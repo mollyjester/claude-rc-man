@@ -25,6 +25,8 @@ class FakeSystem:
         self.commands: list[list[str]] = []
         self.as_user_commands: list[tuple[str, list[str]]] = []
         self.claude_versions: dict[str, str | None] = {}
+        self.check_failures: list[str] = []
+        self.checked: list[str] = []
 
     def user(self, name):
         info = self.users.get(name)
@@ -67,6 +69,10 @@ class FakeSystem:
     def install_claude(self, info, version):
         self.as_user_commands.append((info.name, ["install-claude", version]))
         self.claude_versions[info.name] = version
+
+    def check_candidate(self, cfg, version):
+        self.checked.append(version)
+        return list(self.check_failures)
 
 
 @pytest.fixture
@@ -355,9 +361,12 @@ def test_documented_verbs_match_both_command_lines():
     import re
 
     doc = (REPO / "project-knowledge" / "rc-admin.md").read_text(encoding="utf-8")
-    assert set(re.findall(r"`rc-admin ([a-z]+)", doc)) == set(ra.VERBS)
-    guide = (REPO / "docs" / "users.md").read_text(encoding="utf-8")
-    assert set(re.findall(r"rcman-user ([a-z]+)", guide)) == set(ra.VERBS)
+    assert set(re.findall(r"`rc-admin ([a-z][a-z-]*)", doc)) == set(ra.VERBS)
+    guides = [
+        (REPO / "docs" / name).read_text(encoding="utf-8")
+        for name in ("users.md", "claude-version.md")
+    ]
+    assert set(re.findall(r"rcman-user ([a-z][a-z-]*)", "\n".join(guides))) == set(ra.VERBS)
 
 
 def test_sudoers_template_is_valid_and_narrow(tmp_path):
@@ -376,3 +385,88 @@ def test_sudoers_template_is_valid_and_narrow(tmp_path):
     rules = [line for line in rendered.splitlines() if line.strip() and not line.startswith("#")]
     assert "rcman ALL=(root) NOPASSWD: /opt/rcman/helpers/rc-admin" in rules
     assert not any("env_keep" in line or "SETENV" in line for line in rules)
+
+
+# --- Claude Code versions ------------------------------------------------------------
+
+
+def test_approved_version_is_the_tested_one_until_an_upgrade(cfg):
+    assert ra.approved_version(cfg) == cfg.claude_version
+
+
+def test_upgrade_checks_then_approves_then_installs_where_needed(cfg, two_users):
+    two_users.claude_versions.update({"alice": "9.9.9", "bob": "9.9.9"})
+    two_users.check_failures = []
+    out = ra.upgrade(cfg, two_users, "9.9.10")
+
+    assert two_users.checked == ["9.9.10"]
+    assert ra.approved_version(cfg) == "9.9.10"
+    assert oct(cfg.approved_file.stat().st_mode & 0o777) == "0o644"
+    assert out["approved"] == "9.9.10" and out["tested"] == "9.9.9"
+    assert out["users"] == {"alice": "installed", "bob": "installed"}
+    assert two_users.claude_versions == {"alice": "9.9.10", "bob": "9.9.10"}
+
+
+def test_a_failed_check_changes_nothing(cfg, two_users):
+    two_users.claude_versions.update({"alice": "9.9.9", "bob": "9.9.9"})
+    two_users.check_failures = ["sign_in_screen"]
+    with pytest.raises(ra.AdminError) as err:
+        ra.upgrade(cfg, two_users, "9.9.10")
+    assert err.value.code == "claude_checks_failed"
+    assert err.value.detail == {"failed": ["sign_in_screen"]}
+    assert ra.approved_version(cfg) == "9.9.9"
+    assert not cfg.approved_file.exists()
+    assert two_users.claude_versions == {"alice": "9.9.9", "bob": "9.9.9"}
+
+
+def test_users_already_on_the_version_are_left_alone(cfg, two_users):
+    two_users.claude_versions.update({"alice": "9.9.10", "bob": "9.9.9"})
+    two_users.check_failures = []
+    out = ra.upgrade(cfg, two_users, "9.9.10")
+    assert out["users"] == {"alice": "already", "bob": "installed"}
+
+
+def test_one_failed_install_is_reported_and_the_rest_continue(cfg, two_users):
+    two_users.claude_versions.update({"alice": "9.9.9", "bob": "9.9.9"})
+    two_users.check_failures = []
+    real_install = two_users.install_claude
+
+    def flaky(info, version):
+        if info.name == "alice":
+            raise ra.AdminError("claude_install_failed")
+        real_install(info, version)
+
+    two_users.install_claude = flaky
+    out = ra.upgrade(cfg, two_users, "9.9.10")
+    assert out["users"] == {"alice": "failed", "bob": "installed"}
+
+
+@pytest.mark.parametrize("version", ["", "latest", "1.2", "1.2.3; rm -rf /", "../1.2.3"])
+def test_invalid_versions_are_refused_before_any_check(cfg, two_users, version):
+    two_users.checked = []
+    refused(lambda: ra.upgrade(cfg, two_users, version), "version_invalid")
+    assert two_users.checked == []
+
+
+def test_new_users_get_the_approved_version(cfg, two_users, tmp_path):
+    two_users.check_failures = []
+    two_users.claude_versions.update({"alice": "9.9.9", "bob": "9.9.9"})
+    ra.upgrade(cfg, two_users, "9.9.10")
+    ra.add(cfg, two_users, "carol", "carol@example.com", admin=False)
+    assert two_users.claude_versions["carol"] == "9.9.10"
+
+
+def test_status_reports_approved_tested_and_installed(cfg, two_users):
+    two_users.claude_versions.update({"alice": "9.9.9", "bob": "1.0.0"})
+    out = ra.claude_status(cfg, two_users)
+    assert (out["approved"], out["tested"]) == ("9.9.9", "9.9.9")
+    assert out["users"] == [
+        {"linux": "alice", "installed": "9.9.9"},
+        {"linux": "bob", "installed": "1.0.0"},
+    ]
+
+
+def test_a_corrupt_approval_file_falls_back_to_the_tested_version(cfg):
+    cfg.etc.mkdir(parents=True, exist_ok=True)
+    cfg.approved_file.write_text("garbage")
+    assert ra.approved_version(cfg) == cfg.claude_version

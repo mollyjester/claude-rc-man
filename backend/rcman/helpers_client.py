@@ -62,6 +62,8 @@ ADMIN_STATUS = {
     "command_failed": 500,
     "claude_install_failed": 502,
     "users_file_invalid": 500,
+    "version_invalid": 400,
+    "claude_checks_failed": 409,
 }
 
 HelperRunner = Callable[..., tuple[int, dict]]

@@ -17,6 +17,7 @@ Python standard library only: it runs under the system interpreter.
 from __future__ import annotations
 
 import argparse
+import datetime
 import hashlib
 import json
 import os
@@ -104,6 +105,8 @@ STOPPED = "Environment preserved."
 LOGIN_URL = re.compile(r"https://claude\.com/cai/oauth/authorize\?\S+")
 LOGIN_PROMPT = "Paste code here if prompted"
 LOGIN_FAILED = "Login failed"
+LOGIN_SUCCEEDED = "Login successful"
+CREDENTIALS = Path(".claude") / ".credentials.json"  # relative to the home folder
 
 
 class HelperError(Exception):
@@ -236,6 +239,8 @@ def classify_login(lines: list[str], exit_code: int | None) -> dict:
     url = LOGIN_URL.search(text)
     if LOGIN_FAILED in text:
         state = "failed"
+    elif LOGIN_SUCCEEDED in text:
+        state = "succeeded"
     elif exit_code is not None:
         state = "exited"
     elif LOGIN_PROMPT in text and url:
@@ -554,7 +559,21 @@ class Helper:
             "org_name": data.get("orgName"),
             "subscription_type": data.get("subscriptionType"),
             "auth_method": data.get("authMethod"),
+            "login_expires_at": self._login_expires_at(),
         }
+
+    def _login_expires_at(self) -> str | None:
+        """When the sign-in itself expires, from Claude Code's credentials file.
+
+        Only ``claudeAiOauth.refreshTokenExpiresAt`` is read; it is an internal
+        file, so anything unexpected means the expiry is unknown.
+        """
+        try:
+            data = json.loads((self.cfg.home / CREDENTIALS).read_text(encoding="utf-8"))
+            millis = data["claudeAiOauth"]["refreshTokenExpiresAt"]
+            return datetime.datetime.fromtimestamp(int(millis) / 1000, datetime.UTC).isoformat()
+        except (OSError, ValueError, KeyError, TypeError):
+            return None
 
     def auth_login(self, email: str) -> dict:
         if not EMAIL.fullmatch(email):
@@ -574,7 +593,12 @@ class Helper:
         if not self.tmux.exists(LOGIN_SESSION) or self._login()["state"] != "awaiting_code":
             raise HelperError("no_login_in_progress")
         self.tmux.paste_line(LOGIN_SESSION, code.strip())
-        self._wait_login(lambda s: s["exit_code"] is not None or s["state"] == "failed")
+        login = self._wait_login(
+            lambda s: s["exit_code"] is not None or s["state"] in ("failed", "succeeded")
+        )
+        if login["state"] == "succeeded" and login["exit_code"] is None:
+            self.tmux.type(LOGIN_SESSION, "")  # Claude Code waits for Enter after signing in
+            self._wait_login(lambda s: s["exit_code"] is not None)
         self.tmux.kill(LOGIN_SESSION)
         status = self.auth_status()
         if not status["logged_in"]:

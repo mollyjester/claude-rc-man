@@ -42,13 +42,15 @@ def screen_of(name, **values):
 
 def test_fake_reproduces_every_recorded_screen(tmp_path):
     account = logged_in(tmp_path / "account")
+    automatic = [s for s in rec.SEQUENCES if not s.needs_human]
     recorded = rec.record(
         claude_bin=FAKE,
-        sequences=rec.SEQUENCES,
+        sequences=automatic,
         account_config_dir=account,
         workdir=tmp_path / "work",
     )
-    expected = rec.load_fixtures()
+    names = {c for s in automatic for c in s.captures}
+    expected = {name: f for name, f in rec.load_fixtures().items() if name in names}
     assert set(recorded) == set(expected)  # every capture was produced
     assert rec.compare(recorded, expected) == []
 
@@ -220,3 +222,37 @@ def test_logout_disconnects_the_account(pane, tmp_path):
     run(pane, ["auth", "logout"], tmp_path, cfg)
     assert pane.wait_exit(timeout=10) == rec.load_fixtures()["auth_logout"].exit_code
     assert json.loads((cfg / fake.STATE_FILE).read_text())["logged_in"] is False
+
+
+def test_an_accepted_code_signs_in_with_the_recorded_screens(pane, tmp_path):
+    cfg = tmp_path / "cfg"
+    fake.write_state(cfg, logged_in=False, accept_codes=["GOOD-CODE"])
+    run(pane, ["auth", "login", "--claudeai", "--email", "x@example.com"], tmp_path, cfg)
+    pane.wait_for(r"Paste code here", timeout=10)
+    pane.type_line("GOOD-CODE")
+    pane.wait_for(r"Login successful", timeout=10)
+    pane.type_line("")
+    assert pane.wait_exit(timeout=10) == rec.load_fixtures()["login_succeeded_done"].exit_code
+    assert json.loads((cfg / fake.STATE_FILE).read_text())["logged_in"] is True
+    assert "GOOD-CODE" not in pane.text()
+
+
+def test_a_code_not_accepted_still_fails(pane, tmp_path):
+    cfg = tmp_path / "cfg"
+    fake.write_state(cfg, logged_in=False, accept_codes=["GOOD-CODE"])
+    run(pane, ["auth", "login", "--claudeai", "--email", "x@example.com"], tmp_path, cfg)
+    pane.wait_for(r"Paste code here", timeout=10)
+    pane.type_line("BAD-CODE")
+    assert pane.wait_exit(timeout=10) == rec.load_fixtures()["login_failed"].exit_code
+
+
+def test_login_help_is_the_recorded_help(pane, tmp_path):
+    run(pane, ["auth", "login", "--help"], tmp_path, tmp_path / "cfg")
+    assert pane.wait_exit(timeout=10) == rec.load_fixtures()["auth_login_help"].exit_code
+    assert "--claudeai" in pane.text() and "--email" in pane.text()
+
+
+def test_the_reported_version_can_be_overridden(pane, tmp_path):
+    run(pane, ["--version"], tmp_path, tmp_path / "cfg", FAKE_CLAUDE_VERSION="7.7.7")
+    pane.wait_exit(timeout=10)
+    assert pane.text() == "7.7.7 (Claude Code)"

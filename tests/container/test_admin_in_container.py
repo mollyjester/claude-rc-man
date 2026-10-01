@@ -328,3 +328,40 @@ def test_app_user_runs_rc_admin_as_root(env, two, sudoers):
 def test_fake_installer_is_executable_by_users():
     assert os.access(INSTALLER, os.X_OK)
     assert shutil.which("runuser")
+
+
+# --- Claude Code versions ------------------------------------------------------------
+
+
+def installed(name):
+    out = as_user(
+        name, str(Path(account(name).pw_dir) / ".local" / "bin" / "claude"), "--version"
+    ).stdout
+    return out.split()[0] if out else None
+
+
+def test_upgrade_checks_in_the_canary_then_rolls_out(env, etc, two):
+    assert installed("alice") == approved_version()
+    out = admin_ok(env, "claude-upgrade", "2.1.999")
+    assert out["approved"] == "2.1.999"
+    assert out["users"] == {"alice": "installed", "bob": "installed"}
+    assert (etc / "claude-version").read_text().strip() == "2.1.999"
+    assert installed("alice") == installed("bob") == "2.1.999"
+    canary = Path("/var/lib/rcman/canary")
+    assert canary.stat().st_uid == account("rcman").pw_uid
+    status = admin_ok(env, "claude-status")
+    assert status["approved"] == "2.1.999" and status["tested"] == approved_version()
+
+
+def test_a_version_failing_the_checks_changes_nothing(env, etc, two):
+    code, out = admin(env, "claude-upgrade", "0.0.1")
+    assert code == 1 and out["error"]["code"] == "claude_checks_failed"
+    assert set(out["error"]["failed"]) >= {"version", "auth_status", "sign_in_screen"}
+    assert not (etc / "claude-version").exists()
+    assert installed("alice") == installed("bob") == approved_version()
+
+
+def test_people_added_after_an_upgrade_get_the_approved_version(env, two):
+    admin_ok(env, "claude-upgrade", "2.1.999")
+    admin_ok(env, "add", "carol", "carol@example.com")
+    assert installed("carol") == "2.1.999"

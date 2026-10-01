@@ -115,3 +115,33 @@ def test_list_prints_a_line_per_person(cfg, system):
 def test_usage_error_exits_2(cfg, system):
     code, _, _ = run(cfg, system, ["frobnicate"])
     assert code == 2
+
+
+def test_claude_status_in_words(cfg, system):
+    system.claude_versions.update({"alice": "9.9.9", "bob": "1.0.0"})
+    code, out, _ = run(cfg, system, ["claude-status"])
+    assert code == 0
+    assert "approved 9.9.9" in out and "tested 9.9.9" in out
+    assert "bob" in out and "1.0.0" in out and "differs" in out
+
+
+def test_claude_upgrade_reports_each_user(cfg, system):
+    system.claude_versions.update({"alice": "9.9.9", "bob": "9.9.9"})
+    code, out, _ = run(cfg, system, ["claude-upgrade", "9.9.10"])
+    assert code == 0
+    assert "Approved Claude Code 9.9.10" in out
+    assert "alice: installed" in out and "bob: installed" in out
+    assert "newer than the tested 9.9.9" in out
+
+
+def test_claude_upgrade_failure_names_the_checks(cfg, system):
+    system.check_failures = ["version", "logout"]
+    code, _, err = run(cfg, system, ["claude-upgrade", "9.9.10"])
+    assert code == 1
+    assert "version" in err and "logout" in err
+
+
+def test_rolling_back_says_older(cfg, system):
+    system.claude_versions.update({"alice": "9.9.9", "bob": "9.9.9"})
+    code, out, _ = run(cfg, system, ["claude-upgrade", "9.9.1"])
+    assert "older than the tested 9.9.9" in out

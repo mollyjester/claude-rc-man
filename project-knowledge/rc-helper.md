@@ -31,9 +31,9 @@ command-line reference is `rc-helper --help` and `rc-helper <verb> --help`.
 | `rc-helper forget <path>` | Removes a server that has stopped from the list |
 | `rc-helper output <path>` | The server's current screen and state |
 | `rc-helper confirm <path> --answer y\|n` | Answers the folder-trust question |
-| `rc-helper auth-status` | Whether a Claude account is connected, and which |
+| `rc-helper auth-status` | Whether a Claude account is connected, which, and when the sign-in expires (`login_expires_at`, or `null` when unknown) |
 | `rc-helper auth-login --email <e>` | Starts connecting a Claude account; returns the sign-in URL |
-| `rc-helper auth-code` | Finishes connecting with the code read from stdin; returns the account |
+| `rc-helper auth-code` | Finishes connecting with the code read from stdin — pressing Enter after Claude reports success, as it asks — and returns the account as `auth-status` does |
 
 ## Server states
 
@@ -76,6 +76,10 @@ if Claude asks again.
   `/usr/bin/env -i` with only the variables `child_env` lists — never through
   a shell, and with self-update disabled. Remote Control sessions start in
   permission mode `default`.
+- The sign-in expiry is read from Claude Code's credentials file
+  (`CREDENTIALS`), from `claudeAiOauth.refreshTokenExpiresAt` only; no token
+  is read into the output. It is an internal file, so anything unexpected
+  makes the expiry unknown rather than an error.
 - The sign-in code reaches the sign-in prompt through a tmux paste buffer
   loaded from stdin, so it never appears in any process's arguments.
 - `rc-helper` refuses to run as root. It runs on the system Python with only
