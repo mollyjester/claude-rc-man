@@ -1,0 +1,58 @@
+import { expect, test } from "@playwright/test";
+
+import { m } from "../src/messages";
+import { ALICE, BOB, useAs } from "./people";
+
+test("settings: the server's verdict is shown as given", async ({ page }) => {
+  await useAs(page, BOB);
+  await page.goto("/settings");
+  const prefix = page.getByLabel(m.prefixLabel);
+  await expect(prefix).toHaveValue("bob");
+  await prefix.fill("not valid!");
+  await page.getByRole("button", { name: m.save }).click();
+  await expect(page.getByRole("alert")).toContainText("prefix:");
+  await prefix.fill("bobs-box");
+  await page.getByRole("button", { name: m.save }).click();
+  await expect(page.getByText(m.saved)).toBeVisible();
+});
+
+test("help: pages from docs/, with links between them", async ({ page }) => {
+  await useAs(page, BOB);
+  await page.goto("/help");
+  const nav = page.getByRole("navigation", { name: m.docsTitle });
+  await nav.getByRole("link", { name: "Servers" }).click();
+  await expect(page.getByRole("heading", { name: "Servers", level: 1 })).toBeVisible();
+  await page.reload();
+  await expect(page.getByRole("heading", { name: "Servers", level: 1 })).toBeVisible();
+});
+
+test("administration is offered to administrators only", async ({ page }) => {
+  await useAs(page, BOB);
+  await page.goto("/");
+  await expect(page.getByText(m.signedInAs(BOB))).toBeVisible();
+  await expect(page.getByRole("link", { name: m.navUsers })).toHaveCount(0);
+  await page.goto("/admin/people");
+  await expect(page).toHaveURL("/");
+
+  await useAs(page, ALICE);
+  await page.goto("/admin/people");
+  await expect(page.getByRole("row", { name: /bob@example.com/ })).toBeVisible();
+  await page.getByRole("link", { name: m.navAudit }).click();
+  await expect(page.getByRole("heading", { name: m.auditTitle })).toBeVisible();
+  await page.getByRole("link", { name: m.navVersions }).click();
+  await expect(page.getByText(m.versionsApproved)).toBeVisible();
+});
+
+test("a refused change shows the server's reason", async ({ page }) => {
+  await useAs(page, ALICE);
+  await page.goto("/admin/claude");
+  await page.getByLabel(m.versionsUpgrade).fill("9.9.9");
+  await page.getByRole("button", { name: m.versionsUpgradeGo }).click();
+  await expect(page.getByRole("alert")).toContainText("version");
+});
+
+test("an address rcman does not know is refused", async ({ page }) => {
+  await useAs(page, "stranger@example.com");
+  await page.goto("/");
+  await expect(page.getByRole("alert")).toContainText("may not use rcman");
+});

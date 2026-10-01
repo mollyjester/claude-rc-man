@@ -8,7 +8,7 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 MEDIA_TYPE = "application/problem+json"
-PUBLIC_PATHS = {"/api/health"}
+PUBLIC_PATHS = {"/api/health", "/{path:path}"}  # the frontend's files need no identity
 
 MESSAGES = {
     "not_authenticated": "Sign in first.",

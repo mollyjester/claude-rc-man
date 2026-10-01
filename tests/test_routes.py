@@ -10,5 +10,8 @@ def test_included_routers_are_enumerated_with_their_prefixes(app):
     assert ("/api/users/{linux}", "DELETE") in found
 
 
-def test_only_api_routes_are_enumerated(app):
-    assert all(c.path.startswith("/api/") for c in routes.api_routes(app))
+def test_every_route_is_under_api_except_the_frontend(app):
+    from rcman import spa
+
+    outside = {c.path for c in routes.api_routes(app) if not c.path.startswith("/api/")}
+    assert outside == {spa.CATCH_ALL}

@@ -11,7 +11,9 @@ How the test suite is organised and run. The rules the suite follows are in
 | `make test` | Runs the whole suite with pytest |
 | `make lint` | Checks formatting and lint with ruff |
 | `make format` | Applies formatting and safe lint fixes |
-| `make check` | Lint, then tests — what CI runs on every push to `main` and every pull request |
+| `make frontend-test` | Type-checks the frontend and runs its component tests |
+| `make e2e` | Builds the frontend and runs the browser tests |
+| `make check` | Lint, the Python tests, the frontend tests and the browser tests — what CI runs on every push to `main` and every pull request |
 
 Run pytest from the repository root; `pyproject.toml` holds its configuration.
 The suite needs `tmux`. `tests/test_container_suite.py` runs the root-only
@@ -29,6 +31,7 @@ and run by hand with `uv run pytest -m real_claude`; what they need is in
 | `tests/fakes/` | The fake `claude` and its recorded fixtures — see [fake-claude.md](fake-claude.md) |
 | `helpers/` | `rc-helper` — see [rc-helper.md](rc-helper.md); `rc-admin` and `rcman-user` — see [rc-admin.md](rc-admin.md) |
 | `backend/` | The FastAPI application — see [backend.md](backend.md) |
+| `frontend/` | The React application, its component tests and its browser tests — see [frontend.md](frontend.md) |
 | `tests/container/` | The container image and the suite that runs as root inside it |
 | `devtools/` | Development tooling: the documentation guards, the edit-time hook, the tmux driver, the Claude recorder and the fake's implementation |
 
@@ -62,7 +65,8 @@ file edits in Claude Code sessions. It runs the edited file's paired test:
 
 - `<dir>/<name>.py` runs `tests/test_<name>.py`;
 - a test file runs itself;
-- a Markdown file runs `tests/test_docs_guard.py`.
+- a Markdown file runs `tests/test_docs_guard.py`;
+- `frontend/src/<name>.ts(x)` runs `<name>.test.ts(x)` beside it with Vitest.
 
 A Python module with no paired test is reported. The hook is silent when the
 test passes; on failure it reports to the operator and to the agent. Its own

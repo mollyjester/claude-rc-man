@@ -11,8 +11,9 @@ Control servers. What it does and how far it is implemented: [README.md](README.
 
 ## Commands
 
-`make setup`, `make test`, `make lint`, `make format`, `make check` — what each
-does: [project-knowledge/tests.md](project-knowledge/tests.md).
+`make setup`, `make test`, `make lint`, `make format`, `make frontend-test`,
+`make e2e`, `make check` — what each does:
+[project-knowledge/tests.md](project-knowledge/tests.md).
 
 ## Where to look
 
@@ -27,6 +28,7 @@ does: [project-knowledge/tests.md](project-knowledge/tests.md).
 | `rc-admin`, `rcman-user`, `users.toml`, the approved Claude version | [project-knowledge/rc-admin.md](project-knowledge/rc-admin.md) |
 | Adding and removing people, for administrators | [docs/users.md](docs/users.md) |
 | The backend: layout, identity, errors, helper calls, audit | [project-knowledge/backend.md](project-knowledge/backend.md) |
+| The frontend: layout, rules, tests | [project-knowledge/frontend.md](project-knowledge/frontend.md) |
 | Settings, for administrators | [docs/configuration.md](docs/configuration.md) |
 | The audit trail and its retention, for administrators | [docs/audit.md](docs/audit.md) |
 | Connecting a Claude account, for colleagues | [docs/claude-account.md](docs/claude-account.md) |

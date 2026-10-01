@@ -29,6 +29,9 @@ class Settings(BaseSettings):
     docs_dir: Path = Field(
         APP_ROOT / "docs", description="The directory of documentation pages served to users."
     )
+    frontend_dir: Path = Field(
+        APP_ROOT / "frontend" / "dist", description="The built web interface rcman serves."
+    )
     audit_retention_days: int = Field(
         90, ge=1, description="Audit events older than this many days are deleted."
     )
