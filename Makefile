@@ -26,4 +26,6 @@ frontend-build:  ## build the frontend into frontend/dist
 e2e: frontend-build  ## the built frontend in a browser, against the real backend
 	cd frontend && npx playwright test
 
-check: lint test frontend-test e2e  ## everything CI runs
+check: export RCMAN_REQUIRE_REAL_CLAUDE = 1
+check: export RCMAN_REQUIRE_CONTAINER = 1
+check: lint test frontend-test e2e  ## everything; tests that would skip fail instead

@@ -1,7 +1,7 @@
 """Runs the root-only suite in tests/container/ inside a throwaway container.
 
 Uses ``docker`` when the current user may, otherwise ``sudo -n docker``. When
-neither works the test skips, unless ``RCMAN_REQUIRE_CONTAINER=1`` (set in CI),
+neither works the test skips, unless ``RCMAN_REQUIRE_CONTAINER=1`` (set by ``make check``),
 in which case it fails.
 """
 
@@ -31,7 +31,7 @@ DOCKER = docker()
 
 pytestmark = pytest.mark.skipif(
     DOCKER is None and not REQUIRED,
-    reason="docker is not usable (CI sets RCMAN_REQUIRE_CONTAINER=1 to make this a failure)",
+    reason="docker is not usable (make check sets RCMAN_REQUIRE_CONTAINER=1 to fail instead)",
 )
 
 

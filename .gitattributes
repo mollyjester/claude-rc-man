@@ -7,8 +7,6 @@
 /devtools/** export-ignore
 /.claude export-ignore
 /.claude/** export-ignore
-/.github export-ignore
-/.github/** export-ignore
 /project-knowledge export-ignore
 /project-knowledge/** export-ignore
 /CLAUDE.md export-ignore

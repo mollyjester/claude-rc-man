@@ -1,4 +1,4 @@
-"""Real-account checks: run by hand, never in CI.
+"""Real-account checks: run by hand only.
 
 ``uv run pytest -m real_claude`` runs every recording sequence that needs a
 logged-in account, plus the one that submits an invalid sign-in code, against

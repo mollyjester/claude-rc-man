@@ -20,7 +20,6 @@ DEV_ONLY = [
     "devtools/",
     "frontend/",
     ".claude/",
-    ".github/",
     "project-knowledge/",
     "CLAUDE.md",
     "CONTRIBUTING.md",

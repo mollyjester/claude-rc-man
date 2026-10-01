@@ -13,13 +13,13 @@ How the test suite is organised and run. The rules the suite follows are in
 | `make format` | Applies formatting and safe lint fixes |
 | `make frontend-test` | Type-checks the frontend and runs its component tests |
 | `make e2e` | Builds the frontend and runs the browser tests |
-| `make check` | Lint, the Python tests, the frontend tests and the browser tests — what CI runs on every push to `main` and every pull request |
+| `make check` | Lint, the Python tests, the frontend tests and the browser tests. It sets `RCMAN_REQUIRE_REAL_CLAUDE=1` and `RCMAN_REQUIRE_CONTAINER=1`, so tests that would skip for want of the real `claude` or of Docker fail instead |
 
 Run pytest from the repository root; `pyproject.toml` holds its configuration.
 The suite needs `tmux`. `tests/test_container_suite.py` runs the root-only
 suite in `tests/container/` inside a throwaway Ubuntu container, through
 `docker` or `sudo -n docker`; it skips when neither works, unless
-`RCMAN_REQUIRE_CONTAINER=1`, which CI sets. Tests marked `real_claude` are deselected by default
+`RCMAN_REQUIRE_CONTAINER=1`, which `make check` sets. Tests marked `real_claude` are deselected by default
 and run by hand with `uv run pytest -m real_claude`; what they need is in
 [fake-claude.md](fake-claude.md).
 
