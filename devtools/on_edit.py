@@ -1,0 +1,83 @@
+#!/usr/bin/env python3
+"""PostToolUse hook: run a file's paired test when the file changes.
+
+The pairing is a convention, not a table, so nothing has to be kept in step:
+
+- ``<dir>/<name>.py`` is tested by ``tests/test_<name>.py``;
+- a test file is its own pair, and a package ``__init__.py`` has none;
+- a Markdown file is checked by ``tests/test_docs_guard.py``.
+
+A Python file outside ``tests/`` with no paired test is reported rather than
+skipped. Silent on success. On failure the message reaches the operator through
+``systemMessage`` and the agent through ``additionalContext``.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+DOCS_GUARD_TEST = Path("tests") / "test_docs_guard.py"
+OUTPUT_TAIL_LINES = 60
+
+
+def paired_test(root: Path, path: Path) -> Path | None:
+    try:
+        rel = path.resolve().relative_to(root.resolve())
+    except ValueError:
+        return None
+    if rel.suffix == ".md":
+        return root / DOCS_GUARD_TEST
+    if rel.suffix != ".py" or rel.name == "__init__.py":
+        return None
+    if rel.parts[0] == "tests":
+        return root / rel if rel.name.startswith("test_") else None
+    return root / "tests" / f"test_{rel.stem}.py"
+
+
+def _report(summary: str, detail: str) -> dict:
+    return {
+        "systemMessage": summary,
+        "hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext": detail},
+    }
+
+
+def handle(payload: dict, root: Path) -> dict | None:
+    file_path = (payload.get("tool_input") or {}).get("file_path")
+    if not file_path:
+        return None
+    test = paired_test(root, Path(file_path))
+    if test is None:
+        return None
+    test_rel = test.relative_to(root).as_posix()
+    if not test.is_file():
+        message = f"{file_path} has no paired test: expected {test_rel}"
+        return _report(message, message)
+    proc = subprocess.run(
+        [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", test_rel],
+        cwd=root,
+        capture_output=True,
+        text=True,
+    )
+    if proc.returncode == 0:
+        return None
+    tail = "\n".join((proc.stdout + proc.stderr).splitlines()[-OUTPUT_TAIL_LINES:])
+    return _report(f"Paired test failed: {test_rel}", f"{test_rel} failed:\n{tail}")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--root", type=Path, default=ROOT, help="repository root")
+    args = parser.parse_args()
+    out = handle(json.load(sys.stdin), args.root)
+    if out is not None:
+        print(json.dumps(out))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

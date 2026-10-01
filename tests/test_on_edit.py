@@ -1,0 +1,131 @@
+"""The PostToolUse hook that runs a file's paired test when the file changes."""
+
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+from devtools import on_edit
+
+REPO = Path(__file__).resolve().parent.parent
+
+PASSING = "def test_ok():\n    assert True\n"
+FAILING = "def test_bad():\n    assert False, 'planted failure'\n"
+
+
+def make_root(tmp_path: Path, files: dict[str, str]) -> Path:
+    for name, text in files.items():
+        path = tmp_path / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+    return tmp_path
+
+
+def payload(root: Path, rel: str) -> dict:
+    return {"hook_event_name": "PostToolUse", "tool_input": {"file_path": str(root / rel)}}
+
+
+# --- pairing ------------------------------------------------------------------
+
+
+def test_module_pairs_with_its_test(tmp_path):
+    root = make_root(tmp_path, {"devtools/thing.py": "", "tests/test_thing.py": PASSING})
+    assert on_edit.paired_test(root, root / "devtools/thing.py") == root / "tests/test_thing.py"
+
+
+def test_test_pairs_with_itself(tmp_path):
+    root = make_root(tmp_path, {"tests/test_thing.py": PASSING})
+    path = root / "tests/test_thing.py"
+    assert on_edit.paired_test(root, path) == path
+
+
+def test_markdown_pairs_with_the_docs_guard(tmp_path):
+    guide = "docs/guide" + ".md"  # built so this file holds no dangling reference
+    root = make_root(tmp_path, {guide: "", "tests/test_docs_guard.py": PASSING})
+    assert on_edit.paired_test(root, root / guide) == root / "tests/test_docs_guard.py"
+
+
+def test_unrelated_file_has_no_pair(tmp_path):
+    root = make_root(tmp_path, {"pyproject.toml": ""})
+    assert on_edit.paired_test(root, root / "pyproject.toml") is None
+
+
+def test_file_outside_the_root_has_no_pair(tmp_path):
+    root = make_root(tmp_path / "repo", {"tests/test_x.py": PASSING})
+    assert on_edit.paired_test(root, tmp_path / "elsewhere" / "x.py") is None
+
+
+# --- running --------------------------------------------------------------------
+
+
+def test_passing_pair_is_silent(tmp_path):
+    root = make_root(tmp_path, {"devtools/thing.py": "", "tests/test_thing.py": PASSING})
+    assert on_edit.handle(payload(root, "devtools/thing.py"), root) is None
+
+
+def test_failing_pair_is_reported_to_user_and_agent(tmp_path):
+    root = make_root(tmp_path, {"devtools/thing.py": "", "tests/test_thing.py": FAILING})
+
+    out = on_edit.handle(payload(root, "devtools/thing.py"), root)
+
+    assert out is not None
+    assert "tests/test_thing.py" in out["systemMessage"]
+    context = out["hookSpecificOutput"]["additionalContext"]
+    assert out["hookSpecificOutput"]["hookEventName"] == "PostToolUse"
+    assert "planted failure" in context
+
+
+def test_missing_pair_is_reported_not_skipped(tmp_path):
+    root = make_root(tmp_path, {"devtools/lonely.py": ""})
+
+    out = on_edit.handle(payload(root, "devtools/lonely.py"), root)
+
+    assert out is not None
+    assert "tests/test_lonely.py" in out["systemMessage"]
+
+
+def test_payload_without_a_path_is_silent(tmp_path):
+    assert on_edit.handle({"hook_event_name": "PostToolUse", "tool_input": {}}, tmp_path) is None
+
+
+def test_script_prints_json_on_failure(tmp_path):
+    """Through the real invocation path: stdin JSON in, stdout JSON out."""
+    root = make_root(tmp_path, {"devtools/thing.py": "", "tests/test_thing.py": FAILING})
+    proc = subprocess.run(
+        [sys.executable, str(REPO / "devtools" / "on_edit.py"), "--root", str(root)],
+        input=json.dumps(payload(root, "devtools/thing.py")),
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert "planted failure" in json.loads(proc.stdout)["hookSpecificOutput"]["additionalContext"]
+
+
+def test_script_prints_nothing_on_success(tmp_path):
+    root = make_root(tmp_path, {"devtools/thing.py": "", "tests/test_thing.py": PASSING})
+    proc = subprocess.run(
+        [sys.executable, str(REPO / "devtools" / "on_edit.py"), "--root", str(root)],
+        input=json.dumps(payload(root, "devtools/thing.py")),
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert proc.stdout == ""
+
+
+# --- wiring ---------------------------------------------------------------------
+
+
+def test_settings_route_file_edits_to_the_hook():
+    """What is enforced is what the wiring hands over, not what the script can do."""
+    settings = json.loads((REPO / ".claude" / "settings.json").read_text(encoding="utf-8"))
+    entries = settings["hooks"]["PostToolUse"]
+    wired = [
+        (entry["matcher"], hook["command"])
+        for entry in entries
+        for hook in entry["hooks"]
+        if "devtools/on_edit.py" in hook["command"]
+    ]
+    assert wired, "no PostToolUse hook runs devtools/on_edit.py"
+    matchers = {tool for matcher, _ in wired for tool in matcher.split("|")}
+    assert {"Edit", "Write"} <= matchers

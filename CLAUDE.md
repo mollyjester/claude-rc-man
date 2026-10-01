@@ -9,10 +9,16 @@ description of a destination belongs in the file it names.
 The repository for a self-hosted web service that controls Claude Code Remote
 Control servers. What it does and how far it is implemented: [README.md](README.md).
 
+## Commands
+
+`make setup`, `make test`, `make lint`, `make format`, `make check` — what each
+does: [project-knowledge/tests.md](project-knowledge/tests.md).
+
 ## Where to look
 
 | Question | File |
 |---|---|
 | The rules that override everything else | [CONTRIBUTING.md](CONTRIBUTING.md) |
 | The full standing rules, and where documentation goes | [project-knowledge/working-rules.md](project-knowledge/working-rules.md) |
+| How tests are organised and run, the repository guards, the edit-time hook | [project-knowledge/tests.md](project-knowledge/tests.md) |
 | The design and the implementation plan | GitHub issues on `mollyjester/claude-rc-man` (label `design`, label `build-step`) |

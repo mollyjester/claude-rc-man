@@ -9,8 +9,9 @@ under each colleague's own Claude account.
 
 ## Status
 
-The repository contains contributor documentation only; no part of the service
-is implemented yet. The design and the ordered implementation steps are
+The repository contains contributor documentation, development tooling and the
+tests that guard the repository's own rules; no part of the service is
+implemented yet. The design and the ordered implementation steps are
 tracked as [GitHub issues](https://github.com/mollyjester/claude-rc-man/issues).
 
 ## Contributing
