@@ -14,13 +14,17 @@ How the test suite is organised and run. The rules the suite follows are in
 | `make check` | Lint, then tests — what CI runs on every push to `main` and every pull request |
 
 Run pytest from the repository root; `pyproject.toml` holds its configuration.
+The suite needs `tmux`. Tests marked `real_claude` are deselected by default
+and run by hand with `uv run pytest -m real_claude`; what they need is in
+[fake-claude.md](fake-claude.md).
 
 ## What lives where
 
 | Path | Contents |
 |---|---|
 | `tests/` | The test suite; `tests/test_<name>.py` tests the module `<name>.py` |
-| `devtools/` | Development tooling: the documentation guards and the edit-time hook |
+| `tests/fakes/` | The fake `claude` and its recorded fixtures — see [fake-claude.md](fake-claude.md) |
+| `devtools/` | Development tooling: the documentation guards, the edit-time hook, the tmux driver, the Claude recorder and the fake's implementation |
 
 ## Repository guards
 

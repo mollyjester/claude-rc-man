@@ -1,0 +1,3 @@
+Error: You must be logged in to use Remote Control.
+
+Remote Control is only available with claude.ai subscriptions. Run `claude auth login` to sign in with your claude.ai account.
