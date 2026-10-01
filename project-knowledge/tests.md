@@ -14,7 +14,10 @@ How the test suite is organised and run. The rules the suite follows are in
 | `make check` | Lint, then tests — what CI runs on every push to `main` and every pull request |
 
 Run pytest from the repository root; `pyproject.toml` holds its configuration.
-The suite needs `tmux`. Tests marked `real_claude` are deselected by default
+The suite needs `tmux`. `tests/test_container_suite.py` runs the root-only
+suite in `tests/container/` inside a throwaway Ubuntu container, through
+`docker` or `sudo -n docker`; it skips when neither works, unless
+`RCMAN_REQUIRE_CONTAINER=1`, which CI sets. Tests marked `real_claude` are deselected by default
 and run by hand with `uv run pytest -m real_claude`; what they need is in
 [fake-claude.md](fake-claude.md).
 
@@ -24,7 +27,8 @@ and run by hand with `uv run pytest -m real_claude`; what they need is in
 |---|---|
 | `tests/` | The test suite; `tests/test_<name>.py` tests the module `<name>.py` |
 | `tests/fakes/` | The fake `claude` and its recorded fixtures — see [fake-claude.md](fake-claude.md) |
-| `helpers/` | `rc-helper` — see [rc-helper.md](rc-helper.md) |
+| `helpers/` | `rc-helper` — see [rc-helper.md](rc-helper.md); `rc-admin` and `rcman-user` — see [rc-admin.md](rc-admin.md) |
+| `tests/container/` | The container image and the suite that runs as root inside it |
 | `devtools/` | Development tooling: the documentation guards, the edit-time hook, the tmux driver, the Claude recorder and the fake's implementation |
 
 ## Repository guards

@@ -1,0 +1,5 @@
+# Lets the rcman application user run rc-admin as root, with a reset
+# environment. Rendered by install.sh: @ADMIN@ is the installed rc-admin path,
+# @APP_USER@ the application user.
+Defaults!@ADMIN@ env_reset
+@APP_USER@ ALL=(root) NOPASSWD: @ADMIN@

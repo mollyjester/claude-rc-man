@@ -1,0 +1,11 @@
+#!/usr/bin/python3 -I
+"""Launcher for rcman-user; the implementation is in helpers/ beside it."""
+
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from helpers.rcman_user import main  # noqa: E402
+
+sys.exit(main(sys.argv[1:]))

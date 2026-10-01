@@ -1,5 +1,10 @@
 {
   "captures": {
+    "auth_logout": {
+      "sequence": "auth_logout",
+      "exit_code": 0,
+      "needs_account": false
+    },
     "auth_status_logged_in": {
       "sequence": "auth_status_logged_in",
       "exit_code": 0,

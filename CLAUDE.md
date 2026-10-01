@@ -24,4 +24,6 @@ does: [project-knowledge/tests.md](project-knowledge/tests.md).
 | The fake `claude`, its fixtures, and approving a new Claude Code version | [project-knowledge/fake-claude.md](project-knowledge/fake-claude.md) |
 | `rc-helper`: verbs, JSON contract, server states, isolation, sudo | [project-knowledge/rc-helper.md](project-knowledge/rc-helper.md) |
 | What a server is, for colleagues | [docs/servers.md](docs/servers.md) |
+| `rc-admin`, `rcman-user`, `users.toml`, the approved Claude version | [project-knowledge/rc-admin.md](project-knowledge/rc-admin.md) |
+| Adding and removing people, for administrators | [docs/users.md](docs/users.md) |
 | The design and the implementation plan | GitHub issues on `mollyjester/claude-rc-man` (label `design`, label `build-step`) |

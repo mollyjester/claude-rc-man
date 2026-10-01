@@ -257,6 +257,7 @@ SEQUENCES: list[Sequence] = [
         _exit_only("auth_status_logged_out"),
     ),
     Sequence("rc_logged_out", RC_ARGS, ("rc_logged_out",), _exit_only("rc_logged_out")),
+    Sequence("auth_logout", ["auth", "logout"], ("auth_logout",), _exit_only("auth_logout")),
     Sequence("login_prompt", LOGIN_ARGS, ("login_prompt",), _login_prompt),
     Sequence("login_failed", LOGIN_ARGS, ("login_failed",), _login_failed, submits_code=True),
     Sequence(
