@@ -19,6 +19,8 @@ DEV_ONLY = [
     "tests/",
     "devtools/",
     "frontend/",
+    "installer/",
+    "install.sh",
     ".claude/",
     "project-knowledge/",
     "CLAUDE.md",

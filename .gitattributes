@@ -17,3 +17,7 @@
 # The frontend's sources: a deployment receives the built frontend/dist instead.
 /frontend export-ignore
 /frontend/** export-ignore
+# The installer runs from the clone, not from a release.
+/install.sh export-ignore
+/installer export-ignore
+/installer/** export-ignore
