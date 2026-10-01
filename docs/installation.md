@@ -28,11 +28,21 @@ installer downloads itself and checks against its published checksum.
    review.
 3. Under **Data access**, add only the `openid`, `userinfo.email` and
    `userinfo.profile` scopes. These need no verification by Google.
-4. Under **Audience**, choose **Publish app**. Who gets in is still decided by
+4. Under **Branding**, Google needs two links before the app can be published:
+   - **Application home page**: `https://<your host name>/`.
+   - **Application privacy policy link**: the same address. rcman has no
+     separate privacy page, and Google does not check the link for these
+     scopes.
+   - Under **Authorised domains**, add the domain your host name belongs to:
+     `example.com` for `rcman.example.com`. It also covers the redirect URI
+     below.
+
+   Leave the logo and the Terms of Service link empty, and save.
+5. Under **Audience**, choose **Publish app**. Who gets in is still decided by
    rcman's own list of people, not by Google.
-5. Under **Clients**, create a client of type **Web application**, with the
+6. Under **Clients**, create a client of type **Web application**, with the
    authorized redirect URI `https://<your host name>/oauth2/callback`, exactly.
-6. Copy the client ID and the client secret straight away: Google shows the
+7. Copy the client ID and the client secret straight away: Google shows the
    secret only once. If it is lost, add a new secret to the client and delete
    the old one.
 
