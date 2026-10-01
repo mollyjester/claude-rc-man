@@ -51,3 +51,6 @@ version is `frontend/.nvmrc`.
   per person with the fake `claude`, two people with their own homes, and
   oauth2-proxy's identity header set per test. `rc-admin` there is a stand-in
   that manages the users file; the container suite tests the real one.
+- **Whole-stack browser tests**: `e2e-stack/*.spec.ts` with
+  `playwright.stack.config.ts`, against an installed rcman behind real Caddy
+  and oauth2-proxy in a container — see [tests.md](tests.md).

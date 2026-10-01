@@ -30,6 +30,7 @@ Control servers. What it does and how far it is implemented: [README.md](README.
 | The backend: layout, identity, errors, helper calls, audit | [project-knowledge/backend.md](project-knowledge/backend.md) |
 | The frontend: layout, rules, tests | [project-knowledge/frontend.md](project-knowledge/frontend.md) |
 | The installer: how it is built and tested | [project-knowledge/installer.md](project-knowledge/installer.md) |
+| Checks that need a real Claude account | [project-knowledge/real-claude-checklist.md](project-knowledge/real-claude-checklist.md) |
 | Installing and upgrading, for administrators | [docs/installation.md](docs/installation.md) |
 | Settings, for administrators | [docs/configuration.md](docs/configuration.md) |
 | The audit trail and its retention, for administrators | [docs/audit.md](docs/audit.md) |

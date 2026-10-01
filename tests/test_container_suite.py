@@ -107,3 +107,65 @@ def test_install_suite_passes():
         ],
         env={"HOST_UID": str(os.getuid())},
     )
+
+
+def test_the_whole_stack_in_a_browser():
+    """tests/container/stack.py in a fresh container; the browser specs in frontend/e2e-stack."""
+    import socket
+    import time
+
+    from installer import install as ins
+
+    cache = Path.home() / ".cache" / "rcman-test"
+    ins.ensure_toolchain(cache / "toolchain")
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    name = f"rcman-stack-{os.getpid()}"
+    args = [*DOCKER, "run", "-d", "--name", name, "--init", "-p", f"127.0.0.1:{port}:443"]
+    args += ["-v", f"{REPO}:/src:ro", "-v", f"{cache / 'toolchain'}:{ins.TOOLCHAIN}"]
+    args += ["-v", f"{cache / 'npm'}:/home/dev/.npm", "-v", f"{cache / 'uv'}:/root/.cache/uv"]
+    args += ["-e", f"HOST_UID={os.getuid()}", "-e", "PYTHONDONTWRITEBYTECODE=1"]
+    args += [image(), "python3", "/src/tests/container/stack.py"]
+    subprocess.run(args, check=True, capture_output=True)
+    try:
+        deadline = time.monotonic() + 1200
+        while True:
+            logs = subprocess.run([*DOCKER, "logs", name], capture_output=True, text=True)
+            output = logs.stdout + logs.stderr
+            if "READY" in output.splitlines():
+                break
+            running = subprocess.run(
+                [*DOCKER, "inspect", "-f", "{{.State.Running}}", name],
+                capture_output=True,
+                text=True,
+            )
+            assert running.stdout.strip() == "true" and time.monotonic() < deadline, output[-5000:]
+            time.sleep(2)
+        browser = subprocess.run(
+            [
+                "npx",
+                "playwright",
+                "test",
+                "--config",
+                "playwright.stack.config.ts",
+                "--reporter=line",
+            ],
+            cwd=REPO / "frontend",
+            env={**os.environ, "RCMAN_STACK_PORT": str(port)},
+            capture_output=True,
+            text=True,
+            timeout=1200,
+        )
+        assert browser.returncode == 0, browser.stdout[-8000:] + browser.stderr[-2000:]
+        assert " passed" in browser.stdout and " skipped" not in browser.stdout
+
+        def inside(*argv):
+            return subprocess.run([*DOCKER, "exec", name, *argv], capture_output=True, text=True)
+
+        assert inside("getent", "passwd", "carol").returncode != 0
+        assert inside("test", "-d", "/home/carol").returncode == 0  # kept
+        assert inside("getent", "passwd", "dave").returncode != 0
+        assert inside("test", "-e", "/home/dave").returncode != 0  # deleted
+    finally:
+        subprocess.run([*DOCKER, "rm", "-f", name], capture_output=True)
