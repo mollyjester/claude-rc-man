@@ -11,10 +11,12 @@ tests the real one.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import shutil
 import subprocess
+import time
 from pathlib import Path
 
 from rcman.main import create_app as rcman_app
@@ -29,7 +31,27 @@ PEOPLE = {"alice": ("alice@example.com", True), "bob": ("bob@example.com", False
 GOOD_CODE = "GOOD-CODE"
 
 
+def sockets(root: Path) -> Path:
+    """Each person's tmux socket is here; inside the world, so every run uses the same ones."""
+    return root / "tmux"
+
+
+def _stop_tmux(root: Path) -> None:
+    # tmux detaches from whatever started it, so ending the backend leaves it running.
+    for sock in sockets(root).glob("*.sock"):
+        tmux = ["tmux", "-S", str(sock)]
+        pid = subprocess.run(
+            [*tmux, "display-message", "-p", "#{pid}"], capture_output=True, text=True
+        ).stdout.strip()
+        subprocess.run([*tmux, "kill-server"], capture_output=True)
+        # kill-server returns before the server has gone.
+        deadline = time.monotonic() + 10
+        while pid and Path(f"/proc/{pid}").exists() and time.monotonic() < deadline:
+            time.sleep(0.05)
+
+
 def _world(root: Path) -> dict[str, Path]:
+    _stop_tmux(root)  # a run that was killed before it could shut down
     if root.exists():
         shutil.rmtree(root)
     homes = {}
@@ -53,15 +75,14 @@ def _world(root: Path) -> dict[str, Path]:
 def create_app():
     root = Path(os.environ["RCMAN_E2E_DIR"])
     homes = _world(root)
-    sockets = Path("/tmp") / f"rce2e-{os.getpid()}"
-    sockets.mkdir(exist_ok=True)
+    sockets(root).mkdir()
 
     def helper(linux, args, stdin=None):
         env = {
             "PATH": "/usr/bin:/bin",
             "RC_HELPER_HOME": str(homes[linux]),
             "RC_HELPER_CLAUDE": str(root / "claude"),
-            "RC_HELPER_TMUX_SOCKET": str(sockets / f"{linux}.sock"),
+            "RC_HELPER_TMUX_SOCKET": str(sockets(root) / f"{linux}.sock"),
         }
         proc = subprocess.run(
             [str(REPO / "helpers" / "rc-helper"), *args],
@@ -108,4 +129,16 @@ def create_app():
         database=root / "rcman.db",
         frontend_dir=REPO / "frontend" / "dist",
     )
-    return rcman_app(settings, helper=helper, admin=admin)
+    app = rcman_app(settings, helper=helper, admin=admin)
+    rcman_lifespan = app.router.lifespan_context
+
+    @contextlib.asynccontextmanager
+    async def lifespan(app):
+        async with rcman_lifespan(app) as state:
+            try:
+                yield state
+            finally:
+                _stop_tmux(root)
+
+    app.router.lifespan_context = lifespan
+    return app
