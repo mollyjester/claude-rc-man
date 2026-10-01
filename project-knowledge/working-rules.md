@@ -1,0 +1,146 @@
+# Working rules
+
+The standing rules for anyone changing this repository, human or agent.
+[CONTRIBUTING.md](../CONTRIBUTING.md) names the three that override everything
+else; this file is the full list. Rules are referred to by their bold name.
+
+---
+
+## Knowing versus assuming
+
+- **Robustness over speed.** Where the correct approach costs more than a
+  workable one, take the correct one. A shortcut today is a defect tomorrow.
+- **Verify every claim in the current code before depending on it** —
+  including a claim made by an issue, a docstring, a comment, a previous
+  message, or a test name.
+- **A recorded decision is not a control.** A document or docstring asserting
+  that a check exists is a claim to verify, never a fact to build on.
+- **Prove every negative against a known positive.** An empty search, a zero
+  count or an absent file is a finding only after the same search has been
+  shown to find a case known to be present.
+- **Tool, script and subagent output is a hint, not verified truth.** Confirm
+  it independently before building on it or quoting it onward.
+- **Ambiguity, contradiction or a missing prerequisite: stop and ask.** A
+  question is a deliverable; a guess is a defect.
+- **Verify after acting, not only before.** A change is finished when
+  something independent shows it did what was intended.
+- **Probe assumptions against reality, not against tests written alongside
+  them.** Tests written with a mechanism encode its assumptions. Name the
+  load-bearing assumptions; each one is a test case that must be able to
+  contradict it. Reproduce through the product's own invocation path. A fake
+  of an external program is recorded from the real one and checked against it
+  by contract tests, never written from memory.
+
+## Scope
+
+- **No silent scope expansion.** Something wrong found nearby is reported, not
+  fixed in passing — with one exception: a documentation error is fixed as
+  soon as it is met, because a known-wrong document is a defect in its own
+  right.
+- **Recording a defect is not fixing it.** For every defect found, exactly one
+  of: fix it (the default); get an explicit decision that it stays, recorded
+  where the next reader will meet it; or show by measurement that it was never
+  a defect. Handing back a list of known, undecided defects is not delivery.
+
+## Tests and guards
+
+- **Tests first.** A failing test that states the intended behaviour exists
+  before the code that satisfies it. This applies to documentation guards as
+  much as to features.
+- **A guard that cannot fail is prose.** Every guard has a planted twin: a test
+  that introduces the violation, confirms the plant took effect, and asserts
+  the guard fires.
+- **Non-vacuity.** Ask what would let a guard pass over an empty or wrong
+  input, and close that path first. Every absence assertion is preceded by a
+  positive that becomes true only once the thing it is absent from exists.
+- **A guard whose input can shrink to empty must still be able to fail.**
+  Drive it over a synthetic input with a known positive so *empty* and
+  *clean* stay distinguishable.
+- **Derive the candidate set from the code, never list it by hand.** Routes
+  come from the application's route table, settings from the settings model,
+  CLI options from the parser. A hand-kept list is one more thing to drift.
+- **Exemptions are named, reasoned and stale-checked.** The first answer to a
+  flagged site is to fix the site. Where an exemption is genuinely right it
+  names its subject, states what makes that subject different, and fails when
+  the subject no longer exists.
+- **A green suite that proves nothing is worse than a missing test**, because
+  it is credited as coverage.
+- **A suite that did not run is not a green suite.** Read the totals and the
+  collected count, not just the exit code; report failing test names.
+- **Throwaway probes go in a scratch directory** outside the repository and are
+  deleted when done.
+
+## Design rules that prevent drift
+
+- **Derive counts; never hand-maintain a constant** that duplicates
+  information the code already implies.
+- **Never write a number in a document.** Counts, sizes, durations and
+  defaults go stale the moment they are written. Point at where the value
+  lives — the settings model, the parser, the route table — instead.
+- **User-facing strings live in one message catalogue** per tier, never
+  inline and never mirrored by hand.
+- **Validation lives on the server only.** The frontend sends what was entered
+  and displays the problem-details errors it receives; it holds no rules of
+  its own.
+- **Remove orphaned functionality; do not keep it as "legacy".** Dead or
+  unreachable code is deleted, then the documentation is revisited.
+
+## Documentation
+
+- **Documentation describes the current state only.** No "previously",
+  "used to", "was removed because", no migration narrative, no account of a
+  superseded approach. Git and the issue tracker hold history. Where a past
+  decision explains a present constraint, write the constraint.
+- **Any inconsistency between documentation and code is a bug**, with the same
+  priority as any other bug.
+- **Docs move in the same commit as the code.** A change is not done until the
+  documentation it affects matches it.
+- **Knowledge lives in one place.** A second statement of the same thing is the
+  one nobody updates. Where a subject has a home, link to it; where it has
+  none, create one rather than adding a paragraph wherever you happen to be.
+- **Find affected documentation by searching, never from memory.** One field
+  can surface in its endpoint, the form that sets it and the page that shows
+  it; missing one is a documentation bug.
+- **A reference must point at something that ships.** Name only files that
+  exist in the repository after merge. Plans and design discussion live in
+  GitHub issues and are linked from there, never from code.
+- **`install.sh` is part of the documentation contract.** A change to the
+  installer and to the installation guide land together.
+- **An illustration that enumerates is wrong the moment another case exists.**
+  Repair it by quantifying ("wherever they appear"), not by extending the list.
+- **Reference documentation is generated, not hand-written.** The HTTP API
+  reference comes from the OpenAPI description, a CLI's reference from its
+  `--help`, the configuration reference from the settings model. Hand-written
+  prose that names any of them is checked against them by tests.
+
+### Where documentation goes
+
+| Location | Audience |
+|---|---|
+| `docs/` | Colleagues and admins using the service |
+| `project-knowledge/` | Contributors |
+| `CLAUDE.md` | A contents list for agent sessions; nothing in it is duplicated from what it points at |
+| GitHub issues | Plans, design decisions, history |
+
+## Code invariants
+
+- **Never `shell=True`.** Child processes get a fixed argv and an allowlisted
+  environment, never the service's full environment.
+- **Credentials and one-time codes never appear in argv, URLs or logs.** They
+  reach child processes through the environment or stdin and are held in
+  memory only as long as needed.
+- **Resolve and confine every user-supplied path** to the owning user's home
+  before using it; the home directory itself is never a valid target.
+- **Every mutating endpoint is audited**, and a test over the route table
+  checks it. An exemption carries a reason that also appears in `docs/`.
+- **The interface offers only what the server will allow.** A control shown to
+  someone the server will refuse is a defect.
+
+## Reporting
+
+- **A negative result is a deliverable** — provided it says how it was looked
+  for, so the reader can judge whether the method could have found something.
+- **Name what is unsettled** alongside what was found, and what would settle it.
+- **Rank findings by severity**, each with a reproduction someone else can run.
+- **Report completion faithfully**: what was skipped, what failed, what was
+  left out and why.
