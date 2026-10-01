@@ -24,6 +24,7 @@ and run by hand with `uv run pytest -m real_claude`; what they need is in
 |---|---|
 | `tests/` | The test suite; `tests/test_<name>.py` tests the module `<name>.py` |
 | `tests/fakes/` | The fake `claude` and its recorded fixtures — see [fake-claude.md](fake-claude.md) |
+| `helpers/` | `rc-helper` — see [rc-helper.md](rc-helper.md) |
 | `devtools/` | Development tooling: the documentation guards, the edit-time hook, the tmux driver, the Claude recorder and the fake's implementation |
 
 ## Repository guards

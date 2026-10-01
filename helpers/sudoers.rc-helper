@@ -1,0 +1,5 @@
+# Lets the rcman application user run rc-helper as any member of rcusers, with
+# a reset environment. Rendered by install.sh: @HELPER@ is the installed
+# rc-helper path, @APP_USER@ the application user.
+Defaults!@HELPER@ env_reset
+@APP_USER@ ALL=(%rcusers) NOPASSWD: @HELPER@

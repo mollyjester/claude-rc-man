@@ -116,7 +116,8 @@ class Fake:
     def show(self, name: str, prompt: bool = False) -> int | None:
         self.values["time"] = datetime.datetime.now().strftime("%H:%M:%S")
         text = rec.fill("\n".join(self.fixtures[name].lines), self.values)
-        sys.stdout.write(CLEAR + text + ("" if prompt else "\n"))
+        clear = CLEAR if sys.stdout.isatty() else ""
+        sys.stdout.write(clear + text + ("" if prompt else "\n"))
         sys.stdout.flush()
         return self.fixtures[name].exit_code
 

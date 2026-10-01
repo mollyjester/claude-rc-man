@@ -9,31 +9,16 @@ final screen and exit status can still be read.
 
 from __future__ import annotations
 
-import os
 import re
 import subprocess
 import time
 from pathlib import Path
 
+from helpers.rc_helper import pane_exit_status
+
 WIDTH = 200
 HEIGHT = 50
 POLL_SECONDS = 0.1
-
-
-def _zombie_status(pid: int) -> int | None:
-    """The wait status of an exited, not yet reaped process, from ``/proc``."""
-    try:
-        fields = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
-    except (OSError, IndexError):
-        return None
-    if fields[0] != "Z":  # state; only a zombie has a final exit code
-        return None
-    return int(fields[-1])  # exit_code: the last field, a wait status
-
-
-def _exit_code(wait_status: int) -> int:
-    code = os.waitstatus_to_exitcode(wait_status)
-    return code if code >= 0 else 128 - code
 
 
 def server_running(socket: Path) -> bool:
@@ -102,18 +87,8 @@ class Pane:
 
     def exit_status(self) -> int | None:
         fmt = "#{pane_dead}:#{pane_dead_status}:#{pane_dead_signal}:#{pane_pid}"
-        dead, status, signal, pid = (
-            self._tmux("display-message", "-p", "-t", "p", fmt).strip().split(":")
-        )
-        if dead != "1":
-            return None
-        if status:
-            return int(status)
-        if signal:
-            return 128 + int(signal)  # the shell's convention
-        # tmux saw the pane close before reaping the process: read the zombie's status.
-        wait_status = _zombie_status(int(pid)) if pid else None
-        return None if wait_status is None else _exit_code(wait_status)
+        fields = self._tmux("display-message", "-p", "-t", "p", fmt).strip().split(":")
+        return pane_exit_status(*fields)
 
     def wait_for(self, pattern: str, timeout: float) -> re.Match:
         regex = re.compile(pattern, re.MULTILINE)
