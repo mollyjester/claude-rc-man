@@ -37,7 +37,8 @@ program was still running) and whether it needed an account.
 ## What the fake does
 
 It implements only the invocations rcman makes — `--version`, `auth status`,
-`auth login`, `remote-control` — and fails loudly on anything else. Its state
+`auth login`, `auth logout`, `remote-control` — and fails loudly on anything
+else. Its state
 (logged in or not, trusted folders, the session each folder last served) is
 `fake-state.json` under `CLAUDE_CONFIG_DIR`, or under `~/.claude-fake` when
 that is unset, so it never touches a real Claude configuration. Tests set a
@@ -74,6 +75,8 @@ them as unrecognised screens until they are recorded:
   never used Remote Control;
 - a server exiting after an extended network outage;
 - an expired login;
+- logging out an account that is logged in — the fake shows the screen
+  recorded for one that is not;
 - a crashed session;
 - interrupting a server before its session is ready — the fake finishes
   becoming ready first;

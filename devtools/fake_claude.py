@@ -153,6 +153,10 @@ class Fake:
             )
         if a[:2] == ["auth", "login"]:
             return self.login()
+        if a[:2] == ["auth", "logout"]:
+            self.state["logged_in"] = False
+            _save_state(self.state_dir, self.state)
+            return self.show("auth_logout")
         if a[:1] == ["remote-control"]:
             return self.remote_control()
         print(f"fake claude: unsupported invocation: {' '.join(a)}")

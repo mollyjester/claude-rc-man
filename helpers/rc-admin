@@ -1,0 +1,11 @@
+#!/usr/bin/python3 -I
+"""Launcher for rc-admin; the implementation is in helpers/ beside it."""
+
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from helpers.rc_admin import main_json as main  # noqa: E402
+
+sys.exit(main(sys.argv[1:]))

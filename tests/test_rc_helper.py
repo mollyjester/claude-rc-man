@@ -103,6 +103,7 @@ SERVER_STATES = {
 LOGIN_STATES = {"login_prompt": "awaiting_code", "login_failed": "failed"}
 NOT_READ_AS_SCREENS = {
     "version": "read by `claude --version` output, not a screen",
+    "auth_logout": "rc-admin runs it and reads only the exit status",
     "auth_status_logged_in": "parsed as JSON by auth-status",
     "auth_status_logged_out": "parsed as JSON by auth-status",
 }

@@ -1,0 +1,7 @@
+#!/bin/sh
+# Stands in for the Claude Code installer: links the fake claude into the
+# user's ~/.local/bin and records the version it was asked for.
+set -e
+mkdir -p "$HOME/.local/bin"
+ln -sf /src/tests/fakes/claude "$HOME/.local/bin/claude"
+echo "$1" >> "$HOME/.fake-installs"

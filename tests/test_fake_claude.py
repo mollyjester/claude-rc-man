@@ -213,3 +213,10 @@ def test_output_to_a_pipe_is_plain_text(tmp_path):
         [str(FAKE), "auth", "status"], env=env_for(tmp_path / "cfg"), capture_output=True, text=True
     )
     assert json.loads(proc.stdout)["loggedIn"] is False
+
+
+def test_logout_disconnects_the_account(pane, tmp_path):
+    cfg = logged_in(tmp_path / "cfg")
+    run(pane, ["auth", "logout"], tmp_path, cfg)
+    assert pane.wait_exit(timeout=10) == rec.load_fixtures()["auth_logout"].exit_code
+    assert json.loads((cfg / fake.STATE_FILE).read_text())["logged_in"] is False
