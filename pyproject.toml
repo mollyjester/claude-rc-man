@@ -14,7 +14,10 @@ package = false
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
-addopts = "-ra --strict-markers"
+addopts = "-ra --strict-markers -m 'not real_claude'"
+markers = [
+    "real_claude: needs a logged-in Claude account; run by hand with -m real_claude",
+]
 
 [tool.ruff]
 line-length = 100

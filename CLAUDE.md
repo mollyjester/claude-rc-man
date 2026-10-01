@@ -21,4 +21,5 @@ does: [project-knowledge/tests.md](project-knowledge/tests.md).
 | The rules that override everything else | [CONTRIBUTING.md](CONTRIBUTING.md) |
 | The full standing rules, and where documentation goes | [project-knowledge/working-rules.md](project-knowledge/working-rules.md) |
 | How tests are organised and run, the repository guards, the edit-time hook | [project-knowledge/tests.md](project-knowledge/tests.md) |
+| The fake `claude`, its fixtures, and approving a new Claude Code version | [project-knowledge/fake-claude.md](project-knowledge/fake-claude.md) |
 | The design and the implementation plan | GitHub issues on `mollyjester/claude-rc-man` (label `design`, label `build-step`) |

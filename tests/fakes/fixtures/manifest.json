@@ -1,0 +1,80 @@
+{
+  "captures": {
+    "auth_status_logged_in": {
+      "sequence": "auth_status_logged_in",
+      "exit_code": 0,
+      "needs_account": true
+    },
+    "auth_status_logged_out": {
+      "sequence": "auth_status_logged_out",
+      "exit_code": 1,
+      "needs_account": false
+    },
+    "login_failed": {
+      "sequence": "login_failed",
+      "exit_code": 1,
+      "needs_account": false
+    },
+    "login_prompt": {
+      "sequence": "login_prompt",
+      "exit_code": null,
+      "needs_account": false
+    },
+    "rc_logged_out": {
+      "sequence": "rc_logged_out",
+      "exit_code": 1,
+      "needs_account": false
+    },
+    "server_connected_after_trust": {
+      "sequence": "server",
+      "exit_code": null,
+      "needs_account": true
+    },
+    "server_connected_resumed": {
+      "sequence": "server",
+      "exit_code": null,
+      "needs_account": true
+    },
+    "server_ready_after_trust": {
+      "sequence": "server",
+      "exit_code": null,
+      "needs_account": true
+    },
+    "server_ready_resumed": {
+      "sequence": "server",
+      "exit_code": null,
+      "needs_account": true
+    },
+    "server_stopped_after_trust": {
+      "sequence": "server",
+      "exit_code": 0,
+      "needs_account": true
+    },
+    "server_stopped_resumed": {
+      "sequence": "server",
+      "exit_code": 0,
+      "needs_account": true
+    },
+    "trust_answer_too_fast": {
+      "sequence": "trust_too_fast",
+      "exit_code": null,
+      "needs_account": true
+    },
+    "trust_declined": {
+      "sequence": "trust_declined",
+      "exit_code": 1,
+      "needs_account": true
+    },
+    "trust_prompt": {
+      "sequence": "trust_declined",
+      "exit_code": null,
+      "needs_account": true
+    },
+    "version": {
+      "sequence": "version",
+      "exit_code": 0,
+      "needs_account": false
+    }
+  },
+  "claude_version": "2.1.286"
+}

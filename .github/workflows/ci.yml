@@ -8,8 +8,17 @@ on:
 jobs:
   check:
     runs-on: ubuntu-latest
+    env:
+      RCMAN_REQUIRE_REAL_CLAUDE: "1"
+      DISABLE_AUTOUPDATER: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq tmux
+      - name: Install the Claude Code version the fixtures were recorded from
+        run: |
+          version=$(python3 -c 'import json; print(json.load(open("tests/fakes/fixtures/manifest.json"))["claude_version"])')
+          curl -fsSL https://claude.ai/install.sh | bash -s "$version"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - run: uv sync --locked
       - run: make check

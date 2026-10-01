@@ -1,0 +1,11 @@
+#!/usr/bin/env python3
+"""Launcher for the fake `claude`; the implementation is devtools/fake_claude.py."""
+
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
+
+from devtools.fake_claude import main  # noqa: E402
+
+sys.exit(main())

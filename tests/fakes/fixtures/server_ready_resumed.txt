@@ -1,0 +1,8 @@
+
+·✔︎· Connected · {folder} · HEAD
+    Capacity: 1/32 · New sessions will be created in the current directory
+    {session_name}
+
+Continue coding in the Claude mobile app or {environment_url}
+Or ask Claude to work in this folder from your projects on claude.ai
+space to show QR code
