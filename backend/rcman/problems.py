@@ -1,0 +1,86 @@
+"""RFC 9457 problem details for every error the API returns."""
+
+from __future__ import annotations
+
+from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
+
+MEDIA_TYPE = "application/problem+json"
+PUBLIC_PATHS = {"/api/health"}
+
+MESSAGES = {
+    "not_authenticated": "Sign in first.",
+    "not_allowed": "This account may not use rcman.",
+    "admin_only": "Only administrators may do this.",
+    "origin_refused": "The request did not come from rcman.",
+    "not_found": "There is nothing here.",
+    "method_not_allowed": "That is not allowed here.",
+    "validation_failed": "Some of what was sent is not valid.",
+    "users_file_invalid": "The users file is invalid.",
+    "helper_unavailable": "rcman could not reach its helper.",
+    "internal_error": "Something went wrong in rcman.",
+}
+STATUS = {
+    "not_authenticated": 401,
+    "not_allowed": 403,
+    "admin_only": 403,
+    "origin_refused": 403,
+    "not_found": 404,
+    "method_not_allowed": 405,
+    "validation_failed": 422,
+    "users_file_invalid": 500,
+    "helper_unavailable": 502,
+    "internal_error": 500,
+}
+
+
+class Problem(Exception):
+    def __init__(self, code: str, status: int | None = None, title: str | None = None, **extra):
+        super().__init__(code)
+        self.code = code
+        self.status = status or STATUS[code]
+        self.title = title or MESSAGES[code]
+        self.extra = extra
+
+
+def response(code: str, status: int, title: str, **extra) -> JSONResponse:
+    body = {
+        "type": f"urn:rcman:problem:{code}",
+        "title": title,
+        "status": status,
+        "code": code,
+        **extra,
+    }
+    return JSONResponse(body, status_code=status, media_type=MEDIA_TYPE)
+
+
+def _field(loc) -> str:
+    """The field an error is about: its location without the leading part (body, query, ...)."""
+    parts = (
+        list(loc[1:])
+        if loc and loc[0] in ("body", "query", "path", "header", "cookie")
+        else list(loc)
+    )
+    return ".".join(str(p) for p in parts) or "request"
+
+
+def install(app: FastAPI) -> None:
+    @app.exception_handler(Problem)
+    async def _problem(request: Request, exc: Problem):
+        return response(exc.code, exc.status, exc.title, **exc.extra)
+
+    @app.exception_handler(RequestValidationError)
+    async def _validation(request: Request, exc: RequestValidationError):
+        errors = [{"field": _field(e["loc"]), "message": e["msg"]} for e in exc.errors()]
+        return response("validation_failed", 422, MESSAGES["validation_failed"], errors=errors)
+
+    @app.exception_handler(StarletteHTTPException)
+    async def _http(request: Request, exc: StarletteHTTPException):
+        code = {404: "not_found", 405: "method_not_allowed"}.get(exc.status_code, "internal_error")
+        return response(code, exc.status_code, MESSAGES[code])
+
+    @app.exception_handler(Exception)
+    async def _unexpected(request: Request, exc: Exception):
+        return response("internal_error", 500, MESSAGES["internal_error"])
