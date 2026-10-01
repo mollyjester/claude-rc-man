@@ -19,9 +19,23 @@ Run pytest from the repository root; `pyproject.toml` holds its configuration.
 The suite needs `tmux`. `tests/test_container_suite.py` runs the root-only
 suite in `tests/container/` inside a throwaway Ubuntu container, through
 `docker` or `sudo -n docker`; it skips when neither works, unless
-`RCMAN_REQUIRE_CONTAINER=1`, which `make check` sets. It runs two suites, each
-in a fresh container: user management, and a real installation (see
-[installer.md](installer.md)). Tests marked `real_claude` are deselected by default
+`RCMAN_REQUIRE_CONTAINER=1`, which `make check` sets. It runs three, each in a
+fresh container: user management; a real installation (see
+[installer.md](installer.md)); and the whole stack in a browser.
+
+The **whole stack** is `tests/container/stack.py`: rcman installed from a
+clone, people added with `rcman-user` as real Linux accounts with the fake
+`claude`, real oauth2-proxy whose Google endpoints point at
+`tests/container/oidc_stub.py`, and real Caddy with its own certificate
+authority for `rcman.test` and `auth.test`. Playwright on the host drives it
+through the container's published port with `frontend/playwright.stack.config.ts`
+and the specs in `frontend/e2e-stack/`: signing in through Caddy and
+oauth2-proxy, connecting Claude, a server's lifecycle, one person unable to
+reach another's servers through sudo, an address that is not on the list, the
+audit trail, and removing people with and without their home folder.
+
+What needs a real Claude account is checked by hand:
+[real-claude-checklist.md](real-claude-checklist.md). Tests marked `real_claude` are deselected by default
 and run by hand with `uv run pytest -m real_claude`; what they need is in
 [fake-claude.md](fake-claude.md).
 
