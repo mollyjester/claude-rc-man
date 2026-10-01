@@ -32,6 +32,10 @@ reason it gave is shown on the server it was about.
 - Each folder has at most one server. One server can host several sessions.
 - Servers keep running when you close your browser.
 - Your Claude account has to be connected before a server can start.
+- The list shows only servers started from rcman. A `claude remote-control`
+  you start yourself, in a terminal, is not shown, and rcman cannot stop or
+  resume it. To have rcman manage that folder, quit the one you started and
+  choose **Start** beside the folder here.
 
 ## Starting
 

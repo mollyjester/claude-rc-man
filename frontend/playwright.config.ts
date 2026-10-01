@@ -17,6 +17,8 @@ export default defineConfig({
     cwd: "..",
     url: `${ORIGIN}/api/health`,
     reuseExistingServer: false,
+    // Not the default SIGKILL: the backend's shutdown stops the tmux servers it started.
+    gracefulShutdown: { signal: "SIGTERM", timeout: 10_000 },
     env: { RCMAN_PUBLIC_ORIGIN: ORIGIN, RCMAN_E2E_DIR: "/tmp/rcman-e2e" },
   },
 });
