@@ -6,6 +6,25 @@ own Claude account. The conversations it hosts — its **sessions** — appear i
 [claude.ai/code](https://claude.ai/code) and in the Claude app, where you work
 with them.
 
+## The Servers page
+
+The Servers page shows your folders on one side and your servers on the other.
+Open a folder with the arrow beside it, and choose **Start** beside any folder
+that has no server yet. Each server shows its state, and only the actions that
+state allows:
+
+| State | What you can do |
+|---|---|
+| Starting, Connecting, Ready | Stop |
+| Waiting for your answer | Trust the folder, decline, or stop |
+| Stopped | Resume, or forget it |
+| Not started (folder not trusted, or Claude account not connected) | Start again, or forget it |
+| Ended | Start again, forget it, or show its last screen |
+| Unrecognised screen | Show the screen, or stop |
+
+The page refreshes the states by itself. When rcman refuses an action, the
+reason it gave is shown on the server it was about.
+
 ## Rules
 
 - A server always runs in a folder *inside* your home folder, never in the home
@@ -39,6 +58,7 @@ your list. Archiving or deleting individual sessions is done in claude.ai/code.
 
 ## When something looks unfamiliar
 
-If Claude shows a screen rcman does not recognise, rcman reports the server as
-unrecognised and passes on its raw screen rather than guessing what it means.
-This usually means Claude Code has changed in a way rcman does not handle yet.
+If Claude shows a screen rcman does not recognise, the server is shown as
+**Unrecognised screen** and **Show screen** displays exactly what Claude shows,
+rather than rcman guessing what it means. This usually means Claude Code has
+changed in a way rcman does not handle yet.

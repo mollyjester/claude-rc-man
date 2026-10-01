@@ -6,7 +6,7 @@ fixtures, check the installed version is the one the fixtures were recorded
 from, and check every option rcman passes is still in `--help`.
 
 When `claude` is not installed these tests skip, unless
-``RCMAN_REQUIRE_REAL_CLAUDE=1`` (set in CI), in which case they fail.
+``RCMAN_REQUIRE_REAL_CLAUDE=1`` (set by ``make check``), in which case they fail.
 """
 
 import os
@@ -21,7 +21,7 @@ REQUIRED = os.environ.get("RCMAN_REQUIRE_REAL_CLAUDE") == "1"
 
 pytestmark = pytest.mark.skipif(
     REAL is None and not REQUIRED,
-    reason="claude is not installed (CI sets RCMAN_REQUIRE_REAL_CLAUDE=1 to make this a failure)",
+    reason="claude is not installed (make check sets RCMAN_REQUIRE_REAL_CLAUDE=1 to fail instead)",
 )
 
 NO_ACCOUNT = [

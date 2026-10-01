@@ -8,7 +8,7 @@ import datetime as dt
 
 from fastapi import FastAPI
 
-from rcman import audit, db, problems
+from rcman import audit, db, problems, spa
 from rcman.helpers_client import AdminRunner, HelperRunner, sudo_admin, sudo_helper
 from rcman.routers import audit_log, claude, docs, folders, me, servers, users
 from rcman.settings import Settings
@@ -71,4 +71,5 @@ def create_app(
 
     for module in (me, folders, servers, claude, users, audit_log, docs):
         app.include_router(module.router)
+    spa.install(app, settings.frontend_dir)  # last: it answers every path not matched above
     return app

@@ -89,12 +89,13 @@ them as unrecognised screens until they are recorded:
 | Tests | Needs | Runs |
 |---|---|---|
 | `tests/test_fake_claude.py` | Nothing | Always. The recorder drives the fake exactly as it drives the real binary and must reproduce every fixture |
-| `tests/test_claude_contract.py` | The real `claude`, no account | Always; skipped when `claude` is not installed unless `RCMAN_REQUIRE_REAL_CLAUDE=1`, which CI sets. The installed version must be the manifest's; the no-account screens must match the fixtures; every option rcman passes must be in `--help`, except where help is refused without a login |
+| `tests/test_claude_contract.py` | The real `claude`, no account | Always; skipped when `claude` is not installed unless `RCMAN_REQUIRE_REAL_CLAUDE=1`, which `make check` sets. The installed version must be the manifest's; the no-account screens must match the fixtures; every option rcman passes must be in `--help`, except where help is refused without a login |
 | `tests/test_claude_real_account.py` | The real `claude`, logged in | By hand: `uv run pytest -m real_claude`. Runs the account sequences and the one that submits an invalid sign-in code, and checks the options whose help needs a login |
 
-CI installs exactly the version in `manifest.json`. A machine whose `claude`
-updates itself fails the contract tests as soon as the installed version moves
-past the fixtures; that failure is the signal to approve the new version.
+The contract tests compare the installed `claude` with `manifest.json`. A
+machine whose `claude` updates itself fails them as soon as the installed
+version moves past the fixtures; that failure is the signal to approve the new
+version.
 
 ## Approving a new Claude Code version
 

@@ -5,11 +5,15 @@ The pairing is a convention, not a table, so nothing has to be kept in step:
 
 - ``<dir>/<name>.py`` is tested by ``tests/test_<name>.py``;
 - a test file is its own pair, and a package ``__init__.py`` has none;
-- a Markdown file is checked by ``tests/test_docs_guard.py``.
+- a Markdown file is checked by ``tests/test_docs_guard.py``;
+- ``frontend/src/<name>.ts`` or ``.tsx`` is tested by ``<name>.test.ts(x)`` beside
+  it, run with Vitest.
 
 A Python file outside ``tests/`` with no paired test is reported rather than
-skipped. Silent on success. On failure the message reaches the operator through
-``systemMessage`` and the agent through ``additionalContext``.
+skipped; a frontend file without one is not, because components are covered
+through the screens that use them. Silent on success. On failure the message
+reaches the operator through ``systemMessage`` and the agent through
+``additionalContext``.
 """
 
 from __future__ import annotations
@@ -25,11 +29,29 @@ DOCS_GUARD_TEST = Path("tests") / "test_docs_guard.py"
 OUTPUT_TAIL_LINES = 60
 
 
+FRONTEND = Path("frontend")
+FRONTEND_SOURCE = FRONTEND / "src"
+
+
+def _frontend_pair(root: Path, rel: Path) -> Path | None:
+    if rel.suffix not in (".ts", ".tsx") or FRONTEND_SOURCE not in rel.parents:
+        return None
+    if rel.stem.endswith(".test"):
+        return root / rel
+    for suffix in (".test.tsx", ".test.ts"):
+        candidate = root / rel.with_name(rel.stem + suffix)
+        if candidate.exists():
+            return candidate
+    return None
+
+
 def paired_test(root: Path, path: Path) -> Path | None:
     try:
         rel = path.resolve().relative_to(root.resolve())
     except ValueError:
         return None
+    if rel.suffix in (".ts", ".tsx"):
+        return _frontend_pair(root, rel)
     if rel.suffix == ".md":
         return root / DOCS_GUARD_TEST
     if rel.suffix != ".py" or rel.name == "__init__.py":
@@ -57,12 +79,16 @@ def handle(payload: dict, root: Path) -> dict | None:
     if not test.is_file():
         message = f"{file_path} has no paired test: expected {test_rel}"
         return _report(message, message)
-    proc = subprocess.run(
-        [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", test_rel],
-        cwd=root,
-        capture_output=True,
-        text=True,
-    )
+    if FRONTEND in test.relative_to(root).parents:
+        argv = ["npx", "vitest", "run", test.relative_to(root / FRONTEND).as_posix()]
+        proc = subprocess.run(argv, cwd=root / FRONTEND, capture_output=True, text=True)
+    else:
+        proc = subprocess.run(
+            [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", test_rel],
+            cwd=root,
+            capture_output=True,
+            text=True,
+        )
     if proc.returncode == 0:
         return None
     tail = "\n".join((proc.stdout + proc.stderr).splitlines()[-OUTPUT_TAIL_LINES:])

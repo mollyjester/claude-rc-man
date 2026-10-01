@@ -18,8 +18,8 @@ REPO = Path(__file__).resolve().parent.parent
 DEV_ONLY = [
     "tests/",
     "devtools/",
+    "frontend/",
     ".claude/",
-    ".github/",
     "project-knowledge/",
     "CLAUDE.md",
     "CONTRIBUTING.md",

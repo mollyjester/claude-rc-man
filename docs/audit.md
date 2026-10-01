@@ -2,7 +2,8 @@
 
 rcman records every request that changes something: who made it, as which
 Linux user, what they did, to what, and whether it worked. Requests that only
-read are not recorded. Administrators read the trail in rcman.
+read are not recorded. Administrators read the trail on the **Audit trail**
+page in rcman, newest first.
 
 Each event is also written to the system journal as one line of JSON, so it
 can be read with `journalctl` on the server.

@@ -1,0 +1,37 @@
+:root {
+  font-family: system-ui, sans-serif;
+  color-scheme: light dark;
+  --muted: #6b7280;
+  --border: #d1d5db;
+  --warn: #b45309;
+  --bad: #b91c1c;
+}
+body { margin: 0; }
+header { display: flex; gap: 1.5rem; align-items: center; padding: 0.75rem 1.5rem; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+header nav { display: flex; gap: 1rem; flex: 1; }
+header nav a.active { font-weight: 600; }
+main { padding: 1rem 1.5rem; max-width: 72rem; }
+.columns { display: grid; grid-template-columns: minmax(16rem, 1fr) 2fr; gap: 2rem; }
+@media (max-width: 48rem) { .columns { grid-template-columns: 1fr; } }
+.tree, .tree ul { list-style: none; padding-left: 1rem; }
+.tree li { margin: 0.2rem 0; }
+.toggle { display: inline-block; width: 1.5rem; }
+.name { margin-right: 0.5rem; }
+.server { border: 1px solid var(--border); border-radius: 0.5rem; padding: 0.75rem 1rem; margin-bottom: 0.75rem; }
+.server h3 { margin: 0 0 0.25rem; font-size: 1rem; }
+.state { font-weight: 600; margin: 0.25rem 0; }
+.state-unrecognised .state, .state-exited .state { color: var(--bad); }
+.state-trust_prompt .state { color: var(--warn); }
+.actions { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-top: 0.5rem; }
+.screen { background: #111827; color: #e5e7eb; padding: 0.75rem; overflow-x: auto; font-size: 0.8rem; }
+.problem { border-left: 4px solid var(--bad); padding: 0.25rem 0.75rem; margin: 0.5rem 0; }
+.claude { border: 1px solid var(--border); border-radius: 0.5rem; padding: 0.5rem 1rem; margin-bottom: 1rem; }
+.claude-expiring, .claude-expired, .claude-not_connected { border-color: var(--warn); }
+.muted { color: var(--muted); }
+.warning { color: var(--warn); }
+.dialog { border: 1px solid var(--border); border-radius: 0.5rem; padding: 1rem; margin: 1rem 0; }
+form label { display: block; margin: 0.5rem 0; }
+form input[type="text"] { display: block; min-width: 20rem; max-width: 100%; }
+table { border-collapse: collapse; margin: 0.5rem 0 1rem; }
+th, td { text-align: left; padding: 0.25rem 0.75rem; border-bottom: 1px solid var(--border); }
+.docs { display: grid; grid-template-columns: 14rem 1fr; gap: 2rem; }

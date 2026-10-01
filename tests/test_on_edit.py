@@ -129,3 +129,50 @@ def test_settings_route_file_edits_to_the_hook():
     assert wired, "no PostToolUse hook runs devtools/on_edit.py"
     matchers = {tool for matcher, _ in wired for tool in matcher.split("|")}
     assert {"Edit", "Write"} <= matchers
+
+
+# --- frontend ---------------------------------------------------------------------
+
+
+def test_frontend_module_pairs_with_its_test(tmp_path):
+    root = make_root(tmp_path, {"frontend/src/Thing.tsx": "", "frontend/src/Thing.test.tsx": ""})
+    assert (
+        on_edit.paired_test(root, root / "frontend/src/Thing.tsx")
+        == root / "frontend/src/Thing.test.tsx"
+    )
+
+
+def test_frontend_ts_module_pairs_too(tmp_path):
+    root = make_root(tmp_path, {"frontend/src/api.ts": "", "frontend/src/api.test.ts": ""})
+    assert (
+        on_edit.paired_test(root, root / "frontend/src/api.ts") == root / "frontend/src/api.test.ts"
+    )
+
+
+def test_frontend_test_pairs_with_itself(tmp_path):
+    root = make_root(tmp_path, {"frontend/src/Thing.test.tsx": ""})
+    path = root / "frontend/src/Thing.test.tsx"
+    assert on_edit.paired_test(root, path) == path
+
+
+def test_frontend_test_runs_with_vitest(tmp_path, monkeypatch):
+    root = make_root(tmp_path, {"frontend/src/Thing.tsx": "", "frontend/src/Thing.test.tsx": ""})
+    seen = {}
+
+    def fake_run(argv, cwd, **kw):
+        import subprocess
+
+        seen["argv"], seen["cwd"] = argv, cwd
+        return subprocess.CompletedProcess(argv, 1, stdout="planted vitest failure", stderr="")
+
+    monkeypatch.setattr(on_edit.subprocess, "run", fake_run)
+    out = on_edit.handle(payload(root, "frontend/src/Thing.tsx"), root)
+    assert seen["argv"] == ["npx", "vitest", "run", "src/Thing.test.tsx"]
+    assert seen["cwd"] == root / "frontend"
+    assert "planted vitest failure" in out["hookSpecificOutput"]["additionalContext"]
+
+
+def test_a_frontend_module_without_a_test_is_not_reported(tmp_path):
+    """Components are covered through the screens that use them; only paired files run."""
+    root = make_root(tmp_path, {"frontend/src/main.tsx": ""})
+    assert on_edit.handle(payload(root, "frontend/src/main.tsx"), root) is None
