@@ -17,7 +17,7 @@ from devtools import record_claude as rec
 pytestmark = pytest.mark.real_claude
 
 REAL = shutil.which("claude")
-ACCOUNT = [s for s in rec.SEQUENCES if s.needs_account or s.submits_code]
+ACCOUNT = [s for s in rec.SEQUENCES if (s.needs_account or s.submits_code) and not s.needs_human]
 
 
 def test_account_screens_match_the_fixtures(tmp_path):

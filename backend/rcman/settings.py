@@ -36,6 +36,10 @@ class Settings(BaseSettings):
         100_000, ge=1, description="At most this many audit events are kept; the oldest go first."
     )
 
+    login_warning_days: int = Field(
+        3, ge=1, description="Warn this many days before someone's Claude sign-in expires."
+    )
+
     @field_validator("public_origin")
     @classmethod
     def _bare_origin(cls, value: str) -> str:

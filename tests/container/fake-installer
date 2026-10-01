@@ -1,7 +1,14 @@
 #!/bin/sh
-# Stands in for the Claude Code installer: links the fake claude into the
-# user's ~/.local/bin and records the version it was asked for.
+# Stands in for the Claude Code installer: installs the fake claude, reporting
+# the version it was asked for, into the user's ~/.local/bin, and records the
+# version. Version 0.0.1 installs a broken binary instead, which every upgrade
+# check must reject.
 set -e
 mkdir -p "$HOME/.local/bin"
-ln -sf /src/tests/fakes/claude "$HOME/.local/bin/claude"
+if [ "$1" = "0.0.1" ]; then
+  printf '#!/bin/sh\necho broken\n' > "$HOME/.local/bin/claude"
+else
+  printf '#!/bin/sh\nFAKE_CLAUDE_VERSION=%s exec /src/tests/fakes/claude "$@"\n' "$1" > "$HOME/.local/bin/claude"
+fi
+chmod 755 "$HOME/.local/bin/claude"
 echo "$1" >> "$HOME/.fake-installs"

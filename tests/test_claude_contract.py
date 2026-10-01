@@ -24,7 +24,9 @@ pytestmark = pytest.mark.skipif(
     reason="claude is not installed (CI sets RCMAN_REQUIRE_REAL_CLAUDE=1 to make this a failure)",
 )
 
-NO_ACCOUNT = [s for s in rec.SEQUENCES if not s.needs_account and not s.submits_code]
+NO_ACCOUNT = [
+    s for s in rec.SEQUENCES if not s.needs_account and not s.submits_code and not s.needs_human
+]
 
 
 def test_real_claude_is_installed():

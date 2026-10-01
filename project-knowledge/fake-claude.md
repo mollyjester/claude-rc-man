@@ -37,8 +37,8 @@ program was still running) and whether it needed an account.
 ## What the fake does
 
 It implements only the invocations rcman makes — `--version`, `auth status`,
-`auth login`, `auth logout`, `remote-control` — and fails loudly on anything
-else. Its state
+`auth login` and its `--help`, `auth logout`, `remote-control` — and fails
+loudly on anything else. Its state
 (logged in or not, trusted folders, the session each folder last served) is
 `fake-state.json` under `CLAUDE_CONFIG_DIR`, or under `~/.claude-fake` when
 that is unset, so it never touches a real Claude configuration. Tests set a
@@ -60,17 +60,19 @@ It reproduces these behaviours of the real binary, each recorded:
   without asking about trust.
 - `remote-control --help` is refused without a login.
 
-`FAKE_CLAUDE_SCENARIO=unrecognised` makes `remote-control` show a synthetic
-screen that matches no recording, for testing how unrecognised output is
-handled. `FAKE_CLAUDE_READY_SECONDS` sets how long the connected stage lasts.
+Signing in succeeds, with the recorded screens, for a code listed in the
+state's `accept_codes`, and fails for any other.
+
+`FAKE_CLAUDE_SCENARIO=unrecognised` makes `remote-control` and `auth login`
+show a synthetic screen that matches no recording, for testing how
+unrecognised output is handled. `FAKE_CLAUDE_READY_SECONDS` sets how long the
+connected stage lasts, and `FAKE_CLAUDE_VERSION` the version it reports.
 
 ## Not recorded
 
 The fake has no recording of these, so it cannot show them, and rcman treats
 them as unrecognised screens until they are recorded:
 
-- a successful sign-in — every code the fake receives is answered with the
-  recorded failure;
 - the one-time "Enable Remote Control?" confirmation of an account that has
   never used Remote Control;
 - a server exiting after an extended network outage;
@@ -108,3 +110,12 @@ past the fixtures; that failure is the signal to approve the new version.
 
 Recording also leaves the scratch folders it trusted in that account's Claude
 configuration.
+
+## Sequences that need a person
+
+A sequence marked `needs_human` runs only when named with `--sequence`, never
+in an automated run. `login_succeeded` records a real sign-in: it writes the
+sign-in URL to `HANDOFF/url` (`HANDOFF` in `devtools/record_claude.py`), waits
+for a person to sign in and put Claude's code in `HANDOFF/code`, captures the
+success screens, and logs out, which revokes that sign-in. It uses a
+throwaway configuration, so the account's other sign-ins are untouched.

@@ -9,9 +9,10 @@ under each colleague's own Claude account.
 
 ## Status
 
-Built so far: `rc-helper`, which controls one person's servers; `rc-admin`
-and `rcman-user`, which add and remove people; and the backend API. The web
-interface, connecting a Claude account and the installer are not built yet.
+Built so far: `rc-helper`, which controls one person's servers and connects
+their Claude account; `rc-admin` and `rcman-user`, which add and remove people
+and roll out Claude Code versions; and the backend API. The web interface and
+the installer are not built yet.
 The design and the ordered implementation steps are tracked as
 [GitHub issues](https://github.com/mollyjester/claude-rc-man/issues).
 

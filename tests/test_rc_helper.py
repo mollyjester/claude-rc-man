@@ -100,10 +100,16 @@ SERVER_STATES = {
     "server_stopped_after_trust": "stopped",
     "server_stopped_resumed": "stopped",
 }
-LOGIN_STATES = {"login_prompt": "awaiting_code", "login_failed": "failed"}
+LOGIN_STATES = {
+    "login_prompt": "awaiting_code",
+    "login_failed": "failed",
+    "login_succeeded": "succeeded",
+    "login_succeeded_done": "succeeded",
+}
 NOT_READ_AS_SCREENS = {
     "version": "read by `claude --version` output, not a screen",
     "auth_logout": "rc-admin runs it and reads only the exit status",
+    "auth_login_help": "the upgrade checks look for options in it",
     "auth_status_logged_in": "parsed as JSON by auth-status",
     "auth_status_logged_out": "parsed as JSON by auth-status",
 }
@@ -496,3 +502,44 @@ def test_sudoers_template_is_valid_and_narrow(tmp_path):
         line.startswith("Defaults!/opt/rcman/helpers/rc-helper") and "env_reset" in line
         for line in rules
     )
+
+
+# --- sign-in success and login expiry ------------------------------------------------
+
+
+def credentials(env, **oauth):
+    path = Path(env["RC_HELPER_HOME"]) / ".claude" / ".credentials.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {"claudeAiOauth": {"accessToken": "AT-SECRET", "refreshToken": "RT-SECRET", **oauth}}
+        )
+    )
+
+
+def test_an_accepted_code_connects_the_account(env):
+    fake.write_state(
+        Path(env["RC_HELPER_HOME"]) / ".claude-fake", logged_in=False, accept_codes=["GOOD"]
+    )
+    ok(env, "auth-login", "--email", "someone@example.com")
+    out = ok(env, "auth-code", stdin="GOOD\n")
+    assert out["logged_in"] is True
+    assert ok(env, "auth-status")["logged_in"] is True
+
+
+def test_auth_status_reports_when_the_login_expires(env):
+    log_in(env)
+    credentials(env, refreshTokenExpiresAt=1_900_000_000_000)
+    out = ok(env, "auth-status")
+    assert out["login_expires_at"] == "2030-03-17T17:46:40+00:00"
+    assert "SECRET" not in json.dumps(out)
+
+
+def test_login_expiry_is_unknown_without_the_field(env):
+    log_in(env)
+    assert ok(env, "auth-status")["login_expires_at"] is None  # no credentials file
+    credentials(env)
+    assert ok(env, "auth-status")["login_expires_at"] is None  # no expiry field
+    path = Path(env["RC_HELPER_HOME"]) / ".claude" / ".credentials.json"
+    path.write_text("not json")
+    assert ok(env, "auth-status")["login_expires_at"] is None  # unreadable

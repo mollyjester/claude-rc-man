@@ -31,6 +31,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -96,6 +97,7 @@ def sanitise(text: str, ctx: Context) -> str:
     text = re.sub(re.escape(ENVIRONMENT_URL_PREFIX) + r"\S+", "{environment_url}", text)
     for key, placeholder in ACCOUNT_FIELDS.items():
         text = re.sub(rf'("{key}": )"[^"]*"', rf'\1"{{{placeholder}}}"', text)
+    text = re.sub(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+", "{email}", text)
     paths = sorted([(ctx.cwd, "{cwd}"), (ctx.config_dir, "{config_dir}")], key=lambda p: -len(p[0]))
     for path, placeholder in paths:
         text = text.replace(path, placeholder)
@@ -187,6 +189,7 @@ class Sequence:
     steps: Callable[[Run], None]
     needs_account: bool = False
     submits_code: bool = False
+    needs_human: bool = False  # recorded only when named, with a person signing in
 
 
 def _exit_only(capture: str) -> Callable[[Run], None]:
@@ -239,6 +242,37 @@ def _server(r: Run) -> None:
     r.capture_exit("server_stopped_resumed")
 
 
+HANDOFF = Path("/tmp/rcman-record-handoff")  # where a person-driven sequence exchanges files
+HUMAN_TIMEOUT = 15 * 60.0
+
+
+def _login_succeeded(r: Run) -> None:
+    """A real sign-in: a person opens the URL and hands the code back through HANDOFF.
+
+    The URL is written to ``HANDOFF/url``; the sequence waits for ``HANDOFF/code``,
+    types it, captures the success screens, and then logs out, which revokes the
+    sign-in it just made.
+    """
+    match = r.pane.wait_for(re.escape(LOGIN_URL_PREFIX) + r"\S+", TIMEOUT)
+    HANDOFF.mkdir(mode=0o700, exist_ok=True)
+    code_file = HANDOFF / "code"
+    code_file.unlink(missing_ok=True)
+    (HANDOFF / "url").write_text(match.group(0) + "\n", encoding="utf-8")
+    deadline = time.monotonic() + HUMAN_TIMEOUT
+    while not code_file.exists():
+        if time.monotonic() > deadline:
+            raise TimeoutError("no sign-in code was handed over")
+        time.sleep(0.5)
+    code = code_file.read_text(encoding="utf-8").strip()
+    code_file.unlink()
+    r.pane.type_line(code)
+    r.capture_when(r"Login successful", "login_succeeded")
+    r.pane.type_line("")
+    r.capture_exit("login_succeeded_done")
+    r.pane.rerun([r.argv[0], "auth", "logout"], r.cwd, r.env)
+    r.pane.wait_exit(TIMEOUT)
+
+
 RC_ARGS = [
     "remote-control",
     "--remote-control-session-name-prefix",
@@ -258,8 +292,21 @@ SEQUENCES: list[Sequence] = [
     ),
     Sequence("rc_logged_out", RC_ARGS, ("rc_logged_out",), _exit_only("rc_logged_out")),
     Sequence("auth_logout", ["auth", "logout"], ("auth_logout",), _exit_only("auth_logout")),
+    Sequence(
+        "auth_login_help",
+        ["auth", "login", "--help"],
+        ("auth_login_help",),
+        _exit_only("auth_login_help"),
+    ),
     Sequence("login_prompt", LOGIN_ARGS, ("login_prompt",), _login_prompt),
     Sequence("login_failed", LOGIN_ARGS, ("login_failed",), _login_failed, submits_code=True),
+    Sequence(
+        "login_succeeded",
+        LOGIN_ARGS,
+        ("login_succeeded", "login_succeeded_done"),
+        _login_succeeded,
+        needs_human=True,
+    ),
     Sequence(
         "auth_status_logged_in",
         ["auth", "status"],
@@ -301,7 +348,7 @@ SEQUENCES: list[Sequence] = [
 def select_sequences(names: list[str] | None, with_account: bool) -> list[Sequence]:
     by_name = {s.name: s for s in SEQUENCES}
     if not names:
-        return [s for s in SEQUENCES if with_account or not s.needs_account]
+        return [s for s in SEQUENCES if (with_account or not s.needs_account) and not s.needs_human]
     unknown = [n for n in names if n not in by_name]
     if unknown:
         raise ValueError(f"unknown sequence(s): {', '.join(unknown)}; known: {', '.join(by_name)}")

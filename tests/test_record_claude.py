@@ -189,3 +189,15 @@ def test_help_refused_logged_out_recognises_the_recorded_refusal():
     refusal = "\n".join(rec.load_fixtures()["rc_logged_out"].lines)
     assert rec.help_refused_logged_out(refusal)
     assert not rec.help_refused_logged_out("Usage: claude remote-control [options]")
+
+
+def test_any_email_address_on_a_screen_is_replaced():
+    assert sanitise("Logged in as someone.else+x@sub.example.org.") == "Logged in as {email}."
+
+
+def test_sequences_needing_a_person_never_run_unasked():
+    human = {s.name for s in rec.SEQUENCES if s.needs_human}
+    assert human, "no sequence needs a person"  # non-vacuity: the sign-in recording exists
+    everything = {s.name for s in rec.select_sequences(None, with_account=True)}
+    assert human.isdisjoint(everything)
+    assert [s.name for s in rec.select_sequences(sorted(human), with_account=True)] == sorted(human)

@@ -69,6 +69,32 @@ def main(
             result = ra.delete(cfg, system, args.linux_user, delete_home, env.get("SUDO_USER"))
             kept = "deleted" if result["home_deleted"] else "kept"
             print(f"Removed {result['deleted']}; home folder {kept}.", file=stdout)
+        elif args.verb == "claude-status":
+            status = ra.claude_status(cfg, system)
+            print(
+                f"Claude Code: approved {status['approved']}, tested {status['tested']}",
+                file=stdout,
+            )
+            for u in status["users"]:
+                installed = u["installed"] or "not installed"
+                note = "" if u["installed"] == status["approved"] else "  (differs)"
+                print(f"  {u['linux']:<16} {installed}{note}", file=stdout)
+        elif args.verb == "claude-upgrade":
+            result = ra.upgrade(cfg, system, args.version)
+            print(f"Approved Claude Code {result['approved']}.", file=stdout)
+            if result["approved"] != result["tested"]:
+                key = [
+                    tuple(int(n) for n in v.split("."))
+                    for v in (result["approved"], result["tested"])
+                ]
+                relation = "newer" if key[0] > key[1] else "older"
+                print(
+                    f"Note: {result['approved']} is {relation} than the tested {result['tested']}; "
+                    "screens that need a signed-in account were not checked.",
+                    file=stdout,
+                )
+            for linux, outcome in sorted(result["users"].items()):
+                print(f"  {linux}: {outcome}", file=stdout)
         else:
             users = ra.list_users(cfg, system)["users"]
             print(f"{'LINUX':<16} {'EMAIL':<40} {'ROLE':<6} ACCOUNT", file=stdout)
@@ -79,5 +105,7 @@ def main(
         return 0
     except ra.AdminError as error:
         detail = error.detail.get("detail") or error.detail.get("stderr")
+        if "failed" in error.detail:
+            detail = "failed: " + ", ".join(error.detail["failed"])
         print(ra.MESSAGES[error.code] + (f" ({detail})" if detail else ""), file=stderr)
         return 1

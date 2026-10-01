@@ -29,4 +29,6 @@ does: [project-knowledge/tests.md](project-knowledge/tests.md).
 | The backend: layout, identity, errors, helper calls, audit | [project-knowledge/backend.md](project-knowledge/backend.md) |
 | Settings, for administrators | [docs/configuration.md](docs/configuration.md) |
 | The audit trail and its retention, for administrators | [docs/audit.md](docs/audit.md) |
+| Connecting a Claude account, for colleagues | [docs/claude-account.md](docs/claude-account.md) |
+| Claude Code versions and rolling one out, for administrators | [docs/claude-version.md](docs/claude-version.md) |
 | The design and the implementation plan | GitHub issues on `mollyjester/claude-rc-man` (label `design`, label `build-step`) |

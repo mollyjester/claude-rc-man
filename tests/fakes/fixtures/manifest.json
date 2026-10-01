@@ -1,5 +1,10 @@
 {
   "captures": {
+    "auth_login_help": {
+      "sequence": "auth_login_help",
+      "exit_code": 0,
+      "needs_account": false
+    },
     "auth_logout": {
       "sequence": "auth_logout",
       "exit_code": 0,
@@ -23,6 +28,16 @@
     "login_prompt": {
       "sequence": "login_prompt",
       "exit_code": null,
+      "needs_account": false
+    },
+    "login_succeeded": {
+      "sequence": "login_succeeded",
+      "exit_code": null,
+      "needs_account": false
+    },
+    "login_succeeded_done": {
+      "sequence": "login_succeeded",
+      "exit_code": 0,
       "needs_account": false
     },
     "rc_logged_out": {

@@ -7,9 +7,10 @@ trusted, which session each folder last served — lives in ``fake-state.json``
 under ``CLAUDE_CONFIG_DIR``, or under ``~/.claude-fake`` when that is unset, so
 it never touches a real Claude configuration.
 
-Setting ``FAKE_CLAUDE_SCENARIO=unrecognised`` makes ``remote-control`` show a
-synthetic screen that no recording contains, for testing how unrecognised
-output is handled.
+Setting ``FAKE_CLAUDE_SCENARIO=unrecognised`` makes ``remote-control`` and
+``auth login`` show a synthetic screen that no recording contains, for testing
+how unrecognised output is handled. ``FAKE_CLAUDE_VERSION`` replaces the
+version it reports.
 
 An answer to the folder-trust prompt that arrives sooner than
 :data:`MIN_ANSWER_SECONDS` after the prompt is refused with the recorded
@@ -22,9 +23,9 @@ A server shows the recorded *connected* screen (no session yet) for
 the *ready* screen. Interrupting a server before it is ready has not been
 recorded, so the fake finishes becoming ready before it handles the interrupt.
 
-Logging in is not implemented: a successful sign-in has not been recorded, so
-every submitted code is answered with the recorded failure. Tests that need a
-logged-in fake call :func:`write_state`.
+Signing in succeeds for a code listed in the state's ``accept_codes`` and fails
+for any other, each with the recorded screens. Tests that need a logged-in fake
+call :func:`write_state`.
 """
 
 from __future__ import annotations
@@ -66,9 +67,15 @@ def write_state(
     logged_in: bool,
     trusted: list[str] | None = None,
     servers: dict[str, str] | None = None,
+    accept_codes: list[str] | None = None,
 ) -> None:
     config_dir.mkdir(parents=True, exist_ok=True)
-    state = {"logged_in": logged_in, "trusted": trusted or [], "servers": servers or {}}
+    state = {
+        "logged_in": logged_in,
+        "trusted": trusted or [],
+        "servers": servers or {},
+        "accept_codes": accept_codes or [],
+    }
     (config_dir / STATE_FILE).write_text(json.dumps(state), encoding="utf-8")
 
 
@@ -97,7 +104,7 @@ class Fake:
         self.args = args
         self.env = env
         self.fixtures = rec.load_fixtures()
-        self.version = rec.load_manifest()["claude_version"]
+        self.version = env.get("FAKE_CLAUDE_VERSION") or rec.load_manifest()["claude_version"]
         self.cwd = os.getcwd()
         self.config_dir = env.get("CLAUDE_CONFIG_DIR") or os.path.join(
             env.get("HOME", "/"), ".claude"
@@ -151,6 +158,8 @@ class Fake:
             return self.show(
                 "auth_status_logged_in" if self.state["logged_in"] else "auth_status_logged_out"
             )
+        if a == ["auth", "login", "--help"]:
+            return self.show("auth_login_help")
         if a[:2] == ["auth", "login"]:
             return self.login()
         if a[:2] == ["auth", "logout"]:
@@ -163,13 +172,24 @@ class Fake:
         return 2
 
     def login(self) -> int:
+        if self.env.get("FAKE_CLAUDE_SCENARIO") == "unrecognised":
+            sys.stdout.write(CLEAR + UNRECOGNISED_SCREEN + "\n")
+            sys.stdout.flush()
+            self.wait_for_interrupt()
+            return 1
         email = _option(self.args, "--email") or ""
         self.values["login_url"] = (
             rec.LOGIN_URL_PREFIX + "fake=1&login_hint=" + email.replace("@", "%40")
         )
         self.show("login_prompt", prompt=True)
-        self.read_line()
-        return self.show("login_failed")
+        code = self.read_line().strip()
+        if code not in self.state.get("accept_codes", []):
+            return self.show("login_failed")
+        self.state["logged_in"] = True
+        _save_state(self.state_dir, self.state)
+        self.show("login_succeeded", prompt=True)
+        self.read_line()  # Claude Code waits for Enter
+        return self.show("login_succeeded_done")
 
     def session_name(self) -> str:
         if existing := self.state["servers"].get(self.cwd):

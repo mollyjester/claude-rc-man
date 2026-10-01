@@ -84,6 +84,9 @@ def test_driving_every_audited_route_writes_its_row(app, client, settings, admin
         ("PUT", "/api/me/settings"): {"json": {"prefix": "alice"}},
         ("POST", "/api/users"): {"json": {"linux": "dave", "email": "dave@example.com"}},
         ("DELETE", "/api/users/{linux}"): {"params": {"home": "keep"}},
+        ("POST", "/api/claude/login"): {"json": {}},
+        ("POST", "/api/claude/code"): {"json": {"code": "x"}},
+        ("POST", "/api/claude/upgrade"): {"json": {"version": "2.2.0"}},
     }
     audited = {
         (sorted(r.methods)[0], r.path): audit.action_of(r.route)
@@ -94,6 +97,7 @@ def test_driving_every_audited_route_writes_its_row(app, client, settings, admin
     admin_runner.replies = [
         (0, {"user": {}, "created": True}),
         (0, {"deleted": "bob", "home_deleted": False}),
+        (0, {"approved": "2.2.0", "tested": "2.2.0", "users": {}}),
     ]
     for (method, path), kwargs in calls.items():
         before = len(rows(settings))

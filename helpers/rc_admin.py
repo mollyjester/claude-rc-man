@@ -20,6 +20,7 @@ import json
 import os
 import pwd
 import re
+import shutil
 import subprocess
 import tempfile
 import time
@@ -27,9 +28,10 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
+from helpers import claude_checks
 from helpers import users_file as uf
 
-VERBS = ("add", "del", "list")
+VERBS = ("add", "del", "list", "claude-status", "claude-upgrade")
 MIN_UID = 1000
 CLAUDE_INSTALLER_URL = "https://claude.ai/install.sh"
 VERSION_FILE = Path(__file__).resolve().parent / "claude-version"
@@ -60,6 +62,8 @@ MESSAGES = {
     "command_failed": "A system command failed.",
     "claude_install_failed": "Installing Claude Code failed.",
     "users_file_invalid": "The users file is invalid.",
+    "version_invalid": "A Claude Code version looks like 1.2.3.",
+    "claude_checks_failed": "That Claude Code version failed rcman's checks; nothing was changed.",
 }
 
 
@@ -75,8 +79,10 @@ class Config:
     etc: Path
     user_group: str
     app_group: str
-    claude_version: str
+    claude_version: str  # the version rcman's recorded tests cover
     installer: Path | None  # None: the official Claude Code installer
+    app_user: str = "rcman"
+    canary_home: Path = Path("/var/lib/rcman/canary")  # where candidate versions are checked
 
     @property
     def users_file(self) -> Path:
@@ -86,8 +92,13 @@ class Config:
     def allowlist(self) -> Path:
         return self.etc / "allowed-emails"
 
+    @property
+    def approved_file(self) -> Path:
+        return self.etc / "claude-version"
+
 
 def approved_claude_version() -> str:
+    """The version rcman's recorded tests cover, shipped in helpers/claude-version."""
     return VERSION_FILE.read_text(encoding="utf-8").strip()
 
 
@@ -99,7 +110,17 @@ def config_from_env(env: dict[str, str]) -> Config:
         app_group="rcman",
         claude_version=approved_claude_version(),
         installer=Path(installer) if installer else None,
+        canary_home=Path(env.get("RC_ADMIN_CANARY") or "/var/lib/rcman/canary"),
     )
+
+
+def approved_version(cfg: Config) -> str:
+    """The version rolled out: the last approved upgrade, else the tested version."""
+    try:
+        text = cfg.approved_file.read_text(encoding="utf-8").strip()
+    except OSError:
+        return cfg.claude_version
+    return text if VERSION.fullmatch(text) else cfg.claude_version
 
 
 @dataclass(frozen=True)
@@ -190,6 +211,38 @@ class RealSystem:
 
     def chown(self, path: Path, uid: int, gid: int) -> None:
         os.chown(path, uid, gid)
+
+    def check_candidate(self, cfg: Config, version: str) -> list[str]:
+        """Install ``version`` in the canary home, as the app user, and run the checks."""
+        app = pwd.getpwnam(cfg.app_user)
+        home = cfg.canary_home
+        if home.exists():
+            shutil.rmtree(home)
+        home.mkdir(parents=True, mode=0o700)
+        os.chown(home, app.pw_uid, app.pw_gid)
+        canary = UserInfo(cfg.app_user, app.pw_uid, app.pw_gid, home, [])
+        try:
+            self.install_claude(canary, version)
+        except AdminError:
+            return ["install"]
+        env = {
+            "HOME": str(home),
+            "PATH": f"{home}/.local/bin:/usr/local/bin:/usr/bin:/bin",
+            "LANG": "C.UTF-8",
+            "TERM": "xterm-256color",
+            "DISABLE_AUTOUPDATER": "1",
+            "CLAUDE_CONFIG_DIR": str(home / "check-config"),
+        }
+        claude = str(_claude(canary))
+
+        def run(args, until=None, timeout=claude_checks.TIMEOUT):
+            argv = ["runuser", "-u", cfg.app_user, "--", "/usr/bin/env", "-i"]
+            argv += [f"{k}={v}" for k, v in env.items()] + [claude, *args]
+            return claude_checks.run_in_pty(
+                argv, {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin"}, home, until, timeout
+            )
+
+        return claude_checks.candidate_checks(run, version)
 
     def install_claude(self, info: UserInfo, version: str) -> None:
         if self.installer is not None:
@@ -286,8 +339,9 @@ def add(cfg: Config, system, linux: str, email: str, admin: bool, adopt: bool = 
             system.run(["usermod", "--append", "--groups", cfg.user_group, linux])
     os.chmod(info.home, 0o750)
 
-    if _installed_version(system, info) != cfg.claude_version:
-        system.install_claude(info, cfg.claude_version)
+    version = approved_version(cfg)
+    if _installed_version(system, info) != version:
+        system.install_claude(info, version)
     _seed(system, info)
 
     users = [u for u in users if u.linux != linux] + [
@@ -297,7 +351,7 @@ def add(cfg: Config, system, linux: str, email: str, admin: bool, adopt: bool = 
     return {
         "user": {"linux": linux, "email": email, "admin": admin},
         "created": created,
-        "claude_version": cfg.claude_version,
+        "claude_version": version,
     }
 
 
@@ -357,6 +411,39 @@ def list_users(cfg: Config, system) -> dict:
     return {"users": out}
 
 
+def claude_status(cfg: Config, system) -> dict:
+    users = []
+    for user in _load(cfg):
+        info = system.user(user.linux)
+        installed = _installed_version(system, info) if info else None
+        users.append({"linux": user.linux, "installed": installed})
+    return {"approved": approved_version(cfg), "tested": cfg.claude_version, "users": users}
+
+
+def upgrade(cfg: Config, system, version: str) -> dict:
+    """Check ``version``; only if it passes, approve it and install it for everyone."""
+    if not VERSION.fullmatch(version):
+        raise AdminError("version_invalid")
+    failed = system.check_candidate(cfg, version)
+    if failed:
+        raise AdminError("claude_checks_failed", {"failed": failed})
+    uf.write_atomic(cfg.approved_file, version + "\n", mode=0o644)
+    results = {}
+    for user in _load(cfg):
+        info = system.user(user.linux)
+        if info is None or cfg.user_group not in info.groups:
+            results[user.linux] = "no_account"
+        elif _installed_version(system, info) == version:
+            results[user.linux] = "already"
+        else:
+            try:
+                system.install_claude(info, version)
+                results[user.linux] = "installed"
+            except AdminError:
+                results[user.linux] = "failed"
+    return {"approved": version, "tested": cfg.claude_version, "users": results}
+
+
 def home_of(system, linux: str) -> Path | None:
     info = system.user(linux)
     return info.home if info else None
@@ -386,6 +473,11 @@ def parser(prog: str, parser_class=_Parser, requester: bool = False) -> argparse
     if requester:
         del_p.add_argument("--requester", help="email of the administrator asking")
     verbs.add_parser("list", help="everyone and their account state")
+    verbs.add_parser(
+        "claude-status", help="the approved Claude Code version and everyone's installed one"
+    )
+    up = verbs.add_parser("claude-upgrade", help="check a Claude Code version, then roll it out")
+    up.add_argument("version")
     return p
 
 
@@ -416,6 +508,10 @@ def main_json(argv: list[str], cfg: Config | None = None, system=None) -> int:
                 home_decision(args),
                 requester.linux if requester else None,
             )
+        elif args.verb == "claude-status":
+            result = claude_status(cfg, system)
+        elif args.verb == "claude-upgrade":
+            result = upgrade(cfg, system, args.version)
         else:
             result = list_users(cfg, system)
         print(json.dumps(result))

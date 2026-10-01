@@ -17,3 +17,4 @@ when a value is invalid.
 | `RCMAN_DOCS_DIR` | Where the documentation pages shown in rcman are |
 | `RCMAN_AUDIT_RETENTION_DAYS` | How long audit events are kept (see [Audit trail](audit.md)) |
 | `RCMAN_AUDIT_MAX_ROWS` | The most audit events kept at once (see [Audit trail](audit.md)) |
+| `RCMAN_LOGIN_WARNING_DAYS` | How many days before a Claude sign-in expires people are warned (see [Connecting your Claude account](claude-account.md)) |

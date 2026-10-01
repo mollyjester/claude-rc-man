@@ -20,7 +20,7 @@ the OpenAPI description it serves at `/api/openapi`.
 | `audit.py` | The audit trail: recording, coverage, retention |
 | `helpers_client.py` | Calling `rc-helper` and `rc-admin`, and mapping their errors to HTTP statuses |
 | `routes.py` | The app's routes as FastAPI resolves them after including routers |
-| `routers/` | One module per area: `me`, `folders`, `servers`, `users`, `audit_log`, `docs` |
+| `routers/` | One module per area: `me`, `folders`, `servers`, `claude`, `users`, `audit_log`, `docs` |
 
 ## Requests
 
@@ -50,6 +50,17 @@ production they are `sudo_helper` — `sudo -n -u <linux-user> rc-helper ...` �
 and `sudo_admin` — `sudo -n rc-admin ...`. Positional paths are passed after
 `--`, and option values as `--option=value`, so nothing a person sends can be
 read as an option.
+
+## Claude account and versions
+
+`routers/claude.py` reports the signed-in user's connection — `not_connected`,
+`connected`, `expiring` (within `RCMAN_LOGIN_WARNING_DAYS` of the sign-in's
+expiry) or `expired` — and drives the connect flow through rc-helper's
+`auth-login` and `auth-code`; the code goes to rc-helper on stdin and is
+neither audited nor logged. For administrators it reports versions through
+rc-admin's `claude-status`, flagging who differs from the approved version and
+whether that version is the tested one, and rolls one out with
+`claude-upgrade`.
 
 ## Audit
 
