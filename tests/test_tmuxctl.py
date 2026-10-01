@@ -5,6 +5,7 @@ import sys
 import pytest
 
 from devtools import tmuxctl
+from helpers import rc_helper
 
 
 @pytest.fixture
@@ -127,7 +128,7 @@ def test_exit_status_of_an_unreaped_process_comes_from_proc(monkeypatch, pane, t
         return out
 
     monkeypatch.setattr(pane, "_tmux", unreaped)
-    monkeypatch.setattr(tmuxctl, "_zombie_status", lambda pid: 5 << 8)  # wait status
+    monkeypatch.setattr(rc_helper, "_zombie_status", lambda pid: 5 << 8)  # wait status
     assert pane.exit_status() == 5
 
 
@@ -138,13 +139,13 @@ def test_zombie_status_reads_the_kernel_exit_code(tmp_path):
 
     child = subprocess.Popen([sys.executable, "-c", "raise SystemExit(7)"])
     for _ in range(100):  # wait for it to become a zombie, without reaping it
-        if tmuxctl._zombie_status(child.pid) is not None:
+        if rc_helper._zombie_status(child.pid) is not None:
             break
         time.sleep(0.05)
-    status = tmuxctl._zombie_status(child.pid)
+    status = rc_helper._zombie_status(child.pid)
     child.wait()
     assert status is not None and os.waitstatus_to_exitcode(status) == 7
-    assert tmuxctl._zombie_status(child.pid) is None  # reaped: no longer readable
+    assert rc_helper._zombie_status(child.pid) is None  # reaped: no longer readable
 
 
 def test_a_closed_pane_can_run_again_at_once(tmp_path):
