@@ -26,4 +26,7 @@ does: [project-knowledge/tests.md](project-knowledge/tests.md).
 | What a server is, for colleagues | [docs/servers.md](docs/servers.md) |
 | `rc-admin`, `rcman-user`, `users.toml`, the approved Claude version | [project-knowledge/rc-admin.md](project-knowledge/rc-admin.md) |
 | Adding and removing people, for administrators | [docs/users.md](docs/users.md) |
+| The backend: layout, identity, errors, helper calls, audit | [project-knowledge/backend.md](project-knowledge/backend.md) |
+| Settings, for administrators | [docs/configuration.md](docs/configuration.md) |
+| The audit trail and its retention, for administrators | [docs/audit.md](docs/audit.md) |
 | The design and the implementation plan | GitHub issues on `mollyjester/claude-rc-man` (label `design`, label `build-step`) |

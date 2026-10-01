@@ -9,10 +9,11 @@ under each colleague's own Claude account.
 
 ## Status
 
-The repository contains contributor documentation, development tooling and the
-tests that guard the repository's own rules; no part of the service is
-implemented yet. The design and the ordered implementation steps are
-tracked as [GitHub issues](https://github.com/mollyjester/claude-rc-man/issues).
+Built so far: `rc-helper`, which controls one person's servers; `rc-admin`
+and `rcman-user`, which add and remove people; and the backend API. The web
+interface, connecting a Claude account and the installer are not built yet.
+The design and the ordered implementation steps are tracked as
+[GitHub issues](https://github.com/mollyjester/claude-rc-man/issues).
 
 ## Contributing
 
