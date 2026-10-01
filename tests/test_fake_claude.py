@@ -203,3 +203,13 @@ def test_server_connects_first_and_becomes_ready_after(pane, tmp_path):
     connected = pane.text()
     pane.wait_for(READY, timeout=fake.READY_SECONDS + 10)
     assert "Capacity: 0/" in connected and READY not in connected
+
+
+def test_output_to_a_pipe_is_plain_text(tmp_path):
+    """Like the real binary, nothing but the text when stdout is not a terminal."""
+    import subprocess
+
+    proc = subprocess.run(
+        [str(FAKE), "auth", "status"], env=env_for(tmp_path / "cfg"), capture_output=True, text=True
+    )
+    assert json.loads(proc.stdout)["loggedIn"] is False
