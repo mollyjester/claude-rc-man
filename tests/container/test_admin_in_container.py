@@ -35,6 +35,15 @@ def approved_version():
     return (SRC / "helpers" / "claude-version").read_text().strip()
 
 
+@pytest.fixture(scope="module", autouse=True)
+def accounts():
+    """What the installer creates: the rcusers group and the rcman application user."""
+    if subprocess.run(["getent", "group", "rcusers"], capture_output=True).returncode != 0:
+        subprocess.run(["groupadd", "rcusers"], check=True)
+    if subprocess.run(["getent", "passwd", "rcman"], capture_output=True).returncode != 0:
+        subprocess.run(["useradd", "--system", "--user-group", "rcman"], check=True)
+
+
 @pytest.fixture
 def etc(tmp_path):
     return tmp_path / "etc"

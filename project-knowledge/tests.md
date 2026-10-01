@@ -19,7 +19,9 @@ Run pytest from the repository root; `pyproject.toml` holds its configuration.
 The suite needs `tmux`. `tests/test_container_suite.py` runs the root-only
 suite in `tests/container/` inside a throwaway Ubuntu container, through
 `docker` or `sudo -n docker`; it skips when neither works, unless
-`RCMAN_REQUIRE_CONTAINER=1`, which `make check` sets. Tests marked `real_claude` are deselected by default
+`RCMAN_REQUIRE_CONTAINER=1`, which `make check` sets. It runs two suites, each
+in a fresh container: user management, and a real installation (see
+[installer.md](installer.md)). Tests marked `real_claude` are deselected by default
 and run by hand with `uv run pytest -m real_claude`; what they need is in
 [fake-claude.md](fake-claude.md).
 

@@ -1,0 +1,15 @@
+# Written by install.sh.
+[Unit]
+Description=oauth2-proxy for rcman
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=rcman-proxy
+Group=rcman-proxy
+ExecStart=@OAUTH2_PROXY@ --config @ETC@/oauth2-proxy.cfg
+NoNewPrivileges=true
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

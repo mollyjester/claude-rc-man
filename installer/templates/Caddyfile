@@ -1,0 +1,21 @@
+@DOMAIN@ {
+	# oauth2-proxy's own pages: sign-in, callback, sign-out.
+	handle /oauth2/* {
+		reverse_proxy 127.0.0.1:@PROXY_PORT@
+	}
+	handle {
+		route {
+			# rcman trusts X-Forwarded-Email; only oauth2-proxy may set it.
+			request_header -X-Forwarded-Email
+			forward_auth 127.0.0.1:@PROXY_PORT@ {
+				uri /oauth2/auth
+				copy_headers X-Auth-Request-Email>X-Forwarded-Email
+				@unauthenticated status 401
+				handle_response @unauthenticated {
+					redir * /oauth2/start?rd={scheme}://{host}{uri}
+				}
+			}
+			reverse_proxy 127.0.0.1:@APP_PORT@
+		}
+	}
+}

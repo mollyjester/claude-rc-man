@@ -50,21 +50,60 @@ def test_docker_is_usable():
     assert DOCKER is not None, "neither docker nor sudo -n docker works"
 
 
-def test_container_suite_passes():
-    proc = subprocess.run(
-        [
-            *DOCKER, "run", "--rm", "--init",  # an init reaps orphans, as on a real host
-            "-v", f"{REPO}:/src:ro",
-            "-e", "RCMAN_IN_CONTAINER=1",
-            "-e", "PYTHONDONTWRITEBYTECODE=1",
-            "-w", "/src",
-            image(),
-            "python3", "-m", "pytest", "-q", "-p", "no:cacheprovider", "-rs", "tests/container",
-        ],
-        capture_output=True,
-        text=True,
-        timeout=900,
-    )  # fmt: skip
+def run_suite(module: str, mounts: list[tuple[Path, str]] = (), env: dict[str, str] | None = None):
+    args = [
+        *DOCKER,
+        "run",
+        "--rm",
+        "--init",
+        "-v",
+        f"{REPO}:/src:ro",
+    ]  # an init reaps orphans, as on a real host
+    for host, container in mounts:
+        args += ["-v", f"{host}:{container}"]
+    for key, value in {
+        "RCMAN_IN_CONTAINER": "1",
+        "PYTHONDONTWRITEBYTECODE": "1",
+        **(env or {}),
+    }.items():
+        args += ["-e", f"{key}={value}"]
+    args += [
+        "-w",
+        "/src",
+        image(),
+        "python3",
+        "-m",
+        "pytest",
+        "-q",
+        "-p",
+        "no:cacheprovider",
+        "-rs",
+        module,
+    ]
+    proc = subprocess.run(args, capture_output=True, text=True, timeout=2400)
     output = proc.stdout + proc.stderr
     assert proc.returncode == 0, output
     assert " skipped" not in output.splitlines()[-1], output  # it ran, rather than skipping
+
+
+def test_user_management_suite_passes():
+    run_suite("tests/container/test_admin_in_container.py")
+
+
+def test_install_suite_passes():
+    """A fresh container; the toolchain comes from a host cache the installer's code fills."""
+    from installer import install as ins
+
+    cache = Path.home() / ".cache" / "rcman-test"
+    ins.ensure_toolchain(cache / "toolchain")
+    for name in ("npm", "uv"):
+        (cache / name).mkdir(parents=True, exist_ok=True)
+    run_suite(
+        "tests/container/test_install_in_container.py",
+        mounts=[
+            (cache / "toolchain", str(ins.TOOLCHAIN)),
+            (cache / "npm", "/home/dev/.npm"),
+            (cache / "uv", "/root/.cache/uv"),
+        ],
+        env={"HOST_UID": str(os.getuid())},
+    )
