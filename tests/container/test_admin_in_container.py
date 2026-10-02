@@ -291,10 +291,15 @@ def sudoers():
     assert check.returncode == 0, check.stdout + check.stderr
 
 
-def as_app(*argv, extra_env=None):
+def as_app(*argv, extra_env=None, stdin=None):
     env = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", **(extra_env or {})}
     return subprocess.run(
-        ["runuser", "-u", "rcman", "--", *argv], env=env, capture_output=True, text=True, timeout=60
+        ["runuser", "-u", "rcman", "--", *argv],
+        env=env,
+        input=stdin,
+        capture_output=True,
+        text=True,
+        timeout=60,
     )
 
 
@@ -327,8 +332,8 @@ def test_test_hooks_do_not_pass_through_sudo(env, two, sudoers, tmp_path):
     assert paths == ["projects"]  # bob's real home, not the decoy
 
 
-def helper_as_bob(*args):
-    proc = as_app("sudo", "-n", "-u", "bob", str(RC_HELPER), *args)
+def helper_as_bob(*args, stdin=None):
+    proc = as_app("sudo", "-n", "-u", "bob", str(RC_HELPER), *args, stdin=stdin)
     return proc.returncode, json.loads(proc.stdout)
 
 
@@ -437,3 +442,31 @@ def test_people_added_after_an_upgrade_get_the_approved_version(env, two):
     admin_ok(env, "claude-upgrade", "2.1.999")
     admin_ok(env, "add", "carol", "carol@example.com")
     assert installed("carol") == "2.1.999"
+
+
+def test_git_through_sudo_uses_the_persons_home_and_config(env, two, sudoers):
+    bob = account("bob")
+    home = Path(bob.pw_dir)
+    repo = home / "projects" / "repo"
+    repo.mkdir(parents=True)
+    (home / ".gitignore_global").write_text("*.log\n")
+    (home / ".gitconfig").write_text("[core]\n\texcludesFile = ~/.gitignore_global\n")
+    (repo / "x.log").write_text("ignored by bob's own configuration\n")
+    (repo / "y.txt").write_text("listed\n")
+    for path in (home / ".gitignore_global", home / ".gitconfig"):
+        os.chown(path, bob.pw_uid, bob.pw_gid)
+    subprocess.run(["chown", "-R", f"{bob.pw_uid}:{bob.pw_gid}", str(repo)], check=True)
+    init = as_user("bob", "env", f"HOME={home}", "git", "-C", str(repo), "init", "-q", "-b", "main")
+    assert init.returncode == 0, init.stderr
+
+    code, out = helper_as_bob("git-status", "--", "projects/repo")
+    assert code == 0, out
+    assert out["not_staged"]["files"] == [{"path": "y.txt", "change": "untracked"}]
+    code, out = helper_as_bob("git-stage", "--", "projects/repo", stdin='["y.txt"]')
+    assert code == 0, out
+    args = ("git-commit", "--author-name=Bob", "--author-email=bob@example.com")
+    code, out = helper_as_bob(*args, "--", "projects/repo", stdin="Add y.txt through sudo")
+    assert code == 0 and out["branch"] == "main", out
+    shown = as_user("bob", "env", f"HOME={home}", "git", "-C", str(repo), "log", "--format=%an|%s")
+    assert shown.stdout == "Bob|Add y.txt through sudo\n", shown.stderr
+    assert (repo / ".git" / "objects").stat().st_uid == bob.pw_uid  # written as bob
