@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 import { FIELDS } from "./Settings";
+import { bold, guideTable } from "./test/guideTable";
 
 const GUIDE = resolve(__dirname, "../../docs/settings.md");
 const HEADER = "| Setting | What it sets |";
@@ -9,18 +10,8 @@ const HEADER = "| Setting | What it sets |";
 type Row = { label: string; field: string };
 
 // The rows of the guide's settings table: the label in bold, then the field in code.
-function settingsTable(markdown: string): Row[] {
-  const lines = markdown.split("\n");
-  const start = lines.findIndex((line) => line.trim() === HEADER);
-  if (start < 0) return [];
-  const rows: Row[] = [];
-  for (const line of lines.slice(start + 2)) {
-    if (!line.trim().startsWith("|")) break;
-    const cell = line.split("|")[1];
-    rows.push({ label: cell.match(/\*\*(.+?)\*\*/)?.[1] ?? "", field: cell.match(/\(`(.+?)`\)/)?.[1] ?? "" });
-  }
-  return rows;
-}
+const settingsTable = (markdown: string): Row[] =>
+  guideTable(markdown, HEADER).map(([cell]) => ({ label: bold(cell)[0] ?? "", field: cell.match(/\(`(.+?)`\)/)?.[1] ?? "" }));
 
 // What the page shows, derived from the page itself.
 function expected(): Row[] {

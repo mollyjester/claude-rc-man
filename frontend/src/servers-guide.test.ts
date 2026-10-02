@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 
 import { ACTIONS, KIND, KIND_ORDER, LABELS, LIVE, PRIMARY } from "./Servers";
 import { m } from "./messages";
+import { bold, guideTable } from "./test/guideTable";
 
 const GUIDE = resolve(__dirname, "../../docs/servers.md");
 const HEADER = "| State | Dot | What to do | Main button | Buttons |";
@@ -11,22 +12,16 @@ const NONE = "—";
 
 type Row = { state: string; dot: string; next: string; main: string; buttons: string[] };
 
-const bold = (cell: string) => [...cell.matchAll(/\*\*(.+?)\*\*/g)].map((b) => b[1]);
-
 // The rows of the guide's state table: the state's name, its dot, what to do,
 // its main button in bold or NONE, then each button in bold.
-function stateTable(markdown: string): Row[] {
-  const lines = markdown.split("\n");
-  const start = lines.findIndex((line) => line.trim() === HEADER);
-  if (start < 0) return [];
-  const rows: Row[] = [];
-  for (const line of lines.slice(start + 2)) {
-    if (!line.trim().startsWith("|")) break;
-    const [state, dot, next, main, buttons] = line.split("|").slice(1, 6).map((cell) => cell.trim());
-    rows.push({ state, dot, next, main: bold(main)[0] ?? main, buttons: bold(buttons) });
-  }
-  return rows;
-}
+const stateTable = (markdown: string): Row[] =>
+  guideTable(markdown, HEADER).map(([state, dot, next, main, buttons]) => ({
+    state,
+    dot,
+    next,
+    main: bold(main)[0] ?? main,
+    buttons: bold(buttons),
+  }));
 
 // What the page shows for every state, derived from the interface itself.
 function expected(): Row[] {
@@ -132,18 +127,8 @@ function shapeOf(css: string, kind: string): string {
 }
 
 // The guide's table of the dots' shapes, in its order: each dot by name, then its shape.
-function shapeTable(markdown: string): [string, string][] {
-  const lines = markdown.split("\n");
-  const start = lines.findIndex((line) => line.trim() === SHAPE_HEADER);
-  if (start < 0) return [];
-  const rows: [string, string][] = [];
-  for (const line of lines.slice(start + 2)) {
-    if (!line.trim().startsWith("|")) break;
-    const [dot, shape] = line.split("|").slice(1, 3).map((cell) => cell.trim());
-    rows.push([dot, shape]);
-  }
-  return rows;
-}
+const shapeTable = (markdown: string): [string, string][] =>
+  guideTable(markdown, SHAPE_HEADER).map(([dot, shape]) => [dot, shape]);
 
 // Each kind's dot and shape, most urgent first, as the guide's table lists them.
 const shapes = (css: string): [string, string][] => KIND_ORDER.map((kind) => [m.kinds[kind], shapeOf(css, kind)]);
