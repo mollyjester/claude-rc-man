@@ -73,7 +73,9 @@ it to the journal. `tests/test_audit.py` starts the app with the unit's own
 `ExecStart` and reads the line from its output. It also finds every changing route in the route table and fails on any that neither
 records nor is listed in `audit.EXEMPT` with a reason that also appears in
 [the audit guide](../docs/audit.md); it then drives every audited route and
-checks its row. Retention runs when the app starts and once a day.
+checks its row. The table is append-only: a trigger in `db.py`'s migrations
+aborts any `UPDATE`, so rows are only added, and deleted by retention, which
+runs when the app starts and once a day.
 
 ## Tests
 

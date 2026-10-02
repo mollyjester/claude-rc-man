@@ -29,6 +29,9 @@ refused request is recorded too.
 
 ## How long events are kept
 
+An event cannot be altered once it is recorded; it stays until retention
+removes it.
+
 Once a day, and whenever rcman starts, events older than
 `RCMAN_AUDIT_RETENTION_DAYS` are deleted, and then the oldest events beyond
 `RCMAN_AUDIT_MAX_ROWS`. Both are described in [Configuration](configuration.md).
