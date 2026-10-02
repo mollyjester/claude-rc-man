@@ -2,6 +2,7 @@
 // person a Linux account of their own. Runs in order against one installation.
 import { type Page, expect, test } from "@playwright/test";
 
+import { openAdminPage, panel, selectInProjects, summary } from "../e2e/nav";
 import { m } from "../src/messages";
 
 const GOOD_CODE = "GOOD-CODE";
@@ -27,9 +28,10 @@ test("a person signs in, connects Claude, and runs a server", async ({ page }) =
   await expect(page.getByText(m.claudeNotConnected)).toBeVisible();
   await connectClaude(page);
 
-  await page.getByRole("button", { name: m.expand("projects") }).click();
-  await page.getByRole("button", { name: m.startIn("projects/alice-demo") }).click();
-  const card = page.getByRole("article", { name: "projects/alice-demo" });
+  await selectInProjects(page, "alice-demo");
+  const opened = panel(page, "projects/alice-demo");
+  await opened.getByRole("button", { name: m.start }).click();
+  const card = opened.getByRole("article", { name: "projects/alice-demo" });
   await card.getByRole("button", { name: m.trustYes }).click();
   await expect(card.getByText(m.states.ready, { exact: true })).toBeVisible();
   await expect(card.getByText(/^alice-/)).toBeVisible();
@@ -39,15 +41,26 @@ test("a person signs in, connects Claude, and runs a server", async ({ page }) =
   await expect(card.getByText(m.states.ready, { exact: true })).toBeVisible();
   await card.getByRole("button", { name: m.stop }).click();
   await expect(card.getByText(m.states.stopped, { exact: true })).toBeVisible();
+  await card.getByRole("button", { name: m.forget }).click();
+  await expect(card).toHaveCount(0);
+
+  // The folder is trusted now, so starting it again goes straight to ready.
+  await opened.getByRole("button", { name: m.start }).click();
+  await expect(card.getByText(m.states.ready, { exact: true })).toBeVisible();
+  await card.getByRole("button", { name: m.stop }).click();
+  await expect(card.getByText(m.states.stopped, { exact: true })).toBeVisible();
 });
 
 test("another person sees only their own home and servers", async ({ page }) => {
   await signIn(page, "bob@example.com");
   await expect(page.getByText(m.signedInAs("bob@example.com"))).toBeVisible();
-  await page.getByRole("button", { name: m.expand("projects") }).click();
-  await expect(page.getByRole("button", { name: m.startIn("projects/bob-demo") })).toBeVisible();
+  await selectInProjects(page, "bob-demo");
+  const opened = panel(page, "projects/bob-demo");
+  await expect(opened.getByText(m.notConnected.start)).toBeVisible();
+  await expect(opened.getByRole("button", { name: m.start })).toHaveCount(0);
   await expect(page.getByText("alice-demo")).toHaveCount(0);
-  await expect(page.getByText(m.serversEmpty)).toBeVisible();
+  await expect(summary(page).getByText(m.yourServersEmpty)).toBeVisible();
+  await expect(page.getByRole("button", { name: m.navAdmin })).toHaveCount(0);
   await expect(page.getByRole("link", { name: m.navUsers })).toHaveCount(0);
 
   // Even asked directly, from bob's own signed-in page, rcman acts only in bob's home.
@@ -65,10 +78,13 @@ test("another person sees only their own home and servers", async ({ page }) => 
 test("administrators see everyone's servers, and act on none of them", async ({ page, browser }) => {
   // bob runs a server, as his own Linux account.
   await signIn(page, "bob@example.com");
-  await expect(page.getByRole("link", { name: m.navEveryone })).toHaveCount(0);
+  await expect(page.getByText(m.signedInAs("bob@example.com"))).toBeVisible();
+  await expect(page.getByRole("button", { name: m.navAdmin })).toHaveCount(0);
   await connectClaude(page);
-  await page.getByRole("button", { name: m.expand("projects") }).click();
-  await page.getByRole("button", { name: m.startIn("projects/bob-demo") }).click();
+  await selectInProjects(page, "bob-demo");
+  const start = panel(page, "projects/bob-demo").getByRole("button", { name: m.start });
+  await expect(start).toBeVisible(); // now that his account is connected
+  await start.click();
   const card = page.getByRole("article", { name: "projects/bob-demo" });
   await card.getByRole("button", { name: m.trustYes }).click();
   await expect(card.getByText(m.states.ready, { exact: true })).toBeVisible();
@@ -76,7 +92,7 @@ test("administrators see everyone's servers, and act on none of them", async ({ 
   // alice, an administrator, sees it: rcman listed it through sudo -u bob.
   const admin = await browser.newPage();
   await signIn(admin, "alice@example.com");
-  await admin.getByRole("link", { name: m.navEveryone }).click();
+  await openAdminPage(admin, m.navEveryone);
   const bob = admin.getByRole("region", { name: m.everyonePerson("bob", "bob@example.com") });
   await expect(bob.getByRole("row", { name: /projects\/bob-demo/ }).getByText(m.states.ready, { exact: true })).toBeVisible();
   const alice = admin.getByRole("region", { name: m.everyonePerson("alice", "alice@example.com") });
@@ -98,8 +114,8 @@ test("an address that is not on the list gets nowhere", async ({ page }) => {
 
 test("the audit trail records what people did", async ({ page }) => {
   await signIn(page, "alice@example.com");
-  await page.getByRole("link", { name: m.navAudit }).click();
-  for (const action of ["claude.login", "claude.connect", "server.start", "server.confirm", "server.stop", "server.resume"]) {
+  await openAdminPage(page, m.navAudit);
+  for (const action of ["claude.login", "claude.connect", "server.start", "server.confirm", "server.stop", "server.resume", "server.forget"]) {
     await expect(page.getByRole("cell", { name: action, exact: true }).first()).toBeVisible();
   }
   await expect(page.getByRole("cell", { name: "bob@example.com (bob)" }).first()).toBeVisible(); // bob's refused stop
@@ -107,7 +123,7 @@ test("the audit trail records what people did", async ({ page }) => {
 
 test("people are removed, with and without their home", async ({ page }) => {
   await signIn(page, "alice@example.com");
-  await page.getByRole("link", { name: m.navUsers }).click();
+  await openAdminPage(page, m.navUsers);
   for (const [linux, choice] of [
     ["carol", m.usersKeepHome],
     ["dave", m.usersDeleteHome],

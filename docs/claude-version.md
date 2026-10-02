@@ -10,7 +10,7 @@ Code that need a signed-in account — the folder-trust question and the server
 screens — have then not been checked against it.
 
 Administrators can do everything below on the **Claude Code** page in rcman,
-or over SSH with `rcman-user`.
+under **Admin** in the navigation, or over SSH with `rcman-user`.
 
 ## Seeing what is installed
 

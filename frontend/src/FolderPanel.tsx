@@ -1,0 +1,118 @@
+import { type ReactNode, useState } from "react";
+import { Link } from "react-router-dom";
+
+import { ApiError, api } from "./api";
+import { folderLink, lineage } from "./Folders";
+import { m } from "./messages";
+import { ProblemView, asApiError } from "./ProblemView";
+import { type Server, ServerCard, type StartBlocked } from "./Servers";
+
+// Home, then each folder down to the selected one. Each step and the slash after
+// it are one .path-part, so that the breadcrumb wraps only after a slash; the
+// slashes are only for the eye.
+function Breadcrumb({ path }: { path: string }) {
+  const folders = lineage(path);
+  const slash = <span aria-hidden="true">/</span>;
+  return (
+    <nav aria-label={m.breadcrumb} className="breadcrumb">
+      <ol>
+        <li>
+          <span className="path-part">
+            <Link to={folderLink(null)}>{m.home}</Link>
+            {folders.length > 0 && slash}
+          </span>
+        </li>
+        {folders.map((folder, i) => (
+          <li key={folder.path}>
+            <span className="path-part">
+              {i < folders.length - 1 ? (
+                <>
+                  <Link to={folderLink(folder.path)}>{folder.name}</Link>
+                  {slash}
+                </>
+              ) : (
+                <span aria-current="page">{folder.name}</span>
+              )}
+            </span>
+          </li>
+        ))}
+      </ol>
+    </nav>
+  );
+}
+
+function PanelSection({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <section className="panel-section">
+      <h3>{title}</h3>
+      {children}
+    </section>
+  );
+}
+
+function StartServer({ path, onStarted }: { path: string; onStarted: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<ApiError | null>(null);
+
+  async function start() {
+    setBusy(true);
+    setError(null);
+    try {
+      await api.post("/api/servers", { path });
+    } catch (e) {
+      setError(asApiError(e));
+    } finally {
+      setBusy(false);
+    }
+    onStarted();
+  }
+
+  return (
+    <>
+      <button type="button" className="primary" disabled={busy} onClick={start}>
+        {m.start}
+      </button>
+      <ProblemView error={error} />
+    </>
+  );
+}
+
+// The selected folder: where it is, and its Claude server or the offer to start
+// one. Each of server and startReason is undefined until it is known; server is
+// null when the folder has none, and startReason null when a server can start.
+export function FolderPanel({
+  path,
+  server,
+  startReason,
+  onChange,
+}: {
+  path: string;
+  server: Server | null | undefined;
+  startReason: StartBlocked | null | undefined;
+  onChange: () => void;
+}) {
+  const known = server !== undefined && startReason !== undefined;
+  return (
+    <section aria-label={path} className="panel">
+      <Breadcrumb path={path} />
+      <h2>{lineage(path).at(-1)?.name ?? path}</h2>
+      <PanelSection title={m.serverTitle}>
+        {!known && <p>{m.loading}</p>}
+        {known && server && <ServerCard server={server} startReason={startReason} onChange={onChange} />}
+        {known && !server && <p>{m.noServer}</p>}
+        {known && !server && startReason === null && <StartServer path={path} onStarted={onChange} />}
+        {known && !server && startReason !== null && <p>{startReason.start}</p>}
+      </PanelSection>
+    </section>
+  );
+}
+
+// The panel while no folder is selected.
+export function HomePanel() {
+  return (
+    <section aria-label={m.home} className="panel">
+      <h2>{m.home}</h2>
+      <p>{m.panelEmpty}</p>
+    </section>
+  );
+}

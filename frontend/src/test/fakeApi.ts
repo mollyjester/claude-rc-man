@@ -35,7 +35,8 @@ export function fakeApi(routes: Routes) {
       });
     }
     const route = routes[key];
-    const reply = typeof route === "function" ? route(call) : route;
+    // A handler may answer later, by returning a promise.
+    const reply = await (typeof route === "function" ? route(call) : route);
     if (reply instanceof Problem) {
       return new Response(JSON.stringify(reply.body), {
         status: reply.status,
@@ -53,7 +54,7 @@ export function fakeApi(routes: Routes) {
 }
 
 export const ME = { email: "alice@example.com", linux: "alice", admin: false, prefix: "alice" };
-export const ADMIN = { ...ME, admin: true };
+export const ADMIN_USER = { ...ME, admin: true };
 export const CONNECTED = {
   connection: "connected",
   account: { email: "alice@claude.test", org_name: "Org", subscription_type: "max" },

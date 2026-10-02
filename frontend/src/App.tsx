@@ -1,17 +1,24 @@
-import { type ReactElement, createContext, useContext, useEffect, useState } from "react";
-import { NavLink, Navigate, Route, Routes } from "react-router-dom";
+import {
+  type FocusEvent,
+  type KeyboardEvent,
+  createContext,
+  useContext,
+  useEffect,
+  useId,
+  useRef,
+  useState,
+} from "react";
+import { NavLink, Navigate, Route, Routes, matchPath, useLocation } from "react-router-dom";
 
+import { ADMIN_PAGES } from "./AdminPages";
 import { ApiError, api } from "./api";
+import { Caret } from "./Caret";
 import { Attention } from "./Attention";
-import { Audit } from "./Audit";
 import { Dashboard } from "./Dashboard";
 import { Docs } from "./Docs";
-import { Everyone } from "./Everyone";
 import { m } from "./messages";
-import { People } from "./People";
 import { ProblemView, asApiError } from "./ProblemView";
 import { Settings } from "./Settings";
-import { Versions } from "./Versions";
 
 export type Me = { email: string; linux: string; admin: boolean; prefix: string };
 
@@ -20,13 +27,53 @@ export const useMe = () => useContext(MeContext);
 
 export const POLL_MS = 5000;
 
-// The pages only administrators are offered, in the order the navigation shows them.
-export const ADMIN_PAGES: { path: string; label: string; element: () => ReactElement }[] = [
-  { path: "/admin/people", label: m.navUsers, element: () => <People /> },
-  { path: "/admin/servers", label: m.navEveryone, element: () => <Everyone /> },
-  { path: "/admin/audit", label: m.navAudit, element: () => <Audit /> },
-  { path: "/admin/claude", label: m.navVersions, element: () => <Versions /> },
-];
+// The administrators' pages behind one button: a disclosure that closes when
+// a page is chosen, when the page changes, on Escape and when focus leaves it.
+function AdminMenu() {
+  const [open, setOpen] = useState(false);
+  const { pathname } = useLocation();
+  const button = useRef<HTMLButtonElement>(null);
+  const id = useId();
+  const here = ADMIN_PAGES.some((page) => matchPath(page.path, pathname));
+
+  useEffect(() => setOpen(false), [pathname]);
+
+  function onKeyDown(event: KeyboardEvent) {
+    if (event.key === "Escape" && open) {
+      setOpen(false);
+      button.current?.focus();
+    }
+  }
+
+  function onBlur(event: FocusEvent) {
+    if (!event.currentTarget.contains(event.relatedTarget)) setOpen(false);
+  }
+
+  return (
+    <div className="menu" onKeyDown={onKeyDown} onBlur={onBlur}>
+      <button
+        ref={button}
+        type="button"
+        className={here ? "active" : undefined}
+        aria-expanded={open}
+        aria-controls={id}
+        onClick={() => setOpen((shown) => !shown)}
+      >
+        {m.navAdmin}
+        <Caret />
+      </button>
+      <ul id={id} hidden={!open}>
+        {ADMIN_PAGES.map((page) => (
+          <li key={page.path}>
+            <NavLink to={page.path} onClick={() => setOpen(false)}>
+              {page.label}
+            </NavLink>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
 
 function Nav({ me }: { me: Me }) {
   return (
@@ -38,12 +85,7 @@ function Nav({ me }: { me: Me }) {
         </NavLink>
         <NavLink to="/settings">{m.navSettings}</NavLink>
         <NavLink to="/help">{m.navDocs}</NavLink>
-        {me.admin &&
-          ADMIN_PAGES.map((page) => (
-            <NavLink key={page.path} to={page.path}>
-              {page.label}
-            </NavLink>
-          ))}
+        {me.admin && <AdminMenu />}
       </nav>
       <span className="muted">{m.signedInAs(me.email)}</span>
     </header>

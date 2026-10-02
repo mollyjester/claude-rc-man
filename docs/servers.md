@@ -8,22 +8,56 @@ with them.
 
 ## The Servers page
 
-The Servers page shows your folders on one side and your servers on the other.
-Open a folder with the arrow beside it, and choose **Start** beside any folder
-that has no server yet. Each server shows its state, and only the actions that
-state allows:
+The Servers page has two sides. On the left are your **Folders**, and under
+them **Your servers**, which lists every server you have; on the right is the
+panel of the folder you have selected.
 
-| State | Buttons |
+Select a folder by its name. The arrow beside a name opens the folder to show
+the folders inside it, without selecting it. A folder whose server is running,
+waiting for your answer, has a problem or is not running carries a dot whose
+shape and colour say which, and pointing at a dot names it. A folder with no
+server carries none. While a folder is closed, its dot also stands for the
+servers inside it, showing the most urgent of them, from the top of this
+table:
+
+| Dot | Shape |
 |---|---|
-| Starting | **Stop** |
-| Waiting for your answer | **Yes, trust it**, **No**, **Stop** |
-| Ready to accept sessions | **Stop** |
-| In use | **Stop** |
-| Stopped | **Resume**, **Forget** |
-| Not started: folder not trusted | **Start again**, **Forget** |
-| Not started: Claude account not connected | **Start again**, **Forget** |
-| Stopped by itself | **Resume**, **Forget**, **Show screen** |
-| Unrecognised screen | **Show screen**, **Stop** |
+| Has a problem | triangle |
+| Needs your answer | ring |
+| Running | filled circle |
+| Not running | hollow square |
+
+Choosing a server in **Your servers** selects its folder, wherever it is in the
+tree.
+
+The panel starts with where the folder is, from **Home** down; any step of it
+selects that folder, and **Home** selects none. Below that, its
+**Claude server** section shows the folder's server, or **Start** when it has
+none. **Start**, **Resume** and **Start again** are offered only while your
+Claude account is connected; until then the section, or the server in place of
+what to do next, says to connect it. The folder you have selected is part of
+the page's address, so reloading the page keeps it, and the browser's back
+button returns to the folder selected before.
+
+A server shows its state as a coloured badge, a sentence saying what to do
+next, and only the actions that state allows. Its main button, the action to
+take next, stands out; **Stop** and **Forget** never do. A server that is
+ready or in use also has **Open in claude.ai**, which is its main button:
+
+| State | Dot | What to do | Main button | Buttons |
+|---|---|---|---|---|
+| Starting | Running | Claude is starting. Wait a moment. | — | **Stop** |
+| Waiting for your answer | Needs your answer | Answer whether you trust this folder. | **Yes, trust it** | **Yes, trust it**, **No**, **Stop** |
+| Ready to accept sessions | Running | Open it in claude.ai to start a session. | **Open in claude.ai** | **Open in claude.ai**, **Stop** |
+| In use | Running | A session is attached; continue it in claude.ai. | **Open in claude.ai** | **Open in claude.ai**, **Stop** |
+| Stopped | Not running | Resume to pick up its sessions, or forget it. | **Resume** | **Resume**, **Forget** |
+| Not started: folder not trusted | Not running | Start again to answer once more, or forget it. | **Start again** | **Start again**, **Forget** |
+| Not started: Claude account not connected | Has a problem | Connect your Claude account above, then start again. | **Start again** | **Start again**, **Forget** |
+| Stopped by itself | Has a problem | Show the screen to see why it stopped, then resume it. | **Resume** | **Resume**, **Forget**, **Show screen** |
+| Unrecognised screen | Has a problem | Show the screen, stop it, and tell an administrator. | **Show screen** | **Show screen**, **Stop** |
+
+**Show screen** opens what Claude shows below the buttons, and choosing it
+again closes it; its arrow turns to say which.
 
 The page refreshes the states by itself. When rcman refuses an action, the
 reason it gave is shown on the server it was about.
@@ -40,7 +74,7 @@ reason it gave is shown on the server it was about.
 - The list shows only servers started from rcman. A `claude remote-control`
   you start yourself, in a terminal, is not shown, and rcman cannot stop or
   resume it. To have rcman manage that folder, quit the one you started and
-  choose **Start** beside the folder here.
+  select the folder here and choose **Start**.
 
 ## Starting
 
@@ -91,7 +125,8 @@ rcman handles it once it has been taught to recognise it.
 
 ## For administrators
 
-The **Everyone's servers** page lists each person in rcman with their servers:
+The **Everyone's servers** page, under **Admin** in the navigation, lists each
+person in rcman with their servers:
 the folder, the state and the session's name, as each person's own Servers page
 shows them. It is for looking only; it has no buttons, because rcman lets only
 the person a server belongs to act on it. A person whose servers could not be
@@ -100,8 +135,9 @@ reason, and everyone else is listed as usual.
 
 While anyone's server is on a screen rcman does not recognise, administrators
 are warned at the top of every page, with the person's Linux user and the
-folder and a link to **Everyone's servers**. The warning never includes the screen itself; the
-person whose server it is sees it with **Show screen**. Each action that ends
-on such a screen is also recorded in the [audit trail](audit.md) with the
-result `unrecognised_screen`. The warning is worked out afresh each time a page
-is opened, so it lasts only while the server shows that screen.
+folder and a link to **Everyone's servers**. The warning never includes the
+screen itself; the person whose server it is sees it with **Show screen**.
+Each action that ends on such a screen is also recorded in the
+[audit trail](audit.md) with the result `unrecognised_screen`. The warning is
+worked out afresh each time a page is opened, so it lasts only while the
+server shows that screen.

@@ -3,14 +3,14 @@ import { screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { m } from "./messages";
-import { ADMIN, NOTHING_TO_ATTEND, fakeApi } from "./test/fakeApi";
+import { ADMIN_USER, NOTHING_TO_ATTEND, fakeApi } from "./test/fakeApi";
 import { renderApp } from "./test/render";
 
 const RULE_ATTRIBUTES = ["required", "pattern", "min", "max", "minlength", "maxlength", "step"];
 
 function api() {
   return fakeApi({
-    "GET /api/me": ADMIN,
+    "GET /api/me": ADMIN_USER,
     "GET /api/claude": { connection: "not_connected", account: null, login_expires_at: null },
     "GET /api/me/settings": { prefix: "alice" },
     "GET /api/users": { users: [] },
