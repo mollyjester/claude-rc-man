@@ -35,6 +35,19 @@ MIGRATIONS = [
         select raise(abort, 'append-only');
     end;
     """,
+    # The commit author. A setting left unset is null and means its default:
+    # the Linux user for the prefix, the users file's address for the email.
+    """
+    create table user_settings_new (
+        email text primary key,
+        prefix text,
+        author_name text,
+        author_email text
+    );
+    insert into user_settings_new (email, prefix) select email, prefix from user_settings;
+    drop table user_settings;
+    alter table user_settings_new rename to user_settings;
+    """,
 ]
 
 
