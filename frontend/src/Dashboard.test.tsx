@@ -102,6 +102,7 @@ test("a folder with no server offers Start, which starts one there", async () =>
   const opened = await panel("projects/beta");
   const start = await within(opened).findByRole("button", { name: m.start });
   expect(start).toHaveClass("primary");
+  expect(within(opened).getByText(m.noServer)).toBeInTheDocument();
   await userEvent.click(start);
   await waitFor(() => expect(fake.made("POST", "/api/servers")).toHaveLength(1));
   expect(fake.made("POST", "/api/servers")[0].body).toEqual({ path: "projects/beta" });
@@ -122,6 +123,7 @@ test.each(CONNECTION_STATES)("with the Claude account %s, Start is offered only 
     expect(await within(opened).findByRole("button", { name: m.start })).toBeInTheDocument();
   } else {
     expect(await within(opened).findByText(reason.start)).toBeInTheDocument();
+    expect(within(opened).getByText(m.noServer)).toBeInTheDocument();
     expect(within(opened).queryByRole("button", { name: m.start })).not.toBeInTheDocument();
   }
 });
@@ -368,6 +370,10 @@ test("a server with a session attached is in use, and shows the session and a li
   const found = await card();
   expect(found.getByText("In use")).toBeInTheDocument();
   expect(found.getByText("alice-quiet-otter")).toBeInTheDocument();
+  // the link is among the card's actions, beside Stop
+  const actions = found.getByRole("button", { name: m.stop }).parentElement!;
+  expect(actions).toHaveClass("actions");
+  expect(actions).toContainElement(found.getByRole("link", { name: m.openSession }));
   expect(found.getByRole("link", { name: m.openSession })).toHaveAttribute(
     "href",
     "https://claude.ai/code?environment=env_1",

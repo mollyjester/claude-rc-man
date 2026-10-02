@@ -173,20 +173,18 @@ export function ServerCard({
           {m.sessionName}: <code>{server.session_name}</code>
         </p>
       )}
-      {server.environment_url && LIVE.includes(server.state) && (
-        <p>
+      {server.exit_code !== null && server.state === "exited" && <p>{m.exitCode(server.exit_code)}</p>}
+      <div className="actions">
+        {server.environment_url && LIVE.includes(server.state) && (
           <a
             href={server.environment_url}
             target="_blank"
             rel="noopener noreferrer"
-            className={primary === "openSession" ? "button primary" : undefined}
+            className={primary === "openSession" ? "button primary" : "button"}
           >
             {m.openSession}
           </a>
-        </p>
-      )}
-      {server.exit_code !== null && server.state === "exited" && <p>{m.exitCode(server.exit_code)}</p>}
-      <div className="actions">
+        )}
         {actions.map((action) => (
           <button
             key={action}

@@ -88,6 +88,7 @@ export function FolderPanel({
       <PanelSection title={m.serverTitle}>
         {!known && <p>{m.loading}</p>}
         {known && server && <ServerCard server={server} startReason={startReason} onChange={onChange} />}
+        {known && !server && <p>{m.noServer}</p>}
         {known && !server && startReason === null && <StartServer path={path} onStarted={onChange} />}
         {known && !server && startReason !== null && <p>{startReason.start}</p>}
       </PanelSection>

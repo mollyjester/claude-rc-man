@@ -36,6 +36,7 @@ export const m = {
   breadcrumb: "Folder",
   panelEmpty: "Select a folder to see its Claude server, or to start one.",
   serverTitle: "Claude server",
+  noServer: "No Claude server runs in this folder.",
   states: {
     starting: "Starting",
     trust_prompt: "Waiting for your answer",
