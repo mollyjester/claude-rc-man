@@ -123,6 +123,20 @@ CALLS = {
     ("POST", "/api/folders"): {"json": {"parent": "projects", "name": "new"}},
     ("DELETE", "/api/folders"): {"params": {"path": "projects/alice-project"}},
     ("PATCH", "/api/me/settings"): {"json": {"prefix": "alice"}},
+    ("POST", "/api/git/stage"): {
+        "json": {"path": "projects/alice-project", "files": ["README.md"]}
+    },
+    ("POST", "/api/git/unstage"): {
+        "json": {"path": "projects/alice-project", "files": ["README.md"]}
+    },
+    ("POST", "/api/git/commit"): {
+        "json": {"path": "projects/alice-project", "message": "A message"}
+    },
+    ("POST", "/api/git/switch"): {"json": {"path": "projects/alice-project", "branch": "main"}},
+    ("POST", "/api/git/branch"): {"json": {"path": "projects/alice-project", "name": "new-branch"}},
+    ("POST", "/api/git/fetch"): {"json": {"path": "projects/alice-project"}},
+    ("GET", "/api/git/status"): {"params": {"path": "projects/alice-project"}},
+    ("GET", "/api/git/branches"): {"params": {"path": "projects/alice-project"}},
     ("POST", "/api/users"): {"json": {"linux": "dave", "email": "dave@example.com"}},
     ("DELETE", "/api/users/{linux}"): {"params": {"home": "keep"}},
     ("POST", "/api/claude/login"): {"json": {}},
