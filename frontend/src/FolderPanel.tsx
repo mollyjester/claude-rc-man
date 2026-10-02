@@ -211,7 +211,9 @@ function FolderActions({
         </button>
         {/* Offered for any folder in the address. One typed by hand through a
             symbolic link (?folder=link/x) is refused by the server with
-            path_through_link: the tree never links there, so that is accepted. */}
+            path_through_link, and one spelt otherwise than its names on disk
+            with path_name_differs: the tree never links there, so that is
+            accepted. */}
         {path !== null && servers !== null && (
           <button type="button" className="secondary-danger" onClick={() => setOpened("delete")}>
             {m.deleteFolder}

@@ -48,18 +48,18 @@ at the first step that fails:
    name, which is never resolved (`resolve_entry`), so a link is the link and
    not where it leads. A path with any part that begins with a dot, as given
    or as resolved, is refused with `path_hidden`; that keeps `~/.local`,
-   `~/.claude` and the like out of reach. Servers are known by their
-   folders' paths as recorded, so a path that would reach servers other than
-   those it names is refused: one that goes through a link before its last
-   part — whose resolved path differs from the path as written, normalised
-   against the home folder — with `path_through_link`, and one whose parts
-   are not the names on disk letter for letter, as a file system that
-   ignores case would allow, with `path_name_differs`.
+   `~/.claude` and the like out of reach. A path whose resolved path
+   differs from the path as written, normalised against the home folder, is
+   refused with `path_through_link`, and one whose parts are not the names
+   on disk letter for letter with `path_name_differs` (see below): servers
+   are found by their folders' recorded paths, and either would reach
+   servers other than those found.
 3. It takes the folder lock exclusively (see below).
-4. For a folder, it walks it without following links, counting what is in
-   it, and refuses with `delete_mount_inside`, having done nothing, when
-   anything inside is on another device: `shutil.rmtree` would cross into a
-   mounted file system.
+4. It surveys what it would remove: for a folder, it walks it without
+   following links, noting each entry's path, device and inode, and refuses
+   with `delete_mount_inside`, having done nothing, when anything inside is
+   on another device: `shutil.rmtree` would cross into a mounted file
+   system.
 5. It interrupts every running server whose folder is the path or below it,
    then waits for all of them to exit within one `STOP_TIMEOUT`. It waits on
    the processes' exit, not on their screens. When any is still running, it
@@ -70,9 +70,9 @@ at the first step that fails:
 7. It unlinks a link, or removes a folder with `shutil.rmtree` through the
    parent's file descriptor. Whatever could not be removed is reported as
    `left`, sorted and at most `DELETE_REPORT_LIMIT` paths, along with the
-   servers `forgotten`: with `delete_failed` when nothing was removed — as
-   many entries are there as step 4 counted, or the link is still there —
-   and with `delete_incomplete` when some were. No permission is changed to
+   servers `forgotten`: with `delete_failed` when nothing was removed —
+   everything step 4 surveyed is still there, whatever else has appeared —
+   and with `delete_incomplete` when anything was. No permission is changed to
    force it. Running `delete` again carries on from there.
 
 rc-helper does not catch SIGTERM, which `run_bounded` sends when a call
@@ -114,10 +114,14 @@ if Claude asks again.
 
 - The home folder comes from the password database, never from `$HOME`. A
   folder must resolve, after following symbolic links, inside the home folder
-  and must not be the home folder itself. `stop`, `forget`, `output` and
-  `confirm` also reach a server whose folder no longer exists: its path is
-  then followed as far as it exists and must still lead inside the home
-  folder.
+  and must not be the home folder itself, and each part of the resolved path
+  must be a name on disk letter for letter (`check_names`), or it is
+  `path_name_differs`; a file system that ignores case would reach a folder
+  under another spelling. So servers are recorded, and folders made, under
+  their names on disk only. `stop`, `forget`, `output` and `confirm` also
+  reach a server whose folder no longer exists, or is no longer named as it
+  was: its path is then followed as far as it exists and must still lead
+  inside the home folder.
 - `mkdir` opens the parent folder one part at a time from the home folder,
   refusing to follow a link (`open_dir`), and makes the new folder through
   that file descriptor, so a part replaced by a link after the path was

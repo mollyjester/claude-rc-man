@@ -309,7 +309,23 @@ def resolve_folder(home: Path, rel: str, allow_home: bool = False) -> Path:
         raise HelperError("path_not_found")
     if not target.is_dir():
         raise HelperError("path_not_directory")
+    check_names(home, relative(home, target))
     return target
+
+
+def check_names(home: Path, rel: str) -> None:
+    """Refuse a path whose parts are not the names on disk, letter for letter.
+
+    A file system that ignores case reaches beta as Beta. Every folder a
+    server is started in or a folder is made in is resolved through
+    resolve_folder, which checks this, so servers are recorded, and folders
+    found, under their names on disk only.
+    """
+    root = home.resolve()
+    parts = rel.split("/") if rel else []
+    for i, part in enumerate(parts):
+        if part not in os.listdir(root.joinpath(*parts[:i])):
+            raise HelperError("path_name_differs")
 
 
 def _joined(parent_rel: str, name: str) -> str:
@@ -903,7 +919,7 @@ class Helper:
             written = posixpath.relpath(posixpath.normpath(posixpath.join(root, rel)), root)
             if entry.rel != written:
                 raise HelperError("path_through_link")
-            self._check_names(entry.rel)
+            check_names(self.cfg.home, entry.rel)
             with self._lock(exclusive=True):
                 before = self._survey(entry)
                 servers = self._servers_in(entry.rel)
@@ -919,36 +935,35 @@ class Helper:
             "forgotten": forgotten,
         }
 
-    def _check_names(self, rel: str) -> None:
-        """Refuse a path whose parts are not the names on disk, letter for letter.
-
-        A file system that ignores case reaches beta as Beta, but the server in
-        it is recorded as beta.
-        """
-        root = self.cfg.home.resolve()
-        parts = rel.split("/")
-        for i, part in enumerate(parts):
-            if part not in os.listdir(root.joinpath(*parts[:i])):
-                raise HelperError("path_name_differs")
-
     @staticmethod
-    def _survey(entry: Entry) -> int:
-        """How many entries a delete would remove, the entry itself among them.
+    def _survey(entry: Entry) -> set[tuple[str, int, int]]:
+        """What a delete would remove, the entry itself among it: each as its
+        path from the parent, its device and its inode, so that something
+        removed is told from something else that appeared in its place.
 
         A folder is walked without following links, and refused with
         ``delete_mount_inside`` when anything in it is on another device.
         """
+        try:
+            top = os.lstat(entry.name, dir_fd=entry.parent_fd)
+        except FileNotFoundError:
+            return set()
+        found = {(entry.name, top.st_dev, top.st_ino)}
         if entry.is_link:
-            return 1
+            return found
         device = os.fstat(entry.parent_fd).st_dev
-        count = 1
         walk = os.fwalk(entry.name, dir_fd=entry.parent_fd, follow_symlinks=False)
-        for _path, folders, files, fd in walk:
+        for path, folders, files, fd in walk:
             if os.fstat(fd).st_dev != device:
                 walk.close()
                 raise HelperError("delete_mount_inside")
-            count += len(folders) + len(files)
-        return count
+            for name in (*folders, *files):
+                try:
+                    st = os.stat(name, dir_fd=fd, follow_symlinks=False)
+                except FileNotFoundError:
+                    continue
+                found.add((posixpath.join(path, name), st.st_dev, st.st_ino))
+        return found
 
     def _servers_in(self, rel: str) -> list[tuple[str, str]]:
         """(folder, session) of every server in the folder ``rel`` or below it, by folder."""
@@ -989,11 +1004,12 @@ class Helper:
         return forgotten
 
     @classmethod
-    def _remove(cls, entry: Entry, forgotten: list[str], before: int) -> None:
+    def _remove(cls, entry: Entry, forgotten: list[str], before: set) -> None:
         """Delete the entry; whatever could not be removed is reported, and nothing else done.
 
-        ``delete_failed`` when nothing was removed — as many entries are there
-        as ``before`` counted — and ``delete_incomplete`` when some were.
+        ``delete_failed`` when nothing was removed — everything ``before``
+        surveyed is still there, whatever else may have appeared — and
+        ``delete_incomplete`` when anything was.
         """
         left: set[str] = set()
         if entry.is_link:
@@ -1009,7 +1025,7 @@ class Helper:
             parent = entry.rel.rpartition("/")[0]
             report = sorted(_joined(parent, path) for path in left)[:DELETE_REPORT_LIMIT]
             detail = {"forgotten": forgotten, "left": report}
-            if cls._survey(entry) == before:
+            if before <= cls._survey(entry):
                 raise HelperError("delete_failed", detail)
             raise HelperError("delete_incomplete", detail)
 
@@ -1018,11 +1034,11 @@ class Helper:
         return folder, relative(self.cfg.home, folder)
 
     def _known(self, rel: str) -> str:
-        """The path a folder's server is known by, which is still there once the folder is gone."""
+        """The path a folder's server is known by, also once the folder is gone or renamed."""
         try:
             return self._folder(rel)[1]
         except HelperError as error:
-            if error.code != "path_not_found":
+            if error.code not in ("path_not_found", "path_name_differs"):
                 raise
         return relative(self.cfg.home, confine(self.cfg.home, rel))
 

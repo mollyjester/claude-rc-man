@@ -1195,6 +1195,111 @@ def test_delete_refuses_a_path_not_written_as_the_names_on_disk(env, monkeypatch
     assert in_process(env).delete("projects/beta")["deleted"] == "projects/beta"  # positive
 
 
+def listed_as(monkeypatch, folder: Path, name: str, shown: str) -> None:
+    """``folder`` lists ``name`` as ``shown``, as a file system that ignores case can."""
+    real_listdir, folder = os.listdir, folder.resolve()
+
+    def listdir(path="."):
+        names = real_listdir(path)
+        return [shown if n == name else n for n in names] if Path(path) == folder else names
+
+    monkeypatch.setattr(os, "listdir", listdir)
+
+
+def test_a_server_starts_and_a_folder_is_made_only_where_the_path_is_as_on_disk(env, monkeypatch):
+    home = Path(env["RC_HELPER_HOME"])
+    log_in(env)
+    listed_as(monkeypatch, home / "projects", "beta", "Beta")
+    helper_ = in_process(env)
+    for call, args in (
+        (helper_.start, ("projects/beta", "pfx")),
+        (helper_.resume, ("projects/beta", "pfx")),
+        (helper_.mkdir, ("projects/beta", "x")),
+    ):
+        assert refusal(call, *args).code == "path_name_differs", call.__name__
+    assert not (home / "projects" / "beta" / "x").exists()
+    assert ok(env, "list")["servers"] == []
+    assert helper_.mkdir("projects", "new") == {"created": "projects/new"}  # positive control
+    assert helper_.start("projects/alpha", "pfx")["server"]["path"] == "projects/alpha"
+
+
+def test_a_recorded_server_is_reached_however_its_folder_is_listed_now(env, monkeypatch):
+    home = Path(env["RC_HELPER_HOME"])
+    log_in(env)
+    ok(env, "start", "projects/beta", "--prefix", "pfx")
+    listed_as(monkeypatch, home / "projects", "beta", "Beta")
+    helper_ = in_process(env)
+    assert helper_.output("projects/beta")["server"]["state"] == "trust_prompt"
+    assert helper_.confirm("projects/beta", "n")["server"]["state"] == "trust_declined"
+    assert helper_.forget("projects/beta") == {"forgotten": "projects/beta"}
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root removes anything; the container suite checks")
+@pytest.mark.parametrize("mode", [0o500, 0o000])
+def test_a_folder_of_which_nothing_can_be_removed_is_reported_as_nothing_deleted(env, mode):
+    home = Path(env["RC_HELPER_HOME"])
+    locked = home / "projects" / "gamma" / "locked"
+    locked.mkdir(parents=True)
+    (locked / "file").write_text("x")
+    locked.chmod(mode)
+    try:
+        code, out = helper(env, "delete", "--", "projects/gamma")
+    finally:
+        locked.chmod(0o700)
+    assert code == 1 and out["error"]["code"] == "delete_failed", out
+    assert (locked / "file").read_text() == "x"
+
+
+def gamma_with_a_locked_folder(home: Path) -> Path:
+    gamma = home / "projects" / "gamma"
+    (gamma / "locked").mkdir(parents=True)
+    (gamma / "locked" / "file").write_text("x")
+    (gamma / "locked").chmod(0o500)
+    return gamma
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root removes anything; the container suite checks")
+def test_something_removed_while_something_else_appears_is_some_removed(env, monkeypatch):
+    home = Path(env["RC_HELPER_HOME"])
+    gamma = gamma_with_a_locked_folder(home)
+    (gamma / "a").write_text("yours")
+    real_unlink = os.unlink
+
+    def unlink(path, *, dir_fd=None):
+        real_unlink(path, dir_fd=dir_fd)
+        if path == "a":  # as it goes, something else appears beside it
+            (gamma / "b").write_text("new")
+
+    monkeypatch.setattr(os, "unlink", unlink)
+    try:
+        error = refusal(in_process(env).delete, "projects/gamma")
+    finally:
+        monkeypatch.undo()
+        (gamma / "locked").chmod(0o700)
+    assert not (gamma / "a").exists() and (gamma / "b").exists()  # the probe took effect
+    assert error.code == "delete_incomplete"
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root removes anything; the container suite checks")
+def test_something_appearing_while_nothing_is_removed_is_nothing_removed(env, monkeypatch):
+    home = Path(env["RC_HELPER_HOME"])
+    gamma = gamma_with_a_locked_folder(home)
+    real_unlink = os.unlink
+
+    def unlink(path, *, dir_fd=None):
+        (gamma / "added").write_text("new")
+        real_unlink(path, dir_fd=dir_fd)
+
+    monkeypatch.setattr(os, "unlink", unlink)
+    try:
+        error = refusal(in_process(env).delete, "projects/gamma")
+    finally:
+        monkeypatch.undo()
+        (gamma / "locked").chmod(0o700)
+    assert (gamma / "added").exists() and (gamma / "locked" / "file").exists()
+    assert error.code == "delete_failed"
+
+
 def test_the_report_of_what_is_left_is_capped(env, monkeypatch):
     home = Path(env["RC_HELPER_HOME"])
     for i in range(h.DELETE_REPORT_LIMIT + 5):
