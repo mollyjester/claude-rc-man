@@ -35,6 +35,7 @@ MESSAGES = {
     "users_file_invalid": "The users file is invalid.",
     "helper_unavailable": "rcman could not reach its helper.",
     "helper_timeout": "rcman's helper took too long to answer.",
+    "author_not_set": "Set your commit author name in Settings before committing.",
     "internal_error": "Something went wrong in rcman.",
 }
 STATUS = {
@@ -49,6 +50,7 @@ STATUS = {
     "users_file_invalid": 500,
     "helper_unavailable": 502,
     "helper_timeout": 504,
+    "author_not_set": 409,
     "internal_error": 500,
 }
 
@@ -83,6 +85,9 @@ FIELD_MESSAGES = {
     "string_unicode": "This holds half of a character, which is not text.",
     STRING_EMPTY: "This cannot be empty.",
     "string_too_long": "This can be at most {max_length} characters long.",
+    "list_type": "This must be a list.",
+    "too_short": "This must hold at least {min_length} items.",
+    "too_long": "This can hold at most {max_length} items.",
     "bool_type": "This must be true or false.",
     "bool_parsing": "This must be true or false.",
     "int_parsing": "This must be a whole number.",
