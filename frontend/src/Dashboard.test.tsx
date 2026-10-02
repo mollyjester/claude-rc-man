@@ -642,11 +642,14 @@ test("a folder's panel has New folder and Delete folder in its header, and the t
   const opened = await panel("projects/alpha");
   const newFolder = await within(opened).findByRole("button", { name: m.newFolder });
   const deleteFolder = await within(opened).findByRole("button", { name: m.deleteFolder });
+  expect(newFolder).toHaveClass("secondary");
+  expect(deleteFolder).toHaveClass("secondary-danger");
   // in the header: before the Claude server section, and outside the server's card
   const section = within(opened).getByRole("heading", { name: m.serverTitle });
   for (const button of [newFolder, deleteFolder]) {
     expect(button.compareDocumentPosition(section) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(button).not.toHaveClass("primary");
+    expect(button).not.toHaveClass("danger"); // a form's lead only: this one just opens the dialog
   }
   expect(within(await tree()).getByRole("button", { name: "alpha" })).toBeInTheDocument(); // the tree is there
   expect(within(await tree()).queryByRole("button", { name: m.newFolder })).not.toBeInTheDocument();
@@ -691,17 +694,17 @@ test("New folder in a folder makes it there, selects it, and the folder shows it
 });
 
 test("a refused name shows the server's reason in the form and keeps it", async () => {
+  // whatever the server says about the field, shown as it was sent
+  const sent = { field: "name", message: "planted reason, as the server sent it" };
   const fake = dashboard([], {
-    "POST /api/folders": problem(422, "validation_failed", "Some of what was sent is not valid.", {
-      errors: [{ field: "name", message: "String should match pattern" }],
-    }),
+    "POST /api/folders": problem(422, "validation_failed", "Some of what was sent is not valid.", { errors: [sent] }),
   });
   const { location } = renderApp("/?folder=projects");
   const opened = await panel("projects");
   await userEvent.click(within(opened).getByRole("button", { name: m.newFolder }));
   await userEvent.type(within(opened).getByLabelText(m.newFolderName), ".hidden");
   await userEvent.click(within(opened).getByRole("button", { name: m.create }));
-  expect(await within(opened).findByRole("alert")).toHaveTextContent("name: String should match pattern");
+  expect(await within(opened).findByRole("alert")).toHaveTextContent(`${sent.field}: ${sent.message}`);
   expect(within(opened).getByLabelText(m.newFolderName)).toHaveValue(".hidden");
   expect(within(opened).getByRole("button", { name: m.create })).toBeEnabled();
   expect(fake.made("POST", "/api/folders")).toHaveLength(1);
@@ -777,6 +780,27 @@ test("confirming deletes the folder, refreshes, and selects the folder above in 
   expect(asked(fake, "")).toBe(2);
   await navigate(-1); // it replaced the deleted folder in the history
   expect(await screen.findByRole("region", { name: m.home })).toBeInTheDocument();
+});
+
+test("a folder made where one was deleted starts empty and closed", async () => {
+  dashboard([], changingFolders());
+  renderApp("/?folder=projects");
+  await expand("projects");
+  await expand("gamma");
+  expect(await folder("deep")).toBeInTheDocument(); // positive control: gamma was open, with deep in it
+  await select("gamma");
+  const dialog = await openDelete("projects/gamma");
+  await userEvent.click(dialog.getByRole("button", { name: m.deleteFolderConfirm }));
+  const projects = await panel("projects");
+  await waitFor(() => expect(within(screen.getByRole("region", { name: m.foldersTitle })).queryByRole("button", { name: "gamma" })).not.toBeInTheDocument());
+
+  await userEvent.click(within(projects).getByRole("button", { name: m.newFolder }));
+  await userEvent.type(within(projects).getByLabelText(m.newFolderName), "gamma");
+  await userEvent.click(within(projects).getByRole("button", { name: m.create }));
+  expect(await panel("projects/gamma")).toBeInTheDocument();
+  expect(await folder("gamma")).toHaveAttribute("aria-current", "true");
+  expect(within(await tree()).queryByRole("button", { name: m.collapse("gamma") })).not.toBeInTheDocument();
+  expect(within(await tree()).queryByRole("button", { name: "deep" })).not.toBeInTheDocument();
 });
 
 test("deleting a folder at the top selects Home", async () => {

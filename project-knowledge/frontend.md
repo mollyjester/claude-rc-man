@@ -41,7 +41,10 @@ version is `frontend/.nvmrc`.
   `primary` button, or its one `danger` button where what it does cannot be
   undone, such as deleting a folder; its other buttons are plain, and a
   dialog's choice is a form too. `src/forms.test.tsx` checks every form, and
-  that only the forms it lists as destructive use `danger`.
+  that only the forms it lists as destructive use `danger`. A button outside
+  a form that opens such a form, such as a panel's **Delete folder**, is a
+  danger outline, `secondary-danger`. `src/styles.test.ts` checks that both
+  look unlike any other button in both schemes.
 - **Every piece of text not from the server is in `src/messages.ts`.**
 - **Every colour is a custom property in `src/styles.css`**, with a value for
   a light scheme and one for a dark scheme, which the browser picks between by

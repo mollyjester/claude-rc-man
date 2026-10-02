@@ -13,8 +13,9 @@
   --running: #15803d;
   --waiting: #b45309;
   --problem: #b91c1c;
-  --danger: #b91c1c;
-  --danger-fg: #ffffff;
+  /* what cannot be undone is drawn in the colour of a problem, on the page's own */
+  --danger: var(--problem);
+  --danger-fg: var(--bg);
   --stopped: #4b5563;
   --focus: #2563eb;
   --shadow: rgba(17, 24, 39, 0.18);
@@ -33,8 +34,6 @@
     --running: #4ade80;
     --waiting: #fbbf24;
     --problem: #f87171;
-    --danger: #f87171;
-    --danger-fg: #111827;
     --stopped: #9ca3af;
     --focus: #93c5fd;
     --shadow: rgba(0, 0, 0, 0.6);
@@ -49,6 +48,8 @@ button.primary, a.button.primary { background: var(--accent); border-color: var(
 /* A form's leading button where what it does cannot be undone. */
 button.danger { background: var(--danger); border-color: var(--danger); color: var(--danger-fg); font-weight: 600; }
 button.secondary { background: transparent; }
+/* A button that opens what cannot be undone, without being that itself. */
+button.secondary-danger { background: transparent; border-color: var(--danger); color: var(--danger); }
 button:disabled { opacity: 0.6; cursor: default; }
 
 header { display: flex; gap: 1.5rem; align-items: center; padding: 0.75rem 1.5rem; border-bottom: 1px solid var(--border); flex-wrap: wrap; }

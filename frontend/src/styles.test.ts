@@ -127,6 +127,79 @@ test("named colours count as colours, wherever they are written", () => {
   expect(violations(lightOnly)).toEqual(["no dark colour: --planted"]);
 });
 
+// --- how buttons look ----------------------------------------------------------------
+
+type Scheme = "light" | "dark";
+
+// The custom properties of a scheme, by name: dark's over light's.
+function variables(css: string, scheme: Scheme): Map<string, string> {
+  const block = (re: RegExp) => uncommented(css).match(re)?.[1] ?? "";
+  const read = (text: string) => [...text.matchAll(/(--[\w-]+)\s*:\s*([^;]+);/g)].map((m) => [m[1], m[2].trim()] as const);
+  const found = new Map(read(block(/(?:^|\})\s*:root\s*\{([^}]*)\}/)));
+  if (scheme === "dark") for (const [name, value] of read(block(/prefers-color-scheme:\s*dark\)\s*\{\s*:root\s*\{([^}]*)\}/))) found.set(name, value);
+  return found;
+}
+
+// A value with every var() replaced by what it holds in the scheme.
+function resolved(value: string, vars: Map<string, string>, depth = 0): string {
+  if (depth > 10) return value;
+  return value.replace(/var\(\s*(--[\w-]+)\s*\)/g, (_, name: string) => resolved(vars.get(name) ?? `unset ${name}`, vars, depth + 1));
+}
+
+// The declarations of the rules whose selector list holds exactly this selector.
+function rule(css: string, selector: string): Map<string, string> {
+  const found = new Map<string, string>();
+  for (const [, selectors, body] of uncommented(css).matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+    if (!selectors.split(",").some((s) => s.trim() === selector)) continue;
+    for (const [, property, value] of body.matchAll(/([\w-]+)\s*:\s*([^;]+);?/g)) found.set(property, value.trim());
+  }
+  return found;
+}
+
+// How a button with the given class looks in a scheme: the plain button's rule, then the class's.
+function looks(css: string, selector: string, scheme: Scheme) {
+  const vars = variables(css, scheme);
+  const declared = new Map([...rule(css, "button"), ...rule(css, selector)]);
+  const value = (property: string) => resolved(declared.get(property) ?? "", vars);
+  return { own: rule(css, selector).size, background: value("background"), color: value("color"), border: value("border-color") };
+}
+
+// What is wrong with how the destructive buttons look: a danger button not
+// unlike a primary or a plain one, or a danger outline not unlike a secondary one.
+function buttonFaults(css: string): string[] {
+  const found: string[] = [];
+  for (const scheme of ["light", "dark"] as const) {
+    const plain = looks(css, "button", scheme);
+    const primary = looks(css, "button.primary", scheme);
+    const danger = looks(css, "button.danger", scheme);
+    const secondary = looks(css, "button.secondary", scheme);
+    const outline = looks(css, "button.secondary-danger", scheme);
+    if (!danger.own || danger.background === primary.background || danger.background === plain.background)
+      found.push(`${scheme}: a danger button looks like another`);
+    if (!outline.own || outline.color === secondary.color || outline.color === plain.color || outline.border !== outline.color)
+      found.push(`${scheme}: a danger outline looks like a secondary button`);
+    if (outline.color !== danger.background) found.push(`${scheme}: a danger outline is not in the danger colour`);
+  }
+  return found;
+}
+
+test("danger buttons look like no other button, in both schemes", () => {
+  expect(looks(STYLES, "button.primary", "dark").background).toMatch(/^#/); // positive control: the reader resolves
+  expect(buttonFaults(STYLES)).toEqual([]);
+});
+
+test("the check fails on a danger button or a danger outline that is not styled", () => {
+  const noDanger = STYLES.replace(/button\.danger\s*\{[^}]*\}/, "");
+  expect(noDanger).not.toEqual(STYLES);
+  expect(buttonFaults(noDanger)).toContain("light: a danger button looks like another");
+  const noOutline = STYLES.replace(/button\.secondary-danger\s*\{[^}]*\}/, "");
+  expect(noOutline).not.toEqual(STYLES);
+  expect(buttonFaults(noOutline)).toContain("dark: a danger outline looks like a secondary button");
+  const likePrimary = STYLES.replace(/(prefers-color-scheme:\s*dark\)\s*\{\s*:root\s*\{)/, "$1\n    --danger: var(--accent);");
+  expect(likePrimary).not.toEqual(STYLES);
+  expect(buttonFaults(likePrimary)).toEqual(["dark: a danger button looks like another"]);
+});
+
 test("a colour's name in a property that takes no colour is not a colour", () => {
   // positive control: the engine reads these words as colours where one is meant
   for (const word of ["background", "menu", "highlight"]) expect(isColourName(word)).toBe(true);

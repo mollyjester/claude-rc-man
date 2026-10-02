@@ -210,7 +210,7 @@ function FolderActions({
           {m.newFolder}
         </button>
         {path !== null && servers !== null && (
-          <button type="button" className="secondary" onClick={() => setOpened("delete")}>
+          <button type="button" className="secondary-danger" onClick={() => setOpened("delete")}>
             {m.deleteFolder}
           </button>
         )}
