@@ -178,7 +178,7 @@ export function ServerSummary({
                 onClick={() => onSelect(server.path)}
               >
                 <BreakableAtSlashes path={server.path} />
-              </button>
+              </button>{" "}
               <StateBadge state={server.state} />
             </li>
           ))}

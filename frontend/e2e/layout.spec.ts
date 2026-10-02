@@ -72,3 +72,26 @@ test("Your servers lines its paths up with its heading, each badge on its path's
   expect(badgeBox.x).toBeGreaterThan(pathBox.x + pathBox.width - 1); // beside it, not under it
   expect(badgeBox.y).toBeLessThan(pathBox.y + pathBox.height);
 });
+
+test("a badge with no room beside its path goes below it, lined up with it", async ({ page }) => {
+  await useAs(page, ALICE);
+  await page.setViewportSize({ width: 780, height: 800 });
+  const server = { path: "projects/alice-alpha", state: "trust_prompt", environment_url: null, session_name: null, exit_code: null };
+  await page.route("**/api/servers", (route) => route.fulfill({ json: { servers: [server] } }));
+  await page.goto("/");
+  await expect(tree(page).getByRole("button", { name: "projects", exact: true })).toBeVisible();
+  const list = summary(page);
+  const path = list.getByRole("button", { name: server.path });
+  const badge = list.getByText(m.states.trust_prompt, { exact: true });
+  await expect(badge).toBeVisible();
+
+  const textLeft = await path.evaluate((el) => {
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    return range.getBoundingClientRect().left;
+  });
+  const pathBox = (await path.boundingBox())!;
+  const badgeBox = (await badge.boundingBox())!;
+  expect(badgeBox.y).toBeGreaterThanOrEqual(pathBox.y + pathBox.height - 1); // positive control: it went below
+  expect(Math.abs(badgeBox.x - textLeft)).toBeLessThanOrEqual(1);
+});
