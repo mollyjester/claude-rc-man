@@ -1,7 +1,7 @@
 import { type FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 
-import { ApiError, api } from "./api";
+import { ApiError, api, problemFrom } from "./api";
 import { m } from "./messages";
 import { ProblemView, asApiError } from "./ProblemView";
 
@@ -14,12 +14,15 @@ export type GitStatus = {
   staged: FileList;
   not_staged: FileList;
   author: { name: string; email: string } | null;
+  push_to_github: boolean;
 };
+type Pushed = { path: string; branch: string; upstream: string | null; upstream_set: boolean };
+type CommitPushed = { path: string; commit: string; push: Pushed | null; push_problem: Record<string, unknown> | null };
 type Branches = {
   local: { branches: { name: string; current: boolean; upstream: string | null }[]; more: number };
   remote: { branches: { name: string; local: string | null }[]; more: number };
 };
-type Action = "status" | "branches" | "stage" | "unstage" | "commit" | "switch" | "branch" | "fetch";
+type Action = "status" | "branches" | "stage" | "unstage" | "commit" | "switch" | "branch" | "fetch" | "push" | "github";
 
 // A repository's status: fetched when the section opens, every pollMs while it
 // is open (pollMs 0: never by itself), and whenever refresh is called. An
@@ -144,10 +147,19 @@ function kept(selected: ReadonlySet<string>, list: FileList): ReadonlySet<string
   return next.size === selected.size ? selected : next;
 }
 
+// Why nothing can be pushed from here, or null where a push can be tried: on
+// a branch, and to GitHub only with a token stored.
+function pushReason(status: GitStatus, token: boolean | null): "branch" | "token" | null {
+  if (status.branch.name === null) return "branch";
+  if (status.push_to_github && token !== true) return "token";
+  return null;
+}
+
 // The Changes section of a repository: its branch, the staged and not staged
-// files, Commit, and its branches. What is offered follows rcman's own rules —
-// Commit only with something staged and an author name set; git's own
-// refusals are shown as it gave them, beside what was tried.
+// files, Commit, Push and Commit & Push, and its branches. What is offered
+// follows rcman's own rules — Commit only with something staged and an author
+// name set, Push only as pushReason allows; git's own refusals are shown as it
+// gave them, beside what was tried.
 export function Changes({ path, pollMs }: { path: string; pollMs: number }) {
   const { status, error: statusError, refresh } = useGitStatus(path, pollMs);
   const [branches, setBranches] = useState<Branches | null>(null);
@@ -157,6 +169,16 @@ export function Changes({ path, pollMs }: { path: string; pollMs: number }) {
   const [newBranch, setNewBranch] = useState("");
   const [busy, setBusy] = useState(false);
   const [errors, setErrors] = useState<Partial<Record<Action, ApiError>>>({});
+  const [token, setToken] = useState<boolean | null>(null);
+  const [pushed, setPushed] = useState<Pushed | null>(null);
+  const [notPushed, setNotPushed] = useState<string | null>(null);
+
+  useEffect(() => {
+    api.get<{ token: boolean }>("/api/github").then(
+      (answer) => setToken(answer.token === true),
+      (e) => setErrors((current) => ({ ...current, github: asApiError(e) })),
+    );
+  }, []);
 
   const listBranches = useCallback(async () => {
     try {
@@ -223,6 +245,33 @@ export function Changes({ path, pollMs }: { path: string; pollMs: number }) {
     if (await act("commit", () => api.post("/api/git/commit", { path, message }))) setMessage("");
   }
 
+  async function push() {
+    setPushed(null);
+    setNotPushed(null);
+    await act("push", async () => setPushed(await api.post<Pushed>("/api/git/push", { path })));
+  }
+
+  // Commit & Push: a commit made whose push failed is a commit made, so the box
+  // is emptied and both are said.
+  async function commitPush() {
+    setPushed(null);
+    setNotPushed(null);
+    setErrors((current) => ({ ...current, push: undefined }));
+    let answer: CommitPushed | null = null;
+    await act("commit", async () => {
+      answer = await api.post<CommitPushed>("/api/git/commit-push", { path, message });
+    });
+    const done = answer as CommitPushed | null;
+    if (done === null) return;
+    setMessage("");
+    if (done.push !== null) setPushed(done.push);
+    if (done.push_problem !== null) {
+      setNotPushed(done.commit);
+      const problem = problemFrom(done.push_problem, Number(done.push_problem.status) || 0);
+      setErrors((current) => ({ ...current, push: problem }));
+    }
+  }
+
   async function createBranch(event: FormEvent) {
     event.preventDefault();
     if (await act("branch", () => api.post("/api/git/branch", { path, name: newBranch }))) setNewBranch("");
@@ -242,6 +291,22 @@ export function Changes({ path, pollMs }: { path: string; pollMs: number }) {
       {status !== null && (
         <>
           <BranchLine branch={status.branch} />
+          {pushReason(status, token) === "branch" ? (
+            <p>{m.pushNeedsBranch}</p>
+          ) : pushReason(status, token) === "token" ? (
+            <p>
+              {m.pushNeedsToken} <Link to="/settings">{m.pushTokenLink}</Link>
+            </p>
+          ) : (
+            <div className="actions">
+              <button type="button" className="secondary" disabled={busy} onClick={push}>
+                {m.push}
+              </button>
+            </div>
+          )}
+          {pushed !== null && pushed.upstream !== null && <p role="status">{m.pushed(pushed.branch, pushed.upstream)}</p>}
+          {notPushed !== null && <p>{m.committedNotPushed(notPushed.slice(0, 7))}</p>}
+          <ProblemView error={errors.push ?? errors.github ?? null} />
           <Files
             title={m.stagedTitle}
             list={status.staged}
@@ -279,6 +344,11 @@ export function Changes({ path, pollMs }: { path: string; pollMs: number }) {
                 <button type="submit" className="primary" disabled={busy}>
                   {m.commit}
                 </button>
+                {pushReason(status, token) === null && (
+                  <button type="button" className="secondary" disabled={busy} onClick={commitPush}>
+                    {m.commitPush}
+                  </button>
+                )}
               </div>
             </form>
           )}

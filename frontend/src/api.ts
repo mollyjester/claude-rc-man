@@ -18,6 +18,21 @@ export class ApiError extends Error {
 
 type Query = Record<string, string | number | boolean | undefined>;
 
+// Problem details as the server sent them, in a failed response or in an
+// answer that reports one, as an ApiError.
+export function problemFrom(data: unknown, status: number): ApiError {
+  const { status: _status, code, title, errors, type: _type, ...extra } = (data ?? {}) as Record<string, unknown>;
+  void _status;
+  void _type;
+  return new ApiError(
+    status,
+    typeof code === "string" ? code : "unexpected_response",
+    typeof title === "string" ? title : m.unexpectedResponse,
+    Array.isArray(errors) ? (errors as FieldError[]) : [],
+    extra,
+  );
+}
+
 async function request<T>(method: string, path: string, body?: unknown, query?: Query): Promise<T> {
   const params = new URLSearchParams();
   for (const [key, value] of Object.entries(query ?? {})) {
@@ -37,18 +52,7 @@ async function request<T>(method: string, path: string, body?: unknown, query?: 
   } catch {
     data = undefined;
   }
-  if (!response.ok) {
-    const { status, code, title, errors, type, ...extra } = (data ?? {}) as Record<string, unknown>;
-    void status;
-    void type;
-    throw new ApiError(
-      response.status,
-      typeof code === "string" ? code : "unexpected_response",
-      typeof title === "string" ? title : m.unexpectedResponse,
-      Array.isArray(errors) ? (errors as FieldError[]) : [],
-      extra,
-    );
-  }
+  if (!response.ok) throw problemFrom(data, response.status);
   return data as T;
 }
 

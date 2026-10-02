@@ -48,6 +48,16 @@ Settings page shows; until you have set a name there, Commit is not offered
 and the section links to Settings. Your repository's hooks run as they would
 in a terminal, and a hook that refuses stops the commit with its own words.
 
+### Commit & Push
+
+**Commit & Push**, beside **Commit**, commits and then pushes, as
+[Push](#push) below does. It is offered where both Commit and Push are.
+When the push would be refused before it is tried — you are not on a
+branch, or it goes to GitHub and no [GitHub token](#github-token) is
+stored — nothing is committed. When the commit is made and the push then
+fails, the section says both: the commit made, and what stopped the push.
+Push again once that is dealt with.
+
 ### Commit author
 
 Every commit made from rcman is recorded with the commit author from your
@@ -68,6 +78,52 @@ branches up to date, adding new ones and dropping those deleted there. It
 changes none of your files and none of your local branches. It needs a
 remote git can fetch from without asking for a password: git is never
 allowed to ask, so a remote that needs one is refused with git's own words.
+
+## Push
+
+**Push** pushes the branch you are on. A branch that does not track a
+remote branch yet is pushed to `origin` under its own name and set to
+track it there, as `git push -u origin HEAD` does; one that does is pushed
+as `git push` pushes it, so your own git configuration decides where. While
+you are not on a branch there is nothing to push, and the section says so.
+
+A push to GitHub — to a remote whose address begins with
+`https://github.com/` — needs your [GitHub token](#github-token); until one
+is stored, Push and Commit & Push are not offered there, and the section
+links to Settings. A push anywhere else is offered without one, and needs
+whatever that remote needs without asking for a password; when git refuses,
+the section shows its words, as for a push GitHub rejects because someone
+pushed first.
+
+## GitHub token
+
+To push to GitHub, git needs a GitHub personal access token. Add one on the
+[Settings](settings.md) page. A fine-grained token, limited to the
+repositories you work on and with **Contents** set to read and write, is the
+safest; a classic token with the `repo` scope works too.
+
+- **Claude uses it too.** rcman stores the token as git's own credential
+  for `https://github.com` in your account, so every git push to GitHub
+  that runs as you — from rcman, from your Claude sessions, or from a
+  terminal — uses it.
+- **Where it is kept.** In `~/.git-credentials`, in plain text, readable by
+  you only, where git's `store` credential helper keeps credentials. rcman
+  also adds one line to `~/.gitconfig`, which tells git to use that helper
+  for `https://github.com`. Credential helpers you have set yourself stay;
+  git asks them in the order your configuration lists them, and uses the
+  first credential one gives.
+- **Never shown.** Once saved, rcman never shows the token again, nor
+  records it in the audit trail or its logs. Settings only says whether one
+  is stored. Saving another replaces it.
+- **When GitHub refuses it** — it has expired or been revoked — git forgets
+  it, and Settings then says no token is stored; add a new one.
+- **Removing it.** **Remove token** in Settings removes the token rcman
+  stored, and nothing else: the line in `~/.gitconfig` stays, as do other
+  credentials you stored yourself. The token itself still works on GitHub
+  until you revoke it there, under **Settings**, **Developer settings**,
+  **Personal access tokens**; do that too once you are done with it.
+
+A push to anywhere other than GitHub needs no token from rcman.
 
 ## What Claude changes
 

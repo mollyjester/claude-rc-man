@@ -17,7 +17,9 @@ version is `frontend/.nvmrc`.
 
 - **The server validates; the page shows what it said.** `src/api.ts` is the
   only way to the backend; every failure becomes an `ApiError` carrying the
-  problem details as sent, and `src/ProblemView.tsx` shows them — the title,
+  problem details as sent, built by `problemFrom`, which also turns the
+  problem details an answer reports, as Commit & Push's `push_problem`,
+  into one; `src/ProblemView.tsx` shows them — the title,
   each field error, and a raw screen, failed checks, the server a problem is
   about with its screen, what a delete left, or what git said and how many
   lines more, when the server passes one.
@@ -40,7 +42,11 @@ version is `frontend/.nvmrc`.
   sentence saying what to do. The Changes section is shown only for a
   folder the tree lists as a repository; Commit is offered only with
   something staged and a commit author name set, and otherwise the section
-  says why; Switch is offered for a local branch other than the current one
+  says why; Push is offered on a branch, and, when git-status says the push
+  goes to GitHub (`push_to_github`), only while `/api/github` says a token
+  is stored, which the section asks once when it opens; otherwise the
+  section says why, linking to Settings for the token; Commit & Push is
+  offered where both Commit and Push are; Switch is offered for a local branch other than the current one
   and for a remote branch no local branch tracks; Stage selected and
   Unstage selected only while something is checked. git's own refusals, which
   rcman cannot know in advance, are shown as git gave them. Delete folder is offered only for a folder,
@@ -52,7 +58,8 @@ version is `frontend/.nvmrc`.
   undone, such as deleting a folder; its other buttons are plain, and a
   dialog's choice is a form too. `src/forms.test.tsx` checks every form, and
   that only the forms it lists as destructive use `danger`. A button outside
-  a form that opens such a form, such as a panel's **Delete folder**, is a
+  a form that opens such a form, such as a panel's **Delete folder** or
+  Settings' **Remove token**, is a
   danger outline, `secondary-danger`; `src/forms.test.tsx` checks the button
   that opens each form it lists as destructive. `src/styles.test.ts` checks
   that both look unlike any other button in both schemes.
@@ -81,11 +88,11 @@ version is `frontend/.nvmrc`.
 | `src/Dashboard.tsx` | The Servers page: the folder tree and its summary beside the selected folder's panel, the selection kept in the address as `?folder=`, the servers refreshed every `POLL_MS`; after a folder is made it is selected, and after one is deleted the folder above it replaces it in the address |
 | `src/Folders.tsx` | The folder tree, fetched a folder at a time and opened to whatever is selected — `reload` fetches a folder again after a folder is made or deleted in it, and `forget` drops a deleted folder and all below it — each folder's status dot and repository marker, and the summary of every server |
 | `src/FolderPanel.tsx` | A folder's panel: its breadcrumb, its actions (**New folder** and **Delete folder**, with its confirmation), its Claude server section and, for a repository, its Changes section; and the Home panel, shown while no folder is selected, with **New folder** only |
-| `src/Changes.tsx` | A repository's Changes section: its branch, the staged and not staged files with a checkbox each, Commit, and its branches. Only the selected folder's status is fetched, when its panel opens, every `POLL_MS` while it is open and after every action; an answer older than one asked for since is dropped. Its branches are fetched when it opens, after every action and when the current branch changes. What is checked is kept across refreshes, for files still listed |
+| `src/Changes.tsx` | A repository's Changes section: its branch, the staged and not staged files with a checkbox each, Commit, Push and Commit & Push, and its branches. Only the selected folder's status is fetched, when its panel opens, every `POLL_MS` while it is open and after every action; an answer older than one asked for since is dropped. Its branches are fetched when it opens, after every action and when the current branch changes. What is checked is kept across refreshes, for files still listed |
 | `src/Servers.tsx` | A server's states, what each allows and shows, and its card; `serversIn`, the servers in a folder or below it, which both a folder's dot and the delete confirmation count |
 | `src/Caret.tsx` | The caret of a disclosure button, such as **Admin** and a server's **Show screen**, turned by its `aria-expanded` |
 | `src/Claude.tsx` | The Claude account's state and the connect flow |
-| `src/Settings.tsx` | The person's own settings, in parts that are each saved on their own; `FIELDS` is every field it shows, and a test holds `docs/settings.md` to it |
+| `src/Settings.tsx` | The person's own settings, in parts that are each saved on their own; `FIELDS` is every setting it shows, and a test holds `docs/settings.md` to it. The GitHub token is a part of its own, outside `FIELDS`: a password field never filled from the server, which `/api/github` tells only whether a token is stored, and **Remove token**, which asks first |
 | `src/People.tsx`, `src/Everyone.tsx`, `src/Audit.tsx`, `src/Versions.tsx` | Administration; `src/Everyone.tsx` shows everyone's servers with no actions |
 | `src/Attention.tsx` | The administrators' warning at the top of every page, from `/api/attention`, fetched on load and on every change of page |
 | `src/Docs.tsx` | The help pages, from `/api/docs` |
