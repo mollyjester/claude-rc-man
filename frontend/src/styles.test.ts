@@ -10,6 +10,29 @@ const SAME_IN_DARK: Record<string, string> = {
 };
 
 const COLOUR = /#[0-9a-fA-F]{3,8}\b|\b(?:rgba?|hsla?)\(/;
+// Keywords a colour may be written as that name no colour of the stylesheet's own.
+const NOT_A_COLOUR = new Set(["transparent", "currentcolor", "inherit", "initial", "unset", "revert", "none"]);
+
+// Whether a word is a colour, as the browser's own colour parser reads it:
+// the named colours come from the engine, not from a list kept here.
+function isColourName(word: string) {
+  if (NOT_A_COLOUR.has(word.toLowerCase())) return false;
+  const style = document.createElement("div").style;
+  style.color = word;
+  return style.color !== "";
+}
+
+// The named colours a declaration's value uses, var() fallbacks included.
+function colourNames(declaration: string): string[] {
+  const value = declaration
+    .slice(declaration.indexOf(":") + 1)
+    .replace(/--[\w-]+/g, "")
+    .replace(/"[^"]*"|'[^']*'/g, "")
+    .replace(/[\w-]+\(/g, "(");
+  return [...value.matchAll(/[a-zA-Z]+(?:-[a-zA-Z]+)*/g)].map((w) => w[0]).filter(isColourName);
+}
+
+const hasColour = (declaration: string) => COLOUR.test(declaration) || colourNames(declaration).length > 0;
 
 const uncommented = (css: string) => css.replace(/\/\*[\s\S]*?\*\//g, "");
 
@@ -36,15 +59,15 @@ const dark = (css: string) =>
 function violations(css: string): string[] {
   const found: string[] = [];
   for (const declaration of declarations(css)) {
-    if (COLOUR.test(declaration) && !declaration.startsWith("--")) found.push(`colour outside a variable: ${declaration}`);
+    if (hasColour(declaration) && !declaration.startsWith("--")) found.push(`colour outside a variable: ${declaration}`);
   }
   const darkSet = new Set(dark(css));
   for (const name of light(css)) {
-    const colour = declarations(css).some((d) => d.startsWith(`${name}:`) && COLOUR.test(d));
+    const colour = declarations(css).some((d) => d.startsWith(`${name}:`) && hasColour(d));
     if (colour && !darkSet.has(name) && !(name in SAME_IN_DARK)) found.push(`no dark colour: ${name}`);
   }
   const declared = new Set([...light(css), ...darkSet]);
-  for (const [, name] of css.matchAll(/var\((--[\w-]+)\)/g)) {
+  for (const [, name] of css.matchAll(/var\(\s*(--[\w-]+)/g)) {
     if (!declared.has(name)) found.push(`not declared: ${name}`);
   }
   return found;
@@ -71,6 +94,28 @@ test("the check fails on a colour outside a variable, a missing dark colour, or 
 
   const undeclared = `${STYLES}\n.planted { color: var(--nowhere); }`;
   expect(violations(undeclared)).toEqual(["not declared: --nowhere"]);
+  const undeclaredWithFallback = `${STYLES}\n.planted { color: var(--nowhere, var(--fg)); }`;
+  expect(violations(undeclaredWithFallback)).toEqual(["not declared: --nowhere"]);
 
   expect(light("")).toEqual([]);
+});
+
+test("named colours count as colours, wherever they are written", () => {
+  // positive and negative controls for the engine's colour parser
+  expect(isColourName("gray")).toBe(true);
+  expect(isColourName("solid")).toBe(false);
+  expect(isColourName("transparent")).toBe(false);
+
+  const named = `${STYLES}\n.planted { color: gray; }`;
+  expect(violations(named)).toEqual(["colour outside a variable: color: gray"]);
+
+  const fallback = `${STYLES}\n.planted { color: var(--muted, gray); }`;
+  expect(violations(fallback)).toEqual(["colour outside a variable: color: var(--muted, gray)"]);
+
+  const inDark = STYLES.replace(/(prefers-color-scheme:\s*dark\)\s*\{\s*:root\s*\{)/, "$1\n    color: gray;");
+  expect(inDark).not.toEqual(STYLES); // the plant took effect
+  expect(violations(inDark)).toEqual(["colour outside a variable: color: gray"]);
+
+  const lightOnly = STYLES.replace(/(:root\s*\{)/, "$1\n  --planted: gray;");
+  expect(violations(lightOnly)).toEqual(["no dark colour: --planted"]);
 });

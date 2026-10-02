@@ -38,8 +38,9 @@ version is `frontend/.nvmrc`.
 - **Every piece of text not from the server is in `src/messages.ts`.**
 - **Every colour is a custom property in `src/styles.css`**, with a value for
   a light scheme and one for a dark scheme, which the browser picks between by
-  the system's setting; `src/styles.test.ts` holds the stylesheet to that and
-  names the colours kept the same in both. Each pair of colours text is drawn
+  the system's setting; `src/styles.test.ts` holds the stylesheet to that,
+  counting named colours as jsdom's colour parser reads them, and names the
+  colours kept the same in both. Each pair of colours text is drawn
   in meets WCAG AA contrast in both schemes; that is checked by hand when a
   colour changes.
 - Links between help pages — a page's file name, optionally followed by a
