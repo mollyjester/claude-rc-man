@@ -2,7 +2,7 @@ import { cleanup, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { CONNECTION_STATES, START_REASON } from "./Claude";
-import { ACTIONS, KIND, PRIMARY } from "./Servers";
+import { ACTIONS, KIND, LABELS, PRIMARY } from "./Servers";
 import { m } from "./messages";
 import { CONNECTED, ME, type Routes, fakeApi, problem } from "./test/fakeApi";
 import { renderApp } from "./test/render";
@@ -121,7 +121,7 @@ test.each(CONNECTION_STATES)("with the Claude account %s, Start is offered only 
   if (reason === null) {
     expect(await within(opened).findByRole("button", { name: m.start })).toBeInTheDocument();
   } else {
-    expect(await within(opened).findByText(reason)).toBeInTheDocument();
+    expect(await within(opened).findByText(reason.start)).toBeInTheDocument();
     expect(within(opened).queryByRole("button", { name: m.start })).not.toBeInTheDocument();
   }
 });
@@ -134,7 +134,7 @@ test("until the Claude account's state is known, neither Start nor a reason is s
   expect(within(opened).getByText(m.loading)).toBeInTheDocument();
   expect(within(opened).queryByRole("button", { name: m.start })).not.toBeInTheDocument();
   for (const reason of Object.values(START_REASON)) {
-    if (reason) expect(within(opened).queryByText(reason)).not.toBeInTheDocument();
+    if (reason) expect(within(opened).queryByText(reason.start)).not.toBeInTheDocument();
   }
 });
 
@@ -150,31 +150,35 @@ test("once the account is connected on the page, Start is offered", async () => 
   });
   renderApp("/?folder=projects/beta");
   const opened = await panel("projects/beta");
-  expect(await within(opened).findByText(m.startNotConnected)).toBeInTheDocument();
+  expect(await within(opened).findByText(m.notConnected.start)).toBeInTheDocument();
   await userEvent.click(screen.getByRole("button", { name: m.connect }));
   await userEvent.click(screen.getByRole("button", { name: m.connectGo }));
   await userEvent.type(await screen.findByLabelText(m.connectCode), "CODE");
   await userEvent.click(screen.getByRole("button", { name: m.connectSubmit }));
   expect(await within(opened).findByRole("button", { name: m.start })).toBeInTheDocument();
-  expect(within(opened).queryByText(m.startNotConnected)).not.toBeInTheDocument();
+  expect(within(opened).queryByText(m.notConnected.start)).not.toBeInTheDocument();
 });
 
 test.each([
-  ["stopped", m.resume],
-  ["trust_declined", m.startAgain],
-  ["logged_out", m.startAgain],
-])("a %s server offers %s only while the account is connected", async (state, label) => {
-  dashboard([server("projects/alpha", state)], { "GET /api/claude": NOT_CONNECTED });
+  ["stopped", "resume"],
+  ["exited", "resume"],
+  ["trust_declined", "startAgain"],
+  ["logged_out", "startAgain"],
+] as const)("a %s server offers %s only while the account is connected, and says why instead", async (state, action) => {
+  const said = m.notConnected[action];
+  dashboard([server("projects/alpha", state, { screen: ["x"], exit_code: 1 })], { "GET /api/claude": NOT_CONNECTED });
   const waiting = await card();
   expect(waiting.getByRole("button", { name: m.forget })).toBeInTheDocument(); // the card is there
-  expect(waiting.queryByRole("button", { name: label })).not.toBeInTheDocument();
-  expect(waiting.getByText(m.startNotConnected)).toBeInTheDocument();
+  expect(waiting.queryByRole("button", { name: LABELS[action] })).not.toBeInTheDocument();
+  expect(waiting.getByText(said)).toBeInTheDocument();
+  expect(waiting.queryByText(m.nextStep[state])).not.toBeInTheDocument();
   cleanup();
 
-  dashboard([server("projects/alpha", state)]);
+  dashboard([server("projects/alpha", state, { screen: ["x"], exit_code: 1 })]);
   const offered = await card();
-  expect(offered.getByRole("button", { name: label })).toBeInTheDocument();
-  expect(offered.queryByText(m.startNotConnected)).not.toBeInTheDocument();
+  expect(offered.getByRole("button", { name: LABELS[action] })).toBeInTheDocument();
+  expect(offered.getByText(m.nextStep[state])).toBeInTheDocument();
+  expect(offered.queryByText(said)).not.toBeInTheDocument();
 });
 
 test("a folder that is not there still opens, and Start shows the server's reason", async () => {
@@ -378,16 +382,6 @@ test("a stopped server keeps its environment but offers no link to it", async ()
   expect(found.getByText(m.states.stopped)).toBeInTheDocument();
   expect(found.queryByRole("link", { name: m.openSession })).not.toBeInTheDocument();
 });
-
-const LABELS: Record<string, string> = {
-  stop: m.stop,
-  resume: m.resume,
-  startAgain: m.startAgain,
-  forget: m.forget,
-  showScreen: m.showScreen,
-  trustYes: m.trustYes,
-  trustNo: m.trustNo,
-};
 
 test.each(Object.entries(ACTIONS))("a %s server offers exactly its actions", async (state, actions) => {
   dashboard([server("projects/alpha", state, { screen: ["x"], exit_code: 1 })]);

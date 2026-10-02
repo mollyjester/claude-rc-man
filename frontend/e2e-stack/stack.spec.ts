@@ -57,7 +57,7 @@ test("another person sees only their own home and servers", async ({ page }) => 
   await expect(page.getByText(m.signedInAs("bob@example.com"))).toBeVisible();
   await selectInProjects(page, "bob-demo");
   const panel = page.getByRole("region", { name: "projects/bob-demo", exact: true });
-  await expect(panel.getByText(m.startNotConnected)).toBeVisible();
+  await expect(panel.getByText(m.notConnected.start)).toBeVisible();
   await expect(panel.getByRole("button", { name: m.start })).toHaveCount(0);
   await expect(page.getByText("alice-demo")).toHaveCount(0);
   await expect(page.getByRole("region", { name: m.runningTitle }).getByText(m.runningEmpty)).toBeVisible();

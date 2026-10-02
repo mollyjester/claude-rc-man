@@ -8,7 +8,7 @@ test("connecting a Claude account", async ({ page }) => {
   await page.goto("/?folder=projects/bob-alpha");
   await expect(page.getByText(m.claudeNotConnected)).toBeVisible();
   const panel = page.getByRole("region", { name: "projects/bob-alpha", exact: true });
-  await expect(panel.getByText(m.startNotConnected)).toBeVisible();
+  await expect(panel.getByText(m.notConnected.start)).toBeVisible();
   await expect(panel.getByRole("button", { name: m.start })).toHaveCount(0);
 
   await page.getByRole("button", { name: m.connect }).click();
@@ -24,5 +24,5 @@ test("connecting a Claude account", async ({ page }) => {
   await page.getByRole("button", { name: m.connectSubmit }).click();
   await expect(page.getByText(m.claudeConnectedAs("fake-user@example.com"))).toBeVisible();
   await expect(panel.getByRole("button", { name: m.start })).toBeVisible();
-  await expect(panel.getByText(m.startNotConnected)).toHaveCount(0);
+  await expect(panel.getByText(m.notConnected.start)).toHaveCount(0);
 });

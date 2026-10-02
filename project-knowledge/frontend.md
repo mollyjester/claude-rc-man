@@ -30,7 +30,9 @@ version is `frontend/.nvmrc`.
   `docs/servers.md` to all of them. `START_REASON` in `src/Claude.tsx` says,
   for each state of the Claude account in `CONNECTION_STATES`, why no server
   can start, or null where one can; Start, and the actions that start Claude
-  again, are offered only where it is null, and the reason is shown instead.
+  again, are offered only where it is null. Otherwise it says why in place of
+  each: in the panel instead of Start, and on a server's card instead of the
+  sentence saying what to do.
   Administration is offered only to administrators,
   and the server refuses everyone else regardless.
 - **Every piece of text not from the server is in `src/messages.ts`.**

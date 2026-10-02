@@ -24,7 +24,8 @@ The panel starts with where the folder is, from **Home** down; any step of it
 selects that folder, and **Home** selects none. Below that, its
 **Claude server** section shows the folder's server, or **Start** when it has none.
 **Start**, **Resume** and **Start again** are offered only while your Claude
-account is connected; until then the section says to connect it. The
+account is connected; until then the section, or the server in place of what
+to do next, says to connect it. The
 folder you have selected is part of the page's address, so reloading the page
 keeps it, and the browser's back button returns to the folder selected before.
 

@@ -23,14 +23,18 @@ test("every state of the account says whether a server can start, and why not", 
   // non-vacuity: some states let a server start and some do not
   const reasons = Object.values(START_REASON);
   expect(reasons).toContain(null);
-  expect(reasons.some((r) => typeof r === "string" && r.length > 0)).toBe(true);
+  const blocked = reasons.filter((r) => r !== null);
+  expect(blocked.length).toBeGreaterThan(0);
+  for (const reason of blocked) {
+    for (const said of [reason.start, reason.resume, reason.startAgain]) expect(said).toMatch(/\S/);
+  }
 });
 
 test("an expiring or expired sign-in still starts a server: rc-helper refuses only an account not signed in", () => {
   expect(START_REASON.expiring).toBeNull();
   expect(START_REASON.expired).toBeNull();
   expect(START_REASON.connected).toBeNull();
-  expect(START_REASON.not_connected).toBe(m.startNotConnected);
+  expect(START_REASON.not_connected).toBe(m.notConnected);
 });
 
 test("connecting: link, then code, then connected", async () => {

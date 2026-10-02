@@ -2,6 +2,7 @@ import { type ReactNode, useState } from "react";
 import { Link } from "react-router-dom";
 
 import { ApiError, api } from "./api";
+import type { StartBlocked } from "./Claude";
 import { folderLink, lineage } from "./Folders";
 import { m } from "./messages";
 import { ProblemView, asApiError } from "./ProblemView";
@@ -76,7 +77,7 @@ export function FolderPanel({
 }: {
   path: string;
   server: Server | null | undefined;
-  startReason: string | null | undefined;
+  startReason: StartBlocked | null | undefined;
   onChange: () => void;
 }) {
   const known = server !== undefined && startReason !== undefined;
@@ -88,7 +89,7 @@ export function FolderPanel({
         {!known && <p>{m.loading}</p>}
         {known && server && <ServerCard server={server} startReason={startReason} onChange={onChange} />}
         {known && !server && startReason === null && <StartServer path={path} onStarted={onChange} />}
-        {known && !server && startReason !== null && <p>{startReason}</p>}
+        {known && !server && startReason !== null && <p>{startReason.start}</p>}
       </PanelSection>
     </section>
   );

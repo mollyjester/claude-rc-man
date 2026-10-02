@@ -1,6 +1,7 @@
 import { useState } from "react";
 
 import { ApiError, api } from "./api";
+import type { StartBlocked } from "./Claude";
 import { m } from "./messages";
 import { ProblemView, asApiError } from "./ProblemView";
 
@@ -13,7 +14,11 @@ export type Server = {
   screen?: string[];
 };
 
-type Action = "stop" | "resume" | "startAgain" | "forget" | "showScreen" | "trustYes" | "trustNo";
+// The actions that start Claude, which the server refuses while the account cannot.
+export type StartAction = "resume" | "startAgain";
+type Action = StartAction | "stop" | "forget" | "showScreen" | "trustYes" | "trustNo";
+const STARTS: Action[] = ["resume", "startAgain"] satisfies StartAction[];
+const startsClaude = (action: Action): action is StartAction => STARTS.includes(action);
 
 // What each state reported by rc-helper allows; the server refuses anything else.
 export const ACTIONS: Record<string, Action[]> = {
@@ -62,9 +67,6 @@ export const PRIMARY: Record<string, Action | "openSession" | null> = {
   exited: "resume",
   unrecognised: "showScreen",
 };
-
-// The actions that start Claude, which the server refuses while the account cannot.
-const STARTS: Action[] = ["resume", "startAgain"];
 
 const CALLS: Record<Exclude<Action, "showScreen">, [string, Record<string, string>]> = {
   stop: ["/api/servers/stop", {}],
@@ -120,14 +122,16 @@ export function ServerCard({
   onChange,
 }: {
   server: Server;
-  startReason: string | null;
+  startReason: StartBlocked | null;
   onChange: () => void;
 }) {
   const [error, setError] = useState<ApiError | null>(null);
   const [busy, setBusy] = useState(false);
   const [showScreen, setShowScreen] = useState(false);
   const allowed = ACTIONS[server.state] ?? ["showScreen"];
-  const actions = startReason === null ? allowed : allowed.filter((action) => !STARTS.includes(action));
+  // The action that would start Claude, when the account cannot: it is not offered.
+  const blocked = startReason ? allowed.find(startsClaude) : undefined;
+  const actions = allowed.filter((action) => action !== blocked);
   const primary = PRIMARY[server.state];
 
   async function act(action: Action) {
@@ -153,7 +157,7 @@ export function ServerCard({
       <p>
         <StateBadge state={server.state} />
       </p>
-      <p>{m.nextStep[server.state] ?? m.nextStepUnknown}</p>
+      <p>{blocked && startReason ? startReason[blocked] : (m.nextStep[server.state] ?? m.nextStepUnknown)}</p>
       {server.state === "trust_prompt" && (
         <div className="question">
           <p>
@@ -180,7 +184,6 @@ export function ServerCard({
         </p>
       )}
       {server.exit_code !== null && server.state === "exited" && <p>{m.exitCode(server.exit_code)}</p>}
-      {actions.length < allowed.length && <p>{startReason}</p>}
       <div className="actions">
         {actions.map((action) => (
           <button
