@@ -1,11 +1,15 @@
 // Validation belongs to the server: no input may carry a rule of its own.
 // Each form leads with what it does: its submit button is its one primary
 // button, or its one danger button where what it does cannot be undone.
-import { screen, within } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { vi } from "vitest";
 
+import { useState } from "react";
+
+import { ApiError, api as client } from "./api";
 import { m } from "./messages";
+import { ProblemView, asApiError } from "./ProblemView";
 import { FIELDS } from "./Settings";
 import { ADMIN_USER, NOT_CONNECTED, NOTHING_TO_ATTEND, SETTINGS, fakeApi } from "./test/fakeApi";
 import { renderApp } from "./test/render";
@@ -234,4 +238,89 @@ test("the settings page has an input for every field it describes, and nothing e
   expect(found.length).toBe(Object.keys(FIELDS).length);
   expect(document.querySelectorAll("form").length).toBeGreaterThan(1);
   expect(document.querySelectorAll("form[novalidate]").length).toBe(document.querySelectorAll("form").length);
+});
+
+// The inputs of a form whose refusal names a field: each carries the field's
+// name, so the server's error can be matched to it. A radio's label names one
+// choice, not the field, so radios are not among them.
+function fieldInputs(form: HTMLFormElement): HTMLInputElement[] {
+  return [...form.querySelectorAll("input")].filter((input) => input.type !== "radio");
+}
+
+// What a form's refusal shows wrongly: an input with no field name, or a field
+// error shown under anything but the input's label. Every request but a GET is
+// refused with an error for each of the form's fields.
+async function labelFaults(form: HTMLFormElement): Promise<string[]> {
+  const faults: string[] = [];
+  const named = fieldInputs(form).filter((input) => {
+    if (!input.name) faults.push(`${input.labels?.[0]?.textContent?.trim()}: an input with no field name`);
+    return Boolean(input.name);
+  });
+  const answer = globalThis.fetch;
+  const refuse = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    if ((init?.method ?? "GET").toUpperCase() === "GET") return answer(input, init);
+    const errors = named.map((i) => ({ field: i.name, message: `planted reason for ${i.name}` }));
+    const body = { type: "urn:rcman:problem:validation_failed", title: "Refused.", status: 422, code: "validation_failed", errors };
+    return new Response(JSON.stringify(body), { status: 422, headers: { "content-type": "application/problem+json" } });
+  });
+  vi.stubGlobal("fetch", refuse);
+  try {
+    await userEvent.click(form.querySelector('button[type="submit"]')!);
+    await screen.findByText("Refused.");
+    for (const input of named) {
+      const label = input.labels?.[0]?.textContent?.trim();
+      if (!screen.queryByText(`${label}: planted reason for ${input.name}`)) faults.push(`${input.name}: not shown as ${label}`);
+    }
+  } finally {
+    vi.stubGlobal("fetch", answer);
+  }
+  return faults;
+}
+
+test.each(PAGES)("a refused field on %s (%s) is named by its label", async (_, path, open) => {
+  api();
+  renderApp(path);
+  await open();
+  await inputs();
+  const forms = [...document.querySelectorAll("form")].filter((form) => fieldInputs(form).length > 0);
+  for (const form of forms) expect(await labelFaults(form)).toEqual([]);
+});
+
+test("the label check finds every form that names a field", () => {
+  const checked = PAGES.map(([page]) => page);
+  expect(checked).toEqual(expect.arrayContaining(["settings", "people", "Claude Code versions"]));
+});
+
+// A form whose ProblemView is given no labels.
+function Unlabelled() {
+  const [error, setError] = useState<ApiError | null>(null);
+  return (
+    <form
+      noValidate
+      onSubmit={async (event) => {
+        event.preventDefault();
+        await client.post("/planted", {}).catch((e) => setError(asApiError(e)));
+      }}
+    >
+      <label>
+        Planted label
+        <input type="text" name="planted" />
+      </label>
+      <label>
+        Nameless
+        <input type="text" />
+      </label>
+      <button type="submit">Send</button>
+      <ProblemView error={error} />
+    </form>
+  );
+}
+
+test("the label check fails on a form that shows a field by its name, or has an input with none", async () => {
+  fakeApi({});
+  render(<Unlabelled />);
+  expect(await labelFaults(document.querySelector("form")!)).toEqual([
+    "Nameless: an input with no field name",
+    "planted: not shown as Planted label",
+  ]);
 });
