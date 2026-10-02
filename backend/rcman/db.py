@@ -1,7 +1,8 @@
 """The SQLite database and its migrations.
 
 Each entry of :data:`MIGRATIONS` is applied once, in order; ``user_version``
-records how many have been applied.
+records how many have been applied. A script and its version are applied in
+one transaction, so a script never begins or commits one of its own.
 """
 
 from __future__ import annotations
@@ -65,8 +66,13 @@ def migrate(path: Path) -> None:
     try:
         version = con.execute("pragma user_version").fetchone()[0]
         for number, script in enumerate(MIGRATIONS[version:], start=version + 1):
-            con.executescript(script)
-            con.execute(f"pragma user_version = {number}")
-            con.commit()
+            # A script and the version that records it are one transaction, so a
+            # migration that stops part way leaves nothing behind.
+            try:
+                con.executescript(f"begin;\n{script}\npragma user_version = {number};\ncommit;")
+            except BaseException:
+                if con.in_transaction:
+                    con.rollback()
+                raise
     finally:
         con.close()
