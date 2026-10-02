@@ -554,6 +554,24 @@ test("an unrecognised screen can be shown as it is", async () => {
   expect(found.getByText(/strange line\s+another/)).toBeInTheDocument();
 });
 
+test("Show screen is a toggle, which hides the screen again", async () => {
+  dashboard([server("projects/alpha", "exited", { exit_code: 1, screen: ["last words"] })]);
+  const found = await card();
+  const toggle = found.getByRole("button", { name: m.showScreen });
+  expect(toggle).toHaveAttribute("aria-pressed", "false");
+  expect(found.queryByText("last words")).not.toBeInTheDocument();
+
+  await userEvent.click(toggle);
+  expect(toggle).toHaveAttribute("aria-pressed", "true");
+  expect(toggle).toHaveAccessibleName(m.hideScreen);
+  expect(found.getByText("last words")).toBeInTheDocument();
+
+  await userEvent.click(toggle);
+  expect(toggle).toHaveAttribute("aria-pressed", "false");
+  expect(toggle).toHaveAccessibleName(m.showScreen);
+  expect(found.queryByText("last words")).not.toBeInTheDocument();
+});
+
 test("a refused action shows the server's problem", async () => {
   dashboard([server("projects/alpha", "ready")], {
     "POST /api/servers/stop": problem(409, "not_running", "No server is running in this folder."),

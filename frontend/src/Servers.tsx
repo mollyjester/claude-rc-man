@@ -199,9 +199,10 @@ export function ServerCard({
             type="button"
             className={action === primary ? "primary" : "secondary"}
             disabled={busy}
+            aria-pressed={action === "showScreen" ? showScreen : undefined}
             onClick={() => act(action)}
           >
-            {LABELS[action]}
+            {action === "showScreen" && showScreen ? m.hideScreen : LABELS[action]}
           </button>
         ))}
       </div>

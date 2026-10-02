@@ -56,6 +56,9 @@ ready or in use also has **Open in claude.ai**, which is its main button:
 | Stopped by itself | Has a problem | Show the screen to see why it stopped, then resume it. | **Resume** | **Resume**, **Forget**, **Show screen** |
 | Unrecognised screen | Has a problem | Show the screen, stop it, and tell an administrator. | **Show screen** | **Show screen**, **Stop** |
 
+**Show screen** shows what Claude shows, below the buttons, and becomes
+**Hide screen** until it is chosen again.
+
 The page refreshes the states by itself. When rcman refuses an action, the
 reason it gave is shown on the server it was about.
 

@@ -69,6 +69,7 @@ export const m = {
   startAgain: "Start again",
   forget: "Forget",
   showScreen: "Show screen",
+  hideScreen: "Hide screen",
   openSession: "Open in claude.ai",
   sessionName: "Session",
   exitCode: (code: number) => `Exit status ${code}`,
