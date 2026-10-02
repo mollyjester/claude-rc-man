@@ -15,7 +15,7 @@
 					redir * /oauth2/start?rd={scheme}://{host}{uri}
 				}
 			}
-			reverse_proxy 127.0.0.1:@APP_PORT@
+			reverse_proxy unix/@SOCKET@
 		}
 	}
 }

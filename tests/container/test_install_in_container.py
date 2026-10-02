@@ -78,6 +78,36 @@ def get(url, headers=None):
         return error.code, error.read().decode()
 
 
+SOCKET = "/run/rcman/rcman.sock"
+# One HTTP request over a unix socket, run as another user; prints status, headers, body.
+UDS_CLIENT = """
+import http.client, json, socket, sys
+path, method, url, headers, body = json.loads(sys.argv[1])
+class C(http.client.HTTPConnection):
+    def connect(self):
+        self.sock = socket.socket(socket.AF_UNIX)
+        self.sock.settimeout(10)
+        self.sock.connect(path)
+try:
+    c = C("rcman")
+    c.request(method, url, body=body, headers=headers)
+    r = c.getresponse()
+    print(json.dumps([r.status, dict(r.headers), r.read().decode(errors="replace")]))
+except OSError as e:
+    print(json.dumps([None, {}, type(e).__name__ + ": " + str(e)]))
+except Exception as e:
+    print(json.dumps([None, {}, "not HTTP: " + type(e).__name__]))
+"""
+
+
+def app(url, headers=None, method="GET", body=None, user="caddy", path=SOCKET):
+    """A request to rcman over a unix socket as ``user``: (status, body); status None if refused."""
+    request = json.dumps([path, method, url, headers or {}, body])
+    proc = sh("runuser", "-u", user, "--", sys.executable, "-c", UDS_CLIENT, request)
+    status, _headers, text = json.loads(proc.stdout)
+    return status, text
+
+
 def commit_in_origin(path, text, message):
     work = Path("/tmp/origin-work")
     if work.exists():
@@ -172,40 +202,149 @@ def test_configuration_files_and_their_owners(first_install):
 
 
 def test_services_answer(first_install):
-    assert get("http://127.0.0.1:8001/api/health") == (200, '{"status":"ok"}')
+    assert app("/api/health") == (200, '{"status":"ok"}')
     assert get("http://127.0.0.1:4180/ping")[0] == 200
-    status, body = get("http://127.0.0.1:8001/")
+    status, body = app("/")
     assert status == 200 and '<div id="root">' in body
 
 
 def test_the_app_reaches_the_helpers_through_sudo(first_install):
     me = {"X-Forwarded-Email": "dev@example.com"}
-    status, body = get("http://127.0.0.1:8001/api/me", me)
+    status, body = app("/api/me", me)
     assert status == 200 and json.loads(body)["admin"] is True
-    status, body = get("http://127.0.0.1:8001/api/folders", me)  # rcman -> sudo -u dev rc-helper
+    status, body = app("/api/folders", me)  # rcman -> sudo -u dev rc-helper
     assert status == 200, body
     # dev's own home: the clone and the projects folder rc-admin created
     assert [e["path"] for e in json.loads(body)["entries"]] == ["projects", "rcman"]
-    status, body = get("http://127.0.0.1:8001/api/users", me)  # rcman -> sudo rc-admin
+    status, body = app("/api/users", me)  # rcman -> sudo rc-admin
     assert status == 200, body
+
+
+def test_the_socket_directory_admits_only_its_group(first_install):
+    import grp
+
+    run = Path("/run/rcman")
+    st = run.stat()
+    assert pwd.getpwuid(st.st_uid).pw_name == "rcman"
+    assert grp.getgrgid(st.st_gid).gr_name == "rcman-web"
+    assert stat.S_IMODE(st.st_mode) == 0o750  # the socket itself is 0666; this is what guards it
+    assert grp.getgrnam("rcman-web").gr_mem == ["caddy"]
+    tmpfiles = Path("/etc/tmpfiles.d/rcman.conf").read_text()
+    assert tmpfiles == "d /run/rcman 0750 rcman rcman-web -\n"
+    assert app("/api/health", user="caddy")[0] == 200  # positive control
+    status, text = app("/api/health", user="dev")
+    assert status is None and text.startswith("PermissionError"), text
+    for other in ("rcman-proxy", "nobody"):
+        assert app("/api/health", user=other)[0] is None, other
+
+
+def listeners():
+    """Every listening TCP address (host, port) and unix socket path in the container."""
+    tcp = set()
+    for table, family in (("/proc/net/tcp", socket.AF_INET), ("/proc/net/tcp6", socket.AF_INET6)):
+        for line in Path(table).read_text().splitlines()[1:]:
+            fields = line.split()
+            if fields[3] != "0A":  # LISTEN
+                continue
+            address, port = fields[1].split(":")
+            raw = bytes.fromhex(address)
+            if family == socket.AF_INET:
+                host = socket.inet_ntop(family, raw[::-1])
+            else:
+                host = socket.inet_ntop(
+                    family, b"".join(raw[i : i + 4][::-1] for i in range(0, 16, 4))
+                )
+            if host in ("0.0.0.0", "::"):
+                host = "127.0.0.1" if family == socket.AF_INET else "::1"
+            tcp.add((host, int(port, 16)))
+    unix = set()
+    for line in Path("/proc/net/unix").read_text().splitlines()[1:]:
+        fields = line.split()
+        if len(fields) >= 8 and fields[5] == "01" and int(fields[3], 16) & 0x10000:
+            if not fields[7].startswith("@"):  # abstract names are not files
+                unix.add(fields[7])
+    return tcp, unix
+
+
+PROBE = """
+import json, sys, urllib.request, urllib.error
+req = urllib.request.Request(sys.argv[1], headers=json.loads(sys.argv[2]))
+try:
+    r = urllib.request.urlopen(req, timeout=10)
+    print(r.status, r.read().decode(errors="replace"))
+except urllib.error.HTTPError as e:
+    print(e.code, e.read().decode(errors="replace"))
+except Exception as e:
+    print("refused", e)
+"""
+
+
+def test_no_loopback_listener_lets_a_local_user_impersonate(first_install):
+    """Whatever listens here, a local user cannot use it to be someone in rcman."""
+    admin = "dev@example.com"
+    spoof = {"X-Forwarded-Email": admin, "X-Auth-Request-Email": admin}
+    tcp, unix = listeners()
+    assert ("127.0.0.1", 4180) in tcp and SOCKET in unix  # non-vacuity: both are found
+    for host, port in sorted(tcp):
+        url = f"http://{'[' + host + ']' if ':' in host else host}:{port}/api/me"
+        out = sh(
+            "runuser", "-u", "dev", "--", sys.executable, "-c", PROBE, url, json.dumps(spoof)
+        ).stdout
+        assert '"admin":true' not in out and f'"email":"{admin}"' not in out, (host, port, out)
+    for path in sorted(unix):
+        status, text = app("/api/me", spoof, user="dev", path=path)
+        assert '"admin":true' not in text and f'"email":"{admin}"' not in text, (path, text)
+    # oauth2-proxy without its cookie names no one.
+    request = urllib.request.Request("http://127.0.0.1:4180/oauth2/auth", headers=spoof)
+    try:
+        urllib.request.urlopen(request, timeout=10)
+        raise AssertionError("oauth2-proxy accepted a request without its cookie")
+    except urllib.error.HTTPError as error:
+        assert error.code == 401
+        assert "X-Auth-Request-Email" not in error.headers
+    # Positive control: through the socket, as Caddy, the header is believed.
+    status, text = app("/api/me", spoof, user="caddy")
+    assert status == 200 and json.loads(text)["email"] == admin
+    assert '"admin":true' in text
+
+
+def test_the_installer_warns_about_a_caddy_admin_api_on_loopback(first_install):
+    """Planted twin: a Caddy whose admin API is on loopback, as by default, is warned about."""
+    sys.path.insert(0, str(SRC))
+    from installer import install as ins
+
+    assert ins.CADDY_ADMIN_WARNING not in first_install.stdout + first_install.stderr
+    caddy = subprocess.Popen(
+        ["caddy", "run"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+    )  # no configuration: the admin API on localhost:2019
+    try:
+        deadline = time.monotonic() + 20
+        while ("127.0.0.1", 2019) not in listeners()[0] and time.monotonic() < deadline:
+            time.sleep(0.2)
+        assert ("127.0.0.1", 2019) in listeners()[0]
+        proc = install()
+        assert proc.returncode == 0, proc.stdout + proc.stderr  # a warning, not a refusal
+        assert ins.CADDY_ADMIN_WARNING in proc.stdout + proc.stderr
+    finally:
+        caddy.terminate()
+        caddy.wait(timeout=10)
 
 
 def test_audit_events_reach_the_journal(first_install):
     """The service's output is what systemd sends to the journal; an audit event is a line in it."""
     log = Path("/run/fake-systemd/rcman.service.log")
     before = log.read_text(errors="replace").splitlines()
-    request = urllib.request.Request(
-        "http://127.0.0.1:8001/api/me/settings",
-        data=json.dumps({"prefix": "journal"}).encode(),
-        method="PUT",
-        headers={
+    status, text = app(
+        "/api/me/settings",
+        {
             "X-Forwarded-Email": "dev@example.com",
             "Origin": f"https://{DOMAIN}",
             "Content-Type": "application/json",
         },
+        method="PUT",
+        body=json.dumps({"prefix": "journal"}),
     )
-    with urllib.request.urlopen(request, timeout=10) as response:
-        assert response.status == 200
+    assert status == 200, text
     deadline = time.monotonic() + 10
     while True:  # the event is written as the request finishes, which may follow the response
         after = log.read_text(errors="replace").splitlines()[len(before) :]
@@ -227,6 +366,7 @@ def test_audit_events_reach_the_journal(first_install):
 
 def test_the_caddy_snippet_is_printed_and_valid(first_install):
     assert "Add this to your Caddyfile" in first_install.stdout
+    assert "The Caddy site block changed" in first_install.stdout
     snippet = (ETC / "Caddyfile.snippet").read_text()
     assert snippet in first_install.stdout
     path = Path("/tmp/Caddyfile")
@@ -243,8 +383,10 @@ def test_running_again_changes_nothing(first_install):
     proc = install()
     assert proc.returncode == 0, proc.stderr
     assert changes(proc)["changed"] == []
+    assert "The Caddy site block changed" not in proc.stdout
+    assert "restart Caddy" not in proc.stdout
     assert os.readlink(ROOT / "current") == release
-    assert get("http://127.0.0.1:8001/api/health")[0] == 200
+    assert app("/api/health")[0] == 200
 
 
 def test_saved_settings_need_no_answers(first_install):
@@ -275,7 +417,7 @@ def test_an_update_of_install_sh_restarts_it_and_builds_a_new_release(first_inst
     )
     assert os.readlink(ROOT / "current") == f"releases/{head[:12]}"
     assert os.readlink(ROOT / "previous") == old
-    assert get("http://127.0.0.1:8001/api/health")[0] == 200
+    assert app("/api/health")[0] == 200
 
 
 def test_rollback_returns_to_the_previous_release(first_install):
@@ -285,9 +427,9 @@ def test_rollback_returns_to_the_previous_release(first_install):
     assert os.readlink(ROOT / "current") == previous
     assert os.readlink(ROOT / "previous") == current
     deadline = time.monotonic() + 30
-    while get("http://127.0.0.1:8001/api/health")[0] != 200 and time.monotonic() < deadline:
+    while app("/api/health")[0] != 200 and time.monotonic() < deadline:
         time.sleep(0.5)
-    assert get("http://127.0.0.1:8001/api/health")[0] == 200
+    assert app("/api/health")[0] == 200
 
 
 def test_a_clone_that_cannot_fast_forward_is_refused(first_install):
@@ -324,13 +466,14 @@ class H(http.server.BaseHTTPRequestHandler):
 http.server.HTTPServer(("127.0.0.1", int(sys.argv[1])), H).serve_forever()
 """
 FAKE_APP = """
-import http.server, sys
+import http.server, socketserver, sys
 class H(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200); self.end_headers()
         self.wfile.write(("email=" + str(self.headers.get("X-Forwarded-Email"))).encode())
     def log_message(self, *a): pass
-http.server.HTTPServer(("127.0.0.1", int(sys.argv[1])), H).serve_forever()
+    def address_string(self): return "unix"
+socketserver.UnixStreamServer(sys.argv[1], H).serve_forever()
 """
 
 
@@ -338,16 +481,18 @@ def test_caddy_lets_only_oauth2_proxy_set_the_identity(tmp_path):
     sys.path.insert(0, str(SRC))
     from installer import install as ins
 
-    auth, app, site = free_port(), free_port(), free_port()
-    snippet = ins.render(
-        "Caddyfile",
-        {"DOMAIN": f"http://127.0.0.1:{site}", "PROXY_PORT": str(auth), "APP_PORT": str(app)},
+    auth, site = free_port(), free_port()
+    fake_socket = tmp_path / "app.sock"
+    rendered = ins.render(
+        "Caddyfile", {"DOMAIN": f"http://127.0.0.1:{site}", "PROXY_PORT": str(auth)}
     )
+    assert f"unix/{ins.SOCKET}" in rendered
+    snippet = rendered.replace(str(ins.SOCKET), str(fake_socket))
     config = tmp_path / "Caddyfile"
     config.write_text("{\n\tadmin off\n\tauto_https off\n}\n" + snippet)
     procs = [
         subprocess.Popen([sys.executable, "-c", FAKE_AUTH, str(auth)]),
-        subprocess.Popen([sys.executable, "-c", FAKE_APP, str(app)]),
+        subprocess.Popen([sys.executable, "-c", FAKE_APP, str(fake_socket)]),
         subprocess.Popen(
             ["caddy", "run", "--adapter", "caddyfile", "--config", str(config)],
             stderr=subprocess.DEVNULL,

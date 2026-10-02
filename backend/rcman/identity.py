@@ -1,8 +1,9 @@
 """Who is asking.
 
 oauth2-proxy, behind Caddy's forward_auth, signs people in with Google and
-passes the address on as ``X-Forwarded-Email``. rcman listens only where Caddy
-can reach it, so the header is trusted; the address must be in the users file,
+passes the address on as ``X-Forwarded-Email``. Installed, rcman listens only
+on a unix socket only Caddy's group can reach (see installer/install.py), so
+the header is trusted; the address must be in the users file,
 read on every request. A request that changes something must also carry an
 ``Origin`` equal to the configured public origin.
 """

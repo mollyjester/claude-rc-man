@@ -40,10 +40,14 @@ SETTINGS_FILE = ETC / "install.env"
 SYSTEMD = Path("/etc/systemd/system")
 SUDOERS = Path("/etc/sudoers.d/rcman")
 CADDY_SNIPPET = ETC / "Caddyfile.snippet"
+RUN = Path("/run/rcman")
+SOCKET = RUN / "rcman.sock"  # rcman's only listener; Caddy's group alone may enter RUN
+TMPFILES = Path("/etc/tmpfiles.d/rcman.conf")
 
 APP_USER = "rcman"
 PROXY_USER = "rcman-proxy"
 USER_GROUP = "rcusers"
+WEB_GROUP = "rcman-web"  # its only member is Caddy's account
 COMPLETE = ".complete"  # marks a release that was fully built
 UNITS = ("rcman.service", "rcman-oauth2-proxy.service")
 TEMPLATES = (
@@ -57,6 +61,12 @@ TEMPLATES = (
 UV_VERSION = "0.12.21"
 OAUTH2_PROXY_VERSION = "v7.15.5"
 HEALTH_TIMEOUT = 60.0
+CADDY_ADMIN_PORT = 2019  # Caddy's default admin API address is localhost:2019
+CADDY_ADMIN_WARNING = (
+    "Something answers on Caddy's admin API address, 127.0.0.1:2019. Any local user can "
+    "rewrite Caddy's configuration through it, and so reach rcman as anyone. Put `admin off` "
+    "(or an admin address on a unix socket) in the global options of your Caddyfile."
+)
 
 LABEL = r"(?!-)[A-Za-z0-9-]+(?<!-)"  # a host name label: no leading or trailing hyphen
 HOSTNAME = re.compile(LABEL + r"(?:\." + LABEL + r")+")
@@ -78,8 +88,8 @@ FIELDS = {
     "GOOGLE_CLIENT_SECRET": ("Google OAuth client secret", True, None, None),
     "ADMIN_EMAIL": ("Google email address of the first administrator", False, None, EMAIL),
     "ADMIN_LINUX": ("Linux user of the first administrator", False, "", LINUX_NAME),
-    "APP_PORT": ("Local port for rcman", False, "8001", PORT),
     "PROXY_PORT": ("Local port for oauth2-proxy", False, "4180", PORT),
+    "CADDY_USER": ("Linux account Caddy runs as", False, "caddy", LINUX_NAME),
 }
 
 
@@ -104,9 +114,14 @@ def save_settings(path: Path, values: dict[str, str]) -> bool:
 def gather(
     saved: Path, environ: dict[str, str], flags: dict[str, str | None], ask, sudo_user: str
 ) -> dict[str, str]:
-    """Settings from flags, then RCMAN_INSTALL_* variables, then the saved file, then questions."""
-    values = load_settings(saved)
-    for key in (*FIELDS, "COOKIE_SECRET"):
+    """Settings from flags, then RCMAN_INSTALL_* variables, then the saved file, then questions.
+
+    Only the fields and the cookie secret are kept, so a saved setting the
+    installer no longer has is dropped when the settings are saved again.
+    """
+    keep = (*FIELDS, "COOKIE_SECRET")
+    values = {k: v for k, v in load_settings(saved).items() if k in keep}
+    for key in keep:
         if environ.get(f"RCMAN_INSTALL_{key}"):
             values[key] = environ[f"RCMAN_INSTALL_{key}"]
         if flags.get(key.lower()):
@@ -147,6 +162,7 @@ def _paths() -> dict[str, str]:
         "CURRENT": str(CURRENT),
         "ETC": str(ETC),
         "STATE": str(STATE),
+        "SOCKET": str(SOCKET),
         "OAUTH2_PROXY": str(oauth2_proxy_binary()),
     }
 
@@ -174,6 +190,11 @@ def sudoers() -> str:
             )
         )
     return "# Written by install.sh.\n" + "\n".join(parts)
+
+
+def tmpfiles() -> str:
+    """The tmpfiles.d line that makes the socket's directory at every boot."""
+    return f"d {RUN} 0750 {APP_USER} {WEB_GROUP} -\n"
 
 
 def write_if_changed(path: Path, text: str, mode: int, gid: int | None = None) -> bool:
@@ -255,7 +276,16 @@ def _exists(kind: str, name: str) -> bool:
     return subprocess.run(["getent", kind, name], capture_output=True).returncode == 0
 
 
-def ensure_accounts() -> list[str]:
+def check_caddy_user(name: str) -> None:
+    if not _exists("passwd", name):
+        raise InstallError(
+            f"there is no Linux account {name!r} for Caddy; give the account Caddy runs as "
+            "with --caddy-user"
+        )
+
+
+def ensure_accounts(caddy_user: str) -> list[str]:
+    check_caddy_user(caddy_user)
     changes = []
     if not _exists("group", USER_GROUP):
         run(["groupadd", USER_GROUP])
@@ -287,6 +317,12 @@ def ensure_accounts() -> list[str]:
             ]
         )
         changes.append(f"user {PROXY_USER}")
+    if not _exists("group", WEB_GROUP):
+        run(["groupadd", "--system", WEB_GROUP])
+        changes.append(f"group {WEB_GROUP}")
+    if WEB_GROUP not in run(["id", "-nG", caddy_user]).stdout.split():  # to reach rcman's socket
+        run(["usermod", "--append", "--groups", WEB_GROUP, caddy_user])
+        changes.append(f"{caddy_user} in group {WEB_GROUP}")
     proxy_groups = run(["id", "-nG", PROXY_USER]).stdout.split()
     if APP_USER not in proxy_groups:  # to read the allowlist, which belongs to group rcman
         run(["usermod", "--append", "--groups", APP_USER, PROXY_USER])
@@ -298,6 +334,21 @@ def ensure_accounts() -> list[str]:
         os.chmod(STATE, 0o750)
         changes.append(str(STATE))
     ETC.mkdir(parents=True, exist_ok=True)
+    return changes
+
+
+def ensure_runtime_dir() -> list[str]:
+    """The socket's directory: made at boot by tmpfiles.d, and made or repaired here."""
+    changes = []
+    if write_if_changed(TMPFILES, tmpfiles(), 0o644):
+        changes.append(str(TMPFILES))
+    uid, gid = pwd.getpwnam(APP_USER).pw_uid, _gid(WEB_GROUP)
+    RUN.mkdir(parents=True, exist_ok=True)
+    st = RUN.stat()
+    if (st.st_uid, st.st_gid, st.st_mode & 0o7777) != (uid, gid, 0o750):
+        os.chown(RUN, uid, gid)
+        os.chmod(RUN, 0o750)
+        changes.append(str(RUN))
     return changes
 
 
@@ -539,25 +590,73 @@ def ensure_admin(settings: dict[str, str]) -> None:
     )
 
 
+def _status_over_socket(path: Path, url: str) -> int:
+    import http.client
+    import socket
+
+    class Connection(http.client.HTTPConnection):
+        def connect(self):
+            self.sock = socket.socket(socket.AF_UNIX)
+            self.sock.settimeout(5)
+            self.sock.connect(str(path))
+
+    connection = Connection("rcman")
+    try:
+        connection.request("GET", url)
+        return connection.getresponse().status
+    finally:
+        connection.close()
+
+
+def _status_over_tcp(url: str) -> int:
+    with urllib.request.urlopen(url, timeout=5) as response:
+        return response.status
+
+
 def health(settings: dict[str, str]) -> None:
     checks = {
-        "rcman": f"http://127.0.0.1:{settings['APP_PORT']}/api/health",
-        "oauth2-proxy": f"http://127.0.0.1:{settings['PROXY_PORT']}/ping",
+        "rcman": lambda: _status_over_socket(SOCKET, "/api/health"),
+        "oauth2-proxy": lambda: _status_over_tcp(f"http://127.0.0.1:{settings['PROXY_PORT']}/ping"),
     }
     deadline = time.monotonic() + HEALTH_TIMEOUT
     pending = dict(checks)
     while pending:
-        for name, url in list(pending.items()):
+        for name, check in list(pending.items()):
             try:
-                with urllib.request.urlopen(url, timeout=5) as response:
-                    if response.status == 200:
-                        del pending[name]
+                if check() == 200:
+                    del pending[name]
             except OSError:
                 pass
         if pending and time.monotonic() > deadline:
             raise InstallError("not healthy: " + ", ".join(pending))
         if pending:
             time.sleep(1)
+
+
+def caddy_admin_exposed(host: str = "127.0.0.1", port: int = CADDY_ADMIN_PORT) -> bool:
+    """Whether something accepts connections on Caddy's default admin API address."""
+    import socket
+
+    try:
+        socket.create_connection((host, port), timeout=2).close()
+        return True
+    except OSError:
+        return False
+
+
+def caddy_notices(changes: list[str], caddy_user: str) -> list[str]:
+    """What to tell the administrator to do to Caddy after this run."""
+    notices = []
+    if str(CADDY_SNIPPET) in changes:
+        notices.append(
+            f"The Caddy site block changed: replace yours with it ({CADDY_SNIPPET}) "
+            "and restart Caddy."
+        )
+    elif f"{caddy_user} in group {WEB_GROUP}" in changes:
+        notices.append(
+            f"{caddy_user} joined the group {WEB_GROUP}: restart Caddy so it can reach rcman."
+        )
+    return notices
 
 
 # --- command line -----------------------------------------------------------------------
@@ -587,7 +686,8 @@ def main(argv: list[str]) -> int:
         changes = []
         if save_settings(SETTINGS_FILE, settings):
             changes.append(str(SETTINGS_FILE))
-        changes += ensure_accounts()
+        changes += ensure_accounts(settings["CADDY_USER"])
+        changes += ensure_runtime_dir()
         changes += ensure_toolchain()
         release, built = build_release(REPO, owner)
         switched = switch(ROOT, release)
@@ -600,6 +700,10 @@ def main(argv: list[str]) -> int:
         print(json.dumps({"release": release, "changed": changes}))
         print(f"\nAdd this to your Caddyfile ({CADDY_SNIPPET}):\n")
         print(CADDY_SNIPPET.read_text(encoding="utf-8"))
+        for notice in caddy_notices(changes, settings["CADDY_USER"]):
+            print(notice)
+        if caddy_admin_exposed():
+            print(f"Warning: {CADDY_ADMIN_WARNING}", file=sys.stderr)
         return 0
     except InstallError as error:
         print(f"install.sh: {error}", file=sys.stderr)

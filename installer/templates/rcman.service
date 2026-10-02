@@ -10,7 +10,9 @@ Group=rcman
 WorkingDirectory=@CURRENT@
 EnvironmentFile=@ETC@/rcman.env
 # No NoNewPrivileges: rcman runs rc-helper and rc-admin through sudo.
-ExecStart=@CURRENT@/.venv/bin/uvicorn --factory rcman.main:create_app --host 127.0.0.1 --port @APP_PORT@
+# Its only listener is the unix socket @SOCKET@, in a directory only Caddy's group
+# may enter, made at boot by /etc/tmpfiles.d/rcman.conf.
+ExecStart=@CURRENT@/.venv/bin/uvicorn --factory rcman.main:create_app --uds @SOCKET@
 Restart=on-failure
 
 [Install]

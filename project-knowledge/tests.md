@@ -26,12 +26,14 @@ fresh container: user management; a real installation (see
 The **whole stack** is `tests/container/stack.py`: rcman installed from a
 clone, people added with `rcman-user` as real Linux accounts with the fake
 `claude`, real oauth2-proxy whose Google endpoints point at
-`tests/container/oidc_stub.py`, and real Caddy with its own certificate
-authority for `rcman.test` and `auth.test`. Playwright on the host drives it
+`tests/container/oidc_stub.py`, and real Caddy, running as its own account
+with its admin API off, with its own certificate authority for `rcman.test`
+and `auth.test`. Playwright on the host drives it
 through the container's published port with `frontend/playwright.stack.config.ts`
 and the specs in `frontend/e2e-stack/`: signing in through Caddy and
 oauth2-proxy, connecting Claude, a server's lifecycle, one person unable to
-reach another's servers through sudo, an address that is not on the list, the
+reach another's servers through sudo, an administrator seeing everyone's
+servers without being able to act on them, an address that is not on the list, the
 audit trail, and removing people with and without their home folder.
 
 What needs a real Claude account is checked by hand:

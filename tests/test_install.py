@@ -20,7 +20,7 @@ REPO = Path(__file__).resolve().parent.parent
 
 def test_flags_beat_environment_beat_saved_file(tmp_path):
     saved = tmp_path / "install.env"
-    saved.write_text("DOMAIN=saved.example.com\nADMIN_EMAIL=saved@example.com\nAPP_PORT=9000\n")
+    saved.write_text("DOMAIN=saved.example.com\nADMIN_EMAIL=saved@example.com\nPROXY_PORT=9000\n")
     settings = ins.gather(
         saved,
         environ={
@@ -35,7 +35,57 @@ def test_flags_beat_environment_beat_saved_file(tmp_path):
     )
     assert settings["DOMAIN"] == "flag.example.com"
     assert settings["ADMIN_EMAIL"] == "env@example.com"
-    assert settings["APP_PORT"] == "9000"
+    assert settings["PROXY_PORT"] == "9000"
+
+
+def test_saved_settings_outside_the_fields_are_dropped(tmp_path):
+    """A setting the installer no longer has, such as a saved APP_PORT, is not kept."""
+    saved = tmp_path / "install.env"
+    saved.write_text(
+        "DOMAIN=saved.example.com\nADMIN_EMAIL=saved@example.com\nGOOGLE_CLIENT_ID=id\n"
+        "GOOGLE_CLIENT_SECRET=secret\nCOOKIE_SECRET=" + "c" * 32 + "\nAPP_PORT=8001\n"
+    )
+    settings = ins.gather(
+        saved, environ={"RCMAN_INSTALL_APP_PORT": "9001"}, flags={}, ask=None, sudo_user="dev"
+    )
+    assert "APP_PORT" not in settings
+    assert settings["COOKIE_SECRET"] == "c" * 32  # kept: generated once, not a field
+    assert set(settings) == {*ins.FIELDS, "COOKIE_SECRET"}
+    ins.save_settings(saved, settings)
+    assert "APP_PORT" not in saved.read_text()
+
+
+def test_the_app_port_option_no_longer_exists(capsys):
+    with pytest.raises(SystemExit) as exited:
+        ins.main(["--app-port", "8001"])
+    assert exited.value.code == 2
+    assert "--app-port" in capsys.readouterr().err
+
+
+def test_caddy_runs_as_caddy_unless_told_otherwise(tmp_path):
+    env = {
+        "RCMAN_INSTALL_DOMAIN": "x.example.com",
+        "RCMAN_INSTALL_GOOGLE_CLIENT_ID": "id",
+        "RCMAN_INSTALL_GOOGLE_CLIENT_SECRET": "secret",
+        "RCMAN_INSTALL_ADMIN_EMAIL": "a@example.com",
+    }
+    saved = tmp_path / "install.env"
+    assert ins.gather(saved, environ=env, flags={}, ask=None, sudo_user="dev")["CADDY_USER"] == (
+        "caddy"
+    )
+    flags = {"caddy_user": "www-data"}
+    assert ins.gather(saved, environ=env, flags=flags, ask=None, sudo_user="dev")["CADDY_USER"] == (
+        "www-data"
+    )
+
+
+def test_caddys_account_must_exist():
+    import pwd
+
+    present = pwd.getpwuid(os.getuid()).pw_name
+    ins.check_caddy_user(present)  # positive control: an account that exists passes
+    with pytest.raises(ins.InstallError, match="no-such-caddy"):
+        ins.check_caddy_user("no-such-caddy")
 
 
 def test_missing_values_are_asked_for_when_there_is_a_terminal(tmp_path):
@@ -87,7 +137,8 @@ def test_saved_settings_are_private_and_round_trip(tmp_path):
         ("DOMAIN", "https://x.example.com"),
         ("DOMAIN", "x .com"),
         ("ADMIN_EMAIL", "nope"),
-        ("APP_PORT", "80a"),
+        ("PROXY_PORT", "80a"),
+        ("CADDY_USER", "Caddy!"),
         ("ADMIN_LINUX", "Root!"),
     ],
 )
@@ -112,8 +163,8 @@ SETTINGS = {
     "COOKIE_SECRET": "c" * 32,
     "ADMIN_EMAIL": "admin@example.com",
     "ADMIN_LINUX": "dev",
-    "APP_PORT": "8001",
     "PROXY_PORT": "4180",
+    "CADDY_USER": "caddy",
 }
 
 
@@ -146,11 +197,14 @@ def test_oauth2_proxy_config_allows_only_the_allowlist():
     assert "set_xauthrequest = true" in cfg
 
 
-def test_units_run_as_their_own_users_on_loopback():
+def test_units_run_as_their_own_users_and_the_app_on_its_socket():
     app = ins.render("rcman.service", SETTINGS)
     proxy = ins.render("rcman-oauth2-proxy.service", SETTINGS)
     assert "User=rcman\n" in app and "User=rcman-proxy\n" in proxy
-    assert "--host 127.0.0.1 --port 8001" in app
+    exec_start = next(line for line in app.splitlines() if line.startswith("ExecStart="))
+    assert exec_start.endswith(" --uds /run/rcman/rcman.sock")
+    assert str(ins.SOCKET) == "/run/rcman/rcman.sock"
+    assert "--port" not in app and "--host" not in app  # no TCP listener at all
     assert f"EnvironmentFile={ins.ETC}/rcman.env" in app
     assert not any(
         line.startswith("NoNewPrivileges=") for line in app.splitlines()
@@ -164,7 +218,39 @@ def test_caddy_snippet_strips_the_identity_header_before_authenticating():
     auth = snippet.index("forward_auth 127.0.0.1:4180")
     assert strip < auth and "route {" in snippet[:strip]
     assert "copy_headers X-Auth-Request-Email>X-Forwarded-Email" in snippet
-    assert "reverse_proxy 127.0.0.1:8001" in snippet
+    assert "reverse_proxy unix//run/rcman/rcman.sock\n" in snippet
+    assert snippet.count("reverse_proxy") == 2  # oauth2-proxy's pages, and rcman
+
+
+def test_the_socket_directory_is_made_at_boot_for_rcman_and_caddys_group():
+    assert ins.tmpfiles() == "d /run/rcman 0750 rcman rcman-web -\n"
+    assert ins.SOCKET.parent == ins.RUN == Path("/run/rcman")
+    assert ins.TMPFILES == Path("/etc/tmpfiles.d/rcman.conf")
+
+
+def test_the_site_block_notice_appears_exactly_when_the_snippet_changed():
+    changed = ins.caddy_notices([str(ins.CADDY_SNIPPET), "/etc/rcman/rcman.env"], "caddy")
+    assert any("The Caddy site block changed" in n and "restart Caddy" in n for n in changed)
+    assert ins.caddy_notices(["/etc/rcman/rcman.env"], "caddy") == []
+    assert ins.caddy_notices([], "caddy") == []
+
+
+def test_caddy_is_told_to_restart_when_it_joins_the_socket_group():
+    notices = ins.caddy_notices([f"caddy in group {ins.WEB_GROUP}"], "caddy")
+    assert len(notices) == 1 and "restart Caddy" in notices[0]
+    assert ins.WEB_GROUP == "rcman-web"
+
+
+def test_a_caddy_admin_api_on_loopback_is_noticed():
+    import socket
+
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen()
+        port = listener.getsockname()[1]
+        assert ins.caddy_admin_exposed(port=port) is True  # positive control
+    assert ins.caddy_admin_exposed(port=port) is False
+    assert "admin off" in ins.CADDY_ADMIN_WARNING
 
 
 def test_sudoers_render_and_validate(tmp_path):
@@ -267,9 +353,18 @@ def test_the_guide_documents_every_option_and_setting_and_nothing_else():
 
 def test_the_guide_names_the_paths_the_installer_uses():
     guide = (REPO / "docs" / "installation.md").read_text(encoding="utf-8")
-    for path in (ins.ROOT, ins.ETC / "install.env", ins.CADDY_SNIPPET, ins.STATE, ins.SUDOERS):
+    for path in (
+        ins.ROOT,
+        ins.ETC / "install.env",
+        ins.CADDY_SNIPPET,
+        ins.STATE,
+        ins.SUDOERS,
+        ins.SOCKET,
+        ins.TMPFILES,
+    ):
         assert str(path) in guide, path
     assert "/oauth2/callback" in guide
+    assert f"`{ins.WEB_GROUP}`" in guide and "admin off" in guide
 
 
 @pytest.mark.parametrize("name", ["rcman.example.com", "a-b.c-d.org", "x.io"])

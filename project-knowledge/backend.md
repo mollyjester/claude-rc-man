@@ -27,7 +27,9 @@ the OpenAPI description it serves at `/api/openapi`.
 
 - **Identity.** oauth2-proxy, behind Caddy's `forward_auth`, signs people in
   with Google and passes the address as `X-Forwarded-Email`. rcman trusts the
-  header because it listens only where Caddy can reach it. The address must be
+  header because, installed, it listens only on a unix socket in a directory
+  that only Caddy's group may enter — see
+  [the installer](installer.md#the-socket). The address must be
   in the users file, which is read on every request, so a removal takes effect
   at once. `/api/health` is the only route that needs no identity.
 - **Origin.** A `POST`, `PUT`, `PATCH` or `DELETE` must carry an `Origin`
