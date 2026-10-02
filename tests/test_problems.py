@@ -282,9 +282,9 @@ def test_half_a_character_in_a_ruled_field_is_refused_with_its_rule(client):
 
 
 def test_an_empty_value_where_one_is_needed_says_so(client):
-    r = client.post("/api/servers", json={"path": ""}, headers=changing(ALICE))
+    r = client.post("/api/claude/code", json={"code": ""}, headers=changing(ALICE))
     assert r.json()["errors"] == [
-        {"field": "path", "message": problems.FIELD_MESSAGES["string_empty"]}
+        {"field": "code", "message": problems.FIELD_MESSAGES["string_empty"]}
     ]
 
 

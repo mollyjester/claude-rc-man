@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Annotated
+
 from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel, Field
 
@@ -13,12 +15,13 @@ from rcman.problems import ruled
 
 router = APIRouter(prefix="/api/folders", tags=["folders"])
 FolderName = ruled(rc_helper.FOLDER_NAME, min_length=1, max_length=rc_helper.MAX_PATH_LENGTH)
+PathOrHome = ruled(rc_helper.PATH)  # empty for the home folder
+FolderPath = ruled(rc_helper.PATH, min_length=1)
 
 
 class NewFolder(BaseModel):
-    parent: str = Field(
+    parent: PathOrHome = Field(
         default="",
-        max_length=rc_helper.MAX_PATH_LENGTH,
         description="The folder to make it in, relative to the home folder; empty for the home.",
     )
     name: FolderName = Field(description="The new folder's name.")
@@ -27,9 +30,7 @@ class NewFolder(BaseModel):
 @router.get("")
 def folders(
     request: Request,
-    path: str = Query(
-        "", max_length=rc_helper.MAX_PATH_LENGTH, description="Relative to the home folder."
-    ),
+    path: Annotated[PathOrHome, Query(description="Relative to the home folder.")] = "",
     depth: int = Query(1, ge=1, le=rc_helper.MAX_TREE_DEPTH),
     all: bool = Query(False, description="Include dot-folders."),
     identity: Identity = Depends(current_user),
@@ -56,11 +57,7 @@ def create(
 @router.delete("")
 def delete(
     request: Request,
-    path: str = Query(
-        min_length=1,
-        max_length=rc_helper.MAX_PATH_LENGTH,
-        description="Relative to the home folder.",
-    ),
+    path: Annotated[FolderPath, Query(description="Relative to the home folder.")],
     record: Record = Depends(Recorder("folder.delete")),
 ) -> dict:
     """Stop and forget every server in the folder or below it, then delete it."""

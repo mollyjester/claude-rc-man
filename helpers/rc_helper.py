@@ -60,7 +60,6 @@ MESSAGES = {
     "usage": "The command line was not understood.",
     "internal_error": "rc-helper failed unexpectedly.",
     "refused_as_root": "rc-helper does not run as root.",
-    "path_invalid": "The folder must be a path relative to your home folder.",
     "path_is_home": "Choose a folder inside your home folder, not the home folder itself.",
     "path_outside_home": "The folder is outside your home folder.",
     "path_not_found": "The folder does not exist.",
@@ -114,6 +113,13 @@ WIDTH, HEIGHT = 200, 50
 MAX_TREE_DEPTH = 3
 MAX_PREFIX_LENGTH = 32
 MAX_PATH_LENGTH = 1024
+# A path as rc-helper takes one: relative, with no null character, which no
+# path can hold, and of a length a path can have; empty for the home folder.
+PATH = Rule(
+    re.compile(rf"(?:[^/\x00][^\x00]{{0,{MAX_PATH_LENGTH - 1}}})?"),
+    "The folder must be a path relative to your home folder, without a null character, "
+    f"and at most {MAX_PATH_LENGTH} characters long.",
+)
 PREFIX = Rule(
     re.compile(rf"[A-Za-z0-9][A-Za-z0-9-]{{0,{MAX_PREFIX_LENGTH - 1}}}"),
     "The session name prefix may use letters A to Z, digits and hyphens, start with a "
@@ -231,7 +237,12 @@ FOLDER_NAME = Rule(
 # The rules rc-helper refuses a value by, each with the code it refuses it with;
 # MESSAGES gives each code its rule's own sentence. AUTHOR_NAME is the
 # backend's to check: rc-helper takes no author until it commits.
-RULE_CODES = {"prefix_invalid": PREFIX, "name_invalid": FOLDER_NAME, "email_invalid": EMAIL}
+RULE_CODES = {
+    "path_invalid": PATH,
+    "prefix_invalid": PREFIX,
+    "name_invalid": FOLDER_NAME,
+    "email_invalid": EMAIL,
+}
 MESSAGES.update({code: rule.sentence for code, rule in RULE_CODES.items()})
 # The trust prompt refuses an answer that arrives too quickly after the question.
 ANSWER_PACE_SECONDS = 0.5
@@ -318,7 +329,7 @@ def server_command(cfg: Config, prefix: str) -> list[str]:
 
 def check_rel(rel: str) -> None:
     """A path as rc-helper takes one: relative, and of a length a path can have."""
-    if "\0" in rel or rel.startswith("/") or len(rel) > MAX_PATH_LENGTH:
+    if not PATH.fullmatch(rel):
         raise HelperError("path_invalid")
 
 

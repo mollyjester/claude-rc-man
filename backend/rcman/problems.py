@@ -31,6 +31,7 @@ MESSAGES = {
     "not_found": "There is nothing here.",
     "method_not_allowed": "That is not allowed here.",
     "validation_failed": "Some of what was sent is not valid.",
+    "body_unreadable": "What was sent could not be read as text.",
     "users_file_invalid": "The users file is invalid.",
     "helper_unavailable": "rcman could not reach its helper.",
     "helper_timeout": "rcman's helper took too long to answer.",
@@ -44,6 +45,7 @@ STATUS = {
     "not_found": 404,
     "method_not_allowed": 405,
     "validation_failed": 422,
+    "body_unreadable": 400,
     "users_file_invalid": 500,
     "helper_unavailable": 502,
     "helper_timeout": 504,
@@ -150,7 +152,8 @@ def _message(error) -> str:
         return FIELD_MESSAGES[FIELD_INVALID]
 
 
-HTTP_CODES = {404: "not_found", 405: "method_not_allowed"}
+# A body FastAPI cannot read as text is its 400; rcman sends no 400 of its own.
+HTTP_CODES = {400: "body_unreadable", 404: "not_found", 405: "method_not_allowed"}
 
 
 def code_of(exc: Exception) -> str:

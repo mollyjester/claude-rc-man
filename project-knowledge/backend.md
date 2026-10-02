@@ -55,7 +55,8 @@ the OpenAPI description it serves at `/api/openapi`.
   of `field` and `message`. A field's message is never the validation
   library's: it is `FIELD_MESSAGES` in `problems.py` for the error's type,
   with any number in it taken from the error's context, so it is the field's
-  own constraint. A body that is not JSON is about the field `request`. An
+  own constraint. A body that is not JSON is about the field `request`; one that is not
+  UTF-8 text at all is the problem `body_unreadable`. An
   error type with no message gets `field_invalid`'s, and a warning is logged
   on `rcman.problems`. `tests/test_problems.py` finds every field of every
   route in the route table, paired with the schema the API publishes, and

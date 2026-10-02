@@ -21,8 +21,9 @@ command-line reference is `rc-helper --help` and `rc-helper <verb> --help`.
   A test runs each code's refusal through the command line, and holds every
   rule the module has to a code, but `AUTHOR_NAME`, which only the backend
   checks.
-- Paths are relative to the user's home folder. Option values that may start
-  with a hyphen are passed as `--option=value`.
+- Paths are relative to the user's home folder, as `PATH` in
+  `helpers/rc_helper.py` says, which the backend's path fields check too.
+  Option values that may start with a hyphen are passed as `--option=value`.
 - Secrets — the one-time sign-in code — are read from stdin, never from the
   command line, and never printed.
 
