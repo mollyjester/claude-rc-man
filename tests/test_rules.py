@@ -77,7 +77,16 @@ def helpers_rules() -> dict[str, Rule]:
     for module in (users_file, rc_helper, rc_admin):
         found.update(held_rules(module))
     # Non-vacuity for every check that runs over them: the rules known to exist.
-    names = {"PREFIX", "EMAIL", "LINUX_NAME", "FOLDER_NAME", "AUTHOR_NAME", "VERSION", "PATH"}
+    names = {
+        "PREFIX",
+        "EMAIL",
+        "LINUX_NAME",
+        "FOLDER_NAME",
+        "AUTHOR_NAME",
+        "VERSION",
+        "PATH",
+        "COMMIT_MESSAGE",
+    }
     assert names <= set(found), names - set(found)
     return found
 

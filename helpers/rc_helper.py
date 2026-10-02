@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import dataclasses
 import datetime
 import errno
 import fcntl
@@ -29,6 +30,7 @@ import posixpath
 import pwd
 import re
 import shutil
+import signal
 import stat
 import subprocess
 import sys
@@ -37,6 +39,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
+from helpers import git_run
 from helpers.rules import Rule
 from helpers.users_file import EMAIL
 
@@ -54,6 +57,14 @@ VERBS = (
     "auth-code",
     "mkdir",
     "delete",
+    "git-status",
+    "git-branches",
+    "git-stage",
+    "git-unstage",
+    "git-commit",
+    "git-switch",
+    "git-branch-new",
+    "git-fetch",
 )
 
 MESSAGES = {
@@ -102,6 +113,21 @@ MESSAGES = {
     "delete_unsafe": (
         "Folders cannot be deleted safely on this system, so rcman does not delete them."
     ),
+    # git
+    "git_not_installed": "git is not installed on this machine.",
+    "git_failed": "git refused. What it said is below.",
+    "git_timeout": "git did not finish in time, so it was stopped.",
+    "git_unrecognised_output": "git answered with output rc-helper does not recognise.",
+    "not_a_repository": "This folder is not the top folder of a git repository.",
+    "repository_outside_home": (
+        "This repository keeps its git data outside your home folder, so rcman leaves it alone."
+    ),
+    "file_list_invalid": "The list of files was not understood.",
+    "file_invalid": "A file name is not one rcman can stage or unstage.",
+    "file_outside_repository": "A file is outside the repository.",
+    "nothing_staged": "Nothing is staged, so there is nothing to commit.",
+    "branch_invalid": "git does not take that as a branch name.",
+    "branch_not_found": "There is no such branch.",
 }
 
 TMUX_SOCKET_NAME = "rcman"
@@ -237,14 +263,25 @@ FOLDER_NAME = Rule(
     f"A folder's name may not be empty, begin with a dot, hold a slash, {_UNSEEN_WORDS}, "
     f"begin or end with {_NOT_AT_AN_END_WORDS}, or be longer than the file system allows.",
 )
+MAX_COMMIT_MESSAGE_LENGTH = 10_000
+# A commit message must hold something besides what git counts as white space,
+# which git would strip to nothing, and no NUL, at which git would cut it.
+_GIT_SPACE = _class(chars=" \t\n\v\f\r")
+_NUL = _class(chars="\0")
+COMMIT_MESSAGE = Rule(
+    re.compile(rf"[{_GIT_SPACE}]*[^{_GIT_SPACE}{_NUL}][^{_NUL}]*"),
+    "A commit message must hold something other than white space, no NUL character, "
+    f"and be at most {MAX_COMMIT_MESSAGE_LENGTH} characters long.",
+)
 # The rules rc-helper refuses a value by, each with the code it refuses it with;
-# MESSAGES gives each code its rule's own sentence. AUTHOR_NAME is the
-# backend's to check: rc-helper takes no author until it commits.
+# MESSAGES gives each code its rule's own sentence.
 RULE_CODES = {
     "path_invalid": PATH,
     "prefix_invalid": PREFIX,
     "name_invalid": FOLDER_NAME,
     "email_invalid": EMAIL,
+    "author_name_invalid": AUTHOR_NAME,
+    "message_invalid": COMMIT_MESSAGE,
 }
 MESSAGES.update({code: rule.sentence for code, rule in RULE_CODES.items()})
 # The trust prompt refuses an answer that arrives too quickly after the question.
@@ -267,8 +304,9 @@ MAX_LISTED_FILES = 500
 MAX_LISTED_BRANCHES = 200
 # How many files one stage or unstage takes: every file a list can show.
 MAX_FILES_PER_CALL = MAX_LISTED_FILES
-MAX_COMMIT_MESSAGE_LENGTH = 10_000
 MAX_BRANCH_NAME_LENGTH = 255
+# Every change a file is listed with; docs/git.md has a row for each.
+CHANGES = git_run.CHANGES
 
 # What Claude Code shows; held to the recorded fixtures by tests/test_rc_helper.py.
 TRUST_PROMPT = re.compile(r"^Trust .+\? \[y/N\]$")
@@ -319,6 +357,22 @@ def child_env(cfg: Config) -> dict[str, str]:
         "LANG": "C.UTF-8",
         "DISABLE_AUTOUPDATER": "1",
         "BROWSER": "/bin/false",
+    }
+
+
+def git_env(cfg: Config) -> dict[str, str]:
+    """The only environment git is started with: the server's, cut down, with git
+    unable to ask anything on a terminal and taking no lock it does not need.
+
+    Hooks run with it too, so they find the person's own programs on PATH;
+    git itself is looked for on the system path only (git_run).
+    """
+    server = child_env(cfg)
+    return {
+        **{key: server[key] for key in ("HOME", "USER", "LOGNAME", "PATH", "LANG")},
+        "LC_ALL": "C.UTF-8",
+        "GIT_TERMINAL_PROMPT": "0",
+        "GIT_OPTIONAL_LOCKS": "0",
     }
 
 
@@ -667,6 +721,179 @@ class Tmux:
         self.run("send-keys", "-t", f"={session}:", "C-c")
 
 
+# --- git: what it is given ------------------------------------------------------------
+
+STATUS_ARGS = [
+    "status",
+    "--porcelain=v2",
+    "-z",
+    "--branch",
+    "--untracked-files=normal",
+    "--ignored=no",
+]
+BRANCHES_ARGS = [
+    "for-each-ref",
+    f"--format={git_run.BRANCH_FORMAT}",
+    "refs/heads",
+    "refs/remotes",
+]
+# A file list as git reads one: NUL-separated on stdin, each name taken literally.
+PATHSPEC_FROM_STDIN = ["--pathspec-from-file=-", "--pathspec-file-nul"]
+# The most a list of files can take on stdin: each name at its longest in UTF-8, and
+# the JSON around it.
+MAX_FILE_LIST_BYTES = MAX_FILES_PER_CALL * (MAX_PATH_LENGTH * 6 + 4) + 2
+MAX_COMMIT_MESSAGE_BYTES = MAX_COMMIT_MESSAGE_LENGTH * 4
+
+
+def read_files(data: bytes) -> list[str]:
+    """The JSON list of file names a stage or unstage reads on stdin."""
+    try:
+        files = json.loads(data)
+    except ValueError:
+        raise HelperError("file_list_invalid") from None
+    if (
+        not isinstance(files, list)
+        or not files
+        or len(files) > MAX_FILES_PER_CALL
+        or not all(isinstance(f, str) for f in files)
+    ):
+        raise HelperError("file_list_invalid")
+    return files
+
+
+def check_file(repo: Path, name: str) -> bytes:
+    """A file name in a repository, as git gets it; refused when it could reach outside.
+
+    The name is read as written, then its folder resolved, so that a link
+    to elsewhere is refused while a link in the repository is the link. A
+    folder, which an untracked folder is listed as, may end in one slash.
+    """
+    if not name or "\0" in name or len(name) > MAX_PATH_LENGTH:
+        raise HelperError("file_invalid")
+    try:
+        encoded = name.encode("utf-8")
+    except UnicodeEncodeError:  # a name that is not UTF-8 is listed, but not selectable
+        raise HelperError("file_invalid") from None
+    if name.startswith("/"):
+        raise HelperError("file_outside_repository")
+    parts = name.removesuffix("/").split("/")
+    if any(part in ("", ".") for part in parts):
+        raise HelperError("file_invalid")
+    if any(part == ".." or part.casefold() == ".git" for part in parts):
+        raise HelperError("file_outside_repository")
+    folder = (repo / name.removesuffix("/")).parent.resolve()
+    if folder != repo and repo not in folder.parents:
+        raise HelperError("file_outside_repository")
+    if any(part.casefold() == ".git" for part in folder.relative_to(repo).parts):
+        raise HelperError("file_outside_repository")
+    return encoded
+
+
+def _name(raw: bytes) -> str:
+    return raw.decode("utf-8", "replace")
+
+
+def _is_utf8(raw: bytes) -> bool:
+    try:
+        raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return False
+    return True
+
+
+def _file(change: git_run.Change) -> dict:
+    """A changed file as rc-helper lists it."""
+    listed = {"path": _name(change.path), "change": change.change}
+    if change.origin is not None:
+        listed["from"] = _name(change.origin)
+    if change.submodule:
+        listed["submodule"] = True
+    if not _is_utf8(change.path):
+        listed["selectable"] = False
+    return listed
+
+
+def _short(ref: str | None) -> str | None:
+    """A branch's full name without refs/heads/ or refs/remotes/."""
+    if ref is None:
+        return None
+    for prefix in ("refs/heads/", "refs/remotes/"):
+        if ref.startswith(prefix):
+            return ref[len(prefix) :]
+    return ref
+
+
+class _Capped:
+    """A list holding at most ``limit`` items, counting those beyond."""
+
+    def __init__(self, limit: int, key: str):
+        self.limit, self.key = limit, key
+        self.items: list = []
+        self.more = 0
+
+    def add(self, item) -> None:
+        if len(self.items) < self.limit:
+            self.items.append(item)
+        else:
+            self.more += 1
+
+    def answer(self) -> dict:
+        return {self.key: self.items, "more": self.more}
+
+
+def git_verb(timeout: float = GIT_TIMEOUT):
+    """A git verb: it holds the folder lock shared, so git never runs in a folder being
+    deleted, has one deadline for all its git calls, and has git_run's exceptions
+    as rc-helper's codes."""
+
+    def wrap(method):
+        def verb(self, *args, **kwargs):
+            with self._lock(exclusive=False):
+                try:
+                    return method(self, time.monotonic() + timeout, *args, **kwargs)
+                except git_run.GitMissing:
+                    raise HelperError("git_not_installed") from None
+                except git_run.GitFailed as error:
+                    detail = {"git": error.lines, "git_more": error.more}
+                    raise HelperError("git_failed", detail) from None
+                except git_run.GitTimedOut:
+                    raise HelperError("git_timeout") from None
+                except git_run.GitUnrecognised as error:
+                    raise HelperError("git_unrecognised_output", {"git": error.lines}) from None
+
+        verb.__name__ = method.__name__
+        verb.__doc__ = method.__doc__
+        return verb
+
+    return wrap
+
+
+def check_branch_name(name: str) -> None:
+    """What any branch name must be before git is asked about it."""
+    if not name or name.startswith("-") or len(name) > MAX_BRANCH_NAME_LENGTH:
+        raise HelperError("branch_invalid")
+
+
+def check_author(name: str, email: str) -> None:
+    if not AUTHOR_NAME.fullmatch(name):
+        raise HelperError("author_name_invalid")
+    if not EMAIL.fullmatch(email):
+        raise HelperError("email_invalid")
+
+
+def read_message(data: bytes) -> bytes:
+    """A commit message as read on stdin: UTF-8, and one COMMIT_MESSAGE accepts."""
+    if len(data) > MAX_COMMIT_MESSAGE_BYTES:
+        raise HelperError("message_invalid")
+    try:
+        message = data.decode("utf-8")
+    except UnicodeDecodeError:
+        raise HelperError("message_invalid") from None
+    if len(message) > MAX_COMMIT_MESSAGE_LENGTH or not COMMIT_MESSAGE.fullmatch(message):
+        raise HelperError("message_invalid")
+    return data
+
+
 # --- verbs ----------------------------------------------------------------------------
 
 
@@ -742,7 +969,12 @@ class Helper:
             has_children = (
                 bool(sub) if sub is not None else bool(self._entries(target, 1, show_all))
             )
-            entry = {"name": child.name, "path": rel, "has_children": has_children}
+            entry = {
+                "name": child.name,
+                "path": rel,
+                "has_children": has_children,
+                "repository": (target / ".git").exists(),
+            }
             if sub is not None:
                 entry["children"] = sub
             entries.append(entry)
@@ -1088,6 +1320,173 @@ class Helper:
                 raise HelperError("delete_failed", detail)
             raise HelperError("delete_incomplete", detail)
 
+    # --- git ---------------------------------------------------------------------------
+
+    def _git(self, repo: Path, args: list[str], deadline: float, **kwargs) -> str:
+        return git_run.Git(git_env(self.cfg)).run(repo, args, deadline=deadline, **kwargs)
+
+    def _git_records(self, repo: Path, args: list[str], sep: bytes, deadline: float):
+        return git_run.Git(git_env(self.cfg)).stream(repo, args, sep=sep, deadline=deadline)
+
+    def _repository(self, rel: str, deadline: float) -> tuple[Path, str]:
+        """A repository's top folder, in the home folder, with its git data there too.
+
+        Without a .git of its own a folder is no repository, and git is not
+        asked: git would find one above it, the home folder's among them.
+        """
+        folder, rel = self._folder(rel)
+        if not (folder / ".git").exists():
+            raise HelperError("not_a_repository")
+        where = self._git(
+            folder,
+            [
+                "rev-parse",
+                "--path-format=absolute",
+                "--show-toplevel",
+                "--git-dir",
+                "--git-common-dir",
+            ],
+            deadline,
+        ).split("\n")
+        if len(where) < 3:
+            raise git_run.GitUnrecognised("\n".join(where))
+        top, git_dir, common_dir = where[:3]
+        if Path(top) != folder:
+            raise HelperError("not_a_repository")
+        root = self.cfg.home.resolve()
+        for data in (git_dir, common_dir):
+            if root not in Path(data).resolve().parents:
+                raise HelperError("repository_outside_home")
+        return folder, rel
+
+    def _changes(self, repo: Path, deadline: float, branch: git_run.Branch):
+        records = self._git_records(repo, STATUS_ARGS, b"\0", deadline)
+        return git_run.parse_status(records, branch)
+
+    def _branches(self, repo: Path, deadline: float):
+        return git_run.parse_branches(self._git_records(repo, BRANCHES_ARGS, b"\n", deadline))
+
+    def _current(self, repo: Path, deadline: float) -> str | None:
+        return self._git(repo, ["branch", "--show-current"], deadline).strip() or None
+
+    @git_verb()
+    def git_status(self, deadline: float, rel: str) -> dict:
+        repo, rel = self._repository(rel, deadline)
+        branch = git_run.Branch()
+        lists = {
+            True: _Capped(MAX_LISTED_FILES, "files"),
+            False: _Capped(MAX_LISTED_FILES, "files"),
+        }
+        for change in self._changes(repo, deadline, branch):
+            lists[change.staged].add(_file(change))
+        return {
+            "path": rel,
+            "branch": dataclasses.asdict(branch),
+            "staged": lists[True].answer(),
+            "not_staged": lists[False].answer(),
+        }
+
+    @git_verb()
+    def git_branches(self, deadline: float, rel: str) -> dict:
+        repo, rel = self._repository(rel, deadline)
+        local = _Capped(MAX_LISTED_BRANCHES, "branches")
+        remote = _Capped(MAX_LISTED_BRANCHES, "branches")
+        tracking: dict[str, str] = {}  # a remote branch's full name -> a local branch on it
+        remotes = []
+        for ref in self._branches(repo, deadline):
+            if ref.remote:
+                remotes.append(ref.name)
+                continue
+            local.add({"name": ref.name, "current": ref.current, "upstream": _short(ref.upstream)})
+            if ref.upstream and ref.upstream.startswith("refs/remotes/"):
+                tracking.setdefault(ref.upstream, ref.name)
+        for name in remotes:
+            remote.add({"name": name, "local": tracking.get(f"refs/remotes/{name}")})
+        return {"path": rel, "local": local.answer(), "remote": remote.answer()}
+
+    @git_verb()
+    def git_stage(self, deadline: float, rel: str, data: bytes) -> dict:
+        files = read_files(data)
+        repo, rel = self._repository(rel, deadline)
+        names = [check_file(repo, name) for name in files]
+        args = ["--literal-pathspecs", "add", *PATHSPEC_FROM_STDIN]
+        self._git(repo, args, deadline, input=b"".join(n + b"\0" for n in names))
+        return {"path": rel}
+
+    @git_verb()
+    def git_unstage(self, deadline: float, rel: str, data: bytes) -> dict:
+        """Unstage files; a staged rename's target takes its origin with it, which
+        would otherwise stay staged as deleted."""
+        files = read_files(data)
+        repo, rel = self._repository(rel, deadline)
+        names = [check_file(repo, name) for name in files]
+        renamed = {
+            change.path: change.origin
+            for change in self._changes(repo, deadline, git_run.Branch())
+            if change.staged and change.change == "renamed"
+        }
+        names += [renamed[n] for n in names if n in renamed]
+        args = ["--literal-pathspecs", "reset", "-q", *PATHSPEC_FROM_STDIN]
+        self._git(repo, args, deadline, input=b"".join(n + b"\0" for n in names))
+        return {"path": rel}
+
+    @git_verb()
+    def git_commit(self, deadline: float, rel: str, name: str, email: str, data: bytes) -> dict:
+        """Commit what is staged, with the message read on stdin, as the author given.
+
+        The message reaches git on stdin too, and is never part of any answer.
+        """
+        check_author(name, email)
+        message = read_message(data)
+        repo, rel = self._repository(rel, deadline)
+        if not any(c.staged for c in self._changes(repo, deadline, git_run.Branch())):
+            raise HelperError("nothing_staged")
+        author = {
+            "GIT_AUTHOR_NAME": name,
+            "GIT_AUTHOR_EMAIL": email,
+            "GIT_COMMITTER_NAME": name,
+            "GIT_COMMITTER_EMAIL": email,
+        }
+        self._git(repo, ["commit", "-q", "-F", "-"], deadline, input=message, extra_env=author)
+        commit = self._git(repo, ["rev-parse", "HEAD"], deadline).strip()
+        return {"path": rel, "commit": commit, "branch": self._current(repo, deadline)}
+
+    @git_verb()
+    def git_switch(self, deadline: float, rel: str, branch: str, remote: bool) -> dict:
+        """Switch to a local branch, or make a local branch tracking a remote one."""
+        check_branch_name(branch)
+        repo, rel = self._repository(rel, deadline)
+        if not any(r.remote is remote and r.name == branch for r in self._branches(repo, deadline)):
+            raise HelperError("branch_not_found")
+        args = ["switch", "--track", branch] if remote else ["switch", "--no-guess", branch]
+        self._git(repo, args, deadline)
+        return {"path": rel, "branch": self._current(repo, deadline)}
+
+    @git_verb()
+    def git_branch_new(self, deadline: float, rel: str, name: str) -> dict:
+        """Make a branch at the current commit and switch to it.
+
+        The name must be one git takes as it is: check-ref-format would expand
+        @{-1} and the like into another branch's name.
+        """
+        check_branch_name(name)
+        repo, rel = self._repository(rel, deadline)
+        try:
+            checked = self._git(repo, ["check-ref-format", "--branch", name], deadline)
+        except git_run.GitFailed:
+            raise HelperError("branch_invalid") from None
+        if checked.rstrip("\n") != name:
+            raise HelperError("branch_invalid")
+        self._git(repo, ["switch", "-c", name], deadline)
+        return {"path": rel, "branch": self._current(repo, deadline)}
+
+    @git_verb(timeout=GIT_NETWORK_TIMEOUT)
+    def git_fetch(self, deadline: float, rel: str) -> dict:
+        """git fetch --prune from the default remote: no files and no local branch change."""
+        repo, rel = self._repository(rel, deadline)
+        self._git(repo, ["fetch", "--prune"], deadline)
+        return {"path": rel}
+
     def _folder(self, rel: str) -> tuple[Path, str]:
         folder = resolve_folder(self.cfg.home, rel)
         return folder, relative(self.cfg.home, folder)
@@ -1156,6 +1555,30 @@ def _parser() -> argparse.ArgumentParser:
         "delete", help="stop and forget every server in a folder or below it, then delete it"
     )
     delete.add_argument("path")
+    for name, text in [
+        ("git-status", "a repository's branch, and its staged and not staged files"),
+        ("git-branches", "a repository's local and remote-tracking branches"),
+        ("git-fetch", "git fetch --prune"),
+    ]:
+        verbs.add_parser(name, help=text).add_argument("path")
+    for name, text in [
+        ("git-stage", "stage files; their names are read from stdin as a JSON list"),
+        ("git-unstage", "unstage files; their names are read from stdin as a JSON list"),
+    ]:
+        verbs.add_parser(name, help=text).add_argument("path")
+    commit = verbs.add_parser("git-commit", help="commit; the message is read from stdin")
+    commit.add_argument("path")
+    commit.add_argument("--author-name", required=True)
+    commit.add_argument("--author-email", required=True)
+    switch = verbs.add_parser("git-switch", help="switch to a branch")
+    switch.add_argument("path")
+    switch.add_argument("--branch", required=True)
+    switch.add_argument(
+        "--remote", action="store_true", help="a remote-tracking branch, tracked from a new one"
+    )
+    new = verbs.add_parser("git-branch-new", help="make a branch here and switch to it")
+    new.add_argument("path")
+    new.add_argument("--name", required=True)
     return parser
 
 
@@ -1179,10 +1602,35 @@ def _dispatch(helper: Helper, args: argparse.Namespace, stdin) -> dict:
         return helper.delete(args.path)
     if v == "auth-login":
         return helper.auth_login(args.email)
-    return helper.auth_code(stdin.readline())
+    if v == "auth-code":
+        return helper.auth_code(stdin.readline())
+    raw = getattr(stdin, "buffer", stdin)  # what git is given is passed on as bytes
+    if v in ("git-status", "git-branches", "git-fetch"):
+        return getattr(helper, v.replace("-", "_"))(args.path)
+    if v in ("git-stage", "git-unstage"):
+        return getattr(helper, v.replace("-", "_"))(args.path, raw.read(MAX_FILE_LIST_BYTES + 1))
+    if v == "git-commit":
+        data = raw.read(MAX_COMMIT_MESSAGE_BYTES + 1)
+        return helper.git_commit(args.path, args.author_name, args.author_email, data)
+    if v == "git-switch":
+        return helper.git_switch(args.path, args.branch, args.remote)
+    return helper.git_branch_new(args.path, args.name)
+
+
+def _terminate(signum, _frame):
+    """SIGTERM ends rc-helper as an exception would, so what it started is ended too."""
+    raise SystemExit(128 + signum)
 
 
 def main(argv: list[str], env: dict[str, str], stdin=sys.stdin) -> int:
+    previous = signal.signal(signal.SIGTERM, _terminate)
+    try:
+        return _main(argv, env, stdin)
+    finally:
+        signal.signal(signal.SIGTERM, previous)
+
+
+def _main(argv: list[str], env: dict[str, str], stdin) -> int:
     try:
         if os.getuid() == 0:
             raise HelperError("refused_as_root")
