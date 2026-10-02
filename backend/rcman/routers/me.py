@@ -23,9 +23,7 @@ router = APIRouter(prefix="/api/me", tags=["me"])
 
 
 def _published(schema: dict) -> None:
-    """Describe the body as it is validated: any setting may be left out, none may be null."""
-    for field in schema["properties"].values():
-        field.pop("default", None)
+    """Describe the body as it is validated: at least one setting is sent."""
     schema["minProperties"] = 1
 
 
