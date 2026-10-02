@@ -11,7 +11,12 @@ const SAME_IN_DARK: Record<string, string> = {
 
 const COLOUR = /#[0-9a-fA-F]{3,8}\b|\b(?:rgba?|hsla?)\(/;
 // Keywords a colour may be written as that name no colour of the stylesheet's own.
-const NOT_A_COLOUR = new Set(["transparent", "currentcolor", "inherit", "initial", "unset", "revert", "none"]);
+const NOT_A_COLOUR = new Set(["transparent", "currentcolor", "inherit", "initial", "unset", "revert", "revert-layer", "none"]);
+// The properties whose value can be a colour by name, and custom properties. The
+// engine reads words such as background and menu as system colours, so a word
+// counts only where a colour is meant.
+const TAKES_A_COLOUR =
+  /^(?:--[\w-]+|color|background(?:-[\w-]+)?|border(?:-[\w-]+)?|outline(?:-[\w-]+)?|box-shadow|text-shadow|fill|stroke|caret-color|accent-color|text-decoration(?:-color)?|column-rule(?:-color)?)$/;
 
 // Whether a word is a colour, as the browser's own colour parser reads it:
 // the named colours come from the engine, not from a list kept here.
@@ -24,6 +29,8 @@ function isColourName(word: string) {
 
 // The named colours a declaration's value uses, var() fallbacks included.
 function colourNames(declaration: string): string[] {
+  const property = declaration.slice(0, declaration.indexOf(":")).trim();
+  if (!TAKES_A_COLOUR.test(property)) return [];
   const value = declaration
     .slice(declaration.indexOf(":") + 1)
     .replace(/--[\w-]+/g, "")
@@ -118,4 +125,18 @@ test("named colours count as colours, wherever they are written", () => {
 
   const lightOnly = STYLES.replace(/(:root\s*\{)/, "$1\n  --planted: gray;");
   expect(violations(lightOnly)).toEqual(["no dark colour: --planted"]);
+});
+
+test("a colour's name in a property that takes no colour is not a colour", () => {
+  // positive control: the engine reads these words as colours where one is meant
+  for (const word of ["background", "menu", "highlight"]) expect(isColourName(word)).toBe(true);
+  expect(isColourName("revert-layer")).toBe(false);
+
+  for (const planted of [".planted { transition: background 0.2s; }", ".planted { grid-area: menu; }", ".planted { animation-name: highlight; }"]) {
+    expect(violations(`${STYLES}\n${planted}`)).toEqual([]);
+  }
+  expect(violations(`${STYLES}\n.planted { background: gray; }`)).toEqual(["colour outside a variable: background: gray"]);
+  expect(violations(`${STYLES}\n.planted { border-left: 1px solid gray; }`)).toEqual([
+    "colour outside a variable: border-left: 1px solid gray",
+  ]);
 });
