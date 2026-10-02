@@ -47,8 +47,8 @@ version is approved.
 
 ## Screens with no recording yet
 
-Some screens rcman has no recording of, and so shows as **Unrecognised
-screen**; the full list is under *Not recorded* in
+Some screens rcman has no recording of, and so does not recognise; the full
+list, and how rcman shows them, is under *Not recorded* in
 [fake-claude.md](fake-claude.md). Three of them need particular conditions.
 Whenever those conditions come up, record the screen: add a sequence for it to
 `SEQUENCES` in `devtools/record_claude.py`, record it with

@@ -63,7 +63,8 @@ A call that outlasts its timeout — `HELPER_TIMEOUT` and `ADMIN_TIMEOUT` in
 `run_bounded`, which ends a call that times out with SIGTERM, which sudo
 passes on to the helper, and SIGKILL only after `TERMINATE_GRACE_SECONDS`:
 sudo cannot pass SIGKILL on, so killing it outright would leave the helper
-running. The container suite shows both through real sudo.
+running. The container suite shows, through real sudo, that killing sudo
+leaves the helper running and that `run_bounded` ends it.
 
 `everyone.py` lists every person's servers for administrators
 (`GET /api/servers/everyone`). It runs `rc-helper list` as each person in the
@@ -95,8 +96,8 @@ and folder, from `everyone.everyone`; and, from the same report as
 `/api/claude/versions`, who differs from the approved version and whether it is
 untested. The two run side by side, and when the version report fails the
 unrecognised screens are still reported, with the failure as `versions_error`.
-It is built on every request and never stored, and it carries no screen text. The frontend asks for it when the app loads and on every change
-of page. A server action that ends on an unrecognised screen sets
+It is built on every request and never stored, and it carries no screen text.
+The frontend asks for it when the app loads and on every change of page. A server action that ends on an unrecognised screen sets
 `Record.result` to `unrecognised_screen`, which the audit row records in place
 of `ok`.
 
@@ -108,10 +109,12 @@ same event as a JSON line on the `rcman.audit` logger. uvicorn configures only
 its own loggers, so `create_app` calls `audit.install_logging()`, which gives
 that logger one handler writing the bare line to standard error; systemd sends
 it to the journal. `tests/test_audit.py` starts the app with the unit's own
-`ExecStart` and reads the line from its output. It also finds every changing route in the route table and fails on any that neither
-records nor is listed in `audit.EXEMPT` with a reason that also appears in
+`ExecStart` and reads the line from its output. It also finds every changing
+route in the route table and fails on any that neither records nor is listed
+in `audit.EXEMPT` with a reason that also appears in
 [the audit guide](../docs/audit.md); it then drives every audited route and
-checks its row. The table is append-only: a trigger in `db.py`'s migrations
+checks its row. The results a row can have besides an error code are
+`audit.RESULTS`, and a test holds the guide's results table to them. The table is append-only: a trigger in `db.py`'s migrations
 aborts any `UPDATE`, so rows are only added, and deleted by retention, which
 runs when the app starts and once a day.
 

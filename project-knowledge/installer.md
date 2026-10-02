@@ -33,17 +33,18 @@ runs uvicorn with `--uds` on `SOCKET` and no TCP listener; uvicorn makes the
 socket world-writable, so the protection is its directory, `RUN`: owner
 `rcman`, group `WEB_GROUP`, mode 0750, made at boot by the `tmpfiles()` line in
 `TMPFILES` and made or repaired by `ensure_runtime_dir` on every run. The
-group's only member is `CADDY_USER`; `ensure_accounts` takes anyone else out. `caddy_notices` says when Caddy needs its
-site block replaced or a restart to join the group, and the installer warns
+group's only member is `CADDY_USER`; `ensure_accounts` takes anyone else out.
+`caddy_notices` says when Caddy needs its site block replaced or a restart to
+join the group, and the installer warns
 when `caddy_admin_exposed` finds Caddy's admin API on loopback, since any
 local user could reconfigure Caddy through it. The health check reaches rcman
 through the socket.
 
 ## Tests
 
-- `tests/test_install.py`: settings precedence and validation, rendered files,
-  sudoers validated with `visudo`, release switching and rollback, and the
-  guide.
+- `tests/test_install.py`: settings precedence and validation, dropping saved
+  settings that are not fields, rendered files, sudoers validated with
+  `visudo`, release switching and rollback, the Caddy notices, and the guide.
 - `tests/container/test_install_in_container.py`: a real installation in a
   fresh container. The working tree becomes a git origin and a user `dev`
   clones it and runs `install.sh`. `tests/container/fake-systemctl` stands in
@@ -54,6 +55,9 @@ through the socket.
   sudo, a second run changing nothing, self-update and its restart, rollback,
   the refusals, and — with Caddy and stand-ins for oauth2-proxy and rcman —
   that a browser cannot set the identity header itself. It also checks that
-  only Caddy's account can reach rcman's socket, that no listener in the
-  container lets a local user be someone in rcman, and that a Caddy admin API
-  on loopback is warned about.
+  only Caddy's account can reach rcman's socket and that a run takes anyone
+  else out of its group, that no listener in the container lets a local user
+  be someone in rcman, that a Caddy admin API on loopback is warned about,
+  that a helper call that times out ends the helper behind sudo, and that
+  audit events reach the service's output, which systemd sends to the
+  journal.
