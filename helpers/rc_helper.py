@@ -310,11 +310,6 @@ def _joined(parent_rel: str, name: str) -> str:
     return f"{parent_rel}/{name}" if parent_rel else name
 
 
-def _rel_of(root: Path, folder: Path) -> str:
-    """A resolved folder's path relative to the resolved home; empty for the home itself."""
-    return "" if folder == root else folder.relative_to(root).as_posix()
-
-
 def open_dir(root: Path, folder: Path) -> int:
     """An fd on ``folder``, a resolved folder in ``root``, reached without following a link.
 
@@ -388,11 +383,13 @@ def resolve_entry(home: Path, rel: str) -> Entry:
     except BaseException:
         os.close(fd)
         raise
-    return Entry(parent, fd, name, _joined(_rel_of(root, parent), name), stat.S_ISLNK(mode))
+    return Entry(parent, fd, name, _joined(relative(home, parent), name), stat.S_ISLNK(mode))
 
 
-def relative(cfg: Config, folder: Path) -> str:
-    return folder.relative_to(cfg.home.resolve()).as_posix()
+def relative(home: Path, folder: Path) -> str:
+    """A resolved folder's path relative to the home folder; empty for the home itself."""
+    root = home.resolve()
+    return "" if folder == root else folder.relative_to(root).as_posix()
 
 
 def session_for(rel: str) -> str:
@@ -639,7 +636,7 @@ class Helper:
             raise HelperError("depth_invalid")
         folder = resolve_folder(self.cfg.home, rel, allow_home=True)
         return {
-            "path": relative(self.cfg, folder) if rel else "",
+            "path": relative(self.cfg.home, folder),
             "entries": self._entries(folder, depth, show_all),
         }
 
@@ -726,6 +723,10 @@ class Helper:
             return self._start(rel, prefix)
 
     def stop(self, rel: str) -> dict:
+        with self._lock(exclusive=False):
+            return self._stop(rel)
+
+    def _stop(self, rel: str) -> dict:
         rel = self._known(rel)
         session = self._existing(rel)
         if self.tmux.exit_status(session) is not None:
@@ -735,6 +736,10 @@ class Helper:
         return {"server": server}
 
     def forget(self, rel: str) -> dict:
+        with self._lock(exclusive=False):
+            return self._forget(rel)
+
+    def _forget(self, rel: str) -> dict:
         rel = self._known(rel)
         session = self._existing(rel)
         if self.tmux.exit_status(session) is None:
@@ -752,7 +757,7 @@ class Helper:
         }
 
     def confirm(self, rel: str, answer: str) -> dict:
-        _, rel = self._folder(rel)
+        rel = self._known(rel)
         session = self._existing(rel)
         if self._server(session, rel)["state"] != "trust_prompt":
             raise HelperError("nothing_to_confirm")
@@ -858,7 +863,7 @@ class Helper:
             folder = resolve_folder(self.cfg.home, rel, allow_home=True)
             fd = open_dir(root, folder)
             try:
-                created = check_folder_name(name, fd, _rel_of(root, folder))
+                created = check_folder_name(name, fd, relative(self.cfg.home, folder))
                 try:
                     os.mkdir(name, dir_fd=fd)
                 except FileExistsError:
@@ -963,7 +968,7 @@ class Helper:
 
     def _folder(self, rel: str) -> tuple[Path, str]:
         folder = resolve_folder(self.cfg.home, rel)
-        return folder, relative(self.cfg, folder)
+        return folder, relative(self.cfg.home, folder)
 
     def _known(self, rel: str) -> str:
         """The path a folder's server is known by, which is still there once the folder is gone."""
@@ -972,7 +977,7 @@ class Helper:
         except HelperError as error:
             if error.code != "path_not_found":
                 raise
-        return relative(self.cfg, confine(self.cfg.home, rel))
+        return relative(self.cfg.home, confine(self.cfg.home, rel))
 
     def _existing(self, rel: str) -> str:
         session = session_for(rel)

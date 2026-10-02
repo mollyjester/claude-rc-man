@@ -100,16 +100,18 @@ if Claude asks again.
 
 - The home folder comes from the password database, never from `$HOME`. A
   folder must resolve, after following symbolic links, inside the home folder
-  and must not be the home folder itself. `stop`, `forget` and `output` also
-  reach a server whose folder no longer exists: its path is then followed as
-  far as it exists and must still lead inside the home folder.
+  and must not be the home folder itself. `stop`, `forget`, `output` and
+  `confirm` also reach a server whose folder no longer exists: its path is
+  then followed as far as it exists and must still lead inside the home
+  folder.
 - `mkdir` opens the parent folder one part at a time from the home folder,
   refusing to follow a link (`open_dir`), and makes the new folder through
   that file descriptor, so a part replaced by a link after the path was
   resolved is refused rather than followed.
-- Starting and resuming a server and making a folder take a shared `flock` on
-  the home folder itself, and deleting takes it exclusively, so no server
-  starts in a folder while it is being deleted. A lock held the other way is
+- Starting, resuming, stopping and forgetting a server and making a folder
+  take a shared `flock` on the home folder itself, and deleting takes it
+  exclusively, so no server starts, stops or is forgotten in a folder while it
+  is being deleted. A lock held the other way is
   refused at once with `folder_busy`, never waited for. The lock is held by
   `rc-helper` only, never by the servers it starts.
 - Servers run in tmux on a dedicated socket (`TMUX_SOCKET_NAME`), configured by

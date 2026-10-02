@@ -223,6 +223,17 @@ def test_home_itself_is_allowed_only_for_listing(home):
     assert h.resolve_folder(home, "", allow_home=True) == home.resolve()
 
 
+def test_the_home_folder_relative_to_itself_is_the_empty_path(home):
+    assert h.relative(home, (home / "a" / "b").resolve()) == "a/b"  # positive control
+    assert h.relative(home, home.resolve()) == ""
+
+
+def test_the_home_folder_listed_as_dot_is_listed_as_the_home(env):
+    assert ok(env, "tree", "--", ".")["path"] == ""
+    assert ok(env, "tree", "--", "projects/..")["path"] == ""
+    assert ok(env, "tree", "--", "projects")["path"] == "projects"  # positive control
+
+
 def test_refusals_through_the_command_line(env):
     assert error_code(env, "start", "", "--prefix", "p") == "path_is_home"
     assert error_code(env, "start", "../x", "--prefix", "p") == "path_outside_home"
@@ -368,12 +379,22 @@ def test_a_server_whose_folder_is_gone_can_still_be_reached(env):
 def test_a_folder_that_is_gone_is_still_confined_to_the_home(env, tmp_path):
     (tmp_path / "elsewhere").mkdir()
     (Path(env["RC_HELPER_HOME"]) / "projects" / "out").symlink_to(tmp_path / "elsewhere")
-    for verb in ("stop", "forget", "output"):
-        assert error_code(env, verb, "projects/gone") == "unknown_server"  # positive control
-        assert error_code(env, verb, "../gone") == "path_outside_home"
-        assert error_code(env, verb, "projects/out/gone") == "path_outside_home"
-        assert error_code(env, verb, "projects/gone/../..") == "path_is_home"
-        assert error_code(env, verb, "/gone") == "path_invalid"
+    for verb in (["stop"], ["forget"], ["output"], ["confirm", "--answer=y"]):
+        assert error_code(env, *verb, "projects/gone") == "unknown_server"  # positive control
+        assert error_code(env, *verb, "../gone") == "path_outside_home"
+        assert error_code(env, *verb, "projects/out/gone") == "path_outside_home"
+        assert error_code(env, *verb, "projects/gone/../..") == "path_is_home"
+        assert error_code(env, *verb, "/gone") == "path_invalid"
+
+
+def test_the_trust_question_of_a_server_whose_folder_is_gone_can_still_be_answered(env):
+    import shutil
+
+    log_in(env)
+    ok(env, "start", "projects/beta/inner", "--prefix", "pfx")
+    shutil.rmtree(Path(env["RC_HELPER_HOME"]) / "projects" / "beta")
+    out = ok(env, "confirm", "projects/beta/inner", "--answer", "n")
+    assert out["server"]["state"] == "trust_declined"
 
 
 def test_forget_refuses_a_running_server(env):
@@ -1227,6 +1248,8 @@ def test_while_a_delete_runs_nothing_starts_and_no_folder_is_made(env):
         assert error_code(env, "start", "projects/alpha", "--prefix", "pfx") == "folder_busy"
         assert error_code(env, "resume", "projects/alpha", "--prefix", "pfx") == "folder_busy"
         assert error_code(env, "mkdir", "--name=new") == "folder_busy"
+        assert error_code(env, "stop", "projects/alpha") == "folder_busy"
+        assert error_code(env, "forget", "projects/alpha") == "folder_busy"
         assert error_code(env, "delete", "--", "projects/beta") == "folder_busy"
         assert time.monotonic() - began < 10  # refused at once, not after waiting
     finally:
