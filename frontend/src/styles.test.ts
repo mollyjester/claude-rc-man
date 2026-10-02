@@ -1,6 +1,8 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
+import { uncommented } from "./test/css";
+
 const STYLES = readFileSync(resolve(__dirname, "styles.css"), "utf-8");
 
 // Colours that stay the same in both schemes, and why.
@@ -40,8 +42,6 @@ function colourNames(declaration: string): string[] {
 }
 
 const hasColour = (declaration: string) => COLOUR.test(declaration) || colourNames(declaration).length > 0;
-
-const uncommented = (css: string) => css.replace(/\/\*[\s\S]*?\*\//g, "");
 
 // Every declaration in the stylesheet: what ends in ; or }.
 function declarations(css: string): string[] {

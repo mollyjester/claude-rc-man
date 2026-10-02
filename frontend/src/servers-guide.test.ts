@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 
 import { ACTIONS, KIND, KIND_ORDER, LABELS, LIVE, PRIMARY } from "./Servers";
 import { m } from "./messages";
+import { uncommented } from "./test/css";
 import { bold, guideTable } from "./test/guideTable";
 
 const GUIDE = resolve(__dirname, "../../docs/servers.md");
@@ -81,12 +82,10 @@ test("the check fails on a guide whose table has drifted", () => {
 const STYLES = resolve(__dirname, "styles.css");
 const SHAPE_HEADER = "| Dot | Shape |";
 
-// The shape the stylesheet gives a kind's dot, read from its .dot-<kind> rule.
 // The declarations of every rule whose selector names a class, in order.
 function rulesFor(css: string, className: string): string[] {
-  const text = css.replace(/\/\*[\s\S]*?\*\//g, "");
   const named = new RegExp(`\\.${className}(?![\\w-])`);
-  return [...text.matchAll(/([^{}]+)\{([^{}]*)\}/g)].filter((r) => named.test(r[1])).map((r) => r[2]);
+  return [...uncommented(css).matchAll(/([^{}]+)\{([^{}]*)\}/g)].filter((r) => named.test(r[1])).map((r) => r[2]);
 }
 
 // A declared value: the last declaration of a property in the rule, or undefined.

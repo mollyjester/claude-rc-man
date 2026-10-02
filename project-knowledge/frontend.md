@@ -81,7 +81,9 @@ version is `frontend/.nvmrc`.
   before each file's first test and sets how long a `findBy*` waits, both
   so that the suite passes on a loaded machine; its comments say why. The
   tests that hold a guide in `docs/` to the page read its tables with
-  `guideTable` in `src/test/guideTable.ts`.
+  `guideTable` in `src/test/guideTable.ts`, and the tests that read
+  `src/styles.css` take its comments out with `uncommented` in
+  `src/test/css.ts`.
 - **Browser tests** (Playwright): `e2e/*.spec.ts`, against the built frontend
   served by the real backend from `tests/e2e_server.py` — a real `rc-helper`
   per person with the fake `claude`, two people with their own homes, and
