@@ -1,52 +1,93 @@
+/* Every colour is a custom property here, light first and dark below;
+   src/styles.test.ts holds the stylesheet to that. */
 :root {
   font-family: system-ui, sans-serif;
   color-scheme: light dark;
-  --muted: #6b7280;
+  --bg: #ffffff;
+  --fg: #1f2937;
+  --surface: #f3f4f6;
+  --muted: #4b5563;
   --border: #d1d5db;
-  --warn: #b45309;
-  --bad: #b91c1c;
+  --accent: #1d4ed8;
+  --accent-fg: #ffffff;
+  --running: #15803d;
+  --waiting: #b45309;
+  --problem: #b91c1c;
+  --stopped: #4b5563;
+  --focus: #2563eb;
+  --screen-bg: #111827;
+  --screen-fg: #e5e7eb;
 }
-body { margin: 0; }
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #111827;
+    --fg: #e5e7eb;
+    --surface: #1f2937;
+    --muted: #9ca3af;
+    --border: #374151;
+    --accent: #93c5fd;
+    --accent-fg: #111827;
+    --running: #4ade80;
+    --waiting: #fbbf24;
+    --problem: #f87171;
+    --stopped: #9ca3af;
+    --focus: #93c5fd;
+  }
+}
+body { margin: 0; background: var(--bg); color: var(--fg); }
+a { color: var(--accent); }
+:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+
+button, a.button { display: inline-block; font: inherit; padding: 0.35rem 0.85rem; border-radius: 0.375rem; border: 1px solid var(--border); background: var(--surface); color: var(--fg); cursor: pointer; text-decoration: none; }
+button.primary, a.button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); font-weight: 600; }
+button.secondary { background: transparent; }
+button:disabled { opacity: 0.6; cursor: default; }
+
 header { display: flex; gap: 1.5rem; align-items: center; padding: 0.75rem 1.5rem; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
-header nav { display: flex; gap: 1rem; flex: 1; }
+header nav { display: flex; gap: 1rem; flex: 1; align-items: center; }
 header nav a.active, header nav button.active { font-weight: 600; }
 .menu { position: relative; }
-.menu > button { background: none; border: none; padding: 0; font: inherit; color: inherit; cursor: pointer; text-decoration: underline; }.menu ul { position: absolute; top: 100%; left: 0; z-index: 1; list-style: none; margin: 0.25rem 0 0; padding: 0.25rem 0; min-width: 12rem; background: Canvas; border: 1px solid var(--border); border-radius: 0.5rem; }
+.menu > button { background: none; border: none; padding: 0; color: var(--accent); text-decoration: underline; }
+.menu ul { position: absolute; top: 100%; left: 0; z-index: 1; list-style: none; margin: 0.25rem 0 0; padding: 0.25rem 0; min-width: 12rem; background: var(--bg); border: 1px solid var(--border); border-radius: 0.5rem; }
 .menu li a { display: block; padding: 0.35rem 0.75rem; }
 main { padding: 1rem 1.5rem; max-width: 72rem; }
+
 .workspace { display: grid; grid-template-columns: minmax(16rem, 1fr) 2fr; gap: 2rem; align-items: start; }
 @media (max-width: 48rem) { .workspace { grid-template-columns: 1fr; } }
 .tree, .tree ul, .summary { list-style: none; padding-left: 0; }
 .tree ul { padding-left: 1.5rem; }
 .tree li, .summary li { margin: 0.2rem 0; }
 .toggle { display: inline-block; width: 1.5rem; }
-button.name { background: none; border: none; padding: 0.1rem 0.35rem; border-radius: 0.25rem; font: inherit; color: inherit; cursor: pointer; text-align: left; }
-button.name[aria-current="true"] { font-weight: 600; outline: 2px solid var(--border); }
+button.toggle { background: none; border: none; padding: 0; color: var(--fg); }
+button.name { background: none; border: none; padding: 0.1rem 0.35rem; border-radius: 0.25rem; color: var(--fg); text-align: left; }
+button.name[aria-current="true"] { background: var(--accent); color: var(--accent-fg); font-weight: 600; }
 .dot { display: inline-block; width: 0.6rem; height: 0.6rem; border-radius: 50%; margin-left: 0.25rem; vertical-align: middle; }
-.dot-running { background: #15803d; }
-.dot-waiting { background: var(--warn); }
-.dot-problem { background: var(--bad); }
-.dot-stopped { background: var(--muted); }
+.dot-running { background: var(--running); }
+.dot-waiting { background: var(--waiting); }
+.dot-problem { background: var(--problem); }
+.dot-stopped { background: var(--stopped); }
 .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+
 .panel { border: 1px solid var(--border); border-radius: 0.5rem; padding: 0.75rem 1.25rem; }
 .panel h2 { margin: 0.25rem 0 0.75rem; }
 .panel-section h3 { font-size: 1rem; margin: 0.75rem 0 0.5rem; }
 .breadcrumb ol { list-style: none; display: flex; flex-wrap: wrap; gap: 0.25rem; padding: 0; margin: 0; }
 .breadcrumb li + li::before { content: "/"; margin-right: 0.25rem; color: var(--muted); }
-.server { border: 1px solid var(--border); border-radius: 0.5rem; padding: 0.75rem 1rem; margin-bottom: 0.75rem; }
+.server { border: 1px solid var(--border); border-radius: 0.5rem; padding: 0.75rem 1rem; background: var(--surface); }
 .badge { display: inline-block; font-weight: 600; font-size: 0.85rem; padding: 0.1rem 0.5rem; border-radius: 1rem; border: 1px solid currentColor; }
-.badge-problem { color: var(--bad); }
-.badge-waiting { color: var(--warn); }
-.badge-stopped { color: var(--muted); }
-button.primary, a.button.primary { font-weight: 600; }
+.badge-running { color: var(--running); }
+.badge-waiting { color: var(--waiting); }
+.badge-problem { color: var(--problem); }
+.badge-stopped { color: var(--stopped); }
 .actions { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-top: 0.5rem; }
-.screen { background: #111827; color: #e5e7eb; padding: 0.75rem; overflow-x: auto; font-size: 0.8rem; }
-.problem { border-left: 4px solid var(--bad); padding: 0.25rem 0.75rem; margin: 0.5rem 0; }
+.screen { background: var(--screen-bg); color: var(--screen-fg); padding: 0.75rem; overflow-x: auto; font-size: 0.8rem; }
+
+.problem { border-left: 4px solid var(--problem); padding: 0.25rem 0.75rem; margin: 0.5rem 0; }
 .claude { border: 1px solid var(--border); border-radius: 0.5rem; padding: 0.5rem 1rem; margin-bottom: 1rem; }
-.claude-expiring, .claude-expired, .claude-not_connected { border-color: var(--warn); }
+.claude-expiring, .claude-expired, .claude-not_connected { border-color: var(--waiting); }
 .muted { color: var(--muted); }
-.warning { color: var(--warn); }
-.attention { border-left: 4px solid var(--warn); padding: 0.25rem 0.75rem; margin: 0.5rem 0 1rem; }
+.warning { color: var(--waiting); }
+.attention { border-left: 4px solid var(--waiting); padding: 0.25rem 0.75rem; margin: 0.5rem 0 1rem; }
 .dialog { border: 1px solid var(--border); border-radius: 0.5rem; padding: 1rem; margin: 1rem 0; }
 form label { display: block; margin: 0.5rem 0; }
 form input[type="text"] { display: block; min-width: 20rem; max-width: 100%; }
