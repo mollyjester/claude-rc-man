@@ -201,16 +201,68 @@ def test_a_body_that_is_not_json_is_about_the_request(client):
 
 
 def test_a_value_too_long_says_how_long_it_may_be(client):
+    from rcman.routers.claude import MAX_CODE_LENGTH
+
+    code = "a" * (MAX_CODE_LENGTH + 1)
+    r = client.post("/api/claude/code", json={"code": code}, headers=changing(ALICE))
+    [error] = r.json()["errors"]
+    assert error["field"] == "code"
+    assert str(MAX_CODE_LENGTH) in error["message"]
+    assert error["message"] == problems.FIELD_MESSAGES["string_too_long"].format(
+        max_length=MAX_CODE_LENGTH
+    )
+
+
+def test_every_path_field_refuses_a_null_character_with_the_path_rule(app, client):
     from helpers import rc_helper
 
-    path = "a" * (rc_helper.MAX_PATH_LENGTH + 1)
-    r = client.post("/api/servers", json={"path": path}, headers=changing(ALICE))
-    [error] = r.json()["errors"]
-    assert error["field"] == "path"
-    assert str(rc_helper.MAX_PATH_LENGTH) in error["message"]
-    assert error["message"] == problems.FIELD_MESSAGES["string_too_long"].format(
-        max_length=rc_helper.MAX_PATH_LENGTH
-    )
+    rule = rc_helper.PATH
+    checked = [f for f in request_fields(app) if f.schema.get("pattern") == rule.anchored]
+    names = {(f.method, f.path, f.name) for f in checked}
+    known = {
+        ("POST", "/api/servers", "path"),
+        ("POST", "/api/folders", "parent"),
+        ("GET", "/api/folders", "path"),
+        ("DELETE", "/api/folders", "path"),
+        ("GET", "/api/servers/output", "path"),
+    }
+    assert known <= names, known - names  # non-vacuity
+    for f in checked:
+        r = send(client, f, "a\x00b", CALLS, changing(ALICE))
+        assert r.json().get("errors") == [{"field": f.name, "message": rule.sentence}], f
+
+
+def test_a_null_character_is_never_an_internal_error(app):
+    """Driven over every text field: refused in rcman's words, or taken, never a crash."""
+    from fastapi.testclient import TestClient
+
+    from tests.test_rules import helpers_rules
+
+    sentences = {rule.sentence for rule in helpers_rules().values()}
+    texts = [f for f in request_fields(app) if f.schema.get("type") == "string"]
+    assert len(texts) > 10  # non-vacuity
+    found = []
+    with TestClient(app, raise_server_exceptions=False) as client:
+        for f in texts:
+            r = send(client, f, "a\x00b", CALLS, changing(ALICE))
+            what = f"{f.method} {f.path} {f.where} {f.name}"
+            if r.status_code >= 500:
+                found.append(f"{what}: {r.status_code} {r.text[:120]}")
+            elif r.status_code == 422:
+                for e in r.json()["errors"]:
+                    if library_text(e["message"]) or not readable(e["message"], sentences):
+                        found.append(f"{what}: {e['message']!r}")
+    assert found == []
+
+
+def test_a_body_that_is_not_utf8_is_refused_in_plain_words(app, client):
+    found = bodies(app)
+    assert ("POST", "/api/servers") in {(m, p) for m, p, _ in found}  # non-vacuity
+    headers = {**changing(ALICE), "content-type": "application/json"}
+    for method, path, _ in found:
+        r = client.request(method, concrete(path), content=b'{"x": "\xff"}', headers=headers)
+        assert_problem(r, 400, "body_unreadable")
+        assert r.json()["title"] == problems.MESSAGES["body_unreadable"]
 
 
 def test_half_a_character_is_refused_in_plain_words(client):
@@ -509,7 +561,9 @@ LONE_SURROGATE = object()  # a violation only raw JSON can send: "\ud800", half 
 
 def refused_value(pattern: str) -> str:
     """A value the published pattern refuses, from a few that break most patterns."""
-    for value in ("\x01", " ", ""):
+    from tests.test_rc_helper import REFUSAL_CANDIDATES
+
+    for value in REFUSAL_CANDIDATES:
         if not re.search(pattern, value):
             return value
     raise AssertionError(f"no candidate value breaks {pattern!r}")

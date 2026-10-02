@@ -1527,6 +1527,7 @@ RULE_INVOCATIONS = {
     "prefix_invalid": ("start", "projects/alpha", "--prefix={}"),
     "name_invalid": ("mkdir", "--name={}", "--", "projects"),
     "email_invalid": ("auth-login", "--email={}"),
+    "path_invalid": ("output", "--", "{}"),
 }
 # Rules rc-helper holds without reporting them itself: subject -> why.
 RULES_NOT_REPORTED = {
@@ -1534,9 +1535,13 @@ RULES_NOT_REPORTED = {
 }
 
 
+# Values that break most rules, each one a command line can carry.
+REFUSAL_CANDIDATES = ("\x01", " ", "", "/")
+
+
 def refused_value(rule) -> str:
     """A value the rule refuses, from a few that break most rules."""
-    for value in ("\x01", " ", ""):
+    for value in REFUSAL_CANDIDATES:
         if not rule.fullmatch(value):
             return value
     raise AssertionError(f"no candidate value breaks {rule.pattern!r}")

@@ -77,7 +77,7 @@ def helpers_rules() -> dict[str, Rule]:
     for module in (users_file, rc_helper, rc_admin):
         found.update(held_rules(module))
     # Non-vacuity for every check that runs over them: the rules known to exist.
-    names = {"PREFIX", "EMAIL", "LINUX_NAME", "FOLDER_NAME", "AUTHOR_NAME", "VERSION"}
+    names = {"PREFIX", "EMAIL", "LINUX_NAME", "FOLDER_NAME", "AUTHOR_NAME", "VERSION", "PATH"}
     assert names <= set(found), names - set(found)
     return found
 
@@ -114,6 +114,7 @@ def _limits():
         (rc_helper.PREFIX, rc_helper.MAX_PREFIX_LENGTH),
         (users_file.LINUX_NAME, users_file.MAX_LINUX_NAME_LENGTH),
         (rc_helper.AUTHOR_NAME, rc_helper.MAX_AUTHOR_NAME_LENGTH),
+        (rc_helper.PATH, rc_helper.MAX_PATH_LENGTH),
     ]
 
 
