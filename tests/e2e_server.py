@@ -4,11 +4,15 @@
 ``RCMAN_E2E_DIR``: a users file with alice (administrator, Claude connected)
 and bob (Claude not connected; the code ``GOOD-CODE`` connects him), a home
 and a tmux socket for each, and the fake claude. alice also has a git
-repository, projects/alice-repo, whose origin is in the world's origins/: it
-holds main and feature, and later, which alice's repository has not fetched.
-rc-helper runs for real as the current user against those homes. rc-admin needs root, so a stand-in
-manages the users file itself and reports versions; the container suite
-tests the real one.
+repository, projects/alice-repo, whose origin is
+https://github.com/alice/alice-repo.git: it holds main and feature, and
+later, which alice's repository has not fetched. While the backend runs, the
+world's GitHub (tests/github_server.py) serves the world's origins/ and takes
+a push with the token in ``RCMAN_E2E_GITHUB_TOKEN``; rc-helper's
+``RC_HELPER_GITHUB`` points https://github.com/ at it. rc-helper runs for
+real as the current user against those homes. rc-admin needs root, so a
+stand-in manages the users file itself and reports versions; the container
+suite tests the real one.
 """
 
 from __future__ import annotations
@@ -28,6 +32,7 @@ from devtools import fake_claude as fake
 from devtools import record_claude as rec
 from helpers import users_file as uf
 from tests.git_fixtures import make_repo, push_branch_to_origin
+from tests.github_server import UNREACHABLE, GitHubServer
 
 REPO = Path(__file__).resolve().parent.parent
 PEOPLE = {"alice": ("alice@example.com", True), "bob": ("bob@example.com", False)}
@@ -37,6 +42,11 @@ GOOD_CODE = "GOOD-CODE"
 def sockets(root: Path) -> Path:
     """Each person's tmux socket is here; inside the world, so every run uses the same ones."""
     return root / "tmux"
+
+
+def origins(root: Path) -> Path:
+    """The bare repositories the world's GitHub serves, as <owner>/<name>.git."""
+    return root / "origins"
 
 
 def _stop_tmux(root: Path) -> None:
@@ -64,8 +74,8 @@ def _world(root: Path) -> dict[str, Path]:
             (home / "projects" / f"{linux}-{folder}").mkdir(parents=True)
         homes[linux] = home
     repo = homes["alice"] / "projects" / "alice-repo"
-    origin = root / "origins" / "alice-repo.git"
-    make_repo(repo, origin=origin)
+    origin = origins(root) / "alice" / "alice-repo.git"
+    make_repo(repo, origin=origin, url=GitHubServer.github_url("alice", "alice-repo"))
     push_branch_to_origin(repo, origin, "later")
     fake.write_state(homes["alice"] / ".claude-fake", logged_in=True)
     fake.write_state(homes["bob"] / ".claude-fake", logged_in=False, accept_codes=[GOOD_CODE])
@@ -83,6 +93,7 @@ def create_app():
     root = Path(os.environ["RCMAN_E2E_DIR"])
     homes = _world(root)
     sockets(root).mkdir()
+    github = GitHubServer()
 
     def helper(linux, args, stdin=None, timeout=60):
         env = {
@@ -90,6 +101,7 @@ def create_app():
             "RC_HELPER_HOME": str(homes[linux]),
             "RC_HELPER_CLAUDE": str(root / "claude"),
             "RC_HELPER_TMUX_SOCKET": str(sockets(root) / f"{linux}.sock"),
+            "RC_HELPER_GITHUB": github.url or UNREACHABLE,
         }
         proc = subprocess.run(
             [str(REPO / "helpers" / "rc-helper"), *args],
@@ -137,15 +149,20 @@ def create_app():
         frontend_dir=REPO / "frontend" / "dist",
     )
     app = rcman_app(settings, helper=helper, admin=admin)
+    app.state.github = github
     rcman_lifespan = app.router.lifespan_context
 
     @contextlib.asynccontextmanager
     async def lifespan(app):
-        async with rcman_lifespan(app) as state:
-            try:
-                yield state
-            finally:
-                _stop_tmux(root)
+        github.start(origins(root), os.environ["RCMAN_E2E_GITHUB_TOKEN"])
+        try:
+            async with rcman_lifespan(app) as state:
+                try:
+                    yield state
+                finally:
+                    _stop_tmux(root)
+        finally:
+            github.stop()
 
     app.router.lifespan_context = lifespan
     return app

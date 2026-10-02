@@ -27,7 +27,8 @@ username, as GitHub takes a personal access token. The `github` fixture in
 `tests/conftest.py` runs one for the session, with `GITHUB_TOKEN`; every
 rc-helper a test runs has `RC_HELPER_GITHUB` (see
 [rc-helper.md](rc-helper.md#test-hooks)) pointing at it or at `UNREACHABLE`,
-so that no test reaches the real GitHub. `tests/test_container_suite.py` runs the root-only
+so that no test reaches the real GitHub; the browser tests' world runs one
+of its own (see [frontend.md](frontend.md#tests)). `tests/test_container_suite.py` runs the root-only
 suite in `tests/container/` inside a throwaway Ubuntu container, through
 `docker` or `sudo -n docker`; it skips when neither works, unless
 `RCMAN_REQUIRE_CONTAINER=1`, which `make check` sets. It runs three, each in a

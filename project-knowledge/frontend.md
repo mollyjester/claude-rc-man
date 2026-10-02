@@ -114,10 +114,13 @@ version is `frontend/.nvmrc`.
 - **Browser tests** (Playwright): `e2e/*.spec.ts`, against the built frontend
   served by the real backend from `tests/e2e_server.py` — a real `rc-helper`
   per person with the fake `claude`, two people with their own homes, one of
-  them with a git repository whose origin is in the world, and oauth2-proxy's
-  identity header set per test. Where the world is, `WORLD` in
-  `e2e/people.ts`, is what `playwright.config.ts` gives the backend, so a
-  test can change a file there behind rcman's back. `rc-admin` there is a stand-in
+  them with a git repository whose origin is on GitHub, and oauth2-proxy's
+  identity header set per test. GitHub is the world's own
+  `tests/github_server.py`, serving the world's `origins/` while the backend
+  runs, and taking a push with `GITHUB_TOKEN` in `e2e/people.ts`. Where the
+  world is, `WORLD` there too, and the token are what `playwright.config.ts`
+  gives the backend, so a test can change a file there behind rcman's back,
+  and enter the token. `rc-admin` there is a stand-in
   that manages the users file; the container suite tests the real one.
   The tmux sockets are in the world's `tmux/` directory; the backend stops
   their tmux servers when it shuts down — Playwright stops it with SIGTERM
