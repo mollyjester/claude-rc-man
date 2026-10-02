@@ -102,6 +102,10 @@ def test_the_transaction_check_catches_a_script_that_commits():
     assert transaction_control("create table t1(x); commit;") == ["commit;"]
     assert transaction_control("begin;\ncreate table t1(x);") == ["begin;"]
     assert transaction_control("create table t1(x);\n-- note\nSAVEPOINT a;") != []
+    assert transaction_control("create table t(x); /* */ commit;") != []
+    assert transaction_control("/* c */\ncommit;") != []
+    assert transaction_control("commit/**/;") != []
+    assert transaction_control("insert into t values ('/* x */ commit');") == []
     assert transaction_control("create table t1(x);") == []
 
 
