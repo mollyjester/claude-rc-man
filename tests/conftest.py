@@ -111,6 +111,32 @@ def client(app):
         yield c
 
 
+# A valid request for each route that takes one: (method, path) -> keyword
+# arguments for the test client. Tests that drive every route of a kind, found
+# in the route table, take their requests from here.
+CALLS = {
+    ("POST", "/api/servers"): {"json": {"path": "projects/alice-project"}},
+    ("POST", "/api/servers/resume"): {"json": {"path": "projects/alice-project"}},
+    ("POST", "/api/servers/stop"): {"json": {"path": "projects/alice-project"}},
+    ("POST", "/api/servers/forget"): {"json": {"path": "projects/alice-project"}},
+    ("POST", "/api/servers/confirm"): {"json": {"path": "projects/alice-project", "answer": "y"}},
+    ("PUT", "/api/me/settings"): {"json": {"prefix": "alice"}},
+    ("POST", "/api/users"): {"json": {"linux": "dave", "email": "dave@example.com"}},
+    ("DELETE", "/api/users/{linux}"): {"params": {"home": "keep"}},
+    ("POST", "/api/claude/login"): {"json": {}},
+    ("POST", "/api/claude/code"): {"json": {"code": "x"}},
+    ("POST", "/api/claude/upgrade"): {"json": {"version": "2.2.0"}},
+    ("GET", "/api/audit"): {},
+    ("GET", "/api/users"): {},
+    ("GET", "/api/claude/versions"): {},
+}
+
+
+def concrete(path):
+    """A route's path with its parameters filled in."""
+    return path.replace("{linux}", "bob")
+
+
 def as_user(email):
     return {"X-Forwarded-Email": email}
 

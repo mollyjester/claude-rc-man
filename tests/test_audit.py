@@ -8,7 +8,7 @@ from pathlib import Path
 from fastapi.routing import APIRoute
 from rcman import audit, db, routes
 
-from tests.conftest import ALICE, BOB, changing
+from tests.conftest import ALICE, BOB, CALLS, changing, concrete
 
 REPO = Path(__file__).resolve().parent.parent
 CHANGING = {"POST", "PUT", "PATCH", "DELETE"}
@@ -73,21 +73,7 @@ def test_a_route_without_a_recorder_is_detected():
 
 
 def test_driving_every_audited_route_writes_its_row(app, client, settings, admin_runner):
-    calls = {
-        ("POST", "/api/servers"): {"json": {"path": "projects/alice-project"}},
-        ("POST", "/api/servers/resume"): {"json": {"path": "projects/alice-project"}},
-        ("POST", "/api/servers/stop"): {"json": {"path": "projects/alice-project"}},
-        ("POST", "/api/servers/forget"): {"json": {"path": "projects/alice-project"}},
-        ("POST", "/api/servers/confirm"): {
-            "json": {"path": "projects/alice-project", "answer": "y"}
-        },
-        ("PUT", "/api/me/settings"): {"json": {"prefix": "alice"}},
-        ("POST", "/api/users"): {"json": {"linux": "dave", "email": "dave@example.com"}},
-        ("DELETE", "/api/users/{linux}"): {"params": {"home": "keep"}},
-        ("POST", "/api/claude/login"): {"json": {}},
-        ("POST", "/api/claude/code"): {"json": {"code": "x"}},
-        ("POST", "/api/claude/upgrade"): {"json": {"version": "2.2.0"}},
-    }
+    calls = {k: v for k, v in CALLS.items() if k[0] in CHANGING}
     audited = {
         (sorted(r.methods)[0], r.path): audit.action_of(r.route)
         for r in changing_routes(app)
@@ -101,7 +87,7 @@ def test_driving_every_audited_route_writes_its_row(app, client, settings, admin
     ]
     for (method, path), kwargs in calls.items():
         before = len(rows(settings))
-        client.request(method, path.replace("{linux}", "bob"), headers=changing(ALICE), **kwargs)
+        client.request(method, concrete(path), headers=changing(ALICE), **kwargs)
         after = rows(settings)
         assert len(after) == before + 1, (method, path)
         assert after[-1]["action"] == audited[(method, path)]

@@ -19,7 +19,7 @@ the OpenAPI description it serves at `/api/openapi`.
 | `problems.py` | RFC 9457 problem details for every error |
 | `audit.py` | The audit trail: recording, coverage, retention |
 | `helpers_client.py` | Calling `rc-helper` and `rc-admin`, and mapping their errors to HTTP statuses |
-| `routes.py` | The app's routes as FastAPI resolves them after including routers |
+| `routes.py` | The app's routes as FastAPI resolves them after including routers, and which of them are for administrators |
 | `routers/` | One module per area: `me`, `folders`, `servers`, `claude`, `users`, `audit_log`, `docs` |
 
 ## Requests
@@ -31,7 +31,10 @@ the OpenAPI description it serves at `/api/openapi`.
   at once. `/api/health` is the only route that needs no identity.
 - **Origin.** A `POST`, `PUT`, `PATCH` or `DELETE` must carry an `Origin`
   header equal to `RCMAN_PUBLIC_ORIGIN`.
-- **Administrators.** Routers for administrators depend on `admin_user`.
+- **Administrators.** Routes for administrators depend on `admin_user`.
+  `routes.admin_only` finds them in the route table, and
+  `tests/test_identity.py` drives each one as someone who is not an
+  administrator, with a valid request from `CALLS` in `tests/conftest.py`.
 - **Validation** happens here, in Pydantic models and query parameters; the
   frontend shows what comes back. Rules shared with the helpers — the session
   name prefix, Linux user names, email addresses, path lengths, folder depth —
