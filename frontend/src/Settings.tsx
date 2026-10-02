@@ -71,6 +71,7 @@ function Part(props: { title: string; fields: Field[]; reply: Reply; onSaved: (r
               {FIELDS[field].label}
               <input
                 type="text"
+                name={field}
                 value={values[field]}
                 onChange={(e) => setValues({ ...values, [field]: e.target.value })}
               />

@@ -1,7 +1,7 @@
 // Validation belongs to the server: no input may carry a rule of its own.
 // Each form leads with what it does: its submit button is its one primary
 // button, or its one danger button where what it does cannot be undone.
-import { render, screen, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { vi } from "vitest";
 
@@ -252,10 +252,14 @@ function fieldInputs(form: HTMLFormElement): HTMLInputElement[] {
 // refused with an error for each of the form's fields.
 async function labelFaults(form: HTMLFormElement): Promise<string[]> {
   const faults: string[] = [];
-  const named = fieldInputs(form).filter((input) => {
-    if (!input.name) faults.push(`${input.labels?.[0]?.textContent?.trim()}: an input with no field name`);
-    return Boolean(input.name);
-  });
+  // Read before submitting: a refusal may take the form away.
+  const label = (input: HTMLInputElement) => input.labels?.[0]?.textContent?.trim() ?? "";
+  const named = fieldInputs(form)
+    .filter((input) => {
+      if (!input.name) faults.push(`${label(input)}: an input with no field name`);
+      return Boolean(input.name);
+    })
+    .map((input) => ({ name: input.name, label: label(input) }));
   const answer = globalThis.fetch;
   const refuse = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     if ((init?.method ?? "GET").toUpperCase() === "GET") return answer(input, init);
@@ -265,11 +269,13 @@ async function labelFaults(form: HTMLFormElement): Promise<string[]> {
   });
   vi.stubGlobal("fetch", refuse);
   try {
+    const before = screen.queryAllByText("Refused.").length;
     await userEvent.click(form.querySelector('button[type="submit"]')!);
-    await screen.findByText("Refused.");
+    await waitFor(() => expect(screen.queryAllByText("Refused.").length).toBeGreaterThan(before));
     for (const input of named) {
-      const label = input.labels?.[0]?.textContent?.trim();
-      if (!screen.queryByText(`${label}: planted reason for ${input.name}`)) faults.push(`${input.name}: not shown as ${label}`);
+      if (!screen.queryByText(`${input.label}: planted reason for ${input.name}`)) {
+        faults.push(`${input.name}: not shown as ${input.label}`);
+      }
     }
   } finally {
     vi.stubGlobal("fetch", answer);

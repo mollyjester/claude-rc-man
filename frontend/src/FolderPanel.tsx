@@ -114,7 +114,7 @@ function NewFolderForm({
     <form noValidate onSubmit={create}>
       <label>
         {m.newFolderName}
-        <input type="text" value={name} onChange={(e) => setName(e.target.value)} />
+        <input type="text" name="name" value={name} onChange={(e) => setName(e.target.value)} />
       </label>
       <div className="actions">
         <button type="submit" className="primary" disabled={busy}>

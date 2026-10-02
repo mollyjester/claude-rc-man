@@ -20,9 +20,11 @@ version is `frontend/.nvmrc`.
   problem details as sent, and `src/ProblemView.tsx` shows them — the title,
   each field error, and a raw screen, failed checks, the server a problem is
   about with its screen, or what a delete left, when the server passes one.
-  A form passes `ProblemView` its labels by field name, so a field error is
-  named as the form names the field, and by the server's name for it where
-  the form has no label.
+  Each input carries its field's name in its `name` attribute, and a form
+  passes `ProblemView` its labels by field name, so a field error is named as
+  the form names the field, and by the server's name for it where the form
+  has no label; `src/forms.test.tsx` refuses every field of every form and
+  checks each error is shown under its input's label.
   Forms are `noValidate` and no input carries a validation attribute;
   `src/forms.test.tsx` checks every form.
 - **Only what the server allows is offered.** `ACTIONS` in `src/Servers.tsx`
