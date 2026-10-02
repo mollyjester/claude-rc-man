@@ -55,7 +55,7 @@ def test_saved_settings_outside_the_fields_are_dropped(tmp_path):
     assert "APP_PORT" not in saved.read_text()
 
 
-def test_the_app_port_option_no_longer_exists(capsys):
+def test_there_is_no_app_port_option(capsys):
     with pytest.raises(SystemExit) as exited:
         ins.main(["--app-port", "8001"])
     assert exited.value.code == 2
@@ -256,6 +256,18 @@ def test_a_caddy_admin_api_on_loopback_is_noticed():
         assert ins.caddy_admin_exposed(port=port) is True  # positive control
     assert ins.caddy_admin_exposed(port=port) is False
     assert "admin off" in ins.CADDY_ADMIN_WARNING
+
+
+def test_a_caddy_admin_api_on_ipv6_loopback_is_noticed_too():
+    import socket
+
+    with socket.socket(socket.AF_INET6) as listener:
+        listener.bind(("::1", 0))
+        listener.listen()
+        port = listener.getsockname()[1]
+        assert ins.caddy_admin_exposed(port=port) is True
+    assert ins.caddy_admin_exposed(port=port) is False
+    assert "127.0.0.1" in ins.CADDY_ADMIN_WARNING and "[::1]" in ins.CADDY_ADMIN_WARNING
 
 
 def test_sudoers_render_and_validate(tmp_path):

@@ -144,7 +144,8 @@ restart Caddy:
 }
 ```
 
-The installer warns, on every run, while something answers on `127.0.0.1:2019`.
+The installer warns, on every run, while something answers on that address,
+at `127.0.0.1:2019` or `[::1]:2019`.
 
 ## Upgrading and rolling back
 
