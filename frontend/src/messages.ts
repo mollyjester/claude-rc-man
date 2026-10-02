@@ -3,8 +3,6 @@ export const m = {
   appName: "rcman",
   unexpectedResponse: "rcman answered in a way the page does not understand.",
   loading: "Loading…",
-  retry: "Try again",
-  close: "Close",
   cancel: "Cancel",
   save: "Save",
   saved: "Saved.",

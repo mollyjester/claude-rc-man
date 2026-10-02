@@ -1,6 +1,7 @@
 import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
+import { ADMIN_PAGES } from "./AdminPages";
 import { m } from "./messages";
 import { vi } from "vitest";
 
@@ -31,8 +32,26 @@ test("administrators are told who is on an unrecognised screen and whose version
   expect(within(banner).getByText(m.attentionUnrecognised(["bob: projects/beta"]))).toBeInTheDocument();
   expect(within(banner).getByText(m.attentionVersionsDiffer(["carol"]))).toBeInTheDocument();
   expect(within(banner).getByText(m.attentionUntested)).toBeInTheDocument();
-  expect(within(banner).getByRole("link", { name: m.navEveryone })).toHaveAttribute("href", "/admin/servers");
-  expect(within(banner).getAllByRole("link", { name: m.navVersions })[0]).toHaveAttribute("href", "/admin/claude");
+  expect(within(banner).getByRole("link", { name: m.navEveryone })).toBeInTheDocument();
+  expect(within(banner).getAllByRole("link", { name: m.navVersions }).length).toBeGreaterThan(0);
+});
+
+test("every link in the warning leads to an administrators' page", async () => {
+  api(ADMIN, {
+    unrecognised: [{ linux: "bob", path: "projects/beta" }],
+    versions_differ: ["carol"],
+    untested: true,
+    versions_error: { code: "helper_timeout", title: "rcman's helper took too long to answer." },
+  });
+  renderApp();
+  const banner = await screen.findByRole("region", { name: m.attentionTitle });
+  const links = within(banner).getAllByRole("link");
+  expect(links.length).toBeGreaterThan(0);
+  for (const link of links) {
+    const page = ADMIN_PAGES.find((p) => p.label === link.textContent);
+    expect(page).toBeDefined();
+    expect(link).toHaveAttribute("href", page!.path);
+  }
 });
 
 test("it is fetched again on every change of page", async () => {

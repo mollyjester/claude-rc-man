@@ -1,9 +1,12 @@
 import { useEffect, useState } from "react";
 import { Link, useLocation } from "react-router-dom";
 
+import { adminPath } from "./AdminPages";
 import { ApiError, api } from "./api";
 import { m } from "./messages";
 import { ProblemView, asApiError } from "./ProblemView";
+
+const PageLink = ({ label }: { label: string }) => <Link to={adminPath(label)}>{label}</Link>;
 
 type Report = {
   unrecognised: { linux: string; path: string }[];
@@ -49,23 +52,23 @@ export function Attention() {
       {unrecognised.length > 0 && (
         <p>
           {m.attentionUnrecognised(unrecognised.map((s) => `${s.linux}: ${s.path}`))}{" "}
-          <Link to="/admin/servers">{m.navEveryone}</Link>
+          <PageLink label={m.navEveryone} />
         </p>
       )}
       {differ.length > 0 && (
         <p>
-          {m.attentionVersionsDiffer(differ)} <Link to="/admin/claude">{m.navVersions}</Link>
+          {m.attentionVersionsDiffer(differ)} <PageLink label={m.navVersions} />
         </p>
       )}
       {untested && (
         <p>
-          {m.attentionUntested} <Link to="/admin/claude">{m.navVersions}</Link>
+          {m.attentionUntested} <PageLink label={m.navVersions} />
         </p>
       )}
       {failed && (
         <>
           <p>
-            {m.attentionVersionsFailed} <Link to="/admin/claude">{m.navVersions}</Link>
+            {m.attentionVersionsFailed} <PageLink label={m.navVersions} />
           </p>
           <ProblemView error={new ApiError(0, failed.code, failed.title)} />
         </>

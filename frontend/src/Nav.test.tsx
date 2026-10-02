@@ -1,7 +1,7 @@
 import { screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
-import { ADMIN_PAGES } from "./App";
+import { ADMIN_PAGES } from "./AdminPages";
 import { m } from "./messages";
 import { ADMIN, CONNECTED, ME, NOTHING_TO_ATTEND, type Reply, fakeApi } from "./test/fakeApi";
 import { renderApp } from "./test/render";

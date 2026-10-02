@@ -1,7 +1,6 @@
 import {
   type FocusEvent,
   type KeyboardEvent,
-  type ReactElement,
   createContext,
   useContext,
   useEffect,
@@ -11,17 +10,14 @@ import {
 } from "react";
 import { NavLink, Navigate, Route, Routes, matchPath, useLocation } from "react-router-dom";
 
+import { ADMIN_PAGES } from "./AdminPages";
 import { ApiError, api } from "./api";
 import { Attention } from "./Attention";
-import { Audit } from "./Audit";
 import { Dashboard } from "./Dashboard";
 import { Docs } from "./Docs";
-import { Everyone } from "./Everyone";
 import { m } from "./messages";
-import { People } from "./People";
 import { ProblemView, asApiError } from "./ProblemView";
 import { Settings } from "./Settings";
-import { Versions } from "./Versions";
 
 export type Me = { email: string; linux: string; admin: boolean; prefix: string };
 
@@ -29,14 +25,6 @@ const MeContext = createContext<Me | null>(null);
 export const useMe = () => useContext(MeContext);
 
 export const POLL_MS = 5000;
-
-// The pages only administrators are offered, in the order the navigation shows them.
-export const ADMIN_PAGES: { path: string; label: string; element: () => ReactElement }[] = [
-  { path: "/admin/people", label: m.navUsers, element: () => <People /> },
-  { path: "/admin/servers", label: m.navEveryone, element: () => <Everyone /> },
-  { path: "/admin/audit", label: m.navAudit, element: () => <Audit /> },
-  { path: "/admin/claude", label: m.navVersions, element: () => <Versions /> },
-];
 
 // The administrators' pages behind one button: a disclosure that closes when
 // a page is chosen, when the page changes, on Escape and when focus leaves it.
