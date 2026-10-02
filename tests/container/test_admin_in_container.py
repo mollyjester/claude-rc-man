@@ -358,8 +358,8 @@ def test_a_link_leading_out_of_the_home_is_deleted_as_the_link(env, two, sudoers
     home = Path(account("bob").pw_dir)
     link = home / "projects" / "out"
     assert as_user("bob", "ln", "-s", str(outside_but_bobs), str(link)).returncode == 0
-    # bob could delete what it leads to: only rc-helper keeps it
-    assert as_user("bob", "test", "-w", str(outside_but_bobs / "kept")).returncode == 0
+    # bob could delete what it leads to — its folder is his to write — so only rc-helper keeps it
+    assert as_user("bob", "test", "-w", str(outside_but_bobs)).returncode == 0
     code, out = helper_as_bob("delete", "--", "projects/out")
     assert (code, out["link"]) == (0, True), out
     assert not link.is_symlink()
