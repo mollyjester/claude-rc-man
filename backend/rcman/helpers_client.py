@@ -20,6 +20,10 @@ ADMIN_TIMEOUT = 600
 # Deleting a folder: the helper waits up to its STOP_TIMEOUT for the servers in
 # it to stop, then removes a whole tree, however large.
 FOLDER_DELETE_TIMEOUT_SECONDS = 300
+# A git call: how much longer than the helper's own deadline for git
+# (rc_helper.GIT_TIMEOUT, or GIT_NETWORK_TIMEOUT for a fetch) rcman waits, for
+# sudo and the helper to start and to answer.
+GIT_ANSWER_MARGIN_SECONDS = 15
 # After a timeout: how long sudo has to pass SIGTERM on and its child to end.
 TERMINATE_GRACE_SECONDS = 5.0
 
@@ -60,6 +64,20 @@ HELPER_STATUS = {
     "path_name_differs": 400,
     "delete_mount_inside": 409,
     "delete_unsafe": 500,
+    "git_not_installed": 500,
+    "git_failed": 409,
+    "git_timeout": 504,
+    "git_unrecognised_output": 502,
+    "not_a_repository": 409,
+    "repository_outside_home": 400,
+    "file_list_invalid": 400,
+    "file_invalid": 400,
+    "file_outside_repository": 400,
+    "nothing_staged": 409,
+    "message_invalid": 400,
+    "author_name_invalid": 400,
+    "branch_invalid": 400,
+    "branch_not_found": 404,
 }
 ADMIN_STATUS = {
     "usage": 500,

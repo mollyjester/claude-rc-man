@@ -21,7 +21,8 @@ the OpenAPI description it serves at `/api/openapi`.
 | `helpers_client.py` | Calling `rc-helper` and `rc-admin`, and mapping their errors to HTTP statuses |
 | `everyone.py` | Everyone's servers, for administrators: one `rc-helper list` per person, side by side |
 | `routes.py` | The app's routes as FastAPI resolves them after including routers, and which of them are for administrators |
-| `routers/` | One module per area: `me`, `folders`, `servers`, `claude`, `users`, `audit_log`, `attention`, `docs` |
+| `routers/` | One module per area: `me`, `folders`, `git`, `servers`, `claude`, `users`, `audit_log`, `attention`, `docs` |
+| `routers/git.py` | The git repositories in the person's home, under `/api/git`: status, branches, stage, unstage, commit, switch, a new branch and fetch, each one rc-helper git verb (see [Git](#git)) |
 | `routers/me.py` | Each person's own settings, changed with `PATCH /api/me/settings`, which changes only the settings sent; `prefix_of` and `author_of` are how the rest of the backend reads them |
 
 ## Requests
@@ -96,6 +97,11 @@ ignores SIGTERM is not waited for: once sudo is killed, `run_bounded` closes
 the pipes without reading them and raises the timeout. That helper is left
 behind as an orphan until it ends or `rcman.service` stops.
 
+A git call's timeout is the helper's own deadline for it —
+`rc_helper.GIT_TIMEOUT`, or `rc_helper.GIT_NETWORK_TIMEOUT` for a fetch — and
+`GIT_ANSWER_MARGIN_SECONDS` in `helpers_client.py` besides, so the helper's
+`git_timeout` reaches the person before rcman stops waiting.
+
 `everyone.py` lists every person's servers for administrators
 (`GET /api/servers/everyone`). It runs `rc-helper list` as each person in the
 users file in a thread pool of at most `EVERYONE_WORKERS`, and waits
@@ -117,6 +123,21 @@ neither audited nor logged. For administrators it reports versions through
 rc-admin's `claude-status`, flagging who differs from the approved version and
 whether that version is the tested one, and rolls one out with
 `claude-upgrade`.
+
+## Git
+
+`routers/git.py` runs one rc-helper git verb per request, as the signed-in
+person, on a folder in their own home. The files to stage or unstage go to
+the helper on stdin as a JSON list, and a commit's message on stdin as it
+is; neither is ever in an argument. The commit message is validated by
+`rc_helper.COMMIT_MESSAGE` and `MAX_COMMIT_MESSAGE_LENGTH`, and is never
+recorded or logged: the audit target of every git action is the folder.
+`GET /api/git/status` adds `author`, from `author_of`: who commits are
+recorded as, or `null` while no name is set; `POST /api/git/commit` is
+then refused with `author_not_set`, without asking the helper, and
+otherwise passes the name and address as `--author-name` and
+`--author-email`. git's refusals, a network failure among them, come back
+as `git_failed` with git's own words as `git`.
 
 ## Attention
 

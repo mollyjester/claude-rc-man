@@ -19,6 +19,12 @@ can be read with `journalctl` on the server.
 | `server.confirm` | answers a server's folder-trust question | the folder |
 | `folder.create` | creates a folder | the new folder, as asked |
 | `folder.delete` | deletes a folder, stopping and forgetting every server in it or below it | the folder |
+| `git.stage` | stages files in a repository (see [Git](git.md)) | the repository's folder |
+| `git.unstage` | unstages files | the repository's folder |
+| `git.commit` | commits what is staged | the repository's folder — the message is never recorded |
+| `git.switch` | switches to a branch | the repository's folder |
+| `git.branch` | makes a branch and switches to it | the repository's folder |
+| `git.fetch` | refreshes the remote branches with **Refresh branches** | the repository's folder |
 | `settings.update` | changes their settings (see [Settings](settings.md)) | the settings they sent, as JSON; none when they were refused |
 | `claude.login` | starts connecting their Claude account | the Claude account's email address |
 | `claude.connect` | finishes connecting with Claude's code | none — the code is never recorded |
