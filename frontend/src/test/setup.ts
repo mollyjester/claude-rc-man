@@ -1,6 +1,14 @@
 import "@testing-library/jest-dom/vitest";
-import { cleanup, screen } from "@testing-library/react";
+import { cleanup, configure, screen } from "@testing-library/react";
 import { afterEach, beforeAll } from "vitest";
+
+// How long a findBy* or waitFor waits. It waits for the page's own fetches and
+// renders and for each query over the page to run. On a machine running six
+// busy processes per CPU, the People page was ready 0.43s after render and
+// each role query over it after a change took 0.25-0.29s, so the default
+// 1000ms ran out; this leaves room for that. A test that fails waits this long
+// before saying so; one that passes is not slowed.
+configure({ asyncUtilTimeout: 3000 });
 
 // Each test file evaluates the testing tools afresh, so the first role query in
 // a file runs code nothing has run yet: computing what is hidden and what each
