@@ -18,6 +18,9 @@ from rcman.problems import MESSAGES, Problem
 
 EVERYONE_WORKERS = 8
 EVERYONE_TIMEOUT_SECONDS = 15.0
+# What is passed on about each server: never its screen, which may show anything
+# the person's Claude showed, nor its claude.ai address, which is theirs alone.
+SERVER_FIELDS = ("path", "state", "session_name", "exit_code")
 
 
 def _error(code: str, title: str) -> dict:
@@ -52,13 +55,16 @@ def everyone(request: Request) -> list[dict]:
     people = []
     for future, user in futures.items():
         entry = {"linux": user.linux, "email": user.email}
-        if not future.done():
+        if not future.done() or future.cancelled():  # still running, or still queued
             entry["error"] = _error("helper_timeout", MESSAGES["helper_timeout"])
         elif isinstance(future.exception(), Problem):
             entry["error"] = _error(future.exception().code, future.exception().title)
         elif future.exception() is not None:
             entry["error"] = _error("internal_error", MESSAGES["internal_error"])
         else:
-            entry["servers"] = future.result()["servers"]
+            entry["servers"] = [
+                {key: server.get(key) for key in SERVER_FIELDS}
+                for server in future.result()["servers"]
+            ]
         people.append(entry)
     return people

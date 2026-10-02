@@ -101,3 +101,40 @@ def test_the_pool_is_no_larger_than_needed(people, settings, admin_runner, monke
         request_for(make_app(settings, lambda *a, **k: (0, {"servers": []}), admin_runner))
     )
     assert seen["workers"] == min(people, everyone.EVERYONE_WORKERS)
+
+
+def test_more_people_than_workers_all_get_an_answer(settings, admin_runner, monkeypatch):
+    """Calls still queued when the wait ends are cancelled; they too are helper_timeout."""
+    monkeypatch.setattr(everyone, "EVERYONE_WORKERS", 1)
+    monkeypatch.setattr(everyone, "EVERYONE_TIMEOUT_SECONDS", 0.5)
+    release = threading.Event()
+
+    def runner(linux, args, stdin=None, timeout=None):
+        release.wait(3)
+        return 0, {"servers": []}
+
+    try:
+        found = by_linux(everyone.everyone(request_for(make_app(settings, runner, admin_runner))))
+    finally:
+        release.set()
+    assert set(found) == {"alice", "bob", "carol"}  # more people than the one worker
+    assert {e["error"]["code"] for e in found.values()} == {"helper_timeout"}
+
+
+def test_only_what_the_page_shows_is_listed(app, client, helper_homes):
+    """No screen text and no claude.ai address of anyone's server leaves rcman."""
+    from devtools import fake_claude as fake
+    from tests.test_servers import unrecognised_claude
+
+    unrecognised_claude(helper_homes)
+    r = client.post(
+        "/api/servers", json={"path": "projects/alice-project"}, headers=changing(ALICE)
+    )
+    assert fake.UNRECOGNISED_SCREEN in r.text  # positive control: the server has a screen
+    server = by_linux(everyone.everyone(request_for(app)))["alice"]["servers"][0]
+    assert set(server) == set(everyone.SERVER_FIELDS)
+    assert server["state"] == "unrecognised"
+    listed = client.get("/api/servers/everyone", headers=changing(ALICE))
+    assert listed.status_code == 200
+    assert fake.UNRECOGNISED_SCREEN not in listed.text
+    assert "screen" not in listed.text and "environment_url" not in listed.text

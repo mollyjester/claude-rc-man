@@ -67,8 +67,10 @@ users file in a thread pool of at most `EVERYONE_WORKERS`, and waits
 `EVERYONE_TIMEOUT_SECONDS`, which is also each call's own timeout. A person
 whose call fails is listed with the error's code and title instead of their
 servers, and one still running when the wait ends with `helper_timeout`, so
-one person never hides or stalls the others. The listing is read-only: no
-route lets one person act on another's servers.
+one person never hides or stalls the others; a call still queued when the
+wait ends is cancelled and is `helper_timeout` too. Each server is passed on
+with only `SERVER_FIELDS` — never its screen or its claude.ai address. The
+listing is read-only: no route lets one person act on another's servers.
 
 ## Claude account and versions
 
