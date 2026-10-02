@@ -135,6 +135,31 @@ def test_a_refused_settings_change_is_recorded_as_validation_failed(client, sett
     assert last["target"] is None  # what was refused is not recorded
 
 
+def test_the_refused_target_check_fails_on_a_route_that_records_too_early(app, settings):
+    """Planted twin: a route that sets its target before the body is validated is caught."""
+    from fastapi import Depends
+    from fastapi.testclient import TestClient
+    from pydantic import BaseModel
+
+    class Body(BaseModel):
+        n: int
+
+    def early(record=Depends(audit.Recorder("planted.early"))):
+        record.target = "recorded before validation"
+        return record
+
+    @app.post("/api/planted-early")
+    def planted(body: Body, record=Depends(early)):
+        return {}
+
+    with TestClient(app) as client:
+        r = client.post("/api/planted-early", json={"n": "not a number"}, headers=changing(BOB))
+    assert r.status_code == 422
+    last = rows(settings)[-1]
+    assert (last["action"], last["result"]) == ("planted.early", "validation_failed")
+    assert last["target"] is not None  # the check above would fail here
+
+
 def test_every_failure_is_recorded_with_the_code_it_is_answered_with(app, settings):
     """Whatever ends an audited request, its row carries the code of the problem sent back."""
     from fastapi import Depends, HTTPException
