@@ -69,7 +69,9 @@ version is `frontend/.nvmrc`.
   answers from a table of routes in the backend's problem-details shape and
   records every call. `renderApp` in `src/test/render.tsx` also returns the
   router's current location and a `navigate`, whose `navigate(-1)` is the
-  browser's back button.
+  browser's back button. `src/test/setup.ts` runs the role queries once
+  before each file's first test and sets how long a `findBy*` waits, both
+  so that the suite passes on a loaded machine; its comments say why.
 - **Browser tests** (Playwright): `e2e/*.spec.ts`, against the built frontend
   served by the real backend from `tests/e2e_server.py` — a real `rc-helper`
   per person with the fake `claude`, two people with their own homes, and
