@@ -52,8 +52,9 @@ header nav a.active, header nav button.active { font-weight: 600; }
 .menu li a { display: block; padding: 0.35rem 0.75rem; }
 main { padding: 1rem 1.5rem; max-width: 72rem; }
 
-.workspace { display: grid; grid-template-columns: minmax(16rem, 1fr) 2fr; gap: 2rem; align-items: start; }
-@media (max-width: 48rem) { .workspace { grid-template-columns: 1fr; } }
+/* minmax(0, …): a wide screen scrolls inside its card rather than widening the column. */
+.workspace { display: grid; grid-template-columns: minmax(16rem, 1fr) minmax(0, 2fr); gap: 2rem; align-items: start; }
+@media (max-width: 48rem) { .workspace { grid-template-columns: minmax(0, 1fr); } }
 .tree, .tree ul, .summary { list-style: none; padding-left: 0; }
 .tree ul { padding-left: 1.5rem; }
 .tree li, .summary li { margin: 0.2rem 0; }
