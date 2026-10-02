@@ -861,3 +861,23 @@ test("Delete folder is not offered until the servers are listed", async () => {
   expect(await within(opened).findByRole("button", { name: m.newFolder })).toBeInTheDocument(); // the header is there
   expect(within(opened).queryByRole("button", { name: m.deleteFolder })).not.toBeInTheDocument();
 });
+
+test("a repository carries a marker its name is described by, and another folder none", async () => {
+  const marked = (path: string) => ({ ...entry(path), repository: path !== "projects/beta" });
+  dashboard([server("projects/alpha", "ready")], {
+    "GET /api/folders": (c) =>
+      c.query.get("path") === "projects"
+        ? { path: "projects", entries: [marked("projects/alpha"), marked("projects/beta"), marked("projects/gamma")] }
+        : FOLDERS[c.query.get("path") ?? ""],
+  });
+  renderApp();
+  await expand("projects");
+  const alpha = await folder("alpha");
+  expect(alpha).toHaveAccessibleDescription(`${m.kinds.running} ${m.repository}`);
+  expect(alpha.closest("li")!.querySelector(":scope > .repository-marker")).toHaveTextContent(m.repositoryMark);
+  const gamma = await folder("gamma");
+  expect(gamma).toHaveAccessibleDescription(m.repository); // no dot, but the marker
+  const beta = await folder("beta");
+  expect(beta.closest("li")!.querySelector(":scope > .repository-marker")).toBeNull();
+  expectNoDot(beta);
+});

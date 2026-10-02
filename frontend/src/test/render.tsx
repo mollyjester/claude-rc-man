@@ -14,11 +14,11 @@ function RouterProbe({ router }: { router: Router }) {
 
 // The whole app at a path; location() is where it is now, and navigate()
 // moves as the browser would — navigate(-1) is its back button.
-export function renderApp(path = "/") {
+export function renderApp(path = "/", { pollMs = 0 }: { pollMs?: number } = {}) {
   const router: Router = {};
   const result = render(
     <MemoryRouter initialEntries={[path]}>
-      <App pollMs={0} />
+      <App pollMs={pollMs} />
       <RouterProbe router={router} />
     </MemoryRouter>,
   );
