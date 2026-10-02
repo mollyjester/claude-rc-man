@@ -37,7 +37,7 @@ VERBS = ("add", "del", "list", "claude-status", "claude-upgrade")
 MIN_UID = 1000
 CLAUDE_INSTALLER_URL = "https://claude.ai/install.sh"
 VERSION_FILE = Path(__file__).resolve().parent / "claude-version"
-VERSION = Rule(re.compile(r"\d+\.\d+\.\d+"), "A Claude Code version looks like 1.2.3.")
+VERSION = Rule(re.compile(r"[0-9]+\.[0-9]+\.[0-9]+"), "A Claude Code version looks like 1.2.3.")
 PROCESS_EXIT_TIMEOUT = 10.0
 
 # The rules rc-admin refuses a value by, each with the code it refuses it with;
