@@ -45,7 +45,7 @@ test("the folder tree loads lazily and offers start on folders without a server"
   expect(fake.made("POST", "/api/servers")[0].body).toEqual({ path: "projects/alpha" });
 });
 
-test("a ready server shows its session and a link to it", async () => {
+test("a server with a session attached is in use, and shows the session and a link to it", async () => {
   dashboard([
     server("projects/alpha", "ready", {
       session_name: "alice-quiet-otter",
@@ -54,12 +54,35 @@ test("a ready server shows its session and a link to it", async () => {
   ]);
   renderApp();
   const card = await screen.findByRole("article", { name: "projects/alpha" });
-  expect(within(card).getByText(m.states.ready)).toBeInTheDocument();
+  expect(within(card).getByText("In use")).toBeInTheDocument();
   expect(within(card).getByText("alice-quiet-otter")).toBeInTheDocument();
   expect(within(card).getByRole("link", { name: m.openSession })).toHaveAttribute(
     "href",
     "https://claude.ai/code?environment=env_1",
   );
+});
+
+test("a connected server with no session yet is ready to accept sessions and links to them", async () => {
+  dashboard([
+    server("projects/alpha", "connected", { environment_url: "https://claude.ai/code?environment=env_1" }),
+  ]);
+  renderApp();
+  const card = await screen.findByRole("article", { name: "projects/alpha" });
+  expect(within(card).getByText("Ready to accept sessions")).toBeInTheDocument();
+  expect(within(card).getByRole("link", { name: m.openSession })).toHaveAttribute(
+    "href",
+    "https://claude.ai/code?environment=env_1",
+  );
+});
+
+test("a stopped server keeps its environment but offers no link to it", async () => {
+  dashboard([
+    server("projects/alpha", "stopped", { environment_url: "https://claude.ai/code?environment=env_1" }),
+  ]);
+  renderApp();
+  const card = await screen.findByRole("article", { name: "projects/alpha" });
+  expect(within(card).getByText(m.states.stopped)).toBeInTheDocument();
+  expect(within(card).queryByRole("link", { name: m.openSession })).not.toBeInTheDocument();
 });
 
 const LABELS: Record<string, string> = {

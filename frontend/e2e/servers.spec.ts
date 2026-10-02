@@ -43,5 +43,9 @@ test("people never see each other's folders or servers", async ({ page, browser 
   await expect(bob.getByText("alice-beta")).toHaveCount(0);
   await expect(bob.getByText(m.serversEmpty)).toBeVisible();
 
+  // Wait for the stop to finish: the run ends when the test does, and a stop
+  // still in flight would be cut off.
+  const stopped = page.waitForResponse((r) => r.url().endsWith("/api/servers/stop"));
   await page.getByRole("article", { name: "projects/alice-beta" }).getByRole("button", { name: m.stop }).click();
+  expect((await stopped).ok()).toBe(true);
 });

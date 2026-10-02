@@ -9,11 +9,12 @@ under each colleague's own Claude account.
 
 ## Status
 
-Built so far: `rc-helper`, which controls one person's servers and connects
-their Claude account; `rc-admin` and `rcman-user`, which add and remove people
-and roll out Claude Code versions; the backend API; the web interface; and the
-installer. How to install it: [docs/installation.md](docs/installation.md).
-The design and the ordered implementation steps are tracked as
+Built: `rc-helper`, which controls one person's servers and connects their
+Claude account; `rc-admin` and `rcman-user`, which add and remove people and
+roll out Claude Code versions; the backend API; the web interface; the
+installer; and the end-to-end and real-Claude checks. How to install it:
+[docs/installation.md](docs/installation.md). The design, including the parts
+not built yet, and the implementation steps are tracked as
 [GitHub issues](https://github.com/mollyjester/claude-rc-man/issues).
 
 ## Contributing
