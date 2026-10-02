@@ -78,7 +78,9 @@ test("what the server refuses is shown as it said it, in the part that sent it",
   const prefix = await part(m.settingsPrefixTitle);
   await userEvent.type(within(author).getByLabelText(FIELDS.author_name.label), "<b>");
   await userEvent.click(within(author).getByRole("button", { name: m.save }));
-  expect(await within(author).findByText("author_name: planted reason, as the server sent it")).toBeInTheDocument();
+  expect(
+    await within(author).findByText(`${FIELDS.author_name.label}: planted reason, as the server sent it`),
+  ).toBeInTheDocument();
   expect(within(prefix).queryByRole("alert")).toBeNull();
 });
 

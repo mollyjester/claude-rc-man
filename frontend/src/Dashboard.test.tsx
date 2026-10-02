@@ -704,7 +704,7 @@ test("a refused name shows the server's reason in the form and keeps it", async 
   await userEvent.click(within(opened).getByRole("button", { name: m.newFolder }));
   await userEvent.type(within(opened).getByLabelText(m.newFolderName), ".hidden");
   await userEvent.click(within(opened).getByRole("button", { name: m.create }));
-  expect(await within(opened).findByRole("alert")).toHaveTextContent(`${sent.field}: ${sent.message}`);
+  expect(await within(opened).findByRole("alert")).toHaveTextContent(`${m.newFolderName}: ${sent.message}`);
   expect(within(opened).getByLabelText(m.newFolderName)).toHaveValue(".hidden");
   expect(within(opened).getByRole("button", { name: m.create })).toBeEnabled();
   expect(fake.made("POST", "/api/folders")).toHaveLength(1);

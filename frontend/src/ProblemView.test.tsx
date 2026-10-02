@@ -17,6 +17,17 @@ test("shows the server's title and every field error exactly as sent", () => {
   ).toBeInTheDocument();
 });
 
+test("names a field by the form's label when given one, and by its name otherwise", () => {
+  const error = new ApiError(422, "validation_failed", "Some of what was sent is not valid.", [
+    { field: "prefix", message: "planted reason" },
+    { field: "request", message: "planted reason about the whole request" },
+  ]);
+  render(<ProblemView error={error} labels={{ prefix: "Planted label" }} />);
+  expect(screen.getByText("Planted label: planted reason")).toBeInTheDocument();
+  expect(screen.queryByText("prefix: planted reason")).not.toBeInTheDocument();
+  expect(screen.getByText("request: planted reason about the whole request")).toBeInTheDocument();
+});
+
 test("shows a raw screen the server passed on", () => {
   const error = new ApiError(502, "claude_unrecognised_output", "Unrecognised.", [], { screen: ["line one", "line two"] });
   render(<ProblemView error={error} />);
