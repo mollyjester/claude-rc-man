@@ -30,7 +30,7 @@ a refused request is recorded too:
 | Result | Meaning |
 |---|---|
 | `ok` | It worked |
-| `unrecognised_screen` | It worked, but the server ended on a screen rcman does not recognise |
+| `unrecognised_screen` | It worked, but left the server on a screen rcman does not recognise |
 
 Administrators are warned about servers on an unrecognised screen, as described
 in [Servers](servers.md#for-administrators).

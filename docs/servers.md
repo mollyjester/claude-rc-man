@@ -64,7 +64,7 @@ A server can also stop by itself — for example when the machine loses its
 network connection for a long time, or when its process is ended outside
 rcman. It is then shown as **Stopped by itself**, with its exit status, and
 **Show screen** displays what Claude showed last. **Resume** starts it again
-in the same way as a server you stopped.
+in the same folder.
 
 A server that has stopped can be **forgotten**, which removes it from
 your list. Archiving or deleting individual sessions is done in claude.ai/code.
@@ -83,8 +83,8 @@ When it happens:
    [Connecting your Claude account](claude-account.md)).
 2. Choose **Stop**, then **Forget**.
 3. Tell an administrator, with what the screen said. Administrators are warned
-   about the server with your name and the folder, but not what the screen
-   says.
+   about the server with your Linux user and the folder, but not what the
+   screen says.
 
 A server cannot be used in that folder while Claude keeps showing that screen;
 rcman handles it once it has been taught to recognise it.
@@ -99,8 +99,8 @@ listed — rcman's helper failed or took too long for them — is shown with the
 reason, and everyone else is listed as usual.
 
 While anyone's server is on a screen rcman does not recognise, administrators
-are warned at the top of every page, with the person and the folder and a link
-to **Everyone's servers**. The warning never includes the screen itself; the
+are warned at the top of every page, with the person's Linux user and the
+folder and a link to **Everyone's servers**. The warning never includes the screen itself; the
 person whose server it is sees it with **Show screen**. Each action that ends
 on such a screen is also recorded in the [audit trail](audit.md) with the
 result `unrecognised_screen`. The warning is worked out afresh each time a page

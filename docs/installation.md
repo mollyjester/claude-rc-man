@@ -114,21 +114,29 @@ passing one.
 
 The installer prints the site block for your Caddyfile and keeps it in
 `/etc/rcman/Caddyfile.snippet`. Either `import` that file in your Caddyfile, so
-it is always the current one, or copy the block in. It sends oauth2-proxy's own pages to
-oauth2-proxy, asks oauth2-proxy whether each other request is signed in, sends
-people who are not to the Google sign-in, and passes the signed-in address to
-rcman through the socket. It also removes any address a browser sends itself,
-so only oauth2-proxy can tell rcman who someone is.
+it is always the current one, or copy the block in. It sends oauth2-proxy's
+own pages to oauth2-proxy, asks oauth2-proxy whether each other request is
+signed in, sends people who are not to the Google sign-in, and passes the
+signed-in address to rcman through the socket. It also removes any address a
+browser sends itself, so only oauth2-proxy can tell rcman who someone is.
 
-When the site block changes — on the first installation, too — the installer
-says so. If your Caddyfile imports it there is nothing to change; if it holds
-a copy, copy it again. Either way, **restart** Caddy. A reload is not enough the first time, because Caddy has to start again
-to belong to `rcman-web`.
+The installer says when Caddy needs something from you, at the end of its
+output:
+
+- **The site block changed** — on the first installation, and whenever an
+  upgrade changes it. If your Caddyfile imports the snippet there is nothing
+  to change in it; if it holds a copy, copy the block again. Then **restart**
+  Caddy: it keeps the site block it started with until then.
+- **Caddy's account joined `rcman-web`** — on the first installation, or when
+  `--caddy-user` names another account. **Restart** Caddy. A reload is not
+  enough, because only a Caddy that starts again belongs to the group, and
+  until then it cannot reach rcman's socket.
 
 Caddy's admin API must not be reachable by other local users. By default it
 listens on `localhost:2019`, where any local user can rewrite Caddy's
 configuration — and so send rcman any address they like. Turn it off, or move
-it to a unix socket, in the global options at the top of your Caddyfile:
+it to a unix socket, in the global options at the top of your Caddyfile, then
+restart Caddy:
 
 ```
 {
@@ -136,11 +144,20 @@ it to a unix socket, in the global options at the top of your Caddyfile:
 }
 ```
 
-The installer warns when something answers on that address.
+The installer warns, on every run, while something answers on `127.0.0.1:2019`.
 
 ## Upgrading and rolling back
 
 To upgrade, run `sudo ./install.sh` again: it pulls `main` and installs it.
+Then do what it says about Caddy, as described under [Caddy](#caddy).
+
+An installation whose site block sends requests for rcman to a local port is
+upgraded to the socket: the run changes the site block and adds Caddy's
+account to `rcman-web`, and rcman cannot be reached through Caddy until Caddy
+uses the new block and belongs to the group. After that run, copy the
+block again if your Caddyfile holds a copy, make sure Caddy's admin API is off,
+and restart Caddy.
+
 To go back to the release before the current one, use `--rollback`:
 
 ```
