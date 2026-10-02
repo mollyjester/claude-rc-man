@@ -265,6 +265,33 @@ def test_what_git_wrote_on_standard_output_is_part_of_its_refusal(tmp_path):
     assert any("nothing to commit" in line for line in failed.value.lines), failed.value.lines
 
 
+# A git that writes a secret on standard output, says something on standard
+# error, and refuses.
+SAYS_A_SECRET = ["-c", "alias.secret=!echo SECRET-OUT; echo said-on-stderr >&2; exit 1", "secret"]
+
+
+def test_a_refusal_with_secret_output_carries_only_what_git_said_on_stderr(tmp_path):
+    repo = make_repo(tmp_path / "r")
+    with pytest.raises(g.GitFailed) as failed:
+        g.Git(ENV).run(repo, SAYS_A_SECRET, deadline=soon(), secret_output=True)
+    assert failed.value.lines == ["said-on-stderr"] and failed.value.more == 0
+
+
+def test_the_secret_output_check_sees_standard_output_without_it(tmp_path):
+    """Planted twin: the same git without secret_output has its standard output in the
+    refusal, so the check above can fail."""
+    repo = make_repo(tmp_path / "r")
+    with pytest.raises(g.GitFailed) as failed:
+        g.Git(ENV).run(repo, SAYS_A_SECRET, deadline=soon())
+    assert "SECRET-OUT" in failed.value.lines and "said-on-stderr" in failed.value.lines
+
+
+def test_secret_output_still_answers_with_standard_output(tmp_path):
+    repo = make_repo(tmp_path / "r")
+    args = ["-c", "alias.says=!echo the-answer", "says"]
+    assert g.Git(ENV).run(repo, args, deadline=soon(), secret_output=True) == "the-answer\n"
+
+
 def test_gits_message_is_capped_and_says_how_much_more_there_was(tmp_path):
     repo = make_repo(tmp_path / "r")
     total = g.MAX_GIT_MESSAGE_LINES + 7
