@@ -78,6 +78,7 @@ FIELD_MESSAGES = {
     RULE_REFUSED: "{sentence}",
     "missing": "This is required.",
     "string_type": "This must be text.",
+    "string_unicode": "This holds half of a character, which is not text.",
     STRING_EMPTY: "This cannot be empty.",
     "string_too_long": "This can be at most {max_length} characters long.",
     "bool_type": "This must be true or false.",
@@ -93,9 +94,9 @@ FIELD_MESSAGES = {
 }
 
 
-# What a ruled field refuses with its rule's sentence: the rule itself, and
-# any length the field is given besides.
-_RULED = ("string_pattern_mismatch", "string_too_short", "string_too_long")
+# What a ruled field refuses with its rule's sentence: what the rule refuses, any
+# length the field is given besides, and text holding half of a character.
+_RULED = ("string_pattern_mismatch", "string_too_short", "string_too_long", "string_unicode")
 
 
 def ruled(rule: Rule, **constraints):
