@@ -28,7 +28,11 @@ export function useFolderTree() {
   const [open, setOpen] = useState<ReadonlySet<string>>(new Set());
   const requested = useRef(new Set<string>());
 
-  // Fetches a folder's contents once; after a failure, the next request tries again.
+  // Fetches a folder's contents once. After a failure the folder may be asked
+  // again: the effect below asks for every open folder whenever the set of open
+  // folders changes, so a folder whose fetch failed is retried when it is
+  // reopened, and also when any other folder is opened or closed while it stays
+  // open.
   const load = useCallback(async (path: string) => {
     if (requested.current.has(path)) return;
     requested.current.add(path);
@@ -56,12 +60,13 @@ export function useFolderTree() {
     });
   }, []);
 
-  // Opens every folder above a path, so that it can be seen.
+  // Opens every folder above a path, so that it can be seen; the same set when
+  // they are open already, so that nothing renders or fetches again.
   const reveal = useCallback((path: string) => {
     const above = lineage(path)
       .slice(0, -1)
       .map((f) => f.path);
-    setOpen((current) => new Set([...current, ...above]));
+    setOpen((current) => (above.every((p) => current.has(p)) ? current : new Set([...current, ...above])));
   }, []);
 
   return { contents, open, toggle, reveal };
