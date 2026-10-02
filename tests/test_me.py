@@ -104,8 +104,29 @@ def test_a_change_leaves_the_other_settings_alone(client):
 
 
 def test_an_author_set_first_leaves_the_prefix_its_default(client):
-    patch(client, {"author_name": "Bob B"})
+    r = patch(client, {"author_name": "Bob B"})
+    assert r.status_code == 200, r.text
+    assert r.json()["effective_author"] == {"name": "Bob B", "email": BOB}
+    assert r.json()["prefix"] == "bob"
     assert client.get("/api/me", headers=as_user(BOB)).json()["prefix"] == "bob"
+
+
+def stored(settings, email):
+    import sqlite3
+
+    con = sqlite3.connect(settings.database)
+    con.row_factory = sqlite3.Row
+    try:
+        return dict(con.execute("select * from user_settings where email = ?", (email,)).fetchone())
+    finally:
+        con.close()
+
+
+def test_an_empty_email_is_stored_as_unset(client, settings):
+    patch(client, {"author_name": "Bob B", "author_email": "bob@work.example"})
+    assert stored(settings, BOB)["author_email"] == "bob@work.example"  # positive control
+    assert patch(client, {"author_email": ""}).status_code == 200
+    assert stored(settings, BOB)["author_email"] is None
 
 
 @pytest.mark.parametrize(("name", "accepted"), AUTHOR_NAMES)
