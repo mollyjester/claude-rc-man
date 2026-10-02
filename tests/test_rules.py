@@ -100,6 +100,13 @@ def test_every_helpers_rule_sentence_is_a_sentence():
         assert rule.sentence[0].isupper() and rule.sentence.endswith("."), name
 
 
+def test_no_helpers_rule_sentence_is_in_a_librarys_words():
+    from tests.test_problems import library_text
+
+    for name, rule in helpers_rules().items():
+        assert not library_text(rule.sentence), name
+
+
 def _limits():
     from helpers import rc_helper, users_file
 
