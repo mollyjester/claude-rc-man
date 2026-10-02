@@ -99,7 +99,7 @@ _NOT_IN_AUTHOR_NAME = (
     (0x2028, 0x2029),  # line and paragraph separators
     # Invisible format characters (Unicode category Cf), which make two names
     # look alike; tests/test_rc_helper.py derives them from the Unicode
-    # database. Not ZWNJ and ZWJ (_BETWEEN_LETTERS_ONLY): Persian and Indic
+    # database. Not ZWNJ and ZWJ (_NOT_ALONE_OR_AT_AN_END): Persian and Indic
     # names are written with them.
     (0x00AD, 0x00AD),
     (0x0600, 0x0605),
@@ -128,9 +128,9 @@ _NOT_IN_AUTHOR_NAME = (
 # What git strips from either end of a name besides white space: crud() in
 # git's ident.c. tests/test_rc_helper.py asks real git.
 _GIT_TRIMS = ",:;<>\"'\\"
-# ZWNJ and ZWJ, which join or part the letters on either side: a name holds
-# them only between two characters, never alone or at an end.
-_BETWEEN_LETTERS_ONLY = (0x200C, 0x200D)
+# ZWNJ and ZWJ, which join or part the characters beside them: a name may
+# hold them, but not alone and not at either end.
+_NOT_ALONE_OR_AT_AN_END = (0x200C, 0x200D)
 
 
 def _escape(code: int) -> str:
@@ -145,7 +145,7 @@ _NOWHERE = "".join(
 _NOT_AT_ENDS = (
     _NOWHERE
     + "".join(_escape(ord(c)) for c in _GIT_TRIMS)
-    + "".join(_escape(code) for code in _BETWEEN_LETTERS_ONLY)
+    + "".join(_escape(code) for code in _NOT_ALONE_OR_AT_AN_END)
     + r"\s"
 )
 # No lookaround, so the backend's validator reads it as this module does.

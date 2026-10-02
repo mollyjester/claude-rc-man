@@ -582,7 +582,7 @@ AUTHOR_NAMES_REFUSED = [
     f"a{chr(0xE0020)}b",  # TAG SPACE
     f"a{chr(0x3164)}b",  # HANGUL FILLER
     chr(0x3164),
-    chr(0x200C),  # ZWNJ and ZWJ only between letters: not alone, not at either end
+    chr(0x200C),  # ZWNJ and ZWJ: not alone, not at either end
     chr(0x200C) + chr(0x200D),
     chr(0x200C) + "Bob",
     "Bob" + chr(0x200D),
@@ -628,7 +628,7 @@ def test_author_name_rule(name, accepted):
     assert bool(h.AUTHOR_NAME.fullmatch(name)) is accepted
 
 
-def test_every_format_character_is_refused_in_a_name_but_the_allowed_ones():
+def test_every_format_character_is_refused_but_zwnj_and_zwj_inside_a_name():
     import unicodedata
 
     found = format_characters()
@@ -642,7 +642,7 @@ def test_every_format_character_is_refused_in_a_name_but_the_allowed_ones():
         for name in (f"a{c}b", c, f"{c}b", f"a{c}")
         if h.AUTHOR_NAME.fullmatch(name) and (ord(c) not in ALLOWED_FORMAT or name != f"a{c}b")
     ]
-    assert let_through == []  # the allowed ones only between letters
+    assert let_through == []  # the allowed ones only inside a name, never alone or at an end
 
 
 def test_hangul_fillers_are_refused_in_a_name():
