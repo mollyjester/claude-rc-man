@@ -60,8 +60,8 @@ command-line reference is `rc-helper --help` and `rc-helper <verb> --help`.
 | `rc-helper git-stage <path>` | Stages the files named in a JSON list read from stdin; refuses a name outside the repository |
 | `rc-helper git-unstage <path>` | Unstages the files named in a JSON list read from stdin, before the first commit too; a staged rename's new name takes the old one with it |
 | `rc-helper git-commit <path> --author-name=<n> --author-email=<e>` | Commits what is staged with the message read from stdin, as `<n>` and `<e>` for both author and committer; refuses with `nothing_staged` when nothing is. The name must match `AUTHOR_NAME`, the address `EMAIL` and the message `COMMIT_MESSAGE`, each in `helpers/rc_helper.py` or the module it imports it from. Returns the new commit and the branch |
-| `rc-helper git-switch <path> --branch=<b> [--remote]` | Switches to the local branch `<b>`, or with `--remote` makes a local branch tracking the remote-tracking branch `<b>` and switches to it; `branch_not_found` when there is no such branch of that kind |
-| `rc-helper git-branch-new <path> --name=<b>` | Makes the branch `<b>` at the current commit and switches to it; `branch_invalid` unless git takes the name exactly as given |
+| `rc-helper git-switch <path> --branch=<b> [--remote]` | Switches to the local branch `<b>`, or with `--remote` makes a local branch tracking the remote-tracking branch `<b>` and switches to it; `branch_not_found` when there is no such branch of that kind. `<b>` must match `BRANCH_NAME` |
+| `rc-helper git-branch-new <path> --name=<b>` | Makes the branch `<b>` at the current commit and switches to it. `<b>` must match `BRANCH_NAME`, and is `branch_invalid` unless `git check-ref-format --branch` takes it exactly as given |
 | `rc-helper git-fetch <path>` | `git fetch --prune` from the default remote |
 
 ## Deleting a folder

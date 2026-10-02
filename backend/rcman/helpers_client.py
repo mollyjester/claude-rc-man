@@ -79,6 +79,7 @@ HELPER_STATUS = {
     "message_invalid": 400,
     "author_name_invalid": 400,
     "branch_invalid": 400,
+    "branch_name_invalid": 400,
     "branch_not_found": 404,
 }
 ADMIN_STATUS = {

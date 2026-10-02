@@ -282,6 +282,15 @@ COMMIT_MESSAGE = Rule(
     "A commit message must hold something other than white space, no NUL character, "
     f"and be at most {MAX_COMMIT_MESSAGE_LENGTH} characters long.",
 )
+MAX_BRANCH_NAME_LENGTH = 255
+# What any branch name must be before git is asked about it: git itself says
+# what else it takes (git-branch-new), and an option is never a name.
+_NO_HYPHEN = _class(chars="-")
+BRANCH_NAME = Rule(
+    re.compile(rf"[^{_NUL}{_NO_HYPHEN}][^{_NUL}]{{0,{MAX_BRANCH_NAME_LENGTH - 1}}}"),
+    "A branch name must not be empty, begin with a hyphen or hold a null character, "
+    f"and may be at most {MAX_BRANCH_NAME_LENGTH} characters long.",
+)
 # The rules rc-helper refuses a value by, each with the code it refuses it with;
 # MESSAGES gives each code its rule's own sentence.
 RULE_CODES = {
@@ -291,6 +300,7 @@ RULE_CODES = {
     "email_invalid": EMAIL,
     "author_name_invalid": AUTHOR_NAME,
     "message_invalid": COMMIT_MESSAGE,
+    "branch_name_invalid": BRANCH_NAME,
 }
 MESSAGES.update({code: rule.sentence for code, rule in RULE_CODES.items()})
 # A message that states a length, so written once the length is.
@@ -317,7 +327,6 @@ MAX_LISTED_FILES = 500
 MAX_LISTED_BRANCHES = 200
 # How many files one stage or unstage takes: every file a list can show.
 MAX_FILES_PER_CALL = MAX_LISTED_FILES
-MAX_BRANCH_NAME_LENGTH = 255
 # Every change a file is listed with; docs/git.md has a row for each.
 CHANGES = git_run.CHANGES
 
@@ -884,9 +893,8 @@ def git_verb(timeout: float = GIT_TIMEOUT):
 
 
 def check_branch_name(name: str) -> None:
-    """What any branch name must be before git is asked about it."""
-    if not name or name.startswith("-") or len(name) > MAX_BRANCH_NAME_LENGTH:
-        raise HelperError("branch_invalid")
+    if not BRANCH_NAME.fullmatch(name):
+        raise HelperError("branch_name_invalid")
 
 
 def check_author(name: str, email: str) -> None:

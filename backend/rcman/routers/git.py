@@ -18,6 +18,7 @@ from rcman.audit import Record, Recorder
 from rcman.helpers_client import GIT_ANSWER_MARGIN_SECONDS, call_helper
 from rcman.identity import Identity, current_user
 from rcman.problems import Problem, ruled
+from rcman.routers.folders import FolderPath
 from rcman.routers.me import author_of
 
 router = APIRouter(prefix="/api/git", tags=["git"])
@@ -27,19 +28,11 @@ LOCAL_TIMEOUT = rc_helper.GIT_TIMEOUT + GIT_ANSWER_MARGIN_SECONDS
 NETWORK_TIMEOUT = rc_helper.GIT_NETWORK_TIMEOUT + GIT_ANSWER_MARGIN_SECONDS
 
 CommitMessage = ruled(rc_helper.COMMIT_MESSAGE, max_length=rc_helper.MAX_COMMIT_MESSAGE_LENGTH)
-RepositoryPath = Annotated[
-    str,
-    Field(
-        min_length=1,
-        max_length=rc_helper.MAX_PATH_LENGTH,
-        description="The repository's folder, relative to the home folder.",
-    ),
-]
-BranchName = Annotated[str, Field(min_length=1, max_length=rc_helper.MAX_BRANCH_NAME_LENGTH)]
+BranchName = ruled(rc_helper.BRANCH_NAME)
 
 
 class RepositoryBody(BaseModel):
-    path: RepositoryPath
+    path: FolderPath = Field(description="The repository's folder, relative to the home folder.")
 
 
 class FilesBody(RepositoryBody):
@@ -71,18 +64,15 @@ def _git(request: Request, identity: Identity, verb: str, path: str, *options: s
     return call_helper(request.app.state.helper, identity, [verb, *options, "--", path], **kw)
 
 
-def _query_path():
-    return Query(
-        min_length=1,
-        max_length=rc_helper.MAX_PATH_LENGTH,
-        description="The repository's folder, relative to the home folder.",
-    )
+RepositoryQuery = Annotated[
+    FolderPath, Query(description="The repository's folder, relative to the home folder.")
+]
 
 
 @router.get("/status")
 def status(
     request: Request,
-    path: Annotated[str, _query_path()],
+    path: RepositoryQuery,
     identity: Identity = Depends(current_user),
 ) -> dict:
     """The branch, the staged and not staged files, and who commits are recorded as."""
@@ -95,7 +85,7 @@ def status(
 @router.get("/branches")
 def branches(
     request: Request,
-    path: Annotated[str, _query_path()],
+    path: RepositoryQuery,
     identity: Identity = Depends(current_user),
 ) -> dict:
     return _git(request, identity, "git-branches", path)
