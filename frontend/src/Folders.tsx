@@ -42,33 +42,27 @@ export function useFolderTree() {
     setContents((current) => new Map(current).set(path, result));
   }, []);
 
+  // The home folder's contents, and those of every open folder.
   useEffect(() => {
     load("");
-  }, [load]);
+    open.forEach(load);
+  }, [open, load]);
 
-  const toggle = useCallback(
-    (path: string) => {
-      setOpen((current) => {
-        const next = new Set(current);
-        if (!next.delete(path)) next.add(path);
-        return next;
-      });
-      load(path); // nothing to do once its contents are fetched
-    },
-    [load],
-  );
+  const toggle = useCallback((path: string) => {
+    setOpen((current) => {
+      const next = new Set(current);
+      if (!next.delete(path)) next.add(path);
+      return next;
+    });
+  }, []);
 
   // Opens every folder above a path, so that it can be seen.
-  const reveal = useCallback(
-    (path: string) => {
-      const above = lineage(path)
-        .slice(0, -1)
-        .map((f) => f.path);
-      above.forEach(load);
-      setOpen((current) => new Set([...current, ...above]));
-    },
-    [load],
-  );
+  const reveal = useCallback((path: string) => {
+    const above = lineage(path)
+      .slice(0, -1)
+      .map((f) => f.path);
+    setOpen((current) => new Set([...current, ...above]));
+  }, []);
 
   return { contents, open, toggle, reveal };
 }

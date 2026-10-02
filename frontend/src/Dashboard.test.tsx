@@ -263,6 +263,30 @@ test("a folder that is only a slash still opens, under Home", async () => {
   expect(within(opened).getByRole("heading", { level: 2 })).toHaveTextContent("/");
 });
 
+test("a folder whose contents could not be fetched is asked again when reopened, not when closed", async () => {
+  let failing = true;
+  const fake = dashboard([], {
+    "GET /api/folders": (c) => {
+      const path = c.query.get("path") ?? "";
+      if (path === "projects" && failing) return problem(500, "helper_failed", "rcman's helper failed.");
+      return FOLDERS[path];
+    },
+  });
+  const asked = () => fake.made("GET", "/api/folders").filter((c) => c.query.get("path") === "projects").length;
+  renderApp();
+  await expand("projects");
+  expect(await within(await tree()).findByRole("alert")).toHaveTextContent("rcman's helper failed.");
+  expect(asked()).toBe(1);
+
+  failing = false;
+  await userEvent.click(within(await tree()).getByRole("button", { name: m.collapse("projects") }));
+  expect(within(await tree()).queryByRole("alert")).not.toBeInTheDocument();
+  expect(asked()).toBe(1);
+  await expand("projects");
+  expect(await folder("alpha")).toBeInTheDocument();
+  expect(asked()).toBe(2);
+});
+
 test("a folder selected from the address is shown in the tree", async () => {
   const fake = dashboard([]);
   renderApp("/?folder=projects/alpha");
