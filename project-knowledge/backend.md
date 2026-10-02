@@ -22,7 +22,7 @@ the OpenAPI description it serves at `/api/openapi`.
 | `everyone.py` | Everyone's servers, for administrators: one `rc-helper list` per person, side by side |
 | `routes.py` | The app's routes as FastAPI resolves them after including routers, and which of them are for administrators |
 | `routers/` | One module per area: `me`, `folders`, `git`, `github`, `servers`, `claude`, `users`, `audit_log`, `attention`, `docs` |
-| `routers/git.py` | The git repositories in the person's home, under `/api/git`: status, branches, stage, unstage, commit, switch, a new branch and fetch, each one rc-helper git verb (see [Git](#git)) |
+| `routers/git.py` | The git repositories in the person's home, under `/api/git`: status, branches, stage, unstage, commit, switch, a new branch, fetch and push, each one rc-helper git verb, and Commit & Push (see [Git](#git)) |
 | `routers/github.py` | The person's GitHub token, under `/api/github`: whether one is stored, storing one, and removing it (see [GitHub token](#github-token)) |
 | `routers/me.py` | Each person's own settings, changed with `PATCH /api/me/settings`, which changes only the settings sent; `prefix_of` and `author_of` are how the rest of the backend reads them |
 
@@ -99,7 +99,8 @@ the pipes without reading them and raises the timeout. That helper is left
 behind as an orphan until it ends or `rcman.service` stops.
 
 A git call's timeout is the helper's own deadline for it —
-`rc_helper.GIT_TIMEOUT`, or `rc_helper.GIT_NETWORK_TIMEOUT` for a fetch — and
+`rc_helper.GIT_TIMEOUT`, or `rc_helper.GIT_NETWORK_TIMEOUT` for a fetch and
+for every `git-push`, `--check` too, whose deadline in the helper it is — and
 `GIT_ANSWER_MARGIN_SECONDS` in `helpers_client.py` besides, so the helper's
 `git_timeout` reaches the person before rcman stops waiting.
 
@@ -139,6 +140,17 @@ then refused with `author_not_set`, without asking the helper, and
 otherwise passes the name and address as `--author-name` and
 `--author-email`. git's refusals, a network failure among them, come back
 as `git_failed` with git's own words as `git`.
+
+`POST /api/git/push` runs `git-push`. `POST /api/git/commit-push`, audited
+once as `git.commit_push`, takes the commit's message and, in this order,
+refuses with `author_not_set` without asking the helper; runs
+`git-push --check`, so that a push refused before it is tried —
+`detached_head`, or `github_token_not_set` — commits nothing; runs
+`git-commit`, whose refusal is the request's; and runs `git-push`. It
+answers 200 with the `path`, the `commit`, and `push`, `git-push`'s answer,
+or `null` and `push_problem`, the push's problem details as a failed
+request would have them (`problems.body`), when the commit was made and the
+push failed; the audit row's result is then `committed_not_pushed`.
 
 ## GitHub token
 

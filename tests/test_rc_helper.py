@@ -2884,6 +2884,17 @@ def test_a_rejected_push_comes_back_in_gits_words(env, repo):
     assert any("rejected" in line for line in out["error"]["git"]), out
 
 
+def test_a_branch_with_no_commit_yet_comes_back_in_gits_words(env, repo):
+    fresh = Path(env["RC_HELPER_HOME"]) / "projects" / "fresh"
+    fresh.mkdir()
+    fixture_git(fresh, "init", "-q", "-b", "trunk")
+    fixture_git(fresh, "remote", "add", "origin", str(origin_of(repo)))
+    assert ok(env, "git-status", "--", "projects/fresh")["push_to_github"] is False
+    code, out = push(env, "projects/fresh")
+    assert (code, out["error"]["code"]) == (1, "git_failed"), out
+    assert any("does not match any" in line for line in out["error"]["git"]), out
+
+
 def test_a_detached_head_is_not_pushed(env, repo):
     commit_in(repo, "more.txt")
     fixture_git(repo, "switch", "-q", "--detach", "HEAD")
@@ -2917,7 +2928,7 @@ def test_status_says_whether_a_push_goes_to_github(env, hooked, repo, on_github,
     fixture_git(tmp_path, "init", "-q", "--bare", str(elsewhere))
     fixture_git(gh_repo, "remote", "set-url", "--push", "origin", str(elsewhere))
     assert ok(hooked, "git-status", "--", GH_REL)["push_to_github"] is False
-    assert error_code(hooked, "git-push", "--check", "--", GH_REL) != "github_token_not_set"
+    assert ok(hooked, "git-push", "--check", "--", GH_REL)["branch"] == "main"  # no token asked
 
 
 def test_a_push_remote_of_its_own_decides_where_a_branch_is_pushed(hooked, repo, on_github):

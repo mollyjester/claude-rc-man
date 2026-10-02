@@ -80,6 +80,8 @@ HELPER_STATUS = {
     "branch_name_invalid": 400,
     "branch_not_found": 404,
     "token_invalid": 400,
+    "detached_head": 409,
+    "github_token_not_set": 409,
 }
 ADMIN_STATUS = {
     "usage": 500,

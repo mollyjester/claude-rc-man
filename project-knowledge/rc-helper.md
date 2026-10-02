@@ -44,7 +44,7 @@ command-line reference is `rc-helper --help` and `rc-helper <verb> --help`.
 | `rc-helper mkdir [parent] --name=<name>` | Makes a folder named `<name>` in a folder, or in the home folder when no parent is given. The name must match `FOLDER_NAME` in `helpers/rc_helper.py`, whose sentence says what it refuses and which shares its invisible characters with `AUTHOR_NAME`, and be no longer than the file system's `PC_NAME_MAX` in bytes; refuses with `folder_exists` when anything, even a dangling link, has that name |
 | `rc-helper delete <path>` | Stops every running server in a folder or below it, forgets every server there, then deletes the folder and everything in it; a link is deleted as the link. Refuses the home folder, anything outside it, a dot-folder or anything in one (`path_hidden`), a path through a link (`path_through_link`), and a path not written as the names on disk (`path_name_differs`). See [Deleting a folder](#deleting-a-folder) |
 | `rc-helper auth-code` | Finishes connecting with the code read from stdin — pressing Enter after Claude reports success, as it asks — and returns the account as `auth-status` does |
-| `rc-helper git-status <path>` | A repository's branch — its name (`null` while detached), commit (`null` before the first), upstream and how far ahead and behind it is — and its `staged` and `not_staged` files, each with its change (`CHANGES`), where a rename or copy came from, whether it is a submodule, and `selectable: false` for a name that is not UTF-8. See [Git](#git) |
+| `rc-helper git-status <path>` | A repository's branch — its name (`null` while detached), commit (`null` before the first), upstream and how far ahead and behind it is — and its `staged` and `not_staged` files, each with its change (`CHANGES`), where a rename or copy came from, whether it is a submodule, and `selectable: false` for a name that is not UTF-8; and `push_to_github`, whether a push from it goes to GitHub (see [Push](#push)). See [Git](#git) |
 | `rc-helper git-branches <path>` | The local branches, each with whether it is current and its upstream, and the remote-tracking branches, each with the local branch tracking it or `null`; `origin/HEAD` and other symbolic refs are left out |
 | `rc-helper git-stage <path>` | Stages the files named in a JSON list read from stdin; refuses a name outside the repository |
 | `rc-helper git-unstage <path>` | Unstages the files named in a JSON list read from stdin, before the first commit too; a staged rename's new name takes the old one with it |
@@ -52,6 +52,7 @@ command-line reference is `rc-helper --help` and `rc-helper <verb> --help`.
 | `rc-helper git-switch <path> --branch=<b> [--remote]` | Switches to the local branch `<b>`, or with `--remote` makes a local branch tracking the remote-tracking branch `<b>` and switches to it; `branch_not_found` when there is no such branch of that kind. `<b>` must match `BRANCH_NAME` |
 | `rc-helper git-branch-new <path> --name=<b>` | Makes the branch `<b>` at the current commit and switches to it. `<b>` must match `BRANCH_NAME`, and is `branch_invalid` unless `git check-ref-format --branch` takes it exactly as given |
 | `rc-helper git-fetch <path>` | `git fetch --prune` from the default remote |
+| `rc-helper git-push <path> [--check]` | Pushes the current branch, and returns it, its upstream and whether the push set it (`upstream_set`); refuses with `detached_head` while no branch is checked out and with `github_token_not_set` for a push to GitHub with no token stored. With `--check`, refuses as it would and pushes nothing. See [Push](#push) |
 | `rc-helper github-token` | Stores the token read from stdin as git's credential for GitHub, in place of any rcman stored before, and has git use its store helper for GitHub. The token must match `GITHUB_TOKEN`. See [GitHub token](#github-token) |
 | `rc-helper github-status` | Whether a token rcman stored is there and git is told to use the store helper for GitHub, as `token` |
 | `rc-helper github-forget` | Erases the token rcman stored, and nothing else |
@@ -184,7 +185,7 @@ running git are `helpers/git_run.py`, tested by `tests/test_git_run.py`.
   configuration, the system's too, and their hooks apply as they would in a
   terminal; hooks find the person's `~/.local/bin` first on their PATH.
 - **Deadlines.** A verb's git calls share one deadline, `GIT_TIMEOUT`, and a
-  fetch has `GIT_NETWORK_TIMEOUT`. Each git runs in a session of its own
+  fetch and a push have `GIT_NETWORK_TIMEOUT`. Each git runs in a session of its own
   (`start_new_session`); at the deadline, when its output is left unread, or
   on SIGTERM, its whole process group is killed, hooks and remote helpers
   with it, and the verb answers `git_timeout`.
@@ -218,6 +219,26 @@ running git are `helpers/git_run.py`, tested by `tests/test_git_run.py`.
   stdin (`git commit -F -`); it never appears in any argv or answer. The
   author and committer reach git as `GIT_AUTHOR_*` and `GIT_COMMITTER_*`,
   which beat the person's `user.name` and `user.email`.
+
+## Push
+
+`git-push` pushes the current branch. One with no upstream is pushed as
+`git push -u origin HEAD` (`PUSH_REMOTE`), which makes it track the branch
+it makes there; one with an upstream as `git push`, so that the person's
+`push.default` and push remotes apply. A detached HEAD is refused before
+git is asked.
+
+A push goes to GitHub when the push URL of the remote it goes to — the
+branch's push remote as git finds it (`%(push:remotename)`), or `origin`
+for a branch with no upstream — starts with `Config.github` once git has
+rewritten it (`git remote get-url --push`), so that the person's own
+`insteadOf` and `pushurl` settings decide it as they decide the push.
+Only a push to GitHub needs the token, and is refused with
+`github_token_not_set` without one, before anything is pushed; a push
+elsewhere is tried, and git's refusal, if any, passed on. `git-status`
+reports the same as `push_to_github`. `--check` stops after these checks:
+the backend's Commit & Push checks first, so that nothing is committed
+for a push that would not be tried.
 
 ## GitHub token
 

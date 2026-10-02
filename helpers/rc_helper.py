@@ -65,6 +65,7 @@ VERBS = (
     "git-switch",
     "git-branch-new",
     "git-fetch",
+    "git-push",
     "github-token",
     "github-status",
     "github-forget",
@@ -131,6 +132,10 @@ MESSAGES = {
     "nothing_staged": "Nothing is staged, so there is nothing to commit.",
     "branch_invalid": "git does not take that as a branch name.",
     "branch_not_found": "There is no such branch.",
+    "detached_head": (
+        "You are not on a branch, so there is nothing to push. Switch to a branch first."
+    ),
+    "github_token_not_set": "Add a GitHub token in Settings before pushing to GitHub.",
 }
 
 TMUX_SOCKET_NAME = "rcman"
@@ -779,6 +784,10 @@ BRANCHES_ARGS = [
     "refs/heads",
     "refs/remotes",
 ]
+# for-each-ref's format for where a branch is pushed: its name, upstream and push remote.
+PUSH_FORMAT = "%(refname)%00%(upstream)%00%(push:remotename)"
+# The remote a branch with no upstream is pushed to, and made to track (git-push).
+PUSH_REMOTE = "origin"
 # A file list as git reads one: NUL-separated on stdin, each name taken literally.
 PATHSPEC_FROM_STDIN = ["--pathspec-from-file=-", "--pathspec-file-nul"]
 # The most a list of files can take on stdin: each name at its longest in UTF-8, and
@@ -1441,11 +1450,13 @@ class Helper:
         }
         for change in self._changes(repo, deadline, branch):
             lists[change.staged].add(_file(change))
+        remote = self._push_target(repo, branch.name, deadline)[1]
         return {
             "path": rel,
             "branch": dataclasses.asdict(branch),
             "staged": lists[True].answer(),
             "not_staged": lists[False].answer(),
+            "push_to_github": self._to_github(repo, remote, deadline),
         }
 
     @git_verb()
@@ -1548,6 +1559,57 @@ class Helper:
         repo, rel = self._repository(rel, deadline)
         self._git(repo, ["fetch", "--prune"], deadline)
         return {"path": rel}
+
+    def _push_target(self, repo: Path, branch: str | None, deadline: float):
+        """A branch's upstream (its full name, or None) and the remote git-push pushes it
+        to: its push remote, as git push finds it, or PUSH_REMOTE when it has no upstream,
+        when there is no branch, or before its first commit, when it is no ref yet."""
+        if branch is None:
+            return None, PUSH_REMOTE
+        ref = f"refs/heads/{branch}"
+        args = ["for-each-ref", f"--format={PUSH_FORMAT}", ref]
+        for line in self._git(repo, args, deadline).split("\n"):
+            name, _, rest = line.partition("\0")
+            if name == ref:  # the pattern is a prefix to git, so only this branch's line
+                upstream, _, remote = rest.partition("\0")
+                return (upstream, remote or PUSH_REMOTE) if upstream else (None, PUSH_REMOTE)
+        return None, PUSH_REMOTE
+
+    def _to_github(self, repo: Path, remote: str, deadline: float) -> bool:
+        """Whether a push to ``remote`` goes to GitHub: its push URL, as git rewrites it
+        with the person's configuration and the test hook, is under Config.github. A
+        remote git does not know is no push to GitHub; git says so when it is pushed to."""
+        try:
+            url = self._git(repo, ["remote", "get-url", "--push", "--", remote], deadline)
+        except git_run.GitFailed:
+            return False
+        return url.strip().startswith(self.cfg.github)
+
+    @git_verb(timeout=GIT_NETWORK_TIMEOUT)
+    def git_push(self, deadline: float, rel: str, check: bool) -> dict:
+        """Push the current branch: one with no upstream as git push -u origin HEAD, and
+        otherwise as git push, as the person's push.default says.
+
+        Refused while HEAD is detached, and for a push to GitHub without a token, before
+        git is asked to push. With ``check``, only those are checked.
+        """
+        repo, rel = self._repository(rel, deadline)
+        branch = self._current(repo, deadline)
+        if branch is None:
+            raise HelperError("detached_head")
+        upstream, remote = self._push_target(repo, branch, deadline)
+        if self._to_github(repo, remote, deadline) and not self._token_stored(deadline):
+            raise HelperError("github_token_not_set")
+        if check:
+            return {"path": rel, "branch": branch}
+        args = ["push"] if upstream else ["push", "-u", PUSH_REMOTE, "HEAD"]
+        self._git(repo, args, deadline)
+        return {
+            "path": rel,
+            "branch": branch,
+            "upstream": _short(self._push_target(repo, branch, deadline)[0]),
+            "upstream_set": upstream is None,
+        }
 
     # --- the GitHub token -------------------------------------------------------------
     #
@@ -1718,6 +1780,11 @@ def _parser() -> argparse.ArgumentParser:
     new = verbs.add_parser("git-branch-new", help="make a branch here and switch to it")
     new.add_argument("path")
     new.add_argument("--name", required=True)
+    push = verbs.add_parser("git-push", help="push the current branch")
+    push.add_argument("path")
+    push.add_argument(
+        "--check", action="store_true", help="only check that the push would be tried"
+    )
     verbs.add_parser(
         "github-token", help="store a token as git's credential for GitHub; read from stdin"
     )
@@ -1762,6 +1829,8 @@ def _dispatch(helper: Helper, args: argparse.Namespace, stdin) -> dict:
         return helper.git_commit(args.path, args.author_name, args.author_email, data)
     if v == "git-switch":
         return helper.git_switch(args.path, args.branch, args.remote)
+    if v == "git-push":
+        return helper.git_push(args.path, args.check)
     return helper.git_branch_new(args.path, args.name)
 
 

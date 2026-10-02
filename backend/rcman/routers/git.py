@@ -2,7 +2,8 @@
 
 What git is given that a person wrote — the files to stage or unstage and a
 commit's message — reaches rc-helper on stdin, never in its arguments; a
-commit's message is never recorded or logged.
+commit's message is never recorded or logged. Pushing to GitHub needs the
+person's GitHub token (routers/github.py), which rc-helper checks for.
 """
 
 from __future__ import annotations
@@ -14,7 +15,8 @@ from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel, Field
 
 from helpers import rc_helper
-from rcman.audit import Record, Recorder
+from rcman import problems
+from rcman.audit import COMMITTED_NOT_PUSHED, Record, Recorder
 from rcman.helpers_client import GIT_ANSWER_MARGIN_SECONDS, call_helper
 from rcman.identity import Identity, current_user
 from rcman.problems import Problem, ruled
@@ -144,3 +146,46 @@ def fetch(
     """git fetch --prune: refreshes the remote-tracking branches, and nothing else."""
     record.target = body.path
     return _git(request, record.identity, "git-fetch", body.path, timeout=NETWORK_TIMEOUT)
+
+
+@router.post("/push")
+def push(
+    body: RepositoryBody, request: Request, record: Record = Depends(Recorder("git.push"))
+) -> dict:
+    """Push the current branch; one with no upstream is pushed to origin and set to track it.
+
+    Refused while no branch is checked out, and for a push to GitHub until a token is stored.
+    """
+    record.target = body.path
+    return _git(request, record.identity, "git-push", body.path, timeout=NETWORK_TIMEOUT)
+
+
+@router.post("/commit-push")
+def commit_push(
+    body: CommitBody, request: Request, record: Record = Depends(Recorder("git.commit_push"))
+) -> dict:
+    """Commit what is staged, then push it.
+
+    Nothing is committed when the push would be refused before it was tried: no
+    branch checked out, or a push to GitHub with no token. When the commit is made
+    and the push fails, the answer is the commit and the push's problem, and the
+    audit row says committed_not_pushed.
+    """
+    record.target = body.path
+    author = author_of(request, record.identity)
+    if author is None:
+        raise Problem("author_not_set")
+    _git(request, record.identity, "git-push", body.path, "--check", timeout=NETWORK_TIMEOUT)
+    options = (f"--author-name={author.name}", f"--author-email={author.email}")
+    made = _git(request, record.identity, "git-commit", body.path, *options, stdin=body.message)
+    answer = {"path": made["path"], "commit": made["commit"], "push": None, "push_problem": None}
+    try:
+        answer["push"] = _git(
+            request, record.identity, "git-push", body.path, timeout=NETWORK_TIMEOUT
+        )
+    except Problem as failed:
+        answer["push_problem"] = problems.body(
+            failed.code, failed.status, failed.title, **failed.extra
+        )
+        record.result = COMMITTED_NOT_PUSHED
+    return answer

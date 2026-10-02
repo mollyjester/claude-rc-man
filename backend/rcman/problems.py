@@ -64,15 +64,21 @@ class Problem(Exception):
         self.extra = extra
 
 
-def response(code: str, status: int, title: str, **extra) -> JSONResponse:
-    body = {
+def body(code: str, status: int, title: str, **extra) -> dict:
+    """A problem's details, as a response carries them or an answer reports one."""
+    return {
         "type": f"urn:rcman:problem:{code}",
         "title": title,
         "status": status,
         "code": code,
         **extra,
     }
-    return JSONResponse(body, status_code=status, media_type=MEDIA_TYPE)
+
+
+def response(code: str, status: int, title: str, **extra) -> JSONResponse:
+    return JSONResponse(
+        body(code, status, title, **extra), status_code=status, media_type=MEDIA_TYPE
+    )
 
 
 # What a refused field is told, by the type of the validation error, with the
