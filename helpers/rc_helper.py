@@ -122,8 +122,8 @@ PATH = Rule(
 )
 PREFIX = Rule(
     re.compile(rf"[A-Za-z0-9][A-Za-z0-9-]{{0,{MAX_PREFIX_LENGTH - 1}}}"),
-    "The session name prefix may use letters A to Z, digits and hyphens, start with a "
-    f"letter or digit, and be at most {MAX_PREFIX_LENGTH} characters long.",
+    "The session name prefix may use letters a to z in either case, digits and hyphens, "
+    f"start with a letter or digit, and be at most {MAX_PREFIX_LENGTH} characters long.",
 )
 MAX_AUTHOR_NAME_LENGTH = 128
 # Code points no name may hold anywhere, because they show as nothing or as
@@ -179,7 +179,10 @@ def _class(ranges=(), chars: str = "") -> str:
 # What no name may hold anywhere, and what it may besides not begin or end with,
 # each with the words the rules' sentences say it in.
 _UNSEEN = _class((*CONTROLS, *SEPARATORS, *INVISIBLE_FORMAT, *HANGUL_FILLERS))
-_UNSEEN_WORDS = "a control character or an invisible character"
+_UNSEEN_WORDS = (
+    "a control character or an invisible character other than the joiners some "
+    "scripts need between letters"
+)
 _NOT_AT_AN_END = _class(chars="".join(map(chr, JOINERS))) + r"\s"
 _NOT_AT_AN_END_WORDS = "white space"
 
