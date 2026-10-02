@@ -74,7 +74,20 @@ your list. Archiving or deleting individual sessions is done in claude.ai/code.
 If Claude shows a screen rcman does not recognise, the server is shown as
 **Unrecognised screen** and **Show screen** displays exactly what Claude shows,
 rather than rcman guessing what it means. This usually means Claude Code has
-changed in a way rcman does not handle yet.
+changed, or is asking something, in a way rcman does not handle yet.
+
+When it happens:
+
+1. Choose **Show screen** and read what Claude says. It may name something to
+   do outside rcman, such as signing in again (see
+   [Connecting your Claude account](claude-account.md)).
+2. Choose **Stop**, then **Forget**.
+3. Tell an administrator, with what the screen said. Administrators are warned
+   about the server with your name and the folder, but not what the screen
+   says.
+
+A server cannot be used in that folder while Claude keeps showing that screen;
+rcman handles it once it has been taught to recognise it.
 
 ## For administrators
 

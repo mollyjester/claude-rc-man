@@ -44,3 +44,23 @@ With a person added for the test account (`sudo rcman-user add`):
 Write down what differed from this list. A screen rcman shows as
 **Unrecognised screen** is recorded as a new fixture and handled before the
 version is approved.
+
+## Screens with no recording yet
+
+Some screens rcman has no recording of, and so shows as **Unrecognised
+screen**; the full list is under *Not recorded* in
+[fake-claude.md](fake-claude.md). Three of them need particular conditions.
+Whenever those conditions come up, record the screen: add a sequence for it to
+`SEQUENCES` in `devtools/record_claude.py`, record it with
+`uv run python devtools/record_claude.py --with-account --sequence <name>`,
+and teach rc-helper and the fake to recognise it, tests first.
+
+1. **Enabling Remote Control.** With a Claude account that has never used
+   Remote Control, start a server: Claude asks once whether to enable it.
+   Record that question, both answers, and the screen that follows each.
+2. **Network loss.** With a server ready, cut the machine's network for longer
+   than a server survives, then restore it. Record the screen the server ends
+   on and its exit status.
+3. **Expired sign-in.** With an account whose sign-in has expired — rcman
+   shows the connection as expired — start a server. Record what Claude shows
+   instead of the trust question or the server screen.
