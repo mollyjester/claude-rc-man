@@ -28,6 +28,13 @@ MIGRATIONS = [
         prefix text not null
     );
     """,
+    # Audit events are never changed; retention deletes them, nothing else touches them.
+    """
+    create trigger audit_append_only before update on audit
+    begin
+        select raise(abort, 'append-only');
+    end;
+    """,
 ]
 
 

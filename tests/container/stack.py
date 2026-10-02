@@ -3,8 +3,9 @@
 
 Installs rcman from a clone as install.sh does, adds people with rcman-user,
 points oauth2-proxy's Google provider at a stand-in (tests/container/oidc_stub.py),
-and puts Caddy, with its own certificate authority, in front of rcman.test and
-auth.test. Prints READY and keeps everything running.
+and puts Caddy, with its own certificate authority and its admin API off,
+running as its own account, in front of rcman.test and auth.test. Prints READY
+and keeps everything running.
 
 The only change to what the installer wrote is the three Google endpoints in
 oauth2-proxy's configuration.
@@ -108,7 +109,18 @@ def main() -> None:
         + Path("/etc/rcman/Caddyfile.snippet").read_text()
         + f"\n{AUTH} {{\n\treverse_proxy 127.0.0.1:{STUB_PORT}\n}}\n"
     )
-    caddy = subprocess.Popen(["caddy", "run", "--adapter", "caddyfile", "--config", str(caddyfile)])
+    # Caddy as its own account, as on a real host: it reaches rcman's socket only
+    # through the group the installer made it a member of.
+    data = Path("/var/lib/caddy")
+    data.mkdir(parents=True, exist_ok=True)
+    sh("chown", "-R", "caddy:caddy", str(data))
+    caddy = subprocess.Popen(
+        [
+            "runuser", "-u", "caddy", "--", "/usr/bin/env", f"HOME={data}",
+            f"XDG_DATA_HOME={data}/.local/share", f"XDG_CONFIG_HOME={data}/.config",
+            "caddy", "run", "--adapter", "caddyfile", "--config", str(caddyfile),
+        ]
+    )  # fmt: skip
     time.sleep(3)
     if caddy.poll() is not None:
         sys.exit("caddy did not start")

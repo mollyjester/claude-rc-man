@@ -2,7 +2,7 @@ import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { m } from "./messages";
-import { ADMIN, CONNECTED, type Routes, fakeApi, problem } from "./test/fakeApi";
+import { ADMIN, CONNECTED, NOTHING_TO_ATTEND, type Routes, fakeApi, problem } from "./test/fakeApi";
 import { renderApp } from "./test/render";
 
 const USERS = {
@@ -13,7 +13,12 @@ const USERS = {
 };
 
 function api(extra: Routes) {
-  return fakeApi({ "GET /api/me": ADMIN, "GET /api/claude": CONNECTED, ...extra });
+  return fakeApi({
+    "GET /api/me": ADMIN,
+    "GET /api/claude": CONNECTED,
+    "GET /api/attention": NOTHING_TO_ATTEND,
+    ...extra,
+  });
 }
 
 test("people are listed with role and account", async () => {

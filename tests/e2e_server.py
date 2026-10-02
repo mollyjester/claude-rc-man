@@ -77,7 +77,7 @@ def create_app():
     homes = _world(root)
     sockets(root).mkdir()
 
-    def helper(linux, args, stdin=None):
+    def helper(linux, args, stdin=None, timeout=60):
         env = {
             "PATH": "/usr/bin:/bin",
             "RC_HELPER_HOME": str(homes[linux]),
@@ -86,11 +86,11 @@ def create_app():
         }
         proc = subprocess.run(
             [str(REPO / "helpers" / "rc-helper"), *args],
-            env=env, input=stdin, capture_output=True, text=True, timeout=60,
+            env=env, input=stdin, capture_output=True, text=True, timeout=timeout,
         )  # fmt: skip
         return proc.returncode, json.loads(proc.stdout)
 
-    def admin(args):
+    def admin(args, timeout=None):
         users = uf.load(root / "users.toml")
         if args[0] == "list":
             return 0, {

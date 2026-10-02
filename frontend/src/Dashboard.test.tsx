@@ -126,7 +126,8 @@ test.each([
   ["stop", m.stop, "/api/servers/stop", "ready"],
   ["resume", m.resume, "/api/servers/resume", "stopped"],
   ["forget", m.forget, "/api/servers/forget", "stopped"],
-  ["start again", m.startAgain, "/api/servers", "exited"],
+  ["resume", m.resume, "/api/servers/resume", "exited"],
+  ["start again", m.startAgain, "/api/servers", "trust_declined"],
 ])("%s calls its endpoint with the folder", async (_name, label, path, state) => {
   const fake = dashboard([server("projects/alpha", state)], { [`POST ${path}`]: { server: server("projects/alpha", state) } });
   renderApp();
@@ -134,6 +135,21 @@ test.each([
   await userEvent.click(within(card).getByRole("button", { name: label }));
   await waitFor(() => expect(fake.made("POST", path)).toHaveLength(1));
   expect(fake.made("POST", path)[0].body).toEqual({ path: "projects/alpha" });
+});
+
+test("a server that stopped by itself says so, whatever its exit status, and can be resumed", async () => {
+  for (const exit_code of [0, 1, 137]) {
+    const fake = dashboard([server("projects/alpha", "exited", { exit_code, screen: ["x"] })], {
+      "POST /api/servers/resume": { server: server("projects/alpha", "connected") },
+    });
+    const { unmount } = renderApp();
+    const card = await screen.findByRole("article", { name: "projects/alpha" });
+    expect(within(card).getByText("Stopped by itself")).toBeInTheDocument();
+    await userEvent.click(within(card).getByRole("button", { name: m.resume }));
+    await waitFor(() => expect(fake.made("POST", "/api/servers/resume")).toHaveLength(1));
+    expect(fake.made("POST", "/api/servers/resume")[0].body).toEqual({ path: "projects/alpha" });
+    unmount();
+  }
 });
 
 test("an unrecognised screen can be shown as it is", async () => {

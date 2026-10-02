@@ -10,7 +10,7 @@ from fastapi import FastAPI
 
 from rcman import audit, db, problems, spa
 from rcman.helpers_client import AdminRunner, HelperRunner, sudo_admin, sudo_helper
-from rcman.routers import audit_log, claude, docs, folders, me, servers, users
+from rcman.routers import attention, audit_log, claude, docs, folders, me, servers, users
 from rcman.settings import Settings
 
 RETENTION_INTERVAL_SECONDS = 24 * 60 * 60
@@ -35,6 +35,7 @@ def create_app(
     admin: AdminRunner | None = None,
 ) -> FastAPI:
     settings = settings or Settings()
+    audit.install_logging()
 
     @contextlib.asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -69,7 +70,7 @@ def create_app(
     def health() -> dict:
         return {"status": "ok"}
 
-    for module in (me, folders, servers, claude, users, audit_log, docs):
+    for module in (me, folders, servers, claude, users, audit_log, attention, docs):
         app.include_router(module.router)
     spa.install(app, settings.frontend_dir)  # last: it answers every path not matched above
     return app

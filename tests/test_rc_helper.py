@@ -299,9 +299,56 @@ def test_start_trust_confirm_ready_stop_resume_forget(env):
     assert [s["path"] for s in ok(env, "list")["servers"]] == []
 
 
-def test_resume_needs_a_stopped_server(env):
+def test_resume_needs_a_stopped_server(env, tmp_path):
     log_in(env)
+    assert (
+        error_code(env, "resume", "projects/alpha", "--prefix", "pfx") == "not_stopped"
+    )  # missing
+
+    ok(env, "start", "projects/alpha", "--prefix", "pfx")
+    assert (
+        ok(env, "confirm", "projects/alpha", "--answer", "n")["server"]["state"] == "trust_declined"
+    )
     assert error_code(env, "resume", "projects/alpha", "--prefix", "pfx") == "not_stopped"
+
+    # A server whose claude finds itself signed out, though auth status said otherwise.
+    signed_out = tmp_path / "signed-out"
+    fake.write_state(signed_out, logged_in=False)
+    wrapper = Path(env["RC_HELPER_CLAUDE"])
+    wrapper.write_text(
+        '#!/bin/sh\nif [ "$1" = remote-control ]; then '
+        f"export CLAUDE_CONFIG_DIR={signed_out}; fi\n"
+        f'exec {rec.FAKE_CLAUDE} "$@"\n',
+        encoding="utf-8",
+    )
+    ok(env, "start", "projects/beta", "--prefix", "pfx")
+    wait_state(env, "projects/beta", "logged_out")
+    assert error_code(env, "resume", "projects/beta", "--prefix", "pfx") == "not_stopped"
+
+
+def test_a_server_that_died_can_be_resumed(env):
+    import signal
+
+    log_in(env)
+    ok(env, "start", "projects/alpha", "--prefix", "pfx")
+    ok(env, "confirm", "projects/alpha", "--answer", "y")
+    ready = wait_state(env, "projects/alpha", "ready")
+    tmux = ["tmux", "-S", env["RC_HELPER_TMUX_SOCKET"]]
+    session = h.session_for("projects/alpha")
+    pid = subprocess.run(
+        [*tmux, "display-message", "-p", "-t", f"={session}:", "#{pane_pid}"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    os.kill(int(pid), signal.SIGKILL)
+    died = wait_state(env, "projects/alpha", "exited")
+    assert died["exit_code"] is not None
+
+    resumed = ok(env, "resume", "projects/alpha", "--prefix", "pfx")
+    assert resumed["server"]["state"] in ("connected", "ready")  # no trust question
+    again = wait_state(env, "projects/alpha", "ready")
+    assert again["session_name"] == ready["session_name"]
 
 
 def test_forget_refuses_a_running_server(env):

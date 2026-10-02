@@ -20,6 +20,7 @@ MESSAGES = {
     "validation_failed": "Some of what was sent is not valid.",
     "users_file_invalid": "The users file is invalid.",
     "helper_unavailable": "rcman could not reach its helper.",
+    "helper_timeout": "rcman's helper took too long to answer.",
     "internal_error": "Something went wrong in rcman.",
 }
 STATUS = {
@@ -32,6 +33,7 @@ STATUS = {
     "validation_failed": 422,
     "users_file_invalid": 500,
     "helper_unavailable": 502,
+    "helper_timeout": 504,
     "internal_error": 500,
 }
 

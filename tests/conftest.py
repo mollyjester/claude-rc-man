@@ -27,7 +27,7 @@ class RecordingAdmin:
         self.calls: list[list[str]] = []
         self.replies: list[tuple[int, dict]] = []
 
-    def __call__(self, args):
+    def __call__(self, args, timeout=None):
         self.calls.append(list(args))
         return self.replies.pop(0) if self.replies else (0, {"users": []})
 
@@ -50,7 +50,7 @@ def helper_homes(tmp_path):
     sock_root = Path("/tmp") / f"rcb-{tmp_path.name[-10:]}"
     sock_root.mkdir(exist_ok=True)
 
-    def runner(linux, args, stdin=None):
+    def runner(linux, args, stdin=None, timeout=60):
         sock = sock_root / f"{linux}.sock"
         sockets.append(sock)
         env = {
@@ -61,7 +61,7 @@ def helper_homes(tmp_path):
         }
         proc = subprocess.run(
             [str(REPO / "helpers" / "rc-helper"), *args],
-            env=env, input=stdin, capture_output=True, text=True, timeout=60,
+            env=env, input=stdin, capture_output=True, text=True, timeout=timeout,
         )  # fmt: skip
         return proc.returncode, json.loads(proc.stdout)
 
@@ -109,6 +109,34 @@ def client(app):
 
     with TestClient(app) as c:
         yield c
+
+
+# A valid request for each route that takes one: (method, path) -> keyword
+# arguments for the test client. Tests that drive every route of a kind, found
+# in the route table, take their requests from here.
+CALLS = {
+    ("POST", "/api/servers"): {"json": {"path": "projects/alice-project"}},
+    ("POST", "/api/servers/resume"): {"json": {"path": "projects/alice-project"}},
+    ("POST", "/api/servers/stop"): {"json": {"path": "projects/alice-project"}},
+    ("POST", "/api/servers/forget"): {"json": {"path": "projects/alice-project"}},
+    ("POST", "/api/servers/confirm"): {"json": {"path": "projects/alice-project", "answer": "y"}},
+    ("PUT", "/api/me/settings"): {"json": {"prefix": "alice"}},
+    ("POST", "/api/users"): {"json": {"linux": "dave", "email": "dave@example.com"}},
+    ("DELETE", "/api/users/{linux}"): {"params": {"home": "keep"}},
+    ("POST", "/api/claude/login"): {"json": {}},
+    ("POST", "/api/claude/code"): {"json": {"code": "x"}},
+    ("POST", "/api/claude/upgrade"): {"json": {"version": "2.2.0"}},
+    ("GET", "/api/audit"): {},
+    ("GET", "/api/users"): {},
+    ("GET", "/api/claude/versions"): {},
+    ("GET", "/api/servers/everyone"): {},
+    ("GET", "/api/attention"): {},
+}
+
+
+def concrete(path):
+    """A route's path with its parameters filled in."""
+    return path.replace("{linux}", "bob")
 
 
 def as_user(email):

@@ -15,6 +15,7 @@ export const m = {
   navUsers: "People",
   navAudit: "Audit trail",
   navVersions: "Claude Code",
+  navEveryone: "Everyone's servers",
   signedInAs: (email: string) => `Signed in as ${email}`,
 
   foldersTitle: "Folders",
@@ -34,7 +35,7 @@ export const m = {
     stopped: "Stopped",
     trust_declined: "Not started: folder not trusted",
     logged_out: "Not started: Claude account not connected",
-    exited: "Ended",
+    exited: "Stopped by itself",
     unrecognised: "Unrecognised screen",
   } as Record<string, string>,
   stop: "Stop",
@@ -102,6 +103,21 @@ export const m = {
   auditResult: "Result",
   auditOlder: "Older",
   auditEmpty: "Nothing recorded.",
+
+  attentionTitle: "Needs attention",
+  attentionUnrecognised: (servers: string[]) =>
+    `Servers on a screen rcman does not recognise: ${servers.join(", ")}.`,
+  attentionVersionsDiffer: (people: string[]) =>
+    `Claude Code differs from the approved version for: ${people.join(", ")}.`,
+  attentionVersionsFailed: "rcman could not check the Claude Code versions:",
+  attentionUntested: "The approved Claude Code version is not the one rcman's recorded tests cover.",
+
+  everyoneTitle: "Everyone's servers",
+  everyoneIntro: "Each person's servers, to look at only. Only the person a server belongs to can act on it.",
+  everyonePerson: (linux: string, email: string) => `${linux} (${email})`,
+  everyoneNone: "No servers.",
+  everyoneFolder: "Folder",
+  everyoneState: "State",
 
   versionsTitle: "Claude Code",
   versionsApproved: "Approved version",

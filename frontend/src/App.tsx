@@ -1,10 +1,12 @@
-import { createContext, useContext, useEffect, useState } from "react";
+import { type ReactElement, createContext, useContext, useEffect, useState } from "react";
 import { NavLink, Navigate, Route, Routes } from "react-router-dom";
 
 import { ApiError, api } from "./api";
+import { Attention } from "./Attention";
 import { Audit } from "./Audit";
 import { Dashboard } from "./Dashboard";
 import { Docs } from "./Docs";
+import { Everyone } from "./Everyone";
 import { m } from "./messages";
 import { People } from "./People";
 import { ProblemView, asApiError } from "./ProblemView";
@@ -18,6 +20,14 @@ export const useMe = () => useContext(MeContext);
 
 export const POLL_MS = 5000;
 
+// The pages only administrators are offered, in the order the navigation shows them.
+export const ADMIN_PAGES: { path: string; label: string; element: () => ReactElement }[] = [
+  { path: "/admin/people", label: m.navUsers, element: () => <People /> },
+  { path: "/admin/servers", label: m.navEveryone, element: () => <Everyone /> },
+  { path: "/admin/audit", label: m.navAudit, element: () => <Audit /> },
+  { path: "/admin/claude", label: m.navVersions, element: () => <Versions /> },
+];
+
 function Nav({ me }: { me: Me }) {
   return (
     <header>
@@ -28,13 +38,12 @@ function Nav({ me }: { me: Me }) {
         </NavLink>
         <NavLink to="/settings">{m.navSettings}</NavLink>
         <NavLink to="/help">{m.navDocs}</NavLink>
-        {me.admin && (
-          <>
-            <NavLink to="/admin/people">{m.navUsers}</NavLink>
-            <NavLink to="/admin/audit">{m.navAudit}</NavLink>
-            <NavLink to="/admin/claude">{m.navVersions}</NavLink>
-          </>
-        )}
+        {me.admin &&
+          ADMIN_PAGES.map((page) => (
+            <NavLink key={page.path} to={page.path}>
+              {page.label}
+            </NavLink>
+          ))}
       </nav>
       <span className="muted">{m.signedInAs(me.email)}</span>
     </header>
@@ -62,14 +71,13 @@ export function App({ pollMs = POLL_MS }: { pollMs?: number }) {
     <MeContext.Provider value={me}>
       <Nav me={me} />
       <main>
+        {me.admin && <Attention />}
         <Routes>
           <Route path="/" element={<Dashboard pollMs={pollMs} />} />
           <Route path="/settings" element={<Settings />} />
           <Route path="/help" element={<Docs />} />
           <Route path="/help/:slug" element={<Docs />} />
-          {me.admin && <Route path="/admin/people" element={<People />} />}
-          {me.admin && <Route path="/admin/audit" element={<Audit />} />}
-          {me.admin && <Route path="/admin/claude" element={<Versions />} />}
+          {me.admin && ADMIN_PAGES.map((page) => <Route key={page.path} path={page.path} element={page.element()} />)}
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </main>

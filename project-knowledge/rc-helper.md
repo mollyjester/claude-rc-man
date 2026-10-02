@@ -26,7 +26,7 @@ command-line reference is `rc-helper --help` and `rc-helper <verb> --help`.
 | `rc-helper tree [path]` | Subfolders of a folder in the home folder (the home folder itself when no path is given); `--depth` for nested levels, `--all` to include dot-folders. Symbolic links leading outside the home folder are left out |
 | `rc-helper list` | Every server and its state |
 | `rc-helper start <path> --prefix <p>` | Starts a server in a folder, with `<p>` as the session name prefix. Refuses when Claude is not connected or a server already runs there; in a folder with a stopped server it starts that server again |
-| `rc-helper resume <path> --prefix <p>` | Starts a stopped server again; refuses when there is none |
+| `rc-helper resume <path> --prefix <p>` | Starts a server again that is `stopped` or `exited` (`RESUMABLE` in `helpers/rc_helper.py`); refuses with `not_stopped` when there is none |
 | `rc-helper stop <path>` | Stops a running server with Ctrl+C and waits for it to exit |
 | `rc-helper forget <path>` | Removes a server that has stopped from the list |
 | `rc-helper output <path>` | The server's current screen and state |
@@ -51,7 +51,7 @@ a screen fails there first.
 | `stopped` | Stopped with its sessions preserved; `start` or `resume` brings them back |
 | `trust_declined` | The trust question was answered no; the server ended |
 | `logged_out` | Claude refused because no account is connected |
-| `exited` | The server ended in a way not listed above; `exit_code` and `screen` are set |
+| `exited` | The server ended in a way not listed above, whatever its exit status — it stopped by itself; `exit_code` and `screen` are set, and `start` or `resume` starts it again |
 | `unrecognised` | A live screen that matches no known state; `screen` is set |
 
 A screen in transition can match no known state for a moment, so verbs that

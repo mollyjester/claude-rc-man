@@ -64,11 +64,13 @@ The installer asks for what it needs the first time, and saves the answers in
 | The Google OAuth client secret | `--google-client-secret` | `RCMAN_INSTALL_GOOGLE_CLIENT_SECRET` |
 | The first administrator's Google address | `--admin-email` | `RCMAN_INSTALL_ADMIN_EMAIL` |
 | Their Linux user; you, unless given | `--admin-linux` | `RCMAN_INSTALL_ADMIN_LINUX` |
-| The local port rcman listens on | `--app-port` | `RCMAN_INSTALL_APP_PORT` |
 | The local port oauth2-proxy listens on | `--proxy-port` | `RCMAN_INSTALL_PROXY_PORT` |
+| The Linux account Caddy runs as | `--caddy-user` | `RCMAN_INSTALL_CADDY_USER` |
 
 An option wins over a variable, a variable over the saved answer, and the
-saved answer over asking. The ports have defaults and are not asked for.
+saved answer over asking. The port and Caddy's account have defaults and are
+not asked for; the account must exist. Anything else saved in
+`/etc/rcman/install.env` is dropped from it.
 Without a terminal the installer does not ask; it names what is missing and
 stops. The secret oauth2-proxy signs its cookies with is generated on the first
 run and kept.
@@ -81,33 +83,82 @@ run and kept.
    `install.sh`, it starts again with the new version.
 2. **Creates the accounts it needs**: the `rcusers` group every person's Linux
    account belongs to, a system user `rcman` for rcman itself (its data lives
-   in `/var/lib/rcman`), and a system user `rcman-proxy` for oauth2-proxy.
-3. **Builds a release** of the clone's commit under `/opt/rcman/releases`: the
+   in `/var/lib/rcman`), a system user `rcman-proxy` for oauth2-proxy, and a
+   group `rcman-web` whose only member is Caddy's account; anyone else in it is
+   taken out.
+3. **Makes the directory of rcman's socket**, `/run/rcman`: it belongs to
+   `rcman` and the group `rcman-web`, and no one else may enter it.
+   `/etc/tmpfiles.d/rcman.conf` makes it again at every boot.
+4. **Builds a release** of the clone's commit under `/opt/rcman/releases`: the
    files rcman runs, the built web interface, and its Python environment — and
    nothing used only for development. Everything in it belongs to root.
-4. **Makes it current** — `/opt/rcman/current` — and keeps the release before
+5. **Makes it current** — `/opt/rcman/current` — and keeps the release before
    it as `/opt/rcman/previous`; older ones are removed.
-5. **Writes the configuration** in `/etc/rcman`, the sudoers rules in
+6. **Writes the configuration** in `/etc/rcman`, the sudoers rules in
    `/etc/sudoers.d/rcman` (checked with `visudo` first), and the two systemd
    services, `rcman` and `rcman-oauth2-proxy`.
-6. **Starts the services**, restarting them when anything changed.
-7. **Adds the first administrator**, as `rcman-user add --admin --adopt` would.
-8. **Checks** that both services answer, and prints the Caddy configuration.
+7. **Starts the services**, restarting them when anything changed.
+8. **Adds the first administrator**, as `rcman-user add --admin --adopt` would.
+9. **Checks** that both services answer, and prints the Caddy configuration
+   and what to do about Caddy, if anything.
 
 Running it again for the same commit changes nothing.
 
 ## Caddy
 
-The installer prints the site block to add to your Caddyfile and keeps it in
-`/etc/rcman/Caddyfile.snippet`. It sends oauth2-proxy's own pages to
-oauth2-proxy, asks oauth2-proxy whether each other request is signed in, sends
-people who are not to the Google sign-in, and passes the signed-in address to
-rcman. It also removes any address a browser sends itself, so only
-oauth2-proxy can tell rcman who someone is. Reload Caddy after adding it.
+rcman listens on no network port. Its only listener is the unix socket
+`/run/rcman/rcman.sock`, in a directory only the group `rcman-web` may enter,
+and Caddy's account is that group's only member. rcman believes the address
+Caddy passes it, so this is what keeps anyone else on the machine from
+passing one.
+
+The installer prints the site block for your Caddyfile and keeps it in
+`/etc/rcman/Caddyfile.snippet`. Either `import` that file in your Caddyfile, so
+it is always the current one, or copy the block in. It sends oauth2-proxy's
+own pages to oauth2-proxy, asks oauth2-proxy whether each other request is
+signed in, sends people who are not to the Google sign-in, and passes the
+signed-in address to rcman through the socket. It also removes any address a
+browser sends itself, so only oauth2-proxy can tell rcman who someone is.
+
+The installer says when Caddy needs something from you, at the end of its
+output:
+
+- **The site block changed** — on the first installation, and whenever an
+  upgrade changes it. If your Caddyfile imports the snippet there is nothing
+  to change in it; if it holds a copy, copy the block again. Then **restart**
+  Caddy: it keeps the site block it started with until then.
+- **Caddy's account joined `rcman-web`** — on the first installation, or when
+  `--caddy-user` names another account. **Restart** Caddy. A reload is not
+  enough, because only a Caddy that starts again belongs to the group, and
+  until then it cannot reach rcman's socket.
+
+Caddy's admin API must not be reachable by other local users. By default it
+listens on `localhost:2019`, where any local user can rewrite Caddy's
+configuration — and so send rcman any address they like. Turn it off, or move
+it to a unix socket, in the global options at the top of your Caddyfile, then
+restart Caddy:
+
+```
+{
+	admin off
+}
+```
+
+The installer warns, on every run, while something answers on that address,
+at `127.0.0.1:2019` or `[::1]:2019`.
 
 ## Upgrading and rolling back
 
 To upgrade, run `sudo ./install.sh` again: it pulls `main` and installs it.
+Then do what it says about Caddy, as described under [Caddy](#caddy).
+
+An installation whose site block sends requests for rcman to a local port is
+upgraded to the socket: the run changes the site block and adds Caddy's
+account to `rcman-web`, and rcman cannot be reached through Caddy until Caddy
+uses the new block and belongs to the group. After that run, copy the
+block again if your Caddyfile holds a copy, make sure Caddy's admin API is off,
+and restart Caddy.
+
 To go back to the release before the current one, use `--rollback`:
 
 ```

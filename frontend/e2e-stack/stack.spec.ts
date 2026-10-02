@@ -62,6 +62,32 @@ test("another person sees only their own home and servers", async ({ page }) => 
   expect(status).toBe(404);
 });
 
+test("administrators see everyone's servers, and act on none of them", async ({ page, browser }) => {
+  // bob runs a server, as his own Linux account.
+  await signIn(page, "bob@example.com");
+  await expect(page.getByRole("link", { name: m.navEveryone })).toHaveCount(0);
+  await connectClaude(page);
+  await page.getByRole("button", { name: m.expand("projects") }).click();
+  await page.getByRole("button", { name: m.startIn("projects/bob-demo") }).click();
+  const card = page.getByRole("article", { name: "projects/bob-demo" });
+  await card.getByRole("button", { name: m.trustYes }).click();
+  await expect(card.getByText(m.states.ready, { exact: true })).toBeVisible();
+
+  // alice, an administrator, sees it: rcman listed it through sudo -u bob.
+  const admin = await browser.newPage();
+  await signIn(admin, "alice@example.com");
+  await admin.getByRole("link", { name: m.navEveryone }).click();
+  const bob = admin.getByRole("region", { name: m.everyonePerson("bob", "bob@example.com") });
+  await expect(bob.getByRole("row", { name: /projects\/bob-demo/ }).getByText(m.states.ready, { exact: true })).toBeVisible();
+  const alice = admin.getByRole("region", { name: m.everyonePerson("alice", "alice@example.com") });
+  await expect(alice.getByRole("row", { name: /projects\/alice-demo/ })).toBeVisible();
+  await expect(admin.getByRole("main").getByRole("button")).toHaveCount(0);
+  await admin.close();
+
+  await card.getByRole("button", { name: m.stop }).click();
+  await expect(card.getByText(m.states.stopped, { exact: true })).toBeVisible();
+});
+
 test("an address that is not on the list gets nowhere", async ({ page }) => {
   await signIn(page, "stranger@example.com");
   await expect(page.getByText(/403|Forbidden|Permission Denied/i).first()).toBeVisible();

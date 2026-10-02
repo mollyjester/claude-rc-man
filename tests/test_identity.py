@@ -1,7 +1,9 @@
 """Who is asking: the proxy's email header, the users file, the origin."""
 
+from rcman import routes
+
 from helpers import users_file as uf
-from tests.conftest import ALICE, BOB, ORIGIN, as_user
+from tests.conftest import ALICE, BOB, CALLS, ORIGIN, as_user, changing, concrete
 
 
 def test_no_identity_is_401(client):
@@ -23,10 +25,39 @@ def test_removed_user_is_refused_at_once(client, settings):
     assert client.get("/api/me", headers=as_user(BOB)).status_code == 403
 
 
-def test_admin_routes_refuse_non_admins(client):
-    for path in ("/api/audit", "/api/users"):
-        r = client.get(path, headers=as_user(BOB))
-        assert (r.status_code, r.json()["code"]) == (403, "admin_only"), path
+KNOWN_ADMIN_ROUTES = {
+    ("GET", "/api/audit"),
+    ("GET", "/api/users"),
+    ("POST", "/api/users"),
+    ("DELETE", "/api/users/{linux}"),
+    ("GET", "/api/claude/versions"),
+    ("POST", "/api/claude/upgrade"),
+    ("GET", "/api/servers/everyone"),
+    ("GET", "/api/attention"),
+}
+
+
+def admin_routes(app):
+    return {
+        (method, c.path)
+        for c in routes.api_routes(app)
+        if routes.admin_only(c.route)
+        for method in c.methods
+    }
+
+
+def test_admin_routes_are_found_in_the_route_table(app):
+    found = admin_routes(app)
+    assert KNOWN_ADMIN_ROUTES <= found  # non-vacuity: every known one is found
+    assert ("GET", "/api/me") not in found and ("GET", "/api/servers") not in found
+
+
+def test_admin_routes_refuse_non_admins(client, app):
+    found = admin_routes(app)
+    assert found and found <= set(CALLS)  # every admin route has a valid request to drive it
+    for method, path in sorted(found):
+        r = client.request(method, concrete(path), headers=changing(BOB), **CALLS[(method, path)])
+        assert (r.status_code, r.json()["code"]) == (403, "admin_only"), (method, path)
     assert client.get("/api/audit", headers=as_user(ALICE)).status_code == 200
 
 

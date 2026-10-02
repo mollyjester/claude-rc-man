@@ -60,3 +60,180 @@ def test_every_admin_error_code_has_a_status():
 @pytest.mark.parametrize("status", [*hc.HELPER_STATUS.values(), *hc.ADMIN_STATUS.values()])
 def test_statuses_are_client_or_server_errors(status):
     assert 400 <= status < 600
+
+
+def test_a_helper_that_times_out_is_a_problem():
+    import subprocess
+
+    from rcman.identity import Identity
+    from rcman.problems import Problem
+
+    seen = {}
+
+    def fake_run(argv, **kw):
+        seen["timeout"] = kw["timeout"]
+        raise subprocess.TimeoutExpired(argv, kw["timeout"])
+
+    run = hc.sudo_helper(Path("/x"), runner=fake_run)
+    with pytest.raises(Problem) as raised:
+        hc.call_helper(run, Identity("a@example.com", "alice", False), ["list"], timeout=7)
+    assert (raised.value.code, raised.value.status) == ("helper_timeout", 504)
+    assert seen["timeout"] == 7
+    hc.call_helper(
+        hc.sudo_helper(Path("/x"), runner=lambda argv, **kw: seen.update(kw) or ok(argv)),
+        Identity("a@example.com", "alice", False),
+        ["list"],
+    )
+    assert seen["timeout"] == hc.HELPER_TIMEOUT  # the default when none is given
+
+
+def ok(argv):
+    import subprocess
+
+    return subprocess.CompletedProcess(argv, 0, stdout='{"servers": []}', stderr="")
+
+
+# A stand-in for sudo: it runs a child that outlives it unless told to stop, and,
+# like sudo, relays SIGTERM to that child; SIGKILL it cannot relay.
+SUDO_LIKE = """
+import signal, subprocess, sys, time
+child = subprocess.Popen([sys.executable, "-c",
+    "import os, sys, time; open(sys.argv[1], 'w').write(str(os.getpid())); time.sleep(60)",
+    sys.argv[1]])
+signal.signal(signal.SIGTERM, lambda *a: (child.terminate(), child.wait(), sys.exit(143)))
+child.wait()
+"""
+
+
+def child_alive(pid_file, deadline=5.0):
+    import time
+
+    start = time.monotonic()
+    while not pid_file.exists() or not pid_file.read_text():
+        assert time.monotonic() - start < deadline, "the child never started"
+        time.sleep(0.05)
+    pid = int(pid_file.read_text())
+    while time.monotonic() - start < deadline:
+        try:
+            with open(f"/proc/{pid}/stat") as stat:
+                if stat.read().split(")")[-1].split()[0] == "Z":
+                    return False, pid
+        except FileNotFoundError:
+            return False, pid
+        time.sleep(0.1)
+    return True, pid
+
+
+def test_a_timed_out_helper_does_not_leave_its_child_running(tmp_path):
+    import os
+    import signal
+    import subprocess
+    import sys
+
+    # Planted twin: subprocess.run's own timeout kills the sudo stand-in outright,
+    # and the child it started keeps running.
+    planted = tmp_path / "planted.pid"
+    with pytest.raises(subprocess.TimeoutExpired):
+        subprocess.run([sys.executable, "-c", SUDO_LIKE, str(planted)], timeout=1)
+    alive, pid = child_alive(planted, deadline=1.0)
+    assert alive  # the defect is real for a plain timeout
+    os.kill(pid, signal.SIGKILL)
+
+    pid_file = tmp_path / "child.pid"
+    with pytest.raises(subprocess.TimeoutExpired):
+        hc.run_bounded(
+            [sys.executable, "-c", SUDO_LIKE, str(pid_file)],
+            input=None,
+            capture_output=True,
+            text=True,
+            timeout=1,
+        )
+    alive, pid = child_alive(pid_file)
+    if alive:
+        os.kill(pid, signal.SIGKILL)
+    assert not alive
+
+
+def test_run_bounded_returns_what_the_process_printed():
+    import sys
+
+    proc = hc.run_bounded(
+        [sys.executable, "-c", "import sys; print(sys.stdin.read().upper()); sys.exit(3)"],
+        input="hi",
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert (proc.returncode, proc.stdout.strip()) == (3, "HI")
+
+
+def test_the_production_runners_bound_their_calls_this_way():
+    import inspect
+
+    assert inspect.signature(hc.sudo_helper).parameters["runner"].default is hc.run_bounded
+    assert inspect.signature(hc.sudo_admin).parameters["runner"].default is hc.run_bounded
+
+
+def test_an_admin_call_that_times_out_is_a_problem():
+    import subprocess
+
+    from rcman.problems import Problem
+
+    seen = {}
+
+    def fake_run(argv, **kw):
+        seen["timeout"] = kw["timeout"]
+        raise subprocess.TimeoutExpired(argv, kw["timeout"])
+
+    run = hc.sudo_admin(Path("/x"), runner=fake_run)
+    with pytest.raises(Problem) as raised:
+        hc.call_admin(run, ["claude-status"], timeout=9)
+    assert (raised.value.code, raised.value.status) == ("helper_timeout", 504)
+    assert seen["timeout"] == 9
+    hc.call_admin(
+        hc.sudo_admin(Path("/x"), runner=lambda argv, **kw: seen.update(kw) or ok(argv)),
+        ["list"],
+    )
+    assert seen["timeout"] == hc.ADMIN_TIMEOUT  # the default when none is given
+
+
+# Like SUDO_LIKE, but its child ignores SIGTERM, as a stuck helper might, and
+# keeps the output pipe open.
+SUDO_LIKE_STUBBORN = """
+import signal, subprocess, sys
+child = subprocess.Popen([sys.executable, "-c",
+    "import os, signal, sys, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+    "open(sys.argv[1], 'w').write(str(os.getpid())); time.sleep(60)",
+    sys.argv[1]])
+signal.signal(signal.SIGTERM, lambda *a: child.terminate())
+child.wait()
+"""
+
+
+def test_a_helper_that_ignores_sigterm_does_not_hold_the_call(tmp_path, monkeypatch):
+    import os
+    import signal
+    import subprocess
+    import sys
+    import time
+
+    monkeypatch.setattr(hc, "TERMINATE_GRACE_SECONDS", 0.5)
+    pid_file = tmp_path / "child.pid"
+    started = time.monotonic()
+    try:
+        with pytest.raises(subprocess.TimeoutExpired):
+            hc.run_bounded(
+                [sys.executable, "-c", SUDO_LIKE_STUBBORN, str(pid_file)],
+                input=None,
+                capture_output=True,
+                text=True,
+                timeout=1,
+            )
+        elapsed = time.monotonic() - started
+    finally:
+        if pid_file.exists() and pid_file.read_text():
+            try:
+                os.kill(int(pid_file.read_text()), signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+    assert elapsed < 1 + 0.5 + 2  # the timeout, the grace period and a margin

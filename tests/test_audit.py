@@ -8,7 +8,7 @@ from pathlib import Path
 from fastapi.routing import APIRoute
 from rcman import audit, db, routes
 
-from tests.conftest import ALICE, BOB, changing
+from tests.conftest import ALICE, BOB, CALLS, changing, concrete
 
 REPO = Path(__file__).resolve().parent.parent
 CHANGING = {"POST", "PUT", "PATCH", "DELETE"}
@@ -55,6 +55,30 @@ def test_every_action_is_listed_in_the_guide(app):
     assert actions and actions == listed
 
 
+def documented_results(guide):
+    """The results the guide's results table lists, besides error codes."""
+    return set(
+        re.findall(r"^\| `([a-z_]+)` \| [^|]+ \|$", guide.split("## How long")[0], re.MULTILINE)
+    )
+
+
+def test_every_result_other_than_an_error_code_is_listed_in_the_guide():
+    guide = (REPO / "docs" / "audit.md").read_text(encoding="utf-8")
+    assert set(audit.RESULTS) == {"ok", "unrecognised_screen"}  # non-vacuity: both are known
+    assert documented_results(guide) == set(audit.RESULTS)
+
+
+def test_the_results_check_fails_on_a_drifted_guide():
+    """Planted twin: a results table missing a row, or with one too many, is caught."""
+    rows = [f"| `{result}` | meaning |" for result in audit.RESULTS]
+    right = "| Result | Meaning |\n|---|---|\n" + "\n".join(rows) + "\n"
+    assert documented_results(right) == set(audit.RESULTS)
+    missing = right.replace(rows[-1] + "\n", "")
+    assert missing != right and documented_results(missing) != set(audit.RESULTS)
+    extra = right + "| `forged` | meaning |\n"
+    assert documented_results(extra) != set(audit.RESULTS)
+
+
 def test_a_route_without_a_recorder_is_detected():
     """Planted twin: a changing route with no recorder is reported."""
     from fastapi import FastAPI
@@ -73,21 +97,7 @@ def test_a_route_without_a_recorder_is_detected():
 
 
 def test_driving_every_audited_route_writes_its_row(app, client, settings, admin_runner):
-    calls = {
-        ("POST", "/api/servers"): {"json": {"path": "projects/alice-project"}},
-        ("POST", "/api/servers/resume"): {"json": {"path": "projects/alice-project"}},
-        ("POST", "/api/servers/stop"): {"json": {"path": "projects/alice-project"}},
-        ("POST", "/api/servers/forget"): {"json": {"path": "projects/alice-project"}},
-        ("POST", "/api/servers/confirm"): {
-            "json": {"path": "projects/alice-project", "answer": "y"}
-        },
-        ("PUT", "/api/me/settings"): {"json": {"prefix": "alice"}},
-        ("POST", "/api/users"): {"json": {"linux": "dave", "email": "dave@example.com"}},
-        ("DELETE", "/api/users/{linux}"): {"params": {"home": "keep"}},
-        ("POST", "/api/claude/login"): {"json": {}},
-        ("POST", "/api/claude/code"): {"json": {"code": "x"}},
-        ("POST", "/api/claude/upgrade"): {"json": {"version": "2.2.0"}},
-    }
+    calls = {k: v for k, v in CALLS.items() if k[0] in CHANGING}
     audited = {
         (sorted(r.methods)[0], r.path): audit.action_of(r.route)
         for r in changing_routes(app)
@@ -101,7 +111,7 @@ def test_driving_every_audited_route_writes_its_row(app, client, settings, admin
     ]
     for (method, path), kwargs in calls.items():
         before = len(rows(settings))
-        client.request(method, path.replace("{linux}", "bob"), headers=changing(ALICE), **kwargs)
+        client.request(method, concrete(path), headers=changing(ALICE), **kwargs)
         after = rows(settings)
         assert len(after) == before + 1, (method, path)
         assert after[-1]["action"] == audited[(method, path)]
@@ -130,6 +140,109 @@ def test_audit_events_are_logged_as_json(client, caplog):
     client.put("/api/me/settings", json={"prefix": "pfx"}, headers=changing(BOB))
     event = json.loads(caplog.records[-1].getMessage())
     assert event["action"] == "settings.update" and event["email"] == BOB
+
+
+def _service_argv(port: int, sock: Path) -> list[str]:
+    """The unit's own ExecStart, with the development uvicorn and a free listener."""
+    import shlex
+    import sys
+
+    unit = (REPO / "installer" / "templates" / "rcman.service").read_text(encoding="utf-8")
+    exec_start = next(
+        line.partition("=")[2] for line in unit.splitlines() if line.startswith("ExecStart=")
+    )
+    argv = shlex.split(exec_start)
+    assert argv[0] == "@CURRENT@/.venv/bin/uvicorn"
+    argv[0] = str(Path(sys.executable).parent / "uvicorn")
+    for option, value in (("--port", str(port)), ("--uds", str(sock))):
+        if option in argv:
+            argv[argv.index(option) + 1] = value
+    assert not any("@" in a for a in argv), argv
+    return argv
+
+
+def _request(port, sock, method, path, body=None, headers=None):
+    """One HTTP request to the service, over its unix socket or its TCP port."""
+    import http.client
+    import socket
+
+    if sock is not None:
+
+        class Connection(http.client.HTTPConnection):
+            def connect(self):
+                self.sock = socket.socket(socket.AF_UNIX)
+                self.sock.settimeout(5)
+                self.sock.connect(str(sock))
+
+        conn = Connection("rcman")
+    else:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+    try:
+        conn.request(method, path, body=body, headers=headers or {})
+        response = conn.getresponse()
+        return response.status, response.read().decode()
+    finally:
+        conn.close()
+
+
+def test_audit_events_reach_the_service_output(tmp_path, settings):
+    """Started as the unit starts it, an audit event is a line on the service's own output."""
+    import json
+    import os
+    import socket
+    import subprocess
+    import time
+
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    sock = tmp_path / "rcman.sock"
+    argv = _service_argv(port, sock)
+    if "--uds" not in argv:
+        sock = None
+    env = {
+        "PATH": os.environ["PATH"],
+        "RCMAN_PUBLIC_ORIGIN": settings.public_origin,
+        "RCMAN_USERS_FILE": str(settings.users_file),
+        "RCMAN_DATABASE": str(settings.database),
+    }
+    output = tmp_path / "service.log"
+    with output.open("wb") as log:
+        proc = subprocess.Popen(argv, cwd=REPO, env=env, stdout=log, stderr=subprocess.STDOUT)
+    try:
+        deadline = time.monotonic() + 30
+        while True:
+            try:
+                if _request(port, sock, "GET", "/api/health")[0] == 200:
+                    break
+            except OSError:
+                pass
+            assert time.monotonic() < deadline, output.read_text()
+            time.sleep(0.1)
+        status, text = _request(
+            port,
+            sock,
+            "PUT",
+            "/api/me/settings",
+            body=json.dumps({"prefix": "pfx"}),
+            headers={**changing(BOB), "Content-Type": "application/json"},
+        )
+        assert status == 200, text
+    finally:
+        proc.terminate()
+        proc.wait(timeout=10)
+    lines = output.read_text().splitlines()
+    assert any("Uvicorn running" in line for line in lines), lines  # positive control
+    events = []
+    for line in lines:
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(event, dict) and event.get("action") == "settings.update":
+            events.append(event)
+    assert len(events) == 1, lines
+    assert events[0]["email"] == BOB and events[0]["result"] == "ok"
 
 
 # --- retention ------------------------------------------------------------------------

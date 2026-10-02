@@ -70,8 +70,9 @@ connected stage lasts, and `FAKE_CLAUDE_VERSION` the version it reports.
 
 ## Not recorded
 
-The fake has no recording of these, so it cannot show them, and rcman treats
-them as unrecognised screens until they are recorded:
+The fake has no recording of these, so it cannot show them. Until they are
+recorded, rc-helper reports a live one as `unrecognised`, and a server whose
+process has ended on one as `exited` (see [rc-helper.md](rc-helper.md)):
 
 - the one-time "Enable Remote Control?" confirmation of an account that has
   never used Remote Control;
