@@ -11,7 +11,8 @@ environment variables are test hooks — ``RC_HELPER_HOME``, ``RC_HELPER_CLAUDE`
 and ``RC_HELPER_TMUX_SOCKET`` — and the sudoers rule resets the environment,
 so they never reach a helper started through sudo.
 
-Python standard library only: it runs under the system interpreter.
+Python standard library and the helpers' own modules only: it runs under the
+system interpreter.
 """
 
 from __future__ import annotations
@@ -29,6 +30,8 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+
+from helpers.users_file import EMAIL
 
 VERBS = (
     "tree",
@@ -84,7 +87,20 @@ MAX_TREE_DEPTH = 3
 MAX_PREFIX_LENGTH = 32
 MAX_PATH_LENGTH = 1024
 PREFIX = re.compile(rf"[A-Za-z0-9][A-Za-z0-9-]{{0,{MAX_PREFIX_LENGTH - 1}}}")
-EMAIL = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+")
+MAX_AUTHOR_NAME_LENGTH = 128
+# What a commit author's name may not contain: control characters, line and
+# paragraph separators, the angle brackets git puts around the address, and
+# invisible formatting characters that make two names look alike.
+_NOT_IN_AUTHOR_NAME = (
+    r"\x00-\x1f\x7f-\x9f\u2028\u2029<>"
+    r"\u200B-\u200F\u202A-\u202E\u2060-\u2064\u2066-\u2069\uFEFF"
+)
+# It neither starts nor ends with white space. No lookaround, so the backend's
+# validator reads it as this module does.
+AUTHOR_NAME = re.compile(
+    rf"[^{_NOT_IN_AUTHOR_NAME}\s]"
+    rf"(?:[^{_NOT_IN_AUTHOR_NAME}]{{0,{MAX_AUTHOR_NAME_LENGTH - 2}}}[^{_NOT_IN_AUTHOR_NAME}\s])?"
+)
 # The trust prompt refuses an answer that arrives too quickly after the question.
 ANSWER_PACE_SECONDS = 0.5
 START_TIMEOUT = 30.0
