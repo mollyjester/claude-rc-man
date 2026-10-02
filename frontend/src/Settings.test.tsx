@@ -14,6 +14,7 @@ function api(routes: Routes = {}) {
     "GET /api/claude": CONNECTED,
     "GET /api/me/settings": SETTINGS,
     "PATCH /api/me/settings": (c) => ({ ...SETTINGS, ...(c.body as object) }),
+    "GET /api/github": { token: false },
     ...routes,
   });
 }
@@ -106,4 +107,90 @@ test("saving one part leaves the other part's status alone", async () => {
   expect(await within(author).findByRole("alert")).toBeInTheDocument();
   expect(within(prefix).getByText(m.saved)).toBeInTheDocument();
   expect(within(prefix).queryByRole("alert")).toBeNull();
+});
+
+// --- the GitHub token -----------------------------------------------------------
+
+const PLANTED = "planted-secret-token-in-the-reply";
+
+test("the GitHub token part says whether one is stored, and never fills its field from the server", async () => {
+  api({ "GET /api/github": { token: true, value: PLANTED } });
+  renderApp("/settings");
+  const github = await part(m.settingsGithubTitle);
+  expect(await within(github).findByText(m.githubTokenStored)).toBeInTheDocument();
+  const field = within(github).getByLabelText(m.githubTokenLabel);
+  expect(field).toHaveAttribute("type", "password");
+  expect(field).toHaveAttribute("autocomplete", "off");
+  expect(field).toHaveValue("");
+  expect(document.body.textContent).not.toContain(PLANTED);
+  for (const input of document.querySelectorAll("input")) expect(input.value).not.toContain(PLANTED);
+});
+
+test("with no token stored the part says so, and offers no Remove", async () => {
+  api();
+  renderApp("/settings");
+  const github = await part(m.settingsGithubTitle);
+  expect(await within(github).findByText(m.githubTokenNotStored)).toBeInTheDocument();
+  expect(within(github).queryByRole("button", { name: m.githubTokenRemove })).not.toBeInTheDocument();
+});
+
+test("Save sends the token as typed, then clears the field and says it is stored", async () => {
+  const fake = api({ "POST /api/github/token": { token: true } });
+  renderApp("/settings");
+  const github = await part(m.settingsGithubTitle);
+  await within(github).findByText(m.githubTokenNotStored);
+  const field = within(github).getByLabelText(m.githubTokenLabel);
+  await userEvent.type(field, "ghp_typed-token");
+  const save = within(github).getByRole("button", { name: m.save });
+  expect(save).toHaveClass("primary");
+  await userEvent.click(save);
+  await waitFor(() => expect(fake.made("POST", "/api/github/token")).toHaveLength(1));
+  expect(fake.made("POST", "/api/github/token")[0].body).toEqual({ token: "ghp_typed-token" });
+  expect(await within(github).findByText(m.githubTokenSaved)).toBeInTheDocument();
+  expect(field).toHaveValue("");
+  expect(within(github).getByText(m.githubTokenStored)).toBeInTheDocument();
+});
+
+test("a refused token stays in the field, and the refusal is shown by its label", async () => {
+  api({
+    "POST /api/github/token": problem(422, "validation_failed", "Some of what was sent is not valid.", {
+      errors: [{ field: "token", message: "planted reason, as the server sent it" }],
+    }),
+  });
+  renderApp("/settings");
+  const github = await part(m.settingsGithubTitle);
+  const field = await within(github).findByLabelText(m.githubTokenLabel);
+  await userEvent.type(field, "not a token");
+  await userEvent.click(within(github).getByRole("button", { name: m.save }));
+  expect(await within(github).findByText(`${m.githubTokenLabel}: planted reason, as the server sent it`)).toBeInTheDocument();
+  expect(field).toHaveValue("not a token");
+  expect(within(github).queryByText(m.githubTokenSaved)).toBeNull();
+});
+
+test("Remove asks first, then removes the token", async () => {
+  const fake = api({ "GET /api/github": { token: true }, "DELETE /api/github/token": { token: false } });
+  renderApp("/settings");
+  const github = await part(m.settingsGithubTitle);
+  const remove = await within(github).findByRole("button", { name: m.githubTokenRemove });
+  expect(remove).toHaveClass("secondary-danger");
+  await userEvent.click(remove);
+  const dialog = await screen.findByRole("dialog", { name: m.githubTokenRemoveTitle });
+  expect(fake.made("DELETE", "/api/github/token")).toHaveLength(0); // nothing yet
+  await userEvent.click(within(dialog).getByRole("button", { name: m.githubTokenRemoveConfirm }));
+  await waitFor(() => expect(fake.made("DELETE", "/api/github/token")).toHaveLength(1));
+  expect(await within(github).findByText(m.githubTokenNotStored)).toBeInTheDocument();
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  expect(within(github).queryByRole("button", { name: m.githubTokenRemove })).not.toBeInTheDocument();
+});
+
+test("Cancel leaves the token alone", async () => {
+  const fake = api({ "GET /api/github": { token: true } });
+  renderApp("/settings");
+  const github = await part(m.settingsGithubTitle);
+  await userEvent.click(await within(github).findByRole("button", { name: m.githubTokenRemove }));
+  const dialog = await screen.findByRole("dialog", { name: m.githubTokenRemoveTitle });
+  await userEvent.click(within(dialog).getByRole("button", { name: m.cancel }));
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  expect(fake.made("DELETE", "/api/github/token")).toHaveLength(0);
+  expect(within(github).getByText(m.githubTokenStored)).toBeInTheDocument();
 });

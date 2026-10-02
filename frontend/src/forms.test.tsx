@@ -34,6 +34,7 @@ function api() {
       author: { name: "Alice", email: "alice@example.com" },
     },
     "GET /api/git/branches": { path: REPOSITORY.path, local: { branches: [], more: 0 }, remote: { branches: [], more: 0 } },
+    "GET /api/github": { token: true },
   });
 }
 
@@ -102,6 +103,15 @@ PAGES.push(
 // Pages with a form that has nothing to type in, and what opens it.
 const CHOICES: [string, string, () => Promise<void>][] = [
   [
+    "removing the GitHub token",
+    "/settings",
+    async () => {
+      const github = await screen.findByRole("region", { name: m.settingsGithubTitle });
+      await userEvent.click(await within(github).findByRole("button", { name: m.githubTokenRemove }));
+      await screen.findByRole("dialog");
+    },
+  ],
+  [
     "deleting a folder",
     "/?folder=projects",
     async () => {
@@ -122,7 +132,10 @@ test.each(PAGES)("no input on %s (%s) carries its own validation rule", async (_
     for (const attribute of RULE_ATTRIBUTES) {
       expect(input.hasAttribute(attribute), `${input.outerHTML} has ${attribute}`).toBe(false);
     }
-    if (input instanceof HTMLInputElement) {
+    if (input instanceof HTMLInputElement && input.type === "password") {
+      // The one secret a page takes, the GitHub token, is typed where it is not shown.
+      expect(input.closest("section")?.querySelector("h2")?.textContent).toBe(m.settingsGithubTitle);
+    } else if (input instanceof HTMLInputElement) {
       expect(["text", "checkbox", "radio"]).toContain(input.type);
     }
   }
@@ -157,7 +170,7 @@ test.each([...PAGES, ...CHOICES])("each form on %s (%s) leads with one button, i
 });
 
 // The forms whose submit cannot be undone, which lead with danger instead.
-const DESTRUCTIVE = ["removing someone", "deleting a folder"];
+const DESTRUCTIVE = ["removing someone", "deleting a folder", "removing the GitHub token"];
 
 test("every form said to be destructive is one of those checked", () => {
   const pages = [...PAGES, ...CHOICES].map(([page]) => page);
@@ -243,12 +256,15 @@ test("the check fails on a form with no leading button, two, or one that does no
   expect(hierarchyFaults(document.createElement("div"))).toEqual([]);
 });
 
-test("the settings page has an input for every field it describes, and nothing else", async () => {
+test("the settings page has an input for every field it describes, and the token's, and nothing else", async () => {
   api();
   renderApp("/settings");
   const found = await inputs();
+  const github = await screen.findByRole("region", { name: m.settingsGithubTitle });
+  const token = found.filter((input) => github.contains(input));
+  expect(token.map((input) => (input as HTMLInputElement).type)).toEqual(["password"]);
   expect(Object.keys(FIELDS).length).toBeGreaterThan(0); // non-vacuity
-  expect(found.length).toBe(Object.keys(FIELDS).length);
+  expect(found.length - token.length).toBe(Object.keys(FIELDS).length);
   expect(document.querySelectorAll("form").length).toBeGreaterThan(1);
   expect(document.querySelectorAll("form[novalidate]").length).toBe(document.querySelectorAll("form").length);
 });

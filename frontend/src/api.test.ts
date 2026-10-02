@@ -1,4 +1,4 @@
-import { ApiError, api } from "./api";
+import { ApiError, api, problemFrom } from "./api";
 import { fakeApi, problem } from "./test/fakeApi";
 
 async function failure(promise: Promise<unknown>): Promise<ApiError> {
@@ -48,4 +48,18 @@ test("an error that is not a problem still becomes an ApiError", async () => {
   expect(error).toBeInstanceOf(ApiError);
   expect(error.status).toBe(502);
   expect(error.title).toBeTruthy();
+});
+
+test("problem details in an answer become the ApiError a failed request would be", () => {
+  const error = problemFrom(
+    { type: "urn:rcman:problem:git_failed", title: "planted title", status: 409, code: "git_failed", git: ["words"] },
+    409,
+  );
+  expect(error).toBeInstanceOf(ApiError);
+  expect([error.status, error.code, error.title]).toEqual([409, "git_failed", "planted title"]);
+  expect(error.errors).toEqual([]);
+  expect(error.extra).toEqual({ git: ["words"] });
+  const odd = problemFrom(undefined, 502);
+  expect([odd.status, odd.code]).toEqual([502, "unexpected_response"]);
+  expect(odd.title).toBeTruthy();
 });
