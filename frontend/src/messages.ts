@@ -29,7 +29,7 @@ export const m = {
   states: {
     starting: "Starting",
     trust_prompt: "Waiting for your answer",
-    connected: "Connecting",
+    connected: "Ready to accept sessions",
     ready: "Ready",
     stopped: "Stopped",
     trust_declined: "Not started: folder not trusted",

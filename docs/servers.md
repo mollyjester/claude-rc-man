@@ -15,7 +15,7 @@ state allows:
 
 | State | What you can do |
 |---|---|
-| Starting, Connecting, Ready | Stop |
+| Starting, Ready to accept sessions, Ready | Stop |
 | Waiting for your answer | Trust the folder, decline, or stop |
 | Stopped | Resume, or forget it |
 | Not started (folder not trusted, or Claude account not connected) | Start again, or forget it |
@@ -44,9 +44,10 @@ folder. Sessions started there can read, edit and run the files in it, and the
 folder's own Claude settings apply to them. Answer yes to start the server, or
 no to cancel. Claude remembers the answer yes for that folder.
 
-A server first **connects**, then becomes **ready** once a session is attached
-to it. A ready server shows the session's name and a link to it on
-claude.ai/code.
+Once it has started, a server is **ready to accept sessions**: open one in
+claude.ai/code or the Claude app, in the server's environment. When a session
+is attached the server shows as **Ready**, with the session's name and a link to
+it on claude.ai/code.
 
 ## Stopping and resuming
 

@@ -62,6 +62,13 @@ test("a ready server shows its session and a link to it", async () => {
   );
 });
 
+test("a connected server with no session yet is labelled as ready to accept sessions", async () => {
+  dashboard([server("projects/alpha", "connected")]);
+  renderApp();
+  const card = await screen.findByRole("article", { name: "projects/alpha" });
+  expect(within(card).getByText("Ready to accept sessions")).toBeInTheDocument();
+});
+
 const LABELS: Record<string, string> = {
   stop: m.stop,
   resume: m.resume,
