@@ -29,6 +29,8 @@ HELPER_STATUS = {
     "refused_as_root": 500,
     "path_invalid": 400,
     "path_is_home": 400,
+    "path_ends_in_dot": 400,
+    "folder_path_too_long": 400,
     "path_outside_home": 400,
     "path_not_found": 404,
     "path_not_directory": 400,

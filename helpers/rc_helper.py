@@ -61,6 +61,9 @@ MESSAGES = {
     "internal_error": "rc-helper failed unexpectedly.",
     "refused_as_root": "rc-helper does not run as root.",
     "path_is_home": "Choose a folder inside your home folder, not the home folder itself.",
+    "path_ends_in_dot": (
+        "Name the folder itself: its path may not end in . or .., which name only where they lead."
+    ),
     "path_outside_home": "The folder is outside your home folder.",
     "path_not_found": "The folder does not exist.",
     "path_not_directory": "That is a file, not a folder.",
@@ -247,6 +250,10 @@ RULE_CODES = {
     "email_invalid": EMAIL,
 }
 MESSAGES.update({code: rule.sentence for code, rule in RULE_CODES.items()})
+# A message that states a length, so written once the length is.
+MESSAGES["folder_path_too_long"] = (
+    f"The new folder's path would be longer than {MAX_PATH_LENGTH} characters."
+)
 # The trust prompt refuses an answer that arrives too quickly after the question.
 ANSWER_PACE_SECONDS = 0.5
 START_TIMEOUT = 30.0
@@ -415,7 +422,7 @@ def check_folder_name(name: str, parent_fd: int, parent_rel: str) -> str:
         raise HelperError("name_invalid")
     rel = _joined(parent_rel, name)
     if len(rel) > MAX_PATH_LENGTH:
-        raise HelperError("path_invalid")
+        raise HelperError("folder_path_too_long")
     return rel
 
 
@@ -439,7 +446,9 @@ def resolve_entry(home: Path, rel: str) -> Entry:
     root = home.resolve()
     if parts[-1] in (".", ".."):  # names no entry; only where it leads
         target = confine(home, rel, allow_home=True)
-        raise HelperError("path_is_home" if target == root else "path_invalid")
+        if target == root:
+            raise HelperError("path_is_home")
+        raise HelperError("path_ends_in_dot")
     parent = resolve_folder(home, "/".join(parts[:-1]), allow_home=True)
     name = parts[-1]
     fd = open_dir(root, parent)

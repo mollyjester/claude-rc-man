@@ -17,10 +17,17 @@ command-line reference is `rc-helper --help` and `rc-helper <verb> --help`.
   one of the module's rules — each a `Rule` (`helpers/rules.py`): a pattern and
   the sentence that explains it — is refused with that rule's sentence:
   `RULE_CODES` names the rule behind each such code, and `MESSAGES` takes the
-  sentence from it. The backend refuses the same value with the same sentence.
-  A test runs each code's refusal through the command line, and holds every
-  rule the module has to a code, but `AUTHOR_NAME`, which only the backend
-  checks.
+  sentence from it. A rule's code is raised only where its rule is checked, so
+  the sentence is never said of a value the rule accepts. The backend checks
+  the same rules and refuses a value one refuses with the same sentence; what
+  only the helper can see, it refuses itself in words of its own — a folder
+  name longer than the file system allows (`name_invalid`), a path that leads
+  home, outside the home or nowhere, a path ending in `.` or `..`
+  (`path_ends_in_dot`), a new folder whose path would be too long
+  (`folder_path_too_long`). Tests run each code's refusal through the command
+  line, hold every rule the module has to a code, but `AUTHOR_NAME`, which
+  only the backend checks, and find a rule's code raised where its rule is
+  not checked.
 - Paths are relative to the user's home folder, as `PATH` in
   `helpers/rc_helper.py` says, which the backend's path fields check too.
   Option values that may start with a hyphen are passed as `--option=value`.
