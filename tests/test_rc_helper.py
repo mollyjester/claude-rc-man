@@ -1249,7 +1249,36 @@ def ignoring_interrupts(env):
     )
 
 
-def test_when_a_server_does_not_stop_nothing_is_forgotten_or_deleted(env, monkeypatch):
+def helper_with(env, settings: dict, *args, timeout: float):
+    """rc-helper's answer, run in its own process with some of its settings changed.
+
+    A call that outlasts ``timeout`` fails the test, so one that would wait
+    for ever is caught as a failure rather than a hang.
+    """
+    import sys
+
+    program = (
+        "import os, sys\nfrom helpers import rc_helper as h\n"
+        + "".join(f"h.{name} = {value!r}\n" for name, value in settings.items())
+        + "sys.exit(h.main(sys.argv[1:], dict(os.environ)))\n"
+    )
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            "-c",
+            f"import sys; sys.path.insert(0, {str(REPO)!r})\n" + program,
+            *args,
+        ],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
+    return proc.returncode, json.loads(proc.stdout)
+
+
+def test_when_a_server_does_not_stop_nothing_is_forgotten_or_deleted(env):
     home = Path(env["RC_HELPER_HOME"])
     trusted(env, "projects/beta")
     ok(env, "start", "projects/beta", "--prefix", "pfx")
@@ -1257,12 +1286,14 @@ def test_when_a_server_does_not_stop_nothing_is_forgotten_or_deleted(env, monkey
     ignoring_interrupts(env)
     ok(env, "start", "projects/beta/inner", "--prefix", "pfx")
     sessions = tmux_sessions(env)
-    monkeypatch.setattr(h, "STOP_TIMEOUT", 1.0)
-    error = refusal(in_process(env).delete, "projects/beta")
-    assert error.code == "delete_stop_failed"
-    assert error.detail["server"]["path"] == "projects/beta/inner"
-    assert any("[y/N]" in line for line in error.detail["server"]["screen"])
-    assert error.detail["stopped"] == ["projects/beta"]
+    # a stop deadline of one second, so a delete that waits longer has missed it
+    code, out = helper_with(env, {"STOP_TIMEOUT": 1.0}, "delete", "--", "projects/beta", timeout=15)
+    assert code == 1, out
+    error = out["error"]
+    assert error["code"] == "delete_stop_failed"
+    assert error["server"]["path"] == "projects/beta/inner"
+    assert any("[y/N]" in line for line in error["server"]["screen"])
+    assert error["stopped"] == ["projects/beta"]
     assert tmux_sessions(env) == sessions  # nothing forgotten
     assert (home / "projects" / "beta" / "inner").is_dir()
     servers = {s["path"]: s["state"] for s in ok(env, "list")["servers"]}
