@@ -13,9 +13,11 @@ export function folderLink(path: string | null) {
   return { pathname: "/", search: path ? `?folder=${encodeURIComponent(path).replaceAll("%2F", "/")}` : "" };
 }
 
-// A folder and each folder above it, from the top: "a/b" is a, then a/b.
+// A folder and each folder above it, from the top: "a/b" is a, then a/b. Empty
+// parts, as in "a/" or "/a", are left out; whether the path is valid is for the
+// server to say.
 export function lineage(path: string) {
-  const names = path.split("/");
+  const names = path.split("/").filter(Boolean);
   return names.map((name, i) => ({ name, path: names.slice(0, i + 1).join("/") }));
 }
 

@@ -241,6 +241,28 @@ test("the breadcrumb selects a folder above, and Home selects none", async () =>
   expect(location().search).toBe("");
 });
 
+test.each([
+  ["projects/alpha/", ["projects"], "alpha"],
+  ["/projects", [], "projects"],
+  ["projects//alpha", ["projects"], "alpha"],
+])("the breadcrumb and heading of %s leave out its empty parts", async (path, above, name) => {
+  dashboard([]);
+  renderApp(`/?folder=${path}`);
+  const opened = await panel(path);
+  const crumbs = within(opened).getByRole("navigation", { name: m.breadcrumb });
+  expect(within(crumbs).getAllByRole("listitem").map((li) => li.textContent)).toEqual([m.home, ...above, name]);
+  expect(within(opened).getByRole("heading", { level: 2 })).toHaveTextContent(name);
+});
+
+test("a folder that is only a slash still opens, under Home", async () => {
+  dashboard([]);
+  renderApp("/?folder=/");
+  const opened = await panel("/");
+  const crumbs = within(opened).getByRole("navigation", { name: m.breadcrumb });
+  expect(within(crumbs).getAllByRole("listitem").map((li) => li.textContent)).toEqual([m.home]);
+  expect(within(opened).getByRole("heading", { level: 2 })).toHaveTextContent("/");
+});
+
 test("a folder selected from the address is shown in the tree", async () => {
   const fake = dashboard([]);
   renderApp("/?folder=projects/alpha");

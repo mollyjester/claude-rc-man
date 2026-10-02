@@ -84,7 +84,7 @@ export function FolderPanel({
   return (
     <section aria-label={path} className="panel">
       <Breadcrumb path={path} />
-      <h2>{lineage(path).at(-1)!.name}</h2>
+      <h2>{lineage(path).at(-1)?.name ?? path}</h2>
       <PanelSection title={m.serverTitle}>
         {!known && <p>{m.loading}</p>}
         {known && server && <ServerCard server={server} startReason={startReason} onChange={onChange} />}
