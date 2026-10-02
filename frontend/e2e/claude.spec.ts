@@ -1,15 +1,16 @@
 import { expect, test } from "@playwright/test";
 
 import { m } from "../src/messages";
+import { panel } from "./nav";
 import { BOB, useAs } from "./people";
 
 test("connecting a Claude account", async ({ page }) => {
   await useAs(page, BOB);
   await page.goto("/?folder=projects/bob-alpha");
   await expect(page.getByText(m.claudeNotConnected)).toBeVisible();
-  const panel = page.getByRole("region", { name: "projects/bob-alpha", exact: true });
-  await expect(panel.getByText(m.notConnected.start)).toBeVisible();
-  await expect(panel.getByRole("button", { name: m.start })).toHaveCount(0);
+  const opened = panel(page, "projects/bob-alpha");
+  await expect(opened.getByText(m.notConnected.start)).toBeVisible();
+  await expect(opened.getByRole("button", { name: m.start })).toHaveCount(0);
 
   await page.getByRole("button", { name: m.connect }).click();
   await page.getByRole("button", { name: m.connectGo }).click();
@@ -23,6 +24,6 @@ test("connecting a Claude account", async ({ page }) => {
   await page.getByLabel(m.connectCode).fill("GOOD-CODE");
   await page.getByRole("button", { name: m.connectSubmit }).click();
   await expect(page.getByText(m.claudeConnectedAs("fake-user@example.com"))).toBeVisible();
-  await expect(panel.getByRole("button", { name: m.start })).toBeVisible();
-  await expect(panel.getByText(m.notConnected.start)).toHaveCount(0);
+  await expect(opened.getByRole("button", { name: m.start })).toBeVisible();
+  await expect(opened.getByText(m.notConnected.start)).toHaveCount(0);
 });

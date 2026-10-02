@@ -1,13 +1,8 @@
-import { type Page, expect, test } from "@playwright/test";
+import { expect, test } from "@playwright/test";
 
 import { m } from "../src/messages";
-import { openAdminPage, selectInProjects } from "./nav";
+import { openAdminPage, panel, selectInProjects, summary, tree } from "./nav";
 import { ALICE, BOB, useAs } from "./people";
-
-const tree = (page: Page) => page.getByRole("region", { name: m.foldersTitle });
-const summary = (page: Page) => page.getByRole("region", { name: m.yourServersTitle });
-const panel = (page: Page, path: string) => page.getByRole("region", { name: path, exact: true });
-
 
 test("start, trust, stop, resume and forget through the folder panel", async ({ page }) => {
   await useAs(page, ALICE);

@@ -2,7 +2,7 @@
 // person a Linux account of their own. Runs in order against one installation.
 import { type Page, expect, test } from "@playwright/test";
 
-import { openAdminPage, selectInProjects } from "../e2e/nav";
+import { openAdminPage, panel, selectInProjects, summary } from "../e2e/nav";
 import { m } from "../src/messages";
 
 const GOOD_CODE = "GOOD-CODE";
@@ -22,7 +22,6 @@ async function connectClaude(page: Page) {
   await expect(page.getByText(m.claudeConnectedAs("fake-user@example.com"))).toBeVisible();
 }
 
-
 test("a person signs in, connects Claude, and runs a server", async ({ page }) => {
   await signIn(page, "alice@example.com");
   await expect(page.getByText(m.signedInAs("alice@example.com"))).toBeVisible();
@@ -30,9 +29,9 @@ test("a person signs in, connects Claude, and runs a server", async ({ page }) =
   await connectClaude(page);
 
   await selectInProjects(page, "alice-demo");
-  const panel = page.getByRole("region", { name: "projects/alice-demo", exact: true });
-  await panel.getByRole("button", { name: m.start }).click();
-  const card = panel.getByRole("article", { name: "projects/alice-demo" });
+  const opened = panel(page, "projects/alice-demo");
+  await opened.getByRole("button", { name: m.start }).click();
+  const card = opened.getByRole("article", { name: "projects/alice-demo" });
   await card.getByRole("button", { name: m.trustYes }).click();
   await expect(card.getByText(m.states.ready, { exact: true })).toBeVisible();
   await expect(card.getByText(/^alice-/)).toBeVisible();
@@ -46,7 +45,7 @@ test("a person signs in, connects Claude, and runs a server", async ({ page }) =
   await expect(card).toHaveCount(0);
 
   // The folder is trusted now, so starting it again goes straight to ready.
-  await panel.getByRole("button", { name: m.start }).click();
+  await opened.getByRole("button", { name: m.start }).click();
   await expect(card.getByText(m.states.ready, { exact: true })).toBeVisible();
   await card.getByRole("button", { name: m.stop }).click();
   await expect(card.getByText(m.states.stopped, { exact: true })).toBeVisible();
@@ -56,11 +55,11 @@ test("another person sees only their own home and servers", async ({ page }) => 
   await signIn(page, "bob@example.com");
   await expect(page.getByText(m.signedInAs("bob@example.com"))).toBeVisible();
   await selectInProjects(page, "bob-demo");
-  const panel = page.getByRole("region", { name: "projects/bob-demo", exact: true });
-  await expect(panel.getByText(m.notConnected.start)).toBeVisible();
-  await expect(panel.getByRole("button", { name: m.start })).toHaveCount(0);
+  const opened = panel(page, "projects/bob-demo");
+  await expect(opened.getByText(m.notConnected.start)).toBeVisible();
+  await expect(opened.getByRole("button", { name: m.start })).toHaveCount(0);
   await expect(page.getByText("alice-demo")).toHaveCount(0);
-  await expect(page.getByRole("region", { name: m.yourServersTitle }).getByText(m.yourServersEmpty)).toBeVisible();
+  await expect(summary(page).getByText(m.yourServersEmpty)).toBeVisible();
   await expect(page.getByRole("button", { name: m.navAdmin })).toHaveCount(0);
   await expect(page.getByRole("link", { name: m.navUsers })).toHaveCount(0);
 
@@ -83,7 +82,7 @@ test("administrators see everyone's servers, and act on none of them", async ({ 
   await expect(page.getByRole("button", { name: m.navAdmin })).toHaveCount(0);
   await connectClaude(page);
   await selectInProjects(page, "bob-demo");
-  const start = page.getByRole("region", { name: "projects/bob-demo", exact: true }).getByRole("button", { name: m.start });
+  const start = panel(page, "projects/bob-demo").getByRole("button", { name: m.start });
   await expect(start).toBeVisible(); // now that his account is connected
   await start.click();
   const card = page.getByRole("article", { name: "projects/bob-demo" });
