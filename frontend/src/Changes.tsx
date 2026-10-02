@@ -292,7 +292,7 @@ export function Changes({ path, pollMs }: { path: string; pollMs: number }) {
           <ul aria-label={m.localBranches} className="branches">
             {branches.local.branches.map((b) => (
               <li key={b.name}>
-                {b.name}
+                <span className="branch-name">{b.name}</span>
                 {b.upstream && <> → {b.upstream}</>}
                 {b.current ? (
                   <> ({m.currentBranch})</>
@@ -311,7 +311,7 @@ export function Changes({ path, pollMs }: { path: string; pollMs: number }) {
           <ul aria-label={m.remoteBranches} className="branches">
             {branches.remote.branches.map((b) => (
               <li key={b.name}>
-                {b.name}
+                <span className="branch-name">{b.name}</span>
                 {b.local === null && (
                   <>
                     {" "}

@@ -3,8 +3,10 @@
 ``uvicorn --factory tests.e2e_server:create_app`` builds a throwaway world in
 ``RCMAN_E2E_DIR``: a users file with alice (administrator, Claude connected)
 and bob (Claude not connected; the code ``GOOD-CODE`` connects him), a home
-and a tmux socket for each, and the fake claude. rc-helper runs for real as
-the current user against those homes. rc-admin needs root, so a stand-in
+and a tmux socket for each, and the fake claude. alice also has a git
+repository, projects/alice-repo, whose origin is in the world's origins/: it
+holds main and feature, and later, which alice's repository has not fetched.
+rc-helper runs for real as the current user against those homes. rc-admin needs root, so a stand-in
 manages the users file itself and reports versions; the container suite
 tests the real one.
 """
@@ -25,6 +27,7 @@ from rcman.settings import Settings
 from devtools import fake_claude as fake
 from devtools import record_claude as rec
 from helpers import users_file as uf
+from tests.git_fixtures import make_repo, push_branch_to_origin
 
 REPO = Path(__file__).resolve().parent.parent
 PEOPLE = {"alice": ("alice@example.com", True), "bob": ("bob@example.com", False)}
@@ -60,6 +63,10 @@ def _world(root: Path) -> dict[str, Path]:
         for folder in ("alpha", "beta"):
             (home / "projects" / f"{linux}-{folder}").mkdir(parents=True)
         homes[linux] = home
+    repo = homes["alice"] / "projects" / "alice-repo"
+    origin = root / "origins" / "alice-repo.git"
+    make_repo(repo, origin=origin)
+    push_branch_to_origin(repo, origin, "later")
     fake.write_state(homes["alice"] / ".claude-fake", logged_in=True)
     fake.write_state(homes["bob"] / ".claude-fake", logged_in=False, accept_codes=[GOOD_CODE])
     uf.save(

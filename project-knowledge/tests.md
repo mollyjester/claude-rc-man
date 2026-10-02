@@ -16,7 +16,11 @@ How the test suite is organised and run. The rules the suite follows are in
 | `make check` | Lint, the Python tests, the frontend tests and the browser tests. It sets `RCMAN_REQUIRE_REAL_CLAUDE=1` and `RCMAN_REQUIRE_CONTAINER=1`, so tests that would skip for want of the real `claude` or of Docker fail instead |
 
 Run pytest from the repository root; `pyproject.toml` holds its configuration.
-The suite needs `tmux`. `tests/test_container_suite.py` runs the root-only
+The suite needs `tmux` and `git`. Everything git is tested against real git,
+never a fake: `tests/git_fixtures.py`, which is not a test module, makes real
+repositories, their origins and their branches with the system's git, under
+a fixture configuration of its own, so the person's configuration rc-helper
+reads is only what a test plants. `tests/test_container_suite.py` runs the root-only
 suite in `tests/container/` inside a throwaway Ubuntu container, through
 `docker` or `sudo -n docker`; it skips when neither works, unless
 `RCMAN_REQUIRE_CONTAINER=1`, which `make check` sets. It runs three, each in a
