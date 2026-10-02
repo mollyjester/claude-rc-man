@@ -23,7 +23,12 @@ def test_nothing_to_report(client, admin_runner):
     admin_runner.replies = [(0, CLEAN_VERSIONS)]
     r = attention(client)
     assert r.status_code == 200, r.text
-    assert r.json() == {"unrecognised": [], "versions_differ": [], "untested": False}
+    assert r.json() == {
+        "unrecognised": [],
+        "versions_differ": [],
+        "untested": False,
+        "versions_error": None,
+    }
     assert admin_runner.calls == [["claude-status"]]
 
 
@@ -79,3 +84,53 @@ def test_attention_reuses_the_everyone_listing(client, admin_runner, monkeypatch
     admin_runner.replies = [(0, CLEAN_VERSIONS)]
     assert attention(client).json()["unrecognised"] == [{"linux": "alice", "path": "a"}]
     assert len(seen) == 1
+
+
+def test_a_failing_version_report_still_names_the_unrecognised_screens(
+    client, admin_runner, monkeypatch
+):
+    from rcman import everyone
+
+    monkeypatch.setattr(
+        everyone,
+        "everyone",
+        lambda request: [
+            {"linux": "alice", "email": ALICE, "servers": [{"path": "a", "state": "unrecognised"}]}
+        ],
+    )
+    admin_runner.replies = [
+        (1, {"error": {"code": "internal_error", "message": "rc-admin broke."}})
+    ]
+    r = attention(client)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["unrecognised"] == [{"linux": "alice", "path": "a"}]
+    assert body["versions_error"] == {"code": "internal_error", "title": "rc-admin broke."}
+    assert body["versions_differ"] == [] and body["untested"] is False
+
+
+def test_nothing_failing_means_no_version_error(client, admin_runner):
+    admin_runner.replies = [(0, CLEAN_VERSIONS)]
+    assert attention(client).json()["versions_error"] is None
+
+
+def test_the_listing_and_the_version_report_run_side_by_side(client, admin_runner, monkeypatch):
+    """The listing waits for the version report to start, which it would not if run after it."""
+    import threading
+
+    from rcman import everyone
+
+    started = threading.Event()
+
+    def listing(request):
+        assert started.wait(5), "the version report did not run alongside the listing"
+        return []
+
+    def admin(args, timeout=None):
+        started.set()
+        return 0, CLEAN_VERSIONS
+
+    monkeypatch.setattr(everyone, "everyone", listing)
+    client.app.state.admin = admin
+    r = attention(client)
+    assert r.status_code == 200, r.text

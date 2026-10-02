@@ -2,7 +2,9 @@ import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { m } from "./messages";
-import { ADMIN, CONNECTED, ME, NOTHING_TO_ATTEND, type Reply, fakeApi } from "./test/fakeApi";
+import { vi } from "vitest";
+
+import { ADMIN, CONNECTED, ME, NOTHING_TO_ATTEND, type Reply, fakeApi, problem } from "./test/fakeApi";
 import { renderApp } from "./test/render";
 
 
@@ -59,4 +61,36 @@ test("people who are not administrators never ask", async () => {
   await screen.findByRole("heading", { name: m.settingsTitle });
   expect(fake.made("GET", "/api/attention")).toHaveLength(0);
   expect(screen.queryByRole("region", { name: m.attentionTitle })).not.toBeInTheDocument();
+});
+
+test("however long a page stays open, it is not fetched again", async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  try {
+    const fake = api(ADMIN);
+    renderApp();
+    await waitFor(() => expect(fake.made("GET", "/api/attention")).toHaveLength(1));
+    await vi.advanceTimersByTimeAsync(24 * 60 * 60 * 1000); // a day: past any polling interval
+    expect(fake.made("GET", "/api/attention")).toHaveLength(1);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test("when it cannot be fetched, the server's reason is shown", async () => {
+  api(ADMIN, problem(500, "users_file_invalid", "The users file is invalid."));
+  renderApp();
+  expect(await screen.findByRole("alert")).toHaveTextContent("The users file is invalid.");
+});
+
+test("when the version report fails, the unrecognised screens are still named, with its reason", async () => {
+  api(ADMIN, {
+    ...NOTHING_TO_ATTEND,
+    unrecognised: [{ linux: "bob", path: "projects/beta" }],
+    versions_error: { code: "helper_timeout", title: "rcman's helper took too long to answer." },
+  });
+  renderApp();
+  const banner = await screen.findByRole("region", { name: m.attentionTitle });
+  expect(within(banner).getByText(m.attentionUnrecognised(["bob: projects/beta"]))).toBeInTheDocument();
+  expect(within(banner).getByText(m.attentionVersionsFailed)).toBeInTheDocument();
+  expect(within(banner).getByRole("alert")).toHaveTextContent("rcman's helper took too long to answer.");
 });

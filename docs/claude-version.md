@@ -23,7 +23,8 @@ marking anyone whose version differs.
 
 In rcman, administrators are also warned at the top of every page while anyone's
 version differs from the approved one, or while the approved version is not the
-tested one, with a link to the **Claude Code** page.
+tested one, with a link to the **Claude Code** page — or, when rcman could not
+check the versions, with the reason.
 
 ## Rolling out a version
 

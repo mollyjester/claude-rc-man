@@ -109,6 +109,7 @@ export const m = {
     `Servers on a screen rcman does not recognise: ${servers.join(", ")}.`,
   attentionVersionsDiffer: (people: string[]) =>
     `Claude Code differs from the approved version for: ${people.join(", ")}.`,
+  attentionVersionsFailed: "rcman could not check the Claude Code versions:",
   attentionUntested: "The approved Claude Code version is not the one rcman's recorded tests cover.",
 
   everyoneTitle: "Everyone's servers",

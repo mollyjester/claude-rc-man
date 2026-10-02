@@ -9,6 +9,7 @@ type Report = {
   unrecognised: { linux: string; path: string }[];
   versions_differ: string[];
   untested: boolean;
+  versions_error: { code: string; title: string } | null;
 };
 
 // What administrators should look at, fetched when the app loads and on every
@@ -41,8 +42,8 @@ export function Attention() {
 
   if (error) return <ProblemView error={error} />;
   if (!report) return null;
-  const { unrecognised, versions_differ: differ, untested } = report;
-  if (unrecognised.length === 0 && differ.length === 0 && !untested) return null;
+  const { unrecognised, versions_differ: differ, untested, versions_error: failed } = report;
+  if (unrecognised.length === 0 && differ.length === 0 && !untested && !failed) return null;
   return (
     <section aria-label={m.attentionTitle} className="attention">
       {unrecognised.length > 0 && (
@@ -60,6 +61,14 @@ export function Attention() {
         <p>
           {m.attentionUntested} <Link to="/admin/claude">{m.navVersions}</Link>
         </p>
+      )}
+      {failed && (
+        <>
+          <p>
+            {m.attentionVersionsFailed} <Link to="/admin/claude">{m.navVersions}</Link>
+          </p>
+          <ProblemView error={new ApiError(0, failed.code, failed.title)} />
+        </>
       )}
     </section>
   );

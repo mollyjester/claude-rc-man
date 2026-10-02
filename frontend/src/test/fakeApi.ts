@@ -60,4 +60,4 @@ export const CONNECTED = {
   login_expires_at: "2030-01-01T00:00:00+00:00",
 };
 // What /api/attention answers when nothing needs an administrator's attention.
-export const NOTHING_TO_ATTEND = { unrecognised: [], versions_differ: [], untested: false };
+export const NOTHING_TO_ATTEND = { unrecognised: [], versions_differ: [], untested: false, versions_error: null };
