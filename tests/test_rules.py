@@ -4,7 +4,7 @@ import re
 from typing import Annotated
 
 import pytest
-from pydantic import Field, TypeAdapter, ValidationError
+from pydantic import AfterValidator, Field, TypeAdapter, ValidationError
 
 from helpers.rules import Rule
 
@@ -115,6 +115,52 @@ def _limits():
         (users_file.LINUX_NAME, users_file.MAX_LINUX_NAME_LENGTH),
         (rc_helper.AUTHOR_NAME, rc_helper.MAX_AUTHOR_NAME_LENGTH),
     ]
+
+
+# A short value each rule accepts, to put every code point into; the first one a
+# rule accepts is its example.
+EXAMPLES = ("a", "a@b.c", "1.2.3")
+CODE_POINTS = [chr(c) for c in range(0x110000) if not 0xD800 <= c <= 0xDFFF]
+
+
+def _contexts(example: str) -> list[str]:
+    """Templates putting a code point alone, before, after and in place of each
+    character of the example."""
+    found = ["{}", "{}" + example, example + "{}"]
+    found += [example[:i] + "{}" + example[i + 1 :] for i in range(len(example))]
+    return found
+
+
+def disagreements(rule: Rule) -> list[str]:
+    """Where pydantic's validator, given the rule's anchored pattern, and the rule's own
+    Python expression disagree, over every code point in several contexts."""
+    example = next((e for e in EXAMPLES if rule.fullmatch(e)), None)
+    assert example is not None, rule.pattern
+    # Each value the pattern refuses falls through to the second branch and becomes
+    # None, so no error is built for it.
+    checked = Annotated[str, Field(pattern=rule.anchored)]
+    refusal = Annotated[str, AfterValidator(lambda value: None)]
+    adapter = TypeAdapter(list[Annotated[checked | refusal, Field(union_mode="left_to_right")]])
+    found = []
+    for context in _contexts(example):
+        values = [context.format(c) for c in CODE_POINTS]
+        refused = {i for i, value in enumerate(adapter.validate_python(values)) if value is None}
+        match = rule.regex.fullmatch
+        mine = {i for i, value in enumerate(values) if not match(value)}
+        found += [f"{context!r} U+{ord(CODE_POINTS[i]):04X}" for i in sorted(refused ^ mine)]
+    return found
+
+
+def test_the_backend_and_the_helpers_read_every_rule_alike():
+    rules = [r for rule in helpers_rules().values() for r in (rule, rule.or_empty())]
+    for rule in rules:
+        assert disagreements(rule) == [], rule.pattern
+
+
+def test_a_rule_the_two_engines_read_differently_is_found():
+    """Planted twin: Python's \\s holds the separators U+001C to U+001F; pydantic's does not."""
+    found = disagreements(Rule(re.compile(r"a\s?"), "Say a."))
+    assert "'a{}' U+001C" in found and "'a{}' U+0020" not in found
 
 
 def test_a_sentence_that_states_a_limit_states_the_real_one():

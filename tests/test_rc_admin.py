@@ -472,7 +472,10 @@ def test_one_failed_install_is_reported_and_the_rest_continue(cfg, two_users):
     assert out["users"] == {"alice": "failed", "bob": "installed"}
 
 
-@pytest.mark.parametrize("version", ["", "latest", "1.2", "1.2.3; rm -rf /", "../1.2.3"])
+@pytest.mark.parametrize(
+    "version",
+    ["", "latest", "1.2", "1.2.3; rm -rf /", "../1.2.3", "\u0661.\u0662.\u0663", "1.2.\uff13"],
+)
 def test_invalid_versions_are_refused_before_any_check(cfg, two_users, version):
     two_users.checked = []
     refused(lambda: ra.upgrade(cfg, two_users, version), "version_invalid")
