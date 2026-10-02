@@ -97,7 +97,9 @@ waiting for a hook, is stopped, and the section says so.
 git runs as you, with your own global configuration and the repository's,
 so what you set there applies: what is ignored, how renames are found, your
 hooks and your credential helpers. The one exception is the commit author,
-above.
+above. The installer checks that this machine's git is new enough for what
+rcman runs (see [Installing rcman](installation.md)).
+
 
 ## Not here
 

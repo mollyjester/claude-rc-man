@@ -31,7 +31,8 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 # install.sh runs this in isolated mode, which puts nothing of the clone on the
-# path; the rules for addresses and Linux user names are the helpers'. It runs as
+# path; the rules for addresses and Linux user names, and how git is found and
+# which git rcman needs, are the helpers'. It runs as
 # root, so it writes no bytecode into the clone, which is someone else's, and
 # takes the clone off the path again once it has them.
 _on_path = str(REPO) in sys.path
@@ -39,6 +40,8 @@ if not _on_path:
     sys.path.insert(0, str(REPO))
 _write_bytecode, sys.dont_write_bytecode = sys.dont_write_bytecode, True
 try:
+    from helpers import git_run
+    from helpers.git_run import GIT_MIN_VERSION
     from helpers.rules import Rule
     from helpers.users_file import EMAIL, LINUX_NAME
 finally:
@@ -303,8 +306,25 @@ def check_caddy_user(name: str) -> None:
         )
 
 
+def check_git() -> None:
+    """The system's git, which rc-helper runs, is one that has everything rcman asks of it."""
+    try:
+        git = git_run.find_git()
+    except git_run.GitMissing:
+        raise InstallError(
+            f"there is no git on {git_run.GIT_SEARCH_PATH}; install git and run install.sh again"
+        ) from None
+    found = git_run.version_of(run([git, "--version"]).stdout)
+    if found < GIT_MIN_VERSION:
+        need = ".".join(map(str, GIT_MIN_VERSION))
+        raise InstallError(
+            f"git {'.'.join(map(str, found))} is too old: rcman needs git {need} or later"
+        )
+
+
 def ensure_accounts(caddy_user: str) -> list[str]:
     check_caddy_user(caddy_user)
+    check_git()
     changes = []
     if not _exists("group", USER_GROUP):
         run(["groupadd", USER_GROUP])

@@ -13,6 +13,9 @@ repository, and the same command upgrades an installation.
   git able to pull from GitHub as you (for a private repository, for example
   through `gh auth login`).
 - **sudo** for your account.
+- **git** from the system's packages, recent enough for what rcman runs. The
+  installer checks it and names the version it needs when it is older
+  (`GIT_MIN_VERSION` in `helpers/git_run.py`).
 
 Everything else — the Node.js that builds the web interface, uv for the
 Python environment, oauth2-proxy, and Claude Code for each person — the
@@ -81,25 +84,27 @@ run and kept.
    credentials are used. It refuses when the clone has uncommitted changes, is
    on another branch, or cannot be fast-forwarded. If the update changed
    `install.sh`, it starts again with the new version.
-2. **Creates the accounts it needs**: the `rcusers` group every person's Linux
+2. **Checks git** on the system path is new enough, and stops there when it
+   is not.
+3. **Creates the accounts it needs**: the `rcusers` group every person's Linux
    account belongs to, a system user `rcman` for rcman itself (its data lives
    in `/var/lib/rcman`), a system user `rcman-proxy` for oauth2-proxy, and a
    group `rcman-web` whose only member is Caddy's account; anyone else in it is
    taken out.
-3. **Makes the directory of rcman's socket**, `/run/rcman`: it belongs to
+4. **Makes the directory of rcman's socket**, `/run/rcman`: it belongs to
    `rcman` and the group `rcman-web`, and no one else may enter it.
    `/etc/tmpfiles.d/rcman.conf` makes it again at every boot.
-4. **Builds a release** of the clone's commit under `/opt/rcman/releases`: the
+5. **Builds a release** of the clone's commit under `/opt/rcman/releases`: the
    files rcman runs, the built web interface, and its Python environment — and
    nothing used only for development. Everything in it belongs to root.
-5. **Makes it current** — `/opt/rcman/current` — and keeps the release before
+6. **Makes it current** — `/opt/rcman/current` — and keeps the release before
    it as `/opt/rcman/previous`; older ones are removed.
-6. **Writes the configuration** in `/etc/rcman`, the sudoers rules in
+7. **Writes the configuration** in `/etc/rcman`, the sudoers rules in
    `/etc/sudoers.d/rcman` (checked with `visudo` first), and the two systemd
    services, `rcman` and `rcman-oauth2-proxy`.
-7. **Starts the services**, restarting them when anything changed.
-8. **Adds the first administrator**, as `rcman-user add --admin --adopt` would.
-9. **Checks** that both services answer, and prints the Caddy configuration
+8. **Starts the services**, restarting them when anything changed.
+9. **Adds the first administrator**, as `rcman-user add --admin --adopt` would.
+10. **Checks** that both services answer, and prints the Caddy configuration
    and what to do about Caddy, if anything.
 
 Running it again for the same commit changes nothing.
