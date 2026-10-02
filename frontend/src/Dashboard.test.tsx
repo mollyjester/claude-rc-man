@@ -192,7 +192,9 @@ test("a state allowing more than one action that starts Claude offers none of th
     expect(waiting.getByRole("button", { name: m.forget })).toBeInTheDocument(); // the card is there
     expect(waiting.queryByRole("button", { name: m.resume })).not.toBeInTheDocument();
     expect(waiting.queryByRole("button", { name: m.startAgain })).not.toBeInTheDocument();
-    expect(waiting.getByText(new RegExp(m.notConnected.resume))).toBeInTheDocument();
+    // the sentence gives the reason for each of them
+    const said = waiting.getByText(new RegExp(m.notConnected.resume));
+    expect(said).toHaveTextContent(m.notConnected.startAgain);
   } finally {
     delete ACTIONS.planted;
   }

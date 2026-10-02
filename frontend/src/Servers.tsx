@@ -18,7 +18,7 @@ type Action = "stop" | "resume" | "startAgain" | "forget" | "showScreen" | "trus
 
 // The actions that start Claude, which the server refuses while the account cannot.
 const STARTS = ["resume", "startAgain"] as const satisfies readonly Action[];
-export type StartAction = (typeof STARTS)[number];
+type StartAction = (typeof STARTS)[number];
 const startsClaude = (action: Action): action is StartAction => (STARTS as readonly Action[]).includes(action);
 
 // Why nothing can start Claude, said in place of each control that would: Start
