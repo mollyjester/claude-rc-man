@@ -42,6 +42,67 @@ test("start, trust, stop, resume and forget through the folder panel", async ({ 
   await expect(alpha.getByRole("button", { name: m.start })).toBeVisible();
 });
 
+test("a folder is made, runs a server, and is deleted with it", async ({ page }) => {
+  await useAs(page, ALICE);
+  await page.goto("/");
+  await expect(page.getByText(m.claudeConnectedAs("fake-user@example.com"))).toBeVisible();
+  await tree(page).getByRole("button", { name: "projects", exact: true }).click();
+  const projects = panel(page, "projects");
+  await projects.getByRole("button", { name: m.newFolder }).click();
+  await projects.getByLabel(m.newFolderName).fill("alice-made");
+  await projects.getByRole("button", { name: m.create }).click();
+
+  const made = panel(page, "projects/alice-made");
+  await expect(made).toBeVisible();
+  await expect(tree(page).getByRole("button", { name: "alice-made", exact: true })).toHaveAttribute("aria-current", "true");
+  await made.getByRole("button", { name: m.start }).click();
+  const card = made.getByRole("article", { name: "projects/alice-made" });
+  await card.getByRole("button", { name: m.trustYes }).click();
+  await expect(card.getByText(m.states.ready, { exact: true })).toBeVisible();
+  await expect(summary(page).getByRole("button", { name: "projects/alice-made" })).toBeVisible();
+
+  await made.getByRole("button", { name: m.deleteFolder }).click();
+  const dialog = page.getByRole("dialog", { name: m.deleteFolderTitle("projects/alice-made") });
+  await expect(dialog.getByText(m.deleteFolderServers(1))).toBeVisible();
+  await expect(dialog.getByRole("listitem")).toHaveText(["projects/alice-made"]);
+  await dialog.getByRole("button", { name: m.deleteFolderConfirm }).click();
+
+  await expect(projects).toBeVisible();
+  await expect(page.getByRole("status")).toHaveText(m.folderDeleted("projects/alice-made"));
+  expect(new URL(page.url()).searchParams.get("folder")).toBe("projects");
+  await expect(tree(page).getByRole("button", { name: "alice-made", exact: true })).toHaveCount(0);
+  await expect(tree(page).getByRole("button", { name: "alice-alpha", exact: true })).toBeVisible();
+  await expect(summary(page).getByRole("button", { name: "projects/alice-made" })).toHaveCount(0);
+  const left = await page.evaluate(async () => ({
+    servers: (await (await fetch("/api/servers")).json()).servers.map((s: { path: string }) => s.path),
+    folders: (await (await fetch("/api/folders?path=projects")).json()).entries.map((e: { path: string }) => e.path),
+  }));
+  expect(left.servers).not.toContain("projects/alice-made");
+  expect(left.folders).toContain("projects/alice-alpha"); // positive control: the listing is there
+  expect(left.folders).not.toContain("projects/alice-made");
+});
+
+test("a folder is made in the home folder, and deleted from it", async ({ page }) => {
+  await useAs(page, ALICE);
+  await page.goto("/");
+  const home = page.getByRole("region", { name: m.home });
+  await home.getByRole("button", { name: m.newFolder }).click();
+  await home.getByLabel(m.newFolderName).fill("alice-top");
+  await home.getByRole("button", { name: m.create }).click();
+  const top = panel(page, "alice-top");
+  await expect(top).toBeVisible();
+  await expect(tree(page).getByRole("button", { name: "alice-top", exact: true })).toBeVisible();
+
+  await top.getByRole("button", { name: m.deleteFolder }).click();
+  const dialog = page.getByRole("dialog", { name: m.deleteFolderTitle("alice-top") });
+  await expect(dialog.getByText(m.deleteFolderServers(0))).toBeVisible();
+  await dialog.getByRole("button", { name: m.deleteFolderConfirm }).click();
+  await expect(home).toBeVisible();
+  await expect(home.getByRole("button", { name: m.deleteFolder })).toHaveCount(0);
+  await expect(tree(page).getByRole("button", { name: "alice-top", exact: true })).toHaveCount(0);
+  await expect(tree(page).getByRole("button", { name: "projects", exact: true })).toBeVisible();
+});
+
 test("people never see each other's folders or servers", async ({ page, browser }) => {
   await useAs(page, ALICE);
   await page.goto("/");

@@ -327,6 +327,54 @@ def test_test_hooks_do_not_pass_through_sudo(env, two, sudoers, tmp_path):
     assert paths == ["projects"]  # bob's real home, not the decoy
 
 
+def helper_as_bob(*args):
+    proc = as_app("sudo", "-n", "-u", "bob", str(RC_HELPER), *args)
+    return proc.returncode, json.loads(proc.stdout)
+
+
+def test_folders_are_made_and_deleted_as_the_person(env, two, sudoers):
+    home = Path(account("bob").pw_dir)
+    code, out = helper_as_bob("mkdir", "--name=made", "--", "projects")
+    assert (code, out) == (0, {"created": "projects/made"})
+    assert (home / "projects" / "made").stat().st_uid == account("bob").pw_uid
+    code, out = helper_as_bob("delete", "--", "projects/made")
+    assert code == 0 and out["deleted"] == "projects/made", out
+    assert not (home / "projects" / "made").exists()
+
+
+def test_a_link_to_a_system_folder_is_deleted_as_the_link(env, two, sudoers):
+    home = Path(account("bob").pw_dir)
+    assert as_user("bob", "ln", "-s", "/etc", str(home / "projects" / "etc")).returncode == 0
+    code, out = helper_as_bob("delete", "--", "projects/etc")
+    assert (code, out["link"]) == (0, True), out
+    assert not (home / "projects" / "etc").is_symlink()
+    assert Path("/etc/passwd").is_file()
+
+
+def test_what_the_person_may_not_remove_is_left_and_listed(env, two, sudoers):
+    home = Path(account("bob").pw_dir)
+    assert as_user("bob", "mkdir", "-p", str(home / "projects" / "mixed")).returncode == 0
+    owned = home / "projects" / "mixed" / "roots"
+    owned.mkdir()  # by root, as this suite runs
+    (owned / "file").write_text("x")
+    assert as_user("bob", "touch", str(home / "projects" / "mixed" / "bobs")).returncode == 0
+    code, out = helper_as_bob("delete", "--", "projects/mixed")
+    assert (code, out["error"]["code"]) == (1, "delete_incomplete"), out
+    assert "projects/mixed/roots/file" in out["error"]["left"]
+    assert (owned / "file").read_text() == "x"
+    assert not (home / "projects" / "mixed" / "bobs").exists()  # what bob may remove went
+
+
+def test_another_persons_folders_are_out_of_reach(env, two, sudoers):
+    alice = Path(account("alice").pw_dir)
+    (alice / "projects").mkdir(exist_ok=True)
+    os.chown(alice / "projects", account("alice").pw_uid, account("alice").pw_gid)
+    for args in (("delete", "--", "../alice/projects"), ("mkdir", "--name=x", "--", "../alice")):
+        code, out = helper_as_bob(*args)
+        assert (code, out["error"]["code"]) == (1, "path_outside_home"), args
+    assert (alice / "projects").is_dir() and not (alice / "x").exists()
+
+
 def test_app_user_runs_rc_admin_as_root(env, two, sudoers):
     proc = as_app("sudo", "-n", str(RC_ADMIN), "list")
     # Through sudo the environment is reset: the real /etc/rcman, which has no users file here.

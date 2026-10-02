@@ -2,7 +2,7 @@
 // person a Linux account of their own. Runs in order against one installation.
 import { type Page, expect, test } from "@playwright/test";
 
-import { openAdminPage, panel, selectInProjects, summary } from "../e2e/nav";
+import { openAdminPage, panel, selectInProjects, summary, tree } from "../e2e/nav";
 import { m } from "../src/messages";
 
 const GOOD_CODE = "GOOD-CODE";
@@ -104,6 +104,37 @@ test("administrators see everyone's servers, and act on none of them", async ({ 
   await expect(card.getByText(m.states.stopped, { exact: true })).toBeVisible();
 });
 
+test("a person makes and deletes a folder in their own home, and nobody else can", async ({ page, browser }) => {
+  await signIn(page, "alice@example.com");
+  await expect(page.getByText(m.signedInAs("alice@example.com"))).toBeVisible();
+  await selectInProjects(page, "alice-demo"); // opens projects
+  await tree(page).getByRole("button", { name: "projects", exact: true }).click();
+  const projects = panel(page, "projects");
+  await projects.getByRole("button", { name: m.newFolder }).click();
+  await projects.getByLabel(m.newFolderName).fill("alice-made");
+  await projects.getByRole("button", { name: m.create }).click();
+  const made = panel(page, "projects/alice-made");
+  await expect(made).toBeVisible();
+
+  // bob, signed in on his own, cannot reach alice's folders through the API either.
+  const bob = await browser.newPage();
+  await signIn(bob, "bob@example.com");
+  await expect(bob.getByText(m.signedInAs("bob@example.com"))).toBeVisible();
+  const refused = await bob.evaluate(async () => {
+    const r = await fetch(`/api/folders?path=${encodeURIComponent("../alice/projects/alice-demo")}`, { method: "DELETE" });
+    return [r.status, (await r.json()).code];
+  });
+  expect(refused).toEqual([400, "path_outside_home"]);
+  await bob.close();
+
+  await made.getByRole("button", { name: m.deleteFolder }).click();
+  const dialog = page.getByRole("dialog", { name: m.deleteFolderTitle("projects/alice-made") });
+  await dialog.getByRole("button", { name: m.deleteFolderConfirm }).click();
+  await expect(projects).toBeVisible();
+  await expect(tree(page).getByRole("button", { name: "alice-made", exact: true })).toHaveCount(0);
+  await expect(tree(page).getByRole("button", { name: "alice-demo", exact: true })).toBeVisible(); // bob deleted nothing
+});
+
 test("an address that is not on the list gets nowhere", async ({ page }) => {
   await signIn(page, "stranger@example.com");
   await expect(page.getByText(/403|Forbidden|Permission Denied/i).first()).toBeVisible();
@@ -115,7 +146,7 @@ test("an address that is not on the list gets nowhere", async ({ page }) => {
 test("the audit trail records what people did", async ({ page }) => {
   await signIn(page, "alice@example.com");
   await openAdminPage(page, m.navAudit);
-  for (const action of ["claude.login", "claude.connect", "server.start", "server.confirm", "server.stop", "server.resume", "server.forget"]) {
+  for (const action of ["claude.login", "claude.connect", "server.start", "server.confirm", "server.stop", "server.resume", "server.forget", "folder.create", "folder.delete"]) {
     await expect(page.getByRole("cell", { name: action, exact: true }).first()).toBeVisible();
   }
   await expect(page.getByRole("cell", { name: "bob@example.com (bob)" }).first()).toBeVisible(); // bob's refused stop

@@ -20,7 +20,8 @@ The suite needs `tmux`. `tests/test_container_suite.py` runs the root-only
 suite in `tests/container/` inside a throwaway Ubuntu container, through
 `docker` or `sudo -n docker`; it skips when neither works, unless
 `RCMAN_REQUIRE_CONTAINER=1`, which `make check` sets. It runs three, each in a
-fresh container: user management; a real installation (see
+fresh container: user management, with folders made and deleted through sudo;
+a real installation (see
 [installer.md](installer.md)); and the whole stack in a browser.
 Run it from a full clone, not a git worktree: it mounts the checkout into the
 container and installs from it with git, and a worktree's `.git` is a file
@@ -35,7 +36,8 @@ and `auth.test`. Playwright on the host drives it
 through the container's published port with `frontend/playwright.stack.config.ts`
 and the specs in `frontend/e2e-stack/`: signing in through Caddy and
 oauth2-proxy, connecting Claude, a server's lifecycle, one person unable to
-reach another's servers through sudo, an administrator seeing everyone's
+reach another's servers through sudo, making and deleting a folder, which
+another person cannot delete, an administrator seeing everyone's
 servers without being able to act on them, an address that is not on the list, the
 audit trail, and removing people with and without their home folder.
 
