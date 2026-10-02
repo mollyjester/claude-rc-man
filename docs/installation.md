@@ -112,16 +112,17 @@ and Caddy's account is that group's only member. rcman believes the address
 Caddy passes it, so this is what keeps anyone else on the machine from
 passing one.
 
-The installer prints the site block to add to your Caddyfile and keeps it in
-`/etc/rcman/Caddyfile.snippet`. It sends oauth2-proxy's own pages to
+The installer prints the site block for your Caddyfile and keeps it in
+`/etc/rcman/Caddyfile.snippet`. Either `import` that file in your Caddyfile, so
+it is always the current one, or copy the block in. It sends oauth2-proxy's own pages to
 oauth2-proxy, asks oauth2-proxy whether each other request is signed in, sends
 people who are not to the Google sign-in, and passes the signed-in address to
 rcman through the socket. It also removes any address a browser sends itself,
 so only oauth2-proxy can tell rcman who someone is.
 
 When the site block changes — on the first installation, too — the installer
-says so: put it in your Caddyfile in place of the old one and **restart**
-Caddy. A reload is not enough the first time, because Caddy has to start again
+says so. If your Caddyfile imports it there is nothing to change; if it holds
+a copy, copy it again. Either way, **restart** Caddy. A reload is not enough the first time, because Caddy has to start again
 to belong to `rcman-web`.
 
 Caddy's admin API must not be reachable by other local users. By default it

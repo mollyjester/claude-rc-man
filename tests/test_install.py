@@ -230,7 +230,12 @@ def test_the_socket_directory_is_made_at_boot_for_rcman_and_caddys_group():
 
 def test_the_site_block_notice_appears_exactly_when_the_snippet_changed():
     changed = ins.caddy_notices([str(ins.CADDY_SNIPPET), "/etc/rcman/rcman.env"], "caddy")
-    assert any("The Caddy site block changed" in n and "restart Caddy" in n for n in changed)
+    assert len(changed) == 1
+    notice = changed[0]
+    assert notice.startswith("The Caddy site block changed") and "restart Caddy" in notice
+    # It fits a Caddyfile that imports the snippet as well as one that holds a copy.
+    assert str(ins.CADDY_SNIPPET) in notice and "import" in notice and "copy" in notice
+    assert "replace yours" not in notice
     assert ins.caddy_notices(["/etc/rcman/rcman.env"], "caddy") == []
     assert ins.caddy_notices([], "caddy") == []
 

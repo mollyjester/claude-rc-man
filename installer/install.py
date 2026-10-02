@@ -653,8 +653,9 @@ def caddy_notices(changes: list[str], caddy_user: str) -> list[str]:
     notices = []
     if str(CADDY_SNIPPET) in changes:
         notices.append(
-            f"The Caddy site block changed: replace yours with it ({CADDY_SNIPPET}) "
-            "and restart Caddy."
+            f"The Caddy site block changed ({CADDY_SNIPPET}). If your Caddyfile imports "
+            "it, nothing more is needed there; if it holds a copy, copy it again. "
+            "Then restart Caddy."
         )
     elif f"{caddy_user} in group {WEB_GROUP}" in changes:
         notices.append(
