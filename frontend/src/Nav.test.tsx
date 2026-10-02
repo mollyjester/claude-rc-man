@@ -1,4 +1,5 @@
-import { screen } from "@testing-library/react";
+import { screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 
 import { ADMIN_PAGES } from "./App";
 import { m } from "./messages";
@@ -15,22 +16,93 @@ function api(me: Reply) {
   });
 }
 
+const nav = () => screen.getByRole("banner");
+// The Admin button, once the page knows who is signed in.
+const adminButton = async () => within(await screen.findByRole("banner")).getByRole("button", { name: m.navAdmin });
+
 test("people who are not administrators are not offered administration", async () => {
   api(ME);
   renderApp();
   expect(await screen.findByText(m.signedInAs(ME.email))).toBeInTheDocument();
+  expect(within(nav()).getByRole("link", { name: m.navSettings })).toBeInTheDocument();
+  expect(within(nav()).queryByRole("button", { name: m.navAdmin })).not.toBeInTheDocument();
   for (const { label } of ADMIN_PAGES) {
     expect(screen.queryByRole("link", { name: label })).not.toBeInTheDocument();
   }
-  expect(screen.getByRole("link", { name: m.navSettings })).toBeInTheDocument();
 });
 
-test("administrators are", async () => {
+test("administrators get one Admin entry, which leads to every administrators' page", async () => {
   api(ADMIN);
   renderApp();
-  for (const { path, label } of ADMIN_PAGES) {
-    expect(await screen.findByRole("link", { name: label })).toHaveAttribute("href", path);
+  const admin = await adminButton();
+  expect(within(nav()).getAllByRole("button", { name: m.navAdmin })).toHaveLength(1);
+  expect(admin).toHaveAttribute("aria-expanded", "false");
+  for (const { label } of ADMIN_PAGES) {
+    expect(screen.queryByRole("link", { name: label })).not.toBeInTheDocument();
   }
+
+  await userEvent.click(admin);
+  expect(admin).toHaveAttribute("aria-expanded", "true");
+  const menu = document.getElementById(admin.getAttribute("aria-controls")!)!;
+  const links = within(menu).getAllByRole("link");
+  expect(links).toHaveLength(ADMIN_PAGES.length);
+  for (const { path, label } of ADMIN_PAGES) {
+    expect(within(menu).getByRole("link", { name: label })).toHaveAttribute("href", path);
+  }
+});
+
+test("choosing a page opens it and closes the menu, which then marks itself as where you are", async () => {
+  api(ADMIN);
+  const { location } = renderApp();
+  const admin = await adminButton();
+  expect(admin).not.toHaveClass("active");
+  await userEvent.click(admin);
+  const [page] = ADMIN_PAGES;
+  await userEvent.click(screen.getByRole("link", { name: page.label }));
+  expect(location().pathname).toBe(page.path);
+  expect(admin).toHaveAttribute("aria-expanded", "false");
+  expect(screen.queryByRole("link", { name: page.label })).not.toBeInTheDocument();
+  expect(admin).toHaveClass("active");
+});
+
+test("the menu closes when the page changes, and when the page already open is chosen", async () => {
+  api(ADMIN);
+  const { navigate } = renderApp(ADMIN_PAGES[0].path);
+  const admin = await adminButton();
+  await userEvent.click(admin);
+  expect(admin).toHaveAttribute("aria-expanded", "true");
+  await userEvent.click(screen.getByRole("link", { name: ADMIN_PAGES[0].label }));
+  expect(admin).toHaveAttribute("aria-expanded", "false");
+
+  await userEvent.click(admin);
+  expect(admin).toHaveAttribute("aria-expanded", "true");
+  await navigate("/settings");
+  expect(admin).toHaveAttribute("aria-expanded", "false");
+});
+
+test("the menu closes when focus leaves it, and not while it moves inside it", async () => {
+  api(ADMIN);
+  renderApp();
+  const admin = await adminButton();
+  await userEvent.click(admin);
+  await userEvent.tab();
+  expect(screen.getByRole("link", { name: ADMIN_PAGES[0].label })).toHaveFocus();
+  expect(admin).toHaveAttribute("aria-expanded", "true");
+  await userEvent.click(screen.getByText(m.signedInAs(ADMIN.email)));
+  expect(admin).toHaveAttribute("aria-expanded", "false");
+});
+
+test("Escape closes the menu and returns to its button", async () => {
+  api(ADMIN);
+  renderApp();
+  const admin = await adminButton();
+  await userEvent.click(admin);
+  const first = screen.getByRole("link", { name: ADMIN_PAGES[0].label });
+  first.focus();
+  await userEvent.keyboard("{Escape}");
+  expect(admin).toHaveAttribute("aria-expanded", "false");
+  expect(first).not.toBeVisible();
+  expect(admin).toHaveFocus();
 });
 
 test("the administration pages include everyone's servers", () => {

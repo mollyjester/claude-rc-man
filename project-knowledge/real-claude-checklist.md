@@ -38,8 +38,8 @@ With a person added for the test account (`sudo rcman-user add`):
    the session name rcman shows, and answers a message.
 5. **Stop**, then **Resume**: the same session comes back in claude.ai/code.
 6. **Stop** and **Forget**; archive the session in claude.ai/code.
-7. On **Claude Code** (administrators), the person's installed version is the
-   approved one.
+7. On **Claude Code**, under **Admin** (administrators), the person's
+   installed version is the approved one.
 
 Write down what differed from this list. A screen rcman shows as
 **Unrecognised screen** is recorded as a new fixture and handled before the

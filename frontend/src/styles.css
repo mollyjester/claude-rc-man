@@ -9,7 +9,10 @@
 body { margin: 0; }
 header { display: flex; gap: 1.5rem; align-items: center; padding: 0.75rem 1.5rem; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
 header nav { display: flex; gap: 1rem; flex: 1; }
-header nav a.active { font-weight: 600; }
+header nav a.active, header nav button.active { font-weight: 600; }
+.menu { position: relative; }
+.menu > button { background: none; border: none; padding: 0; font: inherit; color: inherit; cursor: pointer; text-decoration: underline; }.menu ul { position: absolute; top: 100%; left: 0; z-index: 1; list-style: none; margin: 0.25rem 0 0; padding: 0.25rem 0; min-width: 12rem; background: Canvas; border: 1px solid var(--border); border-radius: 0.5rem; }
+.menu li a { display: block; padding: 0.35rem 0.75rem; }
 main { padding: 1rem 1.5rem; max-width: 72rem; }
 .workspace { display: grid; grid-template-columns: minmax(16rem, 1fr) 2fr; gap: 2rem; align-items: start; }
 @media (max-width: 48rem) { .workspace { grid-template-columns: 1fr; } }

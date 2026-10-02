@@ -49,7 +49,7 @@ test("nothing is shown when nothing needs attention", async () => {
   const fake = api(ADMIN);
   renderApp();
   await waitFor(() => expect(fake.made("GET", "/api/attention")).toHaveLength(1));
-  await screen.findByRole("link", { name: m.navEveryone });
+  await screen.findByRole("button", { name: m.navAdmin });
   expect(screen.queryByRole("region", { name: m.attentionTitle })).not.toBeInTheDocument();
 });
 

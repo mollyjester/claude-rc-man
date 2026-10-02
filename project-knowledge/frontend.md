@@ -41,7 +41,7 @@ version is `frontend/.nvmrc`.
 
 | File | What it is |
 |---|---|
-| `src/App.tsx` | Who is signed in, the navigation, and the routes; `ADMIN_PAGES` is the administrators' pages, which the navigation and the routes are built from |
+| `src/App.tsx` | Who is signed in, the navigation, and the routes; `ADMIN_PAGES` is the administrators' pages, which the navigation's **Admin** menu and the routes are built from |
 | `src/Dashboard.tsx` | The Servers page: the folder tree and its summary beside the selected folder's panel, the selection kept in the address as `?folder=`, the servers refreshed every `POLL_MS` |
 | `src/Folders.tsx` | The folder tree, fetched a folder at a time and opened to whatever is selected, each folder's status dot, and the summary of every server |
 | `src/FolderPanel.tsx` | A folder's panel: its breadcrumb and its Claude server section |

@@ -1,6 +1,7 @@
 import { type Page, expect, test } from "@playwright/test";
 
 import { m } from "../src/messages";
+import { openAdminPage } from "./nav";
 import { ALICE, BOB, useAs } from "./people";
 
 const tree = (page: Page) => page.getByRole("region", { name: m.foldersTitle });
@@ -89,7 +90,7 @@ test("administrators see everyone's servers, and act on none of them", async ({ 
   if (await trust.isVisible()) await trust.click();
   await expect(ready).toBeVisible();
 
-  await page.getByRole("link", { name: m.navEveryone }).click();
+  await openAdminPage(page, m.navEveryone);
   await expect(page.getByRole("heading", { name: m.everyoneTitle })).toBeVisible();
   const alice = page.getByRole("region", { name: m.everyonePerson("alice", ALICE) });
   const row = alice.getByRole("row", { name: /projects\/alice-alpha/ });
@@ -101,6 +102,7 @@ test("administrators see everyone's servers, and act on none of them", async ({ 
   await useAs(bob, BOB);
   await bob.goto("/");
   await expect(bob.getByText(m.signedInAs(BOB))).toBeVisible();
+  await expect(bob.getByRole("button", { name: m.navAdmin })).toHaveCount(0);
   await expect(bob.getByRole("link", { name: m.navEveryone })).toHaveCount(0);
   const refused = await bob.evaluate(async () => (await fetch("/api/servers/everyone")).status);
   expect(refused).toBe(403);

@@ -3,7 +3,7 @@
 Each person who uses rcman has their own Linux account on this machine and
 connects their own Claude account. Administrators add and remove people with
 `rcman-user`, run through sudo over SSH, or on the **People** page in rcman,
-which asks the same question about the home folder. Both use `rc-admin`, which
+under **Admin** in the navigation, which asks the same question about the home folder. Both use `rc-admin`, which
 never asks questions and answers in JSON.
 
 `/etc/rcman/users.toml` is the one list of people: each entry maps a Google

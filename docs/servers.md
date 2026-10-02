@@ -113,7 +113,8 @@ rcman handles it once it has been taught to recognise it.
 
 ## For administrators
 
-The **Everyone's servers** page lists each person in rcman with their servers:
+The **Everyone's servers** page, under **Admin** in the navigation, lists each
+person in rcman with their servers:
 the folder, the state and the session's name, as each person's own Servers page
 shows them. It is for looking only; it has no buttons, because rcman lets only
 the person a server belongs to act on it. A person whose servers could not be

@@ -12,6 +12,7 @@ export const m = {
   navDashboard: "Servers",
   navSettings: "Settings",
   navDocs: "Help",
+  navAdmin: "Admin",
   navUsers: "People",
   navAudit: "Audit trail",
   navVersions: "Claude Code",

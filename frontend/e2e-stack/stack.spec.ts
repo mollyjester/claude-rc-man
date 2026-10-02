@@ -2,6 +2,7 @@
 // person a Linux account of their own. Runs in order against one installation.
 import { type Page, expect, test } from "@playwright/test";
 
+import { openAdminPage } from "../e2e/nav";
 import { m } from "../src/messages";
 
 const GOOD_CODE = "GOOD-CODE";
@@ -66,6 +67,7 @@ test("another person sees only their own home and servers", async ({ page }) => 
   await expect(panel.getByRole("button", { name: m.start })).toHaveCount(0);
   await expect(page.getByText("alice-demo")).toHaveCount(0);
   await expect(page.getByRole("region", { name: m.runningTitle }).getByText(m.runningEmpty)).toBeVisible();
+  await expect(page.getByRole("button", { name: m.navAdmin })).toHaveCount(0);
   await expect(page.getByRole("link", { name: m.navUsers })).toHaveCount(0);
 
   // Even asked directly, from bob's own signed-in page, rcman acts only in bob's home.
@@ -83,10 +85,13 @@ test("another person sees only their own home and servers", async ({ page }) => 
 test("administrators see everyone's servers, and act on none of them", async ({ page, browser }) => {
   // bob runs a server, as his own Linux account.
   await signIn(page, "bob@example.com");
-  await expect(page.getByRole("link", { name: m.navEveryone })).toHaveCount(0);
+  await expect(page.getByText(m.signedInAs("bob@example.com"))).toBeVisible();
+  await expect(page.getByRole("button", { name: m.navAdmin })).toHaveCount(0);
   await connectClaude(page);
   await select(page, "bob-demo");
-  await page.getByRole("region", { name: "projects/bob-demo", exact: true }).getByRole("button", { name: m.start }).click();
+  const start = page.getByRole("region", { name: "projects/bob-demo", exact: true }).getByRole("button", { name: m.start });
+  await expect(start).toBeVisible(); // now that his account is connected
+  await start.click();
   const card = page.getByRole("article", { name: "projects/bob-demo" });
   await card.getByRole("button", { name: m.trustYes }).click();
   await expect(card.getByText(m.states.ready, { exact: true })).toBeVisible();
@@ -94,7 +99,7 @@ test("administrators see everyone's servers, and act on none of them", async ({ 
   // alice, an administrator, sees it: rcman listed it through sudo -u bob.
   const admin = await browser.newPage();
   await signIn(admin, "alice@example.com");
-  await admin.getByRole("link", { name: m.navEveryone }).click();
+  await openAdminPage(admin, m.navEveryone);
   const bob = admin.getByRole("region", { name: m.everyonePerson("bob", "bob@example.com") });
   await expect(bob.getByRole("row", { name: /projects\/bob-demo/ }).getByText(m.states.ready, { exact: true })).toBeVisible();
   const alice = admin.getByRole("region", { name: m.everyonePerson("alice", "alice@example.com") });
@@ -116,7 +121,7 @@ test("an address that is not on the list gets nowhere", async ({ page }) => {
 
 test("the audit trail records what people did", async ({ page }) => {
   await signIn(page, "alice@example.com");
-  await page.getByRole("link", { name: m.navAudit }).click();
+  await openAdminPage(page, m.navAudit);
   for (const action of ["claude.login", "claude.connect", "server.start", "server.confirm", "server.stop", "server.resume", "server.forget"]) {
     await expect(page.getByRole("cell", { name: action, exact: true }).first()).toBeVisible();
   }
@@ -125,7 +130,7 @@ test("the audit trail records what people did", async ({ page }) => {
 
 test("people are removed, with and without their home", async ({ page }) => {
   await signIn(page, "alice@example.com");
-  await page.getByRole("link", { name: m.navUsers }).click();
+  await openAdminPage(page, m.navUsers);
   for (const [linux, choice] of [
     ["carol", m.usersKeepHome],
     ["dave", m.usersDeleteHome],

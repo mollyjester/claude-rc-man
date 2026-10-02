@@ -1,5 +1,15 @@
-import { type ReactElement, createContext, useContext, useEffect, useState } from "react";
-import { NavLink, Navigate, Route, Routes } from "react-router-dom";
+import {
+  type FocusEvent,
+  type KeyboardEvent,
+  type ReactElement,
+  createContext,
+  useContext,
+  useEffect,
+  useId,
+  useRef,
+  useState,
+} from "react";
+import { NavLink, Navigate, Route, Routes, matchPath, useLocation } from "react-router-dom";
 
 import { ApiError, api } from "./api";
 import { Attention } from "./Attention";
@@ -28,6 +38,53 @@ export const ADMIN_PAGES: { path: string; label: string; element: () => ReactEle
   { path: "/admin/claude", label: m.navVersions, element: () => <Versions /> },
 ];
 
+// The administrators' pages behind one button: a disclosure that closes when
+// a page is chosen, when the page changes, on Escape and when focus leaves it.
+function AdminMenu() {
+  const [open, setOpen] = useState(false);
+  const { pathname } = useLocation();
+  const button = useRef<HTMLButtonElement>(null);
+  const id = useId();
+  const here = ADMIN_PAGES.some((page) => matchPath(page.path, pathname));
+
+  useEffect(() => setOpen(false), [pathname]);
+
+  function onKeyDown(event: KeyboardEvent) {
+    if (event.key === "Escape" && open) {
+      setOpen(false);
+      button.current?.focus();
+    }
+  }
+
+  function onBlur(event: FocusEvent) {
+    if (!event.currentTarget.contains(event.relatedTarget)) setOpen(false);
+  }
+
+  return (
+    <div className="menu" onKeyDown={onKeyDown} onBlur={onBlur}>
+      <button
+        ref={button}
+        type="button"
+        className={here ? "active" : undefined}
+        aria-expanded={open}
+        aria-controls={id}
+        onClick={() => setOpen((shown) => !shown)}
+      >
+        {m.navAdmin}
+      </button>
+      <ul id={id} hidden={!open}>
+        {ADMIN_PAGES.map((page) => (
+          <li key={page.path}>
+            <NavLink to={page.path} onClick={() => setOpen(false)}>
+              {page.label}
+            </NavLink>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 function Nav({ me }: { me: Me }) {
   return (
     <header>
@@ -38,12 +95,7 @@ function Nav({ me }: { me: Me }) {
         </NavLink>
         <NavLink to="/settings">{m.navSettings}</NavLink>
         <NavLink to="/help">{m.navDocs}</NavLink>
-        {me.admin &&
-          ADMIN_PAGES.map((page) => (
-            <NavLink key={page.path} to={page.path}>
-              {page.label}
-            </NavLink>
-          ))}
+        {me.admin && <AdminMenu />}
       </nav>
       <span className="muted">{m.signedInAs(me.email)}</span>
     </header>

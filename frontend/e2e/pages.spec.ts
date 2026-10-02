@@ -1,6 +1,7 @@
 import { expect, test } from "@playwright/test";
 
 import { m } from "../src/messages";
+import { openAdminPage } from "./nav";
 import { ALICE, BOB, useAs } from "./people";
 
 test("settings: the server's verdict is shown as given", async ({ page }) => {
@@ -30,16 +31,19 @@ test("administration is offered to administrators only", async ({ page }) => {
   await useAs(page, BOB);
   await page.goto("/");
   await expect(page.getByText(m.signedInAs(BOB))).toBeVisible();
+  await expect(page.getByRole("link", { name: m.navSettings })).toBeVisible();
+  await expect(page.getByRole("button", { name: m.navAdmin })).toHaveCount(0);
   await expect(page.getByRole("link", { name: m.navUsers })).toHaveCount(0);
   await page.goto("/admin/people");
   await expect(page).toHaveURL("/");
 
   await useAs(page, ALICE);
-  await page.goto("/admin/people");
+  await page.goto("/");
+  await openAdminPage(page, m.navUsers);
   await expect(page.getByRole("row", { name: /bob@example.com/ })).toBeVisible();
-  await page.getByRole("link", { name: m.navAudit }).click();
+  await openAdminPage(page, m.navAudit);
   await expect(page.getByRole("heading", { name: m.auditTitle })).toBeVisible();
-  await page.getByRole("link", { name: m.navVersions }).click();
+  await openAdminPage(page, m.navVersions);
   await expect(page.getByText(m.versionsApproved)).toBeVisible();
 });
 
