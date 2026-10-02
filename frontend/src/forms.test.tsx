@@ -10,6 +10,9 @@ import { FIELDS } from "./Settings";
 import { ADMIN_USER, NOT_CONNECTED, NOTHING_TO_ATTEND, SETTINGS, fakeApi } from "./test/fakeApi";
 import { renderApp } from "./test/render";
 
+// A repository, whose panel has the commit and new-branch forms.
+const REPOSITORY = { name: "repo", path: "projects/repo", has_children: false, repository: true };
+
 const RULE_ATTRIBUTES = ["required", "pattern", "min", "max", "minlength", "maxlength", "step"];
 
 function api() {
@@ -20,9 +23,17 @@ function api() {
     "GET /api/users": { users: [{ linux: "bob", email: "bob@example.com", admin: false, account: true }] },
     "GET /api/claude/versions": { approved: "1.0.0", tested: "1.0.0", untested: false, differs: [], users: [] },
     "POST /api/claude/login": { url: "https://claude.com/x" },
-    "GET /api/folders": { path: "", entries: [] },
+    "GET /api/folders": (c) => (c.query.get("path") === "projects" ? { path: "projects", entries: [REPOSITORY] } : { path: "", entries: [] }),
     "GET /api/servers": { servers: [] },
     "GET /api/attention": NOTHING_TO_ATTEND,
+    "GET /api/git/status": {
+      path: REPOSITORY.path,
+      branch: { name: "main", commit: "0123456789", upstream: null, ahead: null, behind: null },
+      staged: { files: [{ path: "a.txt", change: "added" }], more: 0 },
+      not_staged: { files: [{ path: "b.txt", change: "untracked" }], more: 0 },
+      author: { name: "Alice", email: "alice@example.com" },
+    },
+    "GET /api/git/branches": { path: REPOSITORY.path, local: { branches: [], more: 0 }, remote: { branches: [], more: 0 } },
   });
 }
 
@@ -81,6 +92,12 @@ const PAGES: [string, string, () => Promise<void>][] = [
     },
   ],
 ];
+
+// The forms of a repository's Changes section, each found by its field.
+PAGES.push(
+  ["a commit", "/?folder=projects/repo", async () => void (await screen.findByLabelText(m.commitMessage))],
+  ["a new branch", "/?folder=projects/repo", async () => void (await screen.findByLabelText(m.newBranchName))],
+);
 
 // Pages with a form that has nothing to type in, and what opens it.
 const CHOICES: [string, string, () => Promise<void>][] = [

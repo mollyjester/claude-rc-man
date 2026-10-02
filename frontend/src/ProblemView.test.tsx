@@ -63,3 +63,19 @@ test("shows nothing without an error", () => {
   const { container } = render(<ProblemView error={null} />);
   expect(container).toBeEmptyDOMElement();
 });
+
+test("shows what git said when it refused, and how much more it said", () => {
+  const git = ["error: Your local changes would be overwritten:", "\tREADME.md", "Aborting"];
+  const error = new ApiError(409, "git_failed", "git refused.", [], { git, git_more: 4 });
+  render(<ProblemView error={error} />);
+  const said = screen.getByLabelText(m.gitSaid);
+  expect(said.tagName).toBe("PRE");
+  expect(said.textContent).toBe(git.join("\n"));
+  expect(screen.getByRole("alert")).toHaveTextContent(m.andMoreLines(4));
+});
+
+test("says nothing of more lines when git said no more", () => {
+  render(<ProblemView error={new ApiError(409, "git_failed", "git refused.", [], { git: ["one"], git_more: 0 })} />);
+  expect(screen.getByLabelText(m.gitSaid)).toHaveTextContent("one"); // positive control
+  expect(screen.getByRole("alert")).not.toHaveTextContent(m.andMoreLines(0));
+});
