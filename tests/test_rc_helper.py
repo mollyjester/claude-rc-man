@@ -1521,6 +1521,57 @@ def test_every_error_code_has_a_message():
     assert set(h.MESSAGES) <= used | {"internal_error", "usage"}
 
 
+# What rc-helper is given that breaks each rule it reports, as an error code ->
+# the command line with the refused value in place of {}.
+RULE_INVOCATIONS = {
+    "prefix_invalid": ("start", "projects/alpha", "--prefix={}"),
+    "name_invalid": ("mkdir", "--name={}", "--", "projects"),
+    "email_invalid": ("auth-login", "--email={}"),
+}
+# Rules rc-helper holds without reporting them itself: subject -> why.
+RULES_NOT_REPORTED = {
+    "AUTHOR_NAME": "the backend checks it; rc-helper takes no author until git-commit",
+}
+
+
+def refused_value(rule) -> str:
+    """A value the rule refuses, from a few that break most rules."""
+    for value in ("\x01", " ", ""):
+        if not rule.fullmatch(value):
+            return value
+    raise AssertionError(f"no candidate value breaks {rule.pattern!r}")
+
+
+def test_a_rule_reported_by_code_is_reported_in_its_own_words():
+    assert h.RULE_CODES  # non-vacuity
+    for code, rule in h.RULE_CODES.items():
+        assert h.MESSAGES[code] is rule.sentence, code
+
+
+def test_every_rule_rc_helper_holds_is_reported_or_exempt():
+    from tests.test_rules import held_rules
+
+    held = held_rules(h)
+    assert {"PREFIX", "FOLDER_NAME", "AUTHOR_NAME"} <= set(held)  # non-vacuity
+    reported = list(h.RULE_CODES.values())
+    for name in RULES_NOT_REPORTED:  # stale check: each exemption still needs to be one
+        assert name in held, f"{name} is exempt but rc-helper no longer holds it"
+        assert held[name] not in reported, f"{name} is exempt but has a code"
+    for name, rule in held.items():
+        assert name in RULES_NOT_REPORTED or rule in reported, f"{name} has no error code"
+
+
+def test_each_rule_is_refused_through_the_command_line_with_its_sentence(env):
+    assert set(RULE_INVOCATIONS) == set(h.RULE_CODES)
+    log_in(env)
+    for code, rule in h.RULE_CODES.items():
+        value = refused_value(rule)
+        args = [part.format(value) for part in RULE_INVOCATIONS[code]]
+        status, out = helper(env, *args)
+        assert status == 1 and out["error"]["code"] == code, (code, out)
+        assert out["error"]["message"] == rule.sentence
+
+
 def test_usage_errors_are_json_too(env):
     code, out = helper(env, "no-such-verb")
     assert code == 2 and out["error"]["code"] == "usage"

@@ -59,3 +59,59 @@ def test_a_rule_needs_a_sentence():
 def test_a_rule_cannot_be_changed():
     with pytest.raises(AttributeError):
         DIGITS.sentence = "Anything."  # type: ignore[misc]
+
+
+# --- the helpers' rules -------------------------------------------------------------
+
+
+def held_rules(module) -> dict[str, Rule]:
+    """The rules a module holds, by name, found among its own attributes."""
+    return {name: value for name, value in vars(module).items() if isinstance(value, Rule)}
+
+
+def helpers_rules() -> dict[str, Rule]:
+    """Every rule the helpers define, by name."""
+    from helpers import rc_admin, rc_helper, users_file
+
+    found = {}
+    for module in (users_file, rc_helper, rc_admin):
+        found.update(held_rules(module))
+    # Non-vacuity for every check that runs over them: the rules known to exist.
+    names = {"PREFIX", "EMAIL", "LINUX_NAME", "FOLDER_NAME", "AUTHOR_NAME", "VERSION"}
+    assert names <= set(found), names - set(found)
+    return found
+
+
+def test_the_helpers_rules_are_found():
+    assert helpers_rules()
+
+
+def test_held_rules_finds_a_rule_and_nothing_else():
+    """Planted twin: a module with one rule among other things yields that rule only."""
+    import types
+
+    module = types.ModuleType("planted")
+    module.RULE, module.REGEX, module.TEXT = DIGITS, re.compile("x"), "Use digits only."
+    assert held_rules(module) == {"RULE": DIGITS}
+
+
+def test_every_helpers_rule_sentence_is_a_sentence():
+    for name, rule in helpers_rules().items():
+        assert rule.sentence[0].isupper() and rule.sentence.endswith("."), name
+
+
+def _limits():
+    from helpers import rc_helper, users_file
+
+    return [
+        (rc_helper.PREFIX, rc_helper.MAX_PREFIX_LENGTH),
+        (users_file.LINUX_NAME, users_file.MAX_LINUX_NAME_LENGTH),
+        (rc_helper.AUTHOR_NAME, rc_helper.MAX_AUTHOR_NAME_LENGTH),
+    ]
+
+
+def test_a_sentence_that_states_a_limit_states_the_real_one():
+    for rule, limit in _limits():
+        assert re.search(rf"\b{limit}\b", rule.sentence), rule.sentence
+        assert rule.fullmatch("a" * limit)
+        assert not rule.fullmatch("a" * (limit + 1))

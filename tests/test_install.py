@@ -154,6 +154,24 @@ def test_invalid_values_are_refused(tmp_path, key, value):
         ins.gather(tmp_path / "install.env", environ=env, flags={}, ask=None, sudo_user="dev")
 
 
+def test_a_value_refused_by_a_helpers_rule_is_explained_by_it(tmp_path):
+    from helpers.rules import Rule
+
+    ruled = {key: field[3] for key, field in ins.FIELDS.items() if isinstance(field[3], Rule)}
+    assert {"ADMIN_EMAIL", "ADMIN_LINUX", "CADDY_USER"} <= set(ruled)  # non-vacuity
+    for key, rule in ruled.items():
+        env = {
+            "RCMAN_INSTALL_DOMAIN": "x.example.com",
+            "RCMAN_INSTALL_GOOGLE_CLIENT_ID": "id",
+            "RCMAN_INSTALL_GOOGLE_CLIENT_SECRET": "secret",
+            "RCMAN_INSTALL_ADMIN_EMAIL": "a@example.com",
+            f"RCMAN_INSTALL_{key}": "Not one!",
+        }
+        with pytest.raises(ins.InstallError) as error:
+            ins.gather(tmp_path / "install.env", environ=env, flags={}, ask=None, sudo_user="dev")
+        assert key in str(error.value) and rule.sentence in str(error.value)
+
+
 def test_the_installer_takes_its_rules_from_the_users_file():
     from tests.test_rc_helper import rule_copy_problems
 

@@ -102,3 +102,10 @@ def test_by_email_and_by_linux(tmp_path):
     assert uf.by_email(users, "ALICE@example.com") == ALICE
     assert uf.by_linux(users, "bob") == BOB
     assert uf.by_email(users, "nobody@example.com") is None
+
+
+def test_a_linux_name_is_as_long_as_useradd_allows():
+    """useradd refuses a name longer than 32 characters."""
+    assert uf.MAX_LINUX_NAME_LENGTH == 32
+    assert uf.LINUX_NAME.fullmatch("a" * uf.MAX_LINUX_NAME_LENGTH)
+    assert not uf.LINUX_NAME.fullmatch("a" * (uf.MAX_LINUX_NAME_LENGTH + 1))
