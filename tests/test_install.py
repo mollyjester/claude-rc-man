@@ -506,3 +506,35 @@ def test_toolchain_directories_are_repaired_to_be_readable(tmp_path):
         os.chmod(tmp_path / sub, 0o700)
     ins.open_up(tmp_path)
     assert stat.S_IMODE((tmp_path / "a" / "b").stat().st_mode) == 0o755
+
+
+# --- prerequisites ---------------------------------------------------------------------
+
+
+def test_this_machines_git_is_new_enough():
+    ins.check_git()  # positive control for the refusals below
+
+
+def test_a_git_older_than_rcman_needs_is_refused(monkeypatch):
+    monkeypatch.setattr(ins, "GIT_MIN_VERSION", (99, 0))
+    with pytest.raises(ins.InstallError, match=r"git .* rcman needs git 99\.0 or later"):
+        ins.check_git()
+
+
+def test_no_git_on_the_system_path_is_refused(monkeypatch, tmp_path):
+    from helpers import git_run
+
+    monkeypatch.setattr(git_run, "GIT_SEARCH_PATH", str(tmp_path))
+    with pytest.raises(ins.InstallError, match="no git"):
+        ins.check_git()
+
+
+def test_git_is_checked_before_anything_is_changed(monkeypatch):
+    import pwd
+
+    ran = []
+    monkeypatch.setattr(ins, "run", lambda *a, **k: ran.append(a))
+    monkeypatch.setattr(ins, "GIT_MIN_VERSION", (99, 0))
+    with pytest.raises(ins.InstallError, match="git"):
+        ins.ensure_accounts(pwd.getpwuid(os.getuid()).pw_name)
+    assert ran == []
