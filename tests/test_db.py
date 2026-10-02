@@ -60,3 +60,31 @@ def test_audit_rows_cannot_be_changed(tmp_path):
     with pytest.raises(sqlite3.DatabaseError, match="append-only"):
         con.execute("update audit set result = 'forged'")
     assert con.execute("select result from audit").fetchone()[0] == "ok"
+
+
+def test_author_migration_keeps_existing_prefixes(tmp_path):
+    found = [i for i, script in enumerate(db.MIGRATIONS) if "author_name" in script]
+    assert len(found) == 1, found
+    number = found[0]
+    path = tmp_path / "x.db"
+    con = sqlite3.connect(path)
+    for script in db.MIGRATIONS[:number]:
+        con.executescript(script)
+    con.execute(f"pragma user_version = {number}")
+    con.execute("insert into user_settings (email, prefix) values ('bob@example.com', 'bobs')")
+    con.commit()
+    columns = {r[1] for r in con.execute("pragma table_info(user_settings)")}
+    assert "prefix" in columns and "author_name" not in columns  # positive control
+    con.close()
+
+    db.migrate(path)
+    con = sqlite3.connect(path)
+    con.row_factory = sqlite3.Row
+    assert dict(con.execute("select * from user_settings").fetchone()) == {
+        "email": "bob@example.com",
+        "prefix": "bobs",
+        "author_name": None,
+        "author_email": None,
+    }
+    con.execute("insert into user_settings (email, prefix) values ('carol@example.com', null)")
+    assert con.execute("pragma user_version").fetchone()[0] == len(db.MIGRATIONS)
