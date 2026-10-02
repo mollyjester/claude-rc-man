@@ -532,8 +532,14 @@ def test_no_git_on_the_system_path_is_refused(monkeypatch, tmp_path):
 def test_git_is_checked_before_anything_is_changed(monkeypatch):
     import pwd
 
-    ran = []
-    monkeypatch.setattr(ins, "run", lambda *a, **k: ran.append(a))
+    ran, real = [], ins.run
+
+    def recording(argv, *args, **kwargs):
+        if argv[1:] == ["--version"]:  # asking git its version changes nothing
+            return real(argv, *args, **kwargs)
+        ran.append(argv)
+
+    monkeypatch.setattr(ins, "run", recording)
     monkeypatch.setattr(ins, "GIT_MIN_VERSION", (99, 0))
     with pytest.raises(ins.InstallError, match="git"):
         ins.ensure_accounts(pwd.getpwuid(os.getuid()).pw_name)
