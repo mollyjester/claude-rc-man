@@ -52,7 +52,7 @@ export function Dashboard({ pollMs }: { pollMs: number }) {
       <div className="workspace">
         <div className="pane">
           <FolderTree tree={tree} servers={servers ?? []} selected={selected} onSelect={select} />
-          <ServerSummary servers={servers} onSelect={select} />
+          <ServerSummary servers={servers} selected={selected} onSelect={select} />
         </div>
         {selected ? (
           <FolderPanel

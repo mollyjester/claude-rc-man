@@ -141,7 +141,15 @@ export function FolderTree(props: TreeProps) {
 }
 
 // Every server, wherever its folder is in the tree, each selecting its folder.
-export function ServerSummary({ servers, onSelect }: { servers: Server[] | null; onSelect: (path: string) => void }) {
+export function ServerSummary({
+  servers,
+  selected,
+  onSelect,
+}: {
+  servers: Server[] | null;
+  selected: string | null;
+  onSelect: (path: string) => void;
+}) {
   return (
     <section aria-label={m.yourServersTitle}>
       <h2>{m.yourServersTitle}</h2>
@@ -150,9 +158,14 @@ export function ServerSummary({ servers, onSelect }: { servers: Server[] | null;
         <ul className="summary">
           {servers.map((server) => (
             <li key={server.path}>
-              <button type="button" className="name" onClick={() => onSelect(server.path)}>
+              <button
+                type="button"
+                className="name"
+                aria-current={server.path === selected ? "true" : undefined}
+                onClick={() => onSelect(server.path)}
+              >
                 {server.path}
-              </button>{" "}
+              </button>
               <StateBadge state={server.state} />
             </li>
           ))}

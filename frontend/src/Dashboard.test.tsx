@@ -337,9 +337,12 @@ test("the summary lists every server, and selects its folder", async () => {
     expect(within(item as HTMLElement).getByText(m.states[state])).toHaveClass("badge");
   }
 
+  expect(within(list).getByRole("button", { name: "projects/gamma/deep" })).not.toHaveAttribute("aria-current");
   await userEvent.click(within(list).getByRole("button", { name: "projects/gamma/deep" }));
   expect(within(await panel("projects/gamma/deep")).getByRole("article")).toBeInTheDocument();
   expect(folderOf(location().search)).toBe("projects/gamma/deep");
+  expect(within(list).getByRole("button", { name: "projects/gamma/deep" })).toHaveAttribute("aria-current", "true");
+  expect(within(list).getByRole("button", { name: "projects/alpha" })).not.toHaveAttribute("aria-current");
   await waitFor(() =>
     expect(fake.made("GET", "/api/folders").map((c) => c.query.get("path"))).toContain("projects/gamma"),
   );
