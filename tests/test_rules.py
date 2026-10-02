@@ -164,6 +164,29 @@ def test_a_rule_the_two_engines_read_differently_is_found():
     assert "'a{}' U+001C" in found and "'a{}' U+0020" not in found
 
 
+def test_a_sentence_that_allows_the_joiners_says_so():
+    """A rule that refuses invisible characters but takes ZWNJ and ZWJ between letters
+    says that; one that refuses them says nothing of joiners."""
+    found = []
+    for name, rule in helpers_rules().items():
+        refuses_invisible = not rule.fullmatch(f"a{chr(0x200B)}b")
+        joins = rule.fullmatch(f"a{chr(0x200C)}b") and rule.fullmatch(f"a{chr(0x200D)}b")
+        if refuses_invisible and joins:
+            found.append(name)
+            assert "joiner" in rule.sentence, name
+        else:
+            assert "joiner" not in rule.sentence, name
+    assert {"AUTHOR_NAME", "FOLDER_NAME"} <= set(found)  # non-vacuity
+
+
+def test_a_sentence_about_letters_says_which_case():
+    from helpers import rc_helper, users_file
+
+    assert rc_helper.PREFIX.fullmatch("Ab") and "either case" in rc_helper.PREFIX.sentence
+    assert not users_file.LINUX_NAME.fullmatch("Ab")
+    assert "lowercase" in users_file.LINUX_NAME.sentence
+
+
 def test_a_sentence_that_states_a_limit_states_the_real_one():
     for rule, limit in _limits():
         assert re.search(rf"\b{limit}\b", rule.sentence), rule.sentence
