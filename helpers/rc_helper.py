@@ -18,12 +18,17 @@ system interpreter.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import datetime
+import errno
+import fcntl
 import hashlib
 import json
 import os
 import pwd
 import re
+import shutil
+import stat
 import subprocess
 import sys
 import time
@@ -45,6 +50,8 @@ VERBS = (
     "auth-status",
     "auth-login",
     "auth-code",
+    "mkdir",
+    "delete",
 )
 
 MESSAGES = {
@@ -75,6 +82,30 @@ MESSAGES = {
     "timeout": "Claude Code did not respond in time.",
     "no_login_in_progress": "Start connecting your Claude account first.",
     "login_failed": "Signing in to Claude failed. Start again and use a fresh code.",
+    "name_invalid": (
+        "A folder's name may not be empty, begin with a dot, hold a slash, a control "
+        "character or an invisible character, begin or end with white space, or be longer "
+        "than the file system allows."
+    ),
+    "folder_exists": "Something with that name is there already.",
+    "path_hidden": (
+        "rcman does not delete a folder whose name begins with a dot, or anything in one."
+    ),
+    "folder_busy": "Your folders are being changed by another request. Try again in a moment.",
+    "delete_stop_failed": "A server in the folder did not stop, so nothing was deleted.",
+    "delete_forget_failed": (
+        "A server in the folder could not be forgotten, so nothing was deleted."
+    ),
+    "delete_incomplete": (
+        "Some of the folder could not be deleted; what is left is listed. "
+        "Delete it again once that can be removed."
+    ),
+    "delete_mount_inside": (
+        "Another file system is mounted inside the folder, so nothing was deleted."
+    ),
+    "delete_unsafe": (
+        "Folders cannot be deleted safely on this system, so rcman does not delete them."
+    ),
 }
 
 TMUX_SOCKET_NAME = "rcman"
@@ -88,19 +119,15 @@ MAX_PREFIX_LENGTH = 32
 MAX_PATH_LENGTH = 1024
 PREFIX = re.compile(rf"[A-Za-z0-9][A-Za-z0-9-]{{0,{MAX_PREFIX_LENGTH - 1}}}")
 MAX_AUTHOR_NAME_LENGTH = 128
-# The Hangul fillers, as (first, last): letters that show as nothing.
-HANGUL_FILLERS = ((0x115F, 0x1160), (0x3164, 0x3164), (0xFFA0, 0xFFA0))
-# Code points a commit author's name may not hold anywhere, as (first, last).
-_NOT_IN_AUTHOR_NAME = (
-    (0x00, 0x1F),  # control characters
-    (0x7F, 0x9F),
-    (0x3C, 0x3C),  # < and >, which git puts around the address
-    (0x3E, 0x3E),
-    (0x2028, 0x2029),  # line and paragraph separators
-    # Invisible format characters (Unicode category Cf), which make two names
-    # look alike; tests/test_rc_helper.py derives them from the Unicode
-    # database. Not ZWNJ and ZWJ (_NOT_ALONE_OR_AT_AN_END): Persian and Indic
-    # names are written with them.
+# Code points no name may hold anywhere, because they show as nothing or as
+# something they are not, and make two names look alike; each as a tuple of
+# (first, last).
+CONTROLS = ((0x00, 0x1F), (0x7F, 0x9F))
+SEPARATORS = ((0x2028, 0x2029),)  # line and paragraph separators
+# Invisible format characters (Unicode category Cf); tests/test_rc_helper.py
+# derives them from the Unicode database. Not ZWNJ and ZWJ (JOINERS): Persian
+# and Indic names are written with them.
+INVISIBLE_FORMAT = (
     (0x00AD, 0x00AD),
     (0x0600, 0x0605),
     (0x061C, 0x061C),
@@ -123,14 +150,12 @@ _NOT_IN_AUTHOR_NAME = (
     (0x1D173, 0x1D17A),
     (0xE0001, 0xE0001),
     (0xE0020, 0xE007F),
-    *HANGUL_FILLERS,
 )
-# What git strips from either end of a name besides white space: crud() in
-# git's ident.c. tests/test_rc_helper.py asks real git.
-_GIT_TRIMS = ",:;<>\"'\\"
+# The Hangul fillers: letters that show as nothing.
+HANGUL_FILLERS = ((0x115F, 0x1160), (0x3164, 0x3164), (0xFFA0, 0xFFA0))
 # ZWNJ and ZWJ, which join or part the characters beside them: a name may
 # hold them, but not alone and not at either end.
-_NOT_ALONE_OR_AT_AN_END = (0x200C, 0x200D)
+JOINERS = (0x200C, 0x200D)
 
 
 def _escape(code: int) -> str:
@@ -138,20 +163,35 @@ def _escape(code: int) -> str:
     return f"\\u{code:04X}" if code <= 0xFFFF else f"\\U{code:08X}"
 
 
-_NOWHERE = "".join(
-    _escape(first) if first == last else f"{_escape(first)}-{_escape(last)}"
-    for first, last in _NOT_IN_AUTHOR_NAME
-)
-_NOT_AT_ENDS = (
-    _NOWHERE
-    + "".join(_escape(ord(c)) for c in _GIT_TRIMS)
-    + "".join(_escape(code) for code in _NOT_ALONE_OR_AT_AN_END)
-    + r"\s"
-)
+def _class(ranges=(), chars: str = "") -> str:
+    """The inside of a character class holding ``ranges`` and ``chars``, as escapes."""
+    spans = (_escape(a) if a == b else f"{_escape(a)}-{_escape(b)}" for a, b in ranges)
+    return "".join(spans) + "".join(_escape(ord(c)) for c in chars)
+
+
+# What no name may hold anywhere, and what it may besides not begin or end with.
+_UNSEEN = _class((*CONTROLS, *SEPARATORS, *INVISIBLE_FORMAT, *HANGUL_FILLERS))
+_NOT_AT_AN_END = _class(chars="".join(map(chr, JOINERS))) + r"\s"
+
+# A commit author's name may not hold < and >, which git puts around the
+# address, nor begin or end with what git strips from either end besides white
+# space: crud() in git's ident.c. tests/test_rc_helper.py asks real git.
+_GIT_TRIMS = ",:;<>\"'\\"
+_NOT_IN_AUTHOR_NAME = _UNSEEN + _class(chars="<>")
+_NOT_AT_AUTHOR_ENDS = _NOT_IN_AUTHOR_NAME + _NOT_AT_AN_END + _class(chars=_GIT_TRIMS)
 # No lookaround, so the backend's validator reads it as this module does.
 AUTHOR_NAME = re.compile(
-    rf"[^{_NOT_AT_ENDS}]"
-    rf"(?:[^{_NOWHERE}]{{0,{MAX_AUTHOR_NAME_LENGTH - 2}}}[^{_NOT_AT_ENDS}])?"
+    rf"[^{_NOT_AT_AUTHOR_ENDS}]"
+    rf"(?:[^{_NOT_IN_AUTHOR_NAME}]{{0,{MAX_AUTHOR_NAME_LENGTH - 2}}}[^{_NOT_AT_AUTHOR_ENDS}])?"
+)
+# A folder's name may not hold a slash, nor begin with a dot: such a folder is
+# hidden, and . and .. are not names. How long it may be is the file system's
+# to say (check_folder_name).
+_NOT_IN_FOLDER_NAME = _UNSEEN + _class(chars="/")
+_NOT_AT_FOLDER_ENDS = _NOT_IN_FOLDER_NAME + _NOT_AT_AN_END
+FOLDER_NAME = re.compile(
+    rf"[^{_NOT_AT_FOLDER_ENDS}{_class(chars='.')}]"
+    rf"(?:[^{_NOT_IN_FOLDER_NAME}]*[^{_NOT_AT_FOLDER_ENDS}])?"
 )
 # The trust prompt refuses an answer that arrives too quickly after the question.
 ANSWER_PACE_SECONDS = 0.5
@@ -161,6 +201,8 @@ STOP_TIMEOUT = 30.0
 RESUMABLE = ("stopped", "exited")
 LOGIN_TIMEOUT = 60.0
 POLL_SECONDS = 0.1
+# How many of the paths a delete could not remove its answer lists.
+DELETE_REPORT_LIMIT = 50
 UNRECOGNISED_GRACE_SECONDS = 3.0
 
 # What Claude Code shows; held to the recorded fixtures by tests/test_rc_helper.py.
@@ -262,6 +304,91 @@ def resolve_folder(home: Path, rel: str, allow_home: bool = False) -> Path:
     if not target.is_dir():
         raise HelperError("path_not_directory")
     return target
+
+
+def _joined(parent_rel: str, name: str) -> str:
+    return f"{parent_rel}/{name}" if parent_rel else name
+
+
+def _rel_of(root: Path, folder: Path) -> str:
+    """A resolved folder's path relative to the resolved home; empty for the home itself."""
+    return "" if folder == root else folder.relative_to(root).as_posix()
+
+
+def open_dir(root: Path, folder: Path) -> int:
+    """An fd on ``folder``, a resolved folder in ``root``, reached without following a link.
+
+    A part of the path that has become a link since it was resolved is refused.
+    """
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    fd = os.open(root, flags)
+    try:
+        for part in folder.relative_to(root).parts:
+            try:
+                child = os.open(part, flags, dir_fd=fd)
+            except FileNotFoundError:
+                raise HelperError("path_not_found") from None
+            except OSError as error:
+                if error.errno in (errno.ELOOP, errno.ENOTDIR):
+                    raise HelperError("path_outside_home") from None
+                raise
+            os.close(fd)
+            fd = child
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
+
+
+def check_folder_name(name: str, parent_fd: int, parent_rel: str) -> str:
+    """The path of a new folder ``name`` in the folder open as ``parent_fd``."""
+    try:
+        encoded = name.encode()
+    except UnicodeEncodeError:  # bytes that are not UTF-8, from a command line
+        raise HelperError("name_invalid") from None
+    if not FOLDER_NAME.fullmatch(name) or len(encoded) > os.fpathconf(parent_fd, "PC_NAME_MAX"):
+        raise HelperError("name_invalid")
+    rel = _joined(parent_rel, name)
+    if len(rel) > MAX_PATH_LENGTH:
+        raise HelperError("path_invalid")
+    return rel
+
+
+@dataclass(frozen=True)
+class Entry:
+    """Something in a folder, found by its resolved parent and its own name, unresolved."""
+
+    parent: Path
+    parent_fd: int  # the caller closes it
+    name: str
+    rel: str
+    is_link: bool
+
+
+def resolve_entry(home: Path, rel: str) -> Entry:
+    """The entry ``rel`` names: a folder, or a link, which is never followed."""
+    check_rel(rel)
+    parts = [part for part in rel.split("/") if part]
+    if all(part == "." for part in parts):
+        raise HelperError("path_is_home")
+    root = home.resolve()
+    if parts[-1] in (".", ".."):  # names no entry; only where it leads
+        target = confine(home, rel, allow_home=True)
+        raise HelperError("path_is_home" if target == root else "path_invalid")
+    parent = resolve_folder(home, "/".join(parts[:-1]), allow_home=True)
+    name = parts[-1]
+    fd = open_dir(root, parent)
+    try:
+        try:
+            mode = os.lstat(name, dir_fd=fd).st_mode
+        except FileNotFoundError:
+            raise HelperError("path_not_found") from None
+        if not stat.S_ISLNK(mode) and not stat.S_ISDIR(mode):
+            raise HelperError("path_not_directory")
+    except BaseException:
+        os.close(fd)
+        raise
+    return Entry(parent, fd, name, _joined(_rel_of(root, parent), name), stat.S_ISLNK(mode))
 
 
 def relative(cfg: Config, folder: Path) -> str:
@@ -550,7 +677,28 @@ class Helper:
             )
         }
 
+    @contextlib.contextmanager
+    def _lock(self, exclusive: bool):
+        """Held while servers start and folders are made (shared) or deleted (exclusive).
+
+        A flock on the home folder itself. One that is held already the other
+        way is refused at once with ``folder_busy``, never waited for.
+        """
+        fd = os.open(self.cfg.home.resolve(), os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            try:
+                fcntl.flock(fd, (fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH) | fcntl.LOCK_NB)
+            except BlockingIOError:
+                raise HelperError("folder_busy") from None
+            yield
+        finally:
+            os.close(fd)
+
     def start(self, rel: str, prefix: str) -> dict:
+        with self._lock(exclusive=False):
+            return self._start(rel, prefix)
+
+    def _start(self, rel: str, prefix: str) -> dict:
         folder, rel = self._folder(rel)
         self._check_prefix(prefix)
         self._require_claude()
@@ -567,11 +715,15 @@ class Helper:
         return {"server": self._settled(session, rel)}
 
     def resume(self, rel: str, prefix: str) -> dict:
-        folder, rel = self._folder(rel)
-        session = session_for(rel)
-        if not self.tmux.exists(session) or self._server(session, rel)["state"] not in RESUMABLE:
-            raise HelperError("not_stopped")
-        return self.start(rel, prefix)
+        with self._lock(exclusive=False):
+            folder, rel = self._folder(rel)
+            session = session_for(rel)
+            if (
+                not self.tmux.exists(session)
+                or self._server(session, rel)["state"] not in RESUMABLE
+            ):
+                raise HelperError("not_stopped")
+            return self._start(rel, prefix)
 
     def stop(self, rel: str) -> dict:
         rel = self._known(rel)
@@ -700,6 +852,115 @@ class Helper:
             time.sleep(POLL_SECONDS)
         return login
 
+    def mkdir(self, rel: str, name: str) -> dict:
+        with self._lock(exclusive=False):
+            root = self.cfg.home.resolve()
+            folder = resolve_folder(self.cfg.home, rel, allow_home=True)
+            fd = open_dir(root, folder)
+            try:
+                created = check_folder_name(name, fd, _rel_of(root, folder))
+                try:
+                    os.mkdir(name, dir_fd=fd)
+                except FileExistsError:
+                    raise HelperError("folder_exists") from None
+            finally:
+                os.close(fd)
+        return {"created": created}
+
+    def delete(self, rel: str) -> dict:
+        """Stop and forget every server in a folder or below it, then delete the folder.
+
+        A link is deleted as the link. Nothing is forgotten unless every server
+        stopped, and nothing is deleted unless every one was forgotten.
+        """
+        if not shutil.rmtree.avoids_symlink_attacks:
+            raise HelperError("delete_unsafe")
+        entry = resolve_entry(self.cfg.home, rel)
+        try:
+            given = [part for part in rel.split("/") if part not in ("", ".", "..")]
+            if any(part.startswith(".") for part in [*given, *entry.rel.split("/")]):
+                raise HelperError("path_hidden")
+            with self._lock(exclusive=True):
+                if not entry.is_link:
+                    self._refuse_mounts(entry)
+                servers = self._servers_in(entry.rel)
+                stopped = self._stop_all(servers)
+                forgotten = self._forget_all(servers)
+                self._remove(entry, forgotten)
+        finally:
+            os.close(entry.parent_fd)
+        return {
+            "deleted": entry.rel,
+            "link": entry.is_link,
+            "stopped": stopped,
+            "forgotten": forgotten,
+        }
+
+    @staticmethod
+    def _refuse_mounts(entry: Entry) -> None:
+        device = os.fstat(entry.parent_fd).st_dev
+        walk = os.fwalk(entry.name, dir_fd=entry.parent_fd, follow_symlinks=False)
+        for _path, _folders, _files, fd in walk:
+            if os.fstat(fd).st_dev != device:
+                walk.close()
+                raise HelperError("delete_mount_inside")
+
+    def _servers_in(self, rel: str) -> list[tuple[str, str]]:
+        """(folder, session) of every server in the folder ``rel`` or below it, by folder."""
+        return sorted(
+            (path, session)
+            for session, path in self.tmux.sessions()
+            if path == rel or path.startswith(f"{rel}/")
+        )
+
+    def _stop_all(self, servers: list[tuple[str, str]]) -> list[str]:
+        """Stop every running server, all within one STOP_TIMEOUT; the folders of those stopped.
+
+        Waits for the processes to exit rather than for a screen, which may be
+        one rcman does not recognise.
+        """
+        running = [(path, s) for path, s in servers if self.tmux.exit_status(s) is None]
+        for _path, session in running:
+            self.tmux.interrupt(session)
+        deadline = time.monotonic() + STOP_TIMEOUT
+        waiting = running
+        while waiting := [(path, s) for path, s in waiting if self.tmux.exit_status(s) is None]:
+            if time.monotonic() > deadline:
+                path, session = waiting[0]
+                server = {**self._server(session, path), "screen": self.tmux.screen(session)}
+                stopped = [p for p, s in running if (p, s) not in waiting]
+                raise HelperError("delete_stop_failed", {"server": server, "stopped": stopped})
+            time.sleep(POLL_SECONDS)
+        return [path for path, _session in running]
+
+    def _forget_all(self, servers: list[tuple[str, str]]) -> list[str]:
+        forgotten: list[str] = []
+        for path, session in servers:
+            self.tmux.kill(session)
+            if self.tmux.exists(session):
+                detail = {"server": self._server(session, path), "forgotten": forgotten}
+                raise HelperError("delete_forget_failed", detail)
+            forgotten.append(path)
+        return forgotten
+
+    @staticmethod
+    def _remove(entry: Entry, forgotten: list[str]) -> None:
+        """Delete the entry; whatever could not be removed is reported, and nothing else done."""
+        left: set[str] = set()
+        if entry.is_link:
+            try:
+                os.unlink(entry.name, dir_fd=entry.parent_fd)
+            except OSError:
+                left.add(entry.name)
+        else:
+            shutil.rmtree(
+                entry.name, dir_fd=entry.parent_fd, onexc=lambda _f, path, _e: left.add(path)
+            )
+        if left:
+            parent = entry.rel.rpartition("/")[0]
+            report = sorted(_joined(parent, path) for path in left)[:DELETE_REPORT_LIMIT]
+            raise HelperError("delete_incomplete", {"forgotten": forgotten, "left": report})
+
     def _folder(self, rel: str) -> tuple[Path, str]:
         folder = resolve_folder(self.cfg.home, rel)
         return folder, relative(self.cfg, folder)
@@ -761,6 +1022,13 @@ def _parser() -> argparse.ArgumentParser:
     login = verbs.add_parser("auth-login", help="start connecting a Claude account")
     login.add_argument("--email", required=True)
     verbs.add_parser("auth-code", help="finish connecting; the code is read from stdin")
+    mkdir = verbs.add_parser("mkdir", help="make a folder in a folder, or in your home")
+    mkdir.add_argument("parent", nargs="?", default="")
+    mkdir.add_argument("--name", required=True, help="the new folder's name")
+    delete = verbs.add_parser(
+        "delete", help="stop and forget every server in a folder or below it, then delete it"
+    )
+    delete.add_argument("path")
     return parser
 
 
@@ -778,6 +1046,10 @@ def _dispatch(helper: Helper, args: argparse.Namespace, stdin) -> dict:
         return helper.confirm(args.path, args.answer)
     if v == "auth-status":
         return helper.auth_status()
+    if v == "mkdir":
+        return helper.mkdir(args.parent, args.name)
+    if v == "delete":
+        return helper.delete(args.path)
     if v == "auth-login":
         return helper.auth_login(args.email)
     return helper.auth_code(stdin.readline())

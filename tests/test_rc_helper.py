@@ -653,32 +653,41 @@ def test_author_name_rule(name, accepted):
     assert bool(h.AUTHOR_NAME.fullmatch(name)) is accepted
 
 
-def test_every_format_character_is_refused_but_zwnj_and_zwj_inside_a_name():
+# The rules that refuse the same invisible characters: a commit author's name,
+# and a folder's.
+NAME_RULES = {"author name": "AUTHOR_NAME", "folder name": "FOLDER_NAME"}
+
+
+@pytest.mark.parametrize("rule", NAME_RULES.values(), ids=NAME_RULES)
+def test_every_format_character_is_refused_but_zwnj_and_zwj_inside_a_name(rule):
     import unicodedata
 
+    rule = getattr(h, rule)
     found = format_characters()
     assert chr(0x200B) in found and chr(0xE0020) in found  # positive control
     for code, name in ALLOWED_FORMAT.items():  # each exemption is still what it is said to be
         assert chr(code) in found and unicodedata.name(chr(code)) == name
-        assert h.AUTHOR_NAME.fullmatch(f"a{chr(code)}b")
+        assert rule.fullmatch(f"a{chr(code)}b")
     let_through = [
         (f"U+{ord(c):04X}", name)
         for c in found
         for name in (f"a{c}b", c, f"{c}b", f"a{c}")
-        if h.AUTHOR_NAME.fullmatch(name) and (ord(c) not in ALLOWED_FORMAT or name != f"a{c}b")
+        if rule.fullmatch(name) and (ord(c) not in ALLOWED_FORMAT or name != f"a{c}b")
     ]
     assert let_through == []  # the allowed ones only inside a name, never alone or at an end
 
 
-def test_hangul_fillers_are_refused_in_a_name():
+@pytest.mark.parametrize("rule", NAME_RULES.values(), ids=NAME_RULES)
+def test_hangul_fillers_are_refused_in_a_name(rule):
+    rule = getattr(h, rule)
     found = hangul_fillers()
     assert chr(0x3164) in found  # positive control: HANGUL FILLER
     assert {code for first, last in h.HANGUL_FILLERS for code in range(first, last + 1)} == {
         ord(c) for c in found
     }
     for c in found:
-        assert not h.AUTHOR_NAME.fullmatch(f"a{c}b"), f"U+{ord(c):04X}"
-        assert not h.AUTHOR_NAME.fullmatch(c), f"U+{ord(c):04X}"
+        assert not rule.fullmatch(f"a{c}b"), f"U+{ord(c):04X}"
+        assert not rule.fullmatch(c), f"U+{ord(c):04X}"
 
 
 def recorded_by_git(tmp_path, name: str) -> str:
@@ -714,6 +723,560 @@ def test_names_git_would_trim_are_refused(tmp_path):
     for c in printable:
         refused = not h.AUTHOR_NAME.fullmatch(f"{c}Bob") and not h.AUTHOR_NAME.fullmatch(f"Bob{c}")
         assert refused is (c in trimmed), repr(c)
+
+
+# --- folders: mkdir and delete ------------------------------------------------------
+
+
+def in_process(env, runner=subprocess.run):
+    """The helper in this process, for what the command line cannot plant."""
+    cfg = h.config_from_env(env)
+    return h.Helper(cfg, h.Tmux(cfg, runner=runner))
+
+
+def refusal(call, *args) -> h.HelperError:
+    with pytest.raises(h.HelperError) as err:
+        call(*args)
+    return err.value
+
+
+def tmux_sessions(env) -> set[str]:
+    out = subprocess.run(
+        ["tmux", "-S", env["RC_HELPER_TMUX_SOCKET"], "list-sessions", "-F", "#{session_name}"],
+        capture_output=True,
+        text=True,
+    ).stdout
+    return set(out.split())
+
+
+def trusted(env, *rels):
+    home = Path(env["RC_HELPER_HOME"])
+    fake.write_state(
+        home / ".claude-fake", logged_in=True, trusted=[str(home.resolve() / r) for r in rels]
+    )
+
+
+def name_max(path) -> int:
+    return os.pathconf(path, "PC_NAME_MAX")
+
+
+@pytest.mark.parametrize(
+    "rel,code",
+    [
+        ("", "path_is_home"),
+        (".", "path_is_home"),
+        ("a/..", "path_is_home"),
+        ("a/b/../..", "path_is_home"),
+        ("/etc", "path_invalid"),
+        ("a\0b", "path_invalid"),
+        ("a/b/..", "path_invalid"),
+        ("a/b/.", "path_invalid"),
+        ("x" * (h.MAX_PATH_LENGTH + 1), "path_invalid"),
+        ("../x", "path_outside_home"),
+        ("escape/x", "path_outside_home"),
+        ("missing", "path_not_found"),
+        ("a/missing", "path_not_found"),
+        ("missing/b", "path_not_found"),
+        ("file", "path_not_directory"),
+    ],
+)
+def test_entry_refusals(home, rel, code):
+    assert refusal(h.resolve_entry, home, rel).code == code
+
+
+def test_an_entry_is_its_resolved_parent_and_its_own_name(home):
+    entry = h.resolve_entry(home, "inner-link/b")
+    try:
+        assert (entry.parent, entry.name, entry.rel, entry.is_link) == (
+            (home / "a").resolve(),
+            "b",
+            "a/b",
+            False,
+        )
+        assert os.path.samestat(os.fstat(entry.parent_fd), os.stat(home / "a"))
+    finally:
+        os.close(entry.parent_fd)
+    entry = h.resolve_entry(home, "inner-link")  # the link itself, never what it leads to
+    try:
+        assert (entry.parent, entry.name, entry.rel, entry.is_link) == (
+            home.resolve(),
+            "inner-link",
+            "inner-link",
+            True,
+        )
+    finally:
+        os.close(entry.parent_fd)
+    entry = h.resolve_entry(home, "escape")  # a link leading outside is still only a link
+    os.close(entry.parent_fd)
+    assert (entry.rel, entry.is_link) == ("escape", True)
+
+
+def test_a_folder_is_opened_without_following_any_link(home, tmp_path):
+    folder = h.resolve_folder(home, "a/b")
+    fd = h.open_dir(home.resolve(), folder)
+    try:
+        assert os.path.samestat(os.fstat(fd), os.stat(folder))  # positive control
+    finally:
+        os.close(fd)
+    (home / "a").rename(tmp_path / "outside" / "a")
+    (home / "a").symlink_to(tmp_path / "outside" / "a")  # a/b now leads outside
+    assert refusal(h.open_dir, home.resolve(), folder).code == "path_outside_home"
+
+
+def test_mkdir_makes_a_folder_in_a_folder_and_in_the_home_folder(env):
+    home = Path(env["RC_HELPER_HOME"])
+    assert ok(env, "mkdir", "--name=new", "--", "projects") == {"created": "projects/new"}
+    assert (home / "projects" / "new").is_dir()
+    assert ok(env, "mkdir", "--name=top") == {"created": "top"}
+    assert (home / "top").is_dir()
+    entries = [e["path"] for e in ok(env, "tree", "projects")["entries"]]
+    assert "projects/new" in entries
+
+
+FOLDER_NAMES_ACCEPTED = [
+    "new",
+    "My Project",
+    "проект",
+    "a.b",
+    "a.",
+    "-x",
+    "--name",
+    "x",
+    f"a{chr(0x200C)}b",  # ZERO WIDTH NON-JOINER, see ALLOWED_FORMAT
+]
+FOLDER_NAMES_REFUSED = [
+    "",
+    ".",
+    "..",
+    ".hidden",
+    "a/b",
+    "/",
+    " a",
+    "a ",
+    " ",
+    "a\tb",
+    "a\nb",
+    "a\x00b",
+    "a\x7fb",
+    "a\x85b",
+    f"a{chr(0x2028)}b",  # LINE SEPARATOR
+    f"a{chr(0x200B)}b",  # ZERO WIDTH SPACE
+    f"a{chr(0x202E)}b",  # RIGHT-TO-LEFT OVERRIDE
+    f"a{chr(0x3164)}b",  # HANGUL FILLER
+    f"{chr(0x00A0)}a",  # NO-BREAK SPACE, white space at the start
+    f"a{chr(0x3000)}",  # IDEOGRAPHIC SPACE, at the end
+    chr(0x200C),
+    chr(0x200D) + "a",
+]
+FOLDER_NAMES = [(n, True) for n in FOLDER_NAMES_ACCEPTED] + [
+    (n, False) for n in FOLDER_NAMES_REFUSED
+]
+
+
+@pytest.mark.parametrize(("name", "accepted"), FOLDER_NAMES)
+def test_folder_name_rule(name, accepted):
+    assert bool(h.FOLDER_NAME.fullmatch(name)) is accepted
+
+
+@pytest.mark.parametrize(("name", "accepted"), FOLDER_NAMES)
+def test_mkdir_makes_exactly_the_folders_the_rule_accepts(env, name, accepted):
+    home = Path(env["RC_HELPER_HOME"])
+    before = set(os.listdir(home / "projects"))
+    if accepted:
+        assert ok(env, "mkdir", f"--name={name}", "--", "projects") == {
+            "created": f"projects/{name}"
+        }
+        assert (home / "projects" / name).is_dir()
+    elif "\0" in name:  # no command line can hold it
+        assert refusal(in_process(env).mkdir, "projects", name).code == "name_invalid"
+    else:
+        assert error_code(env, "mkdir", f"--name={name}", "--", "projects") == "name_invalid"
+    assert accepted or set(os.listdir(home / "projects")) == before
+
+
+def test_a_name_longer_than_the_file_system_takes_is_refused(env):
+    home = Path(env["RC_HELPER_HOME"])
+    limit = name_max(home)
+    fits = "п" * (limit // 2)  # two bytes each
+    assert ok(env, "mkdir", f"--name={fits}", "--", "projects")["created"] == f"projects/{fits}"
+    over = "п" * (limit // 2 + 1)
+    assert len(over) <= limit  # in characters it would fit; in bytes it does not
+    assert error_code(env, "mkdir", f"--name={over}", "--", "projects") == "name_invalid"
+
+
+def test_a_folder_whose_path_would_be_too_long_is_refused(env):
+    home = Path(env["RC_HELPER_HOME"])
+    parts, length = [], 0
+    while length < h.MAX_PATH_LENGTH - 100:
+        parts.append("d" * 99)
+        length += 100
+    deep = "/".join(parts)
+    (home / deep).mkdir(parents=True)
+    fits = "n" * (h.MAX_PATH_LENGTH - len(deep) - 1)
+    assert ok(env, "mkdir", f"--name={fits}", "--", deep)["created"] == f"{deep}/{fits}"
+    over = fits + "n"
+    assert error_code(env, "mkdir", f"--name={over}", "--", deep) == "path_invalid"
+    assert not (home / deep / over).exists()
+
+
+def test_mkdir_refuses_a_name_that_is_there_already(env):
+    home = Path(env["RC_HELPER_HOME"])
+    (home / "projects" / "file").write_text("x")
+    (home / "projects" / "dangling").symlink_to(home / "nowhere")
+    for name in ("alpha", "file", "dangling"):
+        assert error_code(env, "mkdir", f"--name={name}", "--", "projects") == "folder_exists"
+    assert (home / "projects" / "file").read_text() == "x"
+    assert not (home / "nowhere").exists()
+
+
+def test_mkdir_refuses_a_parent_outside_the_home_folder(env, tmp_path):
+    home = Path(env["RC_HELPER_HOME"])
+    (tmp_path / "outside").mkdir()
+    (home / "escape").symlink_to(tmp_path / "outside")
+    assert error_code(env, "mkdir", "--name=x", "--", "..") == "path_outside_home"
+    assert error_code(env, "mkdir", "--name=x", "--", "escape") == "path_outside_home"
+    assert error_code(env, "mkdir", "--name=x", "--", "/tmp") == "path_invalid"
+    assert error_code(env, "mkdir", "--name=x", "--", "missing") == "path_not_found"
+    assert list((tmp_path / "outside").iterdir()) == []
+    assert not (tmp_path / "x").exists()
+
+
+def test_delete_removes_a_folder_and_everything_in_it(env):
+    home = Path(env["RC_HELPER_HOME"])
+    (home / "projects" / "beta" / "inner" / "deeper").mkdir()
+    readonly = home / "projects" / "beta" / "inner" / "readonly"
+    readonly.write_text("x")
+    readonly.chmod(0o400)
+    out = ok(env, "delete", "--", "projects/beta")
+    assert out == {"deleted": "projects/beta", "link": False, "stopped": [], "forgotten": []}
+    assert not (home / "projects" / "beta").exists()
+    assert (home / "projects" / "alpha").is_dir()
+
+
+@pytest.mark.parametrize("rel", ["", ".", "projects/..", "projects/alpha/../.."])
+def test_delete_refuses_the_home_folder(env, rel):
+    assert error_code(env, "delete", "--", rel) == "path_is_home"
+    assert (Path(env["RC_HELPER_HOME"]) / "projects" / "alpha").is_dir()
+
+
+def test_delete_refuses_anything_outside_the_home_folder(env, tmp_path):
+    home = Path(env["RC_HELPER_HOME"])
+    (tmp_path / "x").mkdir()
+    (tmp_path / "outside" / "x").mkdir(parents=True)
+    (home / "escape").symlink_to(tmp_path / "outside")
+    assert error_code(env, "delete", "--", "../x") == "path_outside_home"
+    assert error_code(env, "delete", "--", "escape/x") == "path_outside_home"
+    assert error_code(env, "delete", "--", "projects/../../x") == "path_outside_home"
+    assert error_code(env, "delete", "--", str(tmp_path / "x")) == "path_invalid"
+    assert (tmp_path / "x").is_dir() and (tmp_path / "outside" / "x").is_dir()
+
+
+def test_delete_refuses_a_dot_folder_and_anything_in_one(env):
+    home = Path(env["RC_HELPER_HOME"])
+    (home / ".hidden" / "inside").mkdir()
+    (home / "projects" / ".git").mkdir()
+    (home / "dots").symlink_to(home / ".hidden")
+    for rel in (".hidden", ".hidden/inside", "projects/.git", "dots/inside", ".hidden/../projects"):
+        assert error_code(env, "delete", "--", rel) == "path_hidden", rel
+    assert (home / ".hidden" / "inside").is_dir() and (home / "projects" / ".git").is_dir()
+    assert ok(env, "delete", "--", "projects/alpha")["deleted"] == "projects/alpha"  # positive
+
+
+def test_delete_removes_a_link_and_leaves_what_it_leads_to(env):
+    home = Path(env["RC_HELPER_HOME"])
+    (home / "projects" / "alpha" / "kept").write_text("x")
+    (home / "link").symlink_to(home / "projects" / "alpha")
+    out = ok(env, "delete", "--", "link")
+    assert (out["deleted"], out["link"]) == ("link", True)
+    assert not (home / "link").is_symlink()
+    assert (home / "projects" / "alpha" / "kept").read_text() == "x"
+    # positive control: the real folder at the same place is deleted
+    (home / "link").mkdir()
+    assert ok(env, "delete", "--", "link")["link"] is False
+    assert not (home / "link").exists()
+
+
+def test_delete_removes_a_link_to_the_home_folder_and_nothing_else(env, tmp_path):
+    home = Path(env["RC_HELPER_HOME"])
+    (home / "self").symlink_to(home)
+    (tmp_path / "outside").mkdir()
+    (tmp_path / "outside" / "file").write_text("x")
+    (home / "escape").symlink_to(tmp_path / "outside")
+    assert ok(env, "delete", "--", "self")["link"] is True
+    assert ok(env, "delete", "--", "escape")["link"] is True
+    assert not (home / "self").is_symlink() and not (home / "escape").is_symlink()
+    assert (home / "projects" / "alpha").is_dir()
+    assert (tmp_path / "outside" / "file").read_text() == "x"
+
+
+def test_delete_never_follows_a_link_inside_the_folder(env, tmp_path):
+    home = Path(env["RC_HELPER_HOME"])
+    outside = tmp_path / "outside"
+    (outside / "folder").mkdir(parents=True)
+    (outside / "folder" / "file").write_text("x")
+    (outside / "file").write_text("y")
+    beta = home / "projects" / "beta"
+    (beta / "to-folder").symlink_to(outside / "folder")
+    (beta / "inner" / "to-file").symlink_to(outside / "file")
+    (beta / "inner" / "real").write_text("z")
+    assert ok(env, "delete", "--", "projects/beta")["deleted"] == "projects/beta"
+    assert not (beta / "inner" / "real").exists()  # non-vacuity: what was really there is gone
+    assert (outside / "folder" / "file").read_text() == "x"
+    assert (outside / "file").read_text() == "y"
+
+
+def test_the_system_python_resists_symlink_attacks_on_rmtree():
+    proc = subprocess.run(
+        [
+            "/usr/bin/python3",
+            "-I",
+            "-c",
+            "import shutil; print(shutil.rmtree.avoids_symlink_attacks)",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert proc.stdout.strip() == "True", proc.stderr
+    assert HELPER.read_text(encoding="utf-8").startswith("#!/usr/bin/python3 ")  # what it runs on
+
+
+def test_delete_refuses_where_rmtree_does_not_resist_symlink_attacks(env, monkeypatch):
+    import shutil
+
+    home = Path(env["RC_HELPER_HOME"])
+    monkeypatch.setattr(shutil.rmtree, "avoids_symlink_attacks", False)
+    assert refusal(in_process(env).delete, "projects/beta").code == "delete_unsafe"
+    assert (home / "projects" / "beta" / "inner").is_dir()
+    monkeypatch.undo()
+    assert in_process(env).delete("projects/beta")["deleted"] == "projects/beta"  # positive
+
+
+def plant_a_mount(monkeypatch, folder: Path) -> None:
+    """``folder`` looks like a mount point: another device, to anything that asks by its fd."""
+    real_fstat, planted = os.fstat, os.stat(folder)
+
+    def fstat(fd):
+        result = real_fstat(fd)
+        if os.path.samestat(result, planted):
+            fields = list(result)
+            fields[stat.ST_DEV] = result.st_dev + 1
+            return os.stat_result(fields)
+        return result
+
+    monkeypatch.setattr(os, "fstat", fstat)
+
+
+def test_delete_refuses_a_folder_with_a_mount_point_inside(env, monkeypatch):
+    home = Path(env["RC_HELPER_HOME"])
+    trusted(env, "projects/beta")
+    ok(env, "start", "projects/beta", "--prefix", "pfx")
+    wait_state(env, "projects/beta", "ready")
+    plant_a_mount(monkeypatch, home / "projects" / "beta" / "inner")
+    assert refusal(in_process(env).delete, "projects/beta").code == "delete_mount_inside"
+    assert (home / "projects" / "beta" / "inner").is_dir()
+    assert wait_state(env, "projects/beta", "ready")  # not stopped
+    monkeypatch.undo()
+    out = in_process(env).delete("projects/beta")  # positive control
+    assert out["stopped"] == ["projects/beta"] and not (home / "projects" / "beta").exists()
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root removes anything; the container suite checks")
+def test_what_cannot_be_removed_is_reported_and_delete_again_carries_on(env):
+    home = Path(env["RC_HELPER_HOME"])
+    inner = home / "projects" / "beta" / "inner"
+    (inner / "stuck").write_text("x")
+    (home / "projects" / "beta" / "gone").write_text("y")
+    inner.chmod(0o500)
+    try:
+        code, out = helper(env, "delete", "--", "projects/beta")
+        assert code == 1 and out["error"]["code"] == "delete_incomplete", out
+        assert out["error"]["left"] == [
+            "projects/beta",
+            "projects/beta/inner",
+            "projects/beta/inner/stuck",
+        ]
+        assert out["error"]["forgotten"] == []
+        assert not (home / "projects" / "beta" / "gone").exists()  # the rest went
+        assert stat.S_IMODE(inner.stat().st_mode) == 0o500  # no permission was changed
+    finally:
+        inner.chmod(0o700)
+    assert ok(env, "delete", "--", "projects/beta")["deleted"] == "projects/beta"
+    assert not (home / "projects" / "beta").exists()
+
+
+def test_the_report_of_what_is_left_is_capped(env, monkeypatch):
+    home = Path(env["RC_HELPER_HOME"])
+    for i in range(h.DELETE_REPORT_LIMIT + 5):
+        (home / "projects" / "beta" / f"f{i:03}").write_text("x")
+    real_unlink = os.unlink
+
+    def unlink(path, *, dir_fd=None):
+        if str(path).startswith("f"):
+            raise PermissionError(13, "planted", path)
+        return real_unlink(path, dir_fd=dir_fd)
+
+    monkeypatch.setattr(os, "unlink", unlink)
+    error = refusal(in_process(env).delete, "projects/beta")
+    assert error.code == "delete_incomplete"
+    assert len(error.detail["left"]) == h.DELETE_REPORT_LIMIT
+    assert error.detail["left"] == sorted(error.detail["left"])
+
+
+def test_delete_stops_then_forgets_every_server_in_the_folder_and_below_it(env):
+    home = Path(env["RC_HELPER_HOME"])
+    for rel in ("projects/beta/done", "projects/beta2"):
+        (home / rel).mkdir()
+    log_in(env)
+    trusted(env, "projects/beta", "projects/beta/done", "projects/beta2", "projects/alpha")
+    for rel in ("projects/beta", "projects/beta/done", "projects/beta2", "projects/alpha"):
+        ok(env, "start", rel, "--prefix", "pfx")
+        wait_state(env, rel, "ready")
+    ok(env, "stop", "projects/beta/done")
+    # projects/beta/inner is not trusted: it waits at the trust question
+    assert ok(env, "start", "projects/beta/inner", "--prefix", "pfx")["server"]["state"] == (
+        "trust_prompt"
+    )
+    out = ok(env, "delete", "--", "projects/beta")
+    assert out == {
+        "deleted": "projects/beta",
+        "link": False,
+        "stopped": ["projects/beta", "projects/beta/inner"],
+        "forgotten": ["projects/beta", "projects/beta/done", "projects/beta/inner"],
+    }
+    assert not (home / "projects" / "beta").exists()
+    servers = {s["path"]: s["state"] for s in ok(env, "list")["servers"]}
+    assert servers == {"projects/alpha": "ready", "projects/beta2": "ready"}
+    assert (home / "projects" / "beta2").is_dir()
+
+
+def test_delete_stops_everything_before_forgetting_anything_and_forgets_before_removing(env):
+    home = Path(env["RC_HELPER_HOME"])
+    beta = home / "projects" / "beta"
+    trusted(env, "projects/beta", "projects/beta/inner")
+    for rel in ("projects/beta", "projects/beta/inner"):
+        ok(env, "start", rel, "--prefix", "pfx")
+        wait_state(env, rel, "ready")
+    steps = []
+
+    def runner(args, **kwargs):
+        if "send-keys" in args and "C-c" in args:
+            steps.append(("interrupt", beta.exists()))
+        if "kill-session" in args:
+            steps.append(("forget", beta.exists()))
+        return subprocess.run(args, **kwargs)
+
+    in_process(env, runner).delete("projects/beta")
+    assert steps == [("interrupt", True)] * 2 + [("forget", True)] * 2
+    assert not beta.exists()
+
+
+def ignoring_interrupts(env):
+    """Servers started from now on ignore Ctrl+C while Claude asks to trust the folder."""
+    Path(env["RC_HELPER_CLAUDE"]).write_text(
+        f"#!/bin/sh\ntrap '' INT\nexec {rec.FAKE_CLAUDE} \"$@\"\n", encoding="utf-8"
+    )
+
+
+def test_when_a_server_does_not_stop_nothing_is_forgotten_or_deleted(env, monkeypatch):
+    home = Path(env["RC_HELPER_HOME"])
+    trusted(env, "projects/beta")
+    ok(env, "start", "projects/beta", "--prefix", "pfx")
+    wait_state(env, "projects/beta", "ready")
+    ignoring_interrupts(env)
+    ok(env, "start", "projects/beta/inner", "--prefix", "pfx")
+    sessions = tmux_sessions(env)
+    monkeypatch.setattr(h, "STOP_TIMEOUT", 1.0)
+    error = refusal(in_process(env).delete, "projects/beta")
+    assert error.code == "delete_stop_failed"
+    assert error.detail["server"]["path"] == "projects/beta/inner"
+    assert any("[y/N]" in line for line in error.detail["server"]["screen"])
+    assert error.detail["stopped"] == ["projects/beta"]
+    assert tmux_sessions(env) == sessions  # nothing forgotten
+    assert (home / "projects" / "beta" / "inner").is_dir()
+    servers = {s["path"]: s["state"] for s in ok(env, "list")["servers"]}
+    assert servers == {"projects/beta": "stopped", "projects/beta/inner": "trust_prompt"}
+
+
+def test_when_a_server_cannot_be_forgotten_nothing_is_deleted(env, monkeypatch):
+    home = Path(env["RC_HELPER_HOME"])
+    log_in(env)
+    ok(env, "start", "projects/beta", "--prefix", "pfx")
+    monkeypatch.setattr(h.Tmux, "kill", lambda self, session: None)  # kill-session does nothing
+    error = refusal(in_process(env).delete, "projects/beta")
+    assert error.code == "delete_forget_failed"
+    assert error.detail["server"]["path"] == "projects/beta"
+    assert error.detail["forgotten"] == []
+    assert (home / "projects" / "beta" / "inner").is_dir()
+
+
+def hold_the_lock(env, exclusive):
+    import fcntl
+
+    fd = os.open(Path(env["RC_HELPER_HOME"]).resolve(), os.O_RDONLY | os.O_DIRECTORY)
+    fcntl.flock(fd, fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
+    return fd
+
+
+def test_while_a_delete_runs_nothing_starts_and_no_folder_is_made(env):
+    import time
+
+    log_in(env)
+    fd = hold_the_lock(env, exclusive=True)
+    try:
+        began = time.monotonic()
+        assert error_code(env, "start", "projects/alpha", "--prefix", "pfx") == "folder_busy"
+        assert error_code(env, "resume", "projects/alpha", "--prefix", "pfx") == "folder_busy"
+        assert error_code(env, "mkdir", "--name=new") == "folder_busy"
+        assert error_code(env, "delete", "--", "projects/beta") == "folder_busy"
+        assert time.monotonic() - began < 10  # refused at once, not after waiting
+    finally:
+        os.close(fd)
+    assert ok(env, "start", "projects/alpha", "--prefix", "pfx")  # positive control
+    assert ok(env, "mkdir", "--name=new")
+
+
+def test_while_a_server_starts_or_a_folder_is_made_nothing_is_deleted(env):
+    fd = hold_the_lock(env, exclusive=False)
+    try:
+        assert error_code(env, "delete", "--", "projects/beta") == "folder_busy"
+        assert ok(env, "mkdir", "--name=new")  # these share it
+    finally:
+        os.close(fd)
+    assert ok(env, "delete", "--", "projects/beta")["deleted"] == "projects/beta"  # positive
+
+
+def test_delete_holds_the_lock_while_it_stops_servers(env, monkeypatch):
+    log_in(env)
+    ok(env, "start", "projects/beta", "--prefix", "pfx")
+    during = []
+    real = h.Tmux.interrupt
+
+    def interrupt(self, session):
+        during.append(error_code(env, "start", "projects/alpha", "--prefix", "pfx"))
+        real(self, session)
+
+    monkeypatch.setattr(h.Tmux, "interrupt", interrupt)
+    in_process(env).delete("projects/beta")
+    assert during == ["folder_busy"]
+
+
+def test_a_start_holds_the_lock_and_its_server_does_not(env, monkeypatch):
+    log_in(env)
+    during = []
+    real = h.Tmux.new
+
+    def new(self, *args):
+        during.append(error_code(env, "delete", "--", "projects/beta"))
+        return real(self, *args)
+
+    monkeypatch.setattr(h.Tmux, "new", new)
+    in_process(env).start("projects/alpha", "pfx")
+    assert during == ["folder_busy"]
+    monkeypatch.undo()
+    # a server keeps running once started, and holds nothing: a delete goes ahead
+    ok(env, "start", "projects/beta", "--prefix", "pfx")
+    assert ok(env, "delete", "--", "projects/beta")["forgotten"] == ["projects/beta"]
+    assert [s["path"] for s in ok(env, "list")["servers"]] == ["projects/alpha"]
 
 
 # --- the command-line surface ----------------------------------------------------

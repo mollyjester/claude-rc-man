@@ -33,7 +33,41 @@ command-line reference is `rc-helper --help` and `rc-helper <verb> --help`.
 | `rc-helper confirm <path> --answer y\|n` | Answers the folder-trust question |
 | `rc-helper auth-status` | Whether a Claude account is connected, which, and when the sign-in expires (`login_expires_at`, or `null` when unknown) |
 | `rc-helper auth-login --email <e>` | Starts connecting a Claude account; returns the sign-in URL |
+| `rc-helper mkdir [parent] --name=<name>` | Makes a folder named `<name>` in a folder, or in the home folder when no parent is given. The name may not be empty, begin with a dot, hold a slash, a control character or an invisible character, or begin or end with white space (`FOLDER_NAME` in `helpers/rc_helper.py`, which shares its invisible characters with `AUTHOR_NAME`), nor be longer than the file system's `PC_NAME_MAX` in bytes; refuses with `folder_exists` when anything, even a dangling link, has that name |
+| `rc-helper delete <path>` | Stops every running server in a folder or below it, forgets every server there, then deletes the folder and everything in it; a link is deleted as the link. Refuses the home folder, anything outside it, and a dot-folder or anything in one (`path_hidden`). See [Deleting a folder](#deleting-a-folder) |
 | `rc-helper auth-code` | Finishes connecting with the code read from stdin — pressing Enter after Claude reports success, as it asks — and returns the account as `auth-status` does |
+
+## Deleting a folder
+
+`delete` is the most destructive verb, so it works in a fixed order and stops
+at the first step that fails:
+
+1. It refuses outright, with `delete_unsafe`, where `shutil.rmtree` does not
+   resist symbolic-link attacks.
+2. It finds the entry by its parent, resolved as any folder is, and its own
+   name, which is never resolved (`resolve_entry`), so a link is the link and
+   not where it leads. A path with any part that begins with a dot, as given
+   or as resolved, is refused with `path_hidden`; that keeps `~/.local`,
+   `~/.claude` and the like out of reach.
+3. It takes the folder lock exclusively (see below).
+4. For a folder, it walks it without following links, and refuses with
+   `delete_mount_inside`, having done nothing, when anything inside is on
+   another device: `shutil.rmtree` would cross into a mounted file system.
+5. It interrupts every running server whose folder is the path or below it,
+   then waits for all of them to exit within one `STOP_TIMEOUT`. It waits on
+   the processes' exit, not on their screens. When any is still running, it
+   refuses with `delete_stop_failed`, naming that server with its screen and
+   listing those that stopped; nothing is forgotten or deleted.
+6. It forgets every server there and checks that each is gone; otherwise
+   `delete_forget_failed`, naming the server, and nothing is deleted.
+7. It unlinks a link, or removes a folder with `shutil.rmtree` through the
+   parent's file descriptor. Whatever could not be removed is reported with
+   `delete_incomplete` as `left`, sorted and at most `DELETE_REPORT_LIMIT`
+   paths, along with the servers `forgotten`; no permission is changed to
+   force it. Running `delete` again carries on from there.
+
+It answers with the path deleted, whether it was a link, and the servers
+stopped and forgotten.
 
 ## Server states
 
@@ -69,6 +103,15 @@ if Claude asks again.
   and must not be the home folder itself. `stop`, `forget` and `output` also
   reach a server whose folder no longer exists: its path is then followed as
   far as it exists and must still lead inside the home folder.
+- `mkdir` opens the parent folder one part at a time from the home folder,
+  refusing to follow a link (`open_dir`), and makes the new folder through
+  that file descriptor, so a part replaced by a link after the path was
+  resolved is refused rather than followed.
+- Starting and resuming a server and making a folder take a shared `flock` on
+  the home folder itself, and deleting takes it exclusively, so no server
+  starts in a folder while it is being deleted. A lock held the other way is
+  refused at once with `folder_busy`, never waited for. The lock is held by
+  `rc-helper` only, never by the servers it starts.
 - Servers run in tmux on a dedicated socket (`TMUX_SOCKET_NAME`), configured by
   `helpers/tmux.conf`, so they never mix with the user's own tmux and keep
   their final screen and exit status after they exit. Each folder has its own

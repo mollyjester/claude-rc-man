@@ -45,6 +45,15 @@ HELPER_STATUS = {
     "timeout": 504,
     "no_login_in_progress": 409,
     "login_failed": 409,
+    "name_invalid": 400,
+    "folder_exists": 409,
+    "path_hidden": 400,
+    "folder_busy": 409,
+    "delete_stop_failed": 409,
+    "delete_forget_failed": 500,
+    "delete_incomplete": 409,
+    "delete_mount_inside": 409,
+    "delete_unsafe": 500,
 }
 ADMIN_STATUS = {
     "usage": 500,
