@@ -1532,6 +1532,10 @@ RULE_INVOCATIONS = {
 # Rules rc-helper holds without reporting them itself: subject -> why.
 RULES_NOT_REPORTED = {
     "AUTHOR_NAME": "the backend checks it; rc-helper takes no author until git-commit",
+    "FOLDER_PATH": (
+        "the backend checks it; rc-helper refuses every path that leads home, empty or not, "
+        "as path_is_home"
+    ),
 }
 
 
@@ -1623,6 +1627,14 @@ def test_a_rules_code_raised_elsewhere_is_found():
     assert rule_code_problems(planted, h.RULE_CODES) == [
         "other raises path_invalid without checking PATH"
     ]
+
+
+def test_a_folder_path_is_a_path_that_is_not_the_home_and_says_so():
+    assert h.FOLDER_PATH.fullmatch("projects") and not h.FOLDER_PATH.fullmatch("")
+    for value in ("a", "/a", "a\x00b", "x" * (h.MAX_PATH_LENGTH + 1)):
+        assert bool(h.FOLDER_PATH.fullmatch(value)) is bool(h.PATH.fullmatch(value)), value
+    inside = h.MESSAGES["path_is_home"].removesuffix(".")
+    assert h.FOLDER_PATH.sentence.startswith(inside)  # the home folder's own words
 
 
 def test_a_path_ending_in_a_dot_is_refused_in_its_own_words(env):

@@ -217,8 +217,8 @@ def test_a_value_too_long_says_how_long_it_may_be(client):
 def test_every_path_field_refuses_a_null_character_with_the_path_rule(app, client):
     from helpers import rc_helper
 
-    rule = rc_helper.PATH
-    checked = [f for f in request_fields(app) if f.schema.get("pattern") == rule.anchored]
+    rules = {r.anchored: r for r in (rc_helper.PATH, rc_helper.FOLDER_PATH)}
+    checked = [f for f in request_fields(app) if f.schema.get("pattern") in rules]
     names = {(f.method, f.path, f.name) for f in checked}
     known = {
         ("POST", "/api/servers", "path"),
@@ -230,7 +230,17 @@ def test_every_path_field_refuses_a_null_character_with_the_path_rule(app, clien
     assert known <= names, known - names  # non-vacuity
     for f in checked:
         r = send(client, f, "a\x00b", CALLS, changing(ALICE))
-        assert r.json().get("errors") == [{"field": f.name, "message": rule.sentence}], f
+        sentence = rules[f.schema["pattern"]].sentence
+        assert r.json().get("errors") == [{"field": f.name, "message": sentence}], f
+
+
+def test_an_empty_path_where_a_folder_is_needed_says_why(client):
+    from helpers import rc_helper
+
+    r = client.post("/api/servers", json={"path": ""}, headers=changing(ALICE))
+    assert r.json()["errors"] == [{"field": "path", "message": rc_helper.FOLDER_PATH.sentence}]
+    r = client.get("/api/folders", params={"path": ""}, headers=changing(ALICE))
+    assert r.status_code == 200  # positive control: where the home is meant, it is taken
 
 
 def test_a_null_character_is_never_an_internal_error(app):
