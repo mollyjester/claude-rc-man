@@ -5,6 +5,7 @@ import contextlib
 import copy
 import functools
 import inspect
+import json
 import logging
 import re
 import typing
@@ -210,6 +211,22 @@ def test_a_value_too_long_says_how_long_it_may_be(client):
     assert error["message"] == problems.FIELD_MESSAGES["string_too_long"].format(
         max_length=rc_helper.MAX_PATH_LENGTH
     )
+
+
+def test_half_a_character_is_refused_in_plain_words(client):
+    headers = {**changing(ALICE), "content-type": "application/json"}
+    r = client.post("/api/claude/code", content=b'{"code": "\\ud800"}', headers=headers)
+    assert r.json()["errors"] == [
+        {"field": "code", "message": problems.FIELD_MESSAGES["string_unicode"]}
+    ]
+
+
+def test_half_a_character_in_a_ruled_field_is_refused_with_its_rule(client):
+    from helpers import rc_helper
+
+    headers = {**changing(ALICE), "content-type": "application/json"}
+    r = client.post("/api/folders", content=b'{"name": "\\ud800"}', headers=headers)
+    assert r.json()["errors"] == [{"field": "name", "message": rc_helper.FOLDER_NAME.sentence}]
 
 
 def test_an_empty_value_where_one_is_needed_says_so(client):
@@ -487,6 +504,7 @@ def test_every_route_that_takes_parameters_has_a_valid_request(app, client):
 
 
 OMIT = object()  # a violation that leaves the field out
+LONE_SURROGATE = object()  # a violation only raw JSON can send: "\ud800", half a character
 
 
 def refused_value(pattern: str) -> str:
@@ -518,6 +536,8 @@ def violations(f: RequestField) -> list[tuple[str, object]]:
         found.append(("type", "x"))
     if f.where == "body":
         found.append(("type", []))
+    if f.where == "body" and s.get("type") == "string":
+        found.append(("lone surrogate", LONE_SURROGATE))
     if f.required:
         found.append(("required", OMIT))
     if f.where == "path":  # a path cannot leave a part out or make it empty
@@ -538,6 +558,12 @@ def send(client, f: RequestField, value, calls, headers):
         if value is not OMIT:
             sent[f.name] = value if f.where == "body" else str(value)
         kwargs[part] = sent
+    if value is LONE_SURROGATE:
+        mark = "planted-surrogate"
+        kwargs["json"][f.name] = mark
+        raw = json.dumps(kwargs.pop("json")).replace(json.dumps(mark), '"\\ud800"')
+        kwargs["content"] = raw.encode()
+        headers = {**headers, "content-type": "application/json"}
     return client.request(f.method, concrete(path), headers=headers, **kwargs)
 
 
