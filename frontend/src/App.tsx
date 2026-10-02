@@ -71,6 +71,7 @@ function AdminMenu() {
         onClick={() => setOpen((shown) => !shown)}
       >
         {m.navAdmin}
+        <span className="caret" aria-hidden="true" />
       </button>
       <ul id={id} hidden={!open}>
         {ADMIN_PAGES.map((page) => (

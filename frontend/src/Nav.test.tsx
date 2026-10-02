@@ -41,6 +41,10 @@ test("administrators get one Admin entry, which leads to every administrators' p
     expect(screen.queryByRole("link", { name: label })).not.toBeInTheDocument();
   }
 
+  // a disclosure: a caret, which the stylesheet turns by aria-expanded, outside its name
+  expect(admin.querySelector(".caret")).toHaveAttribute("aria-hidden", "true");
+  expect(admin).toHaveAccessibleName(m.navAdmin);
+
   await userEvent.click(admin);
   expect(admin).toHaveAttribute("aria-expanded", "true");
   const menu = document.getElementById(admin.getAttribute("aria-controls")!)!;
