@@ -44,7 +44,12 @@ the OpenAPI description it serves at `/api/openapi`.
   from the helpers' modules, never restated.
 - **Errors** are always problem details (`application/problem+json`) with
   `type`, `title`, `status` and `code`; validation errors add `errors`, a list
-  of `field` and `message`. The backend's own codes are `MESSAGES` and `STATUS`
+  of `field` and `message`. A field's message is never the validation
+  library's: it is `FIELD_MESSAGES` in `problems.py` for the error's type,
+  with any number in it taken from the error's context, so it is the field's
+  own constraint. A body that is not JSON is about the field `request`. An
+  error type with no message gets `field_invalid`'s, and a warning is logged
+  on `rcman.problems`. The backend's own codes are `MESSAGES` and `STATUS`
   in `problems.py`; errors from the helpers keep the helper's code and message
   and get their status from `HELPER_STATUS` and `ADMIN_STATUS` in
   `helpers_client.py`. A test keeps those tables complete.

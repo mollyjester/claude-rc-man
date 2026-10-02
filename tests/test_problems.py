@@ -140,7 +140,7 @@ def _passthrough_app():
 
     @app.exception_handler(RequestValidationError)
     async def _validation(request, exc):
-        errors = [{"field": problems._field(e["loc"]), "message": e["msg"]} for e in exc.errors()]
+        errors = [{"field": problems._field(e), "message": e["msg"]} for e in exc.errors()]
         return JSONResponse({"errors": errors}, status_code=422)
 
     return app

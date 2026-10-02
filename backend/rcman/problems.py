@@ -2,12 +2,19 @@
 
 from __future__ import annotations
 
+import logging
+
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+log = logging.getLogger("rcman.problems")
 MEDIA_TYPE = "application/problem+json"
+# Validation error types of rcman's own.
+RULE_REFUSED = "rule_refused"  # a helpers' rule refused the value
+SETTINGS_NONE_SENT = "settings_none_sent"
+FIELD_INVALID = "field_invalid"  # any type FIELD_MESSAGES has no message for
 PUBLIC_PATHS = {"/api/health", "/{path:path}"}  # the frontend's files need no identity
 
 MESSAGES = {
@@ -58,14 +65,58 @@ def response(code: str, status: int, title: str, **extra) -> JSONResponse:
     return JSONResponse(body, status_code=status, media_type=MEDIA_TYPE)
 
 
-def _field(loc) -> str:
-    """The field an error is about: its location without the leading part (body, query, ...)."""
+# What a refused field is told, by the type of the validation error, with the
+# numbers from the error's own context, so they are the field's constraints.
+# The library's own message is never sent.
+FIELD_MESSAGES = {
+    RULE_REFUSED: "{sentence}",
+    "missing": "This is required.",
+    "string_type": "This must be text.",
+    "string_empty": "This cannot be empty.",
+    "string_too_short": "This must be at least {min_length} characters long.",
+    "string_too_long": "This can be at most {max_length} characters long.",
+    "bool_type": "This must be true or false.",
+    "bool_parsing": "This must be true or false.",
+    "int_parsing": "This must be a whole number.",
+    "greater_than_equal": "This must be at least {ge}.",
+    "less_than_equal": "This must be at most {le}.",
+    "literal_error": "This must be one of {expected}.",
+    "json_invalid": "What was sent is not valid JSON.",
+    "model_attributes_type": "What was sent must be a JSON object.",
+    SETTINGS_NONE_SENT: "Send at least one setting.",
+    FIELD_INVALID: "This is not valid.",
+}
+
+
+def _field(error) -> str:
+    """The field an error is about: its location without the leading part (body, query, ...).
+
+    A body that is not JSON is about the request as a whole, not the place it broke.
+    """
+    loc = error["loc"]
+    if error["type"] == "json_invalid":
+        return "request"
     parts = (
         list(loc[1:])
         if loc and loc[0] in ("body", "query", "path", "header", "cookie")
         else list(loc)
     )
     return ".".join(str(p) for p in parts) or "request"
+
+
+def _message(error) -> str:
+    """What a field is told about an error, in rcman's words."""
+    kind, context = error["type"], error.get("ctx") or {}
+    if kind == "string_too_short" and context.get("min_length") == 1:
+        kind = "string_empty"
+    if kind not in FIELD_MESSAGES:
+        log.warning("validation error type %s has no message in FIELD_MESSAGES", kind)
+        kind = FIELD_INVALID
+    try:
+        return FIELD_MESSAGES[kind].format(**context)
+    except (KeyError, IndexError):
+        log.warning("validation error type %s lacks the context its message needs", kind)
+        return FIELD_MESSAGES[FIELD_INVALID]
 
 
 HTTP_CODES = {404: "not_found", 405: "method_not_allowed"}
@@ -89,7 +140,7 @@ def install(app: FastAPI) -> None:
 
     @app.exception_handler(RequestValidationError)
     async def _validation(request: Request, exc: RequestValidationError):
-        errors = [{"field": _field(e["loc"]), "message": e["msg"]} for e in exc.errors()]
+        errors = [{"field": _field(e), "message": _message(e)} for e in exc.errors()]
         code = code_of(exc)
         return response(code, STATUS[code], MESSAGES[code], errors=errors)
 
