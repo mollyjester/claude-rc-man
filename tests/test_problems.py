@@ -476,11 +476,28 @@ def _nodes(dependant):
     return found
 
 
-def _constrained(annotation) -> bool:
-    """Whether an annotation carries constraints of its own (Annotated metadata)."""
+def _constraints_of(item) -> set[str]:
+    """The constraints one piece of Annotated metadata adds: annotated_types' (lengths,
+    bounds, a pattern) and pydantic's validators, inside a FieldInfo or alone. A
+    parameter marker adds only what it was given; a plain note adds none."""
+    import annotated_types
+    from pydantic import AfterValidator, BeforeValidator, PlainValidator, WrapValidator
+    from pydantic.fields import FieldInfo
+
+    if isinstance(item, FieldInfo):  # Field(), and FastAPI's Query(), Path(), Body()...
+        return set().union(*(_constraints_of(m) for m in item.metadata))
+    validators = (AfterValidator, BeforeValidator, PlainValidator, WrapValidator)
+    if isinstance(item, (annotated_types.BaseMetadata, *validators)):
+        return {repr(item)}
+    return set()
+
+
+def _constraints(annotation) -> set[str]:
+    """Every constraint an annotation carries, through Annotated and unions."""
     if typing.get_origin(annotation) is Annotated:
-        return True
-    return any(_constrained(a) for a in typing.get_args(annotation))
+        base, *metadata = typing.get_args(annotation)
+        return _constraints(base).union(*(_constraints_of(m) for m in metadata))
+    return set().union(*(_constraints(a) for a in typing.get_args(annotation)))
 
 
 def _call_name(call) -> str:
@@ -489,15 +506,15 @@ def _call_name(call) -> str:
 
 
 def dropped_constraints(app) -> list[str]:
-    """Parameters whose declared type carries constraints, such as a problems.ruled
-    type, that the field FastAPI resolved for them no longer holds.
+    """Parameters whose declared type carries a constraint, such as a problems.ruled
+    type's pattern and validator, that the field FastAPI resolved for them lacks.
 
     FastAPI reads every endpoint and dependency (a function, a class, a bound
     functools.partial, a callable object) with inspect.signature; this compares
     each query, path, header, cookie and body parameter it made with the
-    annotation it was declared with. Path(), Query() or Body() given as the
-    default of a constrained type drops the constraints; inside an Annotated
-    they are kept."""
+    annotation it was declared with. A FastAPI parameter marker given as the
+    default of a constrained type drops the type's constraints; inside an
+    Annotated they are kept."""
     found = []
     for context in routes.api_routes(app):
         for node in _nodes(context.route.dependant):
@@ -506,10 +523,11 @@ def dropped_constraints(app) -> list[str]:
             declared = inspect.signature(node.call, eval_str=True).parameters
             for where in ("query", "path", "header", "cookie", "body"):
                 for param in getattr(node, f"{where}_params"):
-                    hint = declared[param.name].annotation
                     info = param.field_info
-                    kept = bool(info.metadata) or _constrained(info.annotation)
-                    if _constrained(hint) and not kept:
+                    kept = _constraints(info.annotation).union(
+                        *(_constraints_of(m) for m in info.metadata)
+                    )
+                    if _constraints(declared[param.name].annotation) - kept:
                         kind = type(info).__name__
                         found.append(
                             f"{context.path} {_call_name(node.call)}({param.name}): {kind}() "
@@ -552,7 +570,7 @@ def test_no_parameter_has_its_constraints_dropped(app):
         next(c.route.endpoint for c in routes.api_routes(app) if c.path == "/api/users/{linux}"),
         include_extras=True,
     )
-    assert _constrained(hints["linux"])  # non-vacuity: the guard sees the users route's rule
+    assert _constraints(hints["linux"])  # non-vacuity: the guard sees the users route's rule
     assert dropped_constraints(app) == []
 
 
