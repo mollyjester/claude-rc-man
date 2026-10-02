@@ -33,7 +33,7 @@ runs uvicorn with `--uds` on `SOCKET` and no TCP listener; uvicorn makes the
 socket world-writable, so the protection is its directory, `RUN`: owner
 `rcman`, group `WEB_GROUP`, mode 0750, made at boot by the `tmpfiles()` line in
 `TMPFILES` and made or repaired by `ensure_runtime_dir` on every run. The
-group's only member is `CADDY_USER`. `caddy_notices` says when Caddy needs its
+group's only member is `CADDY_USER`; `ensure_accounts` takes anyone else out. `caddy_notices` says when Caddy needs its
 site block replaced or a restart to join the group, and the installer warns
 when `caddy_admin_exposed` finds Caddy's admin API on loopback, since any
 local user could reconfigure Caddy through it. The health check reaches rcman

@@ -323,6 +323,10 @@ def ensure_accounts(caddy_user: str) -> list[str]:
     if WEB_GROUP not in run(["id", "-nG", caddy_user]).stdout.split():  # to reach rcman's socket
         run(["usermod", "--append", "--groups", WEB_GROUP, caddy_user])
         changes.append(f"{caddy_user} in group {WEB_GROUP}")
+    for member in run(["getent", "group", WEB_GROUP]).stdout.strip().split(":")[3].split(","):
+        if member and member != caddy_user:  # Caddy's account is the only one let in
+            run(["gpasswd", "--delete", member, WEB_GROUP])
+            changes.append(f"{member} removed from group {WEB_GROUP}")
     proxy_groups = run(["id", "-nG", PROXY_USER]).stdout.split()
     if APP_USER not in proxy_groups:  # to read the allowlist, which belongs to group rcman
         run(["usermod", "--append", "--groups", APP_USER, PROXY_USER])

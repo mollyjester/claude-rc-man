@@ -238,6 +238,17 @@ def test_the_socket_directory_admits_only_its_group(first_install):
         assert app("/api/health", user=other)[0] is None, other
 
 
+def test_the_socket_group_is_kept_to_caddy_alone(first_install):
+    import grp
+
+    sh("usermod", "--append", "--groups", "rcman-web", "dev")
+    assert "dev" in grp.getgrnam("rcman-web").gr_mem  # the plant took effect
+    proc = install()
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert grp.getgrnam("rcman-web").gr_mem == ["caddy"]
+    assert "dev removed from group rcman-web" in changes(proc)["changed"]
+
+
 def listeners():
     """Every listening TCP address (host, port) and unix socket path in the container."""
     tcp = set()

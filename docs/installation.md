@@ -84,7 +84,8 @@ run and kept.
 2. **Creates the accounts it needs**: the `rcusers` group every person's Linux
    account belongs to, a system user `rcman` for rcman itself (its data lives
    in `/var/lib/rcman`), a system user `rcman-proxy` for oauth2-proxy, and a
-   group `rcman-web` whose only member is Caddy's account.
+   group `rcman-web` whose only member is Caddy's account; anyone else in it is
+   taken out.
 3. **Makes the directory of rcman's socket**, `/run/rcman`: it belongs to
    `rcman` and the group `rcman-web`, and no one else may enter it.
    `/etc/tmpfiles.d/rcman.conf` makes it again at every boot.
