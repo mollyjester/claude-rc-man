@@ -342,13 +342,28 @@ def test_folders_are_made_and_deleted_as_the_person(env, two, sudoers):
     assert not (home / "projects" / "made").exists()
 
 
-def test_a_link_to_a_system_folder_is_deleted_as_the_link(env, two, sudoers):
+@pytest.fixture
+def outside_but_bobs(two):
+    """A folder outside bob's home that bob may change, with a file in it."""
+    target = Path("/srv/rcman-link-target")
+    target.mkdir(parents=True)
+    (target / "kept").write_text("x")
+    for path in (target, target / "kept"):
+        os.chown(path, account("bob").pw_uid, account("bob").pw_gid)
+    yield target
+    shutil.rmtree(target)
+
+
+def test_a_link_leading_out_of_the_home_is_deleted_as_the_link(env, two, sudoers, outside_but_bobs):
     home = Path(account("bob").pw_dir)
-    assert as_user("bob", "ln", "-s", "/etc", str(home / "projects" / "etc")).returncode == 0
-    code, out = helper_as_bob("delete", "--", "projects/etc")
+    link = home / "projects" / "out"
+    assert as_user("bob", "ln", "-s", str(outside_but_bobs), str(link)).returncode == 0
+    # bob could delete what it leads to: only rc-helper keeps it
+    assert as_user("bob", "test", "-w", str(outside_but_bobs / "kept")).returncode == 0
+    code, out = helper_as_bob("delete", "--", "projects/out")
     assert (code, out["link"]) == (0, True), out
-    assert not (home / "projects" / "etc").is_symlink()
-    assert Path("/etc/passwd").is_file()
+    assert not link.is_symlink()
+    assert (outside_but_bobs / "kept").read_text() == "x"
 
 
 def test_what_the_person_may_not_remove_is_left_and_listed(env, two, sudoers):
