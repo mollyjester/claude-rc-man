@@ -22,6 +22,7 @@ the OpenAPI description it serves at `/api/openapi`.
 | `everyone.py` | Everyone's servers, for administrators: one `rc-helper list` per person, side by side |
 | `routes.py` | The app's routes as FastAPI resolves them after including routers, and which of them are for administrators |
 | `routers/` | One module per area: `me`, `folders`, `servers`, `claude`, `users`, `audit_log`, `attention`, `docs` |
+| `routers/me.py` | Each person's own settings, changed with `PATCH /api/me/settings`, which changes only the settings sent; `prefix_of` and `author_of` are how the rest of the backend reads them |
 
 ## Requests
 
@@ -39,9 +40,8 @@ the OpenAPI description it serves at `/api/openapi`.
   `tests/test_identity.py` drives each one as someone who is not an
   administrator, with a valid request from `CALLS` in `tests/conftest.py`.
 - **Validation** happens here, in Pydantic models and query parameters; the
-  frontend shows what comes back. Rules shared with the helpers — the session
-  name prefix, Linux user names, email addresses, path lengths, folder depth —
-  are taken from the helpers' modules, never restated.
+  frontend shows what comes back. Every rule the helpers also apply is taken
+  from the helpers' modules, never restated.
 - **Errors** are always problem details (`application/problem+json`) with
   `type`, `title`, `status` and `code`; validation errors add `errors`, a list
   of `field` and `message`. The backend's own codes are `MESSAGES` and `STATUS`

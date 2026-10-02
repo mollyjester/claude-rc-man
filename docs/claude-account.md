@@ -31,4 +31,4 @@ When Claude Code does not say when a sign-in expires, rcman shows no date.
 If Claude shows a sign-in screen rcman does not recognise, rcman shows it to
 you as it is, and the attempt appears in the audit trail for administrators.
 
-You can also change the prefix of your sessions' names under **Settings**.
+You can also change the prefix of your sessions' names in [Settings](settings.md).

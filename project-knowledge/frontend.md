@@ -36,7 +36,7 @@ version is `frontend/.nvmrc`.
 | `src/App.tsx` | Who is signed in, the navigation, and the routes; `ADMIN_PAGES` is the administrators' pages, which the navigation and the routes are built from |
 | `src/Dashboard.tsx`, `src/Servers.tsx` | The Servers page: folder tree, servers and their actions, refreshed every `POLL_MS` |
 | `src/Claude.tsx` | The Claude account's state and the connect flow |
-| `src/Settings.tsx` | The session name prefix |
+| `src/Settings.tsx` | The person's own settings, in parts that are each saved on their own; `FIELDS` is every field it shows, and a test holds `docs/settings.md` to it |
 | `src/People.tsx`, `src/Everyone.tsx`, `src/Audit.tsx`, `src/Versions.tsx` | Administration; `src/Everyone.tsx` shows everyone's servers with no actions |
 | `src/Attention.tsx` | The administrators' warning at the top of every page, from `/api/attention`, fetched on load and on every change of page |
 | `src/Docs.tsx` | The help pages, from `/api/docs` |
