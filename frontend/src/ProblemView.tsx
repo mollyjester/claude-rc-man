@@ -1,8 +1,9 @@
 import { ApiError } from "./api";
 import { m } from "./messages";
 
-// Shows an error exactly as the server described it.
-export function ProblemView({ error }: { error: ApiError | null }) {
+// Shows an error exactly as the server described it. A form passes its labels,
+// by field name, so a refused field is named as the form names it.
+export function ProblemView({ error, labels = {} }: { error: ApiError | null; labels?: Record<string, string> }) {
   if (!error) return null;
   const screen = error.extra.screen;
   const failed = error.extra.failed;
@@ -16,7 +17,7 @@ export function ProblemView({ error }: { error: ApiError | null }) {
       {error.errors.length > 0 && (
         <ul aria-label={m.problemFieldErrors}>
           {error.errors.map((e, i) => (
-            <li key={i}>{`${e.field}: ${e.message}`}</li>
+            <li key={i}>{`${labels[e.field] ?? e.field}: ${e.message}`}</li>
           ))}
         </ul>
       )}

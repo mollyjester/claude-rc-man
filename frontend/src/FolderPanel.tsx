@@ -124,7 +124,7 @@ function NewFolderForm({
           {m.cancel}
         </button>
       </div>
-      <ProblemView error={error} />
+      <ProblemView error={error} labels={{ name: m.newFolderName }} />
     </form>
   );
 }

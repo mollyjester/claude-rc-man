@@ -83,7 +83,7 @@ export function Versions() {
         </button>
       </form>
       {notice && <p role="status">{notice}</p>}
-      <ProblemView error={error} />
+      <ProblemView error={error} labels={{ version: m.versionsUpgrade }} />
     </section>
   );
 }

@@ -143,7 +143,10 @@ export function People() {
         </button>
       </form>
       {notice && <p role="status">{notice}</p>}
-      <ProblemView error={error} />
+      <ProblemView
+        error={error}
+        labels={{ linux: m.usersLinux, email: m.usersEmail, admin: m.usersAddAdmin, adopt: m.usersAddAdopt }}
+      />
     </section>
   );
 }

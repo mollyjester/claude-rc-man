@@ -84,7 +84,7 @@ function Part(props: { title: string; fields: Field[]; reply: Reply; onSaved: (r
       </form>
       {children}
       {saved && <p role="status">{m.saved}</p>}
-      <ProblemView error={error} />
+      <ProblemView error={error} labels={Object.fromEntries(fields.map((f) => [f, FIELDS[f].label]))} />
     </section>
   );
 }
