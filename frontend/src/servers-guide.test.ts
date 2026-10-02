@@ -87,14 +87,45 @@ const STYLES = resolve(__dirname, "styles.css");
 const SHAPE_HEADER = "| Dot | Shape |";
 
 // The shape the stylesheet gives a kind's dot, read from its .dot-<kind> rule.
+// The declarations of every rule whose selector names a class, in order.
+function rulesFor(css: string, className: string): string[] {
+  const text = css.replace(/\/\*[\s\S]*?\*\//g, "");
+  const named = new RegExp(`\\.${className}(?![\\w-])`);
+  return [...text.matchAll(/([^{}]+)\{([^{}]*)\}/g)].filter((r) => named.test(r[1])).map((r) => r[2]);
+}
+
+// A declared value: the last declaration of a property in the rule, or undefined.
+const valueOf = (rule: string, property: string) =>
+  [...rule.matchAll(new RegExp(`(?:^|;)\\s*${property}\\s*:\\s*([^;]+)`, "g"))].at(-1)?.[1].trim();
+
+// A length in px, from px or rem; undefined for anything else.
+function px(value: string | undefined): number | undefined {
+  const match = value?.match(/^([\d.]+)(px|rem)$/);
+  return match ? parseFloat(match[1]) * (match[2] === "rem" ? 16 : 1) : undefined;
+}
+
+// The shape the stylesheet gives a kind's dot, from its .dot-<kind> rule over
+// the .dot rule. It refuses more than one rule for a kind, and a box that is
+// neither square nor a bar, rather than guess.
 function shapeOf(css: string, kind: string): string {
-  const rule = css.match(new RegExp(`\\.dot-${kind}\\s*\\{([^}]*)\\}`))?.[1];
-  if (rule === undefined) return "no rule";
-  const polygon = rule.match(/clip-path:\s*polygon\(([^)]*)\)/);
+  const rules = rulesFor(css, `dot-${kind}`);
+  if (rules.length === 0) return "no rule";
+  if (rules.length > 1) throw new Error(`more than one rule styles .dot-${kind}`);
+  const [rule] = rules;
+  const base = rulesFor(css, "dot").join(";");
+  const width = px(valueOf(rule, "width") ?? valueOf(base, "width"));
+  const height = px(valueOf(rule, "height") ?? valueOf(base, "height"));
+  if (width === undefined || height === undefined) return "unknown";
+
+  const polygon = valueOf(rule, "clip-path")?.match(/^polygon\(([^)]*)\)$/);
   if (polygon) return polygon[1].split(",").length === 3 ? "triangle" : "polygon";
-  const round = /border-radius:\s*50%/.test(rule);
-  const filled = /background:/.test(rule);
-  const outlined = /border:\s*[\d.]+rem solid/.test(rule);
+  const background = valueOf(rule, "background");
+  const filled = background !== undefined && !/^(transparent|none)$/.test(background);
+  const outlined = /^[\d.]+(px|rem) solid /.test(valueOf(rule, "border") ?? "");
+  if (width >= 2 * height && filled) return "bar";
+  if (width !== height) throw new Error(`.dot-${kind} is ${width}px by ${height}px: neither square nor a bar`);
+  const radius = valueOf(rule, "border-radius");
+  const round = radius === "50%" || (px(radius) ?? 0) >= width / 2;
   if (filled) return round ? "filled circle" : "filled square";
   if (outlined) return round ? "ring" : "hollow square";
   return "unknown";
@@ -139,6 +170,24 @@ test("the check fails on a dot that changed shape, two that share one, or rows o
   expect([...table].reverse()).not.toEqual(shapes(css));
   expect(shapeTable("")).toEqual([]);
   expect(shapeOf("", "running")).toBe("no rule");
+});
+
+test("the shape reader reads backgrounds, radii and sizes as they are, and refuses what it cannot read", () => {
+  const css = readFileSync(STYLES, "utf-8");
+  const planted = (kind: string, rule: string) => {
+    const changed = css.replace(new RegExp(`(\\.dot-${kind}\\s*\\{)[^}]*\\}`), `$1 ${rule} }`);
+    expect(changed).not.toEqual(css); // the plant took effect
+    return changed;
+  };
+  const ring = "border-radius: 50%; border: 0.15rem solid var(--waiting);";
+  expect(shapeOf(planted("waiting", `${ring} background: transparent;`), "waiting")).toBe("ring");
+  expect(shapeOf(planted("waiting", `${ring} background: none;`), "waiting")).toBe("ring");
+  expect(shapeOf(planted("running", "border-radius: 999px; background: var(--running);"), "running")).toBe("filled circle");
+  expect(shapeOf(planted("running", "border-radius: 0.35rem; background: var(--running);"), "running")).toBe("filled circle");
+  expect(shapeOf(planted("running", "border-radius: 0.1rem; background: var(--running);"), "running")).toBe("filled square");
+  expect(shapeOf(planted("stopped", "height: 0.2rem; background: var(--stopped);"), "stopped")).toBe("bar");
+  expect(() => shapeOf(planted("stopped", "height: 0.5rem; background: var(--stopped);"), "stopped")).toThrow(/neither square nor a bar/);
+  expect(() => shapeOf(`${css}\n.tree .dot-problem { border-radius: 50%; }`, "problem")).toThrow(/more than one rule/);
 });
 
 const PAGE_SECTION = "## The Servers page";
