@@ -1125,6 +1125,57 @@ def test_what_cannot_be_removed_is_reported_and_delete_again_carries_on(env):
     assert not (home / "projects" / "beta").exists()
 
 
+def test_delete_refuses_a_path_that_goes_through_a_link(env):
+    home = Path(env["RC_HELPER_HOME"])
+    log_in(env)
+    ok(env, "start", "projects/alpha", "--prefix", "pfx")
+    (home / "lnk").symlink_to(home / "projects")
+    (home / "projects" / "to-beta").symlink_to(home / "projects" / "beta")
+    for rel in ("lnk/alpha", "projects/to-beta/inner", "lnk/beta/inner"):
+        assert error_code(env, "delete", "--", rel) == "path_through_link", rel
+    assert (home / "projects" / "alpha").is_dir() and (
+        home / "projects" / "beta" / "inner"
+    ).is_dir()
+    assert [s["state"] for s in ok(env, "list")["servers"]] == ["trust_prompt"]  # not stopped
+    # positive control: the same folders, named where they are
+    assert ok(env, "delete", "--", "projects/beta/inner")["deleted"] == "projects/beta/inner"
+    assert ok(env, "delete", "--", "projects/./alpha")["forgotten"] == ["projects/alpha"]
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root removes anything; the container suite checks")
+def test_a_link_that_cannot_be_removed_is_reported_as_nothing_deleted(env):
+    home = Path(env["RC_HELPER_HOME"])
+    (home / "projects" / "lnk").symlink_to(home / "projects" / "alpha")
+    (home / "projects").chmod(0o500)
+    try:
+        code, out = helper(env, "delete", "--", "projects/lnk")
+    finally:
+        (home / "projects").chmod(0o700)
+    assert code == 1 and out["error"]["code"] == "delete_failed", out
+    assert out["error"]["left"] == ["projects/lnk"]
+    assert (home / "projects" / "lnk").is_symlink()
+
+
+def test_a_folder_that_cannot_be_opened_is_reported_as_nothing_deleted(env, monkeypatch):
+    home = Path(env["RC_HELPER_HOME"])
+    (home / "projects" / "beta" / "inner" / "file").write_text("x")
+    real_open = os.open
+
+    def refusing(path, flags, mode=0o777, *, dir_fd=None):
+        if path == "beta" and dir_fd is not None:
+            raise PermissionError(13, "planted", path)
+        return real_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(h.Helper, "_refuse_mounts", staticmethod(lambda entry: None))
+    monkeypatch.setattr(os, "open", refusing)
+    error = refusal(in_process(env).delete, "projects/beta")
+    monkeypatch.undo()
+    assert error.code == "delete_failed"
+    assert error.detail["left"] == ["projects/beta"]
+    assert (home / "projects" / "beta" / "inner" / "file").read_text() == "x"
+    assert h.MESSAGES["delete_failed"] != h.MESSAGES["delete_incomplete"]
+
+
 def test_the_report_of_what_is_left_is_capped(env, monkeypatch):
     home = Path(env["RC_HELPER_HOME"])
     for i in range(h.DELETE_REPORT_LIMIT + 5):

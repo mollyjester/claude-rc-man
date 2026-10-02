@@ -25,6 +25,7 @@ import fcntl
 import hashlib
 import json
 import os
+import posixpath
 import pwd
 import re
 import shutil
@@ -97,8 +98,12 @@ MESSAGES = {
         "A server in the folder could not be forgotten, so nothing was deleted."
     ),
     "delete_incomplete": (
-        "Some of the folder could not be deleted; what is left is listed. "
+        "Some of the folder was deleted, but not all of it; what is left is listed. "
         "Delete it again once that can be removed."
+    ),
+    "delete_failed": "The folder could not be deleted, and nothing in it was removed.",
+    "path_through_link": (
+        "rcman does not delete through a symbolic link. Select the folder where it really is."
     ),
     "delete_mount_inside": (
         "Another file system is mounted inside the folder, so nothing was deleted."
@@ -885,6 +890,10 @@ class Helper:
             given = [part for part in rel.split("/") if part not in ("", ".", "..")]
             if any(part.startswith(".") for part in [*given, *entry.rel.split("/")]):
                 raise HelperError("path_hidden")
+            # The servers are found by their folders' resolved paths, so a path
+            # through a link would name servers other than those it reaches.
+            if entry.rel != posixpath.normpath(rel):
+                raise HelperError("path_through_link")
             with self._lock(exclusive=True):
                 if not entry.is_link:
                     self._refuse_mounts(entry)
@@ -950,21 +959,31 @@ class Helper:
 
     @staticmethod
     def _remove(entry: Entry, forgotten: list[str]) -> None:
-        """Delete the entry; whatever could not be removed is reported, and nothing else done."""
-        left: set[str] = set()
+        """Delete the entry; whatever could not be removed is reported, and nothing else done.
+
+        ``delete_failed`` when the entry itself could not be reached, so nothing
+        was removed; ``delete_incomplete`` when some of it was.
+        """
+        failed: list[tuple[Callable, str]] = []  # (what failed, on which path)
         if entry.is_link:
             try:
                 os.unlink(entry.name, dir_fd=entry.parent_fd)
             except OSError:
-                left.add(entry.name)
+                failed.append((os.unlink, entry.name))
         else:
             shutil.rmtree(
-                entry.name, dir_fd=entry.parent_fd, onexc=lambda _f, path, _e: left.add(path)
+                entry.name,
+                dir_fd=entry.parent_fd,
+                onexc=lambda func, path, _error: failed.append((func, path)),
             )
-        if left:
+        if failed:
             parent = entry.rel.rpartition("/")[0]
+            left = {path for _func, path in failed}
             report = sorted(_joined(parent, path) for path in left)[:DELETE_REPORT_LIMIT]
-            raise HelperError("delete_incomplete", {"forgotten": forgotten, "left": report})
+            detail = {"forgotten": forgotten, "left": report}
+            if all(path == entry.name and func is not os.rmdir for func, path in failed):
+                raise HelperError("delete_failed", detail)
+            raise HelperError("delete_incomplete", detail)
 
     def _folder(self, rel: str) -> tuple[Path, str]:
         folder = resolve_folder(self.cfg.home, rel)

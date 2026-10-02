@@ -52,6 +52,8 @@ HELPER_STATUS = {
     "delete_stop_failed": 409,
     "delete_forget_failed": 500,
     "delete_incomplete": 409,
+    "delete_failed": 409,
+    "path_through_link": 400,
     "delete_mount_inside": 409,
     "delete_unsafe": 500,
 }

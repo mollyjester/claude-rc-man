@@ -34,7 +34,7 @@ command-line reference is `rc-helper --help` and `rc-helper <verb> --help`.
 | `rc-helper auth-status` | Whether a Claude account is connected, which, and when the sign-in expires (`login_expires_at`, or `null` when unknown) |
 | `rc-helper auth-login --email <e>` | Starts connecting a Claude account; returns the sign-in URL |
 | `rc-helper mkdir [parent] --name=<name>` | Makes a folder named `<name>` in a folder, or in the home folder when no parent is given. The name may not be empty, begin with a dot, hold a slash, a control character or an invisible character, or begin or end with white space (`FOLDER_NAME` in `helpers/rc_helper.py`, which shares its invisible characters with `AUTHOR_NAME`), nor be longer than the file system's `PC_NAME_MAX` in bytes; refuses with `folder_exists` when anything, even a dangling link, has that name |
-| `rc-helper delete <path>` | Stops every running server in a folder or below it, forgets every server there, then deletes the folder and everything in it; a link is deleted as the link. Refuses the home folder, anything outside it, and a dot-folder or anything in one (`path_hidden`). See [Deleting a folder](#deleting-a-folder) |
+| `rc-helper delete <path>` | Stops every running server in a folder or below it, forgets every server there, then deletes the folder and everything in it; a link is deleted as the link. Refuses the home folder, anything outside it, a dot-folder or anything in one (`path_hidden`), and a path through a link (`path_through_link`). See [Deleting a folder](#deleting-a-folder) |
 | `rc-helper auth-code` | Finishes connecting with the code read from stdin — pressing Enter after Claude reports success, as it asks — and returns the account as `auth-status` does |
 
 ## Deleting a folder
@@ -48,7 +48,11 @@ at the first step that fails:
    name, which is never resolved (`resolve_entry`), so a link is the link and
    not where it leads. A path with any part that begins with a dot, as given
    or as resolved, is refused with `path_hidden`; that keeps `~/.local`,
-   `~/.claude` and the like out of reach.
+   `~/.claude` and the like out of reach. A path that goes through a link
+   before its last part — one whose resolved path differs from the path as
+   written — is refused with `path_through_link`: servers are known by their
+   folders' resolved paths, so it would reach servers other than those named
+   by the path.
 3. It takes the folder lock exclusively (see below).
 4. For a folder, it walks it without following links, and refuses with
    `delete_mount_inside`, having done nothing, when anything inside is on
@@ -61,10 +65,12 @@ at the first step that fails:
 6. It forgets every server there and checks that each is gone; otherwise
    `delete_forget_failed`, naming the server, and nothing is deleted.
 7. It unlinks a link, or removes a folder with `shutil.rmtree` through the
-   parent's file descriptor. Whatever could not be removed is reported with
-   `delete_incomplete` as `left`, sorted and at most `DELETE_REPORT_LIMIT`
-   paths, along with the servers `forgotten`; no permission is changed to
-   force it. Running `delete` again carries on from there.
+   parent's file descriptor. Whatever could not be removed is reported as
+   `left`, sorted and at most `DELETE_REPORT_LIMIT` paths, along with the
+   servers `forgotten`: with `delete_failed` when the entry itself could not
+   be reached, so nothing was removed, and with `delete_incomplete` when some
+   of it was. No permission is changed to force it. Running `delete` again
+   carries on from there.
 
 It answers with the path deleted, whether it was a link, and the servers
 stopped and forgotten.
