@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
-import { ACTIONS, KIND, KIND_ORDER, LABELS, PRIMARY } from "./Servers";
+import { ACTIONS, KIND, KIND_ORDER, LABELS, LIVE, PRIMARY } from "./Servers";
 import { m } from "./messages";
 
 const GUIDE = resolve(__dirname, "../../docs/servers.md");
@@ -37,7 +37,8 @@ function expected(): Row[] {
       dot: m.kinds[KIND[state]],
       next: m.nextStep[state],
       main: primary === null ? NONE : primary === "openSession" ? m.openSession : LABELS[primary],
-      buttons: ACTIONS[state].map((action) => LABELS[action]),
+      // a live server's card leads its actions with the link to claude.ai
+      buttons: [...(LIVE.includes(state) ? [m.openSession] : []), ...ACTIONS[state].map((action) => LABELS[action])],
     };
   });
 }
@@ -67,6 +68,7 @@ test("the check fails on a guide whose table has drifted", () => {
   };
   expect(drifted(`| ${m.states.connected} |`, "| Connecting |")).not.toEqual(expected());
   expect(drifted(`**${m.forget}**`, "")).not.toEqual(expected());
+  expect(drifted(`| **${m.openSession}**, **${m.stop}** |`, `| **${m.stop}** |`)).not.toEqual(expected());
   expect(drifted(m.nextStep.stopped, "Resume it.")).not.toEqual(expected());
   expect(drifted(`| ${m.states.exited} | ${m.kinds[KIND.exited]} |`, `| ${m.states.exited} | ${m.kinds[KIND.ready]} |`)).not.toEqual(
     expected(),

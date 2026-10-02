@@ -32,12 +32,12 @@ tree.
 
 The panel starts with where the folder is, from **Home** down; any step of it
 selects that folder, and **Home** selects none. Below that, its
-**Claude server** section shows the folder's server, or **Start** when it has none.
-**Start**, **Resume** and **Start again** are offered only while your Claude
-account is connected; until then the section, or the server in place of what
-to do next, says to connect it. The
-folder you have selected is part of the page's address, so reloading the page
-keeps it, and the browser's back button returns to the folder selected before.
+**Claude server** section shows the folder's server, or **Start** when it has
+none. **Start**, **Resume** and **Start again** are offered only while your
+Claude account is connected; until then the section, or the server in place of
+what to do next, says to connect it. The folder you have selected is part of
+the page's address, so reloading the page keeps it, and the browser's back
+button returns to the folder selected before.
 
 A server shows its state as a coloured badge, a sentence saying what to do
 next, and only the actions that state allows. Its main button, the action to
@@ -48,8 +48,8 @@ ready or in use also has **Open in claude.ai**, which is its main button:
 |---|---|---|---|---|
 | Starting | Running | Claude is starting. Wait a moment. | — | **Stop** |
 | Waiting for your answer | Needs your answer | Answer whether you trust this folder. | **Yes, trust it** | **Yes, trust it**, **No**, **Stop** |
-| Ready to accept sessions | Running | Open it in claude.ai to start a session. | **Open in claude.ai** | **Stop** |
-| In use | Running | A session is attached; continue it in claude.ai. | **Open in claude.ai** | **Stop** |
+| Ready to accept sessions | Running | Open it in claude.ai to start a session. | **Open in claude.ai** | **Open in claude.ai**, **Stop** |
+| In use | Running | A session is attached; continue it in claude.ai. | **Open in claude.ai** | **Open in claude.ai**, **Stop** |
 | Stopped | Not running | Resume to pick up its sessions, or forget it. | **Resume** | **Resume**, **Forget** |
 | Not started: folder not trusted | Not running | Start again to answer once more, or forget it. | **Start again** | **Start again**, **Forget** |
 | Not started: Claude account not connected | Has a problem | Connect your Claude account above, then start again. | **Start again** | **Start again**, **Forget** |
@@ -132,8 +132,9 @@ reason, and everyone else is listed as usual.
 
 While anyone's server is on a screen rcman does not recognise, administrators
 are warned at the top of every page, with the person's Linux user and the
-folder and a link to **Everyone's servers**. The warning never includes the screen itself; the
-person whose server it is sees it with **Show screen**. Each action that ends
-on such a screen is also recorded in the [audit trail](audit.md) with the
-result `unrecognised_screen`. The warning is worked out afresh each time a page
-is opened, so it lasts only while the server shows that screen.
+folder and a link to **Everyone's servers**. The warning never includes the
+screen itself; the person whose server it is sees it with **Show screen**.
+Each action that ends on such a screen is also recorded in the
+[audit trail](audit.md) with the result `unrecognised_screen`. The warning is
+worked out afresh each time a page is opened, so it lasts only while the
+server shows that screen.
