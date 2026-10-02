@@ -66,7 +66,9 @@ if Claude asks again.
 
 - The home folder comes from the password database, never from `$HOME`. A
   folder must resolve, after following symbolic links, inside the home folder
-  and must not be the home folder itself.
+  and must not be the home folder itself. `stop`, `forget` and `output` also
+  reach a server whose folder no longer exists: its path is then followed as
+  far as it exists and must still lead inside the home folder.
 - Servers run in tmux on a dedicated socket (`TMUX_SOCKET_NAME`), configured by
   `helpers/tmux.conf`, so they never mix with the user's own tmux and keep
   their final screen and exit status after they exit. Each folder has its own

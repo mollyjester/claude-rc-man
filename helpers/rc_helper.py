@@ -234,15 +234,29 @@ def server_command(cfg: Config, prefix: str) -> list[str]:
 # --- paths ------------------------------------------------------------------------
 
 
-def resolve_folder(home: Path, rel: str, allow_home: bool = False) -> Path:
+def check_rel(rel: str) -> None:
+    """A path as rc-helper takes one: relative, and of a length a path can have."""
     if "\0" in rel or rel.startswith("/") or len(rel) > MAX_PATH_LENGTH:
         raise HelperError("path_invalid")
+
+
+def confine(home: Path, rel: str, allow_home: bool = False) -> Path:
+    """Where ``rel`` leads, following links as far as it exists, refused outside the home.
+
+    Whether anything is there is not checked.
+    """
+    check_rel(rel)
     root = home.resolve()
     target = (root / rel).resolve()
     if target != root and root not in target.parents:
         raise HelperError("path_outside_home")
     if target == root and not allow_home:
         raise HelperError("path_is_home")
+    return target
+
+
+def resolve_folder(home: Path, rel: str, allow_home: bool = False) -> Path:
+    target = confine(home, rel, allow_home)
     if not target.exists():
         raise HelperError("path_not_found")
     if not target.is_dir():
@@ -560,7 +574,7 @@ class Helper:
         return self.start(rel, prefix)
 
     def stop(self, rel: str) -> dict:
-        _, rel = self._folder(rel)
+        rel = self._known(rel)
         session = self._existing(rel)
         if self.tmux.exit_status(session) is not None:
             raise HelperError("not_running")
@@ -569,7 +583,7 @@ class Helper:
         return {"server": server}
 
     def forget(self, rel: str) -> dict:
-        _, rel = self._folder(rel)
+        rel = self._known(rel)
         session = self._existing(rel)
         if self.tmux.exit_status(session) is None:
             raise HelperError("still_running")
@@ -577,7 +591,7 @@ class Helper:
         return {"forgotten": rel}
 
     def output(self, rel: str) -> dict:
-        _, rel = self._folder(rel)
+        rel = self._known(rel)
         session = self._existing(rel)
         return {
             "path": rel,
@@ -689,6 +703,15 @@ class Helper:
     def _folder(self, rel: str) -> tuple[Path, str]:
         folder = resolve_folder(self.cfg.home, rel)
         return folder, relative(self.cfg, folder)
+
+    def _known(self, rel: str) -> str:
+        """The path a folder's server is known by, which is still there once the folder is gone."""
+        try:
+            return self._folder(rel)[1]
+        except HelperError as error:
+            if error.code != "path_not_found":
+                raise
+        return relative(self.cfg, confine(self.cfg.home, rel))
 
     def _existing(self, rel: str) -> str:
         session = session_for(rel)

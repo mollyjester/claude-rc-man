@@ -351,6 +351,31 @@ def test_a_server_that_died_can_be_resumed(env):
     assert again["session_name"] == ready["session_name"]
 
 
+def test_a_server_whose_folder_is_gone_can_still_be_reached(env):
+    import shutil
+
+    log_in(env)
+    ok(env, "start", "projects/beta/inner", "--prefix", "pfx")
+    shutil.rmtree(Path(env["RC_HELPER_HOME"]) / "projects" / "beta")
+    assert error_code(env, "start", "projects/beta/inner", "--prefix", "pfx") == "path_not_found"
+
+    assert ok(env, "output", "projects/beta/inner")["server"]["state"] == "trust_prompt"
+    assert ok(env, "stop", "projects/beta/inner")["server"]["exit_code"] is not None
+    assert ok(env, "forget", "projects/beta/inner") == {"forgotten": "projects/beta/inner"}
+    assert ok(env, "list")["servers"] == []
+
+
+def test_a_folder_that_is_gone_is_still_confined_to_the_home(env, tmp_path):
+    (tmp_path / "elsewhere").mkdir()
+    (Path(env["RC_HELPER_HOME"]) / "projects" / "out").symlink_to(tmp_path / "elsewhere")
+    for verb in ("stop", "forget", "output"):
+        assert error_code(env, verb, "projects/gone") == "unknown_server"  # positive control
+        assert error_code(env, verb, "../gone") == "path_outside_home"
+        assert error_code(env, verb, "projects/out/gone") == "path_outside_home"
+        assert error_code(env, verb, "projects/gone/../..") == "path_is_home"
+        assert error_code(env, verb, "/gone") == "path_invalid"
+
+
 def test_forget_refuses_a_running_server(env):
     log_in(env)
     ok(env, "start", "projects/alpha", "--prefix", "pfx")
