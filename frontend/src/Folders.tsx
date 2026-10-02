@@ -48,16 +48,14 @@ export function useFolderTree() {
 
   const toggle = useCallback(
     (path: string) => {
-      const next = new Set(open);
-      if (next.has(path)) {
-        next.delete(path);
-      } else {
-        next.add(path);
-        load(path);
-      }
-      setOpen(next);
+      setOpen((current) => {
+        const next = new Set(current);
+        if (!next.delete(path)) next.add(path);
+        return next;
+      });
+      load(path); // nothing to do once its contents are fetched
     },
-    [open, load],
+    [load],
   );
 
   // Opens every folder above a path, so that it can be seen.
