@@ -64,14 +64,16 @@ def test_admin_routes_refuse_non_admins(client, app):
 def test_changes_need_the_public_origin(client):
     body = {"prefix": "abc"}
     headers = as_user(ALICE)
-    r = client.put("/api/me/settings", json=body, headers=headers)  # no Origin
+    r = client.patch("/api/me/settings", json=body, headers=headers)  # no Origin
     assert (r.status_code, r.json()["code"]) == (403, "origin_refused")
-    r = client.put(
+    r = client.patch(
         "/api/me/settings", json=body, headers={**headers, "Origin": "https://evil.example.com"}
     )
     assert r.status_code == 403
     assert (
-        client.put("/api/me/settings", json=body, headers={**headers, "Origin": ORIGIN}).status_code
+        client.patch(
+            "/api/me/settings", json=body, headers={**headers, "Origin": ORIGIN}
+        ).status_code
         == 200
     )
 

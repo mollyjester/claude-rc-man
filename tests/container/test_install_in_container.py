@@ -444,7 +444,7 @@ def test_audit_events_reach_the_journal(first_install):
             "Origin": f"https://{DOMAIN}",
             "Content-Type": "application/json",
         },
-        method="PUT",
+        method="PATCH",
         body=json.dumps({"prefix": "journal"}),
     )
     assert status == 200, text
@@ -462,9 +462,9 @@ def test_audit_events_reach_the_journal(first_install):
         if events or time.monotonic() > deadline:
             break
         time.sleep(0.2)
-    assert any("PUT /api/me/settings" in line for line in after), after  # positive control
+    assert any("PATCH /api/me/settings" in line for line in after), after  # positive control
     assert len(events) == 1, after
-    assert (events[0]["target"], events[0]["result"]) == ("journal", "ok")
+    assert (events[0]["target"], events[0]["result"]) == ('{"prefix": "journal"}', "ok")
 
 
 def test_the_caddy_snippet_is_printed_and_valid(first_install):

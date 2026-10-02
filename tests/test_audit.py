@@ -128,7 +128,7 @@ def test_a_refused_change_is_recorded_with_its_error_code(client, settings):
 
 
 def test_a_refused_settings_change_is_recorded_as_validation_failed(client, settings):
-    r = client.put("/api/me/settings", json={"prefix": "not valid!"}, headers=changing(BOB))
+    r = client.patch("/api/me/settings", json={"prefix": "not valid!"}, headers=changing(BOB))
     assert (r.status_code, r.json()["code"]) == (422, "validation_failed")
     last = rows(settings)[-1]
     assert (last["action"], last["result"]) == ("settings.update", "validation_failed")
@@ -171,16 +171,32 @@ def test_every_failure_is_recorded_with_the_code_it_is_answered_with(app, settin
 
 
 def test_a_successful_change_is_recorded_as_ok(client, settings):
-    client.put("/api/me/settings", json={"prefix": "pfx"}, headers=changing(BOB))
+    client.patch("/api/me/settings", json={"prefix": "pfx"}, headers=changing(BOB))
     last = rows(settings)[-1]
     assert (last["action"], last["result"], last["linux"]) == ("settings.update", "ok", "bob")
+
+
+def test_a_settings_change_records_the_settings_sent(client, settings):
+    import json
+
+    for body in (
+        {"prefix": "pfx"},
+        {"author_name": "Сергей Лихарев", "author_email": ""},
+        {"author_email": "bob@work.example"},
+    ):
+        r = client.patch("/api/me/settings", json=body, headers=changing(BOB))
+        assert r.status_code == 200, r.text
+        last = rows(settings)[-1]
+        assert (last["action"], last["result"]) == ("settings.update", "ok")
+        assert json.loads(last["target"]) == body
+    assert "Сергей" in rows(settings)[-2]["target"]  # as written, not escaped
 
 
 def test_audit_events_are_logged_as_json(client, caplog):
     import json
 
     caplog.set_level("INFO", logger="rcman.audit")
-    client.put("/api/me/settings", json={"prefix": "pfx"}, headers=changing(BOB))
+    client.patch("/api/me/settings", json={"prefix": "pfx"}, headers=changing(BOB))
     event = json.loads(caplog.records[-1].getMessage())
     assert event["action"] == "settings.update" and event["email"] == BOB
 
@@ -265,7 +281,7 @@ def test_audit_events_reach_the_service_output(tmp_path, settings):
         status, text = _request(
             port,
             sock,
-            "PUT",
+            "PATCH",
             "/api/me/settings",
             body=json.dumps({"prefix": "pfx"}),
             headers={**changing(BOB), "Content-Type": "application/json"},
