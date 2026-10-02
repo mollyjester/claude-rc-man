@@ -35,7 +35,7 @@ test("administrators are told who is on an unrecognised screen and whose version
   expect(within(banner).getAllByRole("link", { name: m.navVersions })[0]).toHaveAttribute("href", "/admin/claude");
 });
 
-test("it is fetched again on every change of page, never on a timer", async () => {
+test("it is fetched again on every change of page", async () => {
   const fake = api(ADMIN);
   renderApp();
   await waitFor(() => expect(fake.made("GET", "/api/attention")).toHaveLength(1));
