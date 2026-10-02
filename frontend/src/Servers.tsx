@@ -92,14 +92,16 @@ export const LABELS: Record<Action, string> = {
   trustNo: m.trustNo,
 };
 
+// The servers in a folder: its own, and every one in a folder inside it.
+export function serversIn(path: string, servers: Server[]): Server[] {
+  return servers.filter((s) => s.path === path || s.path.startsWith(`${path}/`));
+}
+
 // The dot a folder carries: the most urgent kind among its own server and,
 // while includeBelow, every server inside it; none where there is no server.
 export function dotFor(path: string, servers: Server[], includeBelow: boolean): Kind | null {
-  const kinds = new Set(
-    servers
-      .filter((s) => s.path === path || (includeBelow && s.path.startsWith(`${path}/`)))
-      .map((s) => kindOf(s.state)),
-  );
+  const counted = includeBelow ? serversIn(path, servers) : servers.filter((s) => s.path === path);
+  const kinds = new Set(counted.map((s) => kindOf(s.state)));
   return KIND_ORDER.find((kind) => kinds.has(kind)) ?? null;
 }
 

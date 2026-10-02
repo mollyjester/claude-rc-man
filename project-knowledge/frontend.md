@@ -18,7 +18,8 @@ version is `frontend/.nvmrc`.
 - **The server validates; the page shows what it said.** `src/api.ts` is the
   only way to the backend; every failure becomes an `ApiError` carrying the
   problem details as sent, and `src/ProblemView.tsx` shows them — the title,
-  each field error, a raw screen or failed checks when the server passes one.
+  each field error, and a raw screen, failed checks, the server a problem is
+  about with its screen, or what a delete left, when the server passes one.
   Forms are `noValidate` and no input carries a validation attribute;
   `src/forms.test.tsx` checks every form.
 - **Only what the server allows is offered.** `ACTIONS` in `src/Servers.tsx`
@@ -32,11 +33,15 @@ version is `frontend/.nvmrc`.
   can start, or null where one can; Start, and the actions that start Claude
   again, are offered only where it is null. Otherwise it says why in place of
   each: in the panel instead of Start, and on a server's card instead of the
-  sentence saying what to do. Administration is offered only to
-  administrators, and the server refuses everyone else regardless.
+  sentence saying what to do. Delete folder is offered only for a folder,
+  never for the home folder, and only once the servers are listed, since its
+  confirmation names those it stops and forgets. Administration is offered
+  only to administrators, and the server refuses everyone else regardless.
 - **Each form leads with what it does.** Its submit button is its one
-  `primary` button and its other buttons are plain; a dialog's choice is a
-  form too. `src/forms.test.tsx` checks every form.
+  `primary` button, or its one `danger` button where what it does cannot be
+  undone — removing a person, deleting a folder — and its other buttons are
+  plain; a dialog's choice is a form too. `src/forms.test.tsx` checks every
+  form, and that only the forms it names as destructive use `danger`.
 - **Every piece of text not from the server is in `src/messages.ts`.**
 - **Every colour is a custom property in `src/styles.css`**, with a value for
   a light scheme and one for a dark scheme, which the browser picks between by
@@ -59,10 +64,10 @@ version is `frontend/.nvmrc`.
 |---|---|
 | `src/App.tsx` | Who is signed in, the navigation, and the routes |
 | `src/AdminPages.tsx` | `ADMIN`, the administrators' pages by name, which the links in the administrators' warning use, and `ADMIN_PAGES`, the same pages in order, which the navigation's **Admin** menu and the routes are built from |
-| `src/Dashboard.tsx` | The Servers page: the folder tree and its summary beside the selected folder's panel, the selection kept in the address as `?folder=`, the servers refreshed every `POLL_MS` |
-| `src/Folders.tsx` | The folder tree, fetched a folder at a time and opened to whatever is selected, each folder's status dot, and the summary of every server |
-| `src/FolderPanel.tsx` | A folder's panel: its breadcrumb and its Claude server section |
-| `src/Servers.tsx` | A server's states, what each allows and shows, and its card |
+| `src/Dashboard.tsx` | The Servers page: the folder tree and its summary beside the selected folder's panel, the selection kept in the address as `?folder=`, the servers refreshed every `POLL_MS`; after a folder is made it is selected, and after one is deleted the folder above it replaces it in the address |
+| `src/Folders.tsx` | The folder tree, fetched a folder at a time and opened to whatever is selected — `reload` fetches a folder again after a folder is made or deleted in it, and `forget` drops a deleted folder and all below it — each folder's status dot, and the summary of every server |
+| `src/FolderPanel.tsx` | A folder's panel: its breadcrumb, its actions (**New folder** and **Delete folder**, with its confirmation) and its Claude server section; and the Home panel, shown while no folder is selected, with **New folder** only |
+| `src/Servers.tsx` | A server's states, what each allows and shows, and its card; `serversIn`, the servers in a folder or below it, which both a folder's dot and the delete confirmation count |
 | `src/Caret.tsx` | The caret of a disclosure button, such as **Admin** and a server's **Show screen**, turned by its `aria-expanded` |
 | `src/Claude.tsx` | The Claude account's state and the connect flow |
 | `src/Settings.tsx` | The person's own settings, in parts that are each saved on their own; `FIELDS` is every field it shows, and a test holds `docs/settings.md` to it |

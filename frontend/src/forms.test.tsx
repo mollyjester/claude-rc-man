@@ -1,5 +1,6 @@
 // Validation belongs to the server: no input may carry a rule of its own.
-// Each form leads with what it does: its submit button is its one primary button.
+// Each form leads with what it does: its submit button is its one primary
+// button, or its one danger button where what it does cannot be undone.
 import { screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
@@ -60,6 +61,37 @@ const PAGES: [string, string, () => Promise<void>][] = [
       await screen.findByLabelText(m.connectCode);
     },
   ],
+  [
+    "a new folder in the home folder",
+    "/",
+    async () => {
+      const home = await screen.findByRole("region", { name: m.home });
+      await userEvent.click(within(home).getByRole("button", { name: m.newFolder }));
+      await screen.findByLabelText(m.newFolderName);
+    },
+  ],
+  [
+    "a new folder in a folder",
+    "/?folder=projects",
+    async () => {
+      const panel = await screen.findByRole("region", { name: "projects" });
+      await userEvent.click(within(panel).getByRole("button", { name: m.newFolder }));
+      await screen.findByLabelText(m.newFolderName);
+    },
+  ],
+];
+
+// Pages with a form that has nothing to type in, and what opens it.
+const CHOICES: [string, string, () => Promise<void>][] = [
+  [
+    "deleting a folder",
+    "/?folder=projects",
+    async () => {
+      const panel = await screen.findByRole("region", { name: "projects" });
+      await userEvent.click(await within(panel).findByRole("button", { name: m.deleteFolder }));
+      await screen.findByRole("dialog");
+    },
+  ],
 ];
 
 test.each(PAGES)("no input on %s (%s) carries its own validation rule", async (_, path, open) => {
@@ -79,42 +111,73 @@ test.each(PAGES)("no input on %s (%s) carries its own validation rule", async (_
   expect(document.querySelectorAll("form[novalidate]").length).toBe(document.querySelectorAll("form").length);
 });
 
-// What is wrong with the buttons of each form under root: a form whose primary
-// buttons are not exactly one, or whose one is not its submit button. A dialog
-// asks for a choice, so it is a form too.
+// What is wrong with the buttons of each form under root: a form whose leading
+// buttons — primary, or danger where what it does cannot be undone — are not
+// exactly one, or whose one is not its submit button. A dialog asks for a
+// choice, so it is a form too.
 function hierarchyFaults(root: ParentNode): string[] {
   const formless = [...root.querySelectorAll('[role="dialog"]')]
     .filter((dialog) => !dialog.querySelector("form"))
     .map((dialog) => `${dialog.getAttribute("aria-label")}: a dialog with no form`);
   const forms = [...root.querySelectorAll("form")].flatMap((form) => {
-    const primary = [...form.querySelectorAll("button.primary")];
+    const leading = [...form.querySelectorAll("button.primary, button.danger")];
     const name = form.textContent?.trim().slice(0, 40);
-    if (primary.length !== 1) return [`${name}: ${primary.length} primary buttons`];
-    if ((primary[0] as HTMLButtonElement).type !== "submit") return [`${name}: its primary button does not submit it`];
+    if (leading.length !== 1) return [`${name}: ${leading.length} leading buttons`];
+    if ((leading[0] as HTMLButtonElement).type !== "submit") return [`${name}: its leading button does not submit it`];
     return [];
   });
   return [...formless, ...forms];
 }
 
-test.each(PAGES)("each form on %s (%s) has one primary button, its submit button", async (_, path, open) => {
+test.each([...PAGES, ...CHOICES])("each form on %s (%s) leads with one button, its submit button", async (page, path, open) => {
   api();
   renderApp(path);
   await open();
-  await inputs();
+  if (!CHOICES.some(([choice]) => choice === page)) await inputs();
   expect(document.querySelectorAll("form").length).toBeGreaterThan(0); // non-vacuity
   expect(hierarchyFaults(document)).toEqual([]);
 });
 
-test("the check fails on a form with no primary button, two, or one that does not submit it", () => {
+// The forms whose submit cannot be undone, which lead with danger instead.
+const DESTRUCTIVE = ["removing someone", "deleting a folder"];
+
+test("every form said to be destructive is one of those checked", () => {
+  const pages = [...PAGES, ...CHOICES].map(([page]) => page);
+  for (const page of DESTRUCTIVE) expect(pages).toContain(page);
+});
+
+test.each([...PAGES, ...CHOICES].filter(([page]) => DESTRUCTIVE.includes(page)))("the form for %s (%s) leads with danger, not primary", async (_, path, open) => {
+  api();
+  renderApp(path);
+  await open();
+  const dialog = screen.getByRole("dialog");
+  const submit = dialog.querySelector('button[type="submit"]');
+  expect(submit).toHaveClass("danger");
+  expect(dialog.querySelectorAll("button.primary")).toHaveLength(0);
+});
+
+test.each([...PAGES, ...CHOICES].filter(([page]) => !DESTRUCTIVE.includes(page)))("the forms on %s (%s) lead with primary, not danger", async (page, path, open) => {
+  api();
+  renderApp(path);
+  await open();
+  if (!CHOICES.some(([choice]) => choice === page)) await inputs();
+  expect(document.querySelectorAll("form button.primary").length).toBeGreaterThan(0); // non-vacuity
+  expect(document.querySelectorAll("form button.danger")).toHaveLength(0);
+});
+
+test("the check fails on a form with no leading button, two, or one that does not submit it", () => {
   const form = (buttons: string) => {
     const root = document.createElement("div");
     root.innerHTML = `<form>${buttons}</form>`;
     return root;
   };
   expect(hierarchyFaults(form('<button type="submit" class="primary">Save</button><button type="button">Cancel</button>'))).toEqual([]);
+  expect(hierarchyFaults(form('<button type="submit" class="danger">Delete</button><button type="button">Cancel</button>'))).toEqual([]);
   expect(hierarchyFaults(form('<button type="submit">Save</button>'))).toHaveLength(1);
   expect(hierarchyFaults(form('<button class="primary">Save</button><button type="button" class="primary">Cancel</button>'))).toHaveLength(1);
   expect(hierarchyFaults(form('<button type="submit">Save</button><button type="button" class="primary">Cancel</button>'))).toHaveLength(1);
+  expect(hierarchyFaults(form('<button type="submit" class="danger">Delete</button><button type="button" class="primary">Keep</button>'))).toHaveLength(1);
+  expect(hierarchyFaults(form('<button type="submit">Delete</button><button type="button" class="danger">Cancel</button>'))).toHaveLength(1);
   const dialog = document.createElement("div");
   dialog.innerHTML = '<div role="dialog" aria-label="Remove"><button class="primary">Remove</button></div>';
   expect(hierarchyFaults(dialog)).toEqual(["Remove: a dialog with no form"]);

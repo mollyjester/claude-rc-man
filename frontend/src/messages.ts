@@ -33,6 +33,23 @@ export const m = {
   home: "Home",
   breadcrumb: "Folder",
   panelEmpty: "Select a folder to see its Claude server, or to start one.",
+  folderActions: "Folder actions",
+  newFolder: "New folder",
+  newFolderName: "Name of the new folder",
+  create: "Create",
+  deleteFolder: "Delete folder",
+  deleteFolderTitle: (path: string) => `Delete ${path}?`,
+  deleteFolderBody: "The folder and everything in it are deleted. This cannot be undone.",
+  deleteFolderServers: (count: number) =>
+    count === 0
+      ? "No server runs in it or in any folder inside it."
+      : count === 1
+        ? "This server in it is stopped and forgotten first:"
+        : `These ${count} servers in it are stopped and forgotten first:`,
+  deleteFolderServersList: "Servers to stop and forget",
+  deleteFolderConfirm: "Delete",
+  deleting: "Deleting…",
+  folderDeleted: (path: string) => `${path} was deleted.`,
   serverTitle: "Claude server",
   noServer: "No Claude server runs in this folder.",
   states: {
@@ -169,4 +186,6 @@ export const m = {
   docsTitle: "Help",
 
   problemFieldErrors: "Details:",
+  problemServer: "Server:",
+  problemLeft: "Not deleted:",
 };

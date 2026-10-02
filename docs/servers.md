@@ -31,9 +31,10 @@ Choosing a server in **Your servers** selects its folder, wherever it is in the
 tree.
 
 The panel starts with where the folder is, from **Home** down; any step of it
-selects that folder, and **Home** selects none. Below that, its
-**Claude server** section shows the folder's server, or **Start** when it has
-none. **Start**, **Resume** and **Start again** are offered only while your
+selects that folder, and **Home** selects none. Below that are **New folder**
+and **Delete folder** (see [Folders](#folders)), and then its
+**Claude server** section, which shows the folder's server, or **Start** when
+it has none. **Start**, **Resume** and **Start again** are offered only while your
 Claude account is connected; until then the section, or the server in place of
 what to do next, says to connect it. The folder you have selected is part of
 the page's address, so reloading the page keeps it, and the browser's back
@@ -61,6 +62,47 @@ again closes it; its arrow turns to say which.
 
 The page refreshes the states by itself. When rcman refuses an action, the
 reason it gave is shown on the server it was about.
+
+## Folders
+
+**New folder** makes a folder inside the selected folder. While no folder is
+selected, the **Home** panel has it too, and it makes the folder in your home
+folder. Type the name and choose **Create**; the new folder is then selected.
+A name cannot be empty, begin with a dot, hold a slash, a control character or
+an invisible character, or begin or end with a space, and cannot be longer
+than the file system allows. When rcman refuses a name, the form says why and
+keeps what you typed.
+
+**Delete folder** deletes the selected folder and everything in it. It asks
+first, naming the folder and every server in it or in a folder inside it.
+Confirming stops each of those servers that is running, forgets them all, and
+only then deletes the folder; the folder above it is selected afterwards. It
+cannot be undone.
+
+- Your home folder itself cannot be deleted, so the **Home** panel has no
+  **Delete folder**.
+- A folder that is a symbolic link is deleted as the link; what it leads to is
+  left as it is. Links inside a folder are deleted as links too, and never
+  followed.
+- Folders whose name begins with a dot, and anything in one, cannot be deleted
+  from rcman.
+- A folder with another file system mounted inside it is not deleted at all.
+- If a server does not stop, nothing is forgotten and nothing is deleted;
+  rcman names the server and shows its screen.
+- If some of the folder cannot be removed — a file you are not allowed to
+  delete, for example — rcman lists what is left. Everything else is deleted
+  and the servers are forgotten; choosing **Delete folder** again carries on
+  once what is left can be removed.
+- While a folder is being deleted, starting a server or making a folder is
+  refused, and so is deleting while a server starts or a folder is made; try
+  again in a moment.
+- The sessions of the servers that were forgotten stay in claude.ai/code,
+  where they are archived or deleted.
+- Claude remembers, by the folder's path, that you trusted a folder and which
+  sessions can be resumed there. A new folder with the same name in the same
+  place inherits both: Claude does not ask about trust again, and starting a
+  server there may resume a session from the deleted folder. rcman does not
+  change Claude's own files.
 
 ## Rules
 

@@ -35,7 +35,7 @@ function RemoveDialog({ linux, onDone, onCancel }: { linux: string; onDone: () =
           {m.usersDeleteHome}
         </label>
         <div className="actions">
-          <button type="submit" className="primary">
+          <button type="submit" className="danger">
             {m.usersRemoveConfirm}
           </button>
           <button type="button" onClick={onCancel}>

@@ -69,7 +69,30 @@ export function useFolderTree() {
     setOpen((current) => (above.every((p) => current.has(p)) ? current : new Set([...current, ...above])));
   }, []);
 
-  return { contents, open, toggle, reveal };
+  // Fetches a folder's contents again, as after a folder is made or deleted in it.
+  const reload = useCallback(
+    (path: string) => {
+      requested.current.delete(path);
+      load(path);
+    },
+    [load],
+  );
+
+  // Drops all that is known of a folder that is gone, and of every folder in it.
+  const forget = useCallback((path: string) => {
+    const gone = (p: string) => p === path || p.startsWith(`${path}/`);
+    for (const p of [...requested.current]) if (gone(p)) requested.current.delete(p);
+    setContents((current) => new Map([...current].filter(([p]) => !gone(p))));
+    setOpen((current) => new Set([...current].filter((p) => !gone(p))));
+  }, []);
+
+  return { contents, open, toggle, reveal, reload, forget };
+}
+
+// The folder a folder is in: "" for one at the top, and null for the home folder.
+export function parentOf(path: string): string | null {
+  if (!path) return null;
+  return lineage(path).at(-2)?.path ?? "";
 }
 
 export type FolderTreeState = ReturnType<typeof useFolderTree>;

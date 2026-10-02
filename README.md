@@ -3,8 +3,8 @@
 A self-hosted web service for controlling Claude Code
 [Remote Control](https://code.claude.com/docs/en/remote-control) servers on one
 machine. Colleagues sign in with Google, see the folders under their own Linux
-home, and start, stop or resume a `claude remote-control` server in any of
-them. The conversations themselves happen in claude.ai/code or the Claude app,
+home, make and delete folders there, and start, stop or resume a
+`claude remote-control` server in any of them. The conversations themselves happen in claude.ai/code or the Claude app,
 under each colleague's own Claude account.
 
 ## Status
