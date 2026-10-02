@@ -187,7 +187,9 @@ running git are `helpers/git_run.py`, tested by `tests/test_git_run.py`.
   with it, and the verb answers `git_timeout`.
 - **Refusals.** A git that refuses is `git_failed`, with what it wrote on
   stderr and stdout as `git` — at most `MAX_GIT_MESSAGE_LINES` lines — and
-  how many lines more as `git_more`. Output git is not known to write, such
+  how many lines more as `git_more`; for a git whose standard output may
+  hold a secret, what it wrote on stderr only
+  (`secret_output` in `git_run.Git.run`). Output git is not known to write, such
   as an unknown status record, is `git_unrecognised_output`.
 - **Repositories.** The folder is resolved as any folder is, and must have a
   `.git` of its own, or it is `not_a_repository` and git is not asked:

@@ -138,7 +138,7 @@ class Git:
         git has ended, after the records it wrote.
         """
         pending = b""
-        for chunk in self._process(cwd, args, deadline, input, extra_env):
+        for chunk in self._process(cwd, args, deadline, input, extra_env, False):
             pending += chunk
             *records, pending = pending.split(sep)
             yield from records
@@ -153,12 +153,18 @@ class Git:
         deadline: float,
         input: bytes | None = None,
         extra_env: dict[str, str] | None = None,
+        secret_output: bool = False,
     ) -> str:
-        """What git writes on standard output, once it has ended without refusing."""
-        out = b"".join(self._process(cwd, args, deadline, input, extra_env))
+        """What git writes on standard output, once it has ended without refusing.
+
+        With ``secret_output``, what git writes on standard output, which may
+        hold a secret, is left out of a refusal: it carries git's standard
+        error only.
+        """
+        out = b"".join(self._process(cwd, args, deadline, input, extra_env, secret_output))
         return out.decode("utf-8", "surrogateescape")
 
-    def _process(self, cwd, args, deadline, input, extra_env) -> Iterator[bytes]:
+    def _process(self, cwd, args, deadline, input, extra_env, secret_output) -> Iterator[bytes]:
         """The one place git is started: its output as it comes, then its refusal, if any.
 
         stdin, stdout and stderr are served by one loop against the deadline.
@@ -210,7 +216,8 @@ class Git:
                         elif key.fileobj is proc.stderr:
                             message.feed(data)
                         else:
-                            kept.feed(data)
+                            if not secret_output:
+                                kept.feed(data)
                             yield data
             left = deadline - time.monotonic()
             try:
