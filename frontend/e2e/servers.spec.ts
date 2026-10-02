@@ -1,26 +1,19 @@
 import { type Page, expect, test } from "@playwright/test";
 
 import { m } from "../src/messages";
-import { openAdminPage } from "./nav";
+import { openAdminPage, selectInProjects } from "./nav";
 import { ALICE, BOB, useAs } from "./people";
 
 const tree = (page: Page) => page.getByRole("region", { name: m.foldersTitle });
 const summary = (page: Page) => page.getByRole("region", { name: m.runningTitle });
 const panel = (page: Page, path: string) => page.getByRole("region", { name: path, exact: true });
 
-// Selects a folder in projects, opening projects first unless it is open.
-async function select(page: Page, name: string) {
-  const open = tree(page).getByRole("button", { name: m.expand("projects") });
-  await expect(open.or(tree(page).getByRole("button", { name: m.collapse("projects") }))).toBeVisible();
-  if (await open.isVisible()) await open.click();
-  await tree(page).getByRole("button", { name, exact: true }).click();
-}
 
 test("start, trust, stop, resume and forget through the folder panel", async ({ page }) => {
   await useAs(page, ALICE);
   await page.goto("/");
   await expect(page.getByText(m.claudeConnectedAs("fake-user@example.com"))).toBeVisible();
-  await select(page, "alice-alpha");
+  await selectInProjects(page, "alice-alpha");
 
   const alpha = panel(page, "projects/alice-alpha");
   await alpha.getByRole("button", { name: m.start }).click();
@@ -38,7 +31,7 @@ test("start, trust, stop, resume and forget through the folder panel", async ({ 
 
   await page.reload();
   await expect(card.getByText(m.states.ready, { exact: true })).toBeVisible();
-  await select(page, "alice-beta");
+  await selectInProjects(page, "alice-beta");
   await expect(panel(page, "projects/alice-beta").getByRole("button", { name: m.start })).toBeVisible();
   await page.goBack();
   await expect(card.getByText(m.states.ready, { exact: true })).toBeVisible();
@@ -57,7 +50,7 @@ test("start, trust, stop, resume and forget through the folder panel", async ({ 
 test("people never see each other's folders or servers", async ({ page, browser }) => {
   await useAs(page, ALICE);
   await page.goto("/");
-  await select(page, "alice-beta");
+  await selectInProjects(page, "alice-beta");
   await panel(page, "projects/alice-beta").getByRole("button", { name: m.start }).click();
   const card = page.getByRole("article", { name: "projects/alice-beta" });
   await expect(card).toBeVisible();
@@ -80,7 +73,7 @@ test("people never see each other's folders or servers", async ({ page, browser 
 test("administrators see everyone's servers, and act on none of them", async ({ page, browser }) => {
   await useAs(page, ALICE);
   await page.goto("/");
-  await select(page, "alice-alpha");
+  await selectInProjects(page, "alice-alpha");
   await panel(page, "projects/alice-alpha").getByRole("button", { name: m.start }).click();
   const card = page.getByRole("article", { name: "projects/alice-alpha" });
   // The folder is trusted already when the first test ran before this one.
