@@ -3,7 +3,7 @@ import { screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { m } from "./messages";
-import { ADMIN, fakeApi } from "./test/fakeApi";
+import { ADMIN, NOTHING_TO_ATTEND, fakeApi } from "./test/fakeApi";
 import { renderApp } from "./test/render";
 
 const RULE_ATTRIBUTES = ["required", "pattern", "min", "max", "minlength", "maxlength", "step"];
@@ -18,6 +18,7 @@ function api() {
     "POST /api/claude/login": { url: "https://claude.com/x" },
     "GET /api/folders": { path: "", entries: [] },
     "GET /api/servers": { servers: [] },
+    "GET /api/attention": NOTHING_TO_ATTEND,
   });
 }
 

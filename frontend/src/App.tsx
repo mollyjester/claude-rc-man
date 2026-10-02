@@ -2,6 +2,7 @@ import { type ReactElement, createContext, useContext, useEffect, useState } fro
 import { NavLink, Navigate, Route, Routes } from "react-router-dom";
 
 import { ApiError, api } from "./api";
+import { Attention } from "./Attention";
 import { Audit } from "./Audit";
 import { Dashboard } from "./Dashboard";
 import { Docs } from "./Docs";
@@ -70,6 +71,7 @@ export function App({ pollMs = POLL_MS }: { pollMs?: number }) {
     <MeContext.Provider value={me}>
       <Nav me={me} />
       <main>
+        {me.admin && <Attention />}
         <Routes>
           <Route path="/" element={<Dashboard pollMs={pollMs} />} />
           <Route path="/settings" element={<Settings />} />

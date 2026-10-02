@@ -21,6 +21,10 @@ sudo rcman-user claude-status
 shows the approved and tested versions and the version each person has,
 marking anyone whose version differs.
 
+In rcman, administrators are also warned at the top of every page while anyone's
+version differs from the approved one, or while the approved version is not the
+tested one, with a link to the **Claude Code** page.
+
 ## Rolling out a version
 
 ```

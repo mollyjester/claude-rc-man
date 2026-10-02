@@ -41,6 +41,12 @@ def install_logging() -> None:
 # reason also appears in docs/audit.md.
 EXEMPT: dict[tuple[str, ...], str] = {}
 
+# The results an event can have besides the code of the error the request failed
+# with; docs/audit.md lists each.
+OK = "ok"
+UNRECOGNISED_SCREEN = "unrecognised_screen"  # it worked, but ended on a screen rcman does not know
+RESULTS = (OK, UNRECOGNISED_SCREEN)
+
 
 @dataclass
 class Record:
@@ -48,6 +54,7 @@ class Record:
     identity: Identity
     target: str | None = None
     extra: dict = field(default_factory=dict)
+    result: str | None = None  # what to record when the request succeeds; ``ok`` when unset
 
 
 def write(con: sqlite3.Connection, record: Record, result: str) -> None:
@@ -86,7 +93,7 @@ class Recorder:
                 write(con, record, "internal_error")
                 raise
             else:
-                write(con, record, "ok")
+                write(con, record, record.result or OK)
         finally:
             con.close()
 

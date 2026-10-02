@@ -94,3 +94,30 @@ def test_people_who_are_not_administrators_cannot_see_everyones_servers(client):
     r = client.get("/api/servers/everyone", headers=as_user(BOB))
     assert (r.status_code, r.json()["code"]) == (403, "admin_only")
     assert "alice-project" not in r.text
+
+
+def unrecognised_claude(helper_homes):
+    """Every claude the helpers run from now on shows a screen rcman does not know."""
+    from devtools import record_claude as rec
+
+    wrapper = helper_homes.homes["alice"].parent.parent / "claude"
+    wrapper.write_text(
+        f'#!/bin/sh\nFAKE_CLAUDE_SCENARIO=unrecognised exec {rec.FAKE_CLAUDE} "$@"\n'
+    )
+
+
+def test_an_action_ending_on_an_unrecognised_screen_is_audited_as_such(
+    client, helper_homes, settings
+):
+    import sqlite3
+
+    unrecognised_claude(helper_homes)
+    r = client.post("/api/servers", json=ALPHA, headers=changing(ALICE))
+    assert r.status_code == 200, r.text
+    assert r.json()["server"]["state"] == "unrecognised"
+    last = (
+        sqlite3.connect(settings.database)
+        .execute("select action, target, result from audit")
+        .fetchall()[-1]
+    )
+    assert last == ("server.start", ALPHA["path"], "unrecognised_screen")

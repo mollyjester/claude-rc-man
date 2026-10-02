@@ -55,6 +55,30 @@ def test_every_action_is_listed_in_the_guide(app):
     assert actions and actions == listed
 
 
+def documented_results(guide):
+    """The results the guide's results table lists, besides error codes."""
+    return set(
+        re.findall(r"^\| `([a-z_]+)` \| [^|]+ \|$", guide.split("## How long")[0], re.MULTILINE)
+    )
+
+
+def test_every_result_other_than_an_error_code_is_listed_in_the_guide():
+    guide = (REPO / "docs" / "audit.md").read_text(encoding="utf-8")
+    assert set(audit.RESULTS) == {"ok", "unrecognised_screen"}  # non-vacuity: both are known
+    assert documented_results(guide) == set(audit.RESULTS)
+
+
+def test_the_results_check_fails_on_a_drifted_guide():
+    """Planted twin: a results table missing a row, or with one too many, is caught."""
+    rows = [f"| `{result}` | meaning |" for result in audit.RESULTS]
+    right = "| Result | Meaning |\n|---|---|\n" + "\n".join(rows) + "\n"
+    assert documented_results(right) == set(audit.RESULTS)
+    missing = right.replace(rows[-1] + "\n", "")
+    assert missing != right and documented_results(missing) != set(audit.RESULTS)
+    extra = right + "| `forged` | meaning |\n"
+    assert documented_results(extra) != set(audit.RESULTS)
+
+
 def test_a_route_without_a_recorder_is_detected():
     """Planted twin: a changing route with no recorder is reported."""
     from fastapi import FastAPI

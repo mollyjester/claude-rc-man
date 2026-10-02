@@ -81,3 +81,11 @@ shows them. It is for looking only; it has no buttons, because rcman lets only
 the person a server belongs to act on it. A person whose servers could not be
 listed — rcman's helper failed or took too long for them — is shown with the
 reason, and everyone else is listed as usual.
+
+While anyone's server is on a screen rcman does not recognise, administrators
+are warned at the top of every page, with the person and the folder and a link
+to **Everyone's servers**. The warning never includes the screen itself; the
+person whose server it is sees it with **Show screen**. Each action that ends
+on such a screen is also recorded in the [audit trail](audit.md) with the
+result `unrecognised_screen`. The warning is worked out afresh each time a page
+is opened, so it lasts only while the server shows that screen.

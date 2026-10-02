@@ -104,6 +104,13 @@ export const m = {
   auditOlder: "Older",
   auditEmpty: "Nothing recorded.",
 
+  attentionTitle: "Needs attention",
+  attentionUnrecognised: (servers: string[]) =>
+    `Servers on a screen rcman does not recognise: ${servers.join(", ")}.`,
+  attentionVersionsDiffer: (people: string[]) =>
+    `Claude Code differs from the approved version for: ${people.join(", ")}.`,
+  attentionUntested: "The approved Claude Code version is not the one rcman's recorded tests cover.",
+
   everyoneTitle: "Everyone's servers",
   everyoneIntro: "Each person's servers, to look at only. Only the person a server belongs to can act on it.",
   everyonePerson: (linux: string, email: string) => `${linux} (${email})`,

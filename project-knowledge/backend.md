@@ -21,7 +21,7 @@ the OpenAPI description it serves at `/api/openapi`.
 | `helpers_client.py` | Calling `rc-helper` and `rc-admin`, and mapping their errors to HTTP statuses |
 | `everyone.py` | Everyone's servers, for administrators: one `rc-helper list` per person, side by side |
 | `routes.py` | The app's routes as FastAPI resolves them after including routers, and which of them are for administrators |
-| `routers/` | One module per area: `me`, `folders`, `servers`, `claude`, `users`, `audit_log`, `docs` |
+| `routers/` | One module per area: `me`, `folders`, `servers`, `claude`, `users`, `audit_log`, `attention`, `docs` |
 
 ## Requests
 
@@ -78,6 +78,18 @@ neither audited nor logged. For administrators it reports versions through
 rc-admin's `claude-status`, flagging who differs from the approved version and
 whether that version is the tested one, and rolls one out with
 `claude-upgrade`.
+
+## Attention
+
+`routers/attention.py` (`GET /api/attention`, for administrators) reports what
+administrators are warned about: servers on an unrecognised screen, by person
+and folder, from `everyone.everyone`; and, from the same report as
+`/api/claude/versions`, who differs from the approved version and whether it is
+untested. It is built on every request and never stored, and it carries no
+screen text. The frontend asks for it when the app loads and on every change
+of page. A server action that ends on an unrecognised screen sets
+`Record.result` to `unrecognised_screen`, which the audit row records in place
+of `ok`.
 
 ## Audit
 

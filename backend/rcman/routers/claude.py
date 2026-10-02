@@ -80,11 +80,17 @@ def code(
     return _status(request, record.identity)
 
 
-@router.get("/versions", dependencies=[Depends(admin_user)])
-def versions(request: Request) -> dict:
+def version_report(request: Request) -> dict:
+    """rc-admin's claude-status, with who differs from the approved version and whether
+    the approved version is the tested one."""
     status = call_admin(request.app.state.admin, ["claude-status"])
     differs = [u["linux"] for u in status["users"] if u["installed"] != status["approved"]]
     return {**status, "differs": differs, "untested": status["approved"] != status["tested"]}
+
+
+@router.get("/versions", dependencies=[Depends(admin_user)])
+def versions(request: Request) -> dict:
+    return version_report(request)
 
 
 @router.post("/upgrade", dependencies=[Depends(admin_user)])

@@ -130,6 +130,7 @@ CALLS = {
     ("GET", "/api/users"): {},
     ("GET", "/api/claude/versions"): {},
     ("GET", "/api/servers/everyone"): {},
+    ("GET", "/api/attention"): {},
 }
 
 

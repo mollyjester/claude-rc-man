@@ -24,8 +24,16 @@ can be read with `journalctl` on the server.
 | `user.add` | adds or repairs a person (administrators) | the Linux user |
 | `user.delete` | removes a person (administrators) | the Linux user |
 
-The result is `ok`, or the code of the error the request failed with — a
-refused request is recorded too.
+The result is one of these, or the code of the error the request failed with —
+a refused request is recorded too:
+
+| Result | Meaning |
+|---|---|
+| `ok` | It worked |
+| `unrecognised_screen` | It worked, but the server ended on a screen rcman does not recognise |
+
+Administrators are warned about servers on an unrecognised screen, as described
+in [Servers](servers.md#for-administrators).
 
 ## How long events are kept
 

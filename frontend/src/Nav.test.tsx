@@ -2,7 +2,7 @@ import { screen } from "@testing-library/react";
 
 import { ADMIN_PAGES } from "./App";
 import { m } from "./messages";
-import { ADMIN, CONNECTED, ME, type Reply, fakeApi } from "./test/fakeApi";
+import { ADMIN, CONNECTED, ME, NOTHING_TO_ATTEND, type Reply, fakeApi } from "./test/fakeApi";
 import { renderApp } from "./test/render";
 
 function api(me: Reply) {
@@ -11,6 +11,7 @@ function api(me: Reply) {
     "GET /api/claude": CONNECTED,
     "GET /api/folders": { path: "", entries: [] },
     "GET /api/servers": { servers: [] },
+    "GET /api/attention": NOTHING_TO_ATTEND,
   });
 }
 

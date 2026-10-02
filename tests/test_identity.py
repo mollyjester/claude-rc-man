@@ -33,6 +33,7 @@ KNOWN_ADMIN_ROUTES = {
     ("GET", "/api/claude/versions"),
     ("POST", "/api/claude/upgrade"),
     ("GET", "/api/servers/everyone"),
+    ("GET", "/api/attention"),
 }
 
 

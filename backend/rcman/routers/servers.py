@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 
 from helpers import rc_helper
 from rcman import everyone as everyone_
-from rcman.audit import Record, Recorder
+from rcman.audit import UNRECOGNISED_SCREEN, Record, Recorder
 from rcman.helpers_client import call_helper
 from rcman.identity import Identity, admin_user, current_user
 from rcman.routers.me import prefix_of
@@ -30,7 +30,10 @@ class ConfirmBody(PathBody):
 
 
 def _helper(request: Request, record: Record, args: list[str]) -> dict:
-    return call_helper(request.app.state.helper, record.identity, args)
+    out = call_helper(request.app.state.helper, record.identity, args)
+    if (out.get("server") or {}).get("state") == "unrecognised":
+        record.result = UNRECOGNISED_SCREEN  # administrators are warned; see routers/attention.py
+    return out
 
 
 @router.get("")
