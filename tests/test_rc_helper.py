@@ -49,9 +49,14 @@ def env(tmp_path):
 
 
 def helper(env, *args, stdin=None):
+    """rc-helper's exit status and answer; ``stdin`` is text, or bytes sent as they are."""
+    if isinstance(stdin, str):
+        stdin = stdin.encode()
     proc = subprocess.run(
-        [str(HELPER), *args], env=env, input=stdin, capture_output=True, text=True, timeout=60
+        [str(HELPER), *args], env=env, input=stdin, capture_output=True, timeout=60
     )
+    proc.stdout = proc.stdout.decode("utf-8", "replace")
+    proc.stderr = proc.stderr.decode("utf-8", "replace")
     try:
         out = json.loads(proc.stdout)
     except json.JSONDecodeError:
@@ -1522,21 +1527,35 @@ def test_every_error_code_has_a_message():
 
 
 # What rc-helper is given that breaks each rule it reports, as an error code ->
-# the command line with the refused value in place of {}.
+# the command line, and what it reads on stdin, with the refused value in place
+# of {}.
 RULE_INVOCATIONS = {
-    "prefix_invalid": ("start", "projects/alpha", "--prefix={}"),
-    "name_invalid": ("mkdir", "--name={}", "--", "projects"),
-    "email_invalid": ("auth-login", "--email={}"),
-    "path_invalid": ("output", "--", "{}"),
+    "prefix_invalid": (("start", "projects/alpha", "--prefix={}"), None),
+    "name_invalid": (("mkdir", "--name={}", "--", "projects"), None),
+    "email_invalid": (("auth-login", "--email={}"), None),
+    "author_name_invalid": (
+        ("git-commit", "--author-name={}", "--author-email=a@example.com", "--", "projects/alpha"),
+        "A message",
+    ),
+    "message_invalid": (
+        ("git-commit", "--author-name=A", "--author-email=a@example.com", "--", "projects/alpha"),
+        "{}",
+    ),
+    "path_invalid": (("output", "--", "{}"), None),
 }
 # Rules rc-helper holds without reporting them itself: subject -> why.
 RULES_NOT_REPORTED = {
-    "AUTHOR_NAME": "the backend checks it; rc-helper takes no author until git-commit",
     "FOLDER_PATH": (
         "the backend checks it; rc-helper refuses every path that leads home, empty or not, "
         "as path_is_home"
     ),
 }
+
+
+def invoked(code: str, value: str) -> tuple[list[str], str | None]:
+    """The command line and stdin that give rc-helper ``value`` for the rule of ``code``."""
+    args, stdin = RULE_INVOCATIONS[code]
+    return [part.format(value) for part in args], stdin and stdin.format(value)
 
 
 # Values that break most rules, each one a command line can carry.
@@ -1575,8 +1594,8 @@ def test_each_rule_is_refused_through_the_command_line_with_its_sentence(env):
     log_in(env)
     for code, rule in h.RULE_CODES.items():
         value = refused_value(rule)
-        args = [part.format(value) for part in RULE_INVOCATIONS[code]]
-        status, out = helper(env, *args)
+        args, stdin = invoked(code, value)
+        status, out = helper(env, *args, stdin=stdin)
         assert status == 1 and out["error"]["code"] == code, (code, out)
         assert out["error"]["message"] == rule.sentence
 
@@ -1655,8 +1674,8 @@ def test_rc_helper_and_the_backend_refuse_a_value_in_the_same_words(env, client)
     fields = request_fields(client.app)
     for code, rule in h.RULE_CODES.items():
         value = refused_value(rule)
-        args = [part.format(value) for part in RULE_INVOCATIONS[code]]
-        said = helper(env, *args)[1]["error"]["message"]
+        args, stdin = invoked(code, value)
+        said = helper(env, *args, stdin=stdin)[1]["error"]["message"]
         checked = [f for f in fields if f.schema.get("pattern") == rule.anchored]
         assert checked, f"the backend does not check {code}'s rule"
         for f in checked:
@@ -1743,3 +1762,747 @@ def test_login_expiry_is_unknown_without_the_field(env):
     path = Path(env["RC_HELPER_HOME"]) / ".claude" / ".credentials.json"
     path.write_text("not json")
     assert ok(env, "auth-status")["login_expires_at"] is None  # unreadable
+
+
+# --- git ------------------------------------------------------------------------------
+
+from tests.git_fixtures import (  # noqa: E402
+    fixture_git,
+    make_repo,
+    push_branch_to_origin,
+    write,
+)
+
+REPO_REL = "projects/repo"
+
+
+@pytest.fixture
+def repo(env, tmp_path):
+    """A repository in the home folder, with an origin outside it holding main and feature."""
+    origin = tmp_path / "origins" / "repo.git"
+    return make_repo(Path(env["RC_HELPER_HOME"]) / REPO_REL, origin=origin)
+
+
+def origin_of(repo: Path) -> Path:
+    return Path(fixture_git(repo, "remote", "get-url", "origin").strip())
+
+
+def status(env, rel=REPO_REL) -> dict:
+    return ok(env, "git-status", "--", rel)
+
+
+def listed(out: dict, which: str) -> list[tuple[str, str]]:
+    return [(f["path"], f["change"]) for f in out[which]["files"]]
+
+
+def stage(env, files, rel=REPO_REL, verb="git-stage"):
+    return helper(env, verb, "--", rel, stdin=json.dumps(files))
+
+
+def commit(env, message="A message", name="Ann Author", email="ann@example.com", rel=REPO_REL):
+    args = ("git-commit", f"--author-name={name}", f"--author-email={email}", "--", rel)
+    return helper(env, *args, stdin=message)
+
+
+def branch_of(path: Path) -> str:
+    return fixture_git(path, "branch", "--show-current").strip()
+
+
+def test_tree_marks_repositories(env, repo, tmp_path):
+    home = Path(env["RC_HELPER_HOME"])
+    linked = home / "projects" / "linked"
+    fixture_git(repo, "worktree", "add", "-q", str(linked))
+    assert (linked / ".git").is_file()
+    marked = {e["path"]: e["repository"] for e in ok(env, "tree", "projects")["entries"]}
+    assert marked["projects/repo"] is True  # a .git folder
+    assert marked["projects/linked"] is True  # a .git file
+    assert marked["projects/alpha"] is False
+
+
+def test_status_reports_the_branch_its_upstream_and_how_far_apart_they_are(env, repo):
+    branch = status(env)["branch"]
+    assert branch["name"] == "main" and branch["upstream"] == "origin/main"
+    assert (branch["ahead"], branch["behind"]) == (0, 0)
+    assert branch["commit"] == fixture_git(repo, "rev-parse", "HEAD").strip()
+    write(repo / "local.txt")
+    fixture_git(repo, "add", ".")
+    fixture_git(repo, "commit", "-q", "-m", "local")
+    push_branch_to_origin(repo, origin_of(repo), "elsewhere")
+    fixture_git(origin_of(repo), "update-ref", "refs/heads/main", "refs/heads/elsewhere")
+    fixture_git(repo, "fetch", "-q")
+    branch = status(env)["branch"]
+    assert (branch["ahead"], branch["behind"]) == (1, 1)
+
+
+def test_status_of_a_detached_head_and_of_no_commits_yet(env, repo):
+    fixture_git(repo, "switch", "-q", "--detach", "HEAD")
+    assert status(env)["branch"]["name"] is None
+    fresh = Path(env["RC_HELPER_HOME"]) / "projects" / "fresh"
+    fresh.mkdir()
+    fixture_git(fresh, "init", "-q", "-b", "trunk")
+    branch = status(env, "projects/fresh")["branch"]
+    assert branch == {
+        "name": "trunk",
+        "commit": None,
+        "upstream": None,
+        "ahead": None,
+        "behind": None,
+    }
+
+
+def test_status_lists_each_kind_of_change_in_its_list(env, repo):
+    write(repo / "README.md", "changed\n")
+    write(repo / "new.txt")
+    fixture_git(repo, "add", "new.txt")
+    write(repo / "folder" / "inside.txt")
+    write(repo / "both.txt")
+    fixture_git(repo, "add", "both.txt")
+    fixture_git(repo, "commit", "-q", "-m", "both")
+    write(repo / "both.txt", "staged\n")
+    fixture_git(repo, "add", "both.txt")
+    write(repo / "both.txt", "and not\n")
+    out = status(env)
+    assert listed(out, "staged") == [("both.txt", "modified"), ("new.txt", "added")]
+    assert sorted(listed(out, "not_staged")) == [
+        ("README.md", "modified"),
+        ("both.txt", "modified"),
+        ("folder/", "untracked"),
+    ]
+    assert out["staged"]["more"] == 0 and out["path"] == REPO_REL
+
+
+def test_a_rename_is_listed_with_where_it_came_from(env, repo):
+    fixture_git(repo, "mv", "README.md", "MOVED.md")
+    [moved] = status(env)["staged"]["files"]
+    assert moved == {"path": "MOVED.md", "change": "renamed", "from": "README.md"}
+
+
+def test_a_conflict_is_listed_as_unmerged(env, repo):
+    fixture_git(repo, "switch", "-q", "-c", "other")
+    write(repo / "README.md", "theirs\n")
+    fixture_git(repo, "commit", "-q", "-am", "theirs")
+    fixture_git(repo, "switch", "-q", "main")
+    write(repo / "README.md", "ours\n")
+    fixture_git(repo, "commit", "-q", "-am", "ours")
+    from tests.git_fixtures import FIXTURE_HOME, fixture_env
+
+    merge = subprocess.run(
+        ["git", "merge", "-q", "other"],
+        cwd=repo,
+        env=fixture_env(FIXTURE_HOME),
+        capture_output=True,
+    )
+    assert merge.returncode != 0  # positive control: there is a conflict
+    assert listed(status(env), "not_staged") == [("README.md", "unmerged")]
+
+
+def test_a_submodule_is_marked(env, repo, tmp_path):
+    from tests.git_fixtures import add_submodule
+
+    add_submodule(repo, make_repo(tmp_path / "library"), "library")
+    files = status(env)["staged"]["files"]
+    assert {"path": "library", "change": "added", "submodule": True} in files
+    assert {"path": ".gitmodules", "change": "added"} in files
+
+
+NAMES = ["with space.txt", "with\nnewline.txt", "ünïcode.txt", "tab\there.txt"]
+
+
+def test_names_with_spaces_and_newlines_round_trip_through_staging(env, repo):
+    for name in NAMES:
+        write(repo / name)
+    out = status(env)
+    assert sorted(path for path, _ in listed(out, "not_staged")) == sorted(NAMES)
+    assert ok(env, "git-stage", "--", REPO_REL, stdin=json.dumps(NAMES))
+    assert sorted(listed(status(env), "staged")) == sorted((n, "added") for n in NAMES)
+
+
+def test_a_long_list_is_capped_and_says_how_many_more(env, repo):
+    for i in range(h.MAX_LISTED_FILES + 3):
+        write(repo / f"f{i:05}.txt")
+    out = status(env)["not_staged"]
+    assert len(out["files"]) == h.MAX_LISTED_FILES
+    assert out["more"] == 3
+
+
+def test_a_folder_that_is_not_a_repository_is_refused(env, repo):
+    assert status(env)["path"] == REPO_REL  # positive control
+    assert error_code(env, "git-status", "--", "projects/alpha") == "not_a_repository"
+    assert error_code(env, "git-branches", "--", "projects/alpha") == "not_a_repository"
+
+
+def test_a_folder_inside_a_repository_is_not_one(env, repo):
+    write(repo / "inner" / "x.txt")
+    (repo / "empty-git" / ".git").mkdir(parents=True)
+    assert error_code(env, "git-status", "--", f"{REPO_REL}/inner") == "not_a_repository"
+    assert error_code(env, "git-status", "--", f"{REPO_REL}/empty-git") == "not_a_repository"
+
+
+def test_a_home_that_is_a_repository_makes_no_folder_one(env):
+    home = Path(env["RC_HELPER_HOME"])
+    fixture_git(home, "init", "-q")
+    (home / "projects" / "alpha" / ".git").mkdir()  # not a repository, inside one
+    assert error_code(env, "git-status", "--", "projects/alpha") == "not_a_repository"
+    assert error_code(env, "git-status", "--", "projects/beta") == "not_a_repository"
+
+
+def test_a_repository_whose_git_data_is_outside_the_home_is_refused(env, tmp_path):
+    outside = make_repo(tmp_path / "outside-repo")
+    linked = Path(env["RC_HELPER_HOME"]) / "projects" / "linked"
+    fixture_git(outside, "worktree", "add", "-q", str(linked))
+    assert error_code(env, "git-status", "--", "projects/linked") == "repository_outside_home"
+    inside = make_repo(Path(env["RC_HELPER_HOME"]) / "projects" / "inside")
+    fixture_git(inside, "worktree", "add", "-q", str(inside.parent / "linked-inside"))
+    assert status(env, "projects/linked-inside")["branch"]["name"]  # positive control
+
+
+def test_status_writes_nothing_into_the_repository(env, repo):
+    import time
+
+    index = repo / ".git" / "index"
+    time.sleep(1.1)
+    os.utime(repo / "README.md")  # the index's record of it is now stale
+    before = index.stat().st_mtime_ns
+    status(env)
+    assert index.stat().st_mtime_ns == before
+    fixture_git(repo, "status")  # positive control: git itself refreshes the index
+    assert index.stat().st_mtime_ns != before
+
+
+def test_stage_stages_only_the_files_given(env, repo):
+    write(repo / "a.txt")
+    write(repo / "b.txt")
+    write(repo / "README.md", "changed\n")
+    assert ok(env, "git-stage", "--", REPO_REL, stdin=json.dumps(["a.txt", "README.md"]))
+    out = status(env)
+    assert listed(out, "staged") == [("README.md", "modified"), ("a.txt", "added")]
+    assert listed(out, "not_staged") == [("b.txt", "untracked")]
+
+
+def test_unstage_unstages_only_the_files_given(env, repo):
+    write(repo / "a.txt")
+    write(repo / "b.txt")
+    fixture_git(repo, "add", ".")
+    assert ok(env, "git-unstage", "--", REPO_REL, stdin=json.dumps(["a.txt"]))
+    out = status(env)
+    assert listed(out, "staged") == [("b.txt", "added")]
+    assert listed(out, "not_staged") == [("a.txt", "untracked")]
+
+
+def test_unstaging_a_rename_unstages_both_its_sides(env, repo):
+    fixture_git(repo, "mv", "README.md", "MOVED.md")
+    assert ok(env, "git-unstage", "--", REPO_REL, stdin=json.dumps(["MOVED.md"]))
+    out = status(env)
+    assert listed(out, "staged") == []
+    assert sorted(listed(out, "not_staged")) == [
+        ("MOVED.md", "untracked"),
+        ("README.md", "deleted"),
+    ]
+
+
+def test_unstage_works_before_the_first_commit(env):
+    fresh = Path(env["RC_HELPER_HOME"]) / "projects" / "fresh"
+    fresh.mkdir()
+    fixture_git(fresh, "init", "-q", "-b", "main")
+    write(fresh / "a.txt")
+    fixture_git(fresh, "add", "a.txt")
+    assert listed(status(env, "projects/fresh"), "staged") == [("a.txt", "added")]
+    assert ok(env, "git-unstage", "--", "projects/fresh", stdin=json.dumps(["a.txt"]))
+    assert listed(status(env, "projects/fresh"), "not_staged") == [("a.txt", "untracked")]
+
+
+def test_a_deleted_file_and_an_untracked_folder_are_staged(env, repo):
+    (repo / "README.md").unlink()
+    write(repo / "folder" / "x.txt")
+    assert ok(env, "git-stage", "--", REPO_REL, stdin=json.dumps(["README.md", "folder/"]))
+    assert listed(status(env), "staged") == [("README.md", "deleted"), ("folder/x.txt", "added")]
+
+
+def test_names_are_taken_literally(env, repo):
+    for name in ("*", "a", "ab", ":(glob)a*"):
+        write(repo / name)
+    assert ok(env, "git-stage", "--", REPO_REL, stdin=json.dumps(["*", ":(glob)a*"]))
+    assert sorted(listed(status(env), "staged")) == [("*", "added"), (":(glob)a*", "added")]
+
+
+@pytest.mark.parametrize(
+    ("name", "code"),
+    [
+        ("../x", "file_outside_repository"),
+        ("/etc/passwd", "file_outside_repository"),
+        ("a/../../x", "file_outside_repository"),
+        (".git/config", "file_outside_repository"),
+        (".GIT/config", "file_outside_repository"),
+        ("a//b", "file_invalid"),
+        ("./a", "file_invalid"),
+        ("", "file_invalid"),
+        ("a\0b", "file_invalid"),
+        ("x" * (h.MAX_PATH_LENGTH + 1), "file_invalid"),
+    ],
+)
+def test_a_file_outside_the_repository_is_refused(env, repo, name, code):
+    write(repo / "a")
+    write(repo / "README.md", "changed\n")
+    for verb in ("git-stage", "git-unstage"):
+        status_code, out = stage(env, ["README.md", name], verb=verb)
+        assert (status_code, out["error"]["code"]) == (1, code), out
+    assert listed(status(env), "staged") == []  # nothing staged, not even README.md
+
+
+def test_a_file_through_a_link_out_of_the_repository_is_refused(env, repo, tmp_path):
+    elsewhere = tmp_path / "elsewhere"
+    write(elsewhere / "secret.txt")
+    (repo / "out").symlink_to(elsewhere)
+    assert error_code(env, "git-stage", "--", REPO_REL, stdin='["out/secret.txt"]') == (
+        "file_outside_repository"
+    )
+    assert listed(status(env), "staged") == []
+    assert (elsewhere / "secret.txt").read_text() == "content\n"
+    assert not (elsewhere / ".git").exists()
+
+
+def test_a_link_in_the_repository_is_staged_as_the_link(env, repo):
+    (repo / "link").symlink_to("README.md")
+    assert ok(env, "git-stage", "--", REPO_REL, stdin='["link"]')
+    tree = fixture_git(repo, "ls-files", "-s", "link")
+    assert tree.startswith("120000 ")  # a link, not the file it points at
+
+
+@pytest.mark.parametrize(
+    "stdin",
+    [
+        "not json",
+        '{"a": 1}',
+        "[1]",
+        '"a.txt"',
+        "[]",
+        json.dumps(["a"] * (h.MAX_FILES_PER_CALL + 1)),
+    ],
+)
+def test_a_list_of_files_that_is_not_one_is_refused(env, repo, stdin):
+    assert error_code(env, "git-stage", "--", REPO_REL, stdin=stdin) == "file_list_invalid"
+
+
+def test_a_name_that_is_not_utf8_is_listed_but_cannot_be_staged(env, repo):
+    os.close(os.open(bytes(repo) + b"/caf\xe9.txt", os.O_CREAT | os.O_WRONLY))
+    write(repo / "plain.txt")
+    files = status(env)["not_staged"]["files"]
+    assert {"path": "plain.txt", "change": "untracked"} in files  # positive control
+    odd = next(f for f in files if f["path"] != "plain.txt")
+    assert odd["selectable"] is False and odd["path"].startswith("caf")
+    assert "selectable" not in next(f for f in files if f["path"] == "plain.txt")
+    assert (
+        error_code(env, "git-stage", "--", REPO_REL, stdin='["caf\\udce9.txt"]') == "file_invalid"
+    )
+    assert listed(status(env), "staged") == []
+
+
+def test_commit_records_the_message_from_stdin_and_the_author_given(env, repo):
+    (Path(env["RC_HELPER_HOME"]) / ".gitconfig").write_text(
+        "[user]\n\tname = Wrong Name\n\temail = wrong@example.com\n"
+    )
+    write(repo / "a.txt")
+    fixture_git(repo, "add", "a.txt")
+    message = "Add a.txt, ünïcode\n\nWith a body: --author-name=x; $(rm -rf ~)\n"
+    code, out = commit(env, message)
+    assert code == 0, out
+    assert out == {
+        "path": REPO_REL,
+        "commit": fixture_git(repo, "rev-parse", "HEAD").strip(),
+        "branch": "main",
+    }
+    shown = fixture_git(repo, "log", "-1", "--format=%an <%ae>%n%cn <%ce>%n%B")
+    assert shown.startswith("Ann Author <ann@example.com>\nAnn Author <ann@example.com>\n")
+    assert shown.split("\n", 2)[2].rstrip("\n") == message.rstrip("\n")
+    assert listed(status(env), "staged") == []
+    assert "Add a.txt" not in json.dumps(out)
+
+
+def test_the_commit_message_never_reaches_any_argv(env, repo, tmp_path):
+    seen = tmp_path / "seen"
+    hook = repo / ".git" / "hooks" / "pre-commit"
+    hook.write_text(
+        "#!/bin/sh\n"
+        f"cat /proc/$PPID/cmdline > {seen}.git\n"
+        f"helper=$(awk '{{print $4}}' /proc/$PPID/stat)\n"
+        f"cat /proc/$helper/cmdline > {seen}.helper\n"
+    )
+    hook.chmod(0o755)
+    write(repo / "a.txt")
+    fixture_git(repo, "add", "a.txt")
+    assert commit(env, "SECRET-MESSAGE-42")[0] == 0
+    git_argv = Path(f"{seen}.git").read_bytes()
+    helper_argv = Path(f"{seen}.helper").read_bytes()
+    assert b"commit" in git_argv and b"git-commit" in helper_argv  # positive controls
+    assert b"SECRET-MESSAGE-42" not in git_argv + helper_argv
+    assert "SECRET-MESSAGE-42" in fixture_git(repo, "log", "-1", "--format=%B")
+
+
+def test_commit_is_refused_when_nothing_is_staged(env, repo):
+    write(repo / "README.md", "changed but not staged\n")
+    code, out = commit(env)
+    assert (code, out["error"]["code"]) == (1, "nothing_staged")
+    fixture_git(repo, "add", "README.md")
+    assert commit(env)[0] == 0  # positive control
+
+
+@pytest.mark.parametrize(
+    ("message", "name", "email", "code"),
+    [
+        ("", "Ann", "a@example.com", "message_invalid"),
+        (" \n\t\n", "Ann", "a@example.com", "message_invalid"),
+        ("a\0b", "Ann", "a@example.com", "message_invalid"),
+        ("x" * (h.MAX_COMMIT_MESSAGE_LENGTH + 1), "Ann", "a@example.com", "message_invalid"),
+        (b"caf\xe9", "Ann", "a@example.com", "message_invalid"),
+        ("Fine", "", "a@example.com", "author_name_invalid"),
+        ("Fine", "Ann <x>", "a@example.com", "author_name_invalid"),
+        ("Fine", "Ann", "not-an-address", "email_invalid"),
+        ("Fine", "Ann", "", "email_invalid"),
+    ],
+)
+def test_an_invalid_message_name_or_address_is_refused_in_its_rules_words(
+    env, repo, message, name, email, code
+):
+    write(repo / "a.txt")
+    fixture_git(repo, "add", "a.txt")
+    status_code, out = commit(env, message, name, email)
+    assert (status_code, out["error"]["code"]) == (1, code), out
+    assert out["error"]["message"] == h.RULE_CODES[code].sentence
+    assert listed(status(env), "staged") == [("a.txt", "added")]  # nothing committed
+
+
+def test_a_message_as_long_as_allowed_is_committed(env, repo):
+    write(repo / "a.txt")
+    fixture_git(repo, "add", "a.txt")
+    assert commit(env, "x" * h.MAX_COMMIT_MESSAGE_LENGTH)[0] == 0
+
+
+def test_hooks_run_and_a_refusal_comes_back_in_their_words(env, repo):
+    hook = repo / ".git" / "hooks" / "pre-commit"
+    hook.write_text("#!/bin/sh\necho 'No commits on Fridays.' >&2\nexit 1\n")
+    hook.chmod(0o755)
+    write(repo / "a.txt")
+    fixture_git(repo, "add", "a.txt")
+    code, out = commit(env)
+    assert (code, out["error"]["code"]) == (1, "git_failed")
+    assert out["error"]["git"] == ["No commits on Fridays."] and out["error"]["git_more"] == 0
+    assert out["error"]["message"] == h.MESSAGES["git_failed"]
+
+
+def test_branches_lists_local_and_remote_tracking_branches(env, repo):
+    fixture_git(repo, "remote", "set-head", "origin", "main")
+    fixture_git(repo, "branch", "local-only")
+    out = ok(env, "git-branches", "--", REPO_REL)
+    assert out["local"] == {
+        "branches": [
+            {"name": "local-only", "current": False, "upstream": None},
+            {"name": "main", "current": True, "upstream": "origin/main"},
+        ],
+        "more": 0,
+    }
+    assert out["remote"] == {
+        "branches": [
+            {"name": "origin/feature", "local": None},
+            {"name": "origin/main", "local": "main"},
+        ],
+        "more": 0,
+    }
+
+
+def test_a_long_list_of_branches_is_capped(env, repo):
+    head = fixture_git(repo, "rev-parse", "HEAD").strip()
+    lines = "".join(f"create refs/heads/b{i:05} {head}\n" for i in range(h.MAX_LISTED_BRANCHES + 1))
+    fixture_git(repo, "update-ref", "--stdin", input=lines.encode())
+    local = ok(env, "git-branches", "--", REPO_REL)["local"]
+    assert len(local["branches"]) == h.MAX_LISTED_BRANCHES
+    assert local["more"] == 2  # the extra one, and main
+
+
+def test_switch_to_a_local_branch(env, repo):
+    fixture_git(repo, "branch", "other")
+    assert ok(env, "git-switch", "--branch=other", "--", REPO_REL)["branch"] == "other"
+    assert branch_of(repo) == "other"
+
+
+def test_switch_to_a_remote_only_branch_makes_a_local_branch_tracking_it(env, repo):
+    out = ok(env, "git-switch", "--branch=origin/feature", "--remote", "--", REPO_REL)
+    assert out["branch"] == "feature"
+    assert branch_of(repo) == "feature"
+    assert fixture_git(repo, "config", "branch.feature.remote").strip() == "origin"
+    assert fixture_git(repo, "config", "branch.feature.merge").strip() == "refs/heads/feature"
+
+
+@pytest.mark.parametrize(
+    ("args", "code"),
+    [
+        (("--branch=nope",), "branch_not_found"),
+        (("--branch=feature",), "branch_not_found"),  # only on origin
+        (("--branch=main", "--remote"), "branch_not_found"),
+        (("--branch=origin/feature",), "branch_not_found"),
+        (("--branch=-f",), "branch_invalid"),
+        (("--branch=",), "branch_invalid"),
+        ((f"--branch={'x' * (h.MAX_BRANCH_NAME_LENGTH + 1)}",), "branch_invalid"),
+    ],
+)
+def test_switch_refuses_a_branch_that_is_not_there(env, repo, args, code):
+    assert error_code(env, "git-switch", *args, "--", REPO_REL) == code
+    assert branch_of(repo) == "main"
+
+
+def test_a_switch_blocked_by_local_changes_passes_on_gits_words(env, repo):
+    fixture_git(repo, "switch", "-q", "-c", "other")
+    write(repo / "README.md", "on other\n")
+    fixture_git(repo, "commit", "-q", "-am", "other")
+    fixture_git(repo, "switch", "-q", "main")
+    write(repo / "README.md", "my unsaved work\n")
+    code, out = helper(env, "git-switch", "--branch=other", "--", REPO_REL)
+    assert (code, out["error"]["code"]) == (1, "git_failed")
+    assert any("would be overwritten" in line for line in out["error"]["git"])
+    assert branch_of(repo) == "main"
+    assert (repo / "README.md").read_text() == "my unsaved work\n"
+
+
+def test_a_lock_held_on_the_index_passes_on_gits_words(env, repo):
+    write(repo / "a.txt")
+    (repo / ".git" / "index.lock").write_text("")
+    code, out = stage(env, ["a.txt"])
+    assert (code, out["error"]["code"]) == (1, "git_failed")
+    assert any("index.lock" in line for line in out["error"]["git"])
+
+
+def test_new_branch_makes_a_branch_and_switches_to_it(env, repo):
+    out = ok(env, "git-branch-new", "--name=topic/new", "--", REPO_REL)
+    assert out["branch"] == "topic/new"
+    assert branch_of(repo) == "topic/new"
+    assert fixture_git(repo, "rev-parse", "topic/new") == fixture_git(repo, "rev-parse", "main")
+
+
+@pytest.mark.parametrize("name", ["a..b", "@{-1}", "-x", "a b", "", "x.lock", "a~1", "HEAD"])
+def test_new_branch_refuses_a_name_git_would_not_take_as_given(env, repo, name):
+    fixture_git(repo, "switch", "-q", "-c", "previous")
+    fixture_git(repo, "switch", "-q", "main")  # so that @{-1} names a branch
+    assert error_code(env, "git-branch-new", f"--name={name}", "--", REPO_REL) == "branch_invalid"
+    assert branch_of(repo) == "main"
+
+
+def test_new_branch_with_a_name_taken_passes_on_gits_words(env, repo):
+    code, out = helper(env, "git-branch-new", "--name=main", "--", REPO_REL)
+    assert (code, out["error"]["code"]) == (1, "git_failed")
+    assert any("already exists" in line for line in out["error"]["git"])
+
+
+def test_new_branch_before_the_first_commit(env):
+    fresh = Path(env["RC_HELPER_HOME"]) / "projects" / "fresh"
+    fresh.mkdir()
+    fixture_git(fresh, "init", "-q", "-b", "main")
+    out = ok(env, "git-branch-new", "--name=start", "--", "projects/fresh")
+    assert out["branch"] == "start"
+    assert status(env, "projects/fresh")["branch"] == {
+        "name": "start",
+        "commit": None,
+        "upstream": None,
+        "ahead": None,
+        "behind": None,
+    }
+
+
+def remote_names(env) -> list[str]:
+    return [b["name"] for b in ok(env, "git-branches", "--", REPO_REL)["remote"]["branches"]]
+
+
+def test_fetch_adds_new_remote_branches_and_prunes_gone_ones(env, repo):
+    push_branch_to_origin(repo, origin_of(repo), "later")
+    fixture_git(origin_of(repo), "branch", "-D", "feature")
+    before = remote_names(env)
+    assert "origin/feature" in before and "origin/later" not in before  # positive control
+    assert ok(env, "git-fetch", "--", REPO_REL)["path"] == REPO_REL
+    assert remote_names(env) == ["origin/later", "origin/main"]
+    assert branch_of(repo) == "main"
+    assert listed(status(env), "not_staged") == []
+
+
+@pytest.fixture
+def asks_for_a_password():
+    """An HTTP server that answers every request with a demand for a password."""
+    import http.server
+    import threading
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(401)
+            self.send_header("WWW-Authenticate", 'Basic realm="rcman test"')
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def log_message(self, *args):
+            pass
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    yield f"http://127.0.0.1:{server.server_address[1]}/repo.git"
+    server.shutdown()
+
+
+def test_fetch_from_a_remote_that_needs_a_password_fails_without_asking(
+    env, repo, asks_for_a_password
+):
+    import time
+
+    fixture_git(repo, "remote", "set-url", "origin", asks_for_a_password)
+    began = time.monotonic()
+    code, out = helper(env, "git-fetch", "--", REPO_REL)
+    assert (code, out["error"]["code"]) == (1, "git_failed"), out
+    assert any("terminal prompts disabled" in line for line in out["error"]["git"]), out
+    assert time.monotonic() - began < h.GIT_NETWORK_TIMEOUT / 4
+
+
+def test_git_runs_with_the_allowlisted_environment(env, repo, tmp_path):
+    dumped = tmp_path / "env.json"
+    hook = repo / ".git" / "hooks" / "pre-commit"
+    hook.write_text(
+        "#!/usr/bin/python3\n"
+        "import json, os\n"
+        "helper = open(f'/proc/{os.getppid()}/stat').read().rsplit(')', 1)[1].split()[1]\n"
+        "helper_env = open(f'/proc/{helper}/environ', 'rb').read().split(b'\\0')\n"
+        f"json.dump({{'git': dict(os.environ), 'helper': [e.decode() for e in helper_env]}},"
+        f" open({str(dumped)!r}, 'w'))\n"
+    )
+    hook.chmod(0o755)
+    write(repo / "a.txt")
+    fixture_git(repo, "add", "a.txt")
+    decoyed = {**env, "RCMAN_DECOY": "present"}
+    assert helper(decoyed, *commit_args(), stdin="m")[0] == 0
+    seen = json.loads(dumped.read_text())
+    assert "RCMAN_DECOY=present" in seen["helper"]  # positive control: the helper had it
+    assert "RCMAN_DECOY" not in seen["git"] and "RC_HELPER_HOME" not in seen["git"]
+    expected = h.git_env(h.config_from_env(env))
+    assert {k: v for k, v in seen["git"].items() if not k.startswith("GIT_")} == {
+        k: v for k, v in expected.items() if not k.startswith("GIT_")
+    }
+    assert seen["git"]["GIT_TERMINAL_PROMPT"] == "0"
+    assert seen["git"]["GIT_OPTIONAL_LOCKS"] == "0"
+    assert seen["git"]["PATH"].startswith(f"{env['RC_HELPER_HOME']}/.local/bin:")
+    assert "GIT_CONFIG_NOSYSTEM" not in seen["git"]
+
+
+def commit_args(rel=REPO_REL):
+    return ("git-commit", "--author-name=Ann", "--author-email=ann@example.com", "--", rel)
+
+
+def test_sigterm_ends_git_and_its_hooks(env, repo, tmp_path):
+    import signal
+    import time
+
+    pid_file = tmp_path / "hook.pid"
+    hook = repo / ".git" / "hooks" / "pre-commit"
+    hook.write_text(f"#!/bin/sh\necho $$ > {pid_file}\nexec sleep 60\n")
+    hook.chmod(0o755)
+    write(repo / "a.txt")
+    fixture_git(repo, "add", "a.txt")
+    proc = subprocess.Popen(
+        [str(HELPER), *commit_args()],
+        env=env,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    proc.stdin.write(b"m")
+    proc.stdin.close()
+    deadline = time.monotonic() + 20
+    while not pid_file.exists() or not pid_file.read_text().strip():
+        assert time.monotonic() < deadline, "the hook never ran"
+        time.sleep(0.05)
+    pid = int(pid_file.read_text())
+    os.kill(pid, 0)  # positive control: the hook is running
+    proc.send_signal(signal.SIGTERM)
+    proc.wait(timeout=10)
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            break
+        time.sleep(0.05)
+    else:
+        pytest.fail(f"the hook {pid} outlived the helper")
+
+
+GIT_VERBS = [
+    (("git-status",), None),
+    (("git-branches",), None),
+    (("git-stage",), '["a.txt"]'),
+    (("git-unstage",), '["a.txt"]'),
+    (("git-commit", "--author-name=Ann", "--author-email=ann@example.com"), "m"),
+    (("git-switch", "--branch=main"), None),
+    (("git-branch-new", "--name=new"), None),
+    (("git-fetch",), None),
+]
+
+
+def test_every_git_verb_is_driven_here():
+    assert {args[0] for args, _ in GIT_VERBS} == {v for v in h.VERBS if v.startswith("git-")}
+
+
+@pytest.mark.parametrize(("args", "stdin"), GIT_VERBS, ids=[a[0] for a, _ in GIT_VERBS])
+def test_git_verbs_wait_for_no_folder_being_deleted(env, repo, args, stdin):
+    write(repo / "a.txt")
+    fd = hold_the_lock(env, exclusive=True)
+    try:
+        assert error_code(env, *args, "--", REPO_REL, stdin=stdin) == "folder_busy"
+    finally:
+        os.close(fd)
+    shared = hold_the_lock(env, exclusive=False)
+    try:  # positive control: they share the lock with each other
+        code, out = helper(env, *args, "--", REPO_REL, stdin=stdin)
+        assert out.get("error", {}).get("code") != "folder_busy", out
+    finally:
+        os.close(shared)
+
+
+def changes_table(markdown: str) -> list[str]:
+    """The change codes in the first column of the table under "| Change |" in a guide."""
+    lines = markdown.splitlines()
+    start = next((i for i, line in enumerate(lines) if line.startswith("| Change |")), None)
+    if start is None:
+        return []
+    codes = []
+    for line in lines[start + 2 :]:
+        if not line.startswith("|"):
+            break
+        codes.append(re.fullmatch(r"\| `([a-z_]+)` \|.*", line).group(1))
+    return codes
+
+
+def test_the_git_guides_table_of_changes_is_every_change_rc_helper_reports():
+    guide = (REPO / "docs" / "git.md").read_text(encoding="utf-8")
+    assert changes_table(guide) == list(h.CHANGES)
+
+
+def test_the_changes_table_check_fails_on_a_drifted_table():
+    """Planted twins: a row missing, or one too many."""
+    rows = [f"| `{c}` | x | y |" for c in h.CHANGES]
+    right = "| Change | Shown as | Meaning |\n|---|---|---|\n" + "\n".join(rows) + "\n"
+    assert changes_table(right) == list(h.CHANGES)
+    assert changes_table(right.replace(rows[0] + "\n", "")) != list(h.CHANGES)
+    assert changes_table(right + "| `forged` | x | y |\n") != list(h.CHANGES)
+    assert changes_table("nothing here") == []
+
+
+def test_git_env_is_the_server_environment_cut_down_for_git(tmp_path):
+    cfg = h.Config(home=tmp_path, claude=tmp_path / "claude", tmux_socket=None)
+    env = h.git_env(cfg)
+    child = h.child_env(cfg)
+    for key in ("HOME", "USER", "LOGNAME", "PATH", "LANG"):
+        assert env[key] == child[key]
+    assert env["LC_ALL"] == "C.UTF-8"
+    assert set(env) == {
+        "HOME",
+        "USER",
+        "LOGNAME",
+        "PATH",
+        "LANG",
+        "LC_ALL",
+        "GIT_TERMINAL_PROMPT",
+        "GIT_OPTIONAL_LOCKS",
+    }
