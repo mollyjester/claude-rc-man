@@ -120,6 +120,8 @@ CALLS = {
     ("POST", "/api/servers/stop"): {"json": {"path": "projects/alice-project"}},
     ("POST", "/api/servers/forget"): {"json": {"path": "projects/alice-project"}},
     ("POST", "/api/servers/confirm"): {"json": {"path": "projects/alice-project", "answer": "y"}},
+    ("POST", "/api/folders"): {"json": {"parent": "projects", "name": "new"}},
+    ("DELETE", "/api/folders"): {"params": {"path": "projects/alice-project"}},
     ("PATCH", "/api/me/settings"): {"json": {"prefix": "alice"}},
     ("POST", "/api/users"): {"json": {"linux": "dave", "email": "dave@example.com"}},
     ("DELETE", "/api/users/{linux}"): {"params": {"home": "keep"}},

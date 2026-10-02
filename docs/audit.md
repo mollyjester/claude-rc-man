@@ -17,6 +17,8 @@ can be read with `journalctl` on the server.
 | `server.stop` | stops a server | the folder |
 | `server.forget` | removes a stopped server from their list | the folder |
 | `server.confirm` | answers a server's folder-trust question | the folder |
+| `folder.create` | creates a folder | the new folder, as asked |
+| `folder.delete` | deletes a folder, stopping and forgetting every server in it or below it | the folder |
 | `settings.update` | changes their settings (see [Settings](settings.md)) | the settings they sent, as JSON; none when they were refused |
 | `claude.login` | starts connecting their Claude account | the Claude account's email address |
 | `claude.connect` | finishes connecting with Claude's code | none — the code is never recorded |

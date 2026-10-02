@@ -127,6 +127,29 @@ def test_a_refused_change_is_recorded_with_its_error_code(client, settings):
     assert last["target"] == "projects/alice-project"
 
 
+def test_folder_changes_are_recorded_with_the_folder(client, settings):
+    client.post("/api/folders", json={"parent": "projects", "name": "new"}, headers=changing(ALICE))
+    client.post("/api/folders", json={"name": "top"}, headers=changing(ALICE))
+    client.delete("/api/folders", params={"path": "projects/new"}, headers=changing(ALICE))
+    recorded = [(r["action"], r["target"], r["result"]) for r in rows(settings)[-3:]]
+    assert recorded == [
+        ("folder.create", "projects/new", "ok"),
+        ("folder.create", "top", "ok"),
+        ("folder.delete", "projects/new", "ok"),
+    ]
+
+
+def test_a_refused_delete_of_the_home_folder_is_recorded(client, settings):
+    r = client.delete("/api/folders", params={"path": "."}, headers=changing(ALICE))
+    assert r.status_code == 400
+    last = rows(settings)[-1]
+    assert (last["action"], last["target"], last["result"]) == (
+        "folder.delete",
+        ".",
+        "path_is_home",
+    )
+
+
 def test_a_refused_settings_change_is_recorded_as_validation_failed(client, settings):
     r = client.patch("/api/me/settings", json={"prefix": "not valid!"}, headers=changing(BOB))
     assert (r.status_code, r.json()["code"]) == (422, "validation_failed")

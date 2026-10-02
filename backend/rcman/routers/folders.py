@@ -3,12 +3,32 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Query, Request
+from pydantic import BaseModel, Field
 
 from helpers import rc_helper
-from rcman.helpers_client import call_helper
+from rcman.audit import Record, Recorder
+from rcman.helpers_client import ADMIN_TIMEOUT, call_helper
 from rcman.identity import Identity, current_user
 
 router = APIRouter(prefix="/api/folders", tags=["folders"])
+
+# A delete waits for every server in the folder to stop and then removes all
+# of it, which can take as long as an administrator's change to an account.
+FOLDER_DELETE_TIMEOUT_SECONDS = ADMIN_TIMEOUT
+
+
+class NewFolder(BaseModel):
+    parent: str = Field(
+        default="",
+        max_length=rc_helper.MAX_PATH_LENGTH,
+        description="The folder to make it in, relative to the home folder; empty for the home.",
+    )
+    name: str = Field(
+        min_length=1,
+        max_length=rc_helper.MAX_PATH_LENGTH,
+        pattern=f"^{rc_helper.FOLDER_NAME.pattern}$",
+        description="The new folder's name.",
+    )
 
 
 @router.get("")
@@ -29,3 +49,32 @@ def folders(
         *([path] if path else []),
     ]
     return call_helper(request.app.state.helper, identity, args)
+
+
+@router.post("")
+def create(
+    body: NewFolder, request: Request, record: Record = Depends(Recorder("folder.create"))
+) -> dict:
+    record.target = f"{body.parent}/{body.name}" if body.parent else body.name
+    args = ["mkdir", f"--name={body.name}", "--", *([body.parent] if body.parent else [])]
+    return call_helper(request.app.state.helper, record.identity, args)
+
+
+@router.delete("")
+def delete(
+    request: Request,
+    path: str = Query(
+        min_length=1,
+        max_length=rc_helper.MAX_PATH_LENGTH,
+        description="Relative to the home folder.",
+    ),
+    record: Record = Depends(Recorder("folder.delete")),
+) -> dict:
+    """Stop and forget every server in the folder or below it, then delete it."""
+    record.target = path
+    return call_helper(
+        request.app.state.helper,
+        record.identity,
+        ["delete", "--", path],
+        timeout=FOLDER_DELETE_TIMEOUT_SECONDS,
+    )
