@@ -1,7 +1,6 @@
 import { useState } from "react";
 
 import { ApiError, api } from "./api";
-import type { StartBlocked } from "./Claude";
 import { m } from "./messages";
 import { ProblemView, asApiError } from "./ProblemView";
 
@@ -14,11 +13,16 @@ export type Server = {
   screen?: string[];
 };
 
+type Action = "stop" | "resume" | "startAgain" | "forget" | "showScreen" | "trustYes" | "trustNo";
+
 // The actions that start Claude, which the server refuses while the account cannot.
-export type StartAction = "resume" | "startAgain";
-type Action = StartAction | "stop" | "forget" | "showScreen" | "trustYes" | "trustNo";
-const STARTS: Action[] = ["resume", "startAgain"] satisfies StartAction[];
-const startsClaude = (action: Action): action is StartAction => STARTS.includes(action);
+const STARTS = ["resume", "startAgain"] as const satisfies readonly Action[];
+export type StartAction = (typeof STARTS)[number];
+const startsClaude = (action: Action): action is StartAction => (STARTS as readonly Action[]).includes(action);
+
+// Why nothing can start Claude, said in place of each control that would: Start
+// in a folder with no server, and a server's own actions that start it again.
+export type StartBlocked = Record<"start" | StartAction, string>;
 
 // What each state reported by rc-helper allows; the server refuses anything else.
 export const ACTIONS: Record<string, Action[]> = {
@@ -131,9 +135,9 @@ export function ServerCard({
   const [busy, setBusy] = useState(false);
   const [showScreen, setShowScreen] = useState(false);
   const allowed = ACTIONS[server.state] ?? ["showScreen"];
-  // The action that would start Claude, when the account cannot: it is not offered.
-  const blocked = startReason ? allowed.find(startsClaude) : undefined;
-  const actions = allowed.filter((action) => action !== blocked);
+  // The actions that would start Claude, when the account cannot: they are not offered.
+  const blocked = startReason ? allowed.filter(startsClaude) : [];
+  const actions = allowed.filter((action) => !(blocked as Action[]).includes(action));
   const primary = PRIMARY[server.state];
 
   async function act(action: Action) {
@@ -159,7 +163,11 @@ export function ServerCard({
       <p>
         <StateBadge state={server.state} />
       </p>
-      <p>{blocked && startReason ? startReason[blocked] : (m.nextStep[server.state] ?? m.nextStepUnknown)}</p>
+      <p>
+        {startReason && blocked.length > 0
+          ? blocked.map((action) => startReason[action]).join(" ")
+          : (m.nextStep[server.state] ?? m.nextStepUnknown)}
+      </p>
       {server.state === "trust_prompt" && (
         <div className="question">
           <p>

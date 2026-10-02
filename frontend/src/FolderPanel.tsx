@@ -2,11 +2,10 @@ import { type ReactNode, useState } from "react";
 import { Link } from "react-router-dom";
 
 import { ApiError, api } from "./api";
-import type { StartBlocked } from "./Claude";
 import { folderLink, lineage } from "./Folders";
 import { m } from "./messages";
 import { ProblemView, asApiError } from "./ProblemView";
-import { type Server, ServerCard } from "./Servers";
+import { type Server, ServerCard, type StartBlocked } from "./Servers";
 
 function Breadcrumb({ path }: { path: string }) {
   const folders = lineage(path);

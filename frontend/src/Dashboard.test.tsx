@@ -183,6 +183,21 @@ test.each([
   expect(offered.queryByText(said)).not.toBeInTheDocument();
 });
 
+test("a state allowing more than one action that starts Claude offers none of them while it cannot", async () => {
+  // No state rc-helper reports allows two such actions today; one planted here would.
+  ACTIONS.planted = ["resume", "startAgain", "forget"];
+  try {
+    dashboard([server("projects/alpha", "planted")], { "GET /api/claude": NOT_CONNECTED });
+    const waiting = await card();
+    expect(waiting.getByRole("button", { name: m.forget })).toBeInTheDocument(); // the card is there
+    expect(waiting.queryByRole("button", { name: m.resume })).not.toBeInTheDocument();
+    expect(waiting.queryByRole("button", { name: m.startAgain })).not.toBeInTheDocument();
+    expect(waiting.getByText(new RegExp(m.notConnected.resume))).toBeInTheDocument();
+  } finally {
+    delete ACTIONS.planted;
+  }
+});
+
 test("a folder that is not there still opens, and Start shows the server's reason", async () => {
   dashboard([], { "POST /api/servers": problem(404, "no_such_folder", "No such folder.") });
   renderApp("/?folder=gone/away");
