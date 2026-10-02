@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 
 import { ApiError, api } from "./api";
-import { ClaudeConnection, type Connection } from "./Claude";
+import { ClaudeConnection, type Connection, START_REASON } from "./Claude";
 import { FolderPanel, HomePanel } from "./FolderPanel";
 import { FolderTree, ServerSummary, folderLink, useFolderTree } from "./Folders";
 import { ProblemView, asApiError } from "./ProblemView";
@@ -59,6 +59,7 @@ export function Dashboard({ pollMs }: { pollMs: number }) {
             key={selected}
             path={selected}
             server={servers === null ? undefined : (servers.find((s) => s.path === selected) ?? null)}
+            startReason={connection ? START_REASON[connection.connection] : undefined}
             onChange={refresh}
           />
         ) : (

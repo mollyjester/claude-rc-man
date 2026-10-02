@@ -1,6 +1,7 @@
 import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
+import { CONNECTION_STATES, START_REASON } from "./Claude";
 import { m } from "./messages";
 import { CONNECTED, ME, type Reply, type Routes, fakeApi, problem } from "./test/fakeApi";
 import { renderApp } from "./test/render";
@@ -16,6 +17,14 @@ function api(claude: Reply, extra: Routes = {}) {
 }
 
 const NOT_CONNECTED = { connection: "not_connected", account: null, login_expires_at: null };
+
+test("every state of the account says whether a server can start, and why not", () => {
+  expect(Object.keys(START_REASON).sort()).toEqual([...CONNECTION_STATES].sort());
+  // non-vacuity: some states let a server start and some do not
+  const reasons = Object.values(START_REASON);
+  expect(reasons).toContain(null);
+  expect(reasons.some((r) => typeof r === "string" && r.length > 0)).toBe(true);
+});
 
 test("connecting: link, then code, then connected", async () => {
   let connected = false;

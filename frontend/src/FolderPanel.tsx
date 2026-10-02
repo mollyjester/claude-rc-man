@@ -65,25 +65,30 @@ function StartServer({ path, onStarted }: { path: string; onStarted: () => void 
   );
 }
 
-// The selected folder: where it is, and its Claude server or the offer to start one.
-// server is undefined until the servers have been listed, and null when it has none.
+// The selected folder: where it is, and its Claude server or the offer to start
+// one. Each of server and startReason is undefined until it is known; server is
+// null when the folder has none, and startReason null when a server can start.
 export function FolderPanel({
   path,
   server,
+  startReason,
   onChange,
 }: {
   path: string;
   server: Server | null | undefined;
+  startReason: string | null | undefined;
   onChange: () => void;
 }) {
+  const known = server !== undefined && startReason !== undefined;
   return (
     <section aria-label={path} className="panel">
       <Breadcrumb path={path} />
       <h2>{lineage(path).at(-1)!.name}</h2>
       <PanelSection title={m.serverTitle}>
-        {server === undefined && <p>{m.loading}</p>}
-        {server === null && <StartServer path={path} onStarted={onChange} />}
-        {server && <ServerCard server={server} onChange={onChange} />}
+        {!known && <p>{m.loading}</p>}
+        {known && server && <ServerCard server={server} startReason={startReason} onChange={onChange} />}
+        {known && !server && startReason === null && <StartServer path={path} onStarted={onChange} />}
+        {known && !server && startReason !== null && <p>{startReason}</p>}
       </PanelSection>
     </section>
   );

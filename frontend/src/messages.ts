@@ -23,6 +23,7 @@ export const m = {
   expand: (name: string) => `Show folders in ${name}`,
   collapse: (name: string) => `Hide folders in ${name}`,
   start: "Start",
+  startNotConnected: "Connect your Claude account above to start a server here.",
 
   runningTitle: "Your servers",
   runningEmpty: "No servers yet. Select a folder and start one.",

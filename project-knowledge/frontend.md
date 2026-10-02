@@ -27,7 +27,11 @@ version is `frontend/.nvmrc`.
   `PRIMARY` the one action it leads with, and `m.states` and `m.nextStep` its
   name and what to do; `src/Servers.test.ts` holds each of them to the states
   in `ACTIONS`, and `src/servers-guide.test.ts` holds the table in
-  `docs/servers.md` to all of them. Administration is offered only to administrators,
+  `docs/servers.md` to all of them. `START_REASON` in `src/Claude.tsx` says,
+  for each state of the Claude account in `CONNECTION_STATES`, why no server
+  can start, or null where one can; Start, and the actions that start Claude
+  again, are offered only where it is null, and the reason is shown instead.
+  Administration is offered only to administrators,
   and the server refuses everyone else regardless.
 - **Every piece of text not from the server is in `src/messages.ts`.**
 - Links between help pages — a page's file name, optionally followed by a

@@ -4,8 +4,21 @@ import { ApiError, api } from "./api";
 import { m } from "./messages";
 import { ProblemView, asApiError } from "./ProblemView";
 
+export const CONNECTION_STATES = ["not_connected", "connected", "expiring", "expired"] as const;
+export type ConnectionState = (typeof CONNECTION_STATES)[number];
+
+// Why no server can start while the account is in each state; null where one
+// can. rc-helper starts one with an expired sign-in, and the account's section
+// already warns about it.
+export const START_REASON: Record<ConnectionState, string | null> = {
+  not_connected: m.startNotConnected,
+  connected: null,
+  expiring: null,
+  expired: null,
+};
+
 export type Connection = {
-  connection: "not_connected" | "connected" | "expiring" | "expired";
+  connection: ConnectionState;
   account: { email: string | null; org_name: string | null; subscription_type: string | null } | null;
   login_expires_at: string | null;
 };

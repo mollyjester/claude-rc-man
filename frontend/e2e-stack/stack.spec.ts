@@ -60,8 +60,10 @@ test("a person signs in, connects Claude, and runs a server", async ({ page }) =
 test("another person sees only their own home and servers", async ({ page }) => {
   await signIn(page, "bob@example.com");
   await expect(page.getByText(m.signedInAs("bob@example.com"))).toBeVisible();
-  await page.getByRole("button", { name: m.expand("projects") }).click();
-  await expect(page.getByRole("button", { name: "bob-demo", exact: true })).toBeVisible();
+  await select(page, "bob-demo");
+  const panel = page.getByRole("region", { name: "projects/bob-demo", exact: true });
+  await expect(panel.getByText(m.startNotConnected)).toBeVisible();
+  await expect(panel.getByRole("button", { name: m.start })).toHaveCount(0);
   await expect(page.getByText("alice-demo")).toHaveCount(0);
   await expect(page.getByRole("region", { name: m.runningTitle }).getByText(m.runningEmpty)).toBeVisible();
   await expect(page.getByRole("link", { name: m.navUsers })).toHaveCount(0);

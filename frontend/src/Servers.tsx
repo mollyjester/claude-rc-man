@@ -63,6 +63,9 @@ export const PRIMARY: Record<string, Action | "openSession" | null> = {
   unrecognised: "showScreen",
 };
 
+// The actions that start Claude, which the server refuses while the account cannot.
+const STARTS: Action[] = ["resume", "startAgain"];
+
 const CALLS: Record<Exclude<Action, "showScreen">, [string, Record<string, string>]> = {
   stop: ["/api/servers/stop", {}],
   resume: ["/api/servers/resume", {}],
@@ -109,11 +112,22 @@ export function StatusDot({ kind, id }: { kind: Kind; id: string }) {
   );
 }
 
-export function ServerCard({ server, onChange }: { server: Server; onChange: () => void }) {
+// A server and the actions its state allows; startReason, when there is one,
+// is why those that start Claude are not offered.
+export function ServerCard({
+  server,
+  startReason,
+  onChange,
+}: {
+  server: Server;
+  startReason: string | null;
+  onChange: () => void;
+}) {
   const [error, setError] = useState<ApiError | null>(null);
   const [busy, setBusy] = useState(false);
   const [showScreen, setShowScreen] = useState(false);
-  const actions = ACTIONS[server.state] ?? ["showScreen"];
+  const allowed = ACTIONS[server.state] ?? ["showScreen"];
+  const actions = startReason === null ? allowed : allowed.filter((action) => !STARTS.includes(action));
   const primary = PRIMARY[server.state];
 
   async function act(action: Action) {
@@ -166,6 +180,7 @@ export function ServerCard({ server, onChange }: { server: Server; onChange: () 
         </p>
       )}
       {server.exit_code !== null && server.state === "exited" && <p>{m.exitCode(server.exit_code)}</p>}
+      {actions.length < allowed.length && <p>{startReason}</p>}
       <div className="actions">
         {actions.map((action) => (
           <button
