@@ -3,7 +3,8 @@ import { screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { m } from "./messages";
-import { ADMIN, NOTHING_TO_ATTEND, fakeApi } from "./test/fakeApi";
+import { FIELDS } from "./Settings";
+import { ADMIN, NOTHING_TO_ATTEND, SETTINGS, fakeApi } from "./test/fakeApi";
 import { renderApp } from "./test/render";
 
 const RULE_ATTRIBUTES = ["required", "pattern", "min", "max", "minlength", "maxlength", "step"];
@@ -12,7 +13,7 @@ function api() {
   return fakeApi({
     "GET /api/me": ADMIN,
     "GET /api/claude": { connection: "not_connected", account: null, login_expires_at: null },
-    "GET /api/me/settings": { prefix: "alice" },
+    "GET /api/me/settings": SETTINGS,
     "GET /api/users": { users: [] },
     "GET /api/claude/versions": { approved: "1.0.0", tested: "1.0.0", untested: false, differs: [], users: [] },
     "POST /api/claude/login": { url: "https://claude.com/x" },
@@ -53,5 +54,15 @@ test.each([
       expect(["text", "checkbox", "radio"]).toContain(input.type);
     }
   }
+  expect(document.querySelectorAll("form[novalidate]").length).toBe(document.querySelectorAll("form").length);
+});
+
+test("the settings page has an input for every field it describes, and nothing else", async () => {
+  api();
+  renderApp("/settings");
+  const found = await inputs();
+  expect(Object.keys(FIELDS).length).toBeGreaterThan(0); // non-vacuity
+  expect(found.length).toBe(Object.keys(FIELDS).length);
+  expect(document.querySelectorAll("form").length).toBeGreaterThan(1);
   expect(document.querySelectorAll("form[novalidate]").length).toBe(document.querySelectorAll("form").length);
 });

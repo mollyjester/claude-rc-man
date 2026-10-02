@@ -59,5 +59,7 @@ export const CONNECTED = {
   account: { email: "alice@claude.test", org_name: "Org", subscription_type: "max" },
   login_expires_at: "2030-01-01T00:00:00+00:00",
 };
+// What /api/me/settings answers for someone who has set nothing.
+export const SETTINGS = { prefix: "alice", author_name: "", author_email: "", effective_author: null };
 // What /api/attention answers when nothing needs an administrator's attention.
 export const NOTHING_TO_ATTEND = { unrecognised: [], versions_differ: [], untested: false, versions_error: null };
