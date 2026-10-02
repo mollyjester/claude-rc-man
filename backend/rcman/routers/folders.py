@@ -7,14 +7,10 @@ from pydantic import BaseModel, Field
 
 from helpers import rc_helper
 from rcman.audit import Record, Recorder
-from rcman.helpers_client import ADMIN_TIMEOUT, call_helper
+from rcman.helpers_client import FOLDER_DELETE_TIMEOUT_SECONDS, call_helper
 from rcman.identity import Identity, current_user
 
 router = APIRouter(prefix="/api/folders", tags=["folders"])
-
-# A delete waits for every server in the folder to stop and then removes all
-# of it, which can take as long as an administrator's change to an account.
-FOLDER_DELETE_TIMEOUT_SECONDS = ADMIN_TIMEOUT
 
 
 class NewFolder(BaseModel):

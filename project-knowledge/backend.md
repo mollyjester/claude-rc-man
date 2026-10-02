@@ -62,7 +62,7 @@ A call that outlasts its timeout — `HELPER_TIMEOUT` and `ADMIN_TIMEOUT` in
 `call_admin` — is the problem `helper_timeout`. Deleting a folder
 (`DELETE /api/folders`) waits for its servers to stop and removes all of it,
 so it has its own timeout, `FOLDER_DELETE_TIMEOUT_SECONDS` in
-`routers/folders.py`, which is `ADMIN_TIMEOUT`. Both run through
+`helpers_client.py`. Both run through
 `run_bounded`, which ends a call that times out with SIGTERM, which sudo
 passes on to the helper, and SIGKILL only after `TERMINATE_GRACE_SECONDS`:
 sudo cannot pass SIGKILL on, so killing it outright would leave the helper

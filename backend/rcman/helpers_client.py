@@ -17,6 +17,9 @@ from rcman.problems import MESSAGES, Problem
 
 HELPER_TIMEOUT = 120
 ADMIN_TIMEOUT = 600
+# Deleting a folder: the helper waits up to its STOP_TIMEOUT for the servers in
+# it to stop, then removes a whole tree, however large.
+FOLDER_DELETE_TIMEOUT_SECONDS = 300
 # After a timeout: how long sudo has to pass SIGTERM on and its child to end.
 TERMINATE_GRACE_SECONDS = 5.0
 

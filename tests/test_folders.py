@@ -166,7 +166,8 @@ def test_deleting_has_its_own_timeout(settings, admin_runner):
     from fastapi.testclient import TestClient
     from rcman import helpers_client
     from rcman.main import create_app
-    from rcman.routers import folders
+
+    from helpers import rc_helper
 
     seen = {}
 
@@ -178,6 +179,7 @@ def test_deleting_has_its_own_timeout(settings, admin_runner):
         client.get("/api/folders", headers=as_user(ALICE))
         delete(client, ALICE, "projects/alice-project")
     assert seen["tree"] == helpers_client.HELPER_TIMEOUT  # positive control: the usual one
-    assert seen["delete"] == folders.FOLDER_DELETE_TIMEOUT_SECONDS
-    assert folders.FOLDER_DELETE_TIMEOUT_SECONDS == helpers_client.ADMIN_TIMEOUT
-    assert folders.FOLDER_DELETE_TIMEOUT_SECONDS != helpers_client.HELPER_TIMEOUT
+    assert seen["delete"] == helpers_client.FOLDER_DELETE_TIMEOUT_SECONDS
+    assert helpers_client.FOLDER_DELETE_TIMEOUT_SECONDS != helpers_client.HELPER_TIMEOUT
+    # long enough for the helper to give up on a server that does not stop, and more
+    assert helpers_client.FOLDER_DELETE_TIMEOUT_SECONDS > rc_helper.STOP_TIMEOUT
