@@ -532,6 +532,94 @@ def test_a_rule_given_with_path_as_the_default_is_found():
     assert dropped_constraints(right) == []
 
 
+def _digits():
+    from helpers.rules import Rule
+
+    return problems.ruled(Rule(re.compile(r"[0-9]+"), "Use digits only."))
+
+
+def _planted_dependency_apps():
+    """Apps where a dependency, not the endpoint, takes a rule with Query() as the
+    default: a class, and a function bound with functools.partial."""
+    from fastapi import Depends, FastAPI, Query
+
+    Digits = _digits()
+
+    class ByClass:
+        def __init__(self, v: Digits = Query()):  # noqa: B008 - the trap itself
+            self.v = v
+
+    def bound(first: str, v: Digits = Query()) -> str:  # noqa: B008 - the trap itself
+        return v
+
+    by_class, by_partial = FastAPI(), FastAPI()
+    problems.install(by_class)
+    problems.install(by_partial)
+
+    @by_class.get("/x")
+    def class_route(dep: ByClass = Depends()) -> dict:  # noqa: B008
+        return {}
+
+    @by_partial.get("/x")
+    def partial_route(v: str = Depends(functools.partial(bound, "x"))) -> dict:  # noqa: B008
+        return {}
+
+    return by_class, by_partial
+
+
+def test_a_rule_dropped_in_a_dependency_is_found():
+    """Planted twins: the trap in a class dependency and in a bound function."""
+    from fastapi.testclient import TestClient
+
+    for planted in _planted_dependency_apps():
+        [parameter] = planted.openapi()["paths"]["/x"]["get"]["parameters"]
+        assert "pattern" not in parameter["schema"]  # the plant really drops the rule
+        assert TestClient(planted).get("/x", params={"v": "abc"}).status_code == 200
+        [found] = dropped_constraints(planted)
+        assert "(v)" in found and "Annotated[<type>, Query()]" in found
+
+
+def test_a_rule_dropped_in_an_embedded_body_is_found_and_the_right_form_is_read():
+    from fastapi import Body, FastAPI
+    from fastapi.testclient import TestClient
+
+    Digits = _digits()
+    trap, right = FastAPI(), FastAPI()
+    for planted in (trap, right):
+        problems.install(planted)
+
+    @trap.post("/x")
+    def trap_route(v: Digits = Body(embed=True)) -> dict:  # noqa: B008 - the trap itself
+        return {}
+
+    @right.post("/x")
+    def right_route(v: Annotated[Digits, Body(embed=True)]) -> dict:
+        return {}
+
+    assert TestClient(trap).post("/x", json={"v": "abc"}).status_code == 200  # the plant
+    [found] = dropped_constraints(trap)
+    assert "trap_route(v)" in found and "Annotated[<type>, Body()]" in found
+    assert dropped_constraints(right) == []
+    [field] = request_fields(right)
+    assert (field.where, field.name, field.schema["pattern"]) == ("body", "v", "^(?:[0-9]+)$")
+
+
+def test_a_rule_that_may_be_left_out_is_not_mistaken_for_one_dropped():
+    from fastapi import FastAPI, Query
+    from fastapi.testclient import TestClient
+
+    Digits = _digits()
+    app = FastAPI()
+    problems.install(app)
+
+    @app.get("/x")
+    def optional(v: Digits | None = Query(None)) -> dict:  # noqa: B008
+        return {}
+
+    assert TestClient(app).get("/x", params={"v": "abc"}).status_code == 422  # it is checked
+    assert dropped_constraints(app) == []
+
+
 def test_the_fields_are_found_and_agree_with_the_published_api(app):
     found = {(f.method, f.path, f.where, f.name) for f in request_fields(app)}
     known = {
