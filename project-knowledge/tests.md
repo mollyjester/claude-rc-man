@@ -31,8 +31,14 @@ so that no test reaches the real GitHub; the browser tests' world runs one
 of its own (see [frontend.md](frontend.md#tests)). `tests/test_container_suite.py` runs the root-only
 suite in `tests/container/` inside a throwaway Ubuntu container, through
 `docker` or `sudo -n docker`; it skips when neither works, unless
-`RCMAN_REQUIRE_CONTAINER=1`, which `make check` sets. It runs three, each in a
+`RCMAN_REQUIRE_CONTAINER=1`, which `make check` sets. It runs these, each in a
 fresh container: user management, with folders made and deleted and git run, with the person's own configuration, through sudo;
+the GitHub token and pushing through sudo, against `https://github.com`
+itself — `--add-host` makes `github.com` the container's own address, where
+`tests/container/test_github_in_container.py` serves the tests' GitHub with
+a certificate from a certificate authority it makes with `openssl` and adds
+to the system's with `update-ca-certificates`, so that rc-helper runs with
+no `RC_HELPER_GITHUB`, as in production;
 a real installation (see
 [installer.md](installer.md)); and the whole stack in a browser.
 Run it from a full clone, not a git worktree: it mounts the checkout into the
