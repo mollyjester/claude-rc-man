@@ -167,7 +167,6 @@ export const m = {
   versionsFailedChecks: "Failed checks:",
 
   docsTitle: "Help",
-  docsMissing: "There is no such page.",
 
   problemFieldErrors: "Details:",
 };
