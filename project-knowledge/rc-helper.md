@@ -23,7 +23,7 @@ command-line reference is `rc-helper --help` and `rc-helper <verb> --help`.
 - Paths are relative to the user's home folder, as `PATH` in
   `helpers/rc_helper.py` says, which the backend's path fields check too.
   Option values that may start with a hyphen are passed as `--option=value`.
-- Secrets — the one-time sign-in code — are read from stdin, never from the
+- Secrets — the one-time sign-in code and the GitHub token — are read from stdin, never from the
   command line, and never printed. So are a commit's message and the files to
   stage or unstage.
 
