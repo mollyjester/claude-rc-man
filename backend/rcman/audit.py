@@ -20,7 +20,7 @@ from fastapi.routing import APIRoute
 
 from rcman import db
 from rcman.identity import Identity, current_user
-from rcman.problems import Problem
+from rcman.problems import code_of
 
 log = logging.getLogger("rcman.audit")
 log.setLevel(logging.INFO)
@@ -86,11 +86,8 @@ class Recorder:
         try:
             try:
                 yield record
-            except Problem as error:
-                write(con, record, error.code)
-                raise
-            except Exception:
-                write(con, record, "internal_error")
+            except Exception as error:
+                write(con, record, code_of(error))
                 raise
             else:
                 write(con, record, record.result or OK)

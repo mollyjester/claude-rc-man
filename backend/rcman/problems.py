@@ -68,6 +68,20 @@ def _field(loc) -> str:
     return ".".join(str(p) for p in parts) or "request"
 
 
+HTTP_CODES = {404: "not_found", 405: "method_not_allowed"}
+
+
+def code_of(exc: Exception) -> str:
+    """The code of the problem an exception is answered with."""
+    if isinstance(exc, Problem):
+        return exc.code
+    if isinstance(exc, RequestValidationError):
+        return "validation_failed"
+    if isinstance(exc, StarletteHTTPException):
+        return HTTP_CODES.get(exc.status_code, "internal_error")
+    return "internal_error"
+
+
 def install(app: FastAPI) -> None:
     @app.exception_handler(Problem)
     async def _problem(request: Request, exc: Problem):
@@ -76,13 +90,15 @@ def install(app: FastAPI) -> None:
     @app.exception_handler(RequestValidationError)
     async def _validation(request: Request, exc: RequestValidationError):
         errors = [{"field": _field(e["loc"]), "message": e["msg"]} for e in exc.errors()]
-        return response("validation_failed", 422, MESSAGES["validation_failed"], errors=errors)
+        code = code_of(exc)
+        return response(code, STATUS[code], MESSAGES[code], errors=errors)
 
     @app.exception_handler(StarletteHTTPException)
     async def _http(request: Request, exc: StarletteHTTPException):
-        code = {404: "not_found", 405: "method_not_allowed"}.get(exc.status_code, "internal_error")
+        code = code_of(exc)
         return response(code, exc.status_code, MESSAGES[code])
 
     @app.exception_handler(Exception)
     async def _unexpected(request: Request, exc: Exception):
-        return response("internal_error", 500, MESSAGES["internal_error"])
+        code = code_of(exc)
+        return response(code, STATUS[code], MESSAGES[code])
