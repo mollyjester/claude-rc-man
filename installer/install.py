@@ -39,6 +39,7 @@ if not _on_path:
     sys.path.insert(0, str(REPO))
 _write_bytecode, sys.dont_write_bytecode = sys.dont_write_bytecode, True
 try:
+    from helpers.rules import Rule
     from helpers.users_file import EMAIL, LINUX_NAME
 finally:
     sys.dont_write_bytecode = _write_bytecode
@@ -98,6 +99,7 @@ class InstallError(Exception):
 # --- settings -----------------------------------------------------------------------
 
 # key: (question, secret, default, pattern). A default of None means it must be given.
+# A pattern that is a helpers' Rule explains a refusal with its sentence.
 FIELDS = {
     "DOMAIN": ("Public host name of rcman (such as rcman.example.com)", False, None, HOSTNAME),
     "GOOGLE_CLIENT_ID": ("Google OAuth client ID", False, None, None),
@@ -160,7 +162,8 @@ def gather(
     values.setdefault("COOKIE_SECRET", secrets.token_urlsafe(24))
     for key, (_question, _secret, _default, pattern) in FIELDS.items():
         if not values[key] or (pattern and not pattern.fullmatch(values[key])):
-            raise InstallError(f"invalid {key}: {values[key]!r}")
+            why = f" {pattern.sentence}" if isinstance(pattern, Rule) else ""
+            raise InstallError(f"invalid {key}: {values[key]!r}.{why}")
     return values
 
 

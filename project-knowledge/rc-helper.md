@@ -13,7 +13,14 @@ command-line reference is `rc-helper --help` and `rc-helper <verb> --help`.
   command line that does not parse exits 2 with code `usage`. Some errors carry
   extra fields, such as the server's screen. The codes and their messages are
   `MESSAGES` in `helpers/rc_helper.py`, the one place they are written; a test
-  holds the codes used and the codes listed to each other.
+  holds the codes used and the codes listed to each other. A value refused by
+  one of the module's rules — each a `Rule` (`helpers/rules.py`): a pattern and
+  the sentence that explains it — is refused with that rule's sentence:
+  `RULE_CODES` names the rule behind each such code, and `MESSAGES` takes the
+  sentence from it. The backend refuses the same value with the same sentence.
+  A test runs each code's refusal through the command line, and holds every
+  rule the module has to a code, but `AUTHOR_NAME`, which only the backend
+  checks.
 - Paths are relative to the user's home folder. Option values that may start
   with a hyphen are passed as `--option=value`.
 - Secrets — the one-time sign-in code — are read from stdin, never from the
@@ -33,7 +40,7 @@ command-line reference is `rc-helper --help` and `rc-helper <verb> --help`.
 | `rc-helper confirm <path> --answer y\|n` | Answers the folder-trust question |
 | `rc-helper auth-status` | Whether a Claude account is connected, which, and when the sign-in expires (`login_expires_at`, or `null` when unknown) |
 | `rc-helper auth-login --email <e>` | Starts connecting a Claude account; returns the sign-in URL |
-| `rc-helper mkdir [parent] --name=<name>` | Makes a folder named `<name>` in a folder, or in the home folder when no parent is given. The name may not be empty, begin with a dot, hold a slash, a control character or an invisible character, or begin or end with white space (`FOLDER_NAME` in `helpers/rc_helper.py`, which shares its invisible characters with `AUTHOR_NAME`), nor be longer than the file system's `PC_NAME_MAX` in bytes; refuses with `folder_exists` when anything, even a dangling link, has that name |
+| `rc-helper mkdir [parent] --name=<name>` | Makes a folder named `<name>` in a folder, or in the home folder when no parent is given. The name must match `FOLDER_NAME` in `helpers/rc_helper.py`, whose sentence says what it refuses and which shares its invisible characters with `AUTHOR_NAME`, and be no longer than the file system's `PC_NAME_MAX` in bytes; refuses with `folder_exists` when anything, even a dangling link, has that name |
 | `rc-helper delete <path>` | Stops every running server in a folder or below it, forgets every server there, then deletes the folder and everything in it; a link is deleted as the link. Refuses the home folder, anything outside it, a dot-folder or anything in one (`path_hidden`), a path through a link (`path_through_link`), and a path not written as the names on disk (`path_name_differs`). See [Deleting a folder](#deleting-a-folder) |
 | `rc-helper auth-code` | Finishes connecting with the code read from stdin — pressing Enter after Claude reports success, as it asks — and returns the account as `auth-status` does |
 

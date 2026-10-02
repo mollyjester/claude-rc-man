@@ -37,6 +37,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
+from helpers.rules import Rule
 from helpers.users_file import EMAIL
 
 VERBS = (
@@ -65,11 +66,6 @@ MESSAGES = {
     "path_not_found": "The folder does not exist.",
     "path_not_directory": "That is a file, not a folder.",
     "depth_invalid": "The folder depth is out of range.",
-    "prefix_invalid": (
-        "The session name prefix may use letters, digits and hyphens, "
-        "starting with a letter or digit."
-    ),
-    "email_invalid": "That is not a valid email address.",
     "claude_not_installed": "Claude Code is not installed for this account.",
     "claude_not_logged_in": "Connect your Claude account first.",
     "claude_unrecognised_output": "Claude Code answered with output rc-helper does not recognise.",
@@ -83,11 +79,6 @@ MESSAGES = {
     "timeout": "Claude Code did not respond in time.",
     "no_login_in_progress": "Start connecting your Claude account first.",
     "login_failed": "Signing in to Claude failed. Start again and use a fresh code.",
-    "name_invalid": (
-        "A folder's name may not be empty, begin with a dot, hold a slash, a control "
-        "character or an invisible character, begin or end with white space, or be longer "
-        "than the file system allows."
-    ),
     "folder_exists": "Something with that name is there already.",
     "path_hidden": (
         "rcman does not delete a folder whose name begins with a dot, or anything in one."
@@ -123,7 +114,11 @@ WIDTH, HEIGHT = 200, 50
 MAX_TREE_DEPTH = 3
 MAX_PREFIX_LENGTH = 32
 MAX_PATH_LENGTH = 1024
-PREFIX = re.compile(rf"[A-Za-z0-9][A-Za-z0-9-]{{0,{MAX_PREFIX_LENGTH - 1}}}")
+PREFIX = Rule(
+    re.compile(rf"[A-Za-z0-9][A-Za-z0-9-]{{0,{MAX_PREFIX_LENGTH - 1}}}"),
+    "The session name prefix may use letters A to Z, digits and hyphens, start with a "
+    f"letter or digit, and be at most {MAX_PREFIX_LENGTH} characters long.",
+)
 MAX_AUTHOR_NAME_LENGTH = 128
 # Code points no name may hold anywhere, because they show as nothing or as
 # something they are not, and make two names look alike; each as a tuple of
@@ -175,30 +170,69 @@ def _class(ranges=(), chars: str = "") -> str:
     return "".join(spans) + "".join(_escape(ord(c)) for c in chars)
 
 
-# What no name may hold anywhere, and what it may besides not begin or end with.
+# What no name may hold anywhere, and what it may besides not begin or end with,
+# each with the words the rules' sentences say it in.
 _UNSEEN = _class((*CONTROLS, *SEPARATORS, *INVISIBLE_FORMAT, *HANGUL_FILLERS))
+_UNSEEN_WORDS = "a control character or an invisible character"
 _NOT_AT_AN_END = _class(chars="".join(map(chr, JOINERS))) + r"\s"
+_NOT_AT_AN_END_WORDS = "white space"
+
+
+def _either(words: list[str]) -> str:
+    """Words as alternatives: "a, b or c"."""
+    return words[0] if len(words) == 1 else f"{', '.join(words[:-1])} or {words[-1]}"
+
 
 # A commit author's name may not hold < and >, which git puts around the
 # address, nor begin or end with what git strips from either end besides white
 # space: crud() in git's ident.c. tests/test_rc_helper.py asks real git.
 _GIT_TRIMS = ",:;<>\"'\\"
-_NOT_IN_AUTHOR_NAME = _UNSEEN + _class(chars="<>")
+_IN_ADDRESS_MARKS = "<>"
+_CHARACTER_WORDS = {
+    ",": "a comma",
+    ":": "a colon",
+    ";": "a semicolon",
+    "<": "<",
+    ">": ">",
+    '"': "a quotation mark",
+    "'": "an apostrophe",
+    "\\": "a backslash",
+}
+_NOT_IN_AUTHOR_NAME = _UNSEEN + _class(chars=_IN_ADDRESS_MARKS)
 _NOT_AT_AUTHOR_ENDS = _NOT_IN_AUTHOR_NAME + _NOT_AT_AN_END + _class(chars=_GIT_TRIMS)
 # No lookaround, so the backend's validator reads it as this module does.
-AUTHOR_NAME = re.compile(
-    rf"[^{_NOT_AT_AUTHOR_ENDS}]"
-    rf"(?:[^{_NOT_IN_AUTHOR_NAME}]{{0,{MAX_AUTHOR_NAME_LENGTH - 2}}}[^{_NOT_AT_AUTHOR_ENDS}])?"
+AUTHOR_NAME = Rule(
+    re.compile(
+        rf"[^{_NOT_AT_AUTHOR_ENDS}]"
+        rf"(?:[^{_NOT_IN_AUTHOR_NAME}]{{0,{MAX_AUTHOR_NAME_LENGTH - 2}}}[^{_NOT_AT_AUTHOR_ENDS}])?"
+    ),
+    f"A commit author's name may not be empty or longer than {MAX_AUTHOR_NAME_LENGTH} "
+    f"characters, hold {_either([_CHARACTER_WORDS[c] for c in _IN_ADDRESS_MARKS])}, "
+    f"{_UNSEEN_WORDS}, or begin or end with "
+    + _either(
+        [_NOT_AT_AN_END_WORDS]
+        + [_CHARACTER_WORDS[c] for c in _GIT_TRIMS if c not in _IN_ADDRESS_MARKS]
+    )
+    + ".",
 )
 # A folder's name may not hold a slash, nor begin with a dot: such a folder is
 # hidden, and . and .. are not names. How long it may be is the file system's
 # to say (check_folder_name).
 _NOT_IN_FOLDER_NAME = _UNSEEN + _class(chars="/")
 _NOT_AT_FOLDER_ENDS = _NOT_IN_FOLDER_NAME + _NOT_AT_AN_END
-FOLDER_NAME = re.compile(
-    rf"[^{_NOT_AT_FOLDER_ENDS}{_class(chars='.')}]"
-    rf"(?:[^{_NOT_IN_FOLDER_NAME}]*[^{_NOT_AT_FOLDER_ENDS}])?"
+FOLDER_NAME = Rule(
+    re.compile(
+        rf"[^{_NOT_AT_FOLDER_ENDS}{_class(chars='.')}]"
+        rf"(?:[^{_NOT_IN_FOLDER_NAME}]*[^{_NOT_AT_FOLDER_ENDS}])?"
+    ),
+    f"A folder's name may not be empty, begin with a dot, hold a slash, {_UNSEEN_WORDS}, "
+    f"begin or end with {_NOT_AT_AN_END_WORDS}, or be longer than the file system allows.",
 )
+# The rules rc-helper refuses a value by, each with the code it refuses it with;
+# MESSAGES gives each code its rule's own sentence. AUTHOR_NAME is the
+# backend's to check: rc-helper takes no author until it commits.
+RULE_CODES = {"prefix_invalid": PREFIX, "name_invalid": FOLDER_NAME, "email_invalid": EMAIL}
+MESSAGES.update({code: rule.sentence for code, rule in RULE_CODES.items()})
 # The trust prompt refuses an answer that arrives too quickly after the question.
 ANSWER_PACE_SECONDS = 0.5
 START_TIMEOUT = 30.0

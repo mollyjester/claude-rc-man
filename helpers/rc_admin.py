@@ -30,23 +30,27 @@ from pathlib import Path
 
 from helpers import claude_checks
 from helpers import users_file as uf
+from helpers.rules import Rule
 
 VERBS = ("add", "del", "list", "claude-status", "claude-upgrade")
 MIN_UID = 1000
 CLAUDE_INSTALLER_URL = "https://claude.ai/install.sh"
 VERSION_FILE = Path(__file__).resolve().parent / "claude-version"
-VERSION = re.compile(r"\d+\.\d+\.\d+")
+VERSION = Rule(re.compile(r"\d+\.\d+\.\d+"), "A Claude Code version looks like 1.2.3.")
 PROCESS_EXIT_TIMEOUT = 10.0
 
+# The rules rc-admin refuses a value by, each with the code it refuses it with;
+# MESSAGES gives each code its rule's own sentence.
+RULE_CODES = {
+    "linux_invalid": uf.LINUX_NAME,
+    "email_invalid": uf.EMAIL,
+    "version_invalid": VERSION,
+}
 MESSAGES = {
     "usage": "The command line was not understood.",
     "internal_error": "rc-admin failed unexpectedly.",
     "not_root": "rc-admin must run as root.",
-    "linux_invalid": (
-        "Linux user names use lowercase letters, digits, hyphens and underscores, "
-        "starting with a letter."
-    ),
-    "email_invalid": "That is not a valid email address.",
+    **{code: rule.sentence for code, rule in RULE_CODES.items()},
     "email_taken": "That email address already belongs to another user.",
     "linux_taken": "That Linux user already belongs to another email address.",
     "user_exists": (
@@ -62,7 +66,6 @@ MESSAGES = {
     "command_failed": "A system command failed.",
     "claude_install_failed": "Installing Claude Code failed.",
     "users_file_invalid": "The users file is invalid.",
-    "version_invalid": "A Claude Code version looks like 1.2.3.",
     "claude_checks_failed": "That Claude Code version failed rcman's checks; nothing was changed.",
 }
 
@@ -282,7 +285,7 @@ def _claude(info: UserInfo) -> Path:
 
 def _installed_version(system, info: UserInfo) -> str | None:
     code, out = system.as_user(info, [str(_claude(info)), "--version"], check=False)
-    match = VERSION.search(out) if code == 0 else None
+    match = VERSION.regex.search(out) if code == 0 else None
     return match.group(0) if match else None
 
 

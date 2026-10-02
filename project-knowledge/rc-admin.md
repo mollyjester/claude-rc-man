@@ -24,7 +24,10 @@ command-line reference is `--help`.
 
 `rc-admin` prints `{"error": {"code", "message"}}` and exits 1 on failure (2
 for a command line that does not parse). The codes and messages are
-`MESSAGES` in `helpers/rc_admin.py`. `rcman-user` prints the message on
+`MESSAGES` in `helpers/rc_admin.py`; for a value refused by a rule — Linux
+user names and emails from `helpers/users_file.py`, versions from `VERSION` —
+the message is the rule's own sentence, through `RULE_CODES`, as in
+[rc-helper](rc-helper.md#contract). `rcman-user` prints the message on
 stderr; as the administrator to protect from self-deletion it uses
 `SUDO_USER`.
 
