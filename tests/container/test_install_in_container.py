@@ -140,6 +140,19 @@ def service_logs():
 # --- the first installation ---------------------------------------------------------
 
 
+def root_owned(directory: Path) -> list[str]:
+    return sh("find", str(directory), "-user", "root").stdout.split("\n")[:-1]
+
+
+def test_installing_leaves_nothing_owned_by_root_in_the_clone(first_install, tmp_path):
+    """install.sh runs as root from someone's clone; it must not leave root's files there."""
+    planted = tmp_path / "planted"
+    planted.write_text("x")  # this suite runs as root
+    assert str(planted) in root_owned(tmp_path)  # positive control: the check finds root's file
+    assert sh("find", str(CLONE), "-type", "f").stdout  # non-vacuity: the clone has files
+    assert root_owned(CLONE) == []
+
+
 def test_installs_the_clones_commit_as_the_current_release(first_install):
     commit = git("rev-parse", "HEAD", cwd=CLONE)
     assert os.readlink(ROOT / "current") == f"releases/{commit[:12]}"
