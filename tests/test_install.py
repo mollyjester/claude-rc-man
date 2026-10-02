@@ -194,6 +194,30 @@ def test_the_installer_runs_as_install_sh_runs_it_and_writes_nothing_into_the_cl
     assert list(clone.rglob("__pycache__")) == []
 
 
+def test_the_installer_takes_the_clone_off_the_path_once_it_has_the_rules(tmp_path):
+    """Run under -I as install.sh runs it, it leaves nothing of the clone on the path."""
+    import shutil
+
+    clone = tmp_path / "clone"
+    for part in ("installer", "helpers"):
+        shutil.copytree(REPO / part, clone / part, ignore=shutil.ignore_patterns("__pycache__"))
+    probe = (
+        "import runpy, sys\n"
+        f"found = runpy.run_path({str(clone / 'installer' / 'install.py')!r})\n"
+        "print(found['EMAIL'].pattern != '')\n"
+        f"print({str(clone)!r} in sys.path)\n"
+    )
+    proc = subprocess.run(
+        ["/usr/bin/python3", "-I", "-c", probe],
+        env={"PATH": "/usr/bin:/bin"},
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.split() == ["True", "False"]  # it has the rules, and the path is clean
+
+
 # --- rendered files ----------------------------------------------------------------------
 
 SETTINGS = {
