@@ -2,6 +2,8 @@
 
 import time
 
+from rcman.problems import FIELD_MESSAGES
+
 from tests.conftest import ALICE, BOB, as_user, changing
 
 ALPHA = {"path": "projects/alice-project"}
@@ -68,7 +70,9 @@ def test_answer_is_validated_by_the_server(client):
     r = client.post(
         "/api/servers/confirm", json={**ALPHA, "answer": "maybe"}, headers=changing(ALICE)
     )
-    assert r.status_code == 422 and r.json()["errors"][0]["field"] == "answer"
+    assert r.status_code == 422
+    expected = FIELD_MESSAGES["literal_error"].format(expected="'y' or 'n'")
+    assert r.json()["errors"] == [{"field": "answer", "message": expected}]
 
 
 def test_helper_detail_is_passed_on(client, helper_homes):

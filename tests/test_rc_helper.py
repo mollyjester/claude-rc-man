@@ -1572,6 +1572,25 @@ def test_each_rule_is_refused_through_the_command_line_with_its_sentence(env):
         assert out["error"]["message"] == rule.sentence
 
 
+def test_rc_helper_and_the_backend_refuse_a_value_in_the_same_words(env, client):
+    """Every field the backend checks against one of rc-helper's reported rules says
+    what rc-helper says for the same value."""
+    from tests.conftest import ALICE, CALLS, changing
+    from tests.test_problems import request_fields, send
+
+    log_in(env)
+    fields = request_fields(client.app)
+    for code, rule in h.RULE_CODES.items():
+        value = refused_value(rule)
+        args = [part.format(value) for part in RULE_INVOCATIONS[code]]
+        said = helper(env, *args)[1]["error"]["message"]
+        checked = [f for f in fields if f.schema.get("pattern") == rule.anchored]
+        assert checked, f"the backend does not check {code}'s rule"
+        for f in checked:
+            response = send(client, f, value, CALLS, changing(ALICE))
+            assert response.json()["errors"] == [{"field": f.name, "message": said}], f
+
+
 def test_usage_errors_are_json_too(env):
     code, out = helper(env, "no-such-verb")
     assert code == 2 and out["error"]["code"] == "usage"

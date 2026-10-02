@@ -5,6 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from rcman.problems import FIELD_MESSAGES, SETTINGS_NONE_SENT
 
 from helpers import rc_helper, users_file
 from tests.conftest import ALICE, BOB, as_user, changing
@@ -50,12 +51,12 @@ def test_prefix_defaults_to_the_linux_user_and_can_be_changed(client):
 def test_invalid_prefix_is_refused_by_the_server(client, prefix):
     r = patch(client, {"prefix": prefix})
     assert r.status_code == 422
-    assert r.json()["errors"][0]["field"] == "prefix"
+    assert r.json()["errors"] == [{"field": "prefix", "message": rc_helper.PREFIX.sentence}]
 
 
 def test_the_prefix_rule_is_the_helpers_rule():
     pattern = settings_body().model_json_schema()["properties"]["prefix"]["pattern"]
-    assert pattern == f"^{rc_helper.PREFIX.pattern}$"
+    assert pattern == rc_helper.PREFIX.anchored
 
 
 def test_the_commit_author_is_set_and_reported(client):
@@ -137,7 +138,9 @@ def test_the_server_accepts_exactly_the_names_the_helpers_rule_does(client, name
         assert (r.status_code, r.json()["author_name"]) == (200, name)
     else:
         assert r.status_code == 422, name
-        assert [e["field"] for e in r.json()["errors"]] == ["author_name"]
+        assert r.json()["errors"] == [
+            {"field": "author_name", "message": rc_helper.AUTHOR_NAME.sentence}
+        ]
 
 
 def test_the_server_refuses_exactly_the_format_characters_the_helpers_rule_does(client):
@@ -154,15 +157,15 @@ def test_the_server_refuses_exactly_the_format_characters_the_helpers_rule_does(
 
 def test_the_author_rules_are_the_helpers_rules():
     properties = settings_body().model_json_schema()["properties"]
-    assert properties["author_name"]["pattern"] == f"^{rc_helper.AUTHOR_NAME.pattern}$"
-    assert properties["author_email"]["pattern"] == f"^(?:{users_file.EMAIL.pattern})?$"
+    assert properties["author_name"]["pattern"] == rc_helper.AUTHOR_NAME.anchored
+    assert properties["author_email"]["pattern"] == users_file.EMAIL.or_empty().anchored
 
 
 @pytest.mark.parametrize("email", ["no-at", "a@b", "a b@c.d", "bob@example.com\n", " "])
 def test_an_invalid_author_email_is_refused(client, email):
     r = patch(client, {"author_name": "Bob B", "author_email": email})
     assert r.status_code == 422
-    assert [e["field"] for e in r.json()["errors"]] == ["author_email"]
+    assert r.json()["errors"] == [{"field": "author_email", "message": users_file.EMAIL.sentence}]
     assert client.get("/api/me/settings", headers=as_user(BOB)).json() == UNSET  # nothing saved
 
 
@@ -170,7 +173,7 @@ def test_an_invalid_author_email_is_refused(client, email):
 def test_null_is_refused_for_every_setting(client, field):
     r = patch(client, {field: None})
     assert r.status_code == 422
-    assert [e["field"] for e in r.json()["errors"]] == [field]
+    assert r.json()["errors"] == [{"field": field, "message": FIELD_MESSAGES["string_type"]}]
 
 
 def test_the_published_schema_says_what_the_server_accepts(client):
@@ -190,7 +193,9 @@ def test_the_published_schema_says_what_the_server_accepts(client):
 def test_a_change_with_no_settings_is_refused(client):
     r = patch(client, {})
     assert (r.status_code, r.json()["code"]) == (422, "validation_failed")
-    assert r.json()["errors"]
+    assert r.json()["errors"] == [
+        {"field": "request", "message": FIELD_MESSAGES[SETTINGS_NONE_SENT]}
+    ]
 
 
 def test_author_of_is_what_the_settings_report(app, client):

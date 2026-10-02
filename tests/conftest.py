@@ -128,6 +128,9 @@ CALLS = {
     ("POST", "/api/claude/login"): {"json": {}},
     ("POST", "/api/claude/code"): {"json": {"code": "x"}},
     ("POST", "/api/claude/upgrade"): {"json": {"version": "2.2.0"}},
+    ("GET", "/api/folders"): {"params": {"path": "projects"}},
+    ("GET", "/api/servers/output"): {"params": {"path": "projects/alice-project"}},
+    ("GET", "/api/docs/{slug}"): {},
     ("GET", "/api/audit"): {},
     ("GET", "/api/users"): {},
     ("GET", "/api/claude/versions"): {},
@@ -138,7 +141,7 @@ CALLS = {
 
 def concrete(path):
     """A route's path with its parameters filled in."""
-    return path.replace("{linux}", "bob")
+    return path.replace("{linux}", "bob").replace("{slug}", "servers")
 
 
 def as_user(email):

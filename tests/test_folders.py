@@ -65,7 +65,7 @@ def test_the_server_accepts_exactly_the_names_the_helpers_rule_does(client, name
         assert (r.status_code, r.json()) == (200, {"created": f"projects/{name}"})
     else:
         assert r.status_code == 422, name
-        assert [e["field"] for e in r.json()["errors"]] == ["name"]
+        assert r.json()["errors"] == [{"field": "name", "message": rc_helper.FOLDER_NAME.sentence}]
 
 
 def test_the_server_refuses_exactly_the_characters_the_helpers_rule_does(client):
@@ -85,7 +85,7 @@ def test_the_folder_name_rule_is_the_helpers_rule():
     from rcman.routers.folders import NewFolder
 
     properties = NewFolder.model_json_schema()["properties"]
-    assert properties["name"]["pattern"] == f"^{rc_helper.FOLDER_NAME.pattern}$"
+    assert properties["name"]["pattern"] == rc_helper.FOLDER_NAME.anchored
 
 
 def test_a_name_the_file_system_cannot_take_is_the_helpers_refusal(client, helper_homes):
