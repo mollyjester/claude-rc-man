@@ -26,6 +26,13 @@ test("every state of the account says whether a server can start, and why not", 
   expect(reasons.some((r) => typeof r === "string" && r.length > 0)).toBe(true);
 });
 
+test("an expiring or expired sign-in still starts a server: rc-helper refuses only an account not signed in", () => {
+  expect(START_REASON.expiring).toBeNull();
+  expect(START_REASON.expired).toBeNull();
+  expect(START_REASON.connected).toBeNull();
+  expect(START_REASON.not_connected).toBe(m.startNotConnected);
+});
+
 test("connecting: link, then code, then connected", async () => {
   let connected = false;
   const fake = api(() => (connected ? CONNECTED : NOT_CONNECTED), {

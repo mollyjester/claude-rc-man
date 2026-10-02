@@ -9,6 +9,9 @@ import { renderApp } from "./test/render";
 
 const entry = (path: string, has_children = false) => ({ name: path.split("/").pop(), path, has_children });
 
+// A folder whose name holds what an address treats specially.
+const ODD = "projects/gamma/a&b #c?d e";
+
 // Each folder's contents, by its path; "" is the home folder.
 const FOLDERS: Record<string, { path: string; entries: unknown[] }> = {
   "": { path: "", entries: [entry("projects", true), entry("proj")] },
@@ -16,7 +19,8 @@ const FOLDERS: Record<string, { path: string; entries: unknown[] }> = {
     path: "projects",
     entries: [entry("projects/alpha"), entry("projects/beta"), entry("projects/gamma", true)],
   },
-  "projects/gamma": { path: "projects/gamma", entries: [entry("projects/gamma/deep")] },
+  "projects/gamma": { path: "projects/gamma", entries: [entry("projects/gamma/deep"), entry(ODD, true)] },
+  [ODD]: { path: ODD, entries: [entry(`${ODD}/inner`)] },
 };
 
 function server(path: string, state: string, extra: Record<string, unknown> = {}) {
@@ -127,6 +131,7 @@ test("until the Claude account's state is known, neither Start nor a reason is s
   renderApp("/?folder=projects/beta");
   const opened = await panel("projects/beta");
   expect(await within(await summary()).findByText(m.runningEmpty)).toBeInTheDocument(); // the servers are listed
+  expect(within(opened).getByText(m.loading)).toBeInTheDocument();
   expect(within(opened).queryByRole("button", { name: m.start })).not.toBeInTheDocument();
   for (const reason of Object.values(START_REASON)) {
     if (reason) expect(within(opened).queryByText(reason)).not.toBeInTheDocument();
@@ -238,6 +243,39 @@ test("a folder selected from the address is shown in the tree", async () => {
   );
   expect(await folder("alpha")).toHaveAttribute("aria-current", "true");
   expect(within(await tree()).getByRole("button", { name: m.collapse("projects") })).toBeInTheDocument();
+});
+
+test("a folder whose name holds &, #, ? and spaces keeps its place in the address", async () => {
+  const address = "/?folder=projects/gamma/a%26b%20%23c%3Fd%20e";
+  dashboard([]);
+  const { location } = renderApp(`${address}/inner`);
+  const crumbs = within(await panel(`${ODD}/inner`)).getByRole("navigation", { name: m.breadcrumb });
+  const link = within(crumbs).getByRole("link", { name: "a&b #c?d e" });
+  expect(link).toHaveAttribute("href", address);
+  await userEvent.click(link);
+  expect(await panel(ODD)).toBeInTheDocument();
+  expect(location().search).toBe(address.slice(1));
+  cleanup();
+
+  dashboard([]);
+  renderApp(address); // as a reload would
+  expect(await panel(ODD)).toBeInTheDocument();
+  expect(await folder("a&b #c?d e")).toHaveAttribute("aria-current", "true");
+});
+
+test("until the servers are listed, the panel says it is loading", async () => {
+  dashboard([], { "GET /api/servers": () => new Promise(() => {}) });
+  renderApp("/?folder=projects/beta");
+  const opened = await panel("projects/beta");
+  expect(await screen.findByText(m.claudeConnectedAs("alice@claude.test"))).toBeInTheDocument(); // the account is known
+  expect(within(opened).getByText(m.loading)).toBeInTheDocument();
+  expect(within(opened).queryByRole("button", { name: m.start })).not.toBeInTheDocument();
+});
+
+test("a closed folder holding a server with a problem and one waiting shows the problem", async () => {
+  dashboard([server("projects/alpha", "exited"), server("projects/beta", "trust_prompt")]);
+  renderApp();
+  expect(await folder("projects")).toHaveAccessibleDescription(m.kinds.problem);
 });
 
 test.each(Object.entries(KIND))("a folder whose server is %s carries the %s dot", async (state, kind) => {
