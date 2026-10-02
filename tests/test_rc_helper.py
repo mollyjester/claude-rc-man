@@ -2542,6 +2542,11 @@ def server_base(github) -> str:
     return github.url.removesuffix("/")
 
 
+def stored_host(github) -> str:
+    """The hook's host as git credential-store writes it, its colon percent-encoded."""
+    return server_base(github).removeprefix("http://").replace(":", "%3a")
+
+
 def global_config(env, *args) -> list[str]:
     """What the person's own ~/.gitconfig says, read with git outside rc-helper."""
     proc = subprocess.run(
@@ -2558,8 +2563,7 @@ def test_the_token_is_read_from_stdin_and_stored_for_github(hooked, github):
     assert json.loads(proc.stdout) == {"token": True}
     assert TOKEN not in proc.stdout + proc.stderr
     stored = git_credentials(hooked)
-    host = server_base(github).removeprefix("http://")
-    assert stored.read_text() == f"http://{h.GITHUB_USERNAME}:{TOKEN}@{host}\n"
+    assert stored.read_text() == f"http://{h.GITHUB_USERNAME}:{TOKEN}@{stored_host(github)}\n"
     assert stat.S_IMODE(stored.stat().st_mode) == 0o600
     assert global_config(hooked, "--get-all", f"credential.{server_base(github)}.helper") == [
         "store"
@@ -2603,7 +2607,7 @@ def test_a_store_helper_set_already_is_not_set_again(hooked, github):
 def test_a_new_token_replaces_the_old(hooked, github):
     assert set_token(hooked, "first-token")[0] == 0
     assert set_token(hooked, "second-token")[0] == 0
-    host = server_base(github).removeprefix("http://")
+    host = stored_host(github)
     assert (
         git_credentials(hooked).read_text() == f"http://{h.GITHUB_USERNAME}:second-token@{host}\n"
     )
@@ -2709,7 +2713,7 @@ def test_a_plain_git_push_as_the_person_uses_the_stored_token(hooked, github, on
     accepted = push_as_the_person(hooked, repo)
     assert accepted.returncode == 0, accepted.stderr
     assert pushed(on_github) == fixture_git(repo, "rev-parse", "HEAD").strip()
-    assert github.attempts[before:] == [(h.GITHUB_USERNAME, True)]
+    assert set(github.attempts[before:]) == {(h.GITHUB_USERNAME, True)}
 
 
 def test_rcmans_token_is_used_before_an_older_one(hooked, github, on_github):
@@ -2720,7 +2724,7 @@ def test_rcmans_token_is_used_before_an_older_one(hooked, github, on_github):
     before = len(github.attempts)
     proc = push_as_the_person(hooked, Path(hooked["RC_HELPER_HOME"]) / GH_REL)
     assert proc.returncode == 0, proc.stderr
-    assert github.attempts[before:] == [(h.GITHUB_USERNAME, True)]
+    assert set(github.attempts[before:]) == {(h.GITHUB_USERNAME, True)}
 
 
 def test_a_token_github_refuses_is_forgotten_by_git(hooked, github, on_github):

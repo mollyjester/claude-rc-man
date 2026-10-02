@@ -25,6 +25,8 @@ can be read with `journalctl` on the server.
 | `git.switch` | switches to a branch | the repository's folder |
 | `git.branch` | makes a branch and switches to it | the repository's folder |
 | `git.fetch` | refreshes the remote branches with **Refresh branches** | the repository's folder |
+| `github.token` | adds or replaces their GitHub token (see [Git](git.md)) | none — the token is never recorded |
+| `github.forget` | removes their GitHub token | none |
 | `settings.update` | changes their settings (see [Settings](settings.md)) | the settings they sent, as JSON; none when they were refused |
 | `claude.login` | starts connecting their Claude account | the Claude account's email address |
 | `claude.connect` | finishes connecting with Claude's code | none — the code is never recorded |

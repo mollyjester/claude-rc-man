@@ -65,6 +65,9 @@ VERBS = (
     "git-switch",
     "git-branch-new",
     "git-fetch",
+    "github-token",
+    "github-status",
+    "github-forget",
 )
 
 MESSAGES = {
@@ -282,6 +285,14 @@ BRANCH_NAME = Rule(
     "A branch name must not be empty, begin with a hyphen or hold a null character, "
     f"and may be at most {MAX_BRANCH_NAME_LENGTH} characters long.",
 )
+# GitHub's tokens are much shorter; this leaves room for longer ones to come.
+MAX_GITHUB_TOKEN_LENGTH = 255
+# Not checked against GitHub's own shapes of token: GitHub says what it takes.
+GITHUB_TOKEN = Rule(
+    re.compile(rf"[\x21-\x7E]{{1,{MAX_GITHUB_TOKEN_LENGTH}}}"),
+    "A GitHub token is one line of visible characters, with no spaces, "
+    f"at most {MAX_GITHUB_TOKEN_LENGTH} characters long.",
+)
 # The rules rc-helper refuses a value by, each with the code it refuses it with;
 # MESSAGES gives each code its rule's own sentence.
 RULE_CODES = {
@@ -292,6 +303,7 @@ RULE_CODES = {
     "author_name_invalid": AUTHOR_NAME,
     "message_invalid": COMMIT_MESSAGE,
     "branch_name_invalid": BRANCH_NAME,
+    "token_invalid": GITHUB_TOKEN,
 }
 MESSAGES.update({code: rule.sentence for code, rule in RULE_CODES.items()})
 # The trust prompt refuses an answer that arrives too quickly after the question.
@@ -773,6 +785,13 @@ PATHSPEC_FROM_STDIN = ["--pathspec-from-file=-", "--pathspec-file-nul"]
 # the JSON around it.
 MAX_FILE_LIST_BYTES = MAX_FILES_PER_CALL * (MAX_PATH_LENGTH * 6 + 4) + 2
 MAX_COMMIT_MESSAGE_BYTES = MAX_COMMIT_MESSAGE_LENGTH * 4
+# The most a token can take on stdin: each character at its longest in UTF-8, so that
+# the rule, not the cut, refuses one too long; and a line's end.
+MAX_GITHUB_TOKEN_BYTES = MAX_GITHUB_TOKEN_LENGTH * 4 + 2
+# The username a GitHub token is stored with. GitHub takes a token as the password
+# under any username; that it takes this one, for both kinds of token, is checked by
+# hand (project-knowledge/real-claude-checklist.md).
+GITHUB_USERNAME = "x-access-token"
 
 
 def read_files(data: bytes) -> list[str]:
@@ -921,6 +940,19 @@ def read_message(data: bytes) -> bytes:
     if len(message) > MAX_COMMIT_MESSAGE_LENGTH or not COMMIT_MESSAGE.fullmatch(message):
         raise HelperError("message_invalid")
     return data
+
+
+def read_token(data: bytes) -> bytes:
+    """A GitHub token as read on stdin: UTF-8, one line, and one GITHUB_TOKEN accepts."""
+    if len(data) > MAX_GITHUB_TOKEN_BYTES:
+        raise HelperError("token_invalid")
+    try:
+        token = data.decode("utf-8").removesuffix("\n")
+    except UnicodeDecodeError:
+        raise HelperError("token_invalid") from None
+    if not GITHUB_TOKEN.fullmatch(token):
+        raise HelperError("token_invalid")
+    return token.encode("ascii")
 
 
 # --- verbs ----------------------------------------------------------------------------
@@ -1352,6 +1384,7 @@ class Helper:
     # --- git ---------------------------------------------------------------------------
 
     def _git(self, repo: Path, args: list[str], deadline: float, **kwargs) -> str:
+        """git in ``repo``, or in the home folder for what is not about a repository."""
         return git_run.Git(git_env(self.cfg)).run(repo, args, deadline=deadline, **kwargs)
 
     def _git_records(self, repo: Path, args: list[str], sep: bytes, deadline: float):
@@ -1516,6 +1549,83 @@ class Helper:
         self._git(repo, ["fetch", "--prune"], deadline)
         return {"path": rel}
 
+    # --- the GitHub token -------------------------------------------------------------
+    #
+    # The token is git's own credential for GitHub, kept by git's store helper in the
+    # person's ~/.git-credentials, so that a git push anywhere as the person - from a
+    # Claude session too - uses it. It is written and read with git credential-store
+    # itself, not git credential approve, so that it never reaches the person's other
+    # credential helpers, and forgetting it erases rcman's entry only. Under the
+    # RC_HELPER_GITHUB hook all of it is for the hook's address (git_env).
+
+    def _credential(self, password: bytes | None = None) -> bytes:
+        """rcman's GitHub credential as git credential-store reads one, on stdin."""
+        protocol, _, rest = self.cfg.github.partition("://")
+        host = rest.split("/", 1)[0]
+        fields = f"protocol={protocol}\nhost={host}\nusername={GITHUB_USERNAME}\n".encode()
+        if password is not None:
+            fields += b"password=" + password + b"\n"
+        return fields + b"\n"
+
+    def _helper_key(self) -> str:
+        """The configuration key that names git's credential helpers for GitHub."""
+        return f"credential.{self.cfg.github.removesuffix('/')}.helper"
+
+    def _helpers(self, deadline: float) -> list[str]:
+        """The credential helpers the person's global configuration names for GitHub."""
+        args = ["config", "--global", "--get-all", self._helper_key()]
+        try:
+            return self._git(self.cfg.home, args, deadline).split("\n")[:-1]
+        except git_run.GitFailed as error:
+            if error.exit_code == 1:  # git config's answer for a key that is not set
+                return []
+            raise
+
+    def _token_stored(self, deadline: float) -> bool:
+        """Whether rcman's token is stored, and git is told to use the store helper for it.
+
+        The answer is read for whether it holds a password; the password itself is
+        dropped at once and never part of an answer or a refusal.
+        """
+        answer = self._git(
+            self.cfg.home,
+            ["credential-store", "get"],
+            deadline,
+            input=self._credential(),
+            secret_output=True,
+        )
+        stored = any(line.startswith("password=") for line in answer.split("\n"))
+        del answer
+        return stored and "store" in self._helpers(deadline)
+
+    @git_verb()
+    def github_token(self, deadline: float, data: bytes) -> dict:
+        """Store the token read on stdin as git's credential for GitHub, in place of any
+        rcman stored before, and have git use the store helper for GitHub."""
+        token = read_token(data)
+        self._git(
+            self.cfg.home,
+            ["credential-store", "store"],
+            deadline,
+            input=self._credential(token),
+            secret_output=True,
+        )
+        del token
+        if "store" not in self._helpers(deadline):
+            args = ["config", "--global", "--add", self._helper_key(), "store"]
+            self._git(self.cfg.home, args, deadline)
+        return {"token": True}
+
+    @git_verb()
+    def github_status(self, deadline: float) -> dict:
+        return {"token": self._token_stored(deadline)}
+
+    @git_verb()
+    def github_forget(self, deadline: float) -> dict:
+        """Erase rcman's token; the store helper line is left, as are other credentials."""
+        self._git(self.cfg.home, ["credential-store", "erase"], deadline, input=self._credential())
+        return {"token": False}
+
     def _folder(self, rel: str) -> tuple[Path, str]:
         folder = resolve_folder(self.cfg.home, rel)
         return folder, relative(self.cfg.home, folder)
@@ -1608,6 +1718,11 @@ def _parser() -> argparse.ArgumentParser:
     new = verbs.add_parser("git-branch-new", help="make a branch here and switch to it")
     new.add_argument("path")
     new.add_argument("--name", required=True)
+    verbs.add_parser(
+        "github-token", help="store a token as git's credential for GitHub; read from stdin"
+    )
+    verbs.add_parser("github-status", help="whether a GitHub token is stored for git")
+    verbs.add_parser("github-forget", help="remove the GitHub token rcman stored")
     return parser
 
 
@@ -1634,6 +1749,10 @@ def _dispatch(helper: Helper, args: argparse.Namespace, stdin) -> dict:
     if v == "auth-code":
         return helper.auth_code(stdin.readline())
     raw = getattr(stdin, "buffer", stdin)  # what git is given is passed on as bytes
+    if v == "github-token":
+        return helper.github_token(raw.read(MAX_GITHUB_TOKEN_BYTES + 1))
+    if v in ("github-status", "github-forget"):
+        return getattr(helper, v.replace("-", "_"))()
     if v in ("git-status", "git-branches", "git-fetch"):
         return getattr(helper, v.replace("-", "_"))(args.path)
     if v in ("git-stage", "git-unstage"):

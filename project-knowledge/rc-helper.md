@@ -52,6 +52,9 @@ command-line reference is `rc-helper --help` and `rc-helper <verb> --help`.
 | `rc-helper git-switch <path> --branch=<b> [--remote]` | Switches to the local branch `<b>`, or with `--remote` makes a local branch tracking the remote-tracking branch `<b>` and switches to it; `branch_not_found` when there is no such branch of that kind. `<b>` must match `BRANCH_NAME` |
 | `rc-helper git-branch-new <path> --name=<b>` | Makes the branch `<b>` at the current commit and switches to it. `<b>` must match `BRANCH_NAME`, and is `branch_invalid` unless `git check-ref-format --branch` takes it exactly as given |
 | `rc-helper git-fetch <path>` | `git fetch --prune` from the default remote |
+| `rc-helper github-token` | Stores the token read from stdin as git's credential for GitHub, in place of any rcman stored before, and has git use its store helper for GitHub. The token must match `GITHUB_TOKEN`. See [GitHub token](#github-token) |
+| `rc-helper github-status` | Whether a token rcman stored is there and git is told to use the store helper for GitHub, as `token` |
+| `rc-helper github-forget` | Erases the token rcman stored, and nothing else |
 
 ## Deleting a folder
 
@@ -215,6 +218,34 @@ running git are `helpers/git_run.py`, tested by `tests/test_git_run.py`.
   stdin (`git commit -F -`); it never appears in any argv or answer. The
   author and committer reach git as `GIT_AUTHOR_*` and `GIT_COMMITTER_*`,
   which beat the person's `user.name` and `user.email`.
+
+## GitHub token
+
+The token is git's own credential for GitHub in the person's home, so that
+any git push as the person, a Claude session's among them, uses it.
+
+- **Where.** `git credential-store store` writes it, read from stdin, for
+  the protocol and host of `Config.github` with the username
+  `GITHUB_USERNAME`, into the file git's store helper keeps,
+  `~/.git-credentials`, readable by the person only. It replaces an entry
+  rcman stored before and goes first in the file, so git's store helper
+  offers it before any other credential stored there for GitHub. Then
+  `credential.<Config.github>.helper store` is added to the person's
+  `~/.gitconfig` unless that helper is listed there already. Credential
+  helpers the person has set themselves stay, and git asks them in the order
+  its configuration lists them.
+- **Not through the person's helpers.** rc-helper runs `git credential-store`
+  itself, not `git credential approve` and `reject`, so that the token never
+  reaches the person's other credential helpers, and `github-forget`
+  erases only the entry with rcman's username for that host. It leaves the
+  `store` helper in `~/.gitconfig`.
+- **Status.** `github-status` asks `git credential-store get` for rcman's
+  entry, keeps only whether a password came back, and checks that the
+  `store` helper is listed; its answer from git is read with `secret_output`,
+  so that a refusal could not carry it.
+- **Never shown.** The token is in no argv, answer or refusal.
+- **Refused by GitHub.** When GitHub refuses the token, git erases it
+  through the store helper itself, so that `github-status` reports none.
 
 ## sudo
 

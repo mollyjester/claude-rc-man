@@ -79,6 +79,7 @@ HELPER_STATUS = {
     "branch_invalid": 400,
     "branch_name_invalid": 400,
     "branch_not_found": 404,
+    "token_invalid": 400,
 }
 ADMIN_STATUS = {
     "usage": 500,

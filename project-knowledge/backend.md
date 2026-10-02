@@ -21,8 +21,9 @@ the OpenAPI description it serves at `/api/openapi`.
 | `helpers_client.py` | Calling `rc-helper` and `rc-admin`, and mapping their errors to HTTP statuses |
 | `everyone.py` | Everyone's servers, for administrators: one `rc-helper list` per person, side by side |
 | `routes.py` | The app's routes as FastAPI resolves them after including routers, and which of them are for administrators |
-| `routers/` | One module per area: `me`, `folders`, `git`, `servers`, `claude`, `users`, `audit_log`, `attention`, `docs` |
+| `routers/` | One module per area: `me`, `folders`, `git`, `github`, `servers`, `claude`, `users`, `audit_log`, `attention`, `docs` |
 | `routers/git.py` | The git repositories in the person's home, under `/api/git`: status, branches, stage, unstage, commit, switch, a new branch and fetch, each one rc-helper git verb (see [Git](#git)) |
+| `routers/github.py` | The person's GitHub token, under `/api/github`: whether one is stored, storing one, and removing it (see [GitHub token](#github-token)) |
 | `routers/me.py` | Each person's own settings, changed with `PATCH /api/me/settings`, which changes only the settings sent; `prefix_of` and `author_of` are how the rest of the backend reads them |
 
 ## Requests
@@ -138,6 +139,16 @@ then refused with `author_not_set`, without asking the helper, and
 otherwise passes the name and address as `--author-name` and
 `--author-email`. git's refusals, a network failure among them, come back
 as `git_failed` with git's own words as `git`.
+
+## GitHub token
+
+`routers/github.py` stores, reports and removes the person's GitHub token
+through rc-helper's `github-token`, `github-status` and `github-forget`
+(see [rc-helper.md](rc-helper.md#github-token)). `POST /api/github/token`
+validates the token by `rc_helper.GITHUB_TOKEN` and passes it to the helper
+on stdin only; it is never recorded or logged, so neither `github.token` nor
+`github.forget` has an audit target. `GET /api/github` answers whether a
+token is stored, never the token.
 
 ## Attention
 

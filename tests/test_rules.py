@@ -124,6 +124,7 @@ def _limits():
         (users_file.LINUX_NAME, users_file.MAX_LINUX_NAME_LENGTH),
         (rc_helper.AUTHOR_NAME, rc_helper.MAX_AUTHOR_NAME_LENGTH),
         (rc_helper.PATH, rc_helper.MAX_PATH_LENGTH),
+        (rc_helper.GITHUB_TOKEN, rc_helper.MAX_GITHUB_TOKEN_LENGTH),
     ]
 
 
