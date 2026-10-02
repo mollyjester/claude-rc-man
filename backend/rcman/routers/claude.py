@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 from helpers import rc_admin
 from helpers import users_file as uf
 from rcman.audit import Record, Recorder
-from rcman.helpers_client import call_admin, call_helper
+from rcman.helpers_client import ADMIN_TIMEOUT, call_admin, call_helper
 from rcman.identity import Identity, admin_user, current_user
 
 router = APIRouter(prefix="/api/claude", tags=["claude"])
@@ -80,10 +80,10 @@ def code(
     return _status(request, record.identity)
 
 
-def version_report(request: Request) -> dict:
+def version_report(request: Request, timeout: float = ADMIN_TIMEOUT) -> dict:
     """rc-admin's claude-status, with who differs from the approved version and whether
     the approved version is the tested one."""
-    status = call_admin(request.app.state.admin, ["claude-status"])
+    status = call_admin(request.app.state.admin, ["claude-status"], timeout=timeout)
     differs = [u["linux"] for u in status["users"] if u["installed"] != status["approved"]]
     return {**status, "differs": differs, "untested": status["approved"] != status["tested"]}
 

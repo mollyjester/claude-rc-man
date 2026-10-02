@@ -99,6 +99,9 @@ and folder, from `everyone.everyone`; and, from the same report as
 `/api/claude/versions`, who differs from the approved version and whether it is
 untested. The two run side by side, and when the version report fails the
 unrecognised screens are still reported, with the failure as `versions_error`.
+The version report has its own timeout, `ATTENTION_VERSIONS_TIMEOUT_SECONDS` in
+`everyone.py`, past which it is `helper_timeout`; when the listing fails, the
+request fails at once without waiting for the version report.
 It is built on every request and never stored, and it carries no screen text.
 The frontend asks for it when the app loads and on every change of page. A server action that ends on an unrecognised screen sets
 `Record.result` to `unrecognised_screen`, which the audit row records in place

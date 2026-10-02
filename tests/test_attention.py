@@ -134,3 +134,53 @@ def test_the_listing_and_the_version_report_run_side_by_side(client, admin_runne
     client.app.state.admin = admin
     r = attention(client)
     assert r.status_code == 200, r.text
+
+
+def test_a_slow_version_report_is_a_timeout_not_a_wait(client, monkeypatch):
+    import threading
+    import time
+
+    from rcman import everyone
+
+    monkeypatch.setattr(everyone, "ATTENTION_VERSIONS_TIMEOUT_SECONDS", 0.5)
+    monkeypatch.setattr(everyone, "everyone", lambda request: [])
+    seen, release = {}, threading.Event()
+
+    def admin(args, timeout=None):
+        seen["timeout"] = timeout
+        release.wait(5)  # a stand-in that does not honour its timeout
+        return 0, CLEAN_VERSIONS
+
+    client.app.state.admin = admin
+    started = time.monotonic()
+    try:
+        r = attention(client)
+        elapsed = time.monotonic() - started
+    finally:
+        release.set()
+    assert seen["timeout"] == 0.5  # the version report's own timeout reaches rc-admin
+    assert elapsed < 0.5 + 1.5
+    assert r.status_code == 200 and r.json()["versions_error"]["code"] == "helper_timeout"
+
+
+def test_a_failing_listing_does_not_wait_for_the_version_report(client, monkeypatch):
+    import threading
+    import time
+
+    from rcman import everyone
+    from rcman.problems import Problem
+
+    def listing(request):
+        raise Problem("users_file_invalid")
+
+    release = threading.Event()
+    monkeypatch.setattr(everyone, "everyone", listing)
+    client.app.state.admin = lambda args, timeout=None: (release.wait(5), (0, CLEAN_VERSIONS))[1]
+    started = time.monotonic()
+    try:
+        r = attention(client)
+        elapsed = time.monotonic() - started
+    finally:
+        release.set()
+    assert (r.status_code, r.json()["code"]) == (500, "users_file_invalid")
+    assert elapsed < 1.5

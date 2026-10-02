@@ -18,6 +18,8 @@ from rcman.problems import MESSAGES, Problem
 
 EVERYONE_WORKERS = 8
 EVERYONE_TIMEOUT_SECONDS = 15.0
+# How long the attention report waits for rc-admin's version report.
+ATTENTION_VERSIONS_TIMEOUT_SECONDS = 15.0
 # What is passed on about each server: never its screen, which may show anything
 # the person's Claude showed, nor its claude.ai address, which is theirs alone.
 SERVER_FIELDS = ("path", "state", "session_name", "exit_code")
