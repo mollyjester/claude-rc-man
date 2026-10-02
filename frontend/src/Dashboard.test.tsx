@@ -4,7 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { CONNECTION_STATES, START_REASON } from "./Claude";
 import { ACTIONS, KIND, LABELS, PRIMARY } from "./Servers";
 import { m } from "./messages";
-import { CONNECTED, ME, type Routes, fakeApi, problem } from "./test/fakeApi";
+import { CONNECTED, ME, NOT_CONNECTED, type Routes, fakeApi, problem } from "./test/fakeApi";
 import { renderApp } from "./test/render";
 
 const entry = (path: string, has_children = false) => ({ name: path.split("/").pop(), path, has_children });
@@ -111,8 +111,6 @@ test("a folder with no server offers Start, which starts one there", async () =>
   expect(await within(opened).findByRole("article", { name: "projects/beta" })).toBeInTheDocument();
   expect(within(opened).queryByRole("button", { name: m.start })).not.toBeInTheDocument();
 });
-
-const NOT_CONNECTED = { connection: "not_connected", account: null, login_expires_at: null };
 
 test.each(CONNECTION_STATES)("with the Claude account %s, Start is offered only if a server can start", async (state) => {
   dashboard([], { "GET /api/claude": { ...CONNECTED, connection: state } });

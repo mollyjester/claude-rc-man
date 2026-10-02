@@ -4,7 +4,7 @@ import userEvent from "@testing-library/user-event";
 
 import { m } from "./messages";
 import { FIELDS } from "./Settings";
-import { ADMIN_USER, NOTHING_TO_ATTEND, SETTINGS, fakeApi } from "./test/fakeApi";
+import { ADMIN_USER, NOT_CONNECTED, NOTHING_TO_ATTEND, SETTINGS, fakeApi } from "./test/fakeApi";
 import { renderApp } from "./test/render";
 
 const RULE_ATTRIBUTES = ["required", "pattern", "min", "max", "minlength", "maxlength", "step"];
@@ -12,7 +12,7 @@ const RULE_ATTRIBUTES = ["required", "pattern", "min", "max", "minlength", "maxl
 function api() {
   return fakeApi({
     "GET /api/me": ADMIN_USER,
-    "GET /api/claude": { connection: "not_connected", account: null, login_expires_at: null },
+    "GET /api/claude": NOT_CONNECTED,
     "GET /api/me/settings": SETTINGS,
     "GET /api/users": { users: [] },
     "GET /api/claude/versions": { approved: "1.0.0", tested: "1.0.0", untested: false, differs: [], users: [] },

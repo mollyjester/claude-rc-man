@@ -60,6 +60,8 @@ export const CONNECTED = {
   account: { email: "alice@claude.test", org_name: "Org", subscription_type: "max" },
   login_expires_at: "2030-01-01T00:00:00+00:00",
 };
+// What /api/claude answers before anyone has connected a Claude account.
+export const NOT_CONNECTED = { connection: "not_connected", account: null, login_expires_at: null };
 // What /api/me/settings answers for someone who has set nothing.
 export const SETTINGS = { prefix: "alice", author_name: "", author_email: "", effective_author: null };
 // What /api/attention answers when nothing needs an administrator's attention.

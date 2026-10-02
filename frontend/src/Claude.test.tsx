@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 
 import { CONNECTION_STATES, START_REASON } from "./Claude";
 import { m } from "./messages";
-import { CONNECTED, ME, type Reply, type Routes, fakeApi, problem } from "./test/fakeApi";
+import { CONNECTED, ME, NOT_CONNECTED, type Reply, type Routes, fakeApi, problem } from "./test/fakeApi";
 import { renderApp } from "./test/render";
 
 function api(claude: Reply, extra: Routes = {}) {
@@ -15,8 +15,6 @@ function api(claude: Reply, extra: Routes = {}) {
     ...extra,
   });
 }
-
-const NOT_CONNECTED = { connection: "not_connected", account: null, login_expires_at: null };
 
 test("every state of the account says whether a server can start, and why not", () => {
   expect(Object.keys(START_REASON).sort()).toEqual([...CONNECTION_STATES].sort());
