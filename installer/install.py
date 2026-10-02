@@ -32,14 +32,18 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 # install.sh runs this in isolated mode, which puts nothing of the clone on the
 # path; the rules for addresses and Linux user names are the helpers'. It runs as
-# root, so it writes no bytecode into the clone, which is someone else's.
-if str(REPO) not in sys.path:
+# root, so it writes no bytecode into the clone, which is someone else's, and
+# takes the clone off the path again once it has them.
+_on_path = str(REPO) in sys.path
+if not _on_path:
     sys.path.insert(0, str(REPO))
 _write_bytecode, sys.dont_write_bytecode = sys.dont_write_bytecode, True
 try:
     from helpers.users_file import EMAIL, LINUX_NAME
 finally:
     sys.dont_write_bytecode = _write_bytecode
+    if not _on_path:
+        sys.path.remove(str(REPO))
 
 TEMPLATES_DIR = Path(__file__).resolve().parent / "templates"
 
