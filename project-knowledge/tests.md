@@ -24,7 +24,7 @@ reads is only what a test plants. `tests/test_container_suite.py` runs the root-
 suite in `tests/container/` inside a throwaway Ubuntu container, through
 `docker` or `sudo -n docker`; it skips when neither works, unless
 `RCMAN_REQUIRE_CONTAINER=1`, which `make check` sets. It runs three, each in a
-fresh container: user management, with folders made and deleted through sudo;
+fresh container: user management, with folders made and deleted and git run, with the person's own configuration, through sudo;
 a real installation (see
 [installer.md](installer.md)); and the whole stack in a browser.
 Run it from a full clone, not a git worktree: it mounts the checkout into the
