@@ -16,6 +16,7 @@ import pytest
 
 from devtools import fake_claude as fake
 from devtools import record_claude as rec
+from helpers import git_run
 from helpers import rc_helper as h
 from tests.github_server import UNREACHABLE
 
@@ -1547,6 +1548,7 @@ RULE_INVOCATIONS = {
     ),
     "path_invalid": (("output", "--", "{}"), None),
     "branch_name_invalid": (("git-switch", "--branch={}", "--", "projects/alpha"), None),
+    "token_invalid": (("github-token",), "{}"),
 }
 # Rules rc-helper holds without reporting them itself: subject -> why.
 RULES_NOT_REPORTED: dict[str, str] = {}
@@ -2381,20 +2383,27 @@ def test_sigterm_ends_git_and_its_hooks(env, repo, tmp_path):
         pytest.fail(f"the hook {pid} outlived the helper")
 
 
+IN_REPO = ("--", REPO_REL)
+# Every verb that runs git: its command line and what it reads on stdin.
 GIT_VERBS = [
-    (("git-status",), None),
-    (("git-branches",), None),
-    (("git-stage",), '["a.txt"]'),
-    (("git-unstage",), '["a.txt"]'),
-    (("git-commit", "--author-name=Ann", "--author-email=ann@example.com"), "m"),
-    (("git-switch", "--branch=main"), None),
-    (("git-branch-new", "--name=new"), None),
-    (("git-fetch",), None),
+    (("git-status", *IN_REPO), None),
+    (("git-branches", *IN_REPO), None),
+    (("git-stage", *IN_REPO), '["a.txt"]'),
+    (("git-unstage", *IN_REPO), '["a.txt"]'),
+    (("git-commit", "--author-name=Ann", "--author-email=ann@example.com", *IN_REPO), "m"),
+    (("git-switch", "--branch=main", *IN_REPO), None),
+    (("git-branch-new", "--name=new", *IN_REPO), None),
+    (("git-fetch", *IN_REPO), None),
+    (("github-token",), "a-token\n"),
+    (("github-status",), None),
+    (("github-forget",), None),
 ]
 
 
 def test_every_git_verb_is_driven_here():
-    assert {args[0] for args, _ in GIT_VERBS} == {v for v in h.VERBS if v.startswith("git-")}
+    git_verbs = {v for v in h.VERBS if v.startswith(("git-", "github-"))}
+    assert {"git-status", "github-token"} <= git_verbs  # non-vacuity
+    assert {args[0] for args, _ in GIT_VERBS} == git_verbs
 
 
 @pytest.mark.parametrize(("args", "stdin"), GIT_VERBS, ids=[a[0] for a, _ in GIT_VERBS])
@@ -2402,12 +2411,12 @@ def test_git_verbs_wait_for_no_folder_being_deleted(env, repo, args, stdin):
     write(repo / "a.txt")
     fd = hold_the_lock(env, exclusive=True)
     try:
-        assert error_code(env, *args, "--", REPO_REL, stdin=stdin) == "folder_busy"
+        assert error_code(env, *args, stdin=stdin) == "folder_busy"
     finally:
         os.close(fd)
     shared = hold_the_lock(env, exclusive=False)
     try:  # positive control: they share the lock with each other
-        code, out = helper(env, *args, "--", REPO_REL, stdin=stdin)
+        code, out = helper(env, *args, stdin=stdin)
         assert out.get("error", {}).get("code") != "folder_busy", out
     finally:
         os.close(shared)
@@ -2506,3 +2515,252 @@ def test_the_github_hook_sends_git_for_github_to_the_tests_server(env, hooked, o
     ok(hooked, "git-fetch", "--", GH_REL)
     branches = ok(hooked, "git-branches", "--", GH_REL)["remote"]["branches"]
     assert "origin/later" in [b["name"] for b in branches]
+
+
+# --- the GitHub token -----------------------------------------------------------------
+
+TOKEN = "github_pat_rcman-test-0123456789"
+
+
+def run_helper(env, *args, stdin=None) -> subprocess.CompletedProcess:
+    """rc-helper's whole run: exit status, standard output and standard error."""
+    return subprocess.run(
+        [str(HELPER), *args], env=env, input=stdin, capture_output=True, text=True, timeout=60
+    )
+
+
+def set_token(env, token=TOKEN):
+    return helper(env, "github-token", stdin=token + "\n")
+
+
+def git_credentials(env) -> Path:
+    return Path(env["RC_HELPER_HOME"]) / ".git-credentials"
+
+
+def server_base(github) -> str:
+    """The address the hook sends GitHub to, as a credential and its helper know it."""
+    return github.url.removesuffix("/")
+
+
+def global_config(env, *args) -> list[str]:
+    """What the person's own ~/.gitconfig says, read with git outside rc-helper."""
+    proc = subprocess.run(
+        ["git", "config", "--file", str(Path(env["RC_HELPER_HOME"]) / ".gitconfig"), *args],
+        capture_output=True,
+        text=True,
+    )
+    return proc.stdout.split("\n")[:-1]
+
+
+def test_the_token_is_read_from_stdin_and_stored_for_github(hooked, github):
+    proc = run_helper(hooked, "github-token", stdin=TOKEN + "\n")
+    assert proc.returncode == 0, proc.stdout
+    assert json.loads(proc.stdout) == {"token": True}
+    assert TOKEN not in proc.stdout + proc.stderr
+    stored = git_credentials(hooked)
+    host = server_base(github).removeprefix("http://")
+    assert stored.read_text() == f"http://{h.GITHUB_USERNAME}:{TOKEN}@{host}\n"
+    assert stat.S_IMODE(stored.stat().st_mode) == 0o600
+    assert global_config(hooked, "--get-all", f"credential.{server_base(github)}.helper") == [
+        "store"
+    ]
+    proc = run_helper(hooked, "github-status")
+    assert json.loads(proc.stdout) == {"token": True} and TOKEN not in proc.stdout + proc.stderr
+
+
+def test_without_the_hook_the_token_is_stored_for_github_com(tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    cfg = h.Config(home=home, claude=tmp_path / "claude", tmux_socket=None)
+    assert cfg.github == h.GITHUB_URL
+    helper_ = h.Helper(cfg)
+    assert helper_.github_token(TOKEN.encode() + b"\n") == {"token": True}
+    assert (home / ".git-credentials").read_text() == (
+        f"https://{h.GITHUB_USERNAME}:{TOKEN}@github.com\n"
+    )
+    env = {"RC_HELPER_HOME": str(home)}
+    assert global_config(env, "--get-all", "credential.https://github.com.helper") == ["store"]
+    assert helper_.github_status() == {"token": True}
+    assert helper_.github_forget() == {"token": False}
+    assert helper_.github_status() == {"token": False}
+
+
+def test_the_store_helper_is_set_once(hooked, github):
+    key = f"credential.{server_base(github)}.helper"
+    assert set_token(hooked)[0] == 0
+    assert set_token(hooked, "another-token")[0] == 0
+    assert global_config(hooked, "--get-all", key) == ["store"]
+
+
+def test_a_store_helper_set_already_is_not_set_again(hooked, github):
+    key = f"credential.{server_base(github)}.helper"
+    gitconfig = Path(hooked["RC_HELPER_HOME"]) / ".gitconfig"
+    gitconfig.write_text(f'[credential "{server_base(github)}"]\n\thelper = store\n')
+    assert set_token(hooked)[0] == 0
+    assert global_config(hooked, "--get-all", key) == ["store"]
+
+
+def test_a_new_token_replaces_the_old(hooked, github):
+    assert set_token(hooked, "first-token")[0] == 0
+    assert set_token(hooked, "second-token")[0] == 0
+    host = server_base(github).removeprefix("http://")
+    assert (
+        git_credentials(hooked).read_text() == f"http://{h.GITHUB_USERNAME}:second-token@{host}\n"
+    )
+
+
+def test_status_needs_both_the_token_and_its_helper(hooked, github):
+    assert ok(hooked, "github-status") == {"token": False}  # neither
+    assert set_token(hooked)[0] == 0
+    assert ok(hooked, "github-status") == {"token": True}  # both
+    key = f"credential.{server_base(github)}.helper"
+    subprocess.run(
+        ["git", "config", "--file", str(Path(hooked["RC_HELPER_HOME"]) / ".gitconfig"),
+         "--unset-all", key],
+        check=True,
+    )  # fmt: skip
+    assert ok(hooked, "github-status") == {"token": False}  # the token, but git would not use it
+    assert set_token(hooked)[0] == 0
+    assert ok(hooked, "github-forget") == {"token": False}
+    assert global_config(hooked, "--get-all", key) == ["store"]  # the helper is left
+    assert ok(hooked, "github-status") == {"token": False}  # the helper, but no token
+
+
+def test_forget_removes_rcmans_token_only(hooked, github):
+    host = server_base(github).removeprefix("http://")
+    theirs = f"http://someone:their-own-token@{host}\n"
+    git_credentials(hooked).write_text(theirs)
+    git_credentials(hooked).chmod(0o600)
+    assert set_token(hooked)[0] == 0
+    assert TOKEN in git_credentials(hooked).read_text()  # positive control
+    assert ok(hooked, "github-forget") == {"token": False}
+    assert git_credentials(hooked).read_text() == theirs
+
+
+@pytest.mark.parametrize(
+    "stdin",
+    [
+        "",
+        "\n",
+        "has space\n",
+        "two\nlines\n",
+        "tab\there\n",
+        "carriage-return\r\n",
+        "ünïcode\n",
+        "too long",
+        b"\xff\xfe-not-utf8\n",
+    ],
+)
+def test_a_token_that_is_not_one_line_of_visible_characters_is_refused(hooked, stdin):
+    if stdin == "too long":
+        stdin = "x" * (h.MAX_GITHUB_TOKEN_LENGTH + 1) + "\n"
+    code, out = helper(hooked, "github-token", stdin=stdin)
+    assert (code, out["error"]["code"]) == (1, "token_invalid"), out
+    assert out["error"]["message"] == h.GITHUB_TOKEN.sentence
+    assert not git_credentials(hooked).exists()
+
+
+def test_a_token_as_long_as_allowed_and_of_every_visible_character_is_stored(hooked):
+    visible = "".join(map(chr, range(0x21, 0x7F)))
+    assert set_token(hooked, visible)[0] == 0
+    assert set_token(hooked, "x" * h.MAX_GITHUB_TOKEN_LENGTH)[0] == 0
+    assert ok(hooked, "github-status") == {"token": True}
+
+
+def test_the_token_rule_states_its_limit():
+    assert str(h.MAX_GITHUB_TOKEN_LENGTH) in h.GITHUB_TOKEN.sentence
+
+
+def push_as_the_person(env, repo: Path) -> subprocess.CompletedProcess:
+    """A plain git push, as from a Claude session: the server's environment, no terminal,
+    and the hook's address for GitHub, as rc-helper gives git."""
+    cfg = h.config_from_env(env)
+    hook = {k: v for k, v in h.git_env(cfg).items() if k.startswith("GIT_CONFIG")}
+    assert hook  # positive control: the push goes to the tests' GitHub
+    return subprocess.run(
+        ["git", "push", "origin", "HEAD:refs/heads/pushed"],
+        cwd=repo,
+        env={**h.child_env(cfg), **hook},
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        start_new_session=True,
+        timeout=60,
+    )
+
+
+def pushed(bare: Path) -> str | None:
+    found = subprocess.run(
+        ["git", "-C", str(bare), "rev-parse", "--verify", "-q", "refs/heads/pushed"],
+        capture_output=True,
+        text=True,
+    )
+    return found.stdout.strip() or None
+
+
+def test_a_plain_git_push_as_the_person_uses_the_stored_token(hooked, github, on_github):
+    repo = Path(hooked["RC_HELPER_HOME"]) / GH_REL
+    before = len(github.attempts)
+    refused = push_as_the_person(hooked, repo)
+    assert refused.returncode != 0 and pushed(on_github) is None
+    assert ("x-access-token", True) not in github.attempts[before:]
+    assert set_token(hooked, github.token)[0] == 0
+    before = len(github.attempts)
+    accepted = push_as_the_person(hooked, repo)
+    assert accepted.returncode == 0, accepted.stderr
+    assert pushed(on_github) == fixture_git(repo, "rev-parse", "HEAD").strip()
+    assert github.attempts[before:] == [(h.GITHUB_USERNAME, True)]
+
+
+def test_rcmans_token_is_used_before_an_older_one(hooked, github, on_github):
+    host = server_base(github).removeprefix("http://")
+    git_credentials(hooked).write_text(f"http://older:not-the-token@{host}\n")
+    git_credentials(hooked).chmod(0o600)
+    assert set_token(hooked, github.token)[0] == 0
+    before = len(github.attempts)
+    proc = push_as_the_person(hooked, Path(hooked["RC_HELPER_HOME"]) / GH_REL)
+    assert proc.returncode == 0, proc.stderr
+    assert github.attempts[before:] == [(h.GITHUB_USERNAME, True)]
+
+
+def test_a_token_github_refuses_is_forgotten_by_git(hooked, github, on_github):
+    assert set_token(hooked, "not-the-token")[0] == 0
+    assert ok(hooked, "github-status") == {"token": True}
+    proc = push_as_the_person(hooked, Path(hooked["RC_HELPER_HOME"]) / GH_REL)
+    assert proc.returncode != 0 and "Authentication failed" in proc.stderr
+    assert ok(hooked, "github-status") == {"token": False}
+
+
+import time  # noqa: E402
+
+
+def traced(monkeypatch, tmp_path) -> Path:
+    """GIT_TRACE for every git rc-helper runs in this process: the file it writes to."""
+    trace = tmp_path / "trace"
+    plain = h.git_env
+    monkeypatch.setattr(h, "git_env", lambda cfg: {**plain(cfg), "GIT_TRACE": str(trace)})
+    return trace
+
+
+def test_the_token_reaches_no_argv_git_traces(hooked, monkeypatch, tmp_path):
+    trace = traced(monkeypatch, tmp_path)
+    helper_ = in_process(hooked)
+    helper_.github_token(TOKEN.encode() + b"\n")
+    helper_.github_status()
+    helper_.github_forget()
+    text = trace.read_text()
+    assert "credential-store" in text and "config" in text  # positive control
+    assert TOKEN not in text
+
+
+def test_the_trace_check_sees_what_is_in_an_argv(hooked, monkeypatch, tmp_path):
+    """Planted twin: a marker in a git argv is in the trace the check above reads."""
+    trace = traced(monkeypatch, tmp_path)
+    marker = "PLANTED-MARKER-IN-ARGV"
+    home = Path(hooked["RC_HELPER_HOME"])
+    git_run.Git(h.git_env(h.config_from_env(hooked))).run(
+        home,
+        ["config", "--file", str(tmp_path / "cfg"), "rcman.marker", marker],
+        deadline=time.monotonic() + 30,
+    )
+    assert marker in trace.read_text()

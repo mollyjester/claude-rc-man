@@ -444,3 +444,13 @@ def test_the_commit_message_is_never_recorded_or_logged(client, settings, helper
     assert refused.json()["code"] == "nothing_staged"
     assert all(message not in str(value) for row in rows(settings) for value in row.values())
     assert message not in caplog.text
+
+
+def test_github_token_changes_are_recorded_without_a_target(client, settings):
+    token = "a-token-never-recorded"
+    r = client.post("/api/github/token", json={"token": token}, headers=changing(ALICE))
+    assert r.status_code == 200, r.text
+    r = client.delete("/api/github/token", headers=changing(ALICE))
+    assert r.status_code == 200, r.text
+    recorded = [(r["action"], r["target"], r["result"]) for r in rows(settings)[-2:]]
+    assert recorded == [("github.token", None, "ok"), ("github.forget", None, "ok")]
