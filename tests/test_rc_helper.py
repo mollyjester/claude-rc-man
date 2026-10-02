@@ -790,8 +790,8 @@ def name_max(path) -> int:
         ("a/b/../..", "path_is_home"),
         ("/etc", "path_invalid"),
         ("a\0b", "path_invalid"),
-        ("a/b/..", "path_invalid"),
-        ("a/b/.", "path_invalid"),
+        ("a/b/..", "path_ends_in_dot"),
+        ("a/b/.", "path_ends_in_dot"),
         ("x" * (h.MAX_PATH_LENGTH + 1), "path_invalid"),
         ("../x", "path_outside_home"),
         ("escape/x", "path_outside_home"),
@@ -936,7 +936,7 @@ def test_a_folder_whose_path_would_be_too_long_is_refused(env):
     fits = "n" * (h.MAX_PATH_LENGTH - len(deep) - 1)
     assert ok(env, "mkdir", f"--name={fits}", "--", deep)["created"] == f"{deep}/{fits}"
     over = fits + "n"
-    assert error_code(env, "mkdir", f"--name={over}", "--", deep) == "path_invalid"
+    assert error_code(env, "mkdir", f"--name={over}", "--", deep) == "folder_path_too_long"
     assert not (home / deep / over).exists()
 
 
@@ -1575,6 +1575,62 @@ def test_each_rule_is_refused_through_the_command_line_with_its_sentence(env):
         status, out = helper(env, *args)
         assert status == 1 and out["error"]["code"] == code, (code, out)
         assert out["error"]["message"] == rule.sentence
+
+
+def rule_code_problems(source: str, codes: dict) -> list[str]:
+    """Where a rule's code is raised in a function that does not check that rule: the
+    code would then say the rule's sentence about a value the rule accepts."""
+    import ast
+
+    names = {code: next(n for n, v in vars(h).items() if v is rule) for code, rule in codes.items()}
+    found = []
+    for function in ast.walk(ast.parse(source)):
+        if not isinstance(function, ast.FunctionDef):
+            continue
+        text = ast.unparse(function)
+        for node in ast.walk(function):
+            if not (isinstance(node, ast.Call) and getattr(node.func, "id", None) == "HelperError"):
+                continue
+            # The code may be chosen in the call: every constant it could be counts.
+            given = {
+                c.value
+                for arg in node.args[:1]
+                for c in ast.walk(arg)
+                if isinstance(c, ast.Constant)
+            }
+            for code in sorted(given & set(names)):
+                if f"{names[code]}.fullmatch" not in text:
+                    found.append(f"{function.name} raises {code} without checking {names[code]}")
+    return found
+
+
+def test_a_rules_code_is_raised_only_where_the_rule_is_checked():
+    source = (REPO / "helpers" / "rc_helper.py").read_text(encoding="utf-8")
+    assert 'HelperError("path_invalid")' in source  # non-vacuity
+    assert rule_code_problems(source, h.RULE_CODES) == []
+
+
+def test_a_rules_code_raised_elsewhere_is_found():
+    """Planted twin: path_invalid raised by a function that never checks PATH."""
+    planted = (
+        "def check(rel):\n"
+        "    if not PATH.fullmatch(rel):\n"
+        "        raise HelperError('path_invalid')\n"
+        "def other(rel):\n"
+        "    if rel.endswith('.'):\n"
+        "        raise HelperError('path_is_home' if rel == '.' else 'path_invalid')\n"
+    )
+    assert rule_code_problems(planted, h.RULE_CODES) == [
+        "other raises path_invalid without checking PATH"
+    ]
+
+
+def test_a_path_ending_in_a_dot_is_refused_in_its_own_words(env):
+    for rel in ("projects/beta/inner/..", "projects/alpha/."):
+        status, out = helper(env, "delete", "--", rel)
+        assert (status, out["error"]["code"]) == (1, "path_ends_in_dot"), rel
+        assert out["error"]["message"] == h.MESSAGES["path_ends_in_dot"]
+    assert (Path(env["RC_HELPER_HOME"]) / "projects" / "alpha").is_dir()
 
 
 def test_rc_helper_and_the_backend_refuse_a_value_in_the_same_words(env, client):
