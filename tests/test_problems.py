@@ -643,10 +643,14 @@ def test_an_error_type_without_a_message_is_found():
     assert any("the fallback message" in problem for problem in found)
 
 
-def test_every_field_message_is_reached(client):
+def unreached_messages(client) -> set[str]:
+    """The FIELD_MESSAGES entries, but the fallback, that driving every field never uses."""
     _, used = refusal_problems(client, CALLS, changing(ALICE))
-    unused = set(problems.FIELD_MESSAGES) - used - {problems.FIELD_INVALID}
-    assert unused == set()
+    return set(problems.FIELD_MESSAGES) - used - {problems.FIELD_INVALID}
+
+
+def test_every_field_message_is_reached(client):
+    assert unreached_messages(client) == set()
     own = {
         problems.RULE_REFUSED,
         problems.SETTINGS_NONE_SENT,
@@ -655,6 +659,13 @@ def test_every_field_message_is_reached(client):
     }
     assert set(problems.FIELD_MESSAGES) <= set(ERROR_TYPES) | own
     assert own.isdisjoint(ERROR_TYPES)  # rcman's own types are not pydantic's
+
+
+def test_a_field_message_nothing_reaches_is_found(client, monkeypatch):
+    """Planted twin: an entry no refusal can produce is reported, and only it."""
+    planted = {**problems.FIELD_MESSAGES, "planted_never_sent": "Nothing sends this."}
+    monkeypatch.setattr(problems, "FIELD_MESSAGES", planted)
+    assert unreached_messages(client) == {"planted_never_sent"}
 
 
 # --- every published pattern is a helpers' rule -----------------------------------
