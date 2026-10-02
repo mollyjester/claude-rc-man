@@ -28,6 +28,9 @@ export const ACTIONS: Record<string, Action[]> = {
   unrecognised: ["showScreen", "stop"],
 };
 
+// States in which the server is running and its environment on claude.ai takes sessions.
+const LIVE = ["connected", "ready"];
+
 const CALLS: Record<Exclude<Action, "showScreen">, [string, Record<string, string>]> = {
   stop: ["/api/servers/stop", {}],
   resume: ["/api/servers/resume", {}],
@@ -37,7 +40,7 @@ const CALLS: Record<Exclude<Action, "showScreen">, [string, Record<string, strin
   trustNo: ["/api/servers/confirm", { answer: "n" }],
 };
 
-const LABELS: Record<Action, string> = {
+export const LABELS: Record<Action, string> = {
   stop: m.stop,
   resume: m.resume,
   startAgain: m.startAgain,
@@ -88,7 +91,7 @@ function ServerCard({ server, onChange }: { server: Server; onChange: () => void
           {m.sessionName}: <code>{server.session_name}</code>
         </p>
       )}
-      {server.environment_url && server.state === "ready" && (
+      {server.environment_url && LIVE.includes(server.state) && (
         <p>
           <a href={server.environment_url} target="_blank" rel="noopener noreferrer">
             {m.openSession}

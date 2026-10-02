@@ -30,7 +30,7 @@ export const m = {
     starting: "Starting",
     trust_prompt: "Waiting for your answer",
     connected: "Ready to accept sessions",
-    ready: "Ready",
+    ready: "In use",
     stopped: "Stopped",
     trust_declined: "Not started: folder not trusted",
     logged_out: "Not started: Claude account not connected",

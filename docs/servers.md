@@ -13,14 +13,17 @@ Open a folder with the arrow beside it, and choose **Start** beside any folder
 that has no server yet. Each server shows its state, and only the actions that
 state allows:
 
-| State | What you can do |
+| State | Buttons |
 |---|---|
-| Starting, Ready to accept sessions, Ready | Stop |
-| Waiting for your answer | Trust the folder, decline, or stop |
-| Stopped | Resume, or forget it |
-| Not started (folder not trusted, or Claude account not connected) | Start again, or forget it |
-| Ended | Start again, forget it, or show its last screen |
-| Unrecognised screen | Show the screen, or stop |
+| Starting | **Stop** |
+| Waiting for your answer | **Yes, trust it**, **No**, **Stop** |
+| Ready to accept sessions | **Stop** |
+| In use | **Stop** |
+| Stopped | **Resume**, **Forget** |
+| Not started: folder not trusted | **Start again**, **Forget** |
+| Not started: Claude account not connected | **Start again**, **Forget** |
+| Ended | **Start again**, **Forget**, **Show screen** |
+| Unrecognised screen | **Show screen**, **Stop** |
 
 The page refreshes the states by itself. When rcman refuses an action, the
 reason it gave is shown on the server it was about.
@@ -44,10 +47,10 @@ folder. Sessions started there can read, edit and run the files in it, and the
 folder's own Claude settings apply to them. Answer yes to start the server, or
 no to cancel. Claude remembers the answer yes for that folder.
 
-Once it has started, a server is **ready to accept sessions**: open one in
-claude.ai/code or the Claude app, in the server's environment. When a session
-is attached the server shows as **Ready**, with the session's name and a link to
-it on claude.ai/code.
+Once it has started, a server is **ready to accept sessions**, and **Open in
+claude.ai** takes you to it on claude.ai/code, where you start a session; the
+Claude app lists it too. While a session is attached the server is **in use**,
+and shows the session's name beside the same link.
 
 ## Stopping and resuming
 
