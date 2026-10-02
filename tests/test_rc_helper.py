@@ -546,7 +546,17 @@ def test_the_email_rule_check_catches_a_copy():
 
 # --- the commit author's name -----------------------------------------------------
 
-AUTHOR_NAMES_ACCEPTED = ["Bob B", "Сергей Лихарев", "O'Brien", "x", "x" * h.MAX_AUTHOR_NAME_LENGTH]
+AUTHOR_NAMES_ACCEPTED = [
+    "Bob B",
+    "Сергей Лихарев",
+    "O'Brien",
+    "Bob Jr.",
+    "(Bob)",
+    "x",
+    "x" * h.MAX_AUTHOR_NAME_LENGTH,
+    f"a{chr(0x200C)}b",  # ZERO WIDTH NON-JOINER, see ALLOWED_FORMAT
+    f"a{chr(0x200D)}b",  # ZERO WIDTH JOINER
+]
 AUTHOR_NAMES_REFUSED = [
     "",
     " ",
@@ -557,24 +567,114 @@ AUTHOR_NAMES_REFUSED = [
     "a\tb",
     "a\x00b",
     "a\x85b",
-    "a\u2028b",
-    "a\u2029b",
+    f"a{chr(0x2028)}b",  # LINE SEPARATOR
+    f"a{chr(0x2029)}b",  # PARAGRAPH SEPARATOR
     "a<b",
     "a>b",
-    "a\u200Bb",
-    "a\u202Eb",
-    "a\u2066b",
-    "a\uFEFFb",
+    f"a{chr(0x200B)}b",  # ZERO WIDTH SPACE
+    f"a{chr(0x202E)}b",  # RIGHT-TO-LEFT OVERRIDE
+    f"a{chr(0x2066)}b",  # LEFT-TO-RIGHT ISOLATE
+    f"a{chr(0xFEFF)}b",  # ZERO WIDTH NO-BREAK SPACE
+    f"a{chr(0x00AD)}b",  # SOFT HYPHEN
+    f"a{chr(0x1D173)}b",  # MUSICAL SYMBOL BEGIN BEAM, beyond the BMP
+    f"a{chr(0xE0020)}b",  # TAG SPACE
+    f"a{chr(0x3164)}b",  # HANGUL FILLER
+    chr(0x3164),
+    "'Bob'",
+    '"Bob"',
+    "Bob;",
+    "Bob\\",
+    ",Bob",
+    ":Bob",
     "x" * (h.MAX_AUTHOR_NAME_LENGTH + 1),
 ]
 AUTHOR_NAMES = [(n, True) for n in AUTHOR_NAMES_ACCEPTED] + [
     (n, False) for n in AUTHOR_NAMES_REFUSED
 ]
 
+# Format characters (Unicode category Cf) a name may hold, and why: Persian and
+# Indic names are written with them.
+ALLOWED_FORMAT = {0x200C: "ZERO WIDTH NON-JOINER", 0x200D: "ZERO WIDTH JOINER"}
+# Letters by category, but they show as nothing.
+HANGUL_FILLERS = {
+    0x115F: "HANGUL CHOSEONG FILLER",
+    0x1160: "HANGUL JUNGSEONG FILLER",
+    0x3164: "HANGUL FILLER",
+    0xFFA0: "HALFWIDTH HANGUL FILLER",
+}
+
+
+def format_characters() -> list[str]:
+    """Every invisible format character this Python's Unicode database knows."""
+    import sys
+    import unicodedata
+
+    return [chr(c) for c in range(sys.maxunicode + 1) if unicodedata.category(chr(c)) == "Cf"]
+
 
 @pytest.mark.parametrize(("name", "accepted"), AUTHOR_NAMES)
 def test_author_name_rule(name, accepted):
     assert bool(h.AUTHOR_NAME.fullmatch(name)) is accepted
+
+
+def test_every_format_character_is_refused_in_a_name_but_the_allowed_ones():
+    import unicodedata
+
+    found = format_characters()
+    assert chr(0x200B) in found and chr(0xE0020) in found  # positive control
+    for code, name in ALLOWED_FORMAT.items():  # each exemption is still what it is said to be
+        assert chr(code) in found and unicodedata.name(chr(code)) == name
+        assert h.AUTHOR_NAME.fullmatch(f"a{chr(code)}b")
+    let_through = [
+        f"U+{ord(c):04X}"
+        for c in found
+        if ord(c) not in ALLOWED_FORMAT and h.AUTHOR_NAME.fullmatch(f"a{c}b")
+    ]
+    assert let_through == []
+
+
+def test_hangul_fillers_are_refused_in_a_name():
+    import unicodedata
+
+    for code, name in HANGUL_FILLERS.items():
+        assert unicodedata.name(chr(code)) == name
+        assert not h.AUTHOR_NAME.fullmatch(f"a{chr(code)}b"), name
+        assert not h.AUTHOR_NAME.fullmatch(chr(code)), name
+
+
+def recorded_by_git(tmp_path, name: str) -> str:
+    """The author name real git records for ``name``."""
+    proc = subprocess.run(
+        ["git", "var", "GIT_AUTHOR_IDENT"],
+        env={
+            "PATH": "/usr/bin:/bin",
+            "HOME": str(tmp_path),
+            "GIT_AUTHOR_NAME": name,
+            "GIT_AUTHOR_EMAIL": "bob@example.com",
+        },
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 0, proc.stderr
+    return proc.stdout.rpartition(" <bob@example.com>")[0]
+
+
+def test_git_records_every_accepted_name_as_given(tmp_path):
+    assert recorded_by_git(tmp_path, ";Bob;") == "Bob"  # positive control: git does change some
+    for name in AUTHOR_NAMES_ACCEPTED:
+        assert h.AUTHOR_NAME.fullmatch(name), name
+        assert recorded_by_git(tmp_path, name) == name
+
+
+def test_names_git_would_trim_are_refused(tmp_path):
+    """The printable characters git strips from the ends of a name are refused there."""
+    printable = [chr(c) for c in range(0x21, 0x7F)]
+    trimmed = [c for c in printable if recorded_by_git(tmp_path, f"{c}Bob{c}") == "Bob"]
+    assert ";" in trimmed and "." not in trimmed  # positive control, and git keeps a dot
+    for c in printable:
+        refused = not h.AUTHOR_NAME.fullmatch(f"{c}Bob") and not h.AUTHOR_NAME.fullmatch(f"Bob{c}")
+        assert refused is (c in trimmed), repr(c)
 
 
 # --- the command-line surface ----------------------------------------------------

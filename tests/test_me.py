@@ -8,7 +8,7 @@ import pytest
 
 from helpers import rc_helper, users_file
 from tests.conftest import ALICE, BOB, as_user, changing
-from tests.test_rc_helper import AUTHOR_NAMES
+from tests.test_rc_helper import AUTHOR_NAMES, HANGUL_FILLERS, format_characters
 
 UNSET = {"prefix": "bob", "author_name": "", "author_email": "", "effective_author": None}
 
@@ -117,6 +117,18 @@ def test_the_server_accepts_exactly_the_names_the_helpers_rule_does(client, name
     else:
         assert r.status_code == 422, name
         assert [e["field"] for e in r.json()["errors"]] == ["author_name"]
+
+
+def test_the_server_refuses_exactly_the_format_characters_the_helpers_rule_does(client):
+    found = format_characters() + [chr(c) for c in HANGUL_FILLERS]
+    assert found  # non-vacuity
+    disagree = []
+    for c in found:
+        name = f"a{c}b"
+        status = patch(client, {"author_name": name}).status_code
+        if (status == 200) is not bool(rc_helper.AUTHOR_NAME.fullmatch(name)):
+            disagree.append((f"U+{ord(c):04X}", status))
+    assert disagree == []
 
 
 def test_the_author_rules_are_the_helpers_rules():
