@@ -38,7 +38,7 @@ function dashboard(servers: unknown[], extra: Routes = {}) {
 }
 
 const tree = async () => screen.findByRole("region", { name: m.foldersTitle });
-const summary = async () => screen.findByRole("region", { name: m.runningTitle });
+const summary = async () => screen.findByRole("region", { name: m.yourServersTitle });
 const panel = async (path: string) => screen.findByRole("region", { name: path });
 const folder = async (name: string) => within(await tree()).findByRole("button", { name });
 const folderOf = (search: string) => new URLSearchParams(search).get("folder");
@@ -130,7 +130,7 @@ test("until the Claude account's state is known, neither Start nor a reason is s
   dashboard([], { "GET /api/claude": () => new Promise(() => {}) });
   renderApp("/?folder=projects/beta");
   const opened = await panel("projects/beta");
-  expect(await within(await summary()).findByText(m.runningEmpty)).toBeInTheDocument(); // the servers are listed
+  expect(await within(await summary()).findByText(m.yourServersEmpty)).toBeInTheDocument(); // the servers are listed
   expect(within(opened).getByText(m.loading)).toBeInTheDocument();
   expect(within(opened).queryByRole("button", { name: m.start })).not.toBeInTheDocument();
   for (const reason of Object.values(START_REASON)) {
@@ -351,7 +351,7 @@ test("with no servers, the summary says so", async () => {
   renderApp();
   expect(await folder("projects")).toBeInTheDocument();
   const list = await summary();
-  expect(await within(list).findByText(m.runningEmpty)).toBeInTheDocument();
+  expect(await within(list).findByText(m.yourServersEmpty)).toBeInTheDocument();
   expect(within(list).queryAllByRole("button")).toEqual([]);
 });
 

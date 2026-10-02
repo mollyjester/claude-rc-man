@@ -30,8 +30,8 @@ export const m = {
     startAgain: "Connect your Claude account above to start it again.",
   },
 
-  runningTitle: "Your servers",
-  runningEmpty: "No servers yet. Select a folder and start one.",
+  yourServersTitle: "Your servers",
+  yourServersEmpty: "No servers yet. Select a folder and start one.",
   home: "Home",
   breadcrumb: "Folder",
   panelEmpty: "Select a folder to see its Claude server, or to start one.",

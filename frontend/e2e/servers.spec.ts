@@ -5,7 +5,7 @@ import { openAdminPage, selectInProjects } from "./nav";
 import { ALICE, BOB, useAs } from "./people";
 
 const tree = (page: Page) => page.getByRole("region", { name: m.foldersTitle });
-const summary = (page: Page) => page.getByRole("region", { name: m.runningTitle });
+const summary = (page: Page) => page.getByRole("region", { name: m.yourServersTitle });
 const panel = (page: Page, path: string) => page.getByRole("region", { name: path, exact: true });
 
 
@@ -61,7 +61,7 @@ test("people never see each other's folders or servers", async ({ page, browser 
   await bob.getByRole("button", { name: m.expand("projects") }).click();
   await expect(tree(bob).getByRole("button", { name: "bob-alpha", exact: true })).toBeVisible();
   await expect(bob.getByText("alice-beta")).toHaveCount(0);
-  await expect(summary(bob).getByText(m.runningEmpty)).toBeVisible();
+  await expect(summary(bob).getByText(m.yourServersEmpty)).toBeVisible();
 
   // Wait for the stop to finish: the run ends when the test does, and a stop
   // still in flight would be cut off.

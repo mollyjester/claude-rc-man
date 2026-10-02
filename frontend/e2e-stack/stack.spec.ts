@@ -60,7 +60,7 @@ test("another person sees only their own home and servers", async ({ page }) => 
   await expect(panel.getByText(m.notConnected.start)).toBeVisible();
   await expect(panel.getByRole("button", { name: m.start })).toHaveCount(0);
   await expect(page.getByText("alice-demo")).toHaveCount(0);
-  await expect(page.getByRole("region", { name: m.runningTitle }).getByText(m.runningEmpty)).toBeVisible();
+  await expect(page.getByRole("region", { name: m.yourServersTitle }).getByText(m.yourServersEmpty)).toBeVisible();
   await expect(page.getByRole("button", { name: m.navAdmin })).toHaveCount(0);
   await expect(page.getByRole("link", { name: m.navUsers })).toHaveCount(0);
 

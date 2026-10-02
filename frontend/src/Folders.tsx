@@ -143,9 +143,9 @@ export function FolderTree(props: TreeProps) {
 // Every server, wherever its folder is in the tree, each selecting its folder.
 export function ServerSummary({ servers, onSelect }: { servers: Server[] | null; onSelect: (path: string) => void }) {
   return (
-    <section aria-label={m.runningTitle}>
-      <h2>{m.runningTitle}</h2>
-      {servers?.length === 0 && <p>{m.runningEmpty}</p>}
+    <section aria-label={m.yourServersTitle}>
+      <h2>{m.yourServersTitle}</h2>
+      {servers?.length === 0 && <p>{m.yourServersEmpty}</p>}
       {servers && servers.length > 0 && (
         <ul className="summary">
           {servers.map((server) => (
