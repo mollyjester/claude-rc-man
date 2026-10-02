@@ -249,6 +249,59 @@ def test_the_socket_group_is_kept_to_caddy_alone(first_install):
     assert "dev removed from group rcman-web" in changes(proc)["changed"]
 
 
+SLOW = """#!/usr/bin/python3
+import os, sys, time
+open(sys.argv[1], "w").write(str(os.getpid()))
+time.sleep(120)
+"""
+BOUNDED = """
+import subprocess, sys
+from rcman.helpers_client import run_bounded
+runner = run_bounded if sys.argv[1] == "bounded" else subprocess.run
+try:
+    runner(sys.argv[2:], input=None, capture_output=True, text=True, timeout=2)
+except subprocess.TimeoutExpired:
+    print("timed out")
+"""
+
+
+def slow_survives(how, tmp_path):
+    """Run a slow command through real sudo, as rcman runs a helper, and time it out."""
+    pid_file = Path(f"/tmp/slow-{how}.pid")
+    pid_file.unlink(missing_ok=True)
+    out = sh(
+        "runuser", "-u", "rcman", "--", str(ROOT / "current" / ".venv" / "bin" / "python"),
+        "-c", BOUNDED, how, "sudo", "-n", "-u", "dev", "/tmp/slow-helper", str(pid_file),
+    ).stdout  # fmt: skip
+    assert out.strip() == "timed out"
+    pid = int(pid_file.read_text())
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        try:
+            state = Path(f"/proc/{pid}/stat").read_text().split(")")[-1].split()[0]
+        except FileNotFoundError:
+            return False
+        if state == "Z":
+            return False
+        time.sleep(0.1)
+    os.kill(pid, 9)
+    return True
+
+
+def test_a_timed_out_helper_call_ends_the_helper_behind_sudo(first_install, tmp_path):
+    slow = Path("/tmp/slow-helper")
+    slow.write_text(SLOW)
+    slow.chmod(0o755)
+    rule = Path("/etc/sudoers.d/zz-slow-helper")
+    rule.write_text("rcman ALL=(dev) NOPASSWD: /tmp/slow-helper\n")
+    rule.chmod(0o440)
+    try:
+        assert slow_survives("plain", tmp_path)  # planted twin: killing sudo leaves it running
+        assert not slow_survives("bounded", tmp_path)
+    finally:
+        rule.unlink()
+
+
 def listeners():
     """Every listening TCP address (host, port) and unix socket path in the container."""
     tcp = set()

@@ -58,8 +58,12 @@ and `sudo_admin` — `sudo -n rc-admin ...`. Positional paths are passed after
 read as an option.
 
 A call that outlasts its timeout — `HELPER_TIMEOUT` and `ADMIN_TIMEOUT` in
-`helpers_client.py` unless the caller passes one — is the problem
-`helper_timeout`.
+`helpers_client.py` unless the caller passes one to `call_helper` or
+`call_admin` — is the problem `helper_timeout`. Both run through
+`run_bounded`, which ends a call that times out with SIGTERM, which sudo
+passes on to the helper, and SIGKILL only after `TERMINATE_GRACE_SECONDS`:
+sudo cannot pass SIGKILL on, so killing it outright would leave the helper
+running. The container suite shows both through real sudo.
 
 `everyone.py` lists every person's servers for administrators
 (`GET /api/servers/everyone`). It runs `rc-helper list` as each person in the

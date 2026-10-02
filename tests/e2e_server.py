@@ -90,7 +90,7 @@ def create_app():
         )  # fmt: skip
         return proc.returncode, json.loads(proc.stdout)
 
-    def admin(args):
+    def admin(args, timeout=None):
         users = uf.load(root / "users.toml")
         if args[0] == "list":
             return 0, {

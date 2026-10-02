@@ -27,7 +27,7 @@ class RecordingAdmin:
         self.calls: list[list[str]] = []
         self.replies: list[tuple[int, dict]] = []
 
-    def __call__(self, args):
+    def __call__(self, args, timeout=None):
         self.calls.append(list(args))
         return self.replies.pop(0) if self.replies else (0, {"users": []})
 

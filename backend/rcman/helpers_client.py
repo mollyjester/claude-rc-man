@@ -17,6 +17,8 @@ from rcman.problems import MESSAGES, Problem
 
 HELPER_TIMEOUT = 120
 ADMIN_TIMEOUT = 600
+# After a timeout: how long sudo has to pass SIGTERM on and its child to end.
+TERMINATE_GRACE_SECONDS = 5.0
 
 HELPER_STATUS = {
     "usage": 500,
@@ -68,7 +70,8 @@ ADMIN_STATUS = {
 
 # run(linux, args, stdin=None, timeout=HELPER_TIMEOUT) -> (exit code, answer)
 HelperRunner = Callable[..., tuple[int, dict]]
-AdminRunner = Callable[[list[str]], tuple[int, dict]]
+# run(args, timeout=ADMIN_TIMEOUT) -> (exit code, answer)
+AdminRunner = Callable[..., tuple[int, dict]]
 
 
 def _parse(proc: subprocess.CompletedProcess) -> tuple[int, dict]:
@@ -79,7 +82,37 @@ def _parse(proc: subprocess.CompletedProcess) -> tuple[int, dict]:
         return proc.returncode or 1, {"error": error}
 
 
-def sudo_helper(helpers_dir: Path, runner=subprocess.run) -> HelperRunner:
+def run_bounded(
+    argv: list[str],
+    input: str | None = None,
+    capture_output: bool = True,
+    text: bool = True,
+    timeout: float | None = None,
+) -> subprocess.CompletedProcess:
+    """``subprocess.run``, but a call that outlasts ``timeout`` is ended through sudo.
+
+    The process is sudo, running the helper as another user. sudo cannot pass
+    SIGKILL on, so killing it, as ``subprocess.run`` does, leaves the helper
+    running. SIGTERM it does pass on: that comes first, and SIGKILL only if
+    sudo has not ended within :data:`TERMINATE_GRACE_SECONDS`. The timeout is
+    still raised.
+    """
+    pipe = subprocess.PIPE if capture_output else None
+    with subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=pipe, stderr=pipe, text=text) as proc:
+        try:
+            stdout, stderr = proc.communicate(input, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            proc.terminate()
+            try:
+                proc.communicate(timeout=TERMINATE_GRACE_SECONDS)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.communicate()
+            raise subprocess.TimeoutExpired(argv, timeout) from None
+    return subprocess.CompletedProcess(argv, proc.returncode, stdout, stderr)
+
+
+def sudo_helper(helpers_dir: Path, runner=run_bounded) -> HelperRunner:
     def run(
         linux: str, args: list[str], stdin: str | None = None, timeout: float = HELPER_TIMEOUT
     ) -> tuple[int, dict]:
@@ -89,10 +122,10 @@ def sudo_helper(helpers_dir: Path, runner=subprocess.run) -> HelperRunner:
     return run
 
 
-def sudo_admin(helpers_dir: Path, runner=subprocess.run) -> AdminRunner:
-    def run(args: list[str]) -> tuple[int, dict]:
+def sudo_admin(helpers_dir: Path, runner=run_bounded) -> AdminRunner:
+    def run(args: list[str], timeout: float = ADMIN_TIMEOUT) -> tuple[int, dict]:
         argv = ["sudo", "-n", str(helpers_dir / "rc-admin"), *args]
-        return _parse(runner(argv, capture_output=True, text=True, timeout=ADMIN_TIMEOUT))
+        return _parse(runner(argv, capture_output=True, text=True, timeout=timeout))
 
     return run
 
@@ -122,9 +155,10 @@ def call_helper(
     return out
 
 
-def call_admin(run: AdminRunner, args: list[str]) -> dict:
+def call_admin(run: AdminRunner, args: list[str], timeout: float = ADMIN_TIMEOUT) -> dict:
+    """rc-admin's answer; outlasting ``timeout`` is ``helper_timeout``."""
     try:
-        code, out = run(args)
+        code, out = run(args, timeout=timeout)
     except subprocess.TimeoutExpired:
         raise Problem("helper_timeout") from None
     if code != 0:
