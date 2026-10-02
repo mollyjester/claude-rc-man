@@ -102,12 +102,14 @@ export function StateBadge({ state }: { state: string }) {
   return <span className={`badge badge-${kindOf(state)}`}>{m.states[state] ?? state}</span>;
 }
 
-// A coloured dot, and its meaning in words for whatever names it with aria-describedby.
+// A dot whose shape and colour both say its kind, with the kind in words as its
+// title, and as a hidden description for whatever names it with
+// aria-describedby: hidden, so that it is read once, with that name.
 export function StatusDot({ kind, id }: { kind: Kind; id: string }) {
   return (
     <>
-      <span className={`dot dot-${kind}`} aria-hidden="true" />
-      <span id={id} className="visually-hidden">
+      <span className={`dot dot-${kind}`} title={m.kinds[kind]} aria-hidden="true" />
+      <span id={id} hidden>
         {m.kinds[kind]}
       </span>
     </>

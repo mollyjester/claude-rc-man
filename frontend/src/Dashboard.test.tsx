@@ -286,7 +286,16 @@ test.each(Object.entries(KIND))("a folder whose server is %s carries the %s dot"
   dashboard([server("projects/alpha", state)]);
   renderApp();
   await expand("projects");
-  expect(await folder("alpha")).toHaveAccessibleDescription(m.kinds[kind]);
+  const alpha = await folder("alpha");
+  expect(alpha).toHaveAccessibleDescription(m.kinds[kind]);
+  // its shape is the kind's class, its meaning a title on hover, and the
+  // description is read once, through the name it describes
+  const dot = alpha.closest("li")!.querySelector(":scope > .dot")!;
+  expect(dot).toHaveClass(`dot-${kind}`);
+  expect(dot).toHaveAttribute("title", m.kinds[kind]);
+  const description = document.getElementById(alpha.getAttribute("aria-describedby")!)!;
+  expect(description).toHaveTextContent(m.kinds[kind]);
+  expect(description).toHaveAttribute("hidden");
   expectNoDot(await folder("beta"));
 });
 
