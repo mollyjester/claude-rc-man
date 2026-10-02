@@ -64,7 +64,7 @@ MESSAGES = {
     "claude_unrecognised_output": "Claude Code answered with output rc-helper does not recognise.",
     "already_running": "A server is already running in this folder.",
     "not_running": "No server is running in this folder.",
-    "not_stopped": "There is no stopped server in this folder to resume.",
+    "not_stopped": "There is no server in this folder that stopped and can be resumed.",
     "still_running": "Stop the server before forgetting it.",
     "unknown_server": "There is no server for this folder.",
     "nothing_to_confirm": "The server is not asking anything.",
@@ -89,6 +89,8 @@ EMAIL = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+")
 ANSWER_PACE_SECONDS = 0.5
 START_TIMEOUT = 30.0
 STOP_TIMEOUT = 30.0
+# States a server can be resumed from: stopped when asked, or stopped by itself.
+RESUMABLE = ("stopped", "exited")
 LOGIN_TIMEOUT = 60.0
 POLL_SECONDS = 0.1
 UNRECOGNISED_GRACE_SECONDS = 3.0
@@ -485,7 +487,7 @@ class Helper:
     def resume(self, rel: str, prefix: str) -> dict:
         folder, rel = self._folder(rel)
         session = session_for(rel)
-        if not self.tmux.exists(session) or self._server(session, rel)["state"] != "stopped":
+        if not self.tmux.exists(session) or self._server(session, rel)["state"] not in RESUMABLE:
             raise HelperError("not_stopped")
         return self.start(rel, prefix)
 

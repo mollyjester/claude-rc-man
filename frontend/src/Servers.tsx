@@ -24,7 +24,7 @@ export const ACTIONS: Record<string, Action[]> = {
   stopped: ["resume", "forget"],
   trust_declined: ["startAgain", "forget"],
   logged_out: ["startAgain", "forget"],
-  exited: ["startAgain", "forget", "showScreen"],
+  exited: ["resume", "forget", "showScreen"],
   unrecognised: ["showScreen", "stop"],
 };
 

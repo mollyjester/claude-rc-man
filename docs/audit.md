@@ -13,7 +13,7 @@ can be read with `journalctl` on the server.
 | Action | Recorded when someone | Target |
 |---|---|---|
 | `server.start` | starts a server | the folder |
-| `server.resume` | resumes a stopped server | the folder |
+| `server.resume` | resumes a server that stopped | the folder |
 | `server.stop` | stops a server | the folder |
 | `server.forget` | removes a stopped server from their list | the folder |
 | `server.confirm` | answers a server's folder-trust question | the folder |

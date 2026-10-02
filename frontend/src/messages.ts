@@ -35,7 +35,7 @@ export const m = {
     stopped: "Stopped",
     trust_declined: "Not started: folder not trusted",
     logged_out: "Not started: Claude account not connected",
-    exited: "Ended",
+    exited: "Stopped by itself",
     unrecognised: "Unrecognised screen",
   } as Record<string, string>,
   stop: "Stop",

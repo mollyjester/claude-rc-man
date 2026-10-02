@@ -22,7 +22,7 @@ state allows:
 | Stopped | **Resume**, **Forget** |
 | Not started: folder not trusted | **Start again**, **Forget** |
 | Not started: Claude account not connected | **Start again**, **Forget** |
-| Ended | **Start again**, **Forget**, **Show screen** |
+| Stopped by itself | **Resume**, **Forget**, **Show screen** |
 | Unrecognised screen | **Show screen**, **Stop** |
 
 The page refreshes the states by itself. When rcman refuses an action, the
@@ -60,8 +60,11 @@ Stopping a server ends the process but keeps its sessions. Starting it again
 in the same folder **resumes** those sessions, as long as that happens within a
 few hours; after that, starting gives you a new session.
 
-A server also stops by itself if the machine loses its network connection for
-a long time.
+A server can also stop by itself — for example when the machine loses its
+network connection for a long time, or when its process is ended outside
+rcman. It is then shown as **Stopped by itself**, with its exit status, and
+**Show screen** displays what Claude showed last. **Resume** starts it again
+in the same way as a server you stopped.
 
 A server that has stopped can be **forgotten**, which removes it from
 your list. Archiving or deleting individual sessions is done in claude.ai/code.
