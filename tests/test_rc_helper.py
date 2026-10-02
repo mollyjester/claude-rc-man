@@ -1542,6 +1542,7 @@ RULE_INVOCATIONS = {
         "{}",
     ),
     "path_invalid": (("output", "--", "{}"), None),
+    "branch_name_invalid": (("git-switch", "--branch={}", "--", "projects/alpha"), None),
 }
 # Rules rc-helper holds without reporting them itself: subject -> why.
 RULES_NOT_REPORTED = {
@@ -2239,9 +2240,9 @@ def test_switch_to_a_remote_only_branch_makes_a_local_branch_tracking_it(env, re
         (("--branch=feature",), "branch_not_found"),  # only on origin
         (("--branch=main", "--remote"), "branch_not_found"),
         (("--branch=origin/feature",), "branch_not_found"),
-        (("--branch=-f",), "branch_invalid"),
-        (("--branch=",), "branch_invalid"),
-        ((f"--branch={'x' * (h.MAX_BRANCH_NAME_LENGTH + 1)}",), "branch_invalid"),
+        (("--branch=-f",), "branch_name_invalid"),
+        (("--branch=",), "branch_name_invalid"),
+        ((f"--branch={'x' * (h.MAX_BRANCH_NAME_LENGTH + 1)}",), "branch_name_invalid"),
     ],
 )
 def test_switch_refuses_a_branch_that_is_not_there(env, repo, args, code):
@@ -2277,11 +2278,24 @@ def test_new_branch_makes_a_branch_and_switches_to_it(env, repo):
     assert fixture_git(repo, "rev-parse", "topic/new") == fixture_git(repo, "rev-parse", "main")
 
 
-@pytest.mark.parametrize("name", ["a..b", "@{-1}", "-x", "a b", "", "x.lock", "a~1", "HEAD"])
-def test_new_branch_refuses_a_name_git_would_not_take_as_given(env, repo, name):
+@pytest.mark.parametrize(
+    ("name", "code"),
+    [
+        ("a..b", "branch_invalid"),
+        ("@{-1}", "branch_invalid"),
+        ("a b", "branch_invalid"),
+        ("x.lock", "branch_invalid"),
+        ("a~1", "branch_invalid"),
+        ("HEAD", "branch_invalid"),
+        ("-x", "branch_name_invalid"),
+        ("", "branch_name_invalid"),
+        ("x" * (h.MAX_BRANCH_NAME_LENGTH + 1), "branch_name_invalid"),
+    ],
+)
+def test_new_branch_refuses_a_name_git_would_not_take_as_given(env, repo, name, code):
     fixture_git(repo, "switch", "-q", "-c", "previous")
     fixture_git(repo, "switch", "-q", "main")  # so that @{-1} names a branch
-    assert error_code(env, "git-branch-new", f"--name={name}", "--", REPO_REL) == "branch_invalid"
+    assert error_code(env, "git-branch-new", f"--name={name}", "--", REPO_REL) == code
     assert branch_of(repo) == "main"
 
 
