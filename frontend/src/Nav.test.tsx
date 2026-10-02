@@ -1,9 +1,9 @@
 import { screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
-import { ADMIN as ADMIN_PAGE, ADMIN_PAGES } from "./AdminPages";
+import { ADMIN, ADMIN_PAGES } from "./AdminPages";
 import { m } from "./messages";
-import { ADMIN, CONNECTED, ME, NOTHING_TO_ATTEND, type Reply, fakeApi } from "./test/fakeApi";
+import { ADMIN_USER, CONNECTED, ME, NOTHING_TO_ATTEND, type Reply, fakeApi } from "./test/fakeApi";
 import { renderApp } from "./test/render";
 
 function api(me: Reply) {
@@ -32,7 +32,7 @@ test("people who are not administrators are not offered administration", async (
 });
 
 test("administrators get one Admin entry, which leads to every administrators' page", async () => {
-  api(ADMIN);
+  api(ADMIN_USER);
   renderApp();
   const admin = await adminButton();
   expect(within(nav()).getAllByRole("button", { name: m.navAdmin })).toHaveLength(1);
@@ -56,7 +56,7 @@ test("administrators get one Admin entry, which leads to every administrators' p
 });
 
 test("choosing a page opens it and closes the menu, which then marks itself as where you are", async () => {
-  api(ADMIN);
+  api(ADMIN_USER);
   const { location } = renderApp();
   const admin = await adminButton();
   expect(admin).not.toHaveClass("active");
@@ -70,7 +70,7 @@ test("choosing a page opens it and closes the menu, which then marks itself as w
 });
 
 test("the menu closes when the page changes, and when the page already open is chosen", async () => {
-  api(ADMIN);
+  api(ADMIN_USER);
   const { navigate } = renderApp(ADMIN_PAGES[0].path);
   const admin = await adminButton();
   await userEvent.click(admin);
@@ -85,19 +85,19 @@ test("the menu closes when the page changes, and when the page already open is c
 });
 
 test("the menu closes when focus leaves it, and not while it moves inside it", async () => {
-  api(ADMIN);
+  api(ADMIN_USER);
   renderApp();
   const admin = await adminButton();
   await userEvent.click(admin);
   await userEvent.tab();
   expect(screen.getByRole("link", { name: ADMIN_PAGES[0].label })).toHaveFocus();
   expect(admin).toHaveAttribute("aria-expanded", "true");
-  await userEvent.click(screen.getByText(m.signedInAs(ADMIN.email)));
+  await userEvent.click(screen.getByText(m.signedInAs(ADMIN_USER.email)));
   expect(admin).toHaveAttribute("aria-expanded", "false");
 });
 
 test("Escape closes the menu and returns to its button", async () => {
-  api(ADMIN);
+  api(ADMIN_USER);
   renderApp();
   const admin = await adminButton();
   await userEvent.click(admin);
@@ -115,8 +115,8 @@ test("the administration pages include everyone's servers", () => {
   for (const label of [m.navUsers, m.navAudit, m.navVersions, m.navEveryone]) {
     expect(labels).toContain(label);
   }
-  expect(ADMIN_PAGE.everyone.path).toBe("/admin/servers");
-  expect(ADMIN_PAGES).toEqual(Object.values(ADMIN_PAGE));
+  expect(ADMIN.everyone.path).toBe("/admin/servers");
+  expect(ADMIN_PAGES).toEqual(Object.values(ADMIN));
 });
 
 test("an account rcman refuses sees the server's reason", async () => {

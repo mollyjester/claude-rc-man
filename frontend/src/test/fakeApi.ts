@@ -54,7 +54,7 @@ export function fakeApi(routes: Routes) {
 }
 
 export const ME = { email: "alice@example.com", linux: "alice", admin: false, prefix: "alice" };
-export const ADMIN = { ...ME, admin: true };
+export const ADMIN_USER = { ...ME, admin: true };
 export const CONNECTED = {
   connection: "connected",
   account: { email: "alice@claude.test", org_name: "Org", subscription_type: "max" },

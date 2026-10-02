@@ -2,7 +2,7 @@ import { screen, within } from "@testing-library/react";
 
 import { KIND } from "./Servers";
 import { m } from "./messages";
-import { ADMIN, CONNECTED, NOTHING_TO_ATTEND, fakeApi } from "./test/fakeApi";
+import { ADMIN_USER, CONNECTED, NOTHING_TO_ATTEND, fakeApi } from "./test/fakeApi";
 import { renderApp } from "./test/render";
 
 function server(path: string, state: string, extra: Record<string, unknown> = {}) {
@@ -23,7 +23,7 @@ const PEOPLE = {
 
 function api() {
   return fakeApi({
-    "GET /api/me": ADMIN,
+    "GET /api/me": ADMIN_USER,
     "GET /api/claude": CONNECTED,
     "GET /api/attention": NOTHING_TO_ATTEND,
     "GET /api/servers/everyone": PEOPLE,
