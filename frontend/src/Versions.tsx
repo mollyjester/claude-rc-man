@@ -78,7 +78,7 @@ export function Versions() {
           {m.versionsUpgrade}
           <input type="text" value={version} onChange={(e) => setVersion(e.target.value)} />
         </label>
-        <button type="submit" disabled={busy}>
+        <button type="submit" className="primary" disabled={busy}>
           {m.versionsUpgradeGo}
         </button>
       </form>

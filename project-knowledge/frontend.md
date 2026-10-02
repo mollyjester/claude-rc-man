@@ -34,6 +34,9 @@ version is `frontend/.nvmrc`.
   each: in the panel instead of Start, and on a server's card instead of the
   sentence saying what to do. Administration is offered only to
   administrators, and the server refuses everyone else regardless.
+- **Each form leads with what it does.** Its submit button is its one
+  `primary` button and its other buttons are plain; a dialog's choice is a
+  form too. `src/forms.test.tsx` checks every form.
 - **Every piece of text not from the server is in `src/messages.ts`.**
 - **Every colour is a custom property in `src/styles.css`**, with a value for
   a light scheme and one for a dark scheme, which the browser picks between by

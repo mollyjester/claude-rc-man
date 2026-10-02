@@ -10,7 +10,8 @@ function RemoveDialog({ linux, onDone, onCancel }: { linux: string; onDone: () =
   const [home, setHome] = useState<"keep" | "delete">("keep");
   const [error, setError] = useState<ApiError | null>(null);
 
-  async function remove() {
+  async function remove(event: FormEvent) {
+    event.preventDefault();
     setError(null);
     try {
       await api.delete(`/api/users/${encodeURIComponent(linux)}`, { home });
@@ -23,23 +24,25 @@ function RemoveDialog({ linux, onDone, onCancel }: { linux: string; onDone: () =
   return (
     <div role="dialog" aria-label={m.usersRemoveTitle(linux)} className="dialog">
       <h2>{m.usersRemoveTitle(linux)}</h2>
-      <p>{m.usersRemoveBody}</p>
-      <label>
-        <input type="radio" name="home" checked={home === "keep"} onChange={() => setHome("keep")} />
-        {m.usersKeepHome}
-      </label>
-      <label>
-        <input type="radio" name="home" checked={home === "delete"} onChange={() => setHome("delete")} />
-        {m.usersDeleteHome}
-      </label>
-      <div className="actions">
-        <button type="button" onClick={remove}>
-          {m.usersRemoveConfirm}
-        </button>
-        <button type="button" onClick={onCancel}>
-          {m.cancel}
-        </button>
-      </div>
+      <form noValidate onSubmit={remove}>
+        <p>{m.usersRemoveBody}</p>
+        <label>
+          <input type="radio" name="home" checked={home === "keep"} onChange={() => setHome("keep")} />
+          {m.usersKeepHome}
+        </label>
+        <label>
+          <input type="radio" name="home" checked={home === "delete"} onChange={() => setHome("delete")} />
+          {m.usersDeleteHome}
+        </label>
+        <div className="actions">
+          <button type="submit" className="primary">
+            {m.usersRemoveConfirm}
+          </button>
+          <button type="button" onClick={onCancel}>
+            {m.cancel}
+          </button>
+        </div>
+      </form>
       <ProblemView error={error} />
     </div>
   );
@@ -135,7 +138,9 @@ export function People() {
           <input type="checkbox" checked={adopt} onChange={(e) => setAdopt(e.target.checked)} />
           {m.usersAddAdopt}
         </label>
-        <button type="submit">{m.usersAdd}</button>
+        <button type="submit" className="primary">
+          {m.usersAdd}
+        </button>
       </form>
       {notice && <p role="status">{notice}</p>}
       <ProblemView error={error} />

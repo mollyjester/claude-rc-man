@@ -78,7 +78,9 @@ function Part(props: { title: string; fields: Field[]; reply: Reply; onSaved: (r
             <p className="muted">{FIELDS[field].help}</p>
           </div>
         ))}
-        <button type="submit">{m.save}</button>
+        <button type="submit" className="primary">
+          {m.save}
+        </button>
       </form>
       {children}
       {saved && <p role="status">{m.saved}</p>}
