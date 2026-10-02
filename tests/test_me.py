@@ -173,6 +173,20 @@ def test_null_is_refused_for_every_setting(client, field):
     assert [e["field"] for e in r.json()["errors"]] == [field]
 
 
+def test_the_published_schema_says_what_the_server_accepts(client):
+    """Every setting may be left out, none may be null, and at least one is sent."""
+    spec = client.get("/api/openapi.json").json()
+    body = spec["paths"]["/api/me/settings"]["patch"]["requestBody"]["content"]
+    ref = body["application/json"]["schema"]["$ref"]
+    schema = spec["components"]["schemas"][ref.rsplit("/", 1)[1]]
+    assert list(schema["properties"]) == list(settings_body().model_fields)  # non-vacuity
+    assert "required" not in schema
+    assert schema["minProperties"] == 1
+    for name, field in schema["properties"].items():
+        assert field["type"] == "string", name
+        assert "default" not in field and "anyOf" not in field, (name, field)
+
+
 def test_a_change_with_no_settings_is_refused(client):
     r = patch(client, {})
     assert (r.status_code, r.json()["code"]) == (422, "validation_failed")
