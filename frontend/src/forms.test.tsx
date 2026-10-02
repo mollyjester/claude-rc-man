@@ -3,6 +3,7 @@
 // button, or its one danger button where what it does cannot be undone.
 import { screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { vi } from "vitest";
 
 import { m } from "./messages";
 import { FIELDS } from "./Settings";
@@ -154,6 +155,47 @@ test.each([...PAGES, ...CHOICES].filter(([page]) => DESTRUCTIVE.includes(page)))
   const submit = dialog.querySelector('button[type="submit"]');
   expect(submit).toHaveClass("danger");
   expect(dialog.querySelectorAll("button.primary")).toHaveLength(0);
+});
+
+// What is wrong with the button that opened a destructive form: it does not
+// itself do what cannot be undone, so it is a danger outline, not plain, not
+// primary and not danger.
+function openerFaults(opener: Element | undefined): string[] {
+  if (!opener) return ["nothing opened it"];
+  const name = opener.textContent?.trim();
+  if (!opener.classList.contains("secondary-danger")) return [`${name}: not a danger outline`];
+  if (opener.classList.contains("primary") || opener.classList.contains("danger")) return [`${name}: leads as a form would`];
+  return [];
+}
+
+test.each([...PAGES, ...CHOICES].filter(([page]) => DESTRUCTIVE.includes(page)))(
+  "what opens the form for %s (%s) is a danger outline",
+  async (_, path, open) => {
+    api();
+    renderApp(path);
+    const clicked: Element[] = [];
+    const click = userEvent.click;
+    const spy = vi.spyOn(userEvent, "click").mockImplementation(async (element) => {
+      clicked.push(element);
+      return click(element);
+    });
+    try {
+      await open();
+    } finally {
+      spy.mockRestore();
+    }
+    expect(screen.getByRole("dialog")).toBeInTheDocument(); // positive control: it opened
+    expect(openerFaults(clicked.at(-1))).toEqual([]);
+  },
+);
+
+test("the opener check fails on a plain, primary or danger button, or none", () => {
+  const button = (className: string) => Object.assign(document.createElement("button"), { className, textContent: "Remove" });
+  expect(openerFaults(button("secondary-danger"))).toEqual([]);
+  for (const className of ["", "secondary", "primary", "danger", "secondary-danger danger"]) {
+    expect(openerFaults(button(className)), className).toHaveLength(1);
+  }
+  expect(openerFaults(undefined)).toEqual(["nothing opened it"]);
 });
 
 test.each([...PAGES, ...CHOICES].filter(([page]) => !DESTRUCTIVE.includes(page)))("the forms on %s (%s) lead with primary, not danger", async (page, path, open) => {

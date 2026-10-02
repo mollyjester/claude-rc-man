@@ -101,7 +101,7 @@ export function People() {
               <td>{p.admin ? m.usersAdmin : m.usersUser}</td>
               <td>{p.account ? m.usersAccountOk : m.usersAccountMissing}</td>
               <td>
-                <button type="button" onClick={() => setRemoving(p.linux)}>
+                <button type="button" className="secondary-danger" onClick={() => setRemoving(p.linux)}>
                   {m.usersRemove}
                 </button>
               </td>
