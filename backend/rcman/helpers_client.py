@@ -66,6 +66,7 @@ ADMIN_STATUS = {
     "claude_checks_failed": 409,
 }
 
+# run(linux, args, stdin=None, timeout=HELPER_TIMEOUT) -> (exit code, answer)
 HelperRunner = Callable[..., tuple[int, dict]]
 AdminRunner = Callable[[list[str]], tuple[int, dict]]
 
@@ -79,11 +80,11 @@ def _parse(proc: subprocess.CompletedProcess) -> tuple[int, dict]:
 
 
 def sudo_helper(helpers_dir: Path, runner=subprocess.run) -> HelperRunner:
-    def run(linux: str, args: list[str], stdin: str | None = None) -> tuple[int, dict]:
+    def run(
+        linux: str, args: list[str], stdin: str | None = None, timeout: float = HELPER_TIMEOUT
+    ) -> tuple[int, dict]:
         argv = ["sudo", "-n", "-u", linux, str(helpers_dir / "rc-helper"), *args]
-        return _parse(
-            runner(argv, input=stdin, capture_output=True, text=True, timeout=HELPER_TIMEOUT)
-        )
+        return _parse(runner(argv, input=stdin, capture_output=True, text=True, timeout=timeout))
 
     return run
 
@@ -105,16 +106,27 @@ def _raise(out: dict, statuses: dict[str, int]) -> None:
 
 
 def call_helper(
-    run: HelperRunner, identity: Identity, args: list[str], stdin: str | None = None
+    run: HelperRunner,
+    identity: Identity,
+    args: list[str],
+    stdin: str | None = None,
+    timeout: float = HELPER_TIMEOUT,
 ) -> dict:
-    code, out = run(identity.linux, args, stdin)
+    """rc-helper's answer as ``identity``; outlasting ``timeout`` is ``helper_timeout``."""
+    try:
+        code, out = run(identity.linux, args, stdin, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        raise Problem("helper_timeout") from None
     if code != 0:
         _raise(out, HELPER_STATUS)
     return out
 
 
 def call_admin(run: AdminRunner, args: list[str]) -> dict:
-    code, out = run(args)
+    try:
+        code, out = run(args)
+    except subprocess.TimeoutExpired:
+        raise Problem("helper_timeout") from None
     if code != 0:
         _raise(out, ADMIN_STATUS)
     return out

@@ -50,7 +50,7 @@ def helper_homes(tmp_path):
     sock_root = Path("/tmp") / f"rcb-{tmp_path.name[-10:]}"
     sock_root.mkdir(exist_ok=True)
 
-    def runner(linux, args, stdin=None):
+    def runner(linux, args, stdin=None, timeout=60):
         sock = sock_root / f"{linux}.sock"
         sockets.append(sock)
         env = {
@@ -61,7 +61,7 @@ def helper_homes(tmp_path):
         }
         proc = subprocess.run(
             [str(REPO / "helpers" / "rc-helper"), *args],
-            env=env, input=stdin, capture_output=True, text=True, timeout=60,
+            env=env, input=stdin, capture_output=True, text=True, timeout=timeout,
         )  # fmt: skip
         return proc.returncode, json.loads(proc.stdout)
 
@@ -129,6 +129,7 @@ CALLS = {
     ("GET", "/api/audit"): {},
     ("GET", "/api/users"): {},
     ("GET", "/api/claude/versions"): {},
+    ("GET", "/api/servers/everyone"): {},
 }
 
 

@@ -19,6 +19,7 @@ the OpenAPI description it serves at `/api/openapi`.
 | `problems.py` | RFC 9457 problem details for every error |
 | `audit.py` | The audit trail: recording, coverage, retention |
 | `helpers_client.py` | Calling `rc-helper` and `rc-admin`, and mapping their errors to HTTP statuses |
+| `everyone.py` | Everyone's servers, for administrators: one `rc-helper list` per person, side by side |
 | `routes.py` | The app's routes as FastAPI resolves them after including routers, and which of them are for administrators |
 | `routers/` | One module per area: `me`, `folders`, `servers`, `claude`, `users`, `audit_log`, `docs` |
 
@@ -53,6 +54,19 @@ production they are `sudo_helper` — `sudo -n -u <linux-user> rc-helper ...` �
 and `sudo_admin` — `sudo -n rc-admin ...`. Positional paths are passed after
 `--`, and option values as `--option=value`, so nothing a person sends can be
 read as an option.
+
+A call that outlasts its timeout — `HELPER_TIMEOUT` and `ADMIN_TIMEOUT` in
+`helpers_client.py` unless the caller passes one — is the problem
+`helper_timeout`.
+
+`everyone.py` lists every person's servers for administrators
+(`GET /api/servers/everyone`). It runs `rc-helper list` as each person in the
+users file in a thread pool of at most `EVERYONE_WORKERS`, and waits
+`EVERYONE_TIMEOUT_SECONDS`, which is also each call's own timeout. A person
+whose call fails is listed with the error's code and title instead of their
+servers, and one still running when the wait ends with `helper_timeout`, so
+one person never hides or stalls the others. The listing is read-only: no
+route lets one person act on another's servers.
 
 ## Claude account and versions
 

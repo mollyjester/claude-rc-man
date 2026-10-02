@@ -35,6 +35,8 @@ reason it gave is shown on the server it was about.
 - Each folder has at most one server. One server can host several sessions.
 - Servers keep running when you close your browser.
 - Your Claude account has to be connected before a server can start.
+- Administrators can see your servers and their states, but cannot start,
+  stop or otherwise act on them; only you can.
 - The list shows only servers started from rcman. A `claude remote-control`
   you start yourself, in a terminal, is not shown, and rcman cannot stop or
   resume it. To have rcman manage that folder, quit the one you started and
@@ -70,3 +72,12 @@ If Claude shows a screen rcman does not recognise, the server is shown as
 **Unrecognised screen** and **Show screen** displays exactly what Claude shows,
 rather than rcman guessing what it means. This usually means Claude Code has
 changed in a way rcman does not handle yet.
+
+## For administrators
+
+The **Everyone's servers** page lists each person in rcman with their servers:
+the folder, the state and the session's name, as each person's own Servers page
+shows them. It is for looking only; it has no buttons, because rcman lets only
+the person a server belongs to act on it. A person whose servers could not be
+listed — rcman's helper failed or took too long for them — is shown with the
+reason, and everyone else is listed as usual.

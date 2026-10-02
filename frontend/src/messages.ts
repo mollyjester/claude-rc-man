@@ -15,6 +15,7 @@ export const m = {
   navUsers: "People",
   navAudit: "Audit trail",
   navVersions: "Claude Code",
+  navEveryone: "Everyone's servers",
   signedInAs: (email: string) => `Signed in as ${email}`,
 
   foldersTitle: "Folders",
@@ -102,6 +103,13 @@ export const m = {
   auditResult: "Result",
   auditOlder: "Older",
   auditEmpty: "Nothing recorded.",
+
+  everyoneTitle: "Everyone's servers",
+  everyoneIntro: "Each person's servers, to look at only. Only the person a server belongs to can act on it.",
+  everyonePerson: (linux: string, email: string) => `${linux} (${email})`,
+  everyoneNone: "No servers.",
+  everyoneFolder: "Folder",
+  everyoneState: "State",
 
   versionsTitle: "Claude Code",
   versionsApproved: "Approved version",

@@ -60,3 +60,34 @@ def test_every_admin_error_code_has_a_status():
 @pytest.mark.parametrize("status", [*hc.HELPER_STATUS.values(), *hc.ADMIN_STATUS.values()])
 def test_statuses_are_client_or_server_errors(status):
     assert 400 <= status < 600
+
+
+def test_a_helper_that_times_out_is_a_problem():
+    import subprocess
+
+    from rcman.identity import Identity
+    from rcman.problems import Problem
+
+    seen = {}
+
+    def fake_run(argv, **kw):
+        seen["timeout"] = kw["timeout"]
+        raise subprocess.TimeoutExpired(argv, kw["timeout"])
+
+    run = hc.sudo_helper(Path("/x"), runner=fake_run)
+    with pytest.raises(Problem) as raised:
+        hc.call_helper(run, Identity("a@example.com", "alice", False), ["list"], timeout=7)
+    assert (raised.value.code, raised.value.status) == ("helper_timeout", 504)
+    assert seen["timeout"] == 7
+    hc.call_helper(
+        hc.sudo_helper(Path("/x"), runner=lambda argv, **kw: seen.update(kw) or ok(argv)),
+        Identity("a@example.com", "alice", False),
+        ["list"],
+    )
+    assert seen["timeout"] == hc.HELPER_TIMEOUT  # the default when none is given
+
+
+def ok(argv):
+    import subprocess
+
+    return subprocess.CompletedProcess(argv, 0, stdout='{"servers": []}', stderr="")

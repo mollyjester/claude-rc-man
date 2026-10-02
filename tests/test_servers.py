@@ -77,3 +77,20 @@ def test_helper_detail_is_passed_on(client, helper_homes):
     fake.write_state(helper_homes.homes["alice"] / ".claude-fake", logged_in=False)
     r = client.post("/api/servers", json=ALPHA, headers=changing(ALICE))
     assert (r.status_code, r.json()["code"]) == (409, "claude_not_logged_in")
+
+
+def test_administrators_see_every_persons_servers(client):
+    client.post("/api/servers", json=ALPHA, headers=changing(ALICE))
+    r = client.get("/api/servers/everyone", headers=as_user(ALICE))
+    assert r.status_code == 200, r.text
+    people = {p["linux"]: p for p in r.json()["people"]}
+    assert set(people) == {"alice", "bob", "carol"}
+    assert [s["path"] for s in people["alice"]["servers"]] == [ALPHA["path"]]
+    assert people["bob"]["servers"] == []
+
+
+def test_people_who_are_not_administrators_cannot_see_everyones_servers(client):
+    client.post("/api/servers", json=ALPHA, headers=changing(ALICE))
+    r = client.get("/api/servers/everyone", headers=as_user(BOB))
+    assert (r.status_code, r.json()["code"]) == (403, "admin_only")
+    assert "alice-project" not in r.text
