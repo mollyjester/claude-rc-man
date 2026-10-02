@@ -88,6 +88,8 @@ MAX_PREFIX_LENGTH = 32
 MAX_PATH_LENGTH = 1024
 PREFIX = re.compile(rf"[A-Za-z0-9][A-Za-z0-9-]{{0,{MAX_PREFIX_LENGTH - 1}}}")
 MAX_AUTHOR_NAME_LENGTH = 128
+# The Hangul fillers, as (first, last): letters that show as nothing.
+HANGUL_FILLERS = ((0x115F, 0x1160), (0x3164, 0x3164), (0xFFA0, 0xFFA0))
 # Code points a commit author's name may not hold anywhere, as (first, last).
 _NOT_IN_AUTHOR_NAME = (
     (0x00, 0x1F),  # control characters
@@ -121,10 +123,7 @@ _NOT_IN_AUTHOR_NAME = (
     (0x1D173, 0x1D17A),
     (0xE0001, 0xE0001),
     (0xE0020, 0xE007F),
-    # Hangul fillers: letters that show as nothing.
-    (0x115F, 0x1160),
-    (0x3164, 0x3164),
-    (0xFFA0, 0xFFA0),
+    *HANGUL_FILLERS,
 )
 # What git strips from either end of a name besides white space: crud() in
 # git's ident.c. tests/test_rc_helper.py asks real git.
