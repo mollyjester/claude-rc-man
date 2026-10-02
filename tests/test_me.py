@@ -8,7 +8,7 @@ import pytest
 
 from helpers import rc_helper, users_file
 from tests.conftest import ALICE, BOB, as_user, changing
-from tests.test_rc_helper import AUTHOR_NAMES, HANGUL_FILLERS, format_characters
+from tests.test_rc_helper import AUTHOR_NAMES, format_characters, hangul_fillers
 
 UNSET = {"prefix": "bob", "author_name": "", "author_email": "", "effective_author": None}
 
@@ -141,7 +141,7 @@ def test_the_server_accepts_exactly_the_names_the_helpers_rule_does(client, name
 
 
 def test_the_server_refuses_exactly_the_format_characters_the_helpers_rule_does(client):
-    found = format_characters() + [chr(c) for c in HANGUL_FILLERS]
+    found = format_characters() + hangul_fillers()
     assert found  # non-vacuity
     disagree = []
     for c in found:

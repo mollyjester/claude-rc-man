@@ -601,13 +601,18 @@ AUTHOR_NAMES = [(n, True) for n in AUTHOR_NAMES_ACCEPTED] + [
 # Format characters (Unicode category Cf) a name may hold, and why: Persian and
 # Indic names are written with them.
 ALLOWED_FORMAT = {0x200C: "ZERO WIDTH NON-JOINER", 0x200D: "ZERO WIDTH JOINER"}
-# Letters by category, but they show as nothing.
-HANGUL_FILLERS = {
-    0x115F: "HANGUL CHOSEONG FILLER",
-    0x1160: "HANGUL JUNGSEONG FILLER",
-    0x3164: "HANGUL FILLER",
-    0xFFA0: "HALFWIDTH HANGUL FILLER",
-}
+
+
+def hangul_fillers() -> list[str]:
+    """The Hangul fillers: letters by category, but they show as nothing."""
+    import sys
+    import unicodedata
+
+    return [
+        chr(c)
+        for c in range(sys.maxunicode + 1)
+        if {"HANGUL", "FILLER"} <= set(unicodedata.name(chr(c), "").split())
+    ]
 
 
 def format_characters() -> list[str]:
@@ -641,12 +646,14 @@ def test_every_format_character_is_refused_in_a_name_but_the_allowed_ones():
 
 
 def test_hangul_fillers_are_refused_in_a_name():
-    import unicodedata
-
-    for code, name in HANGUL_FILLERS.items():
-        assert unicodedata.name(chr(code)) == name
-        assert not h.AUTHOR_NAME.fullmatch(f"a{chr(code)}b"), name
-        assert not h.AUTHOR_NAME.fullmatch(chr(code)), name
+    found = hangul_fillers()
+    assert chr(0x3164) in found  # positive control: HANGUL FILLER
+    assert {code for first, last in h.HANGUL_FILLERS for code in range(first, last + 1)} == {
+        ord(c) for c in found
+    }
+    for c in found:
+        assert not h.AUTHOR_NAME.fullmatch(f"a{c}b"), f"U+{ord(c):04X}"
+        assert not h.AUTHOR_NAME.fullmatch(c), f"U+{ord(c):04X}"
 
 
 def recorded_by_git(tmp_path, name: str) -> str:
