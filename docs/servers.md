@@ -29,23 +29,21 @@ folder you have selected is part of the page's address, so reloading the page
 keeps it, and the browser's back button returns to the folder selected before.
 
 A server shows its state as a coloured badge, a sentence saying what to do
-next, and only the actions that state allows. The action to take next stands
-out; **Stop** and **Forget** never do:
+next, and only the actions that state allows. Its main button, the action to
+take next, stands out; **Stop** and **Forget** never do. A server that is
+ready or in use also has **Open in claude.ai**, which is its main button:
 
-| State | Dot | What to do | Buttons |
-|---|---|---|---|
-| Starting | Running | Claude is starting. Wait a moment. | **Stop** |
-| Waiting for your answer | Needs your answer | Answer whether you trust this folder. | **Yes, trust it**, **No**, **Stop** |
-| Ready to accept sessions | Running | Open it in claude.ai to start a session. | **Stop** |
-| In use | Running | A session is attached; continue it in claude.ai. | **Stop** |
-| Stopped | Not running | Resume to pick up its sessions, or forget it. | **Resume**, **Forget** |
-| Not started: folder not trusted | Not running | Start again to answer once more, or forget it. | **Start again**, **Forget** |
-| Not started: Claude account not connected | Has a problem | Connect your Claude account above, then start again. | **Start again**, **Forget** |
-| Stopped by itself | Has a problem | Show the screen to see why it stopped, then resume it. | **Resume**, **Forget**, **Show screen** |
-| Unrecognised screen | Has a problem | Show the screen, stop it, and tell an administrator. | **Show screen**, **Stop** |
-
-A server that is ready or in use also has **Open in claude.ai**, which is
-the action to take next there.
+| State | Dot | What to do | Main button | Buttons |
+|---|---|---|---|---|
+| Starting | Running | Claude is starting. Wait a moment. | — | **Stop** |
+| Waiting for your answer | Needs your answer | Answer whether you trust this folder. | **Yes, trust it** | **Yes, trust it**, **No**, **Stop** |
+| Ready to accept sessions | Running | Open it in claude.ai to start a session. | **Open in claude.ai** | **Stop** |
+| In use | Running | A session is attached; continue it in claude.ai. | **Open in claude.ai** | **Stop** |
+| Stopped | Not running | Resume to pick up its sessions, or forget it. | **Resume** | **Resume**, **Forget** |
+| Not started: folder not trusted | Not running | Start again to answer once more, or forget it. | **Start again** | **Start again**, **Forget** |
+| Not started: Claude account not connected | Has a problem | Connect your Claude account above, then start again. | **Start again** | **Start again**, **Forget** |
+| Stopped by itself | Has a problem | Show the screen to see why it stopped, then resume it. | **Resume** | **Resume**, **Forget**, **Show screen** |
+| Unrecognised screen | Has a problem | Show the screen, stop it, and tell an administrator. | **Show screen** | **Show screen**, **Stop** |
 
 The page refreshes the states by itself. When rcman refuses an action, the
 reason it gave is shown on the server it was about.

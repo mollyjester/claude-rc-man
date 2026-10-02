@@ -1,16 +1,20 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
-import { ACTIONS, KIND, LABELS } from "./Servers";
+import { ACTIONS, KIND, LABELS, PRIMARY } from "./Servers";
 import { m } from "./messages";
 
 const GUIDE = resolve(__dirname, "../../docs/servers.md");
-const HEADER = "| State | Dot | What to do | Buttons |";
+const HEADER = "| State | Dot | What to do | Main button | Buttons |";
+// What the guide writes where a state has no main button.
+const NONE = "—";
 
-type Row = { state: string; dot: string; next: string; buttons: string[] };
+type Row = { state: string; dot: string; next: string; main: string; buttons: string[] };
+
+const bold = (cell: string) => [...cell.matchAll(/\*\*(.+?)\*\*/g)].map((b) => b[1]);
 
 // The rows of the guide's state table: the state's name, its dot, what to do,
-// then each button in bold.
+// its main button in bold or NONE, then each button in bold.
 function stateTable(markdown: string): Row[] {
   const lines = markdown.split("\n");
   const start = lines.findIndex((line) => line.trim() === HEADER);
@@ -18,23 +22,29 @@ function stateTable(markdown: string): Row[] {
   const rows: Row[] = [];
   for (const line of lines.slice(start + 2)) {
     if (!line.trim().startsWith("|")) break;
-    const [state, dot, next, buttons] = line.split("|").slice(1, 5).map((cell) => cell.trim());
-    rows.push({ state, dot, next, buttons: [...buttons.matchAll(/\*\*(.+?)\*\*/g)].map((b) => b[1]) });
+    const [state, dot, next, main, buttons] = line.split("|").slice(1, 6).map((cell) => cell.trim());
+    rows.push({ state, dot, next, main: bold(main)[0] ?? main, buttons: bold(buttons) });
   }
   return rows;
 }
 
 // What the page shows for every state, derived from the interface itself.
 function expected(): Row[] {
-  return Object.keys(ACTIONS).map((state) => ({
-    state: m.states[state],
-    dot: m.kinds[KIND[state]],
-    next: m.nextStep[state],
-    buttons: ACTIONS[state].map((action) => LABELS[action]),
-  }));
+  return Object.keys(ACTIONS).map((state) => {
+    const primary = PRIMARY[state];
+    return {
+      state: m.states[state],
+      dot: m.kinds[KIND[state]],
+      next: m.nextStep[state],
+      main: primary === null ? NONE : primary === "openSession" ? m.openSession : LABELS[primary],
+      buttons: ACTIONS[state].map((action) => LABELS[action]),
+    };
+  });
 }
 
-test("the servers guide lists each state with its dot, what to do, and exactly the buttons the page offers", () => {
+const cell = (main: string) => (main === NONE ? NONE : `**${main}**`);
+
+test("the servers guide lists each state with its dot, what to do, its main button, and exactly the buttons the page offers", () => {
   const rows = stateTable(readFileSync(GUIDE, "utf-8"));
   expect(rows.length).toBeGreaterThan(0);
   expect(rows).toEqual(expected());
@@ -43,8 +53,10 @@ test("the servers guide lists each state with its dot, what to do, and exactly t
 test("the check fails on a guide whose table has drifted", () => {
   const right = [
     HEADER,
-    "|---|---|---|---|",
-    ...expected().map((r) => `| ${r.state} | ${r.dot} | ${r.next} | ${r.buttons.map((b) => `**${b}**`).join(", ")} |`),
+    "|---|---|---|---|---|",
+    ...expected().map(
+      (r) => `| ${r.state} | ${r.dot} | ${r.next} | ${cell(r.main)} | ${r.buttons.map((b) => `**${b}**`).join(", ")} |`,
+    ),
   ];
   expect(stateTable(right.join("\n"))).toEqual(expected());
 
@@ -59,6 +71,11 @@ test("the check fails on a guide whose table has drifted", () => {
   expect(drifted(`| ${m.states.exited} | ${m.kinds[KIND.exited]} |`, `| ${m.states.exited} | ${m.kinds[KIND.ready]} |`)).not.toEqual(
     expected(),
   );
+
+  expect(drifted(`${m.nextStep.exited} | **${m.resume}** |`, `${m.nextStep.exited} | **${m.showScreen}** |`)).not.toEqual(
+    expected(),
+  );
+  expect(drifted(`${m.nextStep.starting} | ${NONE} |`, `${m.nextStep.starting} | **${m.stop}** |`)).not.toEqual(expected());
 
   expect(stateTable(right.slice(0, -1).join("\n"))).not.toEqual(expected());
   expect(stateTable("")).toEqual([]);
