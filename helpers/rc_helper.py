@@ -6,10 +6,10 @@ verb prints one JSON object on stdout; failures print ``{"error": {"code",
 "message"}}`` and exit 1 (2 for a malformed command line). Secrets are read
 from stdin, never from the command line.
 
-The user's home comes from the password database, not from ``$HOME``. Three
-environment variables are test hooks — ``RC_HELPER_HOME``, ``RC_HELPER_CLAUDE``
-and ``RC_HELPER_TMUX_SOCKET`` — and the sudoers rule resets the environment,
-so they never reach a helper started through sudo.
+The user's home comes from the password database, not from ``$HOME``. Four
+environment variables are test hooks — ``RC_HELPER_HOME``, ``RC_HELPER_CLAUDE``,
+``RC_HELPER_TMUX_SOCKET`` and ``RC_HELPER_GITHUB`` — and the sudoers rule resets
+the environment, so they never reach a helper started through sudo.
 
 Python standard library and the helpers' own modules only: it runs under the
 system interpreter.
@@ -340,18 +340,28 @@ class HelperError(Exception):
         self.detail = detail or {}
 
 
+GITHUB_URL = "https://github.com/"
+
+
 @dataclass(frozen=True)
 class Config:
     home: Path
     claude: Path
     tmux_socket: Path | None  # None: the named socket TMUX_SOCKET_NAME
+    # Where git reaches GitHub: GITHUB_URL, or the tests' stand-in (git_env).
+    github: str = GITHUB_URL
 
 
 def config_from_env(env: dict[str, str]) -> Config:
     home = Path(env.get("RC_HELPER_HOME") or pwd.getpwuid(os.getuid()).pw_dir)
     claude = Path(env.get("RC_HELPER_CLAUDE") or home / ".local" / "bin" / "claude")
     socket = env.get("RC_HELPER_TMUX_SOCKET")
-    return Config(home=home, claude=claude, tmux_socket=Path(socket) if socket else None)
+    return Config(
+        home=home,
+        claude=claude,
+        tmux_socket=Path(socket) if socket else None,
+        github=env.get("RC_HELPER_GITHUB") or GITHUB_URL,
+    )
 
 
 def child_env(cfg: Config) -> dict[str, str]:
@@ -375,14 +385,25 @@ def git_env(cfg: Config) -> dict[str, str]:
 
     Hooks run with it too, so they find the person's own programs on PATH;
     git itself is looked for on the system path only (git_run).
+
+    Under the RC_HELPER_GITHUB test hook, git is told to fetch from and push
+    to that address in place of GitHub's (GIT_CONFIG_COUNT, which every git
+    of git_run.GIT_MIN_VERSION reads). git looks a credential up for the
+    address it rewrote to, so the github verbs store the token for
+    ``cfg.github`` too.
     """
     server = child_env(cfg)
-    return {
+    env = {
         **{key: server[key] for key in ("HOME", "USER", "LOGNAME", "PATH", "LANG")},
         "LC_ALL": "C.UTF-8",
         "GIT_TERMINAL_PROMPT": "0",
         "GIT_OPTIONAL_LOCKS": "0",
     }
+    if cfg.github != GITHUB_URL:
+        env["GIT_CONFIG_COUNT"] = "1"
+        env["GIT_CONFIG_KEY_0"] = f"url.{cfg.github}.insteadOf"
+        env["GIT_CONFIG_VALUE_0"] = GITHUB_URL
+    return env
 
 
 def _command(cfg: Config, *args: str) -> list[str]:

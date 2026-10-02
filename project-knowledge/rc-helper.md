@@ -224,7 +224,16 @@ A test renders it and validates it with `visudo -c`.
 ## Test hooks
 
 `RC_HELPER_HOME`, `RC_HELPER_CLAUDE` and `RC_HELPER_TMUX_SOCKET` replace the
-home folder, the Claude binary and the tmux socket. The sudoers rule resets
-the environment, so they never reach a helper started through sudo. The tests
-point them at a temporary home, a private socket and the fake `claude` — see
-[fake-claude.md](fake-claude.md).
+home folder, the Claude binary and the tmux socket. `RC_HELPER_GITHUB`, a
+base address ending in a slash, replaces GitHub: `git_env` gives git
+`url.<address>.insteadOf https://github.com/` through `GIT_CONFIG_COUNT`, so
+every fetch from and push to `https://github.com/` goes there instead. git
+looks a credential up for the address it rewrote to, so under the hook the
+GitHub token is stored, and its credential helper set, for that address
+rather than for `https://github.com`; without the hook, `Config.github` is
+`GITHUB_URL` and git is given nothing.
+
+The sudoers rule resets the environment, so none of them reaches a helper
+started through sudo. The tests point them at a temporary home, a private
+socket, the fake `claude` — see [fake-claude.md](fake-claude.md) — and the
+tests' GitHub, or an address nothing answers on — see [tests.md](tests.md).
