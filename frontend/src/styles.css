@@ -59,16 +59,19 @@ button[aria-expanded] { display: inline-flex; align-items: center; gap: 0.4rem; 
 main { padding: 1rem 1.5rem; max-width: 72rem; }
 
 /* minmax(0, …): a wide screen scrolls inside its card rather than widening the column. */
-.workspace { display: grid; grid-template-columns: minmax(16rem, 1fr) minmax(0, 2fr); gap: 2rem; align-items: start; }
+.workspace { display: grid; grid-template-columns: minmax(16rem, 2fr) minmax(0, 3fr); gap: 2rem; align-items: start; }
 @media (max-width: 48rem) { .workspace { grid-template-columns: minmax(0, 1fr); } }
 .tree, .tree ul, .summary { list-style: none; padding-left: 0; }
 .tree ul { padding-left: 1.5rem; }
 .tree li, .summary li { margin: 0.2rem 0; }
-/* A path's text lines up with the heading, its button's padding outside it;
-   the badge keeps to the path's line, and a long path breaks after a slash instead. */
-.summary li { display: flex; align-items: center; gap: 0.5rem; }
-.summary button.name { margin-left: -0.35rem; min-width: 0; overflow-wrap: break-word; }
-.summary .badge { flex: none; }
+/* A path's text lines up with the heading, its button's padding outside it.
+   The path and then its badge flow as text does: the badge follows the path on
+   its line, and goes to the next only when it does not fit there. */
+.summary button.name { margin-left: -0.35rem; vertical-align: middle; }
+.summary .badge { margin-left: 0.5rem; vertical-align: middle; }
+/* A folder's name with the slash after it: an atom of the line, so a path wraps
+   only after a slash, broken inside only when it is wider than a line by itself. */
+.path-part { display: inline-block; max-width: 100%; overflow-wrap: anywhere; }
 .toggle { display: inline-block; width: 1.5rem; }
 button.toggle { background: none; border: none; padding: 0; color: var(--fg); }
 button.name { background: none; border: none; padding: 0.1rem 0.35rem; border-radius: 0.25rem; color: var(--fg); text-align: left; }
@@ -85,7 +88,7 @@ button.name[aria-current="true"] { background: var(--accent); color: var(--accen
 .panel h2 { margin: 0.25rem 0 0.75rem; }
 .panel-section h3 { font-size: 1rem; margin: 0.75rem 0 0.5rem; }
 .breadcrumb ol { list-style: none; display: flex; flex-wrap: wrap; gap: 0.25rem; padding: 0; margin: 0; }
-.breadcrumb li + li::before { content: "/"; margin-right: 0.25rem; color: var(--muted); }
+.breadcrumb [aria-hidden="true"] { margin-left: 0.25rem; color: var(--muted); }
 .server { border: 1px solid var(--border); border-radius: 0.5rem; padding: 0.75rem 1rem; background: var(--surface); }
 .server > :first-child { margin-top: 0; }
 .badge { display: inline-block; font-weight: 600; font-size: 0.85rem; padding: 0.1rem 0.5rem; border-radius: 1rem; border: 1px solid currentColor; }

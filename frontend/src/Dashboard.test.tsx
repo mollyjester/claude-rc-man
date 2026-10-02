@@ -265,7 +265,12 @@ test.each([
   renderApp(`/?folder=${path}`);
   const opened = await panel(path);
   const crumbs = within(opened).getByRole("navigation", { name: m.breadcrumb });
-  expect(within(crumbs).getAllByRole("listitem").map((li) => li.textContent)).toEqual([m.home, ...above, name]);
+  // each step but the last ends with the slash after it
+  expect(within(crumbs).getAllByRole("listitem").map((li) => li.textContent)).toEqual([
+    `${m.home}/`,
+    ...above.map((folder) => `${folder}/`),
+    name,
+  ]);
   expect(within(opened).getByRole("heading", { level: 2 })).toHaveTextContent(name);
 });
 
@@ -398,8 +403,11 @@ test("the summary lists every server, and selects its folder", async () => {
   for (const { path, state } of servers) {
     // a narrow line breaks the path after a slash, never inside a name
     const button = within(list).getByRole("button", { name: path });
-    expect(button.querySelectorAll("wbr")).toHaveLength(path.split("/").length - 1);
-    for (const wbr of button.querySelectorAll("wbr")) expect(wbr.previousSibling?.textContent).toMatch(/\/$/);
+    // each folder's name with the slash after it is one part; e2e/paths.spec.ts
+    // checks in a browser that the parts are never broken inside
+    const parts = [...button.querySelectorAll(".path-part")].map((part) => part.textContent);
+    expect(parts).toEqual(path.split("/").map((name, i, names) => (i < names.length - 1 ? `${name}/` : name)));
+    expect(button).toHaveAccessibleName(path);
     const item = button.closest("li")!;
     expect(within(item as HTMLElement).getByText(m.states[state])).toHaveClass("badge");
   }

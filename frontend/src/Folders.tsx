@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useId, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 
 import { ApiError, api } from "./api";
 import { m } from "./messages";
@@ -140,16 +140,14 @@ export function FolderTree(props: TreeProps) {
 }
 
 // A path that a narrow line breaks after one of its slashes rather than inside a name.
+// Each folder's name with the slash after it is one .path-part, an atom of the
+// line that the stylesheet breaks inside only when it is wider than a line.
 function BreakableAtSlashes({ path }: { path: string }) {
-  return path.split("/").map((name, i) => (
-    <Fragment key={i}>
-      {i > 0 && (
-        <>
-          /<wbr />
-        </>
-      )}
-      {name}
-    </Fragment>
+  const names = path.split("/");
+  return names.map((name, i) => (
+    <span key={i} className="path-part">
+      {i < names.length - 1 ? `${name}/` : name}
+    </span>
   ));
 }
 
@@ -174,6 +172,8 @@ export function ServerSummary({
               <button
                 type="button"
                 className="name"
+                // the path as written: browsers put spaces between its parts' boxes otherwise
+                aria-label={server.path}
                 aria-current={server.path === selected ? "true" : undefined}
                 onClick={() => onSelect(server.path)}
               >

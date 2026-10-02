@@ -7,21 +7,33 @@ import { m } from "./messages";
 import { ProblemView, asApiError } from "./ProblemView";
 import { type Server, ServerCard, type StartBlocked } from "./Servers";
 
+// Home, then each folder down to the selected one. Each step and the slash after
+// it are one .path-part, so that the breadcrumb wraps only after a slash; the
+// slashes are only for the eye.
 function Breadcrumb({ path }: { path: string }) {
   const folders = lineage(path);
+  const slash = <span aria-hidden="true">/</span>;
   return (
     <nav aria-label={m.breadcrumb} className="breadcrumb">
       <ol>
         <li>
-          <Link to={folderLink(null)}>{m.home}</Link>
+          <span className="path-part">
+            <Link to={folderLink(null)}>{m.home}</Link>
+            {folders.length > 0 && slash}
+          </span>
         </li>
         {folders.map((folder, i) => (
           <li key={folder.path}>
-            {i < folders.length - 1 ? (
-              <Link to={folderLink(folder.path)}>{folder.name}</Link>
-            ) : (
-              <span aria-current="page">{folder.name}</span>
-            )}
+            <span className="path-part">
+              {i < folders.length - 1 ? (
+                <>
+                  <Link to={folderLink(folder.path)}>{folder.name}</Link>
+                  {slash}
+                </>
+              ) : (
+                <span aria-current="page">{folder.name}</span>
+              )}
+            </span>
           </li>
         ))}
       </ol>
