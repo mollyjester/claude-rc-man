@@ -132,6 +132,7 @@ def test_a_refused_settings_change_is_recorded_as_validation_failed(client, sett
     assert (r.status_code, r.json()["code"]) == (422, "validation_failed")
     last = rows(settings)[-1]
     assert (last["action"], last["result"]) == ("settings.update", "validation_failed")
+    assert last["target"] is None  # what was refused is not recorded
 
 
 def test_every_failure_is_recorded_with_the_code_it_is_answered_with(app, settings):
