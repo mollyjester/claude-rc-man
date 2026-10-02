@@ -154,6 +154,70 @@ def test_invalid_values_are_refused(tmp_path, key, value):
         ins.gather(tmp_path / "install.env", environ=env, flags={}, ask=None, sudo_user="dev")
 
 
+def test_the_installer_takes_its_rules_from_the_users_file():
+    from tests.test_rc_helper import rule_copy_problems
+
+    source = (REPO / "installer" / "install.py").read_text(encoding="utf-8")
+    assert "LINUX_NAME" in source and "EMAIL" in source  # positive control: it uses both
+    assert rule_copy_problems(source, ("EMAIL", "LINUX_NAME")) == []
+
+
+def test_the_installer_rule_check_catches_a_copy():
+    """Planted twin: an installer keeping its own copy of either rule is caught."""
+    from tests.test_rc_helper import rule_copy_problems
+
+    names = ("EMAIL", "LINUX_NAME")
+    right = "import re\nfrom helpers.users_file import EMAIL, LINUX_NAME\n"
+    assert rule_copy_problems(right, names) == []
+    copy = 'LINUX_NAME = re.compile(r"[a-z][a-z0-9_-]{0,31}")\n'
+    assert rule_copy_problems(right + copy, names) != []
+    alone = right.replace(", LINUX_NAME", "")
+    assert alone != right and rule_copy_problems(alone + copy, names) != []
+
+
+def test_the_installer_runs_as_install_sh_runs_it_and_writes_nothing_into_the_clone(tmp_path):
+    """install.sh runs it with the system interpreter in isolated mode, as root, from the clone."""
+    import shutil
+
+    clone = tmp_path / "clone"
+    for part in ("installer", "helpers"):
+        shutil.copytree(REPO / part, clone / part, ignore=shutil.ignore_patterns("__pycache__"))
+    proc = subprocess.run(
+        ["/usr/bin/python3", "-I", str(clone / "installer" / "install.py"), "--help"],
+        env={"PATH": "/usr/bin:/bin"},
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "usage" in proc.stdout
+    assert list(clone.rglob("__pycache__")) == []
+
+
+def test_the_installer_takes_the_clone_off_the_path_once_it_has_the_rules(tmp_path):
+    """Run under -I as install.sh runs it, it leaves nothing of the clone on the path."""
+    import shutil
+
+    clone = tmp_path / "clone"
+    for part in ("installer", "helpers"):
+        shutil.copytree(REPO / part, clone / part, ignore=shutil.ignore_patterns("__pycache__"))
+    probe = (
+        "import runpy, sys\n"
+        f"found = runpy.run_path({str(clone / 'installer' / 'install.py')!r})\n"
+        "print(found['EMAIL'].pattern != '')\n"
+        f"print({str(clone)!r} in sys.path)\n"
+    )
+    proc = subprocess.run(
+        ["/usr/bin/python3", "-I", "-c", probe],
+        env={"PATH": "/usr/bin:/bin"},
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.split() == ["True", "False"]  # it has the rules, and the path is clean
+
+
 # --- rendered files ----------------------------------------------------------------------
 
 SETTINGS = {

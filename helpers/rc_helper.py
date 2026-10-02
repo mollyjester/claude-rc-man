@@ -11,7 +11,8 @@ environment variables are test hooks — ``RC_HELPER_HOME``, ``RC_HELPER_CLAUDE`
 and ``RC_HELPER_TMUX_SOCKET`` — and the sudoers rule resets the environment,
 so they never reach a helper started through sudo.
 
-Python standard library only: it runs under the system interpreter.
+Python standard library and the helpers' own modules only: it runs under the
+system interpreter.
 """
 
 from __future__ import annotations
@@ -29,6 +30,8 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+
+from helpers.users_file import EMAIL
 
 VERBS = (
     "tree",
@@ -84,7 +87,72 @@ MAX_TREE_DEPTH = 3
 MAX_PREFIX_LENGTH = 32
 MAX_PATH_LENGTH = 1024
 PREFIX = re.compile(rf"[A-Za-z0-9][A-Za-z0-9-]{{0,{MAX_PREFIX_LENGTH - 1}}}")
-EMAIL = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+")
+MAX_AUTHOR_NAME_LENGTH = 128
+# The Hangul fillers, as (first, last): letters that show as nothing.
+HANGUL_FILLERS = ((0x115F, 0x1160), (0x3164, 0x3164), (0xFFA0, 0xFFA0))
+# Code points a commit author's name may not hold anywhere, as (first, last).
+_NOT_IN_AUTHOR_NAME = (
+    (0x00, 0x1F),  # control characters
+    (0x7F, 0x9F),
+    (0x3C, 0x3C),  # < and >, which git puts around the address
+    (0x3E, 0x3E),
+    (0x2028, 0x2029),  # line and paragraph separators
+    # Invisible format characters (Unicode category Cf), which make two names
+    # look alike; tests/test_rc_helper.py derives them from the Unicode
+    # database. Not ZWNJ and ZWJ (_NOT_ALONE_OR_AT_AN_END): Persian and Indic
+    # names are written with them.
+    (0x00AD, 0x00AD),
+    (0x0600, 0x0605),
+    (0x061C, 0x061C),
+    (0x06DD, 0x06DD),
+    (0x070F, 0x070F),
+    (0x0890, 0x0891),
+    (0x08E2, 0x08E2),
+    (0x180E, 0x180E),
+    (0x200B, 0x200B),
+    (0x200E, 0x200F),
+    (0x202A, 0x202E),
+    (0x2060, 0x2064),
+    (0x2066, 0x206F),
+    (0xFEFF, 0xFEFF),
+    (0xFFF9, 0xFFFB),
+    (0x110BD, 0x110BD),
+    (0x110CD, 0x110CD),
+    (0x13430, 0x1343F),
+    (0x1BCA0, 0x1BCA3),
+    (0x1D173, 0x1D17A),
+    (0xE0001, 0xE0001),
+    (0xE0020, 0xE007F),
+    *HANGUL_FILLERS,
+)
+# What git strips from either end of a name besides white space: crud() in
+# git's ident.c. tests/test_rc_helper.py asks real git.
+_GIT_TRIMS = ",:;<>\"'\\"
+# ZWNJ and ZWJ, which join or part the characters beside them: a name may
+# hold them, but not alone and not at either end.
+_NOT_ALONE_OR_AT_AN_END = (0x200C, 0x200D)
+
+
+def _escape(code: int) -> str:
+    """A code point as an escape both Python's re and the backend's validator read."""
+    return f"\\u{code:04X}" if code <= 0xFFFF else f"\\U{code:08X}"
+
+
+_NOWHERE = "".join(
+    _escape(first) if first == last else f"{_escape(first)}-{_escape(last)}"
+    for first, last in _NOT_IN_AUTHOR_NAME
+)
+_NOT_AT_ENDS = (
+    _NOWHERE
+    + "".join(_escape(ord(c)) for c in _GIT_TRIMS)
+    + "".join(_escape(code) for code in _NOT_ALONE_OR_AT_AN_END)
+    + r"\s"
+)
+# No lookaround, so the backend's validator reads it as this module does.
+AUTHOR_NAME = re.compile(
+    rf"[^{_NOT_AT_ENDS}]"
+    rf"(?:[^{_NOWHERE}]{{0,{MAX_AUTHOR_NAME_LENGTH - 2}}}[^{_NOT_AT_ENDS}])?"
+)
 # The trust prompt refuses an answer that arrives too quickly after the question.
 ANSWER_PACE_SECONDS = 0.5
 START_TIMEOUT = 30.0

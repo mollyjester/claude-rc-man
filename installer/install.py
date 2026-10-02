@@ -6,7 +6,8 @@ clone's commit, configuration, sudoers rules, systemd services, the first
 administrator, and a health check. Every step leaves things as they are when
 they are already right, so running it again changes nothing.
 
-Python standard library only: it runs under the system interpreter.
+Python standard library and the clone's helpers only: it runs under the system
+interpreter.
 """
 
 from __future__ import annotations
@@ -29,6 +30,21 @@ import urllib.request
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
+# install.sh runs this in isolated mode, which puts nothing of the clone on the
+# path; the rules for addresses and Linux user names are the helpers'. It runs as
+# root, so it writes no bytecode into the clone, which is someone else's, and
+# takes the clone off the path again once it has them.
+_on_path = str(REPO) in sys.path
+if not _on_path:
+    sys.path.insert(0, str(REPO))
+_write_bytecode, sys.dont_write_bytecode = sys.dont_write_bytecode, True
+try:
+    from helpers.users_file import EMAIL, LINUX_NAME
+finally:
+    sys.dont_write_bytecode = _write_bytecode
+    if not _on_path:
+        sys.path.remove(str(REPO))
+
 TEMPLATES_DIR = Path(__file__).resolve().parent / "templates"
 
 ROOT = Path("/opt/rcman")
@@ -72,8 +88,6 @@ CADDY_ADMIN_WARNING = (
 
 LABEL = r"(?!-)[A-Za-z0-9-]+(?<!-)"  # a host name label: no leading or trailing hyphen
 HOSTNAME = re.compile(LABEL + r"(?:\." + LABEL + r")+")
-EMAIL = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+")
-LINUX_NAME = re.compile(r"[a-z][a-z0-9_-]{0,31}")
 PORT = re.compile(r"[1-9][0-9]{1,4}")
 
 

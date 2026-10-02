@@ -22,6 +22,9 @@ suite in `tests/container/` inside a throwaway Ubuntu container, through
 `RCMAN_REQUIRE_CONTAINER=1`, which `make check` sets. It runs three, each in a
 fresh container: user management; a real installation (see
 [installer.md](installer.md)); and the whole stack in a browser.
+Run it from a full clone, not a git worktree: it mounts the checkout into the
+container and installs from it with git, and a worktree's `.git` is a file
+pointing outside that mount, so git fails inside the container.
 
 The **whole stack** is `tests/container/stack.py`: rcman installed from a
 clone, people added with `rcman-user` as real Linux accounts with the fake

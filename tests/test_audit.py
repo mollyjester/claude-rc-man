@@ -127,17 +127,102 @@ def test_a_refused_change_is_recorded_with_its_error_code(client, settings):
     assert last["target"] == "projects/alice-project"
 
 
+def test_a_refused_settings_change_is_recorded_as_validation_failed(client, settings):
+    r = client.patch("/api/me/settings", json={"prefix": "not valid!"}, headers=changing(BOB))
+    assert (r.status_code, r.json()["code"]) == (422, "validation_failed")
+    last = rows(settings)[-1]
+    assert (last["action"], last["result"]) == ("settings.update", "validation_failed")
+    assert last["target"] is None  # what was refused is not recorded
+
+
+def test_the_refused_target_check_fails_on_a_route_that_records_too_early(app, settings):
+    """Planted twin: a route that sets its target before the body is validated is caught."""
+    from fastapi import Depends
+    from fastapi.testclient import TestClient
+    from pydantic import BaseModel
+
+    class Body(BaseModel):
+        n: int
+
+    def early(record=Depends(audit.Recorder("planted.early"))):
+        record.target = "recorded before validation"
+        return record
+
+    @app.post("/api/planted-early")
+    def planted(body: Body, record=Depends(early)):
+        return {}
+
+    with TestClient(app) as client:
+        r = client.post("/api/planted-early", json={"n": "not a number"}, headers=changing(BOB))
+    assert r.status_code == 422
+    last = rows(settings)[-1]
+    assert (last["action"], last["result"]) == ("planted.early", "validation_failed")
+    assert last["target"] is not None  # the check above would fail here
+
+
+def test_every_failure_is_recorded_with_the_code_it_is_answered_with(app, settings):
+    """Whatever ends an audited request, its row carries the code of the problem sent back."""
+    from fastapi import Depends, HTTPException
+    from fastapi.testclient import TestClient
+    from pydantic import BaseModel
+    from rcman.problems import Problem
+
+    class Body(BaseModel):
+        n: int
+
+    @app.post("/api/planted/{kind}")
+    def planted(kind: str, body: Body, record=Depends(audit.Recorder("planted.call"))):
+        if kind == "problem":
+            raise Problem("admin_only")
+        if kind == "missing":
+            raise HTTPException(404)
+        if kind == "boom":
+            raise RuntimeError("planted")
+        return {}
+
+    cases = [
+        ("ok", {"n": 1}, "ok"),
+        ("ok", {"n": "not a number"}, "validation_failed"),
+        ("problem", {"n": 1}, "admin_only"),
+        ("missing", {"n": 1}, "not_found"),
+        ("boom", {"n": 1}, "internal_error"),
+    ]
+    with TestClient(app, raise_server_exceptions=False) as client:
+        for kind, body, code in cases:
+            r = client.post(f"/api/planted/{kind}", json=body, headers=changing(BOB))
+            answered = "ok" if r.status_code == 200 else r.json()["code"]
+            assert answered == code, (kind, body, r.text)
+            last = rows(settings)[-1]
+            assert (last["action"], last["result"]) == ("planted.call", code), (kind, body)
+
+
 def test_a_successful_change_is_recorded_as_ok(client, settings):
-    client.put("/api/me/settings", json={"prefix": "pfx"}, headers=changing(BOB))
+    client.patch("/api/me/settings", json={"prefix": "pfx"}, headers=changing(BOB))
     last = rows(settings)[-1]
     assert (last["action"], last["result"], last["linux"]) == ("settings.update", "ok", "bob")
+
+
+def test_a_settings_change_records_the_settings_sent(client, settings):
+    import json
+
+    for body in (
+        {"prefix": "pfx"},
+        {"author_name": "Сергей Лихарев", "author_email": ""},
+        {"author_email": "bob@work.example"},
+    ):
+        r = client.patch("/api/me/settings", json=body, headers=changing(BOB))
+        assert r.status_code == 200, r.text
+        last = rows(settings)[-1]
+        assert (last["action"], last["result"]) == ("settings.update", "ok")
+        assert json.loads(last["target"]) == body
+    assert "Сергей" in rows(settings)[-2]["target"]  # as written, not escaped
 
 
 def test_audit_events_are_logged_as_json(client, caplog):
     import json
 
     caplog.set_level("INFO", logger="rcman.audit")
-    client.put("/api/me/settings", json={"prefix": "pfx"}, headers=changing(BOB))
+    client.patch("/api/me/settings", json={"prefix": "pfx"}, headers=changing(BOB))
     event = json.loads(caplog.records[-1].getMessage())
     assert event["action"] == "settings.update" and event["email"] == BOB
 
@@ -222,7 +307,7 @@ def test_audit_events_reach_the_service_output(tmp_path, settings):
         status, text = _request(
             port,
             sock,
-            "PUT",
+            "PATCH",
             "/api/me/settings",
             body=json.dumps({"prefix": "pfx"}),
             headers={**changing(BOB), "Content-Type": "application/json"},

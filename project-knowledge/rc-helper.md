@@ -83,7 +83,8 @@ if Claude asks again.
 - The sign-in code reaches the sign-in prompt through a tmux paste buffer
   loaded from stdin, so it never appears in any process's arguments.
 - `rc-helper` refuses to run as root. It runs on the system Python with only
-  the standard library; the launcher runs it in isolated mode (`-I`).
+  the standard library and the helpers' own modules; the launcher runs it in
+  isolated mode (`-I`) and puts the directory above `helpers/` on its path.
 
 ## sudo
 

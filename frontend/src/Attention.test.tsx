@@ -5,7 +5,7 @@ import { ADMIN } from "./AdminPages";
 import { m } from "./messages";
 import { vi } from "vitest";
 
-import { ADMIN_USER, CONNECTED, ME, NOTHING_TO_ATTEND, type Reply, fakeApi, problem } from "./test/fakeApi";
+import { ADMIN_USER, CONNECTED, ME, NOTHING_TO_ATTEND, type Reply, SETTINGS, fakeApi, problem } from "./test/fakeApi";
 import { renderApp } from "./test/render";
 
 
@@ -16,7 +16,7 @@ function api(me: Reply, attention: Reply = NOTHING_TO_ATTEND) {
     "GET /api/folders": { path: "", entries: [] },
     "GET /api/servers": { servers: [] },
     "GET /api/docs": { pages: [] },
-    "GET /api/me/settings": { prefix: "alice" },
+    "GET /api/me/settings": SETTINGS,
     "GET /api/attention": attention,
   });
 }

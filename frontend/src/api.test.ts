@@ -28,12 +28,12 @@ test("sends JSON bodies and the query", async () => {
 
 test("turns a problem into an ApiError carrying everything the server said", async () => {
   fakeApi({
-    "PUT /api/me/settings": problem(422, "validation_failed", "Some of what was sent is not valid.", {
+    "PATCH /api/me/settings": problem(422, "validation_failed", "Some of what was sent is not valid.", {
       errors: [{ field: "prefix", message: "String should match pattern" }],
       screen: ["raw"],
     }),
   });
-  const error = await failure(api.put("/api/me/settings", { prefix: "" }));
+  const error = await failure(api.patch("/api/me/settings", { prefix: "" }));
   expect(error).toBeInstanceOf(ApiError);
   expect(error.status).toBe(422);
   expect(error.code).toBe("validation_failed");

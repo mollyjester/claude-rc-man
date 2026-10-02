@@ -21,7 +21,7 @@ def wait_ready(client, who, path):
 
 
 def test_lifecycle_uses_the_users_prefix(client):
-    client.put("/api/me/settings", json={"prefix": "alpha"}, headers=changing(ALICE))
+    client.patch("/api/me/settings", json={"prefix": "alpha"}, headers=changing(ALICE))
     r = client.post("/api/servers", json=ALPHA, headers=changing(ALICE))
     assert r.status_code == 200, r.text
     assert r.json()["server"]["state"] == "trust_prompt"

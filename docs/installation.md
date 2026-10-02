@@ -170,6 +170,6 @@ Rolling back again returns to the newer release.
 ## Afterwards
 
 Add people with `sudo rcman-user add` or on the **People** page, under
-**Admin** in rcman's navigation — see
-[Adding and removing people](users.md). Settings are described in
+**Admin** in rcman's navigation — see [Adding and removing people](users.md).
+rcman's own settings, which administrators set, are described in
 [Configuration](configuration.md).
