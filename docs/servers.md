@@ -93,12 +93,15 @@ cannot be undone.
   rcman names the server and shows its screen.
 - If some of the folder cannot be removed — a file you are not allowed to
   delete, for example — rcman lists what is left, and says whether nothing
-  could be removed at all or only some of it. Everything else is deleted
-  and the servers are forgotten; choosing **Delete folder** again carries on
-  once what is left can be removed.
-- While a folder is being deleted, starting a server or making a folder is
-  refused, and so is deleting while a server starts or a folder is made; try
-  again in a moment.
+  could be removed at all or only some of it. Either way the servers are
+  forgotten, and whatever could be removed is gone; choosing
+  **Delete folder** again carries on once what is left can be removed.
+- If deleting takes too long, rcman stops waiting and says so. By then part
+  of the folder may already be gone and its servers forgotten; choosing
+  **Delete folder** again carries on.
+- While a folder is being deleted, starting, stopping, answering or
+  forgetting a server and making a folder are refused, and so is deleting
+  while any of those is under way; try again in a moment.
 - The sessions of the servers that were forgotten stay in claude.ai/code,
   where they are archived or deleted.
 - Claude remembers, by the folder's path, that you trusted a folder and which

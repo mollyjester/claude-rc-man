@@ -34,7 +34,7 @@ command-line reference is `rc-helper --help` and `rc-helper <verb> --help`.
 | `rc-helper auth-status` | Whether a Claude account is connected, which, and when the sign-in expires (`login_expires_at`, or `null` when unknown) |
 | `rc-helper auth-login --email <e>` | Starts connecting a Claude account; returns the sign-in URL |
 | `rc-helper mkdir [parent] --name=<name>` | Makes a folder named `<name>` in a folder, or in the home folder when no parent is given. The name may not be empty, begin with a dot, hold a slash, a control character or an invisible character, or begin or end with white space (`FOLDER_NAME` in `helpers/rc_helper.py`, which shares its invisible characters with `AUTHOR_NAME`), nor be longer than the file system's `PC_NAME_MAX` in bytes; refuses with `folder_exists` when anything, even a dangling link, has that name |
-| `rc-helper delete <path>` | Stops every running server in a folder or below it, forgets every server there, then deletes the folder and everything in it; a link is deleted as the link. Refuses the home folder, anything outside it, a dot-folder or anything in one (`path_hidden`), and a path through a link (`path_through_link`). See [Deleting a folder](#deleting-a-folder) |
+| `rc-helper delete <path>` | Stops every running server in a folder or below it, forgets every server there, then deletes the folder and everything in it; a link is deleted as the link. Refuses the home folder, anything outside it, a dot-folder or anything in one (`path_hidden`), a path through a link (`path_through_link`), and a path not written as the names on disk (`path_name_differs`). See [Deleting a folder](#deleting-a-folder) |
 | `rc-helper auth-code` | Finishes connecting with the code read from stdin — pressing Enter after Claude reports success, as it asks — and returns the account as `auth-status` does |
 
 ## Deleting a folder
@@ -48,15 +48,18 @@ at the first step that fails:
    name, which is never resolved (`resolve_entry`), so a link is the link and
    not where it leads. A path with any part that begins with a dot, as given
    or as resolved, is refused with `path_hidden`; that keeps `~/.local`,
-   `~/.claude` and the like out of reach. A path that goes through a link
-   before its last part — one whose resolved path differs from the path as
-   written — is refused with `path_through_link`: servers are known by their
-   folders' resolved paths, so it would reach servers other than those named
-   by the path.
+   `~/.claude` and the like out of reach. Servers are known by their
+   folders' paths as recorded, so a path that would reach servers other than
+   those it names is refused: one that goes through a link before its last
+   part — whose resolved path differs from the path as written, normalised
+   against the home folder — with `path_through_link`, and one whose parts
+   are not the names on disk letter for letter, as a file system that
+   ignores case would allow, with `path_name_differs`.
 3. It takes the folder lock exclusively (see below).
-4. For a folder, it walks it without following links, and refuses with
-   `delete_mount_inside`, having done nothing, when anything inside is on
-   another device: `shutil.rmtree` would cross into a mounted file system.
+4. For a folder, it walks it without following links, counting what is in
+   it, and refuses with `delete_mount_inside`, having done nothing, when
+   anything inside is on another device: `shutil.rmtree` would cross into a
+   mounted file system.
 5. It interrupts every running server whose folder is the path or below it,
    then waits for all of them to exit within one `STOP_TIMEOUT`. It waits on
    the processes' exit, not on their screens. When any is still running, it
@@ -67,10 +70,15 @@ at the first step that fails:
 7. It unlinks a link, or removes a folder with `shutil.rmtree` through the
    parent's file descriptor. Whatever could not be removed is reported as
    `left`, sorted and at most `DELETE_REPORT_LIMIT` paths, along with the
-   servers `forgotten`: with `delete_failed` when the entry itself could not
-   be reached, so nothing was removed, and with `delete_incomplete` when some
-   of it was. No permission is changed to force it. Running `delete` again
-   carries on from there.
+   servers `forgotten`: with `delete_failed` when nothing was removed — as
+   many entries are there as step 4 counted, or the link is still there —
+   and with `delete_incomplete` when some were. No permission is changed to
+   force it. Running `delete` again carries on from there.
+
+rc-helper does not catch SIGTERM, which `run_bounded` sends when a call
+outlasts its timeout (see [backend.md](backend.md)): a delete ended that way
+stops where it is. The servers it had forgotten stay forgotten, and the part
+of the folder not yet removed stays; running `delete` again carries on.
 
 It answers with the path deleted, whether it was a link, and the servers
 stopped and forgotten.
@@ -114,12 +122,12 @@ if Claude asks again.
   refusing to follow a link (`open_dir`), and makes the new folder through
   that file descriptor, so a part replaced by a link after the path was
   resolved is refused rather than followed.
-- Starting, resuming, stopping and forgetting a server and making a folder
-  take a shared `flock` on the home folder itself, and deleting takes it
-  exclusively, so no server starts, stops or is forgotten in a folder while it
-  is being deleted. A lock held the other way is
-  refused at once with `folder_busy`, never waited for. The lock is held by
-  `rc-helper` only, never by the servers it starts.
+- Starting, resuming, stopping, answering and forgetting a server and making
+  a folder take a shared `flock` on the home folder itself, and deleting
+  takes it exclusively, so nothing is done to a server in a folder while it
+  is being deleted. A lock held the other way is refused at once with
+  `folder_busy`, never waited for. The lock is held by `rc-helper` only,
+  never by the servers it starts.
 - Servers run in tmux on a dedicated socket (`TMUX_SOCKET_NAME`), configured by
   `helpers/tmux.conf`, so they never mix with the user's own tmux and keep
   their final screen and exit status after they exit. Each folder has its own

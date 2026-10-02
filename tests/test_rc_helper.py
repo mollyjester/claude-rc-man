@@ -1156,24 +1156,43 @@ def test_a_link_that_cannot_be_removed_is_reported_as_nothing_deleted(env):
     assert (home / "projects" / "lnk").is_symlink()
 
 
-def test_a_folder_that_cannot_be_opened_is_reported_as_nothing_deleted(env, monkeypatch):
+@pytest.mark.skipif(os.geteuid() == 0, reason="root removes anything; the container suite checks")
+def test_an_empty_folder_that_cannot_be_removed_is_reported_as_nothing_deleted(env):
     home = Path(env["RC_HELPER_HOME"])
-    (home / "projects" / "beta" / "inner" / "file").write_text("x")
-    real_open = os.open
-
-    def refusing(path, flags, mode=0o777, *, dir_fd=None):
-        if path == "beta" and dir_fd is not None:
-            raise PermissionError(13, "planted", path)
-        return real_open(path, flags, mode, dir_fd=dir_fd)
-
-    monkeypatch.setattr(h.Helper, "_refuse_mounts", staticmethod(lambda entry: None))
-    monkeypatch.setattr(os, "open", refusing)
-    error = refusal(in_process(env).delete, "projects/beta")
-    monkeypatch.undo()
-    assert error.code == "delete_failed"
-    assert error.detail["left"] == ["projects/beta"]
-    assert (home / "projects" / "beta" / "inner" / "file").read_text() == "x"
+    (home / "projects" / "empty").mkdir()
+    (home / "projects").chmod(0o500)
+    try:
+        code, out = helper(env, "delete", "--", "projects/empty")
+    finally:
+        (home / "projects").chmod(0o700)
+    assert code == 1 and out["error"]["code"] == "delete_failed", out
+    assert out["error"]["left"] == ["projects/empty"]
+    assert (home / "projects" / "empty").is_dir()
     assert h.MESSAGES["delete_failed"] != h.MESSAGES["delete_incomplete"]
+
+
+def test_a_path_back_into_the_home_through_its_own_name_is_no_link(env):
+    home = Path(env["RC_HELPER_HOME"])
+    out = ok(env, "delete", "--", f"../{home.name}/projects/beta")
+    assert out["deleted"] == "projects/beta"
+    assert not (home / "projects" / "beta").exists()
+
+
+def test_delete_refuses_a_path_not_written_as_the_names_on_disk(env, monkeypatch):
+    """As on a file system that ignores case: Beta reaches beta, whose server is projects/beta."""
+    home = Path(env["RC_HELPER_HOME"])
+    projects = (home / "projects").resolve()
+    real_listdir = os.listdir
+
+    def listdir(path="."):
+        names = real_listdir(path)
+        return [("Beta" if n == "beta" else n) for n in names] if Path(path) == projects else names
+
+    monkeypatch.setattr(os, "listdir", listdir)
+    assert refusal(in_process(env).delete, "projects/beta").code == "path_name_differs"
+    assert (home / "projects" / "beta" / "inner").is_dir()
+    monkeypatch.undo()
+    assert in_process(env).delete("projects/beta")["deleted"] == "projects/beta"  # positive
 
 
 def test_the_report_of_what_is_left_is_capped(env, monkeypatch):
@@ -1332,6 +1351,7 @@ def test_while_a_delete_runs_nothing_starts_and_no_folder_is_made(env):
         assert error_code(env, "mkdir", "--name=new") == "folder_busy"
         assert error_code(env, "stop", "projects/alpha") == "folder_busy"
         assert error_code(env, "forget", "projects/alpha") == "folder_busy"
+        assert error_code(env, "confirm", "--answer=y", "projects/alpha") == "folder_busy"
         assert error_code(env, "delete", "--", "projects/beta") == "folder_busy"
         assert time.monotonic() - began < 10  # refused at once, not after waiting
     finally:

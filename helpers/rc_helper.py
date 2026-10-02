@@ -102,6 +102,7 @@ MESSAGES = {
         "Delete it again once that can be removed."
     ),
     "delete_failed": "The folder could not be deleted, and nothing in it was removed.",
+    "path_name_differs": "Write the folder's path exactly as its names are, letter for letter.",
     "path_through_link": (
         "rcman does not delete through a symbolic link. Select the folder where it really is."
     ),
@@ -681,7 +682,8 @@ class Helper:
 
     @contextlib.contextmanager
     def _lock(self, exclusive: bool):
-        """Held while servers start and folders are made (shared) or deleted (exclusive).
+        """Held while servers start, stop, are answered or forgotten and while folders
+        are made (shared), or while a folder is deleted (exclusive).
 
         A flock on the home folder itself. One that is held already the other
         way is refused at once with ``folder_busy``, never waited for.
@@ -762,6 +764,10 @@ class Helper:
         }
 
     def confirm(self, rel: str, answer: str) -> dict:
+        with self._lock(exclusive=False):
+            return self._confirm(rel, answer)
+
+    def _confirm(self, rel: str, answer: str) -> dict:
         rel = self._known(rel)
         session = self._existing(rel)
         if self._server(session, rel)["state"] != "trust_prompt":
@@ -890,17 +896,20 @@ class Helper:
             given = [part for part in rel.split("/") if part not in ("", ".", "..")]
             if any(part.startswith(".") for part in [*given, *entry.rel.split("/")]):
                 raise HelperError("path_hidden")
-            # The servers are found by their folders' resolved paths, so a path
-            # through a link would name servers other than those it reaches.
-            if entry.rel != posixpath.normpath(rel):
+            # The servers are found by their folders' paths as recorded, so a
+            # path through a link, or one written otherwise than the names on
+            # disk, would name servers other than those it reaches.
+            root = str(self.cfg.home.resolve())
+            written = posixpath.relpath(posixpath.normpath(posixpath.join(root, rel)), root)
+            if entry.rel != written:
                 raise HelperError("path_through_link")
+            self._check_names(entry.rel)
             with self._lock(exclusive=True):
-                if not entry.is_link:
-                    self._refuse_mounts(entry)
+                before = self._survey(entry)
                 servers = self._servers_in(entry.rel)
                 stopped = self._stop_all(servers)
                 forgotten = self._forget_all(servers)
-                self._remove(entry, forgotten)
+                self._remove(entry, forgotten, before)
         finally:
             os.close(entry.parent_fd)
         return {
@@ -910,14 +919,36 @@ class Helper:
             "forgotten": forgotten,
         }
 
+    def _check_names(self, rel: str) -> None:
+        """Refuse a path whose parts are not the names on disk, letter for letter.
+
+        A file system that ignores case reaches beta as Beta, but the server in
+        it is recorded as beta.
+        """
+        root = self.cfg.home.resolve()
+        parts = rel.split("/")
+        for i, part in enumerate(parts):
+            if part not in os.listdir(root.joinpath(*parts[:i])):
+                raise HelperError("path_name_differs")
+
     @staticmethod
-    def _refuse_mounts(entry: Entry) -> None:
+    def _survey(entry: Entry) -> int:
+        """How many entries a delete would remove, the entry itself among them.
+
+        A folder is walked without following links, and refused with
+        ``delete_mount_inside`` when anything in it is on another device.
+        """
+        if entry.is_link:
+            return 1
         device = os.fstat(entry.parent_fd).st_dev
+        count = 1
         walk = os.fwalk(entry.name, dir_fd=entry.parent_fd, follow_symlinks=False)
-        for _path, _folders, _files, fd in walk:
+        for _path, folders, files, fd in walk:
             if os.fstat(fd).st_dev != device:
                 walk.close()
                 raise HelperError("delete_mount_inside")
+            count += len(folders) + len(files)
+        return count
 
     def _servers_in(self, rel: str) -> list[tuple[str, str]]:
         """(folder, session) of every server in the folder ``rel`` or below it, by folder."""
@@ -957,31 +988,28 @@ class Helper:
             forgotten.append(path)
         return forgotten
 
-    @staticmethod
-    def _remove(entry: Entry, forgotten: list[str]) -> None:
+    @classmethod
+    def _remove(cls, entry: Entry, forgotten: list[str], before: int) -> None:
         """Delete the entry; whatever could not be removed is reported, and nothing else done.
 
-        ``delete_failed`` when the entry itself could not be reached, so nothing
-        was removed; ``delete_incomplete`` when some of it was.
+        ``delete_failed`` when nothing was removed — as many entries are there
+        as ``before`` counted — and ``delete_incomplete`` when some were.
         """
-        failed: list[tuple[Callable, str]] = []  # (what failed, on which path)
+        left: set[str] = set()
         if entry.is_link:
             try:
                 os.unlink(entry.name, dir_fd=entry.parent_fd)
             except OSError:
-                failed.append((os.unlink, entry.name))
+                left.add(entry.name)
         else:
             shutil.rmtree(
-                entry.name,
-                dir_fd=entry.parent_fd,
-                onexc=lambda func, path, _error: failed.append((func, path)),
+                entry.name, dir_fd=entry.parent_fd, onexc=lambda _f, path, _e: left.add(path)
             )
-        if failed:
+        if left:
             parent = entry.rel.rpartition("/")[0]
-            left = {path for _func, path in failed}
             report = sorted(_joined(parent, path) for path in left)[:DELETE_REPORT_LIMIT]
             detail = {"forgotten": forgotten, "left": report}
-            if all(path == entry.name and func is not os.rmdir for func, path in failed):
+            if cls._survey(entry) == before:
                 raise HelperError("delete_failed", detail)
             raise HelperError("delete_incomplete", detail)
 
