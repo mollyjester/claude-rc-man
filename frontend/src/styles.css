@@ -63,9 +63,9 @@ main { padding: 1rem 1.5rem; max-width: 72rem; }
 .tree ul { padding-left: 1.5rem; }
 .tree li, .summary li { margin: 0.2rem 0; }
 /* A path's text lines up with the heading, its button's padding outside it;
-   the badge keeps to the path's line, and a long path breaks instead. */
+   the badge keeps to the path's line, and a long path breaks after a slash instead. */
 .summary li { display: flex; align-items: center; gap: 0.5rem; }
-.summary button.name { margin-left: -0.35rem; min-width: 0; overflow-wrap: anywhere; }
+.summary button.name { margin-left: -0.35rem; min-width: 0; overflow-wrap: break-word; }
 .summary .badge { flex: none; }
 .toggle { display: inline-block; width: 1.5rem; }
 button.toggle { background: none; border: none; padding: 0; color: var(--fg); }

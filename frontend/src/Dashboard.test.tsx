@@ -396,7 +396,11 @@ test("the summary lists every server, and selects its folder", async () => {
   await within(list).findByRole("button", { name: "projects/alpha" });
   expect(within(list).getAllByRole("button")).toHaveLength(servers.length);
   for (const { path, state } of servers) {
-    const item = within(list).getByRole("button", { name: path }).closest("li")!;
+    // a narrow line breaks the path after a slash, never inside a name
+    const button = within(list).getByRole("button", { name: path });
+    expect(button.querySelectorAll("wbr")).toHaveLength(path.split("/").length - 1);
+    for (const wbr of button.querySelectorAll("wbr")) expect(wbr.previousSibling?.textContent).toMatch(/\/$/);
+    const item = button.closest("li")!;
     expect(within(item as HTMLElement).getByText(m.states[state])).toHaveClass("badge");
   }
 

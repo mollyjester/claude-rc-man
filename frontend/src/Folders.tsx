@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useId, useRef, useState } from "react";
 
 import { ApiError, api } from "./api";
 import { m } from "./messages";
@@ -139,6 +139,20 @@ export function FolderTree(props: TreeProps) {
   );
 }
 
+// A path that a narrow line breaks after one of its slashes rather than inside a name.
+function BreakableAtSlashes({ path }: { path: string }) {
+  return path.split("/").map((name, i) => (
+    <Fragment key={i}>
+      {i > 0 && (
+        <>
+          /<wbr />
+        </>
+      )}
+      {name}
+    </Fragment>
+  ));
+}
+
 // Every server, wherever its folder is in the tree, each selecting its folder.
 export function ServerSummary({
   servers,
@@ -163,7 +177,7 @@ export function ServerSummary({
                 aria-current={server.path === selected ? "true" : undefined}
                 onClick={() => onSelect(server.path)}
               >
-                {server.path}
+                <BreakableAtSlashes path={server.path} />
               </button>
               <StateBadge state={server.state} />
             </li>
