@@ -1,8 +1,12 @@
+import { execFileSync } from "node:child_process";
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
+
 import { expect, test } from "@playwright/test";
 
 import { m } from "../src/messages";
 import { openAdminPage, panel, selectInProjects, summary, tree } from "./nav";
-import { ALICE, BOB, useAs } from "./people";
+import { ALICE, BOB, WORLD, useAs } from "./people";
 
 test("start, trust, stop, resume and forget through the folder panel", async ({ page }) => {
   await useAs(page, ALICE);
@@ -160,4 +164,53 @@ test("administrators see everyone's servers, and act on none of them", async ({ 
   const stopped = page.waitForResponse((r) => r.url().endsWith("/api/servers/stop"));
   await card.getByRole("button", { name: m.stop }).click();
   expect((await stopped).ok()).toBe(true);
+});
+
+test("a repository's changes: appear, stage, commit, switch branch", async ({ page }) => {
+  const repo = join(WORLD, "homes", "alice", "projects", "alice-repo");
+  const git = (...args: string[]) =>
+    execFileSync("git", ["-C", repo, ...args], { env: { PATH: "/usr/bin:/bin", HOME: WORLD }, encoding: "utf-8" });
+  await useAs(page, ALICE);
+  await page.goto("/");
+  await selectInProjects(page, "alice-repo");
+  await expect(tree(page).getByRole("button", { name: "alice-repo", exact: true })).toHaveAccessibleDescription(m.repository);
+  const changes = panel(page, "projects/alice-repo").getByRole("region", { name: m.changesTitle });
+  await expect(changes.getByText(m.onBranch("main"))).toBeVisible();
+
+  // no commit author yet: Commit is not offered, and Settings is where to set one
+  await expect(changes.getByText(m.commitNeedsAuthor)).toBeVisible();
+  await expect(changes.getByRole("button", { name: m.commit })).toHaveCount(0);
+  await changes.getByRole("link", { name: m.commitAuthorLink }).click();
+  const author = page.getByRole("region", { name: m.settingsAuthorTitle });
+  await author.getByLabel(m.authorNameLabel).fill("Alice Author");
+  await author.getByRole("button", { name: m.save }).click();
+  await expect(author.getByText(m.authorEffective("Alice Author", ALICE))).toBeVisible();
+  await page.goBack();
+
+  // a file written behind rcman's back appears by itself
+  writeFileSync(join(repo, "from-claude.txt"), "written as Claude would\n");
+  const notStaged = changes.getByRole("group", { name: m.notStagedTitle });
+  const file = notStaged.getByRole("checkbox", { name: "from-claude.txt" });
+  await expect(file).toBeVisible();
+  await file.check();
+  await notStaged.getByRole("button", { name: m.stageSelected }).click();
+  const staged = changes.getByRole("group", { name: m.stagedTitle });
+  await expect(staged.getByRole("checkbox", { name: "from-claude.txt" })).toBeVisible();
+  await expect(notStaged.getByRole("checkbox", { name: "from-claude.txt" })).toHaveCount(0);
+
+  await changes.getByLabel(m.commitMessage).fill("Add a file Claude wrote");
+  await changes.getByRole("button", { name: m.commit }).click();
+  await expect(changes.getByText(m.commitNothingStaged)).toBeVisible();
+  expect(git("log", "-1", "--format=%an <%ae>|%s")).toBe(`Alice Author <${ALICE}>|Add a file Claude wrote\n`);
+
+  // a branch only on origin needs Refresh branches; switching to one makes it local
+  const remote = changes.getByRole("list", { name: m.remoteBranches });
+  await expect(remote.getByText("origin/feature", { exact: true })).toBeVisible();
+  await expect(remote.getByText("origin/later", { exact: true })).toHaveCount(0);
+  await changes.getByRole("button", { name: m.refreshBranches }).click();
+  await expect(remote.getByText("origin/later", { exact: true })).toBeVisible();
+  await remote.getByRole("button", { name: m.switchTo("origin/feature") }).click();
+  await expect(changes.getByText(m.onBranch("feature"))).toBeVisible();
+  await expect(changes.getByRole("list", { name: m.localBranches }).getByText(`(${m.currentBranch})`)).toBeVisible();
+  expect(git("branch", "--show-current")).toBe("feature\n");
 });

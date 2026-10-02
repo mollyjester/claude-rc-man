@@ -75,3 +75,19 @@ def test_playwright_stops_the_backend_so_its_shutdown_runs():
     # By default Playwright SIGKILLs webServer, and no shutdown code runs.
     config = (REPO / "frontend" / "playwright.config.ts").read_text(encoding="utf-8")
     assert 'gracefulShutdown: { signal: "SIGTERM"' in config
+
+
+def test_alice_has_a_repository_with_an_origin(world):
+    from tests.git_fixtures import fixture_git
+
+    root, _ = world
+    e2e.create_app()
+    repo = root / "homes" / "alice" / "projects" / "alice-repo"
+    origin = root / "origins" / "alice-repo.git"
+    assert fixture_git(repo, "remote", "get-url", "origin").strip() == str(origin)
+    on_origin = fixture_git(origin, "for-each-ref", "--format=%(refname:short)", "refs/heads")
+    assert on_origin.split() == ["feature", "later", "main"]
+    known = fixture_git(repo, "for-each-ref", "--format=%(refname:short)", "refs/remotes")
+    assert known.split() == ["origin/feature", "origin/main"]  # later needs a fetch
+    assert fixture_git(repo, "branch", "--show-current").strip() == "main"
+    assert not (root / "homes" / "bob" / "projects" / "alice-repo").exists()
