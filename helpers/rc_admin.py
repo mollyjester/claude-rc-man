@@ -9,7 +9,8 @@ Two environment variables are test hooks — ``RC_ADMIN_ETC`` and
 ``RC_ADMIN_INSTALLER`` — and the sudoers rule resets the environment, so they
 never reach rc-admin started through sudo.
 
-Python standard library only: it runs under the system interpreter.
+Python standard library and the helpers' own modules only: it runs under the
+system interpreter.
 """
 
 from __future__ import annotations
