@@ -25,11 +25,14 @@ command-line reference is `rc-helper --help` and `rc-helper <verb> --help`.
   home, outside the home or nowhere, a path ending in `.` or `..`
   (`path_ends_in_dot`), a new folder whose path would be too long
   (`folder_path_too_long`). Tests run each code's refusal through the command
-  line, hold every rule the module has to a code, but `AUTHOR_NAME`, which
-  only the backend checks, and find a rule's code raised where its rule is
-  not checked.
+  line, hold every rule the module has to a code, but `AUTHOR_NAME` and
+  `FOLDER_PATH`, which only the backend checks, and find a rule's code raised
+  where its rule is not checked.
 - Paths are relative to the user's home folder, as `PATH` in
-  `helpers/rc_helper.py` says, which the backend's path fields check too.
+  `helpers/rc_helper.py` says, which the backend's path fields check too;
+  where a folder is needed, the backend checks `FOLDER_PATH`, the same
+  without the empty path, and rc-helper refuses any path that leads home
+  with `path_is_home`.
   Option values that may start with a hyphen are passed as `--option=value`.
 - Secrets — the one-time sign-in code — are read from stdin, never from the
   command line, and never printed.

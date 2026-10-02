@@ -56,11 +56,14 @@ VERBS = (
     "delete",
 )
 
+# Words both a message and the path rules' sentences say.
+_INSIDE_HOME = "Choose a folder inside your home folder, not the home folder itself"
+
 MESSAGES = {
     "usage": "The command line was not understood.",
     "internal_error": "rc-helper failed unexpectedly.",
     "refused_as_root": "rc-helper does not run as root.",
-    "path_is_home": "Choose a folder inside your home folder, not the home folder itself.",
+    "path_is_home": f"{_INSIDE_HOME}.",
     "path_ends_in_dot": (
         "Name the folder itself: its path may not end in . or .., which name only where they lead."
     ),
@@ -118,11 +121,14 @@ MAX_PREFIX_LENGTH = 32
 MAX_PATH_LENGTH = 1024
 # A path as rc-helper takes one: relative, with no null character, which no
 # path can hold, and of a length a path can have; empty for the home folder.
-PATH = Rule(
-    re.compile(rf"(?:[^/\x00][^\x00]{{0,{MAX_PATH_LENGTH - 1}}})?"),
-    "The folder must be a path relative to your home folder, without a null character, "
-    f"and at most {MAX_PATH_LENGTH} characters long.",
+# FOLDER_PATH is the same without the empty path, where a folder is needed.
+_PATH_PATTERN = rf"[^/\x00][^\x00]{{0,{MAX_PATH_LENGTH - 1}}}"
+_PATH_WORDS = (
+    "a path relative to your home folder, without a null character, and at most "
+    f"{MAX_PATH_LENGTH} characters long"
 )
+PATH = Rule(re.compile(f"(?:{_PATH_PATTERN})?"), f"The folder must be {_PATH_WORDS}.")
+FOLDER_PATH = Rule(re.compile(_PATH_PATTERN), f"{_INSIDE_HOME}, written as {_PATH_WORDS}.")
 PREFIX = Rule(
     re.compile(rf"[A-Za-z0-9][A-Za-z0-9-]{{0,{MAX_PREFIX_LENGTH - 1}}}"),
     "The session name prefix may use letters a to z in either case, digits and hyphens, "
