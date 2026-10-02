@@ -19,7 +19,8 @@ version is `frontend/.nvmrc`.
   only way to the backend; every failure becomes an `ApiError` carrying the
   problem details as sent, and `src/ProblemView.tsx` shows them — the title,
   each field error, and a raw screen, failed checks, the server a problem is
-  about with its screen, or what a delete left, when the server passes one.
+  about with its screen, what a delete left, or what git said and how many
+  lines more, when the server passes one.
   Each input carries its field's name in its `name` attribute, and a form
   passes `ProblemView` its labels by field name, so a field error is named as
   the form names the field, and by the server's name for it where the form
@@ -38,7 +39,13 @@ version is `frontend/.nvmrc`.
   can start, or null where one can; Start, and the actions that start Claude
   again, are offered only where it is null. Otherwise it says why in place of
   each: in the panel instead of Start, and on a server's card instead of the
-  sentence saying what to do. Delete folder is offered only for a folder,
+  sentence saying what to do. The Changes section is shown only for a
+  folder the tree lists as a repository; Commit is offered only with
+  something staged and a commit author name set, and otherwise the section
+  says why; Switch is offered for a local branch other than the current one
+  and for a remote branch no local branch tracks; Stage selected and
+  Unstage selected only while something is checked. git's own refusals, which
+  rcman cannot know in advance, are shown as git gave them. Delete folder is offered only for a folder,
   never for the home folder, and only once the servers are listed, since its
   confirmation names those it stops and forgets. Administration is offered
   only to administrators, and the server refuses everyone else regardless.
@@ -74,8 +81,9 @@ version is `frontend/.nvmrc`.
 | `src/App.tsx` | Who is signed in, the navigation, and the routes |
 | `src/AdminPages.tsx` | `ADMIN`, the administrators' pages by name, which the links in the administrators' warning use, and `ADMIN_PAGES`, the same pages in order, which the navigation's **Admin** menu and the routes are built from |
 | `src/Dashboard.tsx` | The Servers page: the folder tree and its summary beside the selected folder's panel, the selection kept in the address as `?folder=`, the servers refreshed every `POLL_MS`; after a folder is made it is selected, and after one is deleted the folder above it replaces it in the address |
-| `src/Folders.tsx` | The folder tree, fetched a folder at a time and opened to whatever is selected — `reload` fetches a folder again after a folder is made or deleted in it, and `forget` drops a deleted folder and all below it — each folder's status dot, and the summary of every server |
-| `src/FolderPanel.tsx` | A folder's panel: its breadcrumb, its actions (**New folder** and **Delete folder**, with its confirmation) and its Claude server section; and the Home panel, shown while no folder is selected, with **New folder** only |
+| `src/Folders.tsx` | The folder tree, fetched a folder at a time and opened to whatever is selected — `reload` fetches a folder again after a folder is made or deleted in it, and `forget` drops a deleted folder and all below it — each folder's status dot and repository marker, and the summary of every server |
+| `src/FolderPanel.tsx` | A folder's panel: its breadcrumb, its actions (**New folder** and **Delete folder**, with its confirmation), its Claude server section and, for a repository, its Changes section; and the Home panel, shown while no folder is selected, with **New folder** only |
+| `src/Changes.tsx` | A repository's Changes section: its branch, the staged and not staged files with a checkbox each, Commit, and its branches. Only the selected folder's status is fetched, when its panel opens, every `POLL_MS` while it is open and after every action; an answer older than one asked for since is dropped. Its branches are fetched when it opens, after every action and when the current branch changes. What is checked is kept across refreshes, for files still listed |
 | `src/Servers.tsx` | A server's states, what each allows and shows, and its card; `serversIn`, the servers in a folder or below it, which both a folder's dot and the delete confirmation count |
 | `src/Caret.tsx` | The caret of a disclosure button, such as **Admin** and a server's **Show screen**, turned by its `aria-expanded` |
 | `src/Claude.tsx` | The Claude account's state and the connect flow |
@@ -91,7 +99,7 @@ version is `frontend/.nvmrc`.
   answers from a table of routes in the backend's problem-details shape and
   records every call. `renderApp` in `src/test/render.tsx` also returns the
   router's current location and a `navigate`, whose `navigate(-1)` is the
-  browser's back button. `src/test/setup.ts` runs the role queries once
+  browser's back button, and takes `pollMs`, 0 unless a test gives one. `src/test/setup.ts` runs the role queries once
   before each file's first test and sets how long a `findBy*` waits, both
   so that the suite passes on a loaded machine; its comments say why. The
   tests that hold a guide in `docs/` to the page read its tables with

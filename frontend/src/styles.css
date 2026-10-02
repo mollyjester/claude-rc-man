@@ -91,6 +91,14 @@ button.name[aria-current="true"] { background: var(--accent); color: var(--accen
 .dot-waiting { border-radius: 50%; border: 0.15rem solid var(--waiting); }
 .dot-problem { clip-path: polygon(50% 0, 100% 100%, 0 100%); background: var(--problem); }
 .dot-stopped { border: 0.15rem solid var(--stopped); border-radius: 0.1rem; }
+.repository-marker { margin-left: 0.3rem; padding: 0 0.25rem; font-size: 0.75rem; color: var(--muted); border: 1px solid var(--border); border-radius: 0.25rem; vertical-align: middle; }
+
+.files ul, .branches { list-style: none; padding: 0; margin: 0.25rem 0 0.5rem; }
+.files li, .branches li { margin: 0.15rem 0; }
+.files .file-name { white-space: pre-wrap; font-family: monospace; }
+.files .change { color: var(--muted); }
+.panel-section h4 { font-size: 0.95rem; margin: 0.75rem 0 0.25rem; }
+.panel-section textarea { display: block; width: 100%; box-sizing: border-box; font: inherit; }
 
 .panel { border: 1px solid var(--border); border-radius: 0.5rem; padding: 0.75rem 1.25rem; }
 .panel h2 { margin: 0.25rem 0 0.75rem; }

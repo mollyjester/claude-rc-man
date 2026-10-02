@@ -2,6 +2,7 @@ import { type FormEvent, type ReactNode, useState } from "react";
 import { Link } from "react-router-dom";
 
 import { ApiError, api } from "./api";
+import { Changes } from "./Changes";
 import { folderLink, lineage } from "./Folders";
 import { m } from "./messages";
 import { ProblemView, asApiError } from "./ProblemView";
@@ -43,7 +44,7 @@ function Breadcrumb({ path }: { path: string }) {
 
 function PanelSection({ title, children }: { title: string; children: ReactNode }) {
   return (
-    <section className="panel-section">
+    <section className="panel-section" aria-label={title}>
       <h3>{title}</h3>
       {children}
     </section>
@@ -240,21 +241,27 @@ function FolderActions({
   );
 }
 
-// The selected folder: where it is, what can be done to it, and its Claude
-// server or the offer to start one. Each of servers and startReason is null or
-// undefined until it is known, and startReason null when a server can start.
+// The selected folder: where it is, what can be done to it, its Claude server
+// or the offer to start one, and, for a repository, its changes. Each of
+// servers and startReason is null or undefined until it is known, and
+// startReason null when a server can start; repository is undefined until it
+// is known.
 export function FolderPanel({
   path,
   servers,
   startReason,
   onChange,
   changes,
+  repository,
+  pollMs,
 }: {
   path: string;
   servers: Server[] | null;
   startReason: StartBlocked | null | undefined;
   onChange: () => void;
   changes: FolderChanges;
+  repository: boolean | undefined;
+  pollMs: number;
 }) {
   const server = servers === null ? undefined : (servers.find((s) => s.path === path) ?? null);
   const known = server !== undefined && startReason !== undefined;
@@ -270,6 +277,11 @@ export function FolderPanel({
         {known && !server && startReason === null && <StartServer path={path} onStarted={onChange} />}
         {known && !server && startReason !== null && <p>{startReason.start}</p>}
       </PanelSection>
+      {repository === true && (
+        <PanelSection title={m.changesTitle}>
+          <Changes path={path} pollMs={pollMs} />
+        </PanelSection>
+      )}
     </section>
   );
 }
