@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { useId, useState } from "react";
 
 import { ApiError, api } from "./api";
+import { Caret } from "./Caret";
 import { m } from "./messages";
 import { ProblemView, asApiError } from "./ProblemView";
 
@@ -134,6 +135,7 @@ export function ServerCard({
   const [error, setError] = useState<ApiError | null>(null);
   const [busy, setBusy] = useState(false);
   const [showScreen, setShowScreen] = useState(false);
+  const screenId = useId();
   const allowed = ACTIONS[server.state] ?? ["showScreen"];
   // The actions that would start Claude, when the account cannot: they are not offered.
   const blocked = startReason ? allowed.filter(startsClaude) : [];
@@ -199,15 +201,18 @@ export function ServerCard({
             type="button"
             className={action === primary ? "primary" : "secondary"}
             disabled={busy}
-            aria-pressed={action === "showScreen" ? showScreen : undefined}
+            // Show screen discloses the screen below: a fixed name, with its state in aria-expanded
+            aria-expanded={action === "showScreen" ? showScreen : undefined}
+            aria-controls={action === "showScreen" ? screenId : undefined}
             onClick={() => act(action)}
           >
-            {action === "showScreen" && showScreen ? m.hideScreen : LABELS[action]}
+            {LABELS[action]}
+            {action === "showScreen" && <Caret />}
           </button>
         ))}
       </div>
-      {showScreen && server.screen && (
-        <pre className="screen" aria-label={m.screenTitle(server.path)}>
+      {server.screen && (
+        <pre id={screenId} className="screen" aria-label={m.screenTitle(server.path)} hidden={!showScreen}>
           {server.screen.join("\n")}
         </pre>
       )}

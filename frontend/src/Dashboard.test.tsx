@@ -558,22 +558,26 @@ test("an unrecognised screen can be shown as it is", async () => {
   expect(found.getByText(/strange line\s+another/)).toBeInTheDocument();
 });
 
-test("Show screen is a toggle, which hides the screen again", async () => {
+test("Show screen is a disclosure, which hides the screen again", async () => {
   dashboard([server("projects/alpha", "exited", { exit_code: 1, screen: ["last words"] })]);
   const found = await card();
-  const toggle = found.getByRole("button", { name: m.showScreen });
-  expect(toggle).toHaveAttribute("aria-pressed", "false");
-  expect(found.queryByText("last words")).not.toBeInTheDocument();
+  const disclosure = found.getByRole("button", { name: m.showScreen });
+  expect(disclosure).not.toHaveAttribute("aria-pressed");
+  expect(disclosure.querySelector(".caret")).toHaveAttribute("aria-hidden", "true");
+  const screenOf = () => document.getElementById(disclosure.getAttribute("aria-controls")!);
+  expect(disclosure).toHaveAttribute("aria-expanded", "false");
+  expect(screenOf()).not.toBeVisible();
 
-  await userEvent.click(toggle);
-  expect(toggle).toHaveAttribute("aria-pressed", "true");
-  expect(toggle).toHaveAccessibleName(m.hideScreen);
-  expect(found.getByText("last words")).toBeInTheDocument();
+  await userEvent.click(disclosure);
+  expect(disclosure).toHaveAttribute("aria-expanded", "true");
+  expect(disclosure).toHaveAccessibleName(m.showScreen); // the name stays; its state says what it does
+  expect(screenOf()).toBeVisible();
+  expect(screenOf()).toHaveTextContent("last words");
 
-  await userEvent.click(toggle);
-  expect(toggle).toHaveAttribute("aria-pressed", "false");
-  expect(toggle).toHaveAccessibleName(m.showScreen);
-  expect(found.queryByText("last words")).not.toBeInTheDocument();
+  await userEvent.click(disclosure);
+  expect(disclosure).toHaveAttribute("aria-expanded", "false");
+  expect(disclosure).toHaveAccessibleName(m.showScreen);
+  expect(screenOf()).not.toBeVisible();
 });
 
 test("a refused action shows the server's problem", async () => {

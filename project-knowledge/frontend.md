@@ -56,6 +56,7 @@ version is `frontend/.nvmrc`.
 | `src/Folders.tsx` | The folder tree, fetched a folder at a time and opened to whatever is selected, each folder's status dot, and the summary of every server |
 | `src/FolderPanel.tsx` | A folder's panel: its breadcrumb and its Claude server section |
 | `src/Servers.tsx` | A server's states, what each allows and shows, and its card |
+| `src/Caret.tsx` | The caret of a disclosure button, such as **Admin** and a server's **Show screen**, turned by its `aria-expanded` |
 | `src/Claude.tsx` | The Claude account's state and the connect flow |
 | `src/Settings.tsx` | The session name prefix |
 | `src/People.tsx`, `src/Everyone.tsx`, `src/Audit.tsx`, `src/Versions.tsx` | Administration; `src/Everyone.tsx` shows everyone's servers with no actions |

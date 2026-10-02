@@ -12,6 +12,7 @@ import { NavLink, Navigate, Route, Routes, matchPath, useLocation } from "react-
 
 import { ADMIN_PAGES } from "./AdminPages";
 import { ApiError, api } from "./api";
+import { Caret } from "./Caret";
 import { Attention } from "./Attention";
 import { Dashboard } from "./Dashboard";
 import { Docs } from "./Docs";
@@ -59,7 +60,7 @@ function AdminMenu() {
         onClick={() => setOpen((shown) => !shown)}
       >
         {m.navAdmin}
-        <span className="caret" aria-hidden="true" />
+        <Caret />
       </button>
       <ul id={id} hidden={!open}>
         {ADMIN_PAGES.map((page) => (
