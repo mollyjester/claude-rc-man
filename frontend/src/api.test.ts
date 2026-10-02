@@ -29,7 +29,7 @@ test("sends JSON bodies and the query", async () => {
 test("turns a problem into an ApiError carrying everything the server said", async () => {
   fakeApi({
     "PATCH /api/me/settings": problem(422, "validation_failed", "Some of what was sent is not valid.", {
-      errors: [{ field: "prefix", message: "String should match pattern" }],
+      errors: [{ field: "prefix", message: "planted reason, as the server sent it" }],
       screen: ["raw"],
     }),
   });
@@ -38,7 +38,7 @@ test("turns a problem into an ApiError carrying everything the server said", asy
   expect(error.status).toBe(422);
   expect(error.code).toBe("validation_failed");
   expect(error.title).toBe("Some of what was sent is not valid.");
-  expect(error.errors).toEqual([{ field: "prefix", message: "String should match pattern" }]);
+  expect(error.errors).toEqual([{ field: "prefix", message: "planted reason, as the server sent it" }]);
   expect(error.extra.screen).toEqual(["raw"]);
 });
 

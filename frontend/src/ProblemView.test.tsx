@@ -6,13 +6,15 @@ import { ProblemView } from "./ProblemView";
 
 test("shows the server's title and every field error exactly as sent", () => {
   const error = new ApiError(422, "validation_failed", "Some of what was sent is not valid.", [
-    { field: "prefix", message: "String should match pattern '^x$'" },
-    { field: "email", message: "Field required" },
+    { field: "prefix", message: "planted reason, as the server sent it" },
+    { field: "author_name", message: `planted reason holding < and >, "quotes" and 'apostrophes'` },
   ]);
   render(<ProblemView error={error} />);
   expect(screen.getByRole("alert")).toHaveTextContent("Some of what was sent is not valid.");
-  expect(screen.getByText("prefix: String should match pattern '^x$'")).toBeInTheDocument();
-  expect(screen.getByText("email: Field required")).toBeInTheDocument();
+  expect(screen.getByText("prefix: planted reason, as the server sent it")).toBeInTheDocument();
+  expect(
+    screen.getByText(`author_name: planted reason holding < and >, "quotes" and 'apostrophes'`),
+  ).toBeInTheDocument();
 });
 
 test("shows a raw screen the server passed on", () => {

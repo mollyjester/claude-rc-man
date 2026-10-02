@@ -70,7 +70,7 @@ test("saving the author sends the name and the email as typed, and shows what th
 test("what the server refuses is shown as it said it, in the part that sent it", async () => {
   api({
     "PATCH /api/me/settings": problem(422, "validation_failed", "Some of what was sent is not valid.", {
-      errors: [{ field: "author_name", message: "String should match pattern" }],
+      errors: [{ field: "author_name", message: "planted reason, as the server sent it" }],
     }),
   });
   renderApp("/settings");
@@ -78,7 +78,7 @@ test("what the server refuses is shown as it said it, in the part that sent it",
   const prefix = await part(m.settingsPrefixTitle);
   await userEvent.type(within(author).getByLabelText(FIELDS.author_name.label), "<b>");
   await userEvent.click(within(author).getByRole("button", { name: m.save }));
-  expect(await within(author).findByText("author_name: String should match pattern")).toBeInTheDocument();
+  expect(await within(author).findByText("author_name: planted reason, as the server sent it")).toBeInTheDocument();
   expect(within(prefix).queryByRole("alert")).toBeNull();
 });
 
@@ -88,7 +88,7 @@ test("saving one part leaves the other part's status alone", async () => {
     "PATCH /api/me/settings": (c) =>
       refuse
         ? problem(422, "validation_failed", "Some of what was sent is not valid.", {
-            errors: [{ field: "author_name", message: "String should match pattern" }],
+            errors: [{ field: "author_name", message: "planted reason, as the server sent it" }],
           })
         : { ...SETTINGS, ...(c.body as object) },
   });

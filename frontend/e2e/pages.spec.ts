@@ -14,6 +14,7 @@ test("settings: the server's verdict is shown as given", async ({ page }) => {
   await prefix.fill("not valid!");
   await part.getByRole("button", { name: m.save }).click();
   await expect(part.getByRole("alert")).toContainText("prefix:");
+  await expect(part.getByRole("alert")).not.toContainText("pattern"); // rcman's words, not pydantic's
   await prefix.fill("bobs-box");
   await part.getByRole("button", { name: m.save }).click();
   await expect(part.getByText(m.saved)).toBeVisible();
