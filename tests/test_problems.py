@@ -4,6 +4,7 @@ import ast
 import contextlib
 import copy
 import functools
+import inspect
 import logging
 import re
 import typing
@@ -364,6 +365,102 @@ def bodies(app) -> list[tuple[str, str, dict]]:
         for method, operation in item.items()
         if "requestBody" in operation
     ]
+
+
+def _calls(dependant):
+    """The endpoint of a route and every dependency it calls."""
+    pending, found = [dependant], []
+    while pending:
+        current = pending.pop()
+        if current.call is not None:
+            found.append(current.call)
+        pending.extend(current.dependencies)
+    return found
+
+
+def _constrained(annotation) -> bool:
+    """Whether an annotation carries constraints of its own (Annotated metadata)."""
+    if typing.get_origin(annotation) is Annotated:
+        return True
+    return any(_constrained(a) for a in typing.get_args(annotation))
+
+
+def dropped_constraints(app) -> list[str]:
+    """Parameters whose constraints FastAPI leaves unchecked: a type carrying its own
+    constraints, such as a problems.ruled one, with Path(), Query() or Body() as the
+    default instead of inside an Annotated."""
+    from fastapi import params
+
+    found = []
+    for context in routes.api_routes(app):
+        for call in _calls(context.route.dependant):
+            if not inspect.isroutine(call):  # a callable object, such as a Recorder
+                call = type(call).__call__
+            hints = typing.get_type_hints(call, include_extras=True)
+            for name, parameter in inspect.signature(call).parameters.items():
+                default = parameter.default
+                if isinstance(default, (params.Param, params.Body)) and _constrained(
+                    hints.get(name)
+                ):
+                    kind = type(default).__name__
+                    found.append(
+                        f"{context.path} {call.__name__}({name}): {kind}() as the default "
+                        f"drops the constraints of its type; write "
+                        f"{name}: Annotated[<type>, {kind}()] instead"
+                    )
+    return found
+
+
+def _planted_path_app(annotated: bool):
+    """An app with a ruled path parameter, as the trap or in the Annotated form."""
+    from fastapi import FastAPI, Path
+
+    from helpers.rules import Rule
+
+    Digits = problems.ruled(Rule(re.compile(r"[0-9]+"), "Use digits only."))
+    app = FastAPI()
+    problems.install(app)
+    if annotated:
+
+        @app.get("/x/{n}")
+        def right(n: Annotated[Digits, Path()]) -> dict:
+            return {}
+
+    else:
+
+        @app.get("/x/{n}")
+        def trap(n: Digits = Path()) -> dict:  # noqa: B008 - the trap itself
+            return {}
+
+    return app
+
+
+def _published_path_schema(app) -> dict:
+    return app.openapi()["paths"]["/x/{n}"]["get"]["parameters"][0]["schema"]
+
+
+def test_no_parameter_has_its_constraints_dropped(app):
+    hints = typing.get_type_hints(
+        next(c.route.endpoint for c in routes.api_routes(app) if c.path == "/api/users/{linux}"),
+        include_extras=True,
+    )
+    assert _constrained(hints["linux"])  # non-vacuity: the guard sees the users route's rule
+    assert dropped_constraints(app) == []
+
+
+def test_a_rule_given_with_path_as_the_default_is_found():
+    """Planted twin: the trap drops the rule from what is checked and published."""
+    from fastapi.testclient import TestClient
+
+    trap = _planted_path_app(annotated=False)
+    assert "pattern" not in _published_path_schema(trap)  # the plant really drops the rule
+    assert TestClient(trap).get("/x/abc").status_code == 200  # and lets a refused value in
+    [found] = dropped_constraints(trap)
+    assert "trap(n)" in found and "Annotated[<type>, Path()]" in found
+    right = _planted_path_app(annotated=True)
+    assert "pattern" in _published_path_schema(right)  # positive control
+    assert TestClient(right).get("/x/abc").status_code == 422
+    assert dropped_constraints(right) == []
 
 
 def test_the_fields_are_found_and_agree_with_the_published_api(app):

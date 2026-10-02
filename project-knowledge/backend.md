@@ -47,7 +47,9 @@ the OpenAPI description it serves at `/api/openapi`.
   value either refuses is refused with the rule's sentence, which is also what
   the helper itself says. A path or query parameter takes it as
   `Annotated[<ruled>, Path()]` or `Query()`: given as the parameter's default
-  instead, `Path()` or `Query()` leaves the rule unchecked.
+  instead, `Path()` or `Query()` leaves the rule unchecked, and a test in
+  `tests/test_problems.py` reads every endpoint's and dependency's signature
+  in the route table and fails on any parameter written that way.
 - **Errors** are always problem details (`application/problem+json`) with
   `type`, `title`, `status` and `code`; validation errors add `errors`, a list
   of `field` and `message`. A field's message is never the validation
