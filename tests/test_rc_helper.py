@@ -499,6 +499,45 @@ def test_invalid_email_is_refused(env, email):
     assert error_code(env, "auth-login", "--email", email) == "email_invalid"
 
 
+def test_the_email_rule_is_the_users_files_rule():
+    from helpers import users_file
+
+    assert h.EMAIL is users_file.EMAIL
+
+
+# --- the commit author's name -----------------------------------------------------
+
+AUTHOR_NAMES_ACCEPTED = ["Bob B", "Сергей Лихарев", "O'Brien", "x", "x" * h.MAX_AUTHOR_NAME_LENGTH]
+AUTHOR_NAMES_REFUSED = [
+    "",
+    " ",
+    " Bob",
+    "Bob ",
+    "a\nb",
+    "a\rb",
+    "a\tb",
+    "a\x00b",
+    "a\x85b",
+    "a\u2028b",
+    "a\u2029b",
+    "a<b",
+    "a>b",
+    "a\u200Bb",
+    "a\u202Eb",
+    "a\u2066b",
+    "a\uFEFFb",
+    "x" * (h.MAX_AUTHOR_NAME_LENGTH + 1),
+]
+AUTHOR_NAMES = [(n, True) for n in AUTHOR_NAMES_ACCEPTED] + [
+    (n, False) for n in AUTHOR_NAMES_REFUSED
+]
+
+
+@pytest.mark.parametrize(("name", "accepted"), AUTHOR_NAMES)
+def test_author_name_rule(name, accepted):
+    assert bool(h.AUTHOR_NAME.fullmatch(name)) is accepted
+
+
 # --- the command-line surface ----------------------------------------------------
 
 
