@@ -302,6 +302,45 @@ def test_a_timed_out_helper_call_ends_the_helper_behind_sudo(first_install, tmp_
         rule.unlink()
 
 
+STUBBORN = """#!/usr/bin/python3
+import os, signal, sys, time
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+open(sys.argv[1], "w").write(str(os.getpid()))
+time.sleep(120)
+"""
+
+
+def test_a_helper_ignoring_sigterm_behind_sudo_does_not_hold_the_call(first_install):
+    """It is left behind, but the call still ends soon after its timeout."""
+    stubborn = Path("/tmp/stubborn-helper")
+    stubborn.write_text(STUBBORN)
+    stubborn.chmod(0o755)
+    rule = Path("/etc/sudoers.d/zz-stubborn-helper")
+    rule.write_text("rcman ALL=(dev) NOPASSWD: /tmp/stubborn-helper\n")
+    rule.chmod(0o440)
+    pid_file = Path("/tmp/stubborn.pid")
+    pid_file.unlink(missing_ok=True)
+    python = str(ROOT / "current" / ".venv" / "bin" / "python")
+    grace = float(
+        sh("runuser", "-u", "rcman", "--", python, "-c",
+           "from rcman.helpers_client import TERMINATE_GRACE_SECONDS as g; print(g)").stdout
+    )  # fmt: skip
+    started = time.monotonic()
+    try:
+        out = sh(
+            "runuser", "-u", "rcman", "--", "setsid", python, "-c", BOUNDED, "bounded",
+            "sudo", "-n", "-u", "dev", str(stubborn), str(pid_file),
+            stdin=subprocess.DEVNULL, timeout=120,
+        ).stdout  # fmt: skip
+        elapsed = time.monotonic() - started
+    finally:
+        rule.unlink()
+        if pid_file.exists() and pid_file.read_text():
+            sh("kill", "-9", pid_file.read_text(), check=False)
+    assert out.strip() == "timed out"
+    assert elapsed < 2 + grace + 5, elapsed  # the call's timeout, the grace period, a margin
+
+
 def listeners():
     """Every listening TCP address (host, port) and unix socket path in the container."""
     tcp = set()

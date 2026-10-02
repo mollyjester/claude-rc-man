@@ -64,7 +64,10 @@ A call that outlasts its timeout — `HELPER_TIMEOUT` and `ADMIN_TIMEOUT` in
 passes on to the helper, and SIGKILL only after `TERMINATE_GRACE_SECONDS`:
 sudo cannot pass SIGKILL on, so killing it outright would leave the helper
 running. The container suite shows, through real sudo, that killing sudo
-leaves the helper running and that `run_bounded` ends it.
+leaves the helper running and that `run_bounded` ends it. A helper that
+ignores SIGTERM is not waited for: once sudo is killed, `run_bounded` closes
+the pipes without reading them and raises the timeout. That helper is left
+behind as an orphan until it ends or `rcman.service` stops.
 
 `everyone.py` lists every person's servers for administrators
 (`GET /api/servers/everyone`). It runs `rc-helper list` as each person in the

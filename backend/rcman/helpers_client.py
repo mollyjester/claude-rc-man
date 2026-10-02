@@ -104,10 +104,12 @@ def run_bounded(
         except subprocess.TimeoutExpired:
             proc.terminate()
             try:
-                proc.communicate(timeout=TERMINATE_GRACE_SECONDS)
+                proc.wait(timeout=TERMINATE_GRACE_SECONDS)
             except subprocess.TimeoutExpired:
                 proc.kill()
-                proc.communicate()
+                proc.wait()
+            # Not communicate(): a helper that ignored SIGTERM may still hold the
+            # pipes, and reading them would wait for it. Leaving the block closes them.
             raise subprocess.TimeoutExpired(argv, timeout) from None
     return subprocess.CompletedProcess(argv, proc.returncode, stdout, stderr)
 

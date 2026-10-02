@@ -195,3 +195,45 @@ def test_an_admin_call_that_times_out_is_a_problem():
         ["list"],
     )
     assert seen["timeout"] == hc.ADMIN_TIMEOUT  # the default when none is given
+
+
+# Like SUDO_LIKE, but its child ignores SIGTERM, as a stuck helper might, and
+# keeps the output pipe open.
+SUDO_LIKE_STUBBORN = """
+import signal, subprocess, sys
+child = subprocess.Popen([sys.executable, "-c",
+    "import os, signal, sys, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+    "open(sys.argv[1], 'w').write(str(os.getpid())); time.sleep(60)",
+    sys.argv[1]])
+signal.signal(signal.SIGTERM, lambda *a: child.terminate())
+child.wait()
+"""
+
+
+def test_a_helper_that_ignores_sigterm_does_not_hold_the_call(tmp_path, monkeypatch):
+    import os
+    import signal
+    import subprocess
+    import sys
+    import time
+
+    monkeypatch.setattr(hc, "TERMINATE_GRACE_SECONDS", 0.5)
+    pid_file = tmp_path / "child.pid"
+    started = time.monotonic()
+    try:
+        with pytest.raises(subprocess.TimeoutExpired):
+            hc.run_bounded(
+                [sys.executable, "-c", SUDO_LIKE_STUBBORN, str(pid_file)],
+                input=None,
+                capture_output=True,
+                text=True,
+                timeout=1,
+            )
+        elapsed = time.monotonic() - started
+    finally:
+        if pid_file.exists() and pid_file.read_text():
+            try:
+                os.kill(int(pid_file.read_text()), signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+    assert elapsed < 1 + 0.5 + 2  # the timeout, the grace period and a margin
