@@ -55,6 +55,8 @@ test("Your servers lines its paths up with its heading, each badge on its path's
   const path = list.getByRole("button", { name: server.path });
   const badge = list.getByText(m.states.trust_prompt, { exact: true });
   await expect(badge).toBeVisible();
+  // the tree above it has loaded, so nothing moves the summary while it is measured
+  await expect(tree(page).getByRole("button", { name: "projects", exact: true })).toBeVisible();
 
   // where the path's text starts, not its button's padding
   const textLeft = await path.evaluate((el) => {
