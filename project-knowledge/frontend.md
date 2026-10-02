@@ -32,17 +32,21 @@ version is `frontend/.nvmrc`.
   can start, or null where one can; Start, and the actions that start Claude
   again, are offered only where it is null. Otherwise it says why in place of
   each: in the panel instead of Start, and on a server's card instead of the
-  sentence saying what to do.
-  Administration is offered only to administrators,
-  and the server refuses everyone else regardless.
+  sentence saying what to do. Administration is offered only to
+  administrators, and the server refuses everyone else regardless.
 - **Every piece of text not from the server is in `src/messages.ts`.**
 - **Every colour is a custom property in `src/styles.css`**, with a value for
   a light scheme and one for a dark scheme, which the browser picks between by
-  the system's setting; `src/styles.test.ts` holds the stylesheet to that,
-  counting named colours as jsdom's colour parser reads them, and names the
-  colours kept the same in both. Each pair of colours text is drawn
-  in meets WCAG AA contrast in both schemes; that is checked by hand when a
-  colour changes.
+  the system's setting; `src/styles.test.ts` holds the stylesheet to that and
+  names the colours kept the same in both. It counts a word as a colour where
+  jsdom's colour parser reads it as one, and only in custom properties and in
+  properties that take a colour, since the parser also reads words such as
+  `background` as system colours. Each pair of colours text is drawn in meets
+  WCAG AA contrast in both schemes; that is checked by hand when a colour
+  changes.
+- **Each kind of status dot has its own shape.** `src/servers-guide.test.ts`
+  reads each `.dot-<kind>` rule in `src/styles.css`, requires the shapes to
+  differ, and holds the shape table in `docs/servers.md` to them.
 - Links between help pages — a page's file name, optionally followed by a
   `#part` — stay inside rcman; other links open in a new tab.
 
