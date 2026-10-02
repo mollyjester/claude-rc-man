@@ -6,7 +6,7 @@ import { expect, test } from "@playwright/test";
 
 import { m } from "../src/messages";
 import { openAdminPage, panel, selectInProjects, summary, tree } from "./nav";
-import { ALICE, BOB, WORLD, useAs } from "./people";
+import { ALICE, BOB, GITHUB_TOKEN, WORLD, useAs } from "./people";
 
 test("start, trust, stop, resume and forget through the folder panel", async ({ page }) => {
   await useAs(page, ALICE);
@@ -213,4 +213,60 @@ test("a repository's changes: appear, stage, commit, switch branch", async ({ pa
   await expect(changes.getByText(m.onBranch("feature"))).toBeVisible();
   await expect(changes.getByRole("list", { name: m.localBranches }).getByText(`(${m.currentBranch})`)).toBeVisible();
   expect(git("branch", "--show-current")).toBe("feature\n");
+});
+
+test("a GitHub token is added, a new branch is committed and pushed, and the token removed", async ({ page }) => {
+  const repo = join(WORLD, "homes", "alice", "projects", "alice-repo");
+  const origin = join(WORLD, "origins", "alice", "alice-repo.git");
+  const env = { PATH: "/usr/bin:/bin", HOME: WORLD };
+  const git = (where: string, ...args: string[]) => execFileSync("git", ["-C", where, ...args], { env, encoding: "utf-8" });
+  await useAs(page, ALICE);
+  await page.goto("/settings");
+  const author = page.getByRole("region", { name: m.settingsAuthorTitle });
+  await author.getByLabel(m.authorNameLabel).fill("Alice Author");
+  await author.getByRole("button", { name: m.save }).click();
+  await expect(author.getByText(m.authorEffective("Alice Author", ALICE))).toBeVisible();
+
+  // alice-repo's origin is on GitHub: without a token, Push is not offered
+  await page.goto("/");
+  await selectInProjects(page, "alice-repo");
+  const changes = panel(page, "projects/alice-repo").getByRole("region", { name: m.changesTitle });
+  await expect(changes.getByText(m.pushNeedsToken)).toBeVisible();
+  await expect(changes.getByRole("button", { name: m.push, exact: true })).toHaveCount(0);
+
+  // the token, through Settings: stored, and the field left empty
+  await changes.getByRole("link", { name: m.pushTokenLink }).click();
+  const github = page.getByRole("region", { name: m.settingsGithubTitle });
+  await expect(github.getByText(m.githubTokenNotStored)).toBeVisible();
+  await github.getByLabel(m.githubTokenLabel).fill(GITHUB_TOKEN);
+  await github.getByRole("button", { name: m.save }).click();
+  await expect(github.getByText(m.githubTokenStored)).toBeVisible();
+  await expect(github.getByLabel(m.githubTokenLabel)).toHaveValue("");
+  expect(await page.content()).not.toContain(GITHUB_TOKEN);
+
+  // a new branch, committed and pushed in one go
+  await page.goto("/?folder=projects/alice-repo");
+  const branch = "pushed-from-rcman";
+  await changes.getByLabel(m.newBranchName).fill(branch);
+  await changes.getByRole("button", { name: m.createBranch }).click();
+  await expect(changes.getByText(m.onBranch(branch))).toBeVisible();
+  writeFileSync(join(repo, "to-push.txt"), "pushed through rcman\n");
+  const notStaged = changes.getByRole("group", { name: m.notStagedTitle });
+  await notStaged.getByRole("checkbox", { name: "to-push.txt" }).check();
+  await notStaged.getByRole("button", { name: m.stageSelected }).click();
+  await changes.getByLabel(m.commitMessage).fill("Push a file from rcman");
+  await changes.getByRole("button", { name: m.commitPush }).click();
+  await expect(changes.getByText(m.pushed(branch, `origin/${branch}`))).toBeVisible();
+  expect(git(origin, "log", "-1", "--format=%s", branch)).toBe("Push a file from rcman\n");
+  expect(git(origin, "rev-parse", branch)).toBe(git(repo, "rev-parse", "HEAD"));
+
+  // removing the token: asked first; then Push is not offered again
+  await page.goto("/settings");
+  await github.getByRole("button", { name: m.githubTokenRemove }).click();
+  const dialog = page.getByRole("dialog", { name: m.githubTokenRemoveTitle });
+  await dialog.getByRole("button", { name: m.githubTokenRemoveConfirm }).click();
+  await expect(github.getByText(m.githubTokenNotStored)).toBeVisible();
+  await page.goto("/?folder=projects/alice-repo");
+  await expect(changes.getByText(m.pushNeedsToken)).toBeVisible();
+  await expect(changes.getByRole("button", { name: m.push, exact: true })).toHaveCount(0);
 });
