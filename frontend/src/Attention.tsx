@@ -1,12 +1,12 @@
 import { useEffect, useState } from "react";
 import { Link, useLocation } from "react-router-dom";
 
-import { adminPath } from "./AdminPages";
+import { ADMIN, type AdminPage } from "./AdminPages";
 import { ApiError, api } from "./api";
 import { m } from "./messages";
 import { ProblemView, asApiError } from "./ProblemView";
 
-const PageLink = ({ label }: { label: string }) => <Link to={adminPath(label)}>{label}</Link>;
+const PageLink = ({ page }: { page: AdminPage }) => <Link to={page.path}>{page.label}</Link>;
 
 type Report = {
   unrecognised: { linux: string; path: string }[];
@@ -52,23 +52,23 @@ export function Attention() {
       {unrecognised.length > 0 && (
         <p>
           {m.attentionUnrecognised(unrecognised.map((s) => `${s.linux}: ${s.path}`))}{" "}
-          <PageLink label={m.navEveryone} />
+          <PageLink page={ADMIN.everyone} />
         </p>
       )}
       {differ.length > 0 && (
         <p>
-          {m.attentionVersionsDiffer(differ)} <PageLink label={m.navVersions} />
+          {m.attentionVersionsDiffer(differ)} <PageLink page={ADMIN.versions} />
         </p>
       )}
       {untested && (
         <p>
-          {m.attentionUntested} <PageLink label={m.navVersions} />
+          {m.attentionUntested} <PageLink page={ADMIN.versions} />
         </p>
       )}
       {failed && (
         <>
           <p>
-            {m.attentionVersionsFailed} <PageLink label={m.navVersions} />
+            {m.attentionVersionsFailed} <PageLink page={ADMIN.versions} />
           </p>
           <ProblemView error={new ApiError(0, failed.code, failed.title)} />
         </>

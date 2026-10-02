@@ -1,7 +1,7 @@
 import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
-import { ADMIN_PAGES } from "./AdminPages";
+import { ADMIN as ADMIN_PAGE } from "./AdminPages";
 import { m } from "./messages";
 import { vi } from "vitest";
 
@@ -36,22 +36,20 @@ test("administrators are told who is on an unrecognised screen and whose version
   expect(within(banner).getAllByRole("link", { name: m.navVersions }).length).toBeGreaterThan(0);
 });
 
-test("every link in the warning leads to an administrators' page", async () => {
-  api(ADMIN, {
-    unrecognised: [{ linux: "bob", path: "projects/beta" }],
-    versions_differ: ["carol"],
-    untested: true,
-    versions_error: { code: "helper_timeout", title: "rcman's helper took too long to answer." },
-  });
+test.each([
+  ["unrecognised screens", { unrecognised: [{ linux: "bob", path: "projects/beta" }] }, m.attentionUnrecognised(["bob: projects/beta"]), "everyone"],
+  ["a version that differs", { versions_differ: ["carol"] }, m.attentionVersionsDiffer(["carol"]), "versions"],
+  ["an untested version", { untested: true }, m.attentionUntested, "versions"],
+  ["a version report that failed", { versions_error: { code: "helper_timeout", title: "Too long." } }, m.attentionVersionsFailed, "versions"],
+] as const)("the warning about %s links to its page", async (_about, report, said, page) => {
+  api(ADMIN, { ...NOTHING_TO_ATTEND, ...report });
   renderApp();
   const banner = await screen.findByRole("region", { name: m.attentionTitle });
   const links = within(banner).getAllByRole("link");
-  expect(links.length).toBeGreaterThan(0);
-  for (const link of links) {
-    const page = ADMIN_PAGES.find((p) => p.label === link.textContent);
-    expect(page).toBeDefined();
-    expect(link).toHaveAttribute("href", page!.path);
-  }
+  expect(links).toHaveLength(1);
+  expect(links[0].closest("p")).toHaveTextContent(said);
+  expect(links[0]).toHaveAttribute("href", ADMIN_PAGE[page].path);
+  expect(links[0]).toHaveTextContent(ADMIN_PAGE[page].label);
 });
 
 test("it is fetched again on every change of page", async () => {

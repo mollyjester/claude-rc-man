@@ -6,19 +6,17 @@ import { m } from "./messages";
 import { People } from "./People";
 import { Versions } from "./Versions";
 
-// The pages only administrators are offered, in the order the navigation shows
-// them; the navigation, the routes and the attention warning's links are built
-// from it.
-export const ADMIN_PAGES: { path: string; label: string; element: () => ReactElement }[] = [
-  { path: "/admin/people", label: m.navUsers, element: () => <People /> },
-  { path: "/admin/servers", label: m.navEveryone, element: () => <Everyone /> },
-  { path: "/admin/audit", label: m.navAudit, element: () => <Audit /> },
-  { path: "/admin/claude", label: m.navVersions, element: () => <Versions /> },
-];
+export type AdminPage = { path: string; label: string; element: () => ReactElement };
 
-// Where the administrators' page with a label is.
-export function adminPath(label: string): string {
-  const page = ADMIN_PAGES.find((p) => p.label === label);
-  if (!page) throw new Error(`no administrators' page is labelled ${label}`);
-  return page.path;
-}
+// The pages only administrators are offered, by name, so that a link to one
+// names the page itself; the navigation, the routes and the attention
+// warning's links are built from it.
+export const ADMIN = {
+  people: { path: "/admin/people", label: m.navUsers, element: () => <People /> },
+  everyone: { path: "/admin/servers", label: m.navEveryone, element: () => <Everyone /> },
+  audit: { path: "/admin/audit", label: m.navAudit, element: () => <Audit /> },
+  versions: { path: "/admin/claude", label: m.navVersions, element: () => <Versions /> },
+} satisfies Record<string, AdminPage>;
+
+// The same pages, in the order the navigation shows them.
+export const ADMIN_PAGES: AdminPage[] = Object.values(ADMIN);

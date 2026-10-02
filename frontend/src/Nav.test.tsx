@@ -1,7 +1,7 @@
 import { screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
-import { ADMIN_PAGES } from "./AdminPages";
+import { ADMIN as ADMIN_PAGE, ADMIN_PAGES } from "./AdminPages";
 import { m } from "./messages";
 import { ADMIN, CONNECTED, ME, NOTHING_TO_ATTEND, type Reply, fakeApi } from "./test/fakeApi";
 import { renderApp } from "./test/render";
@@ -115,7 +115,8 @@ test("the administration pages include everyone's servers", () => {
   for (const label of [m.navUsers, m.navAudit, m.navVersions, m.navEveryone]) {
     expect(labels).toContain(label);
   }
-  expect(ADMIN_PAGES.find((p) => p.label === m.navEveryone)?.path).toBe("/admin/servers");
+  expect(ADMIN_PAGE.everyone.path).toBe("/admin/servers");
+  expect(ADMIN_PAGES).toEqual(Object.values(ADMIN_PAGE));
 });
 
 test("an account rcman refuses sees the server's reason", async () => {
