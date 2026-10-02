@@ -2394,6 +2394,7 @@ GIT_VERBS = [
     (("git-switch", "--branch=main", *IN_REPO), None),
     (("git-branch-new", "--name=new", *IN_REPO), None),
     (("git-fetch", *IN_REPO), None),
+    (("git-push", *IN_REPO), None),
     (("github-token",), "a-token\n"),
     (("github-status",), None),
     (("github-forget",), None),
@@ -2757,6 +2758,20 @@ def test_the_token_reaches_no_argv_git_traces(hooked, monkeypatch, tmp_path):
     assert TOKEN not in text
 
 
+def test_a_push_reaches_github_with_the_token_in_no_argv(
+    hooked, github, on_github, monkeypatch, tmp_path
+):
+    trace = traced(monkeypatch, tmp_path)
+    helper_ = in_process(hooked)
+    helper_.github_token(github.token.encode() + b"\n")
+    repo = Path(hooked["RC_HELPER_HOME"]) / GH_REL
+    commit_in(repo, "pushed.txt")
+    assert helper_.git_push(GH_REL, False)["upstream_set"] is False
+    text = trace.read_text()
+    assert "remote-http" in text and "push" in text  # positive control: it went over HTTP
+    assert github.token not in text
+
+
 def test_the_trace_check_sees_what_is_in_an_argv(hooked, monkeypatch, tmp_path):
     """Planted twin: a marker in a git argv is in the trace the check above reads."""
     trace = traced(monkeypatch, tmp_path)
@@ -2768,3 +2783,190 @@ def test_the_trace_check_sees_what_is_in_an_argv(hooked, monkeypatch, tmp_path):
         deadline=time.monotonic() + 30,
     )
     assert marker in trace.read_text()
+
+
+# --- push ---------------------------------------------------------------------------
+
+
+def commit_in(repo: Path, name: str) -> str:
+    """A new commit in ``repo`` adding ``name``; its hash."""
+    write(repo / name)
+    fixture_git(repo, "add", name)
+    fixture_git(repo, "commit", "-q", "-m", f"Add {name}")
+    return fixture_git(repo, "rev-parse", "HEAD").strip()
+
+
+def on_remote(bare: Path, branch: str) -> str | None:
+    found = subprocess.run(
+        ["git", "-C", str(bare), "rev-parse", "--verify", "-q", f"refs/heads/{branch}"],
+        capture_output=True,
+        text=True,
+    )
+    return found.stdout.strip() or None
+
+
+def push(env, rel, *options):
+    return helper(env, "git-push", *options, "--", rel)
+
+
+def test_a_branch_with_no_upstream_is_pushed_and_set_to_track_it(hooked, github, on_github):
+    repo = Path(hooked["RC_HELPER_HOME"]) / GH_REL
+    assert set_token(hooked, github.token)[0] == 0
+    fixture_git(repo, "switch", "-q", "-c", "topic")
+    head = commit_in(repo, "topic.txt")
+    code, out = push(hooked, GH_REL)
+    assert code == 0, out
+    assert out == {
+        "path": GH_REL,
+        "branch": "topic",
+        "upstream": "origin/topic",
+        "upstream_set": True,
+    }
+    assert on_remote(on_github, "topic") == head
+    tracked = fixture_git(repo, "for-each-ref", "--format=%(upstream)", "refs/heads/topic")
+    assert tracked.strip() == "refs/remotes/origin/topic"
+
+
+def test_a_branch_with_an_upstream_is_pushed_there(hooked, github, on_github):
+    repo = Path(hooked["RC_HELPER_HOME"]) / GH_REL
+    assert set_token(hooked, github.token)[0] == 0
+    head = commit_in(repo, "more.txt")
+    code, out = push(hooked, GH_REL)
+    assert code == 0, out
+    assert out == {
+        "path": GH_REL,
+        "branch": "main",
+        "upstream": "origin/main",
+        "upstream_set": False,
+    }
+    assert on_remote(on_github, "main") == head
+
+
+def test_a_push_to_github_is_refused_without_a_token(hooked, github, on_github):
+    repo = Path(hooked["RC_HELPER_HOME"]) / GH_REL
+    before = on_remote(on_github, "main")
+    commit_in(repo, "more.txt")
+    code, out = push(hooked, GH_REL)
+    assert (code, out["error"]["code"]) == (1, "github_token_not_set"), out
+    assert out["error"]["message"] == h.MESSAGES["github_token_not_set"]
+    assert on_remote(on_github, "main") == before
+    assert set_token(hooked, github.token)[0] == 0
+    assert push(hooked, GH_REL)[0] == 0  # positive control: with the token it goes
+
+
+def test_a_push_to_another_remote_needs_no_token(env, repo):
+    head = commit_in(repo, "more.txt")
+    assert ok(env, "github-status") == {"token": False}
+    code, out = push(env, REPO_REL)
+    assert code == 0, out
+    assert out["upstream"] == "origin/main"
+    assert on_remote(origin_of(repo), "main") == head
+
+
+def test_a_token_github_refuses_comes_back_in_gits_words_without_it(hooked, github, on_github):
+    repo = Path(hooked["RC_HELPER_HOME"]) / GH_REL
+    wrong = "a-token-github-refuses"
+    assert set_token(hooked, wrong)[0] == 0
+    commit_in(repo, "more.txt")
+    proc = run_helper(hooked, "git-push", "--", GH_REL)
+    out = json.loads(proc.stdout)
+    assert out["error"]["code"] == "git_failed", out
+    assert any("Authentication failed" in line for line in out["error"]["git"]), out
+    assert wrong not in proc.stdout + proc.stderr
+
+
+def test_a_rejected_push_comes_back_in_gits_words(env, repo):
+    push_branch_to_origin(repo, origin_of(repo), "elsewhere")
+    fixture_git(origin_of(repo), "update-ref", "refs/heads/main", "refs/heads/elsewhere")
+    commit_in(repo, "local.txt")
+    code, out = push(env, REPO_REL)
+    assert (code, out["error"]["code"]) == (1, "git_failed"), out
+    assert any("rejected" in line for line in out["error"]["git"]), out
+
+
+def test_a_detached_head_is_not_pushed(env, repo):
+    commit_in(repo, "more.txt")
+    fixture_git(repo, "switch", "-q", "--detach", "HEAD")
+    before = on_remote(origin_of(repo), "main")
+    code, out = push(env, REPO_REL)
+    assert (code, out["error"]["code"]) == (1, "detached_head"), out
+    assert on_remote(origin_of(repo), "main") == before
+
+
+def test_check_says_whether_a_push_could_start_and_pushes_nothing(env, hooked, github, on_github):
+    repo = Path(hooked["RC_HELPER_HOME"]) / GH_REL
+    before = on_remote(on_github, "main")
+    commit_in(repo, "more.txt")
+    code, out = push(hooked, GH_REL, "--check")
+    assert (code, out["error"]["code"]) == (1, "github_token_not_set"), out
+    assert set_token(hooked, github.token)[0] == 0
+    assert ok(hooked, "git-push", "--check", "--", GH_REL) == {"path": GH_REL, "branch": "main"}
+    assert on_remote(on_github, "main") == before
+    fixture_git(repo, "switch", "-q", "--detach", "HEAD")
+    assert error_code(hooked, "git-push", "--check", "--", GH_REL) == "detached_head"
+
+
+def test_status_says_whether_a_push_goes_to_github(env, hooked, repo, on_github, tmp_path):
+    assert ok(hooked, "git-status", "--", GH_REL)["push_to_github"] is True
+    assert ok(hooked, "git-status", "--", REPO_REL)["push_to_github"] is False
+    gh_repo = Path(hooked["RC_HELPER_HOME"]) / GH_REL
+    fixture_git(gh_repo, "switch", "-q", "-c", "no-upstream")
+    assert ok(hooked, "git-status", "--", GH_REL)["push_to_github"] is True  # to origin
+    fixture_git(gh_repo, "switch", "-q", "main")
+    elsewhere = tmp_path / "elsewhere.git"
+    fixture_git(tmp_path, "init", "-q", "--bare", str(elsewhere))
+    fixture_git(gh_repo, "remote", "set-url", "--push", "origin", str(elsewhere))
+    assert ok(hooked, "git-status", "--", GH_REL)["push_to_github"] is False
+    assert error_code(hooked, "git-push", "--check", "--", GH_REL) != "github_token_not_set"
+
+
+def test_a_push_remote_of_its_own_decides_where_a_branch_is_pushed(hooked, repo, on_github):
+    """A branch tracking a remote that is not GitHub, with GitHub as its push remote."""
+    gh_url = fixture_git(Path(hooked["RC_HELPER_HOME"]) / GH_REL, "remote", "get-url", "origin")
+    fixture_git(repo, "remote", "add", "github", gh_url.strip())
+    assert ok(hooked, "git-status", "--", REPO_REL)["push_to_github"] is False
+    fixture_git(repo, "config", "branch.main.pushRemote", "github")
+    assert ok(hooked, "git-status", "--", REPO_REL)["push_to_github"] is True
+    assert error_code(hooked, "git-push", "--", REPO_REL) == "github_token_not_set"
+
+
+def test_a_repository_with_no_remote_is_no_push_to_github(env):
+    repo = make_repo(Path(env["RC_HELPER_HOME"]) / "projects" / "lonely")
+    assert ok(env, "git-status", "--", "projects/lonely")["push_to_github"] is False
+    commit_in(repo, "x.txt")
+    assert error_code(env, "git-push", "--", "projects/lonely") == "git_failed"
+
+
+SESSION_DUMP = """#!/usr/bin/python3
+import json, os
+sid = os.getsid(0)
+helper = open(f"/proc/{sid}/stat").read().rsplit(")", 1)[1].split()[1]
+seen = []
+for pid in [p for p in os.listdir("/proc") if p.isdigit()]:
+    try:
+        if os.getsid(int(pid)) != sid and pid != helper:
+            continue
+        seen.append([open(f"/proc/{pid}/{part}", "rb").read().decode("utf-8", "replace")
+                     for part in ("cmdline", "environ")])
+    except OSError:
+        pass
+json.dump(seen, open(OUT, "w"))
+"""
+
+
+def test_while_a_push_runs_no_process_holds_the_token(hooked, github, on_github, tmp_path):
+    """Every process of the push's session, and rc-helper itself, read from /proc by a
+    pre-push hook while git's HTTP helper is talking to the server."""
+    repo = Path(hooked["RC_HELPER_HOME"]) / GH_REL
+    dumped = tmp_path / "seen.json"
+    hook = repo / ".git" / "hooks" / "pre-push"
+    hook.write_text(SESSION_DUMP.replace("OUT", repr(str(dumped))))
+    hook.chmod(0o755)
+    assert set_token(hooked, github.token)[0] == 0
+    commit_in(repo, "more.txt")
+    assert push(hooked, GH_REL)[0] == 0
+    seen = json.loads(dumped.read_text())
+    commands = [cmdline for cmdline, _ in seen]
+    assert any("remote-http" in c for c in commands), commands  # positive control
+    assert any("git-push" in c for c in commands), commands  # rc-helper itself
+    assert all(github.token not in cmdline + environ for cmdline, environ in seen)

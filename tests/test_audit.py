@@ -64,7 +64,7 @@ def documented_results(guide):
 
 def test_every_result_other_than_an_error_code_is_listed_in_the_guide():
     guide = (REPO / "docs" / "audit.md").read_text(encoding="utf-8")
-    assert set(audit.RESULTS) == {"ok", "unrecognised_screen"}  # non-vacuity: both are known
+    assert set(audit.RESULTS) == {"ok", "unrecognised_screen", "committed_not_pushed"}
     assert documented_results(guide) == set(audit.RESULTS)
 
 
@@ -454,3 +454,20 @@ def test_github_token_changes_are_recorded_without_a_target(client, settings):
     assert r.status_code == 200, r.text
     recorded = [(r["action"], r["target"], r["result"]) for r in rows(settings)[-2:]]
     assert recorded == [("github.token", None, "ok"), ("github.forget", None, "ok")]
+
+
+def test_a_push_and_a_commit_and_push_are_recorded_with_the_folder(
+    client, settings, helper_homes, tmp_path
+):
+    from tests.git_fixtures import fixture_git, make_repo, write
+
+    path = "projects/alice-project"
+    repo = make_repo(helper_homes.homes["alice"] / path, origin=tmp_path / "o.git")
+    client.patch("/api/me/settings", json={"author_name": "A"}, headers=changing(ALICE))
+    write(repo / "a.txt")
+    fixture_git(repo, "add", "a.txt")
+    body = {"path": path, "message": "Add a.txt"}
+    assert client.post("/api/git/commit-push", json=body, headers=changing(ALICE)).is_success
+    assert client.post("/api/git/push", json={"path": path}, headers=changing(ALICE)).is_success
+    recorded = [(r["action"], r["target"], r["result"]) for r in rows(settings)[-2:]]
+    assert recorded == [("git.commit_push", path, "ok"), ("git.push", path, "ok")]

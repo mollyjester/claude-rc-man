@@ -45,7 +45,7 @@ def git_routes(app):
         if c.path.startswith("/api/git/")
         for method in c.methods
     ]
-    assert len(found) >= 8  # non-vacuity: status, branches and the six changes
+    assert len(found) >= 10  # non-vacuity: status, branches and the eight changes
     return sorted(found)
 
 
@@ -61,15 +61,37 @@ def set_author(client, who=ALICE, **settings):
 
 def test_every_git_route_calls_the_helper_as_the_signed_in_person(app, client, repo, recorded):
     set_author(client)
+    verbs = set()
     for method, path in git_routes(app):
         before = len(recorded.calls)
         r = call(client, method, path)
         assert r.status_code != 422, (path, r.text)
         made = recorded.calls[before:]
-        assert [c["linux"] for c in made] == ["alice"], (path, made)
-        assert made[0]["args"][0].startswith("git-"), made
-        assert made[0]["args"][-2:] == ["--", PATH], made  # the folder, after --
-    assert len({c["args"][0] for c in recorded.calls}) == len(git_routes(app))
+        assert made and all(c["linux"] == "alice" for c in made), (path, made)
+        for c in made:
+            assert c["args"][0].startswith("git-"), made
+            assert c["args"][-2:] == ["--", PATH], made  # the folder, after --
+        verbs |= {c["args"][0] for c in made}
+    # Every route but Commit & Push is one verb of its own; it is two of theirs.
+    assert len(verbs) == len(git_routes(app)) - 1
+
+
+def staged_file(repo, name="a.txt"):
+    write(repo / name)
+    fixture_git(repo, "add", name)
+
+
+def test_commit_and_push_checks_then_commits_then_pushes(client, repo, recorded):
+    set_author(client)
+    staged_file(repo)
+    r = call(client, "POST", "/api/git/commit-push")
+    assert r.status_code == 200, r.text
+    assert [c["args"][:-2] for c in recorded.calls] == [
+        ["git-push", "--check"],
+        ["git-commit", f"--author-name={AUTHOR['author_name']}", f"--author-email={ALICE}"],
+        ["git-push"],
+    ]
+    assert recorded.calls[1]["stdin"] == "A message"  # the message on stdin, as for Commit
 
 
 def test_status_says_who_commits_are_recorded_as(client, repo):
@@ -159,14 +181,19 @@ def test_a_folder_that_is_not_a_repository_is_a_problem(client):
     assert (r.status_code, r.json()["code"]) == (409, "not_a_repository")
 
 
+NETWORK_VERBS = ("git-fetch", "git-push")
+
+
 def test_git_routes_give_the_helper_time_to_answer(app, client, repo, recorded):
     set_author(client)
+    staged_file(repo)
     for method, path in git_routes(app):
         call(client, method, path)
-    timeouts = {c["args"][0]: c["timeout"] for c in recorded.calls}
-    assert timeouts["git-fetch"] > rc_helper.GIT_NETWORK_TIMEOUT
-    local = {verb: t for verb, t in timeouts.items() if verb != "git-fetch"}
-    assert local and all(t > rc_helper.GIT_TIMEOUT for t in local.values()), local
+    network = [c for c in recorded.calls if c["args"][0] in NETWORK_VERBS]
+    local = [c for c in recorded.calls if c["args"][0] not in NETWORK_VERBS]
+    assert {c["args"][0] for c in network} == set(NETWORK_VERBS)  # non-vacuity
+    assert all(c["timeout"] > rc_helper.GIT_NETWORK_TIMEOUT for c in network), network
+    assert local and all(c["timeout"] > rc_helper.GIT_TIMEOUT for c in local), local
 
 
 def test_the_commit_message_field_is_the_helpers_rule(app):
@@ -207,3 +234,139 @@ def test_switch_and_new_branch_and_fetch_change_the_repository(client, repo):
     assert r.status_code == 200, r.text
     names = client.get("/api/git/branches", params={"path": PATH}, headers=as_user(ALICE)).json()
     assert [b["name"] for b in names["local"]["branches"]] == ["feature", "main", "topic"]
+
+
+# --- push -----------------------------------------------------------------------------
+
+
+@pytest.fixture
+def on_github(helper_homes, github, tmp_path):
+    """alice's projects/alice-project as a repository whose origin is on the tests' GitHub;
+    its bare repository there."""
+    name = f"alice-{tmp_path.name}"
+    bare = github.bare("alice", name)
+    make_repo(helper_homes.homes["alice"] / PATH, origin=bare, url=github.github_url("alice", name))
+    return bare
+
+
+def on_remote(bare, branch):
+    import subprocess
+
+    found = subprocess.run(
+        ["git", "-C", str(bare), "rev-parse", "--verify", "-q", f"refs/heads/{branch}"],
+        capture_output=True,
+        text=True,
+    )
+    return found.stdout.strip() or None
+
+
+def store_token(client, token):
+    r = client.post("/api/github/token", json={"token": token}, headers=changing(ALICE))
+    assert r.status_code == 200, r.text
+
+
+def test_status_says_whether_a_push_goes_to_github(client, on_github):
+    r = client.get("/api/git/status", params={"path": PATH}, headers=as_user(ALICE))
+    assert r.json()["push_to_github"] is True
+
+
+def test_push_sets_the_upstream_of_a_new_branch_and_reaches_github(client, github, on_github):
+    store_token(client, github.token)
+    assert call(client, "POST", "/api/git/branch", json={"path": PATH, "name": "topic"}).is_success
+    r = call(client, "POST", "/api/git/push", json={"path": PATH})
+    assert r.status_code == 200, r.text
+    assert r.json() == {"path": PATH, "branch": "topic", "upstream": "origin/topic",
+                        "upstream_set": True}  # fmt: skip
+    assert on_remote(on_github, "topic") is not None
+
+
+def test_push_to_github_without_a_token_is_refused(client, on_github):
+    r = call(client, "POST", "/api/git/push", json={"path": PATH})
+    assert (r.status_code, r.json()["code"]) == (409, "github_token_not_set")
+    assert r.json()["title"] == rc_helper.MESSAGES["github_token_not_set"]
+
+
+def test_commit_and_push_both_work(client, github, on_github, helper_homes):
+    repo = helper_homes.homes["alice"] / PATH
+    set_author(client)
+    store_token(client, github.token)
+    staged_file(repo)
+    body = {"path": PATH, "message": "Add a.txt and push"}
+    r = client.post("/api/git/commit-push", json=body, headers=changing(ALICE))
+    assert r.status_code == 200, r.text
+    head = fixture_git(repo, "rev-parse", "HEAD").strip()
+    assert r.json() == {
+        "path": PATH,
+        "commit": head,
+        "push": {"path": PATH, "branch": "main", "upstream": "origin/main", "upstream_set": False},
+        "push_problem": None,
+    }
+    assert on_remote(on_github, "main") == head
+
+
+def test_when_the_commit_works_and_the_push_fails_the_answer_says_both(
+    client, on_github, helper_homes, settings
+):
+    import sqlite3
+
+    repo = helper_homes.homes["alice"] / PATH
+    set_author(client)
+    store_token(client, "a-token-github-refuses")
+    staged_file(repo)
+    before = on_remote(on_github, "main")
+    body = {"path": PATH, "message": "Committed, not pushed"}
+    r = client.post("/api/git/commit-push", json=body, headers=changing(ALICE))
+    assert r.status_code == 200, r.text
+    answer = r.json()
+    assert answer["commit"] == fixture_git(repo, "rev-parse", "HEAD").strip()
+    assert fixture_git(repo, "log", "-1", "--format=%s").strip() == "Committed, not pushed"
+    assert answer["push"] is None
+    problem = answer["push_problem"]
+    assert (problem["code"], problem["status"]) == ("git_failed", 409)
+    assert problem["type"] == "urn:rcman:problem:git_failed"
+    assert problem["title"] == rc_helper.MESSAGES["git_failed"]
+    assert any("Authentication failed" in line for line in problem["git"]), problem
+    assert on_remote(on_github, "main") == before
+    con = sqlite3.connect(settings.database)
+    action, target, result = con.execute(
+        "select action, target, result from audit order by id desc limit 1"
+    ).fetchone()
+    assert (action, target, result) == ("git.commit_push", PATH, "committed_not_pushed")
+
+
+def test_commit_and_push_to_github_without_a_token_commits_nothing(
+    client, on_github, helper_homes, settings
+):
+    import sqlite3
+
+    repo = helper_homes.homes["alice"] / PATH
+    set_author(client)
+    staged_file(repo)
+    head = fixture_git(repo, "rev-parse", "HEAD").strip()
+    r = client.post(
+        "/api/git/commit-push", json={"path": PATH, "message": "m"}, headers=changing(ALICE)
+    )
+    assert (r.status_code, r.json()["code"]) == (409, "github_token_not_set")
+    assert fixture_git(repo, "rev-parse", "HEAD").strip() == head
+    assert fixture_git(repo, "diff", "--cached", "--name-only").split() == ["a.txt"]
+    con = sqlite3.connect(settings.database)
+    last = con.execute("select action, result from audit order by id desc limit 1").fetchone()
+    assert last == ("git.commit_push", "github_token_not_set")
+
+
+def test_commit_and_push_needs_an_author_first(client, on_github, recorded):
+    r = client.post(
+        "/api/git/commit-push", json={"path": PATH, "message": "m"}, headers=changing(ALICE)
+    )
+    assert (r.status_code, r.json()["code"]) == (409, "author_not_set")
+    assert recorded.calls == []
+
+
+def test_commit_and_push_message_is_the_commits_rule(app):
+    from tests.test_problems import request_fields
+
+    [message] = [
+        f for f in request_fields(app) if f.path == "/api/git/commit-push" and f.name == "message"
+    ]
+    assert message.schema["pattern"] == rc_helper.COMMIT_MESSAGE.anchored
+    assert message.schema["maxLength"] == rc_helper.MAX_COMMIT_MESSAGE_LENGTH

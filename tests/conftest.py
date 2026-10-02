@@ -152,6 +152,10 @@ CALLS = {
     ("POST", "/api/git/switch"): {"json": {"path": "projects/alice-project", "branch": "main"}},
     ("POST", "/api/git/branch"): {"json": {"path": "projects/alice-project", "name": "new-branch"}},
     ("POST", "/api/git/fetch"): {"json": {"path": "projects/alice-project"}},
+    ("POST", "/api/git/push"): {"json": {"path": "projects/alice-project"}},
+    ("POST", "/api/git/commit-push"): {
+        "json": {"path": "projects/alice-project", "message": "A message"}
+    },
     ("GET", "/api/git/status"): {"params": {"path": "projects/alice-project"}},
     ("GET", "/api/git/branches"): {"params": {"path": "projects/alice-project"}},
     ("GET", "/api/github"): {},
