@@ -19,9 +19,11 @@ main { padding: 1rem 1.5rem; max-width: 72rem; }
 .name { margin-right: 0.5rem; }
 .server { border: 1px solid var(--border); border-radius: 0.5rem; padding: 0.75rem 1rem; margin-bottom: 0.75rem; }
 .server h3 { margin: 0 0 0.25rem; font-size: 1rem; }
-.state { font-weight: 600; margin: 0.25rem 0; }
-.state-unrecognised .state, .state-exited .state { color: var(--bad); }
-.state-trust_prompt .state { color: var(--warn); }
+.badge { display: inline-block; font-weight: 600; font-size: 0.85rem; padding: 0.1rem 0.5rem; border-radius: 1rem; border: 1px solid currentColor; }
+.badge-problem { color: var(--bad); }
+.badge-waiting { color: var(--warn); }
+.badge-stopped { color: var(--muted); }
+button.primary, a.button.primary { font-weight: 600; }
 .actions { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-top: 0.5rem; }
 .screen { background: #111827; color: #e5e7eb; padding: 0.75rem; overflow-x: auto; font-size: 0.8rem; }
 .problem { border-left: 4px solid var(--bad); padding: 0.25rem 0.75rem; margin: 0.5rem 0; }

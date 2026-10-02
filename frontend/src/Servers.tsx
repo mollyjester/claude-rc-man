@@ -29,7 +29,39 @@ export const ACTIONS: Record<string, Action[]> = {
 };
 
 // States in which the server is running and its environment on claude.ai takes sessions.
-const LIVE = ["connected", "ready"];
+export const LIVE = ["connected", "ready"];
+
+// The kinds of state a badge or a folder's dot shows, most urgent first.
+export const KIND_ORDER = ["problem", "waiting", "running", "stopped"] as const;
+export type Kind = (typeof KIND_ORDER)[number];
+
+export const KIND: Record<string, Kind> = {
+  starting: "running",
+  trust_prompt: "waiting",
+  connected: "running",
+  ready: "running",
+  stopped: "stopped",
+  trust_declined: "stopped",
+  logged_out: "problem",
+  exited: "problem",
+  unrecognised: "problem",
+};
+
+// A state rcman does not know is a problem until it is taught it.
+export const kindOf = (state: string): Kind => KIND[state] ?? "problem";
+
+// The one action each state leads with; "openSession" is the link to claude.ai.
+export const PRIMARY: Record<string, Action | "openSession" | null> = {
+  starting: null,
+  trust_prompt: "trustYes",
+  connected: "openSession",
+  ready: "openSession",
+  stopped: "resume",
+  trust_declined: "startAgain",
+  logged_out: "startAgain",
+  exited: "resume",
+  unrecognised: "showScreen",
+};
 
 const CALLS: Record<Exclude<Action, "showScreen">, [string, Record<string, string>]> = {
   stop: ["/api/servers/stop", {}],
@@ -50,11 +82,16 @@ export const LABELS: Record<Action, string> = {
   trustNo: m.trustNo,
 };
 
+export function StateBadge({ state }: { state: string }) {
+  return <span className={`badge badge-${kindOf(state)}`}>{m.states[state] ?? state}</span>;
+}
+
 function ServerCard({ server, onChange }: { server: Server; onChange: () => void }) {
   const [error, setError] = useState<ApiError | null>(null);
   const [busy, setBusy] = useState(false);
   const [showScreen, setShowScreen] = useState(false);
   const actions = ACTIONS[server.state] ?? ["showScreen"];
+  const primary = PRIMARY[server.state];
 
   async function act(action: Action) {
     if (action === "showScreen") {
@@ -75,9 +112,12 @@ function ServerCard({ server, onChange }: { server: Server; onChange: () => void
   }
 
   return (
-    <article aria-label={server.path} className={`server state-${server.state}`}>
+    <article aria-label={server.path} className="server">
       <h3>{server.path}</h3>
-      <p className="state">{m.states[server.state] ?? server.state}</p>
+      <p>
+        <StateBadge state={server.state} />
+      </p>
+      <p>{m.nextStep[server.state] ?? m.nextStepUnknown}</p>
       {server.state === "trust_prompt" && (
         <div className="question">
           <p>
@@ -93,7 +133,12 @@ function ServerCard({ server, onChange }: { server: Server; onChange: () => void
       )}
       {server.environment_url && LIVE.includes(server.state) && (
         <p>
-          <a href={server.environment_url} target="_blank" rel="noopener noreferrer">
+          <a
+            href={server.environment_url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className={primary === "openSession" ? "button primary" : undefined}
+          >
             {m.openSession}
           </a>
         </p>
@@ -101,7 +146,13 @@ function ServerCard({ server, onChange }: { server: Server; onChange: () => void
       {server.exit_code !== null && server.state === "exited" && <p>{m.exitCode(server.exit_code)}</p>}
       <div className="actions">
         {actions.map((action) => (
-          <button key={action} type="button" disabled={busy} onClick={() => act(action)}>
+          <button
+            key={action}
+            type="button"
+            className={action === primary ? "primary" : "secondary"}
+            disabled={busy}
+            onClick={() => act(action)}
+          >
             {LABELS[action]}
           </button>
         ))}

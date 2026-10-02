@@ -1,7 +1,7 @@
 import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
-import { ACTIONS } from "./Servers";
+import { ACTIONS, KIND, PRIMARY } from "./Servers";
 import { m } from "./messages";
 import { CONNECTED, ME, type Routes, fakeApi, problem } from "./test/fakeApi";
 import { renderApp } from "./test/render";
@@ -105,9 +105,46 @@ test.each(Object.entries(ACTIONS))("a %s server offers exactly its actions", asy
   expect(offered.sort()).toEqual(actions.map((a) => LABELS[a]).sort());
 });
 
-test("every state the helper reports has actions and a label", () => {
-  const states = Object.keys(m.states);
-  expect(Object.keys(ACTIONS).sort()).toEqual(states.sort());
+test.each(Object.keys(ACTIONS))("a %s server shows its state as a badge and says what to do", async (state) => {
+  dashboard([server("projects/alpha", state, { screen: ["x"], exit_code: 1 })]);
+  renderApp();
+  const card = await screen.findByRole("article", { name: "projects/alpha" });
+  const badge = within(card).getByText(m.states[state], { exact: true });
+  expect(badge).toHaveClass("badge", `badge-${KIND[state]}`);
+  expect(within(card).getByText(m.nextStep[state])).toBeInTheDocument();
+});
+
+test("a state rcman does not know says to look at the screen", async () => {
+  dashboard([server("projects/alpha", "something_new", { screen: ["x"] })]);
+  renderApp();
+  const card = await screen.findByRole("article", { name: "projects/alpha" });
+  expect(within(card).getByText("something_new")).toHaveClass("badge", "badge-problem");
+  expect(within(card).getByText(m.nextStepUnknown)).toBeInTheDocument();
+  expect(within(card).getByRole("button", { name: m.showScreen })).toHaveClass("secondary");
+});
+
+test.each(Object.keys(ACTIONS))("a %s server has one primary action, and Stop and Forget are secondary", async (state) => {
+  dashboard([
+    server("projects/alpha", state, { screen: ["x"], exit_code: 1, environment_url: "https://claude.ai/code?environment=env_1" }),
+  ]);
+  renderApp();
+  const card = await screen.findByRole("article", { name: "projects/alpha" });
+  const primary = PRIMARY[state];
+  const primaries = card.querySelectorAll(".primary");
+  if (primary === null) {
+    expect(primaries).toHaveLength(0);
+  } else {
+    expect(primaries).toHaveLength(1);
+    expect(primaries[0]).toHaveTextContent(primary === "openSession" ? m.openSession : LABELS[primary]);
+  }
+  for (const label of [m.stop, m.forget]) {
+    const button = within(card).queryByRole("button", { name: label });
+    if (button) expect(button).toHaveClass("secondary");
+  }
+  // non-vacuity: the buttons that are not primary are there, and secondary
+  for (const button of within(card).getAllByRole("button")) {
+    if (!button.classList.contains("primary")) expect(button).toHaveClass("secondary");
+  }
 });
 
 test("answering the trust question sends the answer", async () => {

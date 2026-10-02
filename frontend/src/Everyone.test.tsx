@@ -1,5 +1,6 @@
 import { screen, within } from "@testing-library/react";
 
+import { KIND } from "./Servers";
 import { m } from "./messages";
 import { ADMIN, CONNECTED, NOTHING_TO_ATTEND, fakeApi } from "./test/fakeApi";
 import { renderApp } from "./test/render";
@@ -34,7 +35,7 @@ test("each person's servers are listed with their state", async () => {
   renderApp("/admin/servers");
   const alice = await screen.findByRole("region", { name: m.everyonePerson("alice", "alice@example.com") });
   const alpha = within(alice).getByRole("row", { name: /projects\/alpha/ });
-  expect(within(alpha).getByText(m.states.ready)).toBeInTheDocument();
+  expect(within(alpha).getByText(m.states.ready)).toHaveClass("badge", `badge-${KIND.ready}`);
   expect(within(alpha).getByText("alice-quiet-otter")).toBeInTheDocument();
   const beta = within(alice).getByRole("row", { name: /projects\/beta/ });
   expect(within(beta).getByText(m.states.stopped)).toBeInTheDocument();

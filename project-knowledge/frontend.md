@@ -23,7 +23,11 @@ version is `frontend/.nvmrc`.
   `src/forms.test.tsx` checks every form.
 - **Only what the server allows is offered.** `ACTIONS` in `src/Servers.tsx`
   maps every server state rc-helper reports to the actions it allows; a test
-  holds it to the states. Administration is offered only to administrators,
+  holds it to the states. Beside it, `KIND` gives each state its badge colour,
+  `PRIMARY` the one action it leads with, and `m.states` and `m.nextStep` its
+  name and what to do; `src/Servers.test.ts` holds each of them to the states
+  in `ACTIONS`, and `src/servers-guide.test.ts` holds the table in
+  `docs/servers.md` to all of them. Administration is offered only to administrators,
   and the server refuses everyone else regardless.
 - **Every piece of text not from the server is in `src/messages.ts`.**
 - Links between help pages — a page's file name, optionally followed by a

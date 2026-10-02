@@ -10,20 +10,24 @@ with them.
 
 The Servers page shows your folders on one side and your servers on the other.
 Open a folder with the arrow beside it, and choose **Start** beside any folder
-that has no server yet. Each server shows its state, and only the actions that
-state allows:
+that has no server yet. Each server shows its state as a coloured badge, a
+sentence saying what to do next, and only the actions that state allows. The
+action to take next stands out; **Stop** and **Forget** never do:
 
-| State | Buttons |
-|---|---|
-| Starting | **Stop** |
-| Waiting for your answer | **Yes, trust it**, **No**, **Stop** |
-| Ready to accept sessions | **Stop** |
-| In use | **Stop** |
-| Stopped | **Resume**, **Forget** |
-| Not started: folder not trusted | **Start again**, **Forget** |
-| Not started: Claude account not connected | **Start again**, **Forget** |
-| Stopped by itself | **Resume**, **Forget**, **Show screen** |
-| Unrecognised screen | **Show screen**, **Stop** |
+| State | What to do | Buttons |
+|---|---|---|
+| Starting | Claude is starting. Wait a moment. | **Stop** |
+| Waiting for your answer | Answer whether you trust this folder. | **Yes, trust it**, **No**, **Stop** |
+| Ready to accept sessions | Open it in claude.ai to start a session. | **Stop** |
+| In use | A session is attached; continue it in claude.ai. | **Stop** |
+| Stopped | Resume to pick up its sessions, or forget it. | **Resume**, **Forget** |
+| Not started: folder not trusted | Start again to answer once more, or forget it. | **Start again**, **Forget** |
+| Not started: Claude account not connected | Connect your Claude account above, then start again. | **Start again**, **Forget** |
+| Stopped by itself | Show the screen to see why it stopped, then resume it. | **Resume**, **Forget**, **Show screen** |
+| Unrecognised screen | Show the screen, stop it, and tell an administrator. | **Show screen**, **Stop** |
+
+A server that is ready or in use also has **Open in claude.ai**, which is
+the action to take next there.
 
 The page refreshes the states by itself. When rcman refuses an action, the
 reason it gave is shown on the server it was about.
