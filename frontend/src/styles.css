@@ -15,6 +15,7 @@
   --problem: #b91c1c;
   --stopped: #4b5563;
   --focus: #2563eb;
+  --shadow: rgba(17, 24, 39, 0.18);
   --screen-bg: #111827;
   --screen-fg: #e5e7eb;
 }
@@ -32,6 +33,7 @@
     --problem: #f87171;
     --stopped: #9ca3af;
     --focus: #93c5fd;
+    --shadow: rgba(0, 0, 0, 0.6);
   }
 }
 body { margin: 0; background: var(--bg); color: var(--fg); }
@@ -50,7 +52,7 @@ header nav a.active, header nav button.active { font-weight: 600; }
 .menu > button { display: inline-flex; align-items: center; gap: 0.4rem; padding: 0.2rem 0.6rem; }
 .caret { width: 0.4rem; height: 0.4rem; border-right: 2px solid currentColor; border-bottom: 2px solid currentColor; transform: translateY(-0.1rem) rotate(45deg); }
 .menu > button[aria-expanded="true"] .caret { transform: translateY(0.1rem) rotate(225deg); }
-.menu ul { position: absolute; top: 100%; left: 0; z-index: 1; list-style: none; margin: 0.25rem 0 0; padding: 0.25rem 0; min-width: 12rem; background: var(--bg); border: 1px solid var(--border); border-radius: 0.5rem; }
+.menu ul { position: absolute; top: 100%; left: 0; z-index: 1; list-style: none; margin: 0.25rem 0 0; padding: 0.25rem 0; min-width: 12rem; background: var(--bg); border: 1px solid var(--border); border-radius: 0.5rem; box-shadow: 0 0.25rem 0.75rem var(--shadow); }
 .menu li a { display: block; padding: 0.35rem 0.75rem; }
 main { padding: 1rem 1.5rem; max-width: 72rem; }
 
@@ -60,8 +62,11 @@ main { padding: 1rem 1.5rem; max-width: 72rem; }
 .tree, .tree ul, .summary { list-style: none; padding-left: 0; }
 .tree ul { padding-left: 1.5rem; }
 .tree li, .summary li { margin: 0.2rem 0; }
-.summary li { display: flex; flex-wrap: wrap; align-items: center; gap: 0.25rem 0.5rem; }
-.summary button.name { overflow-wrap: anywhere; }
+/* A path's text lines up with the heading, its button's padding outside it;
+   the badge keeps to the path's line, and a long path breaks instead. */
+.summary li { display: flex; align-items: center; gap: 0.5rem; }
+.summary button.name { margin-left: -0.35rem; min-width: 0; overflow-wrap: anywhere; }
+.summary .badge { flex: none; }
 .toggle { display: inline-block; width: 1.5rem; }
 button.toggle { background: none; border: none; padding: 0; color: var(--fg); }
 button.name { background: none; border: none; padding: 0.1rem 0.35rem; border-radius: 0.25rem; color: var(--fg); text-align: left; }
