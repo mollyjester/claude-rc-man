@@ -9,8 +9,10 @@ from helpers import rc_helper
 from rcman.audit import Record, Recorder
 from rcman.helpers_client import FOLDER_DELETE_TIMEOUT_SECONDS, call_helper
 from rcman.identity import Identity, current_user
+from rcman.problems import ruled
 
 router = APIRouter(prefix="/api/folders", tags=["folders"])
+FolderName = ruled(rc_helper.FOLDER_NAME, min_length=1, max_length=rc_helper.MAX_PATH_LENGTH)
 
 
 class NewFolder(BaseModel):
@@ -19,12 +21,7 @@ class NewFolder(BaseModel):
         max_length=rc_helper.MAX_PATH_LENGTH,
         description="The folder to make it in, relative to the home folder; empty for the home.",
     )
-    name: str = Field(
-        min_length=1,
-        max_length=rc_helper.MAX_PATH_LENGTH,
-        pattern=f"^{rc_helper.FOLDER_NAME.pattern}$",
-        description="The new folder's name.",
-    )
+    name: FolderName = Field(description="The new folder's name.")
 
 
 @router.get("")

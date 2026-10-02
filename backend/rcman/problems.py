@@ -3,17 +3,23 @@
 from __future__ import annotations
 
 import logging
+from typing import Annotated
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from pydantic import Field, ValidationError, WrapValidator
+from pydantic_core import PydanticCustomError
 from starlette.exceptions import HTTPException as StarletteHTTPException
+
+from helpers.rules import Rule
 
 log = logging.getLogger("rcman.problems")
 MEDIA_TYPE = "application/problem+json"
 # Validation error types of rcman's own.
 RULE_REFUSED = "rule_refused"  # a helpers' rule refused the value
 SETTINGS_NONE_SENT = "settings_none_sent"
+STRING_EMPTY = "string_empty"  # string_too_short, where the shortest allowed is one
 FIELD_INVALID = "field_invalid"  # any type FIELD_MESSAGES has no message for
 PUBLIC_PATHS = {"/api/health", "/{path:path}"}  # the frontend's files need no identity
 
@@ -72,8 +78,7 @@ FIELD_MESSAGES = {
     RULE_REFUSED: "{sentence}",
     "missing": "This is required.",
     "string_type": "This must be text.",
-    "string_empty": "This cannot be empty.",
-    "string_too_short": "This must be at least {min_length} characters long.",
+    STRING_EMPTY: "This cannot be empty.",
     "string_too_long": "This can be at most {max_length} characters long.",
     "bool_type": "This must be true or false.",
     "bool_parsing": "This must be true or false.",
@@ -86,6 +91,31 @@ FIELD_MESSAGES = {
     SETTINGS_NONE_SENT: "Send at least one setting.",
     FIELD_INVALID: "This is not valid.",
 }
+
+
+# What a ruled field refuses with its rule's sentence: the rule itself, and
+# any length the field is given besides.
+_RULED = ("string_pattern_mismatch", "string_too_short", "string_too_long")
+
+
+def ruled(rule: Rule, **constraints):
+    """Text that must match a helpers' rule, and any length ``constraints``.
+
+    The rule's anchored pattern is validated and published; a value it or a
+    length refuses is refused with the rule's sentence.
+    """
+
+    def explain(value, handler):
+        try:
+            return handler(value)
+        except ValidationError as error:
+            if all(e["type"] in _RULED for e in error.errors()):
+                raise PydanticCustomError(
+                    RULE_REFUSED, "{sentence}", {"sentence": rule.sentence}
+                ) from None
+            raise
+
+    return Annotated[str, Field(pattern=rule.anchored, **constraints), WrapValidator(explain)]
 
 
 def _field(error) -> str:
@@ -108,7 +138,7 @@ def _message(error) -> str:
     """What a field is told about an error, in rcman's words."""
     kind, context = error["type"], error.get("ctx") or {}
     if kind == "string_too_short" and context.get("min_length") == 1:
-        kind = "string_empty"
+        kind = STRING_EMPTY
     if kind not in FIELD_MESSAGES:
         log.warning("validation error type %s has no message in FIELD_MESSAGES", kind)
         kind = FIELD_INVALID

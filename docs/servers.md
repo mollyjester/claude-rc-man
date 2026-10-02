@@ -68,10 +68,7 @@ reason it gave is shown on the server it was about.
 **New folder** makes a folder inside the selected folder. While no folder is
 selected, the **Home** panel has it too, and it makes the folder in your home
 folder. Type the name and choose **Create**; the new folder is then selected.
-A name cannot be empty, begin with a dot, hold a slash, a control character or
-an invisible character, or begin or end with white space, and cannot be longer
-than the file system allows. When rcman refuses a name, the form says why and
-keeps what you typed.
+When rcman refuses a name, the form says why and keeps what you typed.
 
 **Delete folder** deletes the selected folder and everything in it. It asks
 first, naming the folder and every server in it or in a folder inside it.

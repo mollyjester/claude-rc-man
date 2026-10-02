@@ -40,8 +40,14 @@ the OpenAPI description it serves at `/api/openapi`.
   `tests/test_identity.py` drives each one as someone who is not an
   administrator, with a valid request from `CALLS` in `tests/conftest.py`.
 - **Validation** happens here, in Pydantic models and query parameters; the
-  frontend shows what comes back. Every rule the helpers also apply is taken
-  from the helpers' modules, never restated.
+  frontend shows what comes back. Every rule the helpers also apply is a
+  `Rule` (`helpers/rules.py`) taken from the helpers' modules, never restated,
+  and a field takes it as `problems.ruled(rule, ...)`: the field publishes and
+  validates the rule's anchored pattern and any length it is given, and a
+  value either refuses is refused with the rule's sentence, which is also what
+  the helper itself says. A path or query parameter takes it as
+  `Annotated[<ruled>, Path()]` or `Query()`: given as the parameter's default
+  instead, `Path()` or `Query()` leaves the rule unchecked.
 - **Errors** are always problem details (`application/problem+json`) with
   `type`, `title`, `status` and `code`; validation errors add `errors`, a list
   of `field` and `message`. A field's message is never the validation
@@ -49,9 +55,15 @@ the OpenAPI description it serves at `/api/openapi`.
   with any number in it taken from the error's context, so it is the field's
   own constraint. A body that is not JSON is about the field `request`. An
   error type with no message gets `field_invalid`'s, and a warning is logged
-  on `rcman.problems`. The backend's own codes are `MESSAGES` and `STATUS`
-  in `problems.py`; errors from the helpers keep the helper's code and message
-  and get their status from `HELPER_STATUS` and `ADMIN_STATUS` in
+  on `rcman.problems`. `tests/test_problems.py` finds every field of every
+  route in the route table, paired with the schema the API publishes, and
+  holds them to this: every published pattern is a helpers' rule refused with
+  its sentence; every violation each field's schema implies, and every body
+  that is not a JSON object, is refused at its field in a rule's sentence or
+  `FIELD_MESSAGES`' text and never in the library's words; and every
+  `FIELD_MESSAGES` entry is used. The backend's own codes are `MESSAGES` and
+  `STATUS` in `problems.py`; errors from the helpers keep the helper's code and
+  message and get their status from `HELPER_STATUS` and `ADMIN_STATUS` in
   `helpers_client.py`. A test keeps those tables complete.
 
 ## Calling the helpers
