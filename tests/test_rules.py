@@ -87,6 +87,7 @@ def helpers_rules() -> dict[str, Rule]:
         "VERSION",
         "PATH",
         "FOLDER_PATH",
+        "COMMIT_MESSAGE",
     }
     assert names <= set(found), names - set(found)
     return found

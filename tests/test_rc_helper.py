@@ -1851,13 +1851,13 @@ def test_status_of_a_detached_head_and_of_no_commits_yet(env, repo):
 
 
 def test_status_lists_each_kind_of_change_in_its_list(env, repo):
+    write(repo / "both.txt")
+    fixture_git(repo, "add", "both.txt")
+    fixture_git(repo, "commit", "-q", "-m", "both")
     write(repo / "README.md", "changed\n")
     write(repo / "new.txt")
     fixture_git(repo, "add", "new.txt")
     write(repo / "folder" / "inside.txt")
-    write(repo / "both.txt")
-    fixture_git(repo, "add", "both.txt")
-    fixture_git(repo, "commit", "-q", "-m", "both")
     write(repo / "both.txt", "staged\n")
     fixture_git(repo, "add", "both.txt")
     write(repo / "both.txt", "and not\n")
@@ -1872,9 +1872,9 @@ def test_status_lists_each_kind_of_change_in_its_list(env, repo):
 
 
 def test_a_rename_is_listed_with_where_it_came_from(env, repo):
-    fixture_git(repo, "mv", "README.md", "MOVED.md")
+    fixture_git(repo, "mv", "README.md", "MOVED.txt")
     [moved] = status(env)["staged"]["files"]
-    assert moved == {"path": "MOVED.md", "change": "renamed", "from": "README.md"}
+    assert moved == {"path": "MOVED.txt", "change": "renamed", "from": "README.md"}
 
 
 def test_a_conflict_is_listed_as_unmerged(env, repo):
@@ -1990,12 +1990,12 @@ def test_unstage_unstages_only_the_files_given(env, repo):
 
 
 def test_unstaging_a_rename_unstages_both_its_sides(env, repo):
-    fixture_git(repo, "mv", "README.md", "MOVED.md")
-    assert ok(env, "git-unstage", "--", REPO_REL, stdin=json.dumps(["MOVED.md"]))
+    fixture_git(repo, "mv", "README.md", "MOVED.txt")
+    assert ok(env, "git-unstage", "--", REPO_REL, stdin=json.dumps(["MOVED.txt"]))
     out = status(env)
     assert listed(out, "staged") == []
     assert sorted(listed(out, "not_staged")) == [
-        ("MOVED.md", "untracked"),
+        ("MOVED.txt", "untracked"),
         ("README.md", "deleted"),
     ]
 
@@ -2377,6 +2377,10 @@ def test_git_runs_with_the_allowlisted_environment(env, repo, tmp_path):
     assert "RCMAN_DECOY=present" in seen["helper"]  # positive control: the helper had it
     assert "RCMAN_DECOY" not in seen["git"] and "RC_HELPER_HOME" not in seen["git"]
     expected = h.git_env(h.config_from_env(env))
+    # git puts its own programs first on the PATH its hooks get
+    exec_path = fixture_git(repo, "--exec-path").strip()
+    assert seen["git"]["PATH"].startswith(f"{exec_path}:")
+    seen["git"]["PATH"] = seen["git"]["PATH"].removeprefix(f"{exec_path}:")
     assert {k: v for k, v in seen["git"].items() if not k.startswith("GIT_")} == {
         k: v for k, v in expected.items() if not k.startswith("GIT_")
     }

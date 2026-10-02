@@ -183,3 +183,13 @@ def test_deleting_has_its_own_timeout(settings, admin_runner):
     assert helpers_client.FOLDER_DELETE_TIMEOUT_SECONDS != helpers_client.HELPER_TIMEOUT
     # long enough for the helper to give up on a server that does not stop, and more
     assert helpers_client.FOLDER_DELETE_TIMEOUT_SECONDS > rc_helper.STOP_TIMEOUT
+
+
+def test_tree_entries_say_whether_they_are_repositories(client, helper_homes):
+    from tests.git_fixtures import make_repo
+
+    (helper_homes.homes["alice"] / "projects" / "plain").mkdir()
+    make_repo(helper_homes.homes["alice"] / "projects" / "alice-project")
+    entries = client.get("/api/folders", params={"path": "projects"}, headers=as_user(ALICE)).json()
+    marked = {e["path"]: e["repository"] for e in entries["entries"]}
+    assert marked == {"projects/alice-project": True, "projects/plain": False}
