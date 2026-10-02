@@ -63,6 +63,7 @@ test("a repository's panel has a Changes section", async () => {
   const fake = repoApi();
   renderApp(`/?folder=${REPO}`);
   expect(await changes()).toBeTruthy();
+  await waitFor(() => expect(fake.made("GET", "/api/git/branches").length).toBeGreaterThan(0));
   expect(fake.made("GET", "/api/git/status")[0].query.get("path")).toBe(REPO);
   expect(fake.made("GET", "/api/git/branches")[0].query.get("path")).toBe(REPO);
 });

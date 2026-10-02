@@ -8,6 +8,8 @@ export function ProblemView({ error, labels = {} }: { error: ApiError | null; la
   const screen = error.extra.screen;
   const failed = error.extra.failed;
   const left = error.extra.left;
+  const git = error.extra.git;
+  const gitMore = error.extra.git_more;
   // The server a problem is about, as rc-helper describes one, when it names one.
   const server = error.extra.server as { path?: unknown; screen?: unknown } | null | undefined;
   const serverPath = typeof server === "object" && server !== null && typeof server.path === "string" ? server.path : null;
@@ -33,6 +35,15 @@ export function ProblemView({ error, labels = {} }: { error: ApiError | null; la
             {m.problemServer} <code>{serverPath}</code>
           </p>
           {Array.isArray(server?.screen) && <pre className="screen">{server.screen.join("\n")}</pre>}
+        </>
+      )}
+      {Array.isArray(git) && (
+        <>
+          <p>{m.gitSaid}</p>
+          <pre className="screen" aria-label={m.gitSaid}>
+            {git.join("\n")}
+          </pre>
+          {typeof gitMore === "number" && gitMore > 0 && <p>{m.andMoreLines(gitMore)}</p>}
         </>
       )}
       {Array.isArray(left) && (

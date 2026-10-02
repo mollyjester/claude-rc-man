@@ -4,7 +4,7 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import { ApiError, api } from "./api";
 import { ClaudeConnection, type Connection, START_REASON } from "./Claude";
 import { type FolderChanges, FolderPanel, HomePanel } from "./FolderPanel";
-import { FolderTree, ServerSummary, folderLink, parentOf, useFolderTree } from "./Folders";
+import { FolderTree, ServerSummary, folderLink, isRepository, parentOf, useFolderTree } from "./Folders";
 import { m } from "./messages";
 import { ProblemView, asApiError } from "./ProblemView";
 import type { Server } from "./Servers";
@@ -95,6 +95,8 @@ export function Dashboard({ pollMs }: { pollMs: number }) {
             startReason={connection ? START_REASON[connection.connection] : undefined}
             onChange={refresh}
             changes={changes}
+            repository={isRepository(tree, selected)}
+            pollMs={pollMs}
           />
         ) : (
           <HomePanel changes={changes} />
