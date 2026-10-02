@@ -127,6 +127,49 @@ def test_a_refused_change_is_recorded_with_its_error_code(client, settings):
     assert last["target"] == "projects/alice-project"
 
 
+def test_a_refused_settings_change_is_recorded_as_validation_failed(client, settings):
+    r = client.put("/api/me/settings", json={"prefix": "not valid!"}, headers=changing(BOB))
+    assert (r.status_code, r.json()["code"]) == (422, "validation_failed")
+    last = rows(settings)[-1]
+    assert (last["action"], last["result"]) == ("settings.update", "validation_failed")
+
+
+def test_every_failure_is_recorded_with_the_code_it_is_answered_with(app, settings):
+    """Whatever ends an audited request, its row carries the code of the problem sent back."""
+    from fastapi import Depends, HTTPException
+    from fastapi.testclient import TestClient
+    from pydantic import BaseModel
+    from rcman.problems import Problem
+
+    class Body(BaseModel):
+        n: int
+
+    @app.post("/api/planted/{kind}")
+    def planted(kind: str, body: Body, record=Depends(audit.Recorder("planted.call"))):
+        if kind == "problem":
+            raise Problem("admin_only")
+        if kind == "missing":
+            raise HTTPException(404)
+        if kind == "boom":
+            raise RuntimeError("planted")
+        return {}
+
+    cases = [
+        ("ok", {"n": 1}, "ok"),
+        ("ok", {"n": "not a number"}, "validation_failed"),
+        ("problem", {"n": 1}, "admin_only"),
+        ("missing", {"n": 1}, "not_found"),
+        ("boom", {"n": 1}, "internal_error"),
+    ]
+    with TestClient(app, raise_server_exceptions=False) as client:
+        for kind, body, code in cases:
+            r = client.post(f"/api/planted/{kind}", json=body, headers=changing(BOB))
+            answered = "ok" if r.status_code == 200 else r.json()["code"]
+            assert answered == code, (kind, body, r.text)
+            last = rows(settings)[-1]
+            assert (last["action"], last["result"]) == ("planted.call", code), (kind, body)
+
+
 def test_a_successful_change_is_recorded_as_ok(client, settings):
     client.put("/api/me/settings", json={"prefix": "pfx"}, headers=changing(BOB))
     last = rows(settings)[-1]
