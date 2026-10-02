@@ -80,9 +80,15 @@ def transaction_control(script: str) -> list[str]:
     """The statements of a script that begin, end or mark a transaction of their own."""
     import re
 
+    # A quoted string or name is kept whole; a comment of either kind becomes a space.
+    lexemes = re.compile(r"""'(?:[^']|'')*'|"(?:[^"]|"")*"|/\*.*?(?:\*/|$)|--[^\n]*""", re.S)
+
+    def uncommented(match: re.Match) -> str:
+        return " " if match.group().startswith(("/*", "--")) else match.group()
+
     flagged = []
     for statement in statements(script):
-        words = re.sub(r"--[^\n]*", "", statement).replace(";", " ").split()
+        words = re.findall(r"\w+", lexemes.sub(uncommented, statement))
         if words and words[0].lower() in TRANSACTION_CONTROL:
             flagged.append(statement.strip())
     return flagged
