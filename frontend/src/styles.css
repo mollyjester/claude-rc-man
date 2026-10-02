@@ -66,12 +66,13 @@ main { padding: 1rem 1.5rem; max-width: 72rem; }
 button.toggle { background: none; border: none; padding: 0; color: var(--fg); }
 button.name { background: none; border: none; padding: 0.1rem 0.35rem; border-radius: 0.25rem; color: var(--fg); text-align: left; }
 button.name[aria-current="true"] { background: var(--accent); color: var(--accent-fg); font-weight: 600; }
-/* Each kind of dot has its own shape as well as its own colour. */
+/* Each kind of dot has its own shape as well as its own colour; the guide's
+   table of shapes is held to these rules by src/servers-guide.test.ts. */
 .dot { display: inline-block; box-sizing: border-box; width: 0.7rem; height: 0.7rem; margin-left: 0.3rem; vertical-align: middle; }
 .dot-running { border-radius: 50%; background: var(--running); }
 .dot-waiting { border-radius: 50%; border: 0.15rem solid var(--waiting); }
 .dot-problem { clip-path: polygon(50% 0, 100% 100%, 0 100%); background: var(--problem); }
-.dot-stopped { height: 0.25rem; border-radius: 0.1rem; background: var(--stopped); }
+.dot-stopped { border: 0.15rem solid var(--stopped); border-radius: 0.1rem; }
 
 .panel { border: 1px solid var(--border); border-radius: 0.5rem; padding: 0.75rem 1.25rem; }
 .panel h2 { margin: 0.25rem 0 0.75rem; }

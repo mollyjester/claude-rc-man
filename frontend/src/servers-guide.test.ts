@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
-import { ACTIONS, KIND, LABELS, PRIMARY } from "./Servers";
+import { ACTIONS, KIND, KIND_ORDER, LABELS, PRIMARY } from "./Servers";
 import { m } from "./messages";
 
 const GUIDE = resolve(__dirname, "../../docs/servers.md");
@@ -79,6 +79,64 @@ test("the check fails on a guide whose table has drifted", () => {
 
   expect(stateTable(right.slice(0, -1).join("\n"))).not.toEqual(expected());
   expect(stateTable("")).toEqual([]);
+});
+
+const STYLES = resolve(__dirname, "styles.css");
+const SHAPE_HEADER = "| Dot | Shape |";
+
+// The shape the stylesheet gives a kind's dot, read from its .dot-<kind> rule.
+function shapeOf(css: string, kind: string): string {
+  const rule = css.match(new RegExp(`\\.dot-${kind}\\s*\\{([^}]*)\\}`))?.[1];
+  if (rule === undefined) return "no rule";
+  const polygon = rule.match(/clip-path:\s*polygon\(([^)]*)\)/);
+  if (polygon) return polygon[1].split(",").length === 3 ? "triangle" : "polygon";
+  const round = /border-radius:\s*50%/.test(rule);
+  const filled = /background:/.test(rule);
+  const outlined = /border:\s*[\d.]+rem solid/.test(rule);
+  if (filled) return round ? "filled circle" : "filled square";
+  if (outlined) return round ? "ring" : "hollow square";
+  return "unknown";
+}
+
+// The guide's table of the dots' shapes, in its order: each dot by name, then its shape.
+function shapeTable(markdown: string): [string, string][] {
+  const lines = markdown.split("\n");
+  const start = lines.findIndex((line) => line.trim() === SHAPE_HEADER);
+  if (start < 0) return [];
+  const rows: [string, string][] = [];
+  for (const line of lines.slice(start + 2)) {
+    if (!line.trim().startsWith("|")) break;
+    const [dot, shape] = line.split("|").slice(1, 3).map((cell) => cell.trim());
+    rows.push([dot, shape]);
+  }
+  return rows;
+}
+
+// Each kind's dot and shape, most urgent first, as the guide's table lists them.
+const shapes = (css: string): [string, string][] => KIND_ORDER.map((kind) => [m.kinds[kind], shapeOf(css, kind)]);
+
+test("every kind of dot has a shape of its own, which the guide names, most urgent first", () => {
+  const found = shapes(readFileSync(STYLES, "utf-8"));
+  expect(found).toHaveLength(KIND_ORDER.length);
+  for (const [, shape] of found) expect(["no rule", "unknown", "polygon"]).not.toContain(shape);
+  expect(new Set(found.map(([, shape]) => shape)).size).toBe(KIND_ORDER.length);
+  expect(shapeTable(readFileSync(GUIDE, "utf-8"))).toEqual(found);
+});
+
+test("the check fails on a dot that changed shape, two that share one, or rows out of order", () => {
+  const css = readFileSync(STYLES, "utf-8");
+  const round = css.replace(/(\.dot-problem\s*\{)[^}]*\}/, "$1 border-radius: 50%; background: var(--problem); }");
+  expect(round).not.toEqual(css); // the plant took effect
+  expect(shapeOf(round, "problem")).toBe(shapeOf(css, "running"));
+  expect(new Set(shapes(round).map(([, shape]) => shape)).size).toBeLessThan(KIND_ORDER.length);
+
+  const guide = readFileSync(GUIDE, "utf-8");
+  expect(shapeTable(guide)).not.toEqual(shapes(round));
+  const table = shapeTable(guide);
+  expect(table.length).toBeGreaterThan(1);
+  expect([...table].reverse()).not.toEqual(shapes(css));
+  expect(shapeTable("")).toEqual([]);
+  expect(shapeOf("", "running")).toBe("no rule");
 });
 
 const PAGE_SECTION = "## The Servers page";

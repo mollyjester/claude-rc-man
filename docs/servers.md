@@ -15,10 +15,18 @@ panel of the folder you have selected.
 Select a folder by its name. The arrow beside a name opens the folder to show
 the folders inside it, without selecting it. A folder whose server is running,
 waiting for your answer, has a problem or is not running carries a dot whose
-shape and colour say which: a filled circle while it runs, a ring while it
-waits for your answer, a triangle for a problem, and a dash when it is not
-running. Pointing at a dot names it. A folder with no server carries none. While a folder is closed,
-its dot also stands for the servers inside it, showing the most urgent of them.
+shape and colour say which, and pointing at a dot names it. A folder with no
+server carries none. While a folder is closed, its dot also stands for the
+servers inside it, showing the most urgent of them, from the top of this
+table:
+
+| Dot | Shape |
+|---|---|
+| Has a problem | triangle |
+| Needs your answer | ring |
+| Running | filled circle |
+| Not running | hollow square |
+
 Choosing a server in **Your servers** selects its folder, wherever it is in the
 tree.
 
