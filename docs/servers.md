@@ -69,7 +69,7 @@ reason it gave is shown on the server it was about.
 selected, the **Home** panel has it too, and it makes the folder in your home
 folder. Type the name and choose **Create**; the new folder is then selected.
 A name cannot be empty, begin with a dot, hold a slash, a control character or
-an invisible character, or begin or end with a space, and cannot be longer
+an invisible character, or begin or end with white space, and cannot be longer
 than the file system allows. When rcman refuses a name, the form says why and
 keeps what you typed.
 
