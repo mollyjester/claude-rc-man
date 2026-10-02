@@ -258,6 +258,17 @@ POLL_SECONDS = 0.1
 # How many of the paths a delete could not remove its answer lists.
 DELETE_REPORT_LIMIT = 50
 UNRECOGNISED_GRACE_SECONDS = 3.0
+# git: how long a verb's git calls may take, all together; fetch, over the network.
+GIT_TIMEOUT = 30.0
+GIT_NETWORK_TIMEOUT = 120.0
+# How many files each of a status's two lists, and branches each list, holds;
+# the rest are counted.
+MAX_LISTED_FILES = 500
+MAX_LISTED_BRANCHES = 200
+# How many files one stage or unstage takes: every file a list can show.
+MAX_FILES_PER_CALL = MAX_LISTED_FILES
+MAX_COMMIT_MESSAGE_LENGTH = 10_000
+MAX_BRANCH_NAME_LENGTH = 255
 
 # What Claude Code shows; held to the recorded fixtures by tests/test_rc_helper.py.
 TRUST_PROMPT = re.compile(r"^Trust .+\? \[y/N\]$")
