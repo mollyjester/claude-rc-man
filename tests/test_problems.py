@@ -643,6 +643,47 @@ def test_a_rule_dropped_in_an_embedded_body_is_found_and_the_right_form_is_read(
     assert (field.where, field.name, field.schema["pattern"]) == ("body", "v", "^(?:[0-9]+)$")
 
 
+def test_a_rule_dropped_beside_constraints_of_the_default_is_found():
+    """Planted twin: Query(max_length=5) as the default keeps its own limit but drops the
+    rule's pattern and validator."""
+    from fastapi import FastAPI, Query
+    from fastapi.testclient import TestClient
+
+    Digits = _digits()
+    app = FastAPI()
+    problems.install(app)
+
+    @app.get("/x")
+    def limited(v: Digits = Query(max_length=5)) -> dict:  # noqa: B008 - the trap itself
+        return {}
+
+    [parameter] = app.openapi()["paths"]["/x"]["get"]["parameters"]
+    assert "pattern" not in parameter["schema"] and parameter["schema"]["maxLength"] == 5
+    assert TestClient(app).get("/x", params={"v": "abc"}).status_code == 200  # the plant
+    [found] = dropped_constraints(app)
+    assert "limited(v)" in found
+
+
+def test_parameter_markers_and_plain_metadata_are_not_constraints():
+    """Annotated forms that carry no constraint of their own are not reported."""
+    from fastapi import Body, FastAPI, Header, Query
+
+    app = FastAPI()
+    problems.install(app)
+
+    @app.post("/x")
+    def markers(
+        a: Annotated[str, Query(description="Described only.")],
+        b: Annotated[str, Body(embed=True)],
+        c: Annotated[str, Header()] = "x",
+        d: Annotated[int, "a plain note"] = Query(1),  # noqa: B008
+    ) -> dict:
+        return {}
+
+    assert {f.name for f in request_fields(app)} == {"a", "b", "c", "d"}  # all four are read
+    assert dropped_constraints(app) == []
+
+
 def test_a_rule_that_may_be_left_out_is_not_mistaken_for_one_dropped():
     from fastapi import FastAPI, Query
     from fastapi.testclient import TestClient
