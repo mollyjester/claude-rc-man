@@ -15,6 +15,7 @@ from typing import Annotated
 from urllib.parse import quote
 
 import pytest
+from pydantic import BaseModel
 from pydantic_core import PydanticKnownError
 from pydantic_core.core_schema import ErrorType
 from rcman import problems, routes
@@ -394,8 +395,27 @@ def request_fields(app) -> list[RequestField]:
             operation = spec["paths"][context.path][method.lower()]
             published = {(p["in"], p["name"]): p for p in operation.get("parameters", [])}
             for where, param in _parameters(context.route.dependant):
-                if where == "body":
-                    model = param.field_info.annotation
+                model = param.field_info.annotation
+                if where == "body" and not (
+                    isinstance(model, type) and issubclass(model, BaseModel)
+                ):
+                    # An embedded Body(): one property of the body FastAPI publishes.
+                    body = _body_schema(spec, operation)
+                    assert param.alias in body.get("properties", {}), (
+                        f"{method} {context.path}: request_fields reads a body that is a "
+                        f"model or an embedded Body(), not {param.alias!r} as the whole body"
+                    )
+                    found.append(
+                        RequestField(
+                            method,
+                            context.path,
+                            "body",
+                            param.alias,
+                            _resolved(body["properties"][param.alias], spec),
+                            param.alias in body.get("required", []),
+                        )
+                    )
+                elif where == "body":
                     body = _body_schema(spec, operation)
                     assert list(body["properties"]) == list(model.model_fields), context.path
                     found.extend(
@@ -436,13 +456,12 @@ def bodies(app) -> list[tuple[str, str, dict]]:
     ]
 
 
-def _calls(dependant):
-    """The endpoint of a route and every dependency it calls."""
+def _nodes(dependant):
+    """A route's dependant and every dependency below it."""
     pending, found = [dependant], []
     while pending:
         current = pending.pop()
-        if current.call is not None:
-            found.append(current.call)
+        found.append(current)
         pending.extend(current.dependencies)
     return found
 
@@ -454,29 +473,39 @@ def _constrained(annotation) -> bool:
     return any(_constrained(a) for a in typing.get_args(annotation))
 
 
-def dropped_constraints(app) -> list[str]:
-    """Parameters whose constraints FastAPI leaves unchecked: a type carrying its own
-    constraints, such as a problems.ruled one, with Path(), Query() or Body() as the
-    default instead of inside an Annotated."""
-    from fastapi import params
+def _call_name(call) -> str:
+    call = getattr(call, "func", call)  # a functools.partial
+    return getattr(call, "__name__", type(call).__name__)
 
+
+def dropped_constraints(app) -> list[str]:
+    """Parameters whose declared type carries constraints, such as a problems.ruled
+    type, that the field FastAPI resolved for them no longer holds.
+
+    FastAPI reads every endpoint and dependency (a function, a class, a bound
+    functools.partial, a callable object) with inspect.signature; this compares
+    each query, path, header, cookie and body parameter it made with the
+    annotation it was declared with. Path(), Query() or Body() given as the
+    default of a constrained type drops the constraints; inside an Annotated
+    they are kept."""
     found = []
     for context in routes.api_routes(app):
-        for call in _calls(context.route.dependant):
-            if not inspect.isroutine(call):  # a callable object, such as a Recorder
-                call = type(call).__call__
-            hints = typing.get_type_hints(call, include_extras=True)
-            for name, parameter in inspect.signature(call).parameters.items():
-                default = parameter.default
-                if isinstance(default, (params.Param, params.Body)) and _constrained(
-                    hints.get(name)
-                ):
-                    kind = type(default).__name__
-                    found.append(
-                        f"{context.path} {call.__name__}({name}): {kind}() as the default "
-                        f"drops the constraints of its type; write "
-                        f"{name}: Annotated[<type>, {kind}()] instead"
-                    )
+        for node in _nodes(context.route.dependant):
+            if node.call is None:
+                continue
+            declared = inspect.signature(node.call, eval_str=True).parameters
+            for where in ("query", "path", "header", "cookie", "body"):
+                for param in getattr(node, f"{where}_params"):
+                    hint = declared[param.name].annotation
+                    info = param.field_info
+                    kept = bool(info.metadata) or _constrained(info.annotation)
+                    if _constrained(hint) and not kept:
+                        kind = type(info).__name__
+                        found.append(
+                            f"{context.path} {_call_name(node.call)}({param.name}): {kind}() "
+                            f"as the default drops the constraints of its type; write "
+                            f"{param.name}: Annotated[<type>, {kind}()] instead"
+                        )
     return found
 
 

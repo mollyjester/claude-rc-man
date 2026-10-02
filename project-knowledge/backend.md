@@ -45,11 +45,15 @@ the OpenAPI description it serves at `/api/openapi`.
   and a field takes it as `problems.ruled(rule, ...)`: the field publishes and
   validates the rule's anchored pattern and any length it is given, and a
   value either refuses is refused with the rule's sentence, which is also what
-  the helper itself says. A path or query parameter takes it as
-  `Annotated[<ruled>, Path()]` or `Query()`: given as the parameter's default
-  instead, `Path()` or `Query()` leaves the rule unchecked, and a test in
-  `tests/test_problems.py` reads every endpoint's and dependency's signature
-  in the route table and fails on any parameter written that way.
+  the helper itself says. A path, query or embedded body parameter takes it as
+  `Annotated[<ruled>, Path()]`, `Query()` or `Body()`: given as the parameter's
+  default instead, `Path()`, `Query()` or `Body()` leaves the rule unchecked.
+  `dropped_constraints` in `tests/test_problems.py` walks every route's
+  endpoint and dependencies in the route table and compares each query, path,
+  header, cookie and body parameter FastAPI resolved with the annotation it was
+  declared with, read as FastAPI reads it (`inspect.signature`, so a class's
+  `__init__` and a `functools.partial` too): a declared type that carries
+  constraints whose resolved field holds none fails the test.
 - **Errors** are always problem details (`application/problem+json`) with
   `type`, `title`, `status` and `code`; validation errors add `errors`, a list
   of `field` and `message`. A field's message is never the validation
