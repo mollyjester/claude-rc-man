@@ -499,10 +499,49 @@ def test_invalid_email_is_refused(env, email):
     assert error_code(env, "auth-login", "--email", email) == "email_invalid"
 
 
-def test_the_email_rule_is_the_users_files_rule():
-    from helpers import users_file
+def email_rule_problems(source: str) -> list[str]:
+    """What keeps a module's EMAIL from being users_file's: not imported from it, or assigned."""
+    import ast
 
-    assert h.EMAIL is users_file.EMAIL
+    tree = ast.parse(source)
+    problems = []
+    imported = any(
+        isinstance(node, ast.ImportFrom)
+        and node.module == "helpers.users_file"
+        and any(alias.name == "EMAIL" and alias.asname is None for alias in node.names)
+        for node in ast.walk(tree)
+    )
+    if not imported:
+        problems.append("EMAIL is not imported from helpers.users_file")
+    for node in ast.walk(tree):
+        targets = (
+            node.targets
+            if isinstance(node, ast.Assign)
+            else [node.target]
+            if isinstance(node, (ast.AnnAssign, ast.AugAssign, ast.NamedExpr))
+            else []
+        )
+        names = [n.id for t in targets for n in ast.walk(t) if isinstance(n, ast.Name)]
+        if "EMAIL" in names:
+            problems.append(f"EMAIL is assigned on line {node.lineno}")
+    return problems
+
+
+def test_the_email_rule_is_the_users_files_rule():
+    source = (REPO / "helpers" / "rc_helper.py").read_text(encoding="utf-8")
+    assert "EMAIL" in source  # positive control: the module uses the rule
+    assert email_rule_problems(source) == []
+
+
+def test_the_email_rule_check_catches_a_copy():
+    """Planted twin: a module keeping its own copy of the rule is caught, imported or not."""
+    right = "import re\nfrom helpers.users_file import EMAIL\n"
+    assert email_rule_problems(right) == []
+    copy = 'EMAIL = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(\\.[A-Za-z0-9-]+)+")\n'
+    assert email_rule_problems("import re\n" + copy) != []
+    assert email_rule_problems(right + copy) != []  # imported, then replaced
+    renamed = right.replace("import EMAIL", "import EMAIL as ADDRESS")
+    assert renamed != right and email_rule_problems(renamed) != []
 
 
 # --- the commit author's name -----------------------------------------------------
