@@ -12,7 +12,7 @@ import sqlite3
 from dataclasses import dataclass
 
 from fastapi import APIRouter, Depends, Request
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from helpers import rc_helper
 from rcman import db
@@ -22,8 +22,17 @@ from rcman.identity import Identity, current_user
 router = APIRouter(prefix="/api/me", tags=["me"])
 
 
+def _published(schema: dict) -> None:
+    """Describe the body as it is validated: any setting may be left out, none may be null."""
+    for field in schema["properties"].values():
+        field.pop("default", None)
+    schema["minProperties"] = 1
+
+
 class SettingsBody(BaseModel):
     """A change to some of the signed-in person's settings; those left out are unchanged."""
+
+    model_config = ConfigDict(json_schema_extra=_published)
 
     prefix: str = Field(
         default=None,
