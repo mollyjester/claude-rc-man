@@ -726,6 +726,7 @@ def test_the_fields_are_found_and_agree_with_the_published_api(app):
         ("DELETE", "/api/users/{linux}", "query", "home"),
         ("POST", "/api/folders", "body", "name"),
         ("GET", "/api/audit", "query", "limit"),
+        ("POST", "/api/git/stage", "body", "files"),
     }
     assert known <= found, known - found  # non-vacuity: one of each kind
     with_body = {(f.method, f.path) for f in request_fields(app) if f.where == "body"}
@@ -774,7 +775,13 @@ def violations(f: RequestField) -> list[tuple[str, object]]:
         found.append(("type", "maybe"))
     if s.get("type") in ("integer", "number"):
         found.append(("type", "x"))
-    if f.where == "body":
+    if s.get("type") == "array":
+        if s.get("minItems", 0) >= 1:
+            found.append(("minItems", []))
+        if "maxItems" in s:
+            found.append(("maxItems", ["a"] * (s["maxItems"] + 1)))
+        found.append(("type", "x"))
+    elif f.where == "body":
         found.append(("type", []))
     if f.where == "body" and s.get("type") == "string":
         found.append(("lone surrogate", LONE_SURROGATE))
@@ -973,7 +980,15 @@ def pattern_problems(client, calls, headers) -> tuple[list[str], set[str]]:
 
 def test_every_published_pattern_is_explained_by_a_helpers_rule(client):
     found, matched = pattern_problems(client, CALLS, changing(ALICE))
-    names = {"PREFIX", "EMAIL", "LINUX_NAME", "FOLDER_NAME", "AUTHOR_NAME", "VERSION"}
+    names = {
+        "PREFIX",
+        "EMAIL",
+        "LINUX_NAME",
+        "FOLDER_NAME",
+        "AUTHOR_NAME",
+        "VERSION",
+        "COMMIT_MESSAGE",
+    }
     assert names <= {name.removesuffix(".or_empty()") for name in matched}  # non-vacuity
     assert found == []
 
@@ -997,3 +1012,42 @@ def test_a_pattern_without_a_rule_is_found():
     assert [f.schema.get("pattern") for f in request_fields(app)] == ["^a$"]  # the plant
     found, _ = pattern_problems(TestClient(app), {("POST", "/x"): {"json": {"code": "a"}}}, {})
     assert found == ["POST /x body code: its pattern is no helpers' rule"]
+
+
+def test_a_commit_without_an_author_is_a_problem_of_rcmans_own():
+    assert problems.STATUS["author_not_set"] == 409
+    assert problems.MESSAGES["author_not_set"]
+
+
+def _list_app():
+    """An app with a list field of bounded length."""
+    from fastapi import FastAPI
+    from pydantic import BaseModel, Field
+
+    class Body(BaseModel):
+        files: list[str] = Field(min_length=1, max_length=2)
+
+    app = FastAPI()
+    problems.install(app)
+
+    @app.post("/x")
+    def x(body: Body) -> dict:
+        return {}
+
+    return app
+
+
+def test_a_list_fields_violations_are_its_length_and_its_type():
+    [f] = request_fields(_list_app())
+    found = dict(violations(f))
+    assert found["minItems"] == [] and found["maxItems"] == ["a", "a", "a"]
+    assert found["type"] == "x"
+
+
+def test_a_list_too_short_too_long_or_not_a_list_is_refused_in_rcmans_words():
+    from fastapi.testclient import TestClient
+
+    calls = {("POST", "/x"): {"json": {"files": ["a"]}}}
+    found, used = refusal_problems(TestClient(_list_app()), calls, {})
+    assert found == []
+    assert {"too_short", "too_long", "list_type"} <= used

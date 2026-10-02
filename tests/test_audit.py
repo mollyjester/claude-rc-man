@@ -396,3 +396,51 @@ def test_retention_runs_when_the_app_starts(settings, helper_homes, admin_runner
     with TestClient(create_app(settings, helper=helper_homes, admin=admin_runner)):
         pass
     assert rows(settings) == []
+
+
+def test_git_changes_are_recorded_with_the_folder(client, settings, helper_homes, tmp_path):
+    from tests.git_fixtures import make_repo, write
+
+    repo = make_repo(
+        helper_homes.homes["alice"] / "projects" / "alice-project", origin=tmp_path / "o.git"
+    )
+    client.patch("/api/me/settings", json={"author_name": "Alice"}, headers=changing(ALICE))
+    write(repo / "a.txt")
+    path = "projects/alice-project"
+    requests = [
+        ("/api/git/stage", {"path": path, "files": ["a.txt"]}, "git.stage"),
+        ("/api/git/unstage", {"path": path, "files": ["a.txt"]}, "git.unstage"),
+        ("/api/git/stage", {"path": path, "files": ["a.txt"]}, "git.stage"),
+        ("/api/git/commit", {"path": path, "message": "Add a.txt"}, "git.commit"),
+        ("/api/git/branch", {"path": path, "name": "topic"}, "git.branch"),
+        ("/api/git/switch", {"path": path, "branch": "main"}, "git.switch"),
+        ("/api/git/fetch", {"path": path}, "git.fetch"),
+    ]
+    for url, body, _ in requests:
+        r = client.post(url, json=body, headers=changing(ALICE))
+        assert r.status_code == 200, (url, r.text)
+    recorded = [(r["action"], r["target"], r["result"]) for r in rows(settings)[-len(requests) :]]
+    assert recorded == [(action, path, "ok") for _, _, action in requests]
+
+
+def test_the_commit_message_is_never_recorded_or_logged(client, settings, helper_homes, caplog):
+    from tests.git_fixtures import fixture_git, make_repo, write
+
+    repo = make_repo(helper_homes.homes["alice"] / "projects" / "alice-project")
+    client.patch("/api/me/settings", json={"author_name": "Alice"}, headers=changing(ALICE))
+    write(repo / "a.txt")
+    fixture_git(repo, "add", "a.txt")
+    caplog.set_level("DEBUG")
+    message = "SECRET-COMMIT-MESSAGE-7"
+    body = {"path": "projects/alice-project", "message": message}
+    r = client.post("/api/git/commit", json=body, headers=changing(ALICE))
+    assert r.status_code == 200, r.text
+    last = rows(settings)[-1]
+    assert (last["action"], last["result"]) == ("git.commit", "ok")  # positive control
+    assert caplog.records  # positive control: the audit event was logged
+    assert all(message not in str(value) for row in rows(settings) for value in row.values())
+    assert message not in caplog.text
+    refused = client.post("/api/git/commit", json=body, headers=changing(ALICE))
+    assert refused.json()["code"] == "nothing_staged"
+    assert all(message not in str(value) for row in rows(settings) for value in row.values())
+    assert message not in caplog.text
