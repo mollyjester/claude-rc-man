@@ -190,6 +190,41 @@ def test_the_app_reaches_the_helpers_through_sudo(first_install):
     assert status == 200, body
 
 
+def test_audit_events_reach_the_journal(first_install):
+    """The service's output is what systemd sends to the journal; an audit event is a line in it."""
+    log = Path("/run/fake-systemd/rcman.service.log")
+    before = log.read_text(errors="replace").splitlines()
+    request = urllib.request.Request(
+        "http://127.0.0.1:8001/api/me/settings",
+        data=json.dumps({"prefix": "journal"}).encode(),
+        method="PUT",
+        headers={
+            "X-Forwarded-Email": "dev@example.com",
+            "Origin": f"https://{DOMAIN}",
+            "Content-Type": "application/json",
+        },
+    )
+    with urllib.request.urlopen(request, timeout=10) as response:
+        assert response.status == 200
+    deadline = time.monotonic() + 10
+    while True:  # the event is written as the request finishes, which may follow the response
+        after = log.read_text(errors="replace").splitlines()[len(before) :]
+        events = []
+        for line in after:
+            try:
+                event = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(event, dict) and event.get("action") == "settings.update":
+                events.append(event)
+        if events or time.monotonic() > deadline:
+            break
+        time.sleep(0.2)
+    assert any("PUT /api/me/settings" in line for line in after), after  # positive control
+    assert len(events) == 1, after
+    assert (events[0]["target"], events[0]["result"]) == ("journal", "ok")
+
+
 def test_the_caddy_snippet_is_printed_and_valid(first_install):
     assert "Add this to your Caddyfile" in first_install.stdout
     snippet = (ETC / "Caddyfile.snippet").read_text()

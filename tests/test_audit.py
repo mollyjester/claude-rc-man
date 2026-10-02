@@ -132,6 +132,109 @@ def test_audit_events_are_logged_as_json(client, caplog):
     assert event["action"] == "settings.update" and event["email"] == BOB
 
 
+def _service_argv(port: int, sock: Path) -> list[str]:
+    """The unit's own ExecStart, with the development uvicorn and a free listener."""
+    import shlex
+    import sys
+
+    unit = (REPO / "installer" / "templates" / "rcman.service").read_text(encoding="utf-8")
+    exec_start = next(
+        line.partition("=")[2] for line in unit.splitlines() if line.startswith("ExecStart=")
+    )
+    argv = shlex.split(exec_start)
+    assert argv[0] == "@CURRENT@/.venv/bin/uvicorn"
+    argv[0] = str(Path(sys.executable).parent / "uvicorn")
+    for option, value in (("--port", str(port)), ("--uds", str(sock))):
+        if option in argv:
+            argv[argv.index(option) + 1] = value
+    assert not any("@" in a for a in argv), argv
+    return argv
+
+
+def _request(port, sock, method, path, body=None, headers=None):
+    """One HTTP request to the service, over its unix socket or its TCP port."""
+    import http.client
+    import socket
+
+    if sock is not None:
+
+        class Connection(http.client.HTTPConnection):
+            def connect(self):
+                self.sock = socket.socket(socket.AF_UNIX)
+                self.sock.settimeout(5)
+                self.sock.connect(str(sock))
+
+        conn = Connection("rcman")
+    else:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+    try:
+        conn.request(method, path, body=body, headers=headers or {})
+        response = conn.getresponse()
+        return response.status, response.read().decode()
+    finally:
+        conn.close()
+
+
+def test_audit_events_reach_the_service_output(tmp_path, settings):
+    """Started as the unit starts it, an audit event is a line on the service's own output."""
+    import json
+    import os
+    import socket
+    import subprocess
+    import time
+
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    sock = tmp_path / "rcman.sock"
+    argv = _service_argv(port, sock)
+    if "--uds" not in argv:
+        sock = None
+    env = {
+        "PATH": os.environ["PATH"],
+        "RCMAN_PUBLIC_ORIGIN": settings.public_origin,
+        "RCMAN_USERS_FILE": str(settings.users_file),
+        "RCMAN_DATABASE": str(settings.database),
+    }
+    output = tmp_path / "service.log"
+    with output.open("wb") as log:
+        proc = subprocess.Popen(argv, cwd=REPO, env=env, stdout=log, stderr=subprocess.STDOUT)
+    try:
+        deadline = time.monotonic() + 30
+        while True:
+            try:
+                if _request(port, sock, "GET", "/api/health")[0] == 200:
+                    break
+            except OSError:
+                pass
+            assert time.monotonic() < deadline, output.read_text()
+            time.sleep(0.1)
+        status, text = _request(
+            port,
+            sock,
+            "PUT",
+            "/api/me/settings",
+            body=json.dumps({"prefix": "pfx"}),
+            headers={**changing(BOB), "Content-Type": "application/json"},
+        )
+        assert status == 200, text
+    finally:
+        proc.terminate()
+        proc.wait(timeout=10)
+    lines = output.read_text().splitlines()
+    assert any("Uvicorn running" in line for line in lines), lines  # positive control
+    events = []
+    for line in lines:
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(event, dict) and event.get("action") == "settings.update":
+            events.append(event)
+    assert len(events) == 1, lines
+    assert events[0]["email"] == BOB and events[0]["result"] == "ok"
+
+
 # --- retention ------------------------------------------------------------------------
 
 

@@ -32,4 +32,5 @@ refused request is recorded too.
 Once a day, and whenever rcman starts, events older than
 `RCMAN_AUDIT_RETENTION_DAYS` are deleted, and then the oldest events beyond
 `RCMAN_AUDIT_MAX_ROWS`. Both are described in [Configuration](configuration.md).
-The journal has its own size limits, set in journald's configuration.
+The journal has its own size limits, set in journald's configuration —
+`SystemMaxUse=` and the related settings in `/etc/systemd/journald.conf`.

@@ -35,6 +35,7 @@ def create_app(
     admin: AdminRunner | None = None,
 ) -> FastAPI:
     settings = settings or Settings()
+    audit.install_logging()
 
     @contextlib.asynccontextmanager
     async def lifespan(app: FastAPI):

@@ -66,8 +66,11 @@ whether that version is the tested one, and rolls one out with
 
 A route that changes something depends on `Recorder("<action>")`, which writes
 one row when the request finishes, with `ok` or the error code, and logs the
-same event as a JSON line on the `rcman.audit` logger. `tests/test_audit.py`
-finds every changing route in the route table and fails on any that neither
+same event as a JSON line on the `rcman.audit` logger. uvicorn configures only
+its own loggers, so `create_app` calls `audit.install_logging()`, which gives
+that logger one handler writing the bare line to standard error; systemd sends
+it to the journal. `tests/test_audit.py` starts the app with the unit's own
+`ExecStart` and reads the line from its output. It also finds every changing route in the route table and fails on any that neither
 records nor is listed in `audit.EXEMPT` with a reason that also appears in
 [the audit guide](../docs/audit.md); it then drives every audited route and
 checks its row. Retention runs when the app starts and once a day.
