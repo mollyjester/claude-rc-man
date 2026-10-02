@@ -17,6 +17,7 @@ import pytest
 from devtools import fake_claude as fake
 from devtools import record_claude as rec
 from helpers import rc_helper as h
+from tests.github_server import UNREACHABLE
 
 REPO = Path(__file__).resolve().parent.parent
 HELPER = REPO / "helpers" / "rc-helper"
@@ -43,6 +44,7 @@ def env(tmp_path):
         "RC_HELPER_HOME": str(home),
         "RC_HELPER_CLAUDE": str(wrapper),
         "RC_HELPER_TMUX_SOCKET": str(sock / "rcman.sock"),
+        "RC_HELPER_GITHUB": UNREACHABLE,
     }
     yield e
     subprocess.run(["tmux", "-S", e["RC_HELPER_TMUX_SOCKET"], "kill-server"], capture_output=True)
@@ -495,6 +497,8 @@ def test_production_config_ignores_nothing_but_the_test_hooks():
     assert cfg.home == Path(pwd.getpwuid(os.getuid()).pw_dir)
     assert cfg.claude == cfg.home / ".local" / "bin" / "claude"
     assert cfg.tmux_socket is None  # the named socket h.TMUX_SOCKET_NAME
+    assert cfg.github == h.GITHUB_URL == "https://github.com/"
+    assert h.config_from_env({"RC_HELPER_GITHUB": UNREACHABLE}).github == UNREACHABLE
     assert h.config_from_env({"HOME": "/elsewhere"}).home == cfg.home  # $HOME is not trusted
 
 
@@ -2455,3 +2459,50 @@ def test_git_env_is_the_server_environment_cut_down_for_git(tmp_path):
         "GIT_TERMINAL_PROMPT",
         "GIT_OPTIONAL_LOCKS",
     }
+
+
+def test_git_env_points_github_at_the_hook_only_when_set(tmp_path):
+    import dataclasses
+
+    plain = h.Config(home=tmp_path, claude=tmp_path / "claude", tmux_socket=None)
+    assert plain.github == h.GITHUB_URL
+    assert not any(key.startswith("GIT_CONFIG") for key in h.git_env(plain))
+    hooked = h.git_env(dataclasses.replace(plain, github="http://127.0.0.1:9/"))
+    assert {k: v for k, v in hooked.items() if k.startswith("GIT_CONFIG")} == {
+        "GIT_CONFIG_COUNT": "1",
+        "GIT_CONFIG_KEY_0": "url.http://127.0.0.1:9/.insteadOf",
+        "GIT_CONFIG_VALUE_0": "https://github.com/",
+    }
+
+
+@pytest.fixture
+def hooked(env, github):
+    """``env`` with https://github.com/ pointed at the tests' GitHub."""
+    return {**env, "RC_HELPER_GITHUB": github.url}
+
+
+GH_REL = "projects/from-github"
+
+
+@pytest.fixture
+def on_github(env, github, tmp_path):
+    """A repository in the home whose origin is https://github.com/owner/<unique>.git,
+    served by the tests' GitHub; its bare repository there."""
+    name = tmp_path.name
+    bare = github.bare("owner", name)
+    make_repo(
+        Path(env["RC_HELPER_HOME"]) / GH_REL, origin=bare, url=github.github_url("owner", name)
+    )
+    return bare
+
+
+def test_the_github_hook_sends_git_for_github_to_the_tests_server(env, hooked, on_github):
+    repo = Path(env["RC_HELPER_HOME"]) / GH_REL
+    assert fixture_git(repo, "remote", "get-url", "origin").startswith("https://github.com/")
+    push_branch_to_origin(repo, on_github, "later")
+    code, out = helper(env, "git-fetch", "--", GH_REL)  # unhooked: the unreachable address
+    assert (code, out["error"]["code"]) == (1, "git_failed"), out
+    assert any("127.0.0.1 port 1" in line for line in out["error"]["git"]), out
+    ok(hooked, "git-fetch", "--", GH_REL)
+    branches = ok(hooked, "git-branches", "--", GH_REL)["remote"]["branches"]
+    assert "origin/later" in [b["name"] for b in branches]

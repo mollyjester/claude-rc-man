@@ -32,9 +32,25 @@ class RecordingAdmin:
         return self.replies.pop(0) if self.replies else (0, {"users": []})
 
 
+# The token the tests' GitHub takes for a push.
+GITHUB_TOKEN = "github-token-for-the-tests"
+
+
+@pytest.fixture(scope="session")
+def github(tmp_path_factory):
+    """The tests' GitHub (tests/github_server.py), which takes GITHUB_TOKEN for a push."""
+    from tests.github_server import GitHubServer
+
+    server = GitHubServer()
+    server.start(tmp_path_factory.mktemp("github"), GITHUB_TOKEN)
+    yield server
+    server.stop()
+
+
 @pytest.fixture
-def helper_homes(tmp_path):
-    """A real rc-helper per mapped Linux user, each with its own home and tmux socket."""
+def helper_homes(tmp_path, github):
+    """A real rc-helper per mapped Linux user, each with its own home and tmux socket,
+    and https://github.com/ pointed at the tests' GitHub."""
     from devtools import fake_claude as fake
     from devtools import record_claude as rec
 
@@ -58,6 +74,7 @@ def helper_homes(tmp_path):
             "RC_HELPER_HOME": str(homes[linux]),
             "RC_HELPER_CLAUDE": str(wrapper),
             "RC_HELPER_TMUX_SOCKET": str(sock),
+            "RC_HELPER_GITHUB": github.url,
         }
         proc = subprocess.run(
             [str(REPO / "helpers" / "rc-helper"), *args],

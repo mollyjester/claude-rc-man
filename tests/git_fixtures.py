@@ -58,12 +58,14 @@ def write(path: Path, text: str = "content\n") -> Path:
 BODY = "".join(f"line {i} of a file long enough to be recognised when renamed\n" for i in range(40))
 
 
-def make_repo(path: Path, origin: Path | None = None) -> Path:
+def make_repo(path: Path, origin: Path | None = None, url: str | None = None) -> Path:
     """A repository at ``path`` on main with one commit.
 
     With ``origin``: a bare repository there, holding main and feature, which
     the repository has as its remote ``origin``; main tracks origin/main, and
-    there is no local feature.
+    there is no local feature. With ``url`` besides, origin's address is
+    ``url``, which serves that bare repository, as tests/github_server.py does;
+    the branches are pushed to it by its path first.
     """
     path.mkdir(parents=True, exist_ok=True)
     fixture_git(path, "init", "-q", "-b", "main")
@@ -72,12 +74,15 @@ def make_repo(path: Path, origin: Path | None = None) -> Path:
     fixture_git(path, "commit", "-q", "-m", "First commit")
     if origin is not None:
         origin.parent.mkdir(parents=True, exist_ok=True)
-        fixture_git(origin.parent, "init", "-q", "--bare", "-b", "main", str(origin))
+        if not origin.exists():
+            fixture_git(origin.parent, "init", "-q", "--bare", "-b", "main", str(origin))
         fixture_git(path, "remote", "add", "origin", str(origin))
         fixture_git(path, "branch", "feature")
         fixture_git(path, "push", "-q", "origin", "main", "feature")
         fixture_git(path, "branch", "-D", "feature")
         fixture_git(path, "branch", "-q", "--set-upstream-to=origin/main", "main")
+        if url is not None:
+            fixture_git(path, "remote", "set-url", "origin", url)
     return path
 
 
