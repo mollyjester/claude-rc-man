@@ -247,6 +247,14 @@ def test_an_error_without_a_message_gets_a_readable_one_and_is_logged(caplog):
     assert "float_parsing" in caplog.text
 
 
+def test_an_error_without_the_context_its_message_needs_gets_a_readable_one(caplog):
+    error = {"type": "string_too_long", "loc": ("body", "x"), "msg": "", "ctx": {}}
+    with caplog.at_level(logging.WARNING, logger="rcman.problems"):
+        message = problems._message(error)
+    assert message == problems.FIELD_MESSAGES[problems.FIELD_INVALID]
+    assert "string_too_long" in caplog.text
+
+
 def test_a_ruled_field_refuses_a_length_with_its_rules_sentence(client):
     from helpers import rc_helper
 
