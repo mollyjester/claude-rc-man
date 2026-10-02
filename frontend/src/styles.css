@@ -11,14 +11,26 @@ header { display: flex; gap: 1.5rem; align-items: center; padding: 0.75rem 1.5re
 header nav { display: flex; gap: 1rem; flex: 1; }
 header nav a.active { font-weight: 600; }
 main { padding: 1rem 1.5rem; max-width: 72rem; }
-.columns { display: grid; grid-template-columns: minmax(16rem, 1fr) 2fr; gap: 2rem; }
-@media (max-width: 48rem) { .columns { grid-template-columns: 1fr; } }
-.tree, .tree ul { list-style: none; padding-left: 1rem; }
-.tree li { margin: 0.2rem 0; }
+.workspace { display: grid; grid-template-columns: minmax(16rem, 1fr) 2fr; gap: 2rem; align-items: start; }
+@media (max-width: 48rem) { .workspace { grid-template-columns: 1fr; } }
+.tree, .tree ul, .summary { list-style: none; padding-left: 0; }
+.tree ul { padding-left: 1.5rem; }
+.tree li, .summary li { margin: 0.2rem 0; }
 .toggle { display: inline-block; width: 1.5rem; }
-.name { margin-right: 0.5rem; }
+button.name { background: none; border: none; padding: 0.1rem 0.35rem; border-radius: 0.25rem; font: inherit; color: inherit; cursor: pointer; text-align: left; }
+button.name[aria-current="true"] { font-weight: 600; outline: 2px solid var(--border); }
+.dot { display: inline-block; width: 0.6rem; height: 0.6rem; border-radius: 50%; margin-left: 0.25rem; vertical-align: middle; }
+.dot-running { background: #15803d; }
+.dot-waiting { background: var(--warn); }
+.dot-problem { background: var(--bad); }
+.dot-stopped { background: var(--muted); }
+.visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.panel { border: 1px solid var(--border); border-radius: 0.5rem; padding: 0.75rem 1.25rem; }
+.panel h2 { margin: 0.25rem 0 0.75rem; }
+.panel-section h3 { font-size: 1rem; margin: 0.75rem 0 0.5rem; }
+.breadcrumb ol { list-style: none; display: flex; flex-wrap: wrap; gap: 0.25rem; padding: 0; margin: 0; }
+.breadcrumb li + li::before { content: "/"; margin-right: 0.25rem; color: var(--muted); }
 .server { border: 1px solid var(--border); border-radius: 0.5rem; padding: 0.75rem 1rem; margin-bottom: 0.75rem; }
-.server h3 { margin: 0 0 0.25rem; font-size: 1rem; }
 .badge { display: inline-block; font-weight: 600; font-size: 0.85rem; padding: 0.1rem 0.5rem; border-radius: 1rem; border: 1px solid currentColor; }
 .badge-problem { color: var(--bad); }
 .badge-waiting { color: var(--warn); }

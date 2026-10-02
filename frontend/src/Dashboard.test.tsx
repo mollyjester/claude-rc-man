@@ -1,4 +1,4 @@
-import { screen, waitFor, within } from "@testing-library/react";
+import { cleanup, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { ACTIONS, KIND, PRIMARY } from "./Servers";
@@ -6,16 +6,16 @@ import { m } from "./messages";
 import { CONNECTED, ME, type Routes, fakeApi, problem } from "./test/fakeApi";
 import { renderApp } from "./test/render";
 
-const TREE = {
-  path: "",
-  entries: [{ name: "projects", path: "projects", has_children: true }],
-};
-const PROJECTS = {
-  path: "projects",
-  entries: [
-    { name: "alpha", path: "projects/alpha", has_children: false },
-    { name: "beta", path: "projects/beta", has_children: false },
-  ],
+const entry = (path: string, has_children = false) => ({ name: path.split("/").pop(), path, has_children });
+
+// Each folder's contents, by its path; "" is the home folder.
+const FOLDERS: Record<string, { path: string; entries: unknown[] }> = {
+  "": { path: "", entries: [entry("projects", true), entry("proj")] },
+  projects: {
+    path: "projects",
+    entries: [entry("projects/alpha"), entry("projects/beta"), entry("projects/gamma", true)],
+  },
+  "projects/gamma": { path: "projects/gamma", entries: [entry("projects/gamma/deep")] },
 };
 
 function server(path: string, state: string, extra: Record<string, unknown> = {}) {
@@ -26,23 +26,216 @@ function dashboard(servers: unknown[], extra: Routes = {}) {
   return fakeApi({
     "GET /api/me": ME,
     "GET /api/claude": CONNECTED,
-    "GET /api/folders": (c) => (c.query.get("path") === "projects" ? PROJECTS : TREE),
+    "GET /api/folders": (c) => FOLDERS[c.query.get("path") ?? ""] ?? problem(404, "no_such_folder", "No such folder."),
     "GET /api/servers": { servers },
     ...extra,
   });
 }
 
-test("the folder tree loads lazily and offers start on folders without a server", async () => {
-  const fake = dashboard([server("projects/beta", "ready")], {
-    "POST /api/servers": { server: server("projects/alpha", "trust_prompt") },
+const tree = async () => screen.findByRole("region", { name: m.foldersTitle });
+const summary = async () => screen.findByRole("region", { name: m.runningTitle });
+const panel = async (path: string) => screen.findByRole("region", { name: path });
+const folder = async (name: string) => within(await tree()).findByRole("button", { name });
+const folderOf = (search: string) => new URLSearchParams(search).get("folder");
+
+async function expand(name: string) {
+  await userEvent.click(await within(await tree()).findByRole("button", { name: m.expand(name) }));
+}
+
+async function select(name: string) {
+  await userEvent.click(await folder(name));
+}
+
+// The card of the server in a folder, with that folder selected from the address.
+async function card(path = "projects/alpha") {
+  renderApp(`/?folder=${path}`);
+  return within(await within(await panel(path)).findByRole("article", { name: path }));
+}
+
+function expectNoDot(button: HTMLElement) {
+  expect(button).toHaveAccessibleDescription("");
+  expect(button.closest("li")!.querySelector(":scope > .dot")).toBeNull();
+}
+
+test("selecting a folder opens its panel, with the breadcrumb and its server", async () => {
+  const fake = dashboard([server("projects/alpha", "ready")]);
+  renderApp();
+  expect(await screen.findByRole("region", { name: m.home })).toHaveTextContent(m.panelEmpty);
+  expect(fake.calls.filter((c) => c.path === "/api/folders" && c.query.get("path"))).toHaveLength(0);
+  await expand("projects");
+  await select("alpha");
+
+  const opened = await panel("projects/alpha");
+  const crumbs = within(opened).getByRole("navigation", { name: m.breadcrumb });
+  expect(within(crumbs).getByRole("link", { name: m.home })).toHaveAttribute("href", "/");
+  expect(within(crumbs).getByRole("link", { name: "projects" })).toHaveAttribute("href", "/?folder=projects");
+  expect(within(crumbs).getByText("alpha")).toHaveAttribute("aria-current", "page");
+  expect(within(crumbs).queryByRole("link", { name: "alpha" })).not.toBeInTheDocument();
+  expect(within(opened).getByRole("heading", { name: m.serverTitle })).toBeInTheDocument();
+  expect(within(opened).getByRole("article", { name: "projects/alpha" })).toBeInTheDocument();
+  expect(await folder("alpha")).toHaveAttribute("aria-current", "true");
+  expect(await folder("beta")).not.toHaveAttribute("aria-current");
+  expect(screen.queryByRole("region", { name: m.home })).not.toBeInTheDocument();
+});
+
+test("a folder with no server offers Start, which starts one there", async () => {
+  const servers: unknown[] = [];
+  let answer = () => {};
+  const fake = dashboard([], {
+    "GET /api/servers": () => ({ servers }),
+    "POST /api/servers": () =>
+      new Promise((resolve) => {
+        answer = () => {
+          servers.push(server("projects/beta", "trust_prompt"));
+          resolve({ server: servers[0] });
+        };
+      }),
   });
   renderApp();
-  await userEvent.click(await screen.findByRole("button", { name: m.expand("projects") }));
-  const alpha = await screen.findByRole("button", { name: m.startIn("projects/alpha") });
-  expect(screen.queryByRole("button", { name: m.startIn("projects/beta") })).not.toBeInTheDocument();
-  await userEvent.click(alpha);
+  await expand("projects");
+  await select("beta");
+  const opened = await panel("projects/beta");
+  const start = await within(opened).findByRole("button", { name: m.start });
+  expect(start).toHaveClass("primary");
+  await userEvent.click(start);
   await waitFor(() => expect(fake.made("POST", "/api/servers")).toHaveLength(1));
-  expect(fake.made("POST", "/api/servers")[0].body).toEqual({ path: "projects/alpha" });
+  expect(fake.made("POST", "/api/servers")[0].body).toEqual({ path: "projects/beta" });
+  expect(start).toBeDisabled();
+  answer();
+  expect(await within(opened).findByRole("article", { name: "projects/beta" })).toBeInTheDocument();
+  expect(within(opened).queryByRole("button", { name: m.start })).not.toBeInTheDocument();
+});
+
+test("a folder that is not there still opens, and Start shows the server's reason", async () => {
+  dashboard([], { "POST /api/servers": problem(404, "no_such_folder", "No such folder.") });
+  renderApp("/?folder=gone/away");
+  const opened = await panel("gone/away");
+  await userEvent.click(await within(opened).findByRole("button", { name: m.start }));
+  expect(await within(opened).findByRole("alert")).toHaveTextContent("No such folder.");
+});
+
+test("the selected folder is kept in the address, which opens it again", async () => {
+  dashboard([]);
+  const { location } = renderApp("/?folder=projects/alpha");
+  expect(await panel("projects/alpha")).toBeInTheDocument();
+  await select("beta");
+  expect(await panel("projects/beta")).toBeInTheDocument();
+  expect(folderOf(location().search)).toBe("projects/beta");
+});
+
+test("an empty folder in the address is no folder", async () => {
+  dashboard([]);
+  renderApp("/?folder=");
+  expect(await screen.findByRole("region", { name: m.home })).toBeInTheDocument();
+});
+
+test("the back button returns to the folder selected before, then to none", async () => {
+  dashboard([]);
+  const { location, navigate } = renderApp();
+  await expand("projects");
+  await select("alpha");
+  await panel("projects/alpha");
+  const entries = location().key;
+  await select("alpha"); // selecting it again changes nothing
+  expect(location().key).toBe(entries);
+  await select("beta");
+  await panel("projects/beta");
+
+  await navigate(-1);
+  expect(await panel("projects/alpha")).toBeInTheDocument();
+  expect(folderOf(location().search)).toBe("projects/alpha");
+  await navigate(-1);
+  expect(await screen.findByRole("region", { name: m.home })).toBeInTheDocument();
+  expect(location().search).toBe("");
+});
+
+test("the breadcrumb selects a folder above, and Home selects none", async () => {
+  dashboard([]);
+  const { location } = renderApp("/?folder=projects/alpha");
+  const crumbs = within(await panel("projects/alpha")).getByRole("navigation", { name: m.breadcrumb });
+  await userEvent.click(within(crumbs).getByRole("link", { name: "projects" }));
+  expect(await panel("projects")).toBeInTheDocument();
+  expect(folderOf(location().search)).toBe("projects");
+  expect(await folder("projects")).toHaveAttribute("aria-current", "true");
+
+  const above = within(await panel("projects")).getByRole("navigation", { name: m.breadcrumb });
+  await userEvent.click(within(above).getByRole("link", { name: m.home }));
+  expect(await screen.findByRole("region", { name: m.home })).toBeInTheDocument();
+  expect(location().search).toBe("");
+});
+
+test("a folder selected from the address is shown in the tree", async () => {
+  const fake = dashboard([]);
+  renderApp("/?folder=projects/alpha");
+  await waitFor(() =>
+    expect(fake.made("GET", "/api/folders").map((c) => c.query.get("path"))).toContain("projects"),
+  );
+  expect(await folder("alpha")).toHaveAttribute("aria-current", "true");
+  expect(within(await tree()).getByRole("button", { name: m.collapse("projects") })).toBeInTheDocument();
+});
+
+test.each(Object.entries(KIND))("a folder whose server is %s carries the %s dot", async (state, kind) => {
+  dashboard([server("projects/alpha", state)]);
+  renderApp();
+  await expand("projects");
+  expect(await folder("alpha")).toHaveAccessibleDescription(m.kinds[kind]);
+  expectNoDot(await folder("beta"));
+});
+
+test("the check for no dot fails on a folder that has one", async () => {
+  dashboard([server("projects/beta", "ready")]);
+  renderApp();
+  await expand("projects");
+  const beta = await folder("beta");
+  expect(beta).toHaveAccessibleDescription(m.kinds.running); // the plant took effect
+  expect(() => expectNoDot(beta)).toThrow();
+});
+
+test("a closed folder carries the most urgent dot of the servers inside it", async () => {
+  dashboard([server("projects/alpha", "ready"), server("projects/beta", "trust_prompt")]);
+  renderApp();
+  expect(await folder("projects")).toHaveAccessibleDescription(m.kinds.waiting);
+  expectNoDot(await folder("proj"));
+
+  await expand("projects");
+  expectNoDot(await folder("projects"));
+  expect(await folder("alpha")).toHaveAccessibleDescription(m.kinds.running);
+  expect(await folder("beta")).toHaveAccessibleDescription(m.kinds.waiting);
+  expectNoDot(await folder("proj"));
+
+  await userEvent.click(within(await tree()).getByRole("button", { name: m.collapse("projects") }));
+  expect(await folder("projects")).toHaveAccessibleDescription(m.kinds.waiting);
+  expectNoDot(await folder("proj"));
+});
+
+test("the summary lists every server, and selects its folder", async () => {
+  const servers = [server("projects/alpha", "ready"), server("projects/gamma/deep", "exited")];
+  const fake = dashboard(servers);
+  const { location } = renderApp();
+  const list = await summary();
+  await within(list).findByRole("button", { name: "projects/alpha" });
+  expect(within(list).getAllByRole("button")).toHaveLength(servers.length);
+  for (const { path, state } of servers) {
+    const item = within(list).getByRole("button", { name: path }).closest("li")!;
+    expect(within(item as HTMLElement).getByText(m.states[state])).toHaveClass("badge");
+  }
+
+  await userEvent.click(within(list).getByRole("button", { name: "projects/gamma/deep" }));
+  expect(within(await panel("projects/gamma/deep")).getByRole("article")).toBeInTheDocument();
+  expect(folderOf(location().search)).toBe("projects/gamma/deep");
+  await waitFor(() =>
+    expect(fake.made("GET", "/api/folders").map((c) => c.query.get("path"))).toContain("projects/gamma"),
+  );
+  expect(await folder("deep")).toHaveAttribute("aria-current", "true");
+});
+
+test("with no servers, the summary says so", async () => {
+  dashboard([]);
+  renderApp();
+  expect(await folder("projects")).toBeInTheDocument();
+  const list = await summary();
+  expect(await within(list).findByText(m.runningEmpty)).toBeInTheDocument();
+  expect(within(list).queryAllByRole("button")).toEqual([]);
 });
 
 test("a server with a session attached is in use, and shows the session and a link to it", async () => {
@@ -52,11 +245,10 @@ test("a server with a session attached is in use, and shows the session and a li
       environment_url: "https://claude.ai/code?environment=env_1",
     }),
   ]);
-  renderApp();
-  const card = await screen.findByRole("article", { name: "projects/alpha" });
-  expect(within(card).getByText("In use")).toBeInTheDocument();
-  expect(within(card).getByText("alice-quiet-otter")).toBeInTheDocument();
-  expect(within(card).getByRole("link", { name: m.openSession })).toHaveAttribute(
+  const found = await card();
+  expect(found.getByText("In use")).toBeInTheDocument();
+  expect(found.getByText("alice-quiet-otter")).toBeInTheDocument();
+  expect(found.getByRole("link", { name: m.openSession })).toHaveAttribute(
     "href",
     "https://claude.ai/code?environment=env_1",
   );
@@ -66,10 +258,9 @@ test("a connected server with no session yet is ready to accept sessions and lin
   dashboard([
     server("projects/alpha", "connected", { environment_url: "https://claude.ai/code?environment=env_1" }),
   ]);
-  renderApp();
-  const card = await screen.findByRole("article", { name: "projects/alpha" });
-  expect(within(card).getByText("Ready to accept sessions")).toBeInTheDocument();
-  expect(within(card).getByRole("link", { name: m.openSession })).toHaveAttribute(
+  const found = await card();
+  expect(found.getByText("Ready to accept sessions")).toBeInTheDocument();
+  expect(found.getByRole("link", { name: m.openSession })).toHaveAttribute(
     "href",
     "https://claude.ai/code?environment=env_1",
   );
@@ -79,10 +270,9 @@ test("a stopped server keeps its environment but offers no link to it", async ()
   dashboard([
     server("projects/alpha", "stopped", { environment_url: "https://claude.ai/code?environment=env_1" }),
   ]);
-  renderApp();
-  const card = await screen.findByRole("article", { name: "projects/alpha" });
-  expect(within(card).getByText(m.states.stopped)).toBeInTheDocument();
-  expect(within(card).queryByRole("link", { name: m.openSession })).not.toBeInTheDocument();
+  const found = await card();
+  expect(found.getByText(m.states.stopped)).toBeInTheDocument();
+  expect(found.queryByRole("link", { name: m.openSession })).not.toBeInTheDocument();
 });
 
 const LABELS: Record<string, string> = {
@@ -97,40 +287,34 @@ const LABELS: Record<string, string> = {
 
 test.each(Object.entries(ACTIONS))("a %s server offers exactly its actions", async (state, actions) => {
   dashboard([server("projects/alpha", state, { screen: ["x"], exit_code: 1 })]);
-  renderApp();
-  const card = await screen.findByRole("article", { name: "projects/alpha" });
-  const offered = within(card)
-    .queryAllByRole("button")
-    .map((b) => b.textContent);
+  const found = await card();
+  const offered = found.queryAllByRole("button").map((b) => b.textContent);
   expect(offered.sort()).toEqual(actions.map((a) => LABELS[a]).sort());
 });
 
 test.each(Object.keys(ACTIONS))("a %s server shows its state as a badge and says what to do", async (state) => {
   dashboard([server("projects/alpha", state, { screen: ["x"], exit_code: 1 })]);
-  renderApp();
-  const card = await screen.findByRole("article", { name: "projects/alpha" });
-  const badge = within(card).getByText(m.states[state], { exact: true });
+  const found = await card();
+  const badge = found.getByText(m.states[state], { exact: true });
   expect(badge).toHaveClass("badge", `badge-${KIND[state]}`);
-  expect(within(card).getByText(m.nextStep[state])).toBeInTheDocument();
+  expect(found.getByText(m.nextStep[state])).toBeInTheDocument();
 });
 
 test("a state rcman does not know says to look at the screen", async () => {
   dashboard([server("projects/alpha", "something_new", { screen: ["x"] })]);
-  renderApp();
-  const card = await screen.findByRole("article", { name: "projects/alpha" });
-  expect(within(card).getByText("something_new")).toHaveClass("badge", "badge-problem");
-  expect(within(card).getByText(m.nextStepUnknown)).toBeInTheDocument();
-  expect(within(card).getByRole("button", { name: m.showScreen })).toHaveClass("secondary");
+  const found = await card();
+  expect(found.getByText("something_new")).toHaveClass("badge", "badge-problem");
+  expect(found.getByText(m.nextStepUnknown)).toBeInTheDocument();
+  expect(found.getByRole("button", { name: m.showScreen })).toHaveClass("secondary");
 });
 
 test.each(Object.keys(ACTIONS))("a %s server has one primary action, and Stop and Forget are secondary", async (state) => {
   dashboard([
     server("projects/alpha", state, { screen: ["x"], exit_code: 1, environment_url: "https://claude.ai/code?environment=env_1" }),
   ]);
-  renderApp();
-  const card = await screen.findByRole("article", { name: "projects/alpha" });
+  const found = await card();
   const primary = PRIMARY[state];
-  const primaries = card.querySelectorAll(".primary");
+  const primaries = (await panel("projects/alpha")).querySelectorAll(".primary");
   if (primary === null) {
     expect(primaries).toHaveLength(0);
   } else {
@@ -138,11 +322,11 @@ test.each(Object.keys(ACTIONS))("a %s server has one primary action, and Stop an
     expect(primaries[0]).toHaveTextContent(primary === "openSession" ? m.openSession : LABELS[primary]);
   }
   for (const label of [m.stop, m.forget]) {
-    const button = within(card).queryByRole("button", { name: label });
+    const button = found.queryByRole("button", { name: label });
     if (button) expect(button).toHaveClass("secondary");
   }
   // non-vacuity: the buttons that are not primary are there, and secondary
-  for (const button of within(card).getAllByRole("button")) {
+  for (const button of found.getAllByRole("button")) {
     if (!button.classList.contains("primary")) expect(button).toHaveClass("secondary");
   }
 });
@@ -151,10 +335,9 @@ test("answering the trust question sends the answer", async () => {
   const fake = dashboard([server("projects/alpha", "trust_prompt")], {
     "POST /api/servers/confirm": { server: server("projects/alpha", "connected") },
   });
-  renderApp();
-  const card = await screen.findByRole("article", { name: "projects/alpha" });
-  expect(within(card).getByText(m.trustTitle)).toBeInTheDocument();
-  await userEvent.click(within(card).getByRole("button", { name: m.trustYes }));
+  const found = await card();
+  expect(found.getByText(m.trustTitle)).toBeInTheDocument();
+  await userEvent.click(found.getByRole("button", { name: m.trustYes }));
   await waitFor(() => expect(fake.made("POST", "/api/servers/confirm")).toHaveLength(1));
   expect(fake.made("POST", "/api/servers/confirm")[0].body).toEqual({ path: "projects/alpha", answer: "y" });
 });
@@ -167,9 +350,8 @@ test.each([
   ["start again", m.startAgain, "/api/servers", "trust_declined"],
 ])("%s calls its endpoint with the folder", async (_name, label, path, state) => {
   const fake = dashboard([server("projects/alpha", state)], { [`POST ${path}`]: { server: server("projects/alpha", state) } });
-  renderApp();
-  const card = await screen.findByRole("article", { name: "projects/alpha" });
-  await userEvent.click(within(card).getByRole("button", { name: label }));
+  const found = await card();
+  await userEvent.click(found.getByRole("button", { name: label }));
   await waitFor(() => expect(fake.made("POST", path)).toHaveLength(1));
   expect(fake.made("POST", path)[0].body).toEqual({ path: "projects/alpha" });
 });
@@ -179,36 +361,27 @@ test("a server that stopped by itself says so, whatever its exit status, and can
     const fake = dashboard([server("projects/alpha", "exited", { exit_code, screen: ["x"] })], {
       "POST /api/servers/resume": { server: server("projects/alpha", "connected") },
     });
-    const { unmount } = renderApp();
-    const card = await screen.findByRole("article", { name: "projects/alpha" });
-    expect(within(card).getByText("Stopped by itself")).toBeInTheDocument();
-    await userEvent.click(within(card).getByRole("button", { name: m.resume }));
+    const found = await card();
+    expect(found.getByText("Stopped by itself")).toBeInTheDocument();
+    await userEvent.click(found.getByRole("button", { name: m.resume }));
     await waitFor(() => expect(fake.made("POST", "/api/servers/resume")).toHaveLength(1));
     expect(fake.made("POST", "/api/servers/resume")[0].body).toEqual({ path: "projects/alpha" });
-    unmount();
+    cleanup();
   }
 });
 
 test("an unrecognised screen can be shown as it is", async () => {
   dashboard([server("projects/alpha", "unrecognised", { screen: ["strange line", "another"] })]);
-  renderApp();
-  const card = await screen.findByRole("article", { name: "projects/alpha" });
-  await userEvent.click(within(card).getByRole("button", { name: m.showScreen }));
-  expect(within(card).getByText(/strange line\s+another/)).toBeInTheDocument();
+  const found = await card();
+  await userEvent.click(found.getByRole("button", { name: m.showScreen }));
+  expect(found.getByText(/strange line\s+another/)).toBeInTheDocument();
 });
 
 test("a refused action shows the server's problem", async () => {
   dashboard([server("projects/alpha", "ready")], {
     "POST /api/servers/stop": problem(409, "not_running", "No server is running in this folder."),
   });
-  renderApp();
-  const card = await screen.findByRole("article", { name: "projects/alpha" });
-  await userEvent.click(within(card).getByRole("button", { name: m.stop }));
-  expect(await within(card).findByRole("alert")).toHaveTextContent("No server is running in this folder.");
-});
-
-test("an empty list says so", async () => {
-  dashboard([]);
-  renderApp();
-  expect(await screen.findByText(m.serversEmpty)).toBeInTheDocument();
+  const found = await card();
+  await userEvent.click(found.getByRole("button", { name: m.stop }));
+  expect(await found.findByRole("alert")).toHaveTextContent("No server is running in this folder.");
 });

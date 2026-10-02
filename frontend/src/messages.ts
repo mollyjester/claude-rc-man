@@ -23,10 +23,13 @@ export const m = {
   expand: (name: string) => `Show folders in ${name}`,
   collapse: (name: string) => `Hide folders in ${name}`,
   start: "Start",
-  startIn: (path: string) => `Start a server in ${path}`,
 
-  serversTitle: "Servers",
-  serversEmpty: "No servers yet. Pick a folder and start one.",
+  runningTitle: "Your servers",
+  runningEmpty: "No servers yet. Select a folder and start one.",
+  home: "Home",
+  breadcrumb: "Folder",
+  panelEmpty: "Select a folder to see its Claude server, or to start one.",
+  serverTitle: "Claude server",
   states: {
     starting: "Starting",
     trust_prompt: "Waiting for your answer",

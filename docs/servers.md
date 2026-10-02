@@ -8,23 +8,39 @@ with them.
 
 ## The Servers page
 
-The Servers page shows your folders on one side and your servers on the other.
-Open a folder with the arrow beside it, and choose **Start** beside any folder
-that has no server yet. Each server shows its state as a coloured badge, a
-sentence saying what to do next, and only the actions that state allows. The
-action to take next stands out; **Stop** and **Forget** never do:
+The Servers page has two sides. On the left are your **Folders**, and under
+them **Your servers**, which lists every server you have; on the right is the
+panel of the folder you have selected.
 
-| State | What to do | Buttons |
-|---|---|---|
-| Starting | Claude is starting. Wait a moment. | **Stop** |
-| Waiting for your answer | Answer whether you trust this folder. | **Yes, trust it**, **No**, **Stop** |
-| Ready to accept sessions | Open it in claude.ai to start a session. | **Stop** |
-| In use | A session is attached; continue it in claude.ai. | **Stop** |
-| Stopped | Resume to pick up its sessions, or forget it. | **Resume**, **Forget** |
-| Not started: folder not trusted | Start again to answer once more, or forget it. | **Start again**, **Forget** |
-| Not started: Claude account not connected | Connect your Claude account above, then start again. | **Start again**, **Forget** |
-| Stopped by itself | Show the screen to see why it stopped, then resume it. | **Resume**, **Forget**, **Show screen** |
-| Unrecognised screen | Show the screen, stop it, and tell an administrator. | **Show screen**, **Stop** |
+Select a folder by its name. The arrow beside a name opens the folder to show
+the folders inside it, without selecting it. A folder whose server is running,
+waiting for your answer, has a problem or is not running carries a coloured dot
+saying which; a folder with no server carries none. While a folder is closed,
+its dot also stands for the servers inside it, showing the most urgent of them.
+Choosing a server in **Your servers** selects its folder, wherever it is in the
+tree.
+
+The panel starts with where the folder is, from **Home** down; any step of it
+selects that folder, and **Home** selects none. Below that, its
+**Claude server** section shows the folder's server, or **Start** when it has none. The
+folder you have selected is part of the page's address, so reloading the page
+keeps it, and the browser's back button returns to the folder selected before.
+
+A server shows its state as a coloured badge, a sentence saying what to do
+next, and only the actions that state allows. The action to take next stands
+out; **Stop** and **Forget** never do:
+
+| State | Dot | What to do | Buttons |
+|---|---|---|---|
+| Starting | Running | Claude is starting. Wait a moment. | **Stop** |
+| Waiting for your answer | Needs your answer | Answer whether you trust this folder. | **Yes, trust it**, **No**, **Stop** |
+| Ready to accept sessions | Running | Open it in claude.ai to start a session. | **Stop** |
+| In use | Running | A session is attached; continue it in claude.ai. | **Stop** |
+| Stopped | Not running | Resume to pick up its sessions, or forget it. | **Resume**, **Forget** |
+| Not started: folder not trusted | Not running | Start again to answer once more, or forget it. | **Start again**, **Forget** |
+| Not started: Claude account not connected | Has a problem | Connect your Claude account above, then start again. | **Start again**, **Forget** |
+| Stopped by itself | Has a problem | Show the screen to see why it stopped, then resume it. | **Resume**, **Forget**, **Show screen** |
+| Unrecognised screen | Has a problem | Show the screen, stop it, and tell an administrator. | **Show screen**, **Stop** |
 
 A server that is ready or in use also has **Open in claude.ai**, which is
 the action to take next there.
@@ -44,7 +60,7 @@ reason it gave is shown on the server it was about.
 - The list shows only servers started from rcman. A `claude remote-control`
   you start yourself, in a terminal, is not shown, and rcman cannot stop or
   resume it. To have rcman manage that folder, quit the one you started and
-  choose **Start** beside the folder here.
+  select the folder here and choose **Start**.
 
 ## Starting
 

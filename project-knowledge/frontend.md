@@ -38,7 +38,10 @@ version is `frontend/.nvmrc`.
 | File | What it is |
 |---|---|
 | `src/App.tsx` | Who is signed in, the navigation, and the routes; `ADMIN_PAGES` is the administrators' pages, which the navigation and the routes are built from |
-| `src/Dashboard.tsx`, `src/Servers.tsx` | The Servers page: folder tree, servers and their actions, refreshed every `POLL_MS` |
+| `src/Dashboard.tsx` | The Servers page: the folder tree and its summary beside the selected folder's panel, the selection kept in the address as `?folder=`, the servers refreshed every `POLL_MS` |
+| `src/Folders.tsx` | The folder tree, fetched a folder at a time and opened to whatever is selected, each folder's status dot, and the summary of every server |
+| `src/FolderPanel.tsx` | A folder's panel: its breadcrumb and its Claude server section |
+| `src/Servers.tsx` | A server's states, what each allows and shows, and its card |
 | `src/Claude.tsx` | The Claude account's state and the connect flow |
 | `src/Settings.tsx` | The session name prefix |
 | `src/People.tsx`, `src/Everyone.tsx`, `src/Audit.tsx`, `src/Versions.tsx` | Administration; `src/Everyone.tsx` shows everyone's servers with no actions |
@@ -50,7 +53,9 @@ version is `frontend/.nvmrc`.
 - **Component tests** (Vitest, Testing Library, jsdom): `src/*.test.ts(x)`.
   They render the whole app at a route against `src/test/fakeApi.ts`, which
   answers from a table of routes in the backend's problem-details shape and
-  records every call.
+  records every call. `renderApp` in `src/test/render.tsx` also returns the
+  router's current location and a `navigate`, whose `navigate(-1)` is the
+  browser's back button.
 - **Browser tests** (Playwright): `e2e/*.spec.ts`, against the built frontend
   served by the real backend from `tests/e2e_server.py` — a real `rc-helper`
   per person with the fake `claude`, two people with their own homes, and

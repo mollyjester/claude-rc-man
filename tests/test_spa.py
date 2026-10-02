@@ -31,7 +31,7 @@ def test_root_serves_the_app(spa_client):
 
 
 def test_app_routes_fall_back_to_the_app(spa_client):
-    for path in ("/help/servers", "/admin/people", "/settings"):
+    for path in ("/help/servers", "/admin/people", "/settings", "/?folder=projects/alpha"):
         r = spa_client.get(path)
         assert r.status_code == 200 and "id=root" in r.text, path
 

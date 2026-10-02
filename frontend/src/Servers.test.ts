@@ -1,4 +1,4 @@
-import { ACTIONS, KIND, KIND_ORDER, LIVE, PRIMARY } from "./Servers";
+import { ACTIONS, KIND, KIND_ORDER, LIVE, PRIMARY, dotFor } from "./Servers";
 import { m } from "./messages";
 
 // Whether a table keyed by state covers exactly the states rc-helper reports.
@@ -40,4 +40,43 @@ test.each(Object.entries(PRIMARY))("the primary action of a %s server is one it 
     expect(ACTIONS[state]).toContain(primary);
     expect(["stop", "forget"]).not.toContain(primary);
   }
+});
+
+describe("the dot a folder carries", () => {
+  const at = (path: string, state: string) => ({
+    path,
+    state,
+    environment_url: null,
+    session_name: null,
+    exit_code: null,
+  });
+
+  test("is its own server's, whether open or not", () => {
+    const servers = [at("projects", "ready")];
+    expect(dotFor("projects", servers, false)).toBe("running");
+    expect(dotFor("projects", servers, true)).toBe("running");
+  });
+
+  test("includes the servers below it only while it is closed", () => {
+    const servers = [at("projects/alpha", "trust_prompt")];
+    expect(dotFor("projects", servers, true)).toBe("waiting");
+    expect(dotFor("projects", servers, false)).toBeNull();
+  });
+
+  test("is the most urgent of several", () => {
+    const servers = [at("projects", "stopped"), at("projects/alpha", "ready"), at("projects/beta", "exited")];
+    expect(dotFor("projects", servers, true)).toBe("problem");
+    expect(dotFor("projects", servers.slice(0, 2), true)).toBe("running");
+  });
+
+  test("does not come from a folder whose name merely starts the same", () => {
+    const servers = [at("projects/x", "unrecognised")];
+    expect(dotFor("projects", servers, true)).toBe("problem"); // positive control: it is below projects
+    expect(dotFor("proj", servers, true)).toBeNull();
+  });
+
+  test("is none where there is no server", () => {
+    expect(dotFor("projects", [], true)).toBeNull();
+    expect(dotFor("projects", [at("other", "ready")], true)).toBeNull();
+  });
 });

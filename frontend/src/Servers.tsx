@@ -82,11 +82,34 @@ export const LABELS: Record<Action, string> = {
   trustNo: m.trustNo,
 };
 
+// The dot a folder carries: the most urgent kind among its own server and,
+// while includeBelow, every server inside it; none where there is no server.
+export function dotFor(path: string, servers: Server[], includeBelow: boolean): Kind | null {
+  const kinds = new Set(
+    servers
+      .filter((s) => s.path === path || (includeBelow && s.path.startsWith(`${path}/`)))
+      .map((s) => kindOf(s.state)),
+  );
+  return KIND_ORDER.find((kind) => kinds.has(kind)) ?? null;
+}
+
 export function StateBadge({ state }: { state: string }) {
   return <span className={`badge badge-${kindOf(state)}`}>{m.states[state] ?? state}</span>;
 }
 
-function ServerCard({ server, onChange }: { server: Server; onChange: () => void }) {
+// A coloured dot, and its meaning in words for whatever names it with aria-describedby.
+export function StatusDot({ kind, id }: { kind: Kind; id: string }) {
+  return (
+    <>
+      <span className={`dot dot-${kind}`} aria-hidden="true" />
+      <span id={id} className="visually-hidden">
+        {m.kinds[kind]}
+      </span>
+    </>
+  );
+}
+
+export function ServerCard({ server, onChange }: { server: Server; onChange: () => void }) {
   const [error, setError] = useState<ApiError | null>(null);
   const [busy, setBusy] = useState(false);
   const [showScreen, setShowScreen] = useState(false);
@@ -113,7 +136,6 @@ function ServerCard({ server, onChange }: { server: Server; onChange: () => void
 
   return (
     <article aria-label={server.path} className="server">
-      <h3>{server.path}</h3>
       <p>
         <StateBadge state={server.state} />
       </p>
@@ -164,98 +186,5 @@ function ServerCard({ server, onChange }: { server: Server; onChange: () => void
       )}
       <ProblemView error={error} />
     </article>
-  );
-}
-
-export function ServerList({ servers, onChange }: { servers: Server[]; onChange: () => void }) {
-  return (
-    <section aria-label={m.serversTitle}>
-      <h2>{m.serversTitle}</h2>
-      {servers.length === 0 && <p>{m.serversEmpty}</p>}
-      {servers.map((server) => (
-        <ServerCard key={server.path} server={server} onChange={onChange} />
-      ))}
-    </section>
-  );
-}
-
-type Entry = { name: string; path: string; has_children: boolean };
-
-function FolderNode({
-  entry,
-  running,
-  onStart,
-}: {
-  entry: Entry;
-  running: Set<string>;
-  onStart: (path: string) => void;
-}) {
-  const [children, setChildren] = useState<Entry[] | null>(null);
-  const [error, setError] = useState<ApiError | null>(null);
-
-  async function toggle() {
-    if (children) {
-      setChildren(null);
-      return;
-    }
-    try {
-      setChildren((await api.get<{ entries: Entry[] }>("/api/folders", { path: entry.path })).entries);
-    } catch (e) {
-      setError(asApiError(e));
-    }
-  }
-
-  return (
-    <li>
-      {entry.has_children ? (
-        <button
-          type="button"
-          className="toggle"
-          aria-label={children ? m.collapse(entry.name) : m.expand(entry.name)}
-          onClick={toggle}
-        >
-          {children ? "▾" : "▸"}
-        </button>
-      ) : (
-        <span className="toggle" />
-      )}
-      <span className="name">{entry.name}</span>
-      {!running.has(entry.path) && (
-        <button type="button" aria-label={m.startIn(entry.path)} onClick={() => onStart(entry.path)}>
-          {m.start}
-        </button>
-      )}
-      <ProblemView error={error} />
-      {children && (
-        <ul>
-          {children.length === 0 && <li>{m.foldersEmpty}</li>}
-          {children.map((child) => (
-            <FolderNode key={child.path} entry={child} running={running} onStart={onStart} />
-          ))}
-        </ul>
-      )}
-    </li>
-  );
-}
-
-export function FolderTree({
-  entries,
-  running,
-  onStart,
-}: {
-  entries: Entry[];
-  running: Set<string>;
-  onStart: (path: string) => void;
-}) {
-  return (
-    <section aria-label={m.foldersTitle}>
-      <h2>{m.foldersTitle}</h2>
-      {entries.length === 0 && <p>{m.foldersEmpty}</p>}
-      <ul className="tree">
-        {entries.map((entry) => (
-          <FolderNode key={entry.path} entry={entry} running={running} onStart={onStart} />
-        ))}
-      </ul>
-    </section>
   );
 }

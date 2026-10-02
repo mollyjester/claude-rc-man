@@ -21,15 +21,23 @@ async function connectClaude(page: Page) {
   await expect(page.getByText(m.claudeConnectedAs("fake-user@example.com"))).toBeVisible();
 }
 
+// Opens projects in the folder tree and selects one of the folders in it.
+async function select(page: Page, name: string) {
+  const tree = page.getByRole("region", { name: m.foldersTitle });
+  await tree.getByRole("button", { name: m.expand("projects") }).click();
+  await tree.getByRole("button", { name, exact: true }).click();
+}
+
 test("a person signs in, connects Claude, and runs a server", async ({ page }) => {
   await signIn(page, "alice@example.com");
   await expect(page.getByText(m.signedInAs("alice@example.com"))).toBeVisible();
   await expect(page.getByText(m.claudeNotConnected)).toBeVisible();
   await connectClaude(page);
 
-  await page.getByRole("button", { name: m.expand("projects") }).click();
-  await page.getByRole("button", { name: m.startIn("projects/alice-demo") }).click();
-  const card = page.getByRole("article", { name: "projects/alice-demo" });
+  await select(page, "alice-demo");
+  const panel = page.getByRole("region", { name: "projects/alice-demo", exact: true });
+  await panel.getByRole("button", { name: m.start }).click();
+  const card = panel.getByRole("article", { name: "projects/alice-demo" });
   await card.getByRole("button", { name: m.trustYes }).click();
   await expect(card.getByText(m.states.ready, { exact: true })).toBeVisible();
   await expect(card.getByText(/^alice-/)).toBeVisible();
@@ -39,15 +47,23 @@ test("a person signs in, connects Claude, and runs a server", async ({ page }) =
   await expect(card.getByText(m.states.ready, { exact: true })).toBeVisible();
   await card.getByRole("button", { name: m.stop }).click();
   await expect(card.getByText(m.states.stopped, { exact: true })).toBeVisible();
+  await card.getByRole("button", { name: m.forget }).click();
+  await expect(card).toHaveCount(0);
+
+  // The folder is trusted now, so starting it again goes straight to ready.
+  await panel.getByRole("button", { name: m.start }).click();
+  await expect(card.getByText(m.states.ready, { exact: true })).toBeVisible();
+  await card.getByRole("button", { name: m.stop }).click();
+  await expect(card.getByText(m.states.stopped, { exact: true })).toBeVisible();
 });
 
 test("another person sees only their own home and servers", async ({ page }) => {
   await signIn(page, "bob@example.com");
   await expect(page.getByText(m.signedInAs("bob@example.com"))).toBeVisible();
   await page.getByRole("button", { name: m.expand("projects") }).click();
-  await expect(page.getByRole("button", { name: m.startIn("projects/bob-demo") })).toBeVisible();
+  await expect(page.getByRole("button", { name: "bob-demo", exact: true })).toBeVisible();
   await expect(page.getByText("alice-demo")).toHaveCount(0);
-  await expect(page.getByText(m.serversEmpty)).toBeVisible();
+  await expect(page.getByRole("region", { name: m.runningTitle }).getByText(m.runningEmpty)).toBeVisible();
   await expect(page.getByRole("link", { name: m.navUsers })).toHaveCount(0);
 
   // Even asked directly, from bob's own signed-in page, rcman acts only in bob's home.
@@ -67,8 +83,8 @@ test("administrators see everyone's servers, and act on none of them", async ({ 
   await signIn(page, "bob@example.com");
   await expect(page.getByRole("link", { name: m.navEveryone })).toHaveCount(0);
   await connectClaude(page);
-  await page.getByRole("button", { name: m.expand("projects") }).click();
-  await page.getByRole("button", { name: m.startIn("projects/bob-demo") }).click();
+  await select(page, "bob-demo");
+  await page.getByRole("region", { name: "projects/bob-demo", exact: true }).getByRole("button", { name: m.start }).click();
   const card = page.getByRole("article", { name: "projects/bob-demo" });
   await card.getByRole("button", { name: m.trustYes }).click();
   await expect(card.getByText(m.states.ready, { exact: true })).toBeVisible();
@@ -99,7 +115,7 @@ test("an address that is not on the list gets nowhere", async ({ page }) => {
 test("the audit trail records what people did", async ({ page }) => {
   await signIn(page, "alice@example.com");
   await page.getByRole("link", { name: m.navAudit }).click();
-  for (const action of ["claude.login", "claude.connect", "server.start", "server.confirm", "server.stop", "server.resume"]) {
+  for (const action of ["claude.login", "claude.connect", "server.start", "server.confirm", "server.stop", "server.resume", "server.forget"]) {
     await expect(page.getByRole("cell", { name: action, exact: true }).first()).toBeVisible();
   }
   await expect(page.getByRole("cell", { name: "bob@example.com (bob)" }).first()).toBeVisible(); // bob's refused stop

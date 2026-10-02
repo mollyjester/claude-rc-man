@@ -35,7 +35,8 @@ export function fakeApi(routes: Routes) {
       });
     }
     const route = routes[key];
-    const reply = typeof route === "function" ? route(call) : route;
+    // A handler may answer later, by returning a promise.
+    const reply = await (typeof route === "function" ? route(call) : route);
     if (reply instanceof Problem) {
       return new Response(JSON.stringify(reply.body), {
         status: reply.status,

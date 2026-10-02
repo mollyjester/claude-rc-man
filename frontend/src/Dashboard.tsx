@@ -1,17 +1,24 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
+import { useNavigate, useSearchParams } from "react-router-dom";
 
 import { ApiError, api } from "./api";
 import { ClaudeConnection, type Connection } from "./Claude";
+import { FolderPanel, HomePanel } from "./FolderPanel";
+import { FolderTree, ServerSummary, folderLink, useFolderTree } from "./Folders";
 import { ProblemView, asApiError } from "./ProblemView";
-import { FolderTree, type Server, ServerList } from "./Servers";
+import type { Server } from "./Servers";
 
-type Entry = { name: string; path: string; has_children: boolean };
-
+// The Servers page: the folder tree and its summary on one side, and the
+// selected folder's panel on the other. The selected folder is in the address.
 export function Dashboard({ pollMs }: { pollMs: number }) {
   const [connection, setConnection] = useState<Connection | null>(null);
-  const [entries, setEntries] = useState<Entry[]>([]);
-  const [servers, setServers] = useState<Server[]>([]);
+  const [servers, setServers] = useState<Server[] | null>(null);
   const [error, setError] = useState<ApiError | null>(null);
+  const [params] = useSearchParams();
+  const navigate = useNavigate();
+  const selected = params.get("folder") || null;
+  const tree = useFolderTree();
+  const { reveal } = tree;
 
   const refresh = useCallback(async () => {
     try {
@@ -23,7 +30,6 @@ export function Dashboard({ pollMs }: { pollMs: number }) {
 
   useEffect(() => {
     api.get<Connection>("/api/claude").then(setConnection, (e) => setError(asApiError(e)));
-    api.get<{ entries: Entry[] }>("/api/folders").then((r) => setEntries(r.entries), (e) => setError(asApiError(e)));
     refresh();
     if (pollMs > 0) {
       const timer = setInterval(refresh, pollMs);
@@ -31,25 +37,33 @@ export function Dashboard({ pollMs }: { pollMs: number }) {
     }
   }, [pollMs, refresh]);
 
-  const running = useMemo(() => new Set(servers.map((s) => s.path)), [servers]);
+  useEffect(() => {
+    if (selected) reveal(selected);
+  }, [selected, reveal]);
 
-  async function start(path: string) {
-    setError(null);
-    try {
-      await api.post("/api/servers", { path });
-    } catch (e) {
-      setError(asApiError(e));
-    }
-    refresh();
+  function select(path: string) {
+    if (path !== selected) navigate(folderLink(path));
   }
 
   return (
     <>
       <ClaudeConnection connection={connection} onChange={setConnection} />
       <ProblemView error={error} />
-      <div className="columns">
-        <FolderTree entries={entries} running={running} onStart={start} />
-        <ServerList servers={servers} onChange={refresh} />
+      <div className="workspace">
+        <div className="pane">
+          <FolderTree tree={tree} servers={servers ?? []} selected={selected} onSelect={select} />
+          <ServerSummary servers={servers} onSelect={select} />
+        </div>
+        {selected ? (
+          <FolderPanel
+            key={selected}
+            path={selected}
+            server={servers === null ? undefined : (servers.find((s) => s.path === selected) ?? null)}
+            onChange={refresh}
+          />
+        ) : (
+          <HomePanel />
+        )}
       </div>
     </>
   );

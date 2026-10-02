@@ -32,8 +32,8 @@ With a person added for the test account (`sudo rcman-user add`):
 2. **Connect Claude account**: the sign-in link opens claude.com; after
    signing in, the code Claude shows connects the account, and the page shows
    the account and when its sign-in expires.
-3. Start a server in a folder under `~/projects`, answer the trust question,
-   and wait for **Ready**.
+3. Select a folder under `~/projects`, choose **Start**, answer the trust
+   question, and wait for **Ready to accept sessions**.
 4. Open **Open in claude.ai**: the session is listed in claude.ai/code under
    the session name rcman shows, and answers a message.
 5. **Stop**, then **Resume**: the same session comes back in claude.ai/code.
