@@ -827,6 +827,8 @@ def looks_like_repository(root: Path, folder: Path) -> bool:
     """
     dot = folder / ".git"
     try:
+        if not dot.exists():  # the most folders, at the cost of one stat
+            return False
         if dot.is_file():
             with dot.open("rb") as f:
                 line = f.read(MAX_GITDIR_FILE_BYTES).decode("utf-8", "replace").strip()
@@ -1016,6 +1018,10 @@ class Helper:
             try:
                 target = child.resolve()
                 if not target.is_dir() or (target != root and root not in target.parents):
+                    continue
+                # What git keeps is git's: nothing in a .git folder is a folder of
+                # the person's, however it is reached.
+                if any(part.casefold() == ".git" for part in target.relative_to(root).parts):
                     continue
             except OSError:
                 continue
