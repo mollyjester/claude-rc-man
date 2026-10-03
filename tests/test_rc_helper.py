@@ -3445,3 +3445,26 @@ def test_status_says_whether_a_token_is_stored_for_a_push_to_github(
     commit_in(Path(hooked["RC_HELPER_HOME"]) / GH_REL, "more.txt")
     assert push(hooked, GH_REL)[1]["error"]["code"] == "git_failed"
     assert token(hooked, GH_REL) is False  # git forgot the token GitHub refused
+
+
+def test_status_says_how_far_ahead_of_where_it_pushes_the_branch_is(env, repo, tmp_path):
+    """Measured against the push destination (@{push}) when there is one, the upstream
+    otherwise, and null with neither."""
+    assert status(env)["push_ahead"] == 0  # main is where origin/main is
+    commit_in(repo, "more.txt")
+    assert status(env)["push_ahead"] == 1  # against the upstream
+    mirror = tmp_path / "mirror.git"
+    fixture_git(tmp_path, "init", "-q", "--bare", str(mirror))
+    fixture_git(repo, "remote", "add", "mirror", str(mirror))
+    fixture_git(repo, "push", "-q", "mirror", "HEAD~1:refs/heads/main")
+    fixture_git(repo, "fetch", "-q", "mirror")
+    fixture_git(repo, "push", "-q", "origin", "main")
+    fixture_git(repo, "fetch", "-q", "origin")
+    shown = status(env)
+    assert shown["branch"]["ahead"] == 0  # the upstream has it all
+    assert shown["push_ahead"] == 0  # no push remote of its own yet: the upstream
+    fixture_git(repo, "config", "branch.main.pushRemote", "mirror")
+    assert status(env)["push_ahead"] == 1  # the push destination, mirror/main, lacks one
+    fixture_git(repo, "switch", "-q", "-c", "no-upstream")
+    fixture_git(repo, "config", "--unset", "branch.main.pushRemote")
+    assert status(env)["push_ahead"] is None
