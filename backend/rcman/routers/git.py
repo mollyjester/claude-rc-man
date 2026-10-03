@@ -2,8 +2,9 @@
 
 What git is given that a person wrote — the files to stage or unstage and a
 commit's message — reaches rc-helper on stdin, never in its arguments; a
-commit's message is never recorded or logged. Pushing to GitHub needs the
-person's GitHub token (routers/github.py), which rc-helper checks for.
+commit's message is never recorded or logged. A clone's address is an argument:
+the rule it is checked by takes no user or password in it. Pushing to GitHub needs
+the person's GitHub token (routers/github.py), which rc-helper checks for.
 """
 
 from __future__ import annotations
@@ -20,7 +21,7 @@ from rcman.audit import COMMITTED_NOT_PUSHED, Record, Recorder
 from rcman.helpers_client import GIT_ANSWER_MARGIN_SECONDS, call_helper
 from rcman.identity import Identity, current_user
 from rcman.problems import Problem, ruled
-from rcman.routers.folders import FolderPath
+from rcman.routers.folders import FolderPath, PathOrHome
 from rcman.routers.me import author_of
 
 router = APIRouter(prefix="/api/git", tags=["git"])
@@ -28,9 +29,11 @@ router = APIRouter(prefix="/api/git", tags=["git"])
 # time to start and to answer.
 LOCAL_TIMEOUT = rc_helper.GIT_TIMEOUT + GIT_ANSWER_MARGIN_SECONDS
 NETWORK_TIMEOUT = rc_helper.GIT_NETWORK_TIMEOUT + GIT_ANSWER_MARGIN_SECONDS
+CLONE_TIMEOUT = rc_helper.CLONE_TIMEOUT + GIT_ANSWER_MARGIN_SECONDS
 
 CommitMessage = ruled(rc_helper.COMMIT_MESSAGE, max_length=rc_helper.MAX_COMMIT_MESSAGE_LENGTH)
 BranchName = ruled(rc_helper.BRANCH_NAME)
+GitHubUrl = ruled(rc_helper.GITHUB_URL)
 
 
 class RepositoryBody(BaseModel):
@@ -59,6 +62,14 @@ class SwitchBody(RepositoryBody):
 
 class NewBranchBody(RepositoryBody):
     name: BranchName = Field(description="The new branch's name.")
+
+
+class CloneBody(BaseModel):
+    parent: PathOrHome = Field(
+        default="",
+        description="The folder to clone into, relative to the home folder; empty for the home.",
+    )
+    url: GitHubUrl = Field(description="The repository's address on GitHub.")
 
 
 def _git(request: Request, identity: Identity, verb: str, path: str, *options: str, **kw) -> dict:
@@ -189,3 +200,18 @@ def commit_push(
         )
         record.result = COMMITTED_NOT_PUSHED
     return answer
+
+
+@router.post("/clone")
+def clone(
+    body: CloneBody, request: Request, record: Record = Depends(Recorder("git.clone"))
+) -> dict:
+    """Clone a repository from GitHub into a folder, or into the home folder, in the
+    folder git names; a private one with the person's GitHub token.
+
+    The address is recorded as it is: GITHUB_URL takes none with a user or a password
+    in it.
+    """
+    record.target = body.url
+    args = ["git-clone", f"--url={body.url}", "--", *([body.parent] if body.parent else [])]
+    return call_helper(request.app.state.helper, record.identity, args, timeout=CLONE_TIMEOUT)

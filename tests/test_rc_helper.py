@@ -3904,3 +3904,31 @@ def test_a_clone_has_time_for_the_network_and_to_clean_up_before_rcman_gives_up(
     assert h.CLONE_TIMEOUT > helpers_client.HELPER_TIMEOUT
     assert 0 < h.CLONE_CLEANUP_SECONDS
     assert h.CLONE_TIMEOUT - h.CLONE_CLEANUP_SECONDS >= h.GIT_NETWORK_TIMEOUT
+
+
+def test_a_clone_leaves_submodules_uncloned_even_where_the_person_asks_for_them(
+    hooked, github, tmp_path
+):
+    """git clone -- <url> does not clone submodules, and the person's submodule.recurse
+    does not make it: git's clone is the one command that setting does not reach."""
+    from tests.git_fixtures import add_submodule
+
+    home = Path(hooked["RC_HELPER_HOME"])
+    sub, name = f"sub-{tmp_path.name}", f"super-{tmp_path.name}"
+    make_repo(tmp_path / "sub", origin=github.bare("owner", sub))
+    upper = make_repo(tmp_path / "super")
+    add_submodule(upper, tmp_path / "sub", "lib")
+    fixture_git(upper, "config", "-f", ".gitmodules", "submodule.lib.url", github_url_of(sub))
+    fixture_git(upper, "commit", "-q", "-am", "Add lib")
+    bare = github.bare("owner", name)
+    fixture_git(upper, "push", "-q", str(bare), "main")
+    gitconfig = str(home / ".gitconfig")
+    subprocess.run(["git", "config", "--file", gitconfig, "submodule.recurse", "true"], check=True)
+    ok(hooked, "git-clone", f"--url={github_url_of(name)}", "--", "projects")
+    clone_ = home / "projects" / name
+    assert (clone_ / ".gitmodules").is_file()  # positive control: it has a submodule
+    assert os.listdir(clone_ / "lib") == []
+
+
+def github_url_of(name: str) -> str:
+    return f"https://github.com/owner/{name}"

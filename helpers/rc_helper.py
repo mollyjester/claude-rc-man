@@ -69,6 +69,7 @@ VERBS = (
     "github-token",
     "github-status",
     "github-forget",
+    "git-clone",
 )
 
 # Words both a message and the path rules' sentences say.
@@ -142,6 +143,13 @@ MESSAGES = {
         "You are not on a branch, so there is nothing to push. Switch to a branch first."
     ),
     "github_token_not_set": "Add a GitHub token in Settings before pushing to GitHub.",
+    "clone_unsafe": (
+        "A clone that fails could not be removed safely on this system, so rcman does not clone."
+    ),
+    "clone_missing": (
+        "git finished, but the clone is not in the folder rcman made for it, "
+        "so that folder was removed."
+    ),
 }
 
 TMUX_SOCKET_NAME = "rcman"
@@ -307,6 +315,24 @@ GITHUB_TOKEN = Rule(
     "A GitHub token is one line of visible characters, with no spaces, "
     f"at most {MAX_GITHUB_TOKEN_LENGTH} characters long.",
 )
+# How long a GitHub owner's and repository's names may be in an address: longer than
+# GitHub allows, so that they bound what is taken and GitHub refuses the rest.
+MAX_GITHUB_OWNER_LENGTH = 100
+MAX_GITHUB_REPOSITORY_LENGTH = 100
+# A repository on GitHub, as git clone takes it. ASCII only, and no lookaround, so the
+# backend's validator reads it as this module does. A name may not begin with a dot:
+# its folder would be hidden, and rcman does not delete one.
+_GITHUB_OWNER = rf"[A-Za-z0-9_][A-Za-z0-9_-]{{0,{MAX_GITHUB_OWNER_LENGTH - 1}}}"
+_GITHUB_REPOSITORY = rf"[A-Za-z0-9_-][A-Za-z0-9._-]{{0,{MAX_GITHUB_REPOSITORY_LENGTH - 1}}}"
+GITHUB_URL = Rule(
+    re.compile(rf"https://github\.com/{_GITHUB_OWNER}/{_GITHUB_REPOSITORY}(?:\.git)?/?"),
+    "A repository's address must be https://github.com/, its owner, a slash and its "
+    "name, as GitHub shows them, and may end in .git or a slash. The owner and the name "
+    "may hold letters a to z in either case, digits, hyphens and underscores, and the "
+    "name dots too; the owner may not begin with a hyphen, nor the name with a dot. "
+    "Nothing else may be in it: no user name, password, port, query, fragment or "
+    "percent sign.",
+)
 # The rules rc-helper refuses a value by, each with the code it refuses it with;
 # MESSAGES gives each code its rule's own sentence.
 RULE_CODES = {
@@ -318,6 +344,7 @@ RULE_CODES = {
     "message_invalid": COMMIT_MESSAGE,
     "branch_name_invalid": BRANCH_NAME,
     "token_invalid": GITHUB_TOKEN,
+    "url_invalid": GITHUB_URL,
 }
 MESSAGES.update({code: rule.sentence for code, rule in RULE_CODES.items()})
 # A message that states a length, so written once the length is.
@@ -338,6 +365,10 @@ UNRECOGNISED_GRACE_SECONDS = 3.0
 # git: how long a verb's git calls may take, all together; fetch, over the network.
 GIT_TIMEOUT = 30.0
 GIT_NETWORK_TIMEOUT = 120.0
+# A clone: the whole verb's deadline, of which the last CLONE_CLEANUP_SECONDS are kept
+# for removing what a clone that failed left, so git has the rest.
+CLONE_TIMEOUT = 300.0
+CLONE_CLEANUP_SECONDS = 30.0
 # How many files each of a status's two lists, and branches each list, holds;
 # the rest are counted.
 MAX_LISTED_FILES = 500
@@ -542,6 +573,12 @@ def check_folder_name(name: str, parent_fd: int, parent_rel: str) -> str:
     if len(rel) > MAX_PATH_LENGTH:
         raise HelperError("folder_path_too_long")
     return rel
+
+
+def clone_folder_name(url: str) -> str:
+    """The folder git clone makes for an address GITHUB_URL accepts: its last part,
+    less a slash and then .git at its end, as git names it."""
+    return url.removesuffix("/").rsplit("/", 1)[1].removesuffix(".git")
 
 
 @dataclass(frozen=True)
@@ -960,21 +997,28 @@ def git_verb(timeout: str = "GIT_TIMEOUT"):
                 try:
                     deadline = time.monotonic() + globals()[timeout]
                     return method(self, deadline, *args, **kwargs)
-                except git_run.GitMissing:
-                    raise HelperError("git_not_installed") from None
-                except git_run.GitFailed as error:
-                    detail = {"git": error.lines, "git_more": error.more}
-                    raise HelperError("git_failed", detail) from None
-                except git_run.GitTimedOut:
-                    raise HelperError("git_timeout") from None
-                except git_run.GitUnrecognised as error:
-                    raise HelperError("git_unrecognised_output", {"git": error.lines}) from None
+                except GIT_ERRORS as error:
+                    raise git_problem(error) from None
 
         verb.__name__ = method.__name__
         verb.__doc__ = method.__doc__
         return verb
 
     return wrap
+
+
+GIT_ERRORS = (git_run.GitMissing, git_run.GitFailed, git_run.GitTimedOut, git_run.GitUnrecognised)
+
+
+def git_problem(error: Exception) -> HelperError:
+    """One of git_run's exceptions, GIT_ERRORS, as rc-helper's code for it."""
+    if isinstance(error, git_run.GitMissing):
+        return HelperError("git_not_installed")
+    if isinstance(error, git_run.GitFailed):
+        return HelperError("git_failed", {"git": error.lines, "git_more": error.more})
+    if isinstance(error, git_run.GitTimedOut):
+        return HelperError("git_timeout")
+    return HelperError("git_unrecognised_output", {"git": error.lines})
 
 
 def check_branch_name(name: str) -> None:
@@ -1013,6 +1057,47 @@ def read_token(data: bytes) -> bytes:
     if not GITHUB_TOKEN.fullmatch(token):
         raise HelperError("token_invalid")
     return token.encode("ascii")
+
+
+def _is_made(fd: int, name: str, made: os.stat_result) -> bool:
+    """Whether ``name`` in the folder open as ``fd`` is still the folder ``made`` was
+    taken of, by device and inode, without following a link."""
+    try:
+        now = os.lstat(name, dir_fd=fd)
+    except FileNotFoundError:
+        return False
+    return stat.S_ISDIR(now.st_mode) and (now.st_dev, now.st_ino) == (made.st_dev, made.st_ino)
+
+
+def _holds_repository(fd: int, name: str, made: os.stat_result) -> bool:
+    """Whether the folder made as ``name`` holds a .git, as git clone makes one."""
+    if not _is_made(fd, name, made):
+        return False
+    try:
+        inner = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+    except OSError:
+        return False
+    try:
+        os.lstat(".git", dir_fd=inner)
+    except FileNotFoundError:
+        return False
+    finally:
+        os.close(inner)
+    return True
+
+
+def _remove_made(fd: int, name: str, made: os.stat_result) -> bool:
+    """Remove the folder made as ``name``, if it is still that folder; whether nothing of
+    it is left. SIGTERM waits until the removal is done."""
+    mask = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGTERM})
+    try:
+        if not _is_made(fd, name, made):
+            return True
+        failed = []
+        shutil.rmtree(name, dir_fd=fd, onexc=lambda *_: failed.append(True))
+        return not failed and not _is_made(fd, name, made)
+    finally:
+        signal.pthread_sigmask(signal.SIG_SETMASK, mask)
 
 
 # --- verbs ----------------------------------------------------------------------------
@@ -1674,6 +1759,55 @@ class Helper:
             "upstream_set": upstream is None,
         }
 
+    # --- clone ------------------------------------------------------------------------
+
+    def git_clone(self, rel: str, url: str) -> dict:
+        """Clone a repository from GitHub into a folder, or into the home folder, as
+        git clone -- <url> run there makes it: in the folder git names.
+
+        The address is checked before anything else, and nothing is cloned where
+        a failed clone could not be removed safely.
+        """
+        if not GITHUB_URL.fullmatch(url):
+            raise HelperError("url_invalid")
+        if not shutil.rmtree.avoids_symlink_attacks:
+            raise HelperError("clone_unsafe")
+        return self._clone(rel, url)
+
+    @git_verb(timeout="CLONE_TIMEOUT")
+    def _clone(self, deadline: float, rel: str, url: str) -> dict:
+        """The folder is made here first, so that anything already there is refused, even
+        an empty folder git would clone into. On any failure, a timeout and SIGTERM
+        among them, that folder is removed again, and only it: what has its name is
+        removed only while it is the folder made here, by device and inode. What cannot
+        be removed is reported as ``left``."""
+        root = self.cfg.home.resolve()
+        parent = resolve_folder(self.cfg.home, rel, allow_home=True)
+        fd = open_dir(root, parent)
+        try:
+            name = clone_folder_name(url)
+            created = check_folder_name(name, fd, relative(self.cfg.home, parent))
+            try:
+                os.mkdir(name, dir_fd=fd)
+            except FileExistsError:
+                raise HelperError("folder_exists") from None
+            made = os.lstat(name, dir_fd=fd)
+            try:
+                self._git(parent, ["clone", "--", url], deadline - CLONE_CLEANUP_SECONDS)
+                if not _holds_repository(fd, name, made):
+                    raise HelperError("clone_missing")
+            except BaseException as error:
+                removed = _remove_made(fd, name, made)
+                problem = git_problem(error) if isinstance(error, GIT_ERRORS) else error
+                if isinstance(problem, HelperError) and not removed:
+                    problem.detail["left"] = [created]
+                if problem is error:
+                    raise
+                raise problem from None
+        finally:
+            os.close(fd)
+        return {"created": created}
+
     # --- the GitHub token -------------------------------------------------------------
     #
     # The token is git's own credential for GitHub, kept by git's store helper in the
@@ -1853,6 +1987,11 @@ def _parser() -> argparse.ArgumentParser:
     )
     verbs.add_parser("github-status", help="whether a GitHub token is stored for git")
     verbs.add_parser("github-forget", help="remove the GitHub token rcman stored")
+    clone = verbs.add_parser(
+        "git-clone", help="clone a repository from GitHub into a folder, or into your home"
+    )
+    clone.add_argument("parent", nargs="?", default="")
+    clone.add_argument("--url", required=True, help="https://github.com/<owner>/<name>")
     return parser
 
 
@@ -1892,6 +2031,8 @@ def _dispatch(helper: Helper, args: argparse.Namespace, stdin) -> dict:
         return helper.git_commit(args.path, args.author_name, args.author_email, data)
     if v == "git-switch":
         return helper.git_switch(args.path, args.branch, args.remote)
+    if v == "git-clone":
+        return helper.git_clone(args.parent, args.url)
     if v == "git-push":
         return helper.git_push(args.path, args.check)
     return helper.git_branch_new(args.path, args.name)

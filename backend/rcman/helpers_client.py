@@ -21,8 +21,9 @@ ADMIN_TIMEOUT = 600
 # it to stop, then removes a whole tree, however large.
 FOLDER_DELETE_TIMEOUT_SECONDS = 300
 # A git call: how much longer than the helper's own deadline for git
-# (rc_helper.GIT_TIMEOUT, or GIT_NETWORK_TIMEOUT for a fetch) rcman waits, for
-# sudo and the helper to start and to answer.
+# (rc_helper.GIT_TIMEOUT, GIT_NETWORK_TIMEOUT for a fetch or a push, or
+# CLONE_TIMEOUT for a clone) rcman waits, for sudo and the helper to start and
+# to answer.
 GIT_ANSWER_MARGIN_SECONDS = 15
 # After a timeout: how long sudo has to pass SIGTERM on and its child to end.
 TERMINATE_GRACE_SECONDS = 5.0
@@ -84,6 +85,9 @@ HELPER_STATUS = {
     "token_invalid": 400,
     "detached_head": 409,
     "github_token_not_set": 409,
+    "url_invalid": 400,
+    "clone_unsafe": 500,
+    "clone_missing": 502,
 }
 ADMIN_STATUS = {
     "usage": 500,

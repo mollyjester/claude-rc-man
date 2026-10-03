@@ -67,6 +67,7 @@ command-line reference is `rc-helper --help` and `rc-helper <verb> --help`.
 | `rc-helper github-token` | Stores the token read from stdin as git's credential for GitHub, in place of any rcman stored before, and has git use its store helper for GitHub. The token must match `GITHUB_TOKEN`. See [GitHub token](#github-token) |
 | `rc-helper github-status` | Whether a token rcman stored is there and git is told to use the store helper for GitHub, as `token` |
 | `rc-helper github-forget` | Erases the token rcman stored, and nothing else |
+| `rc-helper git-clone [parent] --url=<url>` | Clones the repository at `<url>` into a folder, or into the home folder when no parent is given, as `git clone -- <url>` run there makes it: in the folder git names, `clone_folder_name`. `<url>` must match `GITHUB_URL`. Refuses with `folder_exists` when anything has that name, an empty folder too. Returns the new folder as `created`. See [Clone](#clone) |
 
 ## Deleting a folder
 
@@ -156,10 +157,10 @@ if Claude asks again.
   reach a server whose folder no longer exists, or is no longer named as it
   was: its path is then followed as far as it exists and must still lead
   inside the home folder.
-- `mkdir` opens the parent folder one part at a time from the home folder,
-  refusing to follow a link (`open_dir`), and makes the new folder through
-  that file descriptor, so a part replaced by a link after the path was
-  resolved is refused rather than followed.
+- `mkdir` and `git-clone` open the parent folder one part at a time from
+  the home folder, refusing to follow a link (`open_dir`), and make the new
+  folder through that file descriptor, so a part replaced by a link after
+  the path was resolved is refused rather than followed.
 - Starting, resuming, stopping, answering and forgetting a server, making a
   folder and every git verb take a shared `flock` on the home folder itself,
   and deleting takes it exclusively, so nothing is done to a server or a
@@ -201,9 +202,9 @@ running git are `helpers/git_run.py`, tested by `tests/test_git_run.py`.
   repository while Claude may be working in it. The person's git
   configuration, the system's too, and their hooks apply as they would in a
   terminal; hooks find the person's `~/.local/bin` first on their PATH.
-- **Deadlines.** A verb's git calls share one deadline, `GIT_TIMEOUT`, and a
-  fetch and a push have `GIT_NETWORK_TIMEOUT`, each read when the verb is called
-  (`git_verb` names the constant). Each git runs in a session of its own
+- **Deadlines.** A verb's git calls share one deadline, `GIT_TIMEOUT`; a
+  fetch and a push have `GIT_NETWORK_TIMEOUT`, and a clone `CLONE_TIMEOUT`,
+  each read when the verb is called (`git_verb` names the constant). Each git runs in a session of its own
   (`start_new_session`); at the deadline, when its output is left unread, or
   on SIGTERM, its whole process group is killed, hooks and remote helpers
   with it. At the deadline the verb answers `git_timeout`; on SIGTERM it
@@ -266,6 +267,43 @@ elsewhere is tried, and git's refusal, if any, passed on. `git-status`
 reports the same as `push_to_github`. `--check` stops after these checks:
 the backend's Commit & Push checks first, so that nothing is committed
 for a push that would not be tried.
+
+## Clone
+
+`git-clone` works in a fixed order, and makes nothing until the last step
+before git:
+
+1. It refuses an address `GITHUB_URL` does not take with `url_invalid`,
+   before any path is looked at or the folder lock taken. The rule takes no
+   user or password, so no token can be in an address, and an address that
+   starts with a hyphen is no address.
+2. It refuses outright, with `clone_unsafe`, where `shutil.rmtree` does not
+   resist symbolic-link attacks: it could not remove a failed clone safely.
+3. It takes the folder lock shared, as every git verb does, resolves and
+   opens the parent as `mkdir` does, and checks the new folder's name,
+   `clone_folder_name`, as `mkdir` checks one.
+4. It makes the folder itself, through the parent's file descriptor, and
+   notes its device and inode. Anything already there with that name — an
+   empty folder too, which git would clone into — is `folder_exists`, and
+   git is not run.
+5. git runs in the parent as `git clone -- <url>` and nothing else, so the
+   person's configuration applies, `GIT_ALLOW_PROTOCOL` among what is not
+   set, and submodules are not cloned. Its deadline is the verb's,
+   `CLONE_TIMEOUT`, less `CLONE_CLEANUP_SECONDS`, kept for step 7. git
+   reaches a private repository with the stored [GitHub token](#github-token).
+6. Once git has finished, the folder must still be the one made in step 4
+   and hold a `.git`, or the clone is `clone_missing`.
+7. On any failure after step 4 — git's refusal, the deadline, SIGTERM or
+   anything else — the folder made in step 4 is removed with
+   `shutil.rmtree` through the parent's file descriptor, and only while
+   what has its name is still that folder, by device and inode; SIGTERM
+   waits until the removal is done. When anything of it cannot be removed,
+   the failure's answer lists the folder as `left`.
+
+git takes an address that names a path in the folder it runs in as that
+path: with a repository at `https:/github.com/<owner>/<name>` in the parent,
+git refuses the address, rather than clone that repository or reach GitHub;
+a test holds git to that.
 
 ## GitHub token
 

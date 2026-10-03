@@ -22,7 +22,7 @@ the OpenAPI description it serves at `/api/openapi`.
 | `everyone.py` | Everyone's servers, for administrators: one `rc-helper list` per person, side by side |
 | `routes.py` | The app's routes as FastAPI resolves them after including routers, and which of them are for administrators |
 | `routers/` | One module per area: `me`, `folders`, `git`, `github`, `servers`, `claude`, `users`, `audit_log`, `attention`, `docs` |
-| `routers/git.py` | The git repositories in the person's home, under `/api/git`: status, branches, stage, unstage, commit, switch, a new branch, fetch and push, each one rc-helper git verb, and Commit & Push (see [Git](#git)) |
+| `routers/git.py` | The git repositories in the person's home, under `/api/git`: status, branches, stage, unstage, commit, switch, a new branch, fetch, push and clone, each one rc-helper git verb, and Commit & Push (see [Git](#git)) |
 | `routers/github.py` | The person's GitHub token, under `/api/github`: whether one is stored, storing one, and removing it (see [GitHub token](#github-token)) |
 | `routers/me.py` | Each person's own settings, changed with `PATCH /api/me/settings`, which changes only the settings sent; `prefix_of` and `author_of` are how the rest of the backend reads them |
 
@@ -105,8 +105,9 @@ backend's pipes are opened as UTF-8, and the helpers run in Python's UTF-8
 mode.
 
 A git call's timeout is the helper's own deadline for it —
-`rc_helper.GIT_TIMEOUT`, or `rc_helper.GIT_NETWORK_TIMEOUT` for a fetch and
-for every `git-push`, `--check` too, whose deadline in the helper it is — and
+`rc_helper.GIT_TIMEOUT`, `rc_helper.GIT_NETWORK_TIMEOUT` for a fetch and
+for every `git-push`, `--check` too, whose deadline in the helper it is, or
+`rc_helper.CLONE_TIMEOUT` for a clone — and
 `GIT_ANSWER_MARGIN_SECONDS` in `helpers_client.py` besides, so the helper's
 `git_timeout` reaches the person before rcman stops waiting.
 
@@ -139,7 +140,8 @@ person, on a folder in their own home. The files to stage or unstage go to
 the helper on stdin as a JSON list, and a commit's message on stdin as it
 is; neither is ever in an argument. The commit message is validated by
 `rc_helper.COMMIT_MESSAGE` and `MAX_COMMIT_MESSAGE_LENGTH`, and is never
-recorded or logged: the audit target of every git action is the folder.
+recorded or logged: the audit target of every git action but a clone is
+the folder.
 `GET /api/git/status` adds `author`, from `author_of`: who commits are
 recorded as, or `null` while no name is set; `POST /api/git/commit` is
 then refused with `author_not_set`, without asking the helper, and
@@ -157,6 +159,13 @@ answers 200 with the `path`, the `commit`, and `push`, `git-push`'s answer,
 or `null` and `push_problem`, the push's problem details as a failed
 request would have them (`problems.body`), when the commit was made and the
 push failed; the audit row's result is then `committed_not_pushed`.
+
+`POST /api/git/clone` runs `git-clone` with the address as `--url` and the
+parent folder, when one is given, after `--`. The address is validated by
+`rc_helper.GITHUB_URL`, which takes none with a user or a password in it,
+so the audit target of `git.clone`, the address as given, never holds a
+token; an address the rule refuses is recorded with no target, and never
+logged.
 
 ## GitHub token
 
