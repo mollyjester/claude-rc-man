@@ -5,13 +5,10 @@ A React application in `frontend/`, built with Vite and TypeScript into
 as they are, and `index.html` for every other path outside `/api/`. The Node.js
 version is `frontend/.nvmrc`.
 
-| Command | What it does |
-|---|---|
-| `make frontend-setup` | Installs the packages and Playwright's browser |
-| `make frontend-test` | Type-checks and runs the component tests |
-| `make frontend-build` | Builds `frontend/dist` |
-| `make e2e` | Builds, then runs the browser tests |
-| `cd frontend && npm run dev` | A development server that forwards `/api` to a backend on port 8000 |
+The `make` targets that set up, build and test it are in
+[tests.md](tests.md#running). `cd frontend && npm run dev` runs a development
+server that forwards `/api` to a local backend, at the address
+`frontend/vite.config.ts` names.
 
 ## Rules it keeps
 
@@ -31,12 +28,15 @@ version is `frontend/.nvmrc`.
   Forms are `noValidate` and no input carries a validation attribute;
   `src/forms.test.tsx` checks every form.
 - **Only what the server allows is offered.** `ACTIONS` in `src/Servers.tsx`
-  maps every server state rc-helper reports to the actions it allows; a test
-  holds it to the states. Beside it, `KIND` gives each state its badge colour,
+  maps every server state rc-helper reports to the actions it allows; its
+  states are kept to the table in [rc-helper.md](rc-helper.md#server-states)
+  by hand, and `src/Dashboard.test.tsx` checks that each card offers exactly
+  its state's actions. Beside it, `KIND` gives each state its badge colour,
   `PRIMARY` the one action it leads with, and `m.states` and `m.nextStep` its
   name and what to do; `src/Servers.test.ts` holds each of them to the states
   in `ACTIONS`, and `src/servers-guide.test.ts` holds the table in
-  `docs/servers.md` to all of them. `START_REASON` in `src/Claude.tsx` says,
+  `docs/servers.md` to all of them, and checks that every control its
+  *The Servers page* section names in bold is text from `src/messages.ts`. `START_REASON` in `src/Claude.tsx` says,
   for each state of the Claude account in `CONNECTION_STATES`, why no server
   can start, or null where one can; Start, and the actions that start Claude
   again, are offered only where it is null. Otherwise it says why in place of
@@ -53,7 +53,7 @@ version is `frontend/.nvmrc`.
   (`push_ahead`), and Commit &
   Push where a push can be tried and Commit is offered; Switch is offered for a local branch other than the current one
   and for a remote branch no local branch tracks; Stage selected and
-  Unstage selected only while something is checked. git's own refusals, which
+  Unstage selected are enabled only while something is checked. git's own refusals, which
   rcman cannot know in advance, are shown as git gave them. Clone from
   GitHub is always offered, since a public repository needs no token; a
   private one GitHub refuses without one is git's refusal, shown as such. Delete folder is offered only for a folder,
@@ -62,8 +62,9 @@ version is `frontend/.nvmrc`.
   only to administrators, and the server refuses everyone else regardless.
 - **Each form leads with what it does.** Its submit button is its one
   `primary` button, or its one `danger` button where what it does cannot be
-  undone, such as deleting a folder; its other buttons are plain, and a
-  dialog's choice is a form too. `src/forms.test.tsx` checks every form, and
+  undone, such as deleting a folder; its other buttons are plain or
+  `secondary`, such as Commit & Push beside Commit, and a dialog's choice is
+  a form too. `src/forms.test.tsx` checks every form, and
   that only the forms it lists as destructive use `danger`. A button outside
   a form that opens such a form, such as a panel's **Delete folder** or
   Settings' **Remove token**, is a
@@ -94,8 +95,8 @@ version is `frontend/.nvmrc`.
 | `src/AdminPages.tsx` | `ADMIN`, the administrators' pages by name, which the links in the administrators' warning use, and `ADMIN_PAGES`, the same pages in order, which the navigation's **Admin** menu and the routes are built from |
 | `src/Dashboard.tsx` | The Servers page: the folder tree and its summary beside the selected folder's panel, the selection kept in the address as `?folder=`, the servers refreshed every `POLL_MS`; after a folder is made or cloned, the folder it was made in is fetched again, and the new one selected if the folder it was made in still is, and after one is deleted the folder above it replaces it in the address |
 | `src/Folders.tsx` | The folder tree, fetched a folder at a time and opened to whatever is selected — `reload` fetches a folder again after a folder is made or deleted in it, and `forget` drops a deleted folder and all below it — each folder's status dot and repository marker, and the summary of every server |
-| `src/FolderPanel.tsx` | A folder's panel: its breadcrumb, its actions (**New folder**, **Clone from GitHub** and **Delete folder**, with its confirmation), its Claude server section and, for a repository, its Changes section; and the Home panel, shown while no folder is selected, with **New folder** and **Clone from GitHub** only. New folder's and Clone from GitHub's forms are one `FolderForm`: a field, its submit button, which says the request is running while it runs, when it and Cancel are disabled, and the server's refusal with the form's labels; while its request runs, the header's actions wait too, so no other form can take its place |
-| `src/Changes.tsx` | A repository's Changes section: its branch, the staged and not staged files with a checkbox each, Commit, Push and Commit & Push, and its branches. Only the selected folder's status is fetched, when its panel opens, every `POLL_MS` while it is open and after every action; an answer older than one asked for since is dropped. Its branches are fetched when it opens, after every action and when the current branch changes. What is checked is kept across refreshes, for files still listed. A refusal is shown beside what was tried until any later action there works. New branch is behind a secondary button, so Commit is the section's one primary |
+| `src/FolderPanel.tsx` | A folder's panel: its breadcrumb, its actions (**New folder**, **Clone from GitHub** and **Delete folder**, with its confirmation), its Claude server section and, for a repository, its Changes section; and the Home panel, shown while no folder is selected, with **New folder** and **Clone from GitHub** only. New folder's and Clone from GitHub's forms are one `FolderForm`: a field, a note where the form has one (Clone from GitHub's links to Settings for the token), its submit button, which says the request is running while it runs, when it and Cancel are disabled, and the server's refusal with the form's labels; while its request runs, the header's actions wait too, so no other form can take its place |
+| `src/Changes.tsx` | A repository's Changes section: its branch, the staged and not staged files, with a checkbox for each file that can be selected and Select all, Commit, Push and Commit & Push, and its branches; each change's name is `m.changes`, and `src/git-guide.test.ts` holds the table of changes in `docs/git.md` to it. Only the selected folder's status is fetched, when its panel opens, every `POLL_MS` while it is open and after every action; an answer older than one asked for since is dropped. Its branches are fetched when it opens, after every action and when the current branch changes. What is checked is kept across refreshes, for files still listed. A refusal is shown beside what was tried until any later action there works. New branch is behind a secondary button, so Commit is the section's one primary |
 | `src/Servers.tsx` | A server's states, what each allows and shows, and its card; `serversIn`, the servers in a folder or below it, which both a folder's dot and the delete confirmation count |
 | `src/Caret.tsx` | The caret of a disclosure button, such as **Admin** and a server's **Show screen**, turned by its `aria-expanded` |
 | `src/Claude.tsx` | The Claude account's state and the connect flow |
@@ -107,7 +108,8 @@ version is `frontend/.nvmrc`.
 ## Tests
 
 - **Component tests** (Vitest, Testing Library, jsdom): `src/*.test.ts(x)`.
-  They render the whole app at a route against `src/test/fakeApi.ts`, which
+  Those that render anything render the whole app at a route against
+  `src/test/fakeApi.ts`, which
   answers from a table of routes in the backend's problem-details shape and
   records every call. `renderApp` in `src/test/render.tsx` also returns the
   router's current location and a `navigate`, whose `navigate(-1)` is the
