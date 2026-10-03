@@ -9,7 +9,7 @@ paths to the installer's.
 
 | File | What it is |
 |---|---|
-| `install.sh` | Checks it runs through sudo, updates the clone as `$SUDO_USER` (fast-forward only, refusing a dirty tree or another branch), starts again if that changed `install.sh`, then hands over to the Python installer |
+| `install.sh` | Checks it runs through sudo, updates the clone as `$SUDO_USER` (fast-forward only, refusing a dirty tree or another branch), starts again if that changed `install.sh`, then hands over to the Python installer; with `--rollback` it hands over at once, leaving the clone as it is |
 | `installer/install.py` | Everything else, using the standard library and the clone's `helpers/users_file.py` and `helpers/rules.py`, whose rules' sentences explain a refused setting, and `helpers/git_run.py`, by which `check_git` finds git as rc-helper does and refuses one older than `GIT_MIN_VERSION`; run with the system interpreter in isolated mode and UTF-8 mode, it writes no bytecode into the clone and takes the clone off its path once it has imported the rules |
 | `installer/templates/` | The files it writes, with `@NAME@` placeholders: the app's environment, oauth2-proxy's configuration, both systemd units, and the Caddy site block. A test keeps `TEMPLATES` and the directory equal |
 
@@ -19,12 +19,15 @@ against the checksums their publishers list.
 
 ## Releases
 
-A release is `/opt/rcman/releases/<first twelve characters of the commit>`,
-built in a temporary directory and renamed into place only when complete, then
-marked with `.complete`. `switch` makes it current and the old current
+A release is `/opt/rcman/releases/<a prefix of the commit>` (`build_release`).
+It is built where it will stay, because the virtualenv's scripts name their own
+path, and marked with `COMPLETE` last; on a failure it is removed, `switch`
+refuses a release without the mark, and the next run builds it again. `switch`
+makes it current and the old current
 previous, and removes the release that falls off; `rollback` swaps the two.
-The sudoers rules and the units name paths under `/opt/rcman/current`, so a
-switch needs no change to them.
+The sudoers rules and rcman's unit name paths under `/opt/rcman/current`, and
+oauth2-proxy's unit names the toolchain's binary, so a switch needs no change
+to them.
 
 ## The socket
 
@@ -42,22 +45,21 @@ through the socket.
 
 ## Tests
 
-- `tests/test_install.py`: settings precedence and validation, dropping saved
-  settings that are not fields, rendered files, sudoers validated with
-  `visudo`, release switching and rollback, the Caddy notices, and the guide.
+- `tests/test_install.py`: everything the installer decides that needs no
+  real machine — such as settings precedence and validation, the rendered
+  files, sudoers validated with `visudo`, release switching and rollback, the
+  git check and the Caddy notices — and the guide held to the installer.
 - `tests/container/test_install_in_container.py`: a real installation in a
   fresh container. The working tree becomes a git origin and a user `dev`
   clones it and runs `install.sh`. `tests/container/fake-systemctl` stands in
   for systemd, starting each service exactly as its unit file says. The host
   fills a toolchain cache with the installer's own download code and mounts it
-  in. The suite checks the release's contents and ownership, the accounts,
-  files and modes, the services answering, rcman reaching both helpers through
-  sudo, a second run changing nothing, self-update and its restart, rollback,
-  the refusals, and — with Caddy and stand-ins for oauth2-proxy and rcman —
-  that a browser cannot set the identity header itself. It also checks that
-  only Caddy's account can reach rcman's socket and that a run takes anyone
-  else out of its group, that no listener in the container lets a local user
-  be someone in rcman, that a Caddy admin API on loopback is warned about,
-  that a helper call that times out ends the helper behind sudo, and that
-  audit events reach the service's output, which systemd sends to the
-  journal.
+  in. The suite checks what an installation on a real machine does, such as the
+  release's contents and ownership, the accounts, files and modes, the
+  services answering, rcman reaching both helpers through sudo, a second run
+  changing nothing, self-update and rollback, and — with Caddy and stand-ins
+  for oauth2-proxy and rcman — that a browser cannot set the identity header
+  itself and that only Caddy's account can reach rcman's socket. Among them,
+  through real sudo: a helper call that times out ends the helper behind
+  sudo, which killing sudo alone would leave running, and a helper that
+  ignores SIGTERM does not hold the call.
