@@ -2577,7 +2577,6 @@ def status_of(env, capsys) -> dict:
 def test_a_fetch_has_its_own_deadline_read_when_it_is_called(env, repo, monkeypatch, capsys):
     import time
 
-
     hold = Path(env["RC_HELPER_HOME"]) / "slow-upload-pack"
     hold.write_text("#!/bin/sh\nexec sleep 60\n")
     hold.chmod(0o755)
@@ -2621,3 +2620,22 @@ def test_a_status_record_git_is_not_known_to_write_is_git_unrecognised_output(
     assert out["error"]["git"] == ["z from a newer git"]
     monkeypatch.setattr(git_run, "GIT_SEARCH_PATH", str(Path(real).parent))
     assert status_of(env, capsys)["path"] == REPO_REL  # positive control: real git is read
+
+
+def test_tree_marks_only_what_the_changes_section_can_show(env, repo, tmp_path):
+    """The marker follows the rule git-status keeps: a repository's own .git, with its git
+    data in the home folder."""
+    home = Path(env["RC_HELPER_HOME"])
+    outside = make_repo(tmp_path / "outside-repo")
+    fixture_git(outside, "worktree", "add", "-q", str(home / "projects" / "elsewhere"))
+    (home / "projects" / "empty-git" / ".git").mkdir(parents=True)
+    (home / "projects" / "linked-git").mkdir()
+    (home / "projects" / "linked-git" / ".git").symlink_to(outside / ".git")
+    (home / "projects" / "odd-file").mkdir()
+    (home / "projects" / "odd-file" / ".git").write_text("not a gitdir line\n")
+    marked = {e["path"]: e["repository"] for e in ok(env, "tree", "projects")["entries"]}
+    assert marked["projects/repo"] is True  # positive control
+    for rel in ("elsewhere", "empty-git", "linked-git", "odd-file"):
+        assert marked[f"projects/{rel}"] is False, rel
+        code = error_code(env, "git-status", "--", f"projects/{rel}")
+        assert code in ("not_a_repository", "repository_outside_home", "git_failed"), (rel, code)
