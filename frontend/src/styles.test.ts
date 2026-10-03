@@ -287,3 +287,23 @@ test("a password field is laid out as a text field is", () => {
     form.remove();
   }
 });
+
+test("a form's text field takes the form's font, and its width, up to a limit", () => {
+  const style = document.createElement("style");
+  style.textContent = uncommented(STYLES);
+  document.head.append(style);
+  const form = document.createElement("form");
+  form.innerHTML = '<label>Address<input type="text" name="url"></label>';
+  document.body.append(form);
+  try {
+    const field = getComputedStyle(form.querySelector("input")!);
+    expect(field.display).toBe("block"); // positive control: the stylesheet applies
+    // jsdom gives a field the font around it, as a browser does not: the rule says so itself
+    expect(ruleOf('form input[type="text"], form input[type="password"]')).toMatch(/(?:^|;)\s*font:\s*inherit/);
+    expect([field.width, field.boxSizing]).toEqual(["100%", "border-box"]);
+    expect(field.maxWidth).toMatch(/^\d+(?:\.\d+)?rem$/);
+  } finally {
+    style.remove();
+    form.remove();
+  }
+});

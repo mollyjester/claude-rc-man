@@ -1060,3 +1060,51 @@ test("a clone that ends once another folder is selected leaves that one selected
   expect(cloned).toHaveAccessibleDescription(m.repository);
   expect(folderOf(location().search)).toBe("projects/beta");
 });
+
+test("while it makes a folder, New folder's buttons wait, and only one folder is asked for", async () => {
+  let answer = () => {};
+  const fake = dashboard([], {
+    "POST /api/folders": () =>
+      new Promise((resolve) => {
+        answer = () => resolve({ created: "projects/fresh" });
+      }),
+  });
+  renderApp("/?folder=projects");
+  const opened = await panel("projects");
+  await userEvent.click(within(opened).getByRole("button", { name: m.newFolder }));
+  await userEvent.type(within(opened).getByLabelText(m.newFolderName), "fresh");
+  await userEvent.click(within(opened).getByRole("button", { name: m.create }));
+  const busy = await within(opened).findByRole("button", { name: m.creating });
+  expect(busy).toBeDisabled();
+  expect(within(opened).getByRole("button", { name: m.cancel })).toBeDisabled();
+  await userEvent.click(busy);
+  expect(fake.made("POST", "/api/folders")).toHaveLength(1);
+  answer();
+  expect(await panel("projects/fresh")).toBeInTheDocument();
+});
+
+test.each([
+  [m.newFolder, m.newFolderName, m.create, "POST /api/folders"],
+  [m.cloneFromGithub, m.cloneUrl, m.clone, "POST /api/git/clone"],
+])("while %s runs, the header's other actions wait, so its form stays", async (opener, label, submit, route) => {
+  let answer = () => {};
+  dashboard([], {
+    [route]: () =>
+      new Promise((resolve) => {
+        answer = () => resolve(problem(409, "folder_exists", "Something with that name is there already."));
+      }),
+  });
+  renderApp("/?folder=projects");
+  const opened = await panel("projects");
+  const actions = within(within(opened).getByRole("group", { name: m.folderActions }));
+  await userEvent.click(actions.getByRole("button", { name: opener }));
+  await userEvent.type(within(opened).getByLabelText(label), "x");
+  await userEvent.click(within(opened).getByRole("button", { name: submit }));
+  await waitFor(() => expect(within(opened).getByLabelText(label)).toBeInTheDocument());
+  const header = await within(opened).findByRole("group", { name: m.folderActions });
+  await waitFor(() => expect(within(header).getAllByRole("button").every((b) => (b as HTMLButtonElement).disabled)).toBe(true));
+  expect(within(header).getAllByRole("button")).toHaveLength(3); // New folder, Clone from GitHub, Delete folder
+  answer();
+  expect(await within(opened).findByRole("alert")).toHaveTextContent("Something with that name is there already.");
+  for (const button of within(header).getAllByRole("button")) expect(button).toBeEnabled();
+});
