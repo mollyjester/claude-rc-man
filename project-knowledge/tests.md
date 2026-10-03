@@ -134,9 +134,17 @@ it can fail, and a positive control that keeps an empty input from passing.
   lists.
 - **No fixed shared paths or ports** (`tests/test_fixed_resources.py`). Tests
   run at the same time, so none may hold a fixed path under `/tmp` or a fixed
-  unprivileged port: it finds, outside `tests/container/`, any such path other
-  than a `tempfile` folder given a unique name there, and any fixed port given
-  to a call, as `port=`, or after `--port`, outside the exemptions it lists.
+  unprivileged port. It catches these forms, outside `tests/container/`: a
+  string that is `/tmp` or a path in it, an f-string beginning with one, and a
+  call to `tempfile.gettempdir()`, except as the `dir=` of a `tempfile` call
+  that makes a uniquely named file or folder in `/tmp` itself; and a fixed
+  port, written as a number or a string of digits or held in a module-level
+  name, in a (host, port) address wherever it is written, as `port=`, after
+  `--port`, or after `-p` or `--publish`, alone or as the host port of
+  docker's mapping. It does not follow a port held in a function's own
+  variable, imported or computed, a path built in pieces, or a port in a URL;
+  review covers those. Each exemption it lists covers one site, named by its
+  file, function and text, and fails when that site is gone.
 - **The container marker is derived** (`tests/test_container_marker.py`). In
   the collected suite the tests carrying `container` are exactly those using
   the `docker` fixture, and no source under `tests/` places the marker by
