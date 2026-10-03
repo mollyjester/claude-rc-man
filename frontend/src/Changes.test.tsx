@@ -215,10 +215,10 @@ test("without a commit author, Commit is not offered and the section says where 
   repoApi({ "GET /api/git/status": status([{ path: "a.txt", change: "added" }], [], { author: null }) });
   const app = renderApp(`/?folder=${REPO}`);
   const section = await changes();
-  expect(await section.findByText(m.commitNeedsAuthor, { exact: false })).toBeInTheDocument();
+  expect(await section.findByText(m.commitNeedsAuthor.before.trim(), { exact: false })).toBeInTheDocument();
   expect(section.queryByRole("button", { name: m.commit })).not.toBeInTheDocument();
   expect(section.queryByLabelText(m.commitMessage)).not.toBeInTheDocument();
-  await userEvent.click(section.getByRole("link", { name: m.commitAuthorLink }));
+  await userEvent.click(section.getByRole("link", { name: m.commitNeedsAuthor.link }));
   expect(app.location().pathname).toBe("/settings");
 });
 
@@ -434,8 +434,8 @@ test("New branch is opened by a secondary button, and Commit is the section's on
 test("without an author, the section says so once, with the link to Settings in it", async () => {
   repoApi({ "GET /api/git/status": status([{ path: "a.txt", change: "added" }], [], { author: null }) });
   renderApp(`/?folder=${REPO}`);
-  const link = await (await changes()).findByRole("link", { name: m.commitAuthorLink });
-  expect(link.closest("p")).toHaveTextContent(`${m.commitNeedsAuthor} ${m.commitAuthorLink}`);
+  const link = await (await changes()).findByRole("link", { name: m.commitNeedsAuthor.link });
+  expect(link.closest("p")).toHaveTextContent(m.commitNeedsAuthor.before.trim());
   expect(link.closest("p")!.textContent!.match(/author/gi)).toHaveLength(1); // said once
 });
 
@@ -466,4 +466,24 @@ test("no merge, nothing said of one", async () => {
   renderApp(`/?folder=${REPO}`);
   await (await changes()).findByText(m.onBranch("main")); // positive control: the status is shown
   expect((await changes()).queryByText(m.mergeInProgress)).not.toBeInTheDocument();
+});
+
+test("Cancel on New branch also takes away its refusal", async () => {
+  repoApi({ "POST /api/git/branch": problem(409, "git_failed", "git refused. What it said is below.", { git: ["exists"], git_more: 0 }) });
+  renderApp(`/?folder=${REPO}`);
+  const section = await changes();
+  await userEvent.click(await section.findByRole("button", { name: m.newBranch }));
+  await userEvent.type(section.getByLabelText(m.newBranchName), "main");
+  await userEvent.click(section.getByRole("button", { name: m.createBranch }));
+  expect(await section.findByRole("alert")).toHaveTextContent("git refused."); // positive control
+  await userEvent.click(section.getByRole("button", { name: m.cancel }));
+  expect(section.queryByRole("alert")).not.toBeInTheDocument();
+});
+
+test("the no-author sentence is one message, its link a part of it", async () => {
+  repoApi({ "GET /api/git/status": status([{ path: "a.txt", change: "added" }], [], { author: null }) });
+  renderApp(`/?folder=${REPO}`);
+  const link = await (await changes()).findByRole("link", { name: m.commitNeedsAuthor.link });
+  const { before, link: linked, after } = m.commitNeedsAuthor;
+  expect(link.closest("p")!.textContent).toBe(`${before}${linked}${after}`);
 });

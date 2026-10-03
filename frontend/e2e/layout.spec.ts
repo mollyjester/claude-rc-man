@@ -104,3 +104,31 @@ test("a badge with no room beside its path goes below it, lined up with it", asy
   expect(badgeBox.y).toBeGreaterThanOrEqual(pathBox.y + pathBox.height - 1); // positive control: it went below
   expect(Math.abs(badgeBox.x - textLeft)).toBeLessThanOrEqual(1);
 });
+
+test("a file that cannot be selected lines up with those that can", async ({ page }) => {
+  await useAs(page, ALICE);
+  const path = "projects/alice-repo";
+  const status = {
+    path,
+    branch: { name: "main", commit: "0123456789", upstream: null, ahead: null, behind: null },
+    merging: false,
+    staged: { files: [], more: 0 },
+    not_staged: {
+      files: [
+        { path: "plain.txt", change: "untracked" },
+        { path: "caf�.txt", change: "untracked", selectable: false },
+      ],
+      more: 0,
+    },
+    author: null,
+  };
+  await page.route("**/api/git/status*", (route) => route.fulfill({ json: status }));
+  await page.goto(`/?folder=${path}`);
+  const list = page.getByRole("region", { name: m.changesTitle }).getByRole("group", { name: m.notStagedTitle });
+  const plain = list.getByText("plain.txt", { exact: true });
+  const odd = list.getByText("caf�.txt", { exact: true });
+  await expect(plain).toBeVisible();
+  await expect(odd).toBeVisible();
+  const [plainBox, oddBox] = await Promise.all([plain.boundingBox(), odd.boundingBox()]);
+  expect(Math.abs(plainBox!.x - oddBox!.x)).toBeLessThanOrEqual(1);
+});
