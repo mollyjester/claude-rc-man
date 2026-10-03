@@ -168,18 +168,21 @@ class Git:
         """
         argv = [find_git(), *args]
         env = {**self.env, **(extra_env or {})}
-        proc = self.popen(
-            argv,
-            cwd=cwd,
-            env=env,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            start_new_session=True,
-        )
-        message = _Message()
-        kept = _Message()  # standard output, which is part of a refusal too
+        proc = None
         try:
+            # Inside the try, so that anything raised once git has started -
+            # SIGTERM among it - ends it.
+            proc = self.popen(
+                argv,
+                cwd=cwd,
+                env=env,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                start_new_session=True,
+            )
+            message = _Message()
+            kept = _Message()  # standard output, which is part of a refusal too
             with selectors.DefaultSelector() as selector:
                 to_write = memoryview(input or b"")
                 if to_write:
@@ -218,11 +221,11 @@ class Git:
             except subprocess.TimeoutExpired:
                 raise GitTimedOut() from None
         finally:
-            if proc.returncode is None:
+            if proc is not None and proc.returncode is None:
                 with contextlib.suppress(ProcessLookupError, PermissionError):
                     os.killpg(proc.pid, signal.SIGKILL)
                 proc.wait()
-            for pipe in (proc.stdin, proc.stdout, proc.stderr):
+            for pipe in (proc.stdin, proc.stdout, proc.stderr) if proc is not None else ():
                 with contextlib.suppress(OSError):
                     pipe.close()
         if code != 0:

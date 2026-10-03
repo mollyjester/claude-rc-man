@@ -55,7 +55,7 @@ command-line reference is `rc-helper --help` and `rc-helper <verb> --help`.
 | `rc-helper mkdir [parent] --name=<name>` | Makes a folder named `<name>` in a folder, or in the home folder when no parent is given. The name must match `FOLDER_NAME` in `helpers/rc_helper.py`, whose sentence says what it refuses and which shares its invisible characters with `AUTHOR_NAME`, and be no longer than the file system's `PC_NAME_MAX` in bytes; refuses with `folder_exists` when anything, even a dangling link, has that name |
 | `rc-helper delete <path>` | Stops every running server in a folder or below it, forgets every server there, then deletes the folder and everything in it; a link is deleted as the link. Refuses the home folder, anything outside it, a dot-folder or anything in one (`path_hidden`), a path through a link (`path_through_link`), and a path not written as the names on disk (`path_name_differs`). See [Deleting a folder](#deleting-a-folder) |
 | `rc-helper auth-code` | Finishes connecting with the code read from stdin — pressing Enter after Claude reports success, as it asks — and returns the account as `auth-status` does |
-| `rc-helper git-status <path>` | A repository's branch — its name (`null` while detached), commit (`null` before the first), upstream and how far ahead and behind it is — and its `staged` and `not_staged` files, each with its change (`CHANGES`), where a rename or copy came from, whether it is a submodule, and `selectable: false` for a name that is not UTF-8. See [Git](#git) |
+| `rc-helper git-status <path>` | A repository's branch — its name (`null` while detached), commit (`null` before the first), upstream and how far ahead and behind it is — and its `staged` and `not_staged` files, each with its change (`CHANGES`), where a rename or copy came from, whether it is a submodule, and `selectable: false` for a name that is not UTF-8; and `merging`, whether a merge is under way, which is so until it is committed or aborted. See [Git](#git) |
 | `rc-helper git-branches <path>` | The local branches, each with whether it is current and its upstream, and the remote-tracking branches, each with the local branch tracking it or `null`; `origin/HEAD` and other symbolic refs are left out |
 | `rc-helper git-stage <path>` | Stages the files named in a JSON list read from stdin; refuses a name outside the repository |
 | `rc-helper git-unstage <path>` | Unstages the files named in a JSON list read from stdin, before the first commit too; a staged rename's new name takes the old one with it |
@@ -104,8 +104,11 @@ at the first step that fails:
 
 rc-helper turns SIGTERM, which `run_bounded` sends when a call outlasts its
 timeout (see [backend.md](backend.md)), into an exit, as an exception would
-end it: a delete ended that way stops where it is. The servers it had forgotten stay forgotten, and the part
-of the folder not yet removed stays; running `delete` again carries on.
+end it, and exits with no answer: the backend answers `helper_timeout`.
+Whatever rc-helper started that still runs, git and its hooks among it, is
+ended on the way out. A delete ended that way stops where it is: the servers
+it had forgotten stay forgotten, and the part of the folder not yet removed
+stays; running `delete` again carries on.
 
 It answers with the path deleted, whether it was a link, and the servers
 stopped and forgotten.
@@ -153,12 +156,12 @@ if Claude asks again.
   refusing to follow a link (`open_dir`), and makes the new folder through
   that file descriptor, so a part replaced by a link after the path was
   resolved is refused rather than followed.
-- Starting, resuming, stopping, answering and forgetting a server, making
-  a folder and every git verb take a shared `flock` on the home folder
-  itself, and deleting takes it exclusively, so nothing is done to a server
-  or a repository in a folder while it is being deleted. A lock held the other way is refused at once with
-  `folder_busy`, never waited for. The lock is held by `rc-helper` only,
-  never by the servers it starts.
+- Starting, resuming, stopping, answering and forgetting a server, making a
+  folder and every git verb take a shared `flock` on the home folder itself,
+  and deleting takes it exclusively, so nothing is done to a server or a
+  repository in a folder while it is being deleted. A lock held the other way
+  is refused at once with `folder_busy`, never waited for. The lock is held
+  by `rc-helper` only, never by the servers it starts.
 - Servers run in tmux on a dedicated socket (`TMUX_SOCKET_NAME`), configured by
   `helpers/tmux.conf`, so they never mix with the user's own tmux and keep
   their final screen and exit status after they exit. Each folder has its own
@@ -196,7 +199,8 @@ running git are `helpers/git_run.py`, tested by `tests/test_git_run.py`.
   (`git_verb` names the constant). Each git runs in a session of its own
   (`start_new_session`); at the deadline, when its output is left unread, or
   on SIGTERM, its whole process group is killed, hooks and remote helpers
-  with it, and the verb answers `git_timeout`.
+  with it. At the deadline the verb answers `git_timeout`; on SIGTERM it
+  answers nothing.
 - **Refusals.** A git that refuses is `git_failed`, with what it wrote on
   stderr and stdout as `git` — at most `MAX_GIT_MESSAGE_LINES` lines — and
   how many lines more as `git_more`. Output git is not known to write, such

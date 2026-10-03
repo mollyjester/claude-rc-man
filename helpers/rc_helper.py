@@ -1434,9 +1434,15 @@ class Helper:
         }
         for change in self._changes(repo, deadline, branch):
             lists[change.staged].add(_file(change))
+        merge_head = self._git(
+            repo, ["rev-parse", "--path-format=absolute", "--git-path", "MERGE_HEAD"], deadline
+        ).rstrip("\n")
         return {
             "path": rel,
             "branch": dataclasses.asdict(branch),
+            # MERGE_HEAD stays until the merge is committed or aborted, also once
+            # no file is left unmerged.
+            "merging": Path(merge_head).exists(),
             "staged": lists[True].answer(),
             "not_staged": lists[False].answer(),
         }
@@ -1513,7 +1519,7 @@ class Helper:
         repo, rel = self._repository(rel, deadline)
         if not any(r.remote is remote and r.name == branch for r in self._branches(repo, deadline)):
             raise HelperError("branch_not_found")
-        args = ["switch", "--track", branch] if remote else ["switch", "--no-guess", branch]
+        args = ["switch", "--track", branch] if remote else ["switch", branch]
         self._git(repo, args, deadline)
         return {"path": rel, "branch": self._current(repo, deadline)}
 
