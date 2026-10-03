@@ -27,8 +27,10 @@ any other, and says what an address must be.
   in a terminal with `git submodule update --init`.
 - A clone has a time limit of its own, longer than other git commands have.
   When it fails or takes too long, the folder it was making is removed again,
-  and nothing else is; if any of it cannot be removed, the form lists what is
-  left.
+  even if something moved it meanwhile, and nothing else is: another folder
+  put in its place is left alone. If any of it cannot be removed, or it was
+  moved, the form lists it where it is now. A removal that takes longer than
+  rcman waits carries on after the form has said rcman stopped waiting.
 - A clone carries on if you select another folder meanwhile. It then appears
   in the tree, but is not selected.
 

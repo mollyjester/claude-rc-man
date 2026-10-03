@@ -87,7 +87,7 @@ HELPER_STATUS = {
     "github_token_not_set": 409,
     "url_invalid": 400,
     "clone_unsafe": 500,
-    "clone_missing": 502,
+    "clone_missing": 500,
 }
 ADMIN_STATUS = {
     "usage": 500,

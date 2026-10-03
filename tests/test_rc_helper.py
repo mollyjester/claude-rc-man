@@ -1193,7 +1193,11 @@ def test_delete_refuses_a_path_not_written_as_the_names_on_disk(env, monkeypatch
 
     def listdir(path="."):
         names = real_listdir(path)
-        return [("Beta" if n == "beta" else n) for n in names] if Path(path) == projects else names
+        return (
+            [("Beta" if n == "beta" else n) for n in names]
+            if not isinstance(path, int) and Path(path) == projects
+            else names
+        )
 
     monkeypatch.setattr(os, "listdir", listdir)
     assert refusal(in_process(env).delete, "projects/beta").code == "path_name_differs"
@@ -1208,7 +1212,11 @@ def listed_as(monkeypatch, folder: Path, name: str, shown: str) -> None:
 
     def listdir(path="."):
         names = real_listdir(path)
-        return [shown if n == name else n for n in names] if Path(path) == folder else names
+        return (
+            [shown if n == name else n for n in names]
+            if not isinstance(path, int) and Path(path) == folder
+            else names
+        )
 
     monkeypatch.setattr(os, "listdir", listdir)
 
@@ -3767,11 +3775,12 @@ def test_sigterm_during_a_clone_ends_git_and_leaves_nothing(hooked, published, t
 
 
 def test_a_sigterm_while_a_failed_clone_is_removed_waits_for_the_removal(
-    hooked, github, monkeypatch, capsys
+    hooked, published, monkeypatch, capsys
 ):
-    """The SIGTERM arrives as the folder starts being removed; it takes effect once the
-    removal is done."""
+    """The SIGTERM arrives as the clone a hook failed starts being removed; it takes
+    effect once the removal is done."""
     home = Path(hooked["RC_HELPER_HOME"])
+    persons_hook(hooked, "post-checkout", "#!/bin/sh\nexit 1\n")
     real = shutil.rmtree
     removing = []
 
@@ -3782,11 +3791,10 @@ def test_a_sigterm_while_a_failed_clone_is_removed_waits_for_the_removal(
 
     rmtree.avoids_symlink_attacks = real.avoids_symlink_attacks
     monkeypatch.setattr(shutil, "rmtree", rmtree)
-    url = "https://github.com/owner/no-such-repository"
     with pytest.raises(SystemExit):
-        answer_of(hooked, capsys, "git-clone", f"--url={url}", "--", "projects")
+        answer_of(hooked, capsys, "git-clone", f"--url={published}", "--", "projects")
     assert removing  # positive control: the removal started
-    assert not (home / "projects" / "no-such-repository").exists()
+    assert not (home / "projects" / folder_of(published)).exists()
 
 
 @pytest.mark.skipif(os.geteuid() == 0, reason="root removes anything; the container suite checks")

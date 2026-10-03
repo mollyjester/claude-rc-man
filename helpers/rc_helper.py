@@ -1069,37 +1069,73 @@ def _is_made(fd: int, name: str, made: os.stat_result) -> bool:
     return stat.S_ISDIR(now.st_mode) and (now.st_dev, now.st_ino) == (made.st_dev, made.st_ino)
 
 
-def _holds_repository(fd: int, name: str, made: os.stat_result) -> bool:
-    """Whether the folder made as ``name`` holds a .git, as git clone makes one."""
-    if not _is_made(fd, name, made):
+@contextlib.contextmanager
+def _sigterm_blocked():
+    """SIGTERM held back while the block runs, and taken once it ends; the block is given
+    the mask from before, to let SIGTERM through for a part of it. Blocked for this
+    thread only, which is sound only as rc-helper is: one thread, where no other thread
+    could take it instead."""
+    mask = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGTERM})
+    try:
+        yield mask
+    finally:
+        signal.pthread_sigmask(signal.SIG_SETMASK, mask)
+
+
+def _make_folder(fd: int, name: str) -> int:
+    """Make the folder ``name`` in the folder open as ``fd``; a descriptor on it, opened
+    without following a link. Anything already there is folder_exists, and so is a
+    folder found not empty once opened: something took the new one's place."""
+    try:
+        os.mkdir(name, dir_fd=fd)
+    except FileExistsError:
+        raise HelperError("folder_exists") from None
+    made = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+    if os.listdir(made):
+        os.close(made)
+        raise HelperError("folder_exists")
+    return made
+
+
+def _holds_repository(fd: int, name: str, made_fd: int) -> bool:
+    """Whether the folder made, open as ``made_fd``, is still ``name`` and holds a .git,
+    as git clone makes one."""
+    if not _is_made(fd, name, os.fstat(made_fd)):
         return False
     try:
-        inner = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
-    except OSError:
-        return False
-    try:
-        os.lstat(".git", dir_fd=inner)
+        os.lstat(".git", dir_fd=made_fd)
     except FileNotFoundError:
         return False
-    finally:
-        os.close(inner)
     return True
 
 
-def _remove_made(fd: int, name: str, made: os.stat_result) -> bool:
-    """Remove the folder made as ``name``, if it is still that folder; whether nothing of
-    it is left. SIGTERM waits until the removal is done: blocked for this thread only,
-    which is sound only as rc-helper is, one thread, where no other thread could take
-    it instead."""
-    mask = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGTERM})
-    try:
-        if not _is_made(fd, name, made):
-            return True
-        failed = []
-        shutil.rmtree(name, dir_fd=fd, onexc=lambda *_: failed.append(True))
-        return not failed and not _is_made(fd, name, made)
-    finally:
-        signal.pthread_sigmask(signal.SIG_SETMASK, mask)
+def _remove_made(fd: int, name: str, made_fd: int, root: Path) -> list[str]:
+    """Remove the folder made, open as ``made_fd``: everything in it through that
+    descriptor, wherever the folder has gone, then the folder itself while ``name`` in
+    the folder open as ``fd`` is still it, by device and inode. What is left of it, as
+    its path from the home folder ``root``, or as it is when outside: the folder, where
+    it is now, when anything in it could not be removed or it is no longer ``name``.
+
+    An empty folder put in its place between that check and the removal would be
+    removed in its stead: nothing a removal by name can rule out.
+    """
+    failed = []
+    for entry in os.listdir(made_fd):
+        try:
+            if stat.S_ISDIR(os.lstat(entry, dir_fd=made_fd).st_mode):
+                shutil.rmtree(entry, dir_fd=made_fd, onexc=lambda *_: failed.append(True))
+            else:
+                os.unlink(entry, dir_fd=made_fd)
+        except OSError:
+            failed.append(True)
+    if not failed and _is_made(fd, name, os.fstat(made_fd)):
+        with contextlib.suppress(OSError):
+            os.rmdir(name, dir_fd=fd)
+            return []
+    where = os.readlink(f"/proc/self/fd/{made_fd}")
+    if where.endswith(" (deleted)"):
+        return []
+    return [relative(root, Path(where)) if root in Path(where).parents else where]
 
 
 # --- verbs ----------------------------------------------------------------------------
@@ -1790,33 +1826,45 @@ class Helper:
     @git_verb(timeout="CLONE_TIMEOUT")
     def _clone(self, deadline: float, rel: str, url: str) -> dict:
         """The folder is made here first, so that anything already there is refused, even
-        an empty folder git would clone into. On any failure, a timeout and SIGTERM
-        among them, that folder is removed again, and only it: what has its name is
-        removed only while it is the folder made here, by device and inode. What cannot
-        be removed is reported as ``left``."""
+        an empty folder git would clone into, and held open. git runs in the parent as
+        it was opened, through its descriptor, so that a part of its path replaced by a
+        link since cannot take the clone elsewhere. On any failure, a timeout and SIGTERM
+        among them, the folder made is removed again, and only it (_remove_made). What
+        cannot be removed is reported as ``left``.
+
+        SIGTERM is held back throughout but while git runs, so that it cannot fall
+        between the folder being made and its removal being set to run.
+        """
         root = self.cfg.home.resolve()
         parent = resolve_folder(self.cfg.home, rel, allow_home=True)
         fd = open_dir(root, parent)
         try:
             name = clone_folder_name(url)
             created = check_folder_name(name, fd, relative(self.cfg.home, parent))
-            try:
-                os.mkdir(name, dir_fd=fd)
-            except FileExistsError:
-                raise HelperError("folder_exists") from None
-            made = os.lstat(name, dir_fd=fd)
-            try:
-                self._git(parent, ["clone", "--", url], deadline - CLONE_CLEANUP_SECONDS)
-                if not _holds_repository(fd, name, made):
-                    raise HelperError("clone_missing")
-            except BaseException as error:
-                removed = _remove_made(fd, name, made)
-                problem = git_problem(error) if isinstance(error, GIT_ERRORS) else error
-                if isinstance(problem, HelperError) and not removed:
-                    problem.detail["left"] = [created]
-                if problem is error:
-                    raise
-                raise problem from None
+            with _sigterm_blocked() as unblocked:
+                made_fd = _make_folder(fd, name)
+                try:
+                    try:
+                        signal.pthread_sigmask(signal.SIG_SETMASK, unblocked)
+                        self._git(
+                            Path(f"/proc/self/fd/{fd}"),
+                            ["clone", "--", url],
+                            deadline - CLONE_CLEANUP_SECONDS,
+                        )
+                    finally:
+                        signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGTERM})
+                    if not _holds_repository(fd, name, made_fd):
+                        raise HelperError("clone_missing")
+                except BaseException as error:
+                    left = _remove_made(fd, name, made_fd, root)
+                    problem = git_problem(error) if isinstance(error, GIT_ERRORS) else error
+                    if isinstance(problem, HelperError) and left:
+                        problem.detail["left"] = left
+                    if problem is error:
+                        raise
+                    raise problem from None
+                finally:
+                    os.close(made_fd)
         finally:
             os.close(fd)
         return {"created": created}
@@ -2052,7 +2100,10 @@ def _dispatch(helper: Helper, args: argparse.Namespace, stdin) -> dict:
 
 
 def _terminate(signum, _frame):
-    """SIGTERM ends rc-helper as an exception would, so what it started is ended too."""
+    """SIGTERM ends rc-helper as an exception would, so what it started is ended too.
+    Once: a SIGTERM more, while it ends, is ignored, so that it cannot cut short what
+    the first set going, such as removing a failed clone."""
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
     raise SystemExit(128 + signum)
 
 

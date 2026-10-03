@@ -160,7 +160,9 @@ if Claude asks again.
 - `mkdir` and `git-clone` open the parent folder one part at a time from
   the home folder, refusing to follow a link (`open_dir`), and make the new
   folder through that file descriptor, so a part replaced by a link after
-  the path was resolved is refused rather than followed.
+  the path was resolved is refused rather than followed. `git-clone` also
+  runs git in the parent through that descriptor, and removes a failed
+  clone through the new folder's own (see [Clone](#clone)).
 - Starting, resuming, stopping, answering and forgetting a server, making a
   folder and every git verb take a shared `flock` on the home folder itself,
   and deleting takes it exclusively, so nothing is done to a server or a
@@ -283,22 +285,39 @@ before git:
    opens the parent as `mkdir` does, and checks the new folder's name,
    `clone_folder_name`, as `mkdir` checks one.
 4. It makes the folder itself, through the parent's file descriptor, and
-   notes its device and inode. Anything already there with that name — an
-   empty folder too, which git would clone into — is `folder_exists`, and
-   git is not run.
-5. git runs in the parent as `git clone -- <url>` and nothing else, so the
-   person's configuration applies, `GIT_ALLOW_PROTOCOL` among what is not
-   set, and submodules are not cloned. Its deadline is the verb's,
-   `CLONE_TIMEOUT`, less `CLONE_CLEANUP_SECONDS`, kept for step 7. git
-   reaches a private repository with the stored [GitHub token](#github-token).
-6. Once git has finished, the folder must still be the one made in step 4
-   and hold a `.git`, or the clone is `clone_missing`.
+   opens it without following a link, holding that descriptor until it is
+   done. Anything already there with that name — an empty folder too, which
+   git would clone into — is `folder_exists`, and git is not run; so is a
+   folder found not empty once opened, something having taken the new
+   one's place.
+5. git runs as `git clone -- <url>` and nothing else, so the person's
+   configuration applies, `GIT_ALLOW_PROTOCOL` among what is not set, and
+   submodules are not cloned. Its working folder is the parent as opened in
+   step 3, `/proc/self/fd/<descriptor>`, not the parent's path, so a part of
+   that path replaced by a link since cannot take the clone elsewhere. Its
+   deadline is the verb's, `CLONE_TIMEOUT`, less `CLONE_CLEANUP_SECONDS`,
+   kept for step 7. git reaches a private repository with the stored
+   [GitHub token](#github-token).
+6. Once git has finished, what has the folder's name must still be the
+   folder made in step 4, by device and inode, and hold a `.git`, or the
+   clone is `clone_missing`.
 7. On any failure after step 4 — git's refusal, the deadline, SIGTERM or
-   anything else — the folder made in step 4 is removed with
-   `shutil.rmtree` through the parent's file descriptor, and only while
-   what has its name is still that folder, by device and inode; SIGTERM
-   waits until the removal is done. When anything of it cannot be removed,
-   the failure's answer lists the folder as `left`.
+   anything else — the folder made in step 4 is removed: everything in it
+   through its own descriptor, wherever it has been moved, with
+   `shutil.rmtree` for a folder in it and unlink for anything else; then
+   the folder itself through the parent's descriptor, while what has its
+   name is still that folder by device and inode. A folder put in its place
+   is left alone; only an empty one put there in the instant between that
+   check and the removal could be removed instead, which no removal by name
+   can rule out. When anything in the folder cannot be removed, or it is no
+   longer where it was made, the failure's answer lists it as `left`, where
+   it is now.
+
+SIGTERM is held back throughout `git-clone`, but while git runs, so it
+cannot fall between the folder being made and its removal being set
+going, nor cut the removal short; a SIGTERM more while rc-helper ends is
+ignored. A removal that outlasts `CLONE_CLEANUP_SECONDS` goes on after the
+backend has stopped waiting, and the person is answered `helper_timeout`.
 
 git takes an address that names a path in the folder it runs in as that
 path: with a repository at `https:/github.com/<owner>/<name>` in the parent,
