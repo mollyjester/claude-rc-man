@@ -54,8 +54,8 @@ checked here.
 2. **Clone from GitHub** a private repository set aside for testing: the
    form shows git's words for the refusal, and no folder is left in
    `projects`.
-3. Save a fine-grained token for that repository in **Settings**, as in
-   step 1 below, and clone it again: it is cloned, and its `.git/config`
+3. Save a fine-grained token for that repository in **Settings**, as step 1 of
+   *Pushing to GitHub* below says, and clone it again: it is cloned, and its `.git/config`
    holds no token.
 4. Delete the public clone with **Delete folder**.
 

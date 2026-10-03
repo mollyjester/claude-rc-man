@@ -43,7 +43,7 @@ export const m = {
   cloneParent: "Folder to clone into",
   clone: "Clone",
   cloning: "Cloning…",
-  // Its second sentence's end the link to Settings.
+  // Two sentences; the second ends with the link to Settings.
   cloneNote: {
     before: "git names the new folder after the repository, as git clone does. A private repository is cloned with ",
     link: "your GitHub token",

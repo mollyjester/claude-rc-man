@@ -88,8 +88,9 @@ export type FolderChanges = {
 
 // A form that makes a folder from one value the person types, which is the server's
 // to judge: the request is make(value), which answers with the new folder's path.
-// While it runs, its buttons wait and say so. field is the value's name, as the
-// server names it; labels names the server's fields for its refusals.
+// While it runs, its buttons wait and say so, and onBusy is told, so the actions
+// around it can wait too. field is the value's name, as the server names it;
+// labels names the server's fields for its refusals.
 function FolderForm({
   label,
   field,
@@ -100,6 +101,7 @@ function FolderForm({
   make,
   onMade,
   onCancel,
+  onBusy,
 }: {
   label: string;
   field: string;
@@ -110,6 +112,7 @@ function FolderForm({
   make: (value: string) => Promise<{ created: string }>;
   onMade: (folder: string) => void;
   onCancel: () => void;
+  onBusy: (busy: boolean) => void;
 }) {
   const [value, setValue] = useState("");
   const [busy, setBusy] = useState(false);
@@ -119,12 +122,14 @@ function FolderForm({
     event.preventDefault();
     if (busy) return;
     setBusy(true);
+    onBusy(true);
     setError(null);
     try {
       onMade((await make(value)).created);
     } catch (e) {
       setError(asApiError(e));
       setBusy(false);
+      onBusy(false);
     }
   }
 
@@ -148,10 +153,10 @@ function FolderForm({
   );
 }
 
-type MadeIn = { parent: string; onMade: (folder: string) => void; onCancel: () => void };
+type MadeIn = { parent: string; onMade: (folder: string) => void; onCancel: () => void; onBusy: (busy: boolean) => void };
 
 // Makes a folder in parent ("" for the home folder).
-function NewFolderForm({ parent, onMade, onCancel }: MadeIn) {
+function NewFolderForm({ parent, ...done }: MadeIn) {
   return (
     <FolderForm
       label={m.newFolderName}
@@ -160,14 +165,13 @@ function NewFolderForm({ parent, onMade, onCancel }: MadeIn) {
       busyText={m.creating}
       labels={{ name: m.newFolderName }}
       make={(name) => api.post("/api/folders", { parent, name })}
-      onMade={onMade}
-      onCancel={onCancel}
+      {...done}
     />
   );
 }
 
 // Clones a repository from GitHub into parent ("" for the home folder), in the folder git names.
-function CloneForm({ parent, onMade, onCancel }: MadeIn) {
+function CloneForm({ parent, ...done }: MadeIn) {
   return (
     <FolderForm
       label={m.cloneUrl}
@@ -183,8 +187,7 @@ function CloneForm({ parent, onMade, onCancel }: MadeIn) {
         </p>
       }
       make={(url) => api.post("/api/git/clone", { parent, url })}
-      onMade={onMade}
-      onCancel={onCancel}
+      {...done}
     />
   );
 }
@@ -262,14 +265,18 @@ function FolderActions({
   changes: FolderChanges;
 }) {
   const [opened, setOpened] = useState<"new" | "clone" | "delete" | null>(null);
+  // While a folder is being made or cloned, none of them is offered: another form
+  // would take that one's place, and what the request ends in would be lost.
+  const [waiting, setWaiting] = useState(false);
   const parent = path ?? "";
+  const done = { onMade: (folder: string) => changes.created(parent, folder), onCancel: () => setOpened(null), onBusy: setWaiting };
   return (
     <>
       <div role="group" aria-label={m.folderActions} className="actions">
-        <button type="button" className="secondary" onClick={() => setOpened("new")}>
+        <button type="button" className="secondary" disabled={waiting} onClick={() => setOpened("new")}>
           {m.newFolder}
         </button>
-        <button type="button" className="secondary" onClick={() => setOpened("clone")}>
+        <button type="button" className="secondary" disabled={waiting} onClick={() => setOpened("clone")}>
           {m.cloneFromGithub}
         </button>
         {/* Offered for any folder in the address. One typed by hand through a
@@ -278,16 +285,16 @@ function FolderActions({
             with path_name_differs: the tree never links there, so that is
             accepted. */}
         {path !== null && servers !== null && (
-          <button type="button" className="secondary-danger" onClick={() => setOpened("delete")}>
+          <button type="button" className="secondary-danger" disabled={waiting} onClick={() => setOpened("delete")}>
             {m.deleteFolder}
           </button>
         )}
       </div>
       {opened === "new" && (
-        <NewFolderForm parent={parent} onMade={(folder) => changes.created(parent, folder)} onCancel={() => setOpened(null)} />
+        <NewFolderForm parent={parent} {...done} />
       )}
       {opened === "clone" && (
-        <CloneForm parent={parent} onMade={(folder) => changes.created(parent, folder)} onCancel={() => setOpened(null)} />
+        <CloneForm parent={parent} {...done} />
       )}
       {opened === "delete" && path !== null && servers !== null && (
         <DeleteFolderDialog

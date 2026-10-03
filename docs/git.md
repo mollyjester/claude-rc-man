@@ -31,8 +31,11 @@ any other, and says what an address must be.
   put in its place is left alone. If any of it cannot be removed, or it was
   moved, the form lists it where it is now. A removal that takes longer than
   rcman waits carries on after the form has said rcman stopped waiting.
-- A clone carries on if you select another folder meanwhile. It then appears
-  in the tree, but is not selected.
+- While a clone runs, its panel's **New folder**, **Clone from GitHub** and
+  **Delete folder** wait. Selecting another folder meanwhile leaves the
+  clone running. When it is done, the new folder appears in the tree but is
+  not selected; if it fails, nothing says so, since its form went with the
+  panel: clone again to see why.
 
 ## Changes
 

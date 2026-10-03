@@ -301,7 +301,7 @@ test("a form's text field takes the form's font, and its width, up to a limit", 
     // jsdom gives a field the font around it, as a browser does not: the rule says so itself
     expect(ruleOf('form input[type="text"], form input[type="password"]')).toMatch(/(?:^|;)\s*font:\s*inherit/);
     expect([field.width, field.boxSizing]).toEqual(["100%", "border-box"]);
-    expect(field.maxWidth).toMatch(/^\d+(?:\.\d+)?rem$/);
+    expect(field.maxWidth).toMatch(/^\d+(?:\.\d+)?(?:px|rem)$/); // a length, not the whole width
   } finally {
     style.remove();
     form.remove();
