@@ -96,6 +96,24 @@ const PAGES: [string, string, () => Promise<void>][] = [
       await screen.findByLabelText(m.newFolderName);
     },
   ],
+  [
+    "a clone into the home folder",
+    "/",
+    async () => {
+      const home = await screen.findByRole("region", { name: m.home });
+      await userEvent.click(within(home).getByRole("button", { name: m.cloneFromGithub }));
+      await screen.findByLabelText(m.cloneUrl);
+    },
+  ],
+  [
+    "a clone into a folder",
+    "/?folder=projects",
+    async () => {
+      const panel = await screen.findByRole("region", { name: "projects" });
+      await userEvent.click(within(panel).getByRole("button", { name: m.cloneFromGithub }));
+      await screen.findByLabelText(m.cloneUrl);
+    },
+  ],
 ];
 
 // The forms of a repository's Changes section, each found by its field.

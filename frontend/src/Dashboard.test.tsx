@@ -4,7 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { CONNECTION_STATES, START_REASON } from "./Claude";
 import { ACTIONS, KIND, LABELS, PRIMARY } from "./Servers";
 import { m } from "./messages";
-import { CONNECTED, ME, NOT_CONNECTED, type Routes, fakeApi, problem } from "./test/fakeApi";
+import { CONNECTED, type Call, ME, NOT_CONNECTED, type Routes, fakeApi, problem } from "./test/fakeApi";
 import { renderApp } from "./test/render";
 
 const entry = (path: string, has_children = false) => ({ name: path.split("/").pop(), path, has_children });
@@ -880,4 +880,182 @@ test("a repository carries a marker its name is described by, and another folder
   const beta = await folder("beta");
   expect(beta.closest("li")!.querySelector(":scope > .repository-marker")).toBeNull();
   expectNoDot(beta);
+});
+
+// --- clone from GitHub ------------------------------------------------------------------
+
+const CLONED = "https://github.com/owner/fresh-clone";
+
+// A home whose folders change as they are made, deleted and cloned into, starting as
+// FOLDERS; a clone makes the folder git would name, which is listed as a repository.
+function cloning() {
+  const routes = changingFolders();
+  const list = routes["GET /api/folders"] as (c: Call) => { entries?: { path: string }[] };
+  const make = routes["POST /api/folders"] as (c: Call) => { created: string };
+  const clones = new Set<string>();
+  return {
+    ...routes,
+    "GET /api/folders": (c: Call) => {
+      const found = list(c);
+      if (!found.entries) return found;
+      return { ...found, entries: found.entries.map((e) => ({ ...e, repository: clones.has(e.path) })) };
+    },
+    "POST /api/git/clone": (c: Call) => {
+      const { parent, url } = c.body as { parent: string; url: string };
+      const { created } = make({ ...c, body: { parent, name: url.split("/").pop() } });
+      clones.add(created);
+      return { created };
+    },
+  } satisfies Routes;
+}
+
+// The same, each clone answered only once its answer() is called.
+function cloningLater() {
+  const routes = cloning();
+  const answers: (() => void)[] = [];
+  return {
+    answer: () => answers.shift()!(),
+    routes: {
+      ...routes,
+      "POST /api/git/clone": (c: Call) => new Promise((resolve) => answers.push(() => resolve(routes["POST /api/git/clone"](c)))),
+    } satisfies Routes,
+  };
+}
+
+async function openClone(region: HTMLElement) {
+  await userEvent.click(within(region).getByRole("button", { name: m.cloneFromGithub }));
+  return within(region).getByLabelText(m.cloneUrl);
+}
+
+test.each([
+  ["Home", "/", m.home],
+  ["a folder", "/?folder=projects/alpha", "projects/alpha"],
+])("Clone from GitHub sits after New folder in the header of %s, as secondary, and not in the tree", async (_, path, name) => {
+  dashboard([server("projects/alpha", "ready")]);
+  renderApp(path);
+  const region = await screen.findByRole("region", { name });
+  const clone = within(region).getByRole("button", { name: m.cloneFromGithub });
+  const newFolder = within(region).getByRole("button", { name: m.newFolder });
+  expect(clone).toHaveClass("secondary");
+  expect(clone).not.toHaveClass("primary");
+  expect(newFolder.compareDocumentPosition(clone) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(clone.closest('[role="group"]')).toBe(newFolder.closest('[role="group"]'));
+  expect(within(await tree()).getByRole("button", { name: "projects" })).toBeInTheDocument(); // the tree is there
+  expect(within(await tree()).queryByRole("button", { name: m.cloneFromGithub })).not.toBeInTheDocument();
+});
+
+test("Clone from GitHub in a folder sends the address and the folder, then selects the clone", async () => {
+  const fake = dashboard([], cloning());
+  const { location } = renderApp("/?folder=projects/alpha");
+  const opened = await panel("projects/alpha");
+  await folder("alpha");
+  await userEvent.type(await openClone(opened), CLONED);
+  await userEvent.click(within(opened).getByRole("button", { name: m.clone }));
+
+  expect(await panel("projects/alpha/fresh-clone")).toBeInTheDocument();
+  expect(fake.made("POST", "/api/git/clone").map((c) => c.body)).toEqual([{ parent: "projects/alpha", url: CLONED }]);
+  expect(folderOf(location().search)).toBe("projects/alpha/fresh-clone");
+  const cloned = await folder("fresh-clone");
+  expect(cloned).toHaveAttribute("aria-current", "true");
+  expect(cloned).toHaveAccessibleDescription(m.repository);
+});
+
+test("Clone from GitHub in Home clones into the home folder and selects the clone", async () => {
+  const fake = dashboard([], cloning());
+  const { location } = renderApp();
+  await folder("projects");
+  const home = await screen.findByRole("region", { name: m.home });
+  await userEvent.type(await openClone(home), CLONED);
+  await userEvent.click(within(home).getByRole("button", { name: m.clone }));
+
+  expect(await panel("fresh-clone")).toBeInTheDocument();
+  expect(fake.made("POST", "/api/git/clone")[0].body).toEqual({ parent: "", url: CLONED });
+  expect(folderOf(location().search)).toBe("fresh-clone");
+  expect(asked(fake, "")).toBe(2);
+});
+
+test("the clone form says git names the folder, and links to the GitHub token in Settings", async () => {
+  dashboard([]);
+  renderApp("/?folder=projects");
+  const opened = await panel("projects");
+  await openClone(opened);
+  const link = within(opened).getByRole("link", { name: m.cloneNote.link });
+  expect(link).toHaveAttribute("href", "/settings");
+  expect(link.closest("p")).toHaveTextContent(`${m.cloneNote.before}${m.cloneNote.link}${m.cloneNote.after}`);
+});
+
+test("while it clones, the form's buttons wait, and only one clone is asked for", async () => {
+  const later = cloningLater();
+  const fake = dashboard([], later.routes);
+  renderApp("/?folder=projects");
+  const opened = await panel("projects");
+  await userEvent.type(await openClone(opened), CLONED);
+  await userEvent.click(within(opened).getByRole("button", { name: m.clone }));
+  const busy = await within(opened).findByRole("button", { name: m.cloning });
+  expect(busy).toBeDisabled();
+  expect(within(opened).getByRole("button", { name: m.cancel })).toBeDisabled();
+  await userEvent.click(busy);
+  expect(fake.made("POST", "/api/git/clone")).toHaveLength(1);
+  later.answer();
+  expect(await panel("projects/fresh-clone")).toBeInTheDocument();
+});
+
+test("a refused address is shown under its label in the form, which keeps it", async () => {
+  const sent = { field: "url", message: "planted reason, as the server sent it" };
+  dashboard([], { "POST /api/git/clone": problem(422, "validation_failed", "Some of what was sent is not valid.", { errors: [sent] }) });
+  const { location } = renderApp("/?folder=projects");
+  const opened = await panel("projects");
+  await userEvent.type(await openClone(opened), "https://example.com/x");
+  await userEvent.click(within(opened).getByRole("button", { name: m.clone }));
+  expect(await within(opened).findByRole("alert")).toHaveTextContent(`${m.cloneUrl}: ${sent.message}`);
+  expect(within(opened).getByLabelText(m.cloneUrl)).toHaveValue("https://example.com/x");
+  expect(within(opened).getByRole("button", { name: m.clone })).toBeEnabled();
+  expect(folderOf(location().search)).toBe("projects");
+});
+
+test("git's refusal of a clone is shown in git's words", async () => {
+  dashboard([], {
+    "POST /api/git/clone": problem(409, "git_failed", "git refused. What it said is below.", {
+      git: ["remote: Repository not found.", "fatal: repository not found"],
+      git_more: 0,
+    }),
+  });
+  renderApp("/?folder=projects");
+  const opened = await panel("projects");
+  await userEvent.type(await openClone(opened), CLONED);
+  await userEvent.click(within(opened).getByRole("button", { name: m.clone }));
+  const alert = await within(opened).findByRole("alert");
+  expect(alert).toHaveTextContent("git refused. What it said is below.");
+  expect(within(alert).getByLabelText(m.gitSaid)).toHaveTextContent("remote: Repository not found.");
+});
+
+test("Cancel closes the clone form, having asked for nothing", async () => {
+  const fake = dashboard([]);
+  renderApp("/?folder=projects");
+  const opened = await panel("projects");
+  await userEvent.type(await openClone(opened), CLONED);
+  await userEvent.click(within(opened).getByRole("button", { name: m.cancel }));
+  expect(within(opened).queryByLabelText(m.cloneUrl)).not.toBeInTheDocument();
+  expect(fake.made("POST", "/api/git/clone")).toHaveLength(0);
+});
+
+test("a clone that ends once another folder is selected leaves that one selected, and shows the clone", async () => {
+  const later = cloningLater();
+  const fake = dashboard([], later.routes);
+  const { location } = renderApp("/?folder=projects/alpha");
+  const opened = await panel("projects/alpha");
+  await userEvent.type(await openClone(opened), CLONED);
+  await userEvent.click(within(opened).getByRole("button", { name: m.clone }));
+  await within(opened).findByRole("button", { name: m.cloning });
+  await select("beta");
+  expect(await panel("projects/beta")).toBeInTheDocument();
+  const before = asked(fake, "projects/alpha");
+  later.answer();
+  await waitFor(() => expect(asked(fake, "projects/alpha")).toBe(before + 1));
+  expect(folderOf(location().search)).toBe("projects/beta");
+  await expand("alpha");
+  const cloned = await folder("fresh-clone");
+  expect(cloned).not.toHaveAttribute("aria-current", "true");
+  expect(cloned).toHaveAccessibleDescription(m.repository);
+  expect(folderOf(location().search)).toBe("projects/beta");
 });

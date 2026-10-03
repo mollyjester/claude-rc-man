@@ -150,3 +150,16 @@ def test_the_worlds_github_serves_alices_origin_and_takes_a_push_with_its_token_
         assert accepted.returncode == 0, accepted.stderr
     head = fixture_git(repo, "rev-parse", "HEAD").strip()
     assert fixture_git(origin, "rev-parse", "refs/heads/pushed").strip() == head
+
+
+def test_the_worlds_github_has_a_repository_to_clone_that_no_home_holds(world):
+    from tests.git_fixtures import fixture_git
+
+    root, _ = world
+    e2e.create_app()
+    origin = root / "origins" / "alice" / "demo.git"
+    on_origin = fixture_git(origin, "for-each-ref", "--format=%(refname:short)", "refs/heads")
+    assert on_origin.split() == ["feature", "main"]
+    assert fixture_git(origin, "show", "main:README.md")  # a file to find in the clone
+    for home in (root / "homes").iterdir():
+        assert not list(home.rglob("demo")), home

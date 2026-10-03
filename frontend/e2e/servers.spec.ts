@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { expect, test } from "@playwright/test";
@@ -270,4 +270,35 @@ test("a GitHub token is added, a new branch is committed and pushed, and the tok
   await page.goto("/?folder=projects/alice-repo");
   await expect(changes.getByText(m.pushNeedsToken.before.trim(), { exact: false })).toBeVisible();
   await expect(changes.getByRole("button", { name: m.push, exact: true })).toHaveCount(0);
+});
+
+test("a repository is cloned from GitHub, and a server starts in the clone", async ({ page }) => {
+  const clone = join(WORLD, "homes", "alice", "projects", "demo");
+  await useAs(page, ALICE);
+  await page.goto("/");
+  await expect(page.getByText(m.claudeConnectedAs("fake-user@example.com"))).toBeVisible();
+  await tree(page).getByRole("button", { name: "projects", exact: true }).click();
+  const projects = panel(page, "projects");
+  await projects.getByRole("button", { name: m.cloneFromGithub }).click();
+  await projects.getByLabel(m.cloneUrl).fill("https://github.com/alice/demo");
+  await projects.getByRole("button", { name: m.clone }).click();
+
+  const demo = panel(page, "projects/demo");
+  await expect(demo).toBeVisible();
+  const inTree = tree(page).getByRole("button", { name: "demo", exact: true });
+  await expect(inTree).toHaveAttribute("aria-current", "true");
+  await expect(inTree).toHaveAccessibleDescription(m.repository);
+  const changes = demo.getByRole("region", { name: m.changesTitle });
+  await expect(changes.getByText(m.onBranch("main"))).toBeVisible();
+  expect(readFileSync(join(clone, "README.md"), "utf-8")).toMatch(/^line 0 /);
+
+  await demo.getByRole("button", { name: m.start }).click();
+  const card = demo.getByRole("article", { name: "projects/demo" });
+  await card.getByRole("button", { name: m.trustYes }).click();
+  await expect(card.getByText(m.states.ready, { exact: true })).toBeVisible();
+  await card.getByRole("button", { name: m.stop }).click();
+  await expect(card.getByText(m.states.stopped, { exact: true })).toBeVisible();
+  await card.getByRole("button", { name: m.forget }).click();
+  await expect(card).toHaveCount(0);
+  await expect(demo.getByRole("button", { name: m.start })).toBeVisible();
 });
