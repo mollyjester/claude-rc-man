@@ -6,7 +6,10 @@ reference for the guard to find when it scans this file as part of the real
 corpus.
 """
 
+import os
+import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -230,16 +233,34 @@ TESTS_MD = REPO / "project-knowledge" / "tests.md"
 
 
 def make_targets(makefile: str) -> set[str]:
-    """The targets a Makefile defines: each rule's name, not a comment, a special
-    target or a target-specific variable."""
-    found = set()
-    for line in makefile.splitlines():
-        if line.lstrip().startswith("#"):
+    """The targets a Makefile defines, as make itself reads them: the files of make's
+    database (make -p) that are targets, less special targets and target-specific
+    variables."""
+    with tempfile.TemporaryDirectory() as scratch:
+        path = Path(scratch) / "Makefile"
+        path.write_text(makefile, encoding="utf-8")
+        proc = subprocess.run(
+            [shutil.which("make"), "-pRrq", "-f", str(path), ":"],
+            cwd=scratch,
+            env={"PATH": os.defpath, "LC_ALL": "C"},
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    lines = proc.stdout.splitlines()
+    assert "# Files" in lines, proc.stdout + proc.stderr  # make printed its database
+    found, not_a_target = set(), False
+    for line in lines[lines.index("# Files") + 1 :]:
+        if line.startswith("# Finished Make data base"):
+            break
+        if line == "# Not a target:":
+            not_a_target = True
             continue
         name, colon, rest = line.partition(":")
-        if colon and name and not name[0].isspace() and not name.startswith("."):
-            if not rest.lstrip().startswith("export ") and "=" not in name:
-                found.add(name.strip())
+        rule = colon and name and line[0] not in "#\t ." and "=" not in rest
+        if rule and not not_a_target:
+            found.add(name)
+        not_a_target = False
     return found
 
 
@@ -279,3 +300,30 @@ def test_a_makefile_comment_with_a_colon_is_not_a_target():
     commented = "# Why: a reason\n" + makefile
     assert "# Why:" in commented  # the plant took effect
     assert make_targets(commented) == {"a"}
+
+
+@pytest.mark.parametrize(
+    "variable",
+    [
+        "NAME := value\n",
+        "NAME ::= value\n",
+        "export NAME := value\n",
+        "override NAME := value\n",
+        "define BLOCK\nnot-a-target: x\nendef\n",
+        "ifeq (1,2)\nnot-a-target:\n\tdo it\nendif\n",
+    ],
+)
+def test_a_makefile_variable_or_unused_text_with_a_colon_is_not_a_target(variable):
+    """Variable assignments, a define block's body and a branch make does not take are
+    not rules; the rule beside them still is."""
+    makefile = "a:  ## one\n\tdo a\n"
+    assert make_targets(makefile) == {"a"}  # positive control
+    planted = variable + makefile
+    assert ":" in variable and planted != makefile  # the plant took effect
+    assert make_targets(planted) == {"a"}
+
+
+def test_a_double_colon_rule_and_a_rule_with_several_targets_are_targets():
+    """Positive controls for the forms a variable must not be mistaken for."""
+    assert make_targets("a:: b\n\tdo a\nb c: \n\tdo it\n") == {"a", "b", "c"}
+    assert make_targets("a: missing\n\tdo a\n") == {"a"}  # a prerequisite only is not
