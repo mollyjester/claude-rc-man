@@ -2524,3 +2524,100 @@ def test_git_env_is_the_server_environment_cut_down_for_git(tmp_path):
         "GIT_TERMINAL_PROMPT",
         "GIT_OPTIONAL_LOCKS",
     }
+
+
+# --- git's failures, each as rc-helper answers it -----------------------------------
+
+
+def answer_of(env, capsys, *argv, stdin=""):
+    """rc-helper's exit status and answer, run in this process so a test can change it."""
+    import io
+
+    capsys.readouterr()
+    status = h.main(list(argv), env, stdin=io.TextIOWrapper(io.BytesIO(stdin.encode())))
+    return status, json.loads(capsys.readouterr().out)
+
+
+def test_a_git_past_its_deadline_is_git_timeout_and_is_ended(
+    env, repo, tmp_path, monkeypatch, capsys
+):
+    import time
+
+    pid_file = tmp_path / "hook.pid"
+    hook = repo / ".git" / "hooks" / "pre-commit"
+    hook.write_text(f"#!/bin/sh\necho $$ > {pid_file}\nexec sleep 60\n")
+    hook.chmod(0o755)
+    write(repo / "a.txt")
+    fixture_git(repo, "add", "a.txt")
+    monkeypatch.setattr(h, "GIT_TIMEOUT", 2.0)  # read when the verb is called
+    began = time.monotonic()
+    status, out = answer_of(env, capsys, *commit_args(), stdin="m")
+    assert time.monotonic() - began < 10
+    assert (status, out["error"]["code"]) == (1, "git_timeout"), out
+    assert out["error"]["message"] == h.MESSAGES["git_timeout"]
+    pid = int(pid_file.read_text())  # positive control: the hook ran
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            break
+        time.sleep(0.05)
+    else:
+        pytest.fail(f"the hook {pid} outlived its deadline")
+    assert listed(status_of(env, capsys), "staged") == [("a.txt", "added")]  # nothing committed
+
+
+def status_of(env, capsys) -> dict:
+    status, out = answer_of(env, capsys, "git-status", "--", REPO_REL)
+    assert status == 0, out
+    return out
+
+
+def test_a_fetch_has_its_own_deadline_read_when_it_is_called(env, repo, monkeypatch, capsys):
+    import time
+
+
+    hold = Path(env["RC_HELPER_HOME"]) / "slow-upload-pack"
+    hold.write_text("#!/bin/sh\nexec sleep 60\n")
+    hold.chmod(0o755)
+    fixture_git(repo, "config", "remote.origin.uploadpack", str(hold))
+    monkeypatch.setattr(h, "GIT_NETWORK_TIMEOUT", 2.0)
+    began = time.monotonic()
+    status, out = answer_of(env, capsys, "git-fetch", "--", REPO_REL)
+    assert time.monotonic() - began < 10
+    assert (status, out["error"]["code"]) == (1, "git_timeout"), out
+
+
+def test_no_git_on_the_system_path_is_git_not_installed(env, repo, tmp_path, monkeypatch, capsys):
+    from helpers import git_run
+
+    assert status_of(env, capsys)["path"] == REPO_REL  # positive control
+    monkeypatch.setattr(git_run, "GIT_SEARCH_PATH", str(tmp_path / "no-git-here"))
+    status, out = answer_of(env, capsys, "git-status", "--", REPO_REL)
+    assert (status, out["error"]["code"]) == (1, "git_not_installed"), out
+    assert out["error"]["message"] == h.MESSAGES["git_not_installed"]
+
+
+def test_a_status_record_git_is_not_known_to_write_is_git_unrecognised_output(
+    env, repo, tmp_path, monkeypatch, capsys
+):
+    """A git that writes one record of an unknown kind among its status, through the verb."""
+    from helpers import git_run
+
+    real = git_run.find_git()
+    wrapper_dir = tmp_path / "odd-git"
+    wrapper_dir.mkdir()
+    wrapper = wrapper_dir / "git"
+    wrapper.write_text(
+        "#!/bin/sh\n"
+        'for a in "$@"; do [ "$a" = status ] && { printf "z from a newer git\\0"; break; }; done\n'
+        f'exec {real} "$@"\n'
+    )
+    wrapper.chmod(0o755)
+    monkeypatch.setattr(git_run, "GIT_SEARCH_PATH", str(wrapper_dir))
+    status, out = answer_of(env, capsys, "git-status", "--", REPO_REL)
+    assert (status, out["error"]["code"]) == (1, "git_unrecognised_output"), out
+    assert out["error"]["git"] == ["z from a newer git"]
+    monkeypatch.setattr(git_run, "GIT_SEARCH_PATH", str(Path(real).parent))
+    assert status_of(env, capsys)["path"] == REPO_REL  # positive control: real git is read
