@@ -420,3 +420,45 @@ def test_the_fixtures_own_home_is_removed_when_the_tests_end():
     home = Path(proc.stdout.strip())
     assert home.name.startswith("rcman-fixture-git-home-")  # positive control: it was made
     assert not home.exists()
+
+
+def test_a_sigterm_as_git_starts_still_ends_it(tmp_path, monkeypatch):
+    """SIGTERM arriving the moment git has started, before the call holds it, ends git."""
+    import signal
+
+    repo = make_repo(tmp_path / "r")
+    started = []
+
+    class Terminated(Exception):
+        pass
+
+    def terminated(signum, frame):
+        raise Terminated
+
+    def popen(*args, **kwargs):
+        started.append(subprocess.Popen(*args, **kwargs))
+        os.kill(os.getpid(), signal.SIGTERM)  # as rc-helper's caller would, just then
+        return started[-1]
+
+    previous = signal.signal(signal.SIGTERM, terminated)
+    try:
+        with pytest.raises(Terminated):
+            g.Git(ENV, popen=popen).run(repo, ["hash-object", "--stdin"], deadline=soon())
+    finally:
+        signal.signal(signal.SIGTERM, previous)
+    [proc] = started  # positive control: git started, and waits on its stdin
+    assert proc.poll() is not None, "git was left running"
+
+
+def test_git_and_its_hooks_can_be_ended_by_sigterm(tmp_path):
+    """Whatever the call does with SIGTERM around starting git, git itself takes it."""
+    import signal
+
+    repo = make_repo(tmp_path / "r")
+    mask = tmp_path / "mask"
+    hook(repo, "pre-commit", f"grep SigBlk /proc/$$/status > {mask}\n")
+    write(repo / "x.txt")
+    fixture_git(repo, "add", "x.txt")
+    g.Git(ENV).run(repo, ["commit", "-q", "-m", "x"], deadline=soon())
+    blocked = int(mask.read_text().split()[1], 16)
+    assert not blocked & (1 << (signal.SIGTERM - 1))
