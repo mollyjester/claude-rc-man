@@ -207,7 +207,10 @@ running git are `helpers/git_run.py`, tested by `tests/test_git_run.py`.
   `git rev-parse --show-toplevel` must be the folder itself, and its git
   directory and common directory must resolve inside the home folder, or it
   is `repository_outside_home`, as for a worktree of a repository elsewhere.
-  `tree` marks every entry with `repository`: whether it has a `.git`.
+  `tree` marks every entry with `repository`, found without running git
+  (`looks_like_repository`): whether its `.git` is a folder with a `HEAD`, or
+  a file whose gitdir line leads to one, either resolving inside the home
+  folder.
 - **Files** to stage or unstage are a JSON list on stdin, of at most
   `MAX_FILES_PER_CALL`. Each name is checked as written: empty, NUL, too
   long, or an empty or `.` part is `file_invalid`; absolute, a `..` part or

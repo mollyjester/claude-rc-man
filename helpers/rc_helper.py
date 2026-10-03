@@ -813,6 +813,33 @@ def check_file(repo: Path, name: str) -> bytes:
     return encoded
 
 
+GITDIR_LINE = "gitdir: "
+MAX_GITDIR_FILE_BYTES = 4096
+
+
+def looks_like_repository(root: Path, folder: Path) -> bool:
+    """Whether a folder has a git directory of its own in the home folder ``root``,
+    found without running git, as the tree marks repositories.
+
+    Its .git is either a folder with a HEAD in it or a file whose gitdir line
+    leads to one; either must resolve inside the home folder. git-status asks
+    git itself, and refuses what this lets through.
+    """
+    dot = folder / ".git"
+    try:
+        if dot.is_file():
+            with dot.open("rb") as f:
+                line = f.read(MAX_GITDIR_FILE_BYTES).decode("utf-8", "replace").strip()
+            if not line.startswith(GITDIR_LINE):
+                return False
+            git_dir = (folder / line[len(GITDIR_LINE) :]).resolve()
+        else:
+            git_dir = dot.resolve()
+        return root in git_dir.parents and (git_dir / "HEAD").is_file()
+    except OSError:
+        return False
+
+
 def _name(raw: bytes) -> str:
     return raw.decode("utf-8", "replace")
 
@@ -1001,7 +1028,7 @@ class Helper:
                 "name": child.name,
                 "path": rel,
                 "has_children": has_children,
-                "repository": (target / ".git").exists(),
+                "repository": looks_like_repository(root, target),
             }
             if sub is not None:
                 entry["children"] = sub
