@@ -40,7 +40,8 @@ suite in `tests/container/` inside a throwaway Ubuntu container, through
 `RCMAN_REQUIRE_CONTAINER=1`, which `make check` sets. It runs these, each in a
 fresh container: user management, with folders made and deleted and git run, with the person's own configuration, through sudo;
 the GitHub token and pushing through sudo, against `https://github.com`
-itself — `--add-host` makes `github.com` the container's own address, where
+itself, in a container with no network — `--add-host` makes `github.com` the
+container's own address, which the suite checks before running git, where
 `tests/container/test_github_in_container.py` serves the tests' GitHub with
 a certificate from a certificate authority it makes with `openssl` and adds
 to the system's with `update-ca-certificates`, so that rc-helper runs with

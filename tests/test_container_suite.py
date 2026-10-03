@@ -97,10 +97,11 @@ def test_user_management_suite_passes():
 
 
 def test_github_suite_passes():
-    """github.com is this container's own 127.0.0.1, where the suite serves the tests' GitHub."""
+    """No network, and github.com is this container's own 127.0.0.1, where the suite
+    serves the tests' GitHub."""
     run_suite(
         "tests/container/test_github_in_container.py",
-        docker_args=["--add-host", "github.com:127.0.0.1"],
+        docker_args=["--network", "none", "--add-host", "github.com:127.0.0.1"],
     )
 
 

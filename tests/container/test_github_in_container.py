@@ -1,7 +1,8 @@
 """The GitHub token and push on a real system, through sudo, against https://github.com.
 
-``tests/test_container_suite.py`` runs this module in a container where
-github.com is 127.0.0.1 (``--add-host``) and a certificate authority made
+``tests/test_container_suite.py`` runs this module in a container with no
+network (``--network none``), where github.com is 127.0.0.1 (``--add-host``),
+which the github_com fixture checks before git is run, and a certificate authority made
 here is trusted system-wide, so git reaches the tests' GitHub
 (``tests/github_server.py``) at https://github.com itself: no RC_HELPER_GITHUB
 hook, as in production. Anywhere else it skips.
@@ -9,6 +10,7 @@ hook, as in production. Anywhere else it skips.
 
 import json
 import os
+import socket
 import ssl
 import subprocess
 from pathlib import Path
@@ -44,9 +46,10 @@ def openssl(*args, cwd):
 
 
 @pytest.fixture(scope="module")
-def github(tmp_path_factory):
+def github_com(tmp_path_factory):
     """The tests' GitHub on 127.0.0.1:443 with a certificate for github.com from a
     certificate authority the system trusts; removed again afterwards."""
+    assert socket.gethostbyname("github.com") == "127.0.0.1"  # before any git is run
     pki = tmp_path_factory.mktemp("pki")
     openssl("req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "2", "-subj",
             f"/CN={CA_NAME}", "-keyout", "ca.key", "-out", "ca.crt", cwd=pki)  # fmt: skip
@@ -87,11 +90,11 @@ def as_bob(*argv, cwd=None):
 
 
 @pytest.fixture
-def bobs_repo(two, sudoers, github, tmp_path):
+def bobs_repo(two, sudoers, github_com, tmp_path):
     """bob's projects/repo, one commit on main, whose origin is
     https://github.com/bob/<unique>.git, an empty repository on the tests' GitHub."""
     name = f"repo-{tmp_path.name}"
-    bare = github.bare("bob", name)
+    bare = github_com.bare("bob", name)
     home = Path(account("bob").pw_dir)
     repo = home / "projects" / "repo"
     for argv in (
@@ -111,7 +114,7 @@ def on_remote(bare: Path, ref: str) -> str:
     return out.stdout.strip()
 
 
-def test_the_token_is_stored_for_github_com_in_the_persons_home(env, two, sudoers, github):
+def test_the_token_is_stored_for_github_com_in_the_persons_home(env, two, sudoers, github_com):
     code, out, proc = helper_as_bob("github-token", stdin=TOKEN + "\n")
     assert (code, out) == (0, {"token": True}), proc.stderr
     assert TOKEN not in proc.stdout + proc.stderr
@@ -126,21 +129,21 @@ def test_the_token_is_stored_for_github_com_in_the_persons_home(env, two, sudoer
     assert helper_as_bob("github-status")[1] == {"token": True}
 
 
-def test_a_push_through_sudo_reaches_github_with_the_token(env, bobs_repo, github):
+def test_a_push_through_sudo_reaches_github_with_the_token(env, bobs_repo, github_com):
     repo, bare = bobs_repo
     code, out, _ = helper_as_bob("git-push", "--", "projects/repo")
     assert (code, out["error"]["code"]) == (1, "github_token_not_set"), out
     assert helper_as_bob("github-token", stdin=TOKEN + "\n")[0] == 0
-    before = len(github.attempts)
+    before = len(github_com.attempts)
     code, out, proc = helper_as_bob("git-push", "--", "projects/repo")
     assert code == 0, (out, proc.stderr)
     assert out["upstream"] == "origin/main" and out["upstream_set"] is True
     head = as_bob("git", "-C", str(repo), "rev-parse", "HEAD").stdout.strip()
     assert on_remote(bare, "refs/heads/main") == head
-    assert set(github.attempts[before:]) == {("x-access-token", True)}
+    assert set(github_com.attempts[before:]) == {("x-access-token", True)}
 
 
-def test_a_plain_git_push_as_the_person_uses_the_token(env, bobs_repo, github):
+def test_a_plain_git_push_as_the_person_uses_the_token(env, bobs_repo, github_com):
     repo, bare = bobs_repo
     refused = as_bob("git", "-C", str(repo), "push", "origin", "HEAD:refs/heads/plain")
     assert refused.returncode != 0 and on_remote(bare, "refs/heads/plain") == ""
@@ -150,7 +153,7 @@ def test_a_plain_git_push_as_the_person_uses_the_token(env, bobs_repo, github):
     assert on_remote(bare, "refs/heads/plain") != ""
 
 
-def test_the_github_hook_does_not_pass_through_sudo(env, bobs_repo, github):
+def test_the_github_hook_does_not_pass_through_sudo(env, bobs_repo, github_com):
     """With RC_HELPER_GITHUB at an address nothing answers on in the caller's environment,
     a fetch through sudo still reaches github.com; under the hook it would fail, as
     tests/test_rc_helper.py shows."""
@@ -159,9 +162,10 @@ def test_the_github_hook_does_not_pass_through_sudo(env, bobs_repo, github):
     assert helper_as_bob("git-push", "--", "projects/repo")[0] == 0
     subprocess.run(["git", "-C", str(bare), "update-ref", "refs/heads/later", "refs/heads/main"],
                    check=True)  # fmt: skip
-    code, out, proc = helper_as_bob(
-        "git-fetch", "--", "projects/repo", extra_env={"RC_HELPER_GITHUB": UNREACHABLE}
-    )
+    hooked = {"RC_HELPER_GITHUB": UNREACHABLE}
+    seen = as_app("env", extra_env=hooked)  # positive control: the caller has the hook
+    assert f"RC_HELPER_GITHUB={UNREACHABLE}" in seen.stdout.splitlines(), seen.stdout
+    code, out, proc = helper_as_bob("git-fetch", "--", "projects/repo", extra_env=hooked)
     assert code == 0, (out, proc.stderr)
     fetched = as_bob("git", "-C", str(repo), "rev-parse", "--verify", "origin/later")
     assert fetched.returncode == 0, fetched.stderr  # it came from github.com
