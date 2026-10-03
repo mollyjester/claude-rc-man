@@ -13,9 +13,8 @@ The page groups related settings into parts, and each part is saved on its
 own with its own **Save**. Under the commit author, the page shows the name
 and address commits are recorded as, or that none is set.
 
-The **GitHub token** part stores the token git uses to push to GitHub as
-you, from rcman and from your Claude sessions; what it is for, where it is
-kept and how to remove it are in [Git](git.md#github-token). The part says
+The **GitHub token** part stores your GitHub token; what git uses it for,
+where it is kept and how to remove it are in [Git](git.md#github-token). The part says
 whether a token is stored, never the token itself: its field is always
 empty, and **Save** stores what you type in place of any token stored
 before. **Remove token**, offered while one is stored, asks before it
