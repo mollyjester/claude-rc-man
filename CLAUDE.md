@@ -11,8 +11,7 @@ Control servers. What it does and how far it is implemented: [README.md](README.
 
 ## Commands
 
-`make setup`, `make test`, `make lint`, `make format`, `make frontend-test`,
-`make e2e`, `make check` — what each does:
+The `make` targets, from `make setup` to `make check`, and what each does:
 [project-knowledge/tests.md](project-knowledge/tests.md).
 
 ## Where to look
