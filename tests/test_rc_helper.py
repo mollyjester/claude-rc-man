@@ -463,7 +463,7 @@ def test_invalid_prefix_is_refused(env, prefix):
 
 
 def test_server_command_is_fixed_and_shell_free(tmp_path):
-    cfg = h.Config(home=tmp_path, claude=tmp_path / "claude", tmux_socket=None)
+    cfg = h.Config(home=tmp_path, claude=tmp_path / "claude", tmux_socket=None, github=UNREACHABLE)
     argv = h.server_command(cfg, prefix="pfx")
     assert argv[0] == "/usr/bin/env" and argv[1] == "-i"
     command = argv[argv.index(str(tmp_path / "claude")) :]
@@ -478,7 +478,7 @@ def test_server_command_is_fixed_and_shell_free(tmp_path):
 
 
 def test_server_environment_is_the_allowlist(tmp_path):
-    cfg = h.Config(home=tmp_path, claude=tmp_path / "claude", tmux_socket=None)
+    cfg = h.Config(home=tmp_path, claude=tmp_path / "claude", tmux_socket=None, github=UNREACHABLE)
     argv = h.server_command(cfg, prefix="pfx")
     assigned = [a.split("=", 1)[0] for a in argv[2:] if "=" in a and not a.startswith("/")]
     assert sorted(assigned) == sorted(h.child_env(cfg))
@@ -534,7 +534,9 @@ def test_login_code_never_reaches_any_argv(tmp_path):
         seen.append((list(args), kw.get("input")))
         return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
 
-    cfg = h.Config(home=tmp_path, claude=tmp_path / "claude", tmux_socket=tmp_path / "s")
+    cfg = h.Config(
+        home=tmp_path, claude=tmp_path / "claude", tmux_socket=tmp_path / "s", github=UNREACHABLE
+    )
     h.Tmux(cfg, runner=runner).paste_line("rc-login", "SECRET-CODE-123")
     assert seen, "nothing was run"
     assert not any("SECRET-CODE-123" in " ".join(args) for args, _ in seen)
@@ -2517,7 +2519,7 @@ def test_the_changes_table_check_fails_on_a_drifted_table():
 
 
 def test_git_env_is_the_server_environment_cut_down_for_git(tmp_path):
-    cfg = h.Config(home=tmp_path, claude=tmp_path / "claude", tmux_socket=None)
+    cfg = h.Config(home=tmp_path, claude=tmp_path / "claude", tmux_socket=None, github=h.GITHUB_URL)
     env = h.git_env(cfg)
     child = h.child_env(cfg)
     for key in ("HOME", "USER", "LOGNAME", "PATH", "LANG"):
@@ -2814,7 +2816,9 @@ def test_a_git_verbs_deadline_must_name_a_constant_that_exists():
 def test_git_env_points_github_at_the_hook_only_when_set(tmp_path):
     import dataclasses
 
-    plain = h.Config(home=tmp_path, claude=tmp_path / "claude", tmux_socket=None)
+    plain = h.Config(
+        home=tmp_path, claude=tmp_path / "claude", tmux_socket=None, github=h.GITHUB_URL
+    )
     assert plain.github == h.GITHUB_URL
     assert not any(key.startswith("GIT_CONFIG") for key in h.git_env(plain))
     hooked = h.git_env(dataclasses.replace(plain, github="http://127.0.0.1:9/"))
@@ -2916,7 +2920,7 @@ def test_the_token_is_read_from_stdin_and_stored_for_github(hooked, github):
 def test_without_the_hook_the_token_is_stored_for_github_com(tmp_path):
     home = tmp_path / "home"
     home.mkdir()
-    cfg = h.Config(home=home, claude=tmp_path / "claude", tmux_socket=None)
+    cfg = h.Config(home=home, claude=tmp_path / "claude", tmux_socket=None, github=h.GITHUB_URL)
     assert cfg.github == h.GITHUB_URL
     helper_ = h.Helper(cfg)
     assert helper_.github_token(TOKEN.encode() + b"\n") == {"token": True}
