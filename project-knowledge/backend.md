@@ -98,7 +98,8 @@ running. The container suite shows, through real sudo, that killing sudo
 leaves the helper running and that `run_bounded` ends it. A helper that
 ignores SIGTERM is not waited for: once sudo is killed, `run_bounded` closes
 the pipes without reading them and raises the timeout. That helper is left
-behind as an orphan until it ends or `rcman.service` stops.
+behind as an orphan until it ends or `rcman.service` stops. What a helper
+reads on stdin and writes is UTF-8, whatever the service's locale.
 
 A git call's timeout is the helper's own deadline for it —
 `rc_helper.GIT_TIMEOUT`, or `rc_helper.GIT_NETWORK_TIMEOUT` for a fetch — and

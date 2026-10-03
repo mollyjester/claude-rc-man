@@ -132,9 +132,15 @@ def run_bounded(
     running. SIGTERM it does pass on: that comes first, and SIGKILL only if
     sudo has not ended within :data:`TERMINATE_GRACE_SECONDS`. The timeout is
     still raised.
+
+    Text is UTF-8 both ways, as the helpers read and write it, whatever the
+    service's locale.
     """
     pipe = subprocess.PIPE if capture_output else None
-    with subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=pipe, stderr=pipe, text=text) as proc:
+    encoding = "utf-8" if text else None
+    with subprocess.Popen(
+        argv, stdin=subprocess.PIPE, stdout=pipe, stderr=pipe, text=text, encoding=encoding
+    ) as proc:
         try:
             stdout, stderr = proc.communicate(input, timeout=timeout)
         except subprocess.TimeoutExpired:
