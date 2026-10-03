@@ -1,6 +1,7 @@
 """The Makefile's test targets: make test runs every test that runs on the host, make
 test-container every test that needs a container, and make check both, with a
-container test that cannot run failing rather than skipping.
+container test that cannot run failing rather than skipping. make lint and make
+format cover both the Python code and the frontend.
 
 Each target is run by the real make with uv, npm and npx replaced by recorders, so
 what a target would run is read from what it ran; which tests a pytest command line
@@ -8,7 +9,10 @@ selects is read from pytest's own collection (tests/collected.py).
 """
 
 import json
+import os
+import re
 import shutil
+import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -54,8 +58,6 @@ def recorded(tmp_path: Path, target: str, makefile: Path = MAKEFILE) -> list[Cal
         (fakebin / name).chmod(0o755)
     log = tmp_path / f"{target}.jsonl"
     log.touch()
-    import subprocess
-
     proc = subprocess.run(
         [shutil.which("make"), "-f", str(makefile), "-C", str(REPO), target],
         env={"PATH": str(fakebin), "MAKE_RECORD": str(log)},
@@ -194,3 +196,93 @@ def test_a_program_the_recorder_does_not_stand_in_for_fails_the_target(tmp_path,
     makefile = planted(tmp_path, "\tuv run pytest", "\tpytest", -1)
     with pytest.raises(AssertionError):
         recorded(tmp_path, target, makefile)
+
+
+# --- make lint and make format: ruff for the Python code, Biome for the frontend ---
+
+FRONTEND = REPO / "frontend"
+RUFF = {
+    "lint": [("uv", "run", "ruff", "format", "--check", "."), ("uv", "run", "ruff", "check", ".")],
+    "format": [("uv", "run", "ruff", "format", "."), ("uv", "run", "ruff", "check", "--fix", ".")],
+}
+
+
+@pytest.mark.parametrize("target", ["lint", "format"])
+def test_lint_and_format_run_ruff_and_the_frontend_script_of_the_same_name(tmp_path, target):
+    calls = recorded(tmp_path, target)
+    assert [(c.argv, c.cwd) for c in calls] == [
+        *((argv, str(REPO)) for argv in RUFF[target]),
+        (("npm", "run", target), str(FRONTEND)),
+    ]
+
+
+def lint_tree(tmp_path: Path, planted: str | None, node_modules: bool = True):
+    """The real `make lint` in a scratch tree holding the Makefile, the frontend's
+    package.json and Biome's configuration, and ``planted`` as frontend/src/planted.ts.
+    uv is a recorder, so only the frontend's half does real work; npm and Biome are the
+    real ones, Biome from the frontend's own packages."""
+    biome = FRONTEND / "node_modules" / "@biomejs" / "biome"
+    assert biome.is_dir(), "the frontend's packages are not installed: run make frontend-setup"
+    tree = tmp_path / "tree"
+    (tree / "frontend" / "src").mkdir(parents=True)
+    shutil.copy(MAKEFILE, tree / "Makefile")
+    for name in ("package.json", "biome.jsonc"):
+        shutil.copy(FRONTEND / name, tree / "frontend" / name)
+    if node_modules:
+        (tree / "frontend" / "node_modules").symlink_to(FRONTEND / "node_modules")
+    if planted is not None:
+        (tree / "frontend" / "src" / "planted.ts").write_text(planted, encoding="utf-8")
+    fakebin = tmp_path / "bin"
+    fakebin.mkdir()
+    (fakebin / "uv").write_text(RECORDER.format(python=sys.executable), encoding="utf-8")
+    (fakebin / "uv").chmod(0o755)
+    env = {k: v for k, v in os.environ.items() if not k.startswith("RCMAN_")}
+    env |= {"PATH": f"{fakebin}{os.pathsep}{os.environ['PATH']}", "MAKE_RECORD": "/dev/null"}
+    return subprocess.run(
+        [shutil.which("make"), "-C", str(tree), "lint"],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+
+
+WELL_FORMATTED = "export const planted = { a: 1 };\n"
+
+
+def output(proc: subprocess.CompletedProcess) -> str:
+    """What a run printed, without the colours Biome writes even to a pipe."""
+    return re.sub(r"\x1b\[[0-9;]*m", "", proc.stdout + proc.stderr)
+
+
+def checked(proc: subprocess.CompletedProcess) -> int:
+    """How many files Biome says it checked."""
+    found = re.findall(r"^Checked (\d+) files? in ", output(proc), re.MULTILINE)
+    assert len(found) == 1, output(proc)
+    return int(found[0])
+
+
+def test_make_lint_passes_a_well_formatted_frontend_file_it_checked(tmp_path):
+    """Positive control: Biome checks one file more with the plant than without it, so
+    a lint that found no files could not pass here."""
+    bare = lint_tree(tmp_path / "bare", None)
+    assert bare.returncode == 0, bare.stdout + bare.stderr
+    proc = lint_tree(tmp_path / "planted", WELL_FORMATTED)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert checked(proc) == checked(bare) + 1
+
+
+def test_make_lint_fails_on_a_mis_formatted_frontend_file_and_names_it(tmp_path):
+    """Planted twin: the same file, not formatted as Biome would."""
+    planted = WELL_FORMATTED.replace("{ a: 1 };", "{a:1}")
+    assert planted != WELL_FORMATTED  # the plant took effect
+    proc = lint_tree(tmp_path, planted)
+    assert proc.returncode != 0
+    assert "planted.ts" in output(proc)
+
+
+def test_make_lint_fails_without_the_frontend_packages(tmp_path):
+    """Without frontend/node_modules there is no Biome, and make lint fails, not passes."""
+    proc = lint_tree(tmp_path, WELL_FORMATTED, node_modules=False)
+    assert proc.returncode != 0
+    assert "biome" in output(proc)

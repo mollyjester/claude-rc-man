@@ -10,8 +10,8 @@ How the test suite is organised and run. The rules the suite follows are in
 | `make setup` | Creates the development environment: `make frontend-setup`, then `uv sync` |
 | `make test` | Runs every Python test that runs on the host, in parallel with pytest-xdist: all but those marked `container` |
 | `make test-container` | Runs the Python tests marked `container`, which need a container. It sets `RCMAN_REQUIRE_CONTAINER=1`, so they fail instead of skipping where Docker is not usable |
-| `make lint` | Checks formatting and lint with ruff |
-| `make format` | Applies formatting and safe lint fixes |
+| `make lint` | Checks formatting and lint: ruff for the Python code, Biome for the frontend, with the frontend's packages `make frontend-setup` installs |
+| `make format` | Applies formatting and safe lint fixes: ruff for the Python code, Biome for the frontend |
 | `make frontend-setup` | Installs the frontend's packages and Playwright's browser |
 | `make frontend-test` | Type-checks the frontend and runs its component tests |
 | `make frontend-build` | Builds the frontend into `frontend/dist` |
@@ -145,7 +145,10 @@ it can fail, and a positive control that keeps an empty input from passing.
   command they ran selects from pytest's own collection: every test is in
   exactly one of `make test` and `make test-container`, `make test-container`
   runs exactly the `container` tests, and `make check` runs every test, its
-  container tests with `RCMAN_REQUIRE_CONTAINER=1`.
+  container tests with `RCMAN_REQUIRE_CONTAINER=1`. `make lint` and
+  `make format` run ruff and the frontend's script of the same name, and the
+  real `make lint`, run over a frontend file planted in a scratch tree, fails
+  when Biome would reformat it and when the frontend's packages are missing.
 - **Deployment contents** (`tests/test_export.py`). Deployment uses
   `git archive`, so `.gitattributes` decides what is deployed. The test
   checks that every development-only file is marked `export-ignore`, that the

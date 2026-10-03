@@ -21,7 +21,8 @@ release of Biome cannot change what passes.
 In `frontend/`, `npm run lint` checks without changing anything: formatting,
 the lint rules and the order of imports. An error or a warning fails it;
 Biome's info diagnostics are shown and do not. `npm run format` applies the
-formatting, the order of imports and Biome's safe fixes.
+formatting, the order of imports and Biome's safe fixes. `make lint` and
+`make format` run them after ruff (see [tests.md](tests.md#running)).
 
 A finding is answered first by fixing the code. Where a rule is wrong for
 one place, it is suppressed there, with the reason after the colon:
