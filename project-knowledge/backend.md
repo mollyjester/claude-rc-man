@@ -6,7 +6,8 @@ The project is a Python package (`pyproject.toml`) holding `rcman` and
 `helpers`, so `uv sync` makes both importable from the environment. Its settings come
 from `RCMAN_*` environment variables — see `backend/rcman/settings.py` and
 [the configuration guide](../docs/configuration.md). The HTTP API reference is
-the OpenAPI description it serves at `/api/openapi`.
+the OpenAPI description it serves at `/api/openapi.json`, browsable at
+`/api/openapi`.
 
 ## Layout
 
@@ -20,6 +21,7 @@ the OpenAPI description it serves at `/api/openapi`.
 | `audit.py` | The audit trail: recording, coverage, retention |
 | `helpers_client.py` | Calling `rc-helper` and `rc-admin`, and mapping their errors to HTTP statuses |
 | `everyone.py` | Everyone's servers, for administrators: one `rc-helper list` per person, side by side |
+| `spa.py` | Serving the built frontend: its files, and `index.html` for every other path not under `/api`; installed after every router |
 | `routes.py` | The app's routes as FastAPI resolves them after including routers, and which of them are for administrators |
 | `routers/` | One module per area: `me`, `folders`, `git`, `github`, `servers`, `claude`, `users`, `audit_log`, `attention`, `docs` |
 | `routers/git.py` | The git repositories in the person's home, under `/api/git`: status, branches, stage, unstage, commit, switch, a new branch, fetch, push and clone, each one rc-helper git verb, and Commit & Push (see [Git](#git)) |
@@ -29,12 +31,14 @@ the OpenAPI description it serves at `/api/openapi`.
 ## Requests
 
 - **Identity.** oauth2-proxy, behind Caddy's `forward_auth`, signs people in
-  with Google and passes the address as `X-Forwarded-Email`. rcman trusts the
+  with Google, and Caddy passes the address on as `X-Forwarded-Email`,
+  removing any the browser sent. rcman trusts the
   header because, installed, it listens only on a unix socket in a directory
   that only Caddy's group may enter — see
   [the installer](installer.md#the-socket). The address must be
   in the users file, which is read on every request, so a removal takes effect
-  at once. `/api/health` is the only route that needs no identity.
+  at once. The routes that need no identity are `problems.PUBLIC_PATHS`:
+  `/api/health` and the frontend's files.
 - **Origin.** A `POST`, `PUT`, `PATCH` or `DELETE` must carry an `Origin`
   header equal to `RCMAN_PUBLIC_ORIGIN`.
 - **Administrators.** Routes for administrators depend on `admin_user`.
@@ -95,8 +99,8 @@ so it has its own timeout, `FOLDER_DELETE_TIMEOUT_SECONDS` in
 `run_bounded`, which ends a call that times out with SIGTERM, which sudo
 passes on to the helper, and SIGKILL only after `TERMINATE_GRACE_SECONDS`:
 sudo cannot pass SIGKILL on, so killing it outright would leave the helper
-running. The container suite shows, through real sudo, that killing sudo
-leaves the helper running and that `run_bounded` ends it. A helper that
+running; the container suite checks this through real sudo (see
+[the installer](installer.md#tests)). A helper that
 ignores SIGTERM is not waited for: once sudo is killed, `run_bounded` closes
 the pipes without reading them and raises the timeout. That helper is left
 behind as an orphan until it ends or `rcman.service` stops. What a helper
@@ -189,7 +193,7 @@ The version report has its own timeout, `ATTENTION_VERSIONS_TIMEOUT_SECONDS` in
 `everyone.py`, past which it is `helper_timeout`; when the listing fails, the
 request fails at once without waiting for the version report.
 It is built on every request and never stored, and it carries no screen text.
-The frontend asks for it when the app loads and on every change of page. A server action that ends on an unrecognised screen sets
+A server action that ends on an unrecognised screen sets
 `Record.result` to `unrecognised_screen`, which the audit row records in place
 of `ok`.
 
@@ -205,10 +209,13 @@ it to the journal. `tests/test_audit.py` starts the app with the unit's own
 route in the route table and fails on any that neither records nor is listed
 in `audit.EXEMPT` with a reason that also appears in
 [the audit guide](../docs/audit.md); it then drives every audited route and
-checks its row. The results a row can have besides an error code are
+checks its row, and holds the guide's table of actions to the actions the
+routes record. The results a row can have besides an error code are
 `audit.RESULTS`, and a test holds the guide's results table to them. The table is append-only: a trigger in `db.py`'s migrations
-aborts any `UPDATE`, so rows are only added, and deleted by retention, which
-runs when the app starts and once a day.
+aborts any `UPDATE`, so rows are only added, and deleted only by retention
+(see [the audit guide](../docs/audit.md#how-long-events-are-kept)), which
+`create_app`'s lifespan runs as the app starts and every
+`RETENTION_INTERVAL_SECONDS` after.
 
 ## Tests
 
