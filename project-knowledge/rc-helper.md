@@ -232,7 +232,10 @@ A push goes to GitHub when the push URL of the remote it goes to — the
 branch's push remote as git finds it (`%(push:remotename)`), or `origin`
 for a branch with no upstream — starts with `Config.github` once git has
 rewritten it (`git remote get-url --push`), so that the person's own
-`insteadOf` and `pushurl` settings decide it as they decide the push.
+`insteadOf` and `pushurl` settings decide it as they decide the push. An
+address naming a user (`https://you@github.com/...`) does not: git asks
+for that user's credential, which rcman's, stored under `GITHUB_USERNAME`,
+is not.
 Only a push to GitHub needs the token, and is refused with
 `github_token_not_set` without one, before anything is pushed; a push
 elsewhere is tried, and git's refusal, if any, passed on. `git-status`
@@ -247,8 +250,10 @@ any git push as the person, a Claude session's among them, uses it.
 
 - **Where.** `git credential-store store` writes it, read from stdin, for
   the protocol and host of `Config.github` with the username
-  `GITHUB_USERNAME`, into the file git's store helper keeps,
-  `~/.git-credentials`, readable by the person only. It replaces an entry
+  `GITHUB_USERNAME`, into the file git's store helper uses —
+  `~/.git-credentials`, or `~/.config/git/credentials` when only that one
+  exists, since rc-helper's git has no `XDG_CONFIG_HOME` — readable by the
+  person only. It replaces an entry
   rcman stored before and goes first in the file, so git's store helper
   offers it before any other credential stored there for GitHub. Then
   `credential.<Config.github>.helper store` is added to the person's

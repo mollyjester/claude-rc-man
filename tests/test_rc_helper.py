@@ -3051,3 +3051,32 @@ def test_what_git_answers_about_the_token_is_kept_out_of_refusals(hooked, monkey
         if args[:2] in (["credential-store", "get"], ["credential-store", "store"])
     }
     assert secret == {("credential-store", "store"): True, ("credential-store", "get"): True}
+
+
+def test_the_token_goes_where_gits_store_helper_keeps_credentials(hooked, github):
+    """git's store helper writes to ~/.git-credentials, or to ~/.config/git/credentials
+    when only that exists; rc-helper's git has no XDG_CONFIG_HOME, as the server's does
+    not, so that is the place."""
+    home = Path(hooked["RC_HELPER_HOME"])
+    xdg = home / ".config" / "git" / "credentials"
+    xdg.parent.mkdir(parents=True)
+    xdg.write_text("")
+    xdg.chmod(0o600)
+    assert set_token(hooked)[0] == 0
+    assert TOKEN in xdg.read_text()
+    assert not git_credentials(hooked).exists()
+    assert ok(hooked, "github-status") == {"token": True}
+    assert "XDG_CONFIG_HOME" not in h.git_env(h.config_from_env(hooked))
+
+
+def test_a_github_address_naming_a_user_is_not_rcmans_to_push_with_its_token(
+    hooked, github, on_github
+):
+    """https://someone@github.com/... makes git ask for that user's password, which rcman's
+    token is not stored under, so rcman does not count it as GitHub. Nothing is pushed:
+    the hook does not rewrite such an address, which would reach the real GitHub."""
+    repo = Path(hooked["RC_HELPER_HOME"]) / GH_REL
+    url = fixture_git(repo, "remote", "get-url", "origin").strip()
+    fixture_git(repo, "remote", "set-url", "origin", url.replace("https://", "https://someone@"))
+    assert ok(hooked, "git-status", "--", GH_REL)["push_to_github"] is False
+    assert ok(hooked, "git-push", "--check", "--", GH_REL)["branch"] == "main"

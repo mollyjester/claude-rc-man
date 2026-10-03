@@ -90,7 +90,10 @@ you are not on a branch there is nothing to push, and the section says so.
 A push to GitHub — to a remote whose address begins with
 `https://github.com/` — needs your [GitHub token](#github-token); until one
 is stored, Push and Commit & Push are not offered there, and the section
-links to Settings. A push anywhere else is offered without one, and needs
+links to Settings. An address that names a user, such as
+`https://you@github.com/...`, makes git ask for that user's password, which
+your token is not stored under, so rcman does not treat it as GitHub; take
+the user out of the address (`git remote set-url`) to push with your token. A push anywhere else is offered without one, and needs
 whatever that remote needs without asking for a password; when git refuses,
 the section shows its words, as for a push GitHub rejects because someone
 pushed first.
@@ -106,8 +109,9 @@ safest; a classic token with the `repo` scope works too.
   for `https://github.com` in your account, so every git push to GitHub
   that runs as you — from rcman, from your Claude sessions, or from a
   terminal — uses it.
-- **Where it is kept.** In `~/.git-credentials`, in plain text, readable by
-  you only, where git's `store` credential helper keeps credentials. rcman
+- **Where it is kept.** In plain text, readable by you only, in the file
+  git's `store` credential helper uses: `~/.git-credentials`, or
+  `~/.config/git/credentials` when only that one exists. rcman
   also adds one line to `~/.gitconfig`, which tells git to use that helper
   for `https://github.com`. Credential helpers you have set yourself stay;
   git asks them in the order your configuration lists them, and uses the
