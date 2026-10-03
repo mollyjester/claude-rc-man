@@ -4,7 +4,7 @@ import { GITHUB_TOKEN, WORLD } from "./e2e/people";
 
 // The built frontend, served by the real backend (tests/e2e_server.py) with a
 // real rc-helper per user and the fake claude. oauth2-proxy's identity header
-// is set per test with useAs() in e2e/people.ts.
+// is set per test with signInAs() in e2e/people.ts.
 const PORT = 8765;
 const ORIGIN = `http://127.0.0.1:${PORT}`;
 

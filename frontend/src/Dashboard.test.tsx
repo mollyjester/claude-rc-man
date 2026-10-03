@@ -695,7 +695,8 @@ function changingFolders() {
     "POST /api/folders": (c) => {
       const { parent, name } = c.body as { parent: string; name: string };
       const created = parent ? `${parent}/${name}` : name;
-      (folders[parent] ??= { path: parent, entries: [] }).entries.push(entry(created));
+      folders[parent] ??= { path: parent, entries: [] };
+      folders[parent].entries.push(entry(created));
       folders[created] = { path: created, entries: [] };
       const above = folders[parentOf(parent)];
       if (parent && above)

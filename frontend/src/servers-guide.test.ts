@@ -104,7 +104,7 @@ function rulesFor(css: string, className: string): string[] {
 }
 
 // A declared value: the last declaration of a property in the rule, or undefined.
-const valueOf = (rule: string, property: string) =>
+const declared = (rule: string, property: string) =>
   [...rule.matchAll(new RegExp(`(?:^|;)\\s*${property}\\s*:\\s*([^;]+)`, "g"))].at(-1)?.[1].trim();
 
 // A length in px, from px or rem; undefined for anything else.
@@ -122,19 +122,19 @@ function shapeOf(css: string, kind: string): string {
   if (rules.length > 1) throw new Error(`more than one rule styles .dot-${kind}`);
   const [rule] = rules;
   const base = rulesFor(css, "dot").join(";");
-  const width = px(valueOf(rule, "width") ?? valueOf(base, "width"));
-  const height = px(valueOf(rule, "height") ?? valueOf(base, "height"));
+  const width = px(declared(rule, "width") ?? declared(base, "width"));
+  const height = px(declared(rule, "height") ?? declared(base, "height"));
   if (width === undefined || height === undefined) return "unknown";
 
-  const polygon = valueOf(rule, "clip-path")?.match(/^polygon\(([^)]*)\)$/);
+  const polygon = declared(rule, "clip-path")?.match(/^polygon\(([^)]*)\)$/);
   if (polygon) return polygon[1].split(",").length === 3 ? "triangle" : "polygon";
-  const background = valueOf(rule, "background");
+  const background = declared(rule, "background");
   const filled = background !== undefined && !/^(transparent|none)$/.test(background);
-  const outlined = /^[\d.]+(px|rem) solid /.test(valueOf(rule, "border") ?? "");
+  const outlined = /^[\d.]+(px|rem) solid /.test(declared(rule, "border") ?? "");
   if (width >= 2 * height && filled) return "bar";
   if (width !== height)
     throw new Error(`.dot-${kind} is ${width}px by ${height}px: neither square nor a bar`);
-  const radius = valueOf(rule, "border-radius");
+  const radius = declared(rule, "border-radius");
   const round = radius === "50%" || (px(radius) ?? 0) >= width / 2;
   if (filled) return round ? "filled circle" : "filled square";
   if (outlined) return round ? "ring" : "hollow square";

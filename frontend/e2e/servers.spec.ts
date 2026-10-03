@@ -6,10 +6,10 @@ import { expect, test } from "@playwright/test";
 
 import { m } from "../src/messages";
 import { openAdminPage, panel, selectInProjects, summary, tree } from "./nav";
-import { ALICE, BOB, GITHUB_TOKEN, useAs, WORLD } from "./people";
+import { ALICE, BOB, GITHUB_TOKEN, signInAs, WORLD } from "./people";
 
 test("start, trust, stop, resume and forget through the folder panel", async ({ page }) => {
-  await useAs(page, ALICE);
+  await signInAs(page, ALICE);
   await page.goto("/");
   await expect(page.getByText(m.claudeConnectedAs("fake-user@example.com"))).toBeVisible();
   await selectInProjects(page, "alice-alpha");
@@ -52,7 +52,7 @@ test("start, trust, stop, resume and forget through the folder panel", async ({ 
 });
 
 test("a folder is made, runs a server, and is deleted with it", async ({ page }) => {
-  await useAs(page, ALICE);
+  await signInAs(page, ALICE);
   await page.goto("/");
   await expect(page.getByText(m.claudeConnectedAs("fake-user@example.com"))).toBeVisible();
   await tree(page).getByRole("button", { name: "projects", exact: true }).click();
@@ -99,7 +99,7 @@ test("a folder is made, runs a server, and is deleted with it", async ({ page })
 });
 
 test("a folder is made in the home folder, and deleted from it", async ({ page }) => {
-  await useAs(page, ALICE);
+  await signInAs(page, ALICE);
   await page.goto("/");
   const home = page.getByRole("region", { name: m.home });
   await home.getByRole("button", { name: m.newFolder }).click();
@@ -120,7 +120,7 @@ test("a folder is made in the home folder, and deleted from it", async ({ page }
 });
 
 test("people never see each other's folders or servers", async ({ page, browser }) => {
-  await useAs(page, ALICE);
+  await signInAs(page, ALICE);
   await page.goto("/");
   await selectInProjects(page, "alice-beta");
   await panel(page, "projects/alice-beta").getByRole("button", { name: m.start }).click();
@@ -128,7 +128,7 @@ test("people never see each other's folders or servers", async ({ page, browser 
   await expect(card).toBeVisible();
 
   const bob = await browser.newPage();
-  await useAs(bob, BOB);
+  await signInAs(bob, BOB);
   await bob.goto("/");
   await bob.getByRole("button", { name: m.expand("projects") }).click();
   await expect(tree(bob).getByRole("button", { name: "bob-alpha", exact: true })).toBeVisible();
@@ -146,7 +146,7 @@ test("administrators see everyone's servers, and act on none of them", async ({
   page,
   browser,
 }) => {
-  await useAs(page, ALICE);
+  await signInAs(page, ALICE);
   await page.goto("/");
   await selectInProjects(page, "alice-alpha");
   await panel(page, "projects/alice-alpha").getByRole("button", { name: m.start }).click();
@@ -167,7 +167,7 @@ test("administrators see everyone's servers, and act on none of them", async ({
   await expect(page.getByRole("main").getByRole("button")).toHaveCount(0);
 
   const bob = await browser.newPage();
-  await useAs(bob, BOB);
+  await signInAs(bob, BOB);
   await bob.goto("/");
   await expect(bob.getByText(m.signedInAs(BOB))).toBeVisible();
   await expect(bob.getByRole("button", { name: m.navAdmin })).toHaveCount(0);
@@ -188,7 +188,7 @@ test("a repository's changes: appear, stage, commit, switch branch", async ({ pa
       env: { PATH: "/usr/bin:/bin", HOME: WORLD },
       encoding: "utf-8",
     });
-  await useAs(page, ALICE);
+  await signInAs(page, ALICE);
   await page.goto("/");
   await selectInProjects(page, "alice-repo");
   await expect(
@@ -247,7 +247,7 @@ test("a GitHub token is added, a new branch is committed and pushed, and the tok
   const env = { PATH: "/usr/bin:/bin", HOME: WORLD };
   const git = (where: string, ...args: string[]) =>
     execFileSync("git", ["-C", where, ...args], { env, encoding: "utf-8" });
-  await useAs(page, ALICE);
+  await signInAs(page, ALICE);
   await page.goto("/settings");
   const author = page.getByRole("region", { name: m.settingsAuthorTitle });
   await author.getByLabel(m.authorNameLabel).fill("Alice Author");
@@ -305,7 +305,7 @@ test("a GitHub token is added, a new branch is committed and pushed, and the tok
 
 test("a repository is cloned from GitHub, and a server starts in the clone", async ({ page }) => {
   const clone = join(WORLD, "homes", "alice", "projects", "demo");
-  await useAs(page, ALICE);
+  await signInAs(page, ALICE);
   await page.goto("/");
   await expect(page.getByText(m.claudeConnectedAs("fake-user@example.com"))).toBeVisible();
   await tree(page).getByRole("button", { name: "projects", exact: true }).click();

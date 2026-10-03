@@ -2,7 +2,7 @@ import { expect, type Page, test } from "@playwright/test";
 
 import { m } from "../src/messages";
 import { panel, summary, tree } from "./nav";
-import { ALICE, useAs } from "./people";
+import { ALICE, signInAs } from "./people";
 
 // The summary's heading, its first path's button and text, and that path's
 // badge, measured in one go: anything that loads meanwhile and moves the
@@ -34,7 +34,7 @@ for (const [width, columns] of [
   test(`at ${width}px wide, a server's screen scrolls inside its card instead of widening the page`, async ({
     page,
   }) => {
-    await useAs(page, ALICE);
+    await signInAs(page, ALICE);
     await page.setViewportSize({ width, height: 800 });
     // A server that stopped on a screen wider than any window.
     const server = {
@@ -70,7 +70,7 @@ for (const [width, columns] of [
 test("Your servers lines its paths up with its heading, each badge on its path's line", async ({
   page,
 }) => {
-  await useAs(page, ALICE);
+  await signInAs(page, ALICE);
   await page.setViewportSize({ width: 1200, height: 800 });
   // the longest badge there is, beside a path
   const server = {
@@ -98,7 +98,7 @@ test("Your servers lines its paths up with its heading, each badge on its path's
 });
 
 test("a badge with no room beside its path goes below it, lined up with it", async ({ page }) => {
-  await useAs(page, ALICE);
+  await signInAs(page, ALICE);
   await page.setViewportSize({ width: 780, height: 800 });
   const server = {
     path: "projects/alice-alpha",
@@ -122,7 +122,7 @@ test("a badge with no room beside its path goes below it, lined up with it", asy
 });
 
 test("a file that cannot be selected lines up with those that can", async ({ page }) => {
-  await useAs(page, ALICE);
+  await signInAs(page, ALICE);
   const path = "projects/alice-repo";
   const status = {
     path,

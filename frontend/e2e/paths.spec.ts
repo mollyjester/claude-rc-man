@@ -2,7 +2,7 @@ import { expect, type Locator, type Page, test } from "@playwright/test";
 
 import { m } from "../src/messages";
 import { panel, summary, tree } from "./nav";
-import { ALICE, useAs } from "./people";
+import { ALICE, signInAs } from "./people";
 
 // What holds, in a real browser: a path in Your servers and in a panel's
 // breadcrumb wraps only between its parts, each part being a folder's name with
@@ -68,7 +68,7 @@ function expectBreaksOnlyAfterSlashes(found: Part[], path: string) {
 }
 
 async function show(page: Page, width: number, address: string) {
-  await useAs(page, ALICE);
+  await signInAs(page, ALICE);
   await page.setViewportSize({ width, height: 900 });
   const servers = [at(SHORT, "trust_prompt"), at(LONG, "ready"), at(TOO_WIDE, "stopped")];
   await page.route("**/api/servers", (route) => route.fulfill({ json: { servers } }));
