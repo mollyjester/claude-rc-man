@@ -203,7 +203,9 @@ running git are `helpers/git_run.py`, tested by `tests/test_git_run.py`.
   (`start_new_session`); at the deadline, when its output is left unread, or
   on SIGTERM, its whole process group is killed, hooks and remote helpers
   with it. At the deadline the verb answers `git_timeout`; on SIGTERM it
-  answers nothing.
+  answers nothing. SIGTERM waits while git is being started, so it cannot
+  fall between git starting and rc-helper holding it; git starts with
+  SIGTERM unblocked.
 - **Refusals.** A git that refuses is `git_failed`, with what it wrote on
   stderr and stdout as `git` — at most `MAX_GIT_MESSAGE_LINES` lines — and
   how many lines more as `git_more`. Output git is not known to write, such

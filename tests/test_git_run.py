@@ -456,7 +456,8 @@ def test_git_and_its_hooks_can_be_ended_by_sigterm(tmp_path):
 
     repo = make_repo(tmp_path / "r")
     mask = tmp_path / "mask"
-    hook(repo, "pre-commit", f"grep SigBlk /proc/$$/status > {mask}\n")
+    # git's own mask, its hook's parent: git resets the mask of what it starts
+    hook(repo, "pre-commit", f"grep SigBlk /proc/$PPID/status > {mask}\n")
     write(repo / "x.txt")
     fixture_git(repo, "add", "x.txt")
     g.Git(ENV).run(repo, ["commit", "-q", "-m", "x"], deadline=soon())
