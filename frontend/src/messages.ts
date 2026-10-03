@@ -222,8 +222,8 @@ export const m = {
   commitTitle: "Commit",
   commitMessage: "Commit message",
   commit: "Commit",
-  commitNeedsAuthor: "Commits need an author name:",
-  commitAuthorLink: "set yours in Settings",
+  // One sentence, its middle the link to Settings.
+  commitNeedsAuthor: { before: "Commits need an author name: ", link: "set yours in Settings", after: "." },
   commitNothingStaged: "Nothing is staged. Stage the files to commit first.",
   branchesTitle: "Branches",
   localBranches: "Local branches",

@@ -104,7 +104,10 @@ function Files({
                     <span className="file-name">{file.path}</span>
                   </label>
                 ) : (
-                  <span className="file-name">{file.path}</span>
+                  <>
+                    <span className="no-checkbox" aria-hidden="true" />
+                    <span className="file-name">{file.path}</span>
+                  </>
                 )}{" "}
                 <span className="change">{m.changes[file.change] ?? file.change}</span>
                 {file.from !== undefined && <> {m.renamedFrom(file.from)}</>}
@@ -272,7 +275,9 @@ export function Changes({ path, pollMs }: { path: string; pollMs: number }) {
           <h4>{m.commitTitle}</h4>
           {status.author === null ? (
             <p>
-              {m.commitNeedsAuthor} <Link to="/settings">{m.commitAuthorLink}</Link>.
+              {m.commitNeedsAuthor.before}
+              <Link to="/settings">{m.commitNeedsAuthor.link}</Link>
+              {m.commitNeedsAuthor.after}
             </p>
           ) : status.staged.files.length === 0 ? (
             <p>{m.commitNothingStaged}</p>
@@ -355,7 +360,13 @@ export function Changes({ path, pollMs }: { path: string; pollMs: number }) {
             <button type="submit" className="primary" disabled={busy}>
               {m.createBranch}
             </button>
-            <button type="button" onClick={() => setOpening(false)}>
+            <button
+              type="button"
+              onClick={() => {
+                setOpening(false);
+                setErrors((e) => ({ ...e, branch: undefined }));
+              }}
+            >
               {m.cancel}
             </button>
           </div>

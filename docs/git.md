@@ -70,8 +70,10 @@ branches up to date, adding new ones and dropping those deleted there. It
 changes none of your files and none of your local branches. It needs a
 remote git can fetch from without asking for a password: git is never
 allowed to ask, so a remote that needs one is refused with git's own words.
-Over SSH, only a key without a passphrase works: git here has no terminal
-to ask for one and does not reach your `ssh-agent`.
+Over SSH, git here has no terminal to ask for a key's passphrase and, by
+default, does not reach your `ssh-agent`, so a key with a passphrase works
+only through an agent your SSH configuration names with `IdentityAgent`; a
+key without one works as it is.
 
 ## What Claude changes
 
