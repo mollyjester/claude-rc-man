@@ -340,6 +340,16 @@ function Unlabelled() {
         Nameless
         <input type="text" />
       </label>
+      <label>
+        Nameless box
+        <textarea />
+      </label>
+      <label>
+        Nameless choice
+        <select>
+          <option>one</option>
+        </select>
+      </label>
       <button type="submit">Send</button>
       <ProblemView error={error} />
     </form>
@@ -351,6 +361,8 @@ test("the label check fails on a form that shows a field by its name, or has an 
   render(<Unlabelled />);
   expect(await labelFaults(document.querySelector("form")!)).toEqual([
     "Nameless: an input with no field name",
+    "Nameless box: an input with no field name",
+    "Nameless choice: an input with no field name",
     "planted: not shown as Planted label",
   ]);
 });
