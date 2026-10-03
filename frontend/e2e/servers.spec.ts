@@ -251,6 +251,10 @@ test("a GitHub token is added, a new branch is committed and pushed, and the tok
   await changes.getByLabel(m.newBranchName).fill(branch);
   await changes.getByRole("button", { name: m.createBranch }).click();
   await expect(changes.getByText(m.onBranch(branch))).toBeVisible();
+  // Push alone: the new branch is made on GitHub and tracked
+  await changes.getByRole("button", { name: m.push, exact: true }).click();
+  await expect(changes.getByText(m.pushed(branch, `origin/${branch}`))).toBeVisible();
+  expect(git(origin, "rev-parse", branch)).toBe(git(repo, "rev-parse", "HEAD"));
   writeFileSync(join(repo, "to-push.txt"), "pushed through rcman\n");
   const notStaged = changes.getByRole("group", { name: m.notStagedTitle });
   await notStaged.getByRole("checkbox", { name: "to-push.txt" }).check();
