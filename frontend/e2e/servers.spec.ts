@@ -211,6 +211,6 @@ test("a repository's changes: appear, stage, commit, switch branch", async ({ pa
   await expect(remote.getByText("origin/later", { exact: true })).toBeVisible();
   await remote.getByRole("button", { name: m.switchTo("origin/feature") }).click();
   await expect(changes.getByText(m.onBranch("feature"))).toBeVisible();
-  await expect(changes.getByRole("list", { name: m.localBranches }).getByText(`(${m.currentBranch})`)).toBeVisible();
+  await expect(changes.getByRole("list", { name: m.localBranches }).getByText(m.currentBranch)).toBeVisible();
   expect(git("branch", "--show-current")).toBe("feature\n");
 });
