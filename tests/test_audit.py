@@ -64,7 +64,7 @@ def documented_results(guide):
 
 def test_every_result_other_than_an_error_code_is_listed_in_the_guide():
     guide = (REPO / "docs" / "audit.md").read_text(encoding="utf-8")
-    assert set(audit.RESULTS) == {"ok", "unrecognised_screen"}  # non-vacuity: both are known
+    assert set(audit.RESULTS) == {"ok", "unrecognised_screen", "committed_not_pushed"}
     assert documented_results(guide) == set(audit.RESULTS)
 
 
@@ -125,6 +125,29 @@ def test_a_refused_change_is_recorded_with_its_error_code(client, settings):
     last = rows(settings)[-1]
     assert (last["action"], last["result"]) == ("server.stop", "unknown_server")
     assert last["target"] == "projects/alice-project"
+
+
+def test_folder_changes_are_recorded_with_the_folder(client, settings):
+    client.post("/api/folders", json={"parent": "projects", "name": "new"}, headers=changing(ALICE))
+    client.post("/api/folders", json={"name": "top"}, headers=changing(ALICE))
+    client.delete("/api/folders", params={"path": "projects/new"}, headers=changing(ALICE))
+    recorded = [(r["action"], r["target"], r["result"]) for r in rows(settings)[-3:]]
+    assert recorded == [
+        ("folder.create", "projects/new", "ok"),
+        ("folder.create", "top", "ok"),
+        ("folder.delete", "projects/new", "ok"),
+    ]
+
+
+def test_a_refused_delete_of_the_home_folder_is_recorded(client, settings):
+    r = client.delete("/api/folders", params={"path": "."}, headers=changing(ALICE))
+    assert r.status_code == 400
+    last = rows(settings)[-1]
+    assert (last["action"], last["target"], last["result"]) == (
+        "folder.delete",
+        ".",
+        "path_is_home",
+    )
 
 
 def test_a_refused_settings_change_is_recorded_as_validation_failed(client, settings):
@@ -373,3 +396,92 @@ def test_retention_runs_when_the_app_starts(settings, helper_homes, admin_runner
     with TestClient(create_app(settings, helper=helper_homes, admin=admin_runner)):
         pass
     assert rows(settings) == []
+
+
+def test_git_changes_are_recorded_with_the_folder(client, settings, helper_homes, tmp_path):
+    from tests.git_fixtures import make_repo, write
+
+    repo = make_repo(
+        helper_homes.homes["alice"] / "projects" / "alice-project", origin=tmp_path / "o.git"
+    )
+    client.patch("/api/me/settings", json={"author_name": "Alice"}, headers=changing(ALICE))
+    write(repo / "a.txt")
+    path = "projects/alice-project"
+    requests = [
+        ("/api/git/stage", {"path": path, "files": ["a.txt"]}, "git.stage"),
+        ("/api/git/unstage", {"path": path, "files": ["a.txt"]}, "git.unstage"),
+        ("/api/git/stage", {"path": path, "files": ["a.txt"]}, "git.stage"),
+        ("/api/git/commit", {"path": path, "message": "Add a.txt"}, "git.commit"),
+        ("/api/git/branch", {"path": path, "name": "topic"}, "git.branch"),
+        ("/api/git/switch", {"path": path, "branch": "main"}, "git.switch"),
+        ("/api/git/fetch", {"path": path}, "git.fetch"),
+    ]
+    for url, body, _ in requests:
+        r = client.post(url, json=body, headers=changing(ALICE))
+        assert r.status_code == 200, (url, r.text)
+    recorded = [(r["action"], r["target"], r["result"]) for r in rows(settings)[-len(requests) :]]
+    assert recorded == [(action, path, "ok") for _, _, action in requests]
+
+
+def test_the_commit_message_is_never_recorded_or_logged(client, settings, helper_homes, caplog):
+    from tests.git_fixtures import fixture_git, make_repo, write
+
+    repo = make_repo(helper_homes.homes["alice"] / "projects" / "alice-project")
+    client.patch("/api/me/settings", json={"author_name": "Alice"}, headers=changing(ALICE))
+    write(repo / "a.txt")
+    fixture_git(repo, "add", "a.txt")
+    caplog.set_level("DEBUG")
+    message = "SECRET-COMMIT-MESSAGE-7"
+    body = {"path": "projects/alice-project", "message": message}
+    r = client.post("/api/git/commit", json=body, headers=changing(ALICE))
+    assert r.status_code == 200, r.text
+    last = rows(settings)[-1]
+    assert (last["action"], last["result"]) == ("git.commit", "ok")  # positive control
+    assert caplog.records  # positive control: the audit event was logged
+    assert all(message not in str(value) for row in rows(settings) for value in row.values())
+    assert message not in caplog.text
+    refused = client.post("/api/git/commit", json=body, headers=changing(ALICE))
+    assert refused.json()["code"] == "nothing_staged"
+    assert all(message not in str(value) for row in rows(settings) for value in row.values())
+    assert message not in caplog.text
+
+
+def test_github_token_changes_are_recorded_without_a_target(client, settings):
+    token = "a-token-never-recorded"
+    r = client.post("/api/github/token", json={"token": token}, headers=changing(ALICE))
+    assert r.status_code == 200, r.text
+    r = client.delete("/api/github/token", headers=changing(ALICE))
+    assert r.status_code == 200, r.text
+    recorded = [(r["action"], r["target"], r["result"]) for r in rows(settings)[-2:]]
+    assert recorded == [("github.token", None, "ok"), ("github.forget", None, "ok")]
+
+
+def test_a_push_and_a_commit_and_push_are_recorded_with_the_folder(
+    client, settings, helper_homes, tmp_path
+):
+    from tests.git_fixtures import fixture_git, make_repo, write
+
+    path = "projects/alice-project"
+    repo = make_repo(helper_homes.homes["alice"] / path, origin=tmp_path / "o.git")
+    client.patch("/api/me/settings", json={"author_name": "A"}, headers=changing(ALICE))
+    write(repo / "a.txt")
+    fixture_git(repo, "add", "a.txt")
+    body = {"path": path, "message": "Add a.txt"}
+    assert client.post("/api/git/commit-push", json=body, headers=changing(ALICE)).is_success
+    assert client.post("/api/git/push", json={"path": path}, headers=changing(ALICE)).is_success
+    recorded = [(r["action"], r["target"], r["result"]) for r in rows(settings)[-2:]]
+    assert recorded == [("git.commit_push", path, "ok"), ("git.push", path, "ok")]
+
+
+def test_a_clone_is_recorded_with_its_address(client, settings, github, tmp_path):
+    from tests.git_fixtures import make_repo
+
+    name = f"audited-{tmp_path.name}"
+    make_repo(tmp_path / "published", origin=github.bare("alice", name))
+    cloned = f"https://github.com/alice/{name}"
+    missing = "https://github.com/alice/no-such-repository.git"
+    for url in (cloned, missing):
+        body = {"parent": "projects", "url": url}
+        client.post("/api/git/clone", json=body, headers=changing(ALICE))
+    recorded = [(r["action"], r["target"], r["result"]) for r in rows(settings)[-2:]]
+    assert recorded == [("git.clone", cloned, "ok"), ("git.clone", missing, "git_failed")]

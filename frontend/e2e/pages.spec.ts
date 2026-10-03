@@ -13,7 +13,8 @@ test("settings: the server's verdict is shown as given", async ({ page }) => {
   await expect(prefix).toHaveValue("bob");
   await prefix.fill("not valid!");
   await part.getByRole("button", { name: m.save }).click();
-  await expect(part.getByRole("alert")).toContainText("prefix:");
+  await expect(part.getByRole("alert")).toContainText(`${FIELDS.prefix.label}:`);
+  await expect(part.getByRole("alert")).not.toContainText("pattern"); // rcman's words, not pydantic's
   await prefix.fill("bobs-box");
   await part.getByRole("button", { name: m.save }).click();
   await expect(part.getByText(m.saved)).toBeVisible();
@@ -27,7 +28,7 @@ test("settings: the commit author falls back to the sign-in address", async ({ p
   await expect(part.getByText(m.authorNotSet)).toBeVisible();
   await name.fill("<b>");
   await part.getByRole("button", { name: m.save }).click();
-  await expect(part.getByRole("alert")).toContainText("author_name:");
+  await expect(part.getByRole("alert")).toContainText(`${FIELDS.author_name.label}:`);
   await name.fill("Bob B");
   await expect(part.getByLabel(FIELDS.author_email.label)).toHaveValue("");
   await part.getByRole("button", { name: m.save }).click();

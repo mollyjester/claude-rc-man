@@ -16,11 +16,42 @@ How the test suite is organised and run. The rules the suite follows are in
 | `make check` | Lint, the Python tests, the frontend tests and the browser tests. It sets `RCMAN_REQUIRE_REAL_CLAUDE=1` and `RCMAN_REQUIRE_CONTAINER=1`, so tests that would skip for want of the real `claude` or of Docker fail instead |
 
 Run pytest from the repository root; `pyproject.toml` holds its configuration.
-The suite needs `tmux`. `tests/test_container_suite.py` runs the root-only
+The suite needs `tmux` and `git`. Everything git is tested against real git,
+never a fake: `tests/git_fixtures.py`, which is not a test module, makes real
+repositories, their origins and their branches with the system's git, under
+a fixture configuration of its own, in a home removed when the tests end, so the person's configuration rc-helper
+reads is only what a test plants; fixture git refuses every transport but a
+local repository's, so an http, https, ssh, git or scp-like address a test
+gives it is refused before anything is connected to. GitHub is `tests/github_server.py`: the
+system's `git http-backend` behind a small server, which serves anyone a
+read of a public repository, and takes a push, or a read of one made
+private, only with its token as the password, under any
+username, as GitHub takes a personal access token. The `github` fixture in
+`tests/conftest.py` runs one for the session, with `GITHUB_TOKEN`. Every
+rc-helper a test runs gets its environment from `helper_env` in
+`tests/helper_env.py`, which always sets `RC_HELPER_GITHUB` (see
+[rc-helper.md](rc-helper.md#test-hooks)) to it or to `UNREACHABLE`, so that
+no test reaches the real GitHub; `tests/test_helper_env.py` finds any other
+place in `tests/` that builds one, any rc-helper `Config` made in a test
+without saying where GitHub is, and any git run in a test with GitHub's
+address written into its arguments outside the modules that keep it local
+and the exemptions it lists. Before the first test, `github_hook_works`
+in `tests/conftest.py` checks, without reaching anything, that git as
+rc-helper runs it would send GitHub to the hook's address, and only then
+that the tests' GitHub sees the request. The browser tests' world runs a
+GitHub of its own (see [frontend.md](frontend.md#tests)). `tests/test_container_suite.py` runs the root-only
 suite in `tests/container/` inside a throwaway Ubuntu container, through
 `docker` or `sudo -n docker`; it skips when neither works, unless
-`RCMAN_REQUIRE_CONTAINER=1`, which `make check` sets. It runs three, each in a
-fresh container: user management; a real installation (see
+`RCMAN_REQUIRE_CONTAINER=1`, which `make check` sets. It runs these, each in a
+fresh container: user management, with folders made and deleted and git run, with the person's own configuration, through sudo;
+the GitHub token, pushing and cloning through sudo, against `https://github.com`
+itself, in a container with no network — `--add-host` makes `github.com` the
+container's own address, which the suite checks before running git, where
+`tests/container/test_github_in_container.py` serves the tests' GitHub with
+a certificate from a certificate authority it makes with `openssl` and adds
+to the system's with `update-ca-certificates`, so that rc-helper runs with
+no `RC_HELPER_GITHUB`, as in production;
+a real installation (see
 [installer.md](installer.md)); and the whole stack in a browser.
 Run it from a full clone, not a git worktree: it mounts the checkout into the
 container and installs from it with git, and a worktree's `.git` is a file
@@ -35,7 +66,8 @@ and `auth.test`. Playwright on the host drives it
 through the container's published port with `frontend/playwright.stack.config.ts`
 and the specs in `frontend/e2e-stack/`: signing in through Caddy and
 oauth2-proxy, connecting Claude, a server's lifecycle, one person unable to
-reach another's servers through sudo, an administrator seeing everyone's
+reach another's servers through sudo, making and deleting a folder, which
+another person cannot delete, an administrator seeing everyone's
 servers without being able to act on them, an address that is not on the list, the
 audit trail, and removing people with and without their home folder.
 

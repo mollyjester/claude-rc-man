@@ -1,4 +1,4 @@
-#!/usr/bin/python3 -I
+#!/usr/bin/python3 -IXutf8
 """Launcher for rc-admin; the implementation is in helpers/ beside it."""
 
 import sys

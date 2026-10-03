@@ -45,7 +45,8 @@ EXEMPT: dict[tuple[str, ...], str] = {}
 # with; docs/audit.md lists each.
 OK = "ok"
 UNRECOGNISED_SCREEN = "unrecognised_screen"  # it worked, but ended on a screen rcman does not know
-RESULTS = (OK, UNRECOGNISED_SCREEN)
+COMMITTED_NOT_PUSHED = "committed_not_pushed"  # Commit & Push: the commit was made, the push failed
+RESULTS = (OK, UNRECOGNISED_SCREEN, COMMITTED_NOT_PUSHED)
 
 
 @dataclass

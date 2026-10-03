@@ -35,6 +35,7 @@ Control servers. What it does and how far it is implemented: [README.md](README.
 | Settings, for administrators | [docs/configuration.md](docs/configuration.md) |
 | The audit trail and its retention, for administrators | [docs/audit.md](docs/audit.md) |
 | Connecting a Claude account, for colleagues | [docs/claude-account.md](docs/claude-account.md) |
+| Changes, commits, branches, pushing and the GitHub token, for colleagues | [docs/git.md](docs/git.md) |
 | A colleague's own settings, for colleagues | [docs/settings.md](docs/settings.md) |
 | Claude Code versions and rolling one out, for administrators | [docs/claude-version.md](docs/claude-version.md) |
 | The design and the implementation plan | GitHub issues on `mollyjester/claude-rc-man` (label `design`, label `build-step`) |

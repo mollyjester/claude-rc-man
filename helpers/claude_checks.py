@@ -8,7 +8,8 @@ rcman relies on: the version, ``auth status`` JSON, the logged-out refusal of
 trust question and the server screens — is covered by the recorded tests
 only.
 
-Python standard library only: rc-admin runs these as root.
+Python standard library and the helpers' own modules only: rc-admin runs these
+as root.
 """
 
 from __future__ import annotations

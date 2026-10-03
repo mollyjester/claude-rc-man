@@ -24,7 +24,10 @@ command-line reference is `--help`.
 
 `rc-admin` prints `{"error": {"code", "message"}}` and exits 1 on failure (2
 for a command line that does not parse). The codes and messages are
-`MESSAGES` in `helpers/rc_admin.py`. `rcman-user` prints the message on
+`MESSAGES` in `helpers/rc_admin.py`; for a value refused by a rule — Linux
+user names and emails from `helpers/users_file.py`, versions from `VERSION` —
+the message is the rule's own sentence, through `RULE_CODES`, as in
+[rc-helper](rc-helper.md#contract). `rcman-user` prints the message on
 stderr; as the administrator to protect from self-deletion it uses
 `SUDO_USER`.
 
@@ -84,4 +87,4 @@ through sudo.
 | `tests/test_rc_admin.py` | Which commands each operation decides to run, against a recording stand-in for the system; that refusals run none |
 | `tests/test_rcman_user.py` | The prompt, its default, and refusing without a terminal |
 | `tests/test_claude_checks.py` | The upgrade checks pass the fake and the real installed `claude`, and a broken binary fails every one |
-| `tests/container/test_admin_in_container.py` | The real thing, as root in a container: accounts, groups, modes, ownership, process cleanup, logout, the prompt on a real terminal, a checked upgrade through the canary home (and a version that fails the checks), and the sudoers rules for both helpers — including that test hooks do not pass through sudo |
+| `tests/container/test_admin_in_container.py` | The real thing, as root in a container: accounts, groups, modes, ownership, process cleanup, logout, the prompt on a real terminal, a checked upgrade through the canary home (and a version that fails the checks), and the sudoers rules for both helpers — including that test hooks do not pass through sudo — and folders made and deleted as a person through them: owned by the person, a link leading out of the home, to a folder the person may change, deleted as the link and its target left, what the person may not remove left and listed, and another person's home out of reach |

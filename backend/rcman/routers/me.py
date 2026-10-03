@@ -13,13 +13,18 @@ from dataclasses import dataclass
 
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic_core import PydanticCustomError
 
 from helpers import rc_helper
 from rcman import db
 from rcman.audit import Record, Recorder
 from rcman.identity import Identity, current_user
+from rcman.problems import SETTINGS_NONE_SENT, ruled
 
 router = APIRouter(prefix="/api/me", tags=["me"])
+Prefix = ruled(rc_helper.PREFIX)
+AuthorName = ruled(rc_helper.AUTHOR_NAME)
+AuthorEmail = ruled(rc_helper.EMAIL.or_empty())
 
 
 def _published(schema: dict) -> None:
@@ -32,26 +37,21 @@ class SettingsBody(BaseModel):
 
     model_config = ConfigDict(json_schema_extra=_published)
 
-    prefix: str = Field(
-        default=None,
-        pattern=f"^{rc_helper.PREFIX.pattern}$",
-        description="Prefix of the names of new Remote Control sessions.",
+    prefix: Prefix = Field(
+        default=None, description="Prefix of the names of new Remote Control sessions."
     )
-    author_name: str = Field(
-        default=None,
-        pattern=f"^{rc_helper.AUTHOR_NAME.pattern}$",
-        description="Name commits made from rcman are recorded under.",
+    author_name: AuthorName = Field(
+        default=None, description="Name commits made from rcman are recorded under."
     )
-    author_email: str = Field(
+    author_email: AuthorEmail = Field(
         default=None,
-        pattern=f"^(?:{rc_helper.EMAIL.pattern})?$",
         description="Email address commits are recorded under; empty for the users file's.",
     )
 
     @model_validator(mode="after")
     def _some_setting(self) -> SettingsBody:
         if not self.model_fields_set:
-            raise ValueError("Send at least one setting.")
+            raise PydanticCustomError(SETTINGS_NONE_SENT, "")
         return self
 
 

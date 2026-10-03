@@ -1,5 +1,6 @@
 """User management for administrators, through rc-admin."""
 
+from helpers import users_file as uf
 from tests.conftest import ALICE, BOB, as_user, changing
 
 
@@ -41,8 +42,16 @@ def test_input_is_validated_before_rc_admin(client, admin_runner):
         "/api/users", json={"linux": "Bad!", "email": "x@example.com"}, headers=changing(ALICE)
     )
     assert r.status_code == 422 and admin_runner.calls == []
+    assert r.json()["errors"] == [{"field": "linux", "message": uf.LINUX_NAME.sentence}]
     r = client.post("/api/users", json={"linux": "dave", "email": "nope"}, headers=changing(ALICE))
     assert r.status_code == 422 and admin_runner.calls == []
+    assert r.json()["errors"] == [{"field": "email", "message": uf.EMAIL.sentence}]
+
+
+def test_the_user_to_delete_is_validated_before_rc_admin(client, admin_runner):
+    r = client.delete("/api/users/Bad!", params={"home": "keep"}, headers=changing(ALICE))
+    assert r.status_code == 422 and admin_runner.calls == []
+    assert r.json()["errors"] == [{"field": "linux", "message": uf.LINUX_NAME.sentence}]
 
 
 def test_non_admins_cannot_manage_users(client, admin_runner):

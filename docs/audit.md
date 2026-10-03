@@ -17,6 +17,19 @@ can be read with `journalctl` on the server.
 | `server.stop` | stops a server | the folder |
 | `server.forget` | removes a stopped server from their list | the folder |
 | `server.confirm` | answers a server's folder-trust question | the folder |
+| `folder.create` | creates a folder | the new folder, as asked |
+| `folder.delete` | deletes a folder, stopping and forgetting every server in it or below it | the folder |
+| `git.stage` | stages files in a repository (see [Git](git.md)) | the repository's folder |
+| `git.unstage` | unstages files | the repository's folder |
+| `git.commit` | commits what is staged | the repository's folder — the message is never recorded |
+| `git.switch` | switches to a branch | the repository's folder |
+| `git.branch` | makes a branch and switches to it | the repository's folder |
+| `git.fetch` | refreshes the remote branches with **Refresh branches** | the repository's folder |
+| `git.push` | pushes the current branch with **Push** | the repository's folder |
+| `git.commit_push` | commits what is staged and pushes it with **Commit & Push** | the repository's folder — the message is never recorded |
+| `git.clone` | clones a repository from GitHub | the repository's address, as given — an address with a user or a token in it is refused, and so recorded with none |
+| `github.token` | adds or replaces their GitHub token (see [Git](git.md#github-token)) | none — the token is never recorded |
+| `github.forget` | removes their GitHub token | none |
 | `settings.update` | changes their settings (see [Settings](settings.md)) | the settings they sent, as JSON; none when they were refused |
 | `claude.login` | starts connecting their Claude account | the Claude account's email address |
 | `claude.connect` | finishes connecting with Claude's code | none — the code is never recorded |
@@ -31,6 +44,7 @@ a refused request is recorded too:
 |---|---|
 | `ok` | It worked |
 | `unrecognised_screen` | It worked, but left the server on a screen rcman does not recognise |
+| `committed_not_pushed` | **Commit & Push** made the commit, and the push failed |
 
 Administrators are warned about servers on an unrecognised screen, as described
 in [Servers](servers.md#for-administrators).

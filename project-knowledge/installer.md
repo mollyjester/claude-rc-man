@@ -10,7 +10,7 @@ paths to the installer's.
 | File | What it is |
 |---|---|
 | `install.sh` | Checks it runs through sudo, updates the clone as `$SUDO_USER` (fast-forward only, refusing a dirty tree or another branch), starts again if that changed `install.sh`, then hands over to the Python installer |
-| `installer/install.py` | Everything else, using the standard library and the clone's `helpers/users_file.py`; run with the system interpreter in isolated mode, it writes no bytecode into the clone and takes the clone off its path once it has imported the rules |
+| `installer/install.py` | Everything else, using the standard library and the clone's `helpers/users_file.py` and `helpers/rules.py`, whose rules' sentences explain a refused setting, and `helpers/git_run.py`, by which `check_git` finds git as rc-helper does and refuses one older than `GIT_MIN_VERSION`; run with the system interpreter in isolated mode and UTF-8 mode, it writes no bytecode into the clone and takes the clone off its path once it has imported the rules |
 | `installer/templates/` | The files it writes, with `@NAME@` placeholders: the app's environment, oauth2-proxy's configuration, both systemd units, and the Caddy site block. A test keeps `TEMPLATES` and the directory equal |
 
 The pinned versions are `UV_VERSION` and `OAUTH2_PROXY_VERSION` in

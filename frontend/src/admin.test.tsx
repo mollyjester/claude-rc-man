@@ -47,6 +47,23 @@ test("adding someone sends exactly what was entered", async () => {
   expect(await screen.findByText(m.usersAdded("carol"))).toBeInTheDocument();
 });
 
+test("a refused addition names each field by its label", async () => {
+  const errors = [
+    { field: "linux", message: "planted reason for the name" },
+    { field: "email", message: "planted reason for the address" },
+  ];
+  api({
+    "GET /api/users": USERS,
+    "POST /api/users": problem(422, "validation_failed", "Some of what was sent is not valid.", { errors }),
+  });
+  renderApp("/admin/people");
+  await userEvent.type(await screen.findByLabelText(m.usersLinux), "Bad!");
+  await userEvent.click(screen.getByRole("button", { name: m.usersAdd }));
+  const alert = await screen.findByRole("alert");
+  expect(alert).toHaveTextContent(`${m.usersLinux}: planted reason for the name`);
+  expect(alert).toHaveTextContent(`${m.usersEmail}: planted reason for the address`);
+});
+
 test("removing someone asks about the home folder, keeping it unless told otherwise", async () => {
   const fake = api({ "GET /api/users": USERS, "DELETE /api/users/bob": { deleted: "bob", home_deleted: false } });
   renderApp("/admin/people");
@@ -104,6 +121,18 @@ test("versions show who differs and whether the approved one is tested", async (
   expect(await screen.findByText(m.versionsUntested)).toBeInTheDocument();
   const bob = screen.getByRole("row", { name: /bob/ });
   expect(within(bob).getByText(new RegExp(m.versionsDiffers))).toBeInTheDocument();
+});
+
+test("a refused version names the field by its label", async () => {
+  const errors = [{ field: "version", message: "planted reason for the version" }];
+  api({
+    "GET /api/claude/versions": { approved: "2.1.0", tested: "2.1.0", untested: false, differs: [], users: [] },
+    "POST /api/claude/upgrade": problem(422, "validation_failed", "Some of what was sent is not valid.", { errors }),
+  });
+  renderApp("/admin/claude");
+  await userEvent.type(await screen.findByLabelText(m.versionsUpgrade), "latest");
+  await userEvent.click(screen.getByRole("button", { name: m.versionsUpgradeGo }));
+  expect(await screen.findByRole("alert")).toHaveTextContent(`${m.versionsUpgrade}: planted reason for the version`);
 });
 
 test("rolling out a version sends it and shows failed checks as the server named them", async () => {

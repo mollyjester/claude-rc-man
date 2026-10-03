@@ -41,6 +41,47 @@ With a person added for the test account (`sudo rcman-user add`):
 7. On **Claude Code**, under **Admin** (administrators), the person's
    installed version is the approved one.
 
+### Cloning from GitHub
+
+Every automated clone comes from the tests' own GitHub; whether GitHub
+itself serves rcman's clone, and a private repository with a stored token, is
+checked here.
+
+1. With no GitHub token stored, select `projects` and **Clone from GitHub**
+   a public repository by the address GitHub shows for it: the clone is
+   selected, carries the **git** marker, and its Changes section shows its
+   branch.
+2. **Clone from GitHub** a private repository set aside for testing: the
+   form shows git's words for the refusal, and no folder is left in
+   `projects`.
+3. Save a fine-grained token for that repository in **Settings**, as step 1 of
+   *Pushing to GitHub* below says, and clone it again: it is cloned, and its `.git/config`
+   holds no token.
+4. Delete the public clone with **Delete folder**.
+
+### Pushing to GitHub
+
+Every automated push goes to the tests' own GitHub, which takes any
+username; whether GitHub takes rcman's (`GITHUB_USERNAME` in
+`helpers/rc_helper.py`) with each kind of token is checked here. Use the
+private repository cloned above, in the person's `~/projects`.
+
+1. Create a fine-grained token for that repository only, with **Contents**
+   read and write. In rcman's **Settings**, save it under **GitHub token**:
+   the part says a token is stored, and its field is empty.
+2. Select the repository, make a **New branch from here**, change a file,
+   stage it, and **Commit & Push**: the section says where it pushed, and
+   GitHub shows the branch with the commit.
+3. **Start** a server in the repository and, in claude.ai, ask Claude to
+   commit a change and push it: the push uses the stored token, and GitHub
+   shows it.
+4. Revoke the token on GitHub, change a file, and **Commit & Push**: the
+   commit is made, the section shows git's words for the refused push, and
+   **Settings** then says no token is stored, git having forgotten it.
+5. Repeat steps 1 and 2 with a classic token with the `repo` scope, then
+   **Remove token**, and revoke it on GitHub.
+6. Delete the test branches on GitHub; stop and forget the server.
+
 Write down what differed from this list. A screen rcman shows as
 **Unrecognised screen** is recorded as a new fixture and handled before the
 version is approved.

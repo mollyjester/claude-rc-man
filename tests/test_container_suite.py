@@ -50,12 +50,18 @@ def test_docker_is_usable():
     assert DOCKER is not None, "neither docker nor sudo -n docker works"
 
 
-def run_suite(module: str, mounts: list[tuple[Path, str]] = (), env: dict[str, str] | None = None):
+def run_suite(
+    module: str,
+    mounts: list[tuple[Path, str]] = (),
+    env: dict[str, str] | None = None,
+    docker_args: list[str] = (),
+):
     args = [
         *DOCKER,
         "run",
         "--rm",
         "--init",
+        *docker_args,
         "-v",
         f"{REPO}:/src:ro",
     ]  # an init reaps orphans, as on a real host
@@ -88,6 +94,15 @@ def run_suite(module: str, mounts: list[tuple[Path, str]] = (), env: dict[str, s
 
 def test_user_management_suite_passes():
     run_suite("tests/container/test_admin_in_container.py")
+
+
+def test_github_suite_passes():
+    """No network, and github.com is this container's own 127.0.0.1, where the suite
+    serves the tests' GitHub."""
+    run_suite(
+        "tests/container/test_github_in_container.py",
+        docker_args=["--network", "none", "--add-host", "github.com:127.0.0.1"],
+    )
 
 
 def test_install_suite_passes():

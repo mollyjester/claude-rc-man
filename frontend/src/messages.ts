@@ -33,6 +33,35 @@ export const m = {
   home: "Home",
   breadcrumb: "Folder",
   panelEmpty: "Select a folder to see its Claude server, or to start one.",
+  folderActions: "Folder actions",
+  newFolder: "New folder",
+  newFolderName: "Name of the new folder",
+  create: "Create",
+  creating: "Creating…",
+  cloneFromGithub: "Clone from GitHub",
+  cloneUrl: "Repository address on GitHub",
+  cloneParent: "Folder to clone into",
+  clone: "Clone",
+  cloning: "Cloning…",
+  // Two sentences; the second ends with the link to Settings.
+  cloneNote: {
+    before: "git names the new folder after the repository, as git clone does. A private repository is cloned with ",
+    link: "your GitHub token",
+    after: ".",
+  },
+  deleteFolder: "Delete folder",
+  deleteFolderTitle: (path: string) => `Delete ${path}?`,
+  deleteFolderBody: "The folder and everything in it are deleted. This cannot be undone.",
+  deleteFolderServers: (count: number) =>
+    count === 0
+      ? "No server runs in it or in any folder inside it."
+      : count === 1
+        ? "This server in it is stopped and forgotten first:"
+        : `These ${count} servers in it are stopped and forgotten first:`,
+  deleteFolderServersList: "Servers to stop and forget",
+  deleteFolderConfirm: "Delete",
+  deleting: "Deleting…",
+  folderDeleted: (path: string) => `${path} was deleted.`,
   serverTitle: "Claude server",
   noServer: "No Claude server runs in this folder.",
   states: {
@@ -106,6 +135,18 @@ export const m = {
   authorEmailHelp: "The address commits are recorded under. Leave it empty to use the address you sign in with.",
   authorEffective: (name: string, email: string) => `Commits are recorded as ${name} <${email}>.`,
   authorNotSet: "No commit author is set.",
+  settingsGithubTitle: "GitHub token",
+  githubTokenLabel: "GitHub token",
+  githubTokenHelp:
+    "A personal access token git uses to push to GitHub as you, from rcman and from your Claude sessions. rcman never shows it again once saved.",
+  githubTokenStored: "A GitHub token is stored.",
+  githubTokenNotStored: "No GitHub token is stored.",
+  githubTokenSaved: "Token saved.",
+  githubTokenRemove: "Remove token",
+  githubTokenRemoveTitle: "Remove your GitHub token?",
+  githubTokenRemoveBody:
+    "git, here and in your Claude sessions, can no longer push to GitHub with it. It still works on GitHub until you revoke it there.",
+  githubTokenRemoveConfirm: "Remove",
 
   usersTitle: "People",
   usersLinux: "Linux user",
@@ -168,5 +209,71 @@ export const m = {
 
   docsTitle: "Help",
 
+  repositoryMark: "git",
+  repository: "Git repository",
+  changesTitle: "Changes",
+  refreshStatus: "Refresh changes",
+  listHeading: (title: string, count: number) => `${title} (${count})`,
+  mergeInProgress: "A merge is under way: resolve any conflict, stage the files, and commit to finish it.",
+  stagedTitle: "Staged",
+  notStagedTitle: "Not staged",
+  noFiles: "No files.",
+  selectAll: "Select all",
+  stageSelected: "Stage selected",
+  unstageSelected: "Unstage selected",
+  // Each change a file is listed with, by the code rc-helper gives it.
+  changes: {
+    modified: "Modified",
+    type_changed: "Type changed",
+    added: "Added",
+    deleted: "Deleted",
+    renamed: "Renamed",
+    copied: "Copied",
+    unmerged: "Conflict",
+    untracked: "Untracked",
+  } as Record<string, string>,
+  renamedFrom: (path: string) => `from ${path}`,
+  submodule: "submodule",
+  notSelectable: "Its name is not UTF-8, so rcman cannot stage it.",
+  andMore: (count: number) => `and ${count} more`,
+  onBranch: (name: string) => `On branch ${name}`,
+  detachedAt: (commit: string) => `Not on a branch, at commit ${commit}`,
+  noCommitsYet: (name: string) => `On branch ${name}, with no commits yet`,
+  tracking: (upstream: string, ahead: number | null, behind: number | null) =>
+    ahead === null || behind === null
+      ? `Tracking ${upstream}, which is gone`
+      : `Tracking ${upstream}: ${ahead} ahead, ${behind} behind`,
+  commitTitle: "Commit",
+  commitMessage: "Commit message",
+  commit: "Commit",
+  // One sentence, its middle the link to Settings.
+  commitNeedsAuthor: { before: "Commits need an author name: ", link: "set yours in Settings", after: "." },
+  commitNothingStaged: "Nothing is staged. Stage the files to commit first.",
+  commitPush: "Commit & Push",
+  push: "Push",
+  pushed: (branch: string, upstream: string) => `Pushed ${branch} to ${upstream}.`,
+  pushNeedsToken: {
+    before: "Pushing to GitHub needs a GitHub token, and none is stored: ",
+    link: "add one in Settings",
+    after: ". When GitHub refuses a token, git forgets it.",
+  },
+  pushNeedsBranch: "You are not on a branch, so there is nothing to push.",
+  committedNotPushed: (commit: string) => `Committed ${commit}, but the push failed.`,
+  branchesTitle: "Branches",
+  localBranches: "Local branches",
+  remoteBranches: "Remote branches",
+  currentBranch: "(current)",
+  tracks: (upstream: string) => `→ ${upstream}`,
+  trackedBy: (local: string) => `tracked by ${local}`,
+  newBranch: "New branch",
+  switchTo: (name: string) => `Switch to ${name}`,
+  newBranchName: "New branch from here",
+  createBranch: "Create branch",
+  refreshBranches: "Refresh branches",
+  gitSaid: "What git said",
+  andMoreLines: (count: number) => `and ${count} more lines`,
+
   problemFieldErrors: "Details:",
+  problemServer: "Server:",
+  problemLeft: "Not deleted:",
 };

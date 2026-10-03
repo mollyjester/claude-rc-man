@@ -154,6 +154,24 @@ def test_invalid_values_are_refused(tmp_path, key, value):
         ins.gather(tmp_path / "install.env", environ=env, flags={}, ask=None, sudo_user="dev")
 
 
+def test_a_value_refused_by_a_helpers_rule_is_explained_by_it(tmp_path):
+    from helpers.rules import Rule
+
+    ruled = {key: field[3] for key, field in ins.FIELDS.items() if isinstance(field[3], Rule)}
+    assert {"ADMIN_EMAIL", "ADMIN_LINUX", "CADDY_USER"} <= set(ruled)  # non-vacuity
+    for key, rule in ruled.items():
+        env = {
+            "RCMAN_INSTALL_DOMAIN": "x.example.com",
+            "RCMAN_INSTALL_GOOGLE_CLIENT_ID": "id",
+            "RCMAN_INSTALL_GOOGLE_CLIENT_SECRET": "secret",
+            "RCMAN_INSTALL_ADMIN_EMAIL": "a@example.com",
+            f"RCMAN_INSTALL_{key}": "Not one!",
+        }
+        with pytest.raises(ins.InstallError) as error:
+            ins.gather(tmp_path / "install.env", environ=env, flags={}, ask=None, sudo_user="dev")
+        assert key in str(error.value) and rule.sentence in str(error.value)
+
+
 def test_the_installer_takes_its_rules_from_the_users_file():
     from tests.test_rc_helper import rule_copy_problems
 
@@ -488,3 +506,41 @@ def test_toolchain_directories_are_repaired_to_be_readable(tmp_path):
         os.chmod(tmp_path / sub, 0o700)
     ins.open_up(tmp_path)
     assert stat.S_IMODE((tmp_path / "a" / "b").stat().st_mode) == 0o755
+
+
+# --- prerequisites ---------------------------------------------------------------------
+
+
+def test_this_machines_git_is_new_enough():
+    ins.check_git()  # positive control for the refusals below
+
+
+def test_a_git_older_than_rcman_needs_is_refused(monkeypatch):
+    monkeypatch.setattr(ins, "GIT_MIN_VERSION", (99, 0))
+    with pytest.raises(ins.InstallError, match=r"git .* rcman needs git 99\.0 or later"):
+        ins.check_git()
+
+
+def test_no_git_on_the_system_path_is_refused(monkeypatch, tmp_path):
+    from helpers import git_run
+
+    monkeypatch.setattr(git_run, "GIT_SEARCH_PATH", str(tmp_path))
+    with pytest.raises(ins.InstallError, match="no git"):
+        ins.check_git()
+
+
+def test_git_is_checked_before_anything_is_changed(monkeypatch):
+    import pwd
+
+    ran, real = [], ins.run
+
+    def recording(argv, *args, **kwargs):
+        if argv[1:] == ["--version"]:  # asking git its version changes nothing
+            return real(argv, *args, **kwargs)
+        ran.append(argv)
+
+    monkeypatch.setattr(ins, "run", recording)
+    monkeypatch.setattr(ins, "GIT_MIN_VERSION", (99, 0))
+    with pytest.raises(ins.InstallError, match="git"):
+        ins.ensure_accounts(pwd.getpwuid(os.getuid()).pw_name)
+    assert ran == []

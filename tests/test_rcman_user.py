@@ -98,6 +98,13 @@ def test_the_sudo_user_cannot_delete_themselves(cfg, system):
     assert code == 1 and ra.MESSAGES["cannot_delete_self"] in err
 
 
+def test_an_invalid_linux_name_is_explained_by_its_rule(cfg, system):
+    code, _, err = run(cfg, system, ["add", "Bad!", "dave@example.com"])
+    assert code == 1
+    assert err.strip() == uf.LINUX_NAME.sentence
+    assert system.commands == []
+
+
 def test_add_reports_in_words(cfg, system):
     code, out, _ = run(
         cfg, system, ["add", "carol", "carol@example.com"], env={"SUDO_USER": "alice"}

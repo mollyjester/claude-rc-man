@@ -27,13 +27,18 @@ table:
 | Running | filled circle |
 | Not running | hollow square |
 
+A folder that is a git repository also carries a **git** marker; pointing at
+it names it. Which folders count as repositories is in [Git](git.md).
+
 Choosing a server in **Your servers** selects its folder, wherever it is in the
 tree.
 
 The panel starts with where the folder is, from **Home** down; any step of it
-selects that folder, and **Home** selects none. Below that, its
-**Claude server** section shows the folder's server, or **Start** when it has
-none. **Start**, **Resume** and **Start again** are offered only while your
+selects that folder, and **Home** selects none. Below that are **New folder**,
+**Clone from GitHub** and **Delete folder** (see [Folders](#folders)), and then its
+**Claude server** section, which shows the folder's server, or **Start** when
+it has none. A git repository's panel also has a **Changes** section, for
+staging, committing and branches: see [Git](git.md). **Start**, **Resume** and **Start again** are offered only while your
 Claude account is connected; until then the section, or the server in place of
 what to do next, says to connect it. The folder you have selected is part of
 the page's address, so reloading the page keeps it, and the browser's back
@@ -61,6 +66,55 @@ again closes it; its arrow turns to say which.
 
 The page refreshes the states by itself. When rcman refuses an action, the
 reason it gave is shown on the server it was about.
+
+## Folders
+
+**New folder** makes a folder inside the selected folder. While no folder is
+selected, the **Home** panel has it too, and it makes the folder in your home
+folder. Type the name and choose **Create**; the new folder is then selected.
+When rcman refuses a name, the form says why and keeps what you typed.
+
+**Clone from GitHub**, beside it, clones a repository from GitHub into the
+selected folder, or, in the **Home** panel, into your home folder, in a new
+folder git names after the repository: see
+[Cloning a repository](git.md#cloning-a-repository).
+
+**Delete folder** deletes the selected folder and everything in it. It asks
+first, naming the folder and every server in it or in a folder inside it.
+Confirming stops each of those servers that is running, forgets them all, and
+only then deletes the folder; the folder above it is selected afterwards. It
+cannot be undone.
+
+- Your home folder itself cannot be deleted, so the **Home** panel has no
+  **Delete folder**.
+- A folder that is a symbolic link is deleted as the link; what it leads to is
+  left as it is. Links inside a folder are deleted as links too, and never
+  followed.
+- Folders whose name begins with a dot, and anything in one, cannot be deleted
+  from rcman.
+- A folder whose address goes through a symbolic link on the way is not
+  deleted there; select it where it really is.
+- A folder with another file system mounted inside it is not deleted at all.
+- If a server does not stop, nothing is forgotten and nothing is deleted;
+  rcman names the server and shows its screen.
+- If some of the folder cannot be removed — a file you are not allowed to
+  delete, for example — rcman lists what is left, and says whether nothing
+  could be removed at all or only some of it. Either way the servers are
+  forgotten, and whatever could be removed is gone; choosing
+  **Delete folder** again carries on once what is left can be removed.
+- If deleting takes too long, rcman stops waiting and says so. By then part
+  of the folder may already be gone and its servers forgotten; choosing
+  **Delete folder** again carries on.
+- While a folder is being deleted, starting, stopping, answering or
+  forgetting a server, making a folder and cloning one are refused, and so is deleting
+  while any of those is under way; try again in a moment.
+- The sessions of the servers that were forgotten stay in claude.ai/code,
+  where they are archived or deleted.
+- Claude remembers, by the folder's path, that you trusted a folder and which
+  sessions can be resumed there. A new folder with the same name in the same
+  place inherits both: Claude does not ask about trust again, and starting a
+  server there may resume a session from the deleted folder. rcman does not
+  change Claude's own files.
 
 ## Rules
 

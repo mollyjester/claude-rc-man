@@ -1,4 +1,4 @@
-#!/usr/bin/python3 -I
+#!/usr/bin/python3 -IXutf8
 """Launcher for rc-helper; the implementation is rc_helper.py beside it."""
 
 import os

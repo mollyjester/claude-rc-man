@@ -63,7 +63,7 @@ function Connect({ onConnected }: { onConnected: (c: Connection) => void }) {
         <form noValidate onSubmit={start}>
           <label>
             {m.connectEmail}
-            <input type="text" value={email} onChange={(e) => setEmail(e.target.value)} />
+            <input type="text" name="email" value={email} onChange={(e) => setEmail(e.target.value)} />
           </label>
           <button type="submit" className="primary">
             {m.connectGo}
@@ -79,14 +79,14 @@ function Connect({ onConnected }: { onConnected: (c: Connection) => void }) {
           </p>
           <label>
             {m.connectCode}
-            <input type="text" autoComplete="off" value={code} onChange={(e) => setCode(e.target.value)} />
+            <input type="text" name="code" autoComplete="off" value={code} onChange={(e) => setCode(e.target.value)} />
           </label>
           <button type="submit" className="primary">
             {m.connectSubmit}
           </button>
         </form>
       )}
-      <ProblemView error={error} />
+      <ProblemView error={error} labels={{ email: m.connectEmail, code: m.connectCode }} />
     </div>
   );
 }

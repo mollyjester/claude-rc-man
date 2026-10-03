@@ -35,7 +35,7 @@ function RemoveDialog({ linux, onDone, onCancel }: { linux: string; onDone: () =
           {m.usersDeleteHome}
         </label>
         <div className="actions">
-          <button type="submit" className="primary">
+          <button type="submit" className="danger">
             {m.usersRemoveConfirm}
           </button>
           <button type="button" onClick={onCancel}>
@@ -101,7 +101,7 @@ export function People() {
               <td>{p.admin ? m.usersAdmin : m.usersUser}</td>
               <td>{p.account ? m.usersAccountOk : m.usersAccountMissing}</td>
               <td>
-                <button type="button" onClick={() => setRemoving(p.linux)}>
+                <button type="button" className="secondary-danger" onClick={() => setRemoving(p.linux)}>
                   {m.usersRemove}
                 </button>
               </td>
@@ -124,18 +124,18 @@ export function People() {
       <form noValidate onSubmit={add}>
         <label>
           {m.usersLinux}
-          <input type="text" value={linux} onChange={(e) => setLinux(e.target.value)} />
+          <input type="text" name="linux" value={linux} onChange={(e) => setLinux(e.target.value)} />
         </label>
         <label>
           {m.usersEmail}
-          <input type="text" value={email} onChange={(e) => setEmail(e.target.value)} />
+          <input type="text" name="email" value={email} onChange={(e) => setEmail(e.target.value)} />
         </label>
         <label>
-          <input type="checkbox" checked={admin} onChange={(e) => setAdmin(e.target.checked)} />
+          <input type="checkbox" name="admin" checked={admin} onChange={(e) => setAdmin(e.target.checked)} />
           {m.usersAddAdmin}
         </label>
         <label>
-          <input type="checkbox" checked={adopt} onChange={(e) => setAdopt(e.target.checked)} />
+          <input type="checkbox" name="adopt" checked={adopt} onChange={(e) => setAdopt(e.target.checked)} />
           {m.usersAddAdopt}
         </label>
         <button type="submit" className="primary">
@@ -143,7 +143,10 @@ export function People() {
         </button>
       </form>
       {notice && <p role="status">{notice}</p>}
-      <ProblemView error={error} />
+      <ProblemView
+        error={error}
+        labels={{ linux: m.usersLinux, email: m.usersEmail, admin: m.usersAddAdmin, adopt: m.usersAddAdopt }}
+      />
     </section>
   );
 }

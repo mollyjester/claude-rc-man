@@ -346,6 +346,37 @@ def test_every_error_code_has_a_message():
     assert set(ra.MESSAGES) <= used | {"usage", "internal_error", "not_root"}
 
 
+def test_a_rule_reported_by_code_is_reported_in_its_own_words():
+    assert ra.RULE_CODES  # non-vacuity
+    for code, rule in ra.RULE_CODES.items():
+        assert ra.MESSAGES[code] is rule.sentence, code
+
+
+def test_every_rule_rc_admin_holds_is_reported():
+    from tests.test_rules import held_rules
+
+    held = held_rules(ra)
+    assert "VERSION" in held  # non-vacuity
+    for name, rule in held.items():
+        assert rule in ra.RULE_CODES.values(), f"{name} has no error code"
+
+
+def test_refused_input_is_explained_by_its_rule(cfg, two_users, capsys):
+    from tests.test_rc_helper import refused_value
+
+    calls = {
+        "linux_invalid": ["add", refused_value(uf.LINUX_NAME), "a@example.com"],
+        "email_invalid": ["add", "dave", refused_value(uf.EMAIL)],
+        "version_invalid": ["claude-upgrade", refused_value(ra.VERSION)],
+    }
+    assert set(calls) == set(ra.RULE_CODES)
+    for code, argv in calls.items():
+        assert ra.main_json(argv, cfg=cfg, system=two_users) == 1
+        error = json.loads(capsys.readouterr().out)["error"]
+        assert error["code"] == code
+        assert error["message"] == ra.RULE_CODES[code].sentence
+
+
 def test_json_cli_requires_an_explicit_home_decision(cfg, tmp_path, capsys):
     code = ra.main_json(["del", "bob"], cfg=cfg, system=FakeSystem(tmp_path))
     assert code == 1
@@ -441,7 +472,10 @@ def test_one_failed_install_is_reported_and_the_rest_continue(cfg, two_users):
     assert out["users"] == {"alice": "failed", "bob": "installed"}
 
 
-@pytest.mark.parametrize("version", ["", "latest", "1.2", "1.2.3; rm -rf /", "../1.2.3"])
+@pytest.mark.parametrize(
+    "version",
+    ["", "latest", "1.2", "1.2.3; rm -rf /", "../1.2.3", "\u0661.\u0662.\u0663", "1.2.\uff13"],
+)
 def test_invalid_versions_are_refused_before_any_check(cfg, two_users, version):
     two_users.checked = []
     refused(lambda: ra.upgrade(cfg, two_users, version), "version_invalid")

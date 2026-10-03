@@ -5,7 +5,7 @@ import { m } from "./messages";
 import { ProblemView, asApiError } from "./ProblemView";
 import { type Server, StateBadge, StatusDot, dotFor } from "./Servers";
 
-type Entry = { name: string; path: string; has_children: boolean };
+export type Entry = { name: string; path: string; has_children: boolean; repository: boolean };
 
 // Where a folder's panel is: the Servers page, with the folder in the address,
 // its slashes left as they are so that the address reads as the path.
@@ -69,7 +69,37 @@ export function useFolderTree() {
     setOpen((current) => (above.every((p) => current.has(p)) ? current : new Set([...current, ...above])));
   }, []);
 
-  return { contents, open, toggle, reveal };
+  // Fetches a folder's contents again, as after a folder is made or deleted in it.
+  const reload = useCallback(
+    (path: string) => {
+      requested.current.delete(path);
+      load(path);
+    },
+    [load],
+  );
+
+  // Drops all that is known of a folder that is gone, and of every folder in it.
+  const forget = useCallback((path: string) => {
+    const gone = (p: string) => p === path || p.startsWith(`${path}/`);
+    for (const p of [...requested.current]) if (gone(p)) requested.current.delete(p);
+    setContents((current) => new Map([...current].filter(([p]) => !gone(p))));
+    setOpen((current) => new Set([...current].filter((p) => !gone(p))));
+  }, []);
+
+  return { contents, open, toggle, reveal, reload, forget };
+}
+
+// Whether a folder is a repository, as the folder above it lists it: undefined
+// until that folder's contents are known.
+export function isRepository(tree: FolderTreeState, path: string): boolean | undefined {
+  const contents = tree.contents.get(parentOf(path) ?? "");
+  return Array.isArray(contents) ? contents.find((e) => e.path === path)?.repository : undefined;
+}
+
+// The folder a folder is in: "" for one at the top, and null for the home folder.
+export function parentOf(path: string): string | null {
+  if (!path) return null;
+  return lineage(path).at(-2)?.path ?? "";
 }
 
 export type FolderTreeState = ReturnType<typeof useFolderTree>;
@@ -98,8 +128,10 @@ function FolderList({ path, ...props }: TreeProps & { path: string }) {
 function FolderNode({ entry, ...props }: TreeProps & { entry: Entry }) {
   const { tree, servers, selected, onSelect } = props;
   const id = useId();
+  const markerId = useId();
   const isOpen = tree.open.has(entry.path);
   const dot = dotFor(entry.path, servers, !isOpen);
+  const described = [dot && id, entry.repository && markerId].filter(Boolean).join(" ");
 
   return (
     <li>
@@ -119,12 +151,22 @@ function FolderNode({ entry, ...props }: TreeProps & { entry: Entry }) {
         type="button"
         className="name"
         aria-current={entry.path === selected ? "true" : undefined}
-        aria-describedby={dot ? id : undefined}
+        aria-describedby={described || undefined}
         onClick={() => onSelect(entry.path)}
       >
         {entry.name}
       </button>
       {dot && <StatusDot kind={dot} id={id} />}
+      {entry.repository && (
+        <>
+          <span className="repository-marker" title={m.repository} aria-hidden="true">
+            {m.repositoryMark}
+          </span>
+          <span id={markerId} hidden>
+            {m.repository}
+          </span>
+        </>
+      )}
       {isOpen && <FolderList path={entry.path} {...props} />}
     </li>
   );

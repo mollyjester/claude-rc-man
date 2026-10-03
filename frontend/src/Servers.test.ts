@@ -1,4 +1,4 @@
-import { ACTIONS, KIND, KIND_ORDER, LIVE, PRIMARY, dotFor } from "./Servers";
+import { ACTIONS, KIND, KIND_ORDER, LIVE, PRIMARY, dotFor, serversIn } from "./Servers";
 import { m } from "./messages";
 
 // Whether a table keyed by state covers exactly the states rc-helper reports.
@@ -78,5 +78,27 @@ describe("the dot a folder carries", () => {
   test("is none where there is no server", () => {
     expect(dotFor("projects", [], true)).toBeNull();
     expect(dotFor("projects", [at("other", "ready")], true)).toBeNull();
+  });
+});
+
+describe("the servers in a folder", () => {
+  const at = (path: string) => ({ path, state: "ready", environment_url: null, session_name: null, exit_code: null });
+  const servers = [at("projects"), at("projects/alpha"), at("projects/alpha/deep"), at("projects/alpha2"), at("proj")];
+  const paths = (path: string) => serversIn(path, servers).map((s) => s.path);
+
+  test("are its own and every one below it", () => {
+    expect(paths("projects/alpha")).toEqual(["projects/alpha", "projects/alpha/deep"]);
+    expect(paths("projects")).toEqual(["projects", "projects/alpha", "projects/alpha/deep", "projects/alpha2"]);
+  });
+
+  test("are not those of a folder whose name merely starts the same, nor those above it", () => {
+    expect(paths("projects/alpha")).not.toContain("projects/alpha2");
+    expect(paths("proj")).toEqual(["proj"]);
+    expect(paths("projects/alpha/deep")).toEqual(["projects/alpha/deep"]);
+  });
+
+  test("are none where there is no server", () => {
+    expect(paths("other")).toEqual([]);
+    expect(serversIn("projects", [])).toEqual([]);
   });
 });
