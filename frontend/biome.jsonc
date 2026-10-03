@@ -31,5 +31,28 @@
       // to, and every exception, here or at the site, says why.
       "preset": "recommended"
     }
-  }
+  },
+  "overrides": [
+    {
+      // The tests: the component tests, their support in src/test/, and the browser tests.
+      "includes": [
+        "src/**/*.test.ts",
+        "src/**/*.test.tsx",
+        "src/test/**",
+        "e2e/**",
+        "e2e-stack/**"
+      ],
+      "linter": {
+        "rules": {
+          "style": {
+            // A `!` in a test states what the test expects to find; where that is wrong, the
+            // test meets the null, as it would any other wrong value, and a check written out
+            // would add only a message. The rule holds the application's own code, where a
+            // wrong `!` would reach people.
+            "noNonNullAssertion": "off"
+          }
+        }
+      }
+    }
+  ]
 }
