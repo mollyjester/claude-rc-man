@@ -8,17 +8,32 @@ How the test suite is organised and run. The rules the suite follows are in
 | Command | What it does |
 |---|---|
 | `make setup` | Creates the development environment: `make frontend-setup`, then `uv sync` |
-| `make test` | Runs the whole suite with pytest |
-| `make lint` | Checks formatting and lint with ruff |
-| `make format` | Applies formatting and safe lint fixes |
+| `make test` | Runs every Python test that runs on the host, in parallel with pytest-xdist: all but those marked `container`, and those marked `real_claude`, which no target runs |
+| `make test-container` | Runs the Python tests marked `container`, which need a container, in one process; the `Makefile` says why. It sets `RCMAN_REQUIRE_CONTAINER=1`, so they fail instead of skipping where Docker is not usable |
+| `make lint` | Checks formatting and lint: ruff for the Python code, Biome for the frontend, with the frontend's packages `make frontend-setup` installs |
+| `make format` | Applies formatting and safe lint fixes: ruff for the Python code, Biome for the frontend |
 | `make frontend-setup` | Installs the frontend's packages and Playwright's browser |
 | `make frontend-test` | Type-checks the frontend and runs its component tests |
 | `make frontend-build` | Builds the frontend into `frontend/dist` |
 | `make e2e` | Builds the frontend and runs the browser tests |
-| `make check` | Lint, the Python tests, the frontend tests and the browser tests. It sets `RCMAN_REQUIRE_REAL_CLAUDE=1` and `RCMAN_REQUIRE_CONTAINER=1`, so tests that would skip for want of the real `claude` or of Docker fail instead |
+| `make check` | Lint, `make test`, `make test-container`, the frontend tests and the browser tests. It sets `RCMAN_REQUIRE_REAL_CLAUDE=1`, so tests that would skip for want of the real `claude` fail instead |
+
+When the full suite runs, and how a run is read, is a working rule:
+[the full check runs at the edges of a change](working-rules.md#tests-and-guards).
 
 Run pytest from the repository root; `pyproject.toml` holds its configuration.
-The suite needs `tmux`, `git` and sudo's `visudo`. Everything git is tested against real git,
+The Python tests are split by where they run, not by how long they take:
+`make test` runs everything that runs on the host, slow tests included, and a
+slow host test is made cheaper or split into cases that workers share rather
+than moved out; `make test-container` runs what needs a container, the tests
+marked `container` (see below). `tests/test_make.py` holds the split: every
+test is in exactly one of the two, and `make check` runs both. To work on
+what the container suite covers, run it directly, as in
+`uv run pytest tests/test_container_suite.py -k github`.
+The suite needs `tmux`, `git` and sudo's `visudo`. Each test's tmux sockets
+are in a folder of its own, made under `/tmp` by `tmux_sockets` in
+`tests/conftest.py`, because a socket's path has to stay short, and removed,
+with every tmux server in it, when the test ends. Everything git is tested against real git,
 never a fake: `tests/git_fixtures.py`, which is not a test module, makes real
 repositories, their origins and their branches with the system's git, under
 a fixture configuration of its own, in a home removed when the tests end, so the person's configuration rc-helper
@@ -41,7 +56,10 @@ that the tests' GitHub sees the request. The browser tests' world runs a
 GitHub of its own (see [frontend.md](frontend.md#tests)). `tests/test_container_suite.py` runs the root-only
 suite in `tests/container/` inside a throwaway Ubuntu container, through
 `docker` or `sudo -n docker`; it skips when neither works, unless
-`RCMAN_REQUIRE_CONTAINER=1`, which `make check` sets. It runs these, each in a
+`RCMAN_REQUIRE_CONTAINER=1`, which `make test-container` sets. Its tests take the
+`docker` fixture, and a test that uses it, directly or through another
+fixture, carries the `container` marker, which `tests/container_marker.py`
+adds as tests are collected. It runs these, each in a
 fresh container: user management and Claude Code versions with `rc-admin`
 and `rcman-user`, and everything rc-helper does as a person through sudo
 under the sudoers rules — folders made and deleted, git run with the
@@ -114,6 +132,51 @@ it can fail, and a positive control that keeps an empty input from passing.
   GitHub is, and any git run in a test with GitHub's address written into
   its arguments outside the modules that keep it local and the exemptions it
   lists.
+- **No fixed shared paths or ports** (`tests/test_fixed_resources.py`). Tests
+  run at the same time, so none may hold a fixed path under `/tmp` or a fixed
+  unprivileged port. It reads the Python files in `tests/` but not those in
+  `tests/container/`, and catches these forms: a
+  string that is `/tmp` or a path in it, an f-string beginning with one, and a
+  call to `tempfile.gettempdir()`, except as the `dir=` of a `tempfile` call
+  that makes a uniquely named file or folder in `/tmp` itself; and a fixed
+  port, written as a number or a string of digits or held in a module-level
+  name, in a (host, port) address wherever it is written, as `port=`, after
+  `--port`, or after `-p` or `--publish`, alone or as the host port of
+  docker's mapping. It does not follow a port held in a function's own
+  variable, imported or computed, a path built in pieces, or a port in a URL;
+  review covers those. Each exemption it lists covers one site, named by its
+  file, function and text, and fails when that site is gone.
+- **The container marker is derived** (`tests/test_container_marker.py`). In
+  the collected suite the tests carrying `container` are exactly those using
+  the `docker` fixture, and no source under `tests/` places the marker by
+  hand, as `mark.container`, `getattr` of it, or its name given to
+  `add_marker` or `applymarker`, or asks for the fixture by name with
+  `getfixturevalue`, which leaves it out of a test's fixture names; a name
+  held in a variable is not followed. `tests/collected.py`, which is not a test module, collects the suite
+  in a child process for it.
+- **Every test runs, and container tests cannot skip** (`tests/test_make.py`).
+  It runs `make test`, `make test-container` and `make check` with `uv`,
+  `npm` and `npx` replaced by recorders, and reads which tests each pytest
+  command they ran selects from pytest's own collection: every test is in
+  exactly one of `make test` and `make test-container`, `make test-container`
+  runs exactly the `container` tests, and `make check` runs every test, its
+  container tests with `RCMAN_REQUIRE_CONTAINER=1` and all of them with
+  `RCMAN_REQUIRE_REAL_CLAUDE=1`; none of them runs a test a
+  bare `pytest` leaves out, as a target's own `-m` replaces the
+  `-m 'not real_claude'` of pyproject's `addopts`. `make lint` and
+  `make format` run ruff and the frontend's script of the same name, and the
+  real `make lint`, run over a frontend file planted in a scratch tree, fails
+  when Biome would reformat it, when Biome finds a lint finding it reports as
+  an info, and when the frontend's packages are missing; it checks the
+  frontend's `index.html`, and fails on a lint finding there. Every rule Biome runs
+  at info, as `biome rage` and `biome explain` report, is raised to a warning
+  in `frontend/biome.jsonc`.
+- **Every make target is documented** (`tests/test_docs_guard.py`). This
+  file has a table row whose first cell is `make <target>` for exactly the
+  targets the `Makefile` defines. The targets are read from make's own
+  database (`make -pRrq`), so a comment, a variable, a target-specific
+  variable, a special target such as `.PHONY`, a `define` block's body or a
+  branch make does not take is not mistaken for one.
 - **Deployment contents** (`tests/test_export.py`). Deployment uses
   `git archive`, so `.gitattributes` decides what is deployed. The test
   checks that every development-only file is marked `export-ignore`, that the

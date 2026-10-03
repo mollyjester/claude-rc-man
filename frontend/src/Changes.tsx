@@ -1,13 +1,25 @@
 import { type FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 
-import { ApiError, api, problemFrom } from "./api";
+import { type ApiError, api, problemFrom } from "./api";
 import { m } from "./messages";
-import { ProblemView, asApiError } from "./ProblemView";
+import { asApiError, ProblemView } from "./ProblemView";
 
-type GitFile = { path: string; change: string; from?: string; submodule?: boolean; selectable?: boolean };
+type GitFile = {
+  path: string;
+  change: string;
+  from?: string;
+  submodule?: boolean;
+  selectable?: boolean;
+};
 type FileList = { files: GitFile[]; more: number };
-type Branch = { name: string | null; commit: string | null; upstream: string | null; ahead: number | null; behind: number | null };
+type Branch = {
+  name: string | null;
+  commit: string | null;
+  upstream: string | null;
+  ahead: number | null;
+  behind: number | null;
+};
 export type GitStatus = {
   path: string;
   branch: Branch;
@@ -20,12 +32,26 @@ export type GitStatus = {
   push_ahead: number | null;
 };
 type Pushed = { path: string; branch: string; upstream: string | null; upstream_set: boolean };
-type CommitPushed = { path: string; commit: string; push: Pushed | null; push_problem: Record<string, unknown> | null };
+type CommitPushed = {
+  path: string;
+  commit: string;
+  push: Pushed | null;
+  push_problem: Record<string, unknown> | null;
+};
 type Branches = {
   local: { branches: { name: string; current: boolean; upstream: string | null }[]; more: number };
   remote: { branches: { name: string; local: string | null }[]; more: number };
 };
-type Action = "status" | "branches" | "stage" | "unstage" | "commit" | "switch" | "branch" | "fetch" | "push";
+type Action =
+  | "status"
+  | "branches"
+  | "stage"
+  | "unstage"
+  | "commit"
+  | "switch"
+  | "branch"
+  | "fetch"
+  | "push";
 
 // A repository's status: fetched when the section opens, every pollMs while it
 // is open (pollMs 0: never by itself), and whenever refresh is called. An
@@ -90,6 +116,7 @@ function Files({
     onSelect(next);
   }
   return (
+    // biome-ignore lint/a11y/useSemanticElements: a fieldset would give the same group, but brings a border, padding and margin the panel does not want, and a minimum width of its widest unbreakable content, so a long file name would stretch the whole group past the panel where in a div only the name overflows; a div with the role has none of these to undo
     <div role="group" aria-label={title} className="files">
       <h4>{m.listHeading(title, list.files.length + list.more)}</h4>
       {list.files.length === 0 ? (
@@ -97,15 +124,25 @@ function Files({
       ) : (
         <>
           <label>
-            <input type="checkbox" checked={all} disabled={choosable.length === 0} onChange={() => onSelect(new Set(all ? [] : choosable))} />
+            <input
+              type="checkbox"
+              checked={all}
+              disabled={choosable.length === 0}
+              onChange={() => onSelect(new Set(all ? [] : choosable))}
+            />
             {m.selectAll}
           </label>
           <ul>
             {list.files.map((file, i) => (
+              // biome-ignore lint/suspicious/noArrayIndexKey: two names that are not UTF-8 can read the same once decoded, so the path alone is not unique; a row keeps no state of its own
               <li key={`${file.path}:${i}`}>
                 {selectable(file) ? (
                   <label>
-                    <input type="checkbox" checked={selected.has(file.path)} onChange={() => toggle(file.path)} />
+                    <input
+                      type="checkbox"
+                      checked={selected.has(file.path)}
+                      onChange={() => toggle(file.path)}
+                    />
                     <span className="file-name">{file.path}</span>
                   </label>
                 ) : (
@@ -124,7 +161,12 @@ function Files({
           {list.more > 0 && <p>{m.andMore(list.more)}</p>}
         </>
       )}
-      <button type="button" className="secondary" disabled={busy || selected.size === 0} onClick={onAct}>
+      <button
+        type="button"
+        className="secondary"
+        disabled={busy || selected.size === 0}
+        onClick={onAct}
+      >
         {action}
       </button>
     </div>
@@ -141,7 +183,9 @@ function BranchLine({ branch }: { branch: Branch }) {
   return (
     <>
       <p>{where}</p>
-      {branch.upstream !== null && <p>{m.tracking(branch.upstream, branch.ahead, branch.behind)}</p>}
+      {branch.upstream !== null && (
+        <p>{m.tracking(branch.upstream, branch.ahead, branch.behind)}</p>
+      )}
     </>
   );
 }
@@ -234,13 +278,15 @@ export function Changes({ path, pollMs }: { path: string; pollMs: number }) {
   async function stage() {
     if (!status) return;
     const files = inOrder(status.not_staged, notStaged);
-    if (await act("stage", () => api.post("/api/git/stage", { path, files }))) setNotStaged(new Set());
+    if (await act("stage", () => api.post("/api/git/stage", { path, files })))
+      setNotStaged(new Set());
   }
 
   async function unstage() {
     if (!status) return;
     const files = inOrder(status.staged, staged);
-    if (await act("unstage", () => api.post("/api/git/unstage", { path, files }))) setStaged(new Set());
+    if (await act("unstage", () => api.post("/api/git/unstage", { path, files })))
+      setStaged(new Set());
   }
 
   async function commit(event: FormEvent) {
@@ -283,7 +329,8 @@ export function Changes({ path, pollMs }: { path: string; pollMs: number }) {
     }
   }
 
-  const switchTo = (branch: string, remote: boolean) => act("switch", () => api.post("/api/git/switch", { path, branch, remote }));
+  const switchTo = (branch: string, remote: boolean) =>
+    act("switch", () => api.post("/api/git/switch", { path, branch, remote }));
 
   return (
     <>
@@ -315,7 +362,9 @@ export function Changes({ path, pollMs }: { path: string; pollMs: number }) {
               </div>
             )
           )}
-          {pushed !== null && pushed.upstream !== null && <p role="status">{m.pushed(pushed.branch, pushed.upstream)}</p>}
+          {pushed !== null && pushed.upstream !== null && (
+            <p role="status">{m.pushed(pushed.branch, pushed.upstream)}</p>
+          )}
           {notPushed !== null && <p>{m.committedNotPushed(notPushed.slice(0, 7))}</p>}
           <ProblemView error={errors.push ?? null} />
           <Files
@@ -351,7 +400,12 @@ export function Changes({ path, pollMs }: { path: string; pollMs: number }) {
             <form noValidate onSubmit={commit}>
               <label>
                 {m.commitMessage}
-                <textarea name="message" value={message} onChange={(e) => setMessage(e.target.value)} rows={4} />
+                <textarea
+                  name="message"
+                  value={message}
+                  onChange={(e) => setMessage(e.target.value)}
+                  rows={4}
+                />
               </label>
               <div className="actions">
                 <button type="submit" className="primary" disabled={busy}>
@@ -377,13 +431,27 @@ export function Changes({ path, pollMs }: { path: string; pollMs: number }) {
             {branches.local.branches.map((b) => (
               <li key={b.name}>
                 <span className="branch-name">{b.name}</span>
-                {b.upstream && <> <span>{m.tracks(b.upstream)}</span></>}
+                {b.upstream && (
+                  <>
+                    {" "}
+                    <span>{m.tracks(b.upstream)}</span>
+                  </>
+                )}
                 {b.current ? (
-                  <> <span>{m.currentBranch}</span></>
+                  <>
+                    {" "}
+                    <span>{m.currentBranch}</span>
+                  </>
                 ) : (
                   <>
                     {" "}
-                    <button type="button" className="secondary" disabled={busy} aria-label={m.switchTo(b.name)} onClick={() => switchTo(b.name, false)}>
+                    <button
+                      type="button"
+                      className="secondary"
+                      disabled={busy}
+                      aria-label={m.switchTo(b.name)}
+                      onClick={() => switchTo(b.name, false)}
+                    >
                       {m.switchTo(b.name)}
                     </button>
                   </>
@@ -397,11 +465,22 @@ export function Changes({ path, pollMs }: { path: string; pollMs: number }) {
             {branches.remote.branches.map((b) => (
               <li key={b.name}>
                 <span className="branch-name">{b.name}</span>
-                {b.local !== null && <> <span>{m.trackedBy(b.local)}</span></>}
+                {b.local !== null && (
+                  <>
+                    {" "}
+                    <span>{m.trackedBy(b.local)}</span>
+                  </>
+                )}
                 {b.local === null && (
                   <>
                     {" "}
-                    <button type="button" className="secondary" disabled={busy} aria-label={m.switchTo(b.name)} onClick={() => switchTo(b.name, true)}>
+                    <button
+                      type="button"
+                      className="secondary"
+                      disabled={busy}
+                      aria-label={m.switchTo(b.name)}
+                      onClick={() => switchTo(b.name, true)}
+                    >
                       {m.switchTo(b.name)}
                     </button>
                   </>
@@ -414,10 +493,20 @@ export function Changes({ path, pollMs }: { path: string; pollMs: number }) {
       )}
       <ProblemView error={errors.switch ?? null} labels={{ branch: m.branchesTitle }} />
       <div className="actions">
-        <button type="button" className="secondary" disabled={busy} onClick={() => setOpening(true)}>
+        <button
+          type="button"
+          className="secondary"
+          disabled={busy}
+          onClick={() => setOpening(true)}
+        >
           {m.newBranch}
         </button>
-        <button type="button" className="secondary" disabled={busy} onClick={() => act("fetch", () => api.post("/api/git/fetch", { path }))}>
+        <button
+          type="button"
+          className="secondary"
+          disabled={busy}
+          onClick={() => act("fetch", () => api.post("/api/git/fetch", { path }))}
+        >
           {m.refreshBranches}
         </button>
       </div>
@@ -425,7 +514,12 @@ export function Changes({ path, pollMs }: { path: string; pollMs: number }) {
         <form noValidate onSubmit={createBranch}>
           <label>
             {m.newBranchName}
-            <input type="text" name="name" value={newBranch} onChange={(e) => setNewBranch(e.target.value)} />
+            <input
+              type="text"
+              name="name"
+              value={newBranch}
+              onChange={(e) => setNewBranch(e.target.value)}
+            />
           </label>
           <div className="actions">
             <button type="submit" className="primary" disabled={busy}>

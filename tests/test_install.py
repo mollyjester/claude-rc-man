@@ -3,7 +3,10 @@
 Real installations are tested in the container suite.
 """
 
+import contextlib
+import errno
 import os
+import socket
 import stat
 import subprocess
 from pathlib import Path
@@ -328,27 +331,108 @@ def test_caddy_is_told_to_restart_when_it_joins_the_socket_group():
     assert ins.WEB_GROUP == "rcman-web"
 
 
-def test_a_caddy_admin_api_on_loopback_is_noticed():
-    import socket
-
-    with socket.socket() as listener:
-        listener.bind(("127.0.0.1", 0))
-        listener.listen()
-        port = listener.getsockname()[1]
-        assert ins.caddy_admin_exposed(port=port) is True  # positive control
-    assert ins.caddy_admin_exposed(port=port) is False
-    assert "admin off" in ins.CADDY_ADMIN_WARNING
+def ipv6_loopback() -> bool:
+    """Whether this host has IPv6's loopback address to bind."""
+    try:
+        with socket.socket(socket.AF_INET6) as sock:
+            sock.bind(("::1", 0))
+    except OSError:
+        return False
+    return True
 
 
-def test_a_caddy_admin_api_on_ipv6_loopback_is_noticed_too():
-    import socket
+@contextlib.contextmanager
+def reserved_port():
+    """A port bound on each loopback address the host has, 127.0.0.1 and, where there is
+    IPv6, ::1, without listening: a connection to it is refused, and while it is held no
+    other process, a parallel test included, can take it. Yields the port and its socket
+    for each address family."""
+    ipv6 = ipv6_loopback()
+    for _ in range(20):
+        held = {socket.AF_INET: socket.socket(socket.AF_INET)}
+        held[socket.AF_INET].bind(("127.0.0.1", 0))
+        port = held[socket.AF_INET].getsockname()[1]
+        try:
+            if ipv6:
+                held[socket.AF_INET6] = socket.socket(socket.AF_INET6)
+                held[socket.AF_INET6].bind(("::1", port))
+        except OSError:  # taken on ::1; try another
+            for sock in held.values():
+                sock.close()
+            continue
+        try:
+            yield port, held
+        finally:
+            for sock in held.values():
+                sock.close()
+        return
+    raise RuntimeError("no port free on every loopback address")
 
-    with socket.socket(socket.AF_INET6) as listener:
-        listener.bind(("::1", 0))
-        listener.listen()
-        port = listener.getsockname()[1]
+
+def no_ipv6(monkeypatch):
+    """This process as on a host without IPv6: an IPv6 socket cannot be made."""
+    real = socket.socket
+
+    def refusing(family=socket.AF_INET, *args, **kwargs):
+        if family == socket.AF_INET6:
+            raise OSError(errno.EAFNOSUPPORT, "Address family not supported by protocol")
+        return real(family, *args, **kwargs)
+
+    monkeypatch.setattr(socket, "socket", refusing)
+
+
+def test_ipv6_loopback_is_found_where_it_binds_and_not_where_it_does_not(monkeypatch):
+    try:
+        with socket.socket(socket.AF_INET6) as sock:
+            sock.bind(("::1", 0))
+        expected = True
+    except OSError:
+        expected = False
+    assert ipv6_loopback() is expected
+    no_ipv6(monkeypatch)
+    assert ipv6_loopback() is False
+
+
+def test_without_ipv6_a_port_is_reserved_and_caddy_noticed_on_ipv4_alone(monkeypatch):
+    no_ipv6(monkeypatch)
+    with reserved_port() as (port, held):
+        assert set(held) == {socket.AF_INET}
+        with pytest.raises(OSError):
+            bind(socket.AF_INET, "127.0.0.1", port)
+        assert ins.caddy_admin_exposed(port=port) is False
+        held[socket.AF_INET].listen()
         assert ins.caddy_admin_exposed(port=port) is True
-    assert ins.caddy_admin_exposed(port=port) is False
+
+
+def bind(family, host, port):
+    with socket.socket(family) as other:
+        other.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        other.bind((host, port))
+
+
+IPV6 = pytest.mark.skipif(not ipv6_loopback(), reason="this host has no IPv6 loopback")
+
+
+@pytest.mark.parametrize(
+    ("family", "host"),
+    [(socket.AF_INET, "127.0.0.1"), pytest.param(socket.AF_INET6, "::1", marks=IPV6)],
+)
+def test_a_reserved_port_cannot_be_taken_and_refuses_connections(family, host):
+    bind(family, host, 0)  # positive control: the same bind succeeds on a port not held
+    with reserved_port() as (port, _):
+        with pytest.raises(OSError):
+            bind(family, host, port)
+        with pytest.raises(ConnectionRefusedError):
+            socket.create_connection((host, port), timeout=2).close()
+
+
+@pytest.mark.parametrize("family", [socket.AF_INET, pytest.param(socket.AF_INET6, marks=IPV6)])
+def test_a_caddy_admin_api_on_loopback_is_noticed(family):
+    with reserved_port() as (port, held):
+        assert ins.caddy_admin_exposed(port=port) is False
+        held[family].listen()
+        assert ins.caddy_admin_exposed(port=port) is True
+    assert "admin off" in ins.CADDY_ADMIN_WARNING
     assert "127.0.0.1" in ins.CADDY_ADMIN_WARNING and "[::1]" in ins.CADDY_ADMIN_WARNING
 
 
@@ -506,6 +590,96 @@ def test_toolchain_directories_are_repaired_to_be_readable(tmp_path):
         os.chmod(tmp_path / sub, 0o700)
     ins.open_up(tmp_path)
     assert stat.S_IMODE((tmp_path / "a" / "b").stat().st_mode) == 0o755
+
+
+def fake_downloads(monkeypatch):
+    """The toolchain's downloads served from archives made here, each with its checksum
+    file; returns the URLs fetched. The first archive fetched waits briefly for another
+    caller to start fetching, so that two unlocked callers overlap."""
+    import hashlib
+    import io
+    import tarfile
+    import threading
+    import time
+
+    def archive(top: str, member: str, mode: str) -> bytes:
+        data = io.BytesIO()
+        with tarfile.open(fileobj=data, mode=mode) as tar:
+            info = tarfile.TarInfo(f"{top}/{member}")
+            info.mode, info.size = 0o755, 2
+            tar.addfile(info, io.BytesIO(b"ok"))
+        return data.getvalue()
+
+    arch = ins._arch()
+    node = f"node-v{ins.node_version()}-linux-{arch}"
+    triple = {"x64": "x86_64", "arm64": "aarch64"}[arch] + "-unknown-linux-gnu"
+    proxy = f"oauth2-proxy-{ins.OAUTH2_PROXY_VERSION}.linux-" + {"x64": "amd64"}.get(arch, arch)
+    archives = {
+        f"{node}.tar.xz": archive(node, "bin/node", "w:xz"),
+        f"uv-{triple}.tar.gz": archive(f"uv-{triple}", "uv", "w:gz"),
+        f"{proxy}.tar.gz": archive(proxy, "oauth2-proxy", "w:gz"),
+    }
+    sums = {name: hashlib.sha256(data).hexdigest() for name, data in archives.items()}
+    fetched, started = [], threading.Event()
+
+    def download(url: str) -> bytes:
+        name = url.rsplit("/", 1)[1]
+        fetched.append(url)
+        if name == "SHASUMS256.txt":
+            if started.is_set():
+                started.clear()
+            else:
+                started.set()
+                deadline = time.monotonic() + 1
+                while started.is_set() and time.monotonic() < deadline:
+                    time.sleep(0.01)
+            return "".join(f"{sums[n]}  {n}\n" for n in archives).encode()
+        for archive_name, digest in sums.items():
+            if name in (f"{archive_name}.sha256", f"{archive_name}-sha256sum.txt"):
+                return f"{digest}  {archive_name}\n".encode()
+        return archives[name]
+
+    monkeypatch.setattr(ins, "_download", download)
+    return fetched
+
+
+def test_the_toolchain_is_fetched_once_and_complete(tmp_path, monkeypatch):
+    """Positive control for the fake downloads: one call fills an empty toolchain."""
+    fetched = fake_downloads(monkeypatch)
+    toolchain = tmp_path / "toolchain"
+    assert len(ins.ensure_toolchain(toolchain)) == 3
+    for binary in (ins.node_bin(toolchain) / "node", ins.uv_binary(toolchain)):
+        assert binary.read_bytes() == b"ok"
+    assert ins.oauth2_proxy_binary(toolchain).read_bytes() == b"ok"
+    assert len(fetched) == len(set(fetched)) == 6
+    assert ins.ensure_toolchain(toolchain) == []  # and finds it there the next time
+
+
+def test_two_callers_at_once_make_one_complete_toolchain(tmp_path, monkeypatch):
+    """Two callers filling the same empty toolchain at once, as two parallel test runs
+    sharing a cache do: one fetches and unpacks each tool, the other then finds it."""
+    import threading
+
+    fetched = fake_downloads(monkeypatch)
+    toolchain = tmp_path / "toolchain"
+    results, errors = [], []
+
+    def call():
+        try:
+            results.append(ins.ensure_toolchain(toolchain))
+        except Exception as error:  # noqa: BLE001 - reported below
+            errors.append(error)
+
+    threads = [threading.Thread(target=call) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=60)
+    assert errors == []
+    assert sorted(len(r) for r in results) == [0, 3]
+    assert len(fetched) == len(set(fetched)) == 6
+    assert ins.oauth2_proxy_binary(toolchain).read_bytes() == b"ok"
+    assert [p.name for p in toolchain.iterdir() if p.name.startswith(".") and p.is_dir()] == []
 
 
 # --- prerequisites ---------------------------------------------------------------------

@@ -1,5 +1,6 @@
 """The checks a candidate Claude Code version must pass before it is rolled out."""
 
+import json
 import os
 import shutil
 import sys
@@ -9,6 +10,7 @@ import pytest
 
 from devtools import record_claude as rec
 from helpers import claude_checks as cc
+from helpers import rc_helper
 
 REAL = shutil.which("claude")
 
@@ -67,6 +69,55 @@ def test_the_pty_runner_stops_at_its_pattern_and_kills_the_rest(tmp_path):
 def test_the_installed_real_claude_passes(tmp_path):
     version = rec.installed_version(REAL)
     assert cc.candidate_checks(runner_for(REAL, tmp_path), version) == []
+
+
+@pytest.mark.skipif(
+    REAL is None and os.environ.get("RCMAN_REQUIRE_REAL_CLAUDE") != "1",
+    reason="claude not installed",
+)
+def test_the_installed_real_claude_passes_with_a_long_configuration_path(tmp_path):
+    """auth status prints the configuration's path in its JSON; on a terminal a path
+    longer than a line wraps inside a string, and the JSON no longer reads. The path
+    here is longer than rc-helper's terminal is wide."""
+    version = rec.installed_version(REAL)
+    deep = tmp_path / ("d" * rc_helper.WIDTH)
+    deep.mkdir()
+    assert cc.candidate_checks(runner_for(REAL, deep), version) == []
+
+
+def test_the_terminal_is_the_size_rc_helper_gives_claude(tmp_path):
+    """The screens are read on a terminal of the size rc-helper runs Claude's in."""
+    run = cc.local_runner("/bin/sh", env={}, cwd=tmp_path, config_dir=tmp_path / "cfg")
+    _code, output = run(["-c", "stty size"])
+    assert output.split() == [str(rc_helper.HEIGHT), str(rc_helper.WIDTH)], output
+
+
+TERMINAL_PROBE = f"""#!{sys.executable}
+import json, os, sys
+if sys.argv[1:] == ["auth", "status"]:
+    print(json.dumps({{"loggedIn": False, "terminal": os.isatty(0) or os.isatty(1)}}))
+"""
+
+
+def test_auth_status_is_read_through_pipes_as_rc_helper_reads_it(tmp_path):
+    """rc-helper runs auth status with no terminal; the check runs it the same way."""
+    probe = tmp_path / "claude"
+    probe.write_text(TERMINAL_PROBE, encoding="utf-8")
+    probe.chmod(0o755)
+    run = runner_for(probe, tmp_path)
+    _code, output = run(["auth", "status"], terminal=False)
+    assert json.loads(output) == {"loggedIn": False, "terminal": False}
+    _code, output = run(["auth", "status"])  # positive control: the default is a terminal
+    assert json.loads(output) == {"loggedIn": False, "terminal": True}
+    seen = []
+
+    def recording(args, until=None, timeout=cc.TIMEOUT, terminal=True):
+        seen.append((args, terminal))
+        return run(args, until=until, timeout=timeout, terminal=terminal)
+
+    assert "auth_status" not in cc.candidate_checks(recording, "1.2.3")
+    assert (["auth", "status"], False) in seen
+    assert all(terminal for args, terminal in seen if args != ["auth", "status"])
 
 
 def test_terminal_control_sequences_are_stripped():

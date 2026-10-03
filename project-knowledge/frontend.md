@@ -10,6 +10,35 @@ The `make` targets that set up, build and test it are in
 server that forwards `/api` to a local backend, at the address
 `frontend/vite.config.ts` names.
 
+## Formatting and lint
+
+[Biome](https://biomejs.dev) formats and lints the frontend: its TypeScript,
+its stylesheet and its JSON files; it lints `index.html` too, whose
+formatting, as HTML's, Biome leaves alone by default. `frontend/biome.jsonc` names the files it
+covers and holds every setting that differs from Biome's defaults, each with
+its reason. Its version is pinned exactly in `frontend/package.json`, so a new
+release of Biome cannot change what passes.
+
+In `frontend/`, `npm run lint` checks without changing anything: formatting,
+the lint rules and the order of imports. Any finding fails it: an error or a
+warning does, and the recommended rules Biome reports as infos, which would
+not, are raised to warnings by name in `frontend/biome.jsonc`; a test in
+`tests/test_make.py` asks Biome which rules it runs at info and fails on one
+left out. `npm run format` applies the
+formatting, the order of imports and Biome's safe fixes. `make lint` and
+`make format` run them after ruff (see [tests.md](tests.md#running)).
+
+A finding is answered first by fixing the code. Where a rule is wrong for
+one place, it is suppressed there, with the reason after the colon:
+`// biome-ignore lint/<group>/<rule>: <reason>` — in JSX
+`{/* biome-ignore lint/<group>/<rule>: <reason> */}`, and in CSS a
+`/* … */` comment of the same form. Biome refuses a suppression without a
+reason, and reports one that no longer suppresses anything, so a suppression
+fails the check once its subject is gone. Where a rule is wrong for whole
+files, it is switched off or scoped in `frontend/biome.jsonc`, with a comment
+giving the reason; Biome does not report a setting there that no longer
+matters, so a suppression at the site is preferred.
+
 ## Rules it keeps
 
 - **The server validates; the page shows what it said.** `src/api.ts` is the

@@ -1,8 +1,8 @@
 import { type FormEvent, useState } from "react";
 
-import { ApiError, api } from "./api";
+import { type ApiError, api } from "./api";
 import { m } from "./messages";
-import { ProblemView, asApiError } from "./ProblemView";
+import { asApiError, ProblemView } from "./ProblemView";
 import type { StartBlocked } from "./Servers";
 
 export const CONNECTION_STATES = ["not_connected", "connected", "expiring", "expired"] as const;
@@ -20,7 +20,11 @@ export const START_REASON: Record<ConnectionState, StartBlocked | null> = {
 
 export type Connection = {
   connection: ConnectionState;
-  account: { email: string | null; org_name: string | null; subscription_type: string | null } | null;
+  account: {
+    email: string | null;
+    org_name: string | null;
+    subscription_type: string | null;
+  } | null;
   login_expires_at: string | null;
 };
 
@@ -63,7 +67,12 @@ function Connect({ onConnected }: { onConnected: (c: Connection) => void }) {
         <form noValidate onSubmit={start}>
           <label>
             {m.connectEmail}
-            <input type="text" name="email" value={email} onChange={(e) => setEmail(e.target.value)} />
+            <input
+              type="text"
+              name="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+            />
           </label>
           <button type="submit" className="primary">
             {m.connectGo}
@@ -79,7 +88,13 @@ function Connect({ onConnected }: { onConnected: (c: Connection) => void }) {
           </p>
           <label>
             {m.connectCode}
-            <input type="text" name="code" autoComplete="off" value={code} onChange={(e) => setCode(e.target.value)} />
+            <input
+              type="text"
+              name="code"
+              autoComplete="off"
+              value={code}
+              onChange={(e) => setCode(e.target.value)}
+            />
           </label>
           <button type="submit" className="primary">
             {m.connectSubmit}
@@ -112,7 +127,9 @@ export function ClaudeConnection({
   return (
     <section aria-label={m.claudeTitle} className={`claude claude-${state}`}>
       <p>{message}</p>
-      {state === "connected" && expires && <p className="muted">{m.claudeExpires(when(expires))}</p>}
+      {state === "connected" && expires && (
+        <p className="muted">{m.claudeExpires(when(expires))}</p>
+      )}
       {offer && !connecting && (
         <button type="button" onClick={() => setConnecting(true)}>
           {offer}

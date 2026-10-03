@@ -2,12 +2,24 @@ import { cleanup, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { CONNECTION_STATES, START_REASON } from "./Claude";
-import { ACTIONS, KIND, LABELS, PRIMARY } from "./Servers";
 import { m } from "./messages";
-import { CONNECTED, type Call, ME, NOT_CONNECTED, type Routes, fakeApi, problem } from "./test/fakeApi";
+import { ACTIONS, KIND, LABELS, PRIMARY } from "./Servers";
+import {
+  type Call,
+  CONNECTED,
+  fakeApi,
+  ME,
+  NOT_CONNECTED,
+  problem,
+  type Routes,
+} from "./test/fakeApi";
 import { renderApp } from "./test/render";
 
-const entry = (path: string, has_children = false) => ({ name: path.split("/").pop(), path, has_children });
+const entry = (path: string, has_children = false) => ({
+  name: path.split("/").pop(),
+  path,
+  has_children,
+});
 
 // A folder whose name holds what an address treats specially.
 const ODD = "projects/gamma/a&b #c?d e";
@@ -19,7 +31,10 @@ const FOLDERS: Record<string, { path: string; entries: unknown[] }> = {
     path: "projects",
     entries: [entry("projects/alpha"), entry("projects/beta"), entry("projects/gamma", true)],
   },
-  "projects/gamma": { path: "projects/gamma", entries: [entry("projects/gamma/deep"), entry(ODD, true)] },
+  "projects/gamma": {
+    path: "projects/gamma",
+    entries: [entry("projects/gamma/deep"), entry(ODD, true)],
+  },
   [ODD]: { path: ODD, entries: [entry(`${ODD}/inner`)] },
 };
 
@@ -31,7 +46,8 @@ function dashboard(servers: unknown[], extra: Routes = {}) {
   return fakeApi({
     "GET /api/me": ME,
     "GET /api/claude": CONNECTED,
-    "GET /api/folders": (c) => FOLDERS[c.query.get("path") ?? ""] ?? problem(404, "no_such_folder", "No such folder."),
+    "GET /api/folders": (c) =>
+      FOLDERS[c.query.get("path") ?? ""] ?? problem(404, "no_such_folder", "No such folder."),
     "GET /api/servers": { servers },
     ...extra,
   });
@@ -66,14 +82,19 @@ test("selecting a folder opens its panel, with the breadcrumb and its server", a
   const fake = dashboard([server("projects/alpha", "ready")]);
   renderApp();
   expect(await screen.findByRole("region", { name: m.home })).toHaveTextContent(m.panelEmpty);
-  expect(fake.calls.filter((c) => c.path === "/api/folders" && c.query.get("path"))).toHaveLength(0);
+  expect(fake.calls.filter((c) => c.path === "/api/folders" && c.query.get("path"))).toHaveLength(
+    0,
+  );
   await expand("projects");
   await select("alpha");
 
   const opened = await panel("projects/alpha");
   const crumbs = within(opened).getByRole("navigation", { name: m.breadcrumb });
   expect(within(crumbs).getByRole("link", { name: m.home })).toHaveAttribute("href", "/");
-  expect(within(crumbs).getByRole("link", { name: "projects" })).toHaveAttribute("href", "/?folder=projects");
+  expect(within(crumbs).getByRole("link", { name: "projects" })).toHaveAttribute(
+    "href",
+    "/?folder=projects",
+  );
   expect(within(crumbs).getByText("alpha")).toHaveAttribute("aria-current", "page");
   expect(within(crumbs).queryByRole("link", { name: "alpha" })).not.toBeInTheDocument();
   expect(within(opened).getByRole("heading", { name: m.serverTitle })).toBeInTheDocument();
@@ -112,19 +133,22 @@ test("a folder with no server offers Start, which starts one there", async () =>
   expect(within(opened).queryByRole("button", { name: m.start })).not.toBeInTheDocument();
 });
 
-test.each(CONNECTION_STATES)("with the Claude account %s, Start is offered only if a server can start", async (state) => {
-  dashboard([], { "GET /api/claude": { ...CONNECTED, connection: state } });
-  renderApp("/?folder=projects/beta");
-  const opened = await panel("projects/beta");
-  const reason = START_REASON[state];
-  if (reason === null) {
-    expect(await within(opened).findByRole("button", { name: m.start })).toBeInTheDocument();
-  } else {
-    expect(await within(opened).findByText(reason.start)).toBeInTheDocument();
-    expect(within(opened).getByText(m.noServer)).toBeInTheDocument();
-    expect(within(opened).queryByRole("button", { name: m.start })).not.toBeInTheDocument();
-  }
-});
+test.each(CONNECTION_STATES)(
+  "with the Claude account %s, Start is offered only if a server can start",
+  async (state) => {
+    dashboard([], { "GET /api/claude": { ...CONNECTED, connection: state } });
+    renderApp("/?folder=projects/beta");
+    const opened = await panel("projects/beta");
+    const reason = START_REASON[state];
+    if (reason === null) {
+      expect(await within(opened).findByRole("button", { name: m.start })).toBeInTheDocument();
+    } else {
+      expect(await within(opened).findByText(reason.start)).toBeInTheDocument();
+      expect(within(opened).getByText(m.noServer)).toBeInTheDocument();
+      expect(within(opened).queryByRole("button", { name: m.start })).not.toBeInTheDocument();
+    }
+  },
+);
 
 test("until the Claude account's state is known, neither Start nor a reason is shown", async () => {
   dashboard([], { "GET /api/claude": () => new Promise(() => {}) });
@@ -164,22 +188,27 @@ test.each([
   ["exited", "resume"],
   ["trust_declined", "startAgain"],
   ["logged_out", "startAgain"],
-] as const)("a %s server offers %s only while the account is connected, and says why instead", async (state, action) => {
-  const said = m.notConnected[action];
-  dashboard([server("projects/alpha", state, { screen: ["x"], exit_code: 1 })], { "GET /api/claude": NOT_CONNECTED });
-  const waiting = await card();
-  expect(waiting.getByRole("button", { name: m.forget })).toBeInTheDocument(); // the card is there
-  expect(waiting.queryByRole("button", { name: LABELS[action] })).not.toBeInTheDocument();
-  expect(waiting.getByText(said)).toBeInTheDocument();
-  expect(waiting.queryByText(m.nextStep[state])).not.toBeInTheDocument();
-  cleanup();
+] as const)(
+  "a %s server offers %s only while the account is connected, and says why instead",
+  async (state, action) => {
+    const said = m.notConnected[action];
+    dashboard([server("projects/alpha", state, { screen: ["x"], exit_code: 1 })], {
+      "GET /api/claude": NOT_CONNECTED,
+    });
+    const waiting = await card();
+    expect(waiting.getByRole("button", { name: m.forget })).toBeInTheDocument(); // the card is there
+    expect(waiting.queryByRole("button", { name: LABELS[action] })).not.toBeInTheDocument();
+    expect(waiting.getByText(said)).toBeInTheDocument();
+    expect(waiting.queryByText(m.nextStep[state])).not.toBeInTheDocument();
+    cleanup();
 
-  dashboard([server("projects/alpha", state, { screen: ["x"], exit_code: 1 })]);
-  const offered = await card();
-  expect(offered.getByRole("button", { name: LABELS[action] })).toBeInTheDocument();
-  expect(offered.getByText(m.nextStep[state])).toBeInTheDocument();
-  expect(offered.queryByText(said)).not.toBeInTheDocument();
-});
+    dashboard([server("projects/alpha", state, { screen: ["x"], exit_code: 1 })]);
+    const offered = await card();
+    expect(offered.getByRole("button", { name: LABELS[action] })).toBeInTheDocument();
+    expect(offered.getByText(m.nextStep[state])).toBeInTheDocument();
+    expect(offered.queryByText(said)).not.toBeInTheDocument();
+  },
+);
 
 test("a state allowing more than one action that starts Claude offers none of them while it cannot", async () => {
   // No state rc-helper reports allows two such actions today; one planted here would.
@@ -244,7 +273,9 @@ test("the back button returns to the folder selected before, then to none", asyn
 test("the breadcrumb selects a folder above, and Home selects none", async () => {
   dashboard([]);
   const { location } = renderApp("/?folder=projects/alpha");
-  const crumbs = within(await panel("projects/alpha")).getByRole("navigation", { name: m.breadcrumb });
+  const crumbs = within(await panel("projects/alpha")).getByRole("navigation", {
+    name: m.breadcrumb,
+  });
   await userEvent.click(within(crumbs).getByRole("link", { name: "projects" }));
   expect(await panel("projects")).toBeInTheDocument();
   expect(folderOf(location().search)).toBe("projects");
@@ -266,11 +297,11 @@ test.each([
   const opened = await panel(path);
   const crumbs = within(opened).getByRole("navigation", { name: m.breadcrumb });
   // each step but the last ends with the slash after it
-  expect(within(crumbs).getAllByRole("listitem").map((li) => li.textContent)).toEqual([
-    `${m.home}/`,
-    ...above.map((folder) => `${folder}/`),
-    name,
-  ]);
+  expect(
+    within(crumbs)
+      .getAllByRole("listitem")
+      .map((li) => li.textContent),
+  ).toEqual([`${m.home}/`, ...above.map((folder) => `${folder}/`), name]);
   expect(within(opened).getByRole("heading", { level: 2 })).toHaveTextContent(name);
 });
 
@@ -279,7 +310,11 @@ test("a folder that is only a slash still opens, under Home", async () => {
   renderApp("/?folder=/");
   const opened = await panel("/");
   const crumbs = within(opened).getByRole("navigation", { name: m.breadcrumb });
-  expect(within(crumbs).getAllByRole("listitem").map((li) => li.textContent)).toEqual([m.home]);
+  expect(
+    within(crumbs)
+      .getAllByRole("listitem")
+      .map((li) => li.textContent),
+  ).toEqual([m.home]);
   expect(within(opened).getByRole("heading", { level: 2 })).toHaveTextContent("/");
 });
 
@@ -288,14 +323,18 @@ test("a folder whose contents could not be fetched is asked again when reopened,
   const fake = dashboard([], {
     "GET /api/folders": (c) => {
       const path = c.query.get("path") ?? "";
-      if (path === "projects" && failing) return problem(500, "helper_failed", "rcman's helper failed.");
+      if (path === "projects" && failing)
+        return problem(500, "helper_failed", "rcman's helper failed.");
       return FOLDERS[path];
     },
   });
-  const asked = () => fake.made("GET", "/api/folders").filter((c) => c.query.get("path") === "projects").length;
+  const asked = () =>
+    fake.made("GET", "/api/folders").filter((c) => c.query.get("path") === "projects").length;
   renderApp();
   await expand("projects");
-  expect(await within(await tree()).findByRole("alert")).toHaveTextContent("rcman's helper failed.");
+  expect(await within(await tree()).findByRole("alert")).toHaveTextContent(
+    "rcman's helper failed.",
+  );
   expect(asked()).toBe(1);
 
   failing = false;
@@ -314,14 +353,18 @@ test("a folder selected from the address is shown in the tree", async () => {
     expect(fake.made("GET", "/api/folders").map((c) => c.query.get("path"))).toContain("projects"),
   );
   expect(await folder("alpha")).toHaveAttribute("aria-current", "true");
-  expect(within(await tree()).getByRole("button", { name: m.collapse("projects") })).toBeInTheDocument();
+  expect(
+    within(await tree()).getByRole("button", { name: m.collapse("projects") }),
+  ).toBeInTheDocument();
 });
 
 test("a folder whose name holds &, #, ? and spaces keeps its place in the address", async () => {
   const address = "/?folder=projects/gamma/a%26b%20%23c%3Fd%20e";
   dashboard([]);
   const { location } = renderApp(`${address}/inner`);
-  const crumbs = within(await panel(`${ODD}/inner`)).getByRole("navigation", { name: m.breadcrumb });
+  const crumbs = within(await panel(`${ODD}/inner`)).getByRole("navigation", {
+    name: m.breadcrumb,
+  });
   const link = within(crumbs).getByRole("link", { name: "a&b #c?d e" });
   expect(link).toHaveAttribute("href", address);
   await userEvent.click(link);
@@ -350,22 +393,25 @@ test("a closed folder holding a server with a problem and one waiting shows the 
   expect(await folder("projects")).toHaveAccessibleDescription(m.kinds.problem);
 });
 
-test.each(Object.entries(KIND))("a folder whose server is %s carries the %s dot", async (state, kind) => {
-  dashboard([server("projects/alpha", state)]);
-  renderApp();
-  await expand("projects");
-  const alpha = await folder("alpha");
-  expect(alpha).toHaveAccessibleDescription(m.kinds[kind]);
-  // its shape is the kind's class, its meaning a title on hover, and the
-  // description is read once, through the name it describes
-  const dot = alpha.closest("li")!.querySelector(":scope > .dot")!;
-  expect(dot).toHaveClass(`dot-${kind}`);
-  expect(dot).toHaveAttribute("title", m.kinds[kind]);
-  const description = document.getElementById(alpha.getAttribute("aria-describedby")!)!;
-  expect(description).toHaveTextContent(m.kinds[kind]);
-  expect(description).toHaveAttribute("hidden");
-  expectNoDot(await folder("beta"));
-});
+test.each(Object.entries(KIND))(
+  "a folder whose server is %s carries the %s dot",
+  async (state, kind) => {
+    dashboard([server("projects/alpha", state)]);
+    renderApp();
+    await expand("projects");
+    const alpha = await folder("alpha");
+    expect(alpha).toHaveAccessibleDescription(m.kinds[kind]);
+    // its shape is the kind's class, its meaning a title on hover, and the
+    // description is read once, through the name it describes
+    const dot = alpha.closest("li")!.querySelector(":scope > .dot")!;
+    expect(dot).toHaveClass(`dot-${kind}`);
+    expect(dot).toHaveAttribute("title", m.kinds[kind]);
+    const description = document.getElementById(alpha.getAttribute("aria-describedby")!)!;
+    expect(description).toHaveTextContent(m.kinds[kind]);
+    expect(description).toHaveAttribute("hidden");
+    expectNoDot(await folder("beta"));
+  },
+);
 
 test("the check for no dot fails on a folder that has one", async () => {
   dashboard([server("projects/beta", "ready")]);
@@ -406,20 +452,31 @@ test("the summary lists every server, and selects its folder", async () => {
     // each folder's name with the slash after it is one part; e2e/paths.spec.ts
     // checks in a browser that the parts are never broken inside
     const parts = [...button.querySelectorAll(".path-part")].map((part) => part.textContent);
-    expect(parts).toEqual(path.split("/").map((name, i, names) => (i < names.length - 1 ? `${name}/` : name)));
+    expect(parts).toEqual(
+      path.split("/").map((name, i, names) => (i < names.length - 1 ? `${name}/` : name)),
+    );
     expect(button).toHaveAccessibleName(path);
     const item = button.closest("li")!;
     expect(within(item as HTMLElement).getByText(m.states[state])).toHaveClass("badge");
   }
 
-  expect(within(list).getByRole("button", { name: "projects/gamma/deep" })).not.toHaveAttribute("aria-current");
+  expect(within(list).getByRole("button", { name: "projects/gamma/deep" })).not.toHaveAttribute(
+    "aria-current",
+  );
   await userEvent.click(within(list).getByRole("button", { name: "projects/gamma/deep" }));
   expect(within(await panel("projects/gamma/deep")).getByRole("article")).toBeInTheDocument();
   expect(folderOf(location().search)).toBe("projects/gamma/deep");
-  expect(within(list).getByRole("button", { name: "projects/gamma/deep" })).toHaveAttribute("aria-current", "true");
-  expect(within(list).getByRole("button", { name: "projects/alpha" })).not.toHaveAttribute("aria-current");
+  expect(within(list).getByRole("button", { name: "projects/gamma/deep" })).toHaveAttribute(
+    "aria-current",
+    "true",
+  );
+  expect(within(list).getByRole("button", { name: "projects/alpha" })).not.toHaveAttribute(
+    "aria-current",
+  );
   await waitFor(() =>
-    expect(fake.made("GET", "/api/folders").map((c) => c.query.get("path"))).toContain("projects/gamma"),
+    expect(fake.made("GET", "/api/folders").map((c) => c.query.get("path"))).toContain(
+      "projects/gamma",
+    ),
   );
   expect(await folder("deep")).toHaveAttribute("aria-current", "true");
 });
@@ -455,7 +512,9 @@ test("a server with a session attached is in use, and shows the session and a li
 
 test("a connected server with no session yet is ready to accept sessions and links to them", async () => {
   dashboard([
-    server("projects/alpha", "connected", { environment_url: "https://claude.ai/code?environment=env_1" }),
+    server("projects/alpha", "connected", {
+      environment_url: "https://claude.ai/code?environment=env_1",
+    }),
   ]);
   const found = await card();
   expect(found.getByText("Ready to accept sessions")).toBeInTheDocument();
@@ -467,27 +526,35 @@ test("a connected server with no session yet is ready to accept sessions and lin
 
 test("a stopped server keeps its environment but offers no link to it", async () => {
   dashboard([
-    server("projects/alpha", "stopped", { environment_url: "https://claude.ai/code?environment=env_1" }),
+    server("projects/alpha", "stopped", {
+      environment_url: "https://claude.ai/code?environment=env_1",
+    }),
   ]);
   const found = await card();
   expect(found.getByText(m.states.stopped)).toBeInTheDocument();
   expect(found.queryByRole("link", { name: m.openSession })).not.toBeInTheDocument();
 });
 
-test.each(Object.entries(ACTIONS))("a %s server offers exactly its actions", async (state, actions) => {
-  dashboard([server("projects/alpha", state, { screen: ["x"], exit_code: 1 })]);
-  const found = await card();
-  const offered = found.queryAllByRole("button").map((b) => b.textContent);
-  expect(offered.sort()).toEqual(actions.map((a) => LABELS[a]).sort());
-});
+test.each(Object.entries(ACTIONS))(
+  "a %s server offers exactly its actions",
+  async (state, actions) => {
+    dashboard([server("projects/alpha", state, { screen: ["x"], exit_code: 1 })]);
+    const found = await card();
+    const offered = found.queryAllByRole("button").map((b) => b.textContent);
+    expect(offered.sort()).toEqual(actions.map((a) => LABELS[a]).sort());
+  },
+);
 
-test.each(Object.keys(ACTIONS))("a %s server shows its state as a badge and says what to do", async (state) => {
-  dashboard([server("projects/alpha", state, { screen: ["x"], exit_code: 1 })]);
-  const found = await card();
-  const badge = found.getByText(m.states[state], { exact: true });
-  expect(badge).toHaveClass("badge", `badge-${KIND[state]}`);
-  expect(found.getByText(m.nextStep[state])).toBeInTheDocument();
-});
+test.each(Object.keys(ACTIONS))(
+  "a %s server shows its state as a badge and says what to do",
+  async (state) => {
+    dashboard([server("projects/alpha", state, { screen: ["x"], exit_code: 1 })]);
+    const found = await card();
+    const badge = found.getByText(m.states[state], { exact: true });
+    expect(badge).toHaveClass("badge", `badge-${KIND[state]}`);
+    expect(found.getByText(m.nextStep[state])).toBeInTheDocument();
+  },
+);
 
 test("a state rcman does not know says to look at the screen", async () => {
   dashboard([server("projects/alpha", "something_new", { screen: ["x"] })]);
@@ -497,28 +564,37 @@ test("a state rcman does not know says to look at the screen", async () => {
   expect(found.getByRole("button", { name: m.showScreen })).toHaveClass("secondary");
 });
 
-test.each(Object.keys(ACTIONS))("a %s server has one primary action, and Stop and Forget are secondary", async (state) => {
-  dashboard([
-    server("projects/alpha", state, { screen: ["x"], exit_code: 1, environment_url: "https://claude.ai/code?environment=env_1" }),
-  ]);
-  const found = await card();
-  const primary = PRIMARY[state];
-  const primaries = (await panel("projects/alpha")).querySelectorAll(".primary");
-  if (primary === null) {
-    expect(primaries).toHaveLength(0);
-  } else {
-    expect(primaries).toHaveLength(1);
-    expect(primaries[0]).toHaveTextContent(primary === "openSession" ? m.openSession : LABELS[primary]);
-  }
-  for (const label of [m.stop, m.forget]) {
-    const button = found.queryByRole("button", { name: label });
-    if (button) expect(button).toHaveClass("secondary");
-  }
-  // non-vacuity: the buttons that are not primary are there, and secondary
-  for (const button of found.getAllByRole("button")) {
-    if (!button.classList.contains("primary")) expect(button).toHaveClass("secondary");
-  }
-});
+test.each(Object.keys(ACTIONS))(
+  "a %s server has one primary action, and Stop and Forget are secondary",
+  async (state) => {
+    dashboard([
+      server("projects/alpha", state, {
+        screen: ["x"],
+        exit_code: 1,
+        environment_url: "https://claude.ai/code?environment=env_1",
+      }),
+    ]);
+    const found = await card();
+    const primary = PRIMARY[state];
+    const primaries = (await panel("projects/alpha")).querySelectorAll(".primary");
+    if (primary === null) {
+      expect(primaries).toHaveLength(0);
+    } else {
+      expect(primaries).toHaveLength(1);
+      expect(primaries[0]).toHaveTextContent(
+        primary === "openSession" ? m.openSession : LABELS[primary],
+      );
+    }
+    for (const label of [m.stop, m.forget]) {
+      const button = found.queryByRole("button", { name: label });
+      if (button) expect(button).toHaveClass("secondary");
+    }
+    // non-vacuity: the buttons that are not primary are there, and secondary
+    for (const button of found.getAllByRole("button")) {
+      if (!button.classList.contains("primary")) expect(button).toHaveClass("secondary");
+    }
+  },
+);
 
 test("answering the trust question sends the answer", async () => {
   const fake = dashboard([server("projects/alpha", "trust_prompt")], {
@@ -528,7 +604,10 @@ test("answering the trust question sends the answer", async () => {
   expect(found.getByText(m.trustTitle)).toBeInTheDocument();
   await userEvent.click(found.getByRole("button", { name: m.trustYes }));
   await waitFor(() => expect(fake.made("POST", "/api/servers/confirm")).toHaveLength(1));
-  expect(fake.made("POST", "/api/servers/confirm")[0].body).toEqual({ path: "projects/alpha", answer: "y" });
+  expect(fake.made("POST", "/api/servers/confirm")[0].body).toEqual({
+    path: "projects/alpha",
+    answer: "y",
+  });
 });
 
 test.each([
@@ -538,7 +617,9 @@ test.each([
   ["resume", m.resume, "/api/servers/resume", "exited"],
   ["start again", m.startAgain, "/api/servers", "trust_declined"],
 ])("%s calls its endpoint with the folder", async (_name, label, path, state) => {
-  const fake = dashboard([server("projects/alpha", state)], { [`POST ${path}`]: { server: server("projects/alpha", state) } });
+  const fake = dashboard([server("projects/alpha", state)], {
+    [`POST ${path}`]: { server: server("projects/alpha", state) },
+  });
   const found = await card();
   await userEvent.click(found.getByRole("button", { name: label }));
   await waitFor(() => expect(fake.made("POST", path)).toHaveLength(1));
@@ -581,6 +662,8 @@ test("Show screen is a disclosure, which hides the screen again", async () => {
   expect(disclosure).toHaveAccessibleName(m.showScreen); // the name stays; its state says what it does
   expect(screenOf()).toBeVisible();
   expect(screenOf()).toHaveTextContent("last words");
+  // a figure, so its name reaches assistive technology, which a pre's own name does not
+  expect(found.getByRole("figure", { name: m.screenTitle("projects/alpha") })).toBe(screenOf());
 
   await userEvent.click(disclosure);
   expect(disclosure).toHaveAttribute("aria-expanded", "false");
@@ -601,17 +684,25 @@ test("a refused action shows the server's problem", async () => {
 
 // A home whose folders change as they are made and deleted, starting as FOLDERS.
 function changingFolders() {
-  const folders: Record<string, { path: string; entries: ReturnType<typeof entry>[] }> = structuredClone(FOLDERS) as never;
-  const parentOf = (path: string) => (path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "");
+  const folders: Record<string, { path: string; entries: ReturnType<typeof entry>[] }> =
+    structuredClone(FOLDERS) as never;
+  const parentOf = (path: string) =>
+    path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "";
   const routes: Routes = {
-    "GET /api/folders": (c) => folders[c.query.get("path") ?? ""] ?? problem(404, "path_not_found", "The folder does not exist."),
+    "GET /api/folders": (c) =>
+      folders[c.query.get("path") ?? ""] ??
+      problem(404, "path_not_found", "The folder does not exist."),
     "POST /api/folders": (c) => {
       const { parent, name } = c.body as { parent: string; name: string };
       const created = parent ? `${parent}/${name}` : name;
-      (folders[parent] ??= { path: parent, entries: [] }).entries.push(entry(created));
+      folders[parent] ??= { path: parent, entries: [] };
+      folders[parent].entries.push(entry(created));
       folders[created] = { path: created, entries: [] };
       const above = folders[parentOf(parent)];
-      if (parent && above) above.entries = above.entries.map((e) => (e.path === parent ? { ...e, has_children: true } : e));
+      if (parent && above)
+        above.entries = above.entries.map((e) =>
+          e.path === parent ? { ...e, has_children: true } : e,
+        );
       return { created };
     },
     "DELETE /api/folders": (c) => {
@@ -653,7 +744,9 @@ test("a folder's panel has New folder and Delete folder in its header, and the t
   }
   expect(within(await tree()).getByRole("button", { name: "alpha" })).toBeInTheDocument(); // the tree is there
   expect(within(await tree()).queryByRole("button", { name: m.newFolder })).not.toBeInTheDocument();
-  expect(within(await tree()).queryByRole("button", { name: m.deleteFolder })).not.toBeInTheDocument();
+  expect(
+    within(await tree()).queryByRole("button", { name: m.deleteFolder }),
+  ).not.toBeInTheDocument();
 });
 
 test("New folder in Home makes the folder there and selects it", async () => {
@@ -677,18 +770,25 @@ test("New folder in a folder makes it there, selects it, and the folder shows it
   const { location, navigate } = renderApp("/?folder=projects/alpha");
   const opened = await panel("projects/alpha");
   await folder("alpha");
-  expect(within(await tree()).queryByRole("button", { name: m.expand("alpha") })).not.toBeInTheDocument();
+  expect(
+    within(await tree()).queryByRole("button", { name: m.expand("alpha") }),
+  ).not.toBeInTheDocument();
   await userEvent.click(within(opened).getByRole("button", { name: m.newFolder }));
   await userEvent.type(within(opened).getByLabelText(m.newFolderName), "inner");
   await userEvent.click(within(opened).getByRole("button", { name: m.create }));
 
   expect(await panel("projects/alpha/inner")).toBeInTheDocument();
-  expect(fake.made("POST", "/api/folders")[0].body).toEqual({ parent: "projects/alpha", name: "inner" });
+  expect(fake.made("POST", "/api/folders")[0].body).toEqual({
+    parent: "projects/alpha",
+    name: "inner",
+  });
   expect(folderOf(location().search)).toBe("projects/alpha/inner");
   expect(await folder("inner")).toHaveAttribute("aria-current", "true");
   // the folder above now has a folder in it: its entry, in its own parent's listing, was fetched again
   expect(asked(fake, "projects")).toBe(2);
-  expect(within(await tree()).getByRole("button", { name: m.collapse("alpha") })).toBeInTheDocument();
+  expect(
+    within(await tree()).getByRole("button", { name: m.collapse("alpha") }),
+  ).toBeInTheDocument();
   await navigate(-1); // the new folder was added to the history
   expect(await panel("projects/alpha")).toBeInTheDocument();
 });
@@ -697,14 +797,18 @@ test("a refused name shows the server's reason in the form and keeps it", async 
   // whatever the server says about the field, shown as it was sent
   const sent = { field: "name", message: "planted reason, as the server sent it" };
   const fake = dashboard([], {
-    "POST /api/folders": problem(422, "validation_failed", "Some of what was sent is not valid.", { errors: [sent] }),
+    "POST /api/folders": problem(422, "validation_failed", "Some of what was sent is not valid.", {
+      errors: [sent],
+    }),
   });
   const { location } = renderApp("/?folder=projects");
   const opened = await panel("projects");
   await userEvent.click(within(opened).getByRole("button", { name: m.newFolder }));
   await userEvent.type(within(opened).getByLabelText(m.newFolderName), ".hidden");
   await userEvent.click(within(opened).getByRole("button", { name: m.create }));
-  expect(await within(opened).findByRole("alert")).toHaveTextContent(`${m.newFolderName}: ${sent.message}`);
+  expect(await within(opened).findByRole("alert")).toHaveTextContent(
+    `${m.newFolderName}: ${sent.message}`,
+  );
   expect(within(opened).getByLabelText(m.newFolderName)).toHaveValue(".hidden");
   expect(within(opened).getByRole("button", { name: m.create })).toBeEnabled();
   expect(fake.made("POST", "/api/folders")).toHaveLength(1);
@@ -729,15 +833,25 @@ async function openDelete(path: string) {
 }
 
 test("Delete folder asks first, naming the folder and the servers in it, and calls nothing until confirmed", async () => {
-  const servers = [server("projects/alpha", "ready"), server("projects/alpha/deep", "stopped"), server("projects/alpha2", "ready")];
+  const servers = [
+    server("projects/alpha", "ready"),
+    server("projects/alpha/deep", "stopped"),
+    server("projects/alpha2", "ready"),
+  ];
   const fake = dashboard(servers);
   renderApp("/?folder=projects/alpha");
   const dialog = await openDelete("projects/alpha");
-  expect(dialog.getByRole("heading", { name: m.deleteFolderTitle("projects/alpha") })).toBeInTheDocument();
+  expect(
+    dialog.getByRole("heading", { name: m.deleteFolderTitle("projects/alpha") }),
+  ).toBeInTheDocument();
   expect(dialog.getByText(m.deleteFolderBody)).toBeInTheDocument();
   expect(dialog.getByText(m.deleteFolderServers(2))).toBeInTheDocument();
   const listed = dialog.getByRole("list", { name: m.deleteFolderServersList });
-  expect(within(listed).getAllByRole("listitem").map((li) => li.textContent)).toEqual(["projects/alpha", "projects/alpha/deep"]);
+  expect(
+    within(listed)
+      .getAllByRole("listitem")
+      .map((li) => li.textContent),
+  ).toEqual(["projects/alpha", "projects/alpha/deep"]);
   expect(dialog.getByRole("button", { name: m.deleteFolderConfirm })).toHaveClass("danger");
   expect(fake.made("DELETE", "/api/folders")).toHaveLength(0);
 
@@ -746,14 +860,19 @@ test("Delete folder asks first, naming the folder and the servers in it, and cal
   expect(fake.made("DELETE", "/api/folders")).toHaveLength(0);
 });
 
-test.each([0, 1, 3])("the confirmation says so when %s servers will be stopped and forgotten", async (count) => {
-  const servers = ["", "/a", "/b"].slice(0, count).map((below) => server(`projects/beta${below}`, "ready"));
-  dashboard(servers);
-  renderApp("/?folder=projects/beta");
-  const dialog = await openDelete("projects/beta");
-  expect(dialog.getByText(m.deleteFolderServers(count))).toBeInTheDocument();
-  expect(dialog.queryAllByRole("listitem")).toHaveLength(count);
-});
+test.each([0, 1, 3])(
+  "the confirmation says so when %s servers will be stopped and forgotten",
+  async (count) => {
+    const servers = ["", "/a", "/b"]
+      .slice(0, count)
+      .map((below) => server(`projects/beta${below}`, "ready"));
+    dashboard(servers);
+    renderApp("/?folder=projects/beta");
+    const dialog = await openDelete("projects/beta");
+    expect(dialog.getByText(m.deleteFolderServers(count))).toBeInTheDocument();
+    expect(dialog.queryAllByRole("listitem")).toHaveLength(count);
+  },
+);
 
 test("the count of servers is said in words that fit it", () => {
   expect(new Set([0, 1, 3].map(m.deleteFolderServers)).size).toBe(3);
@@ -774,7 +893,13 @@ test("confirming deletes the folder, refreshes, and selects the folder above in 
   expect(folderOf(location().search)).toBe("projects");
   expect(await screen.findByRole("status")).toHaveTextContent(m.folderDeleted("projects/alpha"));
   expect(fake.made("GET", "/api/servers").length).toBeGreaterThan(listed);
-  await waitFor(() => expect(within(screen.getByRole("region", { name: m.foldersTitle })).queryByRole("button", { name: "alpha" })).not.toBeInTheDocument());
+  await waitFor(() =>
+    expect(
+      within(screen.getByRole("region", { name: m.foldersTitle })).queryByRole("button", {
+        name: "alpha",
+      }),
+    ).not.toBeInTheDocument(),
+  );
   expect(await folder("beta")).toBeInTheDocument(); // the rest of the tree is there
   expect(asked(fake, "projects")).toBe(2);
   expect(asked(fake, "")).toBe(2);
@@ -792,14 +917,22 @@ test("a folder made where one was deleted starts empty and closed", async () => 
   const dialog = await openDelete("projects/gamma");
   await userEvent.click(dialog.getByRole("button", { name: m.deleteFolderConfirm }));
   const projects = await panel("projects");
-  await waitFor(() => expect(within(screen.getByRole("region", { name: m.foldersTitle })).queryByRole("button", { name: "gamma" })).not.toBeInTheDocument());
+  await waitFor(() =>
+    expect(
+      within(screen.getByRole("region", { name: m.foldersTitle })).queryByRole("button", {
+        name: "gamma",
+      }),
+    ).not.toBeInTheDocument(),
+  );
 
   await userEvent.click(within(projects).getByRole("button", { name: m.newFolder }));
   await userEvent.type(within(projects).getByLabelText(m.newFolderName), "gamma");
   await userEvent.click(within(projects).getByRole("button", { name: m.create }));
   expect(await panel("projects/gamma")).toBeInTheDocument();
   expect(await folder("gamma")).toHaveAttribute("aria-current", "true");
-  expect(within(await tree()).queryByRole("button", { name: m.collapse("gamma") })).not.toBeInTheDocument();
+  expect(
+    within(await tree()).queryByRole("button", { name: m.collapse("gamma") }),
+  ).not.toBeInTheDocument();
   expect(within(await tree()).queryByRole("button", { name: "deep" })).not.toBeInTheDocument();
 });
 
@@ -820,7 +953,8 @@ test("while it deletes, the dialog's buttons wait", async () => {
   dashboard([], {
     "DELETE /api/folders": () =>
       new Promise((resolve) => {
-        answer = () => resolve({ deleted: "projects/beta", link: false, stopped: [], forgotten: [] });
+        answer = () =>
+          resolve({ deleted: "projects/beta", link: false, stopped: [], forgotten: [] });
       }),
   });
   renderApp("/?folder=projects/beta");
@@ -835,10 +969,15 @@ test("while it deletes, the dialog's buttons wait", async () => {
 test("a delete that fails says which server, and the servers and tree are fetched again", async () => {
   const stuck = server("projects/alpha", "unrecognised", { screen: ["still going"] });
   const fake = dashboard([stuck], {
-    "DELETE /api/folders": problem(409, "delete_stop_failed", "A server in the folder did not stop.", {
-      server: stuck,
-      stopped: [],
-    }),
+    "DELETE /api/folders": problem(
+      409,
+      "delete_stop_failed",
+      "A server in the folder did not stop.",
+      {
+        server: stuck,
+        stopped: [],
+      },
+    ),
   });
   const { location } = renderApp("/?folder=projects/alpha");
   const dialog = await openDelete("projects/alpha");
@@ -867,14 +1006,19 @@ test("a repository carries a marker its name is described by, and another folder
   dashboard([server("projects/alpha", "ready")], {
     "GET /api/folders": (c) =>
       c.query.get("path") === "projects"
-        ? { path: "projects", entries: [marked("projects/alpha"), marked("projects/beta"), marked("projects/gamma")] }
+        ? {
+            path: "projects",
+            entries: [marked("projects/alpha"), marked("projects/beta"), marked("projects/gamma")],
+          }
         : FOLDERS[c.query.get("path") ?? ""],
   });
   renderApp();
   await expand("projects");
   const alpha = await folder("alpha");
   expect(alpha).toHaveAccessibleDescription(`${m.kinds.running} ${m.repository}`);
-  expect(alpha.closest("li")!.querySelector(":scope > .repository-marker")).toHaveTextContent(m.repositoryMark);
+  expect(alpha.closest("li")!.querySelector(":scope > .repository-marker")).toHaveTextContent(
+    m.repositoryMark,
+  );
   const gamma = await folder("gamma");
   expect(gamma).toHaveAccessibleDescription(m.repository); // no dot, but the marker
   const beta = await folder("beta");
@@ -898,7 +1042,10 @@ function cloning() {
     "GET /api/folders": (c: Call) => {
       const found = list(c);
       if (!found.entries) return found;
-      return { ...found, entries: found.entries.map((e) => ({ ...e, repository: clones.has(e.path) })) };
+      return {
+        ...found,
+        entries: found.entries.map((e) => ({ ...e, repository: clones.has(e.path) })),
+      };
     },
     "POST /api/git/clone": (c: Call) => {
       const { parent, url } = c.body as { parent: string; url: string };
@@ -918,7 +1065,8 @@ function cloningLater() {
     answer: () => answers.shift()!(),
     routes: {
       ...routes,
-      "POST /api/git/clone": (c: Call) => new Promise((resolve) => answers.push(() => resolve(clone(c)))),
+      "POST /api/git/clone": (c: Call) =>
+        new Promise((resolve) => answers.push(() => resolve(clone(c)))),
     } satisfies Routes,
   };
 }
@@ -931,19 +1079,26 @@ async function openClone(region: HTMLElement) {
 test.each([
   ["Home", "/", m.home],
   ["a folder", "/?folder=projects/alpha", "projects/alpha"],
-])("Clone from GitHub sits after New folder in the header of %s, as secondary, and not in the tree", async (_, path, name) => {
-  dashboard([server("projects/alpha", "ready")]);
-  renderApp(path);
-  const region = await screen.findByRole("region", { name });
-  const clone = within(region).getByRole("button", { name: m.cloneFromGithub });
-  const newFolder = within(region).getByRole("button", { name: m.newFolder });
-  expect(clone).toHaveClass("secondary");
-  expect(clone).not.toHaveClass("primary");
-  expect(newFolder.compareDocumentPosition(clone) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-  expect(clone.closest('[role="group"]')).toBe(newFolder.closest('[role="group"]'));
-  expect(await folder("projects")).toBeInTheDocument(); // the tree is there
-  expect(within(await tree()).queryByRole("button", { name: m.cloneFromGithub })).not.toBeInTheDocument();
-});
+])(
+  "Clone from GitHub sits after New folder in the header of %s, as secondary, and not in the tree",
+  async (_, path, name) => {
+    dashboard([server("projects/alpha", "ready")]);
+    renderApp(path);
+    const region = await screen.findByRole("region", { name });
+    const clone = within(region).getByRole("button", { name: m.cloneFromGithub });
+    const newFolder = within(region).getByRole("button", { name: m.newFolder });
+    expect(clone).toHaveClass("secondary");
+    expect(clone).not.toHaveClass("primary");
+    expect(
+      newFolder.compareDocumentPosition(clone) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(clone.closest('[role="group"]')).toBe(newFolder.closest('[role="group"]'));
+    expect(await folder("projects")).toBeInTheDocument(); // the tree is there
+    expect(
+      within(await tree()).queryByRole("button", { name: m.cloneFromGithub }),
+    ).not.toBeInTheDocument();
+  },
+);
 
 test("Clone from GitHub in a folder sends the address and the folder, then selects the clone", async () => {
   const fake = dashboard([], cloning());
@@ -954,7 +1109,9 @@ test("Clone from GitHub in a folder sends the address and the folder, then selec
   await userEvent.click(within(opened).getByRole("button", { name: m.clone }));
 
   expect(await panel("projects/alpha/fresh-clone")).toBeInTheDocument();
-  expect(fake.made("POST", "/api/git/clone").map((c) => c.body)).toEqual([{ parent: "projects/alpha", url: CLONED }]);
+  expect(fake.made("POST", "/api/git/clone").map((c) => c.body)).toEqual([
+    { parent: "projects/alpha", url: CLONED },
+  ]);
   expect(folderOf(location().search)).toBe("projects/alpha/fresh-clone");
   const cloned = await folder("fresh-clone");
   expect(cloned).toHaveAttribute("aria-current", "true");
@@ -982,7 +1139,9 @@ test("the clone form says git names the folder, and links to the GitHub token in
   await openClone(opened);
   const link = within(opened).getByRole("link", { name: m.cloneNote.link });
   expect(link).toHaveAttribute("href", "/settings");
-  expect(link.closest("p")).toHaveTextContent(`${m.cloneNote.before}${m.cloneNote.link}${m.cloneNote.after}`);
+  expect(link.closest("p")).toHaveTextContent(
+    `${m.cloneNote.before}${m.cloneNote.link}${m.cloneNote.after}`,
+  );
 });
 
 test("while it clones, the form's buttons wait, and only one clone is asked for", async () => {
@@ -1003,12 +1162,21 @@ test("while it clones, the form's buttons wait, and only one clone is asked for"
 
 test("a refused address is shown under its label in the form, which keeps it", async () => {
   const sent = { field: "url", message: "planted reason, as the server sent it" };
-  dashboard([], { "POST /api/git/clone": problem(422, "validation_failed", "Some of what was sent is not valid.", { errors: [sent] }) });
+  dashboard([], {
+    "POST /api/git/clone": problem(
+      422,
+      "validation_failed",
+      "Some of what was sent is not valid.",
+      { errors: [sent] },
+    ),
+  });
   const { location } = renderApp("/?folder=projects");
   const opened = await panel("projects");
   await userEvent.type(await openClone(opened), "https://example.com/x");
   await userEvent.click(within(opened).getByRole("button", { name: m.clone }));
-  expect(await within(opened).findByRole("alert")).toHaveTextContent(`${m.cloneUrl}: ${sent.message}`);
+  expect(await within(opened).findByRole("alert")).toHaveTextContent(
+    `${m.cloneUrl}: ${sent.message}`,
+  );
   expect(within(opened).getByLabelText(m.cloneUrl)).toHaveValue("https://example.com/x");
   expect(within(opened).getByRole("button", { name: m.clone })).toBeEnabled();
   expect(folderOf(location().search)).toBe("projects");
@@ -1027,7 +1195,9 @@ test("git's refusal of a clone is shown in git's words", async () => {
   await userEvent.click(within(opened).getByRole("button", { name: m.clone }));
   const alert = await within(opened).findByRole("alert");
   expect(alert).toHaveTextContent("git refused. What it said is below.");
-  expect(within(alert).getByLabelText(m.gitSaid)).toHaveTextContent("remote: Repository not found.");
+  expect(within(alert).getByLabelText(m.gitSaid)).toHaveTextContent(
+    "remote: Repository not found.",
+  );
 });
 
 test("Cancel closes the clone form, having asked for nothing", async () => {
@@ -1092,25 +1262,37 @@ test("while it makes a folder, New folder's buttons and the header's other actio
 test.each([
   [m.newFolder, m.newFolderName, m.create, "POST /api/folders"],
   [m.cloneFromGithub, m.cloneUrl, m.clone, "POST /api/git/clone"],
-])("while %s runs, the header's other actions wait, so its form stays", async (opener, label, submit, route) => {
-  let answer = () => {};
-  dashboard([], {
-    [route]: () =>
-      new Promise((resolve) => {
-        answer = () => resolve(problem(409, "folder_exists", "Something with that name is there already."));
-      }),
-  });
-  renderApp("/?folder=projects");
-  const opened = await panel("projects");
-  const actions = within(within(opened).getByRole("group", { name: m.folderActions }));
-  await userEvent.click(actions.getByRole("button", { name: opener }));
-  await userEvent.type(within(opened).getByLabelText(label), "x");
-  await userEvent.click(within(opened).getByRole("button", { name: submit }));
-  await waitFor(() => expect(within(opened).getByLabelText(label)).toBeInTheDocument());
-  const header = await within(opened).findByRole("group", { name: m.folderActions });
-  await waitFor(() => expect(within(header).getAllByRole("button").every((b) => (b as HTMLButtonElement).disabled)).toBe(true));
-  expect(within(header).getAllByRole("button")).toHaveLength(3); // New folder, Clone from GitHub, Delete folder
-  answer();
-  expect(await within(opened).findByRole("alert")).toHaveTextContent("Something with that name is there already.");
-  for (const button of within(header).getAllByRole("button")) expect(button).toBeEnabled();
-});
+])(
+  "while %s runs, the header's other actions wait, so its form stays",
+  async (opener, label, submit, route) => {
+    let answer = () => {};
+    dashboard([], {
+      [route]: () =>
+        new Promise((resolve) => {
+          answer = () =>
+            resolve(problem(409, "folder_exists", "Something with that name is there already."));
+        }),
+    });
+    renderApp("/?folder=projects");
+    const opened = await panel("projects");
+    const actions = within(within(opened).getByRole("group", { name: m.folderActions }));
+    await userEvent.click(actions.getByRole("button", { name: opener }));
+    await userEvent.type(within(opened).getByLabelText(label), "x");
+    await userEvent.click(within(opened).getByRole("button", { name: submit }));
+    await waitFor(() => expect(within(opened).getByLabelText(label)).toBeInTheDocument());
+    const header = await within(opened).findByRole("group", { name: m.folderActions });
+    await waitFor(() =>
+      expect(
+        within(header)
+          .getAllByRole("button")
+          .every((b) => (b as HTMLButtonElement).disabled),
+      ).toBe(true),
+    );
+    expect(within(header).getAllByRole("button")).toHaveLength(3); // New folder, Clone from GitHub, Delete folder
+    answer();
+    expect(await within(opened).findByRole("alert")).toHaveTextContent(
+      "Something with that name is there already.",
+    );
+    for (const button of within(header).getAllByRole("button")) expect(button).toBeEnabled();
+  },
+);

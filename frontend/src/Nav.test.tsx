@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 
 import { ADMIN, ADMIN_PAGES } from "./AdminPages";
 import { m } from "./messages";
-import { ADMIN_USER, CONNECTED, ME, NOTHING_TO_ATTEND, type Reply, fakeApi } from "./test/fakeApi";
+import { ADMIN_USER, CONNECTED, fakeApi, ME, NOTHING_TO_ATTEND, type Reply } from "./test/fakeApi";
 import { renderApp } from "./test/render";
 
 function api(me: Reply) {
@@ -18,7 +18,8 @@ function api(me: Reply) {
 
 const nav = () => screen.getByRole("banner");
 // The Admin button, once the page knows who is signed in.
-const adminButton = async () => within(await screen.findByRole("banner")).getByRole("button", { name: m.navAdmin });
+const adminButton = async () =>
+  within(await screen.findByRole("banner")).getByRole("button", { name: m.navAdmin });
 
 test("people who are not administrators are not offered administration", async () => {
   api(ME);

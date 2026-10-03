@@ -64,10 +64,14 @@ version differs.
 `claude-upgrade` installs the candidate into the canary home
 (`/var/lib/rcman/canary`, recreated each time and owned by the application
 user) as the application user, and runs `candidate_checks` from
-`helpers/claude_checks.py` there on a pseudo-terminal with a throwaway Claude
-configuration. Only when no check fails does it write the approval file and
-install the version for each user; a user whose installation fails is
-reported and the others continue.
+`helpers/claude_checks.py` there with a throwaway Claude configuration, the
+way rc-helper runs Claude: `auth status` through pipes with no terminal, as
+rc-helper reads it, so that Claude, which wraps its output at a terminal's
+width, does not break a path in its JSON across lines; and the rest on a
+pseudo-terminal of the size rc-helper gives Claude's screens, `WIDTH` by
+`HEIGHT` in `helpers/rc_helper.py`. Only when no check fails does it write the
+approval file and install the version for each user; a user whose
+installation fails is reported and the others continue.
 
 ## sudo
 
@@ -87,5 +91,5 @@ started through sudo.
 | `tests/test_users_file.py` | Parsing, validation, writing and the allowlist |
 | `tests/test_rc_admin.py` | Which commands each operation decides to run, against a recording stand-in for the system; that refusals run none |
 | `tests/test_rcman_user.py` | The front end in words: the prompt, its default and refusing without a terminal, `SUDO_USER` as the administrator asking, each verb's output and refusals, and a command line that does not parse |
-| `tests/test_claude_checks.py` | The upgrade checks pass the fake and the real installed `claude`, and a broken binary fails every one |
+| `tests/test_claude_checks.py` | The upgrade checks pass the fake and the real installed `claude`, the real one with a configuration path longer than a line, and a broken binary fails every one; `auth status` runs with no terminal and the rest on a terminal of rc-helper's size |
 | `tests/container/test_admin_in_container.py` | The real thing, as root in a container — such as accounts, groups, modes, ownership, process cleanup, logout, the prompt on a real terminal, a checked upgrade through the canary home and the version people added afterwards get, the sudoers rules for both helpers, that neither helper's test hooks pass through sudo, and folders and git as a person through them |

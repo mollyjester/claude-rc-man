@@ -2,9 +2,9 @@ import { type AnchorHTMLAttributes, useEffect, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import { Link, useParams } from "react-router-dom";
 
-import { ApiError, api } from "./api";
+import { type ApiError, api } from "./api";
 import { m } from "./messages";
-import { ProblemView, asApiError } from "./ProblemView";
+import { asApiError, ProblemView } from "./ProblemView";
 
 type PageInfo = { slug: string; title: string };
 
@@ -26,7 +26,10 @@ export function Docs() {
   const [error, setError] = useState<ApiError | null>(null);
 
   useEffect(() => {
-    api.get<{ pages: PageInfo[] }>("/api/docs").then((r) => setPages(r.pages), (e) => setError(asApiError(e)));
+    api.get<{ pages: PageInfo[] }>("/api/docs").then(
+      (r) => setPages(r.pages),
+      (e) => setError(asApiError(e)),
+    );
   }, []);
   useEffect(() => {
     setMarkdown(null);

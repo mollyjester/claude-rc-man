@@ -3,10 +3,10 @@ import { expect, test } from "@playwright/test";
 import { m } from "../src/messages";
 import { FIELDS } from "../src/Settings";
 import { openAdminPage } from "./nav";
-import { ALICE, BOB, useAs } from "./people";
+import { ALICE, BOB, signInAs } from "./people";
 
 test("settings: the server's verdict is shown as given", async ({ page }) => {
-  await useAs(page, BOB);
+  await signInAs(page, BOB);
   await page.goto("/settings");
   const part = page.getByRole("region", { name: m.settingsPrefixTitle });
   const prefix = part.getByLabel(FIELDS.prefix.label);
@@ -21,7 +21,7 @@ test("settings: the server's verdict is shown as given", async ({ page }) => {
 });
 
 test("settings: the commit author falls back to the sign-in address", async ({ page }) => {
-  await useAs(page, BOB);
+  await signInAs(page, BOB);
   await page.goto("/settings");
   const part = page.getByRole("region", { name: m.settingsAuthorTitle });
   const name = part.getByLabel(FIELDS.author_name.label);
@@ -38,7 +38,7 @@ test("settings: the commit author falls back to the sign-in address", async ({ p
 });
 
 test("help: pages from docs/, with links between them", async ({ page }) => {
-  await useAs(page, BOB);
+  await signInAs(page, BOB);
   await page.goto("/help");
   const nav = page.getByRole("navigation", { name: m.docsTitle });
   await nav.getByRole("link", { name: "Servers" }).click();
@@ -48,7 +48,7 @@ test("help: pages from docs/, with links between them", async ({ page }) => {
 });
 
 test("administration is offered to administrators only", async ({ page }) => {
-  await useAs(page, BOB);
+  await signInAs(page, BOB);
   await page.goto("/");
   await expect(page.getByText(m.signedInAs(BOB))).toBeVisible();
   await expect(page.getByRole("link", { name: m.navSettings })).toBeVisible();
@@ -57,7 +57,7 @@ test("administration is offered to administrators only", async ({ page }) => {
   await page.goto("/admin/people");
   await expect(page).toHaveURL("/");
 
-  await useAs(page, ALICE);
+  await signInAs(page, ALICE);
   await page.goto("/");
   await openAdminPage(page, m.navUsers);
   await expect(page.getByRole("row", { name: /bob@example.com/ })).toBeVisible();
@@ -68,7 +68,7 @@ test("administration is offered to administrators only", async ({ page }) => {
 });
 
 test("a refused change shows the server's reason", async ({ page }) => {
-  await useAs(page, ALICE);
+  await signInAs(page, ALICE);
   await page.goto("/admin/claude");
   await page.getByLabel(m.versionsUpgrade).fill("9.9.9");
   await page.getByRole("button", { name: m.versionsUpgradeGo }).click();
@@ -76,7 +76,7 @@ test("a refused change shows the server's reason", async ({ page }) => {
 });
 
 test("an address rcman does not know is refused", async ({ page }) => {
-  await useAs(page, "stranger@example.com");
+  await signInAs(page, "stranger@example.com");
   await page.goto("/");
   await expect(page.getByRole("alert")).toContainText("may not use rcman");
 });

@@ -67,6 +67,19 @@ else; this file is the full list. Rules are referred to by their bold name.
   it is credited as coverage.
 - **A suite that did not run is not a green suite.** Read the totals and the
   collected count, not just the exit code; report failing test names.
+- **The full check runs at the edges of a change; targeted tests run in
+  between.** Before a change starts, `make check` gives the baseline: what
+  already fails is recorded and reported as found, not later taken for one's
+  own. While working, run the tests the change touches — the test written
+  first, its module, the paired test the edit-time hook runs — and
+  `make test`, the tests that run on the host, when a step is done. Before
+  the change is handed over, `make check`, which runs everything, the
+  container tests of `make test-container` included, runs again, and again
+  in full after any fix to a red run: a fix checked only by the tests it
+  aimed at is not checked. A targeted run, `make test` or
+  `make test-container` is never reported as the full suite; every run is
+  read by its totals, its collected count and its failing test names. What
+  each target runs is in [tests.md](tests.md#running).
 - **Throwaway probes go in a scratch directory** outside the repository and are
   deleted when done.
 
@@ -135,6 +148,19 @@ else; this file is the full list. Rules are referred to by their bold name.
   checks it. An exemption carries a reason that also appears in `docs/`.
 - **The interface offers only what the server will allow.** A control shown to
   someone the server will refuse is a defect.
+
+## Cleaning up
+
+- **Leave nothing behind when a session ends.** Before a working session is
+  handed over, it removes everything it created that is no longer needed:
+  files and directories made outside the repository — scratch probes,
+  temporary homes, sockets; processes it started — servers, tmux servers,
+  watchers, containers; sessions it opened — tmux, browser, agent sessions;
+  git worktrees it added and local branches whose work is merged or
+  abandoned; and remote branches whose pull request has been merged.
+  Removal is verified, not assumed: what is left is listed afterwards.
+  Anything that must stay — a branch with an open pull request, a process
+  still in use — is named in the handover with the reason.
 
 ## Reporting
 

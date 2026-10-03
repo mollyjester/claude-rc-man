@@ -1,5 +1,5 @@
-import { ACTIONS, KIND, KIND_ORDER, LIVE, PRIMARY, dotFor, serversIn } from "./Servers";
 import { m } from "./messages";
+import { ACTIONS, dotFor, KIND, KIND_ORDER, LIVE, PRIMARY, serversIn } from "./Servers";
 
 // Whether a table keyed by state covers exactly the states rc-helper reports.
 function sameStates(table: Record<string, unknown>) {
@@ -31,16 +31,19 @@ test("every kind of dot has a place in the order of urgency, and every place a k
   expect(Object.keys(m.kinds).sort()).toEqual([...KIND_ORDER].sort());
 });
 
-test.each(Object.entries(PRIMARY))("the primary action of a %s server is one it offers", (state, primary) => {
-  if (primary === null) {
-    expect(state).toBe("starting");
-  } else if (primary === "openSession") {
-    expect(LIVE).toContain(state);
-  } else {
-    expect(ACTIONS[state]).toContain(primary);
-    expect(["stop", "forget"]).not.toContain(primary);
-  }
-});
+test.each(Object.entries(PRIMARY))(
+  "the primary action of a %s server is one it offers",
+  (state, primary) => {
+    if (primary === null) {
+      expect(state).toBe("starting");
+    } else if (primary === "openSession") {
+      expect(LIVE).toContain(state);
+    } else {
+      expect(ACTIONS[state]).toContain(primary);
+      expect(["stop", "forget"]).not.toContain(primary);
+    }
+  },
+);
 
 describe("the dot a folder carries", () => {
   const at = (path: string, state: string) => ({
@@ -64,7 +67,11 @@ describe("the dot a folder carries", () => {
   });
 
   test("is the most urgent of several", () => {
-    const servers = [at("projects", "stopped"), at("projects/alpha", "ready"), at("projects/beta", "exited")];
+    const servers = [
+      at("projects", "stopped"),
+      at("projects/alpha", "ready"),
+      at("projects/beta", "exited"),
+    ];
     expect(dotFor("projects", servers, true)).toBe("problem");
     expect(dotFor("projects", servers.slice(0, 2), true)).toBe("running");
   });
@@ -82,13 +89,30 @@ describe("the dot a folder carries", () => {
 });
 
 describe("the servers in a folder", () => {
-  const at = (path: string) => ({ path, state: "ready", environment_url: null, session_name: null, exit_code: null });
-  const servers = [at("projects"), at("projects/alpha"), at("projects/alpha/deep"), at("projects/alpha2"), at("proj")];
+  const at = (path: string) => ({
+    path,
+    state: "ready",
+    environment_url: null,
+    session_name: null,
+    exit_code: null,
+  });
+  const servers = [
+    at("projects"),
+    at("projects/alpha"),
+    at("projects/alpha/deep"),
+    at("projects/alpha2"),
+    at("proj"),
+  ];
   const paths = (path: string) => serversIn(path, servers).map((s) => s.path);
 
   test("are its own and every one below it", () => {
     expect(paths("projects/alpha")).toEqual(["projects/alpha", "projects/alpha/deep"]);
-    expect(paths("projects")).toEqual(["projects", "projects/alpha", "projects/alpha/deep", "projects/alpha2"]);
+    expect(paths("projects")).toEqual([
+      "projects",
+      "projects/alpha",
+      "projects/alpha/deep",
+      "projects/alpha2",
+    ]);
   });
 
   test("are not those of a folder whose name merely starts the same, nor those above it", () => {

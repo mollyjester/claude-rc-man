@@ -2,10 +2,10 @@ import { expect, test } from "@playwright/test";
 
 import { m } from "../src/messages";
 import { panel } from "./nav";
-import { BOB, useAs } from "./people";
+import { BOB, signInAs } from "./people";
 
 test("connecting a Claude account", async ({ page }) => {
-  await useAs(page, BOB);
+  await signInAs(page, BOB);
   await page.goto("/?folder=projects/bob-alpha");
   await expect(page.getByText(m.claudeNotConnected)).toBeVisible();
   const opened = panel(page, "projects/bob-alpha");
@@ -14,7 +14,10 @@ test("connecting a Claude account", async ({ page }) => {
 
   await page.getByRole("button", { name: m.connect }).click();
   await page.getByRole("button", { name: m.connectGo }).click();
-  await expect(page.getByRole("link", { name: m.connectLink })).toHaveAttribute("href", /oauth\/authorize/);
+  await expect(page.getByRole("link", { name: m.connectLink })).toHaveAttribute(
+    "href",
+    /oauth\/authorize/,
+  );
 
   await page.getByLabel(m.connectCode).fill("WRONG");
   await page.getByRole("button", { name: m.connectSubmit }).click();

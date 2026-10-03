@@ -1,11 +1,11 @@
 import { type FormEvent, type ReactNode, useState } from "react";
 import { Link } from "react-router-dom";
 
-import { ApiError, api } from "./api";
+import { type ApiError, api } from "./api";
 import { Changes } from "./Changes";
 import { folderLink, lineage } from "./Folders";
 import { m } from "./messages";
-import { ProblemView, asApiError } from "./ProblemView";
+import { asApiError, ProblemView } from "./ProblemView";
 import { type Server, ServerCard, type StartBlocked, serversIn } from "./Servers";
 
 // Home, then each folder down to the selected one. Each step and the slash after
@@ -155,7 +155,12 @@ function FolderForm({
   );
 }
 
-type MadeIn = { parent: string; onMade: (folder: string) => void; onCancel: () => void; onBusy: (busy: boolean) => void };
+type MadeIn = {
+  parent: string;
+  onMade: (folder: string) => void;
+  onCancel: () => void;
+  onBusy: (busy: boolean) => void;
+};
 
 // Makes a folder in parent ("" for the home folder).
 function NewFolderForm({ parent, ...done }: MadeIn) {
@@ -271,14 +276,29 @@ function FolderActions({
   // would take that one's place, and what the request ends in would be lost.
   const [waiting, setWaiting] = useState(false);
   const parent = path ?? "";
-  const done = { onMade: (folder: string) => changes.created(parent, folder), onCancel: () => setOpened(null), onBusy: setWaiting };
+  const done = {
+    onMade: (folder: string) => changes.created(parent, folder),
+    onCancel: () => setOpened(null),
+    onBusy: setWaiting,
+  };
   return (
     <>
+      {/* biome-ignore lint/a11y/useSemanticElements: a row of buttons outside any form, not a form's fields, which a fieldset is for */}
       <div role="group" aria-label={m.folderActions} className="actions">
-        <button type="button" className="secondary" disabled={waiting} onClick={() => setOpened("new")}>
+        <button
+          type="button"
+          className="secondary"
+          disabled={waiting}
+          onClick={() => setOpened("new")}
+        >
           {m.newFolder}
         </button>
-        <button type="button" className="secondary" disabled={waiting} onClick={() => setOpened("clone")}>
+        <button
+          type="button"
+          className="secondary"
+          disabled={waiting}
+          onClick={() => setOpened("clone")}
+        >
           {m.cloneFromGithub}
         </button>
         {/* Offered for any folder in the address. One typed by hand through a
@@ -287,17 +307,18 @@ function FolderActions({
             with path_name_differs: the tree never links there, so that is
             accepted. */}
         {path !== null && servers !== null && (
-          <button type="button" className="secondary-danger" disabled={waiting} onClick={() => setOpened("delete")}>
+          <button
+            type="button"
+            className="secondary-danger"
+            disabled={waiting}
+            onClick={() => setOpened("delete")}
+          >
             {m.deleteFolder}
           </button>
         )}
       </div>
-      {opened === "new" && (
-        <NewFolderForm parent={parent} {...done} />
-      )}
-      {opened === "clone" && (
-        <CloneForm parent={parent} {...done} />
-      )}
+      {opened === "new" && <NewFolderForm parent={parent} {...done} />}
+      {opened === "clone" && <CloneForm parent={parent} {...done} />}
       {opened === "delete" && path !== null && servers !== null && (
         <DeleteFolderDialog
           path={path}
@@ -342,9 +363,13 @@ export function FolderPanel({
       <FolderActions path={path} servers={servers} changes={changes} />
       <PanelSection title={m.serverTitle}>
         {!known && <p>{m.loading}</p>}
-        {known && server && <ServerCard server={server} startReason={startReason} onChange={onChange} />}
+        {known && server && (
+          <ServerCard server={server} startReason={startReason} onChange={onChange} />
+        )}
         {known && !server && <p>{m.noServer}</p>}
-        {known && !server && startReason === null && <StartServer path={path} onStarted={onChange} />}
+        {known && !server && startReason === null && (
+          <StartServer path={path} onStarted={onChange} />
+        )}
         {known && !server && startReason !== null && <p>{startReason.start}</p>}
       </PanelSection>
       {repository === true && (

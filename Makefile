@@ -1,18 +1,26 @@
-.PHONY: setup test lint format frontend-setup frontend-test frontend-build e2e check
+.PHONY: setup test test-container lint format frontend-setup frontend-test frontend-build e2e check
 
 setup: frontend-setup  ## install the development environment
 	uv sync
 
-test:  ## run the Python test suite
-	uv run pytest
+test:  ## every Python test that runs on the host, in parallel
+	uv run pytest -n auto -m "not container and not real_claude"
 
-lint:  ## check formatting and lint
+test-container: export RCMAN_REQUIRE_CONTAINER = 1
+# In one process, as the container tests share the image their session fixture builds,
+# which each pytest-xdist worker would build again.
+test-container:  ## the Python tests that need a container; they fail rather than skip
+	uv run pytest -m "container and not real_claude"
+
+lint:  ## check formatting and lint: ruff for the Python code, Biome for the frontend
 	uv run ruff format --check .
 	uv run ruff check .
+	cd frontend && npm run lint
 
-format:  ## apply formatting and safe lint fixes
+format:  ## apply formatting and safe lint fixes, to the Python code and the frontend
 	uv run ruff format .
 	uv run ruff check --fix .
+	cd frontend && npm run format
 
 frontend-setup:  ## install the frontend's packages and Playwright's browser
 	cd frontend && npm ci && npx playwright install chromium
@@ -27,5 +35,4 @@ e2e: frontend-build  ## the built frontend in a browser, against the real backen
 	cd frontend && npx playwright test
 
 check: export RCMAN_REQUIRE_REAL_CLAUDE = 1
-check: export RCMAN_REQUIRE_CONTAINER = 1
-check: lint test frontend-test e2e  ## everything; tests that would skip fail instead
+check: lint test test-container frontend-test e2e  ## everything; tests that would skip fail instead

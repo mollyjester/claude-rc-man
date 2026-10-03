@@ -1,8 +1,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-
-import { ACTIONS, KIND, KIND_ORDER, LABELS, LIVE, PRIMARY } from "./Servers";
 import { m } from "./messages";
+import { ACTIONS, KIND, KIND_ORDER, LABELS, LIVE, PRIMARY } from "./Servers";
 import { uncommented } from "./test/css";
 import { bold, guideTable } from "./test/guideTable";
 
@@ -34,7 +33,10 @@ function expected(): Row[] {
       next: m.nextStep[state],
       main: primary === null ? NONE : primary === "openSession" ? m.openSession : LABELS[primary],
       // a live server's card leads its actions with the link to claude.ai
-      buttons: [...(LIVE.includes(state) ? [m.openSession] : []), ...ACTIONS[state].map((action) => LABELS[action])],
+      buttons: [
+        ...(LIVE.includes(state) ? [m.openSession] : []),
+        ...ACTIONS[state].map((action) => LABELS[action]),
+      ],
     };
   });
 }
@@ -52,7 +54,8 @@ test("the check fails on a guide whose table has drifted", () => {
     HEADER,
     "|---|---|---|---|---|",
     ...expected().map(
-      (r) => `| ${r.state} | ${r.dot} | ${r.next} | ${cell(r.main)} | ${r.buttons.map((b) => `**${b}**`).join(", ")} |`,
+      (r) =>
+        `| ${r.state} | ${r.dot} | ${r.next} | ${cell(r.main)} | ${r.buttons.map((b) => `**${b}**`).join(", ")} |`,
     ),
   ];
   expect(stateTable(right.join("\n"))).toEqual(expected());
@@ -64,16 +67,26 @@ test("the check fails on a guide whose table has drifted", () => {
   };
   expect(drifted(`| ${m.states.connected} |`, "| Connecting |")).not.toEqual(expected());
   expect(drifted(`**${m.forget}**`, "")).not.toEqual(expected());
-  expect(drifted(`| **${m.openSession}**, **${m.stop}** |`, `| **${m.stop}** |`)).not.toEqual(expected());
+  expect(drifted(`| **${m.openSession}**, **${m.stop}** |`, `| **${m.stop}** |`)).not.toEqual(
+    expected(),
+  );
   expect(drifted(m.nextStep.stopped, "Resume it.")).not.toEqual(expected());
-  expect(drifted(`| ${m.states.exited} | ${m.kinds[KIND.exited]} |`, `| ${m.states.exited} | ${m.kinds[KIND.ready]} |`)).not.toEqual(
-    expected(),
-  );
+  expect(
+    drifted(
+      `| ${m.states.exited} | ${m.kinds[KIND.exited]} |`,
+      `| ${m.states.exited} | ${m.kinds[KIND.ready]} |`,
+    ),
+  ).not.toEqual(expected());
 
-  expect(drifted(`${m.nextStep.exited} | **${m.resume}** |`, `${m.nextStep.exited} | **${m.showScreen}** |`)).not.toEqual(
-    expected(),
-  );
-  expect(drifted(`${m.nextStep.starting} | ${NONE} |`, `${m.nextStep.starting} | **${m.stop}** |`)).not.toEqual(expected());
+  expect(
+    drifted(
+      `${m.nextStep.exited} | **${m.resume}** |`,
+      `${m.nextStep.exited} | **${m.showScreen}** |`,
+    ),
+  ).not.toEqual(expected());
+  expect(
+    drifted(`${m.nextStep.starting} | ${NONE} |`, `${m.nextStep.starting} | **${m.stop}** |`),
+  ).not.toEqual(expected());
 
   expect(stateTable(right.slice(0, -1).join("\n"))).not.toEqual(expected());
   expect(stateTable("")).toEqual([]);
@@ -85,11 +98,13 @@ const SHAPE_HEADER = "| Dot | Shape |";
 // The declarations of every rule whose selector names a class, in order.
 function rulesFor(css: string, className: string): string[] {
   const named = new RegExp(`\\.${className}(?![\\w-])`);
-  return [...uncommented(css).matchAll(/([^{}]+)\{([^{}]*)\}/g)].filter((r) => named.test(r[1])).map((r) => r[2]);
+  return [...uncommented(css).matchAll(/([^{}]+)\{([^{}]*)\}/g)]
+    .filter((r) => named.test(r[1]))
+    .map((r) => r[2]);
 }
 
 // A declared value: the last declaration of a property in the rule, or undefined.
-const valueOf = (rule: string, property: string) =>
+const declared = (rule: string, property: string) =>
   [...rule.matchAll(new RegExp(`(?:^|;)\\s*${property}\\s*:\\s*([^;]+)`, "g"))].at(-1)?.[1].trim();
 
 // A length in px, from px or rem; undefined for anything else.
@@ -107,18 +122,19 @@ function shapeOf(css: string, kind: string): string {
   if (rules.length > 1) throw new Error(`more than one rule styles .dot-${kind}`);
   const [rule] = rules;
   const base = rulesFor(css, "dot").join(";");
-  const width = px(valueOf(rule, "width") ?? valueOf(base, "width"));
-  const height = px(valueOf(rule, "height") ?? valueOf(base, "height"));
+  const width = px(declared(rule, "width") ?? declared(base, "width"));
+  const height = px(declared(rule, "height") ?? declared(base, "height"));
   if (width === undefined || height === undefined) return "unknown";
 
-  const polygon = valueOf(rule, "clip-path")?.match(/^polygon\(([^)]*)\)$/);
+  const polygon = declared(rule, "clip-path")?.match(/^polygon\(([^)]*)\)$/);
   if (polygon) return polygon[1].split(",").length === 3 ? "triangle" : "polygon";
-  const background = valueOf(rule, "background");
+  const background = declared(rule, "background");
   const filled = background !== undefined && !/^(transparent|none)$/.test(background);
-  const outlined = /^[\d.]+(px|rem) solid /.test(valueOf(rule, "border") ?? "");
+  const outlined = /^[\d.]+(px|rem) solid /.test(declared(rule, "border") ?? "");
   if (width >= 2 * height && filled) return "bar";
-  if (width !== height) throw new Error(`.dot-${kind} is ${width}px by ${height}px: neither square nor a bar`);
-  const radius = valueOf(rule, "border-radius");
+  if (width !== height)
+    throw new Error(`.dot-${kind} is ${width}px by ${height}px: neither square nor a bar`);
+  const radius = declared(rule, "border-radius");
   const round = radius === "50%" || (px(radius) ?? 0) >= width / 2;
   if (filled) return round ? "filled circle" : "filled square";
   if (outlined) return round ? "ring" : "hollow square";
@@ -130,7 +146,8 @@ const shapeTable = (markdown: string): [string, string][] =>
   guideTable(markdown, SHAPE_HEADER).map(([dot, shape]) => [dot, shape]);
 
 // Each kind's dot and shape, most urgent first, as the guide's table lists them.
-const shapes = (css: string): [string, string][] => KIND_ORDER.map((kind) => [m.kinds[kind], shapeOf(css, kind)]);
+const shapes = (css: string): [string, string][] =>
+  KIND_ORDER.map((kind) => [m.kinds[kind], shapeOf(css, kind)]);
 
 test("every kind of dot has a shape of its own, which the guide names, most urgent first", () => {
   const found = shapes(readFileSync(STYLES, "utf-8"));
@@ -142,7 +159,10 @@ test("every kind of dot has a shape of its own, which the guide names, most urge
 
 test("the check fails on a dot that changed shape, two that share one, or rows out of order", () => {
   const css = readFileSync(STYLES, "utf-8");
-  const round = css.replace(/(\.dot-problem\s*\{)[^}]*\}/, "$1 border-radius: 50%; background: var(--problem); }");
+  const round = css.replace(
+    /(\.dot-problem\s*\{)[^}]*\}/,
+    "$1 border-radius: 50%; background: var(--problem); }",
+  );
   expect(round).not.toEqual(css); // the plant took effect
   expect(shapeOf(round, "problem")).toBe(shapeOf(css, "running"));
   expect(new Set(shapes(round).map(([, shape]) => shape)).size).toBeLessThan(KIND_ORDER.length);
@@ -166,12 +186,24 @@ test("the shape reader reads backgrounds, radii and sizes as they are, and refus
   const ring = "border-radius: 50%; border: 0.15rem solid var(--waiting);";
   expect(shapeOf(planted("waiting", `${ring} background: transparent;`), "waiting")).toBe("ring");
   expect(shapeOf(planted("waiting", `${ring} background: none;`), "waiting")).toBe("ring");
-  expect(shapeOf(planted("running", "border-radius: 999px; background: var(--running);"), "running")).toBe("filled circle");
-  expect(shapeOf(planted("running", "border-radius: 0.35rem; background: var(--running);"), "running")).toBe("filled circle");
-  expect(shapeOf(planted("running", "border-radius: 0.1rem; background: var(--running);"), "running")).toBe("filled square");
-  expect(shapeOf(planted("stopped", "height: 0.2rem; background: var(--stopped);"), "stopped")).toBe("bar");
-  expect(() => shapeOf(planted("stopped", "height: 0.5rem; background: var(--stopped);"), "stopped")).toThrow(/neither square nor a bar/);
-  expect(() => shapeOf(`${css}\n.tree .dot-problem { border-radius: 50%; }`, "problem")).toThrow(/more than one rule/);
+  expect(
+    shapeOf(planted("running", "border-radius: 999px; background: var(--running);"), "running"),
+  ).toBe("filled circle");
+  expect(
+    shapeOf(planted("running", "border-radius: 0.35rem; background: var(--running);"), "running"),
+  ).toBe("filled circle");
+  expect(
+    shapeOf(planted("running", "border-radius: 0.1rem; background: var(--running);"), "running"),
+  ).toBe("filled square");
+  expect(
+    shapeOf(planted("stopped", "height: 0.2rem; background: var(--stopped);"), "stopped"),
+  ).toBe("bar");
+  expect(() =>
+    shapeOf(planted("stopped", "height: 0.5rem; background: var(--stopped);"), "stopped"),
+  ).toThrow(/neither square nor a bar/);
+  expect(() => shapeOf(`${css}\n.tree .dot-problem { border-radius: 50%; }`, "problem")).toThrow(
+    /more than one rule/,
+  );
 });
 
 const PAGE_SECTION = "## The Servers page";

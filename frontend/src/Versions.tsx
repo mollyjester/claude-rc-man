@@ -1,8 +1,8 @@
 import { type FormEvent, useCallback, useEffect, useState } from "react";
 
-import { ApiError, api } from "./api";
+import { type ApiError, api } from "./api";
 import { m } from "./messages";
-import { ProblemView, asApiError } from "./ProblemView";
+import { asApiError, ProblemView } from "./ProblemView";
 
 type Versions = {
   approved: string;
@@ -76,7 +76,12 @@ export function Versions() {
       <form noValidate onSubmit={upgrade}>
         <label>
           {m.versionsUpgrade}
-          <input type="text" name="version" value={version} onChange={(e) => setVersion(e.target.value)} />
+          <input
+            type="text"
+            name="version"
+            value={version}
+            onChange={(e) => setVersion(e.target.value)}
+          />
         </label>
         <button type="submit" className="primary" disabled={busy}>
           {m.versionsUpgradeGo}

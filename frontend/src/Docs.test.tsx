@@ -1,17 +1,28 @@
 import { screen, within } from "@testing-library/react";
 
 import { m } from "./messages";
-import { CONNECTED, ME, fakeApi, problem } from "./test/fakeApi";
+import { CONNECTED, fakeApi, ME, problem } from "./test/fakeApi";
 import { renderApp } from "./test/render";
 
-const PAGES = { pages: [{ slug: "servers", title: "Servers" }, { slug: "users", title: "Adding people" }] };
+const PAGES = {
+  pages: [
+    { slug: "servers", title: "Servers" },
+    { slug: "users", title: "Adding people" },
+  ],
+};
 
 test("help lists every page", async () => {
   fakeApi({ "GET /api/me": ME, "GET /api/claude": CONNECTED, "GET /api/docs": PAGES });
   renderApp("/help");
   const nav = await screen.findByRole("navigation", { name: m.docsTitle });
-  expect(await within(nav).findByRole("link", { name: "Servers" })).toHaveAttribute("href", "/help/servers");
-  expect(within(nav).getByRole("link", { name: "Adding people" })).toHaveAttribute("href", "/help/users");
+  expect(await within(nav).findByRole("link", { name: "Servers" })).toHaveAttribute(
+    "href",
+    "/help/servers",
+  );
+  expect(within(nav).getByRole("link", { name: "Adding people" })).toHaveAttribute(
+    "href",
+    "/help/users",
+  );
 });
 
 test("a page is rendered, with links between pages kept inside rcman", async () => {
@@ -23,13 +34,22 @@ test("a page is rendered, with links between pages kept inside rcman", async () 
       slug: "servers",
       title: "Servers",
       // Built at run time so this file holds no dangling reference for the docs guard.
-      markdown: "# Servers\n\nSee [people](" + "users" + ".md#adding) and [Claude](https://claude.ai/code).",
+      markdown:
+        "# Servers\n\nSee [people](" +
+        "users" +
+        ".md#adding) and [Claude](https://claude.ai/code).",
     },
   });
   renderApp("/help/servers");
   expect(await screen.findByRole("heading", { name: "Servers", level: 1 })).toBeInTheDocument();
-  expect(screen.getByRole("link", { name: "people" })).toHaveAttribute("href", "/help/users#adding");
-  expect(screen.getByRole("link", { name: "Claude" })).toHaveAttribute("href", "https://claude.ai/code");
+  expect(screen.getByRole("link", { name: "people" })).toHaveAttribute(
+    "href",
+    "/help/users#adding",
+  );
+  expect(screen.getByRole("link", { name: "Claude" })).toHaveAttribute(
+    "href",
+    "https://claude.ai/code",
+  );
 });
 
 test("a missing page shows the server's reason, and no page", async () => {

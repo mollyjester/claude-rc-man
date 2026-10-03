@@ -20,11 +20,19 @@ test("the git guide's table of changes is each change the page shows, as it show
 });
 
 test("the check fails on a table that has drifted", () => {
-  const right = [HEADER, "|---|---|---|", ...expected().map(([code, shown]) => `| \`${code}\` | ${shown} | meaning |`)];
+  const right = [
+    HEADER,
+    "|---|---|---|",
+    ...expected().map(([code, shown]) => `| \`${code}\` | ${shown} | meaning |`),
+  ];
   expect(changesTable(right.join("\n"))).toEqual(expected());
-  const relabelled = right.map((line, i) => (i === 2 ? line.replace(/\| [^|`]+ \|/, "| Something else |") : line));
+  const relabelled = right.map((line, i) =>
+    i === 2 ? line.replace(/\| [^|`]+ \|/, "| Something else |") : line,
+  );
   expect(relabelled).not.toEqual(right);
   expect(changesTable(relabelled.join("\n"))).not.toEqual(expected());
   expect(changesTable(right.slice(0, -1).join("\n"))).not.toEqual(expected());
-  expect(changesTable([...right, "| `forged` | Forged | meaning |"].join("\n"))).not.toEqual(expected());
+  expect(changesTable([...right, "| `forged` | Forged | meaning |"].join("\n"))).not.toEqual(
+    expected(),
+  );
 });

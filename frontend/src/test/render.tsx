@@ -1,5 +1,11 @@
 import { act, render } from "@testing-library/react";
-import { type Location, MemoryRouter, type NavigateFunction, useLocation, useNavigate } from "react-router-dom";
+import {
+  type Location,
+  MemoryRouter,
+  type NavigateFunction,
+  useLocation,
+  useNavigate,
+} from "react-router-dom";
 
 import { App } from "../App";
 

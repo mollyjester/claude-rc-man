@@ -1,8 +1,8 @@
 import { type FormEvent, type ReactNode, useEffect, useId, useState } from "react";
 
-import { ApiError, api } from "./api";
+import { type ApiError, api } from "./api";
 import { m } from "./messages";
-import { ProblemView, asApiError } from "./ProblemView";
+import { asApiError, ProblemView } from "./ProblemView";
 
 type Field = "prefix" | "author_name" | "author_email";
 type Reply = Record<Field, string> & { effective_author: { name: string; email: string } | null };
@@ -29,8 +29,18 @@ export function Settings() {
       <ProblemView error={error} />
       {reply && (
         <>
-          <Part title={m.settingsPrefixTitle} fields={["prefix"]} reply={reply} onSaved={setReply} />
-          <Part title={m.settingsAuthorTitle} fields={["author_name", "author_email"]} reply={reply} onSaved={setReply}>
+          <Part
+            title={m.settingsPrefixTitle}
+            fields={["prefix"]}
+            reply={reply}
+            onSaved={setReply}
+          />
+          <Part
+            title={m.settingsAuthorTitle}
+            fields={["author_name", "author_email"]}
+            reply={reply}
+            onSaved={setReply}
+          >
             <p>{author ? m.authorEffective(author.name, author.email) : m.authorNotSet}</p>
           </Part>
         </>
@@ -79,7 +89,13 @@ function GitHubToken() {
         <div>
           <label>
             {m.githubTokenLabel}
-            <input type="password" name="token" autoComplete="new-password" value={token} onChange={(e) => setToken(e.target.value)} />
+            <input
+              type="password"
+              name="token"
+              autoComplete="new-password"
+              value={token}
+              onChange={(e) => setToken(e.target.value)}
+            />
           </label>
           <p className="muted">{m.githubTokenHelp}</p>
         </div>
@@ -117,7 +133,13 @@ function GitHubToken() {
   );
 }
 
-function RemoveTokenDialog({ onRemoved, onCancel }: { onRemoved: () => void; onCancel: () => void }) {
+function RemoveTokenDialog({
+  onRemoved,
+  onCancel,
+}: {
+  onRemoved: () => void;
+  onCancel: () => void;
+}) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<ApiError | null>(null);
 
@@ -154,7 +176,13 @@ function RemoveTokenDialog({ onRemoved, onCancel }: { onRemoved: () => void; onC
 }
 
 // One part of the page: its own fields, saved on their own.
-function Part(props: { title: string; fields: Field[]; reply: Reply; onSaved: (reply: Reply) => void; children?: ReactNode }) {
+function Part(props: {
+  title: string;
+  fields: Field[];
+  reply: Reply;
+  onSaved: (reply: Reply) => void;
+  children?: ReactNode;
+}) {
   const { title, fields, reply, onSaved, children } = props;
   const [values, setValues] = useState(() => Object.fromEntries(fields.map((f) => [f, reply[f]])));
   const [saved, setSaved] = useState(false);
@@ -199,7 +227,10 @@ function Part(props: { title: string; fields: Field[]; reply: Reply; onSaved: (r
       </form>
       {children}
       {saved && <p role="status">{m.saved}</p>}
-      <ProblemView error={error} labels={Object.fromEntries(fields.map((f) => [f, FIELDS[f].label]))} />
+      <ProblemView
+        error={error}
+        labels={Object.fromEntries(fields.map((f) => [f, FIELDS[f].label]))}
+      />
     </section>
   );
 }

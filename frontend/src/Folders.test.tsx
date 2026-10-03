@@ -4,7 +4,9 @@ import { useFolderTree } from "./Folders";
 import { fakeApi } from "./test/fakeApi";
 
 test("revealing a folder whose parents are open already changes nothing", async () => {
-  const fake = fakeApi({ "GET /api/folders": (c) => ({ path: c.query.get("path") ?? "", entries: [] }) });
+  const fake = fakeApi({
+    "GET /api/folders": (c) => ({ path: c.query.get("path") ?? "", entries: [] }),
+  });
   const { result } = renderHook(() => useFolderTree());
   act(() => result.current.reveal("projects/alpha"));
   const open = result.current.open;
@@ -20,22 +22,31 @@ test("revealing a folder whose parents are open already changes nothing", async 
 test("reloading a folder fetches its contents again, though they were fetched before", async () => {
   let round = 1;
   const fake = fakeApi({
-    "GET /api/folders": (c) => ({ path: c.query.get("path") ?? "", entries: [{ name: `r${round}`, path: `r${round}`, has_children: false }] }),
+    "GET /api/folders": (c) => ({
+      path: c.query.get("path") ?? "",
+      entries: [{ name: `r${round}`, path: `r${round}`, has_children: false }],
+    }),
   });
   const { result } = renderHook(() => useFolderTree());
-  await waitFor(() => expect(result.current.contents.get("")).toEqual([expect.objectContaining({ name: "r1" })]));
+  await waitFor(() =>
+    expect(result.current.contents.get("")).toEqual([expect.objectContaining({ name: "r1" })]),
+  );
   round = 2;
   act(() => result.current.reveal("projects/alpha")); // opening another folder asks nothing again of home
   await waitFor(() => expect(fake.made("GET", "/api/folders")).toHaveLength(2));
   expect(result.current.contents.get("")).toEqual([expect.objectContaining({ name: "r1" })]);
 
   act(() => result.current.reload(""));
-  await waitFor(() => expect(result.current.contents.get("")).toEqual([expect.objectContaining({ name: "r2" })]));
+  await waitFor(() =>
+    expect(result.current.contents.get("")).toEqual([expect.objectContaining({ name: "r2" })]),
+  );
   expect(fake.made("GET", "/api/folders").filter((c) => !c.query.get("path"))).toHaveLength(2);
 });
 
 test("forgetting a folder drops it and everything below it, and nothing else", async () => {
-  const fake = fakeApi({ "GET /api/folders": (c) => ({ path: c.query.get("path") ?? "", entries: [] }) });
+  const fake = fakeApi({
+    "GET /api/folders": (c) => ({ path: c.query.get("path") ?? "", entries: [] }),
+  });
   const { result } = renderHook(() => useFolderTree());
   act(() => result.current.reveal("projects/alpha/deep/x"));
   act(() => result.current.reveal("projects/alpha2/x"));
@@ -50,6 +61,8 @@ test("forgetting a folder drops it and everything below it, and nothing else", a
   // forgotten, so a folder made there again under the same name is fetched afresh
   act(() => result.current.reveal("projects/alpha/x"));
   await waitFor(() =>
-    expect(fake.made("GET", "/api/folders").filter((c) => c.query.get("path") === "projects/alpha")).toHaveLength(2),
+    expect(
+      fake.made("GET", "/api/folders").filter((c) => c.query.get("path") === "projects/alpha"),
+    ).toHaveLength(2),
   );
 });
