@@ -97,7 +97,9 @@ process has ended on one as `exited` (see [rc-helper.md](rc-helper.md)):
   becoming ready first;
 - any `--spawn` but `same-dir`, the spawn-mode question answered otherwise
   than `1`, and whether Claude asks it again in a folder it already trusts —
-  the fake refuses these as unsupported invocations.
+  the fake refuses these as unsupported invocations;
+- a server in a repository with a detached HEAD — the fake's status line
+  shows the commit's hash where the branch would be.
 
 ## How the fake is checked against the real binary
 
