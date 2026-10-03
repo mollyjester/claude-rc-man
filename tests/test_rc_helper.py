@@ -102,6 +102,20 @@ SERVER_STATES = {
     "server_ready_resumed": "ready",
     "server_stopped_after_trust": "stopped",
     "server_stopped_resumed": "stopped",
+    "git_trust_prompt": "trust_prompt",
+    "git_server_connected_after_trust": "connected",
+    "git_server_connected_resumed": "connected",
+    "git_server_ready_after_trust": "ready",
+    "git_server_ready_resumed": "ready",
+    "git_server_stopped_after_trust": "stopped",
+    "git_server_stopped_resumed": "stopped",
+    # rcman starts every server with --spawn same-dir, so Claude does not ask
+    # this; shown all the same, it is no state rcman knows, and Stop ends it.
+    "spawn_prompt": "unrecognised",
+    "spawn_prompt_interrupted": "unrecognised",
+    "spawn_connected_same_dir": "connected",
+    "spawn_ready_same_dir": "ready",
+    "spawn_stopped_same_dir": "stopped",
 }
 LOGIN_STATES = {
     "login_prompt": "awaiting_code",
@@ -124,6 +138,7 @@ VALUES = {
     "environment_url": rec.ENVIRONMENT_URL_PREFIX + "env_abc",
     "session_name": "pfx-quiet-otter",
     "time": "01:02:03",
+    "branch": "feature-x",
 }
 
 
@@ -154,6 +169,21 @@ def test_ready_screen_yields_url_and_session_name():
     info = h.classify(*filled("server_ready_resumed"))
     assert info["environment_url"] == VALUES["environment_url"]
     assert info["session_name"] == VALUES["session_name"]
+
+
+def test_a_ready_screen_in_a_repository_yields_url_and_session_name():
+    info = h.classify(*filled("git_server_ready_resumed"))
+    assert info["environment_url"] == VALUES["environment_url"]
+    assert info["session_name"] == VALUES["session_name"]
+    assert any(line.endswith("· feature-x") for line in filled("git_server_ready_resumed")[0])
+
+
+def test_the_spawn_mode_question_is_shown_as_it_is():
+    lines, exit_code = filled("spawn_prompt")
+    assert any("Spawn mode" in line for line in lines)  # the recording is the question
+    info = h.classify(lines, exit_code)
+    assert info["state"] == "unrecognised"
+    assert info["screen"] == lines
 
 
 def test_connected_screen_has_no_session_name():
@@ -311,6 +341,158 @@ def test_start_trust_confirm_ready_stop_resume_forget(env):
     ok(env, "stop", "projects/alpha")
     ok(env, "forget", "projects/alpha")
     assert [s["path"] for s in ok(env, "list")["servers"]] == []
+
+
+def git_folder(env, rel, branch="main"):
+    """A repository in the home folder, on ``branch``."""
+    from tests.git_fixtures import fixture_git, make_repo
+
+    path = make_repo(Path(env["RC_HELPER_HOME"]) / rel)
+    if branch != "main":
+        fixture_git(path, "switch", "-q", "-c", branch)
+    return path
+
+
+def test_a_server_in_a_git_repository_starts_stops_and_resumes(env):
+    log_in(env)
+    git_folder(env, "projects/repo", branch="feature-x")
+    started = ok(env, "start", "projects/repo", "--prefix", "pfx")
+    assert started["server"]["state"] == "trust_prompt"
+
+    confirmed = ok(env, "confirm", "projects/repo", "--answer", "y")
+    assert confirmed["server"]["state"] in ("connected", "ready")
+    ready = wait_state(env, "projects/repo", "ready")
+    assert ready["session_name"].startswith("pfx-")
+    screen = ok(env, "output", "projects/repo")["screen"]
+    assert any(line.endswith("· repo · feature-x") for line in screen)
+    assert not any("Spawn mode" in line for line in screen)
+
+    assert ok(env, "stop", "projects/repo")["server"]["state"] == "stopped"
+    assert ok(env, "resume", "projects/repo", "--prefix", "pfx")["server"]["state"] in (
+        "connected",
+        "ready",
+    )
+    assert wait_state(env, "projects/repo", "ready")["session_name"] == ready["session_name"]
+    ok(env, "stop", "projects/repo")
+    ok(env, "forget", "projects/repo")
+    assert ok(env, "list")["servers"] == []
+
+
+def started_without_spawn(env):
+    """Servers started from now on are started without --spawn, so that Claude
+    asks the spawn-mode question in a repository."""
+    Path(env["RC_HELPER_CLAUDE"]).write_text(
+        "#!/bin/sh\n"
+        "for a; do shift\n"
+        '  if [ -n "$skip" ]; then skip=; continue; fi\n'
+        '  if [ "$a" = --spawn ]; then skip=1; continue; fi\n'
+        '  set -- "$@" "$a"\n'
+        "done\n"
+        f'exec {rec.FAKE_CLAUDE} "$@"\n',
+        encoding="utf-8",
+    )
+
+
+# Short deadlines for a stop, so a test of what happens after them is quick.
+QUICK_STOP = {"STOP_TIMEOUT": 1.0, "END_GRACE_SECONDS": 1.0}
+
+
+def test_a_server_at_the_spawn_mode_question_is_ended_by_stop_and_can_be_forgotten(env):
+    import signal
+
+    log_in(env)
+    git_folder(env, "projects/repo")
+    started_without_spawn(env)
+    ok(env, "start", "projects/repo", "--prefix", "pfx")
+    asked = ok(env, "confirm", "projects/repo", "--answer", "y")["server"]
+    assert asked["state"] == "unrecognised"
+    assert any("Spawn mode" in line for line in asked["screen"])
+
+    code, out = helper_with(env, QUICK_STOP, "stop", "--", "projects/repo", timeout=30)
+    assert code == 0, out
+    assert out["server"]["state"] == "exited"
+    assert out["server"]["exit_code"] == 128 + signal.SIGTERM  # Ctrl+C did not end it
+    assert [s["state"] for s in ok(env, "list")["servers"]] == ["exited"]
+    ok(env, "forget", "projects/repo")
+    assert ok(env, "list")["servers"] == []
+
+
+def ignoring(env, *signals, child=False):
+    """Servers started from now on ignore ``signals`` while Claude asks to trust the folder.
+
+    With ``child``, each also leaves a child of its own running, in its process
+    group, whose process ID is in the returned file.
+    """
+    pid_file = Path(env["RC_HELPER_HOME"]) / "child.pid"
+    spawn = f"sleep 600 &\necho $! > {pid_file}\n" if child else ""
+    Path(env["RC_HELPER_CLAUDE"]).write_text(
+        f"#!/bin/sh\n{spawn}trap '' {' '.join(signals)}\nexec {rec.FAKE_CLAUDE} \"$@\"\n",
+        encoding="utf-8",
+    )
+    return pid_file
+
+
+def alive(pid: int) -> bool:
+    try:
+        state = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0]
+    except (OSError, IndexError):
+        return False
+    return state != "Z"
+
+
+@pytest.mark.parametrize("ignored,ended_by", [(("INT",), "SIGTERM"), (("INT", "TERM"), "SIGKILL")])
+def test_stop_ends_a_server_that_ignores_ctrl_c(env, ignored, ended_by):
+    import signal
+    import time
+
+    log_in(env)
+    child = ignoring(env, *ignored, child=True)
+    ok(env, "start", "projects/alpha", "--prefix", "pfx")
+    pid = int(child.read_text())
+    assert alive(pid)  # known positive for the check below
+
+    began = time.monotonic()
+    code, out = helper_with(env, QUICK_STOP, "stop", "--", "projects/alpha", timeout=30)
+    took = time.monotonic() - began
+    assert code == 0, out
+    assert out["server"]["state"] == "exited"
+    assert out["server"]["exit_code"] == 128 + getattr(signal, ended_by)
+    assert took < QUICK_STOP["STOP_TIMEOUT"] + 2 * QUICK_STOP["END_GRACE_SECONDS"] + 5
+    for _ in range(50):  # what the server started in its process group ends with it
+        if not alive(pid):
+            break
+        time.sleep(0.1)
+    assert not alive(pid)
+    ok(env, "forget", "projects/alpha")
+    assert ok(env, "list")["servers"] == []
+
+
+def test_a_server_that_stops_on_ctrl_c_is_not_ended(env, monkeypatch):
+    log_in(env)
+    trusted(env, "projects/alpha")
+    ok(env, "start", "projects/alpha", "--prefix", "pfx")
+    wait_state(env, "projects/alpha", "ready")
+    sent = []
+    monkeypatch.setattr(h.Tmux, "signal", lambda self, session, sig: sent.append(sig))
+    stopped = in_process(env).stop("projects/alpha")["server"]
+    assert (stopped["state"], stopped["exit_code"]) == ("stopped", 0)
+    assert sent == []
+
+
+def test_a_server_that_cannot_be_ended_is_a_timeout(env, monkeypatch):
+    log_in(env)
+    ignoring(env, "INT")
+    ok(env, "start", "projects/alpha", "--prefix", "pfx")
+    monkeypatch.setattr(h, "STOP_TIMEOUT", 1.0)
+    monkeypatch.setattr(h, "END_GRACE_SECONDS", 0.5)
+    sent = []
+    monkeypatch.setattr(h.Tmux, "signal", lambda self, session, sig: sent.append(sig))
+    error = refusal(in_process(env).stop, "projects/alpha")
+    assert error.code == "timeout"
+    assert error.detail["server"]["state"] == "trust_prompt"
+    assert sent == [h.signal.SIGTERM, h.signal.SIGKILL]
+    monkeypatch.undo()
+    assert ok(env, "list")["servers"][0]["state"] == "trust_prompt"
 
 
 def test_resume_needs_a_stopped_server(env, tmp_path):
@@ -474,7 +656,16 @@ def test_server_command_is_fixed_and_shell_free(tmp_path):
         "pfx",
         "--permission-mode",
         "default",
+        "--spawn",
+        "same-dir",
     ]
+
+
+def test_the_server_is_started_as_the_recorder_records_one(tmp_path):
+    """So the contract tests check every option rc-helper starts a server with."""
+    cfg = h.Config(home=tmp_path, claude=tmp_path / "claude", tmux_socket=None, github=UNREACHABLE)
+    argv = h.server_command(cfg, prefix=rec.PROBE_PREFIX)
+    assert argv[argv.index(str(tmp_path / "claude")) + 1 :] == rec.RC_ARGS
 
 
 def test_server_environment_is_the_allowlist(tmp_path):
@@ -1381,13 +1572,6 @@ def test_delete_stops_everything_before_forgetting_anything_and_forgets_before_r
     assert not beta.exists()
 
 
-def ignoring_interrupts(env):
-    """Servers started from now on ignore Ctrl+C while Claude asks to trust the folder."""
-    Path(env["RC_HELPER_CLAUDE"]).write_text(
-        f"#!/bin/sh\ntrap '' INT\nexec {rec.FAKE_CLAUDE} \"$@\"\n", encoding="utf-8"
-    )
-
-
 def helper_with(env, settings: dict, *args, timeout: float):
     """rc-helper's answer, run in its own process with some of its settings changed.
 
@@ -1417,22 +1601,41 @@ def helper_with(env, settings: dict, *args, timeout: float):
     return proc.returncode, json.loads(proc.stdout)
 
 
-def test_when_a_server_does_not_stop_nothing_is_forgotten_or_deleted(env):
+def test_delete_ends_a_server_that_ignores_ctrl_c(env):
     home = Path(env["RC_HELPER_HOME"])
     trusted(env, "projects/beta")
     ok(env, "start", "projects/beta", "--prefix", "pfx")
     wait_state(env, "projects/beta", "ready")
-    ignoring_interrupts(env)
+    ignoring(env, "INT")
+    ok(env, "start", "projects/beta/inner", "--prefix", "pfx")
+    # a stop deadline of one second, so a delete that waits longer has missed it
+    code, out = helper_with(env, QUICK_STOP, "delete", "--", "projects/beta", timeout=30)
+    assert code == 0, out
+    assert out["stopped"] == ["projects/beta", "projects/beta/inner"]
+    assert out["forgotten"] == ["projects/beta", "projects/beta/inner"]
+    assert not (home / "projects" / "beta").exists()
+    assert ok(env, "list")["servers"] == []
+
+
+def test_when_a_server_cannot_be_ended_nothing_is_forgotten_or_deleted(env, monkeypatch):
+    home = Path(env["RC_HELPER_HOME"])
+    trusted(env, "projects/beta")
+    ok(env, "start", "projects/beta", "--prefix", "pfx")
+    wait_state(env, "projects/beta", "ready")
+    ignoring(env, "INT")
     ok(env, "start", "projects/beta/inner", "--prefix", "pfx")
     sessions = tmux_sessions(env)
-    # a stop deadline of one second, so a delete that waits longer has missed it
-    code, out = helper_with(env, {"STOP_TIMEOUT": 1.0}, "delete", "--", "projects/beta", timeout=15)
-    assert code == 1, out
-    error = out["error"]
-    assert error["code"] == "delete_stop_failed"
-    assert error["server"]["path"] == "projects/beta/inner"
-    assert any("[y/N]" in line for line in error["server"]["screen"])
-    assert error["stopped"] == ["projects/beta"]
+    monkeypatch.setattr(h, "STOP_TIMEOUT", 1.0)
+    monkeypatch.setattr(h, "END_GRACE_SECONDS", 0.5)
+    sent = []
+    monkeypatch.setattr(h.Tmux, "signal", lambda self, session, sig: sent.append(sig))
+    error = refusal(in_process(env).delete, "projects/beta")
+    assert error.code == "delete_stop_failed"
+    assert sent == [h.signal.SIGTERM, h.signal.SIGKILL]  # it was ended, as stop ends one
+    assert error.detail["server"]["path"] == "projects/beta/inner"
+    assert any("[y/N]" in line for line in error.detail["server"]["screen"])
+    assert error.detail["stopped"] == ["projects/beta"]
+    monkeypatch.undo()
     assert tmux_sessions(env) == sessions  # nothing forgotten
     assert (home / "projects" / "beta" / "inner").is_dir()
     servers = {s["path"]: s["state"] for s in ok(env, "list")["servers"]}

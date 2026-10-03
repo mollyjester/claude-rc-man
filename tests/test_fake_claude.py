@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import socket
 
 import pytest
@@ -256,3 +257,101 @@ def test_the_reported_version_can_be_overridden(pane, tmp_path):
     run(pane, ["--version"], tmp_path, tmp_path / "cfg", FAKE_CLAUDE_VERSION="7.7.7")
     pane.wait_exit(timeout=10)
     assert pane.text() == "7.7.7 (Claude Code)"
+
+
+# --- spawn mode, in a git repository ------------------------------------------------
+
+SPAWN_QUESTION = r"Choose \[1/2\]"
+
+
+def repository(path, branch="main"):
+    from tests.git_fixtures import fixture_git, make_repo
+
+    make_repo(path)
+    if branch != "main":
+        fixture_git(path, "switch", "-q", "-c", branch)
+    return path
+
+
+def answer_trust(pane):
+    pane.wait_for(r"\[y/N\]", timeout=10)
+    pane.wait_stable(quiet=fake.MIN_ANSWER_SECONDS * 2)
+    pane.type_line("y")
+
+
+def test_in_a_repository_without_spawn_it_asks_the_spawn_mode_question(pane, tmp_path):
+    import time
+
+    cfg = logged_in(tmp_path / "cfg")
+    folder = repository(tmp_path / "proj")
+    run(pane, ["remote-control"], folder, cfg)
+    answer_trust(pane)
+    pane.wait_for(SPAWN_QUESTION, timeout=10)
+    assert "Capacity:" not in pane.text()
+    pane.interrupt()  # the question ignores Ctrl+C, as recorded
+    time.sleep(1)
+    assert pane.exit_status() is None
+    assert re.search(SPAWN_QUESTION, pane.text())
+    pane.wait_stable(quiet=fake.MIN_ANSWER_SECONDS * 2)
+    pane.type_line("1")
+    pane.wait_for(READY, timeout=10)
+    pane.interrupt()
+    assert pane.wait_exit(timeout=10) == rec.load_fixtures()["spawn_stopped_same_dir"].exit_code
+
+
+def test_the_spawn_mode_question_ends_on_sigterm(pane, tmp_path):
+    import signal
+
+    cfg = logged_in(tmp_path / "cfg")
+    folder = repository(tmp_path / "proj")
+    run(pane, ["remote-control"], folder, cfg)
+    answer_trust(pane)
+    pane.wait_for(SPAWN_QUESTION, timeout=10)
+    pid = int(pane._tmux("display-message", "-p", "-t", "p", "#{pane_pid}").strip())
+    os.kill(pid, signal.SIGTERM)
+    assert pane.wait_exit(timeout=10) == 128 + signal.SIGTERM
+
+
+def test_in_a_repository_with_spawn_same_dir_it_connects_and_shows_the_branch(pane, tmp_path):
+    cfg = logged_in(tmp_path / "cfg")
+    folder = repository(tmp_path / "proj", branch="feature-x")
+    run(pane, ["remote-control", "--spawn", "same-dir"], folder, cfg)
+    answer_trust(pane)
+    pane.wait_for(READY, timeout=10)
+    text = pane.text()
+    assert "Spawn mode" not in text
+    assert re.search(r"Connected · proj · feature-x$", text, re.MULTILINE)
+
+
+def test_in_a_folder_of_a_repository_it_is_in_the_repository(pane, tmp_path):
+    cfg = logged_in(tmp_path / "cfg")
+    folder = repository(tmp_path / "proj") / "sub"
+    folder.mkdir()
+    run(pane, ["remote-control"], folder, cfg)
+    answer_trust(pane)
+    pane.wait_for(SPAWN_QUESTION, timeout=10)
+
+
+def test_outside_a_repository_spawn_same_dir_changes_nothing(pane, tmp_path):
+    cfg = logged_in(tmp_path / "cfg")
+    fake.write_state(cfg, logged_in=True, trusted=[str(tmp_path)])
+    run(pane, ["remote-control", "--spawn", "same-dir"], tmp_path, cfg)
+    pane.wait_for(READY, timeout=10)
+    assert re.search(r"Connected · \S+ · HEAD$", pane.text(), re.MULTILINE)
+
+
+def test_a_spawn_mode_it_has_no_recording_of_fails_loudly(pane, tmp_path):
+    cfg = logged_in(tmp_path / "cfg")
+    run(pane, ["remote-control", "--spawn", "worktree"], tmp_path, cfg)
+    assert pane.wait_exit(timeout=10) == 2
+    assert "unsupported" in pane.text()
+
+
+def test_a_trusted_repository_without_spawn_fails_loudly(pane, tmp_path):
+    """Whether Claude asks again once a folder is trusted has no recording."""
+    folder = repository(tmp_path / "proj")
+    cfg = logged_in(tmp_path / "cfg")
+    fake.write_state(cfg, logged_in=True, trusted=[str(folder)])
+    run(pane, ["remote-control"], folder, cfg)
+    assert pane.wait_exit(timeout=10) == 2
+    assert "unsupported" in pane.text()

@@ -201,3 +201,70 @@ def test_sequences_needing_a_person_never_run_unasked():
     everything = {s.name for s in rec.select_sequences(None, with_account=True)}
     assert human.isdisjoint(everything)
     assert [s.name for s in rec.select_sequences(sorted(human), with_account=True)] == sorted(human)
+
+
+# --- servers in a git repository --------------------------------------------------
+
+GIT_CTX = rec.Context(cwd="/work/proj-x", config_dir="/cfg/dir", version="9.9.9", branch="topic")
+
+
+def test_the_branch_in_the_status_line_is_replaced_in_a_repository():
+    line = "·✔︎· Connected · proj-x · topic"
+    assert rec.sanitise(line, GIT_CTX) == "·✔︎· Connected · {folder} · {branch}"
+
+
+def test_the_branch_is_replaced_only_in_the_status_line():
+    text = "topic\n·✔︎· Connected · proj-x · topic"
+    assert rec.sanitise(text, GIT_CTX) == "topic\n·✔︎· Connected · {folder} · {branch}"
+
+
+def test_outside_a_repository_the_status_line_keeps_what_claude_shows():
+    line = "·✔︎· Connected · proj-x · HEAD"
+    assert "{branch}" in rec.sanitise(line.replace("HEAD", "topic"), GIT_CTX)  # known positive
+    assert sanitise(line) == "·✔︎· Connected · {folder} · HEAD"
+
+
+def test_fill_puts_the_branch_back():
+    values = rec.placeholder_values(GIT_CTX)
+    assert values["branch"] == "topic"
+    assert rec.fill("· {branch}", values) == "· topic"
+
+
+def test_a_server_is_recorded_as_rc_helper_starts_one_with_spawn_mode_same_dir():
+    assert rec.RC_ARGS[rec.RC_ARGS.index("--spawn") + 1] == "same-dir"
+    assert "--spawn" in rec.options_used()[("remote-control",)]
+
+
+def test_the_spawn_mode_question_is_recorded_without_spawn_in_a_repository():
+    by_name = {s.name: s for s in rec.SEQUENCES}
+    question = by_name["spawn_prompt"]
+    assert question.git_repository
+    assert "--spawn" not in question.args
+    assert [a for a in question.args] == [
+        a for a in rec.RC_ARGS if a not in ("--spawn", "same-dir")
+    ]
+    server = by_name["git_server"]
+    assert server.git_repository and server.args == rec.RC_ARGS
+    assert not by_name["server"].git_repository  # known negative
+
+
+def test_a_repository_to_record_in_is_made_on_the_recorded_branch(tmp_path):
+    import subprocess
+
+    folder = tmp_path / "proj"
+    folder.mkdir()
+    rec.make_repository(folder)
+    head = subprocess.run(
+        ["git", "-C", str(folder), "symbolic-ref", "--short", "HEAD"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    assert head == rec.RECORD_BRANCH
+    commits = subprocess.run(
+        ["git", "-C", str(folder), "rev-list", "--count", "HEAD"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    assert commits == "1"
