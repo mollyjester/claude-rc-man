@@ -402,6 +402,18 @@ def test_app_user_runs_rc_admin_as_root(env, two, sudoers):
     assert json.loads(proc.stdout) == {"users": []}
 
 
+def test_rc_admin_test_hooks_do_not_pass_through_sudo(env, etc, two, sudoers):
+    hook = {"RC_ADMIN_ETC": str(etc)}
+    # Positive controls: the hook is in the caller's environment, and, given
+    # directly, it does lead rc-admin to the users `two` added there.
+    caller = as_app("/usr/bin/env", extra_env=hook).stdout.splitlines()
+    assert f"RC_ADMIN_ETC={etc}" in caller
+    assert {u["linux"] for u in admin_ok(env, "list")["users"]} == {"alice", "bob"}
+    proc = as_app("sudo", "-n", str(RC_ADMIN), "list", extra_env=hook)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert json.loads(proc.stdout) == {"users": []}  # the real /etc/rcman, not the hook's
+
+
 def test_fake_installer_is_executable_by_users():
     assert os.access(INSTALLER, os.X_OK)
     assert shutil.which("runuser")
