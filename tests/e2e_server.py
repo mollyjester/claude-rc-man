@@ -33,6 +33,7 @@ from devtools import record_claude as rec
 from helpers import users_file as uf
 from tests.git_fixtures import make_repo, push_branch_to_origin
 from tests.github_server import UNREACHABLE, GitHubServer
+from tests.helper_env import helper_env
 
 REPO = Path(__file__).resolve().parent.parent
 PEOPLE = {"alice": ("alice@example.com", True), "bob": ("bob@example.com", False)}
@@ -96,13 +97,8 @@ def create_app():
     github = GitHubServer()
 
     def helper(linux, args, stdin=None, timeout=60):
-        env = {
-            "PATH": "/usr/bin:/bin",
-            "RC_HELPER_HOME": str(homes[linux]),
-            "RC_HELPER_CLAUDE": str(root / "claude"),
-            "RC_HELPER_TMUX_SOCKET": str(sockets(root) / f"{linux}.sock"),
-            "RC_HELPER_GITHUB": github.url or UNREACHABLE,
-        }
+        sock = sockets(root) / f"{linux}.sock"
+        env = helper_env(homes[linux], root / "claude", sock, github.url or UNREACHABLE)
         proc = subprocess.run(
             [str(REPO / "helpers" / "rc-helper"), *args],
             env=env, input=stdin, capture_output=True, text=True, timeout=timeout,

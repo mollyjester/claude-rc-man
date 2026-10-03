@@ -47,12 +47,26 @@ def github(tmp_path_factory):
     server.stop()
 
 
+@pytest.fixture(scope="session", autouse=True)
+def github_hook_works(github, tmp_path_factory):
+    """Before any test: git as rc-helper runs it sends GitHub to the address the hook
+    gives, the tests' GitHub or UNREACHABLE, so a broken hook stops the session before
+    any test could reach the real GitHub."""
+    from tests.github_server import UNREACHABLE
+    from tests.helper_env import assert_github_hooked
+
+    scratch = tmp_path_factory.mktemp("hook-check")
+    assert_github_hooked(scratch, github.url, github)
+    assert_github_hooked(scratch, UNREACHABLE)
+
+
 @pytest.fixture
 def helper_homes(tmp_path, github):
     """A real rc-helper per mapped Linux user, each with its own home and tmux socket,
     and https://github.com/ pointed at the tests' GitHub."""
     from devtools import fake_claude as fake
     from devtools import record_claude as rec
+    from tests.helper_env import helper_env
 
     homes, sockets = {}, []
     wrapper = tmp_path / "claude"
@@ -69,13 +83,7 @@ def helper_homes(tmp_path, github):
     def runner(linux, args, stdin=None, timeout=60):
         sock = sock_root / f"{linux}.sock"
         sockets.append(sock)
-        env = {
-            "PATH": "/usr/bin:/bin",
-            "RC_HELPER_HOME": str(homes[linux]),
-            "RC_HELPER_CLAUDE": str(wrapper),
-            "RC_HELPER_TMUX_SOCKET": str(sock),
-            "RC_HELPER_GITHUB": github.url,
-        }
+        env = helper_env(homes[linux], wrapper, sock, github.url)
         proc = subprocess.run(
             [str(REPO / "helpers" / "rc-helper"), *args],
             env=env, input=stdin, capture_output=True, text=True, timeout=timeout,

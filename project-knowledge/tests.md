@@ -25,11 +25,16 @@ system's `git http-backend` behind a small server, which serves anyone a
 read of a public repository, and takes a push, or a read of one made
 private, only with its token as the password, under any
 username, as GitHub takes a personal access token. The `github` fixture in
-`tests/conftest.py` runs one for the session, with `GITHUB_TOKEN`; every
-rc-helper a test runs has `RC_HELPER_GITHUB` (see
-[rc-helper.md](rc-helper.md#test-hooks)) pointing at it or at `UNREACHABLE`,
-so that no test reaches the real GitHub; the browser tests' world runs one
-of its own (see [frontend.md](frontend.md#tests)). `tests/test_container_suite.py` runs the root-only
+`tests/conftest.py` runs one for the session, with `GITHUB_TOKEN`. Every
+rc-helper a test runs gets its environment from `helper_env` in
+`tests/helper_env.py`, which always sets `RC_HELPER_GITHUB` (see
+[rc-helper.md](rc-helper.md#test-hooks)) to it or to `UNREACHABLE`, so that
+no test reaches the real GitHub; `tests/test_helper_env.py` finds any other
+place in `tests/` that builds one. Before the first test, `github_hook_works`
+in `tests/conftest.py` checks, without reaching anything, that git as
+rc-helper runs it would send GitHub to the hook's address, and only then
+that the tests' GitHub sees the request. The browser tests' world runs a
+GitHub of its own (see [frontend.md](frontend.md#tests)). `tests/test_container_suite.py` runs the root-only
 suite in `tests/container/` inside a throwaway Ubuntu container, through
 `docker` or `sudo -n docker`; it skips when neither works, unless
 `RCMAN_REQUIRE_CONTAINER=1`, which `make check` sets. It runs these, each in a

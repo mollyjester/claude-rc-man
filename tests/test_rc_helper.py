@@ -19,6 +19,7 @@ from devtools import record_claude as rec
 from helpers import git_run
 from helpers import rc_helper as h
 from tests.github_server import UNREACHABLE
+from tests.helper_env import helper_env
 
 REPO = Path(__file__).resolve().parent.parent
 HELPER = REPO / "helpers" / "rc-helper"
@@ -40,13 +41,7 @@ def env(tmp_path):
         f'#!/bin/sh\nFAKE_CLAUDE_READY_SECONDS=0.3 exec {rec.FAKE_CLAUDE} "$@"\n', encoding="utf-8"
     )
     wrapper.chmod(0o755)
-    e = {
-        "PATH": os.environ["PATH"],
-        "RC_HELPER_HOME": str(home),
-        "RC_HELPER_CLAUDE": str(wrapper),
-        "RC_HELPER_TMUX_SOCKET": str(sock / "rcman.sock"),
-        "RC_HELPER_GITHUB": UNREACHABLE,
-    }
+    e = helper_env(home, wrapper, sock / "rcman.sock", path=os.environ["PATH"])
     yield e
     subprocess.run(["tmux", "-S", e["RC_HELPER_TMUX_SOCKET"], "kill-server"], capture_output=True)
 
@@ -2583,7 +2578,7 @@ def test_without_the_hook_the_token_is_stored_for_github_com(tmp_path):
     assert (home / ".git-credentials").read_text() == (
         f"https://{h.GITHUB_USERNAME}:{TOKEN}@github.com\n"
     )
-    env = {"RC_HELPER_HOME": str(home)}
+    env = helper_env(home, tmp_path / "claude", tmp_path / "tmux.sock")
     assert global_config(env, "--get-all", "credential.https://github.com.helper") == ["store"]
     assert helper_.github_status() == {"token": True}
     assert helper_.github_forget() == {"token": False}
