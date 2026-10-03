@@ -62,7 +62,12 @@ def test_interrupt_delivers_sigint(pane, tmp_path):
     pane.wait_for(r"^ready$", timeout=10)
     pane.interrupt()
     assert pane.wait_exit(timeout=10) == 0
-    assert pane.screen() == ["ready", "^Cinterrupted"]  # the tty echoes ^C
+    # The tty echoes ^C, but may send SIGINT first, so the two come in either order.
+    screen = pane.screen()
+    assert screen[0] == "ready"
+    rest = "".join(screen[1:])
+    assert "^C" in rest and "interrupted" in rest
+    assert rest.replace("^C", "", 1).replace("interrupted", "", 1) == ""
 
 
 def test_wait_for_times_out_with_the_screen_in_the_message(pane, tmp_path):
