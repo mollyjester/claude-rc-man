@@ -207,6 +207,12 @@ test("what was saved is no longer said once Remove is asked for", async () => {
   expect(within(github).queryByText(m.githubTokenSaved)).not.toBeInTheDocument();
 });
 
+test("the token's help says what git uses it for, as docs/git.md does: pushing, cloning a private repository, and in Claude sessions", () => {
+  expect(m.githubTokenHelp).toMatch(/push to GitHub/);
+  expect(m.githubTokenHelp).toMatch(/clone private repositories/);
+  expect(m.githubTokenHelp).toMatch(/Claude sessions/);
+});
+
 test("the token field has its help below it, as every other field", async () => {
   api();
   renderApp("/settings");
