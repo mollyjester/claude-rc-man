@@ -1061,7 +1061,7 @@ test("a clone that ends once another folder is selected leaves that one selected
   expect(folderOf(location().search)).toBe("projects/beta");
 });
 
-test("while it makes a folder, New folder's buttons wait, and only one folder is asked for", async () => {
+test("while it makes a folder, New folder's buttons and the header's other actions wait, and only one folder is asked for", async () => {
   let answer = () => {};
   const fake = dashboard([], {
     "POST /api/folders": () =>
@@ -1077,7 +1077,13 @@ test("while it makes a folder, New folder's buttons wait, and only one folder is
   const busy = await within(opened).findByRole("button", { name: m.creating });
   expect(busy).toBeDisabled();
   expect(within(opened).getByRole("button", { name: m.cancel })).toBeDisabled();
+  const header = within(within(opened).getByRole("group", { name: m.folderActions }));
+  for (const name of [m.newFolder, m.cloneFromGithub, m.deleteFolder]) {
+    expect(header.getByRole("button", { name })).toBeDisabled();
+  }
   await userEvent.click(busy);
+  await userEvent.click(header.getByRole("button", { name: m.cloneFromGithub }));
+  expect(within(opened).queryByLabelText(m.cloneUrl)).not.toBeInTheDocument(); // its form stays
   expect(fake.made("POST", "/api/folders")).toHaveLength(1);
   answer();
   expect(await panel("projects/fresh")).toBeInTheDocument();

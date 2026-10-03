@@ -125,7 +125,9 @@ function FolderForm({
     onBusy(true);
     setError(null);
     try {
-      onMade((await make(value)).created);
+      const { created } = await make(value);
+      onBusy(false);
+      onMade(created);
     } catch (e) {
       setError(asApiError(e));
       setBusy(false);
