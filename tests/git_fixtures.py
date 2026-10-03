@@ -17,8 +17,10 @@ FIXTURE_AUTHOR = ("Fixture Author", "fixture@example.com")
 
 
 def fixture_env(home: Path) -> dict[str, str]:
-    """The environment fixture git runs in: system PATH, its own empty HOME, and https
-    refused, so that no address a test gives it can reach the real GitHub."""
+    """The environment fixture git runs in: system PATH, its own empty HOME, and every
+    transport refused but a local repository's (protocol.allow never, protocol.file.allow
+    always), so that git refuses an http, https, ssh, git or scp-like address before
+    connecting to anything, and no address a test gives it can reach the real GitHub."""
     home.mkdir(parents=True, exist_ok=True)
     name, email = FIXTURE_AUTHOR
     return {
@@ -27,9 +29,11 @@ def fixture_env(home: Path) -> dict[str, str]:
         "LANG": "C.UTF-8",
         "LC_ALL": "C.UTF-8",
         "GIT_CONFIG_NOSYSTEM": "1",
-        "GIT_CONFIG_COUNT": "1",
-        "GIT_CONFIG_KEY_0": "protocol.https.allow",
+        "GIT_CONFIG_COUNT": "2",
+        "GIT_CONFIG_KEY_0": "protocol.allow",
         "GIT_CONFIG_VALUE_0": "never",
+        "GIT_CONFIG_KEY_1": "protocol.file.allow",
+        "GIT_CONFIG_VALUE_1": "always",
         "GIT_AUTHOR_NAME": name,
         "GIT_AUTHOR_EMAIL": email,
         "GIT_COMMITTER_NAME": name,

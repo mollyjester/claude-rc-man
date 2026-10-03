@@ -20,8 +20,9 @@ The suite needs `tmux` and `git`. Everything git is tested against real git,
 never a fake: `tests/git_fixtures.py`, which is not a test module, makes real
 repositories, their origins and their branches with the system's git, under
 a fixture configuration of its own, in a home removed when the tests end, so the person's configuration rc-helper
-reads is only what a test plants; fixture git refuses https, so no address a
-test gives it reaches the real GitHub. GitHub is `tests/github_server.py`: the
+reads is only what a test plants; fixture git refuses every transport but a
+local repository's, so an http, https, ssh, git or scp-like address a test
+gives it is refused before anything is connected to. GitHub is `tests/github_server.py`: the
 system's `git http-backend` behind a small server, which serves anyone a
 read of a public repository, and takes a push, or a read of one made
 private, only with its token as the password, under any

@@ -13,8 +13,8 @@ repository keeps its git data in your home folder.
 
 **Clone from GitHub**, in a folder's panel or in the **Home** panel, clones a
 repository from GitHub into that folder, or into your home folder, as
-`git clone <address>` run there does: git makes a new folder named after the
-repository, and that folder is then selected. The address is the one GitHub
+`git clone <address>` run there would: into a new folder named after the
+repository, as git names it, which is then selected. The address is the one GitHub
 shows for the repository, beginning `https://github.com/`; the form refuses
 any other, and says what an address must be.
 
@@ -30,7 +30,9 @@ any other, and says what an address must be.
   even if something moved it meanwhile, and nothing else is: another folder
   put in its place is left alone. If any of it cannot be removed, or it was
   moved, the form lists it where it is now. A removal that takes longer than
-  rcman waits carries on after the form has said rcman stopped waiting.
+  rcman waits carries on after the form has said rcman stopped waiting; so
+  does a clone git had just finished when rcman stopped waiting, which is
+  then kept, and appears in the tree.
 - While a clone runs, its panel's **New folder**, **Clone from GitHub** and
   **Delete folder** wait. Selecting another folder meanwhile leaves the
   clone running. When it is done, the new folder appears in the tree but is

@@ -3868,25 +3868,26 @@ def test_a_clone_git_made_somewhere_else_is_refused_and_rcmans_folder_removed(
 
     monkeypatch.setattr(h.Helper, "_git", misdirected)
     assert refusal(in_process(hooked).git_clone, "projects", published).code == "clone_missing"
-    assert (elsewhere / name / ".git").is_dir()  # positive control: git did clone
+    assert (elsewhere / ".git").is_dir()  # positive control: git did clone, there
     assert not (home / "projects" / name).exists()
 
 
-def test_a_local_path_named_like_the_address_is_not_cloned_from(hooked, github, published):
-    """git takes an address that names a path in the folder it runs in as that path:
-    https:/github.com/owner/<name> there, a repository, makes git refuse the address
-    rather than clone the repository there, or reach GitHub."""
+def test_a_local_path_named_like_the_address_in_the_parent_changes_nothing(
+    hooked, github, published
+):
+    """git runs in the empty folder made, so a path named like the address, such as a
+    repository at https:/github.com/owner/<name> in the parent, is not where git looks:
+    the clone comes from GitHub, and that repository is left as it is."""
     home = Path(hooked["RC_HELPER_HOME"])
     name = folder_of(published)
     twin = make_repo(home / "projects" / "https:" / "github.com" / "owner" / name)
     head = fixture_git(twin, "rev-parse", "HEAD")
     before = len(github.requests)
-    code, out = clone(hooked, published, "projects")
-    assert (code, out["error"]["code"]) == (1, "git_failed"), out
-    assert not (home / "projects" / name).exists()
-    assert asked_for(github, name, before) == []
+    assert ok(hooked, "git-clone", f"--url={published}", "--", "projects") == {
+        "created": f"projects/{name}"
+    }
+    assert asked_for(github, name, before)
     assert fixture_git(twin, "rev-parse", "HEAD") == head
-    ok(hooked, "git-clone", f"--url={published}", "--", "projects/alpha")  # positive control
 
 
 def test_a_clone_is_made_only_inside_the_home_folder(hooked, github, published, tmp_path):
@@ -4101,8 +4102,8 @@ def test_a_link_put_at_the_new_folders_name_does_not_take_the_clone_there(
     outside.mkdir()
     real = h._make_folder
 
-    def swapped(fd, folder):
-        made = real(fd, folder)
+    def swapped(fd, folder, created):
+        made = real(fd, folder, created)
         os.rename(folder, f"{folder}.moved", src_dir_fd=fd, dst_dir_fd=fd)
         os.symlink(outside, folder, dir_fd=fd)
         return made

@@ -217,7 +217,7 @@ def test_the_hook_check_fails_without_the_hook_before_anything_is_fetched(
 # The tests' modules that give git GitHub's address on purpose, each keeping it away
 # from the real one itself: the hook check, the stand-in and the fixtures. A literal
 # address is all this guard sees; fixture git, which tests give addresses held in
-# variables too, refuses https altogether (git_fixtures.fixture_env).
+# variables too, refuses every network transport (git_fixtures.fixture_env).
 GITHUB_SANCTIONED = {"helper_env.py", "github_server.py", "git_fixtures.py"}
 # Git calls given GitHub's address elsewhere, each with why it reaches no GitHub:
 # (file relative to tests/, the function it is in) -> reason.

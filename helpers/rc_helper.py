@@ -1082,18 +1082,29 @@ def _sigterm_blocked():
         signal.pthread_sigmask(signal.SIG_SETMASK, mask)
 
 
-def _make_folder(fd: int, name: str) -> int:
-    """Make the folder ``name`` in the folder open as ``fd``; a descriptor on it, opened
-    without following a link. Anything already there is folder_exists, and so is a
-    folder found not empty once opened: something took the new one's place."""
+def _make_folder(fd: int, name: str, created: str) -> int:
+    """Make the folder ``name`` in the folder open as ``fd``, whose path from the home
+    folder is ``created``; a descriptor on it, opened without following a link.
+
+    Anything already there is folder_exists. So is finding, once it is made, a link,
+    nothing or a folder that is not empty at its name: something moved the new folder
+    away and may have put something else in its place. Where it went cannot be known,
+    so it is reported as ``left`` under the path it was made at.
+    """
     try:
         os.mkdir(name, dir_fd=fd)
     except FileExistsError:
         raise HelperError("folder_exists") from None
-    made = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+    moved = HelperError("folder_exists", {"left": [created]})
+    try:
+        made = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+    except OSError as error:
+        if error.errno in (errno.ELOOP, errno.ENOTDIR, errno.ENOENT):
+            raise moved from None
+        raise
     if os.listdir(made):
         os.close(made)
-        raise HelperError("folder_exists")
+        raise moved
     return made
 
 
@@ -1132,9 +1143,9 @@ def _remove_made(fd: int, name: str, made_fd: int, root: Path) -> list[str]:
         with contextlib.suppress(OSError):
             os.rmdir(name, dir_fd=fd)
             return []
-    where = os.readlink(f"/proc/self/fd/{made_fd}")
-    if where.endswith(" (deleted)"):
+    if os.fstat(made_fd).st_nlink == 0:  # removed by something else meanwhile
         return []
+    where = os.readlink(f"/proc/self/fd/{made_fd}")
     return [relative(root, Path(where)) if root in Path(where).parents else where]
 
 
@@ -1826,9 +1837,10 @@ class Helper:
     @git_verb(timeout="CLONE_TIMEOUT")
     def _clone(self, deadline: float, rel: str, url: str) -> dict:
         """The folder is made here first, so that anything already there is refused, even
-        an empty folder git would clone into, and held open. git runs in the parent as
-        it was opened, through its descriptor, so that a part of its path replaced by a
-        link since cannot take the clone elsewhere. On any failure, a timeout and SIGTERM
+        an empty folder git would clone into, and held open. git runs in that folder,
+        through its descriptor, and clones into it, ".", so that neither a part of the
+        parent's path nor the folder's own name, replaced by a link since, can take the
+        clone elsewhere. On any failure, a timeout and SIGTERM
         among them, the folder made is removed again, and only it (_remove_made). What
         cannot be removed is reported as ``left``.
 
@@ -1842,13 +1854,13 @@ class Helper:
             name = clone_folder_name(url)
             created = check_folder_name(name, fd, relative(self.cfg.home, parent))
             with _sigterm_blocked() as unblocked:
-                made_fd = _make_folder(fd, name)
+                made_fd = _make_folder(fd, name, created)
                 try:
                     try:
                         signal.pthread_sigmask(signal.SIG_SETMASK, unblocked)
                         self._git(
-                            Path(f"/proc/self/fd/{fd}"),
-                            ["clone", "--", url],
+                            Path(f"/proc/self/fd/{made_fd}"),
+                            ["clone", "--", url, "."],
                             deadline - CLONE_CLEANUP_SECONDS,
                         )
                     finally:
