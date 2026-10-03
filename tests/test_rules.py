@@ -208,9 +208,30 @@ def disagreements(*rules: Rule) -> list[str]:
     return found
 
 
-def test_the_backend_and_the_helpers_read_every_rule_alike():
-    rules = [r for rule in helpers_rules().values() for r in (rule, rule.or_empty())]
-    assert disagreements(*rules) == []
+def _every_rule_in_both_forms():
+    """Every helpers' rule, as it is and as or_empty() makes it, each named."""
+    return [
+        pytest.param(form, id=f"{name}{suffix}")
+        for name, rule in helpers_rules().items()
+        for form, suffix in ((rule, ""), (rule.or_empty(), ".or_empty()"))
+    ]
+
+
+@pytest.mark.parametrize("rule", _every_rule_in_both_forms())
+def test_the_backend_and_the_helpers_read_the_rule_alike(rule):
+    assert disagreements(rule) == []
+
+
+def test_the_agreement_test_has_a_case_for_every_rule_in_both_forms():
+    """Each rule is its own case, so parallel workers share the work; together the
+    cases are every rule, as it is and as or_empty() makes it."""
+    from tests.collected import collect
+
+    test = "tests/test_rules.py::test_the_backend_and_the_helpers_read_the_rule_alike"
+    cases = {n.removeprefix(test) for n in collect(["tests/test_rules.py"]) if n.startswith(test)}
+    names = helpers_rules()
+    assert len(names) >= 10  # non-vacuity: helpers_rules checks the known ones are there
+    assert cases == {f"[{n}]" for n in names} | {f"[{n}.or_empty()]" for n in names}
 
 
 def test_a_rule_the_two_engines_read_differently_is_found():
