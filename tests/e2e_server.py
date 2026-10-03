@@ -27,7 +27,7 @@ from rcman.settings import Settings
 from devtools import fake_claude as fake
 from devtools import record_claude as rec
 from helpers import users_file as uf
-from tests.git_fixtures import make_repo, push_branch_to_origin
+from tests.git_fixtures import FIXTURE_HOME, make_repo, push_branch_to_origin
 
 REPO = Path(__file__).resolve().parent.parent
 PEOPLE = {"alice": ("alice@example.com", True), "bob": ("bob@example.com", False)}
@@ -146,6 +146,9 @@ def create_app():
                 yield state
             finally:
                 _stop_tmux(root)
+                # uvicorn ends itself with the signal that stopped it, so no exit
+                # handler runs: what the git fixtures used goes here.
+                shutil.rmtree(FIXTURE_HOME, ignore_errors=True)
 
     app.router.lifespan_context = lifespan
     return app
