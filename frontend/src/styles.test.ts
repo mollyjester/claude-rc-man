@@ -214,11 +214,20 @@ test("a colour's name in a property that takes no colour is not a colour", () =>
   ]);
 });
 
-// A rule's declarations in the stylesheet, by its exact selector.
-function ruleOf(selector: string): string {
-  const found = [...uncommented(STYLES).matchAll(/([^{}]+)\{([^}]*)\}/g)].find(([, sel]) => sel.trim() === selector);
+// A rule's declarations in the stylesheet, by its exact selector list, read as CSS reads it:
+// any run of white space, a line break included, is one space.
+function ruleOf(selector: string, css = STYLES): string {
+  const found = [...uncommented(css).matchAll(/([^{}]+)\{([^}]*)\}/g)].find(
+    ([, sel]) => sel.trim().replace(/\s+/g, " ") === selector,
+  );
   return found ? found[2] : "";
 }
+
+test("a rule is found by its selector list wherever the list breaks its lines", () => {
+  expect(ruleOf("a, b", "a, b { color: red; }")).toMatch(/color/); // positive control
+  expect(ruleOf("a, b", "a,\nb { color: red; }")).toMatch(/color/);
+  expect(ruleOf("a, b", "a,\n  b\n{ color: red; }")).toMatch(/color/);
+});
 
 test("what git said wraps, where a server's screen scrolls", () => {
   expect(ruleOf(".screen")).toMatch(/overflow-x:\s*auto/); // positive control
