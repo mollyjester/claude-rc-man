@@ -267,8 +267,11 @@ test("the settings page has an input for every field it describes, and nothing e
 // The inputs of a form whose refusal names a field: each carries the field's
 // name, so the server's error can be matched to it. A radio's label names one
 // choice, not the field, so radios are not among them.
-function fieldInputs(form: HTMLFormElement): HTMLInputElement[] {
-  return [...form.querySelectorAll("input")].filter((input) => input.type !== "radio");
+type Field = HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement;
+
+// Every field of a form a person fills in: inputs but radio buttons, text areas and choices.
+function fieldInputs(form: HTMLFormElement): Field[] {
+  return [...form.querySelectorAll<Field>("input, textarea, select")].filter((input) => input.type !== "radio");
 }
 
 // What a form's refusal shows wrongly: an input with no field name, or a field
@@ -277,7 +280,8 @@ function fieldInputs(form: HTMLFormElement): HTMLInputElement[] {
 async function labelFaults(form: HTMLFormElement): Promise<string[]> {
   const faults: string[] = [];
   // Read before submitting: a refusal may take the form away.
-  const label = (input: HTMLInputElement) => input.labels?.[0]?.textContent?.trim() ?? "";
+  // The label's own words, without what the field itself holds, such as a choice's options.
+  const label = (input: Field) => (input.labels?.[0]?.textContent ?? "").replace(input.textContent ?? "", "").trim();
   const named = fieldInputs(form)
     .filter((input) => {
       if (!input.name) faults.push(`${label(input)}: an input with no field name`);
