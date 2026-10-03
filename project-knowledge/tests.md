@@ -18,6 +18,9 @@ How the test suite is organised and run. The rules the suite follows are in
 | `make e2e` | Builds the frontend and runs the browser tests |
 | `make check` | Lint, `make test`, `make test-container`, the frontend tests and the browser tests. It sets `RCMAN_REQUIRE_REAL_CLAUDE=1`, so tests that would skip for want of the real `claude` fail instead |
 
+When the full suite runs, and how a run is read, is a working rule:
+[the full check runs at the edges of a change](working-rules.md#tests-and-guards).
+
 Run pytest from the repository root; `pyproject.toml` holds its configuration.
 The Python tests are split by where they run, not by how long they take:
 `make test` runs everything that runs on the host, slow tests included, and a
