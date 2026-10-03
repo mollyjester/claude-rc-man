@@ -217,14 +217,9 @@ export function ServerCard({
         ))}
       </div>
       {server.screen && (
-        <pre
-          id={screenId}
-          className="screen"
-          aria-label={m.screenTitle(server.path)}
-          hidden={!showScreen}
-        >
-          {server.screen.join("\n")}
-        </pre>
+        <figure id={screenId} aria-label={m.screenTitle(server.path)} hidden={!showScreen}>
+          <pre className="screen">{server.screen.join("\n")}</pre>
+        </figure>
       )}
       <ProblemView error={error} />
     </article>

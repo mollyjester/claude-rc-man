@@ -50,9 +50,9 @@ export function ProblemView({
       )}
       {Array.isArray(git) && (
         <>
-          <pre className="screen git-said" aria-label={m.gitSaid}>
-            {git.join("\n")}
-          </pre>
+          <figure aria-label={m.gitSaid}>
+            <pre className="screen git-said">{git.join("\n")}</pre>
+          </figure>
           {typeof gitMore === "number" && gitMore > 0 && <p>{m.andMoreLines(gitMore)}</p>}
         </>
       )}

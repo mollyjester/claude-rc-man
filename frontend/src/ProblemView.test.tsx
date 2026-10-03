@@ -84,7 +84,9 @@ test("shows what git said when it refused, and how much more it said", () => {
   const git = ["error: Your local changes would be overwritten:", "\ta.txt", "Aborting"];
   const error = new ApiError(409, "git_failed", "git refused.", [], { git, git_more: 4 });
   render(<ProblemView error={error} />);
-  const said = screen.getByLabelText(m.gitSaid);
+  // a figure, so its name reaches assistive technology, which a pre's own name does not
+  const figure = screen.getByRole("figure", { name: m.gitSaid });
+  const said = within(figure).getByText(git[0], { exact: false });
   expect(said.tagName).toBe("PRE");
   expect(said).toHaveClass("git-said"); // wrapped, unlike a screen
   expect(said.textContent).toBe(git.join("\n"));

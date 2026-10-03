@@ -47,6 +47,10 @@ body {
 a {
   color: var(--accent);
 }
+/* A figure only names what it holds, such as a screen, and adds no space of its own. */
+figure {
+  margin: 0;
+}
 :focus-visible {
   outline: 2px solid var(--focus);
   outline-offset: 2px;

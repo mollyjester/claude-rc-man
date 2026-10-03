@@ -662,6 +662,8 @@ test("Show screen is a disclosure, which hides the screen again", async () => {
   expect(disclosure).toHaveAccessibleName(m.showScreen); // the name stays; its state says what it does
   expect(screenOf()).toBeVisible();
   expect(screenOf()).toHaveTextContent("last words");
+  // a figure, so its name reaches assistive technology, which a pre's own name does not
+  expect(found.getByRole("figure", { name: m.screenTitle("projects/alpha") })).toBe(screenOf());
 
   await userEvent.click(disclosure);
   expect(disclosure).toHaveAttribute("aria-expanded", "false");

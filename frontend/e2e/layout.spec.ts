@@ -49,7 +49,7 @@ for (const [width, columns] of [
     await page.goto(`/?folder=${server.path}`);
     const card = page.getByRole("article", { name: server.path });
     await card.getByRole("button", { name: m.showScreen }).click();
-    const screen = card.getByLabel(m.screenTitle(server.path));
+    const screen = card.getByRole("figure", { name: m.screenTitle(server.path) }).locator("pre");
     await expect(screen).toBeVisible();
 
     // positive controls: the layout is the one this width gets, and the
