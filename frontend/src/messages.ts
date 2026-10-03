@@ -240,9 +240,11 @@ export const m = {
   commitPush: "Commit & Push",
   push: "Push",
   pushed: (branch: string, upstream: string) => `Pushed ${branch} to ${upstream}.`,
-  pushNeedsToken:
-    "Pushing to GitHub needs a GitHub token, and none is stored. Add one in Settings; when GitHub refuses a token, git forgets it.",
-  pushTokenLink: "Add a GitHub token",
+  pushNeedsToken: {
+    before: "Pushing to GitHub needs a GitHub token, and none is stored: ",
+    link: "add one in Settings",
+    after: ". When GitHub refuses a token, git forgets it.",
+  },
   pushNeedsBranch: "You are not on a branch, so there is nothing to push.",
   committedNotPushed: (commit: string) => `Committed ${commit}, but the push failed.`,
   branchesTitle: "Branches",

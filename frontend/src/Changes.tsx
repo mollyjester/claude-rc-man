@@ -301,7 +301,9 @@ export function Changes({ path, pollMs }: { path: string; pollMs: number }) {
             <p>{m.pushNeedsBranch}</p>
           ) : pushReason(status) === "token" ? (
             <p>
-              {m.pushNeedsToken} <Link to="/settings">{m.pushTokenLink}</Link>
+              {m.pushNeedsToken.before}
+              <Link to="/settings">{m.pushNeedsToken.link}</Link>
+              {m.pushNeedsToken.after}
             </p>
           ) : (
             somethingToPush(status.branch) && (
