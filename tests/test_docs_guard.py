@@ -230,10 +230,12 @@ TESTS_MD = REPO / "project-knowledge" / "tests.md"
 
 
 def make_targets(makefile: str) -> set[str]:
-    """The targets a Makefile defines: each rule's name, not a special target and
-    not a target-specific variable."""
+    """The targets a Makefile defines: each rule's name, not a comment, a special
+    target or a target-specific variable."""
     found = set()
     for line in makefile.splitlines():
+        if line.lstrip().startswith("#"):
+            continue
         name, colon, rest = line.partition(":")
         if colon and name and not name[0].isspace() and not name.startswith("."):
             if not rest.lstrip().startswith("export ") and "=" not in name:
@@ -268,3 +270,12 @@ def test_the_make_target_check_fails_on_a_drifted_table():
     extra = table + "| `make c` | three |\n"
     assert documented_make_targets(extra) != make_targets(makefile)
     assert documented_make_targets("") == set()
+
+
+def test_a_makefile_comment_with_a_colon_is_not_a_target():
+    """A comment line is not a rule, whatever it holds; the rule beside it still is."""
+    makefile = "a:  ## one\n\tdo a\n"
+    assert make_targets(makefile) == {"a"}  # positive control
+    commented = "# Why: a reason\n" + makefile
+    assert "# Why:" in commented  # the plant took effect
+    assert make_targets(commented) == {"a"}
