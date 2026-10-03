@@ -226,5 +226,5 @@ test("what git said wraps, where a server's screen scrolls", () => {
 });
 
 test("a commit message's box stands apart from its label", () => {
-  expect(ruleOf(".panel-section label > textarea")).toMatch(/margin-top:\s*[1-9.]/);
+  expect(ruleOf(".panel-section label > textarea")).toMatch(/margin-top:\s*[0-9.]*[1-9]/);
 });

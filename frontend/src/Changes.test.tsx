@@ -215,7 +215,7 @@ test("without a commit author, Commit is not offered and the section says where 
   repoApi({ "GET /api/git/status": status([{ path: "a.txt", change: "added" }], [], { author: null }) });
   const app = renderApp(`/?folder=${REPO}`);
   const section = await changes();
-  expect(await section.findByText(m.commitNeedsAuthor)).toBeInTheDocument();
+  expect(await section.findByText(m.commitNeedsAuthor, { exact: false })).toBeInTheDocument();
   expect(section.queryByRole("button", { name: m.commit })).not.toBeInTheDocument();
   expect(section.queryByLabelText(m.commitMessage)).not.toBeInTheDocument();
   await userEvent.click(section.getByRole("link", { name: m.commitAuthorLink }));

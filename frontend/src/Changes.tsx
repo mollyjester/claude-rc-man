@@ -11,6 +11,7 @@ type Branch = { name: string | null; commit: string | null; upstream: string | n
 export type GitStatus = {
   path: string;
   branch: Branch;
+  merging: boolean;
   staged: FileList;
   not_staged: FileList;
   author: { name: string; email: string } | null;
@@ -85,7 +86,7 @@ function Files({
   }
   return (
     <div role="group" aria-label={title} className="files">
-      <h4>{title}</h4>
+      <h4>{m.listHeading(title, list.files.length + list.more)}</h4>
       {list.files.length === 0 ? (
         <p>{m.noFiles}</p>
       ) : (
@@ -155,6 +156,7 @@ export function Changes({ path, pollMs }: { path: string; pollMs: number }) {
   const [notStaged, setNotStaged] = useState<ReadonlySet<string>>(new Set());
   const [message, setMessage] = useState("");
   const [newBranch, setNewBranch] = useState("");
+  const [opening, setOpening] = useState(false);
   const [busy, setBusy] = useState(false);
   const [errors, setErrors] = useState<Partial<Record<Action, ApiError>>>({});
 
@@ -194,6 +196,7 @@ export function Changes({ path, pollMs }: { path: string; pollMs: number }) {
     try {
       await run();
       done = true;
+      setErrors({});
     } catch (e) {
       setErrors((current) => ({ ...current, [action]: asApiError(e) }));
     } finally {
@@ -225,7 +228,10 @@ export function Changes({ path, pollMs }: { path: string; pollMs: number }) {
 
   async function createBranch(event: FormEvent) {
     event.preventDefault();
-    if (await act("branch", () => api.post("/api/git/branch", { path, name: newBranch }))) setNewBranch("");
+    if (await act("branch", () => api.post("/api/git/branch", { path, name: newBranch }))) {
+      setNewBranch("");
+      setOpening(false);
+    }
   }
 
   const switchTo = (branch: string, remote: boolean) => act("switch", () => api.post("/api/git/switch", { path, branch, remote }));
@@ -242,6 +248,7 @@ export function Changes({ path, pollMs }: { path: string; pollMs: number }) {
       {status !== null && (
         <>
           <BranchLine branch={status.branch} />
+          {status.merging && <p>{m.mergeInProgress}</p>}
           <Files
             title={m.stagedTitle}
             list={status.staged}
@@ -265,7 +272,7 @@ export function Changes({ path, pollMs }: { path: string; pollMs: number }) {
           <h4>{m.commitTitle}</h4>
           {status.author === null ? (
             <p>
-              {m.commitNeedsAuthor} <Link to="/settings">{m.commitAuthorLink}</Link>
+              {m.commitNeedsAuthor} <Link to="/settings">{m.commitAuthorLink}</Link>.
             </p>
           ) : status.staged.files.length === 0 ? (
             <p>{m.commitNothingStaged}</p>
@@ -289,13 +296,14 @@ export function Changes({ path, pollMs }: { path: string; pollMs: number }) {
       <ProblemView error={errors.branches ?? null} />
       {branches && (
         <>
+          <h5>{m.localBranches}</h5>
           <ul aria-label={m.localBranches} className="branches">
             {branches.local.branches.map((b) => (
               <li key={b.name}>
                 <span className="branch-name">{b.name}</span>
-                {b.upstream && <> → {b.upstream}</>}
+                {b.upstream && <> <span>{m.tracks(b.upstream)}</span></>}
                 {b.current ? (
-                  <> ({m.currentBranch})</>
+                  <> <span>{m.currentBranch}</span></>
                 ) : (
                   <>
                     {" "}
@@ -308,10 +316,12 @@ export function Changes({ path, pollMs }: { path: string; pollMs: number }) {
             ))}
           </ul>
           {branches.local.more > 0 && <p>{m.andMore(branches.local.more)}</p>}
+          <h5>{m.remoteBranches}</h5>
           <ul aria-label={m.remoteBranches} className="branches">
             {branches.remote.branches.map((b) => (
               <li key={b.name}>
                 <span className="branch-name">{b.name}</span>
+                {b.local !== null && <> <span>{m.trackedBy(b.local)}</span></>}
                 {b.local === null && (
                   <>
                     {" "}
@@ -327,23 +337,31 @@ export function Changes({ path, pollMs }: { path: string; pollMs: number }) {
         </>
       )}
       <ProblemView error={errors.switch ?? null} labels={{ branch: m.branchesTitle }} />
-      <form noValidate onSubmit={createBranch}>
-        <label>
-          {m.newBranchName}
-          <input type="text" name="name" value={newBranch} onChange={(e) => setNewBranch(e.target.value)} />
-        </label>
-        <div className="actions">
-          <button type="submit" className="primary" disabled={busy}>
-            {m.createBranch}
-          </button>
-        </div>
-      </form>
-      <ProblemView error={errors.branch ?? null} labels={{ name: m.newBranchName }} />
       <div className="actions">
+        <button type="button" className="secondary" disabled={busy} onClick={() => setOpening(true)}>
+          {m.newBranch}
+        </button>
         <button type="button" className="secondary" disabled={busy} onClick={() => act("fetch", () => api.post("/api/git/fetch", { path }))}>
           {m.refreshBranches}
         </button>
       </div>
+      {opening && (
+        <form noValidate onSubmit={createBranch}>
+          <label>
+            {m.newBranchName}
+            <input type="text" name="name" value={newBranch} onChange={(e) => setNewBranch(e.target.value)} />
+          </label>
+          <div className="actions">
+            <button type="submit" className="primary" disabled={busy}>
+              {m.createBranch}
+            </button>
+            <button type="button" onClick={() => setOpening(false)}>
+              {m.cancel}
+            </button>
+          </div>
+        </form>
+      )}
+      <ProblemView error={errors.branch ?? null} labels={{ name: m.newBranchName }} />
       <ProblemView error={errors.fetch ?? null} />
     </>
   );
