@@ -29,14 +29,23 @@ test("names a field by the form's label when given one, and by its name otherwis
 });
 
 test("shows a raw screen the server passed on", () => {
-  const error = new ApiError(502, "claude_unrecognised_output", "Unrecognised.", [], { screen: ["line one", "line two"] });
+  const error = new ApiError(502, "claude_unrecognised_output", "Unrecognised.", [], {
+    screen: ["line one", "line two"],
+  });
   render(<ProblemView error={error} />);
   expect(screen.getByText(/line one\s+line two/)).toBeInTheDocument();
 });
 
 test("shows the server a problem names, with its screen", () => {
-  const server = { path: "projects/alpha", state: "unrecognised", screen: ["still here", "and here"] };
-  const error = new ApiError(409, "delete_stop_failed", "A server did not stop.", [], { server, stopped: [] });
+  const server = {
+    path: "projects/alpha",
+    state: "unrecognised",
+    screen: ["still here", "and here"],
+  };
+  const error = new ApiError(409, "delete_stop_failed", "A server did not stop.", [], {
+    server,
+    stopped: [],
+  });
   render(<ProblemView error={error} />);
   const alert = screen.getByRole("alert");
   expect(alert).toHaveTextContent("A server did not stop.");
@@ -46,10 +55,17 @@ test("shows the server a problem names, with its screen", () => {
 
 test("lists what a problem says was left", () => {
   const left = ["projects/beta", "projects/beta/stuck"];
-  const error = new ApiError(409, "delete_incomplete", "Some was left.", [], { left, forgotten: [] });
+  const error = new ApiError(409, "delete_incomplete", "Some was left.", [], {
+    left,
+    forgotten: [],
+  });
   render(<ProblemView error={error} />);
   const list = screen.getByRole("list", { name: m.problemLeft });
-  expect(within(list).getAllByRole("listitem").map((li) => li.textContent)).toEqual(left);
+  expect(
+    within(list)
+      .getAllByRole("listitem")
+      .map((li) => li.textContent),
+  ).toEqual(left);
 });
 
 test("shows nothing of a server or what was left when the problem names neither", () => {
@@ -77,7 +93,11 @@ test("shows what git said when it refused, and how much more it said", () => {
 });
 
 test("says nothing of more lines when git said no more", () => {
-  render(<ProblemView error={new ApiError(409, "git_failed", "git refused.", [], { git: ["one"], git_more: 0 })} />);
+  render(
+    <ProblemView
+      error={new ApiError(409, "git_failed", "git refused.", [], { git: ["one"], git_more: 0 })}
+    />,
+  );
   expect(screen.getByLabelText(m.gitSaid)).toHaveTextContent("one"); // positive control
   expect(screen.getByRole("alert")).not.toHaveTextContent(m.andMoreLines(0));
 });

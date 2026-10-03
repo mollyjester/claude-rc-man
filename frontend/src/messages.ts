@@ -45,7 +45,8 @@ export const m = {
   cloning: "Cloning…",
   // Two sentences; the second ends with the link to Settings.
   cloneNote: {
-    before: "git names the new folder after the repository, as git clone does. A private repository is cloned with ",
+    before:
+      "git names the new folder after the repository, as git clone does. A private repository is cloned with ",
     link: "your GitHub token",
     after: ".",
   },
@@ -112,7 +113,8 @@ export const m = {
   claudeTitle: "Claude account",
   claudeNotConnected: "Your Claude account is not connected. Connect it to start servers.",
   claudeConnectedAs: (email: string) => `Connected as ${email}`,
-  claudeExpiring: (when: string) => `Your Claude sign-in expires ${when}. Connect again to renew it.`,
+  claudeExpiring: (when: string) =>
+    `Your Claude sign-in expires ${when}. Connect again to renew it.`,
   claudeExpired: "Your Claude sign-in has expired. Connect again to keep your servers working.",
   claudeExpires: (when: string) => `Sign-in expires ${when}`,
   connect: "Connect Claude account",
@@ -132,7 +134,8 @@ export const m = {
   authorNameLabel: "Commit author name",
   authorNameHelp: "The name commits made from rcman are recorded under.",
   authorEmailLabel: "Commit author email",
-  authorEmailHelp: "The address commits are recorded under. Leave it empty to use the address you sign in with.",
+  authorEmailHelp:
+    "The address commits are recorded under. Leave it empty to use the address you sign in with.",
   authorEffective: (name: string, email: string) => `Commits are recorded as ${name} <${email}>.`,
   authorNotSet: "No commit author is set.",
   settingsGithubTitle: "GitHub token",
@@ -185,10 +188,12 @@ export const m = {
   attentionVersionsDiffer: (people: string[]) =>
     `Claude Code differs from the approved version for: ${people.join(", ")}.`,
   attentionVersionsFailed: "rcman could not check the Claude Code versions:",
-  attentionUntested: "The approved Claude Code version is not the one rcman's recorded tests cover.",
+  attentionUntested:
+    "The approved Claude Code version is not the one rcman's recorded tests cover.",
 
   everyoneTitle: "Everyone's servers",
-  everyoneIntro: "Each person's servers, to look at only. Only the person a server belongs to can act on it.",
+  everyoneIntro:
+    "Each person's servers, to look at only. Only the person a server belongs to can act on it.",
   everyonePerson: (linux: string, email: string) => `${linux} (${email})`,
   everyoneNone: "No servers.",
   everyoneFolder: "Folder",
@@ -214,7 +219,8 @@ export const m = {
   changesTitle: "Changes",
   refreshStatus: "Refresh changes",
   listHeading: (title: string, count: number) => `${title} (${count})`,
-  mergeInProgress: "A merge is under way: resolve any conflict, stage the files, and commit to finish it.",
+  mergeInProgress:
+    "A merge is under way: resolve any conflict, stage the files, and commit to finish it.",
   stagedTitle: "Staged",
   notStagedTitle: "Not staged",
   noFiles: "No files.",
@@ -247,7 +253,11 @@ export const m = {
   commitMessage: "Commit message",
   commit: "Commit",
   // One sentence, its middle the link to Settings.
-  commitNeedsAuthor: { before: "Commits need an author name: ", link: "set yours in Settings", after: "." },
+  commitNeedsAuthor: {
+    before: "Commits need an author name: ",
+    link: "set yours in Settings",
+    after: ".",
+  },
   commitNothingStaged: "Nothing is staged. Stage the files to commit first.",
   commitPush: "Commit & Push",
   push: "Push",

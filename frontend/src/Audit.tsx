@@ -4,7 +4,15 @@ import { ApiError, api } from "./api";
 import { m } from "./messages";
 import { ProblemView, asApiError } from "./ProblemView";
 
-type Event = { id: number; at: string; email: string; linux: string; action: string; target: string | null; result: string };
+type Event = {
+  id: number;
+  at: string;
+  email: string;
+  linux: string;
+  action: string;
+  target: string | null;
+  result: string;
+};
 
 export function Audit() {
   const [events, setEvents] = useState<Event[]>([]);

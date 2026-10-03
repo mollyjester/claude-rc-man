@@ -18,7 +18,8 @@ function api(me: Reply) {
 
 const nav = () => screen.getByRole("banner");
 // The Admin button, once the page knows who is signed in.
-const adminButton = async () => within(await screen.findByRole("banner")).getByRole("button", { name: m.navAdmin });
+const adminButton = async () =>
+  within(await screen.findByRole("banner")).getByRole("button", { name: m.navAdmin });
 
 test("people who are not administrators are not offered administration", async () => {
   api(ME);

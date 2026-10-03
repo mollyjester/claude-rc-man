@@ -75,7 +75,10 @@ test("another person sees only their own home and servers", async ({ page }) => 
   expect(status).toBe(404);
 });
 
-test("administrators see everyone's servers, and act on none of them", async ({ page, browser }) => {
+test("administrators see everyone's servers, and act on none of them", async ({
+  page,
+  browser,
+}) => {
   // bob runs a server, as his own Linux account.
   await signIn(page, "bob@example.com");
   await expect(page.getByText(m.signedInAs("bob@example.com"))).toBeVisible();
@@ -94,7 +97,9 @@ test("administrators see everyone's servers, and act on none of them", async ({ 
   await signIn(admin, "alice@example.com");
   await openAdminPage(admin, m.navEveryone);
   const bob = admin.getByRole("region", { name: m.everyonePerson("bob", "bob@example.com") });
-  await expect(bob.getByRole("row", { name: /projects\/bob-demo/ }).getByText(m.states.ready, { exact: true })).toBeVisible();
+  await expect(
+    bob.getByRole("row", { name: /projects\/bob-demo/ }).getByText(m.states.ready, { exact: true }),
+  ).toBeVisible();
   const alice = admin.getByRole("region", { name: m.everyonePerson("alice", "alice@example.com") });
   await expect(alice.getByRole("row", { name: /projects\/alice-demo/ })).toBeVisible();
   await expect(admin.getByRole("main").getByRole("button")).toHaveCount(0);
@@ -104,7 +109,10 @@ test("administrators see everyone's servers, and act on none of them", async ({ 
   await expect(card.getByText(m.states.stopped, { exact: true })).toBeVisible();
 });
 
-test("a person makes and deletes a folder in their own home, and nobody else can", async ({ page, browser }) => {
+test("a person makes and deletes a folder in their own home, and nobody else can", async ({
+  page,
+  browser,
+}) => {
   await signIn(page, "alice@example.com");
   await expect(page.getByText(m.signedInAs("alice@example.com"))).toBeVisible();
   await selectInProjects(page, "alice-demo"); // opens projects
@@ -121,7 +129,10 @@ test("a person makes and deletes a folder in their own home, and nobody else can
   await signIn(bob, "bob@example.com");
   await expect(bob.getByText(m.signedInAs("bob@example.com"))).toBeVisible();
   const refused = await bob.evaluate(async () => {
-    const r = await fetch(`/api/folders?path=${encodeURIComponent("../alice/projects/alice-demo")}`, { method: "DELETE" });
+    const r = await fetch(
+      `/api/folders?path=${encodeURIComponent("../alice/projects/alice-demo")}`,
+      { method: "DELETE" },
+    );
     return [r.status, (await r.json()).code];
   });
   expect(refused).toEqual([400, "path_outside_home"]);
@@ -139,14 +150,26 @@ test("an address that is not on the list gets nowhere", async ({ page }) => {
   await signIn(page, "stranger@example.com");
   await expect(page.getByText(/403|Forbidden|Permission Denied/i).first()).toBeVisible();
   // No session came of it: rcman still sends this browser to sign in.
-  const redirected = await page.evaluate(async () => (await fetch("/api/me", { redirect: "manual" })).type);
+  const redirected = await page.evaluate(
+    async () => (await fetch("/api/me", { redirect: "manual" })).type,
+  );
   expect(redirected).toBe("opaqueredirect");
 });
 
 test("the audit trail records what people did", async ({ page }) => {
   await signIn(page, "alice@example.com");
   await openAdminPage(page, m.navAudit);
-  for (const action of ["claude.login", "claude.connect", "server.start", "server.confirm", "server.stop", "server.resume", "server.forget", "folder.create", "folder.delete"]) {
+  for (const action of [
+    "claude.login",
+    "claude.connect",
+    "server.start",
+    "server.confirm",
+    "server.stop",
+    "server.resume",
+    "server.forget",
+    "folder.create",
+    "folder.delete",
+  ]) {
     await expect(page.getByRole("cell", { name: action, exact: true }).first()).toBeVisible();
   }
   await expect(page.getByRole("cell", { name: "bob@example.com (bob)" }).first()).toBeVisible(); // bob's refused stop
@@ -159,7 +182,10 @@ test("people are removed, with and without their home", async ({ page }) => {
     ["carol", m.usersKeepHome],
     ["dave", m.usersDeleteHome],
   ]) {
-    await page.getByRole("row", { name: new RegExp(linux) }).getByRole("button", { name: m.usersRemove }).click();
+    await page
+      .getByRole("row", { name: new RegExp(linux) })
+      .getByRole("button", { name: m.usersRemove })
+      .click();
     const dialog = page.getByRole("dialog", { name: m.usersRemoveTitle(linux) });
     await dialog.getByLabel(choice).check();
     await dialog.getByRole("button", { name: m.usersRemoveConfirm }).click();

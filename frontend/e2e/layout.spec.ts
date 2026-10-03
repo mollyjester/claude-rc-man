@@ -31,7 +31,9 @@ for (const [width, columns] of [
   [900, 2],
   [600, 1],
 ] as const) {
-  test(`at ${width}px wide, a server's screen scrolls inside its card instead of widening the page`, async ({ page }) => {
+  test(`at ${width}px wide, a server's screen scrolls inside its card instead of widening the page`, async ({
+    page,
+  }) => {
     await useAs(page, ALICE);
     await page.setViewportSize({ width, height: 800 });
     // A server that stopped on a screen wider than any window.
@@ -65,11 +67,19 @@ for (const [width, columns] of [
   });
 }
 
-test("Your servers lines its paths up with its heading, each badge on its path's line", async ({ page }) => {
+test("Your servers lines its paths up with its heading, each badge on its path's line", async ({
+  page,
+}) => {
   await useAs(page, ALICE);
   await page.setViewportSize({ width: 1200, height: 800 });
   // the longest badge there is, beside a path
-  const server = { path: "projects/alice-alpha", state: "trust_prompt", environment_url: null, session_name: null, exit_code: null };
+  const server = {
+    path: "projects/alice-alpha",
+    state: "trust_prompt",
+    environment_url: null,
+    session_name: null,
+    exit_code: null,
+  };
   await page.route("**/api/servers", (route) => route.fulfill({ json: { servers: [server] } }));
   await page.goto("/");
   const list = summary(page);
@@ -90,7 +100,13 @@ test("Your servers lines its paths up with its heading, each badge on its path's
 test("a badge with no room beside its path goes below it, lined up with it", async ({ page }) => {
   await useAs(page, ALICE);
   await page.setViewportSize({ width: 780, height: 800 });
-  const server = { path: "projects/alice-alpha", state: "trust_prompt", environment_url: null, session_name: null, exit_code: null };
+  const server = {
+    path: "projects/alice-alpha",
+    state: "trust_prompt",
+    environment_url: null,
+    session_name: null,
+    exit_code: null,
+  };
   await page.route("**/api/servers", (route) => route.fulfill({ json: { servers: [server] } }));
   await page.goto("/");
   await expect(tree(page).getByRole("button", { name: "projects", exact: true })).toBeVisible();
@@ -124,7 +140,9 @@ test("a file that cannot be selected lines up with those that can", async ({ pag
   };
   await page.route("**/api/git/status*", (route) => route.fulfill({ json: status }));
   await page.goto(`/?folder=${path}`);
-  const list = page.getByRole("region", { name: m.changesTitle }).getByRole("group", { name: m.notStagedTitle });
+  const list = page
+    .getByRole("region", { name: m.changesTitle })
+    .getByRole("group", { name: m.notStagedTitle });
   const plain = list.getByText("plain.txt", { exact: true });
   const odd = list.getByText("caf�.txt", { exact: true });
   await expect(plain).toBeVisible();

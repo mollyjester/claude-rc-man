@@ -21,6 +21,10 @@ export default defineConfig({
     reuseExistingServer: false,
     // Not the default SIGKILL: the backend's shutdown stops the tmux servers it started.
     gracefulShutdown: { signal: "SIGTERM", timeout: 10_000 },
-    env: { RCMAN_PUBLIC_ORIGIN: ORIGIN, RCMAN_E2E_DIR: WORLD, RCMAN_E2E_GITHUB_TOKEN: GITHUB_TOKEN },
+    env: {
+      RCMAN_PUBLIC_ORIGIN: ORIGIN,
+      RCMAN_E2E_DIR: WORLD,
+      RCMAN_E2E_GITHUB_TOKEN: GITHUB_TOKEN,
+    },
   },
 });

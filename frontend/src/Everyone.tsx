@@ -65,7 +65,9 @@ export function Everyone() {
       <p>{m.everyoneIntro}</p>
       <ProblemView error={error} />
       {people === null && !error && <p>{m.loading}</p>}
-      {people?.map((person) => <PersonServers key={person.linux} person={person} />)}
+      {people?.map((person) => (
+        <PersonServers key={person.linux} person={person} />
+      ))}
     </section>
   );
 }

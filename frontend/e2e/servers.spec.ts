@@ -21,17 +21,22 @@ test("start, trust, stop, resume and forget through the folder panel", async ({ 
   await card.getByRole("button", { name: m.trustYes }).click();
   await expect(card.getByText(m.states.ready, { exact: true })).toBeVisible();
   await expect(card.getByText(/^alice-/)).toBeVisible();
-  await expect(card.getByRole("link", { name: m.openSession })).toHaveAttribute("href", /environment=/);
-  await expect(alpha.getByRole("button", { name: m.start })).toHaveCount(0);
-  await expect(tree(page).getByRole("button", { name: "alice-alpha", exact: true })).toHaveAccessibleDescription(
-    m.kinds.running,
+  await expect(card.getByRole("link", { name: m.openSession })).toHaveAttribute(
+    "href",
+    /environment=/,
   );
+  await expect(alpha.getByRole("button", { name: m.start })).toHaveCount(0);
+  await expect(
+    tree(page).getByRole("button", { name: "alice-alpha", exact: true }),
+  ).toHaveAccessibleDescription(m.kinds.running);
   await expect(summary(page).getByRole("button", { name: "projects/alice-alpha" })).toBeVisible();
 
   await page.reload();
   await expect(card.getByText(m.states.ready, { exact: true })).toBeVisible();
   await selectInProjects(page, "alice-beta");
-  await expect(panel(page, "projects/alice-beta").getByRole("button", { name: m.start })).toBeVisible();
+  await expect(
+    panel(page, "projects/alice-beta").getByRole("button", { name: m.start }),
+  ).toBeVisible();
   await page.goBack();
   await expect(card.getByText(m.states.ready, { exact: true })).toBeVisible();
 
@@ -58,7 +63,10 @@ test("a folder is made, runs a server, and is deleted with it", async ({ page })
 
   const made = panel(page, "projects/alice-made");
   await expect(made).toBeVisible();
-  await expect(tree(page).getByRole("button", { name: "alice-made", exact: true })).toHaveAttribute("aria-current", "true");
+  await expect(tree(page).getByRole("button", { name: "alice-made", exact: true })).toHaveAttribute(
+    "aria-current",
+    "true",
+  );
   await made.getByRole("button", { name: m.start }).click();
   const card = made.getByRole("article", { name: "projects/alice-made" });
   await card.getByRole("button", { name: m.trustYes }).click();
@@ -78,8 +86,12 @@ test("a folder is made, runs a server, and is deleted with it", async ({ page })
   await expect(tree(page).getByRole("button", { name: "alice-alpha", exact: true })).toBeVisible();
   await expect(summary(page).getByRole("button", { name: "projects/alice-made" })).toHaveCount(0);
   const left = await page.evaluate(async () => ({
-    servers: (await (await fetch("/api/servers")).json()).servers.map((s: { path: string }) => s.path),
-    folders: (await (await fetch("/api/folders?path=projects")).json()).entries.map((e: { path: string }) => e.path),
+    servers: (await (await fetch("/api/servers")).json()).servers.map(
+      (s: { path: string }) => s.path,
+    ),
+    folders: (await (await fetch("/api/folders?path=projects")).json()).entries.map(
+      (e: { path: string }) => e.path,
+    ),
   }));
   expect(left.servers).not.toContain("projects/alice-made");
   expect(left.folders).toContain("projects/alice-alpha"); // positive control: the listing is there
@@ -130,7 +142,10 @@ test("people never see each other's folders or servers", async ({ page, browser 
   expect((await stopped).ok()).toBe(true);
 });
 
-test("administrators see everyone's servers, and act on none of them", async ({ page, browser }) => {
+test("administrators see everyone's servers, and act on none of them", async ({
+  page,
+  browser,
+}) => {
   await useAs(page, ALICE);
   await page.goto("/");
   await selectInProjects(page, "alice-alpha");
@@ -169,11 +184,16 @@ test("administrators see everyone's servers, and act on none of them", async ({ 
 test("a repository's changes: appear, stage, commit, switch branch", async ({ page }) => {
   const repo = join(WORLD, "homes", "alice", "projects", "alice-repo");
   const git = (...args: string[]) =>
-    execFileSync("git", ["-C", repo, ...args], { env: { PATH: "/usr/bin:/bin", HOME: WORLD }, encoding: "utf-8" });
+    execFileSync("git", ["-C", repo, ...args], {
+      env: { PATH: "/usr/bin:/bin", HOME: WORLD },
+      encoding: "utf-8",
+    });
   await useAs(page, ALICE);
   await page.goto("/");
   await selectInProjects(page, "alice-repo");
-  await expect(tree(page).getByRole("button", { name: "alice-repo", exact: true })).toHaveAccessibleDescription(m.repository);
+  await expect(
+    tree(page).getByRole("button", { name: "alice-repo", exact: true }),
+  ).toHaveAccessibleDescription(m.repository);
   const changes = panel(page, "projects/alice-repo").getByRole("region", { name: m.changesTitle });
   await expect(changes.getByText(m.onBranch("main"))).toBeVisible();
 
@@ -201,7 +221,9 @@ test("a repository's changes: appear, stage, commit, switch branch", async ({ pa
   await changes.getByLabel(m.commitMessage).fill("Add a file Claude wrote");
   await changes.getByRole("button", { name: m.commit }).click();
   await expect(changes.getByText(m.commitNothingStaged)).toBeVisible();
-  expect(git("log", "-1", "--format=%an <%ae>|%s")).toBe(`Alice Author <${ALICE}>|Add a file Claude wrote\n`);
+  expect(git("log", "-1", "--format=%an <%ae>|%s")).toBe(
+    `Alice Author <${ALICE}>|Add a file Claude wrote\n`,
+  );
 
   // a branch only on origin needs Refresh branches; switching to one makes it local
   const remote = changes.getByRole("list", { name: m.remoteBranches });
@@ -211,15 +233,20 @@ test("a repository's changes: appear, stage, commit, switch branch", async ({ pa
   await expect(remote.getByText("origin/later", { exact: true })).toBeVisible();
   await remote.getByRole("button", { name: m.switchTo("origin/feature") }).click();
   await expect(changes.getByText(m.onBranch("feature"))).toBeVisible();
-  await expect(changes.getByRole("list", { name: m.localBranches }).getByText(m.currentBranch)).toBeVisible();
+  await expect(
+    changes.getByRole("list", { name: m.localBranches }).getByText(m.currentBranch),
+  ).toBeVisible();
   expect(git("branch", "--show-current")).toBe("feature\n");
 });
 
-test("a GitHub token is added, a new branch is committed and pushed, and the token removed", async ({ page }) => {
+test("a GitHub token is added, a new branch is committed and pushed, and the token removed", async ({
+  page,
+}) => {
   const repo = join(WORLD, "homes", "alice", "projects", "alice-repo");
   const origin = join(WORLD, "origins", "alice", "alice-repo.git");
   const env = { PATH: "/usr/bin:/bin", HOME: WORLD };
-  const git = (where: string, ...args: string[]) => execFileSync("git", ["-C", where, ...args], { env, encoding: "utf-8" });
+  const git = (where: string, ...args: string[]) =>
+    execFileSync("git", ["-C", where, ...args], { env, encoding: "utf-8" });
   await useAs(page, ALICE);
   await page.goto("/settings");
   const author = page.getByRole("region", { name: m.settingsAuthorTitle });

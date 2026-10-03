@@ -26,7 +26,10 @@ export function Docs() {
   const [error, setError] = useState<ApiError | null>(null);
 
   useEffect(() => {
-    api.get<{ pages: PageInfo[] }>("/api/docs").then((r) => setPages(r.pages), (e) => setError(asApiError(e)));
+    api.get<{ pages: PageInfo[] }>("/api/docs").then(
+      (r) => setPages(r.pages),
+      (e) => setError(asApiError(e)),
+    );
   }, []);
   useEffect(() => {
     setMarkdown(null);

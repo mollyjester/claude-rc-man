@@ -21,7 +21,14 @@ type Query = Record<string, string | number | boolean | undefined>;
 // Problem details as the server sent them, in a failed response or in an
 // answer that reports one, as an ApiError.
 export function problemFrom(data: unknown, status: number): ApiError {
-  const { status: _status, code, title, errors, type: _type, ...extra } = (data ?? {}) as Record<string, unknown>;
+  const {
+    status: _status,
+    code,
+    title,
+    errors,
+    type: _type,
+    ...extra
+  } = (data ?? {}) as Record<string, unknown>;
   void _status;
   void _type;
   return new ApiError(

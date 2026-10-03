@@ -19,7 +19,8 @@ type Action = "stop" | "resume" | "startAgain" | "forget" | "showScreen" | "trus
 // The actions that start Claude, which the server refuses while the account cannot.
 const STARTS = ["resume", "startAgain"] as const satisfies readonly Action[];
 type StartAction = (typeof STARTS)[number];
-const startsClaude = (action: Action): action is StartAction => (STARTS as readonly Action[]).includes(action);
+const startsClaude = (action: Action): action is StartAction =>
+  (STARTS as readonly Action[]).includes(action);
 
 // Why nothing can start Claude, said in place of each control that would: Start
 // in a folder with no server, and a server's own actions that start it again.
@@ -185,7 +186,9 @@ export function ServerCard({
           {m.sessionName}: <code>{server.session_name}</code>
         </p>
       )}
-      {server.exit_code !== null && server.state === "exited" && <p>{m.exitCode(server.exit_code)}</p>}
+      {server.exit_code !== null && server.state === "exited" && (
+        <p>{m.exitCode(server.exit_code)}</p>
+      )}
       <div className="actions">
         {server.environment_url && LIVE.includes(server.state) && (
           <a
@@ -214,7 +217,12 @@ export function ServerCard({
         ))}
       </div>
       {server.screen && (
-        <pre id={screenId} className="screen" aria-label={m.screenTitle(server.path)} hidden={!showScreen}>
+        <pre
+          id={screenId}
+          className="screen"
+          aria-label={m.screenTitle(server.path)}
+          hidden={!showScreen}
+        >
           {server.screen.join("\n")}
         </pre>
       )}

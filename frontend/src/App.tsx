@@ -119,7 +119,10 @@ export function App({ pollMs = POLL_MS }: { pollMs?: number }) {
           <Route path="/settings" element={<Settings />} />
           <Route path="/help" element={<Docs />} />
           <Route path="/help/:slug" element={<Docs />} />
-          {me.admin && ADMIN_PAGES.map((page) => <Route key={page.path} path={page.path} element={page.element()} />)}
+          {me.admin &&
+            ADMIN_PAGES.map((page) => (
+              <Route key={page.path} path={page.path} element={page.element()} />
+            ))}
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </main>

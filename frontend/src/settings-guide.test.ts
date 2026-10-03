@@ -11,7 +11,10 @@ type Row = { label: string; field: string };
 
 // The rows of the guide's settings table: the label in bold, then the field in code.
 const settingsTable = (markdown: string): Row[] =>
-  guideTable(markdown, HEADER).map(([cell]) => ({ label: bold(cell)[0] ?? "", field: cell.match(/\(`(.+?)`\)/)?.[1] ?? "" }));
+  guideTable(markdown, HEADER).map(([cell]) => ({
+    label: bold(cell)[0] ?? "",
+    field: cell.match(/\(`(.+?)`\)/)?.[1] ?? "",
+  }));
 
 // What the page shows, derived from the page itself.
 function expected(): Row[] {
@@ -25,7 +28,11 @@ test("the settings guide lists each field the page shows, with the page's label"
 });
 
 test("the check fails on a guide whose table has drifted", () => {
-  const right = [HEADER, "|---|---|", ...expected().map((r) => `| **${r.label}** (\`${r.field}\`) | what it sets |`)];
+  const right = [
+    HEADER,
+    "|---|---|",
+    ...expected().map((r) => `| **${r.label}** (\`${r.field}\`) | what it sets |`),
+  ];
   expect(settingsTable(right.join("\n"))).toEqual(expected());
 
   const relabelled = right.map((line) => line.replace(`**${FIELDS.prefix.label}**`, "**Prefix**"));
@@ -37,6 +44,8 @@ test("the check fails on a guide whose table has drifted", () => {
   expect(settingsTable(renamed.join("\n"))).not.toEqual(expected());
 
   expect(settingsTable(right.slice(0, -1).join("\n"))).not.toEqual(expected());
-  expect(settingsTable([...right, "| **Extra** (`extra`) | what it sets |"].join("\n"))).not.toEqual(expected());
+  expect(
+    settingsTable([...right, "| **Extra** (`extra`) | what it sets |"].join("\n")),
+  ).not.toEqual(expected());
   expect(settingsTable("")).toEqual([]);
 });

@@ -10,7 +10,10 @@ export type Entry = { name: string; path: string; has_children: boolean; reposit
 // Where a folder's panel is: the Servers page, with the folder in the address,
 // its slashes left as they are so that the address reads as the path.
 export function folderLink(path: string | null) {
-  return { pathname: "/", search: path ? `?folder=${encodeURIComponent(path).replaceAll("%2F", "/")}` : "" };
+  return {
+    pathname: "/",
+    search: path ? `?folder=${encodeURIComponent(path).replaceAll("%2F", "/")}` : "",
+  };
 }
 
 // A folder and each folder above it, from the top: "a/b" is a, then a/b. Empty
@@ -66,7 +69,9 @@ export function useFolderTree() {
     const above = lineage(path)
       .slice(0, -1)
       .map((f) => f.path);
-    setOpen((current) => (above.every((p) => current.has(p)) ? current : new Set([...current, ...above])));
+    setOpen((current) =>
+      above.every((p) => current.has(p)) ? current : new Set([...current, ...above]),
+    );
   }, []);
 
   // Fetches a folder's contents again, as after a folder is made or deleted in it.

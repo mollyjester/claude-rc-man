@@ -22,21 +22,29 @@ function api(routes: Routes = {}) {
 const part = (title: string) => screen.findByRole("region", { name: title });
 
 test("both parts are filled in from the server, which alone says who the author is", async () => {
-  api({ "GET /api/me/settings": { ...SETTINGS, author_name: "Alice A", author_email: "a@work.example" } });
+  api({
+    "GET /api/me/settings": { ...SETTINGS, author_name: "Alice A", author_email: "a@work.example" },
+  });
   renderApp("/settings");
   const prefix = await part(m.settingsPrefixTitle);
   const author = await part(m.settingsAuthorTitle);
-  await waitFor(() => expect(within(prefix).getByLabelText(FIELDS.prefix.label)).toHaveValue("alice"));
+  await waitFor(() =>
+    expect(within(prefix).getByLabelText(FIELDS.prefix.label)).toHaveValue("alice"),
+  );
   expect(within(author).getByLabelText(FIELDS.author_name.label)).toHaveValue("Alice A");
   expect(within(author).getByLabelText(FIELDS.author_email.label)).toHaveValue("a@work.example");
   expect(within(author).getByText(m.authorNotSet)).toBeInTheDocument(); // as the server said: no effective author
 });
 
 test("the effective author is the one the server reports", async () => {
-  api({ "GET /api/me/settings": { ...SETTINGS, author_name: "Alice A", effective_author: AUTHOR } });
+  api({
+    "GET /api/me/settings": { ...SETTINGS, author_name: "Alice A", effective_author: AUTHOR },
+  });
   renderApp("/settings");
   const author = await part(m.settingsAuthorTitle);
-  expect(await within(author).findByText(m.authorEffective(AUTHOR.name, AUTHOR.email))).toBeInTheDocument();
+  expect(
+    await within(author).findByText(m.authorEffective(AUTHOR.name, AUTHOR.email)),
+  ).toBeInTheDocument();
   expect(within(author).queryByText(m.authorNotSet)).toBeNull();
 });
 
@@ -49,30 +57,46 @@ test("saving the prefix sends only the prefix", async () => {
   await userEvent.clear(input);
   await userEvent.type(input, "box-1");
   await userEvent.click(within(prefix).getByRole("button", { name: m.save }));
-  await waitFor(() => expect(fake.made("PATCH", "/api/me/settings")[0]?.body).toEqual({ prefix: "box-1" }));
+  await waitFor(() =>
+    expect(fake.made("PATCH", "/api/me/settings")[0]?.body).toEqual({ prefix: "box-1" }),
+  );
   expect(await within(prefix).findByText(m.saved)).toBeInTheDocument();
 });
 
 test("saving the author sends the name and the email as typed, and shows what the server answers", async () => {
   const fake = api({
-    "PATCH /api/me/settings": (c) => ({ ...SETTINGS, ...(c.body as object), effective_author: AUTHOR }),
+    "PATCH /api/me/settings": (c) => ({
+      ...SETTINGS,
+      ...(c.body as object),
+      effective_author: AUTHOR,
+    }),
   });
   renderApp("/settings");
   const author = await part(m.settingsAuthorTitle);
   await userEvent.type(within(author).getByLabelText(FIELDS.author_name.label), "Alice A");
   await userEvent.click(within(author).getByRole("button", { name: m.save }));
   await waitFor(() =>
-    expect(fake.made("PATCH", "/api/me/settings")[0]?.body).toEqual({ author_name: "Alice A", author_email: "" }),
+    expect(fake.made("PATCH", "/api/me/settings")[0]?.body).toEqual({
+      author_name: "Alice A",
+      author_email: "",
+    }),
   );
-  expect(await within(author).findByText(m.authorEffective(AUTHOR.name, AUTHOR.email))).toBeInTheDocument();
+  expect(
+    await within(author).findByText(m.authorEffective(AUTHOR.name, AUTHOR.email)),
+  ).toBeInTheDocument();
   expect(within(author).getByText(m.saved)).toBeInTheDocument();
 });
 
 test("what the server refuses is shown as it said it, in the part that sent it", async () => {
   api({
-    "PATCH /api/me/settings": problem(422, "validation_failed", "Some of what was sent is not valid.", {
-      errors: [{ field: "author_name", message: "planted reason, as the server sent it" }],
-    }),
+    "PATCH /api/me/settings": problem(
+      422,
+      "validation_failed",
+      "Some of what was sent is not valid.",
+      {
+        errors: [{ field: "author_name", message: "planted reason, as the server sent it" }],
+      },
+    ),
   });
   renderApp("/settings");
   const author = await part(m.settingsAuthorTitle);
@@ -80,7 +104,9 @@ test("what the server refuses is shown as it said it, in the part that sent it",
   await userEvent.type(within(author).getByLabelText(FIELDS.author_name.label), "<b>");
   await userEvent.click(within(author).getByRole("button", { name: m.save }));
   expect(
-    await within(author).findByText(`${FIELDS.author_name.label}: planted reason, as the server sent it`),
+    await within(author).findByText(
+      `${FIELDS.author_name.label}: planted reason, as the server sent it`,
+    ),
   ).toBeInTheDocument();
   expect(within(prefix).queryByRole("alert")).toBeNull();
 });
@@ -98,7 +124,9 @@ test("saving one part leaves the other part's status alone", async () => {
   renderApp("/settings");
   const prefix = await part(m.settingsPrefixTitle);
   const author = await part(m.settingsAuthorTitle);
-  await waitFor(() => expect(within(prefix).getByLabelText(FIELDS.prefix.label)).toHaveValue("alice"));
+  await waitFor(() =>
+    expect(within(prefix).getByLabelText(FIELDS.prefix.label)).toHaveValue("alice"),
+  );
   await userEvent.click(within(prefix).getByRole("button", { name: m.save }));
   expect(await within(prefix).findByText(m.saved)).toBeInTheDocument();
   expect(within(author).queryByText(m.saved)).toBeNull();
@@ -123,7 +151,8 @@ test("the GitHub token part says whether one is stored, and never fills its fiel
   expect(field).toHaveAttribute("autocomplete", "new-password");
   expect(field).toHaveValue("");
   expect(document.body.textContent).not.toContain(PLANTED);
-  for (const input of document.querySelectorAll("input")) expect(input.value).not.toContain(PLANTED);
+  for (const input of document.querySelectorAll("input"))
+    expect(input.value).not.toContain(PLANTED);
 });
 
 test("with no token stored the part says so, and offers no Remove", async () => {
@@ -131,7 +160,9 @@ test("with no token stored the part says so, and offers no Remove", async () => 
   renderApp("/settings");
   const github = await part(m.settingsGithubTitle);
   expect(await within(github).findByText(m.githubTokenNotStored)).toBeInTheDocument();
-  expect(within(github).queryByRole("button", { name: m.githubTokenRemove })).not.toBeInTheDocument();
+  expect(
+    within(github).queryByRole("button", { name: m.githubTokenRemove }),
+  ).not.toBeInTheDocument();
 });
 
 test("Save sends the token as typed, then clears the field and says it is stored", async () => {
@@ -153,22 +184,32 @@ test("Save sends the token as typed, then clears the field and says it is stored
 
 test("a refused token stays in the field, and the refusal is shown by its label", async () => {
   api({
-    "POST /api/github/token": problem(422, "validation_failed", "Some of what was sent is not valid.", {
-      errors: [{ field: "token", message: "planted reason, as the server sent it" }],
-    }),
+    "POST /api/github/token": problem(
+      422,
+      "validation_failed",
+      "Some of what was sent is not valid.",
+      {
+        errors: [{ field: "token", message: "planted reason, as the server sent it" }],
+      },
+    ),
   });
   renderApp("/settings");
   const github = await part(m.settingsGithubTitle);
   const field = await within(github).findByLabelText(m.githubTokenLabel);
   await userEvent.type(field, "not a token");
   await userEvent.click(within(github).getByRole("button", { name: m.save }));
-  expect(await within(github).findByText(`${m.githubTokenLabel}: planted reason, as the server sent it`)).toBeInTheDocument();
+  expect(
+    await within(github).findByText(`${m.githubTokenLabel}: planted reason, as the server sent it`),
+  ).toBeInTheDocument();
   expect(field).toHaveValue("not a token");
   expect(within(github).queryByText(m.githubTokenSaved)).toBeNull();
 });
 
 test("Remove asks first, then removes the token", async () => {
-  const fake = api({ "GET /api/github": { token: true }, "DELETE /api/github/token": { token: false } });
+  const fake = api({
+    "GET /api/github": { token: true },
+    "DELETE /api/github/token": { token: false },
+  });
   renderApp("/settings");
   const github = await part(m.settingsGithubTitle);
   const remove = await within(github).findByRole("button", { name: m.githubTokenRemove });
@@ -180,7 +221,9 @@ test("Remove asks first, then removes the token", async () => {
   await waitFor(() => expect(fake.made("DELETE", "/api/github/token")).toHaveLength(1));
   expect(await within(github).findByText(m.githubTokenNotStored)).toBeInTheDocument();
   expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
-  expect(within(github).queryByRole("button", { name: m.githubTokenRemove })).not.toBeInTheDocument();
+  expect(
+    within(github).queryByRole("button", { name: m.githubTokenRemove }),
+  ).not.toBeInTheDocument();
 });
 
 test("Cancel leaves the token alone", async () => {
@@ -232,9 +275,13 @@ test("until the server says whether a token is stored, the part claims neither a
   expect(within(github).getByLabelText(m.githubTokenLabel)).toBeInTheDocument(); // positive control
   expect(within(github).queryByText(m.githubTokenStored)).not.toBeInTheDocument();
   expect(within(github).queryByText(m.githubTokenNotStored)).not.toBeInTheDocument();
-  expect(within(github).queryByRole("button", { name: m.githubTokenRemove })).not.toBeInTheDocument();
+  expect(
+    within(github).queryByRole("button", { name: m.githubTokenRemove }),
+  ).not.toBeInTheDocument();
   await act(async () => answer({ token: true }));
-  expect(await within(github).findByRole("button", { name: m.githubTokenRemove })).toBeInTheDocument();
+  expect(
+    await within(github).findByRole("button", { name: m.githubTokenRemove }),
+  ).toBeInTheDocument();
 });
 
 test("when the server cannot say whether a token is stored, the part shows why and offers no Remove", async () => {
@@ -244,5 +291,7 @@ test("when the server cannot say whether a token is stored, the part shows why a
   expect(await within(github).findByText("planted: the helper took too long")).toBeInTheDocument();
   expect(within(github).queryByText(m.githubTokenStored)).not.toBeInTheDocument();
   expect(within(github).queryByText(m.githubTokenNotStored)).not.toBeInTheDocument();
-  expect(within(github).queryByRole("button", { name: m.githubTokenRemove })).not.toBeInTheDocument();
+  expect(
+    within(github).queryByRole("button", { name: m.githubTokenRemove }),
+  ).not.toBeInTheDocument();
 });

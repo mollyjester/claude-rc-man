@@ -76,7 +76,12 @@ export function Versions() {
       <form noValidate onSubmit={upgrade}>
         <label>
           {m.versionsUpgrade}
-          <input type="text" name="version" value={version} onChange={(e) => setVersion(e.target.value)} />
+          <input
+            type="text"
+            name="version"
+            value={version}
+            onChange={(e) => setVersion(e.target.value)}
+          />
         </label>
         <button type="submit" className="primary" disabled={busy}>
           {m.versionsUpgradeGo}

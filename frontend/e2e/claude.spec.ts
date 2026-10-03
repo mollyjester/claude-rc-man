@@ -14,7 +14,10 @@ test("connecting a Claude account", async ({ page }) => {
 
   await page.getByRole("button", { name: m.connect }).click();
   await page.getByRole("button", { name: m.connectGo }).click();
-  await expect(page.getByRole("link", { name: m.connectLink })).toHaveAttribute("href", /oauth\/authorize/);
+  await expect(page.getByRole("link", { name: m.connectLink })).toHaveAttribute(
+    "href",
+    /oauth\/authorize/,
+  );
 
   await page.getByLabel(m.connectCode).fill("WRONG");
   await page.getByRole("button", { name: m.connectSubmit }).click();

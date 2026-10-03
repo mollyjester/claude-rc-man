@@ -14,10 +14,17 @@ const PEOPLE = {
     {
       linux: "alice",
       email: "alice@example.com",
-      servers: [server("projects/alpha", "ready", { session_name: "alice-quiet-otter" }), server("projects/beta", "stopped")],
+      servers: [
+        server("projects/alpha", "ready", { session_name: "alice-quiet-otter" }),
+        server("projects/beta", "stopped"),
+      ],
     },
     { linux: "bob", email: "bob@example.com", servers: [] },
-    { linux: "carol", email: "carol@example.com", error: { code: "helper_timeout", title: "rcman's helper took too long to answer." } },
+    {
+      linux: "carol",
+      email: "carol@example.com",
+      error: { code: "helper_timeout", title: "rcman's helper took too long to answer." },
+    },
   ],
 };
 
@@ -33,7 +40,9 @@ function api() {
 test("each person's servers are listed with their state", async () => {
   api();
   renderApp("/admin/servers");
-  const alice = await screen.findByRole("region", { name: m.everyonePerson("alice", "alice@example.com") });
+  const alice = await screen.findByRole("region", {
+    name: m.everyonePerson("alice", "alice@example.com"),
+  });
   const alpha = within(alice).getByRole("row", { name: /projects\/alpha/ });
   expect(within(alpha).getByText(m.states.ready)).toHaveClass("badge", `badge-${KIND.ready}`);
   expect(within(alpha).getByText("alice-quiet-otter")).toBeInTheDocument();
@@ -54,6 +63,10 @@ test("nothing on the page acts on anyone's servers", async () => {
 test("a person whose servers could not be listed shows the server's reason", async () => {
   api();
   renderApp("/admin/servers");
-  const carol = await screen.findByRole("region", { name: m.everyonePerson("carol", "carol@example.com") });
-  expect(within(carol).getByRole("alert")).toHaveTextContent("rcman's helper took too long to answer.");
+  const carol = await screen.findByRole("region", {
+    name: m.everyonePerson("carol", "carol@example.com"),
+  });
+  expect(within(carol).getByRole("alert")).toHaveTextContent(
+    "rcman's helper took too long to answer.",
+  );
 });

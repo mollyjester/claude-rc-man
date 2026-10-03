@@ -5,9 +5,17 @@ import { ADMIN } from "./AdminPages";
 import { m } from "./messages";
 import { vi } from "vitest";
 
-import { ADMIN_USER, CONNECTED, ME, NOTHING_TO_ATTEND, type Reply, SETTINGS, fakeApi, problem } from "./test/fakeApi";
+import {
+  ADMIN_USER,
+  CONNECTED,
+  ME,
+  NOTHING_TO_ATTEND,
+  type Reply,
+  SETTINGS,
+  fakeApi,
+  problem,
+} from "./test/fakeApi";
 import { renderApp } from "./test/render";
-
 
 function api(me: Reply, attention: Reply = NOTHING_TO_ATTEND) {
   return fakeApi({
@@ -29,7 +37,9 @@ test("administrators are told who is on an unrecognised screen and whose version
   });
   renderApp();
   const banner = await screen.findByRole("region", { name: m.attentionTitle });
-  expect(within(banner).getByText(m.attentionUnrecognised(["bob: projects/beta"]))).toBeInTheDocument();
+  expect(
+    within(banner).getByText(m.attentionUnrecognised(["bob: projects/beta"])),
+  ).toBeInTheDocument();
   expect(within(banner).getByText(m.attentionVersionsDiffer(["carol"]))).toBeInTheDocument();
   expect(within(banner).getByText(m.attentionUntested)).toBeInTheDocument();
   expect(within(banner).getByRole("link", { name: m.navEveryone })).toBeInTheDocument();
@@ -37,10 +47,25 @@ test("administrators are told who is on an unrecognised screen and whose version
 });
 
 test.each([
-  ["unrecognised screens", { unrecognised: [{ linux: "bob", path: "projects/beta" }] }, m.attentionUnrecognised(["bob: projects/beta"]), "everyone"],
-  ["a version that differs", { versions_differ: ["carol"] }, m.attentionVersionsDiffer(["carol"]), "versions"],
+  [
+    "unrecognised screens",
+    { unrecognised: [{ linux: "bob", path: "projects/beta" }] },
+    m.attentionUnrecognised(["bob: projects/beta"]),
+    "everyone",
+  ],
+  [
+    "a version that differs",
+    { versions_differ: ["carol"] },
+    m.attentionVersionsDiffer(["carol"]),
+    "versions",
+  ],
   ["an untested version", { untested: true }, m.attentionUntested, "versions"],
-  ["a version report that failed", { versions_error: { code: "helper_timeout", title: "Too long." } }, m.attentionVersionsFailed, "versions"],
+  [
+    "a version report that failed",
+    { versions_error: { code: "helper_timeout", title: "Too long." } },
+    m.attentionVersionsFailed,
+    "versions",
+  ],
 ] as const)("the warning about %s links to its page", async (_about, report, said, page) => {
   api(ADMIN_USER, { ...NOTHING_TO_ATTEND, ...report });
   renderApp();
@@ -107,7 +132,11 @@ test("when the version report fails, the unrecognised screens are still named, w
   });
   renderApp();
   const banner = await screen.findByRole("region", { name: m.attentionTitle });
-  expect(within(banner).getByText(m.attentionUnrecognised(["bob: projects/beta"]))).toBeInTheDocument();
+  expect(
+    within(banner).getByText(m.attentionUnrecognised(["bob: projects/beta"])),
+  ).toBeInTheDocument();
   expect(within(banner).getByText(m.attentionVersionsFailed)).toBeInTheDocument();
-  expect(within(banner).getByRole("alert")).toHaveTextContent("rcman's helper took too long to answer.");
+  expect(within(banner).getByRole("alert")).toHaveTextContent(
+    "rcman's helper took too long to answer.",
+  );
 });

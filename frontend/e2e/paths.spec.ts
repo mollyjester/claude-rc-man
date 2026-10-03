@@ -11,10 +11,17 @@ import { ALICE, useAs } from "./people";
 // then it still fits.
 const SHORT = "projects/alice-alpha";
 const LONG = "projects/clients/acme-corporation/website-redesign-2026/frontend-app";
-const TOO_WIDE = "projects/a-folder-whose-name-is-far-too-long-to-fit-on-any-line-of-the-summary-at-all";
+const TOO_WIDE =
+  "projects/a-folder-whose-name-is-far-too-long-to-fit-on-any-line-of-the-summary-at-all";
 const DEEP = `${LONG}/src/components/navigation-menu/dropdown-items`;
 
-const at = (path: string, state: string) => ({ path, state, environment_url: null, session_name: null, exit_code: null });
+const at = (path: string, state: string) => ({
+  path,
+  state,
+  environment_url: null,
+  session_name: null,
+  exit_code: null,
+});
 
 // Each part of a path as laid out: its text, how many lines its own text takes,
 // the top of its first line, its width unbroken against the width of the whole
@@ -28,9 +35,11 @@ async function parts(container: Locator) {
       const line = el.closest("li, ol")!;
       const style = getComputedStyle(line);
       const lineBox = line.getBoundingClientRect();
-      const lineWidth = lineBox.width - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+      const lineWidth =
+        lineBox.width - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
       const unbroken = el.cloneNode(true) as HTMLElement;
-      unbroken.style.cssText = "position: absolute; visibility: hidden; white-space: nowrap; max-width: none";
+      unbroken.style.cssText =
+        "position: absolute; visibility: hidden; white-space: nowrap; max-width: none";
       document.body.append(unbroken);
       const width = unbroken.getBoundingClientRect().width;
       unbroken.remove();
@@ -69,10 +78,15 @@ async function show(page: Page, width: number, address: string) {
 }
 
 for (const width of [600, 780, 900, 1200]) {
-  test(`at ${width}px wide, the paths in Your servers break only right after a slash`, async ({ page }) => {
+  test(`at ${width}px wide, the paths in Your servers break only right after a slash`, async ({
+    page,
+  }) => {
     await show(page, width, "/");
     for (const path of [SHORT, LONG, TOO_WIDE]) {
-      expectBreaksOnlyAfterSlashes(await parts(summary(page).getByRole("button", { name: path })), path);
+      expectBreaksOnlyAfterSlashes(
+        await parts(summary(page).getByRole("button", { name: path })),
+        path,
+      );
     }
 
     // positive control: the long path does take more than one line here
@@ -86,7 +100,9 @@ for (const width of [600, 780, 900, 1200]) {
     expect(name.right).toBeLessThanOrEqual(name.lineRight + 1);
   });
 
-  test(`at ${width}px wide, a deep folder's breadcrumb breaks only between folders`, async ({ page }) => {
+  test(`at ${width}px wide, a deep folder's breadcrumb breaks only between folders`, async ({
+    page,
+  }) => {
     await show(page, width, `/?folder=${DEEP}`);
     const crumbs = panel(page, DEEP).getByRole("navigation", { name: m.breadcrumb });
     // the breadcrumb's parts are its steps, from Home, each with the slash after it

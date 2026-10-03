@@ -24,10 +24,21 @@ function api() {
     "GET /api/me": ADMIN_USER,
     "GET /api/claude": NOT_CONNECTED,
     "GET /api/me/settings": SETTINGS,
-    "GET /api/users": { users: [{ linux: "bob", email: "bob@example.com", admin: false, account: true }] },
-    "GET /api/claude/versions": { approved: "1.0.0", tested: "1.0.0", untested: false, differs: [], users: [] },
+    "GET /api/users": {
+      users: [{ linux: "bob", email: "bob@example.com", admin: false, account: true }],
+    },
+    "GET /api/claude/versions": {
+      approved: "1.0.0",
+      tested: "1.0.0",
+      untested: false,
+      differs: [],
+      users: [],
+    },
     "POST /api/claude/login": { url: "https://claude.com/x" },
-    "GET /api/folders": (c) => (c.query.get("path") === "projects" ? { path: "projects", entries: [REPOSITORY] } : { path: "", entries: [] }),
+    "GET /api/folders": (c) =>
+      c.query.get("path") === "projects"
+        ? { path: "projects", entries: [REPOSITORY] }
+        : { path: "", entries: [] },
     "GET /api/servers": { servers: [] },
     "GET /api/attention": NOTHING_TO_ATTEND,
     "GET /api/git/status": {
@@ -37,7 +48,11 @@ function api() {
       not_staged: { files: [{ path: "b.txt", change: "untracked" }], more: 0 },
       author: { name: "Alice", email: "alice@example.com" },
     },
-    "GET /api/git/branches": { path: REPOSITORY.path, local: { branches: [], more: 0 }, remote: { branches: [], more: 0 } },
+    "GET /api/git/branches": {
+      path: REPOSITORY.path,
+      local: { branches: [], more: 0 },
+      remote: { branches: [], more: 0 },
+    },
     "GET /api/github": { token: true },
   });
 }
@@ -118,7 +133,11 @@ const PAGES: [string, string, () => Promise<void>][] = [
 
 // The forms of a repository's Changes section, each found by its field.
 PAGES.push(
-  ["a commit", "/?folder=projects/repo", async () => void (await screen.findByLabelText(m.commitMessage))],
+  [
+    "a commit",
+    "/?folder=projects/repo",
+    async () => void (await screen.findByLabelText(m.commitMessage)),
+  ],
   [
     "a new branch",
     "/?folder=projects/repo",
@@ -136,7 +155,9 @@ const CHOICES: [string, string, () => Promise<void>][] = [
     "/settings",
     async () => {
       const github = await screen.findByRole("region", { name: m.settingsGithubTitle });
-      await userEvent.click(await within(github).findByRole("button", { name: m.githubTokenRemove }));
+      await userEvent.click(
+        await within(github).findByRole("button", { name: m.githubTokenRemove }),
+      );
       await screen.findByRole("dialog");
     },
   ],
@@ -163,12 +184,16 @@ test.each(PAGES)("no input on %s (%s) carries its own validation rule", async (_
     }
     if (input instanceof HTMLInputElement && input.type === "password") {
       // The one secret a page takes, the GitHub token, is typed where it is not shown.
-      expect(input.closest("section")?.querySelector("h2")?.textContent).toBe(m.settingsGithubTitle);
+      expect(input.closest("section")?.querySelector("h2")?.textContent).toBe(
+        m.settingsGithubTitle,
+      );
     } else if (input instanceof HTMLInputElement) {
       expect(["text", "checkbox", "radio"]).toContain(input.type);
     }
   }
-  expect(document.querySelectorAll("form[novalidate]").length).toBe(document.querySelectorAll("form").length);
+  expect(document.querySelectorAll("form[novalidate]").length).toBe(
+    document.querySelectorAll("form").length,
+  );
 });
 
 // What is wrong with the buttons of each form under root: a form whose leading
@@ -183,20 +208,24 @@ function hierarchyFaults(root: ParentNode): string[] {
     const leading = [...form.querySelectorAll("button.primary, button.danger")];
     const name = form.textContent?.trim().slice(0, 40);
     if (leading.length !== 1) return [`${name}: ${leading.length} leading buttons`];
-    if ((leading[0] as HTMLButtonElement).type !== "submit") return [`${name}: its leading button does not submit it`];
+    if ((leading[0] as HTMLButtonElement).type !== "submit")
+      return [`${name}: its leading button does not submit it`];
     return [];
   });
   return [...formless, ...forms];
 }
 
-test.each([...PAGES, ...CHOICES])("each form on %s (%s) leads with one button, its submit button", async (page, path, open) => {
-  api();
-  renderApp(path);
-  await open();
-  if (!CHOICES.some(([choice]) => choice === page)) await inputs();
-  expect(document.querySelectorAll("form").length).toBeGreaterThan(0); // non-vacuity
-  expect(hierarchyFaults(document)).toEqual([]);
-});
+test.each([...PAGES, ...CHOICES])(
+  "each form on %s (%s) leads with one button, its submit button",
+  async (page, path, open) => {
+    api();
+    renderApp(path);
+    await open();
+    if (!CHOICES.some(([choice]) => choice === page)) await inputs();
+    expect(document.querySelectorAll("form").length).toBeGreaterThan(0); // non-vacuity
+    expect(hierarchyFaults(document)).toEqual([]);
+  },
+);
 
 // The forms whose submit cannot be undone, which lead with danger instead.
 const DESTRUCTIVE = ["removing someone", "deleting a folder", "removing the GitHub token"];
@@ -206,15 +235,18 @@ test("every form said to be destructive is one of those checked", () => {
   for (const page of DESTRUCTIVE) expect(pages).toContain(page);
 });
 
-test.each([...PAGES, ...CHOICES].filter(([page]) => DESTRUCTIVE.includes(page)))("the form for %s (%s) leads with danger, not primary", async (_, path, open) => {
-  api();
-  renderApp(path);
-  await open();
-  const dialog = screen.getByRole("dialog");
-  const submit = dialog.querySelector('button[type="submit"]');
-  expect(submit).toHaveClass("danger");
-  expect(dialog.querySelectorAll("button.primary")).toHaveLength(0);
-});
+test.each([...PAGES, ...CHOICES].filter(([page]) => DESTRUCTIVE.includes(page)))(
+  "the form for %s (%s) leads with danger, not primary",
+  async (_, path, open) => {
+    api();
+    renderApp(path);
+    await open();
+    const dialog = screen.getByRole("dialog");
+    const submit = dialog.querySelector('button[type="submit"]');
+    expect(submit).toHaveClass("danger");
+    expect(dialog.querySelectorAll("button.primary")).toHaveLength(0);
+  },
+);
 
 // What is wrong with the button that opened a destructive form: it does not
 // itself do what cannot be undone, so it is a danger outline, not plain, not
@@ -223,7 +255,8 @@ function openerFaults(opener: Element | undefined): string[] {
   if (!opener) return ["nothing opened it"];
   const name = opener.textContent?.trim();
   if (!opener.classList.contains("secondary-danger")) return [`${name}: not a danger outline`];
-  if (opener.classList.contains("primary") || opener.classList.contains("danger")) return [`${name}: leads as a form would`];
+  if (opener.classList.contains("primary") || opener.classList.contains("danger"))
+    return [`${name}: leads as a form would`];
   return [];
 }
 
@@ -249,7 +282,8 @@ test.each([...PAGES, ...CHOICES].filter(([page]) => DESTRUCTIVE.includes(page)))
 );
 
 test("the opener check fails on a plain, primary or danger button, or none", () => {
-  const button = (className: string) => Object.assign(document.createElement("button"), { className, textContent: "Remove" });
+  const button = (className: string) =>
+    Object.assign(document.createElement("button"), { className, textContent: "Remove" });
   expect(openerFaults(button("secondary-danger"))).toEqual([]);
   for (const className of ["", "secondary", "primary", "danger", "secondary-danger danger"]) {
     expect(openerFaults(button(className)), className).toHaveLength(1);
@@ -257,14 +291,17 @@ test("the opener check fails on a plain, primary or danger button, or none", () 
   expect(openerFaults(undefined)).toEqual(["nothing opened it"]);
 });
 
-test.each([...PAGES, ...CHOICES].filter(([page]) => !DESTRUCTIVE.includes(page)))("the forms on %s (%s) lead with primary, not danger", async (page, path, open) => {
-  api();
-  renderApp(path);
-  await open();
-  if (!CHOICES.some(([choice]) => choice === page)) await inputs();
-  expect(document.querySelectorAll("form button.primary").length).toBeGreaterThan(0); // non-vacuity
-  expect(document.querySelectorAll("form button.danger")).toHaveLength(0);
-});
+test.each([...PAGES, ...CHOICES].filter(([page]) => !DESTRUCTIVE.includes(page)))(
+  "the forms on %s (%s) lead with primary, not danger",
+  async (page, path, open) => {
+    api();
+    renderApp(path);
+    await open();
+    if (!CHOICES.some(([choice]) => choice === page)) await inputs();
+    expect(document.querySelectorAll("form button.primary").length).toBeGreaterThan(0); // non-vacuity
+    expect(document.querySelectorAll("form button.danger")).toHaveLength(0);
+  },
+);
 
 test("the check fails on a form with no leading button, two, or one that does not submit it", () => {
   const form = (buttons: string) => {
@@ -272,15 +309,52 @@ test("the check fails on a form with no leading button, two, or one that does no
     root.innerHTML = `<form>${buttons}</form>`;
     return root;
   };
-  expect(hierarchyFaults(form('<button type="submit" class="primary">Save</button><button type="button">Cancel</button>'))).toEqual([]);
-  expect(hierarchyFaults(form('<button type="submit" class="danger">Delete</button><button type="button">Cancel</button>'))).toEqual([]);
+  expect(
+    hierarchyFaults(
+      form(
+        '<button type="submit" class="primary">Save</button><button type="button">Cancel</button>',
+      ),
+    ),
+  ).toEqual([]);
+  expect(
+    hierarchyFaults(
+      form(
+        '<button type="submit" class="danger">Delete</button><button type="button">Cancel</button>',
+      ),
+    ),
+  ).toEqual([]);
   expect(hierarchyFaults(form('<button type="submit">Save</button>'))).toHaveLength(1);
-  expect(hierarchyFaults(form('<button class="primary">Save</button><button type="button" class="primary">Cancel</button>'))).toHaveLength(1);
-  expect(hierarchyFaults(form('<button type="submit">Save</button><button type="button" class="primary">Cancel</button>'))).toHaveLength(1);
-  expect(hierarchyFaults(form('<button type="submit" class="danger">Delete</button><button type="button" class="primary">Keep</button>'))).toHaveLength(1);
-  expect(hierarchyFaults(form('<button type="submit">Delete</button><button type="button" class="danger">Cancel</button>'))).toHaveLength(1);
+  expect(
+    hierarchyFaults(
+      form(
+        '<button class="primary">Save</button><button type="button" class="primary">Cancel</button>',
+      ),
+    ),
+  ).toHaveLength(1);
+  expect(
+    hierarchyFaults(
+      form(
+        '<button type="submit">Save</button><button type="button" class="primary">Cancel</button>',
+      ),
+    ),
+  ).toHaveLength(1);
+  expect(
+    hierarchyFaults(
+      form(
+        '<button type="submit" class="danger">Delete</button><button type="button" class="primary">Keep</button>',
+      ),
+    ),
+  ).toHaveLength(1);
+  expect(
+    hierarchyFaults(
+      form(
+        '<button type="submit">Delete</button><button type="button" class="danger">Cancel</button>',
+      ),
+    ),
+  ).toHaveLength(1);
   const dialog = document.createElement("div");
-  dialog.innerHTML = '<div role="dialog" aria-label="Remove"><button class="primary">Remove</button></div>';
+  dialog.innerHTML =
+    '<div role="dialog" aria-label="Remove"><button class="primary">Remove</button></div>';
   expect(hierarchyFaults(dialog)).toEqual(["Remove: a dialog with no form"]);
   expect(hierarchyFaults(document.createElement("div"))).toEqual([]);
 });
@@ -295,7 +369,9 @@ test("the settings page has an input for every field it describes, and the token
   expect(Object.keys(FIELDS).length).toBeGreaterThan(0); // non-vacuity
   expect(found.length - token.length).toBe(Object.keys(FIELDS).length);
   expect(document.querySelectorAll("form").length).toBeGreaterThan(1);
-  expect(document.querySelectorAll("form[novalidate]").length).toBe(document.querySelectorAll("form").length);
+  expect(document.querySelectorAll("form[novalidate]").length).toBe(
+    document.querySelectorAll("form").length,
+  );
 });
 
 // The inputs of a form whose refusal names a field: each carries the field's
@@ -305,7 +381,9 @@ type Field = HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement;
 
 // Every field of a form a person fills in: inputs but radio buttons, text areas and choices.
 function fieldInputs(form: HTMLFormElement): Field[] {
-  return [...form.querySelectorAll<Field>("input, textarea, select")].filter((input) => input.type !== "radio");
+  return [...form.querySelectorAll<Field>("input, textarea, select")].filter(
+    (input) => input.type !== "radio",
+  );
 }
 
 // What a form's refusal shows wrongly: an input with no field name, or a field
@@ -315,7 +393,8 @@ async function labelFaults(form: HTMLFormElement): Promise<string[]> {
   const faults: string[] = [];
   // Read before submitting: a refusal may take the form away.
   // The label's own words, without what the field itself holds, such as a choice's options.
-  const label = (input: Field) => (input.labels?.[0]?.textContent ?? "").replace(input.textContent ?? "", "").trim();
+  const label = (input: Field) =>
+    (input.labels?.[0]?.textContent ?? "").replace(input.textContent ?? "", "").trim();
   const named = fieldInputs(form)
     .filter((input) => {
       if (!input.name) faults.push(`${label(input)}: an input with no field name`);
@@ -326,8 +405,17 @@ async function labelFaults(form: HTMLFormElement): Promise<string[]> {
   const refuse = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     if ((init?.method ?? "GET").toUpperCase() === "GET") return answer(input, init);
     const errors = named.map((i) => ({ field: i.name, message: `planted reason for ${i.name}` }));
-    const body = { type: "urn:rcman:problem:validation_failed", title: "Refused.", status: 422, code: "validation_failed", errors };
-    return new Response(JSON.stringify(body), { status: 422, headers: { "content-type": "application/problem+json" } });
+    const body = {
+      type: "urn:rcman:problem:validation_failed",
+      title: "Refused.",
+      status: 422,
+      code: "validation_failed",
+      errors,
+    };
+    return new Response(JSON.stringify(body), {
+      status: 422,
+      headers: { "content-type": "application/problem+json" },
+    });
   });
   vi.stubGlobal("fetch", refuse);
   try {
@@ -350,7 +438,9 @@ test.each(PAGES)("a refused field on %s (%s) is named by its label", async (_, p
   renderApp(path);
   await open();
   await inputs();
-  const forms = [...document.querySelectorAll("form")].filter((form) => fieldInputs(form).length > 0);
+  const forms = [...document.querySelectorAll("form")].filter(
+    (form) => fieldInputs(form).length > 0,
+  );
   for (const form of forms) expect(await labelFaults(form)).toEqual([]);
 });
 
