@@ -1,9 +1,11 @@
 """The backend for the browser tests: real rcman, real rc-helper, fake claude.
 
-``uvicorn --factory tests.e2e_server:create_app`` builds a throwaway world in
-``RCMAN_E2E_DIR``: a users file with alice (administrator, Claude connected)
-and bob (Claude not connected; the code ``GOOD-CODE`` connects him), a home
-and a tmux socket for each, and the fake claude. alice also has a git
+``uvicorn --factory tests.e2e_server:create_app`` makes the world
+``RCMAN_E2E_DIR`` names and removes it when it shuts down; how each run keeps a
+world of its own is in project-knowledge/frontend.md. The world holds a
+users file with alice (administrator, Claude connected) and bob (Claude not
+connected; the code ``GOOD-CODE`` connects him), a home and a tmux socket for
+each, and the fake claude. alice also has a git
 repository, projects/alice-repo, whose origin is
 https://github.com/alice/alice-repo.git: it holds main and feature, and
 later, which alice's repository has not fetched; https://github.com/alice/demo,
@@ -19,10 +21,13 @@ suite tests the real one.
 from __future__ import annotations
 
 import contextlib
+import fcntl
 import json
 import os
 import shutil
+import stat
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -40,10 +45,16 @@ from tests.helper_env import helper_env
 REPO = Path(__file__).resolve().parent.parent
 PEOPLE = {"alice": ("alice@example.com", True), "bob": ("bob@example.com", False)}
 GOOD_CODE = "GOOD-CODE"
+# Every world's name, as frontend/e2e/world.ts makes one; worlds are cleared by it.
+WORLDS = "rcman-e2e-*"
+LOCK = ".lock"
+# Seconds a world may be without its lock file: one is, only in the instants between
+# making it and taking its lock, and between emptying it and removing it.
+UNLOCKED_FOR = 60
 
 
 def sockets(root: Path) -> Path:
-    """Each person's tmux socket is here; inside the world, so every run uses the same ones."""
+    """Each person's tmux socket is here: inside the world, so each run has its own."""
     return root / "tmux"
 
 
@@ -52,9 +63,24 @@ def origins(root: Path) -> Path:
     return root / "origins"
 
 
+def _own(path: Path, kind, uid: int) -> bool:
+    """Whether the path itself, not what a link there points at, is of the kind (a
+    stat.S_IS* test) and belongs to ``uid``."""
+    try:
+        status = path.lstat()
+    except OSError:
+        return False
+    return kind(status.st_mode) and status.st_uid == uid
+
+
 def _stop_tmux(root: Path) -> None:
     # tmux detaches from whatever started it, so ending the backend leaves it running.
+    # Only a socket of our own in the world itself: a link could name any tmux server.
+    if not _own(sockets(root), stat.S_ISDIR, os.getuid()):
+        return
     for sock in sockets(root).glob("*.sock"):
+        if not _own(sock, stat.S_ISSOCK, os.getuid()):
+            continue
         tmux = ["tmux", "-S", str(sock)]
         pid = subprocess.run(
             [*tmux, "display-message", "-p", "#{pid}"], capture_output=True, text=True
@@ -66,10 +92,71 @@ def _stop_tmux(root: Path) -> None:
             time.sleep(0.05)
 
 
+def _remove(root: Path) -> None:
+    """Stop the world's tmux servers and remove it, its lock file last, so a run killed
+    while removing it leaves a world with a lock file nothing holds."""
+    _stop_tmux(root)
+    for entry in root.iterdir():
+        if entry.name == LOCK:
+            continue
+        if entry.is_dir() and not entry.is_symlink():
+            shutil.rmtree(entry)
+        else:
+            entry.unlink()
+    (root / LOCK).unlink(missing_ok=True)
+    root.rmdir()
+
+
+def _lock(root: Path):
+    """The world's lock, held while the returned file is open. It is taken under another
+    name and then renamed, so a world's lock file is held from the moment it appears."""
+    taking = root / ".locking"
+    held = open(taking, "x")  # noqa: SIM115 -- held for the backend's whole life
+    fcntl.flock(held, fcntl.LOCK_EX)
+    taking.rename(root / LOCK)
+    return held
+
+
+def clear_abandoned(parent: Path, uid: int | None = None) -> None:
+    """Stop and remove every world in ``parent`` that a killed run of ``uid``, by default
+    the current user, left; leave everything else, and go on past what cannot be read or
+    removed."""
+    uid = os.getuid() if uid is None else uid
+    for world in sorted(parent.glob(WORLDS)):
+        try:
+            _clear(world, uid)
+        except OSError as error:
+            print(f"e2e_server: left {world}: {error}", file=sys.stderr)
+
+
+def _clear(world: Path, uid: int) -> None:
+    if not _own(world, stat.S_ISDIR, uid):
+        return  # a link, a file, or someone else's
+    try:  # neither following a link nor waiting on a FIFO
+        fd = os.open(world / LOCK, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except FileNotFoundError:
+        if time.time() - world.lstat().st_mtime > UNLOCKED_FOR:
+            _remove(world)  # killed between making it and taking its lock
+        return
+    try:
+        status = os.fstat(fd)
+        if not stat.S_ISREG(status.st_mode) or status.st_uid != uid:
+            return
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return  # a running backend's
+        try:  # another run may have cleared it, and a new one made, since the open
+            if (world / LOCK).lstat().st_ino != status.st_ino:
+                return
+        except FileNotFoundError:
+            return
+        _remove(world)  # under its lock, which no one else can take meanwhile
+    finally:
+        os.close(fd)
+
+
 def _world(root: Path) -> dict[str, Path]:
-    _stop_tmux(root)  # a run that was killed before it could shut down
-    if root.exists():
-        shutil.rmtree(root)
     homes = {}
     for linux in PEOPLE:
         home = root / "homes" / linux
@@ -96,6 +183,22 @@ def _world(root: Path) -> dict[str, Path]:
 
 def create_app():
     root = Path(os.environ["RCMAN_E2E_DIR"])
+    clear_abandoned(root.parent)
+    root.mkdir(mode=0o700)  # refuses a folder that exists, whoever made it
+    held = None
+    try:
+        held = _lock(root)
+        return _app(root, held)
+    except BaseException:
+        try:
+            _remove(root)
+        finally:
+            if held:
+                held.close()
+        raise
+
+
+def _app(root: Path, held):
     homes = _world(root)
     sockets(root).mkdir()
     github = GitHubServer()
@@ -152,22 +255,27 @@ def create_app():
     )
     app = rcman_app(settings, helper=helper, admin=admin)
     app.state.github = github
+    app.state.world_lock = held
     rcman_lifespan = app.router.lifespan_context
 
     @contextlib.asynccontextmanager
     async def lifespan(app):
-        github.start(origins(root), os.environ["RCMAN_E2E_GITHUB_TOKEN"])
+        # uvicorn shuts the app down when it cannot bind, too, so this runs then.
         try:
-            async with rcman_lifespan(app) as state:
-                try:
+            github.start(origins(root), os.environ["RCMAN_E2E_GITHUB_TOKEN"])
+            try:
+                async with rcman_lifespan(app) as state:
                     yield state
-                finally:
-                    _stop_tmux(root)
-                    # uvicorn ends itself with the signal that stopped it, so no exit
-                    # handler runs: what the git fixtures used goes here.
-                    shutil.rmtree(FIXTURE_HOME, ignore_errors=True)
+            finally:
+                github.stop()
         finally:
-            github.stop()
+            try:
+                _remove(root)
+            finally:
+                held.close()
+                # uvicorn ends itself with the signal that stopped it, so no exit handler
+                # runs: what the git fixtures used goes here.
+                shutil.rmtree(FIXTURE_HOME, ignore_errors=True)
 
     app.router.lifespan_context = lifespan
     return app
