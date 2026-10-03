@@ -17,6 +17,7 @@ export type GitStatus = {
   author: { name: string; email: string } | null;
   push_to_github: boolean;
   github_token: boolean | null;
+  push_ahead: number | null;
 };
 type Pushed = { path: string; branch: string; upstream: string | null; upstream_set: boolean };
 type CommitPushed = { path: string; commit: string; push: Pushed | null; push_problem: Record<string, unknown> | null };
@@ -160,8 +161,8 @@ function pushReason(status: GitStatus): "branch" | "token" | null {
   return null;
 }
 
-// Whether Push itself is worth offering: not for a branch its upstream has already.
-const somethingToPush = (branch: Branch) => branch.upstream === null || branch.ahead !== 0;
+// Whether Push itself is worth offering: not where the branch pushes has it all already.
+const somethingToPush = (status: GitStatus) => status.push_ahead !== 0;
 
 // The Changes section of a repository: its branch, the staged and not staged
 // files, Commit, Push and Commit & Push, and its branches. What is offered
@@ -306,7 +307,7 @@ export function Changes({ path, pollMs }: { path: string; pollMs: number }) {
               {m.pushNeedsToken.after}
             </p>
           ) : (
-            somethingToPush(status.branch) && (
+            somethingToPush(status) && (
               <div className="actions">
                 <button type="button" className="secondary" disabled={busy} onClick={push}>
                   {m.push}

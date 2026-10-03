@@ -1520,7 +1520,18 @@ class Helper:
             "not_staged": lists[False].answer(),
             "push_to_github": to_github,
             "github_token": self._token_stored(deadline) if to_github else None,
+            "push_ahead": self._push_ahead(repo, branch, deadline),
         }
+
+    def _push_ahead(self, repo: Path, branch: git_run.Branch, deadline: float) -> int | None:
+        """How many commits of the branch where it pushes lacks: its push destination
+        (@{push}) when git knows one, otherwise its upstream; None with neither."""
+        if branch.name is None:
+            return None
+        try:
+            return int(self._git(repo, ["rev-list", "--count", "@{push}..HEAD"], deadline))
+        except git_run.GitFailed:
+            return branch.ahead
 
     @git_verb()
     def git_branches(self, deadline: float, rel: str) -> dict:

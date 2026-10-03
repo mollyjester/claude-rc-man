@@ -91,7 +91,8 @@ key without one works as it is.
 remote branch yet is pushed to `origin` under its own name and set to
 track it there, as `git push -u origin HEAD` does; one that does is pushed
 as `git push` pushes it, so your own git configuration decides where. Push
-is not offered while the remote branch already has every commit of yours.
+is not offered while the branch it pushes to — where git says your push
+goes, or else the branch it tracks — already has every commit of yours.
 While you are not on a branch there is nothing to push, and the section says
 so.
 

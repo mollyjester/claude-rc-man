@@ -3464,7 +3464,12 @@ def test_status_says_how_far_ahead_of_where_it_pushes_the_branch_is(env, repo, t
     assert shown["branch"]["ahead"] == 0  # the upstream has it all
     assert shown["push_ahead"] == 0  # no push remote of its own yet: the upstream
     fixture_git(repo, "config", "branch.main.pushRemote", "mirror")
+    # git names no @{push} for push.default simple when it differs from the upstream,
+    # so it is the upstream's count still; with current, @{push} is mirror/main.
+    assert status(env)["push_ahead"] == 0
+    fixture_git(repo, "config", "push.default", "current")
     assert status(env)["push_ahead"] == 1  # the push destination, mirror/main, lacks one
     fixture_git(repo, "switch", "-q", "-c", "no-upstream")
     fixture_git(repo, "config", "--unset", "branch.main.pushRemote")
+    fixture_git(repo, "config", "--unset", "push.default")
     assert status(env)["push_ahead"] is None
