@@ -383,6 +383,16 @@ def test_json_cli_requires_an_explicit_home_decision(cfg, tmp_path, capsys):
     assert json.loads(capsys.readouterr().out)["error"]["code"] == "home_decision_required"
 
 
+def test_positionals_after_a_double_dash_are_taken_as_values(cfg, tmp_path, capsys):
+    """The backend passes values after --, so none can be read as an option; one that
+    looks like an option is then refused by its rule, not taken as a flag."""
+    system = FakeSystem(tmp_path)
+    assert ra.main_json(["add", "--", "dave", "-x@example.com"], cfg=cfg, system=system) == 1
+    assert json.loads(capsys.readouterr().out)["error"]["code"] == "email_invalid"
+    assert ra.main_json(["add", "--", "dave", "dave@example.com"], cfg=cfg, system=system) == 0
+    assert json.loads(capsys.readouterr().out)["user"]["linux"] == "dave"
+
+
 def test_json_cli_usage_errors_are_json(cfg, tmp_path, capsys):
     assert ra.main_json(["frobnicate"], cfg=cfg, system=FakeSystem(tmp_path)) == 2
     assert json.loads(capsys.readouterr().out)["error"]["code"] == "usage"

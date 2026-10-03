@@ -155,7 +155,7 @@ def test_upgrade_goes_through_rc_admin(client, admin_runner):
     ]
     r = client.post("/api/claude/upgrade", json={"version": "2.2.0"}, headers=changing(ALICE))
     assert r.status_code == 200
-    assert admin_runner.calls == [["claude-upgrade", "2.2.0"]]
+    assert admin_runner.calls == [["claude-upgrade", "--", "2.2.0"]]
 
 
 def test_a_failed_upgrade_is_a_problem_naming_the_checks(client, admin_runner):

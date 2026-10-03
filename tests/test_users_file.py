@@ -82,7 +82,9 @@ def test_valid_emails(email):
     assert uf.valid_email(email)
 
 
-@pytest.mark.parametrize("email", ["", "a", "a@b", "a@@b.c", "a b@c.d", 'a"@b.c', "a@b.c\n"])
+@pytest.mark.parametrize(
+    "email", ["", "a", "a@b", "a@@b.c", "a b@c.d", 'a"@b.c', "a@b.c\n", "-x@a.b", "--admin@a.b"]
+)
 def test_invalid_emails(email):
     assert not uf.valid_email(email)
 
