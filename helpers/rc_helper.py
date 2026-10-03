@@ -1248,8 +1248,9 @@ class Helper:
 
     @contextlib.contextmanager
     def _lock(self, exclusive: bool):
-        """Held while servers start, stop, are answered or forgotten and while folders
-        are made (shared), or while a folder is deleted (exclusive).
+        """Held while servers start, stop, are answered or forgotten, while folders
+        are made, and by every git and GitHub verb (shared, through git_verb), or
+        while a folder is deleted (exclusive).
 
         A flock on the home folder itself. One that is held already the other
         way is refused at once with ``folder_busy``, never waited for.

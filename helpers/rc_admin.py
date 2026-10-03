@@ -5,9 +5,9 @@ admin page runs through sudo) and ``rcman-user`` (for an administrator over
 SSH; see ``helpers/rcman_user.py``). Every change to the system goes through a
 :class:`RealSystem`, so the decisions can be tested without root.
 
-Two environment variables are test hooks — ``RC_ADMIN_ETC`` and
-``RC_ADMIN_INSTALLER`` — and the sudoers rule resets the environment, so they
-never reach rc-admin started through sudo.
+Three environment variables are test hooks — ``RC_ADMIN_ETC``,
+``RC_ADMIN_CANARY`` and ``RC_ADMIN_INSTALLER`` — and the sudoers rule resets
+the environment, so they never reach rc-admin started through sudo.
 
 Python standard library and the helpers' own modules only: it runs under the
 system interpreter.
