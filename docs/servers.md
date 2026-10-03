@@ -105,8 +105,9 @@ cannot be undone.
 - If deleting takes too long, rcman stops waiting and says so. By then part
   of the folder may already be gone and its servers forgotten; choosing
   **Delete folder** again carries on.
-- While a folder is being deleted, starting, stopping, answering or
-  forgetting a server, making a folder and cloning one are refused, and so is deleting
+- While a folder is being deleted, everything else rcman would do in your
+  home folder is refused — acting on a server, making a folder, and anything
+  git does, even showing a repository's changes — and deleting is refused
   while any of those is under way; try again in a moment.
 - The sessions of the servers that were forgotten stay in claude.ai/code,
   where they are archived or deleted.
