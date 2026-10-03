@@ -184,17 +184,6 @@ main {
 .summary li {
   margin: 0.2rem 0;
 }
-/* A path's text lines up with the heading, its button's padding outside it.
-   The path and then its badge flow as text does: the badge follows the path on
-   its line after a space, and goes to the next only when it does not fit there,
-   where the space falls away so that it lines up with the path. */
-.summary button.name {
-  margin-left: -0.35rem;
-  vertical-align: middle;
-}
-.summary .badge {
-  vertical-align: middle;
-}
 /* A folder's name with the slash after it: an atom of the line, so a path wraps
    only after a slash, broken inside only when it is wider than a line by itself. */
 .path-part {
@@ -355,6 +344,17 @@ button.name[aria-current="true"] {
 }
 .badge-stopped {
   color: var(--stopped);
+}
+/* A path's text lines up with the heading, its button's padding outside it.
+   The path and then its badge flow as text does: the badge follows the path on
+   its line after a space, and goes to the next only when it does not fit there,
+   where the space falls away so that it lines up with the path. */
+.summary button.name {
+  margin-left: -0.35rem;
+  vertical-align: middle;
+}
+.summary .badge {
+  vertical-align: middle;
 }
 .actions {
   display: flex;
