@@ -3455,6 +3455,7 @@ def test_status_says_whether_a_token_is_stored_for_a_push_to_github(
 
 import shutil  # noqa: E402
 import signal  # noqa: E402
+import threading  # noqa: E402
 
 from tests.git_fixtures import BODY  # noqa: E402
 
@@ -3776,7 +3777,7 @@ def test_a_sigterm_while_a_failed_clone_is_removed_waits_for_the_removal(
 
     def rmtree(*args, **kwargs):
         removing.append(args)
-        os.kill(os.getpid(), signal.SIGTERM)
+        signal.pthread_kill(threading.main_thread().ident, signal.SIGTERM)
         return real(*args, **kwargs)
 
     rmtree.avoids_symlink_attacks = real.avoids_symlink_attacks

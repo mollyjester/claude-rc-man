@@ -1088,7 +1088,9 @@ def _holds_repository(fd: int, name: str, made: os.stat_result) -> bool:
 
 def _remove_made(fd: int, name: str, made: os.stat_result) -> bool:
     """Remove the folder made as ``name``, if it is still that folder; whether nothing of
-    it is left. SIGTERM waits until the removal is done."""
+    it is left. SIGTERM waits until the removal is done: blocked for this thread only,
+    which is sound only as rc-helper is, one thread, where no other thread could take
+    it instead."""
     mask = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGTERM})
     try:
         if not _is_made(fd, name, made):
