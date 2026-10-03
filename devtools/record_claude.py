@@ -8,11 +8,14 @@ written to ``tests/fakes/fixtures/`` as ``<capture>.txt`` plus ``manifest.json``
 The fake fills the placeholders back in at run time.
 
 Sequences marked ``needs_account`` run under the real default Claude
-configuration and need a logged-in subscription account; the ``server``
-sequence creates one Remote Control session in that account's claude.ai/code
-list each time it runs. Sequences marked ``submits_code`` send an invalid
-one-time code to Anthropic's sign-in service. Everything else runs with a
-throwaway configuration directory and needs no account.
+configuration and need a logged-in subscription account; each sequence that
+brings a server to ready (``server``, ``git_server`` and ``spawn_answered``)
+creates one Remote Control session in that account's claude.ai/code list each
+time it runs. Sequences marked ``git_repository`` run in a throwaway
+repository on :data:`RECORD_BRANCH`, made in the recorder's own scratch folder.
+Sequences marked ``submits_code`` send an invalid one-time code to Anthropic's
+sign-in service. Everything else runs with a throwaway configuration directory
+and needs no account.
 
 Usage::
 
@@ -28,6 +31,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -67,6 +71,7 @@ PLACEHOLDERS = (
     "org_id",
     "org_name",
     "subscription_type",
+    "branch",
 )
 ACCOUNT_FIELDS = {
     "email": "email",
@@ -81,6 +86,7 @@ class Context:
     cwd: str
     config_dir: str
     version: str
+    branch: str | None = None  # the repository's branch; None outside a repository
 
 
 @dataclass(frozen=True)
@@ -102,6 +108,13 @@ def sanitise(text: str, ctx: Context) -> str:
     for path, placeholder in paths:
         text = text.replace(path, placeholder)
     text = re.sub(r"( Connected · )(.+?)( · )", r"\1{folder}\3", text)
+    if ctx.branch:
+        text = re.sub(
+            r"( Connected · \{folder\} · )" + re.escape(ctx.branch) + "$",
+            r"\1{branch}",
+            text,
+            flags=re.MULTILINE,
+        )
     text = re.sub(r"\[\d\d:\d\d:\d\d\]", "[{time}]", text)
     text = re.sub(r"(^ *Capacity:.*\n {4})(\S+)$", r"\1{session_name}", text, flags=re.MULTILINE)
     return text.replace(ctx.version, "{version}")
@@ -113,6 +126,7 @@ def placeholder_values(ctx: Context, **values: str) -> dict[str, str]:
         "cwd": ctx.cwd,
         "config_dir": ctx.config_dir,
         "folder": os.path.basename(ctx.cwd),
+        **({"branch": ctx.branch} if ctx.branch else {}),
         **values,
     }
 
@@ -190,6 +204,7 @@ class Sequence:
     needs_account: bool = False
     submits_code: bool = False
     needs_human: bool = False  # recorded only when named, with a person signing in
+    git_repository: bool = False  # run in a throwaway repository (make_repository)
 
 
 def _exit_only(capture: str) -> Callable[[Run], None]:
@@ -227,19 +242,102 @@ CONNECTED_QUIET = 0.3
 READY = r"Capacity: [1-9]"  # a session has attached and is named
 
 
-def _server(r: Run) -> None:
-    r.pane.wait_for(r"\[y/N\]", TIMEOUT)
-    r.pane.wait_stable()  # an answer that arrives too quickly is refused
+def _answer_trust(r: Run, capture: str | None = None) -> None:
+    if capture:
+        r.capture_when(r"\[y/N\]", capture)  # waits until the screen is stable
+    else:
+        r.pane.wait_for(r"\[y/N\]", TIMEOUT)
+        r.pane.wait_stable()  # an answer that arrives too quickly is refused
     r.pane.type_line("y")
-    r.capture_when(CONNECTED, "server_connected_after_trust", quiet=CONNECTED_QUIET)
-    r.capture_when(READY, "server_ready_after_trust")
+
+
+def _server_steps(name: str, trust_capture: str | None = None) -> Callable[[Run], None]:
+    """Trust, connected, ready, stopped; then resumed: connected, ready, stopped."""
+
+    def steps(r: Run) -> None:
+        _answer_trust(r, trust_capture)
+        r.capture_when(CONNECTED, f"{name}_connected_after_trust", quiet=CONNECTED_QUIET)
+        r.capture_when(READY, f"{name}_ready_after_trust")
+        r.pane.interrupt()
+        r.capture_exit(f"{name}_stopped_after_trust")
+        r.pane.rerun(r.argv, r.cwd, r.env)
+        r.capture_when(CONNECTED, f"{name}_connected_resumed", quiet=CONNECTED_QUIET)
+        r.capture_when(READY, f"{name}_ready_resumed")
+        r.pane.interrupt()
+        r.capture_exit(f"{name}_stopped_resumed")
+
+    return steps
+
+
+def _server_captures(name: str) -> tuple[str, ...]:
+    return tuple(
+        f"{name}_{stage}_{when}"
+        for when in ("after_trust", "resumed")
+        for stage in ("connected", "ready", "stopped")
+    )
+
+
+SPAWN_QUESTION = r"^Choose \[1/2\]"  # Claude asks for a spawn mode
+# How long Claude is watched after Ctrl+C, or an answer, at the spawn-mode question.
+IGNORED_SECONDS = 3.0
+
+
+def _still_asking(r: Run, after: str) -> None:
+    time.sleep(IGNORED_SECONDS)
+    if r.pane.exit_status() is not None or re.search(CONNECTED, r.pane.text()):
+        raise RuntimeError(f"{after} moved the spawn-mode question on:\n{r.pane.text()}")
+    r.pane.wait_stable()
+
+
+def _spawn_prompt(r: Run) -> None:
+    """The spawn-mode question a repository gets without --spawn: Ctrl+C, then an
+    answer, are both ignored; SIGTERM ends it."""
+    _answer_trust(r)
+    r.capture_when(SPAWN_QUESTION, "spawn_prompt")
     r.pane.interrupt()
-    r.capture_exit("server_stopped_after_trust")
-    r.pane.rerun(r.argv, r.cwd, r.env)
-    r.capture_when(CONNECTED, "server_connected_resumed", quiet=CONNECTED_QUIET)
-    r.capture_when(READY, "server_ready_resumed")
+    _still_asking(r, "Ctrl+C")
+    r.capture("spawn_prompt_interrupted", None)
+    r.pane.type_line("1")
+    _still_asking(r, "An answer after Ctrl+C")
+    r.capture("spawn_prompt_answered_after_interrupt", None)
+    r.pane.signal(signal.SIGTERM)
+    r.capture_exit("spawn_prompt_terminated")
+
+
+def _spawn_answered(r: Run) -> None:
+    """The spawn-mode question answered 1, same-dir; then as a server goes on."""
+    _answer_trust(r)
+    r.pane.wait_for(SPAWN_QUESTION, TIMEOUT)
+    r.pane.wait_stable()
+    r.pane.type_line("1")
+    r.capture_when(CONNECTED, "spawn_connected_same_dir", quiet=CONNECTED_QUIET)
+    r.capture_when(READY, "spawn_ready_same_dir")
     r.pane.interrupt()
-    r.capture_exit("server_stopped_resumed")
+    r.capture_exit("spawn_stopped_same_dir")
+
+
+RECORD_BRANCH = "main"  # the branch of the repository a git_repository sequence runs in
+
+
+def make_repository(folder: Path) -> None:
+    """Make ``folder`` a repository on RECORD_BRANCH with one empty commit,
+    with no configuration of the person's, the system's or a global one."""
+    env = {
+        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        "HOME": str(folder),
+        "LANG": "C.UTF-8",
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_AUTHOR_NAME": "rcman recorder",
+        "GIT_AUTHOR_EMAIL": "recorder@example.invalid",
+        "GIT_COMMITTER_NAME": "rcman recorder",
+        "GIT_COMMITTER_EMAIL": "recorder@example.invalid",
+    }
+    for args in (
+        ["init", "-q", "-b", RECORD_BRANCH],
+        ["commit", "-q", "--allow-empty", "-m", "First commit"],
+    ):
+        subprocess.run(["git", *args], cwd=folder, env=env, check=True, capture_output=True)
 
 
 HANDOFF = Path("/tmp/rcman-record-handoff")  # where a person-driven sequence exchanges files
@@ -273,13 +371,18 @@ def _login_succeeded(r: Run) -> None:
     r.pane.wait_exit(TIMEOUT)
 
 
+# As rc-helper starts a server (tests/test_rc_helper.py holds the two together).
 RC_ARGS = [
     "remote-control",
     "--remote-control-session-name-prefix",
     PROBE_PREFIX,
     "--permission-mode",
     "default",
+    "--spawn",
+    "same-dir",
 ]
+# Without --spawn, Claude asks for a spawn mode in a repository.
+RC_ARGS_ASKING_SPAWN = [a for a in RC_ARGS if a not in ("--spawn", "same-dir")]
 LOGIN_ARGS = ["auth", "login", "--claudeai", "--email", PROBE_EMAIL]
 
 SEQUENCES: list[Sequence] = [
@@ -331,16 +434,38 @@ SEQUENCES: list[Sequence] = [
     Sequence(
         "server",
         RC_ARGS,
-        (
-            "server_connected_after_trust",
-            "server_ready_after_trust",
-            "server_stopped_after_trust",
-            "server_connected_resumed",
-            "server_ready_resumed",
-            "server_stopped_resumed",
-        ),
-        _server,
+        _server_captures("server"),
+        _server_steps("server"),
         needs_account=True,
+    ),
+    Sequence(
+        "git_server",
+        RC_ARGS,
+        ("git_trust_prompt", *_server_captures("git_server")),
+        _server_steps("git_server", trust_capture="git_trust_prompt"),
+        needs_account=True,
+        git_repository=True,
+    ),
+    Sequence(
+        "spawn_prompt",
+        RC_ARGS_ASKING_SPAWN,
+        (
+            "spawn_prompt",
+            "spawn_prompt_interrupted",
+            "spawn_prompt_answered_after_interrupt",
+            "spawn_prompt_terminated",
+        ),
+        _spawn_prompt,
+        needs_account=True,
+        git_repository=True,
+    ),
+    Sequence(
+        "spawn_answered",
+        RC_ARGS_ASKING_SPAWN,
+        ("spawn_connected_same_dir", "spawn_ready_same_dir", "spawn_stopped_same_dir"),
+        _spawn_answered,
+        needs_account=True,
+        git_repository=True,
     ),
 ]
 
@@ -422,6 +547,10 @@ def record(
     out: dict[str, Recorded] = {}
     for seq in sequences:
         folder = Path(tempfile.mkdtemp(prefix=f"{seq.name}-", dir=workdir))
+        branch = None
+        if seq.git_repository:
+            make_repository(folder)
+            branch = RECORD_BRANCH
         sock = Path(tempfile.mkdtemp(prefix="s-", dir="/tmp"))
         if seq.needs_account:
             config = account_config_dir
@@ -434,7 +563,8 @@ def record(
         try:
             with tmuxctl.Pane(socket_dir=sock) as pane:
                 pane.run(argv, cwd=folder, env=env)
-                run = Run(pane, argv, folder, env, Context(str(folder), config_text, version))
+                ctx = Context(str(folder), config_text, version, branch)
+                run = Run(pane, argv, folder, env, ctx)
                 seq.steps(run)
                 out.update(run.out)
         finally:

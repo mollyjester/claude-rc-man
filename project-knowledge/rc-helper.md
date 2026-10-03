@@ -48,7 +48,7 @@ command-line reference is `rc-helper --help` and `rc-helper <verb> --help`.
 | `rc-helper list` | Every server and its state |
 | `rc-helper start <path> --prefix <p>` | Starts a server in a folder, with `<p>` as the session name prefix. Refuses when Claude is not connected or a server already runs there; in a folder whose server has ended, whatever its state, it starts that server again |
 | `rc-helper resume <path> --prefix <p>` | Starts a server again that is `stopped` or `exited` (`RESUMABLE` in `helpers/rc_helper.py`); refuses with `not_stopped` when there is none |
-| `rc-helper stop <path>` | Stops a running server with Ctrl+C and waits for it to exit |
+| `rc-helper stop <path>` | Stops a running server with Ctrl+C and waits for it to exit; ends one that does not. See [Stopping a server](#stopping-a-server) |
 | `rc-helper forget <path>` | Removes a server that has stopped from the list |
 | `rc-helper output <path>` | The server's current screen and state |
 | `rc-helper confirm <path> --answer y\|n` | Answers the folder-trust question |
@@ -94,9 +94,9 @@ at the first step that fails:
    with `delete_mount_inside`, having done nothing, when anything inside is
    on another device: `shutil.rmtree` would cross into a mounted file
    system.
-5. It interrupts every running server whose folder is the path or below it,
-   then waits for all of them to exit within one `STOP_TIMEOUT`. It waits on
-   the processes' exit, not on their screens. When any is still running, it
+5. It stops every running server whose folder is the path or below it, all
+   at once, as `stop` does (see [Stopping a server](#stopping-a-server)),
+   ending any that Ctrl+C does not. When any is still running even so, it
    refuses with `delete_stop_failed`, naming that server with its screen and
    listing those that stopped; nothing is forgotten or deleted.
 6. It forgets every server there and checks that each is gone; otherwise
@@ -121,6 +121,41 @@ stays; running `delete` again carries on.
 It answers with the path deleted, whether it was a link, and the servers
 stopped and forgotten.
 
+## Stopping a server
+
+`stop`, and `delete` for every server in the folder, stop servers in one
+function, `Helper._end` in `helpers/rc_helper.py`:
+
+1. It sends Ctrl+C, and waits up to `STOP_TIMEOUT` for the server's process
+   to exit. It waits on the exit status, not on the screen, which may be one
+   rcman does not recognise.
+2. A server still running then is ended: its own process, the pane's, is
+   sent SIGTERM, and when it is still running `END_GRACE_SECONDS` later, its
+   whole process group — which tmux made for it, and which holds what it
+   started there — is sent SIGKILL, and waited for as long again.
+3. Whatever a server ended that way left running in its process group is
+   killed too.
+
+The process each pane runs is read once, when the stop begins, and only that
+process is waited for and signalled. `stop` and `resume` share the lock, so
+a resume can start a server again in the same pane meanwhile; once the pane
+runs another process, the stop takes its own as ended and leaves the new one
+alone. A process ID that now belongs to someone else (`PermissionError`) is
+taken as gone.
+
+tmux keeps the final screen, so an ended server is `exited`, with the exit
+status the signal gave it, and can be resumed or forgotten. `stop` answers
+with the server as it is then: `stopped` when Ctrl+C stopped it, `exited`
+when it was ended. A server that is still running after SIGKILL is
+`timeout`.
+
+Claude Code ignores Ctrl+C at some questions: at the spawn-mode question
+(see [Processes and isolation](#processes-and-isolation)), it neither exits
+nor takes an answer afterwards, as recorded (`spawn_prompt` in
+`devtools/record_claude.py`). The backend waits for a stop and for a delete
+longer than all of step 1 and 2 (`tests/test_helpers_client.py`,
+`tests/test_folders.py`).
+
 ## Server states
 
 `classify` in `helpers/rc_helper.py` turns a server's screen and exit status
@@ -143,6 +178,13 @@ a screen fails there first.
 A screen in transition can match no known state for a moment, so verbs that
 wait report `unrecognised` only once it has lasted
 `UNRECOGNISED_GRACE_SECONDS`.
+
+In a git repository the server's status line names the branch; the states
+are read from the capacity line under it, so a server there is `connected`
+and `ready` as anywhere else. The spawn-mode question Claude asks in a
+repository when it is started without `--spawn` is no state of its own:
+rc-helper always passes `--spawn`, so a server shows it only if Claude Code
+changes, and it is then `unrecognised`, with its screen, and `stop` ends it.
 
 The folder-trust question refuses an answer that arrives too quickly, so
 `confirm` waits `ANSWER_PACE_SECONDS` before answering and answers once more
@@ -180,7 +222,12 @@ if Claude asks again.
 - Claude Code is `~/.local/bin/claude` of the user. It is started through
   `/usr/bin/env -i` with only the variables `child_env` lists — never through
   a shell, and with self-update disabled. Remote Control sessions start in
-  permission mode `default`.
+  permission mode `default`, and in spawn mode `same-dir`
+  (`--spawn same-dir`): one server per folder, its sessions all working in
+  that folder, as the Changes section shows it. Without `--spawn`, Claude
+  asks for a spawn mode in a git repository. The options are
+  `server_command`, which a test holds to the recorder's `RC_ARGS`, so that
+  the contract tests check each is in Claude's `--help`.
 - The sign-in expiry is read from Claude Code's credentials file
   (`CREDENTIALS`), from `claudeAiOauth.refreshTokenExpiresAt` only; no token
   is read into the output. It is an internal file, so anything unexpected

@@ -1,0 +1,15 @@
+
+Remote Control starts Claude Code sessions in this folder, driven from your other devices:
+  {cwd}
+
+Quick safety check: is this a project you created or one you trust? Sessions started here can read, edit, and execute files, and this folder's project settings (hooks, MCP servers, permission rules, helper commands) apply to them.
+Security guide: https://code.claude.com/docs/en/security
+Trust {cwd}? [y/N] y
+
+·✔︎· Connected · {folder} · {branch}
+    Capacity: 1/32 · New sessions will be created in the current directory
+    {session_name}
+
+Continue coding in the Claude mobile app or {environment_url}
+Or ask Claude to work in this folder from your projects on claude.ai
+space to show QR code · w to toggle spawn mode

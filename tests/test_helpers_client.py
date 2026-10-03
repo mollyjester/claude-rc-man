@@ -286,3 +286,10 @@ def test_what_a_helper_is_given_and_answers_is_utf8_whatever_the_locale(text):
     seen = json.loads(proc.stdout)
     assert seen["locale"].lower().replace("-", "") not in ("utf8",)  # the plant took effect
     assert seen["out"] == text
+
+
+def test_a_stop_is_waited_for_until_the_helper_has_ended_the_server():
+    """A stop waits STOP_TIMEOUT for Ctrl+C, then END_GRACE_SECONDS after each of
+    SIGTERM and SIGKILL; the usual timeout outlasts all of it, with time to spare."""
+    assert rc_helper.STOP_TIMEOUT > 0 and rc_helper.END_GRACE_SECONDS > 0
+    assert hc.HELPER_TIMEOUT > rc_helper.STOP_TIMEOUT + 2 * rc_helper.END_GRACE_SECONDS

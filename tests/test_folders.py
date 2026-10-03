@@ -181,8 +181,10 @@ def test_deleting_has_its_own_timeout(settings, admin_runner):
     assert seen["tree"] == helpers_client.HELPER_TIMEOUT  # positive control: the usual one
     assert seen["delete"] == helpers_client.FOLDER_DELETE_TIMEOUT_SECONDS
     assert helpers_client.FOLDER_DELETE_TIMEOUT_SECONDS != helpers_client.HELPER_TIMEOUT
-    # long enough for the helper to give up on a server that does not stop, and more
-    assert helpers_client.FOLDER_DELETE_TIMEOUT_SECONDS > rc_helper.STOP_TIMEOUT
+    # long enough for the helper to end a server that does not stop, and more
+    assert helpers_client.FOLDER_DELETE_TIMEOUT_SECONDS > (
+        rc_helper.STOP_TIMEOUT + 2 * rc_helper.END_GRACE_SECONDS
+    )
 
 
 def test_tree_entries_say_whether_they_are_repositories(client, helper_homes):

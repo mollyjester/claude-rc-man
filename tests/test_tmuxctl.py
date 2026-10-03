@@ -62,7 +62,12 @@ def test_interrupt_delivers_sigint(pane, tmp_path):
     pane.wait_for(r"^ready$", timeout=10)
     pane.interrupt()
     assert pane.wait_exit(timeout=10) == 0
-    assert pane.screen() == ["ready", "^Cinterrupted"]  # the tty echoes ^C
+    # The tty echoes ^C, but may send SIGINT first, so the two come in either order.
+    screen = pane.screen()
+    assert screen[0] == "ready"
+    rest = "".join(screen[1:])
+    assert "^C" in rest and "interrupted" in rest
+    assert rest.replace("^C", "", 1).replace("interrupted", "", 1) == ""
 
 
 def test_wait_for_times_out_with_the_screen_in_the_message(pane, tmp_path):
@@ -155,3 +160,18 @@ def test_a_closed_pane_can_run_again_at_once(tmp_path):
             p.wait_exit(timeout=10)
             assert p.screen() == [str(i)]
             p.close()
+
+
+def test_signal_reaches_the_program_itself(pane, tmp_path):
+    import signal
+
+    code = (
+        "import signal, time\n"
+        "signal.signal(signal.SIGINT, signal.SIG_IGN)\n"
+        "print('ready'); time.sleep(30)\n"
+    )
+    pane.run([sys.executable, "-c", code], cwd=tmp_path, env={})
+    pane.wait_for(r"^ready$", timeout=10)
+    pane.interrupt()  # ignored: it is the signal that ends it
+    pane.signal(signal.SIGTERM)
+    assert pane.wait_exit(timeout=10) == 128 + signal.SIGTERM

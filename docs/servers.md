@@ -95,8 +95,9 @@ cannot be undone.
 - A folder whose address goes through a symbolic link on the way is not
   deleted there; select it where it really is.
 - A folder with another file system mounted inside it is not deleted at all.
-- If a server does not stop, nothing is forgotten and nothing is deleted;
-  rcman names the server and shows its screen.
+- A server that does not stop when asked is ended, as **Stop** ends one.
+  If even that fails, nothing is forgotten and nothing is deleted; rcman
+  names the server and shows its screen.
 - If some of the folder cannot be removed — a file you are not allowed to
   delete, for example — rcman lists what is left, and says whether nothing
   could be removed at all or only some of it. Either way the servers are
@@ -121,7 +122,9 @@ cannot be undone.
 
 - A server always runs in a folder *inside* your home folder, never in the home
   folder itself.
-- Each folder has at most one server. One server can host several sessions.
+- Each folder has at most one server. One server can host several sessions,
+  and they all work in the server's folder — in a git repository, on the
+  branch checked out there.
 - Servers keep running when you close your browser.
 - Your Claude account has to be connected before a server can start.
 - Administrators can see your servers and their states, but cannot start,
@@ -145,7 +148,10 @@ and shows the session's name beside the same link.
 
 ## Stopping and resuming
 
-Stopping a server ends the process but keeps its sessions. Starting it again
+Stopping a server ends the process but keeps its sessions. If Claude does
+not stop when asked — while it shows a question rcman does not recognise, for
+example — rcman ends it after a short wait; it is then shown as **Stopped by
+itself**, and can be resumed or forgotten. Starting it again
 in the same folder **resumes** those sessions, as long as that happens within a
 few hours; after that, starting gives you a new session.
 

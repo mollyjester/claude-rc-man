@@ -3,9 +3,9 @@
 ``uv run pytest -m real_claude`` runs every recording sequence that needs a
 logged-in account, plus the one that submits an invalid sign-in code, against
 the installed `claude` under the default Claude configuration, and compares
-the screens with the fixtures. The ``server`` sequence creates one Remote
-Control session in that account's claude.ai/code list each run; archive it
-afterwards.
+the screens with the fixtures. Each sequence that brings a server to ready
+creates one Remote Control session in that account's claude.ai/code list each
+run, as ``devtools/record_claude.py`` names them; archive them afterwards.
 """
 
 import shutil

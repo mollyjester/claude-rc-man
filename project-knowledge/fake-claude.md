@@ -30,6 +30,10 @@ the fake fills in when it replays a screen. The placeholder set is
 contains an email address, a home or temporary path, a sign-in URL or an
 environment ID.
 
+A sequence marked `git_repository` runs in a throwaway repository the
+recorder makes in its own scratch folder, on `RECORD_BRANCH`, and the branch
+in a server's status line becomes `{branch}`.
+
 `manifest.json` records the Claude Code version the fixtures were recorded
 from, and for each capture its sequence, its exit code (`null` when the
 program was still running) and whether it needed an account.
@@ -60,6 +64,13 @@ It reproduces these behaviours of the real binary, each recorded:
   running `remote-control` again in the same folder resumes the same session
   without asking about trust.
 - `remote-control --help` is refused without a login.
+- In a git repository — the folder or one above it has a `.git` — the
+  server's status line names the branch, which the fake reads from the
+  repository's `HEAD`.
+- In a git repository, started without `--spawn`, Claude asks for a spawn
+  mode after the trust question. Answered `1`, the server goes on as
+  anywhere else. Ctrl+C there changes nothing, and no answer is taken after
+  it; SIGTERM ends it. With `--spawn same-dir` it is not asked.
 
 Signing in succeeds, with the recorded screens, for a code listed in the
 state's `accept_codes`, and fails for any other.
@@ -84,7 +95,11 @@ process has ended on one as `exited` (see [rc-helper.md](rc-helper.md)):
 - a crashed session;
 - interrupting a server before its session is ready — the fake finishes
   becoming ready first;
-- a folder inside a git repository, where the status line shows a branch.
+- any `--spawn` but `same-dir`, the spawn-mode question answered otherwise
+  than `1`, and whether Claude asks it again in a folder it already trusts —
+  the fake refuses these as unsupported invocations;
+- a server in a repository with a detached HEAD — the fake's status line
+  shows the commit's hash where the branch would be.
 
 ## How the fake is checked against the real binary
 
@@ -105,9 +120,10 @@ version.
 2. Re-record every sequence: `uv run python devtools/record_claude.py --with-account`,
    then each sequence that needs a person, by name (see
    [Sequences that need a person](#sequences-that-need-a-person)). This needs
-   a logged-in account and creates one Remote Control session in its
-   claude.ai/code list (`--sequence <name>` re-records one sequence; a
-   version change requires recording them all).
+   a logged-in account and creates a Remote Control session in its
+   claude.ai/code list for each sequence that brings a server to ready, as
+   the recorder's docstring names them (`--sequence <name>` re-records one
+   sequence; a version change requires recording them all).
 3. Review the fixture diff. Every change is a change in the real binary that
    rcman's screen reading may have to follow.
 4. Run the whole suite, and `uv run pytest -m real_claude`.

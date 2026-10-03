@@ -17,8 +17,9 @@ from rcman.problems import MESSAGES, Problem
 
 HELPER_TIMEOUT = 120
 ADMIN_TIMEOUT = 600
-# Deleting a folder: the helper waits up to its STOP_TIMEOUT for the servers in
-# it to stop, then removes a whole tree, however large.
+# Deleting a folder: the helper stops the servers in it, ending any that does
+# not stop (rc_helper.STOP_TIMEOUT, then END_GRACE_SECONDS twice), then removes a
+# whole tree, however large.
 FOLDER_DELETE_TIMEOUT_SECONDS = 300
 # A git call: how much longer than the helper's own deadline for git
 # (rc_helper.GIT_TIMEOUT, GIT_NETWORK_TIMEOUT for a fetch or a push, or
