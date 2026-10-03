@@ -1,7 +1,9 @@
 """Checks a candidate Claude Code version must pass before rcman rolls it out.
 
 They run the candidate with a throwaway configuration, so no account is
-needed, on a pseudo-terminal as rcman runs it, and look for exactly what
+needed, as rc-helper runs it: ``auth status`` through pipes, with no terminal,
+and the rest on a pseudo-terminal of the size rc-helper gives Claude's screens
+(``WIDTH`` and ``HEIGHT`` in rc_helper). They look for exactly what
 rcman relies on: the version, ``auth status`` JSON, the logged-out refusal of
 ``remote-control``, the sign-in screen, the options rcman passes to
 ``auth login``, and ``auth logout``. What needs a signed-in account — the
@@ -86,21 +88,17 @@ def strip_terminal(text: str) -> str:
 TIMEOUT = 60.0
 CHECK_EMAIL = "check@example.com"
 
-# run(args, until=None, timeout=...) -> (exit code, or None if stopped at ``until``; output)
+# run(args, until=None, timeout=..., terminal=True)
+#   -> (exit code, or None if stopped at ``until``; output)
 Runner = Callable[..., tuple[int | None, str]]
 
 
-# The pseudo-terminal's size. Claude wraps its output, auth status's JSON included, at
-# the terminal's width; a line holding any path must fit in one.
-ROWS = 50
-COLUMNS = 2 * os.pathconf("/", "PC_PATH_MAX")
-
-
 def run_in_pty(argv: list[str], env: dict[str, str], cwd: Path, until: str | None, timeout: float):
-    """Run ``argv`` on a pseudo-terminal of ROWS by COLUMNS; stop at ``until`` or exit.
-    Output without escapes."""
+    """Run ``argv`` on a pseudo-terminal of the size rc-helper gives Claude's screens; stop
+    at ``until`` or exit. Output without escapes."""
     master, slave = os.openpty()
-    fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", ROWS, COLUMNS, 0, 0))
+    size = struct.pack("HHHH", rc_helper.HEIGHT, rc_helper.WIDTH, 0, 0)
+    fcntl.ioctl(slave, termios.TIOCSWINSZ, size)
     proc = subprocess.Popen(
         argv, stdin=slave, stdout=slave, stderr=slave, env=env, cwd=cwd, start_new_session=True
     )
@@ -136,13 +134,47 @@ def run_in_pty(argv: list[str], env: dict[str, str], cwd: Path, until: str | Non
     return exit_code, strip_terminal(b"".join(chunks).decode(errors="replace"))
 
 
+def run_piped(argv: list[str], env: dict[str, str], cwd: Path, timeout: float):
+    """Run ``argv`` with no terminal, as rc-helper runs ``auth status``: stdin empty,
+    stdout read. Output as written."""
+    try:
+        proc = subprocess.run(
+            argv,
+            env=env,
+            cwd=cwd,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        return None, ""
+    return proc.returncode, proc.stdout
+
+
+def run_command(
+    argv: list[str],
+    env: dict[str, str],
+    cwd: Path,
+    until: str | None,
+    timeout: float,
+    terminal: bool = True,
+):
+    """Run ``argv`` on a terminal, or through pipes where ``terminal`` is false."""
+    if terminal:
+        return run_in_pty(argv, env, cwd, until, timeout)
+    return run_piped(argv, env, cwd, timeout)
+
+
 def local_runner(binary: str, env: dict[str, str], cwd: Path, config_dir: Path) -> Runner:
     """Run ``binary`` with ``CLAUDE_CONFIG_DIR`` set to a fresh ``config_dir``."""
 
-    def run(args: list[str], until: str | None = None, timeout: float = TIMEOUT):
+    def run(
+        args: list[str], until: str | None = None, timeout: float = TIMEOUT, terminal: bool = True
+    ):
         config_dir.mkdir(parents=True, exist_ok=True)
         full_env = {**env, "CLAUDE_CONFIG_DIR": str(config_dir), "DISABLE_AUTOUPDATER": "1"}
-        return run_in_pty([binary, *args], full_env, cwd, until, timeout)
+        return run_command([binary, *args], full_env, cwd, until, timeout, terminal)
 
     return run
 
@@ -153,7 +185,7 @@ def _version(run: Runner, version: str) -> bool:
 
 
 def _auth_status(run: Runner, version: str) -> bool:
-    _code, out = run(["auth", "status"])
+    _code, out = run(["auth", "status"], terminal=False)
     try:
         return json.loads(out.strip()).get("loggedIn") is False
     except (json.JSONDecodeError, AttributeError):

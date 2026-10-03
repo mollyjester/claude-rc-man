@@ -239,11 +239,11 @@ class RealSystem:
         }
         claude = str(_claude(canary))
 
-        def run(args, until=None, timeout=claude_checks.TIMEOUT):
+        def run(args, until=None, timeout=claude_checks.TIMEOUT, terminal=True):
             argv = ["runuser", "-u", cfg.app_user, "--", "/usr/bin/env", "-i"]
             argv += [f"{k}={v}" for k, v in env.items()] + [claude, *args]
-            return claude_checks.run_in_pty(
-                argv, {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin"}, home, until, timeout
+            return claude_checks.run_command(
+                argv, {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin"}, home, until, timeout, terminal
             )
 
         return claude_checks.candidate_checks(run, version)
