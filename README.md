@@ -13,10 +13,10 @@ account.
 
 ## Status
 
-Built: `rc-helper`, which controls one person's servers and
-connects their Claude account, and works with their git repositories —
-staging, committing, branches, fetching, pushing and cloning from GitHub, and their GitHub token; `rc-admin` and `rcman-user`, which add and
-remove people and roll out Claude Code versions; the backend API, with its
+Built: `rc-helper`, which does everything rcman does as one person — their
+servers, folders, Claude account, git repositories and GitHub token;
+`rc-admin` and `rcman-user`, which add and remove people and roll out Claude
+Code versions; the backend API, with its
 audit trail; the web interface, including the administrators' pages; the
 installer; and the end-to-end and real-Claude checks. How to install it:
 [docs/installation.md](docs/installation.md). Screens of Claude Code that
