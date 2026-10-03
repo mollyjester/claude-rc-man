@@ -9,8 +9,11 @@ collect_ignore = [] if os.environ.get("RCMAN_IN_CONTAINER") == "1" else ["contai
 
 # --- backend fixtures ------------------------------------------------------------
 
+import contextlib  # noqa: E402
 import json  # noqa: E402
+import shutil  # noqa: E402
 import subprocess  # noqa: E402
+import tempfile  # noqa: E402
 from pathlib import Path  # noqa: E402
 
 import pytest  # noqa: E402
@@ -60,15 +63,32 @@ def github_hook_works(github, tmp_path_factory):
     assert_github_hooked(scratch, UNREACHABLE)
 
 
-@pytest.fixture
-def helper_homes(tmp_path, github):
-    """A real rc-helper per mapped Linux user, each with its own home and tmux socket,
-    and https://github.com/ pointed at the tests' GitHub."""
+@contextlib.contextmanager
+def tmux_sockets(prefix):
+    """A folder of its own for a test's tmux sockets, named with ``prefix``.
+
+    Made under /tmp rather than under tmp_path because a unix socket's path has to stay
+    short, and never named after tmp_path, whose name pytest-xdist's workers repeat.
+    Afterwards every tmux server with a socket in it is killed and the folder removed."""
+    folder = Path(tempfile.mkdtemp(prefix=prefix, dir="/tmp"))
+    try:
+        yield folder
+    finally:
+        for sock in folder.glob("*.sock"):
+            subprocess.run(["tmux", "-S", str(sock), "kill-server"], capture_output=True)
+        shutil.rmtree(folder)
+
+
+@contextlib.contextmanager
+def helper_runner(tmp_path, github_url):
+    """A real rc-helper per mapped Linux user, each with its own home under ``tmp_path``
+    and its own tmux socket in a tmux_sockets folder, and https://github.com/ pointed at
+    ``github_url``."""
     from devtools import fake_claude as fake
     from devtools import record_claude as rec
     from tests.helper_env import helper_env
 
-    homes, sockets = {}, []
+    homes = {}
     wrapper = tmp_path / "claude"
     wrapper.write_text(f'#!/bin/sh\nFAKE_CLAUDE_READY_SECONDS=0.3 exec {rec.FAKE_CLAUDE} "$@"\n')
     wrapper.chmod(0o755)
@@ -77,13 +97,10 @@ def helper_homes(tmp_path, github):
         (home / "projects" / f"{linux}-project").mkdir(parents=True)
         fake.write_state(home / ".claude-fake", logged_in=True)
         homes[linux] = home
-    sock_root = Path("/tmp") / f"rcb-{tmp_path.name[-10:]}"
-    sock_root.mkdir(exist_ok=True)
 
     def runner(linux, args, stdin=None, timeout=60):
-        sock = sock_root / f"{linux}.sock"
-        sockets.append(sock)
-        env = helper_env(homes[linux], wrapper, sock, github.url)
+        sock = runner.socket(linux)
+        env = helper_env(homes[linux], wrapper, sock, github_url)
         proc = subprocess.run(
             [str(REPO / "helpers" / "rc-helper"), *args],
             env=env, input=stdin, capture_output=True, text=True, timeout=timeout,
@@ -91,9 +108,16 @@ def helper_homes(tmp_path, github):
         return proc.returncode, json.loads(proc.stdout)
 
     runner.homes = homes
-    yield runner
-    for sock in set(sockets):
-        subprocess.run(["tmux", "-S", str(sock), "kill-server"], capture_output=True)
+    with tmux_sockets("rcb-") as sock_root:
+        runner.socket = lambda linux: sock_root / f"{linux}.sock"
+        yield runner
+
+
+@pytest.fixture
+def helper_homes(tmp_path, github):
+    """helper_runner for the test's tmp_path, with the tests' GitHub."""
+    with helper_runner(tmp_path, github.url) as runner:
+        yield runner
 
 
 @pytest.fixture

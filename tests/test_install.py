@@ -3,7 +3,9 @@
 Real installations are tested in the container suite.
 """
 
+import contextlib
 import os
+import socket
 import stat
 import subprocess
 from pathlib import Path
@@ -328,27 +330,56 @@ def test_caddy_is_told_to_restart_when_it_joins_the_socket_group():
     assert ins.WEB_GROUP == "rcman-web"
 
 
-def test_a_caddy_admin_api_on_loopback_is_noticed():
-    import socket
+@contextlib.contextmanager
+def reserved_port():
+    """A port bound on both loopback addresses without listening: a connection to it is
+    refused, and while it is held no other process, a parallel test included, can take it.
+    Yields the port and its socket for each address family."""
+    for _ in range(20):
+        held = {socket.AF_INET: socket.socket(socket.AF_INET)}
+        held[socket.AF_INET].bind(("127.0.0.1", 0))
+        port = held[socket.AF_INET].getsockname()[1]
+        held[socket.AF_INET6] = socket.socket(socket.AF_INET6)
+        try:
+            held[socket.AF_INET6].bind(("::1", port))
+        except OSError:  # taken on ::1; try another
+            for sock in held.values():
+                sock.close()
+            continue
+        try:
+            yield port, held
+        finally:
+            for sock in held.values():
+                sock.close()
+        return
+    raise RuntimeError("no port free on both loopback addresses")
 
-    with socket.socket() as listener:
-        listener.bind(("127.0.0.1", 0))
-        listener.listen()
-        port = listener.getsockname()[1]
-        assert ins.caddy_admin_exposed(port=port) is True  # positive control
-    assert ins.caddy_admin_exposed(port=port) is False
-    assert "admin off" in ins.CADDY_ADMIN_WARNING
+
+def bind(family, host, port):
+    with socket.socket(family) as other:
+        other.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        other.bind((host, port))
 
 
-def test_a_caddy_admin_api_on_ipv6_loopback_is_noticed_too():
-    import socket
+@pytest.mark.parametrize(
+    ("family", "host"), [(socket.AF_INET, "127.0.0.1"), (socket.AF_INET6, "::1")]
+)
+def test_a_reserved_port_cannot_be_taken_and_refuses_connections(family, host):
+    bind(family, host, 0)  # positive control: the same bind succeeds on a port not held
+    with reserved_port() as (port, _):
+        with pytest.raises(OSError):
+            bind(family, host, port)
+        with pytest.raises(ConnectionRefusedError):
+            socket.create_connection((host, port), timeout=2).close()
 
-    with socket.socket(socket.AF_INET6) as listener:
-        listener.bind(("::1", 0))
-        listener.listen()
-        port = listener.getsockname()[1]
+
+@pytest.mark.parametrize("family", [socket.AF_INET, socket.AF_INET6])
+def test_a_caddy_admin_api_on_loopback_is_noticed(family):
+    with reserved_port() as (port, held):
+        assert ins.caddy_admin_exposed(port=port) is False
+        held[family].listen()
         assert ins.caddy_admin_exposed(port=port) is True
-    assert ins.caddy_admin_exposed(port=port) is False
+    assert "admin off" in ins.CADDY_ADMIN_WARNING
     assert "127.0.0.1" in ins.CADDY_ADMIN_WARNING and "[::1]" in ins.CADDY_ADMIN_WARNING
 
 

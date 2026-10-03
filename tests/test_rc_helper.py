@@ -18,6 +18,7 @@ from devtools import fake_claude as fake
 from devtools import record_claude as rec
 from helpers import git_run
 from helpers import rc_helper as h
+from tests.conftest import tmux_sockets
 from tests.github_server import UNREACHABLE
 from tests.helper_env import helper_env
 
@@ -34,16 +35,13 @@ def env(tmp_path):
     (home / "projects" / "alpha").mkdir(parents=True)
     (home / "projects" / "beta" / "inner").mkdir(parents=True)
     (home / ".hidden").mkdir()
-    sock = Path(os.environ.get("TMPDIR", "/tmp")) / f"rch-{os.getpid()}-{tmp_path.name[-12:]}"
-    sock.mkdir()
     wrapper = tmp_path / "claude"
     wrapper.write_text(
         f'#!/bin/sh\nFAKE_CLAUDE_READY_SECONDS=0.3 exec {rec.FAKE_CLAUDE} "$@"\n', encoding="utf-8"
     )
     wrapper.chmod(0o755)
-    e = helper_env(home, wrapper, sock / "rcman.sock", path=os.environ["PATH"])
-    yield e
-    subprocess.run(["tmux", "-S", e["RC_HELPER_TMUX_SOCKET"], "kill-server"], capture_output=True)
+    with tmux_sockets("rch-") as sock:
+        yield helper_env(home, wrapper, sock / "rcman.sock", path=os.environ["PATH"])
 
 
 def helper(env, *args, stdin=None):
