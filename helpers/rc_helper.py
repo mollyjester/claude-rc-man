@@ -1451,12 +1451,14 @@ class Helper:
         for change in self._changes(repo, deadline, branch):
             lists[change.staged].add(_file(change))
         remote = self._push_target(repo, branch.name, deadline)[1]
+        to_github = self._to_github(repo, remote, deadline)
         return {
             "path": rel,
             "branch": dataclasses.asdict(branch),
             "staged": lists[True].answer(),
             "not_staged": lists[False].answer(),
-            "push_to_github": self._to_github(repo, remote, deadline),
+            "push_to_github": to_github,
+            "github_token": self._token_stored(deadline) if to_github else None,
         }
 
     @git_verb()

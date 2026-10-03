@@ -429,6 +429,15 @@ test("whether a token is stored comes with the status, so a token GitHub refused
   expect(fake.made("GET", "/api/github")).toHaveLength(0);
 });
 
+test("a status that does not say a token is stored offers no push to GitHub", async () => {
+  repoApi({ "GET /api/git/status": status(STAGED, [], { push_to_github: true, github_token: null }) });
+  renderApp(`/?folder=${REPO}`);
+  const section = await changes();
+  expect(await section.findByText(m.pushNeedsToken)).toBeInTheDocument();
+  expect(section.queryByRole("button", { name: m.push })).not.toBeInTheDocument();
+  expect(section.queryByRole("button", { name: m.commitPush })).not.toBeInTheDocument();
+});
+
 test("until the status is known, neither Push nor why it is not offered is shown", async () => {
   let answer: (value: unknown) => void = () => {};
   repoApi({ "GET /api/git/status": () => new Promise((resolve) => (answer = resolve)) });

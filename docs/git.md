@@ -84,8 +84,10 @@ allowed to ask, so a remote that needs one is refused with git's own words.
 **Push** pushes the branch you are on. A branch that does not track a
 remote branch yet is pushed to `origin` under its own name and set to
 track it there, as `git push -u origin HEAD` does; one that does is pushed
-as `git push` pushes it, so your own git configuration decides where. While
-you are not on a branch there is nothing to push, and the section says so.
+as `git push` pushes it, so your own git configuration decides where. Push
+is not offered while the remote branch already has every commit of yours.
+While you are not on a branch there is nothing to push, and the section says
+so.
 
 A push to GitHub — to a remote whose address begins with
 `https://github.com/` — needs your [GitHub token](#github-token); until one
@@ -120,7 +122,8 @@ safest; a classic token with the `repo` scope works too.
   records it in the audit trail or its logs. Settings only says whether one
   is stored. Saving another replaces it.
 - **When GitHub refuses it** — it has expired or been revoked — git forgets
-  it, and Settings then says no token is stored; add a new one.
+  it: the Changes section stops offering a push to GitHub, and Settings
+  says no token is stored; add a new one.
 - **Removing it.** **Remove token** in Settings removes the token rcman
   stored, and nothing else: the line in `~/.gitconfig` stays, as do other
   credentials you stored yourself. The token itself still works on GitHub

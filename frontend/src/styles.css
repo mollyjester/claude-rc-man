@@ -123,7 +123,7 @@ button.name[aria-current="true"] { background: var(--accent); color: var(--accen
 .attention { border-left: 4px solid var(--waiting); padding: 0.25rem 0.75rem; margin: 0.5rem 0 1rem; }
 .dialog { border: 1px solid var(--border); border-radius: 0.5rem; padding: 1rem; margin: 1rem 0; }
 form label { display: block; margin: 0.5rem 0; }
-form input[type="text"] { display: block; min-width: 20rem; max-width: 100%; }
+form input[type="text"], form input[type="password"] { display: block; min-width: 20rem; max-width: 100%; }
 table { border-collapse: collapse; margin: 0.5rem 0 1rem; }
 th, td { text-align: left; padding: 0.25rem 0.75rem; border-bottom: 1px solid var(--border); }
 .docs { display: grid; grid-template-columns: 14rem 1fr; gap: 2rem; }

@@ -74,20 +74,29 @@ function GitHubToken() {
   return (
     <section aria-labelledby={heading}>
       <h2 id={heading}>{m.settingsGithubTitle}</h2>
-      <p className="muted">{m.githubTokenHelp}</p>
       {stored !== null && <p>{stored ? m.githubTokenStored : m.githubTokenNotStored}</p>}
       <form noValidate onSubmit={save}>
-        <label>
-          {m.githubTokenLabel}
-          <input type="password" autoComplete="off" value={token} onChange={(e) => setToken(e.target.value)} />
-        </label>
+        <div>
+          <label>
+            {m.githubTokenLabel}
+            <input type="password" autoComplete="new-password" value={token} onChange={(e) => setToken(e.target.value)} />
+          </label>
+          <p className="muted">{m.githubTokenHelp}</p>
+        </div>
         <button type="submit" className="primary">
           {m.save}
         </button>
       </form>
       {stored && (
         <div className="actions">
-          <button type="button" className="secondary-danger" onClick={() => setRemoving(true)}>
+          <button
+            type="button"
+            className="secondary-danger"
+            onClick={() => {
+              setSaved(false);
+              setRemoving(true);
+            }}
+          >
             {m.githubTokenRemove}
           </button>
         </div>

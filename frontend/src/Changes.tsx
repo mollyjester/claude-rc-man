@@ -15,6 +15,7 @@ export type GitStatus = {
   not_staged: FileList;
   author: { name: string; email: string } | null;
   push_to_github: boolean;
+  github_token: boolean | null;
 };
 type Pushed = { path: string; branch: string; upstream: string | null; upstream_set: boolean };
 type CommitPushed = { path: string; commit: string; push: Pushed | null; push_problem: Record<string, unknown> | null };
@@ -22,7 +23,7 @@ type Branches = {
   local: { branches: { name: string; current: boolean; upstream: string | null }[]; more: number };
   remote: { branches: { name: string; local: string | null }[]; more: number };
 };
-type Action = "status" | "branches" | "stage" | "unstage" | "commit" | "switch" | "branch" | "fetch" | "push" | "github";
+type Action = "status" | "branches" | "stage" | "unstage" | "commit" | "switch" | "branch" | "fetch" | "push";
 
 // A repository's status: fetched when the section opens, every pollMs while it
 // is open (pollMs 0: never by itself), and whenever refresh is called. An
@@ -148,12 +149,15 @@ function kept(selected: ReadonlySet<string>, list: FileList): ReadonlySet<string
 }
 
 // Why nothing can be pushed from here, or null where a push can be tried: on
-// a branch, and to GitHub only with a token stored.
-function pushReason(status: GitStatus, token: boolean | null): "branch" | "token" | null {
+// a branch, and to GitHub only with a token stored, as the status says.
+function pushReason(status: GitStatus): "branch" | "token" | null {
   if (status.branch.name === null) return "branch";
-  if (status.push_to_github && token !== true) return "token";
+  if (status.push_to_github && status.github_token !== true) return "token";
   return null;
 }
+
+// Whether Push itself is worth offering: not for a branch its upstream has already.
+const somethingToPush = (branch: Branch) => branch.upstream === null || branch.ahead !== 0;
 
 // The Changes section of a repository: its branch, the staged and not staged
 // files, Commit, Push and Commit & Push, and its branches. What is offered
@@ -169,16 +173,8 @@ export function Changes({ path, pollMs }: { path: string; pollMs: number }) {
   const [newBranch, setNewBranch] = useState("");
   const [busy, setBusy] = useState(false);
   const [errors, setErrors] = useState<Partial<Record<Action, ApiError>>>({});
-  const [token, setToken] = useState<boolean | null>(null);
   const [pushed, setPushed] = useState<Pushed | null>(null);
   const [notPushed, setNotPushed] = useState<string | null>(null);
-
-  useEffect(() => {
-    api.get<{ token: boolean }>("/api/github").then(
-      (answer) => setToken(answer.token === true),
-      (e) => setErrors((current) => ({ ...current, github: asApiError(e) })),
-    );
-  }, []);
 
   const listBranches = useCallback(async () => {
     try {
@@ -291,22 +287,24 @@ export function Changes({ path, pollMs }: { path: string; pollMs: number }) {
       {status !== null && (
         <>
           <BranchLine branch={status.branch} />
-          {pushReason(status, token) === "branch" ? (
+          {pushReason(status) === "branch" ? (
             <p>{m.pushNeedsBranch}</p>
-          ) : pushReason(status, token) === "token" ? (
+          ) : pushReason(status) === "token" ? (
             <p>
               {m.pushNeedsToken} <Link to="/settings">{m.pushTokenLink}</Link>
             </p>
           ) : (
-            <div className="actions">
-              <button type="button" className="secondary" disabled={busy} onClick={push}>
-                {m.push}
-              </button>
-            </div>
+            somethingToPush(status.branch) && (
+              <div className="actions">
+                <button type="button" className="secondary" disabled={busy} onClick={push}>
+                  {m.push}
+                </button>
+              </div>
+            )
           )}
           {pushed !== null && pushed.upstream !== null && <p role="status">{m.pushed(pushed.branch, pushed.upstream)}</p>}
           {notPushed !== null && <p>{m.committedNotPushed(notPushed.slice(0, 7))}</p>}
-          <ProblemView error={errors.push ?? errors.github ?? null} />
+          <ProblemView error={errors.push ?? null} />
           <Files
             title={m.stagedTitle}
             list={status.staged}
@@ -344,7 +342,7 @@ export function Changes({ path, pollMs }: { path: string; pollMs: number }) {
                 <button type="submit" className="primary" disabled={busy}>
                   {m.commit}
                 </button>
-                {pushReason(status, token) === null && (
+                {pushReason(status) === null && (
                   <button type="button" className="secondary" disabled={busy} onClick={commitPush}>
                     {m.commitPush}
                   </button>

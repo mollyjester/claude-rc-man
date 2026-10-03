@@ -42,11 +42,13 @@ version is `frontend/.nvmrc`.
   sentence saying what to do. The Changes section is shown only for a
   folder the tree lists as a repository; Commit is offered only with
   something staged and a commit author name set, and otherwise the section
-  says why; Push is offered on a branch, and, when git-status says the push
-  goes to GitHub (`push_to_github`), only while `/api/github` says a token
-  is stored, which the section asks once when it opens; otherwise the
-  section says why, linking to Settings for the token; Commit & Push is
-  offered where both Commit and Push are; Switch is offered for a local branch other than the current one
+  says why; a push can be tried on a branch, and, when the status says it
+  goes to GitHub (`push_to_github`), only while the same status says a
+  token is stored (`github_token`), so a token git forgot after GitHub
+  refused it withdraws it at the next refresh; otherwise the section says
+  why, linking to Settings for the token; Push is offered where a push can
+  be tried and the branch has no upstream or is ahead of it, and Commit &
+  Push where a push can be tried and Commit is offered; Switch is offered for a local branch other than the current one
   and for a remote branch no local branch tracks; Stage selected and
   Unstage selected only while something is checked. git's own refusals, which
   rcman cannot know in advance, are shown as git gave them. Delete folder is offered only for a folder,
