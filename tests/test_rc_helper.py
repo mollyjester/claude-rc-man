@@ -2976,3 +2976,78 @@ def test_while_a_push_runs_no_process_holds_the_token(hooked, github, on_github,
     assert any("remote-http" in c for c in commands), commands  # positive control
     assert any("git-push" in c for c in commands), commands  # rc-helper itself
     assert all(github.token not in cmdline + environ for cmdline, environ in seen)
+
+
+# --- the token in what git is given ------------------------------------------------------
+
+
+def started_gits(monkeypatch) -> list[tuple[list[str], dict]]:
+    """Every git rc-helper starts in this process: its argv and its environment, as
+    git_run.Git hands them to Popen - global -c options included, which GIT_TRACE
+    leaves out."""
+    seen = []
+    real = git_run.Git
+
+    def popen(argv, **kwargs):
+        seen.append((list(argv), dict(kwargs.get("env") or {})))
+        return subprocess.Popen(argv, **kwargs)
+
+    monkeypatch.setattr(git_run, "Git", lambda env, popen_=None: real(env, popen=popen))
+    return seen
+
+
+def test_the_token_is_in_no_argv_or_environment_git_is_started_with(
+    hooked, github, on_github, monkeypatch
+):
+    seen = started_gits(monkeypatch)
+    helper_ = in_process(hooked)
+    helper_.github_token(github.token.encode() + b"\n")
+    helper_.github_status()
+    commit_in(Path(hooked["RC_HELPER_HOME"]) / GH_REL, "more.txt")
+    helper_.git_push(GH_REL, False)
+    helper_.github_forget()
+    argvs = [argv for argv, _ in seen]
+    assert any("credential-store" in argv for argv in argvs)  # positive controls
+    assert any("push" in argv for argv in argvs)
+    for argv, env in seen:
+        assert not any(github.token in part for part in argv), argv
+        assert not any(github.token in value for value in env.values()), argv
+
+
+def test_the_argv_check_sees_a_global_option(hooked, monkeypatch, tmp_path):
+    """Planted twin: a token given to git as a global -c option is in the argv recorded."""
+    seen = started_gits(monkeypatch)
+    marker = "PLANTED-TOKEN-IN-A-GLOBAL-OPTION"
+    home = Path(hooked["RC_HELPER_HOME"])
+    git_run.Git(h.git_env(h.config_from_env(hooked))).run(
+        home, ["-c", f"rcman.t={marker}", "config", "rcman.t"], deadline=time.monotonic() + 30
+    )
+    assert any(marker in part for argv, _ in seen for part in argv)
+
+
+def recorded_git_calls(monkeypatch) -> list[tuple[list[str], dict]]:
+    """Every call rc-helper's verbs make to git, with the options they make it with."""
+    calls = []
+    real = h.Helper._git
+
+    def recording(self, repo, args, deadline, **kwargs):
+        calls.append((list(args), kwargs))
+        return real(self, repo, args, deadline, **kwargs)
+
+    monkeypatch.setattr(h.Helper, "_git", recording)
+    return calls
+
+
+def test_what_git_answers_about_the_token_is_kept_out_of_refusals(hooked, monkeypatch):
+    """The credential-store calls that are given or answer with the token keep git's
+    standard output out of any refusal (secret_output)."""
+    calls = recorded_git_calls(monkeypatch)
+    helper_ = in_process(hooked)
+    helper_.github_token(TOKEN.encode() + b"\n")
+    helper_.github_status()
+    secret = {
+        tuple(args[:2]): kwargs.get("secret_output")
+        for args, kwargs in calls
+        if args[:2] in (["credential-store", "get"], ["credential-store", "store"])
+    }
+    assert secret == {("credential-store", "store"): True, ("credential-store", "get"): True}
