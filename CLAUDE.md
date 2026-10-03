@@ -27,7 +27,7 @@ The `make` targets, from `make setup` to `make check`, and what each does:
 | `rc-admin`, `rcman-user`, `users.toml`, the approved Claude version | [project-knowledge/rc-admin.md](project-knowledge/rc-admin.md) |
 | Adding and removing people, for administrators | [docs/users.md](docs/users.md) |
 | The backend: layout, requests, helper calls, each area's routes, audit | [project-knowledge/backend.md](project-knowledge/backend.md) |
-| The frontend: layout, rules, tests | [project-knowledge/frontend.md](project-knowledge/frontend.md) |
+| The frontend: formatting and lint, layout, rules, tests | [project-knowledge/frontend.md](project-knowledge/frontend.md) |
 | The installer: how it is built and tested | [project-knowledge/installer.md](project-knowledge/installer.md) |
 | Checks that need a real Claude account | [project-knowledge/real-claude-checklist.md](project-knowledge/real-claude-checklist.md) |
 | Installing and upgrading, for administrators | [docs/installation.md](docs/installation.md) |

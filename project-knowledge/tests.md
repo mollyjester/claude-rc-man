@@ -8,8 +8,8 @@ How the test suite is organised and run. The rules the suite follows are in
 | Command | What it does |
 |---|---|
 | `make setup` | Creates the development environment: `make frontend-setup`, then `uv sync` |
-| `make test` | Runs every Python test that runs on the host, in parallel with pytest-xdist: all but those marked `container` |
-| `make test-container` | Runs the Python tests marked `container`, which need a container. It sets `RCMAN_REQUIRE_CONTAINER=1`, so they fail instead of skipping where Docker is not usable |
+| `make test` | Runs every Python test that runs on the host, in parallel with pytest-xdist: all but those marked `container`, and those marked `real_claude`, which no target runs |
+| `make test-container` | Runs the Python tests marked `container`, which need a container, in one process; the `Makefile` says why. It sets `RCMAN_REQUIRE_CONTAINER=1`, so they fail instead of skipping where Docker is not usable |
 | `make lint` | Checks formatting and lint: ruff for the Python code, Biome for the frontend, with the frontend's packages `make frontend-setup` installs |
 | `make format` | Applies formatting and safe lint fixes: ruff for the Python code, Biome for the frontend |
 | `make frontend-setup` | Installs the frontend's packages and Playwright's browser |
@@ -134,7 +134,8 @@ it can fail, and a positive control that keeps an empty input from passing.
   lists.
 - **No fixed shared paths or ports** (`tests/test_fixed_resources.py`). Tests
   run at the same time, so none may hold a fixed path under `/tmp` or a fixed
-  unprivileged port. It catches these forms, outside `tests/container/`: a
+  unprivileged port. It reads the Python files in `tests/` but not those in
+  `tests/container/`, and catches these forms: a
   string that is `/tmp` or a path in it, an f-string beginning with one, and a
   call to `tempfile.gettempdir()`, except as the `dir=` of a `tempfile` call
   that makes a uniquely named file or folder in `/tmp` itself; and a fixed
@@ -166,9 +167,16 @@ it can fail, and a positive control that keeps an empty input from passing.
   `make format` run ruff and the frontend's script of the same name, and the
   real `make lint`, run over a frontend file planted in a scratch tree, fails
   when Biome would reformat it, when Biome finds a lint finding it reports as
-  an info, and when the frontend's packages are missing. Every rule Biome runs
+  an info, and when the frontend's packages are missing; it checks the
+  frontend's `index.html`, and fails on a lint finding there. Every rule Biome runs
   at info, as `biome rage` and `biome explain` report, is raised to a warning
   in `frontend/biome.jsonc`.
+- **Every make target is documented** (`tests/test_docs_guard.py`). This
+  file has a table row whose first cell is `make <target>` for exactly the
+  targets the `Makefile` defines. The targets are read from make's own
+  database (`make -pRrq`), so a comment, a variable, a target-specific
+  variable, a special target such as `.PHONY`, a `define` block's body or a
+  branch make does not take is not mistaken for one.
 - **Deployment contents** (`tests/test_export.py`). Deployment uses
   `git archive`, so `.gitattributes` decides what is deployed. The test
   checks that every development-only file is marked `export-ignore`, that the
