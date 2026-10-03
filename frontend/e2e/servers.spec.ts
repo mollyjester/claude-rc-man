@@ -247,6 +247,7 @@ test("a GitHub token is added, a new branch is committed and pushed, and the tok
   // a new branch, committed and pushed in one go
   await page.goto("/?folder=projects/alice-repo");
   const branch = "pushed-from-rcman";
+  await changes.getByRole("button", { name: m.newBranch, exact: true }).click();
   await changes.getByLabel(m.newBranchName).fill(branch);
   await changes.getByRole("button", { name: m.createBranch }).click();
   await expect(changes.getByText(m.onBranch(branch))).toBeVisible();
