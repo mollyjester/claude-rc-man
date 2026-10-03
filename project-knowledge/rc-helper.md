@@ -179,7 +179,10 @@ if Claude asks again.
   loaded from stdin, so it never appears in any process's arguments.
 - `rc-helper` refuses to run as root. It runs on the system Python with only
   the standard library and the helpers' own modules; the launcher runs it in
-  isolated mode (`-I`) and puts the directory above `helpers/` on its path.
+  isolated mode and in UTF-8 mode (`-IXutf8`), as every launcher in
+  `helpers/` does, so its arguments, file names and standard streams are
+  UTF-8 whatever the locale, and puts the directory above `helpers/` on its
+  path.
 
 ## Git
 
