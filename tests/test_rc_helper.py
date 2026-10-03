@@ -2463,7 +2463,7 @@ def test_every_git_verb_is_driven_here():
 
 
 @pytest.mark.parametrize(("args", "stdin"), GIT_VERBS, ids=[a[0] for a, _ in GIT_VERBS])
-def test_git_verbs_wait_for_no_folder_being_deleted(env, repo, args, stdin):
+def test_git_verbs_are_refused_while_a_folder_is_being_deleted(env, repo, args, stdin):
     write(repo / "a.txt")
     fd = hold_the_lock(env, exclusive=True)
     try:
@@ -2639,3 +2639,50 @@ def test_tree_marks_only_what_the_changes_section_can_show(env, repo, tmp_path):
         assert marked[f"projects/{rel}"] is False, rel
         code = error_code(env, "git-status", "--", f"projects/{rel}")
         assert code in ("not_a_repository", "repository_outside_home", "git_failed"), (rel, code)
+
+
+def test_status_says_when_a_merge_is_in_progress(env, repo):
+    """Until the merge is committed, also once its conflicts are resolved and staged."""
+    from tests.git_fixtures import FIXTURE_HOME, fixture_env
+
+    assert status(env)["merging"] is False  # positive control's twin: no merge
+    fixture_git(repo, "switch", "-q", "-c", "other")
+    write(repo / "README.md", "theirs\n")
+    fixture_git(repo, "commit", "-q", "-am", "theirs")
+    fixture_git(repo, "switch", "-q", "main")
+    write(repo / "README.md", "ours\n")
+    fixture_git(repo, "commit", "-q", "-am", "ours")
+    merge = subprocess.run(
+        ["git", "merge", "-q", "other"],
+        cwd=repo,
+        env=fixture_env(FIXTURE_HOME),
+        capture_output=True,
+    )
+    assert merge.returncode != 0
+    assert status(env)["merging"] is True
+    write(repo / "README.md", "resolved\n")
+    fixture_git(repo, "add", "README.md")
+    resolved = status(env)
+    assert listed(resolved, "not_staged") == []  # no unmerged entry is left to say so
+    assert resolved["merging"] is True
+    assert commit(env, "Merge other")[0] == 0
+    assert status(env)["merging"] is False
+
+
+def test_a_name_with_a_git_part_is_refused_as_written():
+    """The written check alone: .git itself is a name in the repository's own folder."""
+    with pytest.raises(h.HelperError) as err:
+        h.check_file(Path("/nonexistent-repo"), ".git")
+    assert err.value.code == "file_outside_repository"
+    assert h.check_file(Path("/nonexistent-repo"), "git") == b"git"  # positive control
+
+
+def test_a_name_whose_folder_resolves_into_the_git_folder_is_refused(tmp_path):
+    """The resolved check alone: written without .git, the name's folder is .git."""
+    repo = make_repo(tmp_path / "r").resolve()
+    (repo / "meta").symlink_to(".git")
+    (repo / "plain").mkdir()
+    with pytest.raises(h.HelperError) as err:
+        h.check_file(repo, "meta/config")
+    assert err.value.code == "file_outside_repository"
+    assert h.check_file(repo, "plain/config") == b"plain/config"  # positive control

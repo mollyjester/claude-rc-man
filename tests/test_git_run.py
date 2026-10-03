@@ -356,3 +356,49 @@ def test_a_version_is_read_from_gits_answer(text, version):
 def test_an_answer_with_no_version_is_unrecognised():
     with pytest.raises(g.GitUnrecognised):
         g.version_of("hello\n")
+
+
+def test_a_line_git_says_is_cut_at_its_length(tmp_path):
+    repo = make_repo(tmp_path / "r")
+    long = g.MAX_GIT_LINE_LENGTH * 10
+    hook(repo, "pre-commit", f"printf '%{long}s\\n' '' | tr ' ' x >&2; echo after >&2; exit 1\n")
+    write(repo / "x.txt")
+    fixture_git(repo, "add", "x.txt")
+    with pytest.raises(g.GitFailed) as failed:
+        g.Git(ENV).run(repo, ["commit", "-q", "-m", "x"], deadline=soon())
+    assert failed.value.lines == ["x" * g.MAX_GIT_LINE_LENGTH, "after"]
+
+
+def test_git_is_ended_whatever_stops_the_call_once_it_has_started(tmp_path, monkeypatch):
+    """Even an exception right after git starts, as SIGTERM would raise there, ends it."""
+    repo = make_repo(tmp_path / "r")
+    started = []
+
+    def popen(*args, **kwargs):
+        started.append(subprocess.Popen(*args, **kwargs))
+        return started[-1]
+
+    class Stopped(Exception):
+        pass
+
+    def stop(*args, **kwargs):
+        raise Stopped
+
+    monkeypatch.setattr(g, "_Message", stop)
+    with pytest.raises(Stopped):
+        g.Git(ENV, popen=popen).run(repo, ["hash-object", "--stdin"], deadline=soon())
+    [proc] = started  # positive control: git started, and waits on its stdin
+    assert proc.poll() is not None, "git was left running"
+
+
+def test_what_is_kept_of_gits_message_is_bounded_however_much_it_says():
+    """A line that never ends, and lines beyond the cap, are not held in memory."""
+    message = g._Message()
+    for _ in range(100):
+        message.feed(b"x" * 65536)  # one line, never ended
+    assert len(message._partial) <= g.MAX_GIT_LINE_LENGTH * 4
+    message.feed(b"\n" + b"line\n" * (g.MAX_GIT_MESSAGE_LINES * 3))
+    message.close()
+    assert len(message.lines) == g.MAX_GIT_MESSAGE_LINES
+    assert message.lines[0] == "x" * g.MAX_GIT_LINE_LENGTH
+    assert message.more == g.MAX_GIT_MESSAGE_LINES * 3 - (g.MAX_GIT_MESSAGE_LINES - 1)
