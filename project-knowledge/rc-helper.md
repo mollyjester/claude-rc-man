@@ -17,11 +17,13 @@ command-line reference is `rc-helper --help` and `rc-helper <verb> --help`.
   one of the module's rules — each a `Rule` (`helpers/rules.py`): a pattern and
   the sentence that explains it — is refused with that rule's sentence:
   `RULE_CODES` names the rule behind each such code, and `MESSAGES` takes the
-  sentence from it. A rule's code is raised only where its rule is checked, so
-  the sentence is never said of a value the rule accepts. The backend checks
-  the same rules and refuses a value one refuses with the same sentence; what
-  only the helper can see, it refuses itself in words of its own — a folder
-  name longer than the file system allows (`name_invalid`), a path that leads
+  sentence from it. A rule's code is raised only in a function that checks its rule; a check
+  the pattern cannot make — a folder name longer than the file system
+  allows, a commit message too long, a value that is not UTF-8 — refuses
+  with the same code only where the rule's sentence already says it. The
+  backend checks the same rules and refuses a value one refuses with the
+  same sentence; what only the helper can see, it refuses itself in words of
+  its own — a path that leads
   home, outside the home or nowhere, a path ending in `.` or `..`
   (`path_ends_in_dot`), a new folder whose path would be too long
   (`folder_path_too_long`). Tests run each code's refusal through the command
@@ -44,7 +46,7 @@ command-line reference is `rc-helper --help` and `rc-helper <verb> --help`.
 |---|---|
 | `rc-helper tree [path]` | Subfolders of a folder in the home folder (the home folder itself when no path is given); `--depth` for nested levels, `--all` to include dot-folders. Symbolic links leading outside the home folder are left out, and so is anything that is, or leads into, a `.git` folder |
 | `rc-helper list` | Every server and its state |
-| `rc-helper start <path> --prefix <p>` | Starts a server in a folder, with `<p>` as the session name prefix. Refuses when Claude is not connected or a server already runs there; in a folder with a stopped server it starts that server again |
+| `rc-helper start <path> --prefix <p>` | Starts a server in a folder, with `<p>` as the session name prefix. Refuses when Claude is not connected or a server already runs there; in a folder whose server has ended, whatever its state, it starts that server again |
 | `rc-helper resume <path> --prefix <p>` | Starts a server again that is `stopped` or `exited` (`RESUMABLE` in `helpers/rc_helper.py`); refuses with `not_stopped` when there is none |
 | `rc-helper stop <path>` | Stops a running server with Ctrl+C and waits for it to exit |
 | `rc-helper forget <path>` | Removes a server that has stopped from the list |
@@ -52,10 +54,10 @@ command-line reference is `rc-helper --help` and `rc-helper <verb> --help`.
 | `rc-helper confirm <path> --answer y\|n` | Answers the folder-trust question |
 | `rc-helper auth-status` | Whether a Claude account is connected, which, and when the sign-in expires (`login_expires_at`, or `null` when unknown) |
 | `rc-helper auth-login --email <e>` | Starts connecting a Claude account; returns the sign-in URL |
+| `rc-helper auth-code` | Finishes connecting with the code read from stdin — pressing Enter after Claude reports success, as it asks — and returns the account as `auth-status` does |
 | `rc-helper mkdir [parent] --name=<name>` | Makes a folder named `<name>` in a folder, or in the home folder when no parent is given. The name must match `FOLDER_NAME` in `helpers/rc_helper.py`, whose sentence says what it refuses and which shares its invisible characters with `AUTHOR_NAME`, and be no longer than the file system's `PC_NAME_MAX` in bytes; refuses with `folder_exists` when anything, even a dangling link, has that name |
 | `rc-helper delete <path>` | Stops every running server in a folder or below it, forgets every server there, then deletes the folder and everything in it; a link is deleted as the link. Refuses the home folder, anything outside it, a dot-folder or anything in one (`path_hidden`), a path through a link (`path_through_link`), and a path not written as the names on disk (`path_name_differs`). See [Deleting a folder](#deleting-a-folder) |
-| `rc-helper auth-code` | Finishes connecting with the code read from stdin — pressing Enter after Claude reports success, as it asks — and returns the account as `auth-status` does |
-| `rc-helper git-status <path>` | A repository's branch — its name (`null` while detached), commit (`null` before the first), upstream and how far ahead and behind it is — and its `staged` and `not_staged` files, each with its change (`CHANGES`), where a rename or copy came from, whether it is a submodule, and `selectable: false` for a name that is not UTF-8; `merging`, whether a merge is under way, which is so until it is committed or aborted; `push_to_github`, whether a push from it goes to GitHub (see [Push](#push)); `github_token`, for a push to GitHub whether a token is stored, as `github-status` says, and otherwise `null`; and `push_ahead`, how many commits where the branch pushes lacks — its push destination (`@{push}`) when git names one, otherwise its upstream, and `null` with neither. See [Git](#git) |
+| `rc-helper git-status <path>` | A repository's branch — its name (`null` while detached), commit (`null` before the first), upstream and how far ahead and behind it is — and its `staged` and `not_staged` files, each with its change (`CHANGES`), where a rename or copy came from, whether it is a submodule, and `selectable: false` for a name that is not UTF-8; `merging`, whether a merge is under way, which is so until it is committed or aborted; `push_to_github`, whether a push from it goes to GitHub (see [Push](#push)); `github_token`, for a push to GitHub whether a token is stored, as `github-status` says, and otherwise `null`; and `push_ahead`, how many commits where the branch pushes lacks — its push destination (`@{push}`) when git names one, otherwise its upstream, and `null` with neither or while no branch is checked out. See [Git](#git) |
 | `rc-helper git-branches <path>` | The local branches, each with whether it is current and its upstream, and the remote-tracking branches, each with the local branch tracking it or `null`; `origin/HEAD` and other symbolic refs are left out |
 | `rc-helper git-stage <path>` | Stages the files named in a JSON list read from stdin; refuses a name outside the repository |
 | `rc-helper git-unstage <path>` | Unstages the files named in a JSON list read from stdin, before the first commit too; a staged rename's new name takes the old one with it |
@@ -110,8 +112,9 @@ at the first step that fails:
 rc-helper turns SIGTERM, which `run_bounded` sends when a call outlasts its
 timeout (see [backend.md](backend.md)), into an exit, as an exception would
 end it, and exits with no answer: the backend answers `helper_timeout`.
-Whatever rc-helper started that still runs, git and its hooks among it, is
-ended on the way out. A delete ended that way stops where it is: the servers
+Every process rc-helper runs as its own child that still runs, git and its
+hooks among them, is ended on the way out; servers it started in tmux keep
+running. A delete ended that way stops where it is: the servers
 it had forgotten stay forgotten, and the part of the folder not yet removed
 stays; running `delete` again carries on.
 
@@ -132,8 +135,8 @@ a screen fails there first.
 | `connected` | The server is up; no session has attached yet |
 | `ready` | A session is attached; `session_name` and `environment_url` are set |
 | `stopped` | Stopped with its sessions preserved; `start` or `resume` brings them back |
-| `trust_declined` | The trust question was answered no; the server ended |
-| `logged_out` | Claude refused because no account is connected |
+| `trust_declined` | The trust question was answered no; the server ended, and `start` starts it again |
+| `logged_out` | Claude refused because no account is connected; `start` starts it again |
 | `exited` | The server ended in a way not listed above, whatever its exit status — it stopped by itself; `exit_code` and `screen` are set, and `start` or `resume` starts it again |
 | `unrecognised` | A live screen that matches no known state; `screen` is set |
 
@@ -164,7 +167,7 @@ if Claude asks again.
   holds the new folder open, runs git in it and clones into it through that
   descriptor, and removes a failed clone through it (see [Clone](#clone)).
 - Starting, resuming, stopping, answering and forgetting a server, making a
-  folder and every git verb take a shared `flock` on the home folder itself,
+  folder, and every `git-*` and `github-*` verb (`git_verb`) take a shared `flock` on the home folder itself,
   and deleting takes it exclusively, so nothing is done to a server or a
   repository in a folder while it is being deleted. A lock held the other way
   is refused at once with `folder_busy`, never waited for. The lock is held
@@ -222,17 +225,19 @@ running git are `helpers/git_run.py`, tested by `tests/test_git_run.py`.
 - **Repositories.** The folder is resolved as any folder is, and must have a
   `.git` of its own, or it is `not_a_repository` and git is not asked:
   git would find a repository above it, the home folder's among them. Then
-  `git rev-parse --show-toplevel` must be the folder itself, and its git
-  directory and common directory must resolve inside the home folder, or it
-  is `repository_outside_home`, as for a worktree of a repository elsewhere.
+  `git rev-parse --show-toplevel` must be the folder itself, or it is
+  `not_a_repository`, and its git directory and common directory must
+  resolve inside the home folder, or it is `repository_outside_home`, as for
+  a worktree of a repository elsewhere.
   `tree` marks every entry with `repository`, found without running git
   (`looks_like_repository`): whether its `.git` is a folder with a `HEAD`, or
   a file whose gitdir line leads to one, either resolving inside the home
   folder.
 - **Files** to stage or unstage are a JSON list on stdin, of at most
-  `MAX_FILES_PER_CALL`. Each name is checked as written: empty, NUL, too
+  `MAX_FILES_PER_CALL`; anything else — not a JSON list of names, empty, or
+  longer — is `file_list_invalid`. Each name is checked as written: empty, NUL, too
   long, or an empty or `.` part is `file_invalid`; absolute, a `..` part or
-  a `.git` part is `file_outside_repository`; one trailing slash, as an
+  a `.git` part in any case is `file_outside_repository`; one trailing slash, as an
   untracked folder is listed, is allowed. Its folder is then resolved and
   must be in the repository, so a link to elsewhere is refused and a link in
   the repository is staged as the link. A name that is not UTF-8 is listed
@@ -253,7 +258,7 @@ running git are `helpers/git_run.py`, tested by `tests/test_git_run.py`.
 `git push -u origin HEAD` (`PUSH_REMOTE`), which makes it track the branch
 it makes there; one with an upstream as `git push`, so that the person's
 `push.default` and push remotes apply. A detached HEAD is refused before
-git is asked.
+git is asked to push.
 
 A push goes to GitHub when the push URL of the remote it goes to — the
 branch's push remote as git finds it (`%(push:remotename)`), or `origin`
@@ -318,7 +323,8 @@ before git:
    where it is now — read from its descriptor, unless it has no name left,
    having been removed meanwhile.
 
-SIGTERM is held back throughout `git-clone`, but while git runs, so it
+SIGTERM is held back from just before the folder is made until `git-clone`
+answers, but while git runs, so it
 cannot fall between the folder being made and its removal being set
 going, nor cut the removal short; a SIGTERM more while rc-helper ends is
 ignored. One that comes after git has succeeded, once SIGTERM is held back
@@ -342,15 +348,16 @@ any git push as the person, a Claude session's among them, uses it.
   person only. It replaces an entry
   rcman stored before and goes first in the file, so git's store helper
   offers it before any other credential stored there for GitHub. Then
-  `credential.<Config.github>.helper store` is added to the person's
-  `~/.gitconfig` unless that helper is listed there already. Credential
+  `credential.<Config.github, without its final slash>.helper store` is
+  added to the person's global git configuration (`git config --global`)
+  unless that helper is listed there already. Credential
   helpers the person has set themselves stay, and git asks them in the order
   its configuration lists them.
 - **Not through the person's helpers.** rc-helper runs `git credential-store`
   itself, not `git credential approve` and `reject`, so that the token never
   reaches the person's other credential helpers, and `github-forget`
   erases only the entry with rcman's username for that host. It leaves the
-  `store` helper in `~/.gitconfig`.
+  `store` helper in the global configuration.
 - **Status.** `github-status` asks `git credential-store get` for rcman's
   entry, keeps only whether a password came back, and checks that the
   `store` helper is listed; its answer from git is read with `secret_output`,
@@ -363,7 +370,8 @@ any git push as the person, a Claude session's among them, uses it.
 
 `helpers/sudoers.rc-helper` is the sudoers rule template: the application user
 may run `rc-helper`, and nothing else, as any member of the `rcusers` group,
-with the environment reset. `install.sh` fills in `@HELPER@` and `@APP_USER@`.
+with the environment reset. The installer (`sudoers()` in
+`installer/install.py`) fills in `@HELPER@` and `@APP_USER@`.
 A test renders it and validates it with `visudo -c`.
 
 ## Test hooks
