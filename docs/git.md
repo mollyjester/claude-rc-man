@@ -155,8 +155,9 @@ safest; a classic token with the `repo` scope works too.
 - **Where it is kept.** In plain text, readable by you only, in the file
   git's `store` credential helper uses: `~/.git-credentials`, or
   `~/.config/git/credentials` when only that one exists. rcman
-  also adds one line to `~/.gitconfig`, which tells git to use that helper
-  for `https://github.com`. Credential helpers you have set yourself stay;
+  also adds one line to your global git configuration — `~/.gitconfig`, or
+  `~/.config/git/config` when only that one exists — which tells git to use
+  that helper for `https://github.com`. Credential helpers you have set yourself stay;
   git asks them in the order your configuration lists them, and uses the
   first credential one gives.
 - **Never shown.** Once saved, rcman never shows the token again, nor
@@ -166,7 +167,7 @@ safest; a classic token with the `repo` scope works too.
   it: the Changes section stops offering a push to GitHub, and Settings
   says no token is stored; add a new one.
 - **Removing it.** **Remove token** in Settings removes the token rcman
-  stored, and nothing else: the line in `~/.gitconfig` stays, as do other
+  stored, and nothing else: the line in your git configuration stays, as do other
   credentials you stored yourself. The token itself still works on GitHub
   until you revoke it there, under **Settings**, **Developer settings**,
   **Personal access tokens**; do that too once you are done with it.
