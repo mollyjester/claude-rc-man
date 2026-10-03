@@ -156,14 +156,47 @@ matters, so a suppression at the site is preferred.
   clone, and oauth2-proxy's
   identity header set per test. GitHub is the world's own
   `tests/github_server.py`, serving the world's `origins/` while the backend
-  runs, and taking a push with `GITHUB_TOKEN` in `e2e/people.ts`. Where the
-  world is, `WORLD` there too, and the token are what `playwright.config.ts`
-  gives the backend, so a test can change a file there behind rcman's back,
-  and enter the token. `rc-admin` there is a stand-in
+  runs, and taking a push with `GITHUB_TOKEN` in `e2e/people.ts`, which
+  `playwright.config.ts` gives the backend, so a test can enter the token.
+  `rc-admin` there is a stand-in
   that manages the users file; the container suite tests the real one.
-  The tmux sockets are in the world's `tmux/` directory; the backend stops
-  their tmux servers when it shuts down — Playwright stops it with SIGTERM
-  for that — and again before building the world, for a run that was killed.
+
+  Each run has a world and a port of its own, which `e2e/world.ts` names:
+  the world a folder under `/tmp`, with a name no other run has, which the
+  backend's `WORLDS` in `tests/e2e_server.py` matches, and the port one the
+  system has free. Playwright loads the config again in each worker, so
+  `e2e/world.ts` keeps both in the environment, `RCMAN_E2E_DIR` and
+  `RCMAN_E2E_PORT`, which the workers and the backend inherit, and keeps
+  any already given there. A spec finds the world as `WORLD` from there,
+  so a test can change a file in it behind rcman's back.
+
+  The backend makes the world, and refuses a folder that already exists.
+  While it runs it holds a lock on the world's lock file, which appears
+  only once the lock is held. When it shuts down — Playwright stops it with
+  SIGTERM for that — or fails to start, it stops the tmux servers on the
+  sockets in the world's `tmux/` directory and removes the world, the lock
+  file last. Before making its own, it clears the worlds beside it that a
+  killed run left: it stops and removes one whose lock nothing holds, and
+  one without a lock file for longer than `UNLOCKED_FOR` in
+  `tests/e2e_server.py`, which only a run killed while making or removing
+  its world leaves. It leaves a world whose lock is held, and anything that
+  is not a folder of the current user's with, if any, a lock file of its
+  own; it stops only tmux servers whose sockets are the current user's and
+  in the world itself, never one a link points at; and what it cannot
+  read or remove it leaves, and goes on.
+
+  So runs at the same time, from different checkouts or worktrees, or two
+  in one, do not share a world, a port or a tmux server. Two runs in one
+  checkout share `dist/`, which `make e2e` builds before each, and the
+  config's output folder, whose files one run's Playwright removes while
+  the other's still writes there; runs at the same time are each in a
+  checkout or worktree of their own.
 - **Whole-stack browser tests**: `e2e-stack/*.spec.ts` with
   `playwright.stack.config.ts`, against an installed rcman behind real Caddy
-  and oauth2-proxy in a container — see [tests.md](tests.md).
+  and oauth2-proxy in a container — see [tests.md](tests.md). The config
+  takes the container's published port from `RCMAN_STACK_PORT`, which
+  `tests/test_container_suite.py` sets, and refuses to load without it.
+
+Each Playwright config writes to an output folder of its own under
+`test-results/`, its `outputDir`, because Playwright empties a run's output
+folder as the run starts.

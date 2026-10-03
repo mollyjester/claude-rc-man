@@ -1,15 +1,17 @@
 import { defineConfig } from "@playwright/test";
 
-import { GITHUB_TOKEN, WORLD } from "./e2e/people";
+import { GITHUB_TOKEN } from "./e2e/people";
+import { ORIGIN, PORT, WORLD } from "./e2e/world";
 
 // The built frontend, served by the real backend (tests/e2e_server.py) with a
-// real rc-helper per user and the fake claude. oauth2-proxy's identity header
-// is set per test with signInAs() in e2e/people.ts.
-const PORT = 8765;
-const ORIGIN = `http://127.0.0.1:${PORT}`;
+// real rc-helper per user and the fake claude, in a world and on a port of this
+// run's own (e2e/world.ts). oauth2-proxy's identity header is set per test with
+// signInAs() in e2e/people.ts.
 
 export default defineConfig({
   testDir: "e2e",
+  // Its own, as every config has: see project-knowledge/frontend.md.
+  outputDir: "test-results/e2e",
   workers: 1,
   timeout: 60_000,
   expect: { timeout: 15_000 },

@@ -144,8 +144,28 @@ it can fail, and a positive control that keeps an empty input from passing.
   `--port`, or after `-p` or `--publish`, alone or as the host port of
   docker's mapping. It does not follow a port held in a function's own
   variable, imported or computed, a path built in pieces, or a port in a URL;
-  review covers those. Each exemption it lists covers one site, named by its
-  file, function and text, and fails when that site is gone.
+  review covers those. It reads, too, every TypeScript and JavaScript file
+  in `frontend/` that git does not ignore, of the kinds `SOURCES` in the
+  test names — the browser tests, their configs and the rest — parsed with
+  Vite's parser from the frontend's packages, so a file that does not
+  parse, or packages that are missing, fail it. There it catches a string
+  that is `/tmp` or a path in it, a template literal beginning with one,
+  and a call to `tmpdir()`, except `/tmp` itself or `tmpdir()` as the folder
+  of a `join()` of a folder and a prefix given to `mkdtemp` or `mkdtempSync`,
+  which make a uniquely named folder there; a path given to a call
+  is reported as the call, so `join()` is read with the rest of the path.
+  And it catches a fixed port, written as a number or a string of digits,
+  held in a module-level name, or given after `??` or `||`, as the value of
+  a property or an assignment named `port` or ending `_PORT`, as the first
+  argument of `listen`, after `--port`, `-p` or `--publish` in an array or
+  in a command written as one string, and after an address's host and its
+  colon — in a URL, after its scheme, and otherwise after an IP address or
+  `localhost` — whether written in the same string, in a template literal,
+  or joined to it with `+`. Unlike the Python guard, then, it reads a port
+  in a URL. As in Python, it does not follow a port held in a function's own
+  variable, imported or computed, or a path built in pieces. Each exemption
+  it lists covers one site, named by its file, the function or test it is
+  in and its text, and fails when that site is gone.
 - **The container marker is derived** (`tests/test_container_marker.py`). In
   the collected suite the tests carrying `container` are exactly those using
   the `docker` fixture, and no source under `tests/` places the marker by
