@@ -486,7 +486,7 @@ def test_a_server_that_stops_on_ctrl_c_is_not_ended(env, monkeypatch):
     ok(env, "start", "projects/alpha", "--prefix", "pfx")
     wait_state(env, "projects/alpha", "ready")
     sent = []
-    monkeypatch.setattr(h.Tmux, "signal", lambda self, session, sig: sent.append(sig))
+    monkeypatch.setattr(h.Tmux, "signal", lambda self, session, pid, sig: sent.append(sig))
     stopped = in_process(env).stop("projects/alpha")["server"]
     assert (stopped["state"], stopped["exit_code"]) == ("stopped", 0)
     assert sent == []
@@ -499,13 +499,83 @@ def test_stop_answers_timeout_when_it_cannot_end_a_server(env, monkeypatch):
     monkeypatch.setattr(h, "STOP_TIMEOUT", 1.0)
     monkeypatch.setattr(h, "END_GRACE_SECONDS", 0.5)
     sent = []
-    monkeypatch.setattr(h.Tmux, "signal", lambda self, session, sig: sent.append(sig))
+    monkeypatch.setattr(h.Tmux, "signal", lambda self, session, pid, sig: sent.append(sig))
     error = refusal(in_process(env).stop, "projects/alpha")
     assert error.code == "timeout"
     assert error.detail["server"]["state"] == "trust_prompt"
     assert sent == [h.signal.SIGTERM, h.signal.SIGKILL]
     monkeypatch.undo()
     assert ok(env, "list")["servers"][0]["state"] == "trust_prompt"
+
+
+def test_a_server_started_again_while_one_is_ended_is_left_alone(env, monkeypatch):
+    """Stop and resume share the lock: a resume can respawn the pane between the
+    SIGTERM and the SIGKILL of a stop, and the new server is not stop's to end."""
+    import signal
+    import sys
+    import time
+
+    log_in(env)
+    ignoring(env, "INT", "TERM")
+    ok(env, "start", "projects/alpha", "--prefix", "pfx")
+    monkeypatch.setattr(h, "STOP_TIMEOUT", 0.5)
+    monkeypatch.setattr(h, "END_GRACE_SECONDS", 0.5)
+    helper = in_process(env)
+    session = h.session_for("projects/alpha")
+    folder = (Path(env["RC_HELPER_HOME"]) / "projects" / "alpha").resolve()
+    real = h.Tmux.signal
+    respawned = []
+
+    def signal_then_respawn(self, session_, pid, sig):
+        real(self, session_, pid, sig)
+        if sig == signal.SIGTERM and not respawned:  # ignored; the server ends otherwise
+            os.kill(pid, signal.SIGKILL)
+            while helper.tmux.exit_status(session) is None:
+                time.sleep(0.05)
+            helper.tmux.respawn(session, folder, [sys.executable, "-c", "input()"])
+            respawned.append(helper.tmux.pane(session)[1])
+
+    monkeypatch.setattr(h.Tmux, "signal", signal_then_respawn)
+    helper.stop("projects/alpha")
+    assert respawned and respawned[0] != 0
+    time.sleep(0.5)
+    assert alive(respawned[0])
+    assert helper.tmux.pane(session) == (False, respawned[0])
+
+
+def test_a_signal_to_a_process_now_someone_elses_is_as_if_it_were_gone(env, monkeypatch):
+    import signal
+
+    log_in(env)
+    ok(env, "start", "projects/alpha", "--prefix", "pfx")
+    tmux = in_process(env).tmux
+    session = h.session_for("projects/alpha")
+    dead, pid = tmux.pane(session)
+    assert not dead and alive(pid)  # known positive
+
+    def refused(*_args):
+        raise PermissionError(1, "Operation not permitted")
+
+    monkeypatch.setattr(os, "kill", refused)
+    monkeypatch.setattr(os, "killpg", refused)
+    tmux.signal(session, pid, signal.SIGTERM)
+    tmux.signal(session, pid, signal.SIGKILL)
+
+
+def test_a_signal_goes_only_to_the_process_the_pane_still_runs(env, monkeypatch):
+    import signal
+
+    log_in(env)
+    ok(env, "start", "projects/alpha", "--prefix", "pfx")
+    tmux = in_process(env).tmux
+    session = h.session_for("projects/alpha")
+    _dead, pid = tmux.pane(session)
+    sent = []
+    monkeypatch.setattr(os, "kill", lambda p, sig: sent.append((p, sig)))
+    tmux.signal(session, pid + 1, signal.SIGTERM)  # not the pane's process
+    assert sent == []
+    tmux.signal(session, pid, signal.SIGTERM)  # known positive
+    assert sent == [(pid, signal.SIGTERM)]
 
 
 def test_resume_needs_a_stopped_server(env, tmp_path):
@@ -1641,7 +1711,7 @@ def test_when_a_server_cannot_be_ended_nothing_is_forgotten_or_deleted(env, monk
     monkeypatch.setattr(h, "STOP_TIMEOUT", 1.0)
     monkeypatch.setattr(h, "END_GRACE_SECONDS", 0.5)
     sent = []
-    monkeypatch.setattr(h.Tmux, "signal", lambda self, session, sig: sent.append(sig))
+    monkeypatch.setattr(h.Tmux, "signal", lambda self, session, pid, sig: sent.append(sig))
     error = refusal(in_process(env).delete, "projects/beta")
     assert error.code == "delete_stop_failed"
     assert sent == [h.signal.SIGTERM, h.signal.SIGKILL]  # it was ended, as stop ends one
