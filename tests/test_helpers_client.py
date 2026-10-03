@@ -118,10 +118,26 @@ def child_alive(pid_file, deadline=5.0):
             with open(f"/proc/{pid}/stat") as stat:
                 if stat.read().split(")")[-1].split()[0] == "Z":
                     return False, pid
-        except FileNotFoundError:
+        except (FileNotFoundError, ProcessLookupError):
             return False, pid
         time.sleep(0.1)
     return True, pid
+
+
+def test_child_alive_reads_a_child_that_exits_while_its_stat_is_read(tmp_path, monkeypatch):
+    # A process that exits between opening /proc/<pid>/stat and reading it makes
+    # the read fail with ESRCH; that child is gone, not a failure of the test.
+    import io
+    import sys
+
+    class Vanishing(io.StringIO):
+        def read(self, *args):
+            raise ProcessLookupError(3, "No such process")
+
+    pid_file = tmp_path / "child.pid"
+    pid_file.write_text("4242")
+    monkeypatch.setattr(sys.modules[__name__], "open", lambda *a, **kw: Vanishing(), raising=False)
+    assert child_alive(pid_file, deadline=1.0) == (False, 4242)
 
 
 def test_a_timed_out_helper_does_not_leave_its_child_running(tmp_path):
@@ -237,3 +253,36 @@ def test_a_helper_that_ignores_sigterm_does_not_hold_the_call(tmp_path, monkeypa
             except ProcessLookupError:
                 pass
     assert elapsed < 1 + 0.5 + 2  # the timeout, the grace period and a margin
+
+
+# A child Python whose locale is not UTF-8: C, with the coercion to C.UTF-8 and
+# UTF-8 mode both off, so its text streams default to ASCII.
+NOT_UTF8 = {"LC_ALL": "C", "LANG": "C", "PYTHONCOERCECLOCALE": "0", "PYTHONUTF8": "0"}
+ROUND_TRIP = """
+import json, locale, sys
+from rcman import helpers_client as hc
+echo = [sys.executable, "-c", "import sys; sys.stdout.buffer.write(sys.stdin.buffer.read())"]
+text = json.loads(sys.argv[1])  # in ASCII, so the locale cannot change it
+proc = hc.run_bounded(echo, input=text, capture_output=True, text=True, timeout=10)
+print(json.dumps({"locale": locale.getpreferredencoding(False), "out": proc.stdout}))
+"""
+
+
+@pytest.mark.parametrize("text", ["café", "café €", "Сергей ünï 𝄞"])
+def test_what_a_helper_is_given_and_answers_is_utf8_whatever_the_locale(text):
+    import json
+    import os
+    import subprocess
+    import sys
+
+    env = {**{k: v for k, v in os.environ.items() if not k.startswith("LC_")}, **NOT_UTF8}
+    proc = subprocess.run(
+        [sys.executable, "-c", ROUND_TRIP, json.dumps(text)],
+        env=env,
+        capture_output=True,
+        timeout=60,
+    )
+    assert proc.returncode == 0, proc.stderr.decode(errors="replace")[-2000:]
+    seen = json.loads(proc.stdout)
+    assert seen["locale"].lower().replace("-", "") not in ("utf8",)  # the plant took effect
+    assert seen["out"] == text

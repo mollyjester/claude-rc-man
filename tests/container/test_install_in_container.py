@@ -140,6 +140,19 @@ def service_logs():
 # --- the first installation ---------------------------------------------------------
 
 
+def root_owned(directory: Path) -> list[str]:
+    return sh("find", str(directory), "-user", "root").stdout.split("\n")[:-1]
+
+
+def test_installing_leaves_nothing_owned_by_root_in_the_clone(first_install, tmp_path):
+    """install.sh runs as root from someone's clone; it must not leave root's files there."""
+    planted = tmp_path / "planted"
+    planted.write_text("x")  # this suite runs as root
+    assert str(planted) in root_owned(tmp_path)  # positive control: the check finds root's file
+    assert sh("find", str(CLONE), "-type", "f").stdout  # non-vacuity: the clone has files
+    assert root_owned(CLONE) == []
+
+
 def test_installs_the_clones_commit_as_the_current_release(first_install):
     commit = git("rev-parse", "HEAD", cwd=CLONE)
     assert os.readlink(ROOT / "current") == f"releases/{commit[:12]}"
@@ -444,7 +457,7 @@ def test_audit_events_reach_the_journal(first_install):
             "Origin": f"https://{DOMAIN}",
             "Content-Type": "application/json",
         },
-        method="PUT",
+        method="PATCH",
         body=json.dumps({"prefix": "journal"}),
     )
     assert status == 200, text
@@ -462,9 +475,9 @@ def test_audit_events_reach_the_journal(first_install):
         if events or time.monotonic() > deadline:
             break
         time.sleep(0.2)
-    assert any("PUT /api/me/settings" in line for line in after), after  # positive control
+    assert any("PATCH /api/me/settings" in line for line in after), after  # positive control
     assert len(events) == 1, after
-    assert (events[0]["target"], events[0]["result"]) == ("journal", "ok")
+    assert (events[0]["target"], events[0]["result"]) == ('{"prefix": "journal"}', "ok")
 
 
 def test_the_caddy_snippet_is_printed_and_valid(first_install):

@@ -32,9 +32,9 @@ DEV_ONLY = [
 RUNTIME = ["README.md", "pyproject.toml", "uv.lock"]
 
 
-def export_ignored(paths: list[str]) -> set[str]:
+def export_ignored(paths: list[str], repo: Path = REPO) -> set[str]:
     out = subprocess.run(
-        ["git", "-C", str(REPO), "check-attr", "export-ignore", "--stdin"],
+        ["git", "-C", str(repo), "check-attr", "export-ignore", "--stdin"],
         input="\n".join(paths),
         capture_output=True,
         text=True,
@@ -54,12 +54,17 @@ def under_dev_only(path: str) -> bool:
     )
 
 
+def unmarked_development_files(repo: Path, files: list[str]) -> set[str]:
+    """The development-only files among ``files`` that ``repo`` does not export-ignore."""
+    dev_files = [p for p in files if under_dev_only(p)]
+    return set(dev_files) - export_ignored(dev_files, repo)
+
+
 def test_every_development_file_is_export_ignored():
     corpus = docs_guard.corpus_files(REPO)
-    dev_files = [p for p in corpus if under_dev_only(p)]
     # Non-vacuity: this very file is development-only.
-    assert "tests/test_export.py" in dev_files
-    assert set(dev_files) - export_ignored(dev_files) == set()
+    assert "tests/test_export.py" in [p for p in corpus if under_dev_only(p)]
+    assert unmarked_development_files(REPO, corpus) == set()
 
 
 def test_runtime_files_are_exported():
@@ -84,3 +89,18 @@ def test_git_archive_honours_the_patterns_used(tmp_path):
 
     assert "README.md" in names  # positive control
     assert not [n for n in names if n.startswith(("tests", "devtools")) or n == "CLAUDE.md"]
+
+
+def test_the_check_reports_a_development_file_that_is_not_export_ignored(tmp_path):
+    """Planted twin: a repository whose .gitattributes no longer marks devtools/."""
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    attributes = (REPO / ".gitattributes").read_text(encoding="utf-8")
+    planted = "".join(
+        line for line in attributes.splitlines(keepends=True) if not line.startswith("/devtools")
+    )
+    assert planted != attributes  # the plant took effect: devtools/ is no longer marked
+    (tmp_path / ".gitattributes").write_text(planted, encoding="utf-8")
+    files = ["devtools/tool.py", "tests/test_x.py"]
+    assert unmarked_development_files(tmp_path, files) == {"devtools/tool.py"}
+    (tmp_path / ".gitattributes").write_text(attributes, encoding="utf-8")
+    assert unmarked_development_files(tmp_path, files) == set()  # and clean when marked

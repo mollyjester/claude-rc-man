@@ -1,8 +1,9 @@
 import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
+import { CONNECTION_STATES, START_REASON } from "./Claude";
 import { m } from "./messages";
-import { CONNECTED, ME, type Reply, type Routes, fakeApi, problem } from "./test/fakeApi";
+import { CONNECTED, ME, NOT_CONNECTED, type Reply, type Routes, fakeApi, problem } from "./test/fakeApi";
 import { renderApp } from "./test/render";
 
 function api(claude: Reply, extra: Routes = {}) {
@@ -15,7 +16,24 @@ function api(claude: Reply, extra: Routes = {}) {
   });
 }
 
-const NOT_CONNECTED = { connection: "not_connected", account: null, login_expires_at: null };
+test("every state of the account says whether a server can start, and why not", () => {
+  expect(Object.keys(START_REASON).sort()).toEqual([...CONNECTION_STATES].sort());
+  // non-vacuity: some states let a server start and some do not
+  const reasons = Object.values(START_REASON);
+  expect(reasons).toContain(null);
+  const blocked = reasons.filter((r) => r !== null);
+  expect(blocked.length).toBeGreaterThan(0);
+  for (const reason of blocked) {
+    for (const said of [reason.start, reason.resume, reason.startAgain]) expect(said).toMatch(/\S/);
+  }
+});
+
+test("an expiring or expired sign-in still starts a server: rc-helper refuses only an account not signed in", () => {
+  expect(START_REASON.expiring).toBeNull();
+  expect(START_REASON.expired).toBeNull();
+  expect(START_REASON.connected).toBeNull();
+  expect(START_REASON.not_connected).toBe(m.notConnected);
+});
 
 test("connecting: link, then code, then connected", async () => {
   let connected = false;

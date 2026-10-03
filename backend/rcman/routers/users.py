@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, Path, Query, Request
 from pydantic import BaseModel, Field
@@ -11,13 +11,16 @@ from helpers import users_file as uf
 from rcman.audit import Record, Recorder
 from rcman.helpers_client import call_admin
 from rcman.identity import Identity, admin_user
+from rcman.problems import ruled
 
 router = APIRouter(prefix="/api/users", tags=["users"], dependencies=[Depends(admin_user)])
+LinuxName = ruled(uf.LINUX_NAME)
+Email = ruled(uf.EMAIL)
 
 
 class NewUser(BaseModel):
-    linux: str = Field(pattern=f"^{uf.LINUX_NAME.pattern}$", description="Linux user name.")
-    email: str = Field(pattern=f"^{uf.EMAIL.pattern}$", description="Google email address.")
+    linux: LinuxName = Field(description="Linux user name.")
+    email: Email = Field(description="Google email address.")
     admin: bool = Field(False, description="Make them an administrator.")
     adopt: bool = Field(False, description="Take over an existing Linux account.")
 
@@ -33,18 +36,19 @@ def add_user(
 ) -> dict:
     record.target = body.linux
     flags = [*(["--admin"] if body.admin else []), *(["--adopt"] if body.adopt else [])]
-    return call_admin(request.app.state.admin, ["add", body.linux, body.email, *flags])
+    return call_admin(request.app.state.admin, ["add", *flags, "--", body.linux, body.email])
 
 
 @router.delete("/{linux}")
 def delete_user(
     request: Request,
-    linux: str = Path(pattern=f"^{uf.LINUX_NAME.pattern}$"),
+    linux: Annotated[LinuxName, Path()],
     home: Literal["delete", "keep"] = Query(description="Delete or keep their home folder."),
     record: Record = Depends(Recorder("user.delete")),
 ) -> dict:
     record.target = linux
     decision = "--delete" if home == "delete" else "--keep-home"
     return call_admin(
-        request.app.state.admin, ["del", linux, decision, "--requester", record.identity.email]
+        request.app.state.admin,
+        ["del", decision, f"--requester={record.identity.email}", "--", linux],
     )

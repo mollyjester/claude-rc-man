@@ -291,10 +291,15 @@ def sudoers():
     assert check.returncode == 0, check.stdout + check.stderr
 
 
-def as_app(*argv, extra_env=None):
+def as_app(*argv, extra_env=None, stdin=None):
     env = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", **(extra_env or {})}
     return subprocess.run(
-        ["runuser", "-u", "rcman", "--", *argv], env=env, capture_output=True, text=True, timeout=60
+        ["runuser", "-u", "rcman", "--", *argv],
+        env=env,
+        input=stdin,
+        capture_output=True,
+        text=True,
+        timeout=60,
     )
 
 
@@ -327,11 +332,86 @@ def test_test_hooks_do_not_pass_through_sudo(env, two, sudoers, tmp_path):
     assert paths == ["projects"]  # bob's real home, not the decoy
 
 
+def helper_as_bob(*args, stdin=None):
+    proc = as_app("sudo", "-n", "-u", "bob", str(RC_HELPER), *args, stdin=stdin)
+    return proc.returncode, json.loads(proc.stdout)
+
+
+def test_folders_are_made_and_deleted_as_the_person(env, two, sudoers):
+    home = Path(account("bob").pw_dir)
+    code, out = helper_as_bob("mkdir", "--name=made", "--", "projects")
+    assert (code, out) == (0, {"created": "projects/made"})
+    assert (home / "projects" / "made").stat().st_uid == account("bob").pw_uid
+    code, out = helper_as_bob("delete", "--", "projects/made")
+    assert code == 0 and out["deleted"] == "projects/made", out
+    assert not (home / "projects" / "made").exists()
+
+
+@pytest.fixture
+def outside_but_bobs(two):
+    """A folder outside bob's home that bob may change, with a file in it."""
+    target = Path("/srv/rcman-link-target")
+    target.mkdir(parents=True)
+    (target / "kept").write_text("x")
+    for path in (target, target / "kept"):
+        os.chown(path, account("bob").pw_uid, account("bob").pw_gid)
+    yield target
+    shutil.rmtree(target)
+
+
+def test_a_link_leading_out_of_the_home_is_deleted_as_the_link(env, two, sudoers, outside_but_bobs):
+    home = Path(account("bob").pw_dir)
+    link = home / "projects" / "out"
+    assert as_user("bob", "ln", "-s", str(outside_but_bobs), str(link)).returncode == 0
+    # bob could delete what it leads to — its folder is his to write — so only rc-helper keeps it
+    assert as_user("bob", "test", "-w", str(outside_but_bobs)).returncode == 0
+    code, out = helper_as_bob("delete", "--", "projects/out")
+    assert (code, out["link"]) == (0, True), out
+    assert not link.is_symlink()
+    assert (outside_but_bobs / "kept").read_text() == "x"
+
+
+def test_what_the_person_may_not_remove_is_left_and_listed(env, two, sudoers):
+    home = Path(account("bob").pw_dir)
+    assert as_user("bob", "mkdir", "-p", str(home / "projects" / "mixed")).returncode == 0
+    owned = home / "projects" / "mixed" / "roots"
+    owned.mkdir()  # by root, as this suite runs
+    (owned / "file").write_text("x")
+    assert as_user("bob", "touch", str(home / "projects" / "mixed" / "bobs")).returncode == 0
+    code, out = helper_as_bob("delete", "--", "projects/mixed")
+    assert (code, out["error"]["code"]) == (1, "delete_incomplete"), out
+    assert "projects/mixed/roots/file" in out["error"]["left"]
+    assert (owned / "file").read_text() == "x"
+    assert not (home / "projects" / "mixed" / "bobs").exists()  # what bob may remove went
+
+
+def test_another_persons_folders_are_out_of_reach(env, two, sudoers):
+    alice = Path(account("alice").pw_dir)
+    (alice / "projects").mkdir(exist_ok=True)
+    os.chown(alice / "projects", account("alice").pw_uid, account("alice").pw_gid)
+    for args in (("delete", "--", "../alice/projects"), ("mkdir", "--name=x", "--", "../alice")):
+        code, out = helper_as_bob(*args)
+        assert (code, out["error"]["code"]) == (1, "path_outside_home"), args
+    assert (alice / "projects").is_dir() and not (alice / "x").exists()
+
+
 def test_app_user_runs_rc_admin_as_root(env, two, sudoers):
     proc = as_app("sudo", "-n", str(RC_ADMIN), "list")
     # Through sudo the environment is reset: the real /etc/rcman, which has no users file here.
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert json.loads(proc.stdout) == {"users": []}
+
+
+def test_rc_admin_test_hooks_do_not_pass_through_sudo(env, etc, two, sudoers):
+    hook = {"RC_ADMIN_ETC": str(etc)}
+    # Positive controls: the hook is in the caller's environment, and, given
+    # directly, it does lead rc-admin to the users `two` added there.
+    caller = as_app("/usr/bin/env", extra_env=hook).stdout.splitlines()
+    assert f"RC_ADMIN_ETC={etc}" in caller
+    assert {u["linux"] for u in admin_ok(env, "list")["users"]} == {"alice", "bob"}
+    proc = as_app("sudo", "-n", str(RC_ADMIN), "list", extra_env=hook)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert json.loads(proc.stdout) == {"users": []}  # the real /etc/rcman, not the hook's
 
 
 def test_fake_installer_is_executable_by_users():
@@ -374,3 +454,31 @@ def test_people_added_after_an_upgrade_get_the_approved_version(env, two):
     admin_ok(env, "claude-upgrade", "2.1.999")
     admin_ok(env, "add", "carol", "carol@example.com")
     assert installed("carol") == "2.1.999"
+
+
+def test_git_through_sudo_uses_the_persons_home_and_config(env, two, sudoers):
+    bob = account("bob")
+    home = Path(bob.pw_dir)
+    repo = home / "projects" / "repo"
+    repo.mkdir(parents=True)
+    (home / ".gitignore_global").write_text("*.log\n")
+    (home / ".gitconfig").write_text("[core]\n\texcludesFile = ~/.gitignore_global\n")
+    (repo / "x.log").write_text("ignored by bob's own configuration\n")
+    (repo / "y.txt").write_text("listed\n")
+    for path in (home / ".gitignore_global", home / ".gitconfig"):
+        os.chown(path, bob.pw_uid, bob.pw_gid)
+    subprocess.run(["chown", "-R", f"{bob.pw_uid}:{bob.pw_gid}", str(repo)], check=True)
+    init = as_user("bob", "env", f"HOME={home}", "git", "-C", str(repo), "init", "-q", "-b", "main")
+    assert init.returncode == 0, init.stderr
+
+    code, out = helper_as_bob("git-status", "--", "projects/repo")
+    assert code == 0, out
+    assert out["not_staged"]["files"] == [{"path": "y.txt", "change": "untracked"}]
+    code, out = helper_as_bob("git-stage", "--", "projects/repo", stdin='["y.txt"]')
+    assert code == 0, out
+    args = ("git-commit", "--author-name=Bob", "--author-email=bob@example.com")
+    code, out = helper_as_bob(*args, "--", "projects/repo", stdin="Add y.txt through sudo")
+    assert code == 0 and out["branch"] == "main", out
+    shown = as_user("bob", "env", f"HOME={home}", "git", "-C", str(repo), "log", "--format=%an|%s")
+    assert shown.stdout == "Bob|Add y.txt through sudo\n", shown.stderr
+    assert (repo / ".git" / "objects").stat().st_uid == bob.pw_uid  # written as bob

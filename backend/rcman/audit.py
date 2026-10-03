@@ -20,7 +20,7 @@ from fastapi.routing import APIRoute
 
 from rcman import db
 from rcman.identity import Identity, current_user
-from rcman.problems import Problem
+from rcman.problems import code_of
 
 log = logging.getLogger("rcman.audit")
 log.setLevel(logging.INFO)
@@ -45,7 +45,8 @@ EXEMPT: dict[tuple[str, ...], str] = {}
 # with; docs/audit.md lists each.
 OK = "ok"
 UNRECOGNISED_SCREEN = "unrecognised_screen"  # it worked, but ended on a screen rcman does not know
-RESULTS = (OK, UNRECOGNISED_SCREEN)
+COMMITTED_NOT_PUSHED = "committed_not_pushed"  # Commit & Push: the commit was made, the push failed
+RESULTS = (OK, UNRECOGNISED_SCREEN, COMMITTED_NOT_PUSHED)
 
 
 @dataclass
@@ -86,11 +87,8 @@ class Recorder:
         try:
             try:
                 yield record
-            except Problem as error:
-                write(con, record, error.code)
-                raise
-            except Exception:
-                write(con, record, "internal_error")
+            except Exception as error:
+                write(con, record, code_of(error))
                 raise
             else:
                 write(con, record, record.result or OK)

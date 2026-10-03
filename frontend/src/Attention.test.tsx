@@ -1,10 +1,11 @@
 import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
+import { ADMIN } from "./AdminPages";
 import { m } from "./messages";
 import { vi } from "vitest";
 
-import { ADMIN, CONNECTED, ME, NOTHING_TO_ATTEND, type Reply, fakeApi, problem } from "./test/fakeApi";
+import { ADMIN_USER, CONNECTED, ME, NOTHING_TO_ATTEND, type Reply, SETTINGS, fakeApi, problem } from "./test/fakeApi";
 import { renderApp } from "./test/render";
 
 
@@ -15,13 +16,13 @@ function api(me: Reply, attention: Reply = NOTHING_TO_ATTEND) {
     "GET /api/folders": { path: "", entries: [] },
     "GET /api/servers": { servers: [] },
     "GET /api/docs": { pages: [] },
-    "GET /api/me/settings": { prefix: "alice" },
+    "GET /api/me/settings": SETTINGS,
     "GET /api/attention": attention,
   });
 }
 
 test("administrators are told who is on an unrecognised screen and whose version differs", async () => {
-  api(ADMIN, {
+  api(ADMIN_USER, {
     unrecognised: [{ linux: "bob", path: "projects/beta" }],
     versions_differ: ["carol"],
     untested: true,
@@ -31,12 +32,28 @@ test("administrators are told who is on an unrecognised screen and whose version
   expect(within(banner).getByText(m.attentionUnrecognised(["bob: projects/beta"]))).toBeInTheDocument();
   expect(within(banner).getByText(m.attentionVersionsDiffer(["carol"]))).toBeInTheDocument();
   expect(within(banner).getByText(m.attentionUntested)).toBeInTheDocument();
-  expect(within(banner).getByRole("link", { name: m.navEveryone })).toHaveAttribute("href", "/admin/servers");
-  expect(within(banner).getAllByRole("link", { name: m.navVersions })[0]).toHaveAttribute("href", "/admin/claude");
+  expect(within(banner).getByRole("link", { name: m.navEveryone })).toBeInTheDocument();
+  expect(within(banner).getAllByRole("link", { name: m.navVersions }).length).toBeGreaterThan(0);
+});
+
+test.each([
+  ["unrecognised screens", { unrecognised: [{ linux: "bob", path: "projects/beta" }] }, m.attentionUnrecognised(["bob: projects/beta"]), "everyone"],
+  ["a version that differs", { versions_differ: ["carol"] }, m.attentionVersionsDiffer(["carol"]), "versions"],
+  ["an untested version", { untested: true }, m.attentionUntested, "versions"],
+  ["a version report that failed", { versions_error: { code: "helper_timeout", title: "Too long." } }, m.attentionVersionsFailed, "versions"],
+] as const)("the warning about %s links to its page", async (_about, report, said, page) => {
+  api(ADMIN_USER, { ...NOTHING_TO_ATTEND, ...report });
+  renderApp();
+  const banner = await screen.findByRole("region", { name: m.attentionTitle });
+  const links = within(banner).getAllByRole("link");
+  expect(links).toHaveLength(1);
+  expect(links[0].closest("p")).toHaveTextContent(said);
+  expect(links[0]).toHaveAttribute("href", ADMIN[page].path);
+  expect(links[0]).toHaveTextContent(ADMIN[page].label);
 });
 
 test("it is fetched again on every change of page", async () => {
-  const fake = api(ADMIN);
+  const fake = api(ADMIN_USER);
   renderApp();
   await waitFor(() => expect(fake.made("GET", "/api/attention")).toHaveLength(1));
   await userEvent.click(screen.getByRole("link", { name: m.navSettings }));
@@ -46,10 +63,10 @@ test("it is fetched again on every change of page", async () => {
 });
 
 test("nothing is shown when nothing needs attention", async () => {
-  const fake = api(ADMIN);
+  const fake = api(ADMIN_USER);
   renderApp();
   await waitFor(() => expect(fake.made("GET", "/api/attention")).toHaveLength(1));
-  await screen.findByRole("link", { name: m.navEveryone });
+  await screen.findByRole("button", { name: m.navAdmin });
   expect(screen.queryByRole("region", { name: m.attentionTitle })).not.toBeInTheDocument();
 });
 
@@ -66,7 +83,7 @@ test("people who are not administrators never ask", async () => {
 test("however long a page stays open, it is not fetched again", async () => {
   vi.useFakeTimers({ shouldAdvanceTime: true });
   try {
-    const fake = api(ADMIN);
+    const fake = api(ADMIN_USER);
     renderApp();
     await waitFor(() => expect(fake.made("GET", "/api/attention")).toHaveLength(1));
     await vi.advanceTimersByTimeAsync(24 * 60 * 60 * 1000); // a day: past any polling interval
@@ -77,13 +94,13 @@ test("however long a page stays open, it is not fetched again", async () => {
 });
 
 test("when it cannot be fetched, the server's reason is shown", async () => {
-  api(ADMIN, problem(500, "users_file_invalid", "The users file is invalid."));
+  api(ADMIN_USER, problem(500, "users_file_invalid", "The users file is invalid."));
   renderApp();
   expect(await screen.findByRole("alert")).toHaveTextContent("The users file is invalid.");
 });
 
 test("when the version report fails, the unrecognised screens are still named, with its reason", async () => {
-  api(ADMIN, {
+  api(ADMIN_USER, {
     ...NOTHING_TO_ATTEND,
     unrecognised: [{ linux: "bob", path: "projects/beta" }],
     versions_error: { code: "helper_timeout", title: "rcman's helper took too long to answer." },

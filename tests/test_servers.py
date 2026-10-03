@@ -2,6 +2,8 @@
 
 import time
 
+from rcman.problems import FIELD_MESSAGES
+
 from tests.conftest import ALICE, BOB, as_user, changing
 
 ALPHA = {"path": "projects/alice-project"}
@@ -21,7 +23,7 @@ def wait_ready(client, who, path):
 
 
 def test_lifecycle_uses_the_users_prefix(client):
-    client.put("/api/me/settings", json={"prefix": "alpha"}, headers=changing(ALICE))
+    client.patch("/api/me/settings", json={"prefix": "alpha"}, headers=changing(ALICE))
     r = client.post("/api/servers", json=ALPHA, headers=changing(ALICE))
     assert r.status_code == 200, r.text
     assert r.json()["server"]["state"] == "trust_prompt"
@@ -68,7 +70,9 @@ def test_answer_is_validated_by_the_server(client):
     r = client.post(
         "/api/servers/confirm", json={**ALPHA, "answer": "maybe"}, headers=changing(ALICE)
     )
-    assert r.status_code == 422 and r.json()["errors"][0]["field"] == "answer"
+    assert r.status_code == 422
+    expected = FIELD_MESSAGES["literal_error"].format(expected="'y' or 'n'")
+    assert r.json()["errors"] == [{"field": "answer", "message": expected}]
 
 
 def test_helper_detail_is_passed_on(client, helper_homes):

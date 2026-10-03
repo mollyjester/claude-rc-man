@@ -64,7 +64,7 @@ def documented_results(guide):
 
 def test_every_result_other_than_an_error_code_is_listed_in_the_guide():
     guide = (REPO / "docs" / "audit.md").read_text(encoding="utf-8")
-    assert set(audit.RESULTS) == {"ok", "unrecognised_screen"}  # non-vacuity: both are known
+    assert set(audit.RESULTS) == {"ok", "unrecognised_screen", "committed_not_pushed"}
     assert documented_results(guide) == set(audit.RESULTS)
 
 
@@ -127,17 +127,125 @@ def test_a_refused_change_is_recorded_with_its_error_code(client, settings):
     assert last["target"] == "projects/alice-project"
 
 
+def test_folder_changes_are_recorded_with_the_folder(client, settings):
+    client.post("/api/folders", json={"parent": "projects", "name": "new"}, headers=changing(ALICE))
+    client.post("/api/folders", json={"name": "top"}, headers=changing(ALICE))
+    client.delete("/api/folders", params={"path": "projects/new"}, headers=changing(ALICE))
+    recorded = [(r["action"], r["target"], r["result"]) for r in rows(settings)[-3:]]
+    assert recorded == [
+        ("folder.create", "projects/new", "ok"),
+        ("folder.create", "top", "ok"),
+        ("folder.delete", "projects/new", "ok"),
+    ]
+
+
+def test_a_refused_delete_of_the_home_folder_is_recorded(client, settings):
+    r = client.delete("/api/folders", params={"path": "."}, headers=changing(ALICE))
+    assert r.status_code == 400
+    last = rows(settings)[-1]
+    assert (last["action"], last["target"], last["result"]) == (
+        "folder.delete",
+        ".",
+        "path_is_home",
+    )
+
+
+def test_a_refused_settings_change_is_recorded_as_validation_failed(client, settings):
+    r = client.patch("/api/me/settings", json={"prefix": "not valid!"}, headers=changing(BOB))
+    assert (r.status_code, r.json()["code"]) == (422, "validation_failed")
+    last = rows(settings)[-1]
+    assert (last["action"], last["result"]) == ("settings.update", "validation_failed")
+    assert last["target"] is None  # what was refused is not recorded
+
+
+def test_the_refused_target_check_fails_on_a_route_that_records_too_early(app, settings):
+    """Planted twin: a route that sets its target before the body is validated is caught."""
+    from fastapi import Depends
+    from fastapi.testclient import TestClient
+    from pydantic import BaseModel
+
+    class Body(BaseModel):
+        n: int
+
+    def early(record=Depends(audit.Recorder("planted.early"))):
+        record.target = "recorded before validation"
+        return record
+
+    @app.post("/api/planted-early")
+    def planted(body: Body, record=Depends(early)):
+        return {}
+
+    with TestClient(app) as client:
+        r = client.post("/api/planted-early", json={"n": "not a number"}, headers=changing(BOB))
+    assert r.status_code == 422
+    last = rows(settings)[-1]
+    assert (last["action"], last["result"]) == ("planted.early", "validation_failed")
+    assert last["target"] is not None  # the check above would fail here
+
+
+def test_every_failure_is_recorded_with_the_code_it_is_answered_with(app, settings):
+    """Whatever ends an audited request, its row carries the code of the problem sent back."""
+    from fastapi import Depends, HTTPException
+    from fastapi.testclient import TestClient
+    from pydantic import BaseModel
+    from rcman.problems import Problem
+
+    class Body(BaseModel):
+        n: int
+
+    @app.post("/api/planted/{kind}")
+    def planted(kind: str, body: Body, record=Depends(audit.Recorder("planted.call"))):
+        if kind == "problem":
+            raise Problem("admin_only")
+        if kind == "missing":
+            raise HTTPException(404)
+        if kind == "boom":
+            raise RuntimeError("planted")
+        return {}
+
+    cases = [
+        ("ok", {"n": 1}, "ok"),
+        ("ok", {"n": "not a number"}, "validation_failed"),
+        ("problem", {"n": 1}, "admin_only"),
+        ("missing", {"n": 1}, "not_found"),
+        ("boom", {"n": 1}, "internal_error"),
+    ]
+    with TestClient(app, raise_server_exceptions=False) as client:
+        for kind, body, code in cases:
+            r = client.post(f"/api/planted/{kind}", json=body, headers=changing(BOB))
+            answered = "ok" if r.status_code == 200 else r.json()["code"]
+            assert answered == code, (kind, body, r.text)
+            last = rows(settings)[-1]
+            assert (last["action"], last["result"]) == ("planted.call", code), (kind, body)
+
+
 def test_a_successful_change_is_recorded_as_ok(client, settings):
-    client.put("/api/me/settings", json={"prefix": "pfx"}, headers=changing(BOB))
+    client.patch("/api/me/settings", json={"prefix": "pfx"}, headers=changing(BOB))
     last = rows(settings)[-1]
     assert (last["action"], last["result"], last["linux"]) == ("settings.update", "ok", "bob")
+
+
+def test_a_settings_change_records_the_settings_sent(client, settings):
+    import json
+
+    for body in (
+        {"prefix": "pfx"},
+        {"author_name": "Сергей Лихарев", "author_email": ""},
+        {"author_email": "bob@work.example"},
+    ):
+        r = client.patch("/api/me/settings", json=body, headers=changing(BOB))
+        assert r.status_code == 200, r.text
+        last = rows(settings)[-1]
+        assert (last["action"], last["result"]) == ("settings.update", "ok")
+        assert json.loads(last["target"]) == body
+    assert "Сергей" in rows(settings)[-2]["target"]  # as written, not escaped
 
 
 def test_audit_events_are_logged_as_json(client, caplog):
     import json
 
     caplog.set_level("INFO", logger="rcman.audit")
-    client.put("/api/me/settings", json={"prefix": "pfx"}, headers=changing(BOB))
+    client.patch("/api/me/settings", json={"prefix": "pfx"}, headers=changing(BOB))
     event = json.loads(caplog.records[-1].getMessage())
     assert event["action"] == "settings.update" and event["email"] == BOB
 
@@ -222,7 +330,7 @@ def test_audit_events_reach_the_service_output(tmp_path, settings):
         status, text = _request(
             port,
             sock,
-            "PUT",
+            "PATCH",
             "/api/me/settings",
             body=json.dumps({"prefix": "pfx"}),
             headers={**changing(BOB), "Content-Type": "application/json"},
@@ -288,3 +396,92 @@ def test_retention_runs_when_the_app_starts(settings, helper_homes, admin_runner
     with TestClient(create_app(settings, helper=helper_homes, admin=admin_runner)):
         pass
     assert rows(settings) == []
+
+
+def test_git_changes_are_recorded_with_the_folder(client, settings, helper_homes, tmp_path):
+    from tests.git_fixtures import make_repo, write
+
+    repo = make_repo(
+        helper_homes.homes["alice"] / "projects" / "alice-project", origin=tmp_path / "o.git"
+    )
+    client.patch("/api/me/settings", json={"author_name": "Alice"}, headers=changing(ALICE))
+    write(repo / "a.txt")
+    path = "projects/alice-project"
+    requests = [
+        ("/api/git/stage", {"path": path, "files": ["a.txt"]}, "git.stage"),
+        ("/api/git/unstage", {"path": path, "files": ["a.txt"]}, "git.unstage"),
+        ("/api/git/stage", {"path": path, "files": ["a.txt"]}, "git.stage"),
+        ("/api/git/commit", {"path": path, "message": "Add a.txt"}, "git.commit"),
+        ("/api/git/branch", {"path": path, "name": "topic"}, "git.branch"),
+        ("/api/git/switch", {"path": path, "branch": "main"}, "git.switch"),
+        ("/api/git/fetch", {"path": path}, "git.fetch"),
+    ]
+    for url, body, _ in requests:
+        r = client.post(url, json=body, headers=changing(ALICE))
+        assert r.status_code == 200, (url, r.text)
+    recorded = [(r["action"], r["target"], r["result"]) for r in rows(settings)[-len(requests) :]]
+    assert recorded == [(action, path, "ok") for _, _, action in requests]
+
+
+def test_the_commit_message_is_never_recorded_or_logged(client, settings, helper_homes, caplog):
+    from tests.git_fixtures import fixture_git, make_repo, write
+
+    repo = make_repo(helper_homes.homes["alice"] / "projects" / "alice-project")
+    client.patch("/api/me/settings", json={"author_name": "Alice"}, headers=changing(ALICE))
+    write(repo / "a.txt")
+    fixture_git(repo, "add", "a.txt")
+    caplog.set_level("DEBUG")
+    message = "SECRET-COMMIT-MESSAGE-7"
+    body = {"path": "projects/alice-project", "message": message}
+    r = client.post("/api/git/commit", json=body, headers=changing(ALICE))
+    assert r.status_code == 200, r.text
+    last = rows(settings)[-1]
+    assert (last["action"], last["result"]) == ("git.commit", "ok")  # positive control
+    assert caplog.records  # positive control: the audit event was logged
+    assert all(message not in str(value) for row in rows(settings) for value in row.values())
+    assert message not in caplog.text
+    refused = client.post("/api/git/commit", json=body, headers=changing(ALICE))
+    assert refused.json()["code"] == "nothing_staged"
+    assert all(message not in str(value) for row in rows(settings) for value in row.values())
+    assert message not in caplog.text
+
+
+def test_github_token_changes_are_recorded_without_a_target(client, settings):
+    token = "a-token-never-recorded"
+    r = client.post("/api/github/token", json={"token": token}, headers=changing(ALICE))
+    assert r.status_code == 200, r.text
+    r = client.delete("/api/github/token", headers=changing(ALICE))
+    assert r.status_code == 200, r.text
+    recorded = [(r["action"], r["target"], r["result"]) for r in rows(settings)[-2:]]
+    assert recorded == [("github.token", None, "ok"), ("github.forget", None, "ok")]
+
+
+def test_a_push_and_a_commit_and_push_are_recorded_with_the_folder(
+    client, settings, helper_homes, tmp_path
+):
+    from tests.git_fixtures import fixture_git, make_repo, write
+
+    path = "projects/alice-project"
+    repo = make_repo(helper_homes.homes["alice"] / path, origin=tmp_path / "o.git")
+    client.patch("/api/me/settings", json={"author_name": "A"}, headers=changing(ALICE))
+    write(repo / "a.txt")
+    fixture_git(repo, "add", "a.txt")
+    body = {"path": path, "message": "Add a.txt"}
+    assert client.post("/api/git/commit-push", json=body, headers=changing(ALICE)).is_success
+    assert client.post("/api/git/push", json={"path": path}, headers=changing(ALICE)).is_success
+    recorded = [(r["action"], r["target"], r["result"]) for r in rows(settings)[-2:]]
+    assert recorded == [("git.commit_push", path, "ok"), ("git.push", path, "ok")]
+
+
+def test_a_clone_is_recorded_with_its_address(client, settings, github, tmp_path):
+    from tests.git_fixtures import make_repo
+
+    name = f"audited-{tmp_path.name}"
+    make_repo(tmp_path / "published", origin=github.bare("alice", name))
+    cloned = f"https://github.com/alice/{name}"
+    missing = "https://github.com/alice/no-such-repository.git"
+    for url in (cloned, missing):
+        body = {"parent": "projects", "url": url}
+        client.post("/api/git/clone", json=body, headers=changing(ALICE))
+    recorded = [(r["action"], r["target"], r["result"]) for r in rows(settings)[-2:]]
+    assert recorded == [("git.clone", cloned, "ok"), ("git.clone", missing, "git_failed")]

@@ -32,7 +32,7 @@ test("a page is rendered, with links between pages kept inside rcman", async () 
   expect(screen.getByRole("link", { name: "Claude" })).toHaveAttribute("href", "https://claude.ai/code");
 });
 
-test("a missing page says so", async () => {
+test("a missing page shows the server's reason, and no page", async () => {
   fakeApi({
     "GET /api/me": ME,
     "GET /api/claude": CONNECTED,
@@ -41,5 +41,5 @@ test("a missing page says so", async () => {
   });
   renderApp("/help/nope");
   expect(await screen.findByRole("alert")).toHaveTextContent("There is nothing here.");
-  expect(m.docsMissing).toBeTruthy();
+  expect(screen.queryByRole("heading", { level: 1 })).not.toBeInTheDocument();
 });

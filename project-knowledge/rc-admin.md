@@ -9,7 +9,8 @@ allowlist. Two front ends share them:
 | `helpers/rc-admin` | `main_json` in `helpers/rc_admin.py` | The application, through sudo. JSON on stdout, never prompts |
 | `helpers/rcman-user` | `helpers/rcman_user.py` | An administrator over SSH. Output in words; asks about the home folder |
 
-How administrators use them is in [the user guide](../docs/users.md). The
+How administrators use them is in [the user guide](../docs/users.md) and
+[Claude Code versions](../docs/claude-version.md). The
 command-line reference is `--help`.
 
 ## Verbs
@@ -18,13 +19,16 @@ command-line reference is `--help`.
 |---|---|
 | `rc-admin add <linux-user> <email> [--admin] [--adopt]` | Creates or repairs the account, installs the approved Claude Code, seeds `~/.claude/settings.json` and `~/projects`, writes the mapping |
 | `rc-admin del <linux-user> (--delete \| --keep-home) [--requester <email>]` | Stops tmux servers on the `rcman` socket, runs `claude auth logout`, kills the user's processes, removes the account, removes the mapping. `--requester` names the administrator asking, who cannot delete themselves |
-| `rc-admin list` | Every mapping and whether its account exists and is in `rcusers` |
+| `rc-admin list` | Every mapping, whether its account exists and is in `rcusers`, its home folder, and whether Claude Code is installed there |
 | `rc-admin claude-status` | The approved and tested Claude Code versions, and each user's installed one |
 | `rc-admin claude-upgrade <version>` | Checks the version in the canary home; only if every check passes, approves it and installs it for everyone whose version differs |
 
 `rc-admin` prints `{"error": {"code", "message"}}` and exits 1 on failure (2
 for a command line that does not parse). The codes and messages are
-`MESSAGES` in `helpers/rc_admin.py`. `rcman-user` prints the message on
+`MESSAGES` in `helpers/rc_admin.py`; for a value refused by a rule — Linux
+user names and emails from `helpers/users_file.py`, versions from `VERSION` —
+the message is the rule's own sentence, through `RULE_CODES`, as in
+[rc-helper](rc-helper.md#contract). `rcman-user` prints the message on
 stderr; as the administrator to protect from self-deletion it uses
 `SUDO_USER`.
 
@@ -68,20 +72,20 @@ reported and the others continue.
 ## sudo
 
 `helpers/sudoers.rc-admin` lets the application user run `rc-admin`, and
-nothing else, as root with the environment reset. `install.sh` fills in
-`@ADMIN@` and `@APP_USER@`.
+nothing else, as root with the environment reset. The installer
+(`sudoers()` in `installer/install.py`) fills in `@ADMIN@` and `@APP_USER@`.
 
 ## Test hooks and tests
 
 `RC_ADMIN_ETC` replaces `/etc/rcman`, `RC_ADMIN_CANARY` the canary home, and
 `RC_ADMIN_INSTALLER` the official installer with a program run as the user with the version as its
-argument. sudo resets the environment, so neither reaches `rc-admin` started
-through sudo.
+argument. sudo resets the environment, so none of them reaches `rc-admin`
+started through sudo.
 
 | Tests | What they prove |
 |---|---|
 | `tests/test_users_file.py` | Parsing, validation, writing and the allowlist |
 | `tests/test_rc_admin.py` | Which commands each operation decides to run, against a recording stand-in for the system; that refusals run none |
-| `tests/test_rcman_user.py` | The prompt, its default, and refusing without a terminal |
+| `tests/test_rcman_user.py` | The front end in words: the prompt, its default and refusing without a terminal, `SUDO_USER` as the administrator asking, each verb's output and refusals, and a command line that does not parse |
 | `tests/test_claude_checks.py` | The upgrade checks pass the fake and the real installed `claude`, and a broken binary fails every one |
-| `tests/container/test_admin_in_container.py` | The real thing, as root in a container: accounts, groups, modes, ownership, process cleanup, logout, the prompt on a real terminal, a checked upgrade through the canary home (and a version that fails the checks), and the sudoers rules for both helpers — including that test hooks do not pass through sudo |
+| `tests/container/test_admin_in_container.py` | The real thing, as root in a container — such as accounts, groups, modes, ownership, process cleanup, logout, the prompt on a real terminal, a checked upgrade through the canary home and the version people added afterwards get, the sudoers rules for both helpers, that neither helper's test hooks pass through sudo, and folders and git as a person through them |

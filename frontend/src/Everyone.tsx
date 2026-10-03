@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import { ApiError, api } from "./api";
 import { m } from "./messages";
 import { ProblemView, asApiError } from "./ProblemView";
-import type { Server } from "./Servers";
+import { type Server, StateBadge } from "./Servers";
 
 export type Person = {
   linux: string;
@@ -35,7 +35,9 @@ function PersonServers({ person }: { person: Person }) {
             {person.servers.map((server) => (
               <tr key={server.path}>
                 <td>{server.path}</td>
-                <td>{m.states[server.state] ?? server.state}</td>
+                <td>
+                  <StateBadge state={server.state} />
+                </td>
                 <td>{server.session_name && <code>{server.session_name}</code>}</td>
               </tr>
             ))}

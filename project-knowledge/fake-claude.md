@@ -53,8 +53,9 @@ It reproduces these behaviours of the real binary, each recorded:
 - A server first shows a *connected* screen with no session attached, then a
   *ready* screen once a session has attached and is named. How long the
   connected stage lasts varies.
-- A new session's name is the prefix followed by generated words; the fake
-  generates its own words.
+- A new session's name is the prefix followed by generated words. The fake
+  names it `--name` when given, and otherwise the prefix followed by
+  `fake-session`.
 - Ctrl+C stops a server, exit status zero, with the environment preserved;
   running `remote-control` again in the same folder resumes the same session
   without asking about trust.
@@ -70,8 +71,8 @@ connected stage lasts, and `FAKE_CLAUDE_VERSION` the version it reports.
 
 ## Not recorded
 
-The fake has no recording of these, so it cannot show them. Until they are
-recorded, rc-helper reports a live one as `unrecognised`, and a server whose
+The fake has no recording of these, so it cannot show them. rc-helper
+reports a live one as `unrecognised`, and a server whose
 process has ended on one as `exited` (see [rc-helper.md](rc-helper.md)):
 
 - the one-time "Enable Remote Control?" confirmation of an account that has
@@ -89,9 +90,9 @@ process has ended on one as `exited` (see [rc-helper.md](rc-helper.md)):
 
 | Tests | Needs | Runs |
 |---|---|---|
-| `tests/test_fake_claude.py` | Nothing | Always. The recorder drives the fake exactly as it drives the real binary and must reproduce every fixture |
+| `tests/test_fake_claude.py` | Nothing | Always. The recorder drives the fake exactly as it drives the real binary and must reproduce every fixture but those of the sequences that need a person, whose screens the fake's sign-in tests check |
 | `tests/test_claude_contract.py` | The real `claude`, no account | Always; skipped when `claude` is not installed unless `RCMAN_REQUIRE_REAL_CLAUDE=1`, which `make check` sets. The installed version must be the manifest's; the no-account screens must match the fixtures; every option rcman passes must be in `--help`, except where help is refused without a login |
-| `tests/test_claude_real_account.py` | The real `claude`, logged in | By hand: `uv run pytest -m real_claude`. Runs the account sequences and the one that submits an invalid sign-in code, and checks the options whose help needs a login |
+| `tests/test_claude_real_account.py` | The real `claude`, logged in | By hand: `uv run pytest -m real_claude`. Runs the account sequences and the one that submits an invalid sign-in code, and checks every option rcman passes against `--help` while logged in |
 
 The contract tests compare the installed `claude` with `manifest.json`. A
 machine whose `claude` updates itself fails them as soon as the installed
@@ -101,9 +102,11 @@ version.
 ## Approving a new Claude Code version
 
 1. Install the candidate version.
-2. Re-record everything: `uv run python devtools/record_claude.py --with-account`.
-   This needs a logged-in account and creates one Remote Control session in
-   its claude.ai/code list (`--sequence <name>` re-records one sequence; a
+2. Re-record every sequence: `uv run python devtools/record_claude.py --with-account`,
+   then each sequence that needs a person, by name (see
+   [Sequences that need a person](#sequences-that-need-a-person)). This needs
+   a logged-in account and creates one Remote Control session in its
+   claude.ai/code list (`--sequence <name>` re-records one sequence; a
    version change requires recording them all).
 3. Review the fixture diff. Every change is a change in the real binary that
    rcman's screen reading may have to follow.

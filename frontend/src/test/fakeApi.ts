@@ -35,7 +35,8 @@ export function fakeApi(routes: Routes) {
       });
     }
     const route = routes[key];
-    const reply = typeof route === "function" ? route(call) : route;
+    // A handler may answer later, by returning a promise.
+    const reply = await (typeof route === "function" ? route(call) : route);
     if (reply instanceof Problem) {
       return new Response(JSON.stringify(reply.body), {
         status: reply.status,
@@ -53,11 +54,15 @@ export function fakeApi(routes: Routes) {
 }
 
 export const ME = { email: "alice@example.com", linux: "alice", admin: false, prefix: "alice" };
-export const ADMIN = { ...ME, admin: true };
+export const ADMIN_USER = { ...ME, admin: true };
 export const CONNECTED = {
   connection: "connected",
   account: { email: "alice@claude.test", org_name: "Org", subscription_type: "max" },
   login_expires_at: "2030-01-01T00:00:00+00:00",
 };
+// What /api/claude answers before anyone has connected a Claude account.
+export const NOT_CONNECTED = { connection: "not_connected", account: null, login_expires_at: null };
+// What /api/me/settings answers for someone who has set nothing.
+export const SETTINGS = { prefix: "alice", author_name: "", author_email: "", effective_author: null };
 // What /api/attention answers when nothing needs an administrator's attention.
 export const NOTHING_TO_ATTEND = { unrecognised: [], versions_differ: [], untested: false, versions_error: null };

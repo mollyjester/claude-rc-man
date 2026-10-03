@@ -15,7 +15,7 @@ self="$repo/install.sh"
 die() { echo "install.sh: $*" >&2; exit 1; }
 
 [ "$(id -u)" -eq 0 ] || die "run install.sh with sudo"
-case " $* " in *" --rollback "*) exec /usr/bin/python3 -I "$repo/installer/install.py" "$@" ;; esac
+case " $* " in *" --rollback "*) exec /usr/bin/python3 -I -X utf8 "$repo/installer/install.py" "$@" ;; esac
 [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != root ] || die "run install.sh with sudo from the account that owns the clone"
 
 as_owner() { runuser -u "$SUDO_USER" -- "$@"; }
@@ -32,4 +32,4 @@ if [ -z "${RCMAN_INSTALL_UPDATED:-}" ]; then
   fi
 fi
 
-exec /usr/bin/python3 -I "$repo/installer/install.py" "$@"
+exec /usr/bin/python3 -I -X utf8 "$repo/installer/install.py" "$@"

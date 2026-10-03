@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { useId, useState } from "react";
 
 import { ApiError, api } from "./api";
+import { Caret } from "./Caret";
 import { m } from "./messages";
 import { ProblemView, asApiError } from "./ProblemView";
 
@@ -14,6 +15,15 @@ export type Server = {
 };
 
 type Action = "stop" | "resume" | "startAgain" | "forget" | "showScreen" | "trustYes" | "trustNo";
+
+// The actions that start Claude, which the server refuses while the account cannot.
+const STARTS = ["resume", "startAgain"] as const satisfies readonly Action[];
+type StartAction = (typeof STARTS)[number];
+const startsClaude = (action: Action): action is StartAction => (STARTS as readonly Action[]).includes(action);
+
+// Why nothing can start Claude, said in place of each control that would: Start
+// in a folder with no server, and a server's own actions that start it again.
+export type StartBlocked = Record<"start" | StartAction, string>;
 
 // What each state reported by rc-helper allows; the server refuses anything else.
 export const ACTIONS: Record<string, Action[]> = {
@@ -29,7 +39,39 @@ export const ACTIONS: Record<string, Action[]> = {
 };
 
 // States in which the server is running and its environment on claude.ai takes sessions.
-const LIVE = ["connected", "ready"];
+export const LIVE = ["connected", "ready"];
+
+// The kinds of state a badge or a folder's dot shows, most urgent first.
+export const KIND_ORDER = ["problem", "waiting", "running", "stopped"] as const;
+export type Kind = (typeof KIND_ORDER)[number];
+
+export const KIND: Record<string, Kind> = {
+  starting: "running",
+  trust_prompt: "waiting",
+  connected: "running",
+  ready: "running",
+  stopped: "stopped",
+  trust_declined: "stopped",
+  logged_out: "problem",
+  exited: "problem",
+  unrecognised: "problem",
+};
+
+// A state rcman does not know is a problem until it is taught it.
+export const kindOf = (state: string): Kind => KIND[state] ?? "problem";
+
+// The one action each state leads with; "openSession" is the link to claude.ai.
+export const PRIMARY: Record<string, Action | "openSession" | null> = {
+  starting: null,
+  trust_prompt: "trustYes",
+  connected: "openSession",
+  ready: "openSession",
+  stopped: "resume",
+  trust_declined: "startAgain",
+  logged_out: "startAgain",
+  exited: "resume",
+  unrecognised: "showScreen",
+};
 
 const CALLS: Record<Exclude<Action, "showScreen">, [string, Record<string, string>]> = {
   stop: ["/api/servers/stop", {}],
@@ -50,11 +92,57 @@ export const LABELS: Record<Action, string> = {
   trustNo: m.trustNo,
 };
 
-function ServerCard({ server, onChange }: { server: Server; onChange: () => void }) {
+// The servers in a folder: its own, and every one in a folder inside it.
+export function serversIn(path: string, servers: Server[]): Server[] {
+  return servers.filter((s) => s.path === path || s.path.startsWith(`${path}/`));
+}
+
+// The dot a folder carries: the most urgent kind among its own server and,
+// while includeBelow, every server inside it; none where there is no server.
+export function dotFor(path: string, servers: Server[], includeBelow: boolean): Kind | null {
+  const counted = includeBelow ? serversIn(path, servers) : servers.filter((s) => s.path === path);
+  const kinds = new Set(counted.map((s) => kindOf(s.state)));
+  return KIND_ORDER.find((kind) => kinds.has(kind)) ?? null;
+}
+
+export function StateBadge({ state }: { state: string }) {
+  return <span className={`badge badge-${kindOf(state)}`}>{m.states[state] ?? state}</span>;
+}
+
+// A dot whose shape and colour both say its kind, with the kind in words as its
+// title, and as a hidden description for whatever names it with
+// aria-describedby: hidden, so that it is read once, with that name.
+export function StatusDot({ kind, id }: { kind: Kind; id: string }) {
+  return (
+    <>
+      <span className={`dot dot-${kind}`} title={m.kinds[kind]} aria-hidden="true" />
+      <span id={id} hidden>
+        {m.kinds[kind]}
+      </span>
+    </>
+  );
+}
+
+// A server and the actions its state allows; startReason, when there is one,
+// is why those that start Claude are not offered.
+export function ServerCard({
+  server,
+  startReason,
+  onChange,
+}: {
+  server: Server;
+  startReason: StartBlocked | null;
+  onChange: () => void;
+}) {
   const [error, setError] = useState<ApiError | null>(null);
   const [busy, setBusy] = useState(false);
   const [showScreen, setShowScreen] = useState(false);
-  const actions = ACTIONS[server.state] ?? ["showScreen"];
+  const screenId = useId();
+  const allowed = ACTIONS[server.state] ?? ["showScreen"];
+  // The actions that would start Claude, when the account cannot: they are not offered.
+  const blocked = startReason ? allowed.filter(startsClaude) : [];
+  const actions = allowed.filter((action) => !(blocked as Action[]).includes(action));
+  const primary = PRIMARY[server.state];
 
   async function act(action: Action) {
     if (action === "showScreen") {
@@ -75,9 +163,15 @@ function ServerCard({ server, onChange }: { server: Server; onChange: () => void
   }
 
   return (
-    <article aria-label={server.path} className={`server state-${server.state}`}>
-      <h3>{server.path}</h3>
-      <p className="state">{m.states[server.state] ?? server.state}</p>
+    <article aria-label={server.path} className="server">
+      <p>
+        <StateBadge state={server.state} />
+      </p>
+      <p>
+        {startReason && blocked.length > 0
+          ? blocked.map((action) => startReason[action]).join(" ")
+          : (m.nextStep[server.state] ?? m.nextStepUnknown)}
+      </p>
       {server.state === "trust_prompt" && (
         <div className="question">
           <p>
@@ -91,120 +185,40 @@ function ServerCard({ server, onChange }: { server: Server; onChange: () => void
           {m.sessionName}: <code>{server.session_name}</code>
         </p>
       )}
-      {server.environment_url && LIVE.includes(server.state) && (
-        <p>
-          <a href={server.environment_url} target="_blank" rel="noopener noreferrer">
-            {m.openSession}
-          </a>
-        </p>
-      )}
       {server.exit_code !== null && server.state === "exited" && <p>{m.exitCode(server.exit_code)}</p>}
       <div className="actions">
+        {server.environment_url && LIVE.includes(server.state) && (
+          <a
+            href={server.environment_url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className={primary === "openSession" ? "button primary" : "button"}
+          >
+            {m.openSession}
+          </a>
+        )}
         {actions.map((action) => (
-          <button key={action} type="button" disabled={busy} onClick={() => act(action)}>
+          <button
+            key={action}
+            type="button"
+            className={action === primary ? "primary" : "secondary"}
+            disabled={busy}
+            // Show screen discloses the screen below: a fixed name, with its state in aria-expanded
+            aria-expanded={action === "showScreen" ? showScreen : undefined}
+            aria-controls={action === "showScreen" ? screenId : undefined}
+            onClick={() => act(action)}
+          >
             {LABELS[action]}
+            {action === "showScreen" && <Caret />}
           </button>
         ))}
       </div>
-      {showScreen && server.screen && (
-        <pre className="screen" aria-label={m.screenTitle(server.path)}>
+      {server.screen && (
+        <pre id={screenId} className="screen" aria-label={m.screenTitle(server.path)} hidden={!showScreen}>
           {server.screen.join("\n")}
         </pre>
       )}
       <ProblemView error={error} />
     </article>
-  );
-}
-
-export function ServerList({ servers, onChange }: { servers: Server[]; onChange: () => void }) {
-  return (
-    <section aria-label={m.serversTitle}>
-      <h2>{m.serversTitle}</h2>
-      {servers.length === 0 && <p>{m.serversEmpty}</p>}
-      {servers.map((server) => (
-        <ServerCard key={server.path} server={server} onChange={onChange} />
-      ))}
-    </section>
-  );
-}
-
-type Entry = { name: string; path: string; has_children: boolean };
-
-function FolderNode({
-  entry,
-  running,
-  onStart,
-}: {
-  entry: Entry;
-  running: Set<string>;
-  onStart: (path: string) => void;
-}) {
-  const [children, setChildren] = useState<Entry[] | null>(null);
-  const [error, setError] = useState<ApiError | null>(null);
-
-  async function toggle() {
-    if (children) {
-      setChildren(null);
-      return;
-    }
-    try {
-      setChildren((await api.get<{ entries: Entry[] }>("/api/folders", { path: entry.path })).entries);
-    } catch (e) {
-      setError(asApiError(e));
-    }
-  }
-
-  return (
-    <li>
-      {entry.has_children ? (
-        <button
-          type="button"
-          className="toggle"
-          aria-label={children ? m.collapse(entry.name) : m.expand(entry.name)}
-          onClick={toggle}
-        >
-          {children ? "▾" : "▸"}
-        </button>
-      ) : (
-        <span className="toggle" />
-      )}
-      <span className="name">{entry.name}</span>
-      {!running.has(entry.path) && (
-        <button type="button" aria-label={m.startIn(entry.path)} onClick={() => onStart(entry.path)}>
-          {m.start}
-        </button>
-      )}
-      <ProblemView error={error} />
-      {children && (
-        <ul>
-          {children.length === 0 && <li>{m.foldersEmpty}</li>}
-          {children.map((child) => (
-            <FolderNode key={child.path} entry={child} running={running} onStart={onStart} />
-          ))}
-        </ul>
-      )}
-    </li>
-  );
-}
-
-export function FolderTree({
-  entries,
-  running,
-  onStart,
-}: {
-  entries: Entry[];
-  running: Set<string>;
-  onStart: (path: string) => void;
-}) {
-  return (
-    <section aria-label={m.foldersTitle}>
-      <h2>{m.foldersTitle}</h2>
-      {entries.length === 0 && <p>{m.foldersEmpty}</p>}
-      <ul className="tree">
-        {entries.map((entry) => (
-          <FolderNode key={entry.path} entry={entry} running={running} onStart={onStart} />
-        ))}
-      </ul>
-    </section>
   );
 }

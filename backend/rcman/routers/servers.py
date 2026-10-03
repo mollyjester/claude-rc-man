@@ -2,27 +2,23 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel, Field
 
-from helpers import rc_helper
 from rcman import everyone as everyone_
 from rcman.audit import UNRECOGNISED_SCREEN, Record, Recorder
 from rcman.helpers_client import call_helper
 from rcman.identity import Identity, admin_user, current_user
+from rcman.routers.folders import FolderPath
 from rcman.routers.me import prefix_of
 
 router = APIRouter(prefix="/api/servers", tags=["servers"])
 
 
 class PathBody(BaseModel):
-    path: str = Field(
-        min_length=1,
-        max_length=rc_helper.MAX_PATH_LENGTH,
-        description="Relative to the home folder.",
-    )
+    path: FolderPath = Field(description="Relative to the home folder.")
 
 
 class ConfirmBody(PathBody):
@@ -50,7 +46,7 @@ def everyone(request: Request) -> dict:
 @router.get("/output")
 def output(
     request: Request,
-    path: str = Query(min_length=1, max_length=rc_helper.MAX_PATH_LENGTH),
+    path: Annotated[FolderPath, Query()],
     identity: Identity = Depends(current_user),
 ) -> dict:
     return call_helper(request.app.state.helper, identity, ["output", "--", path])

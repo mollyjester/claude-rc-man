@@ -6,9 +6,12 @@ import logging
 import sqlite3
 
 import pytest
+from rcman.problems import FIELD_MESSAGES
 
 from devtools import fake_claude as fake
 from devtools import record_claude as rec
+from helpers import rc_admin
+from helpers import users_file as uf
 from tests.conftest import ALICE, BOB, as_user, changing
 
 
@@ -115,13 +118,12 @@ def test_an_unrecognised_sign_in_screen_is_shown_and_audited(client, helper_home
 
 
 def test_code_and_email_are_validated(client):
-    assert (
-        client.post("/api/claude/code", json={"code": ""}, headers=changing(BOB)).status_code == 422
-    )
-    assert (
-        client.post("/api/claude/login", json={"email": "nope"}, headers=changing(BOB)).status_code
-        == 422
-    )
+    r = client.post("/api/claude/code", json={"code": ""}, headers=changing(BOB))
+    assert r.status_code == 422
+    assert r.json()["errors"] == [{"field": "code", "message": FIELD_MESSAGES["string_empty"]}]
+    r = client.post("/api/claude/login", json={"email": "nope"}, headers=changing(BOB))
+    assert r.status_code == 422
+    assert r.json()["errors"] == [{"field": "email", "message": uf.EMAIL.sentence}]
 
 
 # --- versions (administrators) -------------------------------------------------------
@@ -153,7 +155,7 @@ def test_upgrade_goes_through_rc_admin(client, admin_runner):
     ]
     r = client.post("/api/claude/upgrade", json={"version": "2.2.0"}, headers=changing(ALICE))
     assert r.status_code == 200
-    assert admin_runner.calls == [["claude-upgrade", "2.2.0"]]
+    assert admin_runner.calls == [["claude-upgrade", "--", "2.2.0"]]
 
 
 def test_a_failed_upgrade_is_a_problem_naming_the_checks(client, admin_runner):
@@ -181,3 +183,4 @@ def test_versions_are_for_administrators(client, admin_runner):
 def test_upgrade_version_is_validated(client, admin_runner):
     r = client.post("/api/claude/upgrade", json={"version": "latest"}, headers=changing(ALICE))
     assert r.status_code == 422 and admin_runner.calls == []
+    assert r.json()["errors"] == [{"field": "version", "message": rc_admin.VERSION.sentence}]

@@ -6,7 +6,8 @@ clone's commit, configuration, sudoers rules, systemd services, the first
 administrator, and a health check. Every step leaves things as they are when
 they are already right, so running it again changes nothing.
 
-Python standard library only: it runs under the system interpreter.
+Python standard library and the clone's helpers only: it runs under the system
+interpreter.
 """
 
 from __future__ import annotations
@@ -29,6 +30,25 @@ import urllib.request
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
+# install.sh runs this in isolated mode, which puts nothing of the clone on the
+# path; the rules for addresses and Linux user names, and how git is found and
+# which git rcman needs, are the helpers'. It runs as
+# root, so it writes no bytecode into the clone, which is someone else's, and
+# takes the clone off the path again once it has them.
+_on_path = str(REPO) in sys.path
+if not _on_path:
+    sys.path.insert(0, str(REPO))
+_write_bytecode, sys.dont_write_bytecode = sys.dont_write_bytecode, True
+try:
+    from helpers import git_run
+    from helpers.git_run import GIT_MIN_VERSION
+    from helpers.rules import Rule
+    from helpers.users_file import EMAIL, LINUX_NAME
+finally:
+    sys.dont_write_bytecode = _write_bytecode
+    if not _on_path:
+        sys.path.remove(str(REPO))
+
 TEMPLATES_DIR = Path(__file__).resolve().parent / "templates"
 
 ROOT = Path("/opt/rcman")
@@ -72,8 +92,6 @@ CADDY_ADMIN_WARNING = (
 
 LABEL = r"(?!-)[A-Za-z0-9-]+(?<!-)"  # a host name label: no leading or trailing hyphen
 HOSTNAME = re.compile(LABEL + r"(?:\." + LABEL + r")+")
-EMAIL = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+")
-LINUX_NAME = re.compile(r"[a-z][a-z0-9_-]{0,31}")
 PORT = re.compile(r"[1-9][0-9]{1,4}")
 
 
@@ -84,6 +102,7 @@ class InstallError(Exception):
 # --- settings -----------------------------------------------------------------------
 
 # key: (question, secret, default, pattern). A default of None means it must be given.
+# A pattern that is a helpers' Rule explains a refusal with its sentence.
 FIELDS = {
     "DOMAIN": ("Public host name of rcman (such as rcman.example.com)", False, None, HOSTNAME),
     "GOOGLE_CLIENT_ID": ("Google OAuth client ID", False, None, None),
@@ -146,7 +165,8 @@ def gather(
     values.setdefault("COOKIE_SECRET", secrets.token_urlsafe(24))
     for key, (_question, _secret, _default, pattern) in FIELDS.items():
         if not values[key] or (pattern and not pattern.fullmatch(values[key])):
-            raise InstallError(f"invalid {key}: {values[key]!r}")
+            why = f" {pattern.sentence}" if isinstance(pattern, Rule) else ""
+            raise InstallError(f"invalid {key}: {values[key]!r}.{why}")
     return values
 
 
@@ -286,8 +306,25 @@ def check_caddy_user(name: str) -> None:
         )
 
 
+def check_git() -> None:
+    """The system's git, which rc-helper runs, is one that has everything rcman asks of it."""
+    try:
+        git = git_run.find_git()
+    except git_run.GitMissing:
+        raise InstallError(
+            f"there is no git on {git_run.GIT_SEARCH_PATH}; install git and run install.sh again"
+        ) from None
+    found = git_run.version_of(run([git, "--version"]).stdout)
+    if found < GIT_MIN_VERSION:
+        need = ".".join(map(str, GIT_MIN_VERSION))
+        raise InstallError(
+            f"git {'.'.join(map(str, found))} is too old: rcman needs git {need} or later"
+        )
+
+
 def ensure_accounts(caddy_user: str) -> list[str]:
     check_caddy_user(caddy_user)
+    check_git()
     changes = []
     if not _exists("group", USER_GROUP):
         run(["groupadd", USER_GROUP])

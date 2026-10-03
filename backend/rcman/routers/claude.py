@@ -12,16 +12,17 @@ from helpers import users_file as uf
 from rcman.audit import Record, Recorder
 from rcman.helpers_client import ADMIN_TIMEOUT, call_admin, call_helper
 from rcman.identity import Identity, admin_user, current_user
+from rcman.problems import ruled
 
 router = APIRouter(prefix="/api/claude", tags=["claude"])
 MAX_CODE_LENGTH = 512
+Email = ruled(uf.EMAIL)
+Version = ruled(rc_admin.VERSION)
 
 
 class LoginBody(BaseModel):
-    email: str | None = Field(
-        None,
-        pattern=f"^{uf.EMAIL.pattern}$",
-        description="The Claude account's email address; the Google address when omitted.",
+    email: Email | None = Field(
+        None, description="The Claude account's email address; the Google address when omitted."
     )
 
 
@@ -32,7 +33,7 @@ class CodeBody(BaseModel):
 
 
 class UpgradeBody(BaseModel):
-    version: str = Field(pattern=f"^{rc_admin.VERSION.pattern}$", description="Such as 1.2.3.")
+    version: Version = Field(description="Such as 1.2.3.")
 
 
 def connection(status: dict, warning_days: int, now: dt.datetime | None = None) -> dict:
@@ -98,4 +99,4 @@ def upgrade(
     body: UpgradeBody, request: Request, record: Record = Depends(Recorder("claude.upgrade"))
 ) -> dict:
     record.target = body.version
-    return call_admin(request.app.state.admin, ["claude-upgrade", body.version])
+    return call_admin(request.app.state.admin, ["claude-upgrade", "--", body.version])

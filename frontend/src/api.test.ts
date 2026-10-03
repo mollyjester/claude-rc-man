@@ -1,4 +1,4 @@
-import { ApiError, api } from "./api";
+import { ApiError, api, problemFrom } from "./api";
 import { fakeApi, problem } from "./test/fakeApi";
 
 async function failure(promise: Promise<unknown>): Promise<ApiError> {
@@ -28,17 +28,17 @@ test("sends JSON bodies and the query", async () => {
 
 test("turns a problem into an ApiError carrying everything the server said", async () => {
   fakeApi({
-    "PUT /api/me/settings": problem(422, "validation_failed", "Some of what was sent is not valid.", {
-      errors: [{ field: "prefix", message: "String should match pattern" }],
+    "PATCH /api/me/settings": problem(422, "validation_failed", "Some of what was sent is not valid.", {
+      errors: [{ field: "prefix", message: "planted reason, as the server sent it" }],
       screen: ["raw"],
     }),
   });
-  const error = await failure(api.put("/api/me/settings", { prefix: "" }));
+  const error = await failure(api.patch("/api/me/settings", { prefix: "" }));
   expect(error).toBeInstanceOf(ApiError);
   expect(error.status).toBe(422);
   expect(error.code).toBe("validation_failed");
   expect(error.title).toBe("Some of what was sent is not valid.");
-  expect(error.errors).toEqual([{ field: "prefix", message: "String should match pattern" }]);
+  expect(error.errors).toEqual([{ field: "prefix", message: "planted reason, as the server sent it" }]);
   expect(error.extra.screen).toEqual(["raw"]);
 });
 
@@ -48,4 +48,18 @@ test("an error that is not a problem still becomes an ApiError", async () => {
   expect(error).toBeInstanceOf(ApiError);
   expect(error.status).toBe(502);
   expect(error.title).toBeTruthy();
+});
+
+test("problem details in an answer become the ApiError a failed request would be", () => {
+  const error = problemFrom(
+    { type: "urn:rcman:problem:git_failed", title: "planted title", status: 409, code: "git_failed", git: ["words"] },
+    409,
+  );
+  expect(error).toBeInstanceOf(ApiError);
+  expect([error.status, error.code, error.title]).toEqual([409, "git_failed", "planted title"]);
+  expect(error.errors).toEqual([]);
+  expect(error.extra).toEqual({ git: ["words"] });
+  const odd = problemFrom(undefined, 502);
+  expect([odd.status, odd.code]).toEqual([502, "unexpected_response"]);
+  expect(odd.title).toBeTruthy();
 });

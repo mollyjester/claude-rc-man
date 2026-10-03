@@ -3,9 +3,23 @@ import { type FormEvent, useState } from "react";
 import { ApiError, api } from "./api";
 import { m } from "./messages";
 import { ProblemView, asApiError } from "./ProblemView";
+import type { StartBlocked } from "./Servers";
+
+export const CONNECTION_STATES = ["not_connected", "connected", "expiring", "expired"] as const;
+export type ConnectionState = (typeof CONNECTION_STATES)[number];
+
+// Why no server can start while the account is in each state; null where one
+// can. rc-helper starts one with an expired sign-in, and the account's section
+// already warns about it.
+export const START_REASON: Record<ConnectionState, StartBlocked | null> = {
+  not_connected: m.notConnected,
+  connected: null,
+  expiring: null,
+  expired: null,
+};
 
 export type Connection = {
-  connection: "not_connected" | "connected" | "expiring" | "expired";
+  connection: ConnectionState;
   account: { email: string | null; org_name: string | null; subscription_type: string | null } | null;
   login_expires_at: string | null;
 };
@@ -49,9 +63,11 @@ function Connect({ onConnected }: { onConnected: (c: Connection) => void }) {
         <form noValidate onSubmit={start}>
           <label>
             {m.connectEmail}
-            <input type="text" value={email} onChange={(e) => setEmail(e.target.value)} />
+            <input type="text" name="email" value={email} onChange={(e) => setEmail(e.target.value)} />
           </label>
-          <button type="submit">{m.connectGo}</button>
+          <button type="submit" className="primary">
+            {m.connectGo}
+          </button>
         </form>
       ) : (
         <form noValidate onSubmit={finish}>
@@ -63,12 +79,14 @@ function Connect({ onConnected }: { onConnected: (c: Connection) => void }) {
           </p>
           <label>
             {m.connectCode}
-            <input type="text" autoComplete="off" value={code} onChange={(e) => setCode(e.target.value)} />
+            <input type="text" name="code" autoComplete="off" value={code} onChange={(e) => setCode(e.target.value)} />
           </label>
-          <button type="submit">{m.connectSubmit}</button>
+          <button type="submit" className="primary">
+            {m.connectSubmit}
+          </button>
         </form>
       )}
-      <ProblemView error={error} />
+      <ProblemView error={error} labels={{ email: m.connectEmail, code: m.connectCode }} />
     </div>
   );
 }

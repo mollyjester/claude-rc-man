@@ -1,38 +1,132 @@
+/* Every colour is a custom property here, light first and dark below;
+   src/styles.test.ts holds the stylesheet to that. */
 :root {
   font-family: system-ui, sans-serif;
   color-scheme: light dark;
-  --muted: #6b7280;
+  --bg: #ffffff;
+  --fg: #1f2937;
+  --surface: #f3f4f6;
+  --muted: #4b5563;
   --border: #d1d5db;
-  --warn: #b45309;
-  --bad: #b91c1c;
+  --accent: #1d4ed8;
+  --accent-fg: #ffffff;
+  --running: #15803d;
+  --waiting: #b45309;
+  --problem: #b91c1c;
+  /* what cannot be undone is drawn in the colour of a problem, on the page's own */
+  --danger: var(--problem);
+  --danger-fg: var(--bg);
+  --stopped: #4b5563;
+  --focus: #2563eb;
+  --shadow: rgba(17, 24, 39, 0.18);
+  --screen-bg: #111827;
+  --screen-fg: #e5e7eb;
 }
-body { margin: 0; }
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #111827;
+    --fg: #e5e7eb;
+    --surface: #1f2937;
+    --muted: #9ca3af;
+    --border: #374151;
+    --accent: #93c5fd;
+    --accent-fg: #111827;
+    --running: #4ade80;
+    --waiting: #fbbf24;
+    --problem: #f87171;
+    --stopped: #9ca3af;
+    --focus: #93c5fd;
+    --shadow: rgba(0, 0, 0, 0.6);
+  }
+}
+body { margin: 0; background: var(--bg); color: var(--fg); }
+a { color: var(--accent); }
+:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+
+button, a.button { display: inline-block; font: inherit; padding: 0.35rem 0.85rem; border-radius: 0.375rem; border: 1px solid var(--border); background: var(--surface); color: var(--fg); cursor: pointer; text-decoration: none; }
+button.primary, a.button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); font-weight: 600; }
+/* A form's leading button where what it does cannot be undone. */
+button.danger { background: var(--danger); border-color: var(--danger); color: var(--danger-fg); font-weight: 600; }
+button.secondary { background: transparent; }
+/* A button that opens what cannot be undone, without being that itself. */
+button.secondary-danger { background: transparent; border-color: var(--danger); color: var(--danger); }
+button:disabled { opacity: 0.6; cursor: default; }
+
 header { display: flex; gap: 1.5rem; align-items: center; padding: 0.75rem 1.5rem; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
-header nav { display: flex; gap: 1rem; flex: 1; }
-header nav a.active { font-weight: 600; }
+header nav { display: flex; gap: 1rem; flex: 1; align-items: center; }
+header nav a.active, header nav button.active { font-weight: 600; }
+.menu { position: relative; }
+.menu > button { padding: 0.2rem 0.6rem; }
+/* A disclosure button: its name, then a caret that turns with aria-expanded. */
+button[aria-expanded] { display: inline-flex; align-items: center; gap: 0.4rem; }
+.caret { width: 0.4rem; height: 0.4rem; border-right: 2px solid currentColor; border-bottom: 2px solid currentColor; transform: translateY(-0.1rem) rotate(45deg); }
+[aria-expanded="true"] > .caret { transform: translateY(0.1rem) rotate(225deg); }
+.menu ul { position: absolute; top: 100%; left: 0; z-index: 1; list-style: none; margin: 0.25rem 0 0; padding: 0.25rem 0; min-width: 12rem; background: var(--bg); border: 1px solid var(--border); border-radius: 0.5rem; box-shadow: 0 0.25rem 0.75rem var(--shadow); }
+.menu li a { display: block; padding: 0.35rem 0.75rem; }
 main { padding: 1rem 1.5rem; max-width: 72rem; }
-.columns { display: grid; grid-template-columns: minmax(16rem, 1fr) 2fr; gap: 2rem; }
-@media (max-width: 48rem) { .columns { grid-template-columns: 1fr; } }
-.tree, .tree ul { list-style: none; padding-left: 1rem; }
-.tree li { margin: 0.2rem 0; }
+
+/* minmax(0, …): a wide screen scrolls inside its card rather than widening the column. */
+.workspace { display: grid; grid-template-columns: minmax(16rem, 2fr) minmax(0, 3fr); gap: 2rem; align-items: start; }
+@media (max-width: 48rem) { .workspace { grid-template-columns: minmax(0, 1fr); } }
+.tree, .tree ul, .summary { list-style: none; padding-left: 0; }
+.tree ul { padding-left: 1.5rem; }
+.tree li, .summary li { margin: 0.2rem 0; }
+/* A path's text lines up with the heading, its button's padding outside it.
+   The path and then its badge flow as text does: the badge follows the path on
+   its line after a space, and goes to the next only when it does not fit there,
+   where the space falls away so that it lines up with the path. */
+.summary button.name { margin-left: -0.35rem; vertical-align: middle; }
+.summary .badge { vertical-align: middle; }
+/* A folder's name with the slash after it: an atom of the line, so a path wraps
+   only after a slash, broken inside only when it is wider than a line by itself. */
+.path-part { display: inline-block; max-width: 100%; overflow-wrap: anywhere; }
 .toggle { display: inline-block; width: 1.5rem; }
-.name { margin-right: 0.5rem; }
-.server { border: 1px solid var(--border); border-radius: 0.5rem; padding: 0.75rem 1rem; margin-bottom: 0.75rem; }
-.server h3 { margin: 0 0 0.25rem; font-size: 1rem; }
-.state { font-weight: 600; margin: 0.25rem 0; }
-.state-unrecognised .state, .state-exited .state { color: var(--bad); }
-.state-trust_prompt .state { color: var(--warn); }
+button.toggle { background: none; border: none; padding: 0; color: var(--fg); }
+button.name { background: none; border: none; padding: 0.1rem 0.35rem; border-radius: 0.25rem; color: var(--fg); text-align: left; }
+button.name[aria-current="true"] { background: var(--accent); color: var(--accent-fg); font-weight: 600; }
+/* Each kind of dot has its own shape as well as its own colour; the guide's
+   table of shapes is held to these rules by src/servers-guide.test.ts. */
+.dot { display: inline-block; box-sizing: border-box; width: 0.7rem; height: 0.7rem; margin-left: 0.3rem; vertical-align: middle; }
+.dot-running { border-radius: 50%; background: var(--running); }
+.dot-waiting { border-radius: 50%; border: 0.15rem solid var(--waiting); }
+.dot-problem { clip-path: polygon(50% 0, 100% 100%, 0 100%); background: var(--problem); }
+.dot-stopped { border: 0.15rem solid var(--stopped); border-radius: 0.1rem; }
+.repository-marker { margin-left: 0.3rem; padding: 0 0.25rem; font-size: 0.75rem; color: var(--muted); border: 1px solid var(--border); border-radius: 0.25rem; vertical-align: middle; }
+
+.files ul, .branches { list-style: none; padding: 0; margin: 0.25rem 0 0.5rem; }
+.files li, .branches li { margin: 0.15rem 0; }
+.files .file-name { white-space: pre-wrap; font-family: monospace; }
+/* A file that cannot be selected keeps the room of the checkbox it has not got. */
+.files li input[type="checkbox"], .files .no-checkbox { display: inline-block; box-sizing: border-box; width: 1rem; margin: 0 0.4rem 0 0; vertical-align: middle; }
+.files .change { color: var(--muted); }
+.panel-section h4 { font-size: 0.95rem; margin: 0.75rem 0 0.25rem; }
+.panel-section label > textarea { display: block; width: 100%; box-sizing: border-box; margin-top: 0.35rem; font: inherit; }
+.git-said { white-space: pre-wrap; overflow-wrap: anywhere; }
+
+.panel { border: 1px solid var(--border); border-radius: 0.5rem; padding: 0.75rem 1.25rem; }
+.panel h2 { margin: 0.25rem 0 0.75rem; }
+.panel-section h3 { font-size: 1rem; margin: 0.75rem 0 0.5rem; }
+.breadcrumb ol { list-style: none; display: flex; flex-wrap: wrap; gap: 0.25rem; padding: 0; margin: 0; }
+.breadcrumb [aria-hidden="true"] { margin-left: 0.25rem; color: var(--muted); }
+.server { border: 1px solid var(--border); border-radius: 0.5rem; padding: 0.75rem 1rem; background: var(--surface); }
+.server > :first-child { margin-top: 0; }
+.badge { display: inline-block; font-weight: 600; font-size: 0.85rem; padding: 0.1rem 0.5rem; border-radius: 1rem; border: 1px solid currentColor; }
+.badge-running { color: var(--running); }
+.badge-waiting { color: var(--waiting); }
+.badge-problem { color: var(--problem); }
+.badge-stopped { color: var(--stopped); }
 .actions { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-top: 0.5rem; }
-.screen { background: #111827; color: #e5e7eb; padding: 0.75rem; overflow-x: auto; font-size: 0.8rem; }
-.problem { border-left: 4px solid var(--bad); padding: 0.25rem 0.75rem; margin: 0.5rem 0; }
+.screen { background: var(--screen-bg); color: var(--screen-fg); border: 1px solid var(--border); padding: 0.75rem; overflow-x: auto; font-size: 0.8rem; }
+
+.problem { border-left: 4px solid var(--problem); padding: 0.25rem 0.75rem; margin: 0.5rem 0; }
 .claude { border: 1px solid var(--border); border-radius: 0.5rem; padding: 0.5rem 1rem; margin-bottom: 1rem; }
-.claude-expiring, .claude-expired, .claude-not_connected { border-color: var(--warn); }
+.claude-expiring, .claude-expired, .claude-not_connected { border-color: var(--waiting); }
 .muted { color: var(--muted); }
-.warning { color: var(--warn); }
-.attention { border-left: 4px solid var(--warn); padding: 0.25rem 0.75rem; margin: 0.5rem 0 1rem; }
+.warning { color: var(--waiting); }
+.attention { border-left: 4px solid var(--waiting); padding: 0.25rem 0.75rem; margin: 0.5rem 0 1rem; }
 .dialog { border: 1px solid var(--border); border-radius: 0.5rem; padding: 1rem; margin: 1rem 0; }
 form label { display: block; margin: 0.5rem 0; }
-form input[type="text"] { display: block; min-width: 20rem; max-width: 100%; }
+form input[type="text"], form input[type="password"] { display: block; box-sizing: border-box; width: 100%; max-width: 40rem; font: inherit; }
 table { border-collapse: collapse; margin: 0.5rem 0 1rem; }
 th, td { text-align: left; padding: 0.25rem 0.75rem; border-bottom: 1px solid var(--border); }
 .docs { display: grid; grid-template-columns: 14rem 1fr; gap: 2rem; }

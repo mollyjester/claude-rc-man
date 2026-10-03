@@ -2,7 +2,7 @@
 
 Each entry maps a Google email to a Linux user and says whether that person is
 an administrator. The oauth2-proxy email allowlist is generated from it and
-nothing else. Python standard library only.
+nothing else. Python standard library and the helpers' own modules only.
 """
 
 from __future__ import annotations
@@ -14,8 +14,19 @@ import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
-LINUX_NAME = re.compile(r"[a-z][a-z0-9_-]{0,31}")
-EMAIL = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+")
+from helpers.rules import Rule
+
+MAX_LINUX_NAME_LENGTH = 32  # useradd's limit
+LINUX_NAME = Rule(
+    re.compile(rf"[a-z][a-z0-9_-]{{0,{MAX_LINUX_NAME_LENGTH - 1}}}"),
+    "Linux user names use lowercase letters a to z, digits, hyphens and underscores, "
+    f"start with a letter, and are at most {MAX_LINUX_NAME_LENGTH} characters long.",
+)
+# Never beginning with a hyphen, so that no address can be read as an option.
+EMAIL = Rule(
+    re.compile(r"[A-Za-z0-9._%+][A-Za-z0-9._%+-]*@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+"),
+    "That is not a valid email address.",
+)
 FIELDS = {"email", "linux", "admin"}
 HEADER = "# The people who may use rcman. Managed by rcman-user and the admin page.\n"
 

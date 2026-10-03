@@ -17,6 +17,14 @@ from rcman.problems import MESSAGES, Problem
 
 HELPER_TIMEOUT = 120
 ADMIN_TIMEOUT = 600
+# Deleting a folder: the helper waits up to its STOP_TIMEOUT for the servers in
+# it to stop, then removes a whole tree, however large.
+FOLDER_DELETE_TIMEOUT_SECONDS = 300
+# A git call: how much longer than the helper's own deadline for git
+# (rc_helper.GIT_TIMEOUT, GIT_NETWORK_TIMEOUT for a fetch or a push, or
+# CLONE_TIMEOUT for a clone) rcman waits, for sudo and the helper to start and
+# to answer.
+GIT_ANSWER_MARGIN_SECONDS = 15
 # After a timeout: how long sudo has to pass SIGTERM on and its child to end.
 TERMINATE_GRACE_SECONDS = 5.0
 
@@ -26,6 +34,8 @@ HELPER_STATUS = {
     "refused_as_root": 500,
     "path_invalid": 400,
     "path_is_home": 400,
+    "path_ends_in_dot": 400,
+    "folder_path_too_long": 400,
     "path_outside_home": 400,
     "path_not_found": 404,
     "path_not_directory": 400,
@@ -45,6 +55,39 @@ HELPER_STATUS = {
     "timeout": 504,
     "no_login_in_progress": 409,
     "login_failed": 409,
+    "name_invalid": 400,
+    "folder_exists": 409,
+    "path_hidden": 400,
+    "folder_busy": 409,
+    "delete_stop_failed": 409,
+    "delete_forget_failed": 500,
+    "delete_incomplete": 409,
+    "delete_failed": 409,
+    "path_through_link": 400,
+    "path_name_differs": 400,
+    "delete_mount_inside": 409,
+    "delete_unsafe": 500,
+    "git_not_installed": 500,
+    "git_failed": 409,
+    "git_timeout": 504,
+    "git_unrecognised_output": 502,
+    "not_a_repository": 409,
+    "repository_outside_home": 400,
+    "file_list_invalid": 400,
+    "file_invalid": 400,
+    "file_outside_repository": 400,
+    "nothing_staged": 409,
+    "message_invalid": 400,
+    "author_name_invalid": 400,
+    "branch_invalid": 400,
+    "branch_name_invalid": 400,
+    "branch_not_found": 404,
+    "token_invalid": 400,
+    "detached_head": 409,
+    "github_token_not_set": 409,
+    "url_invalid": 400,
+    "clone_unsafe": 500,
+    "clone_missing": 500,
 }
 ADMIN_STATUS = {
     "usage": 500,
@@ -96,9 +139,15 @@ def run_bounded(
     running. SIGTERM it does pass on: that comes first, and SIGKILL only if
     sudo has not ended within :data:`TERMINATE_GRACE_SECONDS`. The timeout is
     still raised.
+
+    Text is UTF-8 both ways, as the helpers read and write it, whatever the
+    service's locale.
     """
     pipe = subprocess.PIPE if capture_output else None
-    with subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=pipe, stderr=pipe, text=text) as proc:
+    encoding = "utf-8" if text else None
+    with subprocess.Popen(
+        argv, stdin=subprocess.PIPE, stdout=pipe, stderr=pipe, text=text, encoding=encoding
+    ) as proc:
         try:
             stdout, stderr = proc.communicate(input, timeout=timeout)
         except subprocess.TimeoutExpired:

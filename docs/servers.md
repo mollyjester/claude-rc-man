@@ -8,25 +8,114 @@ with them.
 
 ## The Servers page
 
-The Servers page shows your folders on one side and your servers on the other.
-Open a folder with the arrow beside it, and choose **Start** beside any folder
-that has no server yet. Each server shows its state, and only the actions that
-state allows:
+The Servers page has two sides. On the left are your **Folders**, and under
+them **Your servers**, which lists every server you have; on the right is the
+panel of the folder you have selected.
 
-| State | Buttons |
+Select a folder by its name. The arrow beside a name opens the folder to show
+the folders inside it, without selecting it. A folder whose server is running,
+waiting for your answer, has a problem or is not running carries a dot whose
+shape and colour say which, and pointing at a dot names it. A folder with no
+server carries none. While a folder is closed, its dot also stands for the
+servers inside it, showing the most urgent of them, from the top of this
+table:
+
+| Dot | Shape |
 |---|---|
-| Starting | **Stop** |
-| Waiting for your answer | **Yes, trust it**, **No**, **Stop** |
-| Ready to accept sessions | **Stop** |
-| In use | **Stop** |
-| Stopped | **Resume**, **Forget** |
-| Not started: folder not trusted | **Start again**, **Forget** |
-| Not started: Claude account not connected | **Start again**, **Forget** |
-| Stopped by itself | **Resume**, **Forget**, **Show screen** |
-| Unrecognised screen | **Show screen**, **Stop** |
+| Has a problem | triangle |
+| Needs your answer | ring |
+| Running | filled circle |
+| Not running | hollow square |
+
+A folder that is a git repository also carries a **git** marker; pointing at
+it names it. Which folders count as repositories is in [Git](git.md).
+
+Choosing a server in **Your servers** selects its folder, wherever it is in the
+tree.
+
+The panel starts with where the folder is, from **Home** down; any step of it
+selects that folder, and **Home** selects none. Below that are **New folder**,
+**Clone from GitHub** and **Delete folder** (see [Folders](#folders)), and then its
+**Claude server** section, which shows the folder's server, or **Start** when
+it has none. A git repository's panel also has a **Changes** section, for
+staging, committing and branches: see [Git](git.md). **Start**, **Resume** and **Start again** are offered only while your
+Claude account is connected; until then the section, or the server in place of
+what to do next, says to connect it. The folder you have selected is part of
+the page's address, so reloading the page keeps it, and the browser's back
+button returns to the folder selected before.
+
+A server shows its state as a coloured badge, a sentence saying what to do
+next, and only the actions that state allows. Its main button, the action to
+take next, stands out; **Stop** and **Forget** never do. A server that is
+ready or in use also has **Open in claude.ai**, which is its main button:
+
+| State | Dot | What to do | Main button | Buttons |
+|---|---|---|---|---|
+| Starting | Running | Claude is starting. Wait a moment. | — | **Stop** |
+| Waiting for your answer | Needs your answer | Answer whether you trust this folder. | **Yes, trust it** | **Yes, trust it**, **No**, **Stop** |
+| Ready to accept sessions | Running | Open it in claude.ai to start a session. | **Open in claude.ai** | **Open in claude.ai**, **Stop** |
+| In use | Running | A session is attached; continue it in claude.ai. | **Open in claude.ai** | **Open in claude.ai**, **Stop** |
+| Stopped | Not running | Resume to pick up its sessions, or forget it. | **Resume** | **Resume**, **Forget** |
+| Not started: folder not trusted | Not running | Start again to answer once more, or forget it. | **Start again** | **Start again**, **Forget** |
+| Not started: Claude account not connected | Has a problem | Connect your Claude account above, then start again. | **Start again** | **Start again**, **Forget** |
+| Stopped by itself | Has a problem | Show the screen to see why it stopped, then resume it. | **Resume** | **Resume**, **Forget**, **Show screen** |
+| Unrecognised screen | Has a problem | Show the screen, stop it, and tell an administrator. | **Show screen** | **Show screen**, **Stop** |
+
+**Show screen** opens what Claude shows below the buttons, and choosing it
+again closes it; its arrow turns to say which.
 
 The page refreshes the states by itself. When rcman refuses an action, the
 reason it gave is shown on the server it was about.
+
+## Folders
+
+**New folder** makes a folder inside the selected folder. While no folder is
+selected, the **Home** panel has it too, and it makes the folder in your home
+folder. Type the name and choose **Create**; the new folder is then selected.
+When rcman refuses a name, the form says why and keeps what you typed.
+
+**Clone from GitHub**, beside it, clones a repository from GitHub into the
+selected folder, or, in the **Home** panel, into your home folder, in a new
+folder git names after the repository: see
+[Cloning a repository](git.md#cloning-a-repository).
+
+**Delete folder** deletes the selected folder and everything in it. It asks
+first, naming the folder and every server in it or in a folder inside it.
+Confirming stops each of those servers that is running, forgets them all, and
+only then deletes the folder; the folder above it is selected afterwards. It
+cannot be undone.
+
+- Your home folder itself cannot be deleted, so the **Home** panel has no
+  **Delete folder**.
+- A folder that is a symbolic link is deleted as the link; what it leads to is
+  left as it is. Links inside a folder are deleted as links too, and never
+  followed.
+- Folders whose name begins with a dot, and anything in one, cannot be deleted
+  from rcman.
+- A folder whose address goes through a symbolic link on the way is not
+  deleted there; select it where it really is.
+- A folder with another file system mounted inside it is not deleted at all.
+- If a server does not stop, nothing is forgotten and nothing is deleted;
+  rcman names the server and shows its screen.
+- If some of the folder cannot be removed — a file you are not allowed to
+  delete, for example — rcman lists what is left, and says whether nothing
+  could be removed at all or only some of it. Either way the servers are
+  forgotten, and whatever could be removed is gone; choosing
+  **Delete folder** again carries on once what is left can be removed.
+- If deleting takes too long, rcman stops waiting and says so. By then part
+  of the folder may already be gone and its servers forgotten; choosing
+  **Delete folder** again carries on.
+- While a folder is being deleted, everything else rcman would do in your
+  home folder is refused — acting on a server, making a folder, and anything
+  git does, even showing a repository's changes — and deleting is refused
+  while any of those is under way; try again in a moment.
+- The sessions of the servers that were forgotten stay in claude.ai/code,
+  where they are archived or deleted.
+- Claude remembers, by the folder's path, that you trusted a folder and which
+  sessions can be resumed there. A new folder with the same name in the same
+  place inherits both: Claude does not ask about trust again, and starting a
+  server there may resume a session from the deleted folder. rcman does not
+  change Claude's own files.
 
 ## Rules
 
@@ -40,7 +129,7 @@ reason it gave is shown on the server it was about.
 - The list shows only servers started from rcman. A `claude remote-control`
   you start yourself, in a terminal, is not shown, and rcman cannot stop or
   resume it. To have rcman manage that folder, quit the one you started and
-  choose **Start** beside the folder here.
+  select the folder here and choose **Start**.
 
 ## Starting
 
@@ -91,7 +180,8 @@ rcman handles it once it has been taught to recognise it.
 
 ## For administrators
 
-The **Everyone's servers** page lists each person in rcman with their servers:
+The **Everyone's servers** page, under **Admin** in the navigation, lists each
+person in rcman with their servers:
 the folder, the state and the session's name, as each person's own Servers page
 shows them. It is for looking only; it has no buttons, because rcman lets only
 the person a server belongs to act on it. A person whose servers could not be
@@ -100,8 +190,9 @@ reason, and everyone else is listed as usual.
 
 While anyone's server is on a screen rcman does not recognise, administrators
 are warned at the top of every page, with the person's Linux user and the
-folder and a link to **Everyone's servers**. The warning never includes the screen itself; the
-person whose server it is sees it with **Show screen**. Each action that ends
-on such a screen is also recorded in the [audit trail](audit.md) with the
-result `unrecognised_screen`. The warning is worked out afresh each time a page
-is opened, so it lasts only while the server shows that screen.
+folder and a link to **Everyone's servers**. The warning never includes the
+screen itself; the person whose server it is sees it with **Show screen**.
+Each action that ends on such a screen is also recorded in the
+[audit trail](audit.md) with the result `unrecognised_screen`. The warning is
+worked out afresh each time a page is opened, so it lasts only while the
+server shows that screen.
