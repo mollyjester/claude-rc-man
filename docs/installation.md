@@ -157,13 +157,6 @@ at `127.0.0.1:2019` or `[::1]:2019`.
 To upgrade, run `sudo ./install.sh` again: it pulls `main` and installs it.
 Then do what it says about Caddy, as described under [Caddy](#caddy).
 
-An installation whose site block sends requests for rcman to a local port is
-upgraded to the socket: the run changes the site block and adds Caddy's
-account to `rcman-web`, and rcman cannot be reached through Caddy until Caddy
-uses the new block and belongs to the group. After that run, copy the
-block again if your Caddyfile holds a copy, make sure Caddy's admin API is off,
-and restart Caddy.
-
 To go back to the release before the current one, use `--rollback`:
 
 ```
