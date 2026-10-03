@@ -148,7 +148,9 @@ it can fail, and a positive control that keeps an empty input from passing.
   command they ran selects from pytest's own collection: every test is in
   exactly one of `make test` and `make test-container`, `make test-container`
   runs exactly the `container` tests, and `make check` runs every test, its
-  container tests with `RCMAN_REQUIRE_CONTAINER=1`. `make lint` and
+  container tests with `RCMAN_REQUIRE_CONTAINER=1`; none of them runs a test a
+  bare `pytest` leaves out, as a target's own `-m` replaces the
+  `-m 'not real_claude'` of pyproject's `addopts`. `make lint` and
   `make format` run ruff and the frontend's script of the same name, and the
   real `make lint`, run over a frontend file planted in a scratch tree, fails
   when Biome would reformat it and when the frontend's packages are missing.

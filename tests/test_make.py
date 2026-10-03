@@ -1,6 +1,7 @@
 """The Makefile's test targets: make test runs every test that runs on the host, make
 test-container every test that needs a container, and make check both, with a
-container test that cannot run failing rather than skipping. make lint and make
+container test that cannot run failing rather than skipping, and none of them running
+a test that needs a real Claude account. make lint and make
 format cover both the Python code and the frontend.
 
 Each target is run by the real make with uv, npm and npx replaced by recorders, so
@@ -90,25 +91,37 @@ def everything() -> tuple[set[str], set[str]]:
 
 def split_problems(test: list[Call], container: list[Call]) -> list[str]:
     """What is wrong with the split between the two targets' pytest calls: a test in
-    neither, a container test run by make test, or make test-container running other
-    than exactly the container tests."""
+    neither, a container test run by make test, make test-container running other than
+    exactly the container tests, or either running a test a bare pytest leaves out."""
     full, marked = everything()
     host = set().union(*selected(test).values()) if test else set()
     ran = set().union(*selected(container).values()) if container else set()
     problems = [f"in neither: {n}" for n in sorted(full - host - marked)]
     problems += [f"a container test in make test: {n}" for n in sorted(marked & host)]
     problems += [f"not in make test-container: {n}" for n in sorted(marked - ran)]
-    problems += [f"not a container test, in make test-container: {n}" for n in sorted(ran - marked)]
+    problems += [
+        f"not a container test, in make test-container: {n}" for n in sorted((ran & full) - marked)
+    ]
+    problems += left_out(host, full, "make test") + left_out(ran, full, "make test-container")
     return problems
 
 
+def left_out(ran: set[str], full: set[str], target: str) -> list[str]:
+    """Tests a target runs that a bare pytest leaves out. A target's own -m replaces the
+    -m 'not real_claude' of pyproject's addopts, so without its own 'not real_claude' a
+    target runs the tests that need a real Claude account."""
+    return [f"left out of a bare run, in {target}: {n}" for n in sorted(ran - full)]
+
+
 def check_problems(check: list[Call]) -> list[str]:
-    """What make check would miss: a test none of its pytest calls selects, or a call
-    selecting container tests without RCMAN_REQUIRE_CONTAINER=1, where they would skip."""
+    """What make check would get wrong: a test none of its pytest calls selects, a test a
+    bare pytest leaves out, or a call selecting container tests without
+    RCMAN_REQUIRE_CONTAINER=1, where they would skip."""
     full, marked = everything()
     runs = selected(check)
     ran = set().union(*runs.values()) if runs else set()
     problems = [f"not run by make check: {n}" for n in sorted(full - ran)]
+    problems += left_out(ran, full, "make check")
     problems += [
         f"container tests without RCMAN_REQUIRE_CONTAINER=1: {' '.join(call.argv)}"
         for call, tests in runs.items()
@@ -188,6 +201,41 @@ def test_container_tests_that_could_skip_are_reported(tmp_path):
     problems = check_problems(recorded(tmp_path, "check", makefile))
     assert len(problems) == 1
     assert problems[0].startswith("container tests without RCMAN_REQUIRE_CONTAINER=1")
+
+
+def real_claude_tests() -> list[str]:
+    """The tests a bare pytest leaves out, by pyproject's addopts; non-vacuity: some."""
+    found = sorted(collect(["-m", "real_claude"]))
+    assert "tests/test_claude_real_account.py" in {n.split("::")[0] for n in found}
+    return found
+
+
+def test_real_claude_tests_run_by_make_test_are_reported(tmp_path):
+    """Planted twin: a target's own -m replaces addopts' -m 'not real_claude', so make
+    test without its own 'and not real_claude' runs the tests that need a real account."""
+    makefile = planted(tmp_path, '-m "not container and not real_claude"', '-m "not container"')
+    test = recorded(tmp_path, "test", makefile)
+    problems = split_problems(test, recorded(tmp_path, "test-container"))
+    assert problems == [f"left out of a bare run, in make test: {n}" for n in real_claude_tests()]
+
+
+def test_real_claude_tests_run_by_make_test_container_are_reported(tmp_path):
+    """Planted twin: make test-container selecting the real-account tests too."""
+    makefile = planted(
+        tmp_path, '-m "container and not real_claude"', '-m "container or real_claude"'
+    )
+    container = recorded(tmp_path, "test-container", makefile)
+    problems = split_problems(recorded(tmp_path, "test"), container)
+    assert problems == [
+        f"left out of a bare run, in make test-container: {n}" for n in real_claude_tests()
+    ]
+
+
+def test_real_claude_tests_run_by_make_check_are_reported(tmp_path):
+    """Planted twin: make check running make test without 'and not real_claude'."""
+    makefile = planted(tmp_path, '-m "not container and not real_claude"', '-m "not container"')
+    problems = check_problems(recorded(tmp_path, "check", makefile))
+    assert problems == [f"left out of a bare run, in make check: {n}" for n in real_claude_tests()]
 
 
 @pytest.mark.parametrize("target", ["test", "test-container"])
