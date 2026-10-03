@@ -6,6 +6,19 @@ import os
 # tests/test_container_suite.py; elsewhere it is not collected at all.
 collect_ignore = [] if os.environ.get("RCMAN_IN_CONTAINER") == "1" else ["container"]
 
+# The guards over how the suite is split run small pytest projects of their own.
+pytest_plugins = ["pytester"]
+
+import pytest  # noqa: E402
+
+from tests import container_marker  # noqa: E402
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_collection_modifyitems(items):
+    """Before -m selects: the derived markers (tests/container_marker.py)."""
+    container_marker.mark(items)
+
 
 # --- backend fixtures ------------------------------------------------------------
 
@@ -15,8 +28,6 @@ import shutil  # noqa: E402
 import subprocess  # noqa: E402
 import tempfile  # noqa: E402
 from pathlib import Path  # noqa: E402
-
-import pytest  # noqa: E402
 
 REPO = Path(__file__).resolve().parent.parent
 ORIGIN = "https://rcman.example.com"

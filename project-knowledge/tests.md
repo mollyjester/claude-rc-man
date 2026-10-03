@@ -44,7 +44,10 @@ that the tests' GitHub sees the request. The browser tests' world runs a
 GitHub of its own (see [frontend.md](frontend.md#tests)). `tests/test_container_suite.py` runs the root-only
 suite in `tests/container/` inside a throwaway Ubuntu container, through
 `docker` or `sudo -n docker`; it skips when neither works, unless
-`RCMAN_REQUIRE_CONTAINER=1`, which `make check` sets. It runs these, each in a
+`RCMAN_REQUIRE_CONTAINER=1`, which `make check` sets. Its tests take the
+`docker` fixture, and a test that uses it, directly or through another
+fixture, carries the `container` marker, which `tests/container_marker.py`
+adds as tests are collected. It runs these, each in a
 fresh container: user management and Claude Code versions with `rc-admin`
 and `rcman-user`, and everything rc-helper does as a person through sudo
 under the sudoers rules — folders made and deleted, git run with the
@@ -122,6 +125,11 @@ it can fail, and a positive control that keeps an empty input from passing.
   unprivileged port: it finds, outside `tests/container/`, any such path other
   than a `tempfile` folder given a unique name there, and any fixed port given
   to a call, as `port=`, or after `--port`, outside the exemptions it lists.
+- **The container marker is derived** (`tests/test_container_marker.py`). In
+  the collected suite the tests carrying `container` are exactly those using
+  the `docker` fixture, and no source under `tests/` places the marker by
+  hand. `tests/collected.py`, which is not a test module, collects the suite
+  in a child process for it.
 - **Deployment contents** (`tests/test_export.py`). Deployment uses
   `git archive`, so `.gitattributes` decides what is deployed. The test
   checks that every development-only file is marked `export-ignore`, that the
