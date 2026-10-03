@@ -1698,7 +1698,7 @@ def test_documented_verbs_match_the_command_line():
 def test_launcher_is_executable_and_runs_isolated():
     mode = HELPER.stat().st_mode
     assert mode & stat.S_IXUSR
-    assert HELPER.read_text(encoding="utf-8").splitlines()[0] == "#!/usr/bin/python3 -I"
+    assert HELPER.read_text(encoding="utf-8").splitlines()[0] == "#!/usr/bin/python3 -IXutf8"
 
 
 # --- sudoers template --------------------------------------------------------------
@@ -2686,3 +2686,68 @@ def test_a_name_whose_folder_resolves_into_the_git_folder_is_refused(tmp_path):
         h.check_file(repo, "meta/config")
     assert err.value.code == "file_outside_repository"
     assert h.check_file(repo, "plain/config") == b"plain/config"  # positive control
+
+
+# --- UTF-8 whatever the locale ------------------------------------------------------
+
+LAUNCHERS = ["rc-helper", "rc-admin", "rcman-user"]
+
+
+def test_every_launcher_runs_python_isolated_and_in_utf8_mode():
+    found = sorted(
+        p.name
+        for p in (REPO / "helpers").iterdir()
+        if p.is_file() and p.read_bytes().startswith(b"#!/usr/bin/python3")
+    )
+    assert found == sorted(LAUNCHERS)  # every launcher, found, not listed by hand
+    for name in LAUNCHERS:
+        first = (REPO / "helpers" / name).read_text(encoding="utf-8").splitlines()[0]
+        assert first == "#!/usr/bin/python3 -IXutf8", name
+
+
+def test_the_installer_runs_python_in_utf8_mode():
+    script = (REPO / "install.sh").read_text(encoding="utf-8")
+    runs = [line for line in script.splitlines() if "/usr/bin/python3" in line]
+    assert runs  # non-vacuity
+    for line in runs:
+        assert "/usr/bin/python3 -I -X utf8 " in line, line
+
+
+@pytest.fixture
+def latin1(env, tmp_path):
+    """env with an ISO-8859-1 locale, built for the test with localedef."""
+    locales = tmp_path / "locales"
+    locales.mkdir()
+    made = subprocess.run(
+        ["localedef", "-i", "en_US", "-f", "ISO-8859-1", str(locales / "en_US.ISO-8859-1")],
+        capture_output=True,
+        text=True,
+    )
+    if made.returncode not in (0, 1) or not (locales / "en_US.ISO-8859-1").exists():
+        pytest.skip(f"localedef could not build an ISO-8859-1 locale: {made.stderr.strip()}")
+    latin = {**env, "LOCPATH": str(locales), "LC_ALL": "en_US.ISO-8859-1"}
+    probe = subprocess.run(
+        [
+            "/usr/bin/python3",
+            "-I",
+            "-c",
+            "import locale; print(locale.getpreferredencoding(False))",
+        ],
+        env=latin,
+        capture_output=True,
+        text=True,
+    )
+    assert probe.stdout.strip() == "ISO-8859-1"  # the plant took effect
+    return latin
+
+
+def test_a_folder_name_is_listed_as_it_is_under_a_locale_that_is_not_utf8(latin1):
+    (Path(latin1["RC_HELPER_HOME"]) / "projects" / "café").mkdir()
+    names = [e["name"] for e in ok(latin1, "tree", "projects")["entries"]]
+    assert "café" in names, names
+
+
+def test_a_branch_name_is_taken_as_it_is_under_a_locale_that_is_not_utf8(latin1, repo):
+    out = ok(latin1, "git-branch-new", "--name=topic/café", "--", REPO_REL)
+    assert out["branch"] == "topic/café"
+    assert branch_of(repo) == "topic/café"
