@@ -82,10 +82,12 @@ in a terminal, and a hook that refuses stops the commit with its own words.
 ### Commit & Push
 
 **Commit & Push**, beside **Commit**, commits and then pushes, as
-[Push](#push) below does. It is offered where both Commit and Push are.
-When the push would be refused before it is tried — you are not on a
-branch, or it goes to GitHub and no [GitHub token](#github-token) is
-stored — nothing is committed. When the commit is made and the push then
+[Push](#push) below does. It is offered with Commit wherever a push can be
+tried: while you are on a branch and, for a push to GitHub, while a
+[GitHub token](#github-token) is stored — even where **Push** itself is not
+offered because there is nothing to push yet. If a push becomes impossible
+before it is tried — the token has gone meanwhile, say — nothing is
+committed. When the commit is made and the push then
 fails, the section says both: the commit made, and what stopped the push.
 Push again once that is dealt with.
 
