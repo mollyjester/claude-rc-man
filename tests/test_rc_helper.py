@@ -3702,7 +3702,9 @@ def gone(pid: int, within: float = 10) -> bool:
     return False
 
 
-def test_gits_argv_is_clone_and_the_address_and_nothing_else(hooked, published, tmp_path):
+def test_git_clones_the_address_into_the_folder_it_runs_in_the_one_made(
+    hooked, published, tmp_path
+):
     out = tmp_path / "argv.json"
     persons_hook(
         hooked,
@@ -3711,12 +3713,16 @@ def test_gits_argv_is_clone_and_the_address_and_nothing_else(hooked, published, 
         "git = os.getppid()\n"
         "helper = open(f'/proc/{git}/stat').read().rsplit(')', 1)[1].split()[1]\n"
         "argv = lambda pid: open(f'/proc/{pid}/cmdline', 'rb').read().decode().split('\\0')[:-1]\n"
-        f"json.dump({{'git': argv(git), 'helper': argv(helper)}}, open({str(out)!r}, 'w'))\n",
+        "cwd = os.readlink(f'/proc/{git}/cwd')\n"
+        f"json.dump({{'git': argv(git), 'helper': argv(helper), 'cwd': cwd}}, "
+        f"open({str(out)!r}, 'w'))\n",
     )
     ok(hooked, "git-clone", f"--url={published}", "--", "projects")
     seen = json.loads(out.read_text())
-    assert seen["git"] == [git_run.find_git(), "clone", "--", published]
+    assert seen["git"] == [git_run.find_git(), "clone", "--", published, "."]
     assert seen["helper"][-4:] == ["git-clone", f"--url={published}", "--", "projects"]
+    made = Path(hooked["RC_HELPER_HOME"]).resolve() / "projects" / folder_of(published)
+    assert seen["cwd"] == str(made)
 
 
 def test_a_clone_past_its_deadline_is_git_timeout_and_leaves_nothing(
@@ -4081,3 +4087,90 @@ def test_a_second_sigterm_does_not_cut_short_what_the_first_set_going(env, monke
     with pytest.raises(SystemExit):
         answer_of(env, capsys, "git-clone", "--url=https://github.com/owner/r", "--", "projects")
     assert finished
+
+
+def test_a_link_put_at_the_new_folders_name_does_not_take_the_clone_there(
+    hooked, published, monkeypatch, tmp_path
+):
+    """The folder made is moved away and a link to an empty folder outside the home put
+    at its name before git runs: git clones into the folder made, where it went, and
+    nothing outside the home; that folder is emptied again and reported as left."""
+    home = Path(hooked["RC_HELPER_HOME"])
+    name = folder_of(published)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    real = h._make_folder
+
+    def swapped(fd, folder):
+        made = real(fd, folder)
+        os.rename(folder, f"{folder}.moved", src_dir_fd=fd, dst_dir_fd=fd)
+        os.symlink(outside, folder, dir_fd=fd)
+        return made
+
+    monkeypatch.setattr(h, "_make_folder", swapped)
+    error = refusal(in_process(hooked).git_clone, "projects", published)
+    assert os.listdir(outside) == []
+    assert error.code == "clone_missing"
+    assert error.detail["left"] == [f"projects/{name}.moved"]
+    assert os.listdir(home / "projects" / f"{name}.moved") == []
+    assert (home / "projects" / name).is_symlink()  # not rcman's: left alone
+
+
+def replaced_as_made(monkeypatch, name: str, by) -> None:
+    """os.mkdir makes ``name``, which is then moved to <name>.moved and ``by(fd)`` puts
+    something else at its name, before rc-helper can open it."""
+    real = os.mkdir
+
+    def mkdir(path, *args, dir_fd=None, **kwargs):
+        real(path, *args, dir_fd=dir_fd, **kwargs)
+        if path == name and dir_fd is not None:
+            os.rename(name, f"{name}.moved", src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+            by(dir_fd)
+
+    monkeypatch.setattr(os, "mkdir", mkdir)
+
+
+def test_a_link_put_at_the_name_before_the_folder_is_opened_is_folder_exists(
+    hooked, published, monkeypatch, tmp_path
+):
+    home = Path(hooked["RC_HELPER_HOME"])
+    name = folder_of(published)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    replaced_as_made(monkeypatch, name, lambda fd: os.symlink(outside, name, dir_fd=fd))
+    error = refusal(in_process(hooked).git_clone, "projects", published)
+    assert error.code == "folder_exists"
+    assert error.detail["left"] == [f"projects/{name}"]  # made there, and moved away
+    assert os.listdir(outside) == []
+    assert (home / "projects" / name).is_symlink()
+
+
+def test_a_folder_put_at_the_name_before_it_is_opened_is_folder_exists(
+    hooked, published, monkeypatch
+):
+    home = Path(hooked["RC_HELPER_HOME"])
+    name = folder_of(published)
+
+    real_mkdir = os.mkdir
+
+    def full_folder(fd):
+        real_mkdir(name, dir_fd=fd)
+        os.close(os.open(f"{name}/mine", os.O_CREAT | os.O_WRONLY, dir_fd=fd))
+
+    replaced_as_made(monkeypatch, name, full_folder)
+    error = refusal(in_process(hooked).git_clone, "projects", published)
+    assert error.code == "folder_exists"
+    assert error.detail["left"] == [f"projects/{name}"]
+    assert os.listdir(home / "projects" / name) == ["mine"]
+
+
+def test_a_failed_clone_moved_to_a_name_ending_in_deleted_is_still_reported(hooked, published):
+    """The folder's name, not whether it is gone, makes /proc show " (deleted)" after a
+    path; what is left is known from the folder itself."""
+    name = folder_of(published)
+    persons_hook(
+        hooked, "post-checkout", f'#!/bin/sh\ncd .. && mv {name} "{name} (deleted)"\nexit 1\n'
+    )
+    code, out = clone(hooked, published, "projects")
+    assert (code, out["error"]["code"]) == (1, "git_failed"), out
+    assert out["error"]["left"] == [f"projects/{name} (deleted)"]

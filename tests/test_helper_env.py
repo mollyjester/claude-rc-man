@@ -331,3 +331,39 @@ def test_fixture_git_refuses_https_before_reaching_anything(tmp_path):
     plain = {k: v for k, v in env.items() if not k.startswith("GIT_CONFIG_")}
     tried = subprocess.run(["git", "ls-remote", address], env=plain, capture_output=True, text=True)
     assert "not allowed" not in tried.stderr, tried.stderr  # positive control: git tried
+
+
+@pytest.mark.parametrize(
+    ("address", "transport"),
+    [
+        ("http://127.0.0.1:1/owner/repository", "http"),
+        ("ssh://127.0.0.1:1/owner/repository", "ssh"),
+        ("git@github.com:owner/repository.git", "ssh"),
+        ("git://127.0.0.1:1/owner/repository", "git"),
+    ],
+)
+def test_fixture_git_refuses_every_network_transport_before_connecting(
+    tmp_path, address, transport
+):
+    """Fixture git reaches no network at all: each transport is refused before anything
+    is connected to, an scp-like address too."""
+    import subprocess
+
+    from tests.git_fixtures import fixture_env
+
+    env = fixture_env(tmp_path / "home")
+    refused = subprocess.run(["git", "ls-remote", address], env=env, capture_output=True, text=True)
+    assert refused.returncode != 0
+    assert f"transport '{transport}' not allowed" in refused.stderr, refused.stderr
+
+
+def test_fixture_git_still_reads_a_repository_by_its_path(tmp_path):
+    """Positive control: the local repositories the fixtures make, and clone from by
+    their path, are still read."""
+    from tests.git_fixtures import fixture_git, make_repo
+
+    source = make_repo(tmp_path / "source")
+    fixture_git(tmp_path, "clone", "-q", "--", str(source), "copy")
+    fixture_git(tmp_path, "clone", "-q", "--", f"file://{source}", "by-url")
+    assert (tmp_path / "copy" / "README.md").is_file()
+    assert (tmp_path / "by-url" / "README.md").is_file()
