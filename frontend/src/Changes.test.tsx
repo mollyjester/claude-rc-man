@@ -52,7 +52,6 @@ function repoApi(routes: Routes = {}) {
     "GET /api/folders": (c) => FOLDERS[c.query.get("path") ?? ""] ?? problem(404, "path_not_found", "No."),
     "GET /api/git/status": status([], [{ path: "new.txt", change: "untracked" }]),
     "GET /api/git/branches": BRANCHES,
-    "GET /api/github": { token: false },
     ...routes,
   });
 }
@@ -374,10 +373,14 @@ test("an answer that arrives after a newer one is not shown", async () => {
 
 const STAGED: Files = [{ path: "a.txt", change: "added" }];
 const PUSHED = { path: REPO, branch: "main", upstream: "origin/main", upstream_set: false };
+// What git-status says of a push: where it goes, and for GitHub whether a token is stored.
+const ELSEWHERE = { push_to_github: false, github_token: null };
+const NO_TOKEN = { push_to_github: true, github_token: false };
+const TOKEN = { push_to_github: true, github_token: true };
 
 test("Push is offered on a branch whose pushes go elsewhere than GitHub, with no token", async () => {
   const fake = repoApi({
-    "GET /api/git/status": status(STAGED, [], { push_to_github: false }),
+    "GET /api/git/status": status(STAGED, [], ELSEWHERE),
     "POST /api/git/push": PUSHED,
   });
   renderApp(`/?folder=${REPO}`);
@@ -392,7 +395,7 @@ test("Push is offered on a branch whose pushes go elsewhere than GitHub, with no
 });
 
 test("a push to GitHub is offered only with a token; otherwise the section says how to add one", async () => {
-  repoApi({ "GET /api/git/status": status(STAGED, [], { push_to_github: true }) });
+  repoApi({ "GET /api/git/status": status(STAGED, [], NO_TOKEN) });
   const app = renderApp(`/?folder=${REPO}`);
   const section = await changes();
   expect(await section.findByText(m.pushNeedsToken)).toBeInTheDocument();
@@ -404,10 +407,7 @@ test("a push to GitHub is offered only with a token; otherwise the section says 
 });
 
 test("with a token stored, a push to GitHub is offered", async () => {
-  repoApi({
-    "GET /api/git/status": status(STAGED, [], { push_to_github: true }),
-    "GET /api/github": { token: true },
-  });
+  repoApi({ "GET /api/git/status": status(STAGED, [], TOKEN) });
   renderApp(`/?folder=${REPO}`);
   const section = await changes();
   expect(await section.findByRole("button", { name: m.push })).toBeInTheDocument();
@@ -415,12 +415,37 @@ test("with a token stored, a push to GitHub is offered", async () => {
   expect(section.queryByText(m.pushNeedsToken)).not.toBeInTheDocument();
 });
 
+test("whether a token is stored comes with the status, so a token GitHub refused stops Push at the next refresh", async () => {
+  let stored = true;
+  const fake = repoApi({
+    "GET /api/git/status": () => status(STAGED, [], { push_to_github: true, github_token: stored }),
+  });
+  renderApp(`/?folder=${REPO}`, { pollMs: 50 });
+  const section = await changes();
+  expect(await section.findByRole("button", { name: m.push })).toBeInTheDocument();
+  stored = false; // git forgot the token after GitHub refused it
+  expect(await section.findByText(m.pushNeedsToken)).toBeInTheDocument();
+  expect(section.queryByRole("button", { name: m.push })).not.toBeInTheDocument();
+  expect(fake.made("GET", "/api/github")).toHaveLength(0);
+});
+
+test("until the status is known, neither Push nor why it is not offered is shown", async () => {
+  let answer: (value: unknown) => void = () => {};
+  repoApi({ "GET /api/git/status": () => new Promise((resolve) => (answer = resolve)) });
+  renderApp(`/?folder=${REPO}`);
+  const section = await changes();
+  expect(await section.findByText(m.loading)).toBeInTheDocument();
+  expect(section.queryByText(m.pushNeedsToken)).not.toBeInTheDocument();
+  expect(section.queryByText(m.pushNeedsBranch)).not.toBeInTheDocument();
+  expect(section.queryByRole("button", { name: m.push })).not.toBeInTheDocument();
+  expect(section.queryByRole("button", { name: m.commitPush })).not.toBeInTheDocument();
+  await act(async () => answer(status(STAGED, [], TOKEN)));
+  expect(await section.findByRole("button", { name: m.push })).toBeInTheDocument(); // positive control
+});
+
 test("while no branch is checked out, nothing is pushed and the section says why", async () => {
   const detached = { name: null, commit: "0123456789abcdef", upstream: null, ahead: null, behind: null };
-  repoApi({
-    "GET /api/git/status": status(STAGED, [], { branch: detached, push_to_github: false }),
-    "GET /api/github": { token: true },
-  });
+  repoApi({ "GET /api/git/status": status(STAGED, [], { branch: detached, ...TOKEN }) });
   renderApp(`/?folder=${REPO}`);
   const section = await changes();
   expect(await section.findByText(m.pushNeedsBranch)).toBeInTheDocument();
@@ -429,8 +454,24 @@ test("while no branch is checked out, nothing is pushed and the section says why
   expect(section.getByRole("button", { name: m.commit })).toBeInTheDocument(); // positive control
 });
 
+test("Push is not offered for a branch its upstream already has, and Commit & Push still is", async () => {
+  const even = { name: "main", commit: "0123456789abcdef", upstream: "origin/main", ahead: 0, behind: 2 };
+  repoApi({ "GET /api/git/status": status(STAGED, [], { branch: even, ...TOKEN }) });
+  renderApp(`/?folder=${REPO}`);
+  const section = await changes();
+  expect(await section.findByRole("button", { name: m.commitPush })).toBeInTheDocument();
+  expect(section.queryByRole("button", { name: m.push })).not.toBeInTheDocument();
+});
+
+test("Push is offered for a branch with no upstream yet", async () => {
+  const fresh = { name: "topic", commit: "0123456789abcdef", upstream: null, ahead: null, behind: null };
+  repoApi({ "GET /api/git/status": status([], [], { branch: fresh, ...TOKEN }) });
+  renderApp(`/?folder=${REPO}`);
+  expect(await (await changes()).findByRole("button", { name: m.push })).toBeInTheDocument();
+});
+
 test("Commit & Push is offered only where Commit is", async () => {
-  repoApi({ "GET /api/git/status": status([], [], { push_to_github: false }) });
+  repoApi({ "GET /api/git/status": status([], [], ELSEWHERE) });
   renderApp(`/?folder=${REPO}`);
   const section = await changes();
   expect(await section.findByRole("button", { name: m.push })).toBeInTheDocument(); // positive control
@@ -440,7 +481,7 @@ test("Commit & Push is offered only where Commit is", async () => {
 
 test("Commit & Push sends the message, says what was pushed, and empties the box", async () => {
   const fake = repoApi({
-    "GET /api/git/status": status(STAGED, [], { push_to_github: false }),
+    "GET /api/git/status": status(STAGED, [], ELSEWHERE),
     "POST /api/git/commit-push": { path: REPO, commit: "abcdef1234", push: PUSHED, push_problem: null },
   });
   renderApp(`/?folder=${REPO}`);
@@ -457,7 +498,7 @@ test("Commit & Push sends the message, says what was pushed, and empties the box
 
 test("a commit made whose push failed says both, with what git said", async () => {
   repoApi({
-    "GET /api/git/status": status(STAGED, [], { push_to_github: false }),
+    "GET /api/git/status": status(STAGED, [], ELSEWHERE),
     "POST /api/git/commit-push": {
       path: REPO,
       commit: "abcdef1234",
@@ -483,20 +524,4 @@ test("a commit made whose push failed says both, with what git said", async () =
   expect(within(problem).getByLabelText(m.gitSaid)).toHaveTextContent("planted words of git");
   await waitFor(() => expect(box).toHaveValue(""));
   expect(section.queryByText(m.pushed("main", "origin/main"))).not.toBeInTheDocument();
-});
-
-test("whether a token is stored is asked once, however often the status is", async () => {
-  vi.useFakeTimers({ shouldAdvanceTime: true });
-  try {
-    const fake = repoApi({ "GET /api/git/status": status(STAGED, [], { push_to_github: true }) });
-    renderApp(`/?folder=${REPO}`, { pollMs: 50 });
-    await changes();
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(300);
-    });
-    expect(fake.made("GET", "/api/git/status").length).toBeGreaterThan(2);
-    expect(fake.made("GET", "/api/github")).toHaveLength(1);
-  } finally {
-    vi.useRealTimers();
-  }
 });

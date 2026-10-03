@@ -213,3 +213,20 @@ test("a colour's name in a property that takes no colour is not a colour", () =>
     "colour outside a variable: border-left: 1px solid gray",
   ]);
 });
+
+test("a password field is laid out as a text field is", () => {
+  const style = document.createElement("style");
+  style.textContent = uncommented(STYLES);
+  document.head.append(style);
+  const form = document.createElement("form");
+  form.innerHTML = '<input type="text"><input type="password">';
+  document.body.append(form);
+  try {
+    const [text, password] = [...form.querySelectorAll("input")].map((input) => getComputedStyle(input));
+    expect(text.display).toBe("block"); // positive control: the stylesheet applies
+    expect([password.display, password.minWidth, password.maxWidth]).toEqual([text.display, text.minWidth, text.maxWidth]);
+  } finally {
+    style.remove();
+    form.remove();
+  }
+});

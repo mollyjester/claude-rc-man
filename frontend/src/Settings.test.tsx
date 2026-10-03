@@ -120,7 +120,7 @@ test("the GitHub token part says whether one is stored, and never fills its fiel
   expect(await within(github).findByText(m.githubTokenStored)).toBeInTheDocument();
   const field = within(github).getByLabelText(m.githubTokenLabel);
   expect(field).toHaveAttribute("type", "password");
-  expect(field).toHaveAttribute("autocomplete", "off");
+  expect(field).toHaveAttribute("autocomplete", "new-password");
   expect(field).toHaveValue("");
   expect(document.body.textContent).not.toContain(PLANTED);
   for (const input of document.querySelectorAll("input")) expect(input.value).not.toContain(PLANTED);
@@ -193,4 +193,27 @@ test("Cancel leaves the token alone", async () => {
   expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   expect(fake.made("DELETE", "/api/github/token")).toHaveLength(0);
   expect(within(github).getByText(m.githubTokenStored)).toBeInTheDocument();
+});
+
+test("what was saved is no longer said once Remove is asked for", async () => {
+  api({ "POST /api/github/token": { token: true } });
+  renderApp("/settings");
+  const github = await part(m.settingsGithubTitle);
+  await userEvent.type(await within(github).findByLabelText(m.githubTokenLabel), "ghp_typed-token");
+  await userEvent.click(within(github).getByRole("button", { name: m.save }));
+  expect(await within(github).findByText(m.githubTokenSaved)).toBeInTheDocument();
+  await userEvent.click(within(github).getByRole("button", { name: m.githubTokenRemove }));
+  await screen.findByRole("dialog", { name: m.githubTokenRemoveTitle });
+  expect(within(github).queryByText(m.githubTokenSaved)).not.toBeInTheDocument();
+});
+
+test("the token field has its help below it, as every other field", async () => {
+  api();
+  renderApp("/settings");
+  const github = await part(m.settingsGithubTitle);
+  const label = (await within(github).findByLabelText(m.githubTokenLabel)).closest("label")!;
+  expect(label.nextElementSibling).toHaveTextContent(m.githubTokenHelp);
+  const prefix = (await part(m.settingsPrefixTitle)).querySelector("label")!;
+  expect(label.parentElement!.tagName).toBe(prefix.parentElement!.tagName);
+  expect(label.nextElementSibling!.className).toBe(prefix.nextElementSibling!.className);
 });

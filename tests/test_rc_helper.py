@@ -3080,3 +3080,19 @@ def test_a_github_address_naming_a_user_is_not_rcmans_to_push_with_its_token(
     fixture_git(repo, "remote", "set-url", "origin", url.replace("https://", "https://someone@"))
     assert ok(hooked, "git-status", "--", GH_REL)["push_to_github"] is False
     assert ok(hooked, "git-push", "--check", "--", GH_REL)["branch"] == "main"
+
+
+def test_status_says_whether_a_token_is_stored_for_a_push_to_github(
+    env, hooked, github, repo, on_github
+):
+    def token(rc_env, rel):
+        return ok(rc_env, "git-status", "--", rel)["github_token"]
+
+    assert token(hooked, GH_REL) is False
+    assert token(hooked, REPO_REL) is None  # not a push to GitHub: not asked
+    assert set_token(hooked, github.token)[0] == 0
+    assert token(hooked, GH_REL) is True
+    assert set_token(hooked, "a-token-github-refuses")[0] == 0
+    commit_in(Path(hooked["RC_HELPER_HOME"]) / GH_REL, "more.txt")
+    assert push(hooked, GH_REL)[1]["error"]["code"] == "git_failed"
+    assert token(hooked, GH_REL) is False  # git forgot the token GitHub refused

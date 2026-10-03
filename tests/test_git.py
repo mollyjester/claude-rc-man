@@ -265,9 +265,12 @@ def store_token(client, token):
     assert r.status_code == 200, r.text
 
 
-def test_status_says_whether_a_push_goes_to_github(client, on_github):
+def test_status_says_whether_a_push_goes_to_github_and_a_token_is_stored(client, github, on_github):
     r = client.get("/api/git/status", params={"path": PATH}, headers=as_user(ALICE))
-    assert r.json()["push_to_github"] is True
+    assert (r.json()["push_to_github"], r.json()["github_token"]) == (True, False)
+    store_token(client, github.token)
+    r = client.get("/api/git/status", params={"path": PATH}, headers=as_user(ALICE))
+    assert r.json()["github_token"] is True
 
 
 def test_push_sets_the_upstream_of_a_new_branch_and_reaches_github(client, github, on_github):
