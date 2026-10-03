@@ -3,6 +3,7 @@
 import os
 import shutil
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -98,3 +99,39 @@ def test_absolute_column_moves_are_rendered():
 def test_carriage_return_overwrites_and_erase_clears():
     assert cc.strip_terminal("loading...\rdone\x1b[K\n") == "done\n"
     assert cc.strip_terminal("abc\x1b[2Dz\n") == "azc\n"
+
+
+# --- the guide's table of checks ------------------------------------------------------
+
+GUIDE = Path(__file__).resolve().parent.parent / "docs" / "claude-version.md"
+HEADER = "| Check | What it checks |"
+
+
+def guide_checks(markdown: str) -> list[str]:
+    """The checks the guide's table names, in order: the first cell of each row, in code."""
+    lines = markdown.splitlines()
+    if HEADER not in lines:
+        return []
+    rows = []
+    for line in lines[lines.index(HEADER) + 2 :]:
+        if not line.startswith("|"):
+            break
+        rows.append(line.split("|")[1].strip().strip("`"))
+    return rows
+
+
+def test_the_guide_lists_every_check_in_order():
+    names = [name for name, _ in cc.CHECKS]
+    assert names  # non-vacuity
+    assert guide_checks(GUIDE.read_text(encoding="utf-8")) == names
+
+
+def test_the_guide_check_fails_on_a_drifted_table():
+    names = [name for name, _ in cc.CHECKS]
+    table = "\n".join([HEADER, "|---|---|", *(f"| `{n}` | what |" for n in names)])
+    assert guide_checks(table) == names
+    missing = table.replace(f"| `{names[-1]}` | what |", "")
+    assert missing != table  # the plant took effect
+    assert guide_checks(missing) != names
+    assert guide_checks(table + "\n| `extra` | what |") != names
+    assert guide_checks("") == []
