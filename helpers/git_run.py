@@ -174,18 +174,28 @@ class Git:
         """
         argv = [find_git(), *args]
         env = {**self.env, **(extra_env or {})}
-        proc = self.popen(
-            argv,
-            cwd=cwd,
-            env=env,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            start_new_session=True,
-        )
-        message = _Message()
-        kept = _Message()  # standard output, which is part of a refusal too
+        proc = None
+        # SIGTERM waits while git starts, so that it cannot arrive between git
+        # starting and this call holding it; git itself starts with the mask it
+        # would have had. Sound only as rc-helper is: one thread.
+        mask = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGTERM})
         try:
+            try:
+                proc = self.popen(
+                    argv,
+                    cwd=cwd,
+                    env=env,
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    start_new_session=True,
+                    preexec_fn=lambda: signal.pthread_sigmask(signal.SIG_SETMASK, mask),
+                )
+            finally:
+                # A SIGTERM that waited is taken here, with git held, and ends it.
+                signal.pthread_sigmask(signal.SIG_SETMASK, mask)
+            message = _Message()
+            kept = _Message()  # standard output, which is part of a refusal too
             with selectors.DefaultSelector() as selector:
                 to_write = memoryview(input or b"")
                 if to_write:
@@ -225,11 +235,11 @@ class Git:
             except subprocess.TimeoutExpired:
                 raise GitTimedOut() from None
         finally:
-            if proc.returncode is None:
+            if proc is not None and proc.returncode is None:
                 with contextlib.suppress(ProcessLookupError, PermissionError):
                     os.killpg(proc.pid, signal.SIGKILL)
                 proc.wait()
-            for pipe in (proc.stdin, proc.stdout, proc.stderr):
+            for pipe in (proc.stdin, proc.stdout, proc.stderr) if proc is not None else ():
                 with contextlib.suppress(OSError):
                     pipe.close()
         if code != 0:

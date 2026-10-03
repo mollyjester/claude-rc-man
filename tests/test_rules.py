@@ -1,6 +1,7 @@
 """A rule the helpers apply: a regular expression and the sentence that explains it."""
 
 import re
+import typing
 from typing import Annotated
 
 import pytest
@@ -85,6 +86,7 @@ def helpers_rules() -> dict[str, Rule]:
         "AUTHOR_NAME",
         "VERSION",
         "PATH",
+        "FOLDER_PATH",
         "COMMIT_MESSAGE",
     }
     assert names <= set(found), names - set(found)
@@ -136,42 +138,70 @@ CODE_POINTS = [chr(c) for c in range(0x110000) if not 0xD800 <= c <= 0xDFFF]
 
 def _contexts(example: str) -> list[str]:
     """Templates putting a code point alone, before, after and in place of each
-    character of the example."""
+    character of the example, each once."""
     found = ["{}", "{}" + example, example + "{}"]
     found += [example[:i] + "{}" + example[i + 1 :] for i in range(len(example))]
-    return found
+    return list(dict.fromkeys(found))
 
 
-def disagreements(rule: Rule) -> list[str]:
-    """Where pydantic's validator, given the rule's anchored pattern, and the rule's own
-    Python expression disagree, over every code point in several contexts."""
-    example = next((e for e in EXAMPLES if rule.fullmatch(e)), None)
-    assert example is not None, rule.pattern
-    # Each value the pattern refuses falls through to the second branch and becomes
-    # None, so no error is built for it.
-    checked = Annotated[str, Field(pattern=rule.anchored)]
+def disagreements(*rules: Rule) -> list[str]:
+    """Where the backend's validator for a rule, problems.ruled(rule), and the rule's
+    own Python expression disagree, over every code point in several contexts.
+
+    Rules with the same example share its contexts, so each list of values is
+    built once and checked against each of them."""
+    from pydantic import WrapValidator
+    from rcman.problems import ruled
+
+    by_example: dict[str, list[Rule]] = {}
+    for rule in rules:
+        example = next((e for e in EXAMPLES if rule.fullmatch(e)), None)
+        assert example is not None, rule.pattern
+        by_example.setdefault(example, []).append(rule)
+
+    # The backend's own type for the rule, less the validator that only rewords a
+    # refusal (tests/test_problems.py checks the words): run in Python for each of
+    # a million values, it would make this test slower by minutes.
+    def checked(rule: Rule):
+        base, *metadata = typing.get_args(ruled(rule))
+        kept = [m for m in metadata if not isinstance(m, WrapValidator)]
+        assert len(kept) == len(metadata) - 1, metadata
+        return Annotated[(base, *kept)]
+
+    # Each value the backend refuses falls through to the second branch and
+    # becomes None, so no error is built for it.
     refusal = Annotated[str, AfterValidator(lambda value: None)]
-    adapter = TypeAdapter(list[Annotated[checked | refusal, Field(union_mode="left_to_right")]])
+    adapters = {
+        rule: TypeAdapter(
+            list[Annotated[checked(rule) | refusal, Field(union_mode="left_to_right")]]
+        )
+        for rule in rules
+    }
     found = []
-    for context in _contexts(example):
-        values = [context.format(c) for c in CODE_POINTS]
-        refused = {i for i, value in enumerate(adapter.validate_python(values)) if value is None}
-        match = rule.regex.fullmatch
-        mine = {i for i, value in enumerate(values) if not match(value)}
-        found += [f"{context!r} U+{ord(CODE_POINTS[i]):04X}" for i in sorted(refused ^ mine)]
+    for example, group in by_example.items():
+        for context in _contexts(example):
+            values = [context.format(c) for c in CODE_POINTS]
+            for rule in group:
+                result = adapters[rule].validate_python(values)
+                refused = {i for i, value in enumerate(result) if value is None}
+                match = rule.regex.fullmatch
+                mine = {i for i, value in enumerate(values) if not match(value)}
+                found += [
+                    f"{rule.pattern[:20]!r} {context!r} U+{ord(CODE_POINTS[i]):04X}"
+                    for i in sorted(refused ^ mine)
+                ]
     return found
 
 
 def test_the_backend_and_the_helpers_read_every_rule_alike():
     rules = [r for rule in helpers_rules().values() for r in (rule, rule.or_empty())]
-    for rule in rules:
-        assert disagreements(rule) == [], rule.pattern
+    assert disagreements(*rules) == []
 
 
 def test_a_rule_the_two_engines_read_differently_is_found():
     """Planted twin: Python's \\s holds the separators U+001C to U+001F; pydantic's does not."""
     found = disagreements(Rule(re.compile(r"a\s?"), "Say a."))
-    assert "'a{}' U+001C" in found and "'a{}' U+0020" not in found
+    assert "'a\\\\s?' 'a{}' U+001C" in found and "'a\\\\s?' 'a{}' U+0020" not in found
 
 
 def test_a_sentence_that_allows_the_joiners_says_so():

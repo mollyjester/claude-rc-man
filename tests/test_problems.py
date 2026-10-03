@@ -217,8 +217,8 @@ def test_a_value_too_long_says_how_long_it_may_be(client):
 def test_every_path_field_refuses_a_null_character_with_the_path_rule(app, client):
     from helpers import rc_helper
 
-    rule = rc_helper.PATH
-    checked = [f for f in request_fields(app) if f.schema.get("pattern") == rule.anchored]
+    rules = {r.anchored: r for r in (rc_helper.PATH, rc_helper.FOLDER_PATH)}
+    checked = [f for f in request_fields(app) if f.schema.get("pattern") in rules]
     names = {(f.method, f.path, f.name) for f in checked}
     known = {
         ("POST", "/api/servers", "path"),
@@ -230,7 +230,17 @@ def test_every_path_field_refuses_a_null_character_with_the_path_rule(app, clien
     assert known <= names, known - names  # non-vacuity
     for f in checked:
         r = send(client, f, "a\x00b", CALLS, changing(ALICE))
-        assert r.json().get("errors") == [{"field": f.name, "message": rule.sentence}], f
+        sentence = rules[f.schema["pattern"]].sentence
+        assert r.json().get("errors") == [{"field": f.name, "message": sentence}], f
+
+
+def test_an_empty_path_where_a_folder_is_needed_says_why(client):
+    from helpers import rc_helper
+
+    r = client.post("/api/servers", json={"path": ""}, headers=changing(ALICE))
+    assert r.json()["errors"] == [{"field": "path", "message": rc_helper.FOLDER_PATH.sentence}]
+    r = client.get("/api/folders", params={"path": ""}, headers=changing(ALICE))
+    assert r.status_code == 200  # positive control: where the home is meant, it is taken
 
 
 def test_a_null_character_is_never_an_internal_error(app):
@@ -466,11 +476,28 @@ def _nodes(dependant):
     return found
 
 
-def _constrained(annotation) -> bool:
-    """Whether an annotation carries constraints of its own (Annotated metadata)."""
+def _constraints_of(item) -> set[str]:
+    """The constraints one piece of Annotated metadata adds: annotated_types' (lengths,
+    bounds, a pattern) and pydantic's validators, inside a FieldInfo or alone. A
+    parameter marker adds only what it was given; a plain note adds none."""
+    import annotated_types
+    from pydantic import AfterValidator, BeforeValidator, PlainValidator, WrapValidator
+    from pydantic.fields import FieldInfo
+
+    if isinstance(item, FieldInfo):  # Field(), and FastAPI's Query(), Path(), Body()...
+        return set().union(*(_constraints_of(m) for m in item.metadata))
+    validators = (AfterValidator, BeforeValidator, PlainValidator, WrapValidator)
+    if isinstance(item, (annotated_types.BaseMetadata, *validators)):
+        return {repr(item)}
+    return set()
+
+
+def _constraints(annotation) -> set[str]:
+    """Every constraint an annotation carries, through Annotated and unions."""
     if typing.get_origin(annotation) is Annotated:
-        return True
-    return any(_constrained(a) for a in typing.get_args(annotation))
+        base, *metadata = typing.get_args(annotation)
+        return _constraints(base).union(*(_constraints_of(m) for m in metadata))
+    return set().union(*(_constraints(a) for a in typing.get_args(annotation)))
 
 
 def _call_name(call) -> str:
@@ -479,15 +506,15 @@ def _call_name(call) -> str:
 
 
 def dropped_constraints(app) -> list[str]:
-    """Parameters whose declared type carries constraints, such as a problems.ruled
-    type, that the field FastAPI resolved for them no longer holds.
+    """Parameters whose declared type carries a constraint, such as a problems.ruled
+    type's pattern and validator, that the field FastAPI resolved for them lacks.
 
     FastAPI reads every endpoint and dependency (a function, a class, a bound
     functools.partial, a callable object) with inspect.signature; this compares
     each query, path, header, cookie and body parameter it made with the
-    annotation it was declared with. Path(), Query() or Body() given as the
-    default of a constrained type drops the constraints; inside an Annotated
-    they are kept."""
+    annotation it was declared with. A FastAPI parameter marker given as the
+    default of a constrained type drops the type's constraints; inside an
+    Annotated they are kept."""
     found = []
     for context in routes.api_routes(app):
         for node in _nodes(context.route.dependant):
@@ -496,10 +523,11 @@ def dropped_constraints(app) -> list[str]:
             declared = inspect.signature(node.call, eval_str=True).parameters
             for where in ("query", "path", "header", "cookie", "body"):
                 for param in getattr(node, f"{where}_params"):
-                    hint = declared[param.name].annotation
                     info = param.field_info
-                    kept = bool(info.metadata) or _constrained(info.annotation)
-                    if _constrained(hint) and not kept:
+                    kept = _constraints(info.annotation).union(
+                        *(_constraints_of(m) for m in info.metadata)
+                    )
+                    if _constraints(declared[param.name].annotation) - kept:
                         kind = type(info).__name__
                         found.append(
                             f"{context.path} {_call_name(node.call)}({param.name}): {kind}() "
@@ -542,7 +570,7 @@ def test_no_parameter_has_its_constraints_dropped(app):
         next(c.route.endpoint for c in routes.api_routes(app) if c.path == "/api/users/{linux}"),
         include_extras=True,
     )
-    assert _constrained(hints["linux"])  # non-vacuity: the guard sees the users route's rule
+    assert _constraints(hints["linux"])  # non-vacuity: the guard sees the users route's rule
     assert dropped_constraints(app) == []
 
 
@@ -631,6 +659,47 @@ def test_a_rule_dropped_in_an_embedded_body_is_found_and_the_right_form_is_read(
     assert dropped_constraints(right) == []
     [field] = request_fields(right)
     assert (field.where, field.name, field.schema["pattern"]) == ("body", "v", "^(?:[0-9]+)$")
+
+
+def test_a_rule_dropped_beside_constraints_of_the_default_is_found():
+    """Planted twin: Query(max_length=5) as the default keeps its own limit but drops the
+    rule's pattern and validator."""
+    from fastapi import FastAPI, Query
+    from fastapi.testclient import TestClient
+
+    Digits = _digits()
+    app = FastAPI()
+    problems.install(app)
+
+    @app.get("/x")
+    def limited(v: Digits = Query(max_length=5)) -> dict:  # noqa: B008 - the trap itself
+        return {}
+
+    [parameter] = app.openapi()["paths"]["/x"]["get"]["parameters"]
+    assert "pattern" not in parameter["schema"] and parameter["schema"]["maxLength"] == 5
+    assert TestClient(app).get("/x", params={"v": "abc"}).status_code == 200  # the plant
+    [found] = dropped_constraints(app)
+    assert "limited(v)" in found
+
+
+def test_parameter_markers_and_plain_metadata_are_not_constraints():
+    """Annotated forms that carry no constraint of their own are not reported."""
+    from fastapi import Body, FastAPI, Header, Query
+
+    app = FastAPI()
+    problems.install(app)
+
+    @app.post("/x")
+    def markers(
+        a: Annotated[str, Query(description="Described only.")],
+        b: Annotated[str, Body(embed=True)],
+        c: Annotated[str, Header()] = "x",
+        d: Annotated[int, "a plain note"] = Query(1),  # noqa: B008
+    ) -> dict:
+        return {}
+
+    assert {f.name for f in request_fields(app)} == {"a", "b", "c", "d"}  # all four are read
+    assert dropped_constraints(app) == []
 
 
 def test_a_rule_that_may_be_left_out_is_not_mistaken_for_one_dropped():

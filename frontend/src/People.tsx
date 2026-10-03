@@ -124,18 +124,18 @@ export function People() {
       <form noValidate onSubmit={add}>
         <label>
           {m.usersLinux}
-          <input type="text" value={linux} onChange={(e) => setLinux(e.target.value)} />
+          <input type="text" name="linux" value={linux} onChange={(e) => setLinux(e.target.value)} />
         </label>
         <label>
           {m.usersEmail}
-          <input type="text" value={email} onChange={(e) => setEmail(e.target.value)} />
+          <input type="text" name="email" value={email} onChange={(e) => setEmail(e.target.value)} />
         </label>
         <label>
-          <input type="checkbox" checked={admin} onChange={(e) => setAdmin(e.target.checked)} />
+          <input type="checkbox" name="admin" checked={admin} onChange={(e) => setAdmin(e.target.checked)} />
           {m.usersAddAdmin}
         </label>
         <label>
-          <input type="checkbox" checked={adopt} onChange={(e) => setAdopt(e.target.checked)} />
+          <input type="checkbox" name="adopt" checked={adopt} onChange={(e) => setAdopt(e.target.checked)} />
           {m.usersAddAdopt}
         </label>
         <button type="submit" className="primary">

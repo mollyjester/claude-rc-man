@@ -214,6 +214,63 @@ test("a colour's name in a property that takes no colour is not a colour", () =>
   ]);
 });
 
+// A rule's declarations in the stylesheet, by its exact selector.
+function ruleOf(selector: string): string {
+  const found = [...uncommented(STYLES).matchAll(/([^{}]+)\{([^}]*)\}/g)].find(([, sel]) => sel.trim() === selector);
+  return found ? found[2] : "";
+}
+
+test("what git said wraps, where a server's screen scrolls", () => {
+  expect(ruleOf(".screen")).toMatch(/overflow-x:\s*auto/); // positive control
+  expect(ruleOf(".git-said")).toMatch(/white-space:\s*pre-wrap/);
+});
+
+test("a commit message's box stands apart from its label", () => {
+  expect(ruleOf(".panel-section label > textarea")).toMatch(/margin-top:\s*[0-9.]*[1-9]/);
+});
+
+// The value of each custom property in a scheme: the light block's, with the dark
+// block's over it for a dark scheme.
+function schemeValues(css: string, scheme: "light" | "dark"): Record<string, string> {
+  const block = (pattern: RegExp) => uncommented(css).match(pattern)?.[1] ?? "";
+  const values = (text: string) => Object.fromEntries([...text.matchAll(/(--[\w-]+)\s*:\s*([^;]+);/g)].map((m) => [m[1], m[2].trim()]));
+  const lightValues = values(block(/(?:^|\})\s*:root\s*\{([^}]*)\}/));
+  return scheme === "light" ? lightValues : { ...lightValues, ...values(block(/prefers-color-scheme:\s*dark\)\s*\{\s*:root\s*\{([^}]*)\}/)) };
+}
+
+// Blocks drawn on a background the page's own colour in a scheme, with no border
+// to show where they are: they cannot be told from the page.
+function unseenBlocks(css: string): string[] {
+  const found: string[] = [];
+  for (const [, selector, body] of uncommented(css).matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+    const name = selector.trim();
+    if (name === "body" || name === ":root") continue;
+    const background = body.match(/background(?:-color)?\s*:\s*var\(\s*(--[\w-]+)\s*\)/)?.[1];
+    if (!background || /(?:^|;)\s*border(?:-width)?\s*:\s*[^;]*\b(?:[1-9]\d*(?:\.\d+)?|0?\.\d*[1-9])(?:px|rem|em)\b/.test(body)) continue;
+    for (const scheme of ["light", "dark"] as const) {
+      const values = schemeValues(css, scheme);
+      if (values[background] === values["--bg"]) found.push(`${name}: the page's own background in ${scheme}`);
+    }
+  }
+  return found;
+}
+
+test("every block with a background of its own can be told from the page, in both schemes", () => {
+  expect(schemeValues(STYLES, "dark")["--bg"]).not.toBe(schemeValues(STYLES, "light")["--bg"]); // positive control
+  expect(unseenBlocks(STYLES)).toEqual([]);
+});
+
+test("the check finds a block on the page's own background with no border, and lets a border through", () => {
+  const darkBg = schemeValues(STYLES, "dark")["--bg"];
+  const inBlocks = STYLES.replace("--bg: #ffffff;", "--bg: #ffffff;\n  --planted-bg: #abcdef;").replace(
+    /(prefers-color-scheme:\s*dark\)\s*\{\s*:root\s*\{)/,
+    `$1\n    --planted-bg: ${darkBg};`,
+  );
+  expect(schemeValues(inBlocks, "dark")["--planted-bg"]).toBe(darkBg); // the plant took effect
+  expect(unseenBlocks(`${inBlocks}\n.planted { background: var(--planted-bg); }`)).toEqual([".planted: the page's own background in dark"]);
+  expect(unseenBlocks(`${inBlocks}\n.planted { background: var(--planted-bg); border: 1px solid var(--border); }`)).toEqual([]);
+});
+
 test("a password field is laid out as a text field is", () => {
   const style = document.createElement("style");
   style.textContent = uncommented(STYLES);

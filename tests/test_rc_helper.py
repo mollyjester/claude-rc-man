@@ -795,8 +795,8 @@ def name_max(path) -> int:
         ("a/b/../..", "path_is_home"),
         ("/etc", "path_invalid"),
         ("a\0b", "path_invalid"),
-        ("a/b/..", "path_invalid"),
-        ("a/b/.", "path_invalid"),
+        ("a/b/..", "path_ends_in_dot"),
+        ("a/b/.", "path_ends_in_dot"),
         ("x" * (h.MAX_PATH_LENGTH + 1), "path_invalid"),
         ("../x", "path_outside_home"),
         ("escape/x", "path_outside_home"),
@@ -941,7 +941,7 @@ def test_a_folder_whose_path_would_be_too_long_is_refused(env):
     fits = "n" * (h.MAX_PATH_LENGTH - len(deep) - 1)
     assert ok(env, "mkdir", f"--name={fits}", "--", deep)["created"] == f"{deep}/{fits}"
     over = fits + "n"
-    assert error_code(env, "mkdir", f"--name={over}", "--", deep) == "path_invalid"
+    assert error_code(env, "mkdir", f"--name={over}", "--", deep) == "folder_path_too_long"
     assert not (home / deep / over).exists()
 
 
@@ -1546,7 +1546,12 @@ RULE_INVOCATIONS = {
     "token_invalid": (("github-token",), "{}"),
 }
 # Rules rc-helper holds without reporting them itself: subject -> why.
-RULES_NOT_REPORTED: dict[str, str] = {}
+RULES_NOT_REPORTED = {
+    "FOLDER_PATH": (
+        "the backend checks it; rc-helper refuses every path that leads home, empty or not, "
+        "as path_is_home"
+    ),
+}
 
 
 def invoked(code: str, value: str) -> tuple[list[str], str | None]:
@@ -1597,6 +1602,70 @@ def test_each_rule_is_refused_through_the_command_line_with_its_sentence(env):
         assert out["error"]["message"] == rule.sentence
 
 
+def rule_code_problems(source: str, codes: dict) -> list[str]:
+    """Where a rule's code is raised in a function that does not check that rule: the
+    code would then say the rule's sentence about a value the rule accepts."""
+    import ast
+
+    names = {code: next(n for n, v in vars(h).items() if v is rule) for code, rule in codes.items()}
+    found = []
+    for function in ast.walk(ast.parse(source)):
+        if not isinstance(function, ast.FunctionDef):
+            continue
+        text = ast.unparse(function)
+        for node in ast.walk(function):
+            if not (isinstance(node, ast.Call) and getattr(node.func, "id", None) == "HelperError"):
+                continue
+            # The code may be chosen in the call: every constant it could be counts.
+            given = {
+                c.value
+                for arg in node.args[:1]
+                for c in ast.walk(arg)
+                if isinstance(c, ast.Constant)
+            }
+            for code in sorted(given & set(names)):
+                if f"{names[code]}.fullmatch" not in text:
+                    found.append(f"{function.name} raises {code} without checking {names[code]}")
+    return found
+
+
+def test_a_rules_code_is_raised_only_where_the_rule_is_checked():
+    source = (REPO / "helpers" / "rc_helper.py").read_text(encoding="utf-8")
+    assert 'HelperError("path_invalid")' in source  # non-vacuity
+    assert rule_code_problems(source, h.RULE_CODES) == []
+
+
+def test_a_rules_code_raised_elsewhere_is_found():
+    """Planted twin: path_invalid raised by a function that never checks PATH."""
+    planted = (
+        "def check(rel):\n"
+        "    if not PATH.fullmatch(rel):\n"
+        "        raise HelperError('path_invalid')\n"
+        "def other(rel):\n"
+        "    if rel.endswith('.'):\n"
+        "        raise HelperError('path_is_home' if rel == '.' else 'path_invalid')\n"
+    )
+    assert rule_code_problems(planted, h.RULE_CODES) == [
+        "other raises path_invalid without checking PATH"
+    ]
+
+
+def test_a_folder_path_is_a_path_that_is_not_the_home_and_says_so():
+    assert h.FOLDER_PATH.fullmatch("projects") and not h.FOLDER_PATH.fullmatch("")
+    for value in ("a", "/a", "a\x00b", "x" * (h.MAX_PATH_LENGTH + 1)):
+        assert bool(h.FOLDER_PATH.fullmatch(value)) is bool(h.PATH.fullmatch(value)), value
+    inside = h.MESSAGES["path_is_home"].removesuffix(".")
+    assert h.FOLDER_PATH.sentence.startswith(inside)  # the home folder's own words
+
+
+def test_a_path_ending_in_a_dot_is_refused_in_its_own_words(env):
+    for rel in ("projects/beta/inner/..", "projects/alpha/."):
+        status, out = helper(env, "delete", "--", rel)
+        assert (status, out["error"]["code"]) == (1, "path_ends_in_dot"), rel
+        assert out["error"]["message"] == h.MESSAGES["path_ends_in_dot"]
+    assert (Path(env["RC_HELPER_HOME"]) / "projects" / "alpha").is_dir()
+
+
 def test_rc_helper_and_the_backend_refuse_a_value_in_the_same_words(env, client):
     """Every field the backend checks against one of rc-helper's reported rules says
     what rc-helper says for the same value."""
@@ -1630,7 +1699,7 @@ def test_documented_verbs_match_the_command_line():
 def test_launcher_is_executable_and_runs_isolated():
     mode = HELPER.stat().st_mode
     assert mode & stat.S_IXUSR
-    assert HELPER.read_text(encoding="utf-8").splitlines()[0] == "#!/usr/bin/python3 -I"
+    assert HELPER.read_text(encoding="utf-8").splitlines()[0] == "#!/usr/bin/python3 -IXutf8"
 
 
 # --- sudoers template --------------------------------------------------------------
@@ -2403,7 +2472,7 @@ def test_every_git_verb_is_driven_here():
 
 
 @pytest.mark.parametrize(("args", "stdin"), GIT_VERBS, ids=[a[0] for a, _ in GIT_VERBS])
-def test_git_verbs_wait_for_no_folder_being_deleted(env, repo, args, stdin):
+def test_git_verbs_are_refused_while_a_folder_is_being_deleted(env, repo, args, stdin):
     write(repo / "a.txt")
     fd = hold_the_lock(env, exclusive=True)
     try:
@@ -2464,6 +2533,263 @@ def test_git_env_is_the_server_environment_cut_down_for_git(tmp_path):
         "GIT_TERMINAL_PROMPT",
         "GIT_OPTIONAL_LOCKS",
     }
+
+
+# --- git's failures, each as rc-helper answers it -----------------------------------
+
+
+def answer_of(env, capsys, *argv, stdin=""):
+    """rc-helper's exit status and answer, run in this process so a test can change it."""
+    import io
+
+    capsys.readouterr()
+    status = h.main(list(argv), env, stdin=io.TextIOWrapper(io.BytesIO(stdin.encode())))
+    return status, json.loads(capsys.readouterr().out)
+
+
+def test_a_git_past_its_deadline_is_git_timeout_and_is_ended(
+    env, repo, tmp_path, monkeypatch, capsys
+):
+    import time
+
+    pid_file = tmp_path / "hook.pid"
+    hook = repo / ".git" / "hooks" / "pre-commit"
+    hook.write_text(f"#!/bin/sh\necho $$ > {pid_file}\nexec sleep 60\n")
+    hook.chmod(0o755)
+    write(repo / "a.txt")
+    fixture_git(repo, "add", "a.txt")
+    monkeypatch.setattr(h, "GIT_TIMEOUT", 2.0)  # read when the verb is called
+    began = time.monotonic()
+    status, out = answer_of(env, capsys, *commit_args(), stdin="m")
+    assert time.monotonic() - began < 10
+    assert (status, out["error"]["code"]) == (1, "git_timeout"), out
+    assert out["error"]["message"] == h.MESSAGES["git_timeout"]
+    pid = int(pid_file.read_text())  # positive control: the hook ran
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            break
+        time.sleep(0.05)
+    else:
+        pytest.fail(f"the hook {pid} outlived its deadline")
+    assert listed(status_of(env, capsys), "staged") == [("a.txt", "added")]  # nothing committed
+
+
+def status_of(env, capsys) -> dict:
+    status, out = answer_of(env, capsys, "git-status", "--", REPO_REL)
+    assert status == 0, out
+    return out
+
+
+def test_a_fetch_has_its_own_deadline_read_when_it_is_called(env, repo, monkeypatch, capsys):
+    import time
+
+    hold = Path(env["RC_HELPER_HOME"]) / "slow-upload-pack"
+    hold.write_text("#!/bin/sh\nexec sleep 60\n")
+    hold.chmod(0o755)
+    fixture_git(repo, "config", "remote.origin.uploadpack", str(hold))
+    monkeypatch.setattr(h, "GIT_NETWORK_TIMEOUT", 2.0)
+    began = time.monotonic()
+    status, out = answer_of(env, capsys, "git-fetch", "--", REPO_REL)
+    assert time.monotonic() - began < 10
+    assert (status, out["error"]["code"]) == (1, "git_timeout"), out
+
+
+def test_no_git_on_the_system_path_is_git_not_installed(env, repo, tmp_path, monkeypatch, capsys):
+    from helpers import git_run
+
+    assert status_of(env, capsys)["path"] == REPO_REL  # positive control
+    monkeypatch.setattr(git_run, "GIT_SEARCH_PATH", str(tmp_path / "no-git-here"))
+    status, out = answer_of(env, capsys, "git-status", "--", REPO_REL)
+    assert (status, out["error"]["code"]) == (1, "git_not_installed"), out
+    assert out["error"]["message"] == h.MESSAGES["git_not_installed"]
+
+
+def test_a_status_record_git_is_not_known_to_write_is_git_unrecognised_output(
+    env, repo, tmp_path, monkeypatch, capsys
+):
+    """A git that writes one record of an unknown kind among its status, through the verb."""
+    from helpers import git_run
+
+    real = git_run.find_git()
+    wrapper_dir = tmp_path / "odd-git"
+    wrapper_dir.mkdir()
+    wrapper = wrapper_dir / "git"
+    wrapper.write_text(
+        "#!/bin/sh\n"
+        'for a in "$@"; do [ "$a" = status ] && { printf "z from a newer git\\0"; break; }; done\n'
+        f'exec {real} "$@"\n'
+    )
+    wrapper.chmod(0o755)
+    monkeypatch.setattr(git_run, "GIT_SEARCH_PATH", str(wrapper_dir))
+    status, out = answer_of(env, capsys, "git-status", "--", REPO_REL)
+    assert (status, out["error"]["code"]) == (1, "git_unrecognised_output"), out
+    assert out["error"]["git"] == ["z from a newer git"]
+    monkeypatch.setattr(git_run, "GIT_SEARCH_PATH", str(Path(real).parent))
+    assert status_of(env, capsys)["path"] == REPO_REL  # positive control: real git is read
+
+
+def test_tree_marks_only_what_the_changes_section_can_show(env, repo, tmp_path):
+    """The marker follows the rule git-status keeps: a repository's own .git, with its git
+    data in the home folder."""
+    home = Path(env["RC_HELPER_HOME"])
+    outside = make_repo(tmp_path / "outside-repo")
+    fixture_git(outside, "worktree", "add", "-q", str(home / "projects" / "elsewhere"))
+    (home / "projects" / "empty-git" / ".git").mkdir(parents=True)
+    (home / "projects" / "linked-git").mkdir()
+    (home / "projects" / "linked-git" / ".git").symlink_to(outside / ".git")
+    (home / "projects" / "odd-file").mkdir()
+    (home / "projects" / "odd-file" / ".git").write_text("not a gitdir line\n")
+    marked = {e["path"]: e["repository"] for e in ok(env, "tree", "projects")["entries"]}
+    assert marked["projects/repo"] is True  # positive control
+    for rel in ("elsewhere", "empty-git", "linked-git", "odd-file"):
+        assert marked[f"projects/{rel}"] is False, rel
+        code = error_code(env, "git-status", "--", f"projects/{rel}")
+        assert code in ("not_a_repository", "repository_outside_home", "git_failed"), (rel, code)
+
+
+def test_status_says_when_a_merge_is_in_progress(env, repo):
+    """Until the merge is committed, also once its conflicts are resolved and staged."""
+    from tests.git_fixtures import FIXTURE_HOME, fixture_env
+
+    assert status(env)["merging"] is False  # positive control's twin: no merge
+    fixture_git(repo, "switch", "-q", "-c", "other")
+    write(repo / "README.md", "theirs\n")
+    fixture_git(repo, "commit", "-q", "-am", "theirs")
+    fixture_git(repo, "switch", "-q", "main")
+    write(repo / "README.md", "ours\n")
+    fixture_git(repo, "commit", "-q", "-am", "ours")
+    merge = subprocess.run(
+        ["git", "merge", "-q", "other"],
+        cwd=repo,
+        env=fixture_env(FIXTURE_HOME),
+        capture_output=True,
+    )
+    assert merge.returncode != 0
+    assert status(env)["merging"] is True
+    write(repo / "README.md", "resolved\n")
+    fixture_git(repo, "add", "README.md")
+    resolved = status(env)
+    assert listed(resolved, "not_staged") == []  # no unmerged entry is left to say so
+    assert resolved["merging"] is True
+    assert commit(env, "Merge other")[0] == 0
+    assert status(env)["merging"] is False
+
+
+def test_a_name_with_a_git_part_is_refused_as_written():
+    """The written check alone: .git itself is a name in the repository's own folder."""
+    with pytest.raises(h.HelperError) as err:
+        h.check_file(Path("/nonexistent-repo"), ".git")
+    assert err.value.code == "file_outside_repository"
+    assert h.check_file(Path("/nonexistent-repo"), "git") == b"git"  # positive control
+
+
+def test_a_name_whose_folder_resolves_into_the_git_folder_is_refused(tmp_path):
+    """The resolved check alone: written without .git, the name's folder is .git."""
+    repo = make_repo(tmp_path / "r").resolve()
+    (repo / "meta").symlink_to(".git")
+    (repo / "plain").mkdir()
+    with pytest.raises(h.HelperError) as err:
+        h.check_file(repo, "meta/config")
+    assert err.value.code == "file_outside_repository"
+    assert h.check_file(repo, "plain/config") == b"plain/config"  # positive control
+
+
+# --- UTF-8 whatever the locale ------------------------------------------------------
+
+LAUNCHERS = ["rc-helper", "rc-admin", "rcman-user"]
+
+
+def test_every_launcher_runs_python_isolated_and_in_utf8_mode():
+    found = sorted(
+        p.name
+        for p in (REPO / "helpers").iterdir()
+        if p.is_file() and p.read_bytes().startswith(b"#!/usr/bin/python3")
+    )
+    assert found == sorted(LAUNCHERS)  # every launcher, found, not listed by hand
+    for name in LAUNCHERS:
+        first = (REPO / "helpers" / name).read_text(encoding="utf-8").splitlines()[0]
+        assert first == "#!/usr/bin/python3 -IXutf8", name
+
+
+def test_the_installer_runs_python_in_utf8_mode():
+    script = (REPO / "install.sh").read_text(encoding="utf-8")
+    runs = [line for line in script.splitlines() if "/usr/bin/python3" in line]
+    assert runs  # non-vacuity
+    for line in runs:
+        assert "/usr/bin/python3 -I -X utf8 " in line, line
+
+
+@pytest.fixture
+def latin1(env, tmp_path):
+    """env with an ISO-8859-1 locale, built for the test with localedef."""
+    locales = tmp_path / "locales"
+    locales.mkdir()
+    made = subprocess.run(
+        ["localedef", "-i", "en_US", "-f", "ISO-8859-1", str(locales / "en_US.ISO-8859-1")],
+        capture_output=True,
+        text=True,
+    )
+    if made.returncode not in (0, 1) or not (locales / "en_US.ISO-8859-1").exists():
+        pytest.skip(f"localedef could not build an ISO-8859-1 locale: {made.stderr.strip()}")
+    latin = {**env, "LOCPATH": str(locales), "LC_ALL": "en_US.ISO-8859-1"}
+    probe = subprocess.run(
+        [
+            "/usr/bin/python3",
+            "-I",
+            "-c",
+            "import locale; print(locale.getpreferredencoding(False))",
+        ],
+        env=latin,
+        capture_output=True,
+        text=True,
+    )
+    assert probe.stdout.strip() == "ISO-8859-1"  # the plant took effect
+    return latin
+
+
+def test_a_folder_name_is_listed_as_it_is_under_a_locale_that_is_not_utf8(latin1):
+    (Path(latin1["RC_HELPER_HOME"]) / "projects" / "café").mkdir()
+    names = [e["name"] for e in ok(latin1, "tree", "projects")["entries"]]
+    assert "café" in names, names
+
+
+def test_a_branch_name_is_taken_as_it_is_under_a_locale_that_is_not_utf8(latin1, repo):
+    out = ok(latin1, "git-branch-new", "--name=topic/café", "--", REPO_REL)
+    assert out["branch"] == "topic/café"
+    assert branch_of(repo) == "topic/café"
+
+
+def test_a_git_file_without_its_gitdir_prefix_is_not_a_repository(env, repo):
+    """A .git file holding only a path, even one to a real git folder, is no gitdir file."""
+    bare_path = Path(env["RC_HELPER_HOME"]) / "projects" / "bare-path"
+    bare_path.mkdir()
+    (bare_path / ".git").write_text(f"{repo / '.git'}\n")
+    with_prefix = Path(env["RC_HELPER_HOME"]) / "projects" / "with-prefix"
+    fixture_git(repo, "worktree", "add", "-q", str(with_prefix))
+    assert (with_prefix / ".git").read_text().startswith("gitdir: ")  # the twin's form
+    marked = {e["path"]: e["repository"] for e in ok(env, "tree", "projects")["entries"]}
+    assert marked["projects/with-prefix"] is True  # positive control
+    assert marked["projects/bare-path"] is False
+
+
+def test_the_tree_never_lists_what_is_inside_a_git_folder(env, repo):
+    home = Path(env["RC_HELPER_HOME"])
+    (home / "projects" / "peek").symlink_to(repo / ".git")
+    (home / "projects" / "peek-inside").symlink_to(repo / ".git" / "refs")
+    listed = [e["path"] for e in ok(env, "tree", "--all", "--", "projects")["entries"]]
+    assert "projects/repo" in listed  # positive control: the repository itself is listed
+    assert "projects/peek" not in listed and "projects/peek-inside" not in listed
+    inside = [e["path"] for e in ok(env, "tree", "--all", "--", REPO_REL)["entries"]]
+    assert f"{REPO_REL}/.git" not in inside
+
+
+def test_a_git_verbs_deadline_must_name_a_constant_that_exists():
+    h.git_verb("GIT_TIMEOUT")  # positive control
+    with pytest.raises(NameError, match="NO_SUCH_TIMEOUT"):
+        h.git_verb("NO_SUCH_TIMEOUT")
 
 
 def test_git_env_points_github_at_the_hook_only_when_set(tmp_path):

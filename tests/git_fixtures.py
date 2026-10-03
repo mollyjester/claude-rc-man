@@ -7,6 +7,8 @@ configuration, which rc-helper's git does read, is only what a test plants.
 
 from __future__ import annotations
 
+import atexit
+import shutil
 import subprocess
 import tempfile
 from pathlib import Path
@@ -33,6 +35,7 @@ def fixture_env(home: Path) -> dict[str, str]:
 
 # An empty HOME for fixture git, outside every home the tests give rc-helper.
 FIXTURE_HOME = Path(tempfile.mkdtemp(prefix="rcman-fixture-git-home-"))
+atexit.register(shutil.rmtree, FIXTURE_HOME, ignore_errors=True)
 
 
 def fixture_git(cwd: Path, *args: str, input: bytes | None = None) -> str:

@@ -27,8 +27,8 @@ table:
 | Running | filled circle |
 | Not running | hollow square |
 
-A folder that is a git repository also carries a **git** marker, which
-pointing at names.
+A folder that is a git repository also carries a **git** marker; pointing at
+it names it. Which folders count as repositories is in [Git](git.md).
 
 Choosing a server in **Your servers** selects its folder, wherever it is in the
 tree.

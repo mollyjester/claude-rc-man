@@ -79,7 +79,7 @@ function GitHubToken() {
         <div>
           <label>
             {m.githubTokenLabel}
-            <input type="password" autoComplete="new-password" value={token} onChange={(e) => setToken(e.target.value)} />
+            <input type="password" name="token" autoComplete="new-password" value={token} onChange={(e) => setToken(e.target.value)} />
           </label>
           <p className="muted">{m.githubTokenHelp}</p>
         </div>
@@ -185,6 +185,7 @@ function Part(props: { title: string; fields: Field[]; reply: Reply; onSaved: (r
               {FIELDS[field].label}
               <input
                 type="text"
+                name={field}
                 value={values[field]}
                 onChange={(e) => setValues({ ...values, [field]: e.target.value })}
               />

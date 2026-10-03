@@ -96,6 +96,18 @@ def test_alice_has_a_repository_with_an_origin(world):
     assert not (root / "homes" / "bob" / "projects" / "alice-repo").exists()
 
 
+def test_shutting_down_removes_the_fixtures_git_home(world):
+    """uvicorn ends itself with the signal it was stopped by, so no exit handler runs:
+    the backend's own shutdown removes what the world's git fixtures left."""
+    from tests.git_fixtures import FIXTURE_HOME
+
+    app = e2e.create_app()
+    assert FIXTURE_HOME.exists()  # positive control: building the world used it
+    with TestClient(app):
+        pass
+    assert not FIXTURE_HOME.exists()
+
+
 def test_the_worlds_github_serves_alices_origin_and_takes_a_push_with_its_token_only(world):
     import subprocess
 

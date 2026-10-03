@@ -71,11 +71,17 @@ VERBS = (
     "github-forget",
 )
 
+# Words both a message and the path rules' sentences say.
+_INSIDE_HOME = "Choose a folder inside your home folder, not the home folder itself"
+
 MESSAGES = {
     "usage": "The command line was not understood.",
     "internal_error": "rc-helper failed unexpectedly.",
     "refused_as_root": "rc-helper does not run as root.",
-    "path_is_home": "Choose a folder inside your home folder, not the home folder itself.",
+    "path_is_home": f"{_INSIDE_HOME}.",
+    "path_ends_in_dot": (
+        "Name the folder itself: its path may not end in . or .., which name only where they lead."
+    ),
     "path_outside_home": "The folder is outside your home folder.",
     "path_not_found": "The folder does not exist.",
     "path_not_directory": "That is a file, not a folder.",
@@ -149,11 +155,14 @@ MAX_PREFIX_LENGTH = 32
 MAX_PATH_LENGTH = 1024
 # A path as rc-helper takes one: relative, with no null character, which no
 # path can hold, and of a length a path can have; empty for the home folder.
-PATH = Rule(
-    re.compile(rf"(?:[^/\x00][^\x00]{{0,{MAX_PATH_LENGTH - 1}}})?"),
-    "The folder must be a path relative to your home folder, without a null character, "
-    f"and at most {MAX_PATH_LENGTH} characters long.",
+# FOLDER_PATH is the same without the empty path, where a folder is needed.
+_PATH_PATTERN = rf"[^/\x00][^\x00]{{0,{MAX_PATH_LENGTH - 1}}}"
+_PATH_WORDS = (
+    "a path relative to your home folder, without a null character, and at most "
+    f"{MAX_PATH_LENGTH} characters long"
 )
+PATH = Rule(re.compile(f"(?:{_PATH_PATTERN})?"), f"The folder must be {_PATH_WORDS}.")
+FOLDER_PATH = Rule(re.compile(_PATH_PATTERN), f"{_INSIDE_HOME}, written as {_PATH_WORDS}.")
 PREFIX = Rule(
     re.compile(rf"[A-Za-z0-9][A-Za-z0-9-]{{0,{MAX_PREFIX_LENGTH - 1}}}"),
     "The session name prefix may use letters a to z in either case, digits and hyphens, "
@@ -311,6 +320,10 @@ RULE_CODES = {
     "token_invalid": GITHUB_TOKEN,
 }
 MESSAGES.update({code: rule.sentence for code, rule in RULE_CODES.items()})
+# A message that states a length, so written once the length is.
+MESSAGES["folder_path_too_long"] = (
+    f"The new folder's path would be longer than {MAX_PATH_LENGTH} characters."
+)
 # The trust prompt refuses an answer that arrives too quickly after the question.
 ANSWER_PACE_SECONDS = 0.5
 START_TIMEOUT = 30.0
@@ -527,7 +540,7 @@ def check_folder_name(name: str, parent_fd: int, parent_rel: str) -> str:
         raise HelperError("name_invalid")
     rel = _joined(parent_rel, name)
     if len(rel) > MAX_PATH_LENGTH:
-        raise HelperError("path_invalid")
+        raise HelperError("folder_path_too_long")
     return rel
 
 
@@ -551,7 +564,9 @@ def resolve_entry(home: Path, rel: str) -> Entry:
     root = home.resolve()
     if parts[-1] in (".", ".."):  # names no entry; only where it leads
         target = confine(home, rel, allow_home=True)
-        raise HelperError("path_is_home" if target == root else "path_invalid")
+        if target == root:
+            raise HelperError("path_is_home")
+        raise HelperError("path_ends_in_dot")
     parent = resolve_folder(home, "/".join(parts[:-1]), allow_home=True)
     name = parts[-1]
     fd = open_dir(root, parent)
@@ -847,6 +862,35 @@ def check_file(repo: Path, name: str) -> bytes:
     return encoded
 
 
+GITDIR_LINE = "gitdir: "
+MAX_GITDIR_FILE_BYTES = 4096
+
+
+def looks_like_repository(root: Path, folder: Path) -> bool:
+    """Whether a folder has a git directory of its own in the home folder ``root``,
+    found without running git, as the tree marks repositories.
+
+    Its .git is either a folder with a HEAD in it or a file whose gitdir line
+    leads to one; either must resolve inside the home folder. git-status asks
+    git itself, and refuses what this lets through.
+    """
+    dot = folder / ".git"
+    try:
+        if not dot.exists():  # the most folders, at the cost of one stat
+            return False
+        if dot.is_file():
+            with dot.open("rb") as f:
+                line = f.read(MAX_GITDIR_FILE_BYTES).decode("utf-8", "replace").strip()
+            if not line.startswith(GITDIR_LINE):
+                return False
+            git_dir = (folder / line[len(GITDIR_LINE) :]).resolve()
+        else:
+            git_dir = dot.resolve()
+        return root in git_dir.parents and (git_dir / "HEAD").is_file()
+    except OSError:
+        return False
+
+
 def _name(raw: bytes) -> str:
     return raw.decode("utf-8", "replace")
 
@@ -899,16 +943,23 @@ class _Capped:
         return {self.key: self.items, "more": self.more}
 
 
-def git_verb(timeout: float = GIT_TIMEOUT):
+def git_verb(timeout: str = "GIT_TIMEOUT"):
     """A git verb: it holds the folder lock shared, so git never runs in a folder being
     deleted, has one deadline for all its git calls, and has git_run's exceptions
-    as rc-helper's codes."""
+    as rc-helper's codes.
+
+    ``timeout`` names the module's constant that sets the deadline, read when
+    the verb is called.
+    """
+    if timeout not in globals():
+        raise NameError(f"git_verb: no constant {timeout} in rc_helper")
 
     def wrap(method):
         def verb(self, *args, **kwargs):
             with self._lock(exclusive=False):
                 try:
-                    return method(self, time.monotonic() + timeout, *args, **kwargs)
+                    deadline = time.monotonic() + globals()[timeout]
+                    return method(self, deadline, *args, **kwargs)
                 except git_run.GitMissing:
                     raise HelperError("git_not_installed") from None
                 except git_run.GitFailed as error:
@@ -1032,6 +1083,10 @@ class Helper:
                 target = child.resolve()
                 if not target.is_dir() or (target != root and root not in target.parents):
                     continue
+                # What git keeps is git's: nothing in a .git folder is a folder of
+                # the person's, however it is reached.
+                if any(part.casefold() == ".git" for part in target.relative_to(root).parts):
+                    continue
             except OSError:
                 continue
             rel = (folder / child.name).relative_to(root).as_posix()
@@ -1043,7 +1098,7 @@ class Helper:
                 "name": child.name,
                 "path": rel,
                 "has_children": has_children,
-                "repository": (target / ".git").exists(),
+                "repository": looks_like_repository(root, target),
             }
             if sub is not None:
                 entry["children"] = sub
@@ -1450,11 +1505,17 @@ class Helper:
         }
         for change in self._changes(repo, deadline, branch):
             lists[change.staged].add(_file(change))
+        merge_head = self._git(
+            repo, ["rev-parse", "--path-format=absolute", "--git-path", "MERGE_HEAD"], deadline
+        ).rstrip("\n")
         remote = self._push_target(repo, branch.name, deadline)[1]
         to_github = self._to_github(repo, remote, deadline)
         return {
             "path": rel,
             "branch": dataclasses.asdict(branch),
+            # MERGE_HEAD stays until the merge is committed or aborted, also once
+            # no file is left unmerged.
+            "merging": Path(merge_head).exists(),
             "staged": lists[True].answer(),
             "not_staged": lists[False].answer(),
             "push_to_github": to_github,
@@ -1533,7 +1594,7 @@ class Helper:
         repo, rel = self._repository(rel, deadline)
         if not any(r.remote is remote and r.name == branch for r in self._branches(repo, deadline)):
             raise HelperError("branch_not_found")
-        args = ["switch", "--track", branch] if remote else ["switch", "--no-guess", branch]
+        args = ["switch", "--track", branch] if remote else ["switch", branch]
         self._git(repo, args, deadline)
         return {"path": rel, "branch": self._current(repo, deadline)}
 
@@ -1555,7 +1616,7 @@ class Helper:
         self._git(repo, ["switch", "-c", name], deadline)
         return {"path": rel, "branch": self._current(repo, deadline)}
 
-    @git_verb(timeout=GIT_NETWORK_TIMEOUT)
+    @git_verb(timeout="GIT_NETWORK_TIMEOUT")
     def git_fetch(self, deadline: float, rel: str) -> dict:
         """git fetch --prune from the default remote: no files and no local branch change."""
         repo, rel = self._repository(rel, deadline)
@@ -1587,7 +1648,7 @@ class Helper:
             return False
         return url.strip().startswith(self.cfg.github)
 
-    @git_verb(timeout=GIT_NETWORK_TIMEOUT)
+    @git_verb(timeout="GIT_NETWORK_TIMEOUT")
     def git_push(self, deadline: float, rel: str, check: bool) -> dict:
         """Push the current branch: one with no upstream as git push -u origin HEAD, and
         otherwise as git push, as the person's push.default says.

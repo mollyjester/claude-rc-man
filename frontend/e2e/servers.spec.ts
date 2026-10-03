@@ -178,9 +178,9 @@ test("a repository's changes: appear, stage, commit, switch branch", async ({ pa
   await expect(changes.getByText(m.onBranch("main"))).toBeVisible();
 
   // no commit author yet: Commit is not offered, and Settings is where to set one
-  await expect(changes.getByText(m.commitNeedsAuthor)).toBeVisible();
+  await expect(changes.getByText(m.commitNeedsAuthor.before.trim())).toBeVisible();
   await expect(changes.getByRole("button", { name: m.commit })).toHaveCount(0);
-  await changes.getByRole("link", { name: m.commitAuthorLink }).click();
+  await changes.getByRole("link", { name: m.commitNeedsAuthor.link }).click();
   const author = page.getByRole("region", { name: m.settingsAuthorTitle });
   await author.getByLabel(m.authorNameLabel).fill("Alice Author");
   await author.getByRole("button", { name: m.save }).click();
@@ -211,7 +211,7 @@ test("a repository's changes: appear, stage, commit, switch branch", async ({ pa
   await expect(remote.getByText("origin/later", { exact: true })).toBeVisible();
   await remote.getByRole("button", { name: m.switchTo("origin/feature") }).click();
   await expect(changes.getByText(m.onBranch("feature"))).toBeVisible();
-  await expect(changes.getByRole("list", { name: m.localBranches }).getByText(`(${m.currentBranch})`)).toBeVisible();
+  await expect(changes.getByRole("list", { name: m.localBranches }).getByText(m.currentBranch)).toBeVisible();
   expect(git("branch", "--show-current")).toBe("feature\n");
 });
 

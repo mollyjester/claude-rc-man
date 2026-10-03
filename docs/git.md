@@ -14,8 +14,9 @@ repository keeps its git data in your home folder.
 The section shows the branch you are on, and the files git lists in two
 lists: **Staged**, what the next commit holds, and **Not staged**, what has
 changed besides, new files git does not track yet among them. A file changed
-both before and after it was staged is in both lists. Each file is shown as
-one of these changes:
+both before and after it was staged is in both lists. Each list's heading
+says how many files it holds. While a merge is under way, until it is
+committed, the section says so. Each file is shown as one of these changes:
 
 | Change | Shown as | Meaning |
 |---|---|---|
@@ -66,18 +67,23 @@ Every commit made from rcman is recorded with the commit author from your
 
 ## Branches
 
-The section lists your local branches, each with the remote branch it
-tracks, and the remote branches git knows of. **Switch to** a local branch
-checks it out. A remote branch with no local branch of its own can be
-switched to as well: that makes a local branch of the same name tracking it,
-as `git switch` does. **New branch from here** makes a branch at the current
-commit and switches to it; git says which names it takes.
+The section lists your **Local branches**, each with the remote branch it
+tracks, and the **Remote branches** git knows of, each with the local branch
+that tracks it. **Switch to** a local branch checks it out. A remote branch
+with no local branch tracking it can be switched to as well: that makes a
+local branch of the same name tracking it, as `git switch` does.
+**New branch** asks for a name and makes a branch of that name at the
+current commit, then switches to it; git says which names it takes.
 
 **Refresh branches** runs `git fetch --prune`: it brings the list of remote
 branches up to date, adding new ones and dropping those deleted there. It
 changes none of your files and none of your local branches. It needs a
 remote git can fetch from without asking for a password: git is never
 allowed to ask, so a remote that needs one is refused with git's own words.
+Over SSH, git here has no terminal to ask for a key's passphrase and, by
+default, does not reach your `ssh-agent`, so a key with a passphrase works
+only through an agent your SSH configuration names with `IdentityAgent`; a
+key without one works as it is.
 
 ## Push
 
@@ -95,7 +101,8 @@ is stored, Push and Commit & Push are not offered there, and the section
 links to Settings. An address that names a user, such as
 `https://you@github.com/...`, makes git ask for that user's password, which
 your token is not stored under, so rcman does not treat it as GitHub; take
-the user out of the address (`git remote set-url`) to push with your token. A push anywhere else is offered without one, and needs
+the user out of the address (`git remote set-url`) to push with your token.
+A push anywhere else is offered without one, and needs
 whatever that remote needs without asking for a password; when git refuses,
 the section shows its words, as for a push GitHub rejects because someone
 pushed first.
@@ -162,7 +169,6 @@ so what you set there applies: what is ignored, how renames are found, your
 hooks and your credential helpers. The one exception is the commit author,
 above. The installer checks that this machine's git is new enough for what
 rcman runs (see [Installing rcman](installation.md)).
-
 
 ## Not here
 

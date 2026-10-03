@@ -39,8 +39,7 @@ export function ProblemView({ error, labels = {} }: { error: ApiError | null; la
       )}
       {Array.isArray(git) && (
         <>
-          <p>{m.gitSaid}</p>
-          <pre className="screen" aria-label={m.gitSaid}>
+          <pre className="screen git-said" aria-label={m.gitSaid}>
             {git.join("\n")}
           </pre>
           {typeof gitMore === "number" && gitMore > 0 && <p>{m.andMoreLines(gitMore)}</p>}

@@ -16,7 +16,7 @@ from rcman.problems import ruled
 router = APIRouter(prefix="/api/folders", tags=["folders"])
 FolderName = ruled(rc_helper.FOLDER_NAME, min_length=1, max_length=rc_helper.MAX_PATH_LENGTH)
 PathOrHome = ruled(rc_helper.PATH)  # empty for the home folder
-FolderPath = ruled(rc_helper.PATH, min_length=1)
+FolderPath = ruled(rc_helper.FOLDER_PATH)
 
 
 class NewFolder(BaseModel):

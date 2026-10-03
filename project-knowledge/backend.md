@@ -47,24 +47,27 @@ the OpenAPI description it serves at `/api/openapi`.
   and a field takes it as `problems.ruled(rule, ...)`: the field publishes and
   validates the rule's anchored pattern and any length it is given, and a
   value either refuses is refused with the rule's sentence, which is also what
-  the helper itself says. A path, query or embedded body parameter takes it as
-  `Annotated[<ruled>, Path()]`, `Query()` or `Body()`: given as the parameter's
-  default instead, `Path()`, `Query()` or `Body()` leaves the rule unchecked.
-  `dropped_constraints` in `tests/test_problems.py` walks every route's
-  endpoint and dependencies in the route table and compares each query, path,
-  header, cookie and body parameter FastAPI resolved with the annotation it was
-  declared with, read as FastAPI reads it (`inspect.signature`, so a class's
-  `__init__` and a `functools.partial` too): a declared type that carries
-  constraints whose resolved field holds none fails the test.
+  the helper itself says. A parameter takes it inside an `Annotated` with its
+  FastAPI parameter marker, such as `Annotated[<ruled>, Path()]`: any marker
+  given as the parameter's default instead leaves the type's constraints
+  unchecked. Constraints given to the marker itself, such as
+  `Query(ge=1)`, are kept either way. `dropped_constraints` in
+  `tests/test_problems.py` walks every route's endpoint and dependencies in
+  the route table and compares each parameter FastAPI resolved with the
+  annotation it was declared with, read as FastAPI reads it
+  (`inspect.signature`, so a class's `__init__` and a `functools.partial`
+  too). Every constraint the declared type carries — annotated_types'
+  lengths, bounds and patterns, and pydantic's validators, not markers or
+  plain notes — must be on the resolved field, or the test fails.
 - **Errors** are always problem details (`application/problem+json`) with
   `type`, `title`, `status` and `code`; validation errors add `errors`, a list
   of `field` and `message`. A field's message is never the validation
   library's: it is `FIELD_MESSAGES` in `problems.py` for the error's type,
   with any number in it taken from the error's context, so it is the field's
-  own constraint. A body that is not JSON is about the field `request`; one that is not
-  UTF-8 text at all is the problem `body_unreadable`. An
-  error type with no message gets `field_invalid`'s, and a warning is logged
-  on `rcman.problems`. `tests/test_problems.py` finds every field of every
+  own constraint. A body that is not JSON is about the field `request`; one
+  that is not UTF-8 text at all is the problem `body_unreadable`. An error
+  type with no message gets `field_invalid`'s, and a warning is logged on
+  `rcman.problems`. `tests/test_problems.py` finds every field of every
   route in the route table, paired with the schema the API publishes, and
   holds them to this: every published pattern is a helpers' rule refused with
   its sentence; every violation each field's schema implies, and every body
@@ -96,7 +99,10 @@ running. The container suite shows, through real sudo, that killing sudo
 leaves the helper running and that `run_bounded` ends it. A helper that
 ignores SIGTERM is not waited for: once sudo is killed, `run_bounded` closes
 the pipes without reading them and raises the timeout. That helper is left
-behind as an orphan until it ends or `rcman.service` stops.
+behind as an orphan until it ends or `rcman.service` stops. What a helper
+reads on stdin and writes is UTF-8, whatever the service's locale: the
+backend's pipes are opened as UTF-8, and the helpers run in Python's UTF-8
+mode.
 
 A git call's timeout is the helper's own deadline for it —
 `rc_helper.GIT_TIMEOUT`, or `rc_helper.GIT_NETWORK_TIMEOUT` for a fetch and
