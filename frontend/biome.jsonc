@@ -29,7 +29,47 @@
     "rules": {
       // Biome's default, written out: the recommended rules are the ones held
       // to, and every exception, here or at the site, says why.
-      "preset": "recommended"
+      "preset": "recommended",
+      // The recommended rules whose findings Biome reports as infos, which
+      // `biome ci --error-on-warnings` passes: raised to warnings, so that
+      // every finding fails `npm run lint`. tests/test_make.py lists them from
+      // Biome itself and fails on one left out.
+      "complexity": {
+        "noExtraBooleanCast": "warn",
+        "noFlatMapIdentity": "warn",
+        "noUselessCatch": "warn",
+        "noUselessConstructor": "warn",
+        "noUselessContinue": "warn",
+        "noUselessEmptyExport": "warn",
+        "noUselessEscapeInRegex": "warn",
+        "noUselessFragments": "warn",
+        "noUselessLabel": "warn",
+        "noUselessLoneBlockStatements": "warn",
+        "noUselessRename": "warn",
+        "noUselessStringRaw": "warn",
+        "noUselessSwitchCase": "warn",
+        "noUselessTernary": "warn",
+        "noUselessThisAlias": "warn",
+        "noUselessTypeConstraint": "warn",
+        "noUselessUndefinedInitialization": "warn",
+        "useFlatMap": "warn",
+        "useIndexOf": "warn",
+        "useLiteralKeys": "warn"
+      },
+      "correctness": {
+        "useParseIntRadix": "warn"
+      },
+      "style": {
+        "useArrayLiterals": "warn",
+        "useExponentiationOperator": "warn",
+        "useNodejsImportProtocol": "warn",
+        "useShorthandFunctionType": "warn",
+        "useTemplate": "warn"
+      },
+      "suspicious": {
+        "noDuplicateFields": "warn",
+        "noQuickfixBiome": "warn"
+      }
     }
   },
   "overrides": [

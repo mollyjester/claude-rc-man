@@ -337,13 +337,96 @@ def test_make_lint_passes_a_well_formatted_frontend_file_it_checked(tmp_path):
     assert checked(proc) == checked(bare) + 1
 
 
+FORMAT_FINDING = "File content differs from formatting output"
+
+
 def test_make_lint_fails_on_a_mis_formatted_frontend_file_and_names_it(tmp_path):
     """Planted twin: the same file, not formatted as Biome would."""
     planted = WELL_FORMATTED.replace("{ a: 1 };", "{a:1}")
     assert planted != WELL_FORMATTED  # the plant took effect
     proc = lint_tree(tmp_path, planted)
     assert proc.returncode != 0
+    assert "planted.ts" in output(proc) and FORMAT_FINDING in output(proc)
+
+
+INFO_LEVEL = 'export const planted = (a: string) => "x" + a;\n'  # useTemplate: an info
+
+
+def test_make_lint_fails_on_a_frontend_finding_biome_reports_as_an_info(tmp_path):
+    """Planted twin: a lint finding whose default severity is info, in a file formatted as
+    Biome would, fails make lint as any other finding does."""
+    proc = lint_tree(tmp_path, INFO_LEVEL)
+    assert "lint/style/useTemplate" in output(proc)  # the plant was found
+    assert FORMAT_FINDING not in output(proc)  # and only as a lint finding
+    assert proc.returncode != 0
     assert "planted.ts" in output(proc)
+
+
+BIOME = FRONTEND / "node_modules" / ".bin" / "biome"
+BIOME_CONFIG = FRONTEND / "biome.jsonc"
+
+
+def biome(*args: str) -> str:
+    proc = subprocess.run(
+        [str(BIOME), *args], cwd=FRONTEND, capture_output=True, text=True, timeout=60
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    return re.sub(r"\x1b\[[0-9;]*m", "", proc.stdout)
+
+
+def enabled_rules() -> set[str]:
+    """The rules Biome runs over the frontend, as group/name: biome rage lists them."""
+    text = biome("rage", "--linter")
+    section = text[text.index("Enabled rules:") :]
+    return set(re.findall(r"^ +([a-zA-Z0-9]+/[a-zA-Z0-9]+)$", section, re.MULTILINE))
+
+
+def default_severity(rule: str) -> str:
+    """A rule's default severity, as biome explain states it."""
+    found = re.findall(r"^- Default severity: (\w+)$", biome("explain", rule.split("/")[1]), re.M)
+    assert len(found) == 1, rule
+    return found[0]
+
+
+def jsonc(text: str):
+    """JSON with comments, as biome.jsonc is written: comments outside strings removed."""
+    token = re.compile(r'"(?:\\.|[^"\\])*"|//[^\n]*|/\*.*?\*/', re.S)
+    return json.loads(token.sub(lambda m: m.group(0) if m.group(0)[0] == '"' else "", text))
+
+
+def configured_levels(config) -> dict[str, str]:
+    """The level biome.jsonc sets for each rule it names, at the top level, as group/name."""
+    levels = {}
+    for group, rules in config["linter"]["rules"].items():
+        for name, setting in rules.items() if isinstance(rules, dict) else ():
+            level = setting["level"] if isinstance(setting, dict) else setting
+            levels[f"{group}/{name}"] = level
+    return levels
+
+
+def unraised(config, enabled: set[str], info: set[str]) -> list[str]:
+    """Enabled rules whose default severity is info that the configuration leaves there,
+    where make lint, which fails on warnings, would pass their findings."""
+    levels = configured_levels(config)
+    return sorted(r for r in enabled & info if levels.get(r) not in ("warn", "error"))
+
+
+def test_every_rule_biome_runs_at_info_is_raised_to_a_warning():
+    from concurrent.futures import ThreadPoolExecutor
+
+    assert BIOME.exists(), "the frontend's packages are not installed: run make frontend-setup"
+    enabled = enabled_rules()
+    assert "style/useTemplate" in enabled  # non-vacuity: a rule known to run at info
+    with ThreadPoolExecutor(8) as pool:
+        rules = sorted(enabled)
+        severities = dict(zip(rules, pool.map(default_severity, rules), strict=True))
+    info = {r for r, level in severities.items() if level == "info"}
+    assert "style/useTemplate" in info
+    config = jsonc(BIOME_CONFIG.read_text(encoding="utf-8"))
+    assert unraised(config, enabled, info) == []
+    # Planted twin: the same configuration without one of those rules raised.
+    del config["linter"]["rules"]["style"]["useTemplate"]
+    assert unraised(config, enabled, info) == ["style/useTemplate"]
 
 
 def test_make_lint_fails_without_the_frontend_packages(tmp_path):

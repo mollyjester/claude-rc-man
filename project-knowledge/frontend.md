@@ -19,8 +19,11 @@ its reason. Its version is pinned exactly in `frontend/package.json`, so a new
 release of Biome cannot change what passes.
 
 In `frontend/`, `npm run lint` checks without changing anything: formatting,
-the lint rules and the order of imports. An error or a warning fails it;
-Biome's info diagnostics are shown and do not. `npm run format` applies the
+the lint rules and the order of imports. Any finding fails it: an error or a
+warning does, and the recommended rules Biome reports as infos, which would
+not, are raised to warnings by name in `frontend/biome.jsonc`; a test in
+`tests/test_make.py` asks Biome which rules it runs at info and fails on one
+left out. `npm run format` applies the
 formatting, the order of imports and Biome's safe fixes. `make lint` and
 `make format` run them after ruff (see [tests.md](tests.md#running)).
 

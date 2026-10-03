@@ -165,7 +165,10 @@ it can fail, and a positive control that keeps an empty input from passing.
   `-m 'not real_claude'` of pyproject's `addopts`. `make lint` and
   `make format` run ruff and the frontend's script of the same name, and the
   real `make lint`, run over a frontend file planted in a scratch tree, fails
-  when Biome would reformat it and when the frontend's packages are missing.
+  when Biome would reformat it, when Biome finds a lint finding it reports as
+  an info, and when the frontend's packages are missing. Every rule Biome runs
+  at info, as `biome rage` and `biome explain` report, is raised to a warning
+  in `frontend/biome.jsonc`.
 - **Deployment contents** (`tests/test_export.py`). Deployment uses
   `git archive`, so `.gitattributes` decides what is deployed. The test
   checks that every development-only file is marked `export-ignore`, that the
