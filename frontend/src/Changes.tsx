@@ -273,7 +273,7 @@ export function Changes({ path, pollMs }: { path: string; pollMs: number }) {
             <form noValidate onSubmit={commit}>
               <label>
                 {m.commitMessage}
-                <textarea value={message} onChange={(e) => setMessage(e.target.value)} rows={4} />
+                <textarea name="message" value={message} onChange={(e) => setMessage(e.target.value)} rows={4} />
               </label>
               <div className="actions">
                 <button type="submit" className="primary" disabled={busy}>
@@ -330,7 +330,7 @@ export function Changes({ path, pollMs }: { path: string; pollMs: number }) {
       <form noValidate onSubmit={createBranch}>
         <label>
           {m.newBranchName}
-          <input type="text" value={newBranch} onChange={(e) => setNewBranch(e.target.value)} />
+          <input type="text" name="name" value={newBranch} onChange={(e) => setNewBranch(e.target.value)} />
         </label>
         <div className="actions">
           <button type="submit" className="primary" disabled={busy}>
