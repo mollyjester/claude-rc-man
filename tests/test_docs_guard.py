@@ -222,3 +222,49 @@ def test_history_hits_carry_line_numbers():
 )
 def test_non_history_text_is_not_reported(sentence):
     assert docs_guard.history_phrases(sentence) == []
+
+
+# --- the make targets tests.md documents ------------------------------------
+
+TESTS_MD = REPO / "project-knowledge" / "tests.md"
+
+
+def make_targets(makefile: str) -> set[str]:
+    """The targets a Makefile defines: each rule's name, not a special target and
+    not a target-specific variable."""
+    found = set()
+    for line in makefile.splitlines():
+        name, colon, rest = line.partition(":")
+        if colon and name and not name[0].isspace() and not name.startswith("."):
+            if not rest.lstrip().startswith("export ") and "=" not in name:
+                found.add(name.strip())
+    return found
+
+
+def documented_make_targets(markdown: str) -> set[str]:
+    """The targets a table documents, one row each: | `make <target>` | ... |."""
+    found = set()
+    for line in markdown.splitlines():
+        cell = line.split("|")[1].strip() if line.startswith("|") else ""
+        if cell.startswith("`make ") and cell.endswith("`"):
+            found.add(cell[len("`make ") : -1])
+    return found
+
+
+def test_tests_md_documents_every_make_target_and_no_other():
+    targets = make_targets((REPO / "Makefile").read_text(encoding="utf-8"))
+    assert {"setup", "test", "check"} <= targets  # non-vacuity: known targets are found
+    assert documented_make_targets(TESTS_MD.read_text(encoding="utf-8")) == targets
+
+
+def test_the_make_target_check_fails_on_a_drifted_table():
+    makefile = ".PHONY: a b\n\na:  ## one\n\tdo a\n\nb: a\n\tdo b\n\nb: export X = 1\n"
+    assert make_targets(makefile) == {"a", "b"}
+    table = "| Command | What |\n|---|---|\n| `make a` | one |\n| `make b` | two |\n"
+    assert documented_make_targets(table) == {"a", "b"}
+    missing = table.replace("| `make b` | two |\n", "")
+    assert missing != table  # the plant took effect
+    assert documented_make_targets(missing) != make_targets(makefile)
+    extra = table + "| `make c` | three |\n"
+    assert documented_make_targets(extra) != make_targets(makefile)
+    assert documented_make_targets("") == set()
