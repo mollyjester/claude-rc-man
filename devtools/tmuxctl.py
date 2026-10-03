@@ -9,6 +9,7 @@ final screen and exit status can still be read.
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 import time
@@ -84,6 +85,10 @@ class Pane:
 
     def interrupt(self) -> None:
         self._tmux("send-keys", "-t", "p", "C-c")
+
+    def signal(self, signum: int) -> None:
+        """Send ``signum`` to the program itself, as ``kill`` would."""
+        os.kill(int(self._tmux("display-message", "-p", "-t", "p", "#{pane_pid}")), signum)
 
     def exit_status(self) -> int | None:
         fmt = "#{pane_dead}:#{pane_dead_status}:#{pane_dead_signal}:#{pane_pid}"

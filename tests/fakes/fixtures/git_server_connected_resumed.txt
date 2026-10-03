@@ -1,0 +1,7 @@
+
+·✔︎· Connected · {folder} · {branch}
+    Capacity: 0/32 · New sessions will be created in the current directory
+
+Continue coding in the Claude mobile app or {environment_url}
+Or ask Claude to work in this folder from your projects on claude.ai
+space to show QR code · w to toggle spawn mode

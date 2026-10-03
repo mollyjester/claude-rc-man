@@ -155,3 +155,18 @@ def test_a_closed_pane_can_run_again_at_once(tmp_path):
             p.wait_exit(timeout=10)
             assert p.screen() == [str(i)]
             p.close()
+
+
+def test_signal_reaches_the_program_itself(pane, tmp_path):
+    import signal
+
+    code = (
+        "import signal, time\n"
+        "signal.signal(signal.SIGINT, signal.SIG_IGN)\n"
+        "print('ready'); time.sleep(30)\n"
+    )
+    pane.run([sys.executable, "-c", code], cwd=tmp_path, env={})
+    pane.wait_for(r"^ready$", timeout=10)
+    pane.interrupt()  # ignored: it is the signal that ends it
+    pane.signal(signal.SIGTERM)
+    assert pane.wait_exit(timeout=10) == 128 + signal.SIGTERM

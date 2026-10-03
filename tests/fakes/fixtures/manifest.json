@@ -20,6 +20,41 @@
       "exit_code": 1,
       "needs_account": false
     },
+    "git_server_connected_after_trust": {
+      "sequence": "git_server",
+      "exit_code": null,
+      "needs_account": true
+    },
+    "git_server_connected_resumed": {
+      "sequence": "git_server",
+      "exit_code": null,
+      "needs_account": true
+    },
+    "git_server_ready_after_trust": {
+      "sequence": "git_server",
+      "exit_code": null,
+      "needs_account": true
+    },
+    "git_server_ready_resumed": {
+      "sequence": "git_server",
+      "exit_code": null,
+      "needs_account": true
+    },
+    "git_server_stopped_after_trust": {
+      "sequence": "git_server",
+      "exit_code": 0,
+      "needs_account": true
+    },
+    "git_server_stopped_resumed": {
+      "sequence": "git_server",
+      "exit_code": 0,
+      "needs_account": true
+    },
+    "git_trust_prompt": {
+      "sequence": "git_server",
+      "exit_code": null,
+      "needs_account": true
+    },
     "login_failed": {
       "sequence": "login_failed",
       "exit_code": 1,
@@ -72,6 +107,41 @@
     },
     "server_stopped_resumed": {
       "sequence": "server",
+      "exit_code": 0,
+      "needs_account": true
+    },
+    "spawn_connected_same_dir": {
+      "sequence": "spawn_answered",
+      "exit_code": null,
+      "needs_account": true
+    },
+    "spawn_prompt": {
+      "sequence": "spawn_prompt",
+      "exit_code": null,
+      "needs_account": true
+    },
+    "spawn_prompt_answered_after_interrupt": {
+      "sequence": "spawn_prompt",
+      "exit_code": null,
+      "needs_account": true
+    },
+    "spawn_prompt_interrupted": {
+      "sequence": "spawn_prompt",
+      "exit_code": null,
+      "needs_account": true
+    },
+    "spawn_prompt_terminated": {
+      "sequence": "spawn_prompt",
+      "exit_code": 143,
+      "needs_account": true
+    },
+    "spawn_ready_same_dir": {
+      "sequence": "spawn_answered",
+      "exit_code": null,
+      "needs_account": true
+    },
+    "spawn_stopped_same_dir": {
+      "sequence": "spawn_answered",
       "exit_code": 0,
       "needs_account": true
     },

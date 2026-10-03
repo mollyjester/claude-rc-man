@@ -15,7 +15,8 @@ claude.ai/code list; archive them afterwards.
    `/login`).
 2. Run `uv run pytest -m real_claude`; what it checks is in
    [fake-claude.md](fake-claude.md#how-the-fake-is-checked-against-the-real-binary).
-   It creates one session.
+   It creates a session for each sequence that brings a server to ready
+   (see the docstring of `devtools/record_claude.py`).
 3. When a Claude Code version is being approved, follow
    [Approving a new Claude Code version](fake-claude.md#approving-a-new-claude-code-version).
 
@@ -55,9 +56,12 @@ checked here.
    read and write. In **Settings**, save it under **GitHub token**: the part
    says a token is stored, and its field is empty. Clone the private
    repository again: it is cloned, and its `.git/config` holds no token.
-4. **Start** a server in the public clone, then **Delete folder**: the
-   confirmation names the server, which is stopped and forgotten before the
-   folder is deleted, and its session stays in claude.ai/code; archive it.
+4. **Start** a server in the public clone: after the trust question it is
+   **Ready to accept sessions**, with no question about a spawn mode.
+   **Stop**, then **Resume**: it is ready again.
+5. **Delete folder**: the confirmation names the server, which is stopped
+   and forgotten before the folder is deleted, and its session stays in
+   claude.ai/code; archive it.
 
 ### Pushing to GitHub
 
@@ -110,5 +114,3 @@ and teach rc-helper and the fake to recognise it, tests first.
 3. **Expired sign-in.** With an account whose sign-in has expired — rcman
    shows the connection as expired — start a server. Record what Claude shows
    instead of the trust question or the server screen.
-4. **A server in a git repository.** Step 3 of *Pushing to GitHub* starts
-   one; record its screens, whose status line shows the branch.

@@ -280,18 +280,12 @@ def answer_trust(pane):
 
 
 def test_in_a_repository_without_spawn_it_asks_the_spawn_mode_question(pane, tmp_path):
-    import time
-
     cfg = logged_in(tmp_path / "cfg")
     folder = repository(tmp_path / "proj")
     run(pane, ["remote-control"], folder, cfg)
     answer_trust(pane)
     pane.wait_for(SPAWN_QUESTION, timeout=10)
     assert "Capacity:" not in pane.text()
-    pane.interrupt()  # the question ignores Ctrl+C, as recorded
-    time.sleep(1)
-    assert pane.exit_status() is None
-    assert re.search(SPAWN_QUESTION, pane.text())
     pane.wait_stable(quiet=fake.MIN_ANSWER_SECONDS * 2)
     pane.type_line("1")
     pane.wait_for(READY, timeout=10)
@@ -299,17 +293,24 @@ def test_in_a_repository_without_spawn_it_asks_the_spawn_mode_question(pane, tmp
     assert pane.wait_exit(timeout=10) == rec.load_fixtures()["spawn_stopped_same_dir"].exit_code
 
 
-def test_the_spawn_mode_question_ends_on_sigterm(pane, tmp_path):
+def test_after_ctrl_c_the_spawn_mode_question_takes_no_answer_and_ends_on_sigterm(pane, tmp_path):
     import signal
+    import time
 
     cfg = logged_in(tmp_path / "cfg")
     folder = repository(tmp_path / "proj")
     run(pane, ["remote-control"], folder, cfg)
     answer_trust(pane)
     pane.wait_for(SPAWN_QUESTION, timeout=10)
-    pid = int(pane._tmux("display-message", "-p", "-t", "p", "#{pane_pid}").strip())
-    os.kill(pid, signal.SIGTERM)
-    assert pane.wait_exit(timeout=10) == 128 + signal.SIGTERM
+    pane.interrupt()  # changes nothing, as recorded
+    time.sleep(1)
+    assert pane.exit_status() is None
+    pane.type_line("1")  # taken by nothing, as recorded
+    time.sleep(1)
+    assert pane.exit_status() is None
+    assert "Capacity:" not in pane.text()
+    pane.signal(signal.SIGTERM)
+    assert pane.wait_exit(timeout=10) == rec.load_fixtures()["spawn_prompt_terminated"].exit_code
 
 
 def test_in_a_repository_with_spawn_same_dir_it_connects_and_shows_the_branch(pane, tmp_path):

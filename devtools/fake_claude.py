@@ -99,6 +99,20 @@ def _option(args: list[str], name: str) -> str | None:
     return None
 
 
+def _branch(folder: str) -> str | None:
+    """The branch of the repository ``folder`` is in, as its HEAD names it; None
+    outside a repository."""
+    for directory in (Path(folder), *Path(folder).parents):
+        dot_git = directory / ".git"
+        if dot_git.is_file():
+            gitdir = dot_git.read_text(encoding="utf-8").removeprefix("gitdir:").strip()
+            dot_git = directory / gitdir
+        if (dot_git / "HEAD").is_file():
+            head = (dot_git / "HEAD").read_text(encoding="utf-8").strip()
+            return head.removeprefix("ref: refs/heads/")
+    return None
+
+
 class Fake:
     def __init__(self, args: list[str], env: dict[str, str]):
         self.args = args
@@ -168,8 +182,7 @@ class Fake:
             return self.show("auth_logout")
         if a[:1] == ["remote-control"]:
             return self.remote_control()
-        print(f"fake claude: unsupported invocation: {' '.join(a)}")
-        return 2
+        return self.unsupported()
 
     def login(self) -> int:
         if self.env.get("FAKE_CLAUDE_SCENARIO") == "unrecognised":
@@ -211,23 +224,62 @@ class Fake:
             sys.stdout.flush()
             self.wait_for_interrupt()
             return 1
+        spawn = _option(self.args, "--spawn")
+        if spawn not in (None, "same-dir"):
+            return self.unsupported()
+        branch = _branch(self.cwd)
+        if branch is not None:
+            self.values["branch"] = branch
+        asks_spawn = branch is not None and spawn is None
         after_trust = self.cwd not in self.state["trusted"]
+        if asks_spawn and not after_trust:
+            return self.unsupported()  # whether Claude asks again has no recording
         if after_trust:
-            self.show("trust_prompt", prompt=True)
+            self.show("git_trust_prompt" if branch is not None else "trust_prompt", prompt=True)
             if self.paced_answer("trust_answer_too_fast").strip().lower() != "y":
                 return self.show("trust_declined")
             self.state["trusted"].append(self.cwd)
+        if asks_spawn:
+            if self.spawn_question() != "1":
+                return self.unsupported()
+            screens = ("spawn_connected_same_dir", "spawn_ready_same_dir", "spawn_stopped_same_dir")
+        else:
+            stage = "after_trust" if after_trust else "resumed"
+            server = "git_server" if branch is not None else "server"
+            screens = tuple(f"{server}_{s}_{stage}" for s in ("connected", "ready", "stopped"))
         self.values["session_name"] = self.session_name()
         self.state["servers"][self.cwd] = self.values["session_name"]
         _save_state(self.state_dir, self.state)
-        stage = "after_trust" if after_trust else "resumed"
+        connected, ready, stopped = screens
         interrupted: list[bool] = []
         signal.signal(signal.SIGINT, lambda *_: interrupted.append(True))
-        self.show(f"server_connected_{stage}")
+        self.show(connected)
         time.sleep(float(self.env.get("FAKE_CLAUDE_READY_SECONDS", READY_SECONDS)))
-        self.show(f"server_ready_{stage}")
+        self.show(ready)
         self.wait_for_interrupt(interrupted)
-        return self.show(f"server_stopped_{stage}")
+        return self.show(stopped)
+
+    def spawn_question(self) -> str:
+        """The spawn-mode answer; after Ctrl+C, which changes nothing on screen,
+        every answer is ignored, and only a signal that ends it does."""
+        interrupted: list[bool] = []
+
+        def interrupt(*_) -> None:
+            interrupted.append(True)
+            self.show("spawn_prompt_interrupted", prompt=True)
+
+        signal.signal(signal.SIGINT, interrupt)
+        self.show("spawn_prompt", prompt=True)
+        answer = self.read_line()
+        while interrupted:
+            self.show("spawn_prompt_answered_after_interrupt", prompt=True)
+            self.read_line()
+        signal.signal(signal.SIGINT, signal.SIG_DFL)
+        return answer.strip()
+
+    def unsupported(self) -> int:
+        print(f"fake claude: unsupported invocation: {' '.join(self.args)}")
+        return 2
 
     def wait_for_interrupt(self, interrupted: list[bool] | None = None) -> None:
         if interrupted is None:
