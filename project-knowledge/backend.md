@@ -86,7 +86,7 @@ the OpenAPI description it serves at `/api/openapi.json`, browsable at
 
 `create_app` takes the two ways of reaching the helpers as arguments. In
 production they are `sudo_helper` — `sudo -n -u <linux-user> rc-helper ...` —
-and `sudo_admin` — `sudo -n rc-admin ...`. Positional paths are passed after
+and `sudo_admin` — `sudo -n rc-admin ...`. Positional values — paths, user names, addresses, versions — are passed after
 `--`, and option values as `--option=value`, so nothing a person sends can be
 read as an option.
 

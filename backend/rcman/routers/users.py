@@ -36,7 +36,7 @@ def add_user(
 ) -> dict:
     record.target = body.linux
     flags = [*(["--admin"] if body.admin else []), *(["--adopt"] if body.adopt else [])]
-    return call_admin(request.app.state.admin, ["add", body.linux, body.email, *flags])
+    return call_admin(request.app.state.admin, ["add", *flags, "--", body.linux, body.email])
 
 
 @router.delete("/{linux}")
@@ -49,5 +49,6 @@ def delete_user(
     record.target = linux
     decision = "--delete" if home == "delete" else "--keep-home"
     return call_admin(
-        request.app.state.admin, ["del", linux, decision, "--requester", record.identity.email]
+        request.app.state.admin,
+        ["del", decision, f"--requester={record.identity.email}", "--", linux],
     )

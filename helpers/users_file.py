@@ -22,8 +22,9 @@ LINUX_NAME = Rule(
     "Linux user names use lowercase letters a to z, digits, hyphens and underscores, "
     f"start with a letter, and are at most {MAX_LINUX_NAME_LENGTH} characters long.",
 )
+# Never beginning with a hyphen, so that no address can be read as an option.
 EMAIL = Rule(
-    re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+"),
+    re.compile(r"[A-Za-z0-9._%+][A-Za-z0-9._%+-]*@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+"),
     "That is not a valid email address.",
 )
 FIELDS = {"email", "linux", "admin"}

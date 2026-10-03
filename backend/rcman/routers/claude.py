@@ -99,4 +99,4 @@ def upgrade(
     body: UpgradeBody, request: Request, record: Record = Depends(Recorder("claude.upgrade"))
 ) -> dict:
     record.target = body.version
-    return call_admin(request.app.state.admin, ["claude-upgrade", body.version])
+    return call_admin(request.app.state.admin, ["claude-upgrade", "--", body.version])

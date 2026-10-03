@@ -31,6 +31,7 @@ from rcman.settings import Settings
 
 from devtools import fake_claude as fake
 from devtools import record_claude as rec
+from helpers import rc_admin as ra
 from helpers import users_file as uf
 from tests.git_fixtures import FIXTURE_HOME, make_repo, push_branch_to_origin
 from tests.github_server import UNREACHABLE, GitHubServer
@@ -108,26 +109,28 @@ def create_app():
         )  # fmt: skip
         return proc.returncode, json.loads(proc.stdout)
 
-    def admin(args, timeout=None):
+    def admin(argv, timeout=None):
+        # Read as rc-admin reads its command line, so the backend's argv is held to it.
+        args = ra.parser("rc-admin", requester=True).parse_args(argv)
         users = uf.load(root / "users.toml")
-        if args[0] == "list":
+        if args.verb == "list":
             return 0, {
                 "users": [
                     {"linux": u.linux, "email": u.email, "admin": u.admin, "account": True}
                     for u in users
                 ]
             }
-        if args[0] == "add":
-            users = [u for u in users if u.linux != args[1]] + [
-                uf.User(args[2], args[1], "--admin" in args)
+        if args.verb == "add":
+            users = [u for u in users if u.linux != args.linux_user] + [
+                uf.User(args.email, args.linux_user, args.admin)
             ]
             uf.save(root / "users.toml", users)
-            return 0, {"user": {"linux": args[1]}, "created": True}
-        if args[0] == "del":
-            uf.save(root / "users.toml", [u for u in users if u.linux != args[1]])
-            return 0, {"deleted": args[1], "home_deleted": "--delete" in args}
+            return 0, {"user": {"linux": args.linux_user}, "created": True}
+        if args.verb == "del":
+            uf.save(root / "users.toml", [u for u in users if u.linux != args.linux_user])
+            return 0, {"deleted": args.linux_user, "home_deleted": args.delete}
         version = rec.load_manifest()["claude_version"]
-        if args[0] == "claude-status":
+        if args.verb == "claude-status":
             return 0, {
                 "approved": version,
                 "tested": version,
