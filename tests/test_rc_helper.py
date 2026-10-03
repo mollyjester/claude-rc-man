@@ -1544,6 +1544,7 @@ RULE_INVOCATIONS = {
     "path_invalid": (("output", "--", "{}"), None),
     "branch_name_invalid": (("git-switch", "--branch={}", "--", "projects/alpha"), None),
     "token_invalid": (("github-token",), "{}"),
+    "url_invalid": (("git-clone", "--url={}", "--", "projects"), None),
 }
 # Rules rc-helper holds without reporting them itself: subject -> why.
 RULES_NOT_REPORTED = {
@@ -2462,6 +2463,7 @@ GIT_VERBS = [
     (("github-token",), "a-token\n"),
     (("github-status",), None),
     (("github-forget",), None),
+    (("git-clone", "--url=https://github.com/owner/nothing-here", "--", "projects"), None),
 ]
 
 
@@ -3422,3 +3424,483 @@ def test_status_says_whether_a_token_is_stored_for_a_push_to_github(
     commit_in(Path(hooked["RC_HELPER_HOME"]) / GH_REL, "more.txt")
     assert push(hooked, GH_REL)[1]["error"]["code"] == "git_failed"
     assert token(hooked, GH_REL) is False  # git forgot the token GitHub refused
+
+
+# --- clone ----------------------------------------------------------------------------
+
+import shutil  # noqa: E402
+import signal  # noqa: E402
+
+from tests.git_fixtures import BODY  # noqa: E402
+
+# Addresses GITHUB_URL accepts, each with the folder a clone of it makes.
+GITHUB_URLS_ACCEPTED = [
+    ("https://github.com/owner/repo", "repo"),
+    ("https://github.com/owner/repo.git", "repo"),
+    ("https://github.com/owner/repo/", "repo"),
+    ("https://github.com/owner/repo.git/", "repo"),
+    ("https://github.com/Owner-1/Mixed_Case.Repo", "Mixed_Case.Repo"),
+    ("https://github.com/o/-r", "-r"),
+    ("https://github.com/_o/_r", "_r"),
+    ("https://github.com/o/r.git.git", "r.git"),
+    ("https://github.com/o/git", "git"),
+    ("https://github.com/o/r..x", "r..x"),
+    ("https://github.com/0/9", "9"),
+]
+GITHUB_URLS_REFUSED = [
+    "",
+    "http://github.com/o/r",
+    "HTTPS://github.com/o/r",
+    "https://GitHub.com/o/r",
+    "https://www.github.com/o/r",
+    "https://github.com.example.com/o/r",
+    "https://github.com:443/o/r",
+    "https://user@github.com/o/r",
+    "https://user:a-token@github.com/o/r",
+    "https://github.com/o/r?x=1",
+    "https://github.com/o/r#a",
+    "https://github.com/o/r/tree/main",
+    "https://github.com/o",
+    "https://github.com/o/",
+    "https://github.com//r",
+    "https://github.com/o//r",
+    "https://github.com/o/r//",
+    "https://github.com/o/.github",
+    "https://github.com/o/.git",
+    "https://github.com/-o/r",
+    "https://github.com/o.x/r",
+    "https://github.com/o%2Fx/r",
+    "https://github.com/o/%2e",
+    "https://github.com/o/r%20x",
+    "https://github.com/o/r x",
+    "https://github.com/o/résumé",
+    "https://github.com/o/r\n",
+    "https://github.com/o/r\nhttps://github.com/o/s",
+    "https://github.com/o/r\x00",
+    " https://github.com/o/r",
+    "https://github.com\\o\\r",
+    "-https://github.com/o/r",
+    "--upload-pack=x",
+    "ext::sh -c x",
+    "file:///etc",
+    "git@github.com:o/r.git",
+    "ssh://git@github.com/o/r.git",
+]
+
+
+@pytest.mark.parametrize(("url", "folder"), GITHUB_URLS_ACCEPTED)
+def test_the_github_address_rule_accepts_a_repositorys_address(url, folder):
+    assert h.GITHUB_URL.fullmatch(url)
+    assert h.clone_folder_name(url) == folder
+
+
+@pytest.mark.parametrize("url", GITHUB_URLS_REFUSED)
+def test_the_github_address_rule_refuses_anything_else(url):
+    assert not h.GITHUB_URL.fullmatch(url)
+
+
+def test_the_longest_owner_and_name_are_accepted_and_no_longer():
+    owner, name = "o" * h.MAX_GITHUB_OWNER_LENGTH, "r" * h.MAX_GITHUB_REPOSITORY_LENGTH
+    for url in (f"https://github.com/{owner}/{name}", f"https://github.com/{owner}/{name}.git/"):
+        assert h.GITHUB_URL.fullmatch(url), url
+        assert h.clone_folder_name(url) == name
+    assert not h.GITHUB_URL.fullmatch(f"https://github.com/{owner}o/{name}")
+    assert not h.GITHUB_URL.fullmatch(f"https://github.com/{owner}/{name}r")
+
+
+def test_the_folder_a_clone_makes_is_the_one_git_names(tmp_path):
+    """Each accepted address, cloned with real git into a scratch folder, from a local
+    repository it is pointed at by insteadOf, makes the folder clone_folder_name says."""
+    source = make_repo(tmp_path / "source")
+    for url, folder in GITHUB_URLS_ACCEPTED:
+        scratch = tmp_path / "scratch"
+        scratch.mkdir()
+        fixture_git(scratch, "-c", f"url.{source}.insteadOf={url}", "clone", "-q", "--", url)
+        assert os.listdir(scratch) == [h.clone_folder_name(url)] == [folder], url
+        shutil.rmtree(scratch)
+
+
+@pytest.fixture
+def published(github, tmp_path):
+    """A public repository on the tests' GitHub holding main and feature: its address,
+    without .git."""
+    name = f"pub-{tmp_path.name}"
+    make_repo(tmp_path / "published", origin=github.bare("owner", name))
+    return f"https://github.com/owner/{name}"
+
+
+def clone(env, url, *parent):
+    return helper(env, "git-clone", f"--url={url}", "--", *parent)
+
+
+def folder_of(url: str) -> str:
+    return url.removesuffix("/").rsplit("/", 1)[1].removesuffix(".git")
+
+
+def asked_for(github, name: str, since: int) -> list[str]:
+    """The tests' GitHub's requests for the repository ``name`` since ``since``."""
+    return [p for _, p in github.requests[since:] if p.startswith(f"/owner/{name}.git/")]
+
+
+@pytest.mark.parametrize("suffix", ["", ".git", "/", ".git/"])
+def test_a_clone_makes_the_folder_git_names_holding_the_repository(
+    hooked, github, published, suffix
+):
+    home = Path(hooked["RC_HELPER_HOME"])
+    url, name = published + suffix, folder_of(published)
+    before = len(github.requests)
+    assert ok(hooked, "git-clone", f"--url={url}", "--", "projects") == {
+        "created": f"projects/{name}"
+    }
+    assert asked_for(github, name, before)  # positive control: it came from the tests' GitHub
+    clone_ = home / "projects" / name
+    assert (clone_ / "README.md").read_text() == BODY
+    assert fixture_git(clone_, "config", "remote.origin.url").strip() == url
+    assert branch_of(clone_) == "main"
+    marked = {e["path"]: e["repository"] for e in ok(hooked, "tree", "projects")["entries"]}
+    assert marked[f"projects/{name}"] is True
+
+
+def test_a_clone_without_a_parent_is_made_in_the_home_folder(hooked, published):
+    home = Path(hooked["RC_HELPER_HOME"])
+    name = folder_of(published)
+    assert ok(hooked, "git-clone", f"--url={published}") == {"created": name}
+    assert (home / name / ".git").is_dir()
+
+
+@pytest.mark.parametrize("kind", ["empty", "full", "file", "dangling"])
+def test_a_clone_where_something_has_its_name_is_refused_and_leaves_it(
+    hooked, github, published, kind
+):
+    home = Path(hooked["RC_HELPER_HOME"])
+    name = folder_of(published)
+    there = home / "projects" / name
+    if kind in ("empty", "full"):
+        there.mkdir()
+        if kind == "full":
+            write(there / "mine.txt", "mine\n")
+    elif kind == "file":
+        write(there, "mine\n")
+    else:
+        there.symlink_to(home / "nowhere")
+    inode = os.lstat(there).st_ino
+    before = len(github.requests)
+    code, out = clone(hooked, published, "projects")
+    assert (code, out["error"]["code"]) == (1, "folder_exists"), out
+    assert os.lstat(there).st_ino == inode
+    assert asked_for(github, name, before) == []
+    if kind == "full":
+        assert os.listdir(there) == ["mine.txt"]
+    elif kind == "empty":
+        assert os.listdir(there) == []
+    assert not (home / "nowhere").exists()
+    assert ok(hooked, "git-clone", f"--url={published}") == {"created": name}  # positive control
+
+
+def test_a_clone_git_refuses_leaves_nothing(hooked, github):
+    home = Path(hooked["RC_HELPER_HOME"])
+    before = set(os.listdir(home / "projects"))
+    code, out = clone(hooked, "https://github.com/owner/no-such-repository", "projects")
+    assert (code, out["error"]["code"]) == (1, "git_failed"), out
+    assert out["error"]["git"] and "left" not in out["error"]
+    assert set(os.listdir(home / "projects")) == before
+
+
+def test_a_private_repository_is_cloned_with_the_stored_token_only(hooked, github, tmp_path):
+    home = Path(hooked["RC_HELPER_HOME"])
+    name = f"private-{tmp_path.name}"
+    make_repo(tmp_path / "private", origin=github.bare("owner", name, private=True))
+    url = f"https://github.com/owner/{name}"
+    for token in (None, "a-token-github-refuses"):
+        if token:
+            assert set_token(hooked, token)[0] == 0
+        code, out = clone(hooked, url, "projects")
+        assert (code, out["error"]["code"]) == (1, "git_failed"), (token, out)
+        assert out["error"]["git"] and "left" not in out["error"]
+        assert not (home / "projects" / name).exists()
+    assert set_token(hooked, github.token)[0] == 0
+    assert ok(hooked, "git-clone", f"--url={url}", "--", "projects") == {
+        "created": f"projects/{name}"
+    }
+    clone_ = home / "projects" / name
+    assert (clone_ / "README.md").is_file()
+    assert (h.GITHUB_USERNAME, True) in github.attempts  # positive control: the token was used
+    for path in (clone_ / ".git").rglob("*"):
+        if path.is_file():
+            assert github.token.encode() not in path.read_bytes(), path
+
+
+def test_the_token_is_in_no_argv_or_environment_of_a_private_clone(
+    hooked, github, monkeypatch, tmp_path
+):
+    name = f"private-{tmp_path.name}"
+    make_repo(tmp_path / "private", origin=github.bare("owner", name, private=True))
+    seen = started_gits(monkeypatch)
+    helper_ = in_process(hooked)
+    helper_.github_token(github.token.encode() + b"\n")
+    helper_.git_clone("projects", f"https://github.com/owner/{name}")
+    assert any("clone" in argv for argv, _ in seen)  # positive control
+    for argv, env in seen:
+        assert not any(github.token in part for part in argv), argv
+        assert not any(github.token in value for value in env.values()), argv
+
+
+def persons_hook(env, name: str, script: str) -> None:
+    """A hook of the person's own, from core.hooksPath in their ~/.gitconfig, which a
+    clone runs: a new repository has no hooks of its own."""
+    home = Path(env["RC_HELPER_HOME"])
+    hooks = home / ".git-hooks"
+    hooks.mkdir(exist_ok=True)
+    (hooks / name).write_text(script)
+    (hooks / name).chmod(0o755)
+    gitconfig = str(home / ".gitconfig")
+    subprocess.run(["git", "config", "--file", gitconfig, "core.hooksPath", str(hooks)], check=True)
+
+
+def gone(pid: int, within: float = 10) -> bool:
+    deadline = time.monotonic() + within
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return True
+        time.sleep(0.05)
+    return False
+
+
+def test_gits_argv_is_clone_and_the_address_and_nothing_else(hooked, published, tmp_path):
+    out = tmp_path / "argv.json"
+    persons_hook(
+        hooked,
+        "post-checkout",
+        "#!/usr/bin/python3\nimport json, os\n"
+        "git = os.getppid()\n"
+        "helper = open(f'/proc/{git}/stat').read().rsplit(')', 1)[1].split()[1]\n"
+        "argv = lambda pid: open(f'/proc/{pid}/cmdline', 'rb').read().decode().split('\\0')[:-1]\n"
+        f"json.dump({{'git': argv(git), 'helper': argv(helper)}}, open({str(out)!r}, 'w'))\n",
+    )
+    ok(hooked, "git-clone", f"--url={published}", "--", "projects")
+    seen = json.loads(out.read_text())
+    assert seen["git"] == [git_run.find_git(), "clone", "--", published]
+    assert seen["helper"][-4:] == ["git-clone", f"--url={published}", "--", "projects"]
+
+
+def test_a_clone_past_its_deadline_is_git_timeout_and_leaves_nothing(
+    hooked, published, tmp_path, monkeypatch, capsys
+):
+    home = Path(hooked["RC_HELPER_HOME"])
+    pid_file = tmp_path / "hook.pid"
+    persons_hook(hooked, "post-checkout", f"#!/bin/sh\necho $$ > {pid_file}\nexec sleep 60\n")
+    monkeypatch.setattr(h, "CLONE_TIMEOUT", 4.0)  # read when the verb is called
+    monkeypatch.setattr(h, "CLONE_CLEANUP_SECONDS", 1.0)
+    began = time.monotonic()
+    status, out = answer_of(hooked, capsys, "git-clone", f"--url={published}", "--", "projects")
+    assert time.monotonic() - began < 15
+    assert (status, out["error"]["code"]) == (1, "git_timeout"), out
+    assert "left" not in out["error"]
+    assert gone(int(pid_file.read_text()))  # the hook ran, and was ended
+    assert not (home / "projects" / folder_of(published)).exists()
+
+
+def test_git_has_the_clones_deadline_less_the_time_to_clean_up(hooked, published, monkeypatch):
+    deadlines = []
+    real = h.Helper._git
+
+    def recording(self, repo, args, deadline, **kwargs):
+        deadlines.append((args[0], deadline - time.monotonic()))
+        return real(self, repo, args, deadline, **kwargs)
+
+    monkeypatch.setattr(h.Helper, "_git", recording)
+    in_process(hooked).git_clone("projects", published)
+    [(verb, left)] = deadlines
+    assert verb == "clone"
+    expected = h.CLONE_TIMEOUT - h.CLONE_CLEANUP_SECONDS
+    assert expected - 5 < left <= expected
+
+
+def test_sigterm_during_a_clone_ends_git_and_leaves_nothing(hooked, published, tmp_path):
+    home = Path(hooked["RC_HELPER_HOME"])
+    pid_file = tmp_path / "hook.pid"
+    persons_hook(hooked, "post-checkout", f"#!/bin/sh\necho $$ > {pid_file}\nexec sleep 60\n")
+    proc = subprocess.Popen(
+        [str(HELPER), "git-clone", f"--url={published}", "--", "projects"],
+        env=hooked,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    deadline = time.monotonic() + 30
+    while not pid_file.exists() or not pid_file.read_text().strip():
+        assert time.monotonic() < deadline, "the hook never ran"
+        time.sleep(0.05)
+    assert (home / "projects" / folder_of(published) / ".git").is_dir()  # positive control
+    proc.send_signal(signal.SIGTERM)
+    stdout, _ = proc.communicate(timeout=20)
+    assert stdout == b""  # no answer: the backend answers helper_timeout
+    assert gone(int(pid_file.read_text()))
+    assert not (home / "projects" / folder_of(published)).exists()
+
+
+def test_a_sigterm_while_a_failed_clone_is_removed_waits_for_the_removal(
+    hooked, github, monkeypatch, capsys
+):
+    """The SIGTERM arrives as the folder starts being removed; it takes effect once the
+    removal is done."""
+    home = Path(hooked["RC_HELPER_HOME"])
+    real = shutil.rmtree
+    removing = []
+
+    def rmtree(*args, **kwargs):
+        removing.append(args)
+        os.kill(os.getpid(), signal.SIGTERM)
+        return real(*args, **kwargs)
+
+    rmtree.avoids_symlink_attacks = real.avoids_symlink_attacks
+    monkeypatch.setattr(shutil, "rmtree", rmtree)
+    url = "https://github.com/owner/no-such-repository"
+    with pytest.raises(SystemExit):
+        answer_of(hooked, capsys, "git-clone", f"--url={url}", "--", "projects")
+    assert removing  # positive control: the removal started
+    assert not (home / "projects" / "no-such-repository").exists()
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root removes anything; the container suite checks")
+def test_a_failed_clone_that_cannot_be_removed_is_reported_as_left(hooked, published):
+    home = Path(hooked["RC_HELPER_HOME"])
+    name = folder_of(published)
+    persons_hook(
+        hooked, "post-checkout", "#!/bin/sh\nmkdir kept && touch kept/x && chmod 555 kept\nexit 1\n"
+    )
+    code, out = clone(hooked, published, "projects")
+    kept = home / "projects" / name / "kept"
+    try:
+        assert (code, out["error"]["code"]) == (1, "git_failed"), out
+        assert out["error"]["left"] == [f"projects/{name}"]
+        assert (kept / "x").exists()
+    finally:
+        if kept.exists():
+            kept.chmod(0o755)
+
+
+def test_a_second_clone_of_the_same_repository_at_once_is_refused(
+    hooked, github, published, tmp_path
+):
+    home = Path(hooked["RC_HELPER_HOME"])
+    name = folder_of(published)
+    started, release = tmp_path / "started", tmp_path / "release"
+    persons_hook(
+        hooked,
+        "post-checkout",
+        f"#!/bin/sh\ntouch {started}\nwhile [ ! -e {release} ]; do sleep 0.05; done\n",
+    )
+    first = subprocess.Popen(
+        [str(HELPER), "git-clone", f"--url={published}", "--", "projects"],
+        env=hooked,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    try:
+        deadline = time.monotonic() + 30
+        while not started.exists():
+            assert time.monotonic() < deadline, "the first clone never checked out"
+            time.sleep(0.05)
+        code, out = clone(hooked, published, "projects")
+        assert (code, out["error"]["code"]) == (1, "folder_exists"), out
+    finally:
+        release.touch()
+        stdout, _ = first.communicate(timeout=30)
+    assert json.loads(stdout) == {"created": f"projects/{name}"}
+    clone_ = home / "projects" / name
+    assert (clone_ / "README.md").read_text() == BODY
+    assert fixture_git(clone_, "status", "--porcelain") == ""
+
+
+def test_a_clone_git_made_somewhere_else_is_refused_and_rcmans_folder_removed(
+    hooked, published, monkeypatch, tmp_path
+):
+    home = Path(hooked["RC_HELPER_HOME"])
+    name = folder_of(published)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    real = h.Helper._git
+
+    def misdirected(self, repo, args, deadline, **kwargs):
+        return real(self, elsewhere if args[:1] == ["clone"] else repo, args, deadline, **kwargs)
+
+    monkeypatch.setattr(h.Helper, "_git", misdirected)
+    assert refusal(in_process(hooked).git_clone, "projects", published).code == "clone_missing"
+    assert (elsewhere / name / ".git").is_dir()  # positive control: git did clone
+    assert not (home / "projects" / name).exists()
+
+
+def test_a_local_path_named_like_the_address_is_not_cloned_from(hooked, github, published):
+    """git takes an address that names a path in the folder it runs in as that path:
+    https:/github.com/owner/<name> there, a repository, makes git refuse the address
+    rather than clone the repository there, or reach GitHub."""
+    home = Path(hooked["RC_HELPER_HOME"])
+    name = folder_of(published)
+    twin = make_repo(home / "projects" / "https:" / "github.com" / "owner" / name)
+    head = fixture_git(twin, "rev-parse", "HEAD")
+    before = len(github.requests)
+    code, out = clone(hooked, published, "projects")
+    assert (code, out["error"]["code"]) == (1, "git_failed"), out
+    assert not (home / "projects" / name).exists()
+    assert asked_for(github, name, before) == []
+    assert fixture_git(twin, "rev-parse", "HEAD") == head
+    ok(hooked, "git-clone", f"--url={published}", "--", "projects/alpha")  # positive control
+
+
+def test_a_clone_is_made_only_inside_the_home_folder(hooked, github, published, tmp_path):
+    home = Path(hooked["RC_HELPER_HOME"])
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (home / "projects" / "out").symlink_to(outside)
+    write(home / "projects" / "a-file")
+    before = len(github.requests)
+    for parent, code in (
+        ("projects/out", "path_outside_home"),
+        ("..", "path_outside_home"),
+        ("/etc", "path_invalid"),
+        ("projects/a-file", "path_not_directory"),
+        ("projects/none", "path_not_found"),
+    ):
+        assert clone(hooked, published, parent)[1]["error"]["code"] == code, parent
+    assert os.listdir(outside) == []
+    assert asked_for(github, folder_of(published), before) == []
+
+
+def test_a_clone_is_made_only_where_the_path_is_as_on_disk(hooked, published, monkeypatch):
+    home = Path(hooked["RC_HELPER_HOME"])
+    listed_as(monkeypatch, home / "projects", "beta", "Beta")
+    helper_ = in_process(hooked)
+    assert refusal(helper_.git_clone, "projects/beta", published).code == "path_name_differs"
+    assert os.listdir(home / "projects" / "beta") == ["inner"]
+    assert helper_.git_clone("projects/alpha", published)["created"].startswith("projects/alpha/")
+
+
+def test_an_address_is_refused_before_anything_else_is_looked_at(hooked, github, monkeypatch):
+    before = len(github.requests)
+    for parent in ("projects", "/etc", "../outside", "projects/none"):
+        code, out = clone(hooked, "https://user:a-token@github.com/owner/r", parent)
+        assert (code, out["error"]["code"]) == (1, "url_invalid"), (parent, out)
+        assert "a-token" not in json.dumps(out)
+    monkeypatch.setattr(h, "resolve_folder", lambda *a, **k: pytest.fail("a path was resolved"))
+    error = refusal(in_process(hooked).git_clone, "projects", "file:///etc")
+    assert error.code == "url_invalid"
+    assert len(github.requests) == before
+
+
+def test_a_clone_is_refused_where_a_failed_one_could_not_be_removed_safely(
+    hooked, published, monkeypatch
+):
+    home = Path(hooked["RC_HELPER_HOME"])
+    monkeypatch.setattr(shutil.rmtree, "avoids_symlink_attacks", False)
+    assert refusal(in_process(hooked).git_clone, "projects", published).code == "clone_unsafe"
+    assert not (home / "projects" / folder_of(published)).exists()
+
+
+def test_a_clone_has_time_for_the_network_and_to_clean_up_before_rcman_gives_up():
+    from rcman import helpers_client
+
+    assert h.CLONE_TIMEOUT > helpers_client.HELPER_TIMEOUT
+    assert 0 < h.CLONE_CLEANUP_SECONDS
+    assert h.CLONE_TIMEOUT - h.CLONE_CLEANUP_SECONDS >= h.GIT_NETWORK_TIMEOUT

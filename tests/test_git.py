@@ -373,3 +373,84 @@ def test_commit_and_push_message_is_the_commits_rule(app):
     ]
     assert message.schema["pattern"] == rc_helper.COMMIT_MESSAGE.anchored
     assert message.schema["maxLength"] == rc_helper.MAX_COMMIT_MESSAGE_LENGTH
+
+
+# --- clone ----------------------------------------------------------------------------
+
+
+@pytest.fixture
+def published(github, tmp_path):
+    """A public repository on the tests' GitHub: its address, and the folder a clone makes."""
+    name = f"clone-{tmp_path.name}"
+    make_repo(tmp_path / "published", origin=github.bare("alice", name))
+    return f"https://github.com/alice/{name}", name
+
+
+def test_clone_runs_the_helper_as_the_person_with_the_address_and_the_folder(
+    client, recorded, published, helper_homes
+):
+    url, name = published
+    r = call(client, "POST", "/api/git/clone", json={"parent": PATH, "url": url})
+    assert r.status_code == 200, r.text
+    assert r.json() == {"created": f"{PATH}/{name}"}
+    [made] = recorded.calls
+    assert made["linux"] == "alice"
+    assert made["args"] == ["git-clone", f"--url={url}", "--", PATH]
+    assert made["stdin"] is None
+    assert (helper_homes.homes["alice"] / PATH / name / "README.md").is_file()
+
+
+def test_a_clone_into_the_home_folder_sends_no_folder(client, recorded, published, helper_homes):
+    url, name = published
+    r = call(client, "POST", "/api/git/clone", json={"url": url})
+    assert r.status_code == 200, r.text
+    assert r.json() == {"created": name}
+    assert recorded.calls[-1]["args"] == ["git-clone", f"--url={url}", "--"]
+    assert (helper_homes.homes["alice"] / name / ".git").is_dir()
+
+
+def test_people_clone_only_into_their_own_folders(client, published, helper_homes):
+    url, name = published
+    r = call(client, "POST", "/api/git/clone", who=BOB, json={"parent": PATH, "url": url})
+    assert (r.status_code, r.json()["code"]) == (404, "path_not_found")
+    assert not (helper_homes.homes["alice"] / PATH / name).exists()
+    r = call(client, "POST", "/api/git/clone", who=BOB, json={"url": url})
+    assert r.status_code == 200, r.text  # positive control: into bob's own home
+    assert (helper_homes.homes["bob"] / name / ".git").is_dir()
+    assert not (helper_homes.homes["alice"] / name).exists()
+
+
+def test_a_clone_waits_longer_than_the_helpers_own_deadline(client, recorded, published):
+    url, _ = published
+    call(client, "POST", "/api/git/clone", json={"parent": PATH, "url": url})
+    [made] = recorded.calls
+    assert made["timeout"] > rc_helper.CLONE_TIMEOUT
+
+
+def test_the_clone_address_field_is_the_helpers_rule(app):
+    from tests.test_problems import request_fields
+
+    [url] = [f for f in request_fields(app) if f.path == "/api/git/clone" and f.name == "url"]
+    assert url.schema["pattern"] == rc_helper.GITHUB_URL.anchored
+
+
+def test_an_address_with_a_token_in_it_is_refused_and_never_repeated(
+    client, recorded, settings, caplog
+):
+    import sqlite3
+
+    caplog.set_level("DEBUG")
+    secret = "SECRET-TOKEN-IN-AN-ADDRESS-5"
+    url = f"https://alice:{secret}@github.com/alice/repo"
+    r = call(client, "POST", "/api/git/clone", json={"parent": PATH, "url": url})
+    assert (r.status_code, r.json()["code"]) == (422, "validation_failed")
+    assert r.json()["errors"] == [{"field": "url", "message": rc_helper.GITHUB_URL.sentence}]
+    assert secret not in r.text
+    assert recorded.calls == []  # the helper is not asked
+    con = sqlite3.connect(settings.database)
+    rows = con.execute("select * from audit").fetchall()
+    last = con.execute("select action, target, result from audit order by id desc").fetchone()
+    assert last == ("git.clone", None, "validation_failed")  # positive control: recorded
+    assert caplog.records  # positive control: the audit event was logged
+    assert all(secret not in str(value) for row in rows for value in row)
+    assert secret not in caplog.text

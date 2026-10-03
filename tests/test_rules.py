@@ -88,6 +88,7 @@ def helpers_rules() -> dict[str, Rule]:
         "PATH",
         "FOLDER_PATH",
         "COMMIT_MESSAGE",
+        "GITHUB_URL",
     }
     assert names <= set(found), names - set(found)
     return found
@@ -132,14 +133,28 @@ def _limits():
 
 # A short value each rule accepts, to put every code point into; the first one a
 # rule accepts is its example.
-EXAMPLES = ("a", "a@b.c", "1.2.3")
+EXAMPLES = ("a", "a@b.c", "1.2.3", "https://github.com/o/r")
 CODE_POINTS = [chr(c) for c in range(0x110000) if not 0xD800 <= c <= 0xDFFF]
+# Examples too long to put a code point in place of each of their characters in the
+# time a test should take, each with the places used instead: where an address's
+# owner and repository name begin, and inside the owner; the ends are every
+# example's.
+LIMITED_CONTEXTS = {
+    "https://github.com/o/r": [
+        "https://github.com/{}/r",
+        "https://github.com/o{}/r",
+        "https://github.com/o/{}",
+    ],
+}
 
 
 def _contexts(example: str) -> list[str]:
     """Templates putting a code point alone, before, after and in place of each
-    character of the example, each once."""
+    character of the example, each once; for an example in LIMITED_CONTEXTS, in its
+    places instead of in place of each character."""
     found = ["{}", "{}" + example, example + "{}"]
+    if example in LIMITED_CONTEXTS:
+        return found + LIMITED_CONTEXTS[example]
     found += [example[:i] + "{}" + example[i + 1 :] for i in range(len(example))]
     return list(dict.fromkeys(found))
 

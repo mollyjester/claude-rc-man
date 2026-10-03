@@ -164,6 +164,9 @@ CALLS = {
     ("POST", "/api/git/commit-push"): {
         "json": {"path": "projects/alice-project", "message": "A message"}
     },
+    ("POST", "/api/git/clone"): {
+        "json": {"parent": "projects/alice-project", "url": "https://github.com/alice/a-clone"}
+    },
     ("GET", "/api/git/status"): {"params": {"path": "projects/alice-project"}},
     ("GET", "/api/git/branches"): {"params": {"path": "projects/alice-project"}},
     ("GET", "/api/github"): {},

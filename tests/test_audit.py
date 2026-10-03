@@ -471,3 +471,17 @@ def test_a_push_and_a_commit_and_push_are_recorded_with_the_folder(
     assert client.post("/api/git/push", json={"path": path}, headers=changing(ALICE)).is_success
     recorded = [(r["action"], r["target"], r["result"]) for r in rows(settings)[-2:]]
     assert recorded == [("git.commit_push", path, "ok"), ("git.push", path, "ok")]
+
+
+def test_a_clone_is_recorded_with_its_address(client, settings, github, tmp_path):
+    from tests.git_fixtures import make_repo
+
+    name = f"audited-{tmp_path.name}"
+    make_repo(tmp_path / "published", origin=github.bare("alice", name))
+    cloned = f"https://github.com/alice/{name}"
+    missing = "https://github.com/alice/no-such-repository.git"
+    for url in (cloned, missing):
+        body = {"parent": "projects", "url": url}
+        client.post("/api/git/clone", json=body, headers=changing(ALICE))
+    recorded = [(r["action"], r["target"], r["result"]) for r in rows(settings)[-2:]]
+    assert recorded == [("git.clone", cloned, "ok"), ("git.clone", missing, "git_failed")]
