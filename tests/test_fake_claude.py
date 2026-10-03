@@ -41,19 +41,39 @@ def screen_of(name, **values):
 # --- round trip: the recorder over the fake reproduces every fixture ---------
 
 
-def test_fake_reproduces_every_recorded_screen(tmp_path):
+AUTOMATIC = [s for s in rec.SEQUENCES if not s.needs_human]
+
+
+@pytest.mark.parametrize("sequence", AUTOMATIC, ids=lambda s: s.name)
+def test_fake_reproduces_the_recorded_screens_of(sequence, tmp_path):
+    """The sequence, recorded over the fake with an account of its own, gives its
+    fixtures."""
     account = logged_in(tmp_path / "account")
-    automatic = [s for s in rec.SEQUENCES if not s.needs_human]
     recorded = rec.record(
         claude_bin=FAKE,
-        sequences=automatic,
+        sequences=[sequence],
         account_config_dir=account,
         workdir=tmp_path / "work",
     )
-    names = {c for s in automatic for c in s.captures}
-    expected = {name: f for name, f in rec.load_fixtures().items() if name in names}
+    expected = {name: f for name, f in rec.load_fixtures().items() if name in sequence.captures}
+    assert sequence.captures and set(expected) == set(sequence.captures)  # each has a fixture
     assert set(recorded) == set(expected)  # every capture was produced
     assert rec.compare(recorded, expected) == []
+
+
+def test_the_round_trip_has_a_case_for_every_automatic_sequence_and_fixture():
+    """Each sequence the recorder runs unattended is its own case, and together their
+    captures are every fixture but those of the sequences that need a person."""
+    from tests.collected import collect
+
+    test = "tests/test_fake_claude.py::test_fake_reproduces_the_recorded_screens_of"
+    found = collect(["tests/test_fake_claude.py"])
+    cases = {n.removeprefix(test) for n in found if n.startswith(test)}
+    assert AUTOMATIC and len(AUTOMATIC) < len(rec.SEQUENCES)  # both kinds exist
+    assert cases == {f"[{s.name}]" for s in AUTOMATIC}
+    names = {s.name for s in AUTOMATIC}
+    fixtures = {c for c, e in rec.load_manifest()["captures"].items() if e["sequence"] in names}
+    assert {c for s in AUTOMATIC for c in s.captures} == fixtures
 
 
 def test_round_trip_fails_when_a_fixture_differs(tmp_path):

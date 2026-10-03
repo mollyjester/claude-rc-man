@@ -105,7 +105,7 @@ process has ended on one as `exited` (see [rc-helper.md](rc-helper.md)):
 
 | Tests | Needs | Runs |
 |---|---|---|
-| `tests/test_fake_claude.py` | Nothing | Always. The recorder drives the fake exactly as it drives the real binary and must reproduce every fixture but those of the sequences that need a person, whose screens the fake's sign-in tests check |
+| `tests/test_fake_claude.py` | Nothing | Always. The recorder drives the fake exactly as it drives the real binary, each sequence in a test case of its own with an account of its own, and must reproduce every fixture but those of the sequences that need a person, whose screens the fake's sign-in tests check |
 | `tests/test_claude_contract.py` | The real `claude`, no account | Always; skipped when `claude` is not installed unless `RCMAN_REQUIRE_REAL_CLAUDE=1`, which `make check` sets. The installed version must be the manifest's; the no-account screens must match the fixtures; every option rcman passes must be in `--help`, except where help is refused without a login |
 | `tests/test_claude_real_account.py` | The real `claude`, logged in | By hand: `uv run pytest -m real_claude`. Runs the account sequences and the one that submits an invalid sign-in code, and checks every option rcman passes against `--help` while logged in |
 
