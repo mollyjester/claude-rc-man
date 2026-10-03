@@ -116,7 +116,7 @@ function Files({
     onSelect(next);
   }
   return (
-    // biome-ignore lint/a11y/useSemanticElements: a list of files under a heading of its own, which a fieldset would make its legend, no longer a heading
+    // biome-ignore lint/a11y/useSemanticElements: a fieldset would give the same group, but brings a border, padding and margin the panel does not want, and a minimum width of its widest unbreakable content, so a long file name would stretch the whole group past the panel where in a div only the name overflows; a div with the role has none of these to undo
     <div role="group" aria-label={title} className="files">
       <h4>{m.listHeading(title, list.files.length + list.more)}</h4>
       {list.files.length === 0 ? (
