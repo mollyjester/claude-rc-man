@@ -22,6 +22,7 @@ export function Attention() {
   const [report, setReport] = useState<Report | null>(null);
   const [error, setError] = useState<ApiError | null>(null);
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: location.pathname is what sets this off, not what it reads: the report is fetched again on every change of page
   useEffect(() => {
     let current = true;
     api.get<Report>("/api/attention").then(

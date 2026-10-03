@@ -36,6 +36,7 @@ function AdminMenu() {
   const id = useId();
   const here = ADMIN_PAGES.some((page) => matchPath(page.path, pathname));
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: pathname is what sets this off, not what it reads: the menu closes whenever the page changes
   useEffect(() => setOpen(false), [pathname]);
 
   function onKeyDown(event: KeyboardEvent) {

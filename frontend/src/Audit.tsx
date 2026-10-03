@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 import { type ApiError, api } from "./api";
 import { m } from "./messages";
@@ -19,7 +19,9 @@ export function Audit() {
   const [more, setMore] = useState(true);
   const [error, setError] = useState<ApiError | null>(null);
 
-  async function load(before?: number) {
+  // A page of events, the newest or those older than `before`; it reads nothing from a render,
+  // so it is made once.
+  const load = useCallback(async (before?: number) => {
     try {
       const page = (await api.get<{ events: Event[] }>("/api/audit", { before })).events;
       setEvents((current) => (before ? [...current, ...page] : page));
@@ -27,11 +29,11 @@ export function Audit() {
     } catch (e) {
       setError(asApiError(e));
     }
-  }
+  }, []);
 
   useEffect(() => {
     load();
-  }, []);
+  }, [load]);
 
   return (
     <section>
