@@ -10,6 +10,8 @@ const ORIGIN = `http://127.0.0.1:${PORT}`;
 
 export default defineConfig({
   testDir: "e2e",
+  // Its own, as every config has: see project-knowledge/frontend.md.
+  outputDir: "test-results/e2e",
   workers: 1,
   timeout: 60_000,
   expect: { timeout: 15_000 },

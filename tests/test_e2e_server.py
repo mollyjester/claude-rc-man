@@ -1,8 +1,11 @@
-"""The browser tests' backend leaves no tmux server running behind it."""
+"""The browser tests: their backend, which leaves nothing running behind it, and the
+Playwright configs that run them."""
 
+import json
 import os
 import shutil
 import signal
+import socket
 import subprocess
 import tempfile
 from pathlib import Path
@@ -13,6 +16,8 @@ from fastapi.testclient import TestClient
 from tests import e2e_server as e2e
 
 REPO = Path(__file__).resolve().parent.parent
+FRONTEND = REPO / "frontend"
+CONFIGS = ("playwright.config.ts", "playwright.stack.config.ts")
 TOKEN = "the-worlds-github-token"
 
 
@@ -163,3 +168,54 @@ def test_the_worlds_github_has_a_repository_to_clone_that_no_home_holds(world):
     assert fixture_git(origin, "show", "main:README.md")  # a file to find in the clone
     for home in (root / "homes").iterdir():
         assert not list(home.rglob("demo")), home
+
+
+def _free_port() -> int:
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+def listed(config: str, env: dict[str, str]) -> dict:
+    """What Playwright makes of a config, read with --list, which starts no web server."""
+    proc = subprocess.run(
+        ["npx", "playwright", "test", "--config", config, "--list", "--reporter=json"],
+        cwd=FRONTEND, env=env, capture_output=True, text=True, timeout=120,
+    )  # fmt: skip
+    assert proc.returncode == 0, proc.stderr
+    return json.loads(proc.stdout)
+
+
+def test_the_stack_browser_config_refuses_to_run_without_the_stack_port():
+    """No port is assumed: only tests/test_container_suite.py's run knows the port its
+    container published."""
+    env = {k: v for k, v in os.environ.items() if k != "RCMAN_STACK_PORT"}
+    proc = subprocess.run(
+        ["npx", "playwright", "test", "--config", "playwright.stack.config.ts", "--list"],
+        cwd=FRONTEND, env=env, capture_output=True, text=True, timeout=120,
+    )  # fmt: skip
+    assert proc.returncode != 0, proc.stdout
+    assert "RCMAN_STACK_PORT" in proc.stdout + proc.stderr
+    assert "tests/test_container_suite.py" in proc.stdout + proc.stderr
+    env["RCMAN_STACK_PORT"] = str(_free_port())
+    listing = subprocess.run(
+        ["npx", "playwright", "test", "--config", "playwright.stack.config.ts", "--list"],
+        cwd=FRONTEND, env=env, capture_output=True, text=True, timeout=120,
+    )  # fmt: skip
+    assert listing.returncode == 0, listing.stderr  # positive control: given one, it loads
+
+
+def test_the_two_browser_configs_write_to_different_output_folders():
+    # Why each has its own: project-knowledge/frontend.md.
+    env = {**os.environ, "RCMAN_STACK_PORT": str(_free_port())}
+    folders = {}
+    for config in CONFIGS:
+        listing = listed(config, env)
+        assert listing["suites"], config  # positive control: the config's specs are read
+        (project,) = listing["config"]["projects"]
+        folders[config] = Path(project["outputDir"])
+    (one, other) = folders.values()
+    assert not one.is_relative_to(other) and not other.is_relative_to(one), folders
+    for folder in folders.values():
+        ignored = subprocess.run(["git", "check-ignore", "-q", str(folder)], cwd=REPO)
+        assert ignored.returncode == 0, folder

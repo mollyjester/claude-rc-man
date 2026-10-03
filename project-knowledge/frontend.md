@@ -166,4 +166,10 @@ matters, so a suppression at the site is preferred.
   for that — and again before building the world, for a run that was killed.
 - **Whole-stack browser tests**: `e2e-stack/*.spec.ts` with
   `playwright.stack.config.ts`, against an installed rcman behind real Caddy
-  and oauth2-proxy in a container — see [tests.md](tests.md).
+  and oauth2-proxy in a container — see [tests.md](tests.md). The config
+  takes the container's published port from `RCMAN_STACK_PORT`, which
+  `tests/test_container_suite.py` sets, and refuses to load without it.
+
+Each Playwright config writes to an output folder of its own under
+`test-results/`, its `outputDir`, because Playwright empties a run's output
+folder as the run starts.
