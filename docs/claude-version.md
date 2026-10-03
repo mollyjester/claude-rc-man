@@ -33,14 +33,23 @@ sudo rcman-user claude-upgrade <version>
 ```
 
 1. The version is installed in a scratch area that belongs to no person, and
-   checked there without any Claude account: its version number, the account
-   status it reports, how it refuses to start a server when nobody is signed
-   in, its sign-in screen, the sign-in options rcman uses, and signing out.
-2. If any check fails, nothing changes, and the failed checks are named.
+   checked there without any Claude account, by each check in the table
+   below.
+2. If any check fails, nothing changes, and the failed checks are named, as
+   the table names them.
 3. If all pass, the version becomes the approved one and is installed for
    everyone whose version differs. Anyone whose installation fails is named;
    run `sudo rcman-user add` for them again to retry. People added later get
    the approved version.
+
+| Check | What it checks |
+|---|---|
+| `version` | The version number it reports is the one being rolled out |
+| `auth_status` | The account status it reports says nobody is signed in |
+| `logged_out_refusal` | It refuses to start a server when nobody is signed in, as rcman recognises |
+| `sign_in_screen` | Its sign-in screen is one rcman recognises |
+| `login_options` | It offers the sign-in options rcman uses |
+| `logout` | Signing out succeeds |
 
 Servers that are running keep the version they started with until they are
 stopped and started again. An earlier version can be rolled out the same way.
