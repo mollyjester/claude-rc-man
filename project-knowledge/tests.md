@@ -20,7 +20,8 @@ The suite needs `tmux` and `git`. Everything git is tested against real git,
 never a fake: `tests/git_fixtures.py`, which is not a test module, makes real
 repositories, their origins and their branches with the system's git, under
 a fixture configuration of its own, in a home removed when the tests end, so the person's configuration rc-helper
-reads is only what a test plants. GitHub is `tests/github_server.py`: the
+reads is only what a test plants; fixture git refuses https, so no address a
+test gives it reaches the real GitHub. GitHub is `tests/github_server.py`: the
 system's `git http-backend` behind a small server, which serves anyone a
 read of a public repository, and takes a push, or a read of one made
 private, only with its token as the password, under any
@@ -30,8 +31,10 @@ rc-helper a test runs gets its environment from `helper_env` in
 `tests/helper_env.py`, which always sets `RC_HELPER_GITHUB` (see
 [rc-helper.md](rc-helper.md#test-hooks)) to it or to `UNREACHABLE`, so that
 no test reaches the real GitHub; `tests/test_helper_env.py` finds any other
-place in `tests/` that builds one, and any rc-helper `Config` made in a test
-without saying where GitHub is. Before the first test, `github_hook_works`
+place in `tests/` that builds one, any rc-helper `Config` made in a test
+without saying where GitHub is, and any git run in a test with GitHub's
+address written into its arguments outside the modules that keep it local
+and the exemptions it lists. Before the first test, `github_hook_works`
 in `tests/conftest.py` checks, without reaching anything, that git as
 rc-helper runs it would send GitHub to the hook's address, and only then
 that the tests' GitHub sees the request. The browser tests' world runs a
