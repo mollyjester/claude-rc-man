@@ -1,8 +1,8 @@
 """The Makefile's test targets: make test runs every test that runs on the host, make
 test-container every test that needs a container, and make check both, with a
-container test that cannot run failing rather than skipping, and none of them running
-a test that needs a real Claude account. make lint and make
-format cover both the Python code and the frontend.
+container test that cannot run, or a test of the real claude, failing rather than
+skipping, and none of them running a test that needs a real Claude account. make lint
+and make format cover both the Python code and the frontend.
 
 Each target is run by the real make with uv, npm and npx replaced by recorders, so
 what a target would run is read from what it ran; which tests a pytest command line
@@ -115,8 +115,9 @@ def left_out(ran: set[str], full: set[str], target: str) -> list[str]:
 
 def check_problems(check: list[Call]) -> list[str]:
     """What make check would get wrong: a test none of its pytest calls selects, a test a
-    bare pytest leaves out, or a call selecting container tests without
-    RCMAN_REQUIRE_CONTAINER=1, where they would skip."""
+    bare pytest leaves out, a call selecting container tests without
+    RCMAN_REQUIRE_CONTAINER=1, where they would skip, or a call without
+    RCMAN_REQUIRE_REAL_CLAUDE=1, where the tests of the real claude would."""
     full, marked = everything()
     runs = selected(check)
     ran = set().union(*runs.values()) if runs else set()
@@ -126,6 +127,11 @@ def check_problems(check: list[Call]) -> list[str]:
         f"container tests without RCMAN_REQUIRE_CONTAINER=1: {' '.join(call.argv)}"
         for call, tests in runs.items()
         if tests & marked and ("RCMAN_REQUIRE_CONTAINER", "1") not in call.env
+    ]
+    problems += [
+        f"without RCMAN_REQUIRE_REAL_CLAUDE=1: {' '.join(call.argv)}"
+        for call in runs
+        if ("RCMAN_REQUIRE_REAL_CLAUDE", "1") not in call.env
     ]
     return problems
 
@@ -236,6 +242,17 @@ def test_real_claude_tests_run_by_make_check_are_reported(tmp_path):
     makefile = planted(tmp_path, '-m "not container and not real_claude"', '-m "not container"')
     problems = check_problems(recorded(tmp_path, "check", makefile))
     assert problems == [f"left out of a bare run, in make check: {n}" for n in real_claude_tests()]
+
+
+def test_make_check_without_the_real_claude_requirement_is_reported(tmp_path):
+    """Planted twin: make check not setting RCMAN_REQUIRE_REAL_CLAUDE=1, where the tests
+    of the real claude would skip rather than fail without it."""
+    makefile = planted(tmp_path, "check: export RCMAN_REQUIRE_REAL_CLAUDE = 1\n", "")
+    calls = [c for c in recorded(tmp_path, "check", makefile) if c.pytest_args() is not None]
+    assert len(calls) >= 2  # non-vacuity: the host run and the container run
+    assert check_problems(calls) == [
+        f"without RCMAN_REQUIRE_REAL_CLAUDE=1: {' '.join(c.argv)}" for c in calls
+    ]
 
 
 @pytest.mark.parametrize("target", ["test", "test-container"])

@@ -148,7 +148,10 @@ it can fail, and a positive control that keeps an empty input from passing.
 - **The container marker is derived** (`tests/test_container_marker.py`). In
   the collected suite the tests carrying `container` are exactly those using
   the `docker` fixture, and no source under `tests/` places the marker by
-  hand. `tests/collected.py`, which is not a test module, collects the suite
+  hand, as `mark.container`, `getattr` of it, or its name given to
+  `add_marker` or `applymarker`, or asks for the fixture by name with
+  `getfixturevalue`, which leaves it out of a test's fixture names; a name
+  held in a variable is not followed. `tests/collected.py`, which is not a test module, collects the suite
   in a child process for it.
 - **Every test runs, and container tests cannot skip** (`tests/test_make.py`).
   It runs `make test`, `make test-container` and `make check` with `uv`,
@@ -156,7 +159,8 @@ it can fail, and a positive control that keeps an empty input from passing.
   command they ran selects from pytest's own collection: every test is in
   exactly one of `make test` and `make test-container`, `make test-container`
   runs exactly the `container` tests, and `make check` runs every test, its
-  container tests with `RCMAN_REQUIRE_CONTAINER=1`; none of them runs a test a
+  container tests with `RCMAN_REQUIRE_CONTAINER=1` and all of them with
+  `RCMAN_REQUIRE_REAL_CLAUDE=1`; none of them runs a test a
   bare `pytest` leaves out, as a target's own `-m` replaces the
   `-m 'not real_claude'` of pyproject's `addopts`. `make lint` and
   `make format` run ruff and the frontend's script of the same name, and the

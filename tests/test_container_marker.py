@@ -14,7 +14,9 @@ from tests.collected import collect
 
 REPO = Path(__file__).resolve().parent.parent
 TESTS = REPO / "tests"
-MARK = "mark." + container_marker.MARKER  # built, so that this module does not hold it
+NAME = container_marker.MARKER
+MARK = "mark." + NAME  # built, so that this module does not hold it
+FIXTURE = container_marker.FIXTURE
 
 PROJECT_CONFTEST = """
 import pytest
@@ -95,18 +97,46 @@ def test_in_the_suite_the_marker_is_exactly_the_fixtures_users():
     assert "tests/test_collected.py::test_uses_tmp_path" not in marked
 
 
+def _named(node, value: str) -> bool:
+    return isinstance(node, ast.Constant) and node.value == value
+
+
+def _call(node) -> str | None:
+    if not isinstance(node, ast.Call):
+        return None
+    return getattr(node.func, "attr", None) or getattr(node.func, "id", None)
+
+
 def hand_placed(source: str) -> list[int]:
     """The lines where the source places the marker itself: pytest.mark.container or
-    mark.container, called or not, wherever it appears."""
+    mark.container, called or not, getattr(<...>.mark, "container"), or the marker's
+    name given to add_marker or applymarker, wherever these appear. A name held in a
+    variable is not followed."""
+    found = []
+    for node in ast.walk(ast.parse(source)):
+        attribute = (
+            isinstance(node, ast.Attribute)
+            and node.attr == NAME
+            and (
+                (isinstance(node.value, ast.Attribute) and node.value.attr == "mark")
+                or (isinstance(node.value, ast.Name) and node.value.id == "mark")
+            )
+        )
+        by_getattr = _call(node) == "getattr" and len(node.args) >= 2 and _named(node.args[1], NAME)
+        by_string = _call(node) in ("add_marker", "applymarker") and any(
+            _named(a, NAME) for a in node.args
+        )
+        if attribute or by_getattr or by_string:
+            found.append(node.lineno)
+    return found
+
+
+def by_name(source: str) -> list[int]:
+    """The lines where the source asks for the fixture by name, with getfixturevalue."""
     return [
         node.lineno
         for node in ast.walk(ast.parse(source))
-        if isinstance(node, ast.Attribute)
-        and node.attr == container_marker.MARKER
-        and (
-            (isinstance(node.value, ast.Attribute) and node.value.attr == "mark")
-            or (isinstance(node.value, ast.Name) and node.value.id == "mark")
-        )
+        if _call(node) == "getfixturevalue" and any(_named(a, FIXTURE) for a in node.args)
     ]
 
 
@@ -129,6 +159,11 @@ def test_the_marker_is_never_placed_by_hand():
         f"pytestmark = [pytest.{MARK}, pytest.mark.skip]\n",
         f"@pytest.{MARK}(reason='x')\ndef test_x():\n    pass\n",
         f"from pytest import mark\n@{MARK}\ndef test_x():\n    pass\n",
+        f'def pytest_collection_modifyitems(items):\n    items[0].add_marker("{NAME}")\n',
+        f'def test_x(request):\n    request.applymarker("{NAME}")\n',
+        f'def test_x(request):\n    request.node.add_marker("{NAME}")\n',
+        f'pytestmark = getattr(pytest.mark, "{NAME}")\n',
+        f'def test_x(request):\n    request.applymarker(getattr(pytest.mark, "{NAME}"))\n',
     ],
 )
 def test_the_hand_placed_marker_guard_finds_a_planted_marker(planted):
@@ -138,3 +173,26 @@ def test_the_hand_placed_marker_guard_finds_a_planted_marker(planted):
 def test_the_hand_placed_marker_guard_leaves_a_user_of_the_fixture_alone():
     assert hand_placed("def test_x(docker):\n    pass\n") == []
     assert hand_placed("@pytest.mark.skip\ndef test_x():\n    pass\n") == []
+    assert hand_placed('def test_x(request):\n    request.applymarker("skip")\n') == []
+    assert hand_placed("item.add_marker(getattr(pytest.mark, MARKER))\n") == []
+    assert hand_placed('x = getattr(pytest.mark, "skip")\n') == []
+
+
+def test_the_fixture_is_never_requested_by_name():
+    """A test asking for the fixture with request.getfixturevalue does not hold it in its
+    fixture names, so it would not carry the marker."""
+    sources = sorted(TESTS.rglob("*.py"))
+    assert TESTS / "test_container_suite.py" in sources  # non-vacuity
+    found = [
+        f"{p.relative_to(REPO)}:{line}"
+        for p in sources
+        for line in by_name(p.read_text(encoding="utf-8"))
+    ]
+    assert found == []
+
+
+def test_the_by_name_guard_finds_a_planted_request():
+    planted = f'def test_x(request):\n    request.getfixturevalue("{FIXTURE}")\n'
+    assert by_name(planted) == [2]
+    other = planted.replace(f'"{FIXTURE}"', '"tmp_path"')
+    assert other != planted and by_name(other) == []  # the plant was the fixture's name
