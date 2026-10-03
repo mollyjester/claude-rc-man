@@ -28,6 +28,7 @@ export function ProblemView({
       {error.errors.length > 0 && (
         <ul aria-label={m.problemFieldErrors}>
           {error.errors.map((e, i) => (
+            // biome-ignore lint/suspicious/noArrayIndexKey: the server's errors, shown whole and replaced whole; they can repeat, and never move
             <li key={i}>{`${labels[e.field] ?? e.field}: ${e.message}`}</li>
           ))}
         </ul>
@@ -61,6 +62,7 @@ export function ProblemView({
           <p>{m.problemLeft}</p>
           <ul aria-label={m.problemLeft}>
             {left.map((path, i) => (
+              // biome-ignore lint/suspicious/noArrayIndexKey: what the server says a delete left, shown whole and replaced whole; its entries never move
               <li key={i}>{String(path)}</li>
             ))}
           </ul>

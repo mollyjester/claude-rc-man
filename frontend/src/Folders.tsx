@@ -192,6 +192,7 @@ export function FolderTree(props: TreeProps) {
 function BreakableAtSlashes({ path }: { path: string }) {
   const names = path.split("/");
   return names.map((name, i) => (
+    // biome-ignore lint/suspicious/noArrayIndexKey: the parts of one path, which can repeat, and never move
     <span key={i} className="path-part">
       {i < names.length - 1 ? `${name}/` : name}
     </span>

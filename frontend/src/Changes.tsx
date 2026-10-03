@@ -116,6 +116,7 @@ function Files({
     onSelect(next);
   }
   return (
+    // biome-ignore lint/a11y/useSemanticElements: a list of files under a heading of its own, which a fieldset would make its legend, no longer a heading
     <div role="group" aria-label={title} className="files">
       <h4>{m.listHeading(title, list.files.length + list.more)}</h4>
       {list.files.length === 0 ? (
@@ -133,6 +134,7 @@ function Files({
           </label>
           <ul>
             {list.files.map((file, i) => (
+              // biome-ignore lint/suspicious/noArrayIndexKey: two names that are not UTF-8 can read the same once decoded, so the path alone is not unique; a row keeps no state of its own
               <li key={`${file.path}:${i}`}>
                 {selectable(file) ? (
                   <label>

@@ -283,6 +283,7 @@ function FolderActions({
   };
   return (
     <>
+      {/* biome-ignore lint/a11y/useSemanticElements: a row of buttons outside any form, not a form's fields, which a fieldset is for */}
       <div role="group" aria-label={m.folderActions} className="actions">
         <button
           type="button"

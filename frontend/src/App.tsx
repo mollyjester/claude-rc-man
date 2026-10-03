@@ -51,6 +51,7 @@ function AdminMenu() {
   }
 
   return (
+    // biome-ignore lint/a11y/noStaticElementInteractions: it is never focused or clicked itself; it hears the keys and focus that bubble up from the button and links inside it
     <div className="menu" onKeyDown={onKeyDown} onBlur={onBlur}>
       <button
         ref={button}
