@@ -3,7 +3,15 @@ import userEvent from "@testing-library/user-event";
 
 import { CONNECTION_STATES, START_REASON } from "./Claude";
 import { m } from "./messages";
-import { CONNECTED, ME, NOT_CONNECTED, type Reply, type Routes, fakeApi, problem } from "./test/fakeApi";
+import {
+  CONNECTED,
+  fakeApi,
+  ME,
+  NOT_CONNECTED,
+  problem,
+  type Reply,
+  type Routes,
+} from "./test/fakeApi";
 import { renderApp } from "./test/render";
 
 function api(claude: Reply, extra: Routes = {}) {
@@ -54,7 +62,9 @@ test("connecting: link, then code, then connected", async () => {
   expect(fake.made("POST", "/api/claude/login")[0].body).toEqual({});
   await userEvent.type(screen.getByLabelText(m.connectCode), "CODE#STATE");
   await userEvent.click(screen.getByRole("button", { name: m.connectSubmit }));
-  await waitFor(() => expect(fake.made("POST", "/api/claude/code")[0].body).toEqual({ code: "CODE#STATE" }));
+  await waitFor(() =>
+    expect(fake.made("POST", "/api/claude/code")[0].body).toEqual({ code: "CODE#STATE" }),
+  );
   expect(await screen.findByText(m.claudeConnectedAs("alice@claude.test"))).toBeInTheDocument();
 });
 
@@ -64,7 +74,9 @@ test("another Claude address can be given", async () => {
   await userEvent.click(await screen.findByRole("button", { name: m.connect }));
   await userEvent.type(screen.getByLabelText(m.connectEmail), "work@example.org");
   await userEvent.click(screen.getByRole("button", { name: m.connectGo }));
-  await waitFor(() => expect(fake.made("POST", "/api/claude/login")[0].body).toEqual({ email: "work@example.org" }));
+  await waitFor(() =>
+    expect(fake.made("POST", "/api/claude/login")[0].body).toEqual({ email: "work@example.org" }),
+  );
 });
 
 test("a refused code shows the server's problem", async () => {
@@ -85,7 +97,9 @@ test("a refused code shows the server's problem", async () => {
 
 test("an unrecognised sign-in screen is shown as it is", async () => {
   api(NOT_CONNECTED, {
-    "POST /api/claude/login": problem(502, "claude_unrecognised_output", "Unrecognised output.", { screen: ["odd screen"] }),
+    "POST /api/claude/login": problem(502, "claude_unrecognised_output", "Unrecognised output.", {
+      screen: ["odd screen"],
+    }),
   });
   renderApp();
   await userEvent.click(await screen.findByRole("button", { name: m.connect }));

@@ -1,12 +1,20 @@
 import { type FormEvent, useCallback, useEffect, useState } from "react";
 
-import { ApiError, api } from "./api";
+import { type ApiError, api } from "./api";
 import { m } from "./messages";
-import { ProblemView, asApiError } from "./ProblemView";
+import { asApiError, ProblemView } from "./ProblemView";
 
 type Person = { linux: string; email: string; admin: boolean; account: boolean };
 
-function RemoveDialog({ linux, onDone, onCancel }: { linux: string; onDone: () => void; onCancel: () => void }) {
+function RemoveDialog({
+  linux,
+  onDone,
+  onCancel,
+}: {
+  linux: string;
+  onDone: () => void;
+  onCancel: () => void;
+}) {
   const [home, setHome] = useState<"keep" | "delete">("keep");
   const [error, setError] = useState<ApiError | null>(null);
 
@@ -27,11 +35,21 @@ function RemoveDialog({ linux, onDone, onCancel }: { linux: string; onDone: () =
       <form noValidate onSubmit={remove}>
         <p>{m.usersRemoveBody}</p>
         <label>
-          <input type="radio" name="home" checked={home === "keep"} onChange={() => setHome("keep")} />
+          <input
+            type="radio"
+            name="home"
+            checked={home === "keep"}
+            onChange={() => setHome("keep")}
+          />
           {m.usersKeepHome}
         </label>
         <label>
-          <input type="radio" name="home" checked={home === "delete"} onChange={() => setHome("delete")} />
+          <input
+            type="radio"
+            name="home"
+            checked={home === "delete"}
+            onChange={() => setHome("delete")}
+          />
           {m.usersDeleteHome}
         </label>
         <div className="actions">
@@ -59,7 +77,10 @@ export function People() {
   const [error, setError] = useState<ApiError | null>(null);
 
   const load = useCallback(() => {
-    api.get<{ users: Person[] }>("/api/users").then((r) => setPeople(r.users), (e) => setError(asApiError(e)));
+    api.get<{ users: Person[] }>("/api/users").then(
+      (r) => setPeople(r.users),
+      (e) => setError(asApiError(e)),
+    );
   }, []);
   useEffect(load, [load]);
 
@@ -101,7 +122,11 @@ export function People() {
               <td>{p.admin ? m.usersAdmin : m.usersUser}</td>
               <td>{p.account ? m.usersAccountOk : m.usersAccountMissing}</td>
               <td>
-                <button type="button" className="secondary-danger" onClick={() => setRemoving(p.linux)}>
+                <button
+                  type="button"
+                  className="secondary-danger"
+                  onClick={() => setRemoving(p.linux)}
+                >
                   {m.usersRemove}
                 </button>
               </td>
@@ -124,18 +149,38 @@ export function People() {
       <form noValidate onSubmit={add}>
         <label>
           {m.usersLinux}
-          <input type="text" name="linux" value={linux} onChange={(e) => setLinux(e.target.value)} />
+          <input
+            type="text"
+            name="linux"
+            value={linux}
+            onChange={(e) => setLinux(e.target.value)}
+          />
         </label>
         <label>
           {m.usersEmail}
-          <input type="text" name="email" value={email} onChange={(e) => setEmail(e.target.value)} />
+          <input
+            type="text"
+            name="email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+          />
         </label>
         <label>
-          <input type="checkbox" name="admin" checked={admin} onChange={(e) => setAdmin(e.target.checked)} />
+          <input
+            type="checkbox"
+            name="admin"
+            checked={admin}
+            onChange={(e) => setAdmin(e.target.checked)}
+          />
           {m.usersAddAdmin}
         </label>
         <label>
-          <input type="checkbox" name="adopt" checked={adopt} onChange={(e) => setAdopt(e.target.checked)} />
+          <input
+            type="checkbox"
+            name="adopt"
+            checked={adopt}
+            onChange={(e) => setAdopt(e.target.checked)}
+          />
           {m.usersAddAdopt}
         </label>
         <button type="submit" className="primary">
@@ -145,7 +190,12 @@ export function People() {
       {notice && <p role="status">{notice}</p>}
       <ProblemView
         error={error}
-        labels={{ linux: m.usersLinux, email: m.usersEmail, admin: m.usersAddAdmin, adopt: m.usersAddAdopt }}
+        labels={{
+          linux: m.usersLinux,
+          email: m.usersEmail,
+          admin: m.usersAddAdmin,
+          adopt: m.usersAddAdopt,
+        }}
       />
     </section>
   );

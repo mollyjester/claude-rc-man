@@ -13,7 +13,12 @@ export class Problem {
   ) {}
 }
 
-export function problem(status: number, code: string, title: string, extra: Record<string, unknown> = {}) {
+export function problem(
+  status: number,
+  code: string,
+  title: string,
+  extra: Record<string, unknown> = {},
+) {
   return new Problem(status, { type: `urn:rcman:problem:${code}`, title, status, code, ...extra });
 }
 
@@ -29,10 +34,13 @@ export function fakeApi(routes: Routes) {
     calls.push(call);
     const key = `${method} ${url.pathname}`;
     if (!(key in routes)) {
-      return new Response(JSON.stringify({ code: "not_found", title: "no route " + key, status: 404 }), {
-        status: 404,
-        headers: { "content-type": "application/problem+json" },
-      });
+      return new Response(
+        JSON.stringify({ code: "not_found", title: `no route ${key}`, status: 404 }),
+        {
+          status: 404,
+          headers: { "content-type": "application/problem+json" },
+        },
+      );
     }
     const route = routes[key];
     // A handler may answer later, by returning a promise.
@@ -43,13 +51,17 @@ export function fakeApi(routes: Routes) {
         headers: { "content-type": "application/problem+json" },
       });
     }
-    return new Response(JSON.stringify(reply), { status: 200, headers: { "content-type": "application/json" } });
+    return new Response(JSON.stringify(reply), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
   });
   vi.stubGlobal("fetch", fetchMock);
   return {
     calls,
     routes,
-    made: (method: string, path: string) => calls.filter((c) => c.method === method && c.path === path),
+    made: (method: string, path: string) =>
+      calls.filter((c) => c.method === method && c.path === path),
   };
 }
 
@@ -63,6 +75,16 @@ export const CONNECTED = {
 // What /api/claude answers before anyone has connected a Claude account.
 export const NOT_CONNECTED = { connection: "not_connected", account: null, login_expires_at: null };
 // What /api/me/settings answers for someone who has set nothing.
-export const SETTINGS = { prefix: "alice", author_name: "", author_email: "", effective_author: null };
+export const SETTINGS = {
+  prefix: "alice",
+  author_name: "",
+  author_email: "",
+  effective_author: null,
+};
 // What /api/attention answers when nothing needs an administrator's attention.
-export const NOTHING_TO_ATTEND = { unrecognised: [], versions_differ: [], untested: false, versions_error: null };
+export const NOTHING_TO_ATTEND = {
+  unrecognised: [],
+  versions_differ: [],
+  untested: false,
+  versions_error: null,
+};

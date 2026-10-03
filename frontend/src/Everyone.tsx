@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 
 import { ApiError, api } from "./api";
 import { m } from "./messages";
-import { ProblemView, asApiError } from "./ProblemView";
+import { asApiError, ProblemView } from "./ProblemView";
 import { type Server, StateBadge } from "./Servers";
 
 export type Person = {
@@ -65,7 +65,9 @@ export function Everyone() {
       <p>{m.everyoneIntro}</p>
       <ProblemView error={error} />
       {people === null && !error && <p>{m.loading}</p>}
-      {people?.map((person) => <PersonServers key={person.linux} person={person} />)}
+      {people?.map((person) => (
+        <PersonServers key={person.linux} person={person} />
+      ))}
     </section>
   );
 }

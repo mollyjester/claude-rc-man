@@ -1,23 +1,23 @@
 import {
+  createContext,
   type FocusEvent,
   type KeyboardEvent,
-  createContext,
   useContext,
   useEffect,
   useId,
   useRef,
   useState,
 } from "react";
-import { NavLink, Navigate, Route, Routes, matchPath, useLocation } from "react-router-dom";
+import { matchPath, Navigate, NavLink, Route, Routes, useLocation } from "react-router-dom";
 
 import { ADMIN_PAGES } from "./AdminPages";
-import { ApiError, api } from "./api";
-import { Caret } from "./Caret";
 import { Attention } from "./Attention";
+import { type ApiError, api } from "./api";
+import { Caret } from "./Caret";
 import { Dashboard } from "./Dashboard";
 import { Docs } from "./Docs";
 import { m } from "./messages";
-import { ProblemView, asApiError } from "./ProblemView";
+import { asApiError, ProblemView } from "./ProblemView";
 import { Settings } from "./Settings";
 
 export type Me = { email: string; linux: string; admin: boolean; prefix: string };
@@ -36,6 +36,7 @@ function AdminMenu() {
   const id = useId();
   const here = ADMIN_PAGES.some((page) => matchPath(page.path, pathname));
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: pathname is what sets this off, not what it reads: the menu closes whenever the page changes
   useEffect(() => setOpen(false), [pathname]);
 
   function onKeyDown(event: KeyboardEvent) {
@@ -50,6 +51,7 @@ function AdminMenu() {
   }
 
   return (
+    // biome-ignore lint/a11y/noStaticElementInteractions: it is never focused or clicked itself; it hears the keys and focus that bubble up from the button and links inside it
     <div className="menu" onKeyDown={onKeyDown} onBlur={onBlur}>
       <button
         ref={button}
@@ -119,7 +121,10 @@ export function App({ pollMs = POLL_MS }: { pollMs?: number }) {
           <Route path="/settings" element={<Settings />} />
           <Route path="/help" element={<Docs />} />
           <Route path="/help/:slug" element={<Docs />} />
-          {me.admin && ADMIN_PAGES.map((page) => <Route key={page.path} path={page.path} element={page.element()} />)}
+          {me.admin &&
+            ADMIN_PAGES.map((page) => (
+              <Route key={page.path} path={page.path} element={page.element()} />
+            ))}
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </main>

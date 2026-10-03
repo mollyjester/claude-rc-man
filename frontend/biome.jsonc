@@ -1,0 +1,58 @@
+// Biome formats and lints the frontend: `npm run lint` checks, `npm run format`
+// applies. Anything not set here is Biome's default; each setting below says
+// why it differs or why it is written out.
+{
+  // The schema of the installed Biome, which package.json pins, so an editor
+  // checks this file against the rules that version knows.
+  "$schema": "./node_modules/@biomejs/biome/configuration_schema.json",
+  "files": {
+    // Named explicitly rather than taken from .gitignore, so that what is
+    // checked does not depend on git or on what happens to be ignored. The
+    // lock file is npm's own output.
+    "includes": ["src/**", "e2e/**", "e2e-stack/**", "*.ts", "*.json", "!package-lock.json"]
+  },
+  "formatter": {
+    // Spaces, as in the rest of the repository, rather than Biome's tabs.
+    "indentStyle": "space",
+    // The same width ruff holds the Python code to, rather than Biome's 80.
+    "lineWidth": 100
+  },
+  "javascript": {
+    "formatter": {
+      // Biome's defaults, written out because they are a decision of this
+      // project, not something to change with a later default.
+      "quoteStyle": "double",
+      "semicolons": "always"
+    }
+  },
+  "linter": {
+    "rules": {
+      // Biome's default, written out: the recommended rules are the ones held
+      // to, and every exception, here or at the site, says why.
+      "preset": "recommended"
+    }
+  },
+  "overrides": [
+    {
+      // The tests: the component tests, their support in src/test/, and the browser tests.
+      "includes": [
+        "src/**/*.test.ts",
+        "src/**/*.test.tsx",
+        "src/test/**",
+        "e2e/**",
+        "e2e-stack/**"
+      ],
+      "linter": {
+        "rules": {
+          "style": {
+            // A `!` in a test states what the test expects to find; where that is wrong, the
+            // test meets the null, as it would any other wrong value, and a check written out
+            // would add only a message. The rule holds the application's own code, where a
+            // wrong `!` would reach people.
+            "noNonNullAssertion": "off"
+          }
+        }
+      }
+    }
+  ]
+}

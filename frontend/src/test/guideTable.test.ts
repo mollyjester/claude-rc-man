@@ -27,7 +27,9 @@ test("the header is found among the lines however it is indented, and only as a 
 });
 
 test("a row without its closing bar keeps its last cell", () => {
-  expect(guideTable([HEADER, "|---|---|", "| One | the first"].join("\n"), HEADER)).toEqual([["One", "the first"]]);
+  expect(guideTable([HEADER, "|---|---|", "| One | the first"].join("\n"), HEADER)).toEqual([
+    ["One", "the first"],
+  ]);
 });
 
 test("there is no table in an empty guide, one without the header, or one whose table has no rows", () => {

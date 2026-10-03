@@ -16,7 +16,9 @@ export default defineConfig({
     ignoreHTTPSErrors: true,
     trace: "retain-on-failure",
     launchOptions: {
-      args: [`--host-resolver-rules=MAP rcman.test:443 127.0.0.1:${port}, MAP auth.test:443 127.0.0.1:${port}`],
+      args: [
+        `--host-resolver-rules=MAP rcman.test:443 127.0.0.1:${port}, MAP auth.test:443 127.0.0.1:${port}`,
+      ],
     },
   },
 });

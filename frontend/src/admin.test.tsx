@@ -2,7 +2,14 @@ import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { m } from "./messages";
-import { ADMIN_USER, CONNECTED, NOTHING_TO_ATTEND, type Routes, fakeApi, problem } from "./test/fakeApi";
+import {
+  ADMIN_USER,
+  CONNECTED,
+  fakeApi,
+  NOTHING_TO_ATTEND,
+  problem,
+  type Routes,
+} from "./test/fakeApi";
 import { renderApp } from "./test/render";
 
 const USERS = {
@@ -30,7 +37,10 @@ test("people are listed with role and account", async () => {
 });
 
 test("adding someone sends exactly what was entered", async () => {
-  const fake = api({ "GET /api/users": USERS, "POST /api/users": { user: { linux: "carol" }, created: true } });
+  const fake = api({
+    "GET /api/users": USERS,
+    "POST /api/users": { user: { linux: "carol" }, created: true },
+  });
   renderApp("/admin/people");
   await userEvent.type(await screen.findByLabelText(m.usersLinux), "carol");
   await userEvent.type(screen.getByLabelText(m.usersEmail), "carol@example.com");
@@ -54,7 +64,9 @@ test("a refused addition names each field by its label", async () => {
   ];
   api({
     "GET /api/users": USERS,
-    "POST /api/users": problem(422, "validation_failed", "Some of what was sent is not valid.", { errors }),
+    "POST /api/users": problem(422, "validation_failed", "Some of what was sent is not valid.", {
+      errors,
+    }),
   });
   renderApp("/admin/people");
   await userEvent.type(await screen.findByLabelText(m.usersLinux), "Bad!");
@@ -65,38 +77,63 @@ test("a refused addition names each field by its label", async () => {
 });
 
 test("removing someone asks about the home folder, keeping it unless told otherwise", async () => {
-  const fake = api({ "GET /api/users": USERS, "DELETE /api/users/bob": { deleted: "bob", home_deleted: false } });
+  const fake = api({
+    "GET /api/users": USERS,
+    "DELETE /api/users/bob": { deleted: "bob", home_deleted: false },
+  });
   renderApp("/admin/people");
   const bob = await screen.findByRole("row", { name: /bob/ });
   await userEvent.click(within(bob).getByRole("button", { name: m.usersRemove }));
   const dialog = screen.getByRole("dialog", { name: m.usersRemoveTitle("bob") });
   expect(within(dialog).getByLabelText(m.usersKeepHome)).toBeChecked();
   await userEvent.click(within(dialog).getByRole("button", { name: m.usersRemoveConfirm }));
-  await waitFor(() => expect(fake.made("DELETE", "/api/users/bob")[0].query.get("home")).toBe("keep"));
+  await waitFor(() =>
+    expect(fake.made("DELETE", "/api/users/bob")[0].query.get("home")).toBe("keep"),
+  );
 });
 
 test("removing with the home folder", async () => {
-  const fake = api({ "GET /api/users": USERS, "DELETE /api/users/bob": { deleted: "bob", home_deleted: true } });
+  const fake = api({
+    "GET /api/users": USERS,
+    "DELETE /api/users/bob": { deleted: "bob", home_deleted: true },
+  });
   renderApp("/admin/people");
   const bob = await screen.findByRole("row", { name: /bob/ });
   await userEvent.click(within(bob).getByRole("button", { name: m.usersRemove }));
   const dialog = screen.getByRole("dialog");
   await userEvent.click(within(dialog).getByLabelText(m.usersDeleteHome));
   await userEvent.click(within(dialog).getByRole("button", { name: m.usersRemoveConfirm }));
-  await waitFor(() => expect(fake.made("DELETE", "/api/users/bob")[0].query.get("home")).toBe("delete"));
+  await waitFor(() =>
+    expect(fake.made("DELETE", "/api/users/bob")[0].query.get("home")).toBe("delete"),
+  );
 });
 
 test("a refused removal shows the server's reason", async () => {
-  api({ "GET /api/users": USERS, "DELETE /api/users/alice": problem(409, "last_admin", "That is the last administrator.") });
+  api({
+    "GET /api/users": USERS,
+    "DELETE /api/users/alice": problem(409, "last_admin", "That is the last administrator."),
+  });
   renderApp("/admin/people");
   const alice = await screen.findByRole("row", { name: /alice/ });
   await userEvent.click(within(alice).getByRole("button", { name: m.usersRemove }));
-  await userEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: m.usersRemoveConfirm }));
+  await userEvent.click(
+    within(screen.getByRole("dialog")).getByRole("button", { name: m.usersRemoveConfirm }),
+  );
   expect(await screen.findByRole("alert")).toHaveTextContent("That is the last administrator.");
 });
 
 test("the audit trail pages towards older events", async () => {
-  const page1 = { events: [1, 2].map((i) => ({ id: 10 - i, at: "2026-10-01T10:00:00+00:00", email: "a@x", linux: "a", action: "server.start", target: "projects/x", result: "ok" })) };
+  const page1 = {
+    events: [1, 2].map((i) => ({
+      id: 10 - i,
+      at: "2026-10-01T10:00:00+00:00",
+      email: "a@x",
+      linux: "a",
+      action: "server.start",
+      target: "projects/x",
+      result: "ok",
+    })),
+  };
   const fake = api({ "GET /api/audit": (c) => (c.query.get("before") ? { events: [] } : page1) });
   renderApp("/admin/audit");
   expect(await screen.findAllByText("server.start")).toHaveLength(2);
@@ -126,26 +163,52 @@ test("versions show who differs and whether the approved one is tested", async (
 test("a refused version names the field by its label", async () => {
   const errors = [{ field: "version", message: "planted reason for the version" }];
   api({
-    "GET /api/claude/versions": { approved: "2.1.0", tested: "2.1.0", untested: false, differs: [], users: [] },
-    "POST /api/claude/upgrade": problem(422, "validation_failed", "Some of what was sent is not valid.", { errors }),
+    "GET /api/claude/versions": {
+      approved: "2.1.0",
+      tested: "2.1.0",
+      untested: false,
+      differs: [],
+      users: [],
+    },
+    "POST /api/claude/upgrade": problem(
+      422,
+      "validation_failed",
+      "Some of what was sent is not valid.",
+      { errors },
+    ),
   });
   renderApp("/admin/claude");
   await userEvent.type(await screen.findByLabelText(m.versionsUpgrade), "latest");
   await userEvent.click(screen.getByRole("button", { name: m.versionsUpgradeGo }));
-  expect(await screen.findByRole("alert")).toHaveTextContent(`${m.versionsUpgrade}: planted reason for the version`);
+  expect(await screen.findByRole("alert")).toHaveTextContent(
+    `${m.versionsUpgrade}: planted reason for the version`,
+  );
 });
 
 test("rolling out a version sends it and shows failed checks as the server named them", async () => {
   const fake = api({
-    "GET /api/claude/versions": { approved: "2.1.0", tested: "2.1.0", untested: false, differs: [], users: [] },
-    "POST /api/claude/upgrade": problem(409, "claude_checks_failed", "That version failed rcman's checks.", {
-      failed: ["sign_in_screen", "logout"],
-    }),
+    "GET /api/claude/versions": {
+      approved: "2.1.0",
+      tested: "2.1.0",
+      untested: false,
+      differs: [],
+      users: [],
+    },
+    "POST /api/claude/upgrade": problem(
+      409,
+      "claude_checks_failed",
+      "That version failed rcman's checks.",
+      {
+        failed: ["sign_in_screen", "logout"],
+      },
+    ),
   });
   renderApp("/admin/claude");
   await userEvent.type(await screen.findByLabelText(m.versionsUpgrade), "2.3.0");
   await userEvent.click(screen.getByRole("button", { name: m.versionsUpgradeGo }));
-  await waitFor(() => expect(fake.made("POST", "/api/claude/upgrade")[0].body).toEqual({ version: "2.3.0" }));
+  await waitFor(() =>
+    expect(fake.made("POST", "/api/claude/upgrade")[0].body).toEqual({ version: "2.3.0" }),
+  );
   const alert = await screen.findByRole("alert");
   expect(alert).toHaveTextContent("That version failed rcman's checks.");
   expect(alert).toHaveTextContent("sign_in_screen");

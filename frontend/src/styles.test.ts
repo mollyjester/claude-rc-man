@@ -13,7 +13,16 @@ const SAME_IN_DARK: Record<string, string> = {
 
 const COLOUR = /#[0-9a-fA-F]{3,8}\b|\b(?:rgba?|hsla?)\(/;
 // Keywords a colour may be written as that name no colour of the stylesheet's own.
-const NOT_A_COLOUR = new Set(["transparent", "currentcolor", "inherit", "initial", "unset", "revert", "revert-layer", "none"]);
+const NOT_A_COLOUR = new Set([
+  "transparent",
+  "currentcolor",
+  "inherit",
+  "initial",
+  "unset",
+  "revert",
+  "revert-layer",
+  "none",
+]);
 // The properties whose value can be a colour by name, and custom properties. The
 // engine reads words such as background and menu as system colours, so a word
 // counts only where a colour is meant.
@@ -41,7 +50,8 @@ function colourNames(declaration: string): string[] {
   return [...value.matchAll(/[a-zA-Z]+(?:-[a-zA-Z]+)*/g)].map((w) => w[0]).filter(isColourName);
 }
 
-const hasColour = (declaration: string) => COLOUR.test(declaration) || colourNames(declaration).length > 0;
+const hasColour = (declaration: string) =>
+  COLOUR.test(declaration) || colourNames(declaration).length > 0;
 
 // Every declaration in the stylesheet: what ends in ; or }.
 function declarations(css: string): string[] {
@@ -57,21 +67,26 @@ function properties(block: string | undefined): string[] {
 }
 
 // The custom properties of the first :root block, and of the one for a dark scheme.
-const light = (css: string) => properties(uncommented(css).match(/(?:^|\})\s*:root\s*\{([^}]*)\}/)?.[1]);
+const light = (css: string) =>
+  properties(uncommented(css).match(/(?:^|\})\s*:root\s*\{([^}]*)\}/)?.[1]);
 const dark = (css: string) =>
-  properties(uncommented(css).match(/prefers-color-scheme:\s*dark\)\s*\{\s*:root\s*\{([^}]*)\}/)?.[1]);
+  properties(
+    uncommented(css).match(/prefers-color-scheme:\s*dark\)\s*\{\s*:root\s*\{([^}]*)\}/)?.[1],
+  );
 
 // What breaks the rule: colours written outside a custom property, light
 // colours with no dark counterpart, and properties used but never declared.
 function violations(css: string): string[] {
   const found: string[] = [];
   for (const declaration of declarations(css)) {
-    if (hasColour(declaration) && !declaration.startsWith("--")) found.push(`colour outside a variable: ${declaration}`);
+    if (hasColour(declaration) && !declaration.startsWith("--"))
+      found.push(`colour outside a variable: ${declaration}`);
   }
   const darkSet = new Set(dark(css));
   for (const name of light(css)) {
     const colour = declarations(css).some((d) => d.startsWith(`${name}:`) && hasColour(d));
-    if (colour && !darkSet.has(name) && !(name in SAME_IN_DARK)) found.push(`no dark colour: ${name}`);
+    if (colour && !darkSet.has(name) && !(name in SAME_IN_DARK))
+      found.push(`no dark colour: ${name}`);
   }
   const declared = new Set([...light(css), ...darkSet]);
   for (const [, name] of css.matchAll(/var\(\s*(--[\w-]+)/g)) {
@@ -95,7 +110,10 @@ test("the check fails on a colour outside a variable, a missing dark colour, or 
   expect(literal).toContain("#123456");
   expect(violations(literal)).toEqual(["colour outside a variable: color: #123456"]);
 
-  const withoutDark = STYLES.replace(/(prefers-color-scheme:\s*dark\)\s*\{\s*:root\s*\{[^}]*?)--fg:[^;]*;/, "$1");
+  const withoutDark = STYLES.replace(
+    /(prefers-color-scheme:\s*dark\)\s*\{\s*:root\s*\{[^}]*?)--fg:[^;]*;/,
+    "$1",
+  );
   expect(dark(withoutDark)).not.toContain("--fg");
   expect(violations(withoutDark)).toEqual(["no dark colour: --fg"]);
 
@@ -119,7 +137,10 @@ test("named colours count as colours, wherever they are written", () => {
   const fallback = `${STYLES}\n.planted { color: var(--muted, gray); }`;
   expect(violations(fallback)).toEqual(["colour outside a variable: color: var(--muted, gray)"]);
 
-  const inDark = STYLES.replace(/(prefers-color-scheme:\s*dark\)\s*\{\s*:root\s*\{)/, "$1\n    color: gray;");
+  const inDark = STYLES.replace(
+    /(prefers-color-scheme:\s*dark\)\s*\{\s*:root\s*\{)/,
+    "$1\n    color: gray;",
+  );
   expect(inDark).not.toEqual(STYLES); // the plant took effect
   expect(violations(inDark)).toEqual(["colour outside a variable: color: gray"]);
 
@@ -134,16 +155,23 @@ type Scheme = "light" | "dark";
 // The custom properties of a scheme, by name: dark's over light's.
 function variables(css: string, scheme: Scheme): Map<string, string> {
   const block = (re: RegExp) => uncommented(css).match(re)?.[1] ?? "";
-  const read = (text: string) => [...text.matchAll(/(--[\w-]+)\s*:\s*([^;]+);/g)].map((m) => [m[1], m[2].trim()] as const);
+  const read = (text: string) =>
+    [...text.matchAll(/(--[\w-]+)\s*:\s*([^;]+);/g)].map((m) => [m[1], m[2].trim()] as const);
   const found = new Map(read(block(/(?:^|\})\s*:root\s*\{([^}]*)\}/)));
-  if (scheme === "dark") for (const [name, value] of read(block(/prefers-color-scheme:\s*dark\)\s*\{\s*:root\s*\{([^}]*)\}/))) found.set(name, value);
+  if (scheme === "dark")
+    for (const [name, value] of read(
+      block(/prefers-color-scheme:\s*dark\)\s*\{\s*:root\s*\{([^}]*)\}/),
+    ))
+      found.set(name, value);
   return found;
 }
 
 // A value with every var() replaced by what it holds in the scheme.
 function resolved(value: string, vars: Map<string, string>, depth = 0): string {
   if (depth > 10) return value;
-  return value.replace(/var\(\s*(--[\w-]+)\s*\)/g, (_, name: string) => resolved(vars.get(name) ?? `unset ${name}`, vars, depth + 1));
+  return value.replace(/var\(\s*(--[\w-]+)\s*\)/g, (_, name: string) =>
+    resolved(vars.get(name) ?? `unset ${name}`, vars, depth + 1),
+  );
 }
 
 // The declarations of the rules whose selector list holds exactly this selector.
@@ -151,7 +179,8 @@ function rule(css: string, selector: string): Map<string, string> {
   const found = new Map<string, string>();
   for (const [, selectors, body] of uncommented(css).matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
     if (!selectors.split(",").some((s) => s.trim() === selector)) continue;
-    for (const [, property, value] of body.matchAll(/([\w-]+)\s*:\s*([^;]+);?/g)) found.set(property, value.trim());
+    for (const [, property, value] of body.matchAll(/([\w-]+)\s*:\s*([^;]+);?/g))
+      found.set(property, value.trim());
   }
   return found;
 }
@@ -161,7 +190,12 @@ function looks(css: string, selector: string, scheme: Scheme) {
   const vars = variables(css, scheme);
   const declared = new Map([...rule(css, "button"), ...rule(css, selector)]);
   const value = (property: string) => resolved(declared.get(property) ?? "", vars);
-  return { own: rule(css, selector).size, background: value("background"), color: value("color"), border: value("border-color") };
+  return {
+    own: rule(css, selector).size,
+    background: value("background"),
+    color: value("color"),
+    border: value("border-color"),
+  };
 }
 
 // What is wrong with how the destructive buttons look: a danger button not
@@ -174,11 +208,21 @@ function buttonFaults(css: string): string[] {
     const danger = looks(css, "button.danger", scheme);
     const secondary = looks(css, "button.secondary", scheme);
     const outline = looks(css, "button.secondary-danger", scheme);
-    if (!danger.own || danger.background === primary.background || danger.background === plain.background)
+    if (
+      !danger.own ||
+      danger.background === primary.background ||
+      danger.background === plain.background
+    )
       found.push(`${scheme}: a danger button looks like another`);
-    if (!outline.own || outline.color === secondary.color || outline.color === plain.color || outline.border !== outline.color)
+    if (
+      !outline.own ||
+      outline.color === secondary.color ||
+      outline.color === plain.color ||
+      outline.border !== outline.color
+    )
       found.push(`${scheme}: a danger outline looks like a secondary button`);
-    if (outline.color !== danger.background) found.push(`${scheme}: a danger outline is not in the danger colour`);
+    if (outline.color !== danger.background)
+      found.push(`${scheme}: a danger outline is not in the danger colour`);
   }
   return found;
 }
@@ -195,7 +239,10 @@ test("the check fails on a danger button or a danger outline that is not styled"
   const noOutline = STYLES.replace(/button\.secondary-danger\s*\{[^}]*\}/, "");
   expect(noOutline).not.toEqual(STYLES);
   expect(buttonFaults(noOutline)).toContain("dark: a danger outline looks like a secondary button");
-  const likePrimary = STYLES.replace(/(prefers-color-scheme:\s*dark\)\s*\{\s*:root\s*\{)/, "$1\n    --danger: var(--accent);");
+  const likePrimary = STYLES.replace(
+    /(prefers-color-scheme:\s*dark\)\s*\{\s*:root\s*\{)/,
+    "$1\n    --danger: var(--accent);",
+  );
   expect(likePrimary).not.toEqual(STYLES);
   expect(buttonFaults(likePrimary)).toEqual(["dark: a danger button looks like another"]);
 });
@@ -205,20 +252,35 @@ test("a colour's name in a property that takes no colour is not a colour", () =>
   for (const word of ["background", "menu", "highlight"]) expect(isColourName(word)).toBe(true);
   expect(isColourName("revert-layer")).toBe(false);
 
-  for (const planted of [".planted { transition: background 0.2s; }", ".planted { grid-area: menu; }", ".planted { animation-name: highlight; }"]) {
+  for (const planted of [
+    ".planted { transition: background 0.2s; }",
+    ".planted { grid-area: menu; }",
+    ".planted { animation-name: highlight; }",
+  ]) {
     expect(violations(`${STYLES}\n${planted}`)).toEqual([]);
   }
-  expect(violations(`${STYLES}\n.planted { background: gray; }`)).toEqual(["colour outside a variable: background: gray"]);
+  expect(violations(`${STYLES}\n.planted { background: gray; }`)).toEqual([
+    "colour outside a variable: background: gray",
+  ]);
   expect(violations(`${STYLES}\n.planted { border-left: 1px solid gray; }`)).toEqual([
     "colour outside a variable: border-left: 1px solid gray",
   ]);
 });
 
-// A rule's declarations in the stylesheet, by its exact selector.
-function ruleOf(selector: string): string {
-  const found = [...uncommented(STYLES).matchAll(/([^{}]+)\{([^}]*)\}/g)].find(([, sel]) => sel.trim() === selector);
+// A rule's declarations in the stylesheet, by its exact selector list, read as CSS reads it:
+// any run of white space, a line break included, is one space.
+function ruleOf(selector: string, css = STYLES): string {
+  const found = [...uncommented(css).matchAll(/([^{}]+)\{([^}]*)\}/g)].find(
+    ([, sel]) => sel.trim().replace(/\s+/g, " ") === selector,
+  );
   return found ? found[2] : "";
 }
+
+test("a rule is found by its selector list wherever the list breaks its lines", () => {
+  expect(ruleOf("a, b", "a, b { color: red; }")).toMatch(/color/); // positive control
+  expect(ruleOf("a, b", "a,\nb { color: red; }")).toMatch(/color/);
+  expect(ruleOf("a, b", "a,\n  b\n{ color: red; }")).toMatch(/color/);
+});
 
 test("what git said wraps, where a server's screen scrolls", () => {
   expect(ruleOf(".screen")).toMatch(/overflow-x:\s*auto/); // positive control
@@ -233,9 +295,17 @@ test("a commit message's box stands apart from its label", () => {
 // block's over it for a dark scheme.
 function schemeValues(css: string, scheme: "light" | "dark"): Record<string, string> {
   const block = (pattern: RegExp) => uncommented(css).match(pattern)?.[1] ?? "";
-  const values = (text: string) => Object.fromEntries([...text.matchAll(/(--[\w-]+)\s*:\s*([^;]+);/g)].map((m) => [m[1], m[2].trim()]));
+  const values = (text: string) =>
+    Object.fromEntries(
+      [...text.matchAll(/(--[\w-]+)\s*:\s*([^;]+);/g)].map((m) => [m[1], m[2].trim()]),
+    );
   const lightValues = values(block(/(?:^|\})\s*:root\s*\{([^}]*)\}/));
-  return scheme === "light" ? lightValues : { ...lightValues, ...values(block(/prefers-color-scheme:\s*dark\)\s*\{\s*:root\s*\{([^}]*)\}/)) };
+  return scheme === "light"
+    ? lightValues
+    : {
+        ...lightValues,
+        ...values(block(/prefers-color-scheme:\s*dark\)\s*\{\s*:root\s*\{([^}]*)\}/)),
+      };
 }
 
 // Blocks drawn on a background the page's own colour in a scheme, with no border
@@ -246,10 +316,17 @@ function unseenBlocks(css: string): string[] {
     const name = selector.trim();
     if (name === "body" || name === ":root") continue;
     const background = body.match(/background(?:-color)?\s*:\s*var\(\s*(--[\w-]+)\s*\)/)?.[1];
-    if (!background || /(?:^|;)\s*border(?:-width)?\s*:\s*[^;]*\b(?:[1-9]\d*(?:\.\d+)?|0?\.\d*[1-9])(?:px|rem|em)\b/.test(body)) continue;
+    if (
+      !background ||
+      /(?:^|;)\s*border(?:-width)?\s*:\s*[^;]*\b(?:[1-9]\d*(?:\.\d+)?|0?\.\d*[1-9])(?:px|rem|em)\b/.test(
+        body,
+      )
+    )
+      continue;
     for (const scheme of ["light", "dark"] as const) {
       const values = schemeValues(css, scheme);
-      if (values[background] === values["--bg"]) found.push(`${name}: the page's own background in ${scheme}`);
+      if (values[background] === values["--bg"])
+        found.push(`${name}: the page's own background in ${scheme}`);
     }
   }
   return found;
@@ -262,13 +339,22 @@ test("every block with a background of its own can be told from the page, in bot
 
 test("the check finds a block on the page's own background with no border, and lets a border through", () => {
   const darkBg = schemeValues(STYLES, "dark")["--bg"];
-  const inBlocks = STYLES.replace("--bg: #ffffff;", "--bg: #ffffff;\n  --planted-bg: #abcdef;").replace(
+  const inBlocks = STYLES.replace(
+    "--bg: #ffffff;",
+    "--bg: #ffffff;\n  --planted-bg: #abcdef;",
+  ).replace(
     /(prefers-color-scheme:\s*dark\)\s*\{\s*:root\s*\{)/,
     `$1\n    --planted-bg: ${darkBg};`,
   );
   expect(schemeValues(inBlocks, "dark")["--planted-bg"]).toBe(darkBg); // the plant took effect
-  expect(unseenBlocks(`${inBlocks}\n.planted { background: var(--planted-bg); }`)).toEqual([".planted: the page's own background in dark"]);
-  expect(unseenBlocks(`${inBlocks}\n.planted { background: var(--planted-bg); border: 1px solid var(--border); }`)).toEqual([]);
+  expect(unseenBlocks(`${inBlocks}\n.planted { background: var(--planted-bg); }`)).toEqual([
+    ".planted: the page's own background in dark",
+  ]);
+  expect(
+    unseenBlocks(
+      `${inBlocks}\n.planted { background: var(--planted-bg); border: 1px solid var(--border); }`,
+    ),
+  ).toEqual([]);
 });
 
 test("a password field is laid out as a text field is", () => {
@@ -279,9 +365,15 @@ test("a password field is laid out as a text field is", () => {
   form.innerHTML = '<input type="text"><input type="password">';
   document.body.append(form);
   try {
-    const [text, password] = [...form.querySelectorAll("input")].map((input) => getComputedStyle(input));
+    const [text, password] = [...form.querySelectorAll("input")].map((input) =>
+      getComputedStyle(input),
+    );
     expect(text.display).toBe("block"); // positive control: the stylesheet applies
-    expect([password.display, password.minWidth, password.maxWidth]).toEqual([text.display, text.minWidth, text.maxWidth]);
+    expect([password.display, password.minWidth, password.maxWidth]).toEqual([
+      text.display,
+      text.minWidth,
+      text.maxWidth,
+    ]);
   } finally {
     style.remove();
     form.remove();
@@ -299,7 +391,9 @@ test("a form's text field takes the form's font, and its width, up to a limit", 
     const field = getComputedStyle(form.querySelector("input")!);
     expect(field.display).toBe("block"); // positive control: the stylesheet applies
     // jsdom gives a field the font around it, as a browser does not: the rule says so itself
-    expect(ruleOf('form input[type="text"], form input[type="password"]')).toMatch(/(?:^|;)\s*font:\s*inherit/);
+    expect(ruleOf('form input[type="text"], form input[type="password"]')).toMatch(
+      /(?:^|;)\s*font:\s*inherit/,
+    );
     expect([field.width, field.boxSizing]).toEqual(["100%", "border-box"]);
     expect(field.maxWidth).toMatch(/^\d+(?:\.\d+)?(?:px|rem)$/); // a length, not the whole width
   } finally {

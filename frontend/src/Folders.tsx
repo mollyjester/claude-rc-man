@@ -2,15 +2,18 @@ import { useCallback, useEffect, useId, useRef, useState } from "react";
 
 import { ApiError, api } from "./api";
 import { m } from "./messages";
-import { ProblemView, asApiError } from "./ProblemView";
-import { type Server, StateBadge, StatusDot, dotFor } from "./Servers";
+import { asApiError, ProblemView } from "./ProblemView";
+import { dotFor, type Server, StateBadge, StatusDot } from "./Servers";
 
 export type Entry = { name: string; path: string; has_children: boolean; repository: boolean };
 
 // Where a folder's panel is: the Servers page, with the folder in the address,
 // its slashes left as they are so that the address reads as the path.
 export function folderLink(path: string | null) {
-  return { pathname: "/", search: path ? `?folder=${encodeURIComponent(path).replaceAll("%2F", "/")}` : "" };
+  return {
+    pathname: "/",
+    search: path ? `?folder=${encodeURIComponent(path).replaceAll("%2F", "/")}` : "",
+  };
 }
 
 // A folder and each folder above it, from the top: "a/b" is a, then a/b. Empty
@@ -66,7 +69,9 @@ export function useFolderTree() {
     const above = lineage(path)
       .slice(0, -1)
       .map((f) => f.path);
-    setOpen((current) => (above.every((p) => current.has(p)) ? current : new Set([...current, ...above])));
+    setOpen((current) =>
+      above.every((p) => current.has(p)) ? current : new Set([...current, ...above]),
+    );
   }, []);
 
   // Fetches a folder's contents again, as after a folder is made or deleted in it.
@@ -187,6 +192,7 @@ export function FolderTree(props: TreeProps) {
 function BreakableAtSlashes({ path }: { path: string }) {
   const names = path.split("/");
   return names.map((name, i) => (
+    // biome-ignore lint/suspicious/noArrayIndexKey: the parts of one path, which can repeat, and never move
     <span key={i} className="path-part">
       {i < names.length - 1 ? `${name}/` : name}
     </span>

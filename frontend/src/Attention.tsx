@@ -4,7 +4,7 @@ import { Link, useLocation } from "react-router-dom";
 import { ADMIN, type AdminPage } from "./AdminPages";
 import { ApiError, api } from "./api";
 import { m } from "./messages";
-import { ProblemView, asApiError } from "./ProblemView";
+import { asApiError, ProblemView } from "./ProblemView";
 
 const PageLink = ({ page }: { page: AdminPage }) => <Link to={page.path}>{page.label}</Link>;
 
@@ -22,6 +22,7 @@ export function Attention() {
   const [report, setReport] = useState<Report | null>(null);
   const [error, setError] = useState<ApiError | null>(null);
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: location.pathname is what sets this off, not what it reads: the report is fetched again on every change of page
   useEffect(() => {
     let current = true;
     api.get<Report>("/api/attention").then(
