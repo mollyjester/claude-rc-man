@@ -2751,3 +2751,27 @@ def test_a_branch_name_is_taken_as_it_is_under_a_locale_that_is_not_utf8(latin1,
     out = ok(latin1, "git-branch-new", "--name=topic/café", "--", REPO_REL)
     assert out["branch"] == "topic/café"
     assert branch_of(repo) == "topic/café"
+
+
+def test_a_git_file_without_its_gitdir_prefix_is_not_a_repository(env, repo):
+    """A .git file holding only a path, even one to a real git folder, is no gitdir file."""
+    bare_path = Path(env["RC_HELPER_HOME"]) / "projects" / "bare-path"
+    bare_path.mkdir()
+    (bare_path / ".git").write_text(f"{repo / '.git'}\n")
+    with_prefix = Path(env["RC_HELPER_HOME"]) / "projects" / "with-prefix"
+    fixture_git(repo, "worktree", "add", "-q", str(with_prefix))
+    assert (with_prefix / ".git").read_text().startswith("gitdir: ")  # the twin's form
+    marked = {e["path"]: e["repository"] for e in ok(env, "tree", "projects")["entries"]}
+    assert marked["projects/with-prefix"] is True  # positive control
+    assert marked["projects/bare-path"] is False
+
+
+def test_the_tree_never_lists_what_is_inside_a_git_folder(env, repo):
+    home = Path(env["RC_HELPER_HOME"])
+    (home / "projects" / "peek").symlink_to(repo / ".git")
+    (home / "projects" / "peek-inside").symlink_to(repo / ".git" / "refs")
+    listed = [e["path"] for e in ok(env, "tree", "--all", "--", "projects")["entries"]]
+    assert "projects/repo" in listed  # positive control: the repository itself is listed
+    assert "projects/peek" not in listed and "projects/peek-inside" not in listed
+    inside = [e["path"] for e in ok(env, "tree", "--all", "--", REPO_REL)["entries"]]
+    assert f"{REPO_REL}/.git" not in inside
