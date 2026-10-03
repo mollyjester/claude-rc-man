@@ -1,8 +1,8 @@
 import { type FormEvent, type ReactNode, useEffect, useId, useState } from "react";
 
-import { ApiError, api } from "./api";
+import { type ApiError, api } from "./api";
 import { m } from "./messages";
-import { ProblemView, asApiError } from "./ProblemView";
+import { asApiError, ProblemView } from "./ProblemView";
 
 type Field = "prefix" | "author_name" | "author_email";
 type Reply = Record<Field, string> & { effective_author: { name: string; email: string } | null };

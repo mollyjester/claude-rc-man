@@ -6,7 +6,7 @@ import { expect, test } from "@playwright/test";
 
 import { m } from "../src/messages";
 import { openAdminPage, panel, selectInProjects, summary, tree } from "./nav";
-import { ALICE, BOB, GITHUB_TOKEN, WORLD, useAs } from "./people";
+import { ALICE, BOB, GITHUB_TOKEN, useAs, WORLD } from "./people";
 
 test("start, trust, stop, resume and forget through the folder panel", async ({ page }) => {
   await useAs(page, ALICE);

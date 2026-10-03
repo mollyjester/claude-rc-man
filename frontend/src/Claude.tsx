@@ -1,8 +1,8 @@
 import { type FormEvent, useState } from "react";
 
-import { ApiError, api } from "./api";
+import { type ApiError, api } from "./api";
 import { m } from "./messages";
-import { ProblemView, asApiError } from "./ProblemView";
+import { asApiError, ProblemView } from "./ProblemView";
 import type { StartBlocked } from "./Servers";
 
 export const CONNECTION_STATES = ["not_connected", "connected", "expiring", "expired"] as const;

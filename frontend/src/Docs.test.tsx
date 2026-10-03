@@ -1,7 +1,7 @@
 import { screen, within } from "@testing-library/react";
 
 import { m } from "./messages";
-import { CONNECTED, ME, fakeApi, problem } from "./test/fakeApi";
+import { CONNECTED, fakeApi, ME, problem } from "./test/fakeApi";
 import { renderApp } from "./test/render";
 
 const PAGES = {

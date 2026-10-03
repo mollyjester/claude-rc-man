@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 
 import { m } from "./messages";
 import { FIELDS } from "./Settings";
-import { CONNECTED, ME, type Routes, SETTINGS, fakeApi, problem } from "./test/fakeApi";
+import { CONNECTED, fakeApi, ME, problem, type Routes, SETTINGS } from "./test/fakeApi";
 import { renderApp } from "./test/render";
 
 const AUTHOR = { name: "Alice A", email: "alice@example.com" };

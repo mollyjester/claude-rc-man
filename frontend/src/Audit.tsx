@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
 
-import { ApiError, api } from "./api";
+import { type ApiError, api } from "./api";
 import { m } from "./messages";
-import { ProblemView, asApiError } from "./ProblemView";
+import { asApiError, ProblemView } from "./ProblemView";
 
 type Event = {
   id: number;

@@ -1,5 +1,5 @@
 // Finding the parts of rcman's pages, for the browser tests here and in e2e-stack/.
-import { type Page, expect } from "@playwright/test";
+import { expect, type Page } from "@playwright/test";
 
 import { m } from "../src/messages";
 

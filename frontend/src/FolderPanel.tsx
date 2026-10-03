@@ -1,11 +1,11 @@
 import { type FormEvent, type ReactNode, useState } from "react";
 import { Link } from "react-router-dom";
 
-import { ApiError, api } from "./api";
+import { type ApiError, api } from "./api";
 import { Changes } from "./Changes";
 import { folderLink, lineage } from "./Folders";
 import { m } from "./messages";
-import { ProblemView, asApiError } from "./ProblemView";
+import { asApiError, ProblemView } from "./ProblemView";
 import { type Server, ServerCard, type StartBlocked, serversIn } from "./Servers";
 
 // Home, then each folder down to the selected one. Each step and the slash after

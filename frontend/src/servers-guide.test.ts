@@ -1,8 +1,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-
-import { ACTIONS, KIND, KIND_ORDER, LABELS, LIVE, PRIMARY } from "./Servers";
 import { m } from "./messages";
+import { ACTIONS, KIND, KIND_ORDER, LABELS, LIVE, PRIMARY } from "./Servers";
 import { uncommented } from "./test/css";
 import { bold, guideTable } from "./test/guideTable";
 

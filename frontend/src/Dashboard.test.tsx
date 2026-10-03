@@ -2,16 +2,16 @@ import { cleanup, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { CONNECTION_STATES, START_REASON } from "./Claude";
-import { ACTIONS, KIND, LABELS, PRIMARY } from "./Servers";
 import { m } from "./messages";
+import { ACTIONS, KIND, LABELS, PRIMARY } from "./Servers";
 import {
-  CONNECTED,
   type Call,
+  CONNECTED,
+  fakeApi,
   ME,
   NOT_CONNECTED,
-  type Routes,
-  fakeApi,
   problem,
+  type Routes,
 } from "./test/fakeApi";
 import { renderApp } from "./test/render";
 

@@ -4,7 +4,7 @@ import { Link, useLocation } from "react-router-dom";
 import { ADMIN, type AdminPage } from "./AdminPages";
 import { ApiError, api } from "./api";
 import { m } from "./messages";
-import { ProblemView, asApiError } from "./ProblemView";
+import { asApiError, ProblemView } from "./ProblemView";
 
 const PageLink = ({ page }: { page: AdminPage }) => <Link to={page.path}>{page.label}</Link>;
 

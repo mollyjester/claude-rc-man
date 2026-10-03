@@ -1,9 +1,9 @@
 import { useId, useState } from "react";
 
-import { ApiError, api } from "./api";
+import { type ApiError, api } from "./api";
 import { Caret } from "./Caret";
 import { m } from "./messages";
-import { ProblemView, asApiError } from "./ProblemView";
+import { asApiError, ProblemView } from "./ProblemView";
 
 export type Server = {
   path: string;

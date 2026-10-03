@@ -1,9 +1,9 @@
 import { type FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 
-import { ApiError, api, problemFrom } from "./api";
+import { type ApiError, api, problemFrom } from "./api";
 import { m } from "./messages";
-import { ProblemView, asApiError } from "./ProblemView";
+import { asApiError, ProblemView } from "./ProblemView";
 
 type GitFile = {
   path: string;

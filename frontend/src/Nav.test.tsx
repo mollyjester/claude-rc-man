@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 
 import { ADMIN, ADMIN_PAGES } from "./AdminPages";
 import { m } from "./messages";
-import { ADMIN_USER, CONNECTED, ME, NOTHING_TO_ATTEND, type Reply, fakeApi } from "./test/fakeApi";
+import { ADMIN_USER, CONNECTED, fakeApi, ME, NOTHING_TO_ATTEND, type Reply } from "./test/fakeApi";
 import { renderApp } from "./test/render";
 
 function api(me: Reply) {

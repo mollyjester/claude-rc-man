@@ -1,23 +1,23 @@
 import {
+  createContext,
   type FocusEvent,
   type KeyboardEvent,
-  createContext,
   useContext,
   useEffect,
   useId,
   useRef,
   useState,
 } from "react";
-import { NavLink, Navigate, Route, Routes, matchPath, useLocation } from "react-router-dom";
+import { matchPath, Navigate, NavLink, Route, Routes, useLocation } from "react-router-dom";
 
 import { ADMIN_PAGES } from "./AdminPages";
-import { ApiError, api } from "./api";
-import { Caret } from "./Caret";
 import { Attention } from "./Attention";
+import { type ApiError, api } from "./api";
+import { Caret } from "./Caret";
 import { Dashboard } from "./Dashboard";
 import { Docs } from "./Docs";
 import { m } from "./messages";
-import { ProblemView, asApiError } from "./ProblemView";
+import { asApiError, ProblemView } from "./ProblemView";
 import { Settings } from "./Settings";
 
 export type Me = { email: string; linux: string; admin: boolean; prefix: string };

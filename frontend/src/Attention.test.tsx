@@ -1,19 +1,18 @@
 import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-
+import { vi } from "vitest";
 import { ADMIN } from "./AdminPages";
 import { m } from "./messages";
-import { vi } from "vitest";
 
 import {
   ADMIN_USER,
   CONNECTED,
+  fakeApi,
   ME,
   NOTHING_TO_ATTEND,
+  problem,
   type Reply,
   SETTINGS,
-  fakeApi,
-  problem,
 } from "./test/fakeApi";
 import { renderApp } from "./test/render";
 

@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { vi } from "vitest";
 
 import { m } from "./messages";
-import { CONNECTED, ME, type Routes, fakeApi, problem } from "./test/fakeApi";
+import { CONNECTED, fakeApi, ME, problem, type Routes } from "./test/fakeApi";
 import { renderApp } from "./test/render";
 
 const REPO = "projects/repo";

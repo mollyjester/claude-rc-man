@@ -5,12 +5,12 @@ import { CONNECTION_STATES, START_REASON } from "./Claude";
 import { m } from "./messages";
 import {
   CONNECTED,
+  fakeApi,
   ME,
   NOT_CONNECTED,
+  problem,
   type Reply,
   type Routes,
-  fakeApi,
-  problem,
 } from "./test/fakeApi";
 import { renderApp } from "./test/render";
 

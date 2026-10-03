@@ -2,8 +2,8 @@ import { useCallback, useEffect, useId, useRef, useState } from "react";
 
 import { ApiError, api } from "./api";
 import { m } from "./messages";
-import { ProblemView, asApiError } from "./ProblemView";
-import { type Server, StateBadge, StatusDot, dotFor } from "./Servers";
+import { asApiError, ProblemView } from "./ProblemView";
+import { dotFor, type Server, StateBadge, StatusDot } from "./Servers";
 
 export type Entry = { name: string; path: string; has_children: boolean; repository: boolean };
 

@@ -1,4 +1,4 @@
-import { type Locator, type Page, expect, test } from "@playwright/test";
+import { expect, type Locator, type Page, test } from "@playwright/test";
 
 import { m } from "../src/messages";
 import { panel, summary, tree } from "./nav";

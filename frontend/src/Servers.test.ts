@@ -1,5 +1,5 @@
-import { ACTIONS, KIND, KIND_ORDER, LIVE, PRIMARY, dotFor, serversIn } from "./Servers";
 import { m } from "./messages";
+import { ACTIONS, dotFor, KIND, KIND_ORDER, LIVE, PRIMARY, serversIn } from "./Servers";
 
 // Whether a table keyed by state covers exactly the states rc-helper reports.
 function sameStates(table: Record<string, unknown>) {

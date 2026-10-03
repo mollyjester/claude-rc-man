@@ -1,8 +1,7 @@
 import { screen, within } from "@testing-library/react";
-
-import { KIND } from "./Servers";
 import { m } from "./messages";
-import { ADMIN_USER, CONNECTED, NOTHING_TO_ATTEND, fakeApi } from "./test/fakeApi";
+import { KIND } from "./Servers";
+import { ADMIN_USER, CONNECTED, fakeApi, NOTHING_TO_ATTEND } from "./test/fakeApi";
 import { renderApp } from "./test/render";
 
 function server(path: string, state: string, extra: Record<string, unknown> = {}) {

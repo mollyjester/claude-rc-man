@@ -5,10 +5,10 @@ import { m } from "./messages";
 import {
   ADMIN_USER,
   CONNECTED,
-  NOTHING_TO_ATTEND,
-  type Routes,
   fakeApi,
+  NOTHING_TO_ATTEND,
   problem,
+  type Routes,
 } from "./test/fakeApi";
 import { renderApp } from "./test/render";
 

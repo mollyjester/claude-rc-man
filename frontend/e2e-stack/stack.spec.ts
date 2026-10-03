@@ -1,6 +1,6 @@
 // rcman as installed, signed in to through Caddy and oauth2-proxy, with each
 // person a Linux account of their own. Runs in order against one installation.
-import { type Page, expect, test } from "@playwright/test";
+import { expect, type Page, test } from "@playwright/test";
 
 import { openAdminPage, panel, selectInProjects, summary, tree } from "../e2e/nav";
 import { m } from "../src/messages";

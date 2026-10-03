@@ -1,19 +1,19 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 
-import { ApiError, api } from "./api";
+import { type ApiError, api } from "./api";
 import { ClaudeConnection, type Connection, START_REASON } from "./Claude";
 import { type FolderChanges, FolderPanel, HomePanel } from "./FolderPanel";
 import {
   FolderTree,
-  ServerSummary,
   folderLink,
   isRepository,
   parentOf,
+  ServerSummary,
   useFolderTree,
 } from "./Folders";
 import { m } from "./messages";
-import { ProblemView, asApiError } from "./ProblemView";
+import { asApiError, ProblemView } from "./ProblemView";
 import type { Server } from "./Servers";
 
 // The Servers page: the folder tree and its summary on one side, and the

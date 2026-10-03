@@ -3,15 +3,14 @@
 // button, or its one danger button where what it does cannot be undone.
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { useState } from "react";
 import { vi } from "vitest";
 
-import { useState } from "react";
-
-import { ApiError, api as client } from "./api";
+import { type ApiError, api as client } from "./api";
 import { m } from "./messages";
-import { ProblemView, asApiError } from "./ProblemView";
+import { asApiError, ProblemView } from "./ProblemView";
 import { FIELDS } from "./Settings";
-import { ADMIN_USER, NOT_CONNECTED, NOTHING_TO_ATTEND, SETTINGS, fakeApi } from "./test/fakeApi";
+import { ADMIN_USER, fakeApi, NOT_CONNECTED, NOTHING_TO_ATTEND, SETTINGS } from "./test/fakeApi";
 import { renderApp } from "./test/render";
 
 // A repository, whose panel has the commit and new-branch forms.

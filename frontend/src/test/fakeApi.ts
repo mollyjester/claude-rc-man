@@ -35,7 +35,7 @@ export function fakeApi(routes: Routes) {
     const key = `${method} ${url.pathname}`;
     if (!(key in routes)) {
       return new Response(
-        JSON.stringify({ code: "not_found", title: "no route " + key, status: 404 }),
+        JSON.stringify({ code: "not_found", title: `no route ${key}`, status: 404 }),
         {
           status: 404,
           headers: { "content-type": "application/problem+json" },

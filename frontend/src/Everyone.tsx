@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 
 import { ApiError, api } from "./api";
 import { m } from "./messages";
-import { ProblemView, asApiError } from "./ProblemView";
+import { asApiError, ProblemView } from "./ProblemView";
 import { type Server, StateBadge } from "./Servers";
 
 export type Person = {
