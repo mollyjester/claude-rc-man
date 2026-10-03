@@ -354,7 +354,10 @@ MESSAGES["folder_path_too_long"] = (
 # The trust prompt refuses an answer that arrives too quickly after the question.
 ANSWER_PACE_SECONDS = 0.5
 START_TIMEOUT = 30.0
+# How long a stop waits for a server to exit on Ctrl+C before ending its process.
 STOP_TIMEOUT = 30.0
+# Once a stop ends a server's process: how long it waits after SIGTERM, and after SIGKILL.
+END_GRACE_SECONDS = 5.0
 # States a server can be resumed from: stopped when asked, or stopped by itself.
 RESUMABLE = ("stopped", "exited")
 LOGIN_TIMEOUT = 60.0
@@ -480,6 +483,8 @@ def server_command(cfg: Config, prefix: str) -> list[str]:
         prefix,
         "--permission-mode",
         "default",
+        "--spawn",
+        "same-dir",
     )
 
 
@@ -818,6 +823,20 @@ class Tmux:
 
     def interrupt(self, session: str) -> None:
         self.run("send-keys", "-t", f"={session}:", "C-c")
+
+    def signal(self, session: str, sig: int) -> None:
+        """SIGTERM goes to the server's own process, the pane's, to end as it
+        ends itself; SIGKILL to its whole process group, which tmux made for it
+        and which holds whatever it started there, and which nothing survives.
+        One already gone is no error."""
+        pid = int(self.run("display-message", "-p", "-t", f"={session}:", "#{pane_pid}"))
+        try:
+            if sig == signal.SIGKILL:
+                os.killpg(pid, sig)
+            else:
+                os.kill(pid, sig)
+        except ProcessLookupError:
+            pass
 
 
 # --- git: what it is given ------------------------------------------------------------
@@ -1305,9 +1324,45 @@ class Helper:
         session = self._existing(rel)
         if self.tmux.exit_status(session) is not None:
             raise HelperError("not_running")
-        self.tmux.interrupt(session)
-        server = self._wait(session, rel, lambda s: s["exit_code"] is not None, STOP_TIMEOUT)
-        return {"server": server}
+        if self._end([(rel, session)]):
+            raise HelperError("timeout", {"server": self._server(session, rel)})
+        return {"server": self._server(session, rel)}
+
+    def _end(self, servers: list[tuple[str, str]]) -> list[tuple[str, str]]:
+        """Stop every server, (folder, session), that runs; those still running after it.
+
+        Each is sent Ctrl+C, and all have one STOP_TIMEOUT to exit. A server
+        still running then is ended: SIGTERM, then SIGKILL, each followed by
+        END_GRACE_SECONDS (Tmux.signal). What an ended server started in its
+        process group and left behind is killed too. tmux keeps the final
+        screen, so an ended server is ``exited``. Waits for the processes to
+        exit rather than for a screen, which may be one rcman does not
+        recognise.
+        """
+        running = [(path, s) for path, s in servers if self.tmux.exit_status(s) is None]
+        for _path, session in running:
+            self.tmux.interrupt(session)
+        waiting = self._exits(running, STOP_TIMEOUT)
+        ended = list(waiting)
+        for sig in (signal.SIGTERM, signal.SIGKILL):
+            if not waiting:
+                break
+            for _path, session in waiting:
+                self.tmux.signal(session, sig)
+            waiting = self._exits(waiting, END_GRACE_SECONDS)
+        for server in ended:
+            if server not in waiting:
+                self.tmux.signal(server[1], signal.SIGKILL)
+        return waiting
+
+    def _exits(self, servers: list[tuple[str, str]], timeout: float) -> list[tuple[str, str]]:
+        """Wait up to ``timeout`` for every server to exit; those still running."""
+        deadline = time.monotonic() + timeout
+        while servers := [(path, s) for path, s in servers if self.tmux.exit_status(s) is None]:
+            if time.monotonic() > deadline:
+                break
+            time.sleep(POLL_SECONDS)
+        return servers
 
     def forget(self, rel: str) -> dict:
         with self._lock(exclusive=False):
@@ -1525,23 +1580,13 @@ class Helper:
         )
 
     def _stop_all(self, servers: list[tuple[str, str]]) -> list[str]:
-        """Stop every running server, all within one STOP_TIMEOUT; the folders of those stopped.
-
-        Waits for the processes to exit rather than for a screen, which may be
-        one rcman does not recognise.
-        """
+        """Stop every running server as ``stop`` does (``_end``); the folders of those stopped."""
         running = [(path, s) for path, s in servers if self.tmux.exit_status(s) is None]
-        for _path, session in running:
-            self.tmux.interrupt(session)
-        deadline = time.monotonic() + STOP_TIMEOUT
-        waiting = running
-        while waiting := [(path, s) for path, s in waiting if self.tmux.exit_status(s) is None]:
-            if time.monotonic() > deadline:
-                path, session = waiting[0]
-                server = {**self._server(session, path), "screen": self.tmux.screen(session)}
-                stopped = [p for p, s in running if (p, s) not in waiting]
-                raise HelperError("delete_stop_failed", {"server": server, "stopped": stopped})
-            time.sleep(POLL_SECONDS)
+        if waiting := self._end(running):
+            path, session = waiting[0]
+            server = {**self._server(session, path), "screen": self.tmux.screen(session)}
+            stopped = [p for p, s in running if (p, s) not in waiting]
+            raise HelperError("delete_stop_failed", {"server": server, "stopped": stopped})
         return [path for path, _session in running]
 
     def _forget_all(self, servers: list[tuple[str, str]]) -> list[str]:

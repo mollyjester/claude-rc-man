@@ -113,6 +113,8 @@ SERVER_STATES = {
     # this; shown all the same, it is no state rcman knows, and Stop ends it.
     "spawn_prompt": "unrecognised",
     "spawn_prompt_interrupted": "unrecognised",
+    "spawn_prompt_answered_after_interrupt": "unrecognised",
+    "spawn_prompt_terminated": "exited",
     "spawn_connected_same_dir": "connected",
     "spawn_ready_same_dir": "ready",
     "spawn_stopped_same_dir": "stopped",
@@ -424,7 +426,12 @@ def ignoring(env, *signals, child=False):
     group, whose process ID is in the returned file.
     """
     pid_file = Path(env["RC_HELPER_HOME"]) / "child.pid"
-    spawn = f"sleep 600 &\necho $! > {pid_file}\n" if child else ""
+    spawn = (
+        'if [ "$1" = remote-control ]; then\n'
+        f"  sleep 600 </dev/null >/dev/null 2>&1 &\n  echo $! > {pid_file}\nfi\n"
+        if child
+        else ""
+    )
     Path(env["RC_HELPER_CLAUDE"]).write_text(
         f"#!/bin/sh\n{spawn}trap '' {' '.join(signals)}\nexec {rec.FAKE_CLAUDE} \"$@\"\n",
         encoding="utf-8",
@@ -479,7 +486,7 @@ def test_a_server_that_stops_on_ctrl_c_is_not_ended(env, monkeypatch):
     assert sent == []
 
 
-def test_a_server_that_cannot_be_ended_is_a_timeout(env, monkeypatch):
+def test_stop_answers_timeout_when_it_cannot_end_a_server(env, monkeypatch):
     log_in(env)
     ignoring(env, "INT")
     ok(env, "start", "projects/alpha", "--prefix", "pfx")
