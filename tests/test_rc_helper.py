@@ -423,12 +423,15 @@ def ignoring(env, *signals, child=False):
     """Servers started from now on ignore ``signals`` while Claude asks to trust the folder.
 
     With ``child``, each also leaves a child of its own running, in its process
-    group, whose process ID is in the returned file.
+    group, whose process ID is in the returned file. The child ignores SIGHUP,
+    which the session leader's death sends it, so only a signal to the whole
+    group ends it.
     """
     pid_file = Path(env["RC_HELPER_HOME"]) / "child.pid"
     spawn = (
         'if [ "$1" = remote-control ]; then\n'
-        f"  sleep 600 </dev/null >/dev/null 2>&1 &\n  echo $! > {pid_file}\nfi\n"
+        "  (trap '' HUP; exec sleep 600) </dev/null >/dev/null 2>&1 &\n"
+        f"  echo $! > {pid_file}\nfi\n"
         if child
         else ""
     )
@@ -457,19 +460,22 @@ def test_stop_ends_a_server_that_ignores_ctrl_c(env, ignored, ended_by):
     ok(env, "start", "projects/alpha", "--prefix", "pfx")
     pid = int(child.read_text())
     assert alive(pid)  # known positive for the check below
-
-    began = time.monotonic()
-    code, out = helper_with(env, QUICK_STOP, "stop", "--", "projects/alpha", timeout=30)
-    took = time.monotonic() - began
-    assert code == 0, out
-    assert out["server"]["state"] == "exited"
-    assert out["server"]["exit_code"] == 128 + getattr(signal, ended_by)
-    assert took < QUICK_STOP["STOP_TIMEOUT"] + 2 * QUICK_STOP["END_GRACE_SECONDS"] + 5
-    for _ in range(50):  # what the server started in its process group ends with it
-        if not alive(pid):
-            break
-        time.sleep(0.1)
-    assert not alive(pid)
+    try:
+        began = time.monotonic()
+        code, out = helper_with(env, QUICK_STOP, "stop", "--", "projects/alpha", timeout=30)
+        took = time.monotonic() - began
+        assert code == 0, out
+        assert out["server"]["state"] == "exited"
+        assert out["server"]["exit_code"] == 128 + getattr(signal, ended_by)
+        assert took < QUICK_STOP["STOP_TIMEOUT"] + 2 * QUICK_STOP["END_GRACE_SECONDS"] + 5
+        for _ in range(50):  # what the server started in its process group ends with it
+            if not alive(pid):
+                break
+            time.sleep(0.1)
+        assert not alive(pid)
+    finally:
+        if alive(pid):
+            os.kill(pid, signal.SIGKILL)
     ok(env, "forget", "projects/alpha")
     assert ok(env, "list")["servers"] == []
 
