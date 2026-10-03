@@ -13,6 +13,7 @@ interpreter.
 from __future__ import annotations
 
 import argparse
+import fcntl
 import hashlib
 import json
 import os
@@ -467,9 +468,19 @@ def open_up(root: Path) -> None:
             os.chmod(path, path.stat().st_mode | 0o755)
 
 
+TOOLCHAIN_LOCK = ".lock"
+
+
 def ensure_toolchain(toolchain: Path = TOOLCHAIN) -> list[str]:
-    """Node.js (to build the frontend), uv and oauth2-proxy, each checksum-verified."""
+    """Node.js (to build the frontend), uv and oauth2-proxy, each checksum-verified.
+    Callers filling the same toolchain take turns, holding a lock in it."""
     toolchain.mkdir(parents=True, exist_ok=True)
+    with open(toolchain / TOOLCHAIN_LOCK, "a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        return _fill_toolchain(toolchain)
+
+
+def _fill_toolchain(toolchain: Path) -> list[str]:
     changes = []
     arch = _arch()
     if not (node_bin(toolchain) / "node").exists():

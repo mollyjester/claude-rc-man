@@ -592,6 +592,96 @@ def test_toolchain_directories_are_repaired_to_be_readable(tmp_path):
     assert stat.S_IMODE((tmp_path / "a" / "b").stat().st_mode) == 0o755
 
 
+def fake_downloads(monkeypatch):
+    """The toolchain's downloads served from archives made here, each with its checksum
+    file; returns the URLs fetched. The first archive fetched waits briefly for another
+    caller to start fetching, so that two unlocked callers overlap."""
+    import hashlib
+    import io
+    import tarfile
+    import threading
+    import time
+
+    def archive(top: str, member: str, mode: str) -> bytes:
+        data = io.BytesIO()
+        with tarfile.open(fileobj=data, mode=mode) as tar:
+            info = tarfile.TarInfo(f"{top}/{member}")
+            info.mode, info.size = 0o755, 2
+            tar.addfile(info, io.BytesIO(b"ok"))
+        return data.getvalue()
+
+    arch = ins._arch()
+    node = f"node-v{ins.node_version()}-linux-{arch}"
+    triple = {"x64": "x86_64", "arm64": "aarch64"}[arch] + "-unknown-linux-gnu"
+    proxy = f"oauth2-proxy-{ins.OAUTH2_PROXY_VERSION}.linux-" + {"x64": "amd64"}.get(arch, arch)
+    archives = {
+        f"{node}.tar.xz": archive(node, "bin/node", "w:xz"),
+        f"uv-{triple}.tar.gz": archive(f"uv-{triple}", "uv", "w:gz"),
+        f"{proxy}.tar.gz": archive(proxy, "oauth2-proxy", "w:gz"),
+    }
+    sums = {name: hashlib.sha256(data).hexdigest() for name, data in archives.items()}
+    fetched, started = [], threading.Event()
+
+    def download(url: str) -> bytes:
+        name = url.rsplit("/", 1)[1]
+        fetched.append(url)
+        if name == "SHASUMS256.txt":
+            if started.is_set():
+                started.clear()
+            else:
+                started.set()
+                deadline = time.monotonic() + 1
+                while started.is_set() and time.monotonic() < deadline:
+                    time.sleep(0.01)
+            return "".join(f"{sums[n]}  {n}\n" for n in archives).encode()
+        for archive_name, digest in sums.items():
+            if name in (f"{archive_name}.sha256", f"{archive_name}-sha256sum.txt"):
+                return f"{digest}  {archive_name}\n".encode()
+        return archives[name]
+
+    monkeypatch.setattr(ins, "_download", download)
+    return fetched
+
+
+def test_the_toolchain_is_fetched_once_and_complete(tmp_path, monkeypatch):
+    """Positive control for the fake downloads: one call fills an empty toolchain."""
+    fetched = fake_downloads(monkeypatch)
+    toolchain = tmp_path / "toolchain"
+    assert len(ins.ensure_toolchain(toolchain)) == 3
+    for binary in (ins.node_bin(toolchain) / "node", ins.uv_binary(toolchain)):
+        assert binary.read_bytes() == b"ok"
+    assert ins.oauth2_proxy_binary(toolchain).read_bytes() == b"ok"
+    assert len(fetched) == len(set(fetched)) == 6
+    assert ins.ensure_toolchain(toolchain) == []  # and finds it there the next time
+
+
+def test_two_callers_at_once_make_one_complete_toolchain(tmp_path, monkeypatch):
+    """Two callers filling the same empty toolchain at once, as two parallel test runs
+    sharing a cache do: one fetches and unpacks each tool, the other then finds it."""
+    import threading
+
+    fetched = fake_downloads(monkeypatch)
+    toolchain = tmp_path / "toolchain"
+    results, errors = [], []
+
+    def call():
+        try:
+            results.append(ins.ensure_toolchain(toolchain))
+        except Exception as error:  # noqa: BLE001 - reported below
+            errors.append(error)
+
+    threads = [threading.Thread(target=call) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=60)
+    assert errors == []
+    assert sorted(len(r) for r in results) == [0, 3]
+    assert len(fetched) == len(set(fetched)) == 6
+    assert ins.oauth2_proxy_binary(toolchain).read_bytes() == b"ok"
+    assert [p.name for p in toolchain.iterdir() if p.name.startswith(".") and p.is_dir()] == []
+
+
 # --- prerequisites ---------------------------------------------------------------------
 
 

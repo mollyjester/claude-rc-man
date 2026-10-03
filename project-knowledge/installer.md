@@ -15,7 +15,11 @@ paths to the installer's.
 
 The pinned versions are `UV_VERSION` and `OAUTH2_PROXY_VERSION` in
 `installer/install.py`, and `frontend/.nvmrc` for Node.js. Downloads are checked
-against the checksums their publishers list.
+against the checksums their publishers list. `ensure_toolchain` fills the
+toolchain holding an exclusive lock on a file in it, `TOOLCHAIN_LOCK`, so two
+callers filling one toolchain at once, such as two test runs sharing the
+tests' toolchain cache, take turns and the second finds what the first
+unpacked.
 
 ## Releases
 
@@ -48,7 +52,8 @@ through the socket.
 - `tests/test_install.py`: everything the installer decides that needs no
   real machine — such as settings precedence and validation, the rendered
   files, sudoers validated with `visudo`, release switching and rollback, the
-  git check and the Caddy notices — and the guide held to the installer.
+  git check, the Caddy notices and two callers filling one toolchain at once
+  — and the guide held to the installer.
 - `tests/container/test_install_in_container.py`: a real installation in a
   fresh container. The working tree becomes a git origin and a user `dev`
   clones it and runs `install.sh`. `tests/container/fake-systemctl` stands in
