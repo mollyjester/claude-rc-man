@@ -84,3 +84,18 @@ def test_git_archive_honours_the_patterns_used(tmp_path):
 
     assert "README.md" in names  # positive control
     assert not [n for n in names if n.startswith(("tests", "devtools")) or n == "CLAUDE.md"]
+
+
+def test_the_check_reports_a_development_file_that_is_not_export_ignored(tmp_path):
+    """Planted twin: a repository whose .gitattributes no longer marks devtools/."""
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    attributes = (REPO / ".gitattributes").read_text(encoding="utf-8")
+    planted = "".join(
+        line for line in attributes.splitlines(keepends=True) if not line.startswith("/devtools")
+    )
+    assert planted != attributes  # the plant took effect: devtools/ is no longer marked
+    (tmp_path / ".gitattributes").write_text(planted, encoding="utf-8")
+    files = ["devtools/tool.py", "tests/test_x.py"]
+    assert unmarked_development_files(tmp_path, files) == {"devtools/tool.py"}
+    (tmp_path / ".gitattributes").write_text(attributes, encoding="utf-8")
+    assert unmarked_development_files(tmp_path, files) == set()  # and clean when marked
