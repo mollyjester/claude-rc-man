@@ -902,6 +902,8 @@ def git_verb(timeout: str = "GIT_TIMEOUT"):
     ``timeout`` names the module's constant that sets the deadline, read when
     the verb is called.
     """
+    if timeout not in globals():
+        raise NameError(f"git_verb: no constant {timeout} in rc_helper")
 
     def wrap(method):
         def verb(self, *args, **kwargs):
