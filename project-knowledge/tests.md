@@ -8,16 +8,25 @@ How the test suite is organised and run. The rules the suite follows are in
 | Command | What it does |
 |---|---|
 | `make setup` | Creates the development environment: `make frontend-setup`, then `uv sync` |
-| `make test` | Runs the whole suite with pytest |
+| `make test` | Runs every Python test that runs on the host, in parallel with pytest-xdist: all but those marked `container` |
+| `make test-container` | Runs the Python tests marked `container`, which need a container. It sets `RCMAN_REQUIRE_CONTAINER=1`, so they fail instead of skipping where Docker is not usable |
 | `make lint` | Checks formatting and lint with ruff |
 | `make format` | Applies formatting and safe lint fixes |
 | `make frontend-setup` | Installs the frontend's packages and Playwright's browser |
 | `make frontend-test` | Type-checks the frontend and runs its component tests |
 | `make frontend-build` | Builds the frontend into `frontend/dist` |
 | `make e2e` | Builds the frontend and runs the browser tests |
-| `make check` | Lint, the Python tests, the frontend tests and the browser tests. It sets `RCMAN_REQUIRE_REAL_CLAUDE=1` and `RCMAN_REQUIRE_CONTAINER=1`, so tests that would skip for want of the real `claude` or of Docker fail instead |
+| `make check` | Lint, `make test`, `make test-container`, the frontend tests and the browser tests. It sets `RCMAN_REQUIRE_REAL_CLAUDE=1`, so tests that would skip for want of the real `claude` fail instead |
 
 Run pytest from the repository root; `pyproject.toml` holds its configuration.
+The Python tests are split by where they run, not by how long they take:
+`make test` runs everything that runs on the host, slow tests included, and a
+slow host test is made cheaper or split into cases that workers share rather
+than moved out; `make test-container` runs what needs a container, the tests
+marked `container` (see below). `tests/test_make.py` holds the split: every
+test is in exactly one of the two, and `make check` runs both. To work on
+what the container suite covers, run it directly, as in
+`uv run pytest tests/test_container_suite.py -k github`.
 The suite needs `tmux`, `git` and sudo's `visudo`. Each test's tmux sockets
 are in a folder of its own, made under `/tmp` by `tmux_sockets` in
 `tests/conftest.py`, because a socket's path has to stay short, and removed,
@@ -44,7 +53,7 @@ that the tests' GitHub sees the request. The browser tests' world runs a
 GitHub of its own (see [frontend.md](frontend.md#tests)). `tests/test_container_suite.py` runs the root-only
 suite in `tests/container/` inside a throwaway Ubuntu container, through
 `docker` or `sudo -n docker`; it skips when neither works, unless
-`RCMAN_REQUIRE_CONTAINER=1`, which `make check` sets. Its tests take the
+`RCMAN_REQUIRE_CONTAINER=1`, which `make test-container` sets. Its tests take the
 `docker` fixture, and a test that uses it, directly or through another
 fixture, carries the `container` marker, which `tests/container_marker.py`
 adds as tests are collected. It runs these, each in a
@@ -130,6 +139,13 @@ it can fail, and a positive control that keeps an empty input from passing.
   the `docker` fixture, and no source under `tests/` places the marker by
   hand. `tests/collected.py`, which is not a test module, collects the suite
   in a child process for it.
+- **Every test runs, and container tests cannot skip** (`tests/test_make.py`).
+  It runs `make test`, `make test-container` and `make check` with `uv`,
+  `npm` and `npx` replaced by recorders, and reads which tests each pytest
+  command they ran selects from pytest's own collection: every test is in
+  exactly one of `make test` and `make test-container`, `make test-container`
+  runs exactly the `container` tests, and `make check` runs every test, its
+  container tests with `RCMAN_REQUIRE_CONTAINER=1`.
 - **Deployment contents** (`tests/test_export.py`). Deployment uses
   `git archive`, so `.gitattributes` decides what is deployed. The test
   checks that every development-only file is marked `export-ignore`, that the

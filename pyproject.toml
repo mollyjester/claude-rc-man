@@ -13,6 +13,7 @@ dependencies = [
 dev = [
     "httpx2>=2.13.1",
     "pytest",
+    "pytest-xdist>=3.8.0",
     "ruff",
 ]
 
