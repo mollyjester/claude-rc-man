@@ -454,3 +454,16 @@ def test_an_address_with_a_token_in_it_is_refused_and_never_repeated(
     assert caplog.records  # positive control: the audit event was logged
     assert all(secret not in str(value) for row in rows for value in row)
     assert secret not in caplog.text
+
+
+def test_a_clone_git_made_elsewhere_is_a_server_error(app, client):
+    """clone_missing: git said it cloned, but not where rc-helper made the folder for it,
+    which nothing the person did explains."""
+    message = rc_helper.MESSAGES["clone_missing"]
+    app.state.helper = lambda linux, args, stdin=None, timeout=None: (
+        1,
+        {"error": {"code": "clone_missing", "message": message}},
+    )
+    r = call(client, "POST", "/api/git/clone", json={"url": "https://github.com/alice/r"})
+    assert (r.status_code, r.json()["code"]) == (500, "clone_missing")
+    assert r.json()["title"] == message

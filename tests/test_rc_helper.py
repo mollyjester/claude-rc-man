@@ -3986,3 +3986,90 @@ def test_status_says_how_far_ahead_of_where_it_pushes_the_branch_is(env, repo, t
     fixture_git(repo, "config", "--unset", "branch.main.pushRemote")
     fixture_git(repo, "config", "--unset", "push.default")
     assert status(env)["push_ahead"] is None
+
+
+@pytest.mark.parametrize("impostor", ["holding a file", "empty"])
+def test_a_folder_put_where_the_clone_was_is_left_and_the_clone_emptied(
+    hooked, published, impostor
+):
+    """A hook moves the folder rcman made away and puts another of the same name in
+    its place, then fails the clone: the folder rcman made is emptied where it went,
+    and reported as left; the other is not touched."""
+    home = Path(hooked["RC_HELPER_HOME"])
+    name = folder_of(published)
+    make = f"mkdir {name} && touch {name}/mine" if impostor == "holding a file" else f"mkdir {name}"
+    persons_hook(
+        hooked, "post-checkout", f"#!/bin/sh\ncd .. && mv {name} {name}.moved && {make}\nexit 1\n"
+    )
+    code, out = clone(hooked, published, "projects")
+    assert (code, out["error"]["code"]) == (1, "git_failed"), out
+    there, moved = home / "projects" / name, home / "projects" / f"{name}.moved"
+    assert there.is_dir()
+    assert os.listdir(there) == (["mine"] if impostor == "holding a file" else [])
+    assert os.listdir(moved) == []  # the clone's files, removed through its own descriptor
+    assert out["error"]["left"] == [f"projects/{name}.moved"]
+
+
+def test_a_parent_swapped_for_a_link_once_opened_does_not_take_the_clone_there(
+    hooked, published, monkeypatch, tmp_path
+):
+    """Once the parent is open, a part of its path replaced by a link to outside the home
+    folder does not move the clone: git runs in the folder that was opened."""
+    home = Path(hooked["RC_HELPER_HOME"])
+    name = folder_of(published)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    alpha, kept = home / "projects" / "alpha", home / "projects" / "alpha-real"
+    real = h.open_dir
+
+    def swapped(root, folder):
+        fd = real(root, folder)
+        alpha.rename(kept)
+        alpha.symlink_to(outside)
+        return fd
+
+    monkeypatch.setattr(h, "open_dir", swapped)
+    try:
+        answer = in_process(hooked).git_clone("projects/alpha", published)
+    finally:
+        assert os.listdir(outside) == []
+    assert answer == {"created": f"projects/alpha/{name}"}
+    assert (kept / name / ".git").is_dir()  # in the folder that was opened
+
+
+def test_a_sigterm_as_the_folder_is_made_leaves_no_folder(hooked, published, monkeypatch, capsys):
+    home = Path(hooked["RC_HELPER_HOME"])
+    real = os.mkdir
+    made = []
+
+    def mkdir(*args, **kwargs):
+        real(*args, **kwargs)
+        made.append(args)
+        signal.pthread_kill(threading.main_thread().ident, signal.SIGTERM)
+
+    monkeypatch.setattr(os, "mkdir", mkdir)
+    with pytest.raises(SystemExit):
+        answer_of(hooked, capsys, "git-clone", f"--url={published}", "--", "projects")
+    assert made  # positive control: the SIGTERM came as the folder was made
+    assert not (home / "projects" / folder_of(published)).exists()
+
+
+def test_a_second_sigterm_does_not_cut_short_what_the_first_set_going(env, monkeypatch, capsys):
+    """rc-helper ends on the first SIGTERM; one more, while it ends, is not taken."""
+    main = threading.main_thread().ident
+    finished = []
+
+    def git_clone(self, rel, url):
+        try:
+            signal.pthread_kill(main, signal.SIGTERM)
+            time.sleep(5)
+        except SystemExit:
+            signal.pthread_kill(main, signal.SIGTERM)
+            time.sleep(0.2)
+            finished.append(True)
+            raise
+
+    monkeypatch.setattr(h.Helper, "git_clone", git_clone)
+    with pytest.raises(SystemExit):
+        answer_of(env, capsys, "git-clone", "--url=https://github.com/owner/r", "--", "projects")
+    assert finished
