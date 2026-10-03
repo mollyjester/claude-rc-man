@@ -1,8 +1,29 @@
-import { expect, test } from "@playwright/test";
+import { type Page, expect, test } from "@playwright/test";
 
 import { m } from "../src/messages";
 import { panel, summary, tree } from "./nav";
 import { ALICE, useAs } from "./people";
+
+// The summary's heading, its first path's button and text, and that path's
+// badge, measured in one go: anything that loads meanwhile and moves the
+// summary, such as the Claude account above it, moves them all alike.
+async function measured(page: Page) {
+  return summary(page).evaluate((list) => {
+    const box = (el: Element | null) => {
+      const r = el!.getBoundingClientRect();
+      return { x: r.x, y: r.y, width: r.width, height: r.height };
+    };
+    const path = list.querySelector("li button.name")!;
+    const range = document.createRange();
+    range.selectNodeContents(path);
+    return {
+      heading: box(list.querySelector("h2")),
+      path: box(path),
+      textLeft: range.getBoundingClientRect().left,
+      badge: box(list.querySelector("li .badge")),
+    };
+  });
+}
 
 // 900px is wide enough for the folders beside the panel; 600px is not, and
 // the stylesheet puts one below the other.
@@ -58,17 +79,10 @@ test("Your servers lines its paths up with its heading, each badge on its path's
   // the tree above it has loaded, so nothing moves the summary while it is measured
   await expect(tree(page).getByRole("button", { name: "projects", exact: true })).toBeVisible();
 
+  await expect(path).toBeVisible();
   // where the path's text starts, not its button's padding
-  const textLeft = await path.evaluate((el) => {
-    const range = document.createRange();
-    range.selectNodeContents(el);
-    return range.getBoundingClientRect().left;
-  });
-  const heading = (await list.getByRole("heading").boundingBox())!;
+  const { heading, path: pathBox, textLeft, badge: badgeBox } = await measured(page);
   expect(Math.abs(textLeft - heading.x)).toBeLessThanOrEqual(1);
-
-  const pathBox = (await path.boundingBox())!;
-  const badgeBox = (await badge.boundingBox())!;
   expect(badgeBox.x).toBeGreaterThan(pathBox.x + pathBox.width - 1); // beside it, not under it
   expect(badgeBox.y).toBeLessThan(pathBox.y + pathBox.height);
 });
@@ -85,13 +99,8 @@ test("a badge with no room beside its path goes below it, lined up with it", asy
   const badge = list.getByText(m.states.trust_prompt, { exact: true });
   await expect(badge).toBeVisible();
 
-  const textLeft = await path.evaluate((el) => {
-    const range = document.createRange();
-    range.selectNodeContents(el);
-    return range.getBoundingClientRect().left;
-  });
-  const pathBox = (await path.boundingBox())!;
-  const badgeBox = (await badge.boundingBox())!;
+  await expect(path).toBeVisible();
+  const { path: pathBox, textLeft, badge: badgeBox } = await measured(page);
   expect(badgeBox.y).toBeGreaterThanOrEqual(pathBox.y + pathBox.height - 1); // positive control: it went below
   expect(Math.abs(badgeBox.x - textLeft)).toBeLessThanOrEqual(1);
 });
