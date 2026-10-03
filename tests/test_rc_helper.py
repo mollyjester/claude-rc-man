@@ -2775,3 +2775,9 @@ def test_the_tree_never_lists_what_is_inside_a_git_folder(env, repo):
     assert "projects/peek" not in listed and "projects/peek-inside" not in listed
     inside = [e["path"] for e in ok(env, "tree", "--all", "--", REPO_REL)["entries"]]
     assert f"{REPO_REL}/.git" not in inside
+
+
+def test_a_git_verbs_deadline_must_name_a_constant_that_exists():
+    h.git_verb("GIT_TIMEOUT")  # positive control
+    with pytest.raises(NameError, match="NO_SUCH_TIMEOUT"):
+        h.git_verb("NO_SUCH_TIMEOUT")
