@@ -32,9 +32,9 @@ DEV_ONLY = [
 RUNTIME = ["README.md", "pyproject.toml", "uv.lock"]
 
 
-def export_ignored(paths: list[str]) -> set[str]:
+def export_ignored(paths: list[str], repo: Path = REPO) -> set[str]:
     out = subprocess.run(
-        ["git", "-C", str(REPO), "check-attr", "export-ignore", "--stdin"],
+        ["git", "-C", str(repo), "check-attr", "export-ignore", "--stdin"],
         input="\n".join(paths),
         capture_output=True,
         text=True,
@@ -54,12 +54,17 @@ def under_dev_only(path: str) -> bool:
     )
 
 
+def unmarked_development_files(repo: Path, files: list[str]) -> set[str]:
+    """The development-only files among ``files`` that ``repo`` does not export-ignore."""
+    dev_files = [p for p in files if under_dev_only(p)]
+    return set(dev_files) - export_ignored(dev_files, repo)
+
+
 def test_every_development_file_is_export_ignored():
     corpus = docs_guard.corpus_files(REPO)
-    dev_files = [p for p in corpus if under_dev_only(p)]
     # Non-vacuity: this very file is development-only.
-    assert "tests/test_export.py" in dev_files
-    assert set(dev_files) - export_ignored(dev_files) == set()
+    assert "tests/test_export.py" in [p for p in corpus if under_dev_only(p)]
+    assert unmarked_development_files(REPO, corpus) == set()
 
 
 def test_runtime_files_are_exported():
