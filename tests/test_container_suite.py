@@ -3,7 +3,8 @@
 Every test here takes the ``docker`` fixture, so it carries the ``container`` marker
 (tests/container_marker.py). The fixture uses ``docker`` when the current user may,
 otherwise ``sudo -n docker``. When neither works the tests skip, unless
-``RCMAN_REQUIRE_CONTAINER=1`` (set by ``make check``), in which case they fail.
+``RCMAN_REQUIRE_CONTAINER=1`` (set by ``make test-container``, which ``make check``
+runs), in which case they fail.
 """
 
 import hashlib
@@ -28,7 +29,9 @@ def docker() -> list[str]:
             continue
     if os.environ.get("RCMAN_REQUIRE_CONTAINER") == "1":
         pytest.fail("neither docker nor sudo -n docker works")
-    pytest.skip("docker is not usable (make check sets RCMAN_REQUIRE_CONTAINER=1 to fail instead)")
+    pytest.skip(
+        "docker is not usable (make test-container sets RCMAN_REQUIRE_CONTAINER=1 to fail instead)"
+    )
 
 
 @pytest.fixture(scope="session")

@@ -2,8 +2,8 @@
 
 Not a test module. collect() runs pytest's collection in a child process from the
 repository root, with the environment the tests themselves were started with less
-anything that steers a run (RCMAN_* and PYTEST_*), plus what the caller gives, and
-returns each selected test's markers and fixtures by node ID.
+anything that steers a run (RCMAN_*, PYTEST_* and COV_*), plus what the caller gives,
+and returns each selected test's markers and fixtures by node ID.
 """
 
 from __future__ import annotations
