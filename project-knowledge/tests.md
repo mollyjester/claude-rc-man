@@ -117,6 +117,11 @@ it can fail, and a positive control that keeps an empty input from passing.
   GitHub is, and any git run in a test with GitHub's address written into
   its arguments outside the modules that keep it local and the exemptions it
   lists.
+- **No fixed shared paths or ports** (`tests/test_fixed_resources.py`). Tests
+  run at the same time, so none may hold a fixed path under `/tmp` or a fixed
+  unprivileged port: it finds, outside `tests/container/`, any such path other
+  than a `tempfile` folder given a unique name there, and any fixed port given
+  to a call, as `port=`, or after `--port`, outside the exemptions it lists.
 - **Deployment contents** (`tests/test_export.py`). Deployment uses
   `git archive`, so `.gitattributes` decides what is deployed. The test
   checks that every development-only file is marked `export-ignore`, that the
