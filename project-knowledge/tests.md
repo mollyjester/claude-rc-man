@@ -121,6 +121,12 @@ file edits in Claude Code sessions. It runs the edited file's paired test:
 - a Markdown file runs `tests/test_docs_guard.py`;
 - `frontend/src/<name>.ts(x)` runs `<name>.test.ts(x)` beside it with Vitest.
 
+Pairs are found, and tests run, in the checkout the edited file is in, which
+git names from the file's own folder: the wiring starts the hook from the main
+checkout, and a worktree under `.claude/worktrees/` lies inside it. A Python
+test runs with that checkout's packages ahead of any the hook's Python has
+installed.
+
 A Python module with no paired test is reported. The hook is silent when the
 test passes; on failure it reports to the operator and to the agent. Its own
 tests, including one that checks the wiring in `.claude/settings.json`, are in

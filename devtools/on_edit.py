@@ -20,8 +20,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -68,10 +70,41 @@ def _report(summary: str, detail: str) -> dict:
     }
 
 
+def repository_root(path: Path, fallback: Path) -> Path:
+    """The checkout the edited file is in, asked of git where the file is.
+
+    The hook is started from the main checkout, and a worktree lies inside it,
+    under ``.claude/worktrees/``; only git, asked from the file's own folder,
+    tells the two apart. Outside any repository the given root stands."""
+    folder = path.parent
+    while not folder.is_dir() and folder != folder.parent:
+        folder = folder.parent
+    proc = subprocess.run(
+        ["git", "rev-parse", "--show-toplevel"], cwd=folder, capture_output=True, text=True
+    )
+    top = proc.stdout.strip()
+    return Path(top) if proc.returncode == 0 and top else fallback
+
+
+def import_path(root: Path) -> str:
+    """PYTHONPATH that puts the checkout's own packages first.
+
+    The hook's Python may have another checkout's packages installed; the
+    folders that hold the packages ``pyproject.toml`` builds come before them."""
+    try:
+        with open(root / "pyproject.toml", "rb") as f:
+            wheel = tomllib.load(f)["tool"]["hatch"]["build"]["targets"]["wheel"]
+    except (OSError, KeyError, tomllib.TOMLDecodeError):
+        return os.environ.get("PYTHONPATH", "")
+    folders = dict.fromkeys(str(root / Path(package).parent) for package in wheel["packages"])
+    return os.pathsep.join([*folders, os.environ.get("PYTHONPATH", "")]).rstrip(os.pathsep)
+
+
 def handle(payload: dict, root: Path) -> dict | None:
     file_path = (payload.get("tool_input") or {}).get("file_path")
     if not file_path:
         return None
+    root = repository_root(Path(file_path), root)
     test = paired_test(root, Path(file_path))
     if test is None:
         return None
@@ -86,6 +119,7 @@ def handle(payload: dict, root: Path) -> dict | None:
         proc = subprocess.run(
             [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", test_rel],
             cwd=root,
+            env={**os.environ, "PYTHONPATH": import_path(root)},
             capture_output=True,
             text=True,
         )
