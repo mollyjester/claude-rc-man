@@ -19,7 +19,7 @@ Run pytest from the repository root; `pyproject.toml` holds its configuration.
 The suite needs `tmux` and `git`. Everything git is tested against real git,
 never a fake: `tests/git_fixtures.py`, which is not a test module, makes real
 repositories, their origins and their branches with the system's git, under
-a fixture configuration of its own, so the person's configuration rc-helper
+a fixture configuration of its own, in a home removed when the tests end, so the person's configuration rc-helper
 reads is only what a test plants. `tests/test_container_suite.py` runs the root-only
 suite in `tests/container/` inside a throwaway Ubuntu container, through
 `docker` or `sudo -n docker`; it skips when neither works, unless
