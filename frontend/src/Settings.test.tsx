@@ -1,4 +1,4 @@
-import { screen, waitFor, within } from "@testing-library/react";
+import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { m } from "./messages";
@@ -216,4 +216,27 @@ test("the token field has its help below it, as every other field", async () => 
   const prefix = (await part(m.settingsPrefixTitle)).querySelector("label")!;
   expect(label.parentElement!.tagName).toBe(prefix.parentElement!.tagName);
   expect(label.nextElementSibling!.className).toBe(prefix.nextElementSibling!.className);
+});
+
+test("until the server says whether a token is stored, the part claims neither and offers no Remove", async () => {
+  let answer: (value: unknown) => void = () => {};
+  api({ "GET /api/github": () => new Promise((resolve) => (answer = resolve)) });
+  renderApp("/settings");
+  const github = await part(m.settingsGithubTitle);
+  expect(within(github).getByLabelText(m.githubTokenLabel)).toBeInTheDocument(); // positive control
+  expect(within(github).queryByText(m.githubTokenStored)).not.toBeInTheDocument();
+  expect(within(github).queryByText(m.githubTokenNotStored)).not.toBeInTheDocument();
+  expect(within(github).queryByRole("button", { name: m.githubTokenRemove })).not.toBeInTheDocument();
+  await act(async () => answer({ token: true }));
+  expect(await within(github).findByRole("button", { name: m.githubTokenRemove })).toBeInTheDocument();
+});
+
+test("when the server cannot say whether a token is stored, the part shows why and offers no Remove", async () => {
+  api({ "GET /api/github": problem(504, "helper_timeout", "planted: the helper took too long") });
+  renderApp("/settings");
+  const github = await part(m.settingsGithubTitle);
+  expect(await within(github).findByText("planted: the helper took too long")).toBeInTheDocument();
+  expect(within(github).queryByText(m.githubTokenStored)).not.toBeInTheDocument();
+  expect(within(github).queryByText(m.githubTokenNotStored)).not.toBeInTheDocument();
+  expect(within(github).queryByRole("button", { name: m.githubTokenRemove })).not.toBeInTheDocument();
 });

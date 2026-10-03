@@ -15,7 +15,7 @@ from tests.github_server import UNREACHABLE
 from tests.helper_env import assert_github_hooked, helper_env
 
 TESTS = Path(__file__).resolve().parent
-HOME_HOOK = "RC_HELPER_HOME"
+HOME_HOOK = "RC_HELPER_" + "HOME"  # built, so that this module does not name it itself
 # Sites that name the home hook outside helper_env, each with why it may:
 # (file relative to tests/, the function it is in) -> reason.
 EXEMPT = {
@@ -26,29 +26,99 @@ EXEMPT = {
 
 
 def hook_sites(source: str) -> list[tuple[int, str]]:
-    """Where the source names the home hook as a key - in a dict, a call's keywords
-    or a subscript assignment - with the function each is in."""
+    """Where the source names the home hook other than to read it, with the function each
+    is in: the name as a string anywhere - a dict's key, a subscript assigned to, the key
+    given to setenv, setdefault or putenv, or held in a variable for any of them - or as
+    "RC_HELPER_HOME=..." in an argv, or as a keyword, as dict() and update() take it.
+    Reading it (env["RC_HELPER_HOME"]) and asking whether a mapping holds it are not."""
     tree = ast.parse(source)
     found = []
+    reads = set()  # the string nodes that only read it
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Subscript) and isinstance(node.ctx, ast.Load):
+            reads.add(id(node.slice))
+        if isinstance(node, ast.Compare) and all(
+            isinstance(op, (ast.In, ast.NotIn)) for op in node.ops
+        ):
+            reads.add(id(node.left))
+
+    def names_it(node) -> bool:
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            if node.value.startswith(f"{HOME_HOOK}="):
+                return True
+            return node.value == HOME_HOOK and id(node) not in reads
+        return isinstance(node, ast.keyword) and node.arg == HOME_HOOK
 
     def visit(node, function):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             function = node.name
-        keys = []
-        if isinstance(node, ast.Dict):
-            keys = node.keys
-        elif isinstance(node, ast.Assign):
-            keys = [t.slice for t in node.targets if isinstance(t, ast.Subscript)]
-        elif isinstance(node, ast.Call):
-            keys = [a for a in node.args[:1] if getattr(node.func, "attr", "") == "setenv"]
-        for key in keys:
-            if isinstance(key, ast.Constant) and key.value == HOME_HOOK:
-                found.append((node.lineno, function))
+        if names_it(node):
+            found.append((node.lineno if hasattr(node, "lineno") else 0, function))
         for child in ast.iter_child_nodes(node):
             visit(child, function)
 
     visit(tree, "")
     return found
+
+
+def configs_without_github(source: str) -> list[int]:
+    """The lines where the source makes rc-helper's Config without saying where GitHub is,
+    which would leave an in-process helper pointed at the real one."""
+    tree = ast.parse(source)
+    modules, names = set(), set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module == "helpers":
+            modules |= {a.asname or a.name for a in node.names if a.name == "rc_helper"}
+        elif isinstance(node, ast.ImportFrom) and node.module == "helpers.rc_helper":
+            names |= {a.asname or a.name for a in node.names if a.name == "Config"}
+        elif isinstance(node, ast.Import):
+            modules |= {a.asname for a in node.names if a.name == "helpers.rc_helper" and a.asname}
+    found = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        made = (
+            isinstance(func, ast.Attribute)
+            and func.attr == "Config"
+            and isinstance(func.value, ast.Name)
+            and func.value.id in modules
+        ) or (isinstance(func, ast.Name) and func.id in names)
+        if made and not any(k.arg == "github" for k in node.keywords):
+            found.append(node.lineno)
+    return found
+
+
+def test_every_in_process_config_says_where_github_is():
+    found, made = [], 0
+    for path in sorted(TESTS.rglob("*.py")):
+        source = path.read_text(encoding="utf-8")
+        made += source.count("Config(")
+        found += [f"{path.relative_to(TESTS)}:{line}" for line in configs_without_github(source)]
+    assert made > 0  # non-vacuity
+    assert found == []
+
+
+@pytest.mark.parametrize(
+    "planted",
+    [
+        "from helpers import rc_helper as h\ncfg = h.Config(home=x, claude=y, tmux_socket=None)",
+        "from helpers import rc_helper\ncfg = rc_helper.Config(home=x, claude=y, tmux_socket=None)",
+        "from helpers.rc_helper import Config\ncfg = Config(home=x, claude=y, tmux_socket=None)",
+        "import helpers.rc_helper as rh\ncfg = rh.Config(home=x, claude=y, tmux_socket=None)",
+    ],
+)
+def test_the_config_guard_finds_a_config_with_no_github(planted):
+    """Planted twins: each way of reaching rc-helper's Config is found without github=,
+    and not with it; another module's Config is not rc-helper's."""
+    assert configs_without_github(planted) == [2]
+    assert (
+        configs_without_github(planted.replace("tmux_socket=None", "tmux_socket=None, github=g"))
+        == []
+    )
+    other = "from helpers import rc_admin as ra\ncfg = ra.Config(home=x)"
+    assert configs_without_github(other) == []
 
 
 def unhooked_sites() -> tuple[list[str], int]:
@@ -84,13 +154,27 @@ def test_the_exemptions_still_have_their_sites():
         'env["RC_HELPER_HOME"] = "/x"',
         'monkeypatch.setenv("RC_HELPER_HOME", "/x")',
         'run(dict(PATH="/usr/bin"), {"RC_HELPER_HOME": home})',
+        'env = dict(PATH="/usr/bin", RC_HELPER_HOME="/x")',
+        'env.update(RC_HELPER_HOME="/x")',
+        'env.setdefault("RC_HELPER_HOME", "/x")',
+        'os.putenv("RC_HELPER_HOME", "/x")',
+        'run(["env", "RC_HELPER_HOME=/x", "rc-helper", "list"])',
+        'KEY = "RC_HELPER_HOME"',
     ],
 )
 def test_the_guard_finds_a_planted_environment(planted):
     """Planted twins: each way of naming the hook is found, inside a function too."""
     assert hook_sites(planted) != []
     assert hook_sites(f"def f():\n    {planted}\n") == [(2, "f")]
-    assert hook_sites("env = helper_env(home, claude, sock)") == []
+
+
+def test_the_guard_leaves_reading_the_hook_alone():
+    for source in (
+        "env = helper_env(home, claude, sock)",
+        'home = env["RC_HELPER_HOME"]',
+        'assert "RC_HELPER_HOME" not in seen',
+    ):
+        assert hook_sites(source) == [], source
 
 
 def test_helper_env_always_sets_github():

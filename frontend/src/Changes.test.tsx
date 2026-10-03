@@ -582,9 +582,9 @@ test("while no branch is checked out, nothing is pushed and the section says why
   expect(section.getByRole("button", { name: m.commit })).toBeInTheDocument(); // positive control
 });
 
-test("Push is not offered for a branch its upstream already has, and Commit & Push still is", async () => {
-  const even = { name: "main", commit: "0123456789abcdef", upstream: "origin/main", ahead: 0, behind: 2 };
-  repoApi({ "GET /api/git/status": status(STAGED, [], { branch: even, ...TOKEN }) });
+test("Push is not offered for a branch where it pushes has already, and Commit & Push still is", async () => {
+  const even = { name: "main", commit: "0123456789abcdef", upstream: "origin/main", ahead: 3, behind: 2 };
+  repoApi({ "GET /api/git/status": status(STAGED, [], { branch: even, push_ahead: 0, ...TOKEN }) });
   renderApp(`/?folder=${REPO}`);
   const section = await changes();
   expect(await section.findByRole("button", { name: m.commitPush })).toBeInTheDocument();
@@ -660,4 +660,11 @@ test("without a token for a push to GitHub, the section says so in one sentence,
   const link = await (await changes()).findByRole("link", { name: m.pushNeedsToken.link });
   const { before, link: linked, after } = m.pushNeedsToken;
   expect(link.closest("p")!.textContent).toBe(`${before}${linked}${after}`);
+});
+
+test("Push is offered for a branch ahead of where it pushes, even when its upstream has it all", async () => {
+  const even = { name: "main", commit: "0123456789abcdef", upstream: "origin/main", ahead: 0, behind: 0 };
+  repoApi({ "GET /api/git/status": status([], [], { branch: even, push_ahead: 1, ...TOKEN }) });
+  renderApp(`/?folder=${REPO}`);
+  expect(await (await changes()).findByRole("button", { name: m.push })).toBeInTheDocument();
 });

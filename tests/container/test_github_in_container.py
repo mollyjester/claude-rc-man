@@ -49,7 +49,9 @@ def openssl(*args, cwd):
 def github_com(tmp_path_factory):
     """The tests' GitHub on 127.0.0.1:443 with a certificate for github.com from a
     certificate authority the system trusts; removed again afterwards."""
-    assert socket.gethostbyname("github.com") == "127.0.0.1"  # before any git is run
+    # Before any git is run: no network but loopback, and github.com is this container.
+    assert sorted(os.listdir("/sys/class/net")) == ["lo"]
+    assert socket.gethostbyname("github.com") == "127.0.0.1"
     pki = tmp_path_factory.mktemp("pki")
     openssl("req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "2", "-subj",
             f"/CN={CA_NAME}", "-keyout", "ca.key", "-out", "ca.crt", cwd=pki)  # fmt: skip

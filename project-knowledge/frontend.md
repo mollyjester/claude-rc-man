@@ -49,7 +49,8 @@ version is `frontend/.nvmrc`.
   token is stored (`github_token`), so a token git forgot after GitHub
   refused it withdraws it at the next refresh; otherwise the section says
   why, linking to Settings for the token; Push is offered where a push can
-  be tried and the branch has no upstream or is ahead of it, and Commit &
+  be tried and where the branch pushes lacks a commit of it or is unknown
+  (`push_ahead`), and Commit &
   Push where a push can be tried and Commit is offered; Switch is offered for a local branch other than the current one
   and for a remote branch no local branch tracks; Stage selected and
   Unstage selected only while something is checked. git's own refusals, which

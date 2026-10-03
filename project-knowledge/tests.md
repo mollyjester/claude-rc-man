@@ -30,7 +30,8 @@ rc-helper a test runs gets its environment from `helper_env` in
 `tests/helper_env.py`, which always sets `RC_HELPER_GITHUB` (see
 [rc-helper.md](rc-helper.md#test-hooks)) to it or to `UNREACHABLE`, so that
 no test reaches the real GitHub; `tests/test_helper_env.py` finds any other
-place in `tests/` that builds one. Before the first test, `github_hook_works`
+place in `tests/` that builds one, and any rc-helper `Config` made in a test
+without saying where GitHub is. Before the first test, `github_hook_works`
 in `tests/conftest.py` checks, without reaching anything, that git as
 rc-helper runs it would send GitHub to the hook's address, and only then
 that the tests' GitHub sees the request. The browser tests' world runs a

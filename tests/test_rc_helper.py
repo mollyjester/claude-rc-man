@@ -463,7 +463,7 @@ def test_invalid_prefix_is_refused(env, prefix):
 
 
 def test_server_command_is_fixed_and_shell_free(tmp_path):
-    cfg = h.Config(home=tmp_path, claude=tmp_path / "claude", tmux_socket=None)
+    cfg = h.Config(home=tmp_path, claude=tmp_path / "claude", tmux_socket=None, github=UNREACHABLE)
     argv = h.server_command(cfg, prefix="pfx")
     assert argv[0] == "/usr/bin/env" and argv[1] == "-i"
     command = argv[argv.index(str(tmp_path / "claude")) :]
@@ -478,7 +478,7 @@ def test_server_command_is_fixed_and_shell_free(tmp_path):
 
 
 def test_server_environment_is_the_allowlist(tmp_path):
-    cfg = h.Config(home=tmp_path, claude=tmp_path / "claude", tmux_socket=None)
+    cfg = h.Config(home=tmp_path, claude=tmp_path / "claude", tmux_socket=None, github=UNREACHABLE)
     argv = h.server_command(cfg, prefix="pfx")
     assigned = [a.split("=", 1)[0] for a in argv[2:] if "=" in a and not a.startswith("/")]
     assert sorted(assigned) == sorted(h.child_env(cfg))
@@ -534,7 +534,9 @@ def test_login_code_never_reaches_any_argv(tmp_path):
         seen.append((list(args), kw.get("input")))
         return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
 
-    cfg = h.Config(home=tmp_path, claude=tmp_path / "claude", tmux_socket=tmp_path / "s")
+    cfg = h.Config(
+        home=tmp_path, claude=tmp_path / "claude", tmux_socket=tmp_path / "s", github=UNREACHABLE
+    )
     h.Tmux(cfg, runner=runner).paste_line("rc-login", "SECRET-CODE-123")
     assert seen, "nothing was run"
     assert not any("SECRET-CODE-123" in " ".join(args) for args, _ in seen)
@@ -2519,7 +2521,9 @@ def test_the_changes_table_check_fails_on_a_drifted_table():
 
 
 def test_git_env_is_the_server_environment_cut_down_for_git(tmp_path):
-    cfg = h.Config(home=tmp_path, claude=tmp_path / "claude", tmux_socket=None)
+    cfg = h.Config(
+        home=tmp_path, claude=tmp_path / "claude", tmux_socket=None, github=h.GITHUB_ADDRESS
+    )
     env = h.git_env(cfg)
     child = h.child_env(cfg)
     for key in ("HOME", "USER", "LOGNAME", "PATH", "LANG"):
@@ -2597,6 +2601,25 @@ def test_a_fetch_has_its_own_deadline_read_when_it_is_called(env, repo, monkeypa
     status, out = answer_of(env, capsys, "git-fetch", "--", REPO_REL)
     assert time.monotonic() - began < 10
     assert (status, out["error"]["code"]) == (1, "git_timeout"), out
+
+
+def test_a_push_has_the_network_deadline_read_when_it_is_called(env, repo, monkeypatch, capsys):
+    """A push whose remote never answers ends at GIT_NETWORK_TIMEOUT, not at GIT_TIMEOUT:
+    the two are set apart here, the local one the shorter."""
+    import time
+
+    hold = Path(env["RC_HELPER_HOME"]) / "slow-receive-pack"
+    hold.write_text("#!/bin/sh\nexec sleep 60\n")
+    hold.chmod(0o755)
+    fixture_git(repo, "config", "remote.origin.receivepack", str(hold))
+    commit_in(repo, "more.txt")
+    monkeypatch.setattr(h, "GIT_TIMEOUT", 1.0)
+    monkeypatch.setattr(h, "GIT_NETWORK_TIMEOUT", 4.0)
+    began = time.monotonic()
+    status, out = answer_of(env, capsys, "git-push", "--", REPO_REL)
+    took = time.monotonic() - began
+    assert (status, out["error"]["code"]) == (1, "git_timeout"), out
+    assert 3.5 < took < 10, took
 
 
 def test_no_git_on_the_system_path_is_git_not_installed(env, repo, tmp_path, monkeypatch, capsys):
@@ -2797,7 +2820,9 @@ def test_a_git_verbs_deadline_must_name_a_constant_that_exists():
 def test_git_env_points_github_at_the_hook_only_when_set(tmp_path):
     import dataclasses
 
-    plain = h.Config(home=tmp_path, claude=tmp_path / "claude", tmux_socket=None)
+    plain = h.Config(
+        home=tmp_path, claude=tmp_path / "claude", tmux_socket=None, github=h.GITHUB_ADDRESS
+    )
     assert plain.github == h.GITHUB_ADDRESS
     assert not any(key.startswith("GIT_CONFIG") for key in h.git_env(plain))
     hooked = h.git_env(dataclasses.replace(plain, github="http://127.0.0.1:9/"))
@@ -2899,7 +2924,7 @@ def test_the_token_is_read_from_stdin_and_stored_for_github(hooked, github):
 def test_without_the_hook_the_token_is_stored_for_github_com(tmp_path):
     home = tmp_path / "home"
     home.mkdir()
-    cfg = h.Config(home=home, claude=tmp_path / "claude", tmux_socket=None)
+    cfg = h.Config(home=home, claude=tmp_path / "claude", tmux_socket=None, github=h.GITHUB_ADDRESS)
     assert cfg.github == h.GITHUB_ADDRESS
     helper_ = h.Helper(cfg)
     assert helper_.github_token(TOKEN.encode() + b"\n") == {"token": True}
@@ -3932,3 +3957,31 @@ def test_a_clone_leaves_submodules_uncloned_even_where_the_person_asks_for_them(
 
 def github_url_of(name: str) -> str:
     return f"https://github.com/owner/{name}"
+
+
+def test_status_says_how_far_ahead_of_where_it_pushes_the_branch_is(env, repo, tmp_path):
+    """Measured against the push destination (@{push}) when there is one, the upstream
+    otherwise, and null with neither."""
+    assert status(env)["push_ahead"] == 0  # main is where origin/main is
+    commit_in(repo, "more.txt")
+    assert status(env)["push_ahead"] == 1  # against the upstream
+    mirror = tmp_path / "mirror.git"
+    fixture_git(tmp_path, "init", "-q", "--bare", str(mirror))
+    fixture_git(repo, "remote", "add", "mirror", str(mirror))
+    fixture_git(repo, "push", "-q", "mirror", "HEAD~1:refs/heads/main")
+    fixture_git(repo, "fetch", "-q", "mirror")
+    fixture_git(repo, "push", "-q", "origin", "main")
+    fixture_git(repo, "fetch", "-q", "origin")
+    shown = status(env)
+    assert shown["branch"]["ahead"] == 0  # the upstream has it all
+    assert shown["push_ahead"] == 0  # no push remote of its own yet: the upstream
+    fixture_git(repo, "config", "branch.main.pushRemote", "mirror")
+    # git names no @{push} for push.default simple when it differs from the upstream,
+    # so it is the upstream's count still; with current, @{push} is mirror/main.
+    assert status(env)["push_ahead"] == 0
+    fixture_git(repo, "config", "push.default", "current")
+    assert status(env)["push_ahead"] == 1  # the push destination, mirror/main, lacks one
+    fixture_git(repo, "switch", "-q", "-c", "no-upstream")
+    fixture_git(repo, "config", "--unset", "branch.main.pushRemote")
+    fixture_git(repo, "config", "--unset", "push.default")
+    assert status(env)["push_ahead"] is None
