@@ -517,11 +517,11 @@ test("a push to GitHub is offered only with a token; otherwise the section says 
   repoApi({ "GET /api/git/status": status(STAGED, [], NO_TOKEN) });
   const app = renderApp(`/?folder=${REPO}`);
   const section = await changes();
-  expect(await section.findByText(m.pushNeedsToken)).toBeInTheDocument();
+  expect(await section.findByText(m.pushNeedsToken.before.trim(), { exact: false })).toBeInTheDocument();
   expect(section.queryByRole("button", { name: m.push })).not.toBeInTheDocument();
   expect(section.queryByRole("button", { name: m.commitPush })).not.toBeInTheDocument();
   expect(section.getByRole("button", { name: m.commit })).toBeInTheDocument(); // positive control
-  await userEvent.click(section.getByRole("link", { name: m.pushTokenLink }));
+  await userEvent.click(section.getByRole("link", { name: m.pushNeedsToken.link }));
   expect(app.location().pathname).toBe("/settings");
 });
 
@@ -531,7 +531,7 @@ test("with a token stored, a push to GitHub is offered", async () => {
   const section = await changes();
   expect(await section.findByRole("button", { name: m.push })).toBeInTheDocument();
   expect(section.getByRole("button", { name: m.commitPush })).toBeInTheDocument();
-  expect(section.queryByText(m.pushNeedsToken)).not.toBeInTheDocument();
+  expect(section.queryByText(m.pushNeedsToken.before.trim(), { exact: false })).not.toBeInTheDocument();
 });
 
 test("whether a token is stored comes with the status, so a token GitHub refused stops Push at the next refresh", async () => {
@@ -543,7 +543,7 @@ test("whether a token is stored comes with the status, so a token GitHub refused
   const section = await changes();
   expect(await section.findByRole("button", { name: m.push })).toBeInTheDocument();
   stored = false; // git forgot the token after GitHub refused it
-  expect(await section.findByText(m.pushNeedsToken)).toBeInTheDocument();
+  expect(await section.findByText(m.pushNeedsToken.before.trim(), { exact: false })).toBeInTheDocument();
   expect(section.queryByRole("button", { name: m.push })).not.toBeInTheDocument();
   expect(fake.made("GET", "/api/github")).toHaveLength(0);
 });
@@ -552,7 +552,7 @@ test("a status that does not say a token is stored offers no push to GitHub", as
   repoApi({ "GET /api/git/status": status(STAGED, [], { push_to_github: true, github_token: null }) });
   renderApp(`/?folder=${REPO}`);
   const section = await changes();
-  expect(await section.findByText(m.pushNeedsToken)).toBeInTheDocument();
+  expect(await section.findByText(m.pushNeedsToken.before.trim(), { exact: false })).toBeInTheDocument();
   expect(section.queryByRole("button", { name: m.push })).not.toBeInTheDocument();
   expect(section.queryByRole("button", { name: m.commitPush })).not.toBeInTheDocument();
 });
@@ -563,7 +563,7 @@ test("until the status is known, neither Push nor why it is not offered is shown
   renderApp(`/?folder=${REPO}`);
   const section = await changes();
   expect(await section.findByText(m.loading)).toBeInTheDocument();
-  expect(section.queryByText(m.pushNeedsToken)).not.toBeInTheDocument();
+  expect(section.queryByText(m.pushNeedsToken.before.trim(), { exact: false })).not.toBeInTheDocument();
   expect(section.queryByText(m.pushNeedsBranch)).not.toBeInTheDocument();
   expect(section.queryByRole("button", { name: m.push })).not.toBeInTheDocument();
   expect(section.queryByRole("button", { name: m.commitPush })).not.toBeInTheDocument();
@@ -652,4 +652,12 @@ test("a commit made whose push failed says both, with what git said", async () =
   expect(within(problem).getByLabelText(m.gitSaid)).toHaveTextContent("planted words of git");
   await waitFor(() => expect(box).toHaveValue(""));
   expect(section.queryByText(m.pushed("main", "origin/main"))).not.toBeInTheDocument();
+});
+
+test("without a token for a push to GitHub, the section says so in one sentence, the link to Settings in it", async () => {
+  repoApi({ "GET /api/git/status": status(STAGED, [], NO_TOKEN) });
+  renderApp(`/?folder=${REPO}`);
+  const link = await (await changes()).findByRole("link", { name: m.pushNeedsToken.link });
+  const { before, link: linked, after } = m.pushNeedsToken;
+  expect(link.closest("p")!.textContent).toBe(`${before}${linked}${after}`);
 });

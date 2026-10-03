@@ -231,11 +231,11 @@ test("a GitHub token is added, a new branch is committed and pushed, and the tok
   await page.goto("/");
   await selectInProjects(page, "alice-repo");
   const changes = panel(page, "projects/alice-repo").getByRole("region", { name: m.changesTitle });
-  await expect(changes.getByText(m.pushNeedsToken)).toBeVisible();
+  await expect(changes.getByText(m.pushNeedsToken.before.trim(), { exact: false })).toBeVisible();
   await expect(changes.getByRole("button", { name: m.push, exact: true })).toHaveCount(0);
 
   // the token, through Settings: stored, and the field left empty
-  await changes.getByRole("link", { name: m.pushTokenLink }).click();
+  await changes.getByRole("link", { name: m.pushNeedsToken.link }).click();
   const github = page.getByRole("region", { name: m.settingsGithubTitle });
   await expect(github.getByText(m.githubTokenNotStored)).toBeVisible();
   await github.getByLabel(m.githubTokenLabel).fill(GITHUB_TOKEN);
@@ -267,6 +267,6 @@ test("a GitHub token is added, a new branch is committed and pushed, and the tok
   await dialog.getByRole("button", { name: m.githubTokenRemoveConfirm }).click();
   await expect(github.getByText(m.githubTokenNotStored)).toBeVisible();
   await page.goto("/?folder=projects/alice-repo");
-  await expect(changes.getByText(m.pushNeedsToken)).toBeVisible();
+  await expect(changes.getByText(m.pushNeedsToken.before.trim(), { exact: false })).toBeVisible();
   await expect(changes.getByRole("button", { name: m.push, exact: true })).toHaveCount(0);
 });
