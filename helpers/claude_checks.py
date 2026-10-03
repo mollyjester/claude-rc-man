@@ -14,12 +14,15 @@ as root.
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import re
 import select
 import signal
+import struct
 import subprocess
+import termios
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -87,9 +90,17 @@ CHECK_EMAIL = "check@example.com"
 Runner = Callable[..., tuple[int | None, str]]
 
 
+# The pseudo-terminal's size. Claude wraps its output, auth status's JSON included, at
+# the terminal's width; a line holding any path must fit in one.
+ROWS = 50
+COLUMNS = 2 * os.pathconf("/", "PC_PATH_MAX")
+
+
 def run_in_pty(argv: list[str], env: dict[str, str], cwd: Path, until: str | None, timeout: float):
-    """Run ``argv`` on a pseudo-terminal; stop at ``until`` or exit. Output without escapes."""
+    """Run ``argv`` on a pseudo-terminal of ROWS by COLUMNS; stop at ``until`` or exit.
+    Output without escapes."""
     master, slave = os.openpty()
+    fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", ROWS, COLUMNS, 0, 0))
     proc = subprocess.Popen(
         argv, stdin=slave, stdout=slave, stderr=slave, env=env, cwd=cwd, start_new_session=True
     )

@@ -69,6 +69,27 @@ def test_the_installed_real_claude_passes(tmp_path):
     assert cc.candidate_checks(runner_for(REAL, tmp_path), version) == []
 
 
+@pytest.mark.skipif(
+    REAL is None and os.environ.get("RCMAN_REQUIRE_REAL_CLAUDE") != "1",
+    reason="claude not installed",
+)
+def test_the_installed_real_claude_passes_with_a_long_configuration_path(tmp_path):
+    """auth status prints the configuration's path in its JSON; on a narrow terminal
+    a long one wraps inside a string, and the JSON no longer reads."""
+    version = rec.installed_version(REAL)
+    deep = tmp_path / ("d" * 100)
+    deep.mkdir()
+    assert cc.candidate_checks(runner_for(REAL, deep), version) == []
+
+
+def test_the_terminal_is_wide_enough_for_any_path(tmp_path):
+    """A line as long as the longest path the checks could meet is not wrapped."""
+    run = cc.local_runner("/bin/sh", env={}, cwd=tmp_path, config_dir=tmp_path / "cfg")
+    _code, output = run(["-c", "stty size"])
+    rows, columns = (int(n) for n in output.split())
+    assert rows > 0 and columns >= 2 * os.pathconf("/", "PC_PATH_MAX"), output
+
+
 def test_terminal_control_sequences_are_stripped():
     raw = (
         '\x1b7\x1b8{\n"loggedIn":false\n}\n\x1b(B\x0f\x1b[>4m\x1b[<u\x1b7\x1b8'

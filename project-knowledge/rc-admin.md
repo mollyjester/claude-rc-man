@@ -65,7 +65,9 @@ version differs.
 (`/var/lib/rcman/canary`, recreated each time and owned by the application
 user) as the application user, and runs `candidate_checks` from
 `helpers/claude_checks.py` there on a pseudo-terminal with a throwaway Claude
-configuration. Only when no check fails does it write the approval file and
+configuration. The terminal is as wide as `COLUMNS` in that module, so that
+Claude, which wraps its output at the terminal's width, never wraps a line
+holding a path, such as the configuration's in the `auth status` JSON. Only when no check fails does it write the approval file and
 install the version for each user; a user whose installation fails is
 reported and the others continue.
 
