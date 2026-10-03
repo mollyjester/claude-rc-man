@@ -307,6 +307,16 @@ def test_caddy_snippet_strips_the_identity_header_before_authenticating():
     assert snippet.count("reverse_proxy") == 2  # oauth2-proxy's pages, and rcman
 
 
+def test_caddy_snippet_logs_each_request_to_a_file_it_rotates_and_expires():
+    snippet = ins.render("Caddyfile", SETTINGS)
+    block = snippet[snippet.index("\tlog {") : snippet.index("\thandle /oauth2/*")]
+    assert "output file /var/log/caddy/rcman-access.log {" in block
+    # Caddy deletes a rolled file past either limit; both are set, not left to defaults.
+    for option in ("roll_size", "roll_keep", "roll_keep_for"):
+        assert f"\t\t\t{option} " in block
+    assert "log_skip" not in snippet  # every request, the polls among them
+
+
 def test_the_socket_directory_is_made_at_boot_for_rcman_and_caddys_group():
     assert ins.tmpfiles() == "d /run/rcman 0750 rcman rcman-web -\n"
     assert ins.SOCKET.parent == ins.RUN == Path("/run/rcman")
