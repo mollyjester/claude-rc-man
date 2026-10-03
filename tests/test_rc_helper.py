@@ -2597,6 +2597,25 @@ def test_a_fetch_has_its_own_deadline_read_when_it_is_called(env, repo, monkeypa
     assert (status, out["error"]["code"]) == (1, "git_timeout"), out
 
 
+def test_a_push_has_the_network_deadline_read_when_it_is_called(env, repo, monkeypatch, capsys):
+    """A push whose remote never answers ends at GIT_NETWORK_TIMEOUT, not at GIT_TIMEOUT:
+    the two are set apart here, the local one the shorter."""
+    import time
+
+    hold = Path(env["RC_HELPER_HOME"]) / "slow-receive-pack"
+    hold.write_text("#!/bin/sh\nexec sleep 60\n")
+    hold.chmod(0o755)
+    fixture_git(repo, "config", "remote.origin.receivepack", str(hold))
+    commit_in(repo, "more.txt")
+    monkeypatch.setattr(h, "GIT_TIMEOUT", 1.0)
+    monkeypatch.setattr(h, "GIT_NETWORK_TIMEOUT", 4.0)
+    began = time.monotonic()
+    status, out = answer_of(env, capsys, "git-push", "--", REPO_REL)
+    took = time.monotonic() - began
+    assert (status, out["error"]["code"]) == (1, "git_timeout"), out
+    assert 3.5 < took < 10, took
+
+
 def test_no_git_on_the_system_path_is_git_not_installed(env, repo, tmp_path, monkeypatch, capsys):
     from helpers import git_run
 
