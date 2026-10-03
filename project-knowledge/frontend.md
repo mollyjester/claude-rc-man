@@ -13,7 +13,8 @@ server that forwards `/api` to a local backend, at the address
 ## Formatting and lint
 
 [Biome](https://biomejs.dev) formats and lints the frontend: its TypeScript,
-its stylesheet and its JSON files. `frontend/biome.jsonc` names the files it
+its stylesheet and its JSON files; it lints `index.html` too, whose
+formatting, as HTML's, Biome leaves alone by default. `frontend/biome.jsonc` names the files it
 covers and holds every setting that differs from Biome's defaults, each with
 its reason. Its version is pinned exactly in `frontend/package.json`, so a new
 release of Biome cannot change what passes.

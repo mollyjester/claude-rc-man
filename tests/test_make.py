@@ -281,9 +281,11 @@ def test_lint_and_format_run_ruff_and_the_frontend_script_of_the_same_name(tmp_p
     ]
 
 
-def lint_tree(tmp_path: Path, planted: str | None, node_modules: bool = True):
+def lint_tree(
+    tmp_path: Path, planted: str | None, node_modules: bool = True, where: str = "src/planted.ts"
+):
     """The real `make lint` in a scratch tree holding the Makefile, the frontend's
-    package.json and Biome's configuration, and ``planted`` as frontend/src/planted.ts.
+    package.json and Biome's configuration, and ``planted`` as frontend/``where``.
     uv is a recorder, so only the frontend's half does real work; npm and Biome are the
     real ones, Biome from the frontend's own packages."""
     biome = FRONTEND / "node_modules" / "@biomejs" / "biome"
@@ -296,7 +298,7 @@ def lint_tree(tmp_path: Path, planted: str | None, node_modules: bool = True):
     if node_modules:
         (tree / "frontend" / "node_modules").symlink_to(FRONTEND / "node_modules")
     if planted is not None:
-        (tree / "frontend" / "src" / "planted.ts").write_text(planted, encoding="utf-8")
+        (tree / "frontend" / where).write_text(planted, encoding="utf-8")
     fakebin = tmp_path / "bin"
     fakebin.mkdir()
     (fakebin / "uv").write_text(RECORDER.format(python=sys.executable), encoding="utf-8")
@@ -360,6 +362,21 @@ def test_make_lint_fails_on_a_frontend_finding_biome_reports_as_an_info(tmp_path
     assert FORMAT_FINDING not in output(proc)  # and only as a lint finding
     assert proc.returncode != 0
     assert "planted.ts" in output(proc)
+
+
+def test_make_lint_checks_the_frontends_index_html(tmp_path):
+    """The page's index.html is among the files Biome checks: the real one passes, one
+    file more than without it, and a planted one without a language fails."""
+    index = (FRONTEND / "index.html").read_text(encoding="utf-8")
+    bare = lint_tree(tmp_path / "bare", None)
+    proc = lint_tree(tmp_path / "real", index, where="index.html")
+    assert proc.returncode == 0, output(proc)
+    assert checked(proc) == checked(bare) + 1
+    planted = index.replace('<html lang="en">', "<html>")
+    assert planted != index  # the plant took effect
+    proc = lint_tree(tmp_path / "planted", planted, where="index.html")
+    assert proc.returncode != 0
+    assert "index.html" in output(proc) and "lint/a11y/useHtmlLang" in output(proc)
 
 
 BIOME = FRONTEND / "node_modules" / ".bin" / "biome"
