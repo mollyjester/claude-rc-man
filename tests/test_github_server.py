@@ -160,3 +160,44 @@ def test_a_credential_for_github_com_is_not_offered_to_the_rewritten_url(
     proc = git_as(local, home, "push", github_url, "main", config=for_server)
     assert proc.returncode == 0, proc.stderr  # positive control: stored for the rewritten URL
     assert commits(bare) == ["First commit"]
+
+
+@pytest.fixture
+def private(server):
+    """A fresh private repository on the server, holding one commit on main: its URL."""
+    name = f"private-{next(_names)}"
+    bare = server.bare("owner", name, private=True)
+    return bare, f"{server.url}owner/{name}.git"
+
+
+def test_a_private_repository_is_not_read_without_the_token(server, private, local, tmp_path):
+    bare, url = private
+    fixture_git(local, "push", "-q", str(bare), "main")
+    before = len(server.attempts)
+    refused = git_as(tmp_path, tmp_path / "home", "ls-remote", url)
+    assert refused.returncode != 0 and "terminal prompts disabled" in refused.stderr
+    wrong = git_as(tmp_path, tmp_path / "home", "ls-remote", url, config=FROM_ENV, U="x", P="no")
+    assert wrong.returncode != 0
+    clone = tmp_path / "clone"
+    read = git_as(
+        tmp_path, tmp_path / "home", "clone", "-q", url, str(clone), config=FROM_ENV, U="x", P=TOKEN
+    )
+    assert read.returncode == 0, read.stderr
+    assert (clone / "README.md").exists()
+    assert ("x", True) in server.attempts[before:] and ("x", False) in server.attempts[before:]
+
+
+def test_a_public_repository_beside_a_private_one_is_read_by_anyone(
+    server, private, remote, tmp_path
+):
+    bare, url = remote
+    proc = git_as(tmp_path, tmp_path / "home", "ls-remote", url)
+    assert proc.returncode == 0, proc.stderr
+
+
+def test_every_request_is_logged_by_its_path(server, remote, tmp_path):
+    _, url = remote
+    before = len(server.requests)
+    git_as(tmp_path, tmp_path / "home", "ls-remote", url)
+    path = url.removeprefix(server.url.removesuffix("/"))
+    assert any(p.startswith(path.removesuffix(".git")) for _, p in server.requests[before:])
