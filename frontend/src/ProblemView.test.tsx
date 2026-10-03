@@ -70,7 +70,9 @@ test("shows what git said when it refused, and how much more it said", () => {
   render(<ProblemView error={error} />);
   const said = screen.getByLabelText(m.gitSaid);
   expect(said.tagName).toBe("PRE");
+  expect(said).toHaveClass("git-said"); // wrapped, unlike a screen
   expect(said.textContent).toBe(git.join("\n"));
+  expect(screen.queryByText(m.gitSaid)).not.toBeInTheDocument(); // the title leads in, once
   expect(screen.getByRole("alert")).toHaveTextContent(m.andMoreLines(4));
 });
 

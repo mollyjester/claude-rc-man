@@ -100,7 +100,14 @@ const PAGES: [string, string, () => Promise<void>][] = [
 // The forms of a repository's Changes section, each found by its field.
 PAGES.push(
   ["a commit", "/?folder=projects/repo", async () => void (await screen.findByLabelText(m.commitMessage))],
-  ["a new branch", "/?folder=projects/repo", async () => void (await screen.findByLabelText(m.newBranchName))],
+  [
+    "a new branch",
+    "/?folder=projects/repo",
+    async () => {
+      await userEvent.click(await screen.findByRole("button", { name: m.newBranch }));
+      await screen.findByLabelText(m.newBranchName);
+    },
+  ],
 );
 
 // Pages with a form that has nothing to type in, and what opens it.

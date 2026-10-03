@@ -213,3 +213,18 @@ test("a colour's name in a property that takes no colour is not a colour", () =>
     "colour outside a variable: border-left: 1px solid gray",
   ]);
 });
+
+// A rule's declarations in the stylesheet, by its exact selector.
+function ruleOf(selector: string): string {
+  const found = [...uncommented(STYLES).matchAll(/([^{}]+)\{([^}]*)\}/g)].find(([, sel]) => sel.trim() === selector);
+  return found ? found[2] : "";
+}
+
+test("what git said wraps, where a server's screen scrolls", () => {
+  expect(ruleOf(".screen")).toMatch(/overflow-x:\s*auto/); // positive control
+  expect(ruleOf(".git-said")).toMatch(/white-space:\s*pre-wrap/);
+});
+
+test("a commit message's box stands apart from its label", () => {
+  expect(ruleOf(".panel-section label > textarea")).toMatch(/margin-top:\s*[1-9.]/);
+});
