@@ -192,7 +192,8 @@ running git are `helpers/git_run.py`, tested by `tests/test_git_run.py`.
   configuration, the system's too, and their hooks apply as they would in a
   terminal; hooks find the person's `~/.local/bin` first on their PATH.
 - **Deadlines.** A verb's git calls share one deadline, `GIT_TIMEOUT`, and a
-  fetch has `GIT_NETWORK_TIMEOUT`. Each git runs in a session of its own
+  fetch has `GIT_NETWORK_TIMEOUT`, each read when the verb is called
+  (`git_verb` names the constant). Each git runs in a session of its own
   (`start_new_session`); at the deadline, when its output is left unread, or
   on SIGTERM, its whole process group is killed, hooks and remote helpers
   with it, and the verb answers `git_timeout`.

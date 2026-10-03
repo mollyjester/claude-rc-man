@@ -865,16 +865,21 @@ class _Capped:
         return {self.key: self.items, "more": self.more}
 
 
-def git_verb(timeout: float = GIT_TIMEOUT):
+def git_verb(timeout: str = "GIT_TIMEOUT"):
     """A git verb: it holds the folder lock shared, so git never runs in a folder being
     deleted, has one deadline for all its git calls, and has git_run's exceptions
-    as rc-helper's codes."""
+    as rc-helper's codes.
+
+    ``timeout`` names the module's constant that sets the deadline, read when
+    the verb is called.
+    """
 
     def wrap(method):
         def verb(self, *args, **kwargs):
             with self._lock(exclusive=False):
                 try:
-                    return method(self, time.monotonic() + timeout, *args, **kwargs)
+                    deadline = time.monotonic() + globals()[timeout]
+                    return method(self, deadline, *args, **kwargs)
                 except git_run.GitMissing:
                     raise HelperError("git_not_installed") from None
                 except git_run.GitFailed as error:
@@ -1503,7 +1508,7 @@ class Helper:
         self._git(repo, ["switch", "-c", name], deadline)
         return {"path": rel, "branch": self._current(repo, deadline)}
 
-    @git_verb(timeout=GIT_NETWORK_TIMEOUT)
+    @git_verb(timeout="GIT_NETWORK_TIMEOUT")
     def git_fetch(self, deadline: float, rel: str) -> dict:
         """git fetch --prune from the default remote: no files and no local branch change."""
         repo, rel = self._repository(rel, deadline)
