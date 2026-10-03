@@ -53,7 +53,9 @@ version is `frontend/.nvmrc`.
   Push where a push can be tried and Commit is offered; Switch is offered for a local branch other than the current one
   and for a remote branch no local branch tracks; Stage selected and
   Unstage selected only while something is checked. git's own refusals, which
-  rcman cannot know in advance, are shown as git gave them. Delete folder is offered only for a folder,
+  rcman cannot know in advance, are shown as git gave them. Clone from
+  GitHub is always offered, since a public repository needs no token; a
+  private one GitHub refuses without one is git's refusal, shown as such. Delete folder is offered only for a folder,
   never for the home folder, and only once the servers are listed, since its
   confirmation names those it stops and forgets. Administration is offered
   only to administrators, and the server refuses everyone else regardless.
@@ -89,9 +91,9 @@ version is `frontend/.nvmrc`.
 |---|---|
 | `src/App.tsx` | Who is signed in, the navigation, and the routes |
 | `src/AdminPages.tsx` | `ADMIN`, the administrators' pages by name, which the links in the administrators' warning use, and `ADMIN_PAGES`, the same pages in order, which the navigation's **Admin** menu and the routes are built from |
-| `src/Dashboard.tsx` | The Servers page: the folder tree and its summary beside the selected folder's panel, the selection kept in the address as `?folder=`, the servers refreshed every `POLL_MS`; after a folder is made it is selected, and after one is deleted the folder above it replaces it in the address |
+| `src/Dashboard.tsx` | The Servers page: the folder tree and its summary beside the selected folder's panel, the selection kept in the address as `?folder=`, the servers refreshed every `POLL_MS`; after a folder is made or cloned, the folder it was made in is fetched again, and the new one selected if the folder it was made in still is, and after one is deleted the folder above it replaces it in the address |
 | `src/Folders.tsx` | The folder tree, fetched a folder at a time and opened to whatever is selected — `reload` fetches a folder again after a folder is made or deleted in it, and `forget` drops a deleted folder and all below it — each folder's status dot and repository marker, and the summary of every server |
-| `src/FolderPanel.tsx` | A folder's panel: its breadcrumb, its actions (**New folder** and **Delete folder**, with its confirmation), its Claude server section and, for a repository, its Changes section; and the Home panel, shown while no folder is selected, with **New folder** only |
+| `src/FolderPanel.tsx` | A folder's panel: its breadcrumb, its actions (**New folder**, **Clone from GitHub** and **Delete folder**, with its confirmation), its Claude server section and, for a repository, its Changes section; and the Home panel, shown while no folder is selected, with **New folder** and **Clone from GitHub** only. New folder's and Clone from GitHub's forms are one `FolderForm`: a field, its submit button, which says the request is running while it runs, when it and Cancel are disabled, and the server's refusal with the form's labels |
 | `src/Changes.tsx` | A repository's Changes section: its branch, the staged and not staged files with a checkbox each, Commit, Push and Commit & Push, and its branches. Only the selected folder's status is fetched, when its panel opens, every `POLL_MS` while it is open and after every action; an answer older than one asked for since is dropped. Its branches are fetched when it opens, after every action and when the current branch changes. What is checked is kept across refreshes, for files still listed. A refusal is shown beside what was tried until any later action there works. New branch is behind a secondary button, so Commit is the section's one primary |
 | `src/Servers.tsx` | A server's states, what each allows and shows, and its card; `serversIn`, the servers in a folder or below it, which both a folder's dot and the delete confirmation count |
 | `src/Caret.tsx` | The caret of a disclosure button, such as **Admin** and a server's **Show screen**, turned by its `aria-expanded` |
@@ -118,7 +120,8 @@ version is `frontend/.nvmrc`.
 - **Browser tests** (Playwright): `e2e/*.spec.ts`, against the built frontend
   served by the real backend from `tests/e2e_server.py` — a real `rc-helper`
   per person with the fake `claude`, two people with their own homes, one of
-  them with a git repository whose origin is on GitHub, and oauth2-proxy's
+  them with a git repository whose origin is on GitHub and another there to
+  clone, and oauth2-proxy's
   identity header set per test. GitHub is the world's own
   `tests/github_server.py`, serving the world's `origins/` while the backend
   runs, and taking a push with `GITHUB_TOKEN` in `e2e/people.ts`. Where the

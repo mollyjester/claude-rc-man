@@ -6,7 +6,8 @@ and bob (Claude not connected; the code ``GOOD-CODE`` connects him), a home
 and a tmux socket for each, and the fake claude. alice also has a git
 repository, projects/alice-repo, whose origin is
 https://github.com/alice/alice-repo.git: it holds main and feature, and
-later, which alice's repository has not fetched. While the backend runs, the
+later, which alice's repository has not fetched; https://github.com/alice/demo,
+which holds main and feature, is in no home, to be cloned. While the backend runs, the
 world's GitHub (tests/github_server.py) serves the world's origins/ and takes
 a push with the token in ``RCMAN_E2E_GITHUB_TOKEN``; rc-helper's
 ``RC_HELPER_GITHUB`` points https://github.com/ at it. rc-helper runs for
@@ -78,6 +79,8 @@ def _world(root: Path) -> dict[str, Path]:
     origin = origins(root) / "alice" / "alice-repo.git"
     make_repo(repo, origin=origin, url=GitHubServer.github_url("alice", "alice-repo"))
     push_branch_to_origin(repo, origin, "later")
+    # A repository on the world's GitHub that no home holds, to clone.
+    make_repo(root / "sources" / "demo", origin=origins(root) / "alice" / "demo.git")
     fake.write_state(homes["alice"] / ".claude-fake", logged_in=True)
     fake.write_state(homes["bob"] / ".claude-fake", logged_in=False, accept_codes=[GOOD_CODE])
     uf.save(

@@ -37,6 +37,18 @@ export const m = {
   newFolder: "New folder",
   newFolderName: "Name of the new folder",
   create: "Create",
+  creating: "Creating…",
+  cloneFromGithub: "Clone from GitHub",
+  cloneUrl: "Repository address on GitHub",
+  cloneParent: "Folder to clone into",
+  clone: "Clone",
+  cloning: "Cloning…",
+  // Its second sentence's end the link to Settings.
+  cloneNote: {
+    before: "git names the new folder after the repository, as git clone does. A private repository is cloned with ",
+    link: "your GitHub token",
+    after: ".",
+  },
   deleteFolder: "Delete folder",
   deleteFolderTitle: (path: string) => `Delete ${path}?`,
   deleteFolderBody: "The folder and everything in it are deleted. This cannot be undone.",

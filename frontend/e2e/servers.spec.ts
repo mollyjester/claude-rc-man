@@ -281,7 +281,7 @@ test("a repository is cloned from GitHub, and a server starts in the clone", asy
   const projects = panel(page, "projects");
   await projects.getByRole("button", { name: m.cloneFromGithub }).click();
   await projects.getByLabel(m.cloneUrl).fill("https://github.com/alice/demo");
-  await projects.getByRole("button", { name: m.clone }).click();
+  await projects.getByRole("button", { name: m.clone, exact: true }).click();
 
   const demo = panel(page, "projects/demo");
   await expect(demo).toBeVisible();

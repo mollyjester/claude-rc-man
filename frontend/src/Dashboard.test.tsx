@@ -912,12 +912,13 @@ function cloning() {
 // The same, each clone answered only once its answer() is called.
 function cloningLater() {
   const routes = cloning();
+  const clone = routes["POST /api/git/clone"];
   const answers: (() => void)[] = [];
   return {
     answer: () => answers.shift()!(),
     routes: {
       ...routes,
-      "POST /api/git/clone": (c: Call) => new Promise((resolve) => answers.push(() => resolve(routes["POST /api/git/clone"](c)))),
+      "POST /api/git/clone": (c: Call) => new Promise((resolve) => answers.push(() => resolve(clone(c)))),
     } satisfies Routes,
   };
 }
@@ -940,7 +941,7 @@ test.each([
   expect(clone).not.toHaveClass("primary");
   expect(newFolder.compareDocumentPosition(clone) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   expect(clone.closest('[role="group"]')).toBe(newFolder.closest('[role="group"]'));
-  expect(within(await tree()).getByRole("button", { name: "projects" })).toBeInTheDocument(); // the tree is there
+  expect(await folder("projects")).toBeInTheDocument(); // the tree is there
   expect(within(await tree()).queryByRole("button", { name: m.cloneFromGithub })).not.toBeInTheDocument();
 });
 

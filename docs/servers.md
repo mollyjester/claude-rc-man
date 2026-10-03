@@ -34,8 +34,8 @@ Choosing a server in **Your servers** selects its folder, wherever it is in the
 tree.
 
 The panel starts with where the folder is, from **Home** down; any step of it
-selects that folder, and **Home** selects none. Below that are **New folder**
-and **Delete folder** (see [Folders](#folders)), and then its
+selects that folder, and **Home** selects none. Below that are **New folder**,
+**Clone from GitHub** and **Delete folder** (see [Folders](#folders)), and then its
 **Claude server** section, which shows the folder's server, or **Start** when
 it has none. A git repository's panel also has a **Changes** section, for
 staging, committing and branches: see [Git](git.md). **Start**, **Resume** and **Start again** are offered only while your
@@ -74,6 +74,11 @@ selected, the **Home** panel has it too, and it makes the folder in your home
 folder. Type the name and choose **Create**; the new folder is then selected.
 When rcman refuses a name, the form says why and keeps what you typed.
 
+**Clone from GitHub**, beside it, clones a repository from GitHub into the
+selected folder, or, in the **Home** panel, into your home folder, in a new
+folder git names after the repository: see
+[Cloning a repository](git.md#cloning-a-repository).
+
 **Delete folder** deletes the selected folder and everything in it. It asks
 first, naming the folder and every server in it or in a folder inside it.
 Confirming stops each of those servers that is running, forgets them all, and
@@ -101,7 +106,7 @@ cannot be undone.
   of the folder may already be gone and its servers forgotten; choosing
   **Delete folder** again carries on.
 - While a folder is being deleted, starting, stopping, answering or
-  forgetting a server and making a folder are refused, and so is deleting
+  forgetting a server, making a folder and cloning one are refused, and so is deleting
   while any of those is under way; try again in a moment.
 - The sessions of the servers that were forgotten stay in claude.ai/code,
   where they are archived or deleted.

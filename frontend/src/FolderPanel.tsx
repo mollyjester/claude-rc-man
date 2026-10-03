@@ -78,33 +78,50 @@ function StartServer({ path, onStarted }: { path: string; onStarted: () => void 
   );
 }
 
-// What the page does once a folder has been made or deleted, or a delete failed.
+// What the page does once a folder has been made, by New folder or by a clone, or
+// deleted, or a delete failed.
 export type FolderChanges = {
   created: (parent: string, folder: string) => void;
   deleted: (path: string) => void;
   deleteFailed: (path: string) => void;
 };
 
-// Makes a folder in parent ("" for the home folder); its name is the server's to judge.
-function NewFolderForm({
-  parent,
-  onCreated,
+// A form that makes a folder from one value the person types, which is the server's
+// to judge: the request is make(value), which answers with the new folder's path.
+// While it runs, its buttons wait and say so. field is the value's name, as the
+// server names it; labels names the server's fields for its refusals.
+function FolderForm({
+  label,
+  field,
+  submit,
+  busyText,
+  labels,
+  note,
+  make,
+  onMade,
   onCancel,
 }: {
-  parent: string;
-  onCreated: (folder: string) => void;
+  label: string;
+  field: string;
+  submit: string;
+  busyText: string;
+  labels: Record<string, string>;
+  note?: ReactNode;
+  make: (value: string) => Promise<{ created: string }>;
+  onMade: (folder: string) => void;
   onCancel: () => void;
 }) {
-  const [name, setName] = useState("");
+  const [value, setValue] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<ApiError | null>(null);
 
-  async function create(event: FormEvent) {
+  async function send(event: FormEvent) {
     event.preventDefault();
+    if (busy) return;
     setBusy(true);
     setError(null);
     try {
-      onCreated((await api.post<{ created: string }>("/api/folders", { parent, name })).created);
+      onMade((await make(value)).created);
     } catch (e) {
       setError(asApiError(e));
       setBusy(false);
@@ -112,21 +129,63 @@ function NewFolderForm({
   }
 
   return (
-    <form noValidate onSubmit={create}>
+    <form noValidate onSubmit={send}>
       <label>
-        {m.newFolderName}
-        <input type="text" name="name" value={name} onChange={(e) => setName(e.target.value)} />
+        {label}
+        <input type="text" name={field} value={value} onChange={(e) => setValue(e.target.value)} />
       </label>
+      {note}
       <div className="actions">
         <button type="submit" className="primary" disabled={busy}>
-          {m.create}
+          {busy ? busyText : submit}
         </button>
-        <button type="button" onClick={onCancel}>
+        <button type="button" disabled={busy} onClick={onCancel}>
           {m.cancel}
         </button>
       </div>
-      <ProblemView error={error} labels={{ name: m.newFolderName }} />
+      <ProblemView error={error} labels={labels} />
     </form>
+  );
+}
+
+type MadeIn = { parent: string; onMade: (folder: string) => void; onCancel: () => void };
+
+// Makes a folder in parent ("" for the home folder).
+function NewFolderForm({ parent, onMade, onCancel }: MadeIn) {
+  return (
+    <FolderForm
+      label={m.newFolderName}
+      field="name"
+      submit={m.create}
+      busyText={m.creating}
+      labels={{ name: m.newFolderName }}
+      make={(name) => api.post("/api/folders", { parent, name })}
+      onMade={onMade}
+      onCancel={onCancel}
+    />
+  );
+}
+
+// Clones a repository from GitHub into parent ("" for the home folder), in the folder git names.
+function CloneForm({ parent, onMade, onCancel }: MadeIn) {
+  return (
+    <FolderForm
+      label={m.cloneUrl}
+      field="url"
+      submit={m.clone}
+      busyText={m.cloning}
+      labels={{ url: m.cloneUrl, parent: m.cloneParent }}
+      note={
+        <p>
+          {m.cloneNote.before}
+          <Link to="/settings">{m.cloneNote.link}</Link>
+          {m.cloneNote.after}
+        </p>
+      }
+      make={(url) => api.post("/api/git/clone", { parent, url })}
+      onMade={onMade}
+      onCancel={onCancel}
+    />
   );
 }
 
@@ -190,9 +249,9 @@ function DeleteFolderDialog({
   );
 }
 
-// The actions on a folder, at the top of its panel: New folder, and Delete
-// folder for a folder other than the home folder (path null) once its servers
-// are known.
+// The actions on a folder, at the top of its panel: New folder, Clone from
+// GitHub, which needs no token for a public repository, and Delete folder for a
+// folder other than the home folder (path null) once its servers are known.
 function FolderActions({
   path,
   servers,
@@ -202,13 +261,16 @@ function FolderActions({
   servers: Server[] | null;
   changes: FolderChanges;
 }) {
-  const [opened, setOpened] = useState<"new" | "delete" | null>(null);
+  const [opened, setOpened] = useState<"new" | "clone" | "delete" | null>(null);
   const parent = path ?? "";
   return (
     <>
       <div role="group" aria-label={m.folderActions} className="actions">
         <button type="button" className="secondary" onClick={() => setOpened("new")}>
           {m.newFolder}
+        </button>
+        <button type="button" className="secondary" onClick={() => setOpened("clone")}>
+          {m.cloneFromGithub}
         </button>
         {/* Offered for any folder in the address. One typed by hand through a
             symbolic link (?folder=link/x) is refused by the server with
@@ -222,11 +284,10 @@ function FolderActions({
         )}
       </div>
       {opened === "new" && (
-        <NewFolderForm
-          parent={parent}
-          onCreated={(folder) => changes.created(parent, folder)}
-          onCancel={() => setOpened(null)}
-        />
+        <NewFolderForm parent={parent} onMade={(folder) => changes.created(parent, folder)} onCancel={() => setOpened(null)} />
+      )}
+      {opened === "clone" && (
+        <CloneForm parent={parent} onMade={(folder) => changes.created(parent, folder)} onCancel={() => setOpened(null)} />
       )}
       {opened === "delete" && path !== null && servers !== null && (
         <DeleteFolderDialog

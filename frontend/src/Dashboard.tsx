@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 
 import { ApiError, api } from "./api";
@@ -57,10 +57,16 @@ export function Dashboard({ pollMs }: { pollMs: number }) {
     if (above !== null) tree.reload(above);
   }
 
+  // What is selected now, for a request that ends after another folder was selected.
+  const current = useRef(selected);
+  current.current = selected;
+
   const changes: FolderChanges = {
+    // The new folder is selected only while its parent still is: a clone takes a
+    // while, and the person may have moved on.
     created(parent, folder) {
       reloadWithParent(parent);
-      navigate(folderLink(folder));
+      if ((current.current ?? "") === parent) navigate(folderLink(folder));
     },
     deleted(path) {
       const parent = parentOf(path) ?? "";

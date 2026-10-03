@@ -9,6 +9,29 @@ Claude server. A folder counts as a repository when it is the top folder of
 one — a folder inside a repository is not one of its own — and when the
 repository keeps its git data in your home folder.
 
+## Cloning a repository
+
+**Clone from GitHub**, in a folder's panel or in the **Home** panel, clones a
+repository from GitHub into that folder, or into your home folder, as
+`git clone <address>` run there does: git makes a new folder named after the
+repository, and that folder is then selected. The address is the one GitHub
+shows for the repository, beginning `https://github.com/`; the form refuses
+any other, and says what an address must be.
+
+- Something already there with the name git would give the folder — even an
+  empty folder — is left as it is, and nothing is cloned.
+- A public repository needs nothing more. A private one is cloned with your
+  [GitHub token](#github-token); without one, or when GitHub refuses it, the
+  form shows git's words.
+- Submodules are not cloned, whatever your git configuration says; clone them
+  in a terminal with `git submodule update --init`.
+- A clone has a time limit of its own, longer than other git commands have.
+  When it fails or takes too long, the folder it was making is removed again,
+  and nothing else is; if any of it cannot be removed, the form lists what is
+  left.
+- A clone carries on if you select another folder meanwhile. It then appears
+  in the tree, but is not selected.
+
 ## Changes
 
 The section shows the branch you are on, and the files git lists in two
@@ -109,7 +132,8 @@ pushed first.
 
 ## GitHub token
 
-To push to GitHub, git needs a GitHub personal access token. Add one on the
+To push to GitHub, or to clone a private repository from it, git needs a
+GitHub personal access token. Add one on the
 [Settings](settings.md) page. A fine-grained token, limited to the
 repositories you work on and with **Contents** set to read and write, is the
 safest; a classic token with the `repo` scope works too.
