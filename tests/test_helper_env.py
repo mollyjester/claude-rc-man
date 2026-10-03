@@ -210,3 +210,124 @@ def test_the_hook_check_fails_without_the_hook_before_anything_is_fetched(
     with pytest.raises(AssertionError):
         assert_github_hooked(tmp_path, github.url, github)
     assert reached == []  # nothing went through the network path
+
+
+# --- git given GitHub's address -------------------------------------------------------
+
+# The tests' modules that give git GitHub's address on purpose, each keeping it away
+# from the real one itself: the hook check, the stand-in and the fixtures. A literal
+# address is all this guard sees; fixture git, which tests give addresses held in
+# variables too, refuses https altogether (git_fixtures.fixture_env).
+GITHUB_SANCTIONED = {"helper_env.py", "github_server.py", "git_fixtures.py"}
+# Git calls given GitHub's address elsewhere, each with why it reaches no GitHub:
+# (file relative to tests/, the function it is in) -> reason.
+GITHUB_EXEMPT = {
+    (
+        "container/test_github_in_container.py",
+        "test_the_token_is_stored_for_github_com_in_the_persons_home",
+    ): "reads the configuration key naming GitHub's credential helper; git reaches nothing",
+}
+GITHUB_HOST = "github." + "com"  # built, so that this module does not name it itself
+
+
+def github_git_calls(source: str) -> list[tuple[int, str]]:
+    """Where the source runs git with GitHub's address among its arguments, with the
+    function each is in: fixture_git, and any call whose first argument is "git" or a
+    list or tuple starting with it, with a string anywhere in its arguments, an
+    f-string's parts among them, that names GitHub's host."""
+    found = []
+
+    def runs_git(call: ast.Call) -> bool:
+        if getattr(call.func, "id", None) == "fixture_git":
+            return True
+        first = call.args[0] if call.args else None
+        if isinstance(first, (ast.List, ast.Tuple)) and first.elts:
+            first = first.elts[0]
+        return isinstance(first, ast.Constant) and first.value == "git"
+
+    def names_github(call: ast.Call) -> bool:
+        return any(
+            isinstance(node, ast.Constant)
+            and isinstance(node.value, str)
+            and GITHUB_HOST in node.value
+            for arg in [*call.args, *(k.value for k in call.keywords)]
+            for node in ast.walk(arg)
+        )
+
+    def visit(node, function):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            function = node.name
+        if isinstance(node, ast.Call) and runs_git(node) and names_github(node):
+            found.append((node.lineno, function))
+        for child in ast.iter_child_nodes(node):
+            visit(child, function)
+
+    visit(ast.parse(source), "")
+    return found
+
+
+def github_git_sites() -> tuple[list[str], int]:
+    """Every git call given GitHub's address outside GITHUB_SANCTIONED and GITHUB_EXEMPT,
+    and how many such calls there are in all."""
+    flagged, total = [], 0
+    for path in sorted(TESTS.rglob("*.py")):
+        rel = path.relative_to(TESTS).as_posix()
+        for line, function in github_git_calls(path.read_text(encoding="utf-8")):
+            total += 1
+            if rel not in GITHUB_SANCTIONED and (rel, function) not in GITHUB_EXEMPT:
+                flagged.append(f"{rel}:{line} in {function or 'the module'}")
+    return flagged, total
+
+
+def test_git_is_given_githubs_address_only_where_it_reaches_no_github():
+    flagged, total = github_git_sites()
+    assert total >= 1  # non-vacuity: the exempt site is found
+    assert flagged == []
+
+
+def test_the_github_exemptions_still_have_their_sites():
+    for rel, function in GITHUB_EXEMPT:
+        sites = github_git_calls((TESTS / rel).read_text(encoding="utf-8"))
+        assert function in {f for _, f in sites}, (rel, function)
+
+
+@pytest.mark.parametrize(
+    "planted",
+    [
+        f'fixture_git(repo, "clone", "https://{GITHUB_HOST}/o/r")',
+        f'fixture_git(repo, "fetch", f"https://{GITHUB_HOST}/{{owner}}/r")',
+        f'subprocess.run(["git", "clone", "https://{GITHUB_HOST}/o/r"])',
+        f'as_bob("git", "-C", repo, "ls-remote", "https://{GITHUB_HOST}/o/r")',
+        f'run(("git", "push", url), env={{"X": "https://{GITHUB_HOST}/"}})',
+    ],
+)
+def test_the_github_guard_finds_a_planted_git_call(planted):
+    """Planted twins: each way of giving git the address is found, inside a function too."""
+    assert github_git_calls(planted) != []
+    assert github_git_calls(f"def f():\n    {planted}\n") == [(2, "f")]
+
+
+def test_the_github_guard_leaves_other_calls_alone():
+    for source in (
+        f'fixture_git(repo, "clone", "{UNREACHABLE}o/r")',
+        f'subprocess.run(["curl", "https://{GITHUB_HOST}/"])',
+        f'helper(env, "git-clone", "--url=https://{GITHUB_HOST}/o/r")',
+    ):
+        assert github_git_calls(source) == [], source
+
+
+def test_fixture_git_refuses_https_before_reaching_anything(tmp_path):
+    """Whatever address a test gives fixture git, it never speaks https, so it cannot
+    reach the real GitHub, whatever a rewrite would have sent there."""
+    import subprocess
+
+    from tests.git_fixtures import fixture_env
+
+    address = "https://127.0.0.1:1/owner/repository"
+    env = fixture_env(tmp_path / "home")
+    refused = subprocess.run(["git", "ls-remote", address], env=env, capture_output=True, text=True)
+    assert refused.returncode != 0
+    assert "transport 'https' not allowed" in refused.stderr, refused.stderr
+    plain = {k: v for k, v in env.items() if not k.startswith("GIT_CONFIG_")}
+    tried = subprocess.run(["git", "ls-remote", address], env=plain, capture_output=True, text=True)
+    assert "not allowed" not in tried.stderr, tried.stderr  # positive control: git tried
