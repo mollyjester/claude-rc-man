@@ -138,7 +138,7 @@ export const m = {
   settingsGithubTitle: "GitHub token",
   githubTokenLabel: "GitHub token",
   githubTokenHelp:
-    "A personal access token git uses to push to GitHub as you, from rcman and from your Claude sessions. rcman never shows it again once saved.",
+    "A personal access token git uses to push to GitHub and clone private repositories as you, from rcman and from your Claude sessions. rcman never shows it again once saved.",
   githubTokenStored: "A GitHub token is stored.",
   githubTokenNotStored: "No GitHub token is stored.",
   githubTokenSaved: "Token saved.",
