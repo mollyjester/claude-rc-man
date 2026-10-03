@@ -136,6 +136,13 @@ function, `Helper._end` in `helpers/rc_helper.py`:
 3. Whatever a server ended that way left running in its process group is
    killed too.
 
+The process each pane runs is read once, when the stop begins, and only that
+process is waited for and signalled. `stop` and `resume` share the lock, so
+a resume can start a server again in the same pane meanwhile; once the pane
+runs another process, the stop takes its own as ended and leaves the new one
+alone. A process ID that now belongs to someone else (`PermissionError`) is
+taken as gone.
+
 tmux keeps the final screen, so an ended server is `exited`, with the exit
 status the signal gave it, and can be resumed or forgotten. `stop` answers
 with the server as it is then: `stopped` when Ctrl+C stopped it, `exited`

@@ -824,18 +824,32 @@ class Tmux:
     def interrupt(self, session: str) -> None:
         self.run("send-keys", "-t", f"={session}:", "C-c")
 
-    def signal(self, session: str, sig: int) -> None:
-        """SIGTERM goes to the server's own process, the pane's, to end as it
-        ends itself; SIGKILL to its whole process group, which tmux made for it
-        and which holds whatever it started there, and which nothing survives.
-        One already gone is no error."""
-        pid = int(self.run("display-message", "-p", "-t", f"={session}:", "#{pane_pid}"))
+    def pane(self, session: str) -> tuple[bool, int]:
+        """Whether the pane's process has exited, and its process ID."""
+        dead, pid = (
+            self.run("display-message", "-p", "-t", f"={session}:", "#{pane_dead}:#{pane_pid}")
+            .strip()
+            .split(":")
+        )
+        return dead == "1", int(pid)
+
+    def signal(self, session: str, pid: int, sig: int) -> None:
+        """Send ``sig`` to ``pid``, the pane's process when ending it began, and
+        nothing once the pane runs another (a server started again since).
+
+        SIGTERM goes to that process, to end as it ends itself; SIGKILL to its
+        whole process group, which tmux made for it and which holds whatever it
+        started there, and which nothing survives. A process gone, or one whose
+        ID now belongs to someone else, is no error.
+        """
+        if self.pane(session)[1] != pid:
+            return
         try:
             if sig == signal.SIGKILL:
                 os.killpg(pid, sig)
             else:
                 os.kill(pid, sig)
-        except ProcessLookupError:
+        except (ProcessLookupError, PermissionError):
             pass
 
 
@@ -1338,31 +1352,48 @@ class Helper:
         screen, so an ended server is ``exited``. Waits for the processes to
         exit rather than for a screen, which may be one rcman does not
         recognise.
+
+        Each pane's process is read once, here, and only that process is
+        waited for and signalled: stop and resume share the lock, so a resume
+        may start a server again in the pane meanwhile, and that one is left
+        alone.
         """
-        running = [(path, s) for path, s in servers if self.tmux.exit_status(s) is None]
+        pids = {}
+        for _path, session in servers:
+            dead, pid = self.tmux.pane(session)
+            if not dead and self.tmux.exit_status(session) is None:
+                pids[session] = pid
+        running = [(path, s) for path, s in servers if s in pids]
         for _path, session in running:
             self.tmux.interrupt(session)
-        waiting = self._exits(running, STOP_TIMEOUT)
+        waiting = self._exits(running, pids, STOP_TIMEOUT)
         ended = list(waiting)
         for sig in (signal.SIGTERM, signal.SIGKILL):
             if not waiting:
                 break
             for _path, session in waiting:
-                self.tmux.signal(session, sig)
-            waiting = self._exits(waiting, END_GRACE_SECONDS)
+                self.tmux.signal(session, pids[session], sig)
+            waiting = self._exits(waiting, pids, END_GRACE_SECONDS)
         for server in ended:
             if server not in waiting:
-                self.tmux.signal(server[1], signal.SIGKILL)
+                self.tmux.signal(server[1], pids[server[1]], signal.SIGKILL)
         return waiting
 
-    def _exits(self, servers: list[tuple[str, str]], timeout: float) -> list[tuple[str, str]]:
-        """Wait up to ``timeout`` for every server to exit; those still running."""
+    def _exits(
+        self, servers: list[tuple[str, str]], pids: dict[str, int], timeout: float
+    ) -> list[tuple[str, str]]:
+        """Wait up to ``timeout`` for the process ``pids`` names of every server
+        to exit; those still running it."""
         deadline = time.monotonic() + timeout
-        while servers := [(path, s) for path, s in servers if self.tmux.exit_status(s) is None]:
+        while servers := [(path, s) for path, s in servers if self._runs(s, pids[s])]:
             if time.monotonic() > deadline:
                 break
             time.sleep(POLL_SECONDS)
         return servers
+
+    def _runs(self, session: str, pid: int) -> bool:
+        """Whether the pane's process is still ``pid``, and has no exit status yet."""
+        return self.tmux.pane(session)[1] == pid and self.tmux.exit_status(session) is None
 
     def forget(self, rel: str) -> dict:
         with self._lock(exclusive=False):
