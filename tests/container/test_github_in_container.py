@@ -1,4 +1,4 @@
-"""The GitHub token and push on a real system, through sudo, against https://github.com.
+"""The GitHub token, push and clone on a real system, through sudo, against https://github.com.
 
 ``tests/test_container_suite.py`` runs this module in a container with no
 network (``--network none``), where github.com is 127.0.0.1 (``--add-host``),
@@ -171,3 +171,49 @@ def test_the_github_hook_does_not_pass_through_sudo(env, bobs_repo, github_com):
     assert code == 0, (out, proc.stderr)
     fetched = as_bob("git", "-C", str(repo), "rev-parse", "--verify", "origin/later")
     assert fetched.returncode == 0, fetched.stderr  # it came from github.com
+
+
+def on_github_com(github_com, tmp_path, private=False) -> tuple[str, str]:
+    """A repository of bob's on the tests' GitHub with one commit on main: its address
+    on github.com, without .git, and the folder a clone of it makes."""
+    name = f"clone-{tmp_path.name}"
+    bare = github_com.bare("bob", name, private=private)
+    source = tmp_path / "source"
+    for argv in (
+        ["git", "init", "-q", "-b", "main", str(source)],
+        ["git", "-C", str(source), "-c", "user.name=Bob", "-c", "user.email=bob@example.com",
+         "commit", "-q", "--allow-empty", "-m", "First"],
+        ["git", "-C", str(source), "push", "-q", str(bare), "main"],
+    ):  # fmt: skip
+        subprocess.run(argv, check=True, capture_output=True)
+    return GitHubServer.github_url("bob", name).removesuffix(".git"), name
+
+
+def test_a_clone_through_sudo_comes_from_github_and_is_the_persons(
+    env, two, sudoers, github_com, tmp_path
+):
+    url, name = on_github_com(github_com, tmp_path)
+    before = len(github_com.requests)
+    code, out, proc = helper_as_bob("git-clone", f"--url={url}", "--", "projects")
+    assert (code, out) == (0, {"created": f"projects/{name}"}), proc.stderr
+    assert any(p.startswith(f"/bob/{name}.git/") for _, p in github_com.requests[before:])
+    bob = account("bob")
+    clone = Path(bob.pw_dir) / "projects" / name
+    owned = [clone, *clone.rglob("*")]
+    assert len(owned) > 1 and all(p.lstat().st_uid == bob.pw_uid for p in owned)
+    origin = as_bob("git", "-C", str(clone), "config", "remote.origin.url")
+    assert origin.stdout.strip() == url, origin.stderr
+
+
+def test_a_private_clone_through_sudo_needs_the_stored_token(
+    env, two, sudoers, github_com, tmp_path
+):
+    url, name = on_github_com(github_com, tmp_path, private=True)
+    clone = Path(account("bob").pw_dir) / "projects" / name
+    code, out, _ = helper_as_bob("git-clone", f"--url={url}", "--", "projects")
+    assert (code, out["error"]["code"]) == (1, "git_failed"), out
+    assert not clone.exists()
+    assert helper_as_bob("github-token", stdin=TOKEN + "\n")[0] == 0
+    code, out, proc = helper_as_bob("git-clone", f"--url={url}", "--", "projects")
+    assert (code, out) == (0, {"created": f"projects/{name}"}), proc.stderr
+    assert TOKEN not in (clone / ".git" / "config").read_text()

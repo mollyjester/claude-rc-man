@@ -40,7 +40,7 @@ suite in `tests/container/` inside a throwaway Ubuntu container, through
 `docker` or `sudo -n docker`; it skips when neither works, unless
 `RCMAN_REQUIRE_CONTAINER=1`, which `make check` sets. It runs these, each in a
 fresh container: user management, with folders made and deleted and git run, with the person's own configuration, through sudo;
-the GitHub token and pushing through sudo, against `https://github.com`
+the GitHub token, pushing and cloning through sudo, against `https://github.com`
 itself, in a container with no network — `--add-host` makes `github.com` the
 container's own address, which the suite checks before running git, where
 `tests/container/test_github_in_container.py` serves the tests' GitHub with
