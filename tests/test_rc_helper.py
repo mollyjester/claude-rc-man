@@ -493,7 +493,7 @@ def test_production_config_ignores_nothing_but_the_test_hooks():
     assert cfg.home == Path(pwd.getpwuid(os.getuid()).pw_dir)
     assert cfg.claude == cfg.home / ".local" / "bin" / "claude"
     assert cfg.tmux_socket is None  # the named socket h.TMUX_SOCKET_NAME
-    assert cfg.github == h.GITHUB_URL == "https://github.com/"
+    assert cfg.github == h.GITHUB_ADDRESS == "https://github.com/"
     assert h.config_from_env({"RC_HELPER_GITHUB": UNREACHABLE}).github == UNREACHABLE
     assert h.config_from_env({"HOME": "/elsewhere"}).home == cfg.home  # $HOME is not trusted
 
@@ -2796,7 +2796,7 @@ def test_git_env_points_github_at_the_hook_only_when_set(tmp_path):
     import dataclasses
 
     plain = h.Config(home=tmp_path, claude=tmp_path / "claude", tmux_socket=None)
-    assert plain.github == h.GITHUB_URL
+    assert plain.github == h.GITHUB_ADDRESS
     assert not any(key.startswith("GIT_CONFIG") for key in h.git_env(plain))
     hooked = h.git_env(dataclasses.replace(plain, github="http://127.0.0.1:9/"))
     assert {k: v for k, v in hooked.items() if k.startswith("GIT_CONFIG")} == {
@@ -2898,7 +2898,7 @@ def test_without_the_hook_the_token_is_stored_for_github_com(tmp_path):
     home = tmp_path / "home"
     home.mkdir()
     cfg = h.Config(home=home, claude=tmp_path / "claude", tmux_socket=None)
-    assert cfg.github == h.GITHUB_URL
+    assert cfg.github == h.GITHUB_ADDRESS
     helper_ = h.Helper(cfg)
     assert helper_.github_token(TOKEN.encode() + b"\n") == {"token": True}
     assert (home / ".git-credentials").read_text() == (

@@ -314,7 +314,7 @@ every fetch from and push to `https://github.com/` goes there instead. git
 looks a credential up for the address it rewrote to, so under the hook the
 GitHub token is stored, and its credential helper set, for that address
 rather than for `https://github.com`; without the hook, `Config.github` is
-`GITHUB_URL` and git is given nothing.
+`GITHUB_ADDRESS` and git is given nothing.
 
 The sudoers rule resets the environment, so none of them reaches a helper
 started through sudo. The tests point them at a temporary home, a private

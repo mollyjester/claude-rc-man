@@ -370,7 +370,7 @@ class HelperError(Exception):
         self.detail = detail or {}
 
 
-GITHUB_URL = "https://github.com/"
+GITHUB_ADDRESS = "https://github.com/"
 
 
 @dataclass(frozen=True)
@@ -378,8 +378,8 @@ class Config:
     home: Path
     claude: Path
     tmux_socket: Path | None  # None: the named socket TMUX_SOCKET_NAME
-    # Where git reaches GitHub: GITHUB_URL, or the tests' stand-in (git_env).
-    github: str = GITHUB_URL
+    # Where git reaches GitHub: GITHUB_ADDRESS, or the tests' stand-in (git_env).
+    github: str = GITHUB_ADDRESS
 
 
 def config_from_env(env: dict[str, str]) -> Config:
@@ -390,7 +390,7 @@ def config_from_env(env: dict[str, str]) -> Config:
         home=home,
         claude=claude,
         tmux_socket=Path(socket) if socket else None,
-        github=env.get("RC_HELPER_GITHUB") or GITHUB_URL,
+        github=env.get("RC_HELPER_GITHUB") or GITHUB_ADDRESS,
     )
 
 
@@ -429,10 +429,10 @@ def git_env(cfg: Config) -> dict[str, str]:
         "GIT_TERMINAL_PROMPT": "0",
         "GIT_OPTIONAL_LOCKS": "0",
     }
-    if cfg.github != GITHUB_URL:
+    if cfg.github != GITHUB_ADDRESS:
         env["GIT_CONFIG_COUNT"] = "1"
         env["GIT_CONFIG_KEY_0"] = f"url.{cfg.github}.insteadOf"
-        env["GIT_CONFIG_VALUE_0"] = GITHUB_URL
+        env["GIT_CONFIG_VALUE_0"] = GITHUB_ADDRESS
     return env
 
 
