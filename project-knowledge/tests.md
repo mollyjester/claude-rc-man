@@ -22,7 +22,8 @@ repositories, their origins and their branches with the system's git, under
 a fixture configuration of its own, so the person's configuration rc-helper
 reads is only what a test plants. GitHub is `tests/github_server.py`: the
 system's `git http-backend` behind a small server, which serves anyone a
-read and takes a push only with its token as the password, under any
+read of a public repository, and takes a push, or a read of one made
+private, only with its token as the password, under any
 username, as GitHub takes a personal access token. The `github` fixture in
 `tests/conftest.py` runs one for the session, with `GITHUB_TOKEN`; every
 rc-helper a test runs has `RC_HELPER_GITHUB` (see
