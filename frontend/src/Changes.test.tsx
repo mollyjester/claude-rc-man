@@ -40,6 +40,7 @@ function status(staged: Files = [], notStaged: Files = [], extra: Record<string,
     staged: { files: staged, more: 0 },
     not_staged: { files: notStaged, more: 0 },
     author: { name: "Alice", email: "alice@example.com" },
+    push_has_remote: true,
     ...extra,
   };
 }
@@ -55,8 +56,8 @@ const BRANCHES = {
   },
   remote: {
     branches: [
-      { name: "origin/main", local: "main" },
-      { name: "origin/feature", local: null },
+      { name: "origin/main", local: "main", taken_by: "main" },
+      { name: "origin/feature", local: null, taken_by: null },
     ],
     more: 0,
   },
@@ -413,6 +414,40 @@ test("the status is polled while the folder is selected, and no longer once anot
   }
 });
 
+test("while the Changes section polls, only the selected folder's status is fetched, and the folder tree is not fetched again", async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  try {
+    const OTHER = "projects/other";
+    const fake = repoApi({
+      "GET /api/folders": (c) =>
+        ({
+          ...FOLDERS,
+          projects: {
+            path: "projects",
+            entries: [entry(REPO, true), entry(OTHER, true), entry("projects/plain")],
+          },
+        })[c.query.get("path") ?? ""] ?? problem(404, "path_not_found", "No."),
+    });
+    renderApp(`/?folder=${REPO}`, { pollMs: 1000 });
+    await changes();
+    const tree = within(screen.getByRole("region", { name: m.foldersTitle }));
+    expect(await tree.findByRole("button", { name: "other" })).toBeInTheDocument(); // another repository is listed
+    const statuses = () => fake.made("GET", "/api/git/status");
+    const folders = () => fake.made("GET", "/api/folders").length;
+    const first = statuses().length;
+    const fetched = folders();
+    expect(fetched).toBeGreaterThan(0);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3500);
+    });
+    expect(statuses().length).toBeGreaterThanOrEqual(first + 3); // positive control: it polls
+    expect(folders()).toBe(fetched);
+    expect(new Set(statuses().map((c) => c.query.get("path")))).toEqual(new Set([REPO]));
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
 test("an answer that arrives after a newer one is not shown", async () => {
   let answer: (value: unknown) => void = () => {};
   let calls = 0;
@@ -483,6 +518,31 @@ test("the branch lists have headings, and a remote branch says which local branc
   const local = within(section.getByRole("list", { name: m.localBranches }));
   expect(local.getByText(m.tracks("origin/main"))).toBeInTheDocument();
   expect(local.getByText(m.currentBranch)).toBeInTheDocument();
+});
+
+test("a remote branch whose name a local branch has is not offered for switching, and says which", async () => {
+  repoApi({
+    "GET /api/git/branches": {
+      ...BRANCHES,
+      remote: {
+        branches: [
+          { name: "origin/main", local: "main", taken_by: "main" },
+          { name: "origin/feature", local: null, taken_by: "feature" },
+          { name: "origin/free", local: null, taken_by: null },
+        ],
+        more: 0,
+      },
+    },
+  });
+  renderApp(`/?folder=${REPO}`);
+  const remote = within(await (await changes()).findByRole("list", { name: m.remoteBranches }));
+  expect(remote.getByRole("button", { name: m.switchTo("origin/free") })).toBeInTheDocument(); // positive control
+  const taken = remote.getByText("origin/feature").closest("li")!;
+  expect(within(taken).queryByRole("button")).not.toBeInTheDocument();
+  expect(taken).toHaveTextContent(m.nameTakenBy("feature"));
+  const tracked = remote.getByText("origin/main").closest("li")!;
+  expect(tracked).toHaveTextContent(m.trackedBy("main"));
+  expect(tracked).not.toHaveTextContent(m.nameTakenBy("main"));
 });
 
 test("New branch is opened by a secondary button, and Commit is the section's one primary", async () => {
@@ -795,4 +855,51 @@ test("Push is offered for a branch ahead of where it pushes, even when its upstr
   repoApi({ "GET /api/git/status": status([], [], { branch: even, push_ahead: 1, ...TOKEN }) });
   renderApp(`/?folder=${REPO}`);
   expect(await (await changes()).findByRole("button", { name: m.push })).toBeInTheDocument();
+});
+
+test("with nowhere to push, neither Push nor Commit & Push is offered, and the section says why", async () => {
+  const fresh = {
+    name: "topic",
+    commit: "0123456789abcdef",
+    upstream: null,
+    ahead: null,
+    behind: null,
+  };
+  repoApi({
+    "GET /api/git/status": status(STAGED, [], {
+      branch: fresh,
+      ...ELSEWHERE,
+      push_has_remote: false,
+    }),
+  });
+  renderApp(`/?folder=${REPO}`);
+  const section = await changes();
+  expect(await section.findByRole("button", { name: m.commit })).toBeInTheDocument(); // positive control
+  expect(section.queryByRole("button", { name: m.push })).not.toBeInTheDocument();
+  expect(section.queryByRole("button", { name: m.commitPush })).not.toBeInTheDocument();
+  expect(section.getByText(m.pushNeedsRemote)).toBeInTheDocument();
+});
+
+test("a status that does not say a push has a remote offers no push", async () => {
+  repoApi({
+    "GET /api/git/status": status(STAGED, [], { ...ELSEWHERE, push_has_remote: undefined }),
+  });
+  renderApp(`/?folder=${REPO}`);
+  const section = await changes();
+  expect(await section.findByRole("button", { name: m.commit })).toBeInTheDocument(); // positive control
+  expect(section.queryByRole("button", { name: m.push })).not.toBeInTheDocument();
+  expect(section.queryByRole("button", { name: m.commitPush })).not.toBeInTheDocument();
+  expect(section.getByText(m.pushNeedsRemote)).toBeInTheDocument();
+});
+
+test("on a branch with no commit yet, Push is not offered and the section says why; Commit & Push is", async () => {
+  const unborn = { name: "trunk", commit: null, upstream: null, ahead: null, behind: null };
+  repoApi({
+    "GET /api/git/status": status(STAGED, [], { branch: unborn, ...ELSEWHERE, push_ahead: null }),
+  });
+  renderApp(`/?folder=${REPO}`);
+  const section = await changes();
+  expect(await section.findByRole("button", { name: m.commitPush })).toBeInTheDocument();
+  expect(section.queryByRole("button", { name: m.push })).not.toBeInTheDocument();
+  expect(section.getByText(m.pushNeedsCommit)).toBeInTheDocument();
 });

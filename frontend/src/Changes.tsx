@@ -27,6 +27,7 @@ export type GitStatus = {
   staged: FileList;
   not_staged: FileList;
   author: { name: string; email: string } | null;
+  push_has_remote: boolean;
   push_to_github: boolean;
   github_token: boolean | null;
   push_ahead: number | null;
@@ -40,7 +41,10 @@ type CommitPushed = {
 };
 type Branches = {
   local: { branches: { name: string; current: boolean; upstream: string | null }[]; more: number };
-  remote: { branches: { name: string; local: string | null }[]; more: number };
+  remote: {
+    branches: { name: string; local: string | null; taken_by: string | null }[];
+    more: number;
+  };
 };
 type Action =
   | "status"
@@ -198,14 +202,18 @@ function kept(selected: ReadonlySet<string>, list: FileList): ReadonlySet<string
 }
 
 // Why nothing can be pushed from here, or null where a push can be tried: on
-// a branch, and to GitHub only with a token stored, as the status says.
-function pushReason(status: GitStatus): "branch" | "token" | null {
+// a branch, with a remote to push to, and to GitHub only with a token stored,
+// as the status says.
+function pushReason(status: GitStatus): "branch" | "remote" | "token" | null {
   if (status.branch.name === null) return "branch";
+  if (status.push_has_remote !== true) return "remote";
   if (status.push_to_github && status.github_token !== true) return "token";
   return null;
 }
 
-// Whether Push itself is worth offering: not where the branch pushes has it all already.
+// Whether Push itself is worth offering: not where the branch pushes has it all
+// already. Before the first commit, nothing is; Commit & Push makes one.
+const hasCommit = (status: GitStatus) => status.branch.commit !== null;
 const somethingToPush = (status: GitStatus) => status.push_ahead !== 0;
 
 // The Changes section of a repository: its branch, the staged and not staged
@@ -347,12 +355,16 @@ export function Changes({ path, pollMs }: { path: string; pollMs: number }) {
           {status.merging && <p>{m.mergeInProgress}</p>}
           {pushReason(status) === "branch" ? (
             <p>{m.pushNeedsBranch}</p>
+          ) : pushReason(status) === "remote" ? (
+            <p>{m.pushNeedsRemote}</p>
           ) : pushReason(status) === "token" ? (
             <p>
               {m.pushNeedsToken.before}
               <Link to="/settings">{m.pushNeedsToken.link}</Link>
               {m.pushNeedsToken.after}
             </p>
+          ) : !hasCommit(status) ? (
+            <p>{m.pushNeedsCommit}</p>
           ) : (
             somethingToPush(status) && (
               <div className="actions">
@@ -465,13 +477,17 @@ export function Changes({ path, pollMs }: { path: string; pollMs: number }) {
             {branches.remote.branches.map((b) => (
               <li key={b.name}>
                 <span className="branch-name">{b.name}</span>
-                {b.local !== null && (
+                {b.local !== null ? (
                   <>
                     {" "}
                     <span>{m.trackedBy(b.local)}</span>
                   </>
-                )}
-                {b.local === null && (
+                ) : b.taken_by !== null ? (
+                  <>
+                    {" "}
+                    <span>{m.nameTakenBy(b.taken_by)}</span>
+                  </>
+                ) : (
                   <>
                     {" "}
                     <button

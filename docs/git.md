@@ -83,9 +83,11 @@ in a terminal, and a hook that refuses stops the commit with its own words.
 
 **Commit & Push**, beside **Commit**, commits and then pushes, as
 [Push](#push) below does. It is offered with Commit wherever a push can be
-tried: while you are on a branch and, for a push to GitHub, while a
+tried: while you are on a branch that has somewhere to push to, as
+[Push](#push) says, and, for a push to GitHub, while a
 [GitHub token](#github-token) is stored — even where **Push** itself is not
-offered because there is nothing to push yet. If a push becomes impossible
+offered because there is nothing to push yet, on a branch with no commit
+yet among them, whose first commit it makes. If a push becomes impossible
 before it is tried — the token has gone meanwhile, say — nothing is
 committed. When the commit is made and the push then
 fails, the section says both: the commit made, and what stopped the push.
@@ -103,7 +105,14 @@ The section lists your **Local branches**, each with the remote branch it
 tracks, and the **Remote branches** git knows of, each with the local branch
 that tracks it. **Switch to** a local branch checks it out. A remote branch
 with no local branch tracking it can be switched to as well: that makes a
-local branch of the same name tracking it, as `git switch` does.
+local branch tracking it, named as `git switch --track` names it, by what
+follows the first `/` of the remote branch's name: `origin/feature` makes
+`feature`. Where a local branch that does not track it has that name
+already, or a name git cannot keep beside it — git keeps branch names as
+paths, so `feature` and `feature/x` cannot both be branches — git cannot
+make the new one, so the remote branch is not offered for switching and
+says which local branch takes its name; switch to that one, or rename it
+in a terminal.
 **New branch** asks for a name and makes a branch of that name at the
 current commit, then switches to it; git says which names it takes.
 
@@ -125,8 +134,15 @@ track it there, as `git push -u origin HEAD` does; one that does is pushed
 as `git push` pushes it, so your own git configuration decides where. Push
 is not offered while the branch it pushes to — where git says your push
 goes, or else the branch it tracks — already has every commit of yours.
-While you are not on a branch there is nothing to push, and the section says
-so.
+The section says why instead of offering it:
+
+- while you are not on a branch, since there is nothing to push;
+- on a branch that tracks no remote branch, in a repository with no remote
+  named `origin`, since there is nowhere to push it; Commit & Push is not
+  offered either. Add the remote in a terminal (`git remote add origin
+  <address>`);
+- on a branch with no commit yet, since there is nothing to push; Commit &
+  Push makes the first commit and pushes it.
 
 A push to GitHub — to a remote whose address begins with
 `https://github.com/` — needs your [GitHub token](#github-token); until one
@@ -157,7 +173,9 @@ safest; a classic token with the `repo` scope works too.
   `~/.config/git/credentials` when only that one exists. rcman
   also adds one line to your global git configuration — `~/.gitconfig`, or
   `~/.config/git/config` when only that one exists — which tells git to use
-  that helper for `https://github.com`. Credential helpers you have set yourself stay;
+  that helper for `https://github.com`: the setting
+  `credential.https://github.com.helper` with the value `store`, unless
+  it is there already. Credential helpers you have set yourself stay;
   git asks them in the order your configuration lists them, and uses the
   first credential one gives.
 - **Never shown.** Once saved, rcman never shows the token again, nor
@@ -167,8 +185,9 @@ safest; a classic token with the `repo` scope works too.
   it: the Changes section stops offering a push to GitHub, and Settings
   says no token is stored; add a new one.
 - **Removing it.** **Remove token** in Settings removes the token rcman
-  stored, and nothing else: the line in your git configuration stays, as do other
-  credentials you stored yourself. The token itself still works on GitHub
+  stored, and nothing else: the `credential.https://github.com.helper`
+  line in your git configuration stays, as do other credentials you stored
+  yourself. The token itself still works on GitHub
   until you revoke it there, under **Settings**, **Developer settings**,
   **Personal access tokens**; do that too once you are done with it.
 

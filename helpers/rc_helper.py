@@ -35,7 +35,7 @@ import stat
 import subprocess
 import sys
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -139,9 +139,18 @@ MESSAGES = {
     "nothing_staged": "Nothing is staged, so there is nothing to commit.",
     "branch_invalid": "git does not take that as a branch name.",
     "branch_not_found": "There is no such branch.",
+    "branch_name_taken": (
+        "A local branch has the name a branch tracking this one would get, or a name "
+        "git cannot keep beside it, so git cannot make it."
+    ),
     "detached_head": (
         "You are not on a branch, so there is nothing to push. Switch to a branch first."
     ),
+    "no_push_remote": (
+        "This branch tracks no remote branch, and the repository has no remote named "
+        "origin to push it to."
+    ),
+    "no_commits_yet": "This branch has no commits yet, so there is nothing to push.",
     "github_token_not_set": "Add a GitHub token in Settings before pushing to GitHub.",
     "clone_unsafe": (
         "A clone that fails could not be removed safely on this system, so rcman does not clone."
@@ -985,6 +994,25 @@ def _file(change: git_run.Change) -> dict:
     return listed
 
 
+def tracking_name(remote_branch: str) -> str:
+    """The local branch git switch --track makes for a remote-tracking branch, by its
+    short name: what follows the first slash, whatever the remote is called, as git
+    takes it - a/b/feature, of the remote a/b, makes b/feature."""
+    return remote_branch.partition("/")[2]
+
+
+def blocking_branch(name: str, local: Iterable[str]) -> str | None:
+    """The local branch that keeps git from making the branch ``name``, or None: one of
+    that name, or, as git keeps branches as paths, one in a folder of that name
+    (feature/x for feature) or whose name is a folder of it (topic for topic/x). The
+    same name first, then the first in order."""
+    names = set(local)
+    if name in names:
+        return name
+    clashes = [n for n in names if n.startswith(f"{name}/") or name.startswith(f"{n}/")]
+    return min(clashes, default=None)
+
+
 def _short(ref: str | None) -> str | None:
     """A branch's full name without refs/heads/ or refs/remotes/."""
     if ref is None:
@@ -1719,8 +1747,7 @@ class Helper:
         merge_head = self._git(
             repo, ["rev-parse", "--path-format=absolute", "--git-path", "MERGE_HEAD"], deadline
         ).rstrip("\n")
-        remote = self._push_target(repo, branch.name, deadline)[1]
-        to_github = self._to_github(repo, remote, deadline)
+        _, has_remote, to_github = self._push_facts(repo, branch.name, deadline)
         return {
             "path": rel,
             "branch": dataclasses.asdict(branch),
@@ -1729,6 +1756,7 @@ class Helper:
             "merging": Path(merge_head).exists(),
             "staged": lists[True].answer(),
             "not_staged": lists[False].answer(),
+            "push_has_remote": has_remote,
             "push_to_github": to_github,
             "github_token": self._token_stored(deadline) if to_github else None,
             "push_ahead": self._push_ahead(repo, branch, deadline),
@@ -1751,15 +1779,23 @@ class Helper:
         remote = _Capped(MAX_LISTED_BRANCHES, "branches")
         tracking: dict[str, str] = {}  # a remote branch's full name -> a local branch on it
         remotes = []
+        names = set()  # every local branch, those beyond the cap too
         for ref in self._branches(repo, deadline):
             if ref.remote:
                 remotes.append(ref.name)
                 continue
+            names.add(ref.name)
             local.add({"name": ref.name, "current": ref.current, "upstream": _short(ref.upstream)})
             if ref.upstream and ref.upstream.startswith("refs/remotes/"):
                 tracking.setdefault(ref.upstream, ref.name)
         for name in remotes:
-            remote.add({"name": name, "local": tracking.get(f"refs/remotes/{name}")})
+            remote.add(
+                {
+                    "name": name,
+                    "local": tracking.get(f"refs/remotes/{name}"),
+                    "taken_by": blocking_branch(tracking_name(name), names),
+                }
+            )
         return {"path": rel, "local": local.answer(), "remote": remote.answer()}
 
     @git_verb()
@@ -1811,11 +1847,16 @@ class Helper:
 
     @git_verb()
     def git_switch(self, deadline: float, rel: str, branch: str, remote: bool) -> dict:
-        """Switch to a local branch, or make a local branch tracking a remote one."""
+        """Switch to a local branch, or make a local branch tracking a remote one, which
+        is refused before git is asked when a local branch keeps git from making it."""
         check_branch_name(branch)
         repo, rel = self._repository(rel, deadline)
-        if not any(r.remote is remote and r.name == branch for r in self._branches(repo, deadline)):
+        refs = list(self._branches(repo, deadline))
+        if not any(r.remote is remote and r.name == branch for r in refs):
             raise HelperError("branch_not_found")
+        local = [r.name for r in refs if not r.remote]
+        if remote and blocking_branch(tracking_name(branch), local) is not None:
+            raise HelperError("branch_name_taken")
         args = ["switch", "--track", branch] if remote else ["switch", branch]
         self._git(repo, args, deadline)
         return {"path": rel, "branch": self._current(repo, deadline)}
@@ -1847,8 +1888,13 @@ class Helper:
 
     def _push_target(self, repo: Path, branch: str | None, deadline: float):
         """A branch's upstream (its full name, or None) and the remote git-push pushes it
-        to: its push remote, as git push finds it, or PUSH_REMOTE when it has no upstream,
-        when there is no branch, or before its first commit, when it is no ref yet."""
+        to: its push remote, as git push finds it, or PUSH_REMOTE when it has no upstream
+        or when there is no branch.
+
+        Before its first commit a branch is no ref, so git names neither; both are then
+        read from its configuration, as git reads them, and the upstream is the branch
+        it merges on its remote (branch.<b>.merge), which says only that there is one.
+        """
         if branch is None:
             return None, PUSH_REMOTE
         ref = f"refs/heads/{branch}"
@@ -1858,35 +1904,84 @@ class Helper:
             if name == ref:  # the pattern is a prefix to git, so only this branch's line
                 upstream, _, remote = rest.partition("\0")
                 return (upstream, remote or PUSH_REMOTE) if upstream else (None, PUSH_REMOTE)
-        return None, PUSH_REMOTE
+        return self._configured_push_target(repo, branch, deadline)
 
-    def _to_github(self, repo: Path, remote: str, deadline: float) -> bool:
-        """Whether a push to ``remote`` goes to GitHub: its push URL, as git rewrites it
-        with the person's configuration and the test hook, is under Config.github. A
-        remote git does not know is no push to GitHub; git says so when it is pushed to."""
+    def _configured_push_target(self, repo: Path, branch: str, deadline: float):
+        """_push_target for a branch that is no ref yet, from its configuration: an
+        upstream needs both branch.<b>.remote and branch.<b>.merge, and the push remote
+        is branch.<b>.pushRemote, else remote.pushDefault, else branch.<b>.remote, the
+        order git push takes them in."""
+        remote = self._config(repo, f"branch.{branch}.remote", deadline)
+        merge = self._config(repo, f"branch.{branch}.merge", deadline)
+        if remote is None or merge is None:
+            return None, PUSH_REMOTE
+        push = (
+            self._config(repo, f"branch.{branch}.pushRemote", deadline)
+            or self._config(repo, "remote.pushDefault", deadline)
+            or remote
+        )
+        return merge, push
+
+    def _config(self, repo: Path, key: str, deadline: float) -> str | None:
+        """A configuration value as git config --get reads it in the repository, or
+        None while it is not set."""
+        try:
+            return self._git(repo, ["config", "--get", key], deadline).rstrip("\n") or None
+        except git_run.GitFailed as error:
+            if error.exit_code == 1:  # git config's answer for a key that is not set
+                return None
+            raise
+
+    def _push_url(self, repo: Path, remote: str, deadline: float) -> str | None:
+        """The URL a push to ``remote`` goes to, as git rewrites it with the person's
+        configuration and the test hook; None for a remote git does not know."""
         try:
             url = self._git(repo, ["remote", "get-url", "--push", "--", remote], deadline)
         except git_run.GitFailed:
-            return False
-        return url.strip().startswith(self.cfg.github)
+            return None
+        return url.strip()
+
+    def _push_facts(self, repo: Path, branch: str | None, deadline: float):
+        """For a push of ``branch``: its upstream (_push_target), whether it has a remote
+        to go to, and whether it goes to GitHub, from one push URL, that of the remote it
+        goes to.
+
+        One with an upstream has a remote: it goes where git push sends it. One without,
+        and no branch, go to PUSH_REMOTE, so they have one only if git knows a remote of
+        that name. A push goes to GitHub when that remote's push URL is under
+        Config.github; a remote git does not know is no push to GitHub.
+        """
+        upstream, remote = self._push_target(repo, branch, deadline)
+        url = self._push_url(repo, remote, deadline)
+        has_remote = upstream is not None or url is not None  # remote is PUSH_REMOTE here
+        to_github = url is not None and url.startswith(self.cfg.github)
+        return upstream, has_remote, to_github
 
     @git_verb(timeout="GIT_NETWORK_TIMEOUT")
     def git_push(self, deadline: float, rel: str, check: bool) -> dict:
         """Push the current branch: one with no upstream as git push -u origin HEAD, and
         otherwise as git push, as the person's push.default says.
 
-        Refused while HEAD is detached, and for a push to GitHub without a token, before
-        git is asked to push. With ``check``, only those are checked.
+        Refused while HEAD is detached, with no remote to push to, for a push to GitHub
+        without a token, and before the branch's first commit, before git is asked to
+        push. With ``check``, only the first three are checked: Commit & Push's commit
+        makes a first commit.
         """
         repo, rel = self._repository(rel, deadline)
         branch = self._current(repo, deadline)
         if branch is None:
             raise HelperError("detached_head")
-        upstream, remote = self._push_target(repo, branch, deadline)
-        if self._to_github(repo, remote, deadline) and not self._token_stored(deadline):
+        upstream, has_remote, to_github = self._push_facts(repo, branch, deadline)
+        if not has_remote:
+            raise HelperError("no_push_remote")
+        if to_github and not self._token_stored(deadline):
             raise HelperError("github_token_not_set")
         if check:
             return {"path": rel, "branch": branch}
+        try:
+            self._git(repo, ["rev-parse", "--verify", "-q", "HEAD"], deadline)
+        except git_run.GitFailed:
+            raise HelperError("no_commits_yet") from None
         args = ["push"] if upstream else ["push", "-u", PUSH_REMOTE, "HEAD"]
         self._git(repo, args, deadline)
         return {

@@ -2499,11 +2499,109 @@ def test_branches_lists_local_and_remote_tracking_branches(env, repo):
     }
     assert out["remote"] == {
         "branches": [
-            {"name": "origin/feature", "local": None},
-            {"name": "origin/main", "local": "main"},
+            {"name": "origin/feature", "local": None, "taken_by": None},
+            {"name": "origin/main", "local": "main", "taken_by": "main"},
         ],
         "more": 0,
     }
+
+
+def remote_branch(env, name: str) -> dict:
+    """A remote-tracking branch as git-branches lists it."""
+    listed = ok(env, "git-branches", "--", REPO_REL)["remote"]["branches"]
+    return next(b for b in listed if b["name"] == name)
+
+
+def test_a_remote_branch_whose_name_a_local_branch_has_says_which_and_is_not_switched_to(env, repo):
+    """git switch --track would make a local branch of the remote branch's name, and
+    git refuses when one has it already, tracking something else."""
+    assert remote_branch(env, "origin/feature") == {
+        "name": "origin/feature",
+        "local": None,
+        "taken_by": None,
+    }  # positive control: the name is free
+    fixture_git(repo, "branch", "--no-track", "feature", "origin/main")
+    assert remote_branch(env, "origin/feature") == {
+        "name": "origin/feature",
+        "local": None,
+        "taken_by": "feature",
+    }
+    code, out = helper(env, "git-switch", "--branch=origin/feature", "--remote", "--", REPO_REL)
+    assert (code, out["error"]["code"]) == (1, "branch_name_taken"), out
+    assert out["error"]["message"] == h.MESSAGES["branch_name_taken"]
+    assert branch_of(repo) == "main"
+    assert ok(env, "git-switch", "--branch=feature", "--", REPO_REL)["branch"] == "feature"
+
+
+def test_a_remote_with_a_slash_in_its_name_gives_the_name_git_gives(env, repo):
+    """git switch --track names the local branch by what follows the first slash of the
+    remote-tracking branch's name, whatever the remote is called: a/b/feature makes
+    b/feature."""
+    fixture_git(repo, "remote", "add", "a/b", str(origin_of(repo)))
+    fixture_git(repo, "fetch", "-q", "a/b")
+    fixture_git(repo, "branch", "--no-track", "feature", "origin/main")
+    assert remote_branch(env, "a/b/feature")["taken_by"] is None  # feature is not its name
+    out = ok(env, "git-switch", "--branch=a/b/feature", "--remote", "--", REPO_REL)
+    assert out["branch"] == "b/feature"  # positive control: the name git gave it
+    assert remote_branch(env, "a/b/feature")["local"] == "b/feature"
+    fixture_git(repo, "switch", "-q", "main")
+    fixture_git(repo, "branch", "-q", "-D", "b/feature")
+    fixture_git(repo, "branch", "--no-track", "b/feature", "origin/main")
+    assert remote_branch(env, "a/b/feature") == {
+        "name": "a/b/feature",
+        "local": None,
+        "taken_by": "b/feature",
+    }
+    code = error_code(env, "git-switch", "--branch=a/b/feature", "--remote", "--", REPO_REL)
+    assert code == "branch_name_taken"
+    assert branch_of(repo) == "main"
+
+
+def git_switch_track_refused(repo: Path, remote_branch_name: str) -> bool:
+    """Whether real git refuses git switch --track for the remote branch; one it makes
+    is switched away from and deleted again."""
+    from tests.git_fixtures import FIXTURE_HOME, fixture_env
+
+    proc = subprocess.run(
+        ["git", "switch", "-q", "--track", remote_branch_name],
+        cwd=repo,
+        env=fixture_env(FIXTURE_HOME),
+        capture_output=True,
+    )
+    if proc.returncode == 0:
+        made = branch_of(repo)
+        fixture_git(repo, "switch", "-q", "main")
+        fixture_git(repo, "branch", "-q", "-D", made)
+    return proc.returncode != 0
+
+
+@pytest.mark.parametrize(
+    ("local", "remote", "taken_by"),
+    [
+        ("feature/x", "origin/feature", "feature/x"),  # the new branch would be its folder
+        ("topic", "origin/topic/x", "topic"),  # it would be in the new branch's place
+        ("topic/x/y", "origin/topic/x", "topic/x/y"),
+        ("feature-x", "origin/feature", None),  # positive controls: names beside each other
+        ("feat", "origin/feature", None),
+        ("topic/y", "origin/topic/x", None),
+    ],
+)
+def test_a_local_branch_whose_name_git_cannot_keep_beside_the_new_ones_takes_it(
+    env, repo, local, remote, taken_by
+):
+    """git keeps branches as paths, so a branch cannot be named as a folder of another:
+    feature/x and feature cannot both be. Each case is first checked against git."""
+    push_branch_to_origin(repo, origin_of(repo), "topic/x")
+    fixture_git(repo, "fetch", "-q", "origin")
+    fixture_git(repo, "branch", "--no-track", local, "origin/main")
+    assert git_switch_track_refused(repo, remote) is (taken_by is not None)  # as git does
+    assert remote_branch(env, remote) == {"name": remote, "local": None, "taken_by": taken_by}
+    code, out = helper(env, "git-switch", f"--branch={remote}", "--remote", "--", REPO_REL)
+    if taken_by is None:
+        assert code == 0, out
+    else:
+        assert (code, out["error"]["code"]) == (1, "branch_name_taken"), out
+        assert branch_of(repo) == "main"
 
 
 def test_a_long_list_of_branches_is_capped(env, repo):
@@ -3282,6 +3380,126 @@ def test_forget_removes_rcmans_token_only(hooked, github):
     assert git_credentials(hooked).read_text() == theirs
 
 
+# --- the guide's account of where the token is kept --------------------------------------
+
+GIT_GUIDE = REPO / "docs" / "git.md"
+# Files git's store helper and git config --global use in place of ~/.git-credentials
+# and ~/.gitconfig when only they exist, made empty for the second layout.
+XDG_FILES = (".config/git/credentials", ".config/git/config")
+
+
+def files_in(home: Path) -> dict[str, str]:
+    return {str(p.relative_to(home)): p.read_text() for p in home.rglob("*") if p.is_file()}
+
+
+def config_settings(path: Path) -> list[tuple[str, str]]:
+    """Every setting in a git configuration file, as (key, value), read with git."""
+    listed = subprocess.run(
+        ["git", "config", "--file", str(path), "--list", "-z"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    return [tuple(entry.split("\n", 1)) for entry in listed.split("\0") if entry]
+
+
+def token_storage(tmp_path: Path, existing: tuple[str, ...] = ()) -> dict:
+    """What github-token and github-forget change in a home holding the empty files
+    ``existing``, for GitHub itself, as in production: the file the token is written
+    to, the global configuration file that changes and its settings, and, once the
+    token is forgotten, whether it is left and the settings left."""
+    home = tmp_path / "home"
+    home.mkdir(parents=True)
+    for rel in existing:
+        (home / rel).parent.mkdir(parents=True, exist_ok=True)
+        (home / rel).write_text("")
+    cfg = h.Config(home=home, claude=tmp_path / "claude", tmux_socket=None, github=h.GITHUB_ADDRESS)
+    helper_ = h.Helper(cfg)
+    before = files_in(home)
+    helper_.github_token(TOKEN.encode() + b"\n")
+    stored = files_in(home)
+    changed = {rel for rel, text in stored.items() if before.get(rel) != text}
+    [credentials] = [rel for rel in changed if TOKEN in stored[rel]]
+    [config] = changed - {credentials}
+    settings = config_settings(home / config)
+    helper_.github_forget()
+    return {
+        "credentials": credentials,
+        "config": config,
+        "settings": settings,
+        "token_left": TOKEN in files_in(home)[credentials],
+        "settings_left": config_settings(home / config),
+    }
+
+
+def guide_token_bullets(text: str) -> dict[str, str]:
+    """The bullets of the guide's GitHub token section by their bold lead, each with
+    its lines joined."""
+    section = re.search(r"^## GitHub token\n(.*?)(?=^## |\Z)", text, re.M | re.S)
+    if section is None:
+        return {}
+    bullets = re.findall(r"^- \*\*(.+?)\*\*(.*?)(?=^\S|\Z)", section.group(1), re.M | re.S)
+    return {lead: " ".join(body.split()) for lead, body in bullets}
+
+
+def token_guide_problems(text: str, layouts: list[dict]) -> list[str]:
+    """Where the guide's GitHub token section disagrees with what rc-helper does: its
+    "Where it is kept." bullet names every file the token and the setting are written
+    to, in each layout, and the setting's key and value; its "Removing it." bullet
+    names the setting and says it stays exactly when it is left."""
+    bullets = guide_token_bullets(text)
+    kept, removing = bullets.get("Where it is kept."), bullets.get("Removing it.")
+    if kept is None or removing is None:
+        return [f"no Where it is kept. or Removing it. bullet in {sorted(bullets)}"]
+    problems = []
+    for layout in layouts:
+        for rel in (layout["credentials"], layout["config"]):
+            if f"`~/{rel}`" not in kept:
+                problems.append(f"Where it is kept. does not name `~/{rel}`")
+        for key, value in layout["settings"]:
+            for word in (f"`{key}`", f"`{value}`"):
+                if word not in kept:
+                    problems.append(f"Where it is kept. does not name {word}")
+            left = (key, value) in layout["settings_left"]
+            if left != (f"`{key}`" in removing and "stays" in removing):
+                problems.append(f"Removing it. does not say whether `{key}` stays")
+    return problems
+
+
+@pytest.fixture
+def token_layouts(tmp_path) -> list[dict]:
+    """token_storage in a home with neither file, and in one with only XDG_FILES."""
+    layouts = [token_storage(tmp_path / "plain"), token_storage(tmp_path / "xdg", XDG_FILES)]
+    # Positive controls: two layouts writing to different files, a setting written,
+    # and the token gone once forgotten.
+    assert layouts[0]["credentials"] != layouts[1]["credentials"]
+    assert layouts[0]["config"] != layouts[1]["config"]
+    assert all(layout["settings"] for layout in layouts)
+    assert not any(layout["token_left"] for layout in layouts)
+    return layouts
+
+
+def test_the_guide_says_where_the_token_is_kept_and_what_removing_it_leaves(token_layouts):
+    assert token_guide_problems(GIT_GUIDE.read_text(), token_layouts) == []
+
+
+@pytest.mark.parametrize("plant", ["credentials file", "config file", "setting", "stays"])
+def test_the_token_guide_check_fails_on_a_guide_that_says_otherwise(token_layouts, plant):
+    """Planted twins: the guide with one thing it must say changed."""
+    text = GIT_GUIDE.read_text()
+    plain = token_layouts[0]
+    key = plain["settings"][0][0]
+    old, new = {
+        "credentials file": (f"`~/{plain['credentials']}`", "`~/.planted-credentials`"),
+        "config file": (f"`~/{plain['config']}`", "`~/.planted-config`"),
+        "setting": (f"`{key}`", "`credential.planted.helper`"),
+        "stays": ("stays", "goes"),
+    }[plant]
+    planted = text.replace(old, new)
+    assert planted != text  # the plant took effect
+    assert token_guide_problems(planted, token_layouts)
+
+
 @pytest.mark.parametrize(
     "stdin",
     [
@@ -3524,15 +3742,67 @@ def test_a_rejected_push_comes_back_in_gits_words(env, repo):
     assert any("rejected" in line for line in out["error"]["git"]), out
 
 
-def test_a_branch_with_no_commit_yet_comes_back_in_gits_words(env, repo):
+def test_a_branch_with_no_commit_yet_is_not_pushed_but_passes_the_check(env, repo):
+    """Nothing to push before the first commit, which rc-helper says before git is
+    asked; --check passes, as Commit & Push's commit makes that first commit."""
     fresh = Path(env["RC_HELPER_HOME"]) / "projects" / "fresh"
     fresh.mkdir()
     fixture_git(fresh, "init", "-q", "-b", "trunk")
     fixture_git(fresh, "remote", "add", "origin", str(origin_of(repo)))
-    assert ok(env, "git-status", "--", "projects/fresh")["push_to_github"] is False
+    shown = ok(env, "git-status", "--", "projects/fresh")
+    assert (shown["push_to_github"], shown["push_has_remote"]) == (False, True)
     code, out = push(env, "projects/fresh")
-    assert (code, out["error"]["code"]) == (1, "git_failed"), out
-    assert any("does not match any" in line for line in out["error"]["git"]), out
+    assert (code, out["error"]["code"]) == (1, "no_commits_yet"), out
+    assert out["error"]["message"] == h.MESSAGES["no_commits_yet"]
+    assert ok(env, "git-push", "--check", "--", "projects/fresh") == {
+        "path": "projects/fresh",
+        "branch": "trunk",
+    }
+    head = commit_in(fresh, "first.txt")
+    assert push(env, "projects/fresh")[0] == 0  # positive control: once committed, it goes
+    assert on_remote(origin_of(repo), "trunk") == head
+
+
+def test_a_branch_with_no_commit_yet_tracking_a_remote_of_another_name_has_a_remote(env, tmp_path):
+    """A clone of an empty repository with -o: main tracks fork/main before its first
+    commit, which git lists no ref of, and there is no origin."""
+    bare = tmp_path / "empty.git"
+    fixture_git(tmp_path, "init", "-q", "--bare", "-b", "main", str(bare))
+    projects = Path(env["RC_HELPER_HOME"]) / "projects"
+    fixture_git(projects, "clone", "-q", "-o", "fork", str(bare), "forked")
+    shown = ok(env, "git-status", "--", "projects/forked")
+    assert shown["branch"]["upstream"] == "fork/main"  # positive control: git says so
+    assert shown["push_has_remote"] is True
+    assert ok(env, "git-push", "--check", "--", "projects/forked") == {
+        "path": "projects/forked",
+        "branch": "main",
+    }
+    assert error_code(env, "git-push", "--", "projects/forked") == "no_commits_yet"
+    head = commit_in(projects / "forked", "first.txt")
+    assert push(env, "projects/forked")[0] == 0
+    assert on_remote(bare, "main") == head
+
+
+def test_a_branch_with_no_commit_yet_pushing_to_github_needs_the_token(hooked, github, tmp_path):
+    """Before the first commit, where the branch pushes is read from its configuration:
+    its push remote, here GitHub under a name other than origin."""
+    name = f"unborn-{tmp_path.name}"
+    github.bare("owner", name)
+    fresh = Path(hooked["RC_HELPER_HOME"]) / "projects" / "unborn"
+    fresh.mkdir(parents=True)
+    fixture_git(fresh, "init", "-q", "-b", "trunk")
+    fixture_git(fresh, "remote", "add", "hub", github.github_url("owner", name))
+    fixture_git(fresh, "config", "branch.trunk.remote", "hub")
+    fixture_git(fresh, "config", "branch.trunk.merge", "refs/heads/trunk")
+    shown = ok(hooked, "git-status", "--", "projects/unborn")
+    assert shown["branch"]["upstream"] == "hub/trunk"  # positive control
+    assert (shown["push_has_remote"], shown["push_to_github"]) == (True, True)
+    assert shown["github_token"] is False
+    assert error_code(hooked, "git-push", "--check", "--", "projects/unborn") == (
+        "github_token_not_set"
+    )
+    fixture_git(fresh, "config", "branch.trunk.pushRemote", "elsewhere")
+    assert ok(hooked, "git-status", "--", "projects/unborn")["push_to_github"] is False
 
 
 def test_a_detached_head_is_not_pushed(env, repo):
@@ -3585,7 +3855,52 @@ def test_a_repository_with_no_remote_is_no_push_to_github(env):
     repo = make_repo(Path(env["RC_HELPER_HOME"]) / "projects" / "lonely")
     assert ok(env, "git-status", "--", "projects/lonely")["push_to_github"] is False
     commit_in(repo, "x.txt")
-    assert error_code(env, "git-push", "--", "projects/lonely") == "git_failed"
+    assert error_code(env, "git-push", "--", "projects/lonely") == "no_push_remote"
+
+
+def test_a_branch_with_no_upstream_and_no_origin_has_nowhere_to_push(env, tmp_path):
+    """A branch with no upstream is pushed to origin: with no remote of that name,
+    git push -u origin HEAD cannot work, and rc-helper says so before git is asked,
+    in status and in a push, --check too."""
+    repo = make_repo(Path(env["RC_HELPER_HOME"]) / "projects" / "lonely")
+    commit_in(repo, "x.txt")
+    shown = ok(env, "git-status", "--", "projects/lonely")
+    assert shown["push_has_remote"] is False
+    code, out = push(env, "projects/lonely")
+    assert (code, out["error"]["code"]) == (1, "no_push_remote"), out
+    assert out["error"]["message"] == h.MESSAGES["no_push_remote"]
+    assert error_code(env, "git-push", "--check", "--", "projects/lonely") == "no_push_remote"
+    # A branch tracking a remote of another name is pushed there: it has a remote.
+    elsewhere = tmp_path / "elsewhere.git"
+    fixture_git(tmp_path, "init", "-q", "--bare", str(elsewhere))
+    fixture_git(repo, "remote", "add", "elsewhere", str(elsewhere))
+    fixture_git(repo, "push", "-q", "-u", "elsewhere", "main")
+    assert ok(env, "git-status", "--", "projects/lonely")["push_has_remote"] is True
+    head = commit_in(repo, "y.txt")
+    assert push(env, "projects/lonely")[0] == 0
+    assert on_remote(elsewhere, "main") == head
+    # A branch with no upstream again: nowhere, until there is an origin.
+    fixture_git(repo, "switch", "-q", "-c", "topic")
+    assert ok(env, "git-status", "--", "projects/lonely")["push_has_remote"] is False
+    fixture_git(repo, "remote", "rename", "elsewhere", "origin")
+    assert ok(env, "git-status", "--", "projects/lonely")["push_has_remote"] is True
+    assert ok(env, "git-push", "--", "projects/lonely")["upstream"] == "origin/topic"
+
+
+def test_status_says_a_push_has_a_remote_where_it_goes_to_origin_or_an_upstream(env, repo):
+    assert status(env)["push_has_remote"] is True  # main tracks origin/main
+    fixture_git(repo, "switch", "-q", "-c", "no-upstream")
+    assert status(env)["push_has_remote"] is True  # to origin, which there is
+
+
+def test_with_no_branch_checked_out_a_push_has_a_remote_only_with_an_origin(env, repo):
+    """No branch is a push to origin too, as a branch with no upstream is; git-push
+    refuses it as detached_head first."""
+    fixture_git(repo, "switch", "-q", "--detach", "HEAD")
+    assert status(env)["push_has_remote"] is True  # positive control: there is an origin
+    fixture_git(repo, "remote", "remove", "origin")
+    assert status(env)["push_has_remote"] is False
+    assert error_code(env, "git-push", "--", REPO_REL) == "detached_head"
 
 
 SESSION_DUMP = """#!/usr/bin/python3

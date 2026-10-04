@@ -268,6 +268,9 @@ export const m = {
     after: ". When GitHub refuses a token, git forgets it.",
   },
   pushNeedsBranch: "You are not on a branch, so there is nothing to push.",
+  pushNeedsRemote:
+    "This branch tracks no remote branch, and the repository has no remote named origin to push it to.",
+  pushNeedsCommit: "This branch has no commits yet, so there is nothing to push.",
   committedNotPushed: (commit: string) => `Committed ${commit}, but the push failed.`,
   branchesTitle: "Branches",
   localBranches: "Local branches",
@@ -275,6 +278,7 @@ export const m = {
   currentBranch: "(current)",
   tracks: (upstream: string) => `→ ${upstream}`,
   trackedBy: (local: string) => `tracked by ${local}`,
+  nameTakenBy: (local: string) => `its name is taken by ${local}`,
   newBranch: "New branch",
   switchTo: (name: string) => `Switch to ${name}`,
   newBranchName: "New branch from here",
