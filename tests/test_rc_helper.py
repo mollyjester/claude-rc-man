@@ -2147,6 +2147,19 @@ def test_status_of_a_detached_head_and_of_no_commits_yet(env, repo):
     }
 
 
+def test_status_of_a_branch_whose_upstream_is_gone_names_it_with_no_ahead_or_behind(env, repo):
+    fixture_git(repo, "switch", "-q", "-c", "feature", "--track", "origin/feature")
+    branch = status(env)["branch"]
+    assert branch["upstream"] == "origin/feature"
+    assert (branch["ahead"], branch["behind"]) == (0, 0)  # positive control: counted while there
+    fixture_git(origin_of(repo), "branch", "-D", "feature")
+    ok(env, "git-fetch", "--", REPO_REL)  # rc-helper's own fetch prunes it
+    assert "origin/feature" not in remote_names(env)  # the plant took effect
+    branch = status(env)["branch"]
+    assert branch["name"] == "feature" and branch["upstream"] == "origin/feature"
+    assert (branch["ahead"], branch["behind"]) == (None, None)
+
+
 def test_status_lists_each_kind_of_change_in_its_list(env, repo):
     write(repo / "both.txt")
     fixture_git(repo, "add", "both.txt")

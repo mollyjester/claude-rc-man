@@ -1,4 +1,4 @@
-import { screen, within } from "@testing-library/react";
+import { fireEvent, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { ADMIN, ADMIN_PAGES } from "./AdminPages";
@@ -85,15 +85,33 @@ test("the menu closes when the page changes, and when the page already open is c
   expect(admin).toHaveAttribute("aria-expanded", "false");
 });
 
-test("the menu closes when focus leaves it, and not while it moves inside it", async () => {
+test("the menu stays open while focus moves inside it, and closes when Tab takes focus out of it", async () => {
   api(ADMIN_USER);
   renderApp();
   const admin = await adminButton();
   await userEvent.click(admin);
-  await userEvent.tab();
-  expect(screen.getByRole("link", { name: ADMIN_PAGES[0].label })).toHaveFocus();
-  expect(admin).toHaveAttribute("aria-expanded", "true");
-  await userEvent.click(screen.getByText(m.signedInAs(ADMIN_USER.email)));
+  const menu = document.getElementById(admin.getAttribute("aria-controls")!)!;
+  for (const { label } of ADMIN_PAGES) {
+    await userEvent.tab();
+    expect(screen.getByRole("link", { name: label })).toHaveFocus();
+    expect(admin).toHaveAttribute("aria-expanded", "true");
+  }
+  await userEvent.tab(); // past the last page: out of the menu
+  expect(menu.contains(document.activeElement)).toBe(false);
+  expect(document.activeElement).not.toBe(document.body); // something outside took it
+  expect(admin).toHaveAttribute("aria-expanded", "false");
+});
+
+test("a press outside the menu closes it, though focus stays where it was, and a press inside does not", async () => {
+  api(ADMIN_USER);
+  renderApp();
+  const admin = await adminButton();
+  await userEvent.click(admin);
+  const menu = document.getElementById(admin.getAttribute("aria-controls")!)!;
+  fireEvent.pointerDown(menu);
+  expect(admin).toHaveAttribute("aria-expanded", "true"); // positive control: a press inside
+  fireEvent.pointerDown(screen.getByText(m.signedInAs(ADMIN_USER.email)));
+  expect(admin).toHaveFocus(); // the press moved no focus
   expect(admin).toHaveAttribute("aria-expanded", "false");
 });
 

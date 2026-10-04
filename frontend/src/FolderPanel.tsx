@@ -372,11 +372,7 @@ export function FolderPanel({
         )}
         {known && !server && startReason !== null && <p>{startReason.start}</p>}
       </PanelSection>
-      {repository === true && (
-        <PanelSection title={m.changesTitle}>
-          <Changes path={path} pollMs={pollMs} />
-        </PanelSection>
-      )}
+      {repository === true && <Changes path={path} pollMs={pollMs} />}
     </section>
   );
 }

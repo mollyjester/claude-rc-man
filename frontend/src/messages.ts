@@ -220,6 +220,15 @@ export const m = {
   repository: "Git repository",
   changesTitle: "Changes",
   refreshStatus: "Refresh changes",
+  // When the status was last answered, from how many seconds ago.
+  checkedAgo: (seconds: number) =>
+    seconds < 10
+      ? "Checked just now"
+      : seconds < 60
+        ? `Checked ${seconds} s ago`
+        : seconds < 3600
+          ? `Checked ${Math.floor(seconds / 60)} min ago`
+          : `Checked ${Math.floor(seconds / 3600)} h ago`,
   listHeading: (title: string, count: number) => `${title} (${count})`,
   mergeInProgress:
     "A merge is under way: resolve any conflict, stage the files, and commit to finish it.",
@@ -240,6 +249,18 @@ export const m = {
     unmerged: "Conflict",
     untracked: "Untracked",
   } as Record<string, string>,
+  // The letter each change is shown as, by the same codes; its word above is
+  // what it says to assistive technology and in its title.
+  changeLetters: {
+    modified: "M",
+    type_changed: "T",
+    added: "A",
+    deleted: "D",
+    renamed: "R",
+    copied: "C",
+    unmerged: "!",
+    untracked: "U",
+  } as Record<string, string>,
   renamedFrom: (path: string) => `from ${path}`,
   submodule: "submodule",
   notSelectable: "Its name is not UTF-8, so rcman cannot stage it.",
@@ -251,7 +272,6 @@ export const m = {
     ahead === null || behind === null
       ? `Tracking ${upstream}, which is gone`
       : `Tracking ${upstream}: ${ahead} ahead, ${behind} behind`,
-  commitTitle: "Commit",
   commitMessage: "Commit message",
   commit: "Commit",
   // One sentence, its middle the link to Settings.
@@ -262,6 +282,7 @@ export const m = {
   },
   commitNothingStaged: "Nothing is staged. Stage the files to commit first.",
   commitPush: "Commit & Push",
+  commitMenu: "More ways to commit",
   push: "Push",
   pushed: (branch: string, upstream: string) => `Pushed ${branch} to ${upstream}.`,
   pushNeedsToken: {
@@ -277,6 +298,9 @@ export const m = {
   branchesTitle: "Branches",
   localBranches: "Local branches",
   remoteBranches: "Remote branches",
+  findBranch: "Find a branch",
+  noBranches: "None.",
+  noBranchMatches: "No branch matches.",
   currentBranch: "(current)",
   tracks: (upstream: string) => `→ ${upstream}`,
   trackedBy: (local: string) => `tracked by ${local}`,
@@ -284,7 +308,6 @@ export const m = {
   newBranch: "New branch",
   switchTo: (name: string) => `Switch to ${name}`,
   newBranchName: "New branch from here",
-  createBranch: "Create branch",
   refreshBranches: "Refresh branches",
   gitSaid: "What git said",
   andMoreLines: (count: number) => `and ${count} more lines`,

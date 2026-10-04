@@ -30,9 +30,9 @@ changes nothing: a page's report of a failure rcman could not see, written to th
 | `git.commit` | commits what is staged | the repository's folder — the message is never recorded |
 | `git.switch` | switches to a branch | the repository's folder |
 | `git.branch` | makes a branch and switches to it | the repository's folder |
-| `git.fetch` | refreshes the remote branches with **Refresh branches** | the repository's folder |
-| `git.push` | pushes the current branch with **Push** | the repository's folder |
-| `git.commit_push` | commits what is staged and pushes it with **Commit & Push** | the repository's folder — the message is never recorded |
+| `git.fetch` | refreshes the remote branches with **Refresh branches** in the branch bar | the repository's folder |
+| `git.push` | pushes the current branch with **Push** in the branch bar | the repository's folder |
+| `git.commit_push` | commits what is staged and pushes it with **Commit & Push**, in the menu beside **Commit** | the repository's folder — the message is never recorded |
 | `git.clone` | clones a repository from GitHub | the repository's address, as given — an address with a user or a token in it is refused, and so recorded with none |
 | `github.token` | adds or replaces their GitHub token (see [Git](git.md#github-token)) | none — the token is never recorded |
 | `github.forget` | removes their GitHub token | none |

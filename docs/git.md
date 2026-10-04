@@ -41,23 +41,27 @@ any other, and says what an address must be.
 
 ## Changes
 
-The section shows the branch you are on, and the files git lists in two
+The section's heading has the [branch bar](#branches) beside it, or under
+it on a narrow screen. Below, the section shows the files git lists in two
 lists: **Staged**, what the next commit holds, and **Not staged**, what has
 changed besides, new files git does not track yet among them. A file changed
-both before and after it was staged is in both lists. Each list's heading
-says how many files it holds. While a merge is under way, until it is
-committed, the section says so. Each file is shown as one of these changes:
+both before and after it was staged is in both lists. Each list folds under
+its heading, which says how many files it holds: a list is open while it has
+files, opens when files come to it, and otherwise stays open or closed as you
+left it. While a merge is under way, until it is committed, the section says
+so. Each file is shown with a coloured letter for its change; pointing at
+the letter shows its word, which is also what a screen reader says:
 
 | Change | Shown as | Meaning |
 |---|---|---|
-| `modified` | Modified | Its content changed |
-| `type_changed` | Type changed | It became a link, or stopped being one |
-| `added` | Added | It is new in what is staged |
-| `deleted` | Deleted | It was deleted |
-| `renamed` | Renamed | It was renamed; the name it had is shown too |
-| `copied` | Copied | It is a copy of another file, which is shown too |
-| `unmerged` | Conflict | A merge left it with a conflict to resolve |
-| `untracked` | Untracked | git does not track it yet |
+| `modified` | M (Modified) | Its content changed |
+| `type_changed` | T (Type changed) | It became a link, or stopped being one |
+| `added` | A (Added) | It is new in what is staged |
+| `deleted` | D (Deleted) | It was deleted |
+| `renamed` | R (Renamed) | It was renamed; the name it had is shown too |
+| `copied` | C (Copied) | It is a copy of another file, which is shown too |
+| `unmerged` | ! (Conflict) | A merge left it with a conflict to resolve |
+| `untracked` | U (Untracked) | git does not track it yet |
 
 A submodule is marked as one. A very long list shows its first files and
 says how many more there are. A file whose name is not UTF-8 is listed but
@@ -65,9 +69,10 @@ cannot be selected; stage it in a terminal.
 
 ### Staging
 
-Check the files and choose **Stage selected** under **Not staged**, or
-**Unstage selected** under **Staged**; **Select all** checks every file of
-its list. A deleted file is staged as deleted, and a new folder with
+Check the files and choose **Stage selected**, beside the **Not staged**
+heading, or **Unstage selected**, beside the **Staged** heading; each is
+there while its list has files. **Select all** checks every file of its
+list. A deleted file is staged as deleted, and a new folder with
 everything in it. Unstaging a renamed file unstages both its new and its
 old name, so that neither is left half staged.
 
@@ -81,8 +86,9 @@ in a terminal, and a hook that refuses stops the commit with its own words.
 
 ### Commit & Push
 
-**Commit & Push**, beside **Commit**, commits and then pushes, as
-[Push](#push) below does. It is offered with Commit wherever a push can be
+**Commit & Push**, in the menu the arrow beside **Commit** opens
+(**More ways to commit**), commits and then pushes, as [Push](#push) below
+does. It is offered with Commit wherever a push can be
 tried: while you are on a branch that has somewhere to push to, as
 [Push](#push) says, and, for a push to GitHub, while a
 [GitHub token](#github-token) is stored — even where **Push** itself is not
@@ -101,9 +107,13 @@ Every commit made from rcman is recorded with the commit author from your
 
 ## Branches
 
-The section lists your **Local branches**, each with the remote branch it
-tracks, and the **Remote branches** git knows of, each with the local branch
-that tracks it. **Switch to** a local branch checks it out. A remote branch
+The branch bar beside the section's heading starts with the branch you are
+on, or the commit while you are on none. Choose it to see your **Local
+branches**, each with the remote branch it tracks, the one you are on marked
+as current, and the **Remote branches** git knows of. **Find a branch**
+narrows both to the branches whose names hold what you type, whatever the
+case; it looks through the branches listed only, not those a very long list
+counts as more. Choose a local branch to switch to it. A remote branch
 with no local branch tracking it can be switched to as well: that makes a
 local branch tracking it, named as `git switch --track` names it, by what
 follows the first `/` of the remote branch's name: `origin/feature` makes
@@ -112,13 +122,19 @@ already, or a name git cannot keep beside it — git keeps branch names as
 paths, so `feature` and `feature/x` cannot both be branches — git cannot
 make the new one, so the remote branch is not offered for switching and
 says which local branch takes its name; switch to that one, or rename it
-in a terminal.
-**New branch** asks for a name and makes a branch of that name at the
-current commit, then switches to it; git says which names it takes.
+in a terminal. A remote branch a local branch tracks says which, and is not
+offered either: switch to the local one.
 
-**Refresh branches** runs `git fetch --prune`: it brings the list of remote
-branches up to date, adding new ones and dropping those deleted there. It
-changes none of your files and none of your local branches. It needs a
+**+** (**New branch**) asks for a name under **New branch from here**;
+**Create** makes a branch of that name at the current commit, then switches
+to it; git says which names it takes. **Cancel** closes it; so do Escape,
+a click outside it and moving on from it, as they close the list of
+branches.
+
+**Refresh branches**, the circling arrow, turns while it runs. It runs
+`git fetch --prune`: it brings the list of remote branches up to date,
+adding new ones and dropping those deleted there. It changes none of your
+files and none of your local branches. It needs a
 remote git can fetch from without asking for a password: git is never
 allowed to ask, so a remote that needs one is refused with git's own words.
 Over SSH, git here has no terminal to ask for a key's passphrase and, by
@@ -126,9 +142,16 @@ default, does not reach your `ssh-agent`, so a key with a passphrase works
 only through an agent your SSH configuration names with `IdentityAgent`; a
 key without one works as it is.
 
+Where the branch you are on tracks a remote branch, the bar shows how far
+apart they are, as git last fetched it: ↑ the commits yours has that it
+lacks, ↓ those it has that yours lacks. Where that remote branch is gone,
+deleted there and then fetched, the bar says so instead. A branch that
+tracks no remote branch shows neither: rcman cannot tell whether it is on
+the remote.
+
 ## Push
 
-**Push** pushes the branch you are on. A branch that does not track a
+**Push**, at the end of the branch bar, pushes the branch you are on. A branch that does not track a
 remote branch yet is pushed to `origin` under its own name and set to
 track it there, as `git push -u origin HEAD` does; one that does is pushed
 as `git push` pushes it, so your own git configuration decides where. Push
@@ -198,7 +221,9 @@ A push to anywhere other than GitHub needs no token from rcman.
 Claude works in the same folders. While a repository's panel is open, its
 Changes section is refreshed every few seconds and after everything you do
 there, so files Claude edits, and a branch it switches to, appear without
-anything being done; **Refresh changes** refreshes it at once.
+anything being done. The line at the foot of the section says when it was
+last checked; **Refresh changes**, the circling arrow beside it, refreshes
+it at once.
 
 ## When git refuses
 

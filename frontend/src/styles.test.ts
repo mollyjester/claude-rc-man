@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
+import { m } from "./messages";
 import { uncommented } from "./test/css";
 
 const STYLES = readFileSync(resolve(__dirname, "styles.css"), "utf-8");
@@ -400,4 +401,49 @@ test("a form's text field takes the form's font, and its width, up to a limit", 
     style.remove();
     form.remove();
   }
+});
+
+// What is wrong with the colours of the changes' letters: a change whose letter
+// has no rule of its own, or one whose colour is not a custom property that
+// holds a colour in both schemes.
+function letterFaults(css: string): string[] {
+  const found: string[] = [];
+  for (const code of Object.keys(m.changeLetters)) {
+    const colour = ruleOf(`.change-${code}`, css)
+      .match(/(?:^|;)\s*color:\s*([^;]+)/)?.[1]
+      .trim();
+    if (!colour) {
+      found.push(`${code}: no colour`);
+      continue;
+    }
+    if (!/^var\(\s*--[\w-]+\s*\)$/.test(colour)) found.push(`${code}: not a custom property`);
+    for (const scheme of ["light", "dark"] as const) {
+      if (!/^#[0-9a-fA-F]{3,8}$/.test(resolved(colour, variables(css, scheme))))
+        found.push(`${code}: no colour in ${scheme}`);
+    }
+  }
+  return found;
+}
+
+test("each change's letter is drawn in a colour of its own rule, in both schemes", () => {
+  expect(Object.keys(m.changeLetters).length).toBeGreaterThan(0); // non-vacuity
+  expect(letterFaults(STYLES)).toEqual([]);
+});
+
+test("the letter check fails on a change with no rule, or a colour outside a custom property", () => {
+  const code = Object.keys(m.changeLetters)[0];
+  const withoutRule = STYLES.replace(new RegExp(`\\.change-${code}\\s*\\{[^}]*\\}`), "");
+  expect(withoutRule).not.toEqual(STYLES); // the plant took effect
+  expect(letterFaults(withoutRule)).toEqual([`${code}: no colour`]);
+  const literal = `${withoutRule}\n.change-${code} { color: inherit; }`;
+  expect(letterFaults(literal)).toEqual([
+    `${code}: not a custom property`,
+    `${code}: no colour in light`,
+    `${code}: no colour in dark`,
+  ]);
+  const undeclared = `${withoutRule}\n.change-${code} { color: var(--nowhere); }`;
+  expect(letterFaults(undeclared)).toEqual([
+    `${code}: no colour in light`,
+    `${code}: no colour in dark`,
+  ]);
 });
