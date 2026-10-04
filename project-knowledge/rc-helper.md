@@ -320,6 +320,13 @@ rewritten it (`git remote get-url --push`), so that the person's own
 address naming a user (`https://you@github.com/...`) does not: git asks
 for that user's credential, which rcman's, stored under `GITHUB_USERNAME`,
 is not.
+Before a branch's first commit git lists no ref of it, so it names neither
+its upstream nor its push remote; both are then read from the branch's
+configuration, in the order git push takes them
+(`_configured_push_target`): an upstream needs `branch.<b>.remote` and
+`branch.<b>.merge`, and the push remote is `branch.<b>.pushRemote`, else
+`remote.pushDefault`, else `branch.<b>.remote`. A clone of an empty
+repository whose remote is not called `origin` has one such branch.
 Only a push to GitHub needs the token, and is refused with
 `github_token_not_set` without one, before anything is pushed; a push
 elsewhere is tried, and git's refusal, if any, passed on. `git-status`

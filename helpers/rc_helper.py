@@ -1876,8 +1876,13 @@ class Helper:
 
     def _push_target(self, repo: Path, branch: str | None, deadline: float):
         """A branch's upstream (its full name, or None) and the remote git-push pushes it
-        to: its push remote, as git push finds it, or PUSH_REMOTE when it has no upstream,
-        when there is no branch, or before its first commit, when it is no ref yet."""
+        to: its push remote, as git push finds it, or PUSH_REMOTE when it has no upstream
+        or when there is no branch.
+
+        Before its first commit a branch is no ref, so git names neither; both are then
+        read from its configuration, as git reads them, and the upstream is the branch
+        it merges on its remote (branch.<b>.merge), which says only that there is one.
+        """
         if branch is None:
             return None, PUSH_REMOTE
         ref = f"refs/heads/{branch}"
@@ -1887,7 +1892,33 @@ class Helper:
             if name == ref:  # the pattern is a prefix to git, so only this branch's line
                 upstream, _, remote = rest.partition("\0")
                 return (upstream, remote or PUSH_REMOTE) if upstream else (None, PUSH_REMOTE)
-        return None, PUSH_REMOTE
+        return self._configured_push_target(repo, branch, deadline)
+
+    def _configured_push_target(self, repo: Path, branch: str, deadline: float):
+        """_push_target for a branch that is no ref yet, from its configuration: an
+        upstream needs both branch.<b>.remote and branch.<b>.merge, and the push remote
+        is branch.<b>.pushRemote, else remote.pushDefault, else branch.<b>.remote, the
+        order git push takes them in."""
+        remote = self._config(repo, f"branch.{branch}.remote", deadline)
+        merge = self._config(repo, f"branch.{branch}.merge", deadline)
+        if remote is None or merge is None:
+            return None, PUSH_REMOTE
+        push = (
+            self._config(repo, f"branch.{branch}.pushRemote", deadline)
+            or self._config(repo, "remote.pushDefault", deadline)
+            or remote
+        )
+        return merge, push
+
+    def _config(self, repo: Path, key: str, deadline: float) -> str | None:
+        """A configuration value as git config --get reads it in the repository, or
+        None while it is not set."""
+        try:
+            return self._git(repo, ["config", "--get", key], deadline).rstrip("\n") or None
+        except git_run.GitFailed as error:
+            if error.exit_code == 1:  # git config's answer for a key that is not set
+                return None
+            raise
 
     def _push_url(self, repo: Path, remote: str, deadline: float) -> str | None:
         """The URL a push to ``remote`` goes to, as git rewrites it with the person's
