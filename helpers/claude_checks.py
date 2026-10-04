@@ -99,7 +99,7 @@ class Ran(tuple):
     Through pipes it keeps, for the report only, what the check does not read:
     ``stdout`` as written even where the program did not exit, and ``stderr``."""
 
-    def __new__(cls, code: int | None, output: str, stdout: str = "", stderr: str = ""):
+    def __new__(cls, code: int | None, output: str, stdout: str, stderr: str):
         ran = super().__new__(cls, (code, output))
         ran.stdout, ran.stderr = stdout, stderr
         return ran

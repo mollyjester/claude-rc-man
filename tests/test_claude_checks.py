@@ -74,11 +74,10 @@ def test_a_failing_check_reports_what_was_run_and_what_came_back(tmp_path):
 
 
 def test_the_names_of_the_failures_are_the_failed_checks(tmp_path):
-    broken = script(tmp_path, "print('something else entirely')")
-    run = runner_for(broken, tmp_path)
-    failures = cc.candidate_failures(run, "1.2.3")
-    assert failures  # non-vacuity
-    assert cc.candidate_checks(run, "1.2.3") == list(failures)
+    """The fake passes every check but the version, which is not the one it reports."""
+    run = runner_for(rec.FAKE_CLAUDE, tmp_path)
+    assert list(cc.candidate_failures(run, "0.0.1")) == ["version"]
+    assert cc.candidate_checks(run, "0.0.1") == ["version"]
 
 
 def test_auth_status_is_judged_on_its_standard_output_only(tmp_path):
