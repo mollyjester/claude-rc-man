@@ -3333,6 +3333,126 @@ def test_forget_removes_rcmans_token_only(hooked, github):
     assert git_credentials(hooked).read_text() == theirs
 
 
+# --- the guide's account of where the token is kept --------------------------------------
+
+GIT_GUIDE = REPO / "docs" / "git.md"
+# Files git's store helper and git config --global use in place of ~/.git-credentials
+# and ~/.gitconfig when only they exist, made empty for the second layout.
+XDG_FILES = (".config/git/credentials", ".config/git/config")
+
+
+def files_in(home: Path) -> dict[str, str]:
+    return {str(p.relative_to(home)): p.read_text() for p in home.rglob("*") if p.is_file()}
+
+
+def config_settings(path: Path) -> list[tuple[str, str]]:
+    """Every setting in a git configuration file, as (key, value), read with git."""
+    listed = subprocess.run(
+        ["git", "config", "--file", str(path), "--list", "-z"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    return [tuple(entry.split("\n", 1)) for entry in listed.split("\0") if entry]
+
+
+def token_storage(tmp_path: Path, existing: tuple[str, ...] = ()) -> dict:
+    """What github-token and github-forget change in a home holding the empty files
+    ``existing``, for GitHub itself, as in production: the file the token is written
+    to, the global configuration file that changes and its settings, and, once the
+    token is forgotten, whether it is left and the settings left."""
+    home = tmp_path / "home"
+    home.mkdir(parents=True)
+    for rel in existing:
+        (home / rel).parent.mkdir(parents=True, exist_ok=True)
+        (home / rel).write_text("")
+    cfg = h.Config(home=home, claude=tmp_path / "claude", tmux_socket=None, github=h.GITHUB_ADDRESS)
+    helper_ = h.Helper(cfg)
+    before = files_in(home)
+    helper_.github_token(TOKEN.encode() + b"\n")
+    stored = files_in(home)
+    changed = {rel for rel, text in stored.items() if before.get(rel) != text}
+    [credentials] = [rel for rel in changed if TOKEN in stored[rel]]
+    [config] = changed - {credentials}
+    settings = config_settings(home / config)
+    helper_.github_forget()
+    return {
+        "credentials": credentials,
+        "config": config,
+        "settings": settings,
+        "token_left": TOKEN in files_in(home)[credentials],
+        "settings_left": config_settings(home / config),
+    }
+
+
+def guide_token_bullets(text: str) -> dict[str, str]:
+    """The bullets of the guide's GitHub token section by their bold lead, each with
+    its lines joined."""
+    section = re.search(r"^## GitHub token\n(.*?)(?=^## |\Z)", text, re.M | re.S)
+    if section is None:
+        return {}
+    bullets = re.findall(r"^- \*\*(.+?)\*\*(.*?)(?=^\S|\Z)", section.group(1), re.M | re.S)
+    return {lead: " ".join(body.split()) for lead, body in bullets}
+
+
+def token_guide_problems(text: str, layouts: list[dict]) -> list[str]:
+    """Where the guide's GitHub token section disagrees with what rc-helper does: its
+    "Where it is kept." bullet names every file the token and the setting are written
+    to, in each layout, and the setting's key and value; its "Removing it." bullet
+    names the setting and says it stays exactly when it is left."""
+    bullets = guide_token_bullets(text)
+    kept, removing = bullets.get("Where it is kept."), bullets.get("Removing it.")
+    if kept is None or removing is None:
+        return [f"no Where it is kept. or Removing it. bullet in {sorted(bullets)}"]
+    problems = []
+    for layout in layouts:
+        for rel in (layout["credentials"], layout["config"]):
+            if f"`~/{rel}`" not in kept:
+                problems.append(f"Where it is kept. does not name `~/{rel}`")
+        for key, value in layout["settings"]:
+            for word in (f"`{key}`", f"`{value}`"):
+                if word not in kept:
+                    problems.append(f"Where it is kept. does not name {word}")
+            left = (key, value) in layout["settings_left"]
+            if left != (f"`{key}`" in removing and "stays" in removing):
+                problems.append(f"Removing it. does not say whether `{key}` stays")
+    return problems
+
+
+@pytest.fixture
+def token_layouts(tmp_path) -> list[dict]:
+    """token_storage in a home with neither file, and in one with only XDG_FILES."""
+    layouts = [token_storage(tmp_path / "plain"), token_storage(tmp_path / "xdg", XDG_FILES)]
+    # Positive controls: two layouts writing to different files, a setting written,
+    # and the token gone once forgotten.
+    assert layouts[0]["credentials"] != layouts[1]["credentials"]
+    assert layouts[0]["config"] != layouts[1]["config"]
+    assert all(layout["settings"] for layout in layouts)
+    assert not any(layout["token_left"] for layout in layouts)
+    return layouts
+
+
+def test_the_guide_says_where_the_token_is_kept_and_what_removing_it_leaves(token_layouts):
+    assert token_guide_problems(GIT_GUIDE.read_text(), token_layouts) == []
+
+
+@pytest.mark.parametrize("plant", ["credentials file", "config file", "setting", "stays"])
+def test_the_token_guide_check_fails_on_a_guide_that_says_otherwise(token_layouts, plant):
+    """Planted twins: the guide with one thing it must say changed."""
+    text = GIT_GUIDE.read_text()
+    plain = token_layouts[0]
+    key = plain["settings"][0][0]
+    old, new = {
+        "credentials file": (f"`~/{plain['credentials']}`", "`~/.planted-credentials`"),
+        "config file": (f"`~/{plain['config']}`", "`~/.planted-config`"),
+        "setting": (f"`{key}`", "`credential.planted.helper`"),
+        "stays": ("stays", "goes"),
+    }[plant]
+    planted = text.replace(old, new)
+    assert planted != text  # the plant took effect
+    assert token_guide_problems(planted, token_layouts)
+
+
 @pytest.mark.parametrize(
     "stdin",
     [
