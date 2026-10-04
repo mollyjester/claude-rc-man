@@ -370,6 +370,54 @@ def test_commit_and_push_to_github_without_a_token_commits_nothing(
     assert last == ("git.commit_push", "github_token_not_set")
 
 
+def test_with_nowhere_to_push_neither_push_nor_commit_and_push_is_tried(
+    client, helper_homes, settings
+):
+    """A branch with no upstream in a repository with no origin: refused before git is
+    asked to push, and Commit & Push commits nothing."""
+    import sqlite3
+
+    repo = make_repo(helper_homes.homes["alice"] / PATH)
+    r = client.get("/api/git/status", params={"path": PATH}, headers=as_user(ALICE))
+    assert r.json()["push_has_remote"] is False
+    r = call(client, "POST", "/api/git/push", json={"path": PATH})
+    assert (r.status_code, r.json()["code"]) == (409, "no_push_remote"), r.text
+    assert r.json()["title"] == rc_helper.MESSAGES["no_push_remote"]
+    set_author(client)
+    staged_file(repo)
+    head = fixture_git(repo, "rev-parse", "HEAD").strip()
+    r = client.post(
+        "/api/git/commit-push", json={"path": PATH, "message": "m"}, headers=changing(ALICE)
+    )
+    assert (r.status_code, r.json()["code"]) == (409, "no_push_remote"), r.text
+    assert fixture_git(repo, "rev-parse", "HEAD").strip() == head
+    con = sqlite3.connect(settings.database)
+    last = con.execute("select action, result from audit order by id desc limit 1").fetchone()
+    assert last == ("git.commit_push", "no_push_remote")
+
+
+def test_a_branch_with_no_commit_yet_is_not_pushed_and_commit_and_push_makes_the_first(
+    client, helper_homes, tmp_path
+):
+    origin = tmp_path / "origins" / "fresh.git"
+    fixture_git(tmp_path, "init", "-q", "--bare", "-b", "main", str(origin))
+    repo = helper_homes.homes["alice"] / PATH
+    repo.mkdir(parents=True, exist_ok=True)
+    fixture_git(repo, "init", "-q", "-b", "trunk")
+    fixture_git(repo, "remote", "add", "origin", str(origin))
+    r = call(client, "POST", "/api/git/push", json={"path": PATH})
+    assert (r.status_code, r.json()["code"]) == (409, "no_commits_yet"), r.text
+    assert r.json()["title"] == rc_helper.MESSAGES["no_commits_yet"]
+    set_author(client)
+    staged_file(repo)
+    r = client.post(
+        "/api/git/commit-push", json={"path": PATH, "message": "First"}, headers=changing(ALICE)
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["push"]["upstream"] == "origin/trunk", r.json()
+    assert on_remote(origin, "trunk") == fixture_git(repo, "rev-parse", "HEAD").strip()
+
+
 def test_commit_and_push_needs_an_author_first(client, on_github, recorded):
     r = client.post(
         "/api/git/commit-push", json={"path": PATH, "message": "m"}, headers=changing(ALICE)

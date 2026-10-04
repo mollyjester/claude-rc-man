@@ -3575,15 +3575,25 @@ def test_a_rejected_push_comes_back_in_gits_words(env, repo):
     assert any("rejected" in line for line in out["error"]["git"]), out
 
 
-def test_a_branch_with_no_commit_yet_comes_back_in_gits_words(env, repo):
+def test_a_branch_with_no_commit_yet_is_not_pushed_but_passes_the_check(env, repo):
+    """Nothing to push before the first commit, which rc-helper says before git is
+    asked; --check passes, as Commit & Push's commit makes that first commit."""
     fresh = Path(env["RC_HELPER_HOME"]) / "projects" / "fresh"
     fresh.mkdir()
     fixture_git(fresh, "init", "-q", "-b", "trunk")
     fixture_git(fresh, "remote", "add", "origin", str(origin_of(repo)))
-    assert ok(env, "git-status", "--", "projects/fresh")["push_to_github"] is False
+    shown = ok(env, "git-status", "--", "projects/fresh")
+    assert (shown["push_to_github"], shown["push_has_remote"]) == (False, True)
     code, out = push(env, "projects/fresh")
-    assert (code, out["error"]["code"]) == (1, "git_failed"), out
-    assert any("does not match any" in line for line in out["error"]["git"]), out
+    assert (code, out["error"]["code"]) == (1, "no_commits_yet"), out
+    assert out["error"]["message"] == h.MESSAGES["no_commits_yet"]
+    assert ok(env, "git-push", "--check", "--", "projects/fresh") == {
+        "path": "projects/fresh",
+        "branch": "trunk",
+    }
+    head = commit_in(fresh, "first.txt")
+    assert push(env, "projects/fresh")[0] == 0  # positive control: once committed, it goes
+    assert on_remote(origin_of(repo), "trunk") == head
 
 
 def test_a_detached_head_is_not_pushed(env, repo):
@@ -3636,7 +3646,42 @@ def test_a_repository_with_no_remote_is_no_push_to_github(env):
     repo = make_repo(Path(env["RC_HELPER_HOME"]) / "projects" / "lonely")
     assert ok(env, "git-status", "--", "projects/lonely")["push_to_github"] is False
     commit_in(repo, "x.txt")
-    assert error_code(env, "git-push", "--", "projects/lonely") == "git_failed"
+    assert error_code(env, "git-push", "--", "projects/lonely") == "no_push_remote"
+
+
+def test_a_branch_with_no_upstream_and_no_origin_has_nowhere_to_push(env, tmp_path):
+    """A branch with no upstream is pushed to origin: with no remote of that name,
+    git push -u origin HEAD cannot work, and rc-helper says so before git is asked,
+    in status and in a push, --check too."""
+    repo = make_repo(Path(env["RC_HELPER_HOME"]) / "projects" / "lonely")
+    commit_in(repo, "x.txt")
+    shown = ok(env, "git-status", "--", "projects/lonely")
+    assert shown["push_has_remote"] is False
+    code, out = push(env, "projects/lonely")
+    assert (code, out["error"]["code"]) == (1, "no_push_remote"), out
+    assert out["error"]["message"] == h.MESSAGES["no_push_remote"]
+    assert error_code(env, "git-push", "--check", "--", "projects/lonely") == "no_push_remote"
+    # A branch tracking a remote of another name is pushed there: it has a remote.
+    elsewhere = tmp_path / "elsewhere.git"
+    fixture_git(tmp_path, "init", "-q", "--bare", str(elsewhere))
+    fixture_git(repo, "remote", "add", "elsewhere", str(elsewhere))
+    fixture_git(repo, "push", "-q", "-u", "elsewhere", "main")
+    assert ok(env, "git-status", "--", "projects/lonely")["push_has_remote"] is True
+    head = commit_in(repo, "y.txt")
+    assert push(env, "projects/lonely")[0] == 0
+    assert on_remote(elsewhere, "main") == head
+    # A branch with no upstream again: nowhere, until there is an origin.
+    fixture_git(repo, "switch", "-q", "-c", "topic")
+    assert ok(env, "git-status", "--", "projects/lonely")["push_has_remote"] is False
+    fixture_git(repo, "remote", "rename", "elsewhere", "origin")
+    assert ok(env, "git-status", "--", "projects/lonely")["push_has_remote"] is True
+    assert ok(env, "git-push", "--", "projects/lonely")["upstream"] == "origin/topic"
+
+
+def test_status_says_a_push_has_a_remote_where_it_goes_to_origin_or_an_upstream(env, repo):
+    assert status(env)["push_has_remote"] is True  # main tracks origin/main
+    fixture_git(repo, "switch", "-q", "-c", "no-upstream")
+    assert status(env)["push_has_remote"] is True  # to origin, which there is
 
 
 SESSION_DUMP = """#!/usr/bin/python3

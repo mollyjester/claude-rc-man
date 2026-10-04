@@ -40,6 +40,7 @@ function status(staged: Files = [], notStaged: Files = [], extra: Record<string,
     staged: { files: staged, more: 0 },
     not_staged: { files: notStaged, more: 0 },
     author: { name: "Alice", email: "alice@example.com" },
+    push_has_remote: true,
     ...extra,
   };
 }
@@ -820,4 +821,51 @@ test("Push is offered for a branch ahead of where it pushes, even when its upstr
   repoApi({ "GET /api/git/status": status([], [], { branch: even, push_ahead: 1, ...TOKEN }) });
   renderApp(`/?folder=${REPO}`);
   expect(await (await changes()).findByRole("button", { name: m.push })).toBeInTheDocument();
+});
+
+test("with nowhere to push, neither Push nor Commit & Push is offered, and the section says why", async () => {
+  const fresh = {
+    name: "topic",
+    commit: "0123456789abcdef",
+    upstream: null,
+    ahead: null,
+    behind: null,
+  };
+  repoApi({
+    "GET /api/git/status": status(STAGED, [], {
+      branch: fresh,
+      ...ELSEWHERE,
+      push_has_remote: false,
+    }),
+  });
+  renderApp(`/?folder=${REPO}`);
+  const section = await changes();
+  expect(await section.findByRole("button", { name: m.commit })).toBeInTheDocument(); // positive control
+  expect(section.queryByRole("button", { name: m.push })).not.toBeInTheDocument();
+  expect(section.queryByRole("button", { name: m.commitPush })).not.toBeInTheDocument();
+  expect(section.getByText(m.pushNeedsRemote)).toBeInTheDocument();
+});
+
+test("a status that does not say a push has a remote offers no push", async () => {
+  repoApi({
+    "GET /api/git/status": status(STAGED, [], { ...ELSEWHERE, push_has_remote: undefined }),
+  });
+  renderApp(`/?folder=${REPO}`);
+  const section = await changes();
+  expect(await section.findByRole("button", { name: m.commit })).toBeInTheDocument(); // positive control
+  expect(section.queryByRole("button", { name: m.push })).not.toBeInTheDocument();
+  expect(section.queryByRole("button", { name: m.commitPush })).not.toBeInTheDocument();
+  expect(section.getByText(m.pushNeedsRemote)).toBeInTheDocument();
+});
+
+test("on a branch with no commit yet, Push is not offered and the section says why; Commit & Push is", async () => {
+  const unborn = { name: "trunk", commit: null, upstream: null, ahead: null, behind: null };
+  repoApi({
+    "GET /api/git/status": status(STAGED, [], { branch: unborn, ...ELSEWHERE, push_ahead: null }),
+  });
+  renderApp(`/?folder=${REPO}`);
+  const section = await changes();
+  expect(await section.findByRole("button", { name: m.commitPush })).toBeInTheDocument();
+  expect(section.queryByRole("button", { name: m.push })).not.toBeInTheDocument();
+  expect(section.getByText(m.pushNeedsCommit)).toBeInTheDocument();
 });
