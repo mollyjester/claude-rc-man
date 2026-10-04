@@ -414,6 +414,40 @@ test("the status is polled while the folder is selected, and no longer once anot
   }
 });
 
+test("while the Changes section polls, only the selected folder's status is fetched, and the folder tree is not fetched again", async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  try {
+    const OTHER = "projects/other";
+    const fake = repoApi({
+      "GET /api/folders": (c) =>
+        ({
+          ...FOLDERS,
+          projects: {
+            path: "projects",
+            entries: [entry(REPO, true), entry(OTHER, true), entry("projects/plain")],
+          },
+        })[c.query.get("path") ?? ""] ?? problem(404, "path_not_found", "No."),
+    });
+    renderApp(`/?folder=${REPO}`, { pollMs: 1000 });
+    await changes();
+    const tree = within(screen.getByRole("region", { name: m.foldersTitle }));
+    expect(await tree.findByRole("button", { name: "other" })).toBeInTheDocument(); // another repository is listed
+    const statuses = () => fake.made("GET", "/api/git/status");
+    const folders = () => fake.made("GET", "/api/folders").length;
+    const first = statuses().length;
+    const fetched = folders();
+    expect(fetched).toBeGreaterThan(0);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3500);
+    });
+    expect(statuses().length).toBeGreaterThanOrEqual(first + 3); // positive control: it polls
+    expect(folders()).toBe(fetched);
+    expect(new Set(statuses().map((c) => c.query.get("path")))).toEqual(new Set([REPO]));
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
 test("an answer that arrives after a newer one is not shown", async () => {
   let answer: (value: unknown) => void = () => {};
   let calls = 0;
