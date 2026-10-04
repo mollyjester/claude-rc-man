@@ -3716,6 +3716,48 @@ def test_a_branch_with_no_commit_yet_is_not_pushed_but_passes_the_check(env, rep
     assert on_remote(origin_of(repo), "trunk") == head
 
 
+def test_a_branch_with_no_commit_yet_tracking_a_remote_of_another_name_has_a_remote(env, tmp_path):
+    """A clone of an empty repository with -o: main tracks fork/main before its first
+    commit, which git lists no ref of, and there is no origin."""
+    bare = tmp_path / "empty.git"
+    fixture_git(tmp_path, "init", "-q", "--bare", "-b", "main", str(bare))
+    projects = Path(env["RC_HELPER_HOME"]) / "projects"
+    fixture_git(projects, "clone", "-q", "-o", "fork", str(bare), "forked")
+    shown = ok(env, "git-status", "--", "projects/forked")
+    assert shown["branch"]["upstream"] == "fork/main"  # positive control: git says so
+    assert shown["push_has_remote"] is True
+    assert ok(env, "git-push", "--check", "--", "projects/forked") == {
+        "path": "projects/forked",
+        "branch": "main",
+    }
+    assert error_code(env, "git-push", "--", "projects/forked") == "no_commits_yet"
+    head = commit_in(projects / "forked", "first.txt")
+    assert push(env, "projects/forked")[0] == 0
+    assert on_remote(bare, "main") == head
+
+
+def test_a_branch_with_no_commit_yet_pushing_to_github_needs_the_token(hooked, github, tmp_path):
+    """Before the first commit, where the branch pushes is read from its configuration:
+    its push remote, here GitHub under a name other than origin."""
+    name = f"unborn-{tmp_path.name}"
+    github.bare("owner", name)
+    fresh = Path(hooked["RC_HELPER_HOME"]) / "projects" / "unborn"
+    fresh.mkdir(parents=True)
+    fixture_git(fresh, "init", "-q", "-b", "trunk")
+    fixture_git(fresh, "remote", "add", "hub", github.github_url("owner", name))
+    fixture_git(fresh, "config", "branch.trunk.remote", "hub")
+    fixture_git(fresh, "config", "branch.trunk.merge", "refs/heads/trunk")
+    shown = ok(hooked, "git-status", "--", "projects/unborn")
+    assert shown["branch"]["upstream"] == "hub/trunk"  # positive control
+    assert (shown["push_has_remote"], shown["push_to_github"]) == (True, True)
+    assert shown["github_token"] is False
+    assert error_code(hooked, "git-push", "--check", "--", "projects/unborn") == (
+        "github_token_not_set"
+    )
+    fixture_git(fresh, "config", "branch.trunk.pushRemote", "elsewhere")
+    assert ok(hooked, "git-status", "--", "projects/unborn")["push_to_github"] is False
+
+
 def test_a_detached_head_is_not_pushed(env, repo):
     commit_in(repo, "more.txt")
     fixture_git(repo, "switch", "-q", "--detach", "HEAD")

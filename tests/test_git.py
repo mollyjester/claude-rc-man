@@ -418,6 +418,29 @@ def test_a_branch_with_no_commit_yet_is_not_pushed_and_commit_and_push_makes_the
     assert on_remote(origin, "trunk") == fixture_git(repo, "rev-parse", "HEAD").strip()
 
 
+def test_commit_and_push_makes_the_first_commit_of_a_branch_tracking_a_remote_not_named_origin(
+    client, helper_homes, tmp_path
+):
+    """A clone of an empty repository with -o fork: main tracks fork/main from the start."""
+    bare = tmp_path / "origins" / "empty.git"
+    bare.parent.mkdir(parents=True)
+    fixture_git(bare.parent, "init", "-q", "--bare", "-b", "main", str(bare))
+    repo = helper_homes.homes["alice"] / PATH
+    repo.parent.mkdir(parents=True, exist_ok=True)
+    if repo.exists():
+        repo.rmdir()
+    fixture_git(repo.parent, "clone", "-q", "-o", "fork", str(bare), repo.name)
+    set_author(client)
+    staged_file(repo)
+    r = client.post(
+        "/api/git/commit-push", json={"path": PATH, "message": "First"}, headers=changing(ALICE)
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["push"] == {"path": PATH, "branch": "main", "upstream": "fork/main",
+                                "upstream_set": False}  # fmt: skip
+    assert on_remote(bare, "main") == fixture_git(repo, "rev-parse", "HEAD").strip()
+
+
 def test_commit_and_push_needs_an_author_first(client, on_github, recorded):
     r = client.post(
         "/api/git/commit-push", json={"path": PATH, "message": "m"}, headers=changing(ALICE)
