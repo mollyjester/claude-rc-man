@@ -55,8 +55,8 @@ const BRANCHES = {
   },
   remote: {
     branches: [
-      { name: "origin/main", local: "main" },
-      { name: "origin/feature", local: null },
+      { name: "origin/main", local: "main", taken_by: "main" },
+      { name: "origin/feature", local: null, taken_by: null },
     ],
     more: 0,
   },
@@ -483,6 +483,31 @@ test("the branch lists have headings, and a remote branch says which local branc
   const local = within(section.getByRole("list", { name: m.localBranches }));
   expect(local.getByText(m.tracks("origin/main"))).toBeInTheDocument();
   expect(local.getByText(m.currentBranch)).toBeInTheDocument();
+});
+
+test("a remote branch whose name a local branch has is not offered for switching, and says which", async () => {
+  repoApi({
+    "GET /api/git/branches": {
+      ...BRANCHES,
+      remote: {
+        branches: [
+          { name: "origin/main", local: "main", taken_by: "main" },
+          { name: "origin/feature", local: null, taken_by: "feature" },
+          { name: "origin/free", local: null, taken_by: null },
+        ],
+        more: 0,
+      },
+    },
+  });
+  renderApp(`/?folder=${REPO}`);
+  const remote = within(await (await changes()).findByRole("list", { name: m.remoteBranches }));
+  expect(remote.getByRole("button", { name: m.switchTo("origin/free") })).toBeInTheDocument(); // positive control
+  const taken = remote.getByText("origin/feature").closest("li")!;
+  expect(within(taken).queryByRole("button")).not.toBeInTheDocument();
+  expect(taken).toHaveTextContent(m.nameTakenBy("feature"));
+  const tracked = remote.getByText("origin/main").closest("li")!;
+  expect(tracked).toHaveTextContent(m.trackedBy("main"));
+  expect(tracked).not.toHaveTextContent(m.nameTakenBy("main"));
 });
 
 test("New branch is opened by a secondary button, and Commit is the section's one primary", async () => {

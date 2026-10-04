@@ -2499,11 +2499,64 @@ def test_branches_lists_local_and_remote_tracking_branches(env, repo):
     }
     assert out["remote"] == {
         "branches": [
-            {"name": "origin/feature", "local": None},
-            {"name": "origin/main", "local": "main"},
+            {"name": "origin/feature", "local": None, "taken_by": None},
+            {"name": "origin/main", "local": "main", "taken_by": "main"},
         ],
         "more": 0,
     }
+
+
+def remote_branch(env, name: str) -> dict:
+    """A remote-tracking branch as git-branches lists it."""
+    listed = ok(env, "git-branches", "--", REPO_REL)["remote"]["branches"]
+    return next(b for b in listed if b["name"] == name)
+
+
+def test_a_remote_branch_whose_name_a_local_branch_has_says_which_and_is_not_switched_to(
+    env, repo
+):
+    """git switch --track would make a local branch of the remote branch's name, and
+    git refuses when one has it already, tracking something else."""
+    assert remote_branch(env, "origin/feature") == {
+        "name": "origin/feature",
+        "local": None,
+        "taken_by": None,
+    }  # positive control: the name is free
+    fixture_git(repo, "branch", "--no-track", "feature", "origin/main")
+    assert remote_branch(env, "origin/feature") == {
+        "name": "origin/feature",
+        "local": None,
+        "taken_by": "feature",
+    }
+    code, out = helper(env, "git-switch", "--branch=origin/feature", "--remote", "--", REPO_REL)
+    assert (code, out["error"]["code"]) == (1, "branch_name_taken"), out
+    assert out["error"]["message"] == h.MESSAGES["branch_name_taken"]
+    assert branch_of(repo) == "main"
+    assert ok(env, "git-switch", "--branch=feature", "--", REPO_REL)["branch"] == "feature"
+
+
+def test_a_remote_with_a_slash_in_its_name_gives_the_name_git_gives(env, repo):
+    """git switch --track names the local branch by what follows the first slash of the
+    remote-tracking branch's name, whatever the remote is called: a/b/feature makes
+    b/feature."""
+    fixture_git(repo, "remote", "add", "a/b", str(origin_of(repo)))
+    fixture_git(repo, "fetch", "-q", "a/b")
+    fixture_git(repo, "branch", "--no-track", "feature", "origin/main")
+    assert remote_branch(env, "a/b/feature")["taken_by"] is None  # feature is not its name
+    out = ok(env, "git-switch", "--branch=a/b/feature", "--remote", "--", REPO_REL)
+    assert out["branch"] == "b/feature"  # positive control: the name git gave it
+    assert remote_branch(env, "a/b/feature")["local"] == "b/feature"
+    fixture_git(repo, "switch", "-q", "main")
+    fixture_git(repo, "branch", "-q", "-D", "b/feature")
+    fixture_git(repo, "branch", "--no-track", "b/feature", "origin/main")
+    assert remote_branch(env, "a/b/feature") == {
+        "name": "a/b/feature",
+        "local": None,
+        "taken_by": "b/feature",
+    }
+    code = error_code(env, "git-switch", "--branch=a/b/feature", "--remote", "--", REPO_REL)
+    assert code == "branch_name_taken"
+    assert branch_of(repo) == "main"
 
 
 def test_a_long_list_of_branches_is_capped(env, repo):

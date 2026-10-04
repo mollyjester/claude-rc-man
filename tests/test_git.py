@@ -236,6 +236,19 @@ def test_switch_and_new_branch_and_fetch_change_the_repository(client, repo):
     assert [b["name"] for b in names["local"]["branches"]] == ["feature", "main", "topic"]
 
 
+def test_a_remote_branch_whose_name_a_local_branch_has_is_not_switched_to(client, repo):
+    fixture_git(repo, "branch", "--no-track", "feature", "origin/main")
+    names = client.get("/api/git/branches", params={"path": PATH}, headers=as_user(ALICE)).json()
+    listed = {b["name"]: b for b in names["remote"]["branches"]}
+    assert listed["origin/feature"] == {"name": "origin/feature", "local": None,
+                                        "taken_by": "feature"}  # fmt: skip
+    body = {"path": PATH, "branch": "origin/feature", "remote": True}
+    r = call(client, "POST", "/api/git/switch", json=body)
+    assert (r.status_code, r.json()["code"]) == (409, "branch_name_taken"), r.text
+    assert r.json()["title"] == rc_helper.MESSAGES["branch_name_taken"]
+    assert fixture_git(repo, "branch", "--show-current").strip() == "main"
+
+
 # --- push -----------------------------------------------------------------------------
 
 
