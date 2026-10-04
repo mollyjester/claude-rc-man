@@ -1747,8 +1747,7 @@ class Helper:
         merge_head = self._git(
             repo, ["rev-parse", "--path-format=absolute", "--git-path", "MERGE_HEAD"], deadline
         ).rstrip("\n")
-        upstream, remote = self._push_target(repo, branch.name, deadline)
-        to_github = self._to_github(repo, remote, deadline)
+        _, has_remote, to_github = self._push_facts(repo, branch.name, deadline)
         return {
             "path": rel,
             "branch": dataclasses.asdict(branch),
@@ -1757,7 +1756,7 @@ class Helper:
             "merging": Path(merge_head).exists(),
             "staged": lists[True].answer(),
             "not_staged": lists[False].answer(),
-            "push_has_remote": self._has_remote(repo, upstream, deadline),
+            "push_has_remote": has_remote,
             "push_to_github": to_github,
             "github_token": self._token_stored(deadline) if to_github else None,
             "push_ahead": self._push_ahead(repo, branch, deadline),
@@ -1942,17 +1941,21 @@ class Helper:
             return None
         return url.strip()
 
-    def _to_github(self, repo: Path, remote: str, deadline: float) -> bool:
-        """Whether a push to ``remote`` goes to GitHub: its push URL is under
-        Config.github. A remote git does not know is no push to GitHub."""
-        url = self._push_url(repo, remote, deadline)
-        return url is not None and url.startswith(self.cfg.github)
+    def _push_facts(self, repo: Path, branch: str | None, deadline: float):
+        """For a push of ``branch``: its upstream (_push_target), whether it has a remote
+        to go to, and whether it goes to GitHub, from one push URL, that of the remote it
+        goes to.
 
-    def _has_remote(self, repo: Path, upstream: str | None, deadline: float) -> bool:
-        """Whether a push has a remote to go to: one with an upstream goes where git
-        push sends it; one without, as git push -u PUSH_REMOTE HEAD, only if git knows
-        a remote of that name."""
-        return upstream is not None or self._push_url(repo, PUSH_REMOTE, deadline) is not None
+        One with an upstream has a remote: it goes where git push sends it. One without,
+        and no branch, go to PUSH_REMOTE, so they have one only if git knows a remote of
+        that name. A push goes to GitHub when that remote's push URL is under
+        Config.github; a remote git does not know is no push to GitHub.
+        """
+        upstream, remote = self._push_target(repo, branch, deadline)
+        url = self._push_url(repo, remote, deadline)
+        has_remote = upstream is not None or url is not None  # remote is PUSH_REMOTE here
+        to_github = url is not None and url.startswith(self.cfg.github)
+        return upstream, has_remote, to_github
 
     @git_verb(timeout="GIT_NETWORK_TIMEOUT")
     def git_push(self, deadline: float, rel: str, check: bool) -> dict:
@@ -1968,10 +1971,10 @@ class Helper:
         branch = self._current(repo, deadline)
         if branch is None:
             raise HelperError("detached_head")
-        upstream, remote = self._push_target(repo, branch, deadline)
-        if not self._has_remote(repo, upstream, deadline):
+        upstream, has_remote, to_github = self._push_facts(repo, branch, deadline)
+        if not has_remote:
             raise HelperError("no_push_remote")
-        if self._to_github(repo, remote, deadline) and not self._token_stored(deadline):
+        if to_github and not self._token_stored(deadline):
             raise HelperError("github_token_not_set")
         if check:
             return {"path": rel, "branch": branch}
