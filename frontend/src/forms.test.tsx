@@ -46,6 +46,11 @@ function api() {
       staged: { files: [{ path: "a.txt", change: "added" }], more: 0 },
       not_staged: { files: [{ path: "b.txt", change: "untracked" }], more: 0 },
       author: { name: "Alice", email: "alice@example.com" },
+      merging: false,
+      push_has_remote: true,
+      push_to_github: false,
+      github_token: null,
+      push_ahead: 1,
     },
     "GET /api/git/branches": {
       path: REPOSITORY.path,
@@ -141,11 +146,34 @@ PAGES.push(
     "a new branch",
     "/?folder=projects/repo",
     async () => {
-      await userEvent.click(await screen.findByRole("button", { name: m.newBranch }));
+      const plus = await screen.findByRole("button", { name: m.newBranch });
+      expect(plus.textContent).toBe(""); // the + of the branch bar, an icon only
+      await userEvent.click(plus);
       await screen.findByLabelText(m.newBranchName);
     },
   ],
+  [
+    "a commit, its menu open",
+    "/?folder=projects/repo",
+    async () => {
+      await userEvent.click(await screen.findByRole("button", { name: m.commitMenu }));
+      await screen.findByRole("button", { name: m.commitPush });
+    },
+  ],
 );
+
+// Pages with an input outside any form, and what opens it: held only to having
+// no validation rule of its own, since they add no form.
+const OUTSIDE_FORMS: [string, string, () => Promise<void>][] = [
+  [
+    "the branch lookup's filter",
+    "/?folder=projects/repo",
+    async () => {
+      await userEvent.click(await screen.findByRole("button", { name: m.onBranch("main") }));
+      await screen.findByRole("textbox", { name: m.findBranch });
+    },
+  ],
+];
 
 // Pages with a form that has nothing to type in, and what opens it.
 const CHOICES: [string, string, () => Promise<void>][] = [
@@ -171,29 +199,32 @@ const CHOICES: [string, string, () => Promise<void>][] = [
   ],
 ];
 
-test.each(PAGES)("no input on %s (%s) carries its own validation rule", async (_, path, open) => {
-  api();
-  renderApp(path);
-  await open();
-  const found = await inputs();
-  expect(found.length).toBeGreaterThan(0); // non-vacuity
-  for (const input of found) {
-    for (const attribute of RULE_ATTRIBUTES) {
-      expect(input.hasAttribute(attribute), `${input.outerHTML} has ${attribute}`).toBe(false);
+test.each([...PAGES, ...OUTSIDE_FORMS])(
+  "no input on %s (%s) carries its own validation rule",
+  async (_, path, open) => {
+    api();
+    renderApp(path);
+    await open();
+    const found = await inputs();
+    expect(found.length).toBeGreaterThan(0); // non-vacuity
+    for (const input of found) {
+      for (const attribute of RULE_ATTRIBUTES) {
+        expect(input.hasAttribute(attribute), `${input.outerHTML} has ${attribute}`).toBe(false);
+      }
+      if (input instanceof HTMLInputElement && input.type === "password") {
+        // The one secret a page takes, the GitHub token, is typed where it is not shown.
+        expect(input.closest("section")?.querySelector("h2")?.textContent).toBe(
+          m.settingsGithubTitle,
+        );
+      } else if (input instanceof HTMLInputElement) {
+        expect(["text", "checkbox", "radio"]).toContain(input.type);
+      }
     }
-    if (input instanceof HTMLInputElement && input.type === "password") {
-      // The one secret a page takes, the GitHub token, is typed where it is not shown.
-      expect(input.closest("section")?.querySelector("h2")?.textContent).toBe(
-        m.settingsGithubTitle,
-      );
-    } else if (input instanceof HTMLInputElement) {
-      expect(["text", "checkbox", "radio"]).toContain(input.type);
-    }
-  }
-  expect(document.querySelectorAll("form[novalidate]").length).toBe(
-    document.querySelectorAll("form").length,
-  );
-});
+    expect(document.querySelectorAll("form[novalidate]").length).toBe(
+      document.querySelectorAll("form").length,
+    );
+  },
+);
 
 // What is wrong with the buttons of each form under root: a form whose leading
 // buttons — primary, or danger where what it does cannot be undone — are not
@@ -418,9 +449,13 @@ async function labelFaults(form: HTMLFormElement): Promise<string[]> {
   });
   vi.stubGlobal("fetch", refuse);
   try {
-    const before = screen.queryAllByText("Refused.").length;
+    // A refusal not shown before: pressing this form's button may close a pop-up
+    // that held another form's, so a count of them could stay the same.
+    const before = new Set(screen.queryAllByText("Refused."));
     await userEvent.click(form.querySelector('button[type="submit"]')!);
-    await waitFor(() => expect(screen.queryAllByText("Refused.").length).toBeGreaterThan(before));
+    await waitFor(() =>
+      expect(screen.queryAllByText("Refused.").some((shown) => !before.has(shown))).toBe(true),
+    );
     for (const input of named) {
       if (!screen.queryByText(`${input.label}: planted reason for ${input.name}`)) {
         faults.push(`${input.name}: not shown as ${input.label}`);

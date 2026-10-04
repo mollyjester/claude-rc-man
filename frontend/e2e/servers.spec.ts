@@ -196,7 +196,8 @@ test("a repository's changes: appear, stage, commit, switch branch", async ({ pa
     tree(page).getByRole("button", { name: "alice-repo", exact: true }),
   ).toHaveAccessibleDescription(m.repository);
   const changes = panel(page, "projects/alice-repo").getByRole("region", { name: m.changesTitle });
-  await expect(changes.getByText(m.onBranch("main"))).toBeVisible();
+  const lookup = changes.getByRole("button", { name: m.onBranch("main") });
+  await expect(lookup).toBeVisible();
 
   // no commit author yet: Commit is not offered, and Settings is where to set one
   await expect(changes.getByText(m.commitNeedsAuthor.before.trim())).toBeVisible();
@@ -227,17 +228,43 @@ test("a repository's changes: appear, stage, commit, switch branch", async ({ pa
   );
 
   // a branch only on origin needs Refresh branches; switching to one makes it local
+  await lookup.click();
   const remote = changes.getByRole("list", { name: m.remoteBranches });
   await expect(remote.getByText("origin/feature", { exact: true })).toBeVisible();
   await expect(remote.getByText("origin/later", { exact: true })).toHaveCount(0);
-  await changes.getByRole("button", { name: m.refreshBranches }).click();
+  const refresh = changes.getByRole("button", { name: m.refreshBranches });
+  const fetched = page.waitForResponse((r) => new URL(r.url()).pathname === "/api/git/fetch");
+  await refresh.click();
+  await expect(lookup).toHaveAttribute("aria-expanded", "false"); // the press closed it
+  expect((await fetched).ok()).toBe(true);
+  await lookup.click();
   await expect(remote.getByText("origin/later", { exact: true })).toBeVisible();
+  // the filter narrows what is listed
+  await changes.getByRole("textbox", { name: m.findBranch }).fill("FEAT");
+  await expect(remote.getByText("origin/later", { exact: true })).toHaveCount(0);
   await remote.getByRole("button", { name: m.switchTo("origin/feature") }).click();
-  await expect(changes.getByText(m.onBranch("feature"))).toBeVisible();
+  const onFeature = changes.getByRole("button", { name: m.onBranch("feature") });
+  await expect(onFeature).toBeVisible();
+  await expect(onFeature).toHaveAttribute("aria-expanded", "false");
+  await onFeature.click();
   await expect(
     changes.getByRole("list", { name: m.localBranches }).getByText(m.currentBranch),
   ).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(onFeature).toHaveAttribute("aria-expanded", "false");
   expect(git("branch", "--show-current")).toBe("feature\n");
+
+  // a new branch git refuses keeps its form open with git's words; Escape then closes it
+  const plus = changes.getByRole("button", { name: m.newBranch, exact: true });
+  await plus.click();
+  await changes.getByLabel(m.newBranchName).fill("main");
+  await changes.getByRole("button", { name: m.create, exact: true }).click();
+  const refusal = changes.getByRole("alert");
+  await expect(refusal.getByLabel(m.gitSaid)).toContainText("'main' already exists");
+  await expect(plus).toHaveAttribute("aria-expanded", "true");
+  await page.keyboard.press("Escape");
+  await expect(plus).toHaveAttribute("aria-expanded", "false");
+  await expect(changes.getByRole("alert")).toHaveCount(0);
 });
 
 test("a GitHub token is added, a new branch is committed and pushed, and the token removed", async ({
@@ -277,17 +304,22 @@ test("a GitHub token is added, a new branch is committed and pushed, and the tok
   const branch = "pushed-from-rcman";
   await changes.getByRole("button", { name: m.newBranch, exact: true }).click();
   await changes.getByLabel(m.newBranchName).fill(branch);
-  await changes.getByRole("button", { name: m.createBranch }).click();
-  await expect(changes.getByText(m.onBranch(branch))).toBeVisible();
-  // Push alone: the new branch is made on GitHub and tracked
+  await changes.getByRole("button", { name: m.create, exact: true }).click();
+  await expect(changes.getByRole("button", { name: m.onBranch(branch) })).toBeVisible();
+  await expect(changes.getByLabel(m.newBranchName)).toHaveCount(0);
+  // no upstream yet: nothing said of one
+  await expect(changes.getByText(/^Tracking /)).toHaveCount(0);
+  // Push alone, in the branch bar: the new branch is made on GitHub and tracked
   await changes.getByRole("button", { name: m.push, exact: true }).click();
   await expect(changes.getByText(m.pushed(branch, `origin/${branch}`))).toBeVisible();
+  await expect(changes.getByText(m.tracking(`origin/${branch}`, 0, 0))).toBeAttached();
   expect(git(origin, "rev-parse", branch)).toBe(git(repo, "rev-parse", "HEAD"));
   writeFileSync(join(repo, "to-push.txt"), "pushed through rcman\n");
   const notStaged = changes.getByRole("group", { name: m.notStagedTitle });
   await notStaged.getByRole("checkbox", { name: "to-push.txt" }).check();
   await notStaged.getByRole("button", { name: m.stageSelected }).click();
   await changes.getByLabel(m.commitMessage).fill("Push a file from rcman");
+  await changes.getByRole("button", { name: m.commitMenu }).click();
   await changes.getByRole("button", { name: m.commitPush }).click();
   await expect(changes.getByText(m.pushed(branch, `origin/${branch}`))).toBeVisible();
   expect(git(origin, "log", "-1", "--format=%s", branch)).toBe("Push a file from rcman\n");
@@ -321,7 +353,7 @@ test("a repository is cloned from GitHub, and a server starts in the clone", asy
   await expect(inTree).toHaveAttribute("aria-current", "true");
   await expect(inTree).toHaveAccessibleDescription(m.repository);
   const changes = demo.getByRole("region", { name: m.changesTitle });
-  await expect(changes.getByText(m.onBranch("main"))).toBeVisible();
+  await expect(changes.getByRole("button", { name: m.onBranch("main") })).toBeVisible();
   expect(readFileSync(join(clone, "README.md"), "utf-8")).toMatch(/^line 0 /);
 
   await demo.getByRole("button", { name: m.start }).click();

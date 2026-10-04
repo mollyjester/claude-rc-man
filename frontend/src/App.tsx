@@ -1,13 +1,4 @@
-import {
-  createContext,
-  type FocusEvent,
-  type KeyboardEvent,
-  useContext,
-  useEffect,
-  useId,
-  useRef,
-  useState,
-} from "react";
+import { createContext, useContext, useEffect, useState } from "react";
 import { matchPath, Navigate, NavLink, Route, Routes, useLocation } from "react-router-dom";
 
 import { ADMIN_PAGES } from "./AdminPages";
@@ -19,6 +10,7 @@ import { Docs } from "./Docs";
 import { m } from "./messages";
 import { asApiError, ProblemView } from "./ProblemView";
 import { Settings } from "./Settings";
+import { usePopup } from "./usePopup";
 
 export type Me = { email: string; linux: string; admin: boolean; prefix: string };
 
@@ -27,47 +19,27 @@ export const useMe = () => useContext(MeContext);
 
 export const POLL_MS = 5000;
 
-// The administrators' pages behind one button: a disclosure that closes when
-// a page is chosen, when the page changes, on Escape and when focus leaves it.
+// The administrators' pages behind one button: a pop-up (src/usePopup.ts) that
+// also closes when a page is chosen and when the page changes.
 function AdminMenu() {
-  const [open, setOpen] = useState(false);
+  const menu = usePopup();
+  const { close } = menu;
   const { pathname } = useLocation();
-  const button = useRef<HTMLButtonElement>(null);
-  const id = useId();
   const here = ADMIN_PAGES.some((page) => matchPath(page.path, pathname));
 
-  // biome-ignore lint/correctness/useExhaustiveDependencies: pathname is what sets this off, not what it reads: the menu closes whenever the page changes
-  useEffect(() => setOpen(false), [pathname]);
-
-  function onKeyDown(event: KeyboardEvent) {
-    if (event.key === "Escape" && open) {
-      setOpen(false);
-      button.current?.focus();
-    }
-  }
-
-  function onBlur(event: FocusEvent) {
-    if (!event.currentTarget.contains(event.relatedTarget)) setOpen(false);
-  }
+  // biome-ignore lint/correctness/useExhaustiveDependencies: pathname is what sets this off, not what it reads: the menu closes whenever the page changes; close, which it does read, is stable (useCallback with no dependencies in usePopup)
+  useEffect(() => close(), [pathname]);
 
   return (
-    // biome-ignore lint/a11y/noStaticElementInteractions: it is never focused or clicked itself; it hears the keys and focus that bubble up from the button and links inside it
-    <div className="menu" onKeyDown={onKeyDown} onBlur={onBlur}>
-      <button
-        ref={button}
-        type="button"
-        className={here ? "active" : undefined}
-        aria-expanded={open}
-        aria-controls={id}
-        onClick={() => setOpen((shown) => !shown)}
-      >
+    <div className="menu" ref={menu.rootRef}>
+      <button type="button" className={here ? "active" : undefined} {...menu.buttonProps}>
         {m.navAdmin}
         <Caret />
       </button>
-      <ul id={id} hidden={!open}>
+      <ul {...menu.panelProps} hidden={!menu.open}>
         {ADMIN_PAGES.map((page) => (
           <li key={page.path}>
-            <NavLink to={page.path} onClick={() => setOpen(false)}>
+            <NavLink to={page.path} onClick={() => close()}>
               {page.label}
             </NavLink>
           </li>

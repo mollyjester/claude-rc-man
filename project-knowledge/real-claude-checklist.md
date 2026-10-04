@@ -74,19 +74,21 @@ fine-grained token stored there.
 1. In **Settings**, set **Commit author name**. For Claude's commit in step
    3, set `user.name` and `user.email` in the person's git configuration
    too, since rcman's commit author applies to rcman's own commits only.
-2. Select the repository, choose **New branch**, name it under **New branch
-   from here** and **Create branch**; change a file, stage it, and
-   **Commit & Push**: the section says where it pushed, and GitHub shows the
-   branch with the commit.
+2. Select the repository, choose **+** (**New branch**) in the branch bar,
+   name it under **New branch from here** and **Create**; change a file,
+   stage it, write a message, and choose **Commit & Push** in the menu beside
+   **Commit**: the section says where it pushed, and GitHub shows the branch
+   with the commit.
 3. **Start** a server in the repository and, in claude.ai, ask Claude to
    commit a change and push it: the push uses the stored token, and GitHub
    shows it.
-4. Revoke the token on GitHub, change a file, and **Commit & Push**: the
-   commit is made, the section shows git's words for the refused push, and
-   **Settings** then says no token is stored, git having forgotten it.
-5. Save a classic token with the `repo` scope: **Push** sends the commit
-   step 4 left unpushed, and the section says where it pushed. Repeat
-   steps 2 and 3, and step 3 of *Cloning from GitHub*, with it; then
+4. Revoke the token on GitHub, change a file, stage it, and **Commit &
+   Push**: the commit is made, the section shows git's words for the
+   refused push, and **Settings** then says no token is stored, git having
+   forgotten it.
+5. Save a classic token with the `repo` scope: **Push**, in the branch bar,
+   sends the commit step 4 left unpushed, and the section says where it
+   pushed. Repeat steps 2 and 3, and step 3 of *Cloning from GitHub*, with it; then
    **Remove token**, and revoke it on GitHub.
 6. Delete the test branches on GitHub; stop and forget the server; delete
    the private clone with **Delete folder**.
