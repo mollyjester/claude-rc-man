@@ -51,6 +51,101 @@ def test_a_broken_binary_fails_every_check(tmp_path):
     assert set(failures) == {name for name, _ in cc.CHECKS}
 
 
+def script(tmp_path, body, name="claude"):
+    path = tmp_path / name
+    path.write_text(f"#!{sys.executable}\nimport sys, time\n{body}\n", encoding="utf-8")
+    path.chmod(0o755)
+    return path
+
+
+def test_a_failing_check_reports_what_was_run_and_what_came_back(tmp_path):
+    broken = script(
+        tmp_path,
+        "print('something else entirely')\nprint('a complaint', file=sys.stderr)\nsys.exit(3)",
+    )
+    failures = cc.candidate_failures(runner_for(broken, tmp_path), "1.2.3")
+    assert set(failures) == {name for name, _ in cc.CHECKS}
+    detail = failures["auth_status"]
+    assert "auth status" in detail
+    assert "exit code 3" in detail
+    assert "something else entirely" in detail
+    assert "a complaint" in detail  # stderr, which the check does not judge
+    assert "something else entirely" in failures["version"]
+
+
+def test_the_names_of_the_failures_are_the_failed_checks(tmp_path):
+    """The fake passes every check but the version, which is not the one it reports."""
+    run = runner_for(rec.FAKE_CLAUDE, tmp_path)
+    assert list(cc.candidate_failures(run, "0.0.1")) == ["version"]
+    assert cc.candidate_checks(run, "0.0.1") == ["version"]
+
+
+def test_auth_status_is_judged_on_its_standard_output_only(tmp_path):
+    """JSON on stderr does not pass, however it reads; noise on stderr does not fail."""
+    on_stderr = script(tmp_path, "print('{\"loggedIn\": false}', file=sys.stderr)", "a")
+    failures = cc.candidate_failures(runner_for(on_stderr, tmp_path), "1.2.3")
+    assert '{"loggedIn": false}' in failures["auth_status"]
+    on_stdout = script(
+        tmp_path, "print('{\"loggedIn\": false}')\nprint('noise', file=sys.stderr)", "b"
+    )
+    assert "auth_status" not in cc.candidate_failures(runner_for(on_stdout, tmp_path), "1.2.3")
+
+
+def test_auth_status_that_does_not_exit_fails_and_says_so(tmp_path):
+    """Its JSON is complete before it hangs, and the check still fails it."""
+    hangs = script(
+        tmp_path,
+        "if sys.argv[1:] == ['auth', 'status']:\n"
+        "    print('{\"loggedIn\": false}', flush=True)\n"
+        "    print('still going', file=sys.stderr, flush=True)\n"
+        "    time.sleep(60)",
+    )
+    run = runner_for(hangs, tmp_path)
+
+    def quick(args, until=None, timeout=cc.TIMEOUT, terminal=True):
+        return run(args, until=until, timeout=2, terminal=terminal)
+
+    detail = cc.candidate_failures(quick, "1.2.3")["auth_status"]
+    assert "did not exit" in detail
+    assert '{"loggedIn": false}' in detail and "still going" in detail
+
+
+def test_a_check_that_raises_reports_the_exception(tmp_path):
+    def raising(args, until=None, timeout=cc.TIMEOUT, terminal=True):
+        raise RuntimeError("the runner broke")
+
+    failures = cc.candidate_failures(raising, "1.2.3")
+    assert set(failures) == {name for name, _ in cc.CHECKS}
+    assert "RuntimeError" in failures["auth_status"]
+    assert "the runner broke" in failures["auth_status"]
+
+
+SIGN_IN_URL = "https://claude.com/cai/oauth/authorize?code=true&state=SECRETSTATE"
+TOKEN = "sk-ant-oat01-SECRETTOKEN_x-y"
+
+
+def test_the_report_carries_no_sign_in_url_or_token(tmp_path):
+    leaky = script(
+        tmp_path,
+        f"print('visit {SIGN_IN_URL} now')\n"
+        f"print('key {TOKEN} here', file=sys.stderr)\n"
+        "print('the rest survives')",
+    )
+    run = runner_for(leaky, tmp_path)
+    _code, output = run(["auth", "status"])
+    assert SIGN_IN_URL in output and TOKEN in output  # the plant took effect
+    detail = cc.candidate_failures(run, "1.2.3")["auth_status"]
+    assert "SECRETSTATE" not in detail and "SECRETTOKEN" not in detail
+    assert "visit {login_url} now" in detail and "key {token} here" in detail
+    assert "the rest survives" in detail
+
+
+def test_redaction_replaces_only_secrets():
+    text = f"a {SIGN_IN_URL} b {TOKEN} c"
+    assert cc.redact(text) == "a {login_url} b {token} c"
+    assert cc.redact("nothing secret here") == "nothing secret here"
+
+
 def test_the_pty_runner_stops_at_its_pattern_and_kills_the_rest(tmp_path):
     script = tmp_path / "slow"
     script.write_text(
@@ -68,7 +163,7 @@ def test_the_pty_runner_stops_at_its_pattern_and_kills_the_rest(tmp_path):
 )
 def test_the_installed_real_claude_passes(tmp_path):
     version = rec.installed_version(REAL)
-    assert cc.candidate_checks(runner_for(REAL, tmp_path), version) == []
+    assert cc.candidate_failures(runner_for(REAL, tmp_path), version) == {}
 
 
 @pytest.mark.skipif(
@@ -82,7 +177,7 @@ def test_the_installed_real_claude_passes_with_a_long_configuration_path(tmp_pat
     version = rec.installed_version(REAL)
     deep = tmp_path / ("d" * rc_helper.WIDTH)
     deep.mkdir()
-    assert cc.candidate_checks(runner_for(REAL, deep), version) == []
+    assert cc.candidate_failures(runner_for(REAL, deep), version) == {}
 
 
 def test_the_terminal_is_the_size_rc_helper_gives_claude(tmp_path):
