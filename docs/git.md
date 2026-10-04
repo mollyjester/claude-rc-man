@@ -216,6 +216,10 @@ Two refusals are common:
 git is given a time limit; one that does not finish in it, such as one
 waiting for a hook, is stopped, and the section says so.
 
+When git answers in a way rcman does not recognise, the section says so and
+shows what git said. rcman also writes it to the [system journal](journal.md)
+for administrators, without what git said.
+
 ## Your git configuration
 
 git runs as you, with your own global configuration and the repository's,

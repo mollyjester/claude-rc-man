@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 
-import { type ApiError, api } from "./api";
+import { type ApiError, api, SIGNED_OUT, UNREACHABLE } from "./api";
 import { ClaudeConnection, type Connection, START_REASON } from "./Claude";
 import { type FolderChanges, FolderPanel, HomePanel } from "./FolderPanel";
 import {
@@ -16,12 +16,18 @@ import { m } from "./messages";
 import { asApiError, ProblemView } from "./ProblemView";
 import type { Server } from "./Servers";
 
+// Whether two failures would be shown alike, so that one of them is enough.
+const sameFailure = (a: ApiError | null, b: ApiError | null) =>
+  a !== null && b !== null && a.code === b.code && a.title === b.title;
+
 // The Servers page: the folder tree and its summary on one side, and the
 // selected folder's panel on the other. The selected folder is in the address.
 export function Dashboard({ pollMs }: { pollMs: number }) {
   const [connection, setConnection] = useState<Connection | null>(null);
   const [servers, setServers] = useState<Server[] | null>(null);
-  const [error, setError] = useState<ApiError | null>(null);
+  // The Claude account's, which is loaded once, and the servers', polled.
+  const [connectionError, setConnectionError] = useState<ApiError | null>(null);
+  const [serversError, setServersError] = useState<ApiError | null>(null);
   // What was done, shown while the folder it left selected stays selected.
   const [notice, setNotice] = useState<{ text: string; folder: string | null } | null>(null);
   const [params] = useSearchParams();
@@ -30,22 +36,52 @@ export function Dashboard({ pollMs }: { pollMs: number }) {
   const tree = useFolderTree();
   const { reveal } = tree;
 
-  const refresh = useCallback(async () => {
-    try {
-      setServers((await api.get<{ servers: Server[] }>("/api/servers")).servers);
-    } catch (e) {
-      setError(asApiError(e));
-    }
+  // The Claude account is loaded once, and again after a poll works if the page
+  // did not reach rcman for it; a problem rcman sent stays.
+  const connectionUnreached = useRef(false);
+  const loadConnection = useCallback(() => {
+    api.get<Connection>("/api/claude").then(
+      (loaded) => {
+        setConnection(loaded);
+        setConnectionError(null);
+      },
+      (e) => {
+        const error = asApiError(e);
+        connectionUnreached.current = error.code === UNREACHABLE || error.code === SIGNED_OUT;
+        setConnectionError(error);
+      },
+    );
   }, []);
 
+  // A poll's failure is shown until a later poll works; an answer older than one
+  // asked for since is dropped.
+  const latest = useRef(0);
+  const refresh = useCallback(async () => {
+    const asked = ++latest.current;
+    try {
+      const answer = await api.get<{ servers: Server[] }>("/api/servers");
+      if (asked === latest.current) {
+        setServers(answer.servers);
+        setServersError(null);
+        if (connectionUnreached.current) {
+          connectionUnreached.current = false;
+          loadConnection();
+        }
+      }
+    } catch (e) {
+      const error = asApiError(e);
+      if (asked === latest.current) setServersError(error);
+    }
+  }, [loadConnection]);
+
   useEffect(() => {
-    api.get<Connection>("/api/claude").then(setConnection, (e) => setError(asApiError(e)));
+    loadConnection();
     refresh();
     if (pollMs > 0) {
       const timer = setInterval(refresh, pollMs);
       return () => clearInterval(timer);
     }
-  }, [pollMs, refresh]);
+  }, [pollMs, refresh, loadConnection]);
 
   useEffect(() => {
     if (selected) reveal(selected);
@@ -93,7 +129,8 @@ export function Dashboard({ pollMs }: { pollMs: number }) {
   return (
     <>
       <ClaudeConnection connection={connection} onChange={setConnection} />
-      <ProblemView error={error} />
+      <ProblemView error={connectionError} />
+      {!sameFailure(connectionError, serversError) && <ProblemView error={serversError} />}
       {notice && notice.folder === selected && <p role="status">{notice.text}</p>}
       <div className="workspace">
         <div className="pane">

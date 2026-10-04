@@ -1,4 +1,4 @@
-import { cleanup, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { CONNECTION_STATES, START_REASON } from "./Claude";
@@ -12,6 +12,7 @@ import {
   NOT_CONNECTED,
   problem,
   type Routes,
+  UNREACHABLE_REPLY,
 } from "./test/fakeApi";
 import { renderApp } from "./test/render";
 
@@ -1296,3 +1297,149 @@ test.each([
     for (const button of within(header).getAllByRole("button")) expect(button).toBeEnabled();
   },
 );
+
+// --- polls that fail ------------------------------------------------------------
+
+// The Servers page polling every second, with fake timers that still advance by themselves.
+async function polling(test: () => Promise<void>) {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+  try {
+    await test();
+  } finally {
+    consoleError.mockRestore();
+    vi.useRealTimers();
+  }
+}
+
+const pass = (ms: number) =>
+  act(async () => {
+    await vi.advanceTimersByTimeAsync(ms);
+  });
+
+test("a poll that cannot reach rcman says so, and the message goes once a later poll works", () =>
+  polling(async () => {
+    let down = false;
+    const fake = dashboard([], {
+      "GET /api/servers": () => (down ? UNREACHABLE_REPLY : { servers: [] }),
+      "POST /api/client-errors": {},
+    });
+    renderApp("/", { pollMs: 1000 });
+    await summary();
+    expect(screen.queryByText(m.unreachable)).not.toBeInTheDocument();
+    down = true;
+    await pass(1000);
+    expect(await screen.findByRole("alert")).toHaveTextContent(m.unreachable);
+    expect(screen.queryByText(m.unexpectedResponse)).not.toBeInTheDocument();
+    down = false;
+    await pass(1000);
+    await waitFor(() => expect(screen.queryByText(m.unreachable)).not.toBeInTheDocument());
+    await waitFor(() =>
+      expect(fake.made("POST", "/api/client-errors").map((c) => c.body)).toEqual([
+        expect.objectContaining({ kind: "unreachable", method: "GET", path: "/api/servers" }),
+      ]),
+    );
+  }));
+
+test("a failed Claude account load stays while polls work", () =>
+  polling(async () => {
+    const fake = dashboard([], {
+      "GET /api/claude": problem(502, "helper_unavailable", "planted Claude account failure"),
+    });
+    renderApp("/", { pollMs: 1000 });
+    expect(await screen.findByRole("alert")).toHaveTextContent("planted Claude account failure");
+    const polled = fake.made("GET", "/api/servers").length;
+    await pass(2500);
+    expect(fake.made("GET", "/api/servers").length).toBeGreaterThanOrEqual(polled + 2); // positive control
+    expect(screen.getByRole("alert")).toHaveTextContent("planted Claude account failure");
+  }));
+
+test("a failing poll that ends after a later one worked is not shown", () =>
+  polling(async () => {
+    let asked = 0;
+    let failLate = () => {};
+    dashboard([], {
+      "GET /api/servers": () => {
+        asked += 1;
+        if (asked !== 2) return { servers: [server("projects/alpha", "ready")] };
+        return new Promise((resolve) => {
+          failLate = () => resolve(UNREACHABLE_REPLY);
+        });
+      },
+      "POST /api/client-errors": {},
+    });
+    renderApp("/", { pollMs: 1000 });
+    await summary();
+    await pass(1000); // the second poll, which hangs
+    await pass(1000); // the third, which works
+    expect(asked).toBeGreaterThanOrEqual(3);
+    await act(async () => {
+      failLate();
+    });
+    await pass(0);
+    expect(console.error).toHaveBeenCalledWith(
+      "rcman:",
+      "unreachable",
+      "GET",
+      "/api/servers",
+      expect.any(TypeError),
+    ); // positive control: the late poll did fail
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(
+      within(await summary()).getByRole("button", { name: "projects/alpha" }),
+    ).toBeInTheDocument();
+  }));
+
+test("a Claude account load that cannot reach rcman is tried again once a poll works", () =>
+  polling(async () => {
+    let claudeDown = true;
+    const fake = dashboard([], {
+      "GET /api/claude": () => (claudeDown ? UNREACHABLE_REPLY : CONNECTED),
+      "POST /api/client-errors": {},
+    });
+    renderApp("/", { pollMs: 1000 });
+    expect(await screen.findByRole("alert")).toHaveTextContent(m.unreachable);
+    claudeDown = false;
+    await pass(1000);
+    await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument());
+    expect(
+      await screen.findByText(m.claudeConnectedAs(CONNECTED.account.email)),
+    ).toBeInTheDocument();
+    const loads = fake.made("GET", "/api/claude").length;
+    expect(loads).toBeGreaterThanOrEqual(2);
+    await pass(2000);
+    expect(fake.made("GET", "/api/claude")).toHaveLength(loads); // not again once it worked
+  }));
+
+test("the same failure of the account load and the poll is shown once", () =>
+  polling(async () => {
+    const fake = dashboard([], {
+      "GET /api/claude": UNREACHABLE_REPLY,
+      "GET /api/servers": UNREACHABLE_REPLY,
+    });
+    renderApp("/", { pollMs: 0 });
+    await waitFor(() => {
+      expect(fake.made("GET", "/api/claude")).toHaveLength(1);
+      expect(fake.made("GET", "/api/servers")).toHaveLength(1);
+    });
+    await pass(0);
+    expect(await screen.findByRole("alert")).toHaveTextContent(m.unreachable);
+    expect(screen.getAllByRole("alert")).toHaveLength(1);
+  }));
+
+test("different failures of the account load and the poll are both shown", () =>
+  polling(async () => {
+    dashboard([], {
+      "GET /api/claude": problem(502, "helper_unavailable", "planted Claude account failure"),
+      "GET /api/servers": UNREACHABLE_REPLY,
+    });
+    renderApp("/", { pollMs: 0 });
+    await waitFor(() => expect(screen.getAllByRole("alert")).toHaveLength(2));
+    const texts = screen.getAllByRole("alert").map((a) => a.textContent);
+    expect(texts).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("planted Claude account failure"),
+        expect.stringContaining(m.unreachable),
+      ]),
+    );
+  }));

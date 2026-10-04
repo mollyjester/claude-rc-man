@@ -220,6 +220,24 @@ CALLS = {
     ("GET", "/api/claude/versions"): {},
     ("GET", "/api/servers/everyone"): {},
     ("GET", "/api/attention"): {},
+    ("POST", "/api/client-errors"): {
+        "json": {
+            "kind": "unreachable",
+            "method": "GET",
+            "path": "/api/servers",
+            "status": None,
+            "name": "TypeError",
+            "message": "Failed to fetch",
+            "content_type": None,
+            "page": "/",
+            "visibility": "hidden",
+            "online": False,
+            "elapsed_ms": 12,
+            "count": 3,
+            "first_at": 1700000000000,
+            "last_at": 1700000005000,
+        }
+    },
 }
 
 

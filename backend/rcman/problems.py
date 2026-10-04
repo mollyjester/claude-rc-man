@@ -96,6 +96,7 @@ FIELD_MESSAGES = {
     "too_long": "This can hold at most {max_length} items.",
     "bool_type": "This must be true or false.",
     "bool_parsing": "This must be true or false.",
+    "int_type": "This must be a whole number.",
     "int_parsing": "This must be a whole number.",
     "greater_than_equal": "This must be at least {ge}.",
     "less_than_equal": "This must be at most {le}.",

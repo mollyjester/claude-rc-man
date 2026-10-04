@@ -1,8 +1,9 @@
 import { render, screen, within } from "@testing-library/react";
 
-import { ApiError } from "./api";
+import { ApiError, UNEXPECTED_RESPONSE } from "./api";
+import { PAGE_ERROR, takeReports } from "./clientErrors";
 import { m } from "./messages";
-import { ProblemView } from "./ProblemView";
+import { asApiError, ProblemView } from "./ProblemView";
 
 test("shows the server's title and every field error exactly as sent", () => {
   const error = new ApiError(422, "validation_failed", "Some of what was sent is not valid.", [
@@ -102,4 +103,23 @@ test("says nothing of more lines when git said no more", () => {
   );
   expect(screen.getByLabelText(m.gitSaid)).toHaveTextContent("one"); // positive control
   expect(screen.getByRole("alert")).not.toHaveTextContent(m.andMoreLines(0));
+});
+
+test("a fault in the page is not taken for rcman unreachable", () => {
+  const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+  try {
+    // What a browser's fetch throws when rcman is not reached, thrown by the page itself.
+    const fault = new TypeError("Failed to fetch");
+    const error = asApiError(fault);
+    expect([error.code, error.title]).toEqual([UNEXPECTED_RESPONSE, m.unexpectedResponse]);
+    expect(takeReports()).toEqual([
+      expect.objectContaining({ kind: PAGE_ERROR, name: "TypeError", method: null, path: null }),
+    ]);
+    expect(consoleError).toHaveBeenCalledWith("rcman:", PAGE_ERROR, undefined, undefined, fault);
+    const sent = new ApiError(409, "folder_busy", "Busy.");
+    expect(asApiError(sent)).toBe(sent);
+    expect(takeReports()).toEqual([]); // a problem rcman sent is not reported
+  } finally {
+    consoleError.mockRestore();
+  }
 });

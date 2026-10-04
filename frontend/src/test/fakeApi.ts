@@ -4,7 +4,40 @@ import { vi } from "vitest";
 
 export type Call = { method: string; path: string; query: URLSearchParams; body: unknown };
 type Handler = (call: Call) => unknown;
-export type Reply = Handler | Problem | Record<string, unknown> | unknown[];
+export type Reply =
+  | Handler
+  | Problem
+  | Unreachable
+  | SignedOut
+  | Record<string, unknown>
+  | unknown[];
+
+class Unreachable {}
+// What a route answers to stand for rcman not reached: fetch rejects, as a browser's does.
+export const UNREACHABLE_REPLY = new Unreachable();
+class SignedOut {}
+// What a route answers to stand for a sign-in that has ended: the proxy in front of
+// rcman redirects to sign in, which a fetch that does not follow redirects sees as
+// an opaque redirect.
+export const SIGNED_OUT_REPLY = new SignedOut();
+
+function opaqueRedirect(): Response {
+  const response = new Response(null, { status: 200 });
+  Object.defineProperty(response, "type", { value: "opaqueredirect" });
+  Object.defineProperty(response, "status", { value: 0 });
+  Object.defineProperty(response, "ok", { value: false });
+  return response;
+}
+
+// A reply that ends, as a browser's fetch does, when the request's signal aborts.
+function abortable<T>(reply: T | Promise<T>, signal: AbortSignal | null | undefined): Promise<T> {
+  if (!signal) return Promise.resolve(reply);
+  if (signal.aborted) return Promise.reject(signal.reason);
+  return new Promise((resolve, reject) => {
+    signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+    Promise.resolve(reply).then(resolve, reject);
+  });
+}
 
 export class Problem {
   constructor(
@@ -44,7 +77,9 @@ export function fakeApi(routes: Routes) {
     }
     const route = routes[key];
     // A handler may answer later, by returning a promise.
-    const reply = await (typeof route === "function" ? route(call) : route);
+    const reply = await abortable(typeof route === "function" ? route(call) : route, init?.signal);
+    if (reply === UNREACHABLE_REPLY) throw new TypeError("Failed to fetch");
+    if (reply === SIGNED_OUT_REPLY) return opaqueRedirect();
     if (reply instanceof Problem) {
       return new Response(JSON.stringify(reply.body), {
         status: reply.status,

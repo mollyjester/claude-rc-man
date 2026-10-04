@@ -2,6 +2,9 @@ import "@testing-library/jest-dom/vitest";
 import { cleanup, configure, screen } from "@testing-library/react";
 import { afterEach, beforeAll } from "vitest";
 
+import { forgetSending } from "../api";
+import { forgetReports } from "../clientErrors";
+
 // How long a findBy* or waitFor waits. The wait covers the page's own fetches
 // and renders and every query over the whole page, and on a slow or busy
 // machine that takes longer than the library's default; a test that fails
@@ -25,4 +28,10 @@ beforeAll(() => {
   document.body.innerHTML = "";
 });
 
-afterEach(() => cleanup());
+// A report a test left queued, or a sender it left sending, would otherwise
+// send during the next test.
+afterEach(() => {
+  cleanup();
+  forgetReports();
+  forgetSending();
+});

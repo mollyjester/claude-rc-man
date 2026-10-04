@@ -8,12 +8,13 @@ import datetime as dt
 
 from fastapi import FastAPI
 
-from rcman import audit, db, problems, spa
+from rcman import audit, db, journal, problems, spa, unrecognised
 from rcman.helpers_client import AdminRunner, HelperRunner, sudo_admin, sudo_helper
 from rcman.routers import (
     attention,
     audit_log,
     claude,
+    client_errors,
     docs,
     folders,
     git,
@@ -46,7 +47,8 @@ def create_app(
     admin: AdminRunner | None = None,
 ) -> FastAPI:
     settings = settings or Settings()
-    audit.install_logging()
+    for log in (audit.log, client_errors.log, unrecognised.log):
+        journal.install(log)
 
     @contextlib.asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -73,7 +75,9 @@ def create_app(
         swagger_ui_oauth2_redirect_url=None,
     )
     app.state.settings = settings
-    app.state.helper = helper or sudo_helper(settings.helpers_dir)
+    app.state.helper = unrecognised.watched(
+        helper or sudo_helper(settings.helpers_dir), unrecognised.Watch(settings)
+    )
     app.state.admin = admin or sudo_admin(settings.helpers_dir)
     problems.install(app)
 
@@ -81,7 +85,19 @@ def create_app(
     def health() -> dict:
         return {"status": "ok"}
 
-    for module in (me, folders, git, github, servers, claude, users, audit_log, attention, docs):
+    for module in (
+        me,
+        folders,
+        git,
+        github,
+        servers,
+        claude,
+        users,
+        audit_log,
+        attention,
+        docs,
+        client_errors,
+    ):
         app.include_router(module.router)
     spa.install(app, settings.frontend_dir)  # last: it answers every path not matched above
     return app

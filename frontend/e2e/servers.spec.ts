@@ -334,3 +334,26 @@ test("a repository is cloned from GitHub, and a server starts in the clone", asy
   await expect(card).toHaveCount(0);
   await expect(demo.getByRole("button", { name: m.start })).toBeVisible();
 });
+
+test("a refresh that cannot reach rcman says so, goes once rcman answers, and is reported", async ({
+  page,
+  context,
+}) => {
+  await signInAs(page, ALICE);
+  await page.goto("/");
+  await expect(summary(page)).toBeVisible();
+  const reported = page.waitForRequest(
+    (r) => r.method() === "POST" && new URL(r.url()).pathname === "/api/client-errors",
+  );
+  await context.setOffline(true);
+  const alert = page.getByRole("alert").filter({ hasText: m.unreachable });
+  await expect(alert).toBeVisible();
+  await context.setOffline(false);
+  const request = await reported;
+  const report = request.postDataJSON();
+  expect(report).toMatchObject({ kind: "unreachable", method: "GET", path: "/api/servers" });
+  expect(report.count).toBeGreaterThanOrEqual(1);
+  expect((await request.response())?.status()).toBe(200);
+  await expect(alert).toHaveCount(0);
+  await expect(page.getByText(m.unexpectedResponse)).toHaveCount(0);
+});

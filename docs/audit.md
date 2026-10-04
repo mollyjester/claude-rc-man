@@ -5,8 +5,14 @@ Linux user, what they did, to what, and whether it worked. Requests that only
 read are not recorded. Administrators read the trail on the **Audit trail**
 page in rcman, under **Admin** in the navigation, newest first.
 
-Each event is also written to the system journal as one line of JSON, so it
-can be read with `journalctl` on the server.
+Each event is also written to the [system journal](journal.md) as one line of
+JSON, so it can be read with `journalctl` on the server.
+
+The journal also holds two kinds of line that are not in the audit trail: the
+errors people's pages report, and output rcman does not recognise; both are
+described in [The system journal](journal.md). A page sends each report as a
+request of its own, `POST /api/client-errors`, which is not recorded because it
+changes nothing: a page's report of a failure rcman could not see, written to the journal only.
 
 ## What is recorded
 

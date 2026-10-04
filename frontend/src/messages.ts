@@ -2,6 +2,8 @@
 export const m = {
   appName: "rcman",
   unexpectedResponse: "rcman answered in a way the page does not understand.",
+  unreachable: "The page could not reach rcman. Check the connection, then try again.",
+  signedOut: "Your sign-in has ended. Reload the page to sign in again.",
   loading: "Loading…",
   cancel: "Cancel",
   save: "Save",

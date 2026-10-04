@@ -42,8 +42,8 @@ matters, so a suppression at the site is preferred.
 ## Rules it keeps
 
 - **The server validates; the page shows what it said.** `src/api.ts` is the
-  only way to the backend; every failure becomes an `ApiError` carrying the
-  problem details as sent, built by `problemFrom`, which also turns the
+  only way to the backend; every failure the server describes becomes an
+  `ApiError` carrying the problem details as sent, built by `problemFrom`, which also turns the
   problem details an answer reports, as Commit & Push's `push_problem`,
   into one; `src/ProblemView.tsx` shows them — the title,
   each field error, and a raw screen, failed checks, the server a problem is
@@ -56,6 +56,20 @@ matters, so a suppression at the site is preferred.
   checks each error is shown under its input's label.
   Forms are `noValidate` and no input carries a validation attribute;
   `src/forms.test.tsx` checks every form.
+- **Every failure is an `ApiError`, and the page names its own.** `request()`
+  in `src/api.ts` gives a failure that is not the server's problem details one
+  of the page's own codes, each with its message in `src/messages.ts`:
+  `UNREACHABLE` when `fetch` rejects, or when the answer is a 502, 503 or 504
+  that is not JSON — the proxy in front of rcman saying it could not reach it,
+  since rcman's own answers are JSON; `SIGNED_OUT` when the answer is a
+  redirect, which oauth2-proxy sends once the sign-in has ended and rcman's own
+  routes never do, seen as an `opaqueredirect` because every request is sent
+  with `redirect: "manual"`; and `UNEXPECTED_RESPONSE` for an answer that is
+  not JSON, or an error without the server's `code`. A request's body is
+  serialised before the request is sent and outside the `try` around it, so a
+  body that cannot be serialised is a fault in the page, not `UNREACHABLE`.
+  `asApiError` in `src/ProblemView.tsx` turns anything that is not an
+  `ApiError` into `UNEXPECTED_RESPONSE`, and notes it as a `page_error`.
 - **Only what the server allows is offered.** `ACTIONS` in `src/Servers.tsx`
   maps every server state rc-helper reports to the actions it allows; its
   states are kept to the table in [rc-helper.md](rc-helper.md#server-states)
@@ -125,7 +139,7 @@ matters, so a suppression at the site is preferred.
 |---|---|
 | `src/App.tsx` | Who is signed in, the navigation, and the routes |
 | `src/AdminPages.tsx` | `ADMIN`, the administrators' pages by name, which the links in the administrators' warning use, and `ADMIN_PAGES`, the same pages in order, which the navigation's **Admin** menu and the routes are built from |
-| `src/Dashboard.tsx` | The Servers page: the folder tree and its summary beside the selected folder's panel, the selection kept in the address as `?folder=`, the servers refreshed every `POLL_MS`; after a folder is made or cloned, the folder it was made in is fetched again, and the new one selected if the folder it was made in still is, and after one is deleted the folder above it replaces it in the address |
+| `src/Dashboard.tsx` | The Servers page: the folder tree and its summary beside the selected folder's panel, the selection kept in the address as `?folder=`, the servers refreshed every `POLL_MS`; a refresh's failure is shown until a later refresh works, and an answer older than one asked for since is dropped; the Claude account is loaded once, and again after a refresh works when the page did not reach rcman for it (`UNREACHABLE` or `SIGNED_OUT`); its failure and the refresh's are shown once when they are alike, by code and title; after a folder is made or cloned, the folder it was made in is fetched again, and the new one selected if the folder it was made in still is, and after one is deleted the folder above it replaces it in the address |
 | `src/Folders.tsx` | The folder tree, fetched a folder at a time and opened to whatever is selected — `reload` fetches a folder again after a folder is made or deleted in it, and `forget` drops a deleted folder and all below it — each folder's status dot and repository marker, and the summary of every server |
 | `src/FolderPanel.tsx` | A folder's panel: its breadcrumb, its actions (**New folder**, **Clone from GitHub** and **Delete folder**, with its confirmation), its Claude server section and, for a repository, its Changes section; and the Home panel, shown while no folder is selected, with **New folder** and **Clone from GitHub** only. New folder's and Clone from GitHub's forms are one `FolderForm`: a field, a note where the form has one (Clone from GitHub's links to Settings for the token), its submit button, which says the request is running while it runs, when it and Cancel are disabled, and the server's refusal with the form's labels; while its request runs, the header's actions wait too, so no other form can take its place |
 | `src/Changes.tsx` | A repository's Changes section: its branch, the staged and not staged files, with a checkbox for each file that can be selected and Select all, Commit, Push and Commit & Push, and its branches; each change's name is `m.changes`, and `src/git-guide.test.ts` holds the table of changes in `docs/git.md` to it. Only the selected folder's status is fetched, when its panel opens, every `POLL_MS` while it is open and after every action; an answer older than one asked for since is dropped. Its branches are fetched when it opens, after every action and when the current branch changes. What is checked is kept across refreshes, for files still listed. A refusal is shown beside what was tried until any later action there works. New branch is behind a secondary button, so Commit is the section's one primary |
@@ -136,6 +150,31 @@ matters, so a suppression at the site is preferred.
 | `src/People.tsx`, `src/Everyone.tsx`, `src/Audit.tsx`, `src/Versions.tsx` | Administration; `src/Everyone.tsx` shows everyone's servers with no actions |
 | `src/Attention.tsx` | The administrators' warning at the top of every page, from `/api/attention`, fetched on load and on every change of page |
 | `src/Docs.tsx` | The help pages, from `/api/docs` |
+| `src/clientErrors.ts` | The failures noted for rcman, kept until they are sent (see [Reporting failures](#reporting-failures)) |
+
+## Reporting failures
+
+A failure rcman could not see is reported to it, to be written to the journal
+(see [the backend](backend.md#errors-from-the-page) and
+[the journal guide](../docs/journal.md#errors-reported-by-the-page)). Its kinds
+are `UNREACHABLE`, `SIGNED_OUT` and `UNEXPECTED_RESPONSE` from `src/api.ts`,
+and `PAGE_ERROR` from `src/clientErrors.ts`; a problem the server sent is never
+reported. `noteFailure` in `src/clientErrors.ts` writes the original error to
+the browser's console and adds a report to the queue, without the query of the
+request or of the page. Alike failures — the same kind, method, path, status
+and error name — are one report, counted, with the first and the last time;
+the queue holds at most `MAX_QUEUED` reports, leaves out any more, and is in
+memory only, so a reload loses it.
+
+After any request that works, `request()` starts `sendReports`, which sends
+the queue to `POST /api/client-errors` one report at a time; one sender runs at
+a time, and it takes the queue again until it is empty. Its requests are quiet:
+they note no failure of their own and start no sender, so the page never
+reports its reports. A report rcman refuses is dropped; once rcman is not
+reached, or the sign-in has ended, the report and those after it go back in
+the queue for the next request that works. Each is given up after
+`REPORT_TIMEOUT_MS` in `src/api.ts`, so one never answered does not hold up
+the rest. Nothing of this is shown to the person.
 
 ## Tests
 
@@ -143,11 +182,15 @@ matters, so a suppression at the site is preferred.
   Those that render anything render the whole app at a route against
   `src/test/fakeApi.ts`, which
   answers from a table of routes in the backend's problem-details shape and
-  records every call. `renderApp` in `src/test/render.tsx` also returns the
+  records every call; a route answering `UNREACHABLE_REPLY` makes `fetch`
+  reject, as a browser's does, and one answering `SIGNED_OUT_REPLY` answers an
+  opaque redirect, as oauth2-proxy's redirect is seen. `renderApp` in `src/test/render.tsx` also returns the
   router's current location and a `navigate`, whose `navigate(-1)` is the
   browser's back button, and takes `pollMs`, 0 unless a test gives one. `src/test/setup.ts` runs the role queries once
   before each file's first test and sets how long a `findBy*` waits, both
-  so that the suite passes on a loaded machine; its comments say why. The
+  so that the suite passes on a loaded machine; its comments say why. After
+  each test it empties the queue of reports (`forgetReports`) and forgets the
+  sender (`forgetSending`), so that neither sends during the next test. The
   tests that hold a guide in `docs/` to the page read its tables with
   `guideTable` in `src/test/guideTable.ts`, and the tests that read
   `src/styles.css` take its comments out with `uncommented` in
