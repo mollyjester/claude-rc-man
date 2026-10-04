@@ -3893,6 +3893,16 @@ def test_status_says_a_push_has_a_remote_where_it_goes_to_origin_or_an_upstream(
     assert status(env)["push_has_remote"] is True  # to origin, which there is
 
 
+def test_with_no_branch_checked_out_a_push_has_a_remote_only_with_an_origin(env, repo):
+    """No branch is a push to origin too, as a branch with no upstream is; git-push
+    refuses it as detached_head first."""
+    fixture_git(repo, "switch", "-q", "--detach", "HEAD")
+    assert status(env)["push_has_remote"] is True  # positive control: there is an origin
+    fixture_git(repo, "remote", "remove", "origin")
+    assert status(env)["push_has_remote"] is False
+    assert error_code(env, "git-push", "--", REPO_REL) == "detached_head"
+
+
 SESSION_DUMP = """#!/usr/bin/python3
 import json, os
 sid = os.getsid(0)
