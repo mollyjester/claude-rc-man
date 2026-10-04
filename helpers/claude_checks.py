@@ -89,8 +89,20 @@ TIMEOUT = 60.0
 CHECK_EMAIL = "check@example.com"
 
 # run(args, until=None, timeout=..., terminal=True)
-#   -> (exit code, or None if stopped at ``until``; output)
+#   -> (exit code, or None if stopped at ``until`` or at its timeout; output)
 Runner = Callable[..., tuple[int | None, str]]
+
+
+class Ran(tuple):
+    """What a run gives a check: (exit code, output), as a ``Runner`` returns it.
+
+    Through pipes it keeps, for the report only, what the check does not read:
+    ``stdout`` as written even where the program did not exit, and ``stderr``."""
+
+    def __new__(cls, code: int | None, output: str, stdout: str = "", stderr: str = ""):
+        ran = super().__new__(cls, (code, output))
+        ran.stdout, ran.stderr = stdout, stderr
+        return ran
 
 
 def run_in_pty(argv: list[str], env: dict[str, str], cwd: Path, until: str | None, timeout: float):
@@ -134,9 +146,13 @@ def run_in_pty(argv: list[str], env: dict[str, str], cwd: Path, until: str | Non
     return exit_code, strip_terminal(b"".join(chunks).decode(errors="replace"))
 
 
-def run_piped(argv: list[str], env: dict[str, str], cwd: Path, timeout: float):
+def _text(data: str | bytes | None) -> str:
+    return data.decode(errors="replace") if isinstance(data, bytes) else data or ""
+
+
+def run_piped(argv: list[str], env: dict[str, str], cwd: Path, timeout: float) -> Ran:
     """Run ``argv`` with no terminal, as rc-helper runs ``auth status``: stdin empty,
-    stdout read. Output as written."""
+    stdout read. Output as written; none where it does not exit before ``timeout``."""
     try:
         proc = subprocess.run(
             argv,
@@ -147,9 +163,9 @@ def run_piped(argv: list[str], env: dict[str, str], cwd: Path, timeout: float):
             text=True,
             timeout=timeout,
         )
-    except subprocess.TimeoutExpired:
-        return None, ""
-    return proc.returncode, proc.stdout
+    except subprocess.TimeoutExpired as stopped:
+        return Ran(None, "", _text(stopped.stdout), _text(stopped.stderr))
+    return Ran(proc.returncode, proc.stdout, proc.stdout, proc.stderr)
 
 
 def run_command(
@@ -236,18 +252,73 @@ CHECKS: list[tuple[str, Callable[[Runner, str], bool]]] = [
 ]
 
 
+SECRETS = [
+    (rc_helper.LOGIN_URL, "{login_url}"),
+    (re.compile(r"sk-ant-[A-Za-z0-9_-]+"), "{token}"),
+]
+
+
+def redact(text: str) -> str:
+    """``text`` with every sign-in URL and every token replaced by a placeholder."""
+    for pattern, placeholder in SECRETS:
+        text = pattern.sub(placeholder, text)
+    return text
+
+
+def _describe(args: list[str], terminal: bool, ran: tuple) -> str:
+    code, output = ran
+    how = "on a terminal" if terminal else "through pipes"
+    if code is not None:
+        ended = f"exit code {code}"
+    elif terminal:
+        ended = "stopped before it exited"
+    else:
+        ended = "did not exit before its timeout"
+    lines = [f"ran: claude {' '.join(args)} ({how}); {ended}"]
+    if terminal:
+        lines += ["output:", output]
+    else:
+        lines += ["stdout:", getattr(ran, "stdout", output)]
+    stderr = getattr(ran, "stderr", "")
+    if stderr:
+        lines += ["stderr:", stderr]
+    return "\n".join(lines)
+
+
+def _failure(run: Runner, check: Callable[[Runner, str], bool], version: str) -> str | None:
+    """What was run and what came back, where ``check`` fails; None where it passes."""
+    runs: list[str] = []
+
+    def recording(args, until=None, timeout=TIMEOUT, terminal=True):
+        ran = run(args, until=until, timeout=timeout, terminal=terminal)
+        runs.append(_describe(args, terminal, ran))
+        return ran
+
+    try:
+        if check(recording, version):
+            return None
+    except Exception as error:  # noqa: BLE001 - a check that cannot run has failed
+        runs.append(f"raised: {error!r}")
+    return redact("\n".join(runs))
+
+
+def candidate_failures(
+    run: Runner, version: str, on_check: Callable[[str], None] | None = None
+) -> dict[str, str]:
+    """The checks ``version`` fails, each with what was run and what came back, with no
+    sign-in URL or token in it; empty when it passes them all."""
+    failed = {}
+    for name, check in CHECKS:
+        if on_check:
+            on_check(name)
+        detail = _failure(run, check, version)
+        if detail is not None:
+            failed[name] = detail
+    return failed
+
+
 def candidate_checks(
     run: Runner, version: str, on_check: Callable[[str], None] | None = None
 ) -> list[str]:
     """The names of the checks ``version`` fails; empty when it passes them all."""
-    failed = []
-    for name, check in CHECKS:
-        if on_check:
-            on_check(name)
-        try:
-            passed = check(run, version)
-        except Exception:  # noqa: BLE001 - a check that cannot run has failed
-            passed = False
-        if not passed:
-            failed.append(name)
-    return failed
+    return list(candidate_failures(run, version, on_check))
