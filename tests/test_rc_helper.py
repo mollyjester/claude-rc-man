@@ -2557,6 +2557,53 @@ def test_a_remote_with_a_slash_in_its_name_gives_the_name_git_gives(env, repo):
     assert branch_of(repo) == "main"
 
 
+def git_switch_track_refused(repo: Path, remote_branch_name: str) -> bool:
+    """Whether real git refuses git switch --track for the remote branch; one it makes
+    is switched away from and deleted again."""
+    from tests.git_fixtures import FIXTURE_HOME, fixture_env
+
+    proc = subprocess.run(
+        ["git", "switch", "-q", "--track", remote_branch_name],
+        cwd=repo,
+        env=fixture_env(FIXTURE_HOME),
+        capture_output=True,
+    )
+    if proc.returncode == 0:
+        made = branch_of(repo)
+        fixture_git(repo, "switch", "-q", "main")
+        fixture_git(repo, "branch", "-q", "-D", made)
+    return proc.returncode != 0
+
+
+@pytest.mark.parametrize(
+    ("local", "remote", "taken_by"),
+    [
+        ("feature/x", "origin/feature", "feature/x"),  # the new branch would be its folder
+        ("topic", "origin/topic/x", "topic"),  # it would be in the new branch's place
+        ("topic/x/y", "origin/topic/x", "topic/x/y"),
+        ("feature-x", "origin/feature", None),  # positive controls: names beside each other
+        ("feat", "origin/feature", None),
+        ("topic/y", "origin/topic/x", None),
+    ],
+)
+def test_a_local_branch_whose_name_git_cannot_keep_beside_the_new_ones_takes_it(
+    env, repo, local, remote, taken_by
+):
+    """git keeps branches as paths, so a branch cannot be named as a folder of another:
+    feature/x and feature cannot both be. Each case is first checked against git."""
+    push_branch_to_origin(repo, origin_of(repo), "topic/x")
+    fixture_git(repo, "fetch", "-q", "origin")
+    fixture_git(repo, "branch", "--no-track", local, "origin/main")
+    assert git_switch_track_refused(repo, remote) is (taken_by is not None)  # as git does
+    assert remote_branch(env, remote) == {"name": remote, "local": None, "taken_by": taken_by}
+    code, out = helper(env, "git-switch", f"--branch={remote}", "--remote", "--", REPO_REL)
+    if taken_by is None:
+        assert code == 0, out
+    else:
+        assert (code, out["error"]["code"]) == (1, "branch_name_taken"), out
+        assert branch_of(repo) == "main"
+
+
 def test_a_long_list_of_branches_is_capped(env, repo):
     head = fixture_git(repo, "rev-parse", "HEAD").strip()
     lines = "".join(f"create refs/heads/b{i:05} {head}\n" for i in range(h.MAX_LISTED_BRANCHES + 1))
