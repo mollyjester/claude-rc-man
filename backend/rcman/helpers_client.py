@@ -83,6 +83,7 @@ HELPER_STATUS = {
     "branch_invalid": 400,
     "branch_name_invalid": 400,
     "branch_not_found": 404,
+    "branch_name_taken": 409,
     "token_invalid": 400,
     "detached_head": 409,
     "github_token_not_set": 409,

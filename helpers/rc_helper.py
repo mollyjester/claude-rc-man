@@ -139,6 +139,10 @@ MESSAGES = {
     "nothing_staged": "Nothing is staged, so there is nothing to commit.",
     "branch_invalid": "git does not take that as a branch name.",
     "branch_not_found": "There is no such branch.",
+    "branch_name_taken": (
+        "A local branch already has the name a branch tracking this one would get, "
+        "so git cannot make it. Switch to that local branch instead."
+    ),
     "detached_head": (
         "You are not on a branch, so there is nothing to push. Switch to a branch first."
     ),
@@ -985,6 +989,13 @@ def _file(change: git_run.Change) -> dict:
     return listed
 
 
+def tracking_name(remote_branch: str) -> str:
+    """The local branch git switch --track makes for a remote-tracking branch, by its
+    short name: what follows the first slash, whatever the remote is called, as git
+    takes it - a/b/feature, of the remote a/b, makes b/feature."""
+    return remote_branch.partition("/")[2]
+
+
 def _short(ref: str | None) -> str | None:
     """A branch's full name without refs/heads/ or refs/remotes/."""
     if ref is None:
@@ -1751,15 +1762,23 @@ class Helper:
         remote = _Capped(MAX_LISTED_BRANCHES, "branches")
         tracking: dict[str, str] = {}  # a remote branch's full name -> a local branch on it
         remotes = []
+        names = set()  # every local branch, those beyond the cap too
         for ref in self._branches(repo, deadline):
             if ref.remote:
                 remotes.append(ref.name)
                 continue
+            names.add(ref.name)
             local.add({"name": ref.name, "current": ref.current, "upstream": _short(ref.upstream)})
             if ref.upstream and ref.upstream.startswith("refs/remotes/"):
                 tracking.setdefault(ref.upstream, ref.name)
         for name in remotes:
-            remote.add({"name": name, "local": tracking.get(f"refs/remotes/{name}")})
+            remote.add(
+                {
+                    "name": name,
+                    "local": tracking.get(f"refs/remotes/{name}"),
+                    "taken_by": tracking_name(name) if tracking_name(name) in names else None,
+                }
+            )
         return {"path": rel, "local": local.answer(), "remote": remote.answer()}
 
     @git_verb()
@@ -1811,11 +1830,15 @@ class Helper:
 
     @git_verb()
     def git_switch(self, deadline: float, rel: str, branch: str, remote: bool) -> dict:
-        """Switch to a local branch, or make a local branch tracking a remote one."""
+        """Switch to a local branch, or make a local branch tracking a remote one, which
+        is refused before git is asked when a local branch has the name it would get."""
         check_branch_name(branch)
         repo, rel = self._repository(rel, deadline)
-        if not any(r.remote is remote and r.name == branch for r in self._branches(repo, deadline)):
+        refs = list(self._branches(repo, deadline))
+        if not any(r.remote is remote and r.name == branch for r in refs):
             raise HelperError("branch_not_found")
+        if remote and any(not r.remote and r.name == tracking_name(branch) for r in refs):
+            raise HelperError("branch_name_taken")
         args = ["switch", "--track", branch] if remote else ["switch", branch]
         self._git(repo, args, deadline)
         return {"path": rel, "branch": self._current(repo, deadline)}

@@ -40,7 +40,10 @@ type CommitPushed = {
 };
 type Branches = {
   local: { branches: { name: string; current: boolean; upstream: string | null }[]; more: number };
-  remote: { branches: { name: string; local: string | null }[]; more: number };
+  remote: {
+    branches: { name: string; local: string | null; taken_by: string | null }[];
+    more: number;
+  };
 };
 type Action =
   | "status"
@@ -465,13 +468,17 @@ export function Changes({ path, pollMs }: { path: string; pollMs: number }) {
             {branches.remote.branches.map((b) => (
               <li key={b.name}>
                 <span className="branch-name">{b.name}</span>
-                {b.local !== null && (
+                {b.local !== null ? (
                   <>
                     {" "}
                     <span>{m.trackedBy(b.local)}</span>
                   </>
-                )}
-                {b.local === null && (
+                ) : b.taken_by !== null ? (
+                  <>
+                    {" "}
+                    <span>{m.nameTakenBy(b.taken_by)}</span>
+                  </>
+                ) : (
                   <>
                     {" "}
                     <button

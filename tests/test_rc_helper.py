@@ -2512,9 +2512,7 @@ def remote_branch(env, name: str) -> dict:
     return next(b for b in listed if b["name"] == name)
 
 
-def test_a_remote_branch_whose_name_a_local_branch_has_says_which_and_is_not_switched_to(
-    env, repo
-):
+def test_a_remote_branch_whose_name_a_local_branch_has_says_which_and_is_not_switched_to(env, repo):
     """git switch --track would make a local branch of the remote branch's name, and
     git refuses when one has it already, tracking something else."""
     assert remote_branch(env, "origin/feature") == {

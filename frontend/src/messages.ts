@@ -275,6 +275,7 @@ export const m = {
   currentBranch: "(current)",
   tracks: (upstream: string) => `→ ${upstream}`,
   trackedBy: (local: string) => `tracked by ${local}`,
+  nameTakenBy: (local: string) => `its name is taken by ${local}`,
   newBranch: "New branch",
   switchTo: (name: string) => `Switch to ${name}`,
   newBranchName: "New branch from here",
