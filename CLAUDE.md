@@ -33,6 +33,7 @@ The `make` targets, from `make setup` to `make check`, and what each does:
 | Installing and upgrading, for administrators | [docs/installation.md](docs/installation.md) |
 | Settings, for administrators | [docs/configuration.md](docs/configuration.md) |
 | The audit trail and its retention, for administrators | [docs/audit.md](docs/audit.md) |
+| What rcman writes to the system journal, and how to read it, for administrators | [docs/journal.md](docs/journal.md) |
 | Connecting a Claude account, for colleagues | [docs/claude-account.md](docs/claude-account.md) |
 | Changes, commits, branches, pushing and the GitHub token, for colleagues | [docs/git.md](docs/git.md) |
 | A colleague's own settings, for colleagues | [docs/settings.md](docs/settings.md) |

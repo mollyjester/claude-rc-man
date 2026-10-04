@@ -1,4 +1,5 @@
-import { ApiError } from "./api";
+import { ApiError, UNEXPECTED_RESPONSE } from "./api";
+import { noteFailure, PAGE_ERROR } from "./clientErrors";
 import { m } from "./messages";
 
 // Shows an error exactly as the server described it. A form passes its labels,
@@ -72,8 +73,10 @@ export function ProblemView({
   );
 }
 
+// A failure as an ApiError. Anything else is a fault in the page, which is
+// reported (clientErrors.ts) and shown as an answer the page does not understand.
 export function asApiError(error: unknown): ApiError {
-  return error instanceof ApiError
-    ? error
-    : new ApiError(0, "unexpected_response", m.unexpectedResponse);
+  if (error instanceof ApiError) return error;
+  noteFailure({ kind: PAGE_ERROR, cause: error });
+  return new ApiError(0, UNEXPECTED_RESPONSE, m.unexpectedResponse);
 }

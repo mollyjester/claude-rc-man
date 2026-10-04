@@ -67,6 +67,15 @@ again closes it; its arrow turns to say which.
 The page refreshes the states by itself. When rcman refuses an action, the
 reason it gave is shown on the server it was about.
 
+When a refresh cannot reach rcman — the connection has dropped, or rcman is
+restarting — the page says it could not reach rcman, and when your sign-in has
+ended it says to reload the page to sign in again. Either stays until a later
+refresh works, and until then the page shows the states as they last were. If
+your Claude account could not be shown for the same reason, the page tries it
+again once a refresh works. The page reports these failures to rcman once it
+reaches it again, so that administrators can see them in the
+[system journal](journal.md).
+
 ## Folders
 
 **New folder** makes a folder inside the selected folder. While no folder is
@@ -201,4 +210,6 @@ screen itself; the person whose server it is sees it with **Show screen**.
 Each action that ends on such a screen is also recorded in the
 [audit trail](audit.md) with the result `unrecognised_screen`. The warning is
 worked out afresh each time a page is opened, so it lasts only while the
-server shows that screen.
+server shows that screen. When a server comes onto such a screen, rcman also
+writes it once to the [system journal](journal.md), with the person and the
+folder, and never the screen itself.

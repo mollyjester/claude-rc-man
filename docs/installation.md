@@ -125,6 +125,19 @@ signed in, sends people who are not to the Google sign-in, and passes the
 signed-in address to rcman through the socket. It also removes any address a
 browser sends itself, so only oauth2-proxy can tell rcman who someone is.
 
+The site block also has Caddy log every request, the polls included, to
+`/var/log/caddy/rcman-access.log`: one JSON line each, with the address, the
+browser, the path and the status, and with cookies left out. Caddy rotates the
+file itself and deletes a rotated file once there are too many of them or it is
+too old; the limits are the `roll_` settings in
+[`installer/templates/Caddyfile`](../installer/templates/Caddyfile). Caddy's
+account must be able to write to `/var/log/caddy`, as it can when Caddy comes
+from its Ubuntu package. Do not check the Caddyfile with `sudo caddy validate`:
+run as root, it creates the log file as root's, and Caddy then cannot open it
+and does not start. Run it as Caddy's account (`sudo -u caddy caddy validate
+--config /etc/caddy/Caddyfile`), or give the file back to that account with
+`chown` if root already made it.
+
 The installer says when Caddy needs something from you, at the end of its
 output:
 

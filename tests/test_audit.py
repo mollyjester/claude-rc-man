@@ -38,12 +38,35 @@ def test_every_changing_route_is_audited_or_exempt_with_a_reason(app):
     assert unaccounted == []
 
 
+def exemption_problems(present, exempt, guide) -> list[str]:
+    """Exemptions whose route is gone, and those whose reason the guide does not give."""
+    stale = [f"{key}: no such route" for key in exempt if key not in present]
+    undocumented = [
+        f"{key}: reason not in the guide" for key, r in exempt.items() if r not in guide
+    ]
+    return stale + undocumented
+
+
 def test_exemptions_are_stale_checked_and_documented(app):
     present = {(r.path, *sorted(r.methods)) for r in changing_routes(app)}
-    assert set(audit.EXEMPT) <= present
+    assert audit.EXEMPT  # non-vacuity
     guide = (REPO / "docs" / "audit.md").read_text(encoding="utf-8")
-    for reason in audit.EXEMPT.values():
-        assert reason in guide
+    assert exemption_problems(present, audit.EXEMPT, guide) == []
+
+
+def test_the_exemption_check_fails_on_a_stale_or_undocumented_exemption():
+    """Planted twin: an exemption for a route that is gone, or with a reason the guide
+    does not give, is caught."""
+    present = {("/api/planted", "POST")}
+    exempt = {("/api/planted", "POST"): "planted reason"}
+    guide = "The guide gives the planted reason."
+    assert exemption_problems(present, exempt, guide) == []
+    gone = {**exempt, ("/api/gone", "POST"): "planted reason"}
+    assert exemption_problems(present, gone, guide) == ["('/api/gone', 'POST'): no such route"]
+    unsaid = {("/api/planted", "POST"): "a reason the guide does not give"}
+    assert exemption_problems(present, unsaid, guide) == [
+        "('/api/planted', 'POST'): reason not in the guide"
+    ]
 
 
 def test_every_action_is_listed_in_the_guide(app):
@@ -97,7 +120,9 @@ def test_a_route_without_a_recorder_is_detected():
 
 
 def test_driving_every_audited_route_writes_its_row(app, client, settings, admin_runner):
-    calls = {k: v for k, v in CALLS.items() if k[0] in CHANGING}
+    calls = {
+        k: v for k, v in CALLS.items() if k[0] in CHANGING and (k[1], k[0]) not in audit.EXEMPT
+    }
     audited = {
         (sorted(r.methods)[0], r.path): audit.action_of(r.route)
         for r in changing_routes(app)
@@ -293,8 +318,10 @@ def _request(port, sock, method, path, body=None, headers=None):
         conn.close()
 
 
-def test_audit_events_reach_the_service_output(tmp_path, settings):
-    """Started as the unit starts it, an audit event is a line on the service's own output."""
+def service_output(tmp_path, settings, method, path, body, headers) -> list[str]:
+    """The lines the service writes, started as the unit starts it, around one request.
+
+    The request is sent once the service answers, and must succeed."""
     import json
     import os
     import socket
@@ -330,10 +357,10 @@ def test_audit_events_reach_the_service_output(tmp_path, settings):
         status, text = _request(
             port,
             sock,
-            "PATCH",
-            "/api/me/settings",
-            body=json.dumps({"prefix": "pfx"}),
-            headers={**changing(BOB), "Content-Type": "application/json"},
+            method,
+            path,
+            body=json.dumps(body),
+            headers={**headers, "Content-Type": "application/json"},
         )
         assert status == 200, text
     finally:
@@ -341,14 +368,30 @@ def test_audit_events_reach_the_service_output(tmp_path, settings):
         proc.wait(timeout=10)
     lines = output.read_text().splitlines()
     assert any("Uvicorn running" in line for line in lines), lines  # positive control
+    return lines
+
+
+def json_events(lines: list[str]) -> list[dict]:
+    """The lines that are each one JSON object, as those objects."""
+    import json
+
     events = []
     for line in lines:
         try:
             event = json.loads(line)
         except ValueError:
             continue
-        if isinstance(event, dict) and event.get("action") == "settings.update":
+        if isinstance(event, dict):
             events.append(event)
+    return events
+
+
+def test_audit_events_reach_the_service_output(tmp_path, settings):
+    """Started as the unit starts it, an audit event is a line on the service's own output."""
+    lines = service_output(
+        tmp_path, settings, "PATCH", "/api/me/settings", {"prefix": "pfx"}, changing(BOB)
+    )
+    events = [e for e in json_events(lines) if e.get("action") == "settings.update"]
     assert len(events) == 1, lines
     assert events[0]["email"] == BOB and events[0]["result"] == "ok"
 

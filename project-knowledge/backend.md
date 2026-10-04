@@ -19,13 +19,16 @@ the OpenAPI description it serves at `/api/openapi.json`, browsable at
 | `identity.py` | Who is asking, and whether they may |
 | `problems.py` | RFC 9457 problem details for every error |
 | `audit.py` | The audit trail: recording, coverage, retention |
+| `journal.py` | `install(log)`: sends a logger's events to standard error, one bare line each, which systemd sends to the journal |
+| `unrecognised.py` | The watch on every rc-helper answer that writes output rcman does not recognise to the journal (see [Output rcman does not recognise](#output-rcman-does-not-recognise)) |
 | `helpers_client.py` | Calling `rc-helper` and `rc-admin`, and mapping their errors to HTTP statuses |
 | `everyone.py` | Everyone's servers, for administrators: one `rc-helper list` per person, side by side |
 | `spa.py` | Serving the built frontend: its files, and `index.html` for every other path not under `/api`; installed after every router |
 | `routes.py` | The app's routes as FastAPI resolves them after including routers, and which of them are for administrators |
-| `routers/` | One module per area: `me`, `folders`, `git`, `github`, `servers`, `claude`, `users`, `audit_log`, `attention`, `docs` |
+| `routers/` | One module per area: `me`, `folders`, `git`, `github`, `servers`, `claude`, `users`, `audit_log`, `attention`, `docs`, `client_errors` |
 | `routers/git.py` | The git repositories in the person's home, under `/api/git`: status, branches, stage, unstage, commit, switch, a new branch, fetch, push and clone, each one rc-helper git verb, and Commit & Push (see [Git](#git)) |
 | `routers/github.py` | The person's GitHub token, under `/api/github`: whether one is stored, storing one, and removing it (see [GitHub token](#github-token)) |
+| `routers/client_errors.py` | A page's reports of failures rcman could not see, `POST /api/client-errors`, written to the journal (see [Errors from the page](#errors-from-the-page)) |
 | `routers/me.py` | Each person's own settings, changed with `PATCH /api/me/settings`, which changes only the settings sent; `prefix_of` and `author_of` are how the rest of the backend reads them |
 
 ## Requests
@@ -88,7 +91,10 @@ the OpenAPI description it serves at `/api/openapi.json`, browsable at
 production they are `sudo_helper` — `sudo -n -u <linux-user> rc-helper ...` —
 and `sudo_admin` — `sudo -n rc-admin ...`. Positional values — paths, user names, addresses, versions — are passed after
 `--`, and option values as `--option=value`, so nothing a person sends can be
-read as an option.
+read as an option. `app.state.helper`, the runner every route calls
+`rc-helper` through, is the one given wrapped by `unrecognised.watched`, which
+shows each answer to the watch before returning it (see
+[Output rcman does not recognise](#output-rcman-does-not-recognise)).
 
 A call that outlasts its timeout — `HELPER_TIMEOUT` and `ADMIN_TIMEOUT` in
 `helpers_client.py` unless the caller passes one to `call_helper` or
@@ -204,9 +210,11 @@ of `ok`.
 A route that changes something depends on `Recorder("<action>")`, which writes
 one row when the request finishes, with `ok` or the error code, and logs the
 same event as a JSON line on the `rcman.audit` logger. uvicorn configures only
-its own loggers, so `create_app` calls `audit.install_logging()`, which gives
-that logger one handler writing the bare line to standard error; systemd sends
-it to the journal. `tests/test_audit.py` starts the app with the unit's own
+its own loggers, so `create_app` calls `journal.install` on each logger whose
+events go to the journal — `rcman.audit`, `rcman.client` and
+`rcman.unrecognised` — which gives it one handler writing the bare line to
+standard error; systemd sends it to the journal. `tests/test_journal.py` checks
+that the app installs each of them. `tests/test_audit.py` starts the app with the unit's own
 `ExecStart` and reads the line from its output. It also finds every changing
 route in the route table and fails on any that neither records nor is listed
 in `audit.EXEMPT` with a reason that also appears in
@@ -218,6 +226,62 @@ aborts any `UPDATE`, so rows are only added, and deleted only by retention
 (see [the audit guide](../docs/audit.md#how-long-events-are-kept)), which
 `create_app`'s lifespan runs as the app starts and every
 `RETENTION_INTERVAL_SECONDS` after.
+
+## Errors from the page
+
+`routers/client_errors.py` takes the page's reports of failures rcman could not
+see (see [the frontend](frontend.md#reporting-failures)) at
+`POST /api/client-errors` and writes each as one JSON line on the
+`rcman.client` logger — `"event": "client_error"`, `at`, the sender's `email`
+and `linux`, then the report's fields — and nothing else: it keeps nothing and
+is in `audit.EXEMPT`. [The journal guide](../docs/journal.md#errors-reported-by-the-page)
+lists every field, and `tests/test_client_errors.py` holds its table to
+`ClientErrorBody` and the fields the route adds.
+
+Each text field is `Clipped`: text of any length is cut to its bound —
+`SHORT_CHARS`, `PATH_CHARS` or `MESSAGE_CHARS` in the module — rather than
+refused, since a page that is failing cannot do anything about a refusal, and
+the field's published description says what it is cut to. Text holding half
+of a character, a lone surrogate, is refused as every other field refuses it
+(`string_unicode`). Numbers are bounded by `JS_MAX_SAFE`, the largest whole
+number the page holds exactly. A field the model does not name is ignored and
+not logged. A message is written by `json.dumps`, so no text in a report can
+add a line or a field.
+
+Anyone signed in can write to the journal this way, so what one request can
+write is bounded: every field is bounded, the request needs a signed-in person
+in the users file and the public `Origin`, like every changing request, and
+each line names who sent it. There is no throttle per person; journald's own
+rate limit and size limits bound the rest.
+
+## Output rcman does not recognise
+
+`unrecognised.py` writes one JSON line on the `rcman.unrecognised` logger —
+`"event": "unrecognised"`, `at`, `email` (from the users file, `null` when the
+person is not in it), `linux`, `code`, `verb`, `path`, `lines` and
+`fingerprint` — when something enters a state rcman does not recognise.
+`watched` wraps the helper runner, and its `Watch`, one per app, is shown every
+answer. A `list` is all of a person's servers, so it replaces what is
+remembered for them; a server in another answer is noted on its own. A server
+seen in state `unrecognised` that was not remembered as such is written, as
+`server_unrecognised`; a call — person, verb and the folder after `--` —
+failing with a code in `UNRECOGNISED_OUTPUT` is written once per code, and
+forgotten when the same call succeeds. `failing` is bounded by
+`MAX_REMEMBERED`: past it, every remembered call is forgotten, so a long-lived
+failure may be written again. What is remembered is in the process, so the
+watch assumes rcman runs as one process, and starts empty after a restart.
+Answers are noted in the order their calls end, so an older `list` landing
+after a newer one can, at worst, repeat a line.
+
+A line never holds the screen, git's output, stdin or any argument but the
+verb and the folder: `lines` counts the output and `fingerprint` is the first
+`FINGERPRINT_CHARS` hexadecimal characters of the SHA-256 of its lines, each
+without its trailing spaces. `observe` never raises: a fault in it is logged
+with its traceback and the request goes on. The audit row's
+`unrecognised_screen` result (see [Attention](#attention)) is separate from
+this. [The journal guide](../docs/journal.md#output-rcman-does-not-recognise)
+lists every field, and `tests/test_unrecognised.py` holds its table to a line
+the watch writes.
 
 ## Tests
 

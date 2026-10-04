@@ -30,5 +30,8 @@ When Claude Code does not say when a sign-in expires, rcman shows no date.
 
 If Claude shows a sign-in screen rcman does not recognise, rcman shows it to
 you as it is, and the attempt appears in the audit trail for administrators.
+Whenever Claude answers about your account in a way rcman does not recognise,
+rcman also writes that to the [system journal](journal.md) for administrators,
+without what Claude showed.
 
 You can also change the prefix of your sessions' names in [Settings](settings.md).

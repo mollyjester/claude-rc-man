@@ -2,8 +2,8 @@
 
 A route is audited by depending on :class:`Recorder`, which writes the row
 when the request finishes — ``ok`` or the error code it failed with — and logs
-the same event as a JSON line on standard error. ``tests/test_audit.py`` holds every changing
-route to it.
+the same event as a JSON line on standard error (``journal.install``).
+``tests/test_audit.py`` holds every changing route to it.
 """
 
 from __future__ import annotations
@@ -12,7 +12,6 @@ import datetime as dt
 import json
 import logging
 import sqlite3
-import sys
 from dataclasses import dataclass, field
 
 from fastapi import Depends, Request
@@ -26,20 +25,14 @@ log = logging.getLogger("rcman.audit")
 log.setLevel(logging.INFO)
 
 
-def install_logging() -> None:
-    """Send audit events to standard error, one JSON line each, which systemd sends to the journal.
-
-    uvicorn configures only its own loggers, so without this the events go nowhere.
-    """
-    if not log.handlers:
-        handler = logging.StreamHandler(sys.stderr)
-        handler.setFormatter(logging.Formatter("%(message)s"))
-        log.addHandler(handler)
-
-
 # (path, method): reason. A changing route listed here records nothing; its
 # reason also appears in docs/audit.md.
-EXEMPT: dict[tuple[str, ...], str] = {}
+EXEMPT: dict[tuple[str, ...], str] = {
+    ("/api/client-errors", "POST"): (
+        "changes nothing: a page's report of a failure rcman could not see, "
+        "written to the journal only"
+    ),
+}
 
 # The results an event can have besides the code of the error the request failed
 # with; docs/audit.md lists each.

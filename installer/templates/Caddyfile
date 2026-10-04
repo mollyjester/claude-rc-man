@@ -1,4 +1,13 @@
 @DOMAIN@ {
+	# Each request, in Caddy's own log file, rotated: Caddy deletes a rolled file
+	# once there are more than roll_keep of them or it is older than roll_keep_for.
+	log {
+		output file /var/log/caddy/rcman-access.log {
+			roll_size 50MiB
+			roll_keep 10
+			roll_keep_for 720h
+		}
+	}
 	# oauth2-proxy's own pages: sign-in, callback, sign-out.
 	handle /oauth2/* {
 		reverse_proxy 127.0.0.1:@PROXY_PORT@
