@@ -83,9 +83,11 @@ in a terminal, and a hook that refuses stops the commit with its own words.
 
 **Commit & Push**, beside **Commit**, commits and then pushes, as
 [Push](#push) below does. It is offered with Commit wherever a push can be
-tried: while you are on a branch and, for a push to GitHub, while a
+tried: while you are on a branch that has somewhere to push to, as
+[Push](#push) says, and, for a push to GitHub, while a
 [GitHub token](#github-token) is stored — even where **Push** itself is not
-offered because there is nothing to push yet. If a push becomes impossible
+offered because there is nothing to push yet, on a branch with no commit
+yet among them, whose first commit it makes. If a push becomes impossible
 before it is tried — the token has gone meanwhile, say — nothing is
 committed. When the commit is made and the push then
 fails, the section says both: the commit made, and what stopped the push.
@@ -130,8 +132,15 @@ track it there, as `git push -u origin HEAD` does; one that does is pushed
 as `git push` pushes it, so your own git configuration decides where. Push
 is not offered while the branch it pushes to — where git says your push
 goes, or else the branch it tracks — already has every commit of yours.
-While you are not on a branch there is nothing to push, and the section says
-so.
+The section says why instead of offering it:
+
+- while you are not on a branch, since there is nothing to push;
+- on a branch that tracks no remote branch, in a repository with no remote
+  named `origin`, since there is nowhere to push it; Commit & Push is not
+  offered either. Add the remote in a terminal (`git remote add origin
+  <address>`);
+- on a branch with no commit yet, since there is nothing to push; Commit &
+  Push makes the first commit and pushes it.
 
 A push to GitHub — to a remote whose address begins with
 `https://github.com/` — needs your [GitHub token](#github-token); until one

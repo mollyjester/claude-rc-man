@@ -157,7 +157,9 @@ as `git_failed` with git's own words as `git`.
 once as `git.commit_push`, takes the commit's message and, in this order,
 refuses with `author_not_set` without asking the helper; runs
 `git-push --check`, so that a push refused before it is tried —
-`detached_head`, or `github_token_not_set` — commits nothing; runs
+`detached_head`, `no_push_remote` or `github_token_not_set` — commits
+nothing, while a branch with no commit yet passes, its first commit about
+to be made; runs
 `git-commit`, whose refusal is the request's; and runs `git-push`. It
 answers 200 with the `path`, the `commit`, and `push`, `git-push`'s answer,
 or `null` and `push_problem`, the push's problem details as a failed

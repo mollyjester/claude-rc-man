@@ -73,13 +73,15 @@ matters, so a suppression at the site is preferred.
   sentence saying what to do. The Changes section is shown only for a
   folder the tree lists as a repository; Commit is offered only with
   something staged and a commit author name set, and otherwise the section
-  says why; a push can be tried on a branch, and, when the status says it
+  says why; a push can be tried on a branch that, as the status says, has
+  a remote to push to (`push_has_remote`), and, when the status says it
   goes to GitHub (`push_to_github`), only while the same status says a
   token is stored (`github_token`), so a token git forgot after GitHub
   refused it withdraws it at the next refresh; otherwise the section says
   why, linking to Settings for the token; Push is offered where a push can
-  be tried and where the branch pushes lacks a commit of it or is unknown
-  (`push_ahead`), and Commit &
+  be tried, the branch has a commit (`branch.commit`), which the section
+  otherwise says it lacks, and where the branch pushes lacks a commit of
+  it or is unknown (`push_ahead`), and Commit &
   Push where a push can be tried and Commit is offered; Switch is offered for a local branch other than the current one
   and for a remote branch no local branch tracks and whose name no local
   branch has (`taken_by`), which it says otherwise; Stage selected and

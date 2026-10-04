@@ -146,6 +146,11 @@ MESSAGES = {
     "detached_head": (
         "You are not on a branch, so there is nothing to push. Switch to a branch first."
     ),
+    "no_push_remote": (
+        "This branch tracks no remote branch, and the repository has no remote named "
+        "origin to push it to."
+    ),
+    "no_commits_yet": "This branch has no commits yet, so there is nothing to push.",
     "github_token_not_set": "Add a GitHub token in Settings before pushing to GitHub.",
     "clone_unsafe": (
         "A clone that fails could not be removed safely on this system, so rcman does not clone."
@@ -1730,7 +1735,7 @@ class Helper:
         merge_head = self._git(
             repo, ["rev-parse", "--path-format=absolute", "--git-path", "MERGE_HEAD"], deadline
         ).rstrip("\n")
-        remote = self._push_target(repo, branch.name, deadline)[1]
+        upstream, remote = self._push_target(repo, branch.name, deadline)
         to_github = self._to_github(repo, remote, deadline)
         return {
             "path": rel,
@@ -1740,6 +1745,7 @@ class Helper:
             "merging": Path(merge_head).exists(),
             "staged": lists[True].answer(),
             "not_staged": lists[False].answer(),
+            "push_has_remote": self._has_remote(repo, upstream, deadline),
             "push_to_github": to_github,
             "github_token": self._token_stored(deadline) if to_github else None,
             "push_ahead": self._push_ahead(repo, branch, deadline),
@@ -1883,33 +1889,52 @@ class Helper:
                 return (upstream, remote or PUSH_REMOTE) if upstream else (None, PUSH_REMOTE)
         return None, PUSH_REMOTE
 
-    def _to_github(self, repo: Path, remote: str, deadline: float) -> bool:
-        """Whether a push to ``remote`` goes to GitHub: its push URL, as git rewrites it
-        with the person's configuration and the test hook, is under Config.github. A
-        remote git does not know is no push to GitHub; git says so when it is pushed to."""
+    def _push_url(self, repo: Path, remote: str, deadline: float) -> str | None:
+        """The URL a push to ``remote`` goes to, as git rewrites it with the person's
+        configuration and the test hook; None for a remote git does not know."""
         try:
             url = self._git(repo, ["remote", "get-url", "--push", "--", remote], deadline)
         except git_run.GitFailed:
-            return False
-        return url.strip().startswith(self.cfg.github)
+            return None
+        return url.strip()
+
+    def _to_github(self, repo: Path, remote: str, deadline: float) -> bool:
+        """Whether a push to ``remote`` goes to GitHub: its push URL is under
+        Config.github. A remote git does not know is no push to GitHub."""
+        url = self._push_url(repo, remote, deadline)
+        return url is not None and url.startswith(self.cfg.github)
+
+    def _has_remote(self, repo: Path, upstream: str | None, deadline: float) -> bool:
+        """Whether a push has a remote to go to: one with an upstream goes where git
+        push sends it; one without, as git push -u PUSH_REMOTE HEAD, only if git knows
+        a remote of that name."""
+        return upstream is not None or self._push_url(repo, PUSH_REMOTE, deadline) is not None
 
     @git_verb(timeout="GIT_NETWORK_TIMEOUT")
     def git_push(self, deadline: float, rel: str, check: bool) -> dict:
         """Push the current branch: one with no upstream as git push -u origin HEAD, and
         otherwise as git push, as the person's push.default says.
 
-        Refused while HEAD is detached, and for a push to GitHub without a token, before
-        git is asked to push. With ``check``, only those are checked.
+        Refused while HEAD is detached, with no remote to push to, for a push to GitHub
+        without a token, and before the branch's first commit, before git is asked to
+        push. With ``check``, only the first three are checked: Commit & Push's commit
+        makes a first commit.
         """
         repo, rel = self._repository(rel, deadline)
         branch = self._current(repo, deadline)
         if branch is None:
             raise HelperError("detached_head")
         upstream, remote = self._push_target(repo, branch, deadline)
+        if not self._has_remote(repo, upstream, deadline):
+            raise HelperError("no_push_remote")
         if self._to_github(repo, remote, deadline) and not self._token_stored(deadline):
             raise HelperError("github_token_not_set")
         if check:
             return {"path": rel, "branch": branch}
+        try:
+            self._git(repo, ["rev-parse", "--verify", "-q", "HEAD"], deadline)
+        except git_run.GitFailed:
+            raise HelperError("no_commits_yet") from None
         args = ["push"] if upstream else ["push", "-u", PUSH_REMOTE, "HEAD"]
         self._git(repo, args, deadline)
         return {

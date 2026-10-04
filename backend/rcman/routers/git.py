@@ -165,7 +165,9 @@ def push(
 ) -> dict:
     """Push the current branch; one with no upstream is pushed to origin and set to track it.
 
-    Refused while no branch is checked out, and for a push to GitHub until a token is stored.
+    Refused while no branch is checked out, for a branch with no upstream in a repository
+    with no origin, for a push to GitHub until a token is stored, and before the branch's
+    first commit.
     """
     record.target = body.path
     return _git(request, record.identity, "git-push", body.path, timeout=NETWORK_TIMEOUT)
@@ -178,7 +180,8 @@ def commit_push(
     """Commit what is staged, then push it.
 
     Nothing is committed when the push would be refused before it was tried: no
-    branch checked out, or a push to GitHub with no token. When the commit is made
+    branch checked out, nowhere to push, or a push to GitHub with no token. A branch
+    with no commit yet is committed to and pushed. When the commit is made
     and the push fails, the answer is the commit and the push's problem, and the
     audit row says committed_not_pushed.
     """
