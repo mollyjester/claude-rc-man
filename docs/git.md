@@ -107,10 +107,12 @@ that tracks it. **Switch to** a local branch checks it out. A remote branch
 with no local branch tracking it can be switched to as well: that makes a
 local branch tracking it, named as `git switch --track` names it, by what
 follows the first `/` of the remote branch's name: `origin/feature` makes
-`feature`. Where a local branch has that name already, tracking something
-else, git cannot make another, so the remote branch is not offered for
-switching and says which local branch has its name; switch to that one,
-or rename it in a terminal.
+`feature`. Where a local branch, tracking something else, has that name
+already, or a name git cannot keep beside it — git keeps branch names as
+paths, so `feature` and `feature/x` cannot both be branches — git cannot
+make the new one, so the remote branch is not offered for switching and
+says which local branch takes its name; switch to that one, or rename it
+in a terminal.
 **New branch** asks for a name and makes a branch of that name at the
 current commit, then switches to it; git says which names it takes.
 

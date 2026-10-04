@@ -84,7 +84,7 @@ matters, so a suppression at the site is preferred.
   it or is unknown (`push_ahead`), and Commit &
   Push where a push can be tried and Commit is offered; Switch is offered for a local branch other than the current one
   and for a remote branch no local branch tracks and whose name no local
-  branch has (`taken_by`), which it says otherwise; Stage selected and
+  branch takes (`taken_by`), which it says otherwise; Stage selected and
   Unstage selected are enabled only while something is checked. git's own refusals, which
   rcman cannot know in advance, are shown as git gave them. Clone from
   GitHub is always offered, since a public repository needs no token; a

@@ -35,7 +35,7 @@ import stat
 import subprocess
 import sys
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -140,8 +140,8 @@ MESSAGES = {
     "branch_invalid": "git does not take that as a branch name.",
     "branch_not_found": "There is no such branch.",
     "branch_name_taken": (
-        "A local branch already has the name a branch tracking this one would get, "
-        "so git cannot make it. Switch to that local branch instead."
+        "A local branch has the name a branch tracking this one would get, or a name "
+        "git cannot keep beside it, so git cannot make it."
     ),
     "detached_head": (
         "You are not on a branch, so there is nothing to push. Switch to a branch first."
@@ -1001,6 +1001,18 @@ def tracking_name(remote_branch: str) -> str:
     return remote_branch.partition("/")[2]
 
 
+def blocking_branch(name: str, local: Iterable[str]) -> str | None:
+    """The local branch that keeps git from making the branch ``name``, or None: one of
+    that name, or, as git keeps branches as paths, one in a folder of that name
+    (feature/x for feature) or whose name is a folder of it (topic for topic/x). The
+    same name first, then the first in order."""
+    names = set(local)
+    if name in names:
+        return name
+    clashes = [n for n in names if n.startswith(f"{name}/") or name.startswith(f"{n}/")]
+    return min(clashes, default=None)
+
+
 def _short(ref: str | None) -> str | None:
     """A branch's full name without refs/heads/ or refs/remotes/."""
     if ref is None:
@@ -1782,7 +1794,7 @@ class Helper:
                 {
                     "name": name,
                     "local": tracking.get(f"refs/remotes/{name}"),
-                    "taken_by": tracking_name(name) if tracking_name(name) in names else None,
+                    "taken_by": blocking_branch(tracking_name(name), names),
                 }
             )
         return {"path": rel, "local": local.answer(), "remote": remote.answer()}
@@ -1837,13 +1849,14 @@ class Helper:
     @git_verb()
     def git_switch(self, deadline: float, rel: str, branch: str, remote: bool) -> dict:
         """Switch to a local branch, or make a local branch tracking a remote one, which
-        is refused before git is asked when a local branch has the name it would get."""
+        is refused before git is asked when a local branch keeps git from making it."""
         check_branch_name(branch)
         repo, rel = self._repository(rel, deadline)
         refs = list(self._branches(repo, deadline))
         if not any(r.remote is remote and r.name == branch for r in refs):
             raise HelperError("branch_not_found")
-        if remote and any(not r.remote and r.name == tracking_name(branch) for r in refs):
+        local = [r.name for r in refs if not r.remote]
+        if remote and blocking_branch(tracking_name(branch), local) is not None:
             raise HelperError("branch_name_taken")
         args = ["switch", "--track", branch] if remote else ["switch", branch]
         self._git(repo, args, deadline)
