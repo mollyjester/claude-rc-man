@@ -419,6 +419,11 @@ any git push as the person, a Claude session's among them, uses it.
 - **Refused by GitHub.** When GitHub refuses the token, git erases it
   through the store helper itself, so that `github-status` reports none.
 
+[The guide](../docs/git.md#github-token) says where the token is kept and
+what removing it leaves; `token_guide_problems` in `tests/test_rc_helper.py`
+holds it to what `github-token` and `github-forget` change in a home of
+either layout, run for GitHub itself.
+
 ## sudo
 
 `helpers/sudoers.rc-helper` is the sudoers rule template: the application user
