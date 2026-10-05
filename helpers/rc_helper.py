@@ -396,6 +396,10 @@ TOO_FAST = "answer arrived too quickly"
 CAPACITY_CONNECTED = re.compile(r"^\s*Capacity: 0/\d+")
 CAPACITY_READY = re.compile(r"^\s*Capacity: [1-9]\d*/\d+")
 ENVIRONMENT_URL = re.compile(r"https://claude\.ai/code\?environment=\S+")
+# A line Claude Code logs above its status block, and the one it logs once Remote
+# Control has reconnected (tests/fakes/observed/).
+LOG_LINE = re.compile(r"^\[\d\d:\d\d:\d\d\] \S.*$")
+RECONNECTED = re.compile(r"^\[\d\d:\d\d:\d\d\] Reconnected after \d+s$")
 LOGGED_OUT = "You must be logged in to use Remote Control"
 TRUST_DECLINED = "Remote Control did not start:"
 STOPPED = "Environment preserved."
@@ -682,10 +686,15 @@ def classify(lines: list[str], exit_code: int | None) -> dict:
         state = "ready"
     elif any(CAPACITY_CONNECTED.match(line) for line in lines):
         state = "connected"
+    elif RECONNECTED.match(nonempty[-1]) and all(LOG_LINE.match(line) for line in nonempty):
+        # Claude has stopped drawing its status block, so nothing names the session or
+        # the environment, and redraws it, if at all, on its own tick.
+        state = "reconnected"
+        info["session_name"] = info["environment_url"] = None
     else:
         state = "unrecognised"
     info["state"] = state
-    if state in ("unrecognised", "exited"):
+    if state in ("unrecognised", "reconnected", "exited"):
         info["screen"] = lines
     return info
 
@@ -784,11 +793,27 @@ class Tmux:
             if self.exists(session):
                 return False
             raise RuntimeError(f"tmux new-session: {proc.stderr.strip()}")
+        # The options first: they record the folder, without which no verb finds the
+        # server, so a failure to pin it leaves it to be listed and stopped.
         for key, value in options.items():
             self.run("set-option", "-t", f"={session}:", key, value)
+        self.pin(session)
         return True
 
+    def pin(self, session: str) -> None:
+        """Keep the session's window at the size it was made with, WIDTH by HEIGHT,
+        whatever terminal attaches to it; one a terminal has resized returns to it.
+
+        A resize makes Claude's next redraw erase log lines and, for a moment, show
+        its status block twice. Pinned window by window: a global ``window-size
+        manual`` makes tmux 3.4's server exit at the next detached new-session.
+        """
+        self.run("set-option", "-w", "-t", f"={session}:", "window-size", "manual")
+
     def respawn(self, session: str, cwd: Path, argv: list[str]) -> None:
+        """Start the server again in its pane, pinning its window first, so that a
+        window that is not pinned, or was resized, is put right."""
+        self.pin(session)
         self.run("respawn-pane", "-k", "-t", f"={session}:", "-c", str(cwd), *argv)
         self.run("clear-history", "-t", f"={session}:")
 

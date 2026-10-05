@@ -5,7 +5,7 @@ import sqlite3
 
 from devtools import fake_claude as fake
 from tests.conftest import ALICE, BOB, as_user, changing
-from tests.test_servers import ALPHA, unrecognised_claude
+from tests.test_servers import ALPHA, reconnected_claude, unrecognised_claude
 
 CLEAN_VERSIONS = {"approved": "2.1.0", "tested": "2.1.0", "users": []}
 
@@ -45,6 +45,16 @@ def test_unrecognised_screens_are_named_without_their_text(
     con = sqlite3.connect(settings.database)
     stored = json.dumps([list(row) for row in con.execute("select * from audit")])
     assert "server.start" in stored and fake.UNRECOGNISED_SCREEN not in stored
+
+
+def test_a_reconnected_server_is_not_a_warning(client, helper_homes, admin_runner):
+    reconnected_claude(helper_homes)
+    started = client.post("/api/servers", json=ALPHA, headers=changing(ALICE))
+    assert started.json()["server"]["state"] == "reconnected"  # positive control
+    admin_runner.replies = [(0, CLEAN_VERSIONS)]
+    r = attention(client)
+    assert r.status_code == 200, r.text
+    assert r.json()["unrecognised"] == []
 
 
 def test_versions_that_differ_and_an_untested_approval_are_reported(client, admin_runner):

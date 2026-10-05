@@ -59,6 +59,7 @@ ready or in use also has **Open in claude.ai**, which is its main button:
 | Not started: folder not trusted | Not running | Start again to answer once more, or forget it. | **Start again** | **Start again**, **Forget** |
 | Not started: Claude account not connected | Has a problem | Connect your Claude account above, then start again. | **Start again** | **Start again**, **Forget** |
 | Stopped by itself | Has a problem | Show the screen to see why it stopped, then resume it. | **Resume** | **Resume**, **Forget**, **Show screen** |
+| Reconnected, status not shown | Running | Claude says it reconnected but is not showing its status. Show the screen to see what it says. | **Show screen** | **Show screen**, **Stop** |
 | Unrecognised screen | Has a problem | Show the screen, stop it, and tell an administrator. | **Show screen** | **Show screen**, **Stop** |
 
 **Show screen** opens what Claude shows below the buttons, and choosing it
@@ -192,6 +193,15 @@ When it happens:
 
 A server cannot be used in that folder while Claude keeps showing that screen;
 rcman handles it once it has been taught to recognise it.
+
+A server shown as **Reconnected, status not shown** is not on an
+unrecognised screen. Claude shows only the lines of its log, the last saying
+that Remote Control has reconnected, and not the status from which rcman
+reads the session's name and the link to it, so the server has no **Open in
+claude.ai**; **Show screen** displays what Claude says. If Claude shows its
+status again, the server is shown as ready or in use once more. Nothing has
+to be reported, and administrators are not warned about it. **Stop** stops
+it as it stops any server.
 
 ## For administrators
 

@@ -183,6 +183,43 @@ def test_unrecognised_scenario_matches_no_fixture(pane, tmp_path):
         assert shown != rec.fill("\n".join(fixture.lines), rec.ANY_VALUES).splitlines(), name
 
 
+RECONNECTED_SCENARIO = "reconnected_without_status"
+
+
+def test_the_reconnected_scenario_shows_the_observed_screen(pane, tmp_path):
+    cfg = logged_in(tmp_path / "cfg")
+    run(pane, ["remote-control"], tmp_path, cfg, FAKE_CLAUDE_SCENARIO=RECONNECTED_SCENARIO)
+    pane.wait_for(r"Reconnected", timeout=10)
+    ctx = rec.Context(str(tmp_path), str(cfg), rec.load_manifest()["claude_version"])
+    raw = "\n".join(pane.wait_stable(quiet=0.5))
+    observed = rec.load_observed()[RECONNECTED_SCENARIO].lines
+    assert rec.sanitise(raw, ctx).split("\n") == observed
+    assert pane.exit_status() is None  # still running, as it was seen
+    # Planted twin: a screen differing from the one shown is not sanitised into the
+    # observed one, so the comparison would see a fake showing another.
+    changed = raw.replace("Reconnected after 3s", "Reconnected after 4s")
+    assert changed != raw  # the plant took effect
+    assert rec.sanitise(changed, ctx).split("\n") != observed
+    pane.interrupt()
+    assert pane.wait_exit(timeout=10) == 1  # what follows Ctrl+C was not observed
+
+
+def test_every_observed_screen_is_a_scenario_of_the_fake(tmp_path, monkeypatch, capsys):
+    """The scenarios are the observed screens themselves: one more is shown by its name."""
+    planted = rec.Observed(
+        lines=["", "PLANTED OBSERVED SCREEN"], exit_code=None, seen_on="", kept_for=[]
+    )
+    real = rec.load_observed
+    monkeypatch.setattr(rec, "load_observed", lambda: {**real(), "planted_screen": planted})
+    monkeypatch.setattr(fake.Fake, "wait_for_interrupt", lambda self, interrupted=None: None)
+    monkeypatch.chdir(tmp_path)
+    cfg = tmp_path / "cfg"
+    fake.write_state(cfg, logged_in=True, trusted=[os.getcwd()])
+    env = env_for(cfg, FAKE_CLAUDE_SCENARIO="planted_screen", FAKE_CLAUDE_READY_SECONDS="0")
+    assert fake.Fake(["remote-control"], env).run() == 1
+    assert "PLANTED OBSERVED SCREEN" in capsys.readouterr().out
+
+
 def test_unsupported_invocation_fails_loudly(pane, tmp_path):
     run(pane, ["mcp", "list"], tmp_path, tmp_path / "cfg")
     assert pane.wait_exit(timeout=10) == 2

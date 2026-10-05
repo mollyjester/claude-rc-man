@@ -105,6 +105,28 @@ def test_a_list_without_the_server_forgets_it(settings, journal):
     assert len(lines_logged(journal)) == 2
 
 
+def test_a_reconnected_server_is_not_written_and_ends_an_unrecognised_one(settings, journal):
+    reconnected = {**server("projects/a", "reconnected"), "screen": SCREEN}
+    run, _ = watched(
+        settings,
+        listed(reconnected),
+        listed(server("projects/a", "unrecognised")),
+        listed(reconnected),
+        (0, {"server": server("projects/a", "unrecognised")}),
+        (0, {"server": reconnected}),
+        listed(server("projects/a", "unrecognised")),
+    )
+    run("alice", ["list"])
+    assert lines_logged(journal) == []
+    run("alice", ["list"])
+    run("alice", ["list"])
+    run("alice", ["start", "--prefix=p", "--", "projects/a"])
+    run("alice", ["output", "--", "projects/a"])
+    run("alice", ["list"])
+    found = [(line["verb"], line["path"]) for line in lines_logged(journal)]
+    assert found == [("list", "projects/a"), ("start", "projects/a"), ("list", "projects/a")]
+
+
 def test_an_action_answer_counts_as_an_observation(settings, journal):
     run, _ = watched(
         settings,

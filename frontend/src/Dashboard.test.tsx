@@ -648,6 +648,24 @@ test("an unrecognised screen can be shown as it is", async () => {
   expect(found.getByText(/strange line\s+another/)).toBeInTheDocument();
 });
 
+test("a reconnected server offers Show screen and Stop, and no Open in claude.ai", async () => {
+  dashboard([
+    server("projects/alpha", "reconnected", {
+      screen: ["", "[10:09:14] Reconnected after 3s"],
+      // planted: even with an environment named, nothing says it takes sessions
+      environment_url: "https://claude.ai/code?environment=env_1",
+    }),
+  ]);
+  const found = await card();
+  expect(found.getByText(m.states.reconnected, { exact: true })).toHaveClass("badge");
+  expect(found.getByText(m.nextStep.reconnected)).toBeInTheDocument();
+  const offered = found.queryAllByRole("button").map((b) => b.textContent);
+  expect(offered.sort()).toEqual([m.showScreen, m.stop].sort());
+  expect(found.queryByRole("link", { name: m.openSession })).not.toBeInTheDocument();
+  await userEvent.click(found.getByRole("button", { name: m.showScreen }));
+  expect(found.getByText(/Reconnected after 3s/)).toBeInTheDocument();
+});
+
 test("Show screen is a disclosure, which hides the screen again", async () => {
   dashboard([server("projects/alpha", "exited", { exit_code: 1, screen: ["last words"] })]);
   const found = await card();

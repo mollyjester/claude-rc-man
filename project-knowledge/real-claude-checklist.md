@@ -94,13 +94,16 @@ fine-grained token stored there.
    the private clone with **Delete folder**.
 
 Write down what differed from this list. A screen rcman shows as
-**Unrecognised screen** is recorded as a new fixture and handled before the
+**Unrecognised screen** is recorded as a new fixture, or, where no sequence
+can bring it about, kept as an
+[observed screen](fake-claude.md#observed-screens), and handled before the
 version is approved.
 
 ## Screens with no recording yet
 
-Some screens rcman has no recording of, and so does not recognise; the full
-list, and how rcman shows them, is under *Not recorded* in
+Some screens rcman has no recording of, and has not kept as observed, and so
+does not recognise; the full list, and how rcman shows them, is under
+*Not recorded* in
 [fake-claude.md](fake-claude.md). Some of them need particular conditions.
 Whenever those conditions come up, record the screen: add a sequence for it to
 `SEQUENCES` in `devtools/record_claude.py`, record it with

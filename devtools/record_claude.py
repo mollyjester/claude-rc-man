@@ -3,9 +3,11 @@
 
 Each :data:`SEQUENCES` entry drives `claude` through tmux exactly as rcman will
 and captures named screens. Captures are sanitised — paths, URLs, times,
-session names, account details and the version become ``{placeholders}`` — and
-written to ``tests/fakes/fixtures/`` as ``<capture>.txt`` plus ``manifest.json``.
-The fake fills the placeholders back in at run time.
+session names, session IDs, account details and the version become
+``{placeholders}`` — and written to ``tests/fakes/fixtures/`` as ``<capture>.txt``
+plus ``manifest.json``. The fake fills the placeholders back in at run time.
+Screens seen on a live server that no sequence can bring about are kept, sanitised
+the same way, in ``tests/fakes/observed/`` (:func:`load_observed`).
 
 Sequences marked ``needs_account`` run under the real default Claude
 configuration and need a logged-in subscription account; each sequence that
@@ -47,6 +49,8 @@ from devtools import tmuxctl  # noqa: E402
 
 REPO = Path(__file__).resolve().parent.parent
 FIXTURES = REPO / "tests" / "fakes" / "fixtures"
+# Screens seen on a live server that no sequence can bring about; see load_observed.
+OBSERVED = REPO / "tests" / "fakes" / "observed"
 MANIFEST = "manifest.json"
 FAKE_CLAUDE = REPO / "tests" / "fakes" / "claude"
 
@@ -72,6 +76,7 @@ PLACEHOLDERS = (
     "org_name",
     "subscription_type",
     "branch",
+    "session_id",
 )
 ACCOUNT_FIELDS = {
     "email": "email",
@@ -116,6 +121,7 @@ def sanitise(text: str, ctx: Context) -> str:
             flags=re.MULTILINE,
         )
     text = re.sub(r"\[\d\d:\d\d:\d\d\]", "[{time}]", text)
+    text = re.sub(r"\bcse_[A-Za-z0-9]+", "{session_id}", text)
     text = re.sub(r"(^ *Capacity:.*\n {4})(\S+)$", r"\1{session_name}", text, flags=re.MULTILINE)
     return text.replace(ctx.version, "{version}")
 
@@ -589,6 +595,31 @@ def load_fixtures(directory: Path = FIXTURES) -> dict[str, Recorded]:
             exit_code=entry["exit_code"],
         )
         for name, entry in manifest["captures"].items()
+    }
+
+
+@dataclass(frozen=True)
+class Observed:
+    """A screen seen on a live server, kept because no sequence can bring it about."""
+
+    lines: list[str]
+    exit_code: int | None  # None: still running when seen
+    seen_on: str  # the Claude Code version it was seen on
+    kept_for: list[str]  # the versions it is kept for, starting with seen_on
+
+
+def load_observed(directory: Path = OBSERVED) -> dict[str, Observed]:
+    """The observed screens, ``<name>.txt`` each, as ``manifest.json`` beside them lists
+    them, sanitised as the fixtures are. The manifest also records how each was seen."""
+    manifest = load_manifest(directory)
+    return {
+        name: Observed(
+            lines=(directory / f"{name}.txt").read_text(encoding="utf-8").split("\n"),
+            exit_code=entry["exit_code"],
+            seen_on=entry["seen_on"],
+            kept_for=list(entry["kept_for"]),
+        )
+        for name, entry in manifest["screens"].items()
     }
 
 
