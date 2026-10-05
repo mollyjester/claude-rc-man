@@ -1325,7 +1325,8 @@ test("a poll that cannot reach rcman says so, and the message goes once a later 
       "POST /api/client-errors": {},
     });
     renderApp("/", { pollMs: 1000 });
-    await summary();
+    // the first poll was answered: the summary shows before it is
+    expect(await within(await summary()).findByText(m.yourServersEmpty)).toBeInTheDocument();
     expect(screen.queryByText(m.unreachable)).not.toBeInTheDocument();
     down = true;
     await pass(1000);
@@ -1334,11 +1335,14 @@ test("a poll that cannot reach rcman says so, and the message goes once a later 
     down = false;
     await pass(1000);
     await waitFor(() => expect(screen.queryByText(m.unreachable)).not.toBeInTheDocument());
-    await waitFor(() =>
-      expect(fake.made("POST", "/api/client-errors").map((c) => c.body)).toEqual([
-        expect.objectContaining({ kind: "unreachable", method: "GET", path: "/api/servers" }),
-      ]),
-    );
+    const reported = [
+      expect.objectContaining({ kind: "unreachable", method: "GET", path: "/api/servers" }),
+    ];
+    const reports = () => fake.made("POST", "/api/client-errors").map((c) => c.body);
+    await waitFor(() => expect(reports()).toEqual(reported));
+    await pass(1000); // a later poll works, and nothing more is reported
+    expect(fake.made("GET", "/api/servers").length).toBeGreaterThanOrEqual(3); // positive control
+    expect(reports()).toEqual(reported);
   }));
 
 test("a failed Claude account load stays while polls work", () =>
