@@ -3,11 +3,12 @@ time, in pytest-xdist's workers or in two runs, would share.
 
 A test's files go under tmp_path; a folder that must be under /tmp, for a short socket
 path, is made with a unique name (tempfile.mkdtemp(dir="/tmp")); a port is one the system
-picks (port 0) or one held for the test. The guard reads the tests' own source.
+picks (port 0) or one held for the test. The guard reads the tests' own source and the
+frontend's TypeScript and JavaScript, where the browser tests and their configs are.
 tests/container/ is outside it: that suite runs as root in a container of its own.
 
-It reads the frontend's TypeScript and JavaScript too, where the browser tests and their
-configs are. What it catches in each language is in project-knowledge/tests.md.
+It catches the same forms in both languages: FORMS, in this module's last section, spells
+each in both, and project-knowledge/tests.md describes them.
 """
 
 import ast
@@ -23,11 +24,139 @@ import pytest
 TESTS = Path(__file__).resolve().parent
 OUTSIDE = "container"  # runs in a throwaway container of its own, never beside another run
 TMP = "/" + "tmp"  # built, so that this module does not name it itself
-# tempfile's calls that make a uniquely named file or folder in the dir= they are given.
-UNIQUE_IN = {"mkdtemp", "mkstemp", "TemporaryDirectory", "NamedTemporaryFile"}
 # Ports below this need root to bind, so no other test can take one; a test may name one
 # that nothing answers on.
 UNPRIVILEGED = 1024
+# Flags that take a port, and those that take one alone or as the host port of docker's
+# [address:]host:container mapping.
+PORT_FLAGS = {"--port"}
+PUBLISH_FLAGS = {"-p", "--publish"}
+FLAGS = "|".join(re.escape(f) for f in sorted(PORT_FLAGS | PUBLISH_FLAGS, key=len, reverse=True))
+# A flag and what follows it up to a space or the shell's punctuation, in a command written
+# as one string; and a flag just before a port written as an expression.
+FLAG_IN_TEXT = re.compile(rf"(?:^|\s)({FLAGS})(?: |=)([^\s;&|<>()'\"]+)")
+FLAG_BEFORE = re.compile(rf"(?:^|\s)(?:{FLAGS})(?: |=)$")
+# An address's host and colon: in a URL, after its scheme and any user, or else alone.
+ADDRESS = r"(?P<scheme>://(?:[^/@\s]*@)?)?(?P<host>\[[0-9A-Fa-f:.]*\]|[^\s/:@\[\],=]+):"
+# Each one, overlapping, so that a host is not lost inside the match of a word before it.
+ADDRESS_IN_TEXT = re.compile(rf"(?={ADDRESS}(?P<port>[0-9]+)(?![0-9]))")
+ADDRESS_BEFORE = re.compile(ADDRESS + "$")
+# What may stand just before a host written without a scheme.
+BEFORE_HOST = " \t\n,=@:(\"'"
+# A name that holds a port: port itself, or one ending _PORT, as an environment's do.
+PORT_NAME = re.compile(r"(?:^|_)port$", re.IGNORECASE)
+# Calls that read a value and give their fallback where it is missing, as os.environ.get()
+# does, in either language: the fallback is the value, and the call is not a site of its own.
+READS = {"get", "getenv"}
+# What a formatted string shows, read as text: a fixed port given in it as a port, and
+# anything else given in it as a space, which no host, flag or port takes in.
+SHOWN_PORT = str(UNPRIVILEGED)
+SHOWN_OTHER = " "
+
+
+class Site(NamedTuple):
+    line: int
+    function: str
+    kind: str
+    text: str
+
+
+# What both languages share: what a path in /tmp, a fixed port and an address are.
+
+
+def _is_tmp(text: str) -> bool:
+    """The folder itself or a path in it."""
+    return text == TMP or text.startswith(TMP + "/")
+
+
+def _port_number(value) -> bool:
+    """An unprivileged port, as an int or a string of digits."""
+    if isinstance(value, str) and re.fullmatch(r"[0-9]+", value):
+        value = int(value)
+    return type(value) is int and UNPRIVILEGED <= value <= 65535
+
+
+def _port_named(name) -> bool:
+    return isinstance(name, str) and bool(PORT_NAME.search(name))
+
+
+def _published(text: str) -> bool:
+    """What follows -p or --publish, written whole: a fixed port alone, or as the host
+    port of a [address:]host:container mapping."""
+    return _port_number(text.split(":")[-2] if ":" in text else text)
+
+
+def _host(value, named=True) -> bool:
+    """A host as an address names one: any (""), localhost, an IP address or, unless
+    ``named`` is false, a domain."""
+    if not isinstance(value, str):
+        return False
+    try:
+        ipaddress.ip_address(value)
+    except ValueError:
+        domain = named and bool(re.fullmatch(r"[a-z0-9-]+(\.[a-z0-9-]+)+", value))
+        return value in ("", "localhost") or domain
+    return True
+
+
+def _argument_host(value) -> bool:
+    """A host given as a call's argument beside a port: an IP address or localhost, which
+    no file's name or other argument is."""
+    return value != "" and _host(value, named=False)
+
+
+def _addressed(match) -> bool:
+    """A host as an address names one: in a URL any host at all, and alone only one that
+    cannot be a file's name, such as an IP address."""
+    host = match["host"].removeprefix("[").removesuffix("]")
+    if match["scheme"]:
+        return bool(host)
+    start = match.start()
+    return (start == 0 or match.string[start - 1] in BEFORE_HOST) and _host(host, named=False)
+
+
+def _port_in_text(text: str) -> bool:
+    """A fixed port in text: after a flag that takes one, or after an address's host."""
+    for flag, value in FLAG_IN_TEXT.findall(text):
+        if _port_number(value) if flag in PORT_FLAGS else _published(value):
+            return True
+    return any(_addressed(m) and _port_number(m["port"]) for m in ADDRESS_IN_TEXT.finditer(text))
+
+
+def _port_follows(text: str) -> bool:
+    """Whether a port written next, as an expression, would be one: after a flag that
+    takes one, or after an address's host and its colon."""
+    address = ADDRESS_BEFORE.search(text)
+    return bool(FLAG_BEFORE.search(text)) or bool(address and _addressed(address))
+
+
+def _side_by_side(args, host, port) -> bool:
+    """A call's arguments holding a host and a fixed port next to each other, either first."""
+    return any(
+        _argument_host(host(a)) and port(b) or _argument_host(host(b)) and port(a)
+        for a, b in zip(args, args[1:], strict=False)
+    )
+
+
+def _flag_given(elements, string, shown, port) -> bool:
+    """A list of a command's arguments holding a fixed port after a flag that takes one;
+    ``shown`` reads a string or a formatted one as text."""
+    for flag, value in zip(elements, elements[1:], strict=False):
+        flag = string(flag)
+        if flag in PORT_FLAGS and port(value):
+            return True
+        text = shown(value)
+        if text is not None and _port_in_text(text):
+            continue  # a site itself, as an address
+        if flag in PUBLISH_FLAGS and (_published(text) if text is not None else port(value)):
+            return True
+    return False
+
+
+# Python: the tests' own source.
+
+# tempfile's calls that make a uniquely named file or folder in the dir= they are given.
+UNIQUE_IN = {"mkdtemp", "mkstemp", "TemporaryDirectory", "NamedTemporaryFile"}
 # Sites flagged on purpose: (file relative to tests/, the function it is in, the site's
 # source text) -> reason. Each covers exactly one site: another site of the same text in
 # the same function is flagged.
@@ -43,38 +172,16 @@ EXEMPT = {
         f'"{TMP}"',
     ): "gives rc-helper the absolute path to show it is refused; nothing is made there",
 }
-# Flags that take a port, and those that take one alone or as the host port of docker's
-# [address:]host:container mapping.
-PORT_FLAGS = {"--port"}
-PUBLISH_FLAGS = {"-p", "--publish"}
-
-
-class Site(NamedTuple):
-    line: int
-    function: str
-    kind: str
-    text: str
 
 
 def _name(call) -> str | None:
     return getattr(call.func, "attr", None) or getattr(call.func, "id", None)
 
 
-def _is_tmp(text: str) -> bool:
-    """The folder itself or a path in it."""
-    return text == TMP or text.startswith(TMP + "/")
-
-
-def _port_number(value) -> bool:
-    """An unprivileged port, as an int or a string of digits."""
-    if isinstance(value, str) and re.fullmatch(r"[0-9]+", value):
-        value = int(value)
-    return type(value) is int and UNPRIVILEGED <= value <= 65535
-
-
-def _fixed_tmp(node) -> bool:
-    """A string constant that is the folder itself or a path in it."""
-    return isinstance(node, ast.Constant) and isinstance(node.value, str) and _is_tmp(node.value)
+def _string(node) -> str | None:
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    return None
 
 
 def _gettempdir(node) -> bool:
@@ -82,25 +189,49 @@ def _gettempdir(node) -> bool:
 
 
 def _port(node, names=frozenset()) -> bool:
-    """A fixed unprivileged port: an int or a string of digits, a module-level name
-    given one, or str() of either."""
+    """A fixed unprivileged port: an int or a string of digits, a module-level name given
+    one, str(), int() or cast() of either, an f-string showing one alone, or either as the
+    fallback of ``or`` or of a call in READS."""
     if isinstance(node, ast.Name):
         return node.id in names
-    if isinstance(node, ast.Call) and _name(node) == "str" and len(node.args) == 1:
-        return _port(node.args[0], names)
+    if isinstance(node, ast.Call):
+        name, args = _name(node), node.args
+        if name in ("str", "int") and len(args) == 1:
+            return _port(args[0], names)
+        if name == "cast" and len(args) == 2:
+            return _port(args[1], names)
+        if name in READS:
+            fallback = [k.value for k in node.keywords if k.arg == "default"] or args[1:2]
+            return bool(fallback) and _port(fallback[0], names)
+    if isinstance(node, ast.JoinedStr):
+        return _port_number(_shown(node, names))
+    if isinstance(node, ast.BoolOp) and isinstance(node.op, ast.Or):
+        return _port(node.values[-1], names)
     return isinstance(node, ast.Constant) and _port_number(node.value)
 
 
-def _published(text: str) -> bool:
-    """What follows -p or --publish, written whole: a fixed port alone, or as the host
-    port of a [address:]host:container mapping."""
-    return _port_number(text.split(":")[-2] if ":" in text else text)
+def _shown(node, names=frozenset()) -> str | None:
+    """A string's text, or an f-string's, showing a fixed port given in it as SHOWN_PORT
+    and anything else given in it as SHOWN_OTHER."""
+    if not isinstance(node, ast.JoinedStr):
+        return _string(node)
+    return "".join(
+        _string(part)
+        if _string(part) is not None
+        else SHOWN_PORT
+        if isinstance(part, ast.FormattedValue) and _port(part.value, names)
+        else SHOWN_OTHER
+        for part in node.values
+    )
 
 
-def _published_node(node, names) -> bool:
-    if isinstance(node, ast.Constant) and isinstance(node.value, str):
-        return _published(node.value)
-    return _port(node, names)
+def _ending(node) -> str | None:
+    """The text a string, an f-string or a + of them ends with."""
+    if isinstance(node, ast.JoinedStr):
+        return (_string(node.values[-1]) or "") if node.values else ""
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        return _ending(node.right)
+    return _string(node)
 
 
 def _address(node, names) -> bool:
@@ -109,23 +240,39 @@ def _address(node, names) -> bool:
     return (
         isinstance(node, (ast.Tuple, ast.List))
         and len(node.elts) in (2, 4)
-        and isinstance(node.elts[0], ast.Constant)
-        and _host(node.elts[0].value)
+        and _host(_string(node.elts[0]))
         and _port(node.elts[1], names)
     )
 
 
-def _host(value, named=True) -> bool:
-    """A host as an address names one: any (""), localhost, an IP address or, unless
-    ``named`` is false, a domain."""
-    if not isinstance(value, str):
-        return False
-    try:
-        ipaddress.ip_address(value)
-    except ValueError:
-        domain = named and bool(re.fullmatch(r"[a-z0-9-]+(\.[a-z0-9-]+)+", value))
-        return value in ("", "localhost") or domain
-    return True
+def _target_name(target, at_module_level: bool) -> str | None:
+    """What an assignment names: an attribute, a key, or a name of a function's own or a
+    class's; a module-level name is followed to where it is used instead."""
+    if isinstance(target, ast.Attribute):
+        return target.attr
+    if isinstance(target, ast.Subscript):
+        return _string(target.slice)
+    if isinstance(target, ast.Name) and not at_module_level:
+        return target.id
+    return None
+
+
+def _parameters(function) -> list[ast.arg]:
+    a = function.args
+    return [*a.posonlyargs, *a.args, *a.kwonlyargs, *filter(None, (a.vararg, a.kwarg))]
+
+
+def _port_defaults(tree) -> set[int]:
+    """The defaults given to parameters named for a port."""
+    found = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            a = node.args
+            positional = [*a.posonlyargs, *a.args]
+            given = zip(positional[len(positional) - len(a.defaults) :], a.defaults, strict=True)
+            given = [*given, *zip(a.kwonlyargs, a.kw_defaults, strict=True)]
+            found |= {id(value) for arg, value in given if value and _port_named(arg.arg)}
+    return found
 
 
 def _port_names(tree) -> frozenset[str]:
@@ -154,53 +301,91 @@ def _unique_dirs(tree) -> set[int]:
     return allowed
 
 
+def _left_alone(tree) -> set[int]:
+    """Strings that are no site of their own: one standing alone as a statement, as a
+    docstring does, and the text of an f-string, which is read with the f-string."""
+    left = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Expr) and _string(node.value) is not None:
+            left.add(id(node.value))
+        if isinstance(node, ast.JoinedStr):
+            left |= {id(part) for part in node.values if _string(part) is not None}
+    return left
+
+
 def fixed_sites(source: str) -> list[Site]:
     """Where the source names a fixed path under /tmp or a fixed port, with the function
-    each is in, what it is and its text. See the guard's description in tests.md for the
-    forms it catches."""
+    each is in, what it is and its text. FORMS spells the forms it catches."""
     tree = ast.parse(source)
-    allowed = _unique_dirs(tree)
-    names = _port_names(tree)
+    skipped = _unique_dirs(tree) | _left_alone(tree)
+    defaults = _port_defaults(tree)
+    module_level = {id(node) for node in tree.body}
     found = []
 
-    def what(node) -> str | None:
-        if isinstance(node, ast.JoinedStr) and node.values and _fixed_tmp(node.values[0]):
+    def what(node, names) -> str | None:
+        def port(value) -> bool:
+            return _port(value, names)
+
+        if id(node) in defaults and port(node):
+            return "port"
+        text = _string(node)
+        if text is not None:
+            return "path" if _is_tmp(text) else "port" if _port_in_text(text) else None
+        if _gettempdir(node):
             return "path"
-        if (_fixed_tmp(node) or _gettempdir(node)) and id(node) not in allowed:
-            return "path"
+        if isinstance(node, ast.JoinedStr):
+            first = _string(node.values[0]) if node.values else None
+            if first is not None and _is_tmp(first):
+                return "path"
+            if _port_in_text(_shown(node, names)):
+                return "port"
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+            before = _ending(node.left)
+            if before is not None and _port_follows(before) and port(node.right):
+                return "port"
         if _address(node, names):
             return "port"
-        if isinstance(node, ast.Call):
-            if any(k.arg == "port" and _port(k.value, names) for k in node.keywords):
-                return "port"
         if isinstance(node, (ast.List, ast.Tuple)):
-            elts = node.elts
-            for flag, value in zip(elts, elts[1:], strict=False):
-                if not isinstance(flag, ast.Constant):
-                    continue
-                if flag.value in PORT_FLAGS and _port(value, names):
-                    return "port"
-                if flag.value in PUBLISH_FLAGS and _published_node(value, names):
-                    return "port"
-        if isinstance(node, ast.Constant) and isinstance(node.value, str):
-            flag, _, value = node.value.partition("=")
-            if flag in PORT_FLAGS and _port_number(value):
+            if _flag_given(node.elts, _string, lambda v: _shown(v, names), port):
                 return "port"
-            if flag in PUBLISH_FLAGS and _published(value):
+        if isinstance(node, ast.Call):
+            args = node.args
+            if any(_port_named(k.arg) and port(k.value) for k in node.keywords):
+                return "port"
+            if isinstance(node.func, ast.Attribute) and node.func.attr == "listen":
+                if args and port(args[0]):
+                    return "port"
+            if _name(node) not in READS and len(args) >= 2:
+                if _port_named(_string(args[0])) and port(args[1]):
+                    return "port"
+            if _side_by_side(args, _string, port):
+                return "port"
+        if isinstance(node, (ast.Assign, ast.AnnAssign)) and node.value is not None:
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            at_module_level = id(node) in module_level
+            if any(_port_named(_target_name(t, at_module_level)) for t in targets):
+                return "port" if port(node.value) else None
+        if isinstance(node, ast.Dict):
+            if any(
+                _port_named(_string(k)) and port(v)
+                for k, v in zip(node.keys, node.values, strict=True)
+            ):
                 return "port"
         return None
 
-    def visit(node, function, inside_fstring=False):
+    def visit(node, function, names):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             function = node.name
-        kind = None if inside_fstring else what(node)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            names = names - {arg.arg for arg in _parameters(node)}  # a parameter shadows one
+        kind = None if id(node) in skipped else what(node, names)
         if kind:
             text = ast.get_source_segment(source, node) or ""
             found.append(Site(node.lineno, function, kind, text))
         for child in ast.iter_child_nodes(node):
-            visit(child, function, inside_fstring or isinstance(node, ast.JoinedStr))
+            visit(child, function, names)
 
-    visit(tree, "")
+    visit(tree, "", _port_names(tree))
     return found
 
 
@@ -259,89 +444,6 @@ def test_a_new_fixed_site_in_an_exempt_function_is_flagged():
         assert len(flagged(rel, planted)) == 1, extra
 
 
-@pytest.mark.parametrize(
-    ("planted", "kind"),
-    [
-        (f'root = Path("{TMP}") / f"x-{{name}}"', "path"),
-        (f'root = Path("{TMP}/rcman-e2e")', "path"),
-        (f'root = f"{TMP}/x-{{name}}"', "path"),
-        (f'sock = os.path.join("{TMP}", "a.sock")', "path"),
-        (f'd = tmp_path_factory.mktemp("x", dir="{TMP}")', "path"),
-        ('s.bind(("127.0.0.1", 8765))', "port"),
-        ('server = HTTPServer(("", 8765), Handler)', "port"),
-        ('socket.create_connection(("::1", "2019"))', "port"),
-        ("github.start(root, token, port=8765)", "port"),
-        ('run(["uvicorn", "app", "--port", "8765"])', "port"),
-        ('run(["uvicorn", "app", "--port=8765"])', "port"),
-        ('address = ("127.0.0.1", 8765)', "port"),
-        ('address = ["127.0.0.1", 8765]', "port"),
-        ('s.bind(["127.0.0.1", 8765])', "port"),
-        ('address = ("::1", 8765, 0, 0)', "port"),
-        ('address = ("rcman.test", 8765)', "port"),
-        ('address = ("localhost", "8765")', "port"),
-        ('run(["server", "-p", "8765"])', "port"),
-        ('run(["docker", "run", "-p", "8765:80", "image"])', "port"),
-        ('run(["docker", "run", "-p", "127.0.0.1:8765:443", "image"])', "port"),
-        ('run(["docker", "run", "--publish", "8765:80", "image"])', "port"),
-        ('run(["docker", "run", "--publish=127.0.0.1:8765:80", "image"])', "port"),
-        ('root = Path(tempfile.gettempdir()) / "fixed"', "path"),
-        ('sock = os.path.join(tempfile.gettempdir(), "a.sock")', "path"),
-        (f'd = tempfile.mkdtemp(dir="{TMP}/sub")', "path"),
-        ('d = tempfile.mkdtemp(dir=os.path.join(tempfile.gettempdir(), "sub"))', "path"),
-    ],
-)
-def test_the_guard_finds_a_planted_fixed_resource(planted, kind):
-    """Planted twins: each way of naming a fixed path or port is found, in a function too."""
-    assert [s.kind for s in fixed_sites(planted)] == [kind]
-    assert [s[:3] for s in fixed_sites(f"def f():\n    {planted}\n")] == [(2, "f", kind)]
-
-
-PORT_CONSTANT = "PORT = 8765\n"
-
-
-@pytest.mark.parametrize(
-    "use",
-    [
-        's.bind(("127.0.0.1", PORT))',
-        "github.start(root, token, port=PORT)",
-        'run(["uvicorn", "app", "--port", str(PORT)])',
-        'run(["uvicorn", "app", "--port", PORT])',
-    ],
-)
-def test_the_guard_finds_a_fixed_port_held_in_a_module_constant(use):
-    """Planted twin: a port named once at module level and used in a function."""
-    source = f"{PORT_CONSTANT}def f():\n    {use}\n"
-    assert [s[:3] for s in fixed_sites(source)] == [(3, "f", "port")]
-    chosen = source.replace(PORT_CONSTANT, "PORT = 0\n")
-    assert chosen != source and fixed_sites(chosen) == []  # positive control: port 0
-
-
-def test_the_guard_leaves_unique_names_and_chosen_ports_alone():
-    for source in (
-        f'root = Path(tempfile.mkdtemp(prefix="rcb-", dir="{TMP}"))',
-        f'with tempfile.TemporaryDirectory(dir="{TMP}") as d: pass',
-        'root = tmp_path / "x"',
-        's.bind(("127.0.0.1", 0))',
-        "github.start(root, token, port=0)",
-        'UNREACHABLE = "http://127.0.0.1:1/"',
-        'socket.create_connection(("127.0.0.1", 9))',
-        'run(["uvicorn", "app", "--port", str(port)])',
-        f'text = "{TMP}x is another folder"',
-        "d = tempfile.mkdtemp(dir=tempfile.gettempdir())",
-        "d = tempfile.mkdtemp(dir=Path(tempfile.gettempdir()))",
-        f'd = tempfile.mkdtemp(dir=Path("{TMP}"))',
-        'run(["tmux", "display-message", "-p", "#{pid}"])',
-        'run(["mkdir", "-p", "folder"])',
-        'run(["docker", "run", "-p", f"127.0.0.1:{port}:443", "image"])',
-        'run(["docker", "run", "-p", "127.0.0.1::443", "image"])',
-        's.bind(("127.0.0.1", port))',
-        'parse(["--app-port", "8001"])',
-        'sizes = [("width", 1200), ("height", 1200)]',
-        "def f(port):\n    s.bind(('', port))\n",
-    ):
-        assert fixed_sites(source) == [], source
-
-
 # The frontend's TypeScript and JavaScript: the browser tests, their configs and the rest.
 
 FRONTEND = TESTS.parent / "frontend"
@@ -352,7 +454,8 @@ TS_EXEMPT = {
         "a world no other run names, which the backend makes only where nothing is"
         " (project-knowledge/frontend.md)"
     ),
-    ("vite.config.ts", "", '"http://127.0.0.1:8000"'): (
+    # Its port is filled in, as planted text's is below, so that this module does not hold it.
+    ("vite.config.ts", "", '"http://127.0.0.1:<port>"'.replace("<port>", "8000")): (
         "the development server's way to a backend a person runs by hand; no test runs either"
     ),
 }
@@ -379,21 +482,8 @@ for (const [name, [lang, source]] of Object.entries(JSON.parse(input))) {
 }
 process.stdout.write(JSON.stringify(trees));
 """
-FLAGS = "|".join(re.escape(f) for f in sorted(PORT_FLAGS | PUBLISH_FLAGS, key=len, reverse=True))
-# A flag and what follows it, in a command written as one string; and a flag just before
-# a port written as an expression.
-FLAG_IN_TEXT = re.compile(rf"(?:^|\s)({FLAGS})(?: |=)(\S+)")
-FLAG_BEFORE = re.compile(rf"(?:^|\s)(?:{FLAGS})(?: |=)$")
-# An address's host and colon: in a URL, after its scheme and any user, or else alone.
-ADDRESS = r"(?P<scheme>://(?:[^/@\s]*@)?)?(?P<host>\[[0-9A-Fa-f:.]*\]|[^\s/:@\[\],=]+):"
-ADDRESS_IN_TEXT = re.compile(ADDRESS + r"(?P<port>[0-9]+)(?![0-9])")
-ADDRESS_BEFORE = re.compile(ADDRESS + "$")
-# What may stand just before a host written without a scheme.
-BEFORE_HOST = " \t\n,=@"
-# A name that holds a port: port itself, or one ending _PORT, as an environment's do.
-PORT_NAME = re.compile(r"(?:^|_)port$", re.IGNORECASE)
 FUNCTIONS = {"ArrowFunctionExpression", "FunctionExpression"}
-WRAPPERS = {"TSAsExpression", "TSSatisfiesExpression", "TSNonNullExpression"}
+WRAPPERS = {"TSAsExpression", "TSSatisfiesExpression", "TSNonNullExpression", "TSTypeAssertion"}
 
 
 def parse_ts(sources: dict[str, str], cwd: Path = FRONTEND) -> dict[str, dict]:
@@ -409,15 +499,19 @@ def parse_ts(sources: dict[str, str], cwd: Path = FRONTEND) -> dict[str, dict]:
     return json.loads(proc.stdout)
 
 
-def _segment(source: str, start: int, end: int) -> str:
-    return source.encode("utf-16-le")[2 * start : 2 * end].decode("utf-16-le")
+def _segment(encoded: bytes, start: int, end: int) -> str:
+    """The text between two offsets in UTF-16 code units of a source encoded as UTF-16."""
+    return encoded[2 * start : 2 * end].decode("utf-16-le")
 
 
 def _ts_name(node) -> str | None:
     """A call's function name, as tmpdir() or os.tmpdir() name it; an assignment's or a
-    member's name, as process.env.PORT names it."""
+    member's name, as process.env.PORT names it; a computed member's only where it is a
+    string, as process.env["PORT"] names it."""
     target = node.get("callee") or node.get("left") or node
     if target.get("type") == "MemberExpression":
+        if target.get("computed"):
+            return _ts_string(target["property"])
         target = target["property"]
     return target.get("name") if target.get("type") == "Identifier" else _ts_string(target)
 
@@ -464,8 +558,8 @@ def _ts_unique_dirs(tree) -> set[int]:
 
 def _ts_port(node, names=frozenset()) -> bool:
     """A fixed unprivileged port: a number or a string of digits, a module-level name given
-    one, String() or Number() of either, a template of either alone, either after ?? or ||,
-    or either cast."""
+    one, String() or Number() of either, a template showing one alone, either after ?? or
+    || or as the fallback of a call in READS, or either cast."""
     if not node:
         return False
     kind = node["type"]
@@ -477,37 +571,33 @@ def _ts_port(node, names=frozenset()) -> bool:
         return _port_number(node["value"])
     if kind == "CallExpression" and _ts_name(node) in ("String", "Number"):
         return len(node["arguments"]) == 1 and _ts_port(node["arguments"][0], names)
-    if kind == "TemplateLiteral" and len(node["expressions"]) == 1:
-        alone = all(q["value"]["cooked"] == "" for q in node["quasis"])
-        return alone and _ts_port(node["expressions"][0], names)
+    if kind == "CallExpression" and _ts_name(node) in READS:
+        return len(node["arguments"]) >= 2 and _ts_port(node["arguments"][1], names)
+    if kind == "TemplateLiteral":
+        return _port_number(_ts_shown(node, names))
     if kind == "LogicalExpression" and node["operator"] in ("??", "||"):
         return _ts_port(node["right"], names)
     return False
 
 
-def _addressed(match) -> bool:
-    """A host as an address names one: in a URL any _host(), and alone only one that
-    cannot be a file's name, such as an IP address."""
-    host = match["host"].removeprefix("[").removesuffix("]")
-    if match["scheme"]:
-        return _host(host)
-    start = match.start()
-    return (start == 0 or match.string[start - 1] in BEFORE_HOST) and _host(host, named=False)
+def _ts_shown(node, names=frozenset()) -> str | None:
+    """A string's text, or a template's, showing a fixed port given in it as SHOWN_PORT
+    and anything else given in it as SHOWN_OTHER."""
+    if not node or node["type"] != "TemplateLiteral":
+        return _ts_string(node)
+    shown = [node["quasis"][0]["value"]["cooked"] or ""]
+    for value, after in zip(node["expressions"], node["quasis"][1:], strict=True):
+        shown += [SHOWN_PORT if _ts_port(value, names) else SHOWN_OTHER]
+        shown += [after["value"]["cooked"] or ""]
+    return "".join(shown)
 
 
-def _port_in_text(text: str) -> bool:
-    """A fixed port in text: after a flag that takes one, or after an address's host."""
-    for flag, value in FLAG_IN_TEXT.findall(text):
-        if _port_number(value) if flag in PORT_FLAGS else _published(value):
-            return True
-    return any(_addressed(m) and _port_number(m["port"]) for m in ADDRESS_IN_TEXT.finditer(text))
-
-
-def _port_follows(text: str) -> bool:
-    """Whether a port written next, as an expression, would be one: after a flag that
-    takes one, or after an address's host and its colon."""
-    address = ADDRESS_BEFORE.search(text)
-    return bool(FLAG_BEFORE.search(text)) or bool(address and _addressed(address))
+def _ts_parameters(function) -> set[str]:
+    """The names a function's parameters give, with or without a default."""
+    given = (
+        p.get("left", p) if p["type"] == "AssignmentPattern" else p for p in function["params"]
+    )
+    return {p["name"] for p in given if p["type"] == "Identifier"}
 
 
 def _ts_ending(node) -> str | None:
@@ -519,60 +609,80 @@ def _ts_ending(node) -> str | None:
     return _ts_string(node)
 
 
-def _ts_port_names(tree) -> frozenset[str]:
-    """The module-level names given a fixed port."""
-    names = set()
+def _ts_module_declarations(tree) -> list[dict]:
+    """What gives module-level names a value: a declaration, exported or not, and a plain
+    assignment to a name standing as a statement of its own."""
+    found = []
     for node in tree["body"]:
         if node["type"] == "ExportNamedDeclaration":
             node = node.get("declaration") or {}
-        if node.get("type") != "VariableDeclaration":
-            continue
-        for declarator in node["declarations"]:
-            if declarator["id"]["type"] == "Identifier" and _ts_port(declarator["init"]):
-                names.add(declarator["id"]["name"])
+        if node.get("type") == "VariableDeclaration":
+            found += node["declarations"]
+        given = node.get("expression") if node.get("type") == "ExpressionStatement" else None
+        if given and given["type"] == "AssignmentExpression" and given["operator"] == "=":
+            found += [given] if given["left"]["type"] == "Identifier" else []
+    return found
+
+
+def _ts_port_names(tree) -> frozenset[str]:
+    """The module-level names given a fixed port."""
+    names = set()
+    for given in _ts_module_declarations(tree):
+        name, value = (
+            (given["id"], given["init"]) if "id" in given else (given["left"], given["right"])
+        )
+        if name["type"] == "Identifier" and _ts_port(value):
+            names.add(name["name"])
     return frozenset(names)
 
 
-def _ts_what(node, names) -> str | None:
+def _ts_what(node, names, module_level) -> str | None:
     kind = node["type"]
     text = _ts_string(node)
+
+    def port(value) -> bool:
+        return _ts_port(value, names)
+
     if text is not None:
         return "path" if _is_tmp(text) else "port" if _port_in_text(text) else None
     if kind == "TemplateLiteral":
-        quasis = [q["value"]["cooked"] or "" for q in node["quasis"]]
-        if _is_tmp(quasis[0]):
+        if _is_tmp(node["quasis"][0]["value"]["cooked"] or ""):
             return "path"
-        if any(_port_in_text(q) for q in quasis):
+        if _port_in_text(_ts_shown(node, names)):
             return "port"
-        for before, value in zip(quasis, node["expressions"], strict=False):
-            if _port_follows(before) and _ts_port(value, names):
-                return "port"
     if kind == "BinaryExpression" and node["operator"] == "+":
         before = _ts_ending(node["left"])
-        if before is not None and _port_follows(before) and _ts_port(node["right"], names):
+        if before is not None and _port_follows(before) and port(node["right"]):
+            return "port"
+    if kind == "ArrayExpression":
+        elements = node["elements"]
+        if len(elements) in (2, 4) and _host(_ts_string(elements[0])) and port(elements[1]):
+            return "port"
+        if _flag_given(elements, _ts_string, lambda v: _ts_shown(v, names), port):
             return "port"
     if kind == "CallExpression":
         args = node["arguments"]
         if _ts_name(node) == "tmpdir" or args and _ts_tmp(args[0]):
             return "path"
         if node["callee"]["type"] == "MemberExpression" and _ts_name(node) == "listen":
-            return "port" if args and _ts_port(args[0], names) else None
-    if kind == "AssignmentExpression" and PORT_NAME.search(_ts_name(node) or ""):
-        return "port" if _ts_port(node["right"], names) else None
-    if kind == "Property" and PORT_NAME.search(_ts_name(node["key"]) or ""):
-        return "port" if _ts_port(node["value"], names) else None
-    if kind == "ArrayExpression":
-        elements = node["elements"]
-        for flag, value in zip(elements, elements[1:], strict=False):
-            flag = _ts_string(flag)
-            if flag in PORT_FLAGS and _ts_port(value, names):
+            if args and port(args[0]):
                 return "port"
-            text = _ts_string(value)
-            if text is not None and _port_in_text(text):
-                continue  # a site itself, as an address
-            published = _published(text) if text is not None else _ts_port(value, names)
-            if flag in PUBLISH_FLAGS and published:
-                return "port"
+    if kind in ("CallExpression", "NewExpression") and _ts_name(node) not in READS:
+        args = node["arguments"]
+        if len(args) >= 2 and _port_named(_ts_string(args[0])) and port(args[1]):
+            return "port"
+        if _side_by_side(args, _ts_string, port):
+            return "port"
+    if kind in ("AssignmentExpression", "AssignmentPattern") and id(node) not in module_level:
+        if _port_named(_ts_name(node)):
+            return "port" if port(node["right"]) else None
+    if kind == "VariableDeclarator" and id(node) not in module_level:
+        if _port_named(_ts_name(node["id"])):
+            return "port" if port(node["init"]) else None
+    if kind in ("Property", "PropertyDefinition"):
+        key = node["key"]
+        if _port_named(_ts_string(key) if node.get("computed") else _ts_name(key)):
+            return "port" if port(node["value"]) else None
     return None
 
 
@@ -580,28 +690,34 @@ def ts_sites(source: str, tree: dict) -> list[Site]:
     """Where a source names a fixed path under /tmp or a fixed port, with the function or
     test each is in: a function's or a variable's name, or the title a call such as
     test() gives the function it is passed. A path given to a call is the call's site,
-    so join() names it with the rest of the path."""
-    names = _ts_port_names(tree)
-    allowed = _ts_unique_dirs(tree)
-    given = set()  # paths given to a call, whose site is the call
+    so join() names it with the rest of the path. FORMS spells the forms it catches."""
+    encoded = source.encode("utf-16-le")
+    module_level = {id(d) for d in _ts_module_declarations(tree)}
+    # Paths given to a call, whose site is the call; strings standing alone as a statement,
+    # as a directive does; and the folders that _ts_unique_dirs() allows.
+    skipped = _ts_unique_dirs(tree)
     found = []
 
-    def visit(node, scope):
+    def visit(node, scope, names):
         if isinstance(node, list):
             for child in node:
-                visit(child, scope)
+                visit(child, scope, names)
             return
         if not isinstance(node, dict) or "type" not in node:
             return
         kind = node["type"]
         if kind == "FunctionDeclaration" and node.get("id"):
             scope = node["id"]["name"]
+        if kind == "FunctionDeclaration" or kind in FUNCTIONS:
+            names = names - _ts_parameters(node)  # a parameter shadows a module-level name
         if kind == "CallExpression" and node["arguments"] and _ts_tmp(node["arguments"][0]):
-            given.add(id(node["arguments"][0]))
-        what = None if id(node) in given | allowed else _ts_what(node, names)
+            skipped.add(id(node["arguments"][0]))
+        if kind == "ExpressionStatement" and _ts_string(node["expression"]) is not None:
+            skipped.add(id(node["expression"]))
+        what = None if id(node) in skipped else _ts_what(node, names, module_level)
         if what:
-            line = _segment(source, 0, node["start"]).count("\n") + 1
-            found.append(Site(line, scope, what, _segment(source, node["start"], node["end"])))
+            line = _segment(encoded, 0, node["start"]).count("\n") + 1
+            found.append(Site(line, scope, what, _segment(encoded, node["start"], node["end"])))
         for key, child in node.items():
             function = isinstance(child, dict) and child.get("type") in FUNCTIONS
             inner = scope
@@ -611,11 +727,11 @@ def ts_sites(source: str, tree: dict) -> list[Site]:
                 title = _ts_string(child[0]) if child else None
                 for argument in child:
                     named = title is not None and argument.get("type") in FUNCTIONS
-                    visit(argument, title if named else scope)
+                    visit(argument, title if named else scope, names)
                 continue
-            visit(child, inner)
+            visit(child, inner, names)
 
-    visit(tree, "")
+    visit(tree, "", _ts_port_names(tree))
     return found
 
 
@@ -640,117 +756,6 @@ def ts_scanned(root: Path = FRONTEND) -> list[str]:
         cwd=root, check=True, capture_output=True,
     ).stdout.decode().split("\0")  # fmt: skip
     return sorted(r for r in listed if Path(r).suffix in SOURCES and (root / r).is_file())
-
-
-TS_PLANTED = [
-    (f'const root = "{TMP}/rcman-e2e";', "path"),
-    (f'const root = "{TMP}";', "path"),
-    (f"const root = `{TMP}/x-${{name}}`;", "path"),
-    (f'const root = join("{TMP}", "x");', "path"),
-    ('const root = join(tmpdir(), "x");', "path"),
-    ('const root = join(os.tmpdir(), "x");', "path"),
-    ("const root = tmpdir();", "path"),
-    (f'const root = mkdtempSync(join("{TMP}/sub", "x-"));', "path"),
-    ('const root = mkdtempSync(join(tmpdir(), "sub", "x-"));', "path"),
-    ('mkdirSync(join(tmpdir(), "x-"));', "path"),
-    ("export default { webServer: { port: 8765 } };", "port"),
-    ('const server = { port: "8765" };', "port"),
-    ('const server = { "port": 8765 };', "port"),
-    ("const server = { port: 8765 as number };", "port"),
-    ("const server = { port: process.env.PORT ?? 8765 };", "port"),
-    ('const server = { port: Number(process.env.PORT) || "8765" };', "port"),
-    ('run("uvicorn", ["app", "--port", "8765"]);', "port"),
-    ('run("uvicorn", ["app", "--port", String(8765)]);', "port"),
-    ('run("uvicorn", ["app", "--port=8765"]);', "port"),
-    ('run("server", ["-p", "8765"]);', "port"),
-    ('run("docker", ["run", "-p", "127.0.0.1:8765:443", "image"]);', "port"),
-    ('run("docker", ["run", "--publish", "8765:80", "image"]);', "port"),
-    ('const command = "uvicorn app --host 127.0.0.1 --port 8765";', "port"),
-    ('const command = "docker run -p 8765:80 image";', "port"),
-    ("const command = `uvicorn ${app} --port 8765`;", "port"),
-    ("const command = `uvicorn app --port ${8765}`;", "port"),
-    ("const command = `uvicorn app --port=${8765}`;", "port"),
-    ("const url = `http://127.0.0.1:${8765}/api`;", "port"),
-    ('const url = `http://localhost:${"8765"}`;', "port"),
-    ("const rules = `MAP rcman.test:443 127.0.0.1:${process.env.PORT ?? 8765}`;", "port"),
-    ('server.listen(8765, "127.0.0.1");', "port"),
-    ('process.env.RCMAN_E2E_PORT ??= "8765";', "port"),
-    ("process.env.PORT = 8765;", "port"),
-    ('const env = { RCMAN_E2E_PORT: "8765" };', "port"),
-    ('const url = "http://127.0.0.1:8765";', "port"),
-    ('const config = { baseURL: "http://localhost:8765" };', "port"),
-    ('const url = "https://rcman.test:44300/";', "port"),
-    ('const url = "http://user@[::1]:8765/api";', "port"),
-    ("const url = `http://127.0.0.1:8765/${path}`;", "port"),
-    ('const rules = "MAP rcman.test:443 127.0.0.1:44300";', "port"),
-    ('const url = "http://127.0.0.1:" + 8765;', "port"),
-    ('const command = "uvicorn app --port " + "8765";', "port"),
-]
-TS_PORT_DECLARATIONS = [
-    "const PORT = 8765;",
-    'export const PORT = "8765";',
-    'const PORT = process.env.PORT ?? "8765";',
-]
-TS_PORT_USES = [
-    'run("uvicorn", ["--port", String(PORT)]);',
-    "const command = `uvicorn app --port ${PORT}`;",
-    "const url = `http://127.0.0.1:${PORT}`;",
-    "const server = { port: PORT };",
-    "server.listen(PORT);",
-    'const url = "http://127.0.0.1:" + PORT;',
-    "process.env.RCMAN_E2E_PORT ??= PORT;",
-]
-TS_CLEAN = [
-    "const server = { port: 0 };",
-    "const server = { port: process.env.PORT ?? 0 };",
-    'server.listen(0, "127.0.0.1");',
-    "const command = `uvicorn app --port ${process.env.PORT}`;",
-    "const command = `uvicorn app --port ${port}`;",
-    f'const text = "{TMP}x is another folder";',
-    'run("mkdir", ["-p", "folder"]);',
-    'run("tmux", ["display-message", "-p", "#{pid}"]);',
-    'run("docker", ["run", "-p", `127.0.0.1:${port}:443`, "image"]);',
-    'run("docker", ["run", "-p", "127.0.0.1::443", "image"]);',
-    'parse(["--app-port", "8001"]);',
-    'const UNREACHABLE = "http://127.0.0.1:1/";',
-    "await page.setViewportSize({ width: 1200, height: 800 });",
-    'const sizes = [["width", 1200]];',
-    "const ratio = `${count}:${1200}`;",
-    "const port = process.env.RCMAN_STACK_PORT;\nconst rules = `127.0.0.1:${port}`;",
-    "function f(port: number) {\n  server.listen(port);\n}",
-    "test('waits', async () => {\n  await vi.advanceTimersByTimeAsync(3500);\n});",
-    'const root = mkdtempSync(join(tmpdir(), "x-"));',
-    f'const root = mkdtempSync(join("{TMP}", "x-"));',
-    'const root = await fs.mkdtemp(path.join(os.tmpdir(), "x-"));',
-    "const size = { viewport: 1200 };",
-    'process.env.TIMEOUT ??= "3000";',
-    "process.env.RCMAN_E2E_PORT ??= String(await freePort());",
-    'const where = "stack.spec.ts:1234";',
-    'const ratio = "16:9000";',
-    'const url = "https://rcman.test/";',
-    'const url = "http://127.0.0.1:" + port;',
-    'const rules = "MAP rcman.test:443 127.0.0.1:" + port;',
-]
-
-
-def _in_function(snippet: str) -> str:
-    return f"function f() {{\n  {snippet}\n}}\n"
-
-
-def _module_port(declaration: str, use: str) -> str:
-    return f"{declaration}\nfunction f() {{\n  {use}\n}}\n"
-
-
-@pytest.fixture(scope="module")
-def ts_trees() -> dict[str, dict]:
-    """Every TypeScript source these tests plant, parsed together: one node per module."""
-    sources = [s for s, _ in TS_PLANTED] + [_in_function(s) for s, _ in TS_PLANTED]
-    for declaration in TS_PORT_DECLARATIONS:
-        for chosen in (declaration, declaration.replace("8765", "0")):
-            sources += [_module_port(chosen, use) for use in TS_PORT_USES]
-    sources += TS_CLEAN
-    names = {f"planted{i}.ts": source for i, source in enumerate(sources)}
-    return {names[name]: tree for name, tree in parse_ts(names).items()}
 
 
 def test_no_frontend_source_holds_a_fixed_tmp_path_or_port():
@@ -837,31 +842,6 @@ def test_the_world_named_without_a_unique_name_is_flagged():
     assert len(ts_flagged(rel, fixed, parse_ts({rel: fixed})[rel])) == 1
 
 
-@pytest.mark.parametrize(("planted", "kind"), TS_PLANTED)
-def test_the_guard_finds_a_planted_fixed_resource_in_typescript(ts_trees, planted, kind):
-    """Planted twins: each way of naming a fixed path or port is found, in a function too."""
-    assert [s.kind for s in ts_sites(planted, ts_trees[planted])] == [kind]
-    inside = _in_function(planted)
-    assert [s[:3] for s in ts_sites(inside, ts_trees[inside])] == [(2, "f", kind)]
-
-
-@pytest.mark.parametrize("declaration", TS_PORT_DECLARATIONS)
-@pytest.mark.parametrize("use", TS_PORT_USES)
-def test_the_guard_finds_a_fixed_port_held_in_a_typescript_module_constant(
-    ts_trees, declaration, use
-):
-    """Planted twin: a port named once at module level and used in a function."""
-    source = _module_port(declaration, use)
-    assert [s[:3] for s in ts_sites(source, ts_trees[source])] == [(3, "f", "port")]
-    chosen = _module_port(declaration.replace("8765", "0"), use)
-    assert chosen != source and ts_sites(chosen, ts_trees[chosen]) == []  # control: port 0
-
-
-@pytest.mark.parametrize("source", TS_CLEAN)
-def test_the_guard_leaves_unique_names_and_chosen_ports_in_typescript_alone(ts_trees, source):
-    assert ts_sites(source, ts_trees[source]) == []
-
-
 def test_a_typescript_site_is_named_by_the_function_or_test_it_is_in():
     snippet = f'join("{TMP}", "x")'
     source = (
@@ -874,3 +854,585 @@ def test_a_typescript_site_is_named_by_the_function_or_test_it_is_in():
     assert [(s.line, s.function) for s in sites] == [
         (1, ""), (3, "named"), (5, "arrow"), (7, "a test title"),
     ]  # fmt: skip
+
+
+# The forms the guard catches, each spelled in both languages: the one list of them. Planted
+# text writes its path and port as <tmp> and <port>, which _spelled() fills in, so that this
+# module, which the guard reads, does not hold them itself.
+
+PLANTED_PORT = "8765"
+
+
+class Form(NamedTuple):
+    kind: str
+    python: tuple[str, ...]
+    typescript: tuple[str, ...]
+
+
+class Twins(NamedTuple):
+    python: tuple[str, ...]
+    typescript: tuple[str, ...]
+
+
+FORMS = {
+    "/tmp or a path in it, as a string": Form(
+        "path",
+        (
+            'root = "<tmp>"',
+            'root = Path("<tmp>/rcman-e2e")',
+            'root = Path("<tmp>") / f"x-{name}"',
+            'sock = os.path.join("<tmp>", "a.sock")',
+            'd = tmp_path_factory.mktemp("x", dir="<tmp>")',
+            'd = tempfile.mkdtemp(dir="<tmp>/sub")',
+        ),
+        (
+            'const root = "<tmp>";',
+            'const root = "<tmp>/rcman-e2e";',
+            'const root = join("<tmp>", "x");',
+            'const root = mkdtempSync(join("<tmp>/sub", "x-"));',
+        ),
+    ),
+    "a formatted string beginning with one": Form(
+        "path",
+        ('root = f"<tmp>/x-{name}"',),
+        ("const root = `<tmp>/x-${name}`;",),
+    ),
+    "the system's temporary folder": Form(
+        "path",
+        (
+            "root = tempfile.gettempdir()",
+            'root = Path(tempfile.gettempdir()) / "fixed"',
+            'sock = os.path.join(tempfile.gettempdir(), "a.sock")',
+            'os.mkdir(os.path.join(tempfile.gettempdir(), "x-"))',
+            'd = tempfile.mkdtemp(dir=os.path.join(tempfile.gettempdir(), "sub"))',
+        ),
+        (
+            "const root = tmpdir();",
+            'const root = join(tmpdir(), "x");',
+            'const root = join(os.tmpdir(), "x");',
+            'mkdirSync(join(tmpdir(), "x-"));',
+            'const root = mkdtempSync(join(tmpdir(), "sub", "x-"));',
+        ),
+    ),
+    "an address: a host and a port in a tuple, a list or an array": Form(
+        "port",
+        (
+            's.bind(("127.0.0.1", <port>))',
+            's.bind(["127.0.0.1", <port>])',
+            'server = HTTPServer(("", <port>), Handler)',
+            'socket.create_connection(("::1", "<port>"))',
+            'address = ("::1", <port>, 0, 0)',
+            'address = ("rcman.test", <port>)',
+            'address = ("localhost", "<port>")',
+        ),
+        (
+            'const address = ["127.0.0.1", <port>];',
+            'const address = ["", <port>];',
+            'const address = ["::1", "<port>"];',
+            'const address = ["::1", <port>, 0, 0];',
+            'const address = ["rcman.test", <port>];',
+            'const address = ["localhost", "<port>"];',
+        ),
+    ),
+    "a host and a port side by side as a call's arguments": Form(
+        "port",
+        (
+            'connection = asyncio.open_connection("127.0.0.1", <port>)',
+            'server = asyncio.start_server(handle, "127.0.0.1", <port>)',
+            'connection = http.client.HTTPConnection("localhost", "<port>")',
+        ),
+        (
+            'const socket = net.connect(<port>, "127.0.0.1");',
+            'const socket = net.createConnection(<port>, "localhost");',
+            'const site = new Site("::1", "<port>");',
+        ),
+    ),
+    "a name, key or keyword argument for a port: port, or one ending _PORT": Form(
+        "port",
+        (
+            "github.start(root, token, port=<port>)",
+            "start(app_port=<port>)",
+            'config = {"port": <port>}',
+            'env = {"RCMAN_E2E_PORT": "<port>"}',
+            'os.environ["RCMAN_E2E_PORT"] = "<port>"',
+            "server.port = <port>",
+            "server.port: int = <port>",
+            "class Server:\n    port = <port>",
+            'monkeypatch.setenv("RCMAN_E2E_PORT", "<port>")',
+            'os.environ.setdefault("RCMAN_E2E_PORT", "<port>")',
+        ),
+        (
+            "export default { webServer: { port: <port> } };",
+            'const server = { port: "<port>" };',
+            'const server = { "port": <port> };',
+            'const env = { RCMAN_E2E_PORT: "<port>" };',
+            'process.env["RCMAN_E2E_PORT"] = "<port>";',
+            "process.env.PORT = <port>;",
+            'process.env.RCMAN_E2E_PORT ??= "<port>";',
+            "class Server {\n  port = <port>;\n}",
+            'vi.stubEnv("RCMAN_E2E_PORT", "<port>");',
+        ),
+    ),
+    "a parameter named for a port, given one as its default": Form(
+        "port",
+        (
+            "def serve(port=<port>):\n    pass",
+            "def serve(*, app_port: int = <port>):\n    pass",
+            "serve = lambda port=<port>: port",
+        ),
+        (
+            "function serve(port = <port>) {}",
+            "const serve = (appPort, app_port = <port>) => app_port;",
+            "const { port = <port> } = options;",
+        ),
+    ),
+    "the first argument of listen": Form(
+        "port",
+        ("app.listen(<port>)", 'app.listen(<port>, address="127.0.0.1")'),
+        ("server.listen(<port>);", 'server.listen(<port>, "127.0.0.1");'),
+    ),
+    "after --port": Form(
+        "port",
+        (
+            'run(["uvicorn", "app", "--port", "<port>"])',
+            'run(["uvicorn", "app", "--port=<port>"])',
+            'command = "uvicorn app --host 127.0.0.1 --port <port>"',
+            'command = f"uvicorn {app} --port <port>"',
+            'command = f"uvicorn app --port {<port>}"',
+            'command = f"uvicorn app --port={<port>}"',
+            'command = "uvicorn app --port " + "<port>"',
+            'command = "uvicorn app --port <port>; echo ok"',
+            "command = \"sh -c 'uvicorn app --port <port>'\"",
+        ),
+        (
+            'run("uvicorn", ["app", "--port", "<port>"]);',
+            'run("uvicorn", ["app", "--port=<port>"]);',
+            'const command = "uvicorn app --host 127.0.0.1 --port <port>";',
+            "const command = `uvicorn ${app} --port <port>`;",
+            "const command = `uvicorn app --port ${<port>}`;",
+            "const command = `uvicorn app --port=${<port>}`;",
+            'const command = "uvicorn app --port " + "<port>";',
+            'const command = "uvicorn app --port <port>; echo ok";',
+            "const command = \"sh -c 'uvicorn app --port <port>'\";",
+        ),
+    ),
+    "after -p or --publish, alone or as the host port of docker's mapping": Form(
+        "port",
+        (
+            'run(["server", "-p", "<port>"])',
+            'run(["docker", "run", "-p", "<port>:80", "image"])',
+            'run(["docker", "run", "-p", "127.0.0.1:<port>:443", "image"])',
+            'run(["docker", "run", "--publish", "<port>:80", "image"])',
+            'run(["docker", "run", "--publish=127.0.0.1:<port>:80", "image"])',
+            'command = "docker run -p <port>:80 image"',
+            'command = f"docker run -p {<port>}:80 image"',
+            'run(["docker", "run", "-p", f"{<port>}:80", "image"])',
+            'run(["docker", "run", "-p", f"127.0.0.1:{<port>}:80", "image"])',
+        ),
+        (
+            'run("server", ["-p", "<port>"]);',
+            'run("docker", ["run", "-p", "<port>:80", "image"]);',
+            'run("docker", ["run", "-p", "127.0.0.1:<port>:443", "image"]);',
+            'run("docker", ["run", "--publish", "<port>:80", "image"]);',
+            'run("docker", ["run", "--publish=127.0.0.1:<port>:80", "image"]);',
+            'const command = "docker run -p <port>:80 image";',
+            "const command = `docker run -p ${<port>}:80 image`;",
+            'run("docker", ["run", "-p", `${<port>}:80`, "image"]);',
+            'run("docker", ["run", "-p", `127.0.0.1:${<port>}:80`, "image"]);',
+        ),
+    ),
+    "after a host and its colon: in a URL, or after an IP address or localhost": Form(
+        "port",
+        (
+            'url = "http://127.0.0.1:<port>/api"',
+            'httpx.get("http://localhost:<port>")',
+            'url = "https://rcman.test:<port>/"',
+            'url = "http://web:<port>/"',
+            'url = "http://RCMAN.test:<port>/"',
+            'url = "http://user@[::1]:<port>/api"',
+            'rules = "MAP rcman.test:443 127.0.0.1:<port>"',
+            'url = f"http://127.0.0.1:<port>/{path}"',
+            'url = f"http://127.0.0.1:{<port>}/api"',
+            "url = f\"http://localhost:{'<port>'}\"",
+            "rules = f\"MAP rcman.test:443 127.0.0.1:{os.environ.get('PORT') or <port>}\"",
+            'url = "http://127.0.0.1:" + "<port>"',
+            'url = "http://127.0.0.1:" + str(<port>)',
+            'command = "socat TCP:127.0.0.1:<port> -"',
+            'body = \'{"addr": "127.0.0.1:<port>"}\'',
+            "command = \"serve --bind '127.0.0.1:<port>'\"",
+        ),
+        (
+            'const url = "http://127.0.0.1:<port>/api";',
+            'const config = { baseURL: "http://localhost:<port>" };',
+            'const url = "https://rcman.test:<port>/";',
+            'const url = "http://web:<port>/";',
+            'const url = "http://RCMAN.test:<port>/";',
+            'const url = "http://user@[::1]:<port>/api";',
+            'const rules = "MAP rcman.test:443 127.0.0.1:<port>";',
+            "const url = `http://127.0.0.1:<port>/${path}`;",
+            "const url = `http://127.0.0.1:${<port>}/api`;",
+            'const url = `http://localhost:${"<port>"}`;',
+            "const rules = `MAP rcman.test:443 127.0.0.1:${process.env.PORT || <port>}`;",
+            'const url = "http://127.0.0.1:" + "<port>";',
+            'const url = "http://127.0.0.1:" + String(<port>);',
+            'const command = "socat TCP:127.0.0.1:<port> -";',
+            'const body = \'{"addr": "127.0.0.1:<port>"}\';',
+            "const command = \"serve --bind '127.0.0.1:<port>'\";",
+        ),
+    ),
+    "a port converted or cast": Form(
+        "port",
+        (
+            'start(port=int("<port>"))',
+            'run(["uvicorn", "app", "--port", str(<port>)])',
+            "start(port=cast(int, <port>))",
+        ),
+        (
+            'const server = { port: Number("<port>") };',
+            'run("uvicorn", ["app", "--port", String(<port>)]);',
+            "const server = { port: <port> as number };",
+            "const server = { port: <number><port> };",
+        ),
+    ),
+    "a port as the fallback of a value that may be missing": Form(
+        "port",
+        (
+            'start(port=os.environ.get("PORT", <port>))',
+            'start(port=os.getenv("PORT", default="<port>"))',
+            'start(port=int(os.environ.get("PORT") or "<port>"))',
+        ),
+        (
+            "const server = { port: process.env.PORT ?? <port> };",
+            'const server = { port: Number(process.env.PORT) || "<port>" };',
+            'const server = { port: settings.get("PORT", <port>) };',
+        ),
+    ),
+    "a port formatted alone": Form(
+        "port",
+        ('start(port=f"{<port>}")', 'env = {"RCMAN_E2E_PORT": f"<port>"}'),
+        ("const server = { port: `${<port>}` };", "const env = { RCMAN_E2E_PORT: `<port>` };"),
+    ),
+}
+# A module-level name given a fixed port, and the forms that use it in a function. The name
+# is followed to where it is used; it is not a site itself.
+PORT_DECLARATIONS = {
+    "a number": Twins(("PORT = <port>",), ("const PORT = <port>;",)),
+    "a string of digits": Twins(('PORT: str = "<port>"',), ('export const PORT = "<port>";',)),
+    "a fallback": Twins(
+        ('PORT = int(os.environ.get("PORT", "<port>"))',),
+        ('const PORT = process.env.PORT ?? "<port>";',),
+    ),
+}
+PORT_USES = {
+    "an address": Twins(
+        ('s.bind(("127.0.0.1", PORT))',), ('const address = ["127.0.0.1", PORT];',)
+    ),
+    "a call's arguments": Twins(
+        ('connection = asyncio.open_connection("127.0.0.1", PORT)',),
+        ('const socket = net.connect(PORT, "127.0.0.1");',),
+    ),
+    "a port's name": Twins(("start(port=PORT)",), ("const server = { port: PORT };",)),
+    "an environment's port": Twins(
+        ('os.environ.setdefault("RCMAN_E2E_PORT", str(PORT))',),
+        ("process.env.RCMAN_E2E_PORT ??= PORT;",),
+    ),
+    "listen": Twins(("app.listen(PORT)",), ("server.listen(PORT);",)),
+    "after --port": Twins(
+        ('run(["uvicorn", "--port", str(PORT)])', 'run(["uvicorn", "--port", PORT])'),
+        ('run("uvicorn", ["--port", String(PORT)]);',),
+    ),
+    "a formatted command": Twins(
+        ('command = f"uvicorn app --port {PORT}"',),
+        ("const command = `uvicorn app --port ${PORT}`;",),
+    ),
+    "a formatted URL": Twins(
+        ('url = f"http://localhost:{PORT}"',), ("const url = `http://localhost:${PORT}`;",)
+    ),
+    "a joined URL": Twins(
+        ('url = "http://127.0.0.1:" + str(PORT)',), ('const url = "http://127.0.0.1:" + PORT;',)
+    ),
+}
+# A name for a port that is a function's own: a site, as a module-level one is not.
+LOCAL_PORT = Twins(("port = <port>",), ("const port = <port>;", "let port;\nport = <port>;"))
+# What the guard leaves alone, in both languages.
+CLEAN = {
+    "a uniquely named folder made in /tmp itself": Twins(
+        (
+            'root = Path(tempfile.mkdtemp(prefix="rcb-", dir="<tmp>"))',
+            'with tempfile.TemporaryDirectory(dir="<tmp>") as d: pass',
+            'd = tempfile.mkdtemp(dir=Path("<tmp>"))',
+            "d = tempfile.mkdtemp(dir=tempfile.gettempdir())",
+            "d = tempfile.mkdtemp(dir=Path(tempfile.gettempdir()))",
+        ),
+        (
+            'const root = mkdtempSync(join("<tmp>", "x-"));',
+            'const root = mkdtempSync(join(tmpdir(), "x-"));',
+            'const root = await fs.mkdtemp(path.join(os.tmpdir(), "x-"));',
+        ),
+    ),
+    "a test's own folder": Twins(
+        ('root = tmp_path / "x"',), ('const root = join(testInfo.outputDir, "x");',)
+    ),
+    "a port the system picks": Twins(
+        (
+            's.bind(("127.0.0.1", 0))',
+            "github.start(root, token, port=0)",
+            'start(port=os.environ.get("PORT", 0))',
+            'connection = asyncio.open_connection("127.0.0.1", 0)',
+        ),
+        (
+            "const server = { port: 0 };",
+            "const server = { port: process.env.PORT ?? 0 };",
+            'server.listen(0, "127.0.0.1");',
+            'const address = ["127.0.0.1", 0];',
+        ),
+    ),
+    "a port held in a variable, read from the environment or computed": Twins(
+        (
+            's.bind(("127.0.0.1", port))',
+            "def f(port):\n    s.bind(('', port))",
+            'run(["uvicorn", "app", "--port", str(port)])',
+            "command = f\"uvicorn app --port {os.environ['PORT']}\"",
+            'run(["docker", "run", "-p", f"127.0.0.1:{port}:443", "image"])',
+            'url = "http://127.0.0.1:" + str(port)',
+            'rules = "MAP rcman.test:443 127.0.0.1:" + port',
+            'port = os.environ["RCMAN_STACK_PORT"]\nrules = f"127.0.0.1:{port}"',
+            'os.environ.setdefault("RCMAN_E2E_PORT", str(free_port()))',
+        ),
+        (
+            "server.listen(port);",
+            "function f(port: number) {\n  server.listen(port);\n}",
+            "const command = `uvicorn app --port ${port}`;",
+            "const command = `uvicorn app --port ${process.env.PORT}`;",
+            'run("docker", ["run", "-p", `127.0.0.1:${port}:443`, "image"]);',
+            'const url = "http://127.0.0.1:" + port;',
+            'const rules = "MAP rcman.test:443 127.0.0.1:" + port;',
+            "const port = process.env.RCMAN_STACK_PORT;\nconst rules = `127.0.0.1:${port}`;",
+            "process.env.RCMAN_E2E_PORT ??= String(await freePort());",
+        ),
+    ),
+    "a key computed from a variable, whatever the variable's name": Twins(
+        ("def f(port):\n    settings[port] = <port>", "def f(port):\n    d = {port: <port>}"),
+        (
+            "function f(port: string) {\n  settings[port] = <port>;\n}",
+            "function f(port: string) {\n  const d = { [port]: <port> };\n}",
+        ),
+    ),
+    "a parameter that shadows a module-level name for a port": Twins(
+        ('PORT = <port>\ndef f(PORT):\n    s.bind(("127.0.0.1", PORT))',),
+        ("const PORT = <port>;\nfunction f(PORT: number) {\n  server.listen(PORT);\n}",),
+    ),
+    "a privileged port, which no other test can take": Twins(
+        ('UNREACHABLE = "http://127.0.0.1:1/"', 'socket.create_connection(("127.0.0.1", 9))'),
+        (
+            'const UNREACHABLE = "http://127.0.0.1:1/";',
+            'const socket = net.connect(9, "127.0.0.1");',
+        ),
+    ),
+    "text that only looks like a path or a port": Twins(
+        (
+            'text = "<tmp>x is another folder"',
+            'run(["mkdir", "-p", "folder"])',
+            'run(["tmux", "display-message", "-p", "#{pid}"])',
+            'run(["docker", "run", "-p", "127.0.0.1::443", "image"])',
+            'parse(["--app-port", "8001"])',
+            'sizes = [("width", 1200), ("height", 1200)]',
+            'size = {"viewport": 1200}',
+            'write("out.txt", 1200)',
+            'ratio = f"{count}:{1200}"',
+            'ratio = "16:9000"',
+            'where = "stack.spec.ts:1234"',
+            'url = "https://rcman.test/"',
+            'os.environ.setdefault("TIMEOUT", "3000")',
+            'start(os.environ.get("PORT", "<port>"))',
+            "clock.advance(3500)",
+        ),
+        (
+            'const text = "<tmp>x is another folder";',
+            'run("mkdir", ["-p", "folder"]);',
+            'run("tmux", ["display-message", "-p", "#{pid}"]);',
+            'run("docker", ["run", "-p", "127.0.0.1::443", "image"]);',
+            'parse(["--app-port", "8001"]);',
+            'const sizes = [["width", 1200]];',
+            "const size = { viewport: 1200 };",
+            'write("out.txt", 1200);',
+            "const ratio = `${count}:${1200}`;",
+            'const ratio = "16:9000";',
+            'const where = "stack.spec.ts:1234";',
+            'const url = "https://rcman.test/";',
+            'process.env.TIMEOUT ??= "3000";',
+            'start(settings.get("PORT", "<port>"));',
+            "await vi.advanceTimersByTimeAsync(3500);",
+            "await page.setViewportSize({ width: 1200, height: 800 });",
+        ),
+    ),
+    "a string standing alone, as a docstring does": Twins(
+        (
+            '"""Serves on http://127.0.0.1:<port>."""',
+            'def f():\n    """Serves on http://127.0.0.1:<port>."""',
+        ),
+        (
+            '"Serves on http://127.0.0.1:<port>";',
+            'function f() {\n  "Serves on http://127.0.0.1:<port>";\n}',
+        ),
+    ),
+}
+TABLES = {
+    "FORMS": FORMS,
+    "PORT_DECLARATIONS": PORT_DECLARATIONS,
+    "PORT_USES": PORT_USES,
+    "CLEAN": CLEAN,
+}
+
+
+def _spelled(planted: str) -> str:
+    return planted.replace("<tmp>", TMP).replace("<port>", PLANTED_PORT)
+
+
+def _one_sided(table: dict) -> list[str]:
+    """The entries of a table that one language does not spell."""
+    return [name for name, twins in table.items() if not twins.python or not twins.typescript]
+
+
+def _python_in_function(snippet: str) -> str:
+    return "def f():\n" + "".join(f"    {line}\n" for line in snippet.splitlines())
+
+
+def _in_function(snippet: str) -> str:
+    return f"function f() {{\n  {snippet}\n}}\n"
+
+
+def _module_port(declaration: str, use: str, python: bool) -> str:
+    inside = _python_in_function(use) if python else _in_function(use)
+    return f"{_spelled(declaration)}\n{inside}"
+
+
+def _twins(language: str, table: dict) -> list:
+    """Each spelling in one language of a table's entries, with the entry's name as its id."""
+    return [
+        pytest.param(entry, spelling, id=f"{name}: {spelling}")
+        for name, entry in table.items()
+        for spelling in getattr(entry, language)
+    ]
+
+
+def _module_ports(language: str) -> list:
+    return [
+        pytest.param(declaration, use, id=f"{d} / {u}: {use}")
+        for d, declarations in PORT_DECLARATIONS.items()
+        for declaration in getattr(declarations, language)
+        for u, uses in PORT_USES.items()
+        for use in getattr(uses, language)
+    ]
+
+
+def test_every_form_and_allowance_is_spelled_in_both_languages():
+    """What keeps the two languages uniform: an entry one of them does not spell fails."""
+    assert all(TABLES.values())  # non-vacuity: each table has entries
+    for name, table in TABLES.items():
+        assert _one_sided(table) == [], name
+    assert LOCAL_PORT.python and LOCAL_PORT.typescript
+    planted = {**FORMS, "only in Python": Form("port", ("x = 1",), ())}
+    planted["only in TypeScript"] = Form("port", (), ("const x = 1;",))
+    assert _one_sided(planted) == ["only in Python", "only in TypeScript"]
+
+
+def test_planted_text_names_no_fixed_path_or_port_until_spelled():
+    """The placeholders stand for the path and port, so the guard reads none in this module."""
+    entries = [*(e for table in TABLES.values() for e in table.values()), LOCAL_PORT]
+    planted = [s for e in entries for s in (*e.python, *e.typescript)]
+    assert any("<port>" in s for s in planted) and any("<tmp>" in s for s in planted)
+    assert all(TMP not in s and PLANTED_PORT not in s for s in planted)
+
+
+@pytest.mark.parametrize(("form", "planted"), _twins("python", FORMS))
+def test_the_guard_finds_each_form_planted_in_python(form, planted):
+    """Planted twins: each spelling is found, at module level and in a function."""
+    source = _spelled(planted)
+    sites = fixed_sites(source)
+    assert [s.kind for s in sites] == [form.kind]
+    inside = fixed_sites(_python_in_function(source))
+    assert [s[:3] for s in inside] == [(sites[0].line + 1, sites[0].function or "f", form.kind)]
+
+
+@pytest.mark.parametrize(("declaration", "use"), _module_ports("python"))
+def test_the_guard_finds_a_fixed_port_held_in_a_module_constant(declaration, use):
+    """Planted twin: a port named once at module level and used in a function."""
+    source = _module_port(declaration, use, python=True)
+    assert [s[:3] for s in fixed_sites(source)] == [(3, "f", "port")]
+    chosen = _module_port(declaration.replace("<port>", "0"), use, python=True)
+    assert fixed_sites(chosen) == []  # positive control: port 0
+
+
+def test_a_functions_own_port_name_is_a_site_and_a_modules_is_followed():
+    (planted,) = LOCAL_PORT.python
+    assert fixed_sites(_spelled(planted)) == []
+    inside = _python_in_function(_spelled(planted))
+    assert [s[:3] for s in fixed_sites(inside)] == [(2, "f", "port")]
+
+
+@pytest.mark.parametrize(("allowance", "source"), _twins("python", CLEAN))
+def test_the_guard_leaves_unique_names_and_chosen_ports_alone(allowance, source):
+    assert fixed_sites(_spelled(source)) == []
+
+
+@pytest.fixture(scope="module")
+def ts_trees() -> dict[str, dict]:
+    """Every TypeScript source these tests plant, parsed together: one node per module."""
+    sources = []
+    for form in FORMS.values():
+        for planted in map(_spelled, form.typescript):
+            sources += [planted, _in_function(planted)]
+    for declarations in PORT_DECLARATIONS.values():
+        for declaration in declarations.typescript:
+            for uses in PORT_USES.values():
+                for use in uses.typescript:
+                    for chosen in (declaration, declaration.replace("<port>", "0")):
+                        sources.append(_module_port(chosen, use, python=False))
+    for local in map(_spelled, LOCAL_PORT.typescript):
+        sources += [local, _in_function(local)]
+    sources += [_spelled(s) for twins in CLEAN.values() for s in twins.typescript]
+    names = {f"planted{i}.ts": source for i, source in enumerate(sources)}
+    return {names[name]: tree for name, tree in parse_ts(names).items()}
+
+
+@pytest.mark.parametrize(("form", "planted"), _twins("typescript", FORMS))
+def test_the_guard_finds_each_form_planted_in_typescript(ts_trees, form, planted):
+    """Planted twins: each spelling is found, at module level and in a function."""
+    source = _spelled(planted)
+    sites = ts_sites(source, ts_trees[source])
+    assert [s.kind for s in sites] == [form.kind]
+    inside = _in_function(source)
+    assert [s[:3] for s in ts_sites(inside, ts_trees[inside])] == [
+        (sites[0].line + 1, sites[0].function or "f", form.kind)
+    ]
+
+
+@pytest.mark.parametrize(("declaration", "use"), _module_ports("typescript"))
+def test_the_guard_finds_a_fixed_port_held_in_a_typescript_module_constant(
+    ts_trees, declaration, use
+):
+    """Planted twin: a port named once at module level and used in a function."""
+    source = _module_port(declaration, use, python=False)
+    assert [s[:3] for s in ts_sites(source, ts_trees[source])] == [(3, "f", "port")]
+    chosen = _module_port(declaration.replace("<port>", "0"), use, python=False)
+    assert ts_sites(chosen, ts_trees[chosen]) == []  # positive control: port 0
+
+
+@pytest.mark.parametrize("planted", LOCAL_PORT.typescript)
+def test_a_functions_own_port_name_is_a_typescript_site_and_a_modules_is_followed(
+    ts_trees, planted
+):
+    planted = _spelled(planted)
+    assert ts_sites(planted, ts_trees[planted]) == []
+    line = 2 + next(i for i, text in enumerate(planted.splitlines()) if PLANTED_PORT in text)
+    inside = _in_function(planted)
+    assert [s[:3] for s in ts_sites(inside, ts_trees[inside])] == [(line, "f", "port")]
+
+
+@pytest.mark.parametrize(("allowance", "source"), _twins("typescript", CLEAN))
+def test_the_guard_leaves_unique_names_and_chosen_ports_in_typescript_alone(
+    ts_trees, allowance, source
+):
+    source = _spelled(source)
+    assert ts_sites(source, ts_trees[source]) == []

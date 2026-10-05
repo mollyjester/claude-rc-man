@@ -49,7 +49,7 @@ def test_saved_settings_outside_the_fields_are_dropped(tmp_path):
         "GOOGLE_CLIENT_SECRET=secret\nCOOKIE_SECRET=" + "c" * 32 + "\nAPP_PORT=8001\n"
     )
     settings = ins.gather(
-        saved, environ={"RCMAN_INSTALL_APP_PORT": "9001"}, flags={}, ask=None, sudo_user="dev"
+        saved, environ={"RCMAN_INSTALL_APP_PORT": "901"}, flags={}, ask=None, sudo_user="dev"
     )
     assert "APP_PORT" not in settings
     assert settings["COOKIE_SECRET"] == "c" * 32  # kept: generated once, not a field
@@ -248,7 +248,7 @@ SETTINGS = {
     "COOKIE_SECRET": "c" * 32,
     "ADMIN_EMAIL": "admin@example.com",
     "ADMIN_LINUX": "dev",
-    "PROXY_PORT": "4180",
+    "PROXY_PORT": "444",
     "CADDY_USER": "caddy",
 }
 
@@ -276,7 +276,7 @@ def test_oauth2_proxy_config_allows_only_the_allowlist():
     assert 'provider = "google"' in cfg
     assert f'authenticated_emails_file = "{ins.ETC}/allowed-emails"' in cfg
     assert 'redirect_url = "https://rcman.example.com/oauth2/callback"' in cfg
-    assert 'http_address = "127.0.0.1:4180"' in cfg
+    assert 'http_address = "127.0.0.1:444"' in cfg
     assert "email_domains" not in cfg  # any domain would bypass the allowlist
     assert 'cookie_secret = "' + "c" * 32 + '"' in cfg
     assert "set_xauthrequest = true" in cfg
@@ -300,7 +300,7 @@ def test_caddy_snippet_strips_the_identity_header_before_authenticating():
     snippet = ins.render("Caddyfile", SETTINGS)
     assert snippet.startswith("rcman.example.com {")
     strip = snippet.index("request_header -X-Forwarded-Email")
-    auth = snippet.index("forward_auth 127.0.0.1:4180")
+    auth = snippet.index("forward_auth 127.0.0.1:444")
     assert strip < auth and "route {" in snippet[:strip]
     assert "copy_headers X-Auth-Request-Email>X-Forwarded-Email" in snippet
     assert "reverse_proxy unix//run/rcman/rcman.sock\n" in snippet

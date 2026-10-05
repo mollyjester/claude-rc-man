@@ -25,6 +25,7 @@ REPO = Path(__file__).resolve().parent.parent
 FRONTEND = REPO / "frontend"
 CONFIGS = ("playwright.config.ts", "playwright.stack.config.ts")
 TOKEN = "the-worlds-github-token"
+ORIGIN = "http://rcman.test"  # what the browser would send; nothing listens there
 WORLDS = e2e.WORLDS
 
 
@@ -36,7 +37,7 @@ def world(monkeypatch):
     parent = Path(tempfile.mkdtemp(prefix="rce2e-test-", dir="/tmp"))
     root = parent / WORLDS.replace("*", "this-run")
     monkeypatch.setenv("RCMAN_E2E_DIR", str(root))
-    monkeypatch.setenv("RCMAN_PUBLIC_ORIGIN", "http://127.0.0.1:8765")
+    monkeypatch.setenv("RCMAN_PUBLIC_ORIGIN", ORIGIN)
     monkeypatch.setenv("RCMAN_E2E_GITHUB_TOKEN", TOKEN)
     started = []
     yield root, started
@@ -471,7 +472,7 @@ def test_the_worlds_github_serves_alices_origin_and_takes_a_push_with_its_token_
         fetched = client.post(
             "/api/git/fetch",
             json={"path": "projects/alice-repo"},
-            headers={**as_user(ALICE), "Origin": "http://127.0.0.1:8765"},
+            headers={**as_user(ALICE), "Origin": ORIGIN},
         )
         assert fetched.status_code == 200, fetched.text  # read from the world's GitHub
         write(repo / "pushed.txt")
