@@ -112,7 +112,7 @@ SERVER_STATES = {
     "spawn_prompt": "unrecognised",
     "spawn_prompt_interrupted": "unrecognised",
     "spawn_prompt_answered_after_interrupt": "unrecognised",
-    "spawn_prompt_terminated": "exited",
+    "spawn_prompt_killed": "exited",
     "spawn_connected_same_dir": "connected",
     "spawn_ready_same_dir": "ready",
     "spawn_stopped_same_dir": "stopped",
@@ -411,7 +411,7 @@ def test_a_server_at_the_spawn_mode_question_is_ended_by_stop_and_can_be_forgott
     code, out = helper_with(env, QUICK_STOP, "stop", "--", "projects/repo", timeout=30)
     assert code == 0, out
     assert out["server"]["state"] == "exited"
-    assert out["server"]["exit_code"] == 128 + signal.SIGTERM  # Ctrl+C did not end it
+    assert out["server"]["exit_code"] == 128 + signal.SIGKILL  # Ctrl+C and SIGTERM did not end it
     assert [s["state"] for s in ok(env, "list")["servers"]] == ["exited"]
     ok(env, "forget", "projects/repo")
     assert ok(env, "list")["servers"] == []

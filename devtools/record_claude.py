@@ -291,7 +291,7 @@ def _still_asking(r: Run, after: str) -> None:
 
 def _spawn_prompt(r: Run) -> None:
     """The spawn-mode question a repository gets without --spawn: Ctrl+C, then an
-    answer, are both ignored; SIGTERM ends it."""
+    answer, then SIGTERM, are all ignored; SIGKILL ends it."""
     _answer_trust(r)
     r.capture_when(SPAWN_QUESTION, "spawn_prompt")
     r.pane.interrupt()
@@ -301,7 +301,9 @@ def _spawn_prompt(r: Run) -> None:
     _still_asking(r, "An answer after Ctrl+C")
     r.capture("spawn_prompt_answered_after_interrupt", None)
     r.pane.signal(signal.SIGTERM)
-    r.capture_exit("spawn_prompt_terminated")
+    _still_asking(r, "SIGTERM")
+    r.pane.signal(signal.SIGKILL)
+    r.capture_exit("spawn_prompt_killed")
 
 
 def _spawn_answered(r: Run) -> None:
@@ -453,7 +455,7 @@ SEQUENCES: list[Sequence] = [
             "spawn_prompt",
             "spawn_prompt_interrupted",
             "spawn_prompt_answered_after_interrupt",
-            "spawn_prompt_terminated",
+            "spawn_prompt_killed",
         ),
         _spawn_prompt,
         needs_account=True,
