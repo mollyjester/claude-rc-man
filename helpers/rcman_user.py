@@ -108,4 +108,10 @@ def main(
         if "failed" in error.detail:
             detail = "failed: " + ", ".join(error.detail["failed"])
         print(ra.MESSAGES[error.code] + (f" ({detail})" if detail else ""), file=stderr)
+        for name, entry in error.detail.get("report", {}).items():
+            print(f"{name}:", file=stderr)
+            for line in entry["lines"]:
+                print(f"    {line}", file=stderr)
+            if entry["more"]:
+                print(f"    ({entry['more']} more lines not shown)", file=stderr)
         return 1

@@ -200,6 +200,10 @@ test("rolling out a version sends it and shows failed checks as the server named
       "That version failed rcman's checks.",
       {
         failed: ["sign_in_screen", "logout"],
+        report: {
+          sign_in_screen: { lines: ["ran: claude auth login", "planted sign-in screen"], more: 2 },
+          logout: { lines: ["ran: claude auth logout", "planted logout"], more: 0 },
+        },
       },
     ),
   });
@@ -213,4 +217,9 @@ test("rolling out a version sends it and shows failed checks as the server named
   expect(alert).toHaveTextContent("That version failed rcman's checks.");
   expect(alert).toHaveTextContent("sign_in_screen");
   expect(alert).toHaveTextContent("logout");
+  const signIn = within(alert).getByRole("figure", { name: "sign_in_screen" });
+  expect(signIn).toHaveTextContent("planted sign-in screen");
+  expect(signIn.nextElementSibling).toHaveTextContent(m.versionsReportMore(2));
+  const logout = within(alert).getByRole("figure", { name: "logout" });
+  expect(logout).toHaveTextContent("planted logout");
 });

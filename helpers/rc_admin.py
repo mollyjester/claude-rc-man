@@ -39,6 +39,11 @@ CLAUDE_INSTALLER_URL = "https://claude.ai/install.sh"
 VERSION_FILE = Path(__file__).resolve().parent / "claude-version"
 VERSION = Rule(re.compile(r"[0-9]+\.[0-9]+\.[0-9]+"), "A Claude Code version looks like 1.2.3.")
 PROCESS_EXIT_TIMEOUT = 10.0
+# All runuser is given; what it runs gets its variables from the env -i in its argv:
+# user_argv's, or check_candidate's for the checks.
+RUNUSER_ENV = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin"}
+# The name a refused upgrade reports, beside the checks', when installing the candidate fails.
+INSTALL = "install"
 
 # The rules rc-admin refuses a value by, each with the code it refuses it with;
 # MESSAGES gives each code its rule's own sentence.
@@ -216,8 +221,11 @@ class RealSystem:
     def chown(self, path: Path, uid: int, gid: int) -> None:
         os.chown(path, uid, gid)
 
-    def check_candidate(self, cfg: Config, version: str) -> list[str]:
-        """Install ``version`` in the canary home, as the app user, and run the checks."""
+    def check_candidate(self, cfg: Config, version: str) -> dict[str, dict]:
+        """Install ``version`` in the canary home, as the app user, and run the checks:
+        each failed check with its report, as ``claude_checks.candidate_failures`` gives
+        them; ``INSTALL`` where installing fails, with the end of what the installer
+        printed."""
         app = pwd.getpwnam(cfg.app_user)
         home = cfg.canary_home
         if home.exists():
@@ -225,10 +233,13 @@ class RealSystem:
         home.mkdir(parents=True, mode=0o700)
         os.chown(home, app.pw_uid, app.pw_gid)
         canary = UserInfo(cfg.app_user, app.pw_uid, app.pw_gid, home, [])
-        try:
-            self.install_claude(canary, version)
-        except AdminError:
-            return ["install"]
+        ran = self.run_installer(canary, version)
+        if ran[0] != 0:
+            lead = (f"ran: the Claude Code installer for {version}; exit code {ran[0]}",)
+            if ran.dropped:
+                lead += (f"(and {ran.dropped} bytes of output before what was kept)",)
+            output = claude_checks.report(ran.stdout, lead, tail=True, earlier=ran.dropped > 0)
+            return {INSTALL: output}
         env = {
             "HOME": str(home),
             "PATH": f"{home}/.local/bin:/usr/local/bin:/usr/bin:/bin",
@@ -242,25 +253,32 @@ class RealSystem:
         def run(args, until=None, timeout=claude_checks.TIMEOUT, terminal=True):
             argv = ["runuser", "-u", cfg.app_user, "--", "/usr/bin/env", "-i"]
             argv += [f"{k}={v}" for k, v in env.items()] + [claude, *args]
-            return claude_checks.run_command(
-                argv, {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin"}, home, until, timeout, terminal
+            return claude_checks.run_command(argv, RUNUSER_ENV, home, until, timeout, terminal)
+
+        return claude_checks.candidate_failures(run, version)
+
+    def run_installer(self, info: UserInfo, version: str) -> claude_checks.Ran:
+        """Install ``version`` for the user: its exit code, and the end of what the
+        installer printed, standard output and error together."""
+
+        def as_user(argv: list[str]) -> claude_checks.Ran:
+            return claude_checks.capture(
+                user_argv(info, argv), RUNUSER_ENV, info.home, merge=True, tail=True
             )
 
-        return claude_checks.candidate_checks(run, version)
+        if self.installer is not None:
+            return as_user([str(self.installer), version])
+        with tempfile.NamedTemporaryFile("wb", suffix=".sh", delete=False) as script:
+            with urllib.request.urlopen(CLAUDE_INSTALLER_URL, timeout=60) as response:
+                script.write(response.read())
+        try:
+            os.chmod(script.name, 0o644)
+            return as_user(["/bin/bash", script.name, version])
+        finally:
+            os.unlink(script.name)
 
     def install_claude(self, info: UserInfo, version: str) -> None:
-        if self.installer is not None:
-            code, _ = self.as_user(info, [str(self.installer), version], check=False)
-        else:
-            with tempfile.NamedTemporaryFile("wb", suffix=".sh", delete=False) as script:
-                with urllib.request.urlopen(CLAUDE_INSTALLER_URL, timeout=60) as response:
-                    script.write(response.read())
-            try:
-                os.chmod(script.name, 0o644)
-                code, _ = self.as_user(info, ["/bin/bash", script.name, version], check=False)
-            finally:
-                os.unlink(script.name)
-        if code != 0:
+        if self.run_installer(info, version)[0] != 0:
             raise AdminError("claude_install_failed")
 
 
@@ -428,9 +446,9 @@ def upgrade(cfg: Config, system, version: str) -> dict:
     """Check ``version``; only if it passes, approve it and install it for everyone."""
     if not VERSION.fullmatch(version):
         raise AdminError("version_invalid")
-    failed = system.check_candidate(cfg, version)
-    if failed:
-        raise AdminError("claude_checks_failed", {"failed": failed})
+    report = system.check_candidate(cfg, version)
+    if report:
+        raise AdminError("claude_checks_failed", {"failed": list(report), "report": report})
     uf.write_atomic(cfg.approved_file, version + "\n", mode=0o644)
     results = {}
     for user in _load(cfg):

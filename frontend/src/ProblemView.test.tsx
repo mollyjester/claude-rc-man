@@ -105,6 +105,37 @@ test("says nothing of more lines when git said no more", () => {
   expect(screen.getByRole("alert")).not.toHaveTextContent(m.andMoreLines(0));
 });
 
+test("shows what each failed check ran and got back, and how much more it left out", () => {
+  const report = {
+    version: { lines: ["ran: claude --version", "planted version output"], more: 0 },
+    logout: { lines: ["ran: claude auth logout", "planted logout output"], more: 5 },
+  };
+  const error = new ApiError(409, "claude_checks_failed", "Failed.", [], {
+    failed: ["version", "logout"],
+    report,
+  });
+  render(<ProblemView error={error} />);
+  expect(screen.getByRole("alert")).toHaveTextContent(`${m.versionsFailedChecks} version, logout`);
+  for (const [name, entry] of Object.entries(report)) {
+    // a figure, so its name reaches assistive technology, which a pre's own name does not
+    const figure = screen.getByRole("figure", { name });
+    expect(within(figure).getByText(name).tagName).toBe("FIGCAPTION"); // named where it is seen
+    const said = within(figure).getByText(entry.lines[0], { exact: false });
+    expect(said.tagName).toBe("PRE");
+    expect(said.textContent).toBe(entry.lines.join("\n"));
+  }
+  const logout = screen.getByRole("figure", { name: "logout" });
+  expect(logout.nextElementSibling).toHaveTextContent(m.versionsReportMore(5)); // under its own
+  expect(screen.getByRole("alert")).not.toHaveTextContent(m.versionsReportMore(0));
+});
+
+test("shows no report when the problem carries none", () => {
+  const error = new ApiError(409, "claude_checks_failed", "Failed.", [], { failed: ["version"] });
+  render(<ProblemView error={error} />);
+  expect(screen.getByRole("alert")).toHaveTextContent("version"); // positive control
+  expect(screen.queryByRole("figure")).not.toBeInTheDocument();
+});
+
 test("a fault in the page is not taken for rcman unreachable", () => {
   const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
   try {

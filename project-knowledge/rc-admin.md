@@ -63,7 +63,7 @@ version differs.
 
 `claude-upgrade` installs the candidate into the canary home
 (`/var/lib/rcman/canary`, recreated each time and owned by the application
-user) as the application user, and runs `candidate_checks` from
+user) as the application user, and runs `candidate_failures` from
 `helpers/claude_checks.py` there with a throwaway Claude configuration, the
 way rc-helper runs Claude: `auth status` through pipes with no terminal, as
 rc-helper reads it, so that Claude, which wraps its output at a terminal's
@@ -72,6 +72,51 @@ pseudo-terminal of the size rc-helper gives Claude's screens, `WIDTH` by
 `HEIGHT` in `helpers/rc_helper.py`. Only when no check fails does it write the
 approval file and install the version for each user; a user whose
 installation fails is reported and the others continue.
+
+A refusal, `claude_checks_failed`, carries `failed`, the names of what failed
+— `INSTALL` in `helpers/rc_admin.py` where the candidate did not install, and
+otherwise the checks' names in `CHECKS` — and `report`, which gives each of
+them `lines`, what was run and what came back, and `more`, how many lines
+were left out. `report()` in `helpers/claude_checks.py` makes each: it
+removes control sequences and characters (`scrub`), blanks what `SECRETS`
+lists with placeholders (`redact`), then keeps `MAX_REPORT_LINES` lines of
+at most `MAX_REPORT_LINE_LENGTH`, a cut line ending in `CUT` — the first,
+or, for the installer, the last, with `EARLIER_NOT_SHOWN` where earlier ones
+were left out. What could be a URL is judged a run of text at a time
+(`RUN`, `_run`), with no regard to its scheme, which a terminal can write
+over and JSON escapes: a run is blanked where it is part of a sign-in or
+environment URL, or carries a query or fragment parameter (`PARAMETER`),
+which is where an address carries codes, states and ids. A field's value is
+blanked to the end of its line where it has no closing quote. On the
+terminal, `redact_screen` reads a line exactly as wide as the terminal
+(`Screen` never wraps, so only the program could have) together with the
+next, and shows the group joined where that blanks something. It also
+collects, from what was written before the terminal drew it (`Ran.raw`),
+the values within what `redact` would blank that are shaped as credentials
+(`_credentials_in`: `MIN_CREDENTIAL_LENGTH`, `CREDENTIAL_SHAPE`), and blanks
+each as `CREDENTIAL` wherever the screen shows it whole: overwriting a URL
+with spaces or leaving a gap with a cursor move can leave a value no rule
+recognises on its own. With more than `MAX_CREDENTIALS` of them, the screen
+is replaced by `WITHHELD` instead of being searched.
+
+Each run keeps at most `MAX_CAPTURE_BYTES` of each stream it reads and
+counts the rest, which the report mentions; where it keeps the start, the
+line the cap cut is left out, and counted. The terminal is rendered as its
+output arrives (`Screen`), and `until` is looked for in the lines each read
+changes. Both kinds of run read through `_read`: once the program has
+exited, its output is read for up to `DRAIN_SECONDS` more, until it goes
+quiet, so something it started that holds the output open or writes on
+does not keep the run going — the installer's run, which has no deadline,
+included. When a run is done, or at its deadline, everything the program
+started is ended with it (`_end_group`), and a program that had exited
+keeps its exit code, also where the run stopped at `until`; the program is
+not reaped before its group is ended, so the group's id cannot have become
+another's. The installer's standard output and error are read together, and
+their end kept; runuser gets `RUNUSER_ENV` and nothing more, for the checks
+and the installer alike.
+The backend passes `failed` and `report` on unchanged, the Claude Code page
+shows them (see [frontend.md](frontend.md#rules-it-keeps)), and `rcman-user`
+prints them on stderr after the message; the audit records the code only.
 
 ## sudo
 
@@ -91,7 +136,7 @@ started through sudo.
 | Tests | What they prove |
 |---|---|
 | `tests/test_users_file.py` | Parsing, validation, writing and the allowlist |
-| `tests/test_rc_admin.py` | Which commands each operation decides to run, against a recording stand-in for the system; that refusals run none |
-| `tests/test_rcman_user.py` | The front end in words: the prompt, its default and refusing without a terminal, `SUDO_USER` as the administrator asking, each verb's output and refusals, and a command line that does not parse |
-| `tests/test_claude_checks.py` | The upgrade checks pass the fake and the real installed `claude`, the real one with a configuration path longer than a line, and a broken binary fails every one; `auth status` runs with no terminal and the rest on a terminal of rc-helper's size, and is judged on its standard output alone; `candidate_failures` gives each failed check what was run and what came back, standard error included, with no sign-in URL or token in it |
-| `tests/container/test_admin_in_container.py` | The real thing, as root in a container — such as accounts, groups, modes, ownership, process cleanup, logout, the prompt on a real terminal, a checked upgrade through the canary home and the version people added afterwards get, the sudoers rules for both helpers, that neither helper's test hooks pass through sudo, and folders and git as a person through them |
+| `tests/test_rc_admin.py` | Which commands each operation decides to run, against a recording stand-in for the system; that refusals run none; that a refused upgrade carries the names and reports |
+| `tests/test_rcman_user.py` | The front end in words: the prompt, its default and refusing without a terminal, `SUDO_USER` as the administrator asking, each verb's output and refusals, a refused upgrade's reports among them, and a command line that does not parse |
+| `tests/test_claude_checks.py` | The upgrade checks pass the fake and the real installed `claude`, the real one with a configuration path longer than a line, and a broken binary fails every one; `auth status` runs with no terminal and the rest on a terminal of rc-helper's size, and is judged on its standard output alone; `candidate_failures` gives each failed check what was run and what came back, standard error included, with each kind of secret `SECRETS` blanks planted and absent — a sign-in URL written over on the terminal or wrapped at its edge among them — ordinary text, a plain URL and the line after a URL kept, control characters removed, redaction before the cut, the line and capture limits, and a program's children ended with it |
+| `tests/container/test_admin_in_container.py` | The real thing, as root in a container — such as accounts, groups, modes, ownership, process cleanup, logout, the prompt on a real terminal, a checked upgrade through the canary home, a refused one's reports, with the sign-in URL that the test installer's broken binary prints blanked, and the end of what it prints for a version it fails to install, counted and redacted, and the version people added afterwards get, the sudoers rules for both helpers, that neither helper's test hooks pass through sudo, and folders and git as a person through them |

@@ -142,10 +142,23 @@ def test_claude_upgrade_reports_each_user(cfg, system):
 
 
 def test_claude_upgrade_failure_names_the_checks(cfg, system):
-    system.check_failures = ["version", "logout"]
+    system.check_failures = {
+        "version": {"lines": ["ran: claude --version", "planted version output"], "more": 0},
+        "logout": {"lines": ["ran: claude auth logout", "planted logout output"], "more": 7},
+    }
     code, _, err = run(cfg, system, ["claude-upgrade", "9.9.10"])
     assert code == 1
-    assert "version" in err and "logout" in err
+    assert "(failed: version, logout)" in err
+    assert (
+        "version:\n"
+        "    ran: claude --version\n"
+        "    planted version output\n"
+        "logout:\n"
+        "    ran: claude auth logout\n"
+        "    planted logout output\n"
+        "    (7 more lines not shown)\n"
+    ) in err
+    assert err.count("not shown") == 1  # only where lines were left out
 
 
 def test_rolling_back_says_older(cfg, system):

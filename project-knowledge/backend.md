@@ -141,7 +141,8 @@ expiry) or `expired` — and drives the connect flow through rc-helper's
 neither audited nor logged. For administrators it reports versions through
 rc-admin's `claude-status`, flagging who differs from the approved version and
 whether that version is the tested one, and rolls one out with
-`claude-upgrade`.
+`claude-upgrade`, whose refusal keeps rc-admin's `failed` and `report` as it
+gave them (see [rc-admin.md](rc-admin.md#claude-code-versions)).
 
 ## Git
 

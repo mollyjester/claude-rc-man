@@ -38,6 +38,16 @@ With a person added for the test account (`sudo rcman-user add`):
 6. **Stop** and **Forget**; archive the session in claude.ai/code.
 7. On **Claude Code**, under **Admin** (administrators), the person's
    installed version is the approved one.
+8. Roll out a Claude Code version other than the approved one with
+   `sudo rcman-user claude-upgrade <version>`: the official installer runs
+   for the canary home and for each person through `runuser`, which is
+   given only a fixed `PATH` (`RUNUSER_ENV` in `helpers/rc_admin.py`), and
+   the installer only the variables `user_argv` there lists; once it exits,
+   what it prints is read until it goes quiet, and everything it started is
+   ended with it. The upgrade is approved, each person's version is the new
+   one, and the installer left nothing running: `ps -u rcman` lists none of
+   its processes, nor does `ps -u` for each person. Roll the approved
+   version back the same way.
 
 ### Cloning from GitHub
 

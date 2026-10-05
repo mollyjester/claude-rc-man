@@ -216,6 +216,7 @@ export const m = {
   versionsUpgradeGo: "Check and roll out",
   versionsUpgraded: (version: string) => `Claude Code ${version} is approved.`,
   versionsFailedChecks: "Failed checks:",
+  versionsReportMore: (count: number) => `${count} more lines not shown`,
 
   docsTitle: "Help",
 
