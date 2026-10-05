@@ -148,22 +148,23 @@ it can fail, and a positive control that keeps an empty input from passing.
   - a fixed port, written as a number or a string of digits, held in a
     module-level name, converted or cast, in a formatted string that shows
     nothing else, or given as the fallback of a value that may be missing —
-    after `or`, `??` or `||`, or as the default of `get()` or `getenv()` —
-    wherever it appears:
+    after `or`, `??` or `||`, or as the default of a call `READS` in the
+    test names, such as `os.environ.get()` — in any of these places:
     - in an address: a host and the port in a tuple, a list or an array;
     - beside an IP address or `localhost` as a call's arguments, either
       first;
     - given to a name, attribute, key, property, parameter or keyword
-      argument named `port` or ending `_PORT`: assigned, as a parameter's
-      default, or to a call that names it first, as `setenv` and `stubEnv`
-      do. A key counts only where it is written as a string. A module-level
-      name is not a site itself, but is followed to where it is used,
-      except into a function with a parameter of the same name;
+      argument named `port` or ending `_PORT`, in any case: assigned, as a
+      parameter's default, or to a call that names it first, as `setenv`
+      and `stubEnv` do. A key counts only where it is written as a string.
+      A module-level name, declared or assigned at the module's top level,
+      is not a site itself, but is followed to where it is used, except
+      into a function with a parameter of the same name;
     - as the first argument of a `listen` method;
     - after `--port`, and after `-p` or `--publish`, alone or as the host
       port of docker's mapping, in a list of arguments, written whole or
       formatted, or in a command written as one string;
-    - after a host and its colon — in a URL, after its scheme, and
+    - after a host and its colon — in a URL, any host after its scheme, and
       otherwise after an IP address or `localhost` at the start of the text
       or after a character `BEFORE_HOST` in the test names — in one string,
       in a formatted string, or joined to it with `+`.
@@ -175,12 +176,12 @@ it can fail, and a positive control that keeps an empty input from passing.
   or `mkdtempSync`. It leaves alone, too, a string standing alone as a
   statement, as a docstring does. It does not follow a port held in a
   function's own variable not named for one, imported or computed, or a
-  path built in pieces; review covers those. In TypeScript a path given to
-  a call is reported as the call, so `join()` is read with the rest of the
-  path. Its planted twins write the path and the port as placeholders, so
-  that the guard, reading its own module, finds neither there. Each
-  exemption it lists covers one site, named by its file, the function or
-  test it is in and its text, and fails when that site is gone.
+  path built in pieces; review covers those. In TypeScript a path given as
+  a call's first argument is reported as the call, so `join()` is read with
+  the rest of the path. Its planted twins write the path and the port as
+  placeholders, so that the guard, reading its own module, finds neither
+  there. Each exemption it lists covers one site, named by its file, the
+  function or test it is in and its text, and fails when that site is gone.
 - **The container marker is derived** (`tests/test_container_marker.py`). In
   the collected suite the tests carrying `container` are exactly those using
   the `docker` fixture, and no source under `tests/` places the marker by

@@ -7,8 +7,8 @@ picks (port 0) or one held for the test. The guard reads the tests' own source a
 frontend's TypeScript and JavaScript, where the browser tests and their configs are.
 tests/container/ is outside it: that suite runs as root in a container of its own.
 
-It catches the same forms in both languages: FORMS, at the end of this module, spells each
-in both, and project-knowledge/tests.md describes them.
+It catches the same forms in both languages: FORMS, in this module's last section, spells
+each in both, and project-knowledge/tests.md describes them.
 """
 
 import ast
@@ -45,6 +45,9 @@ ADDRESS_BEFORE = re.compile(ADDRESS + "$")
 BEFORE_HOST = " \t\n,=@:(\"'"
 # A name that holds a port: port itself, or one ending _PORT, as an environment's do.
 PORT_NAME = re.compile(r"(?:^|_)port$", re.IGNORECASE)
+# Calls that read a value and give their fallback where it is missing, as os.environ.get()
+# does, in either language: the fallback is the value, and the call is not a site of its own.
+READS = {"get", "getenv"}
 # What a formatted string shows, read as text: a fixed port given in it as a port, and
 # anything else given in it as a space, which no host, flag or port takes in.
 SHOWN_PORT = str(UNPRIVILEGED)
@@ -103,11 +106,11 @@ def _argument_host(value) -> bool:
 
 
 def _addressed(match) -> bool:
-    """A host as an address names one: in a URL any _host(), and alone only one that
+    """A host as an address names one: in a URL any host at all, and alone only one that
     cannot be a file's name, such as an IP address."""
     host = match["host"].removeprefix("[").removesuffix("]")
     if match["scheme"]:
-        return _host(host)
+        return bool(host)
     start = match.start()
     return (start == 0 or match.string[start - 1] in BEFORE_HOST) and _host(host, named=False)
 
@@ -154,9 +157,6 @@ def _flag_given(elements, string, shown, port) -> bool:
 
 # tempfile's calls that make a uniquely named file or folder in the dir= they are given.
 UNIQUE_IN = {"mkdtemp", "mkstemp", "TemporaryDirectory", "NamedTemporaryFile"}
-# Calls that read a value and give their fallback where it is missing, as os.environ.get()
-# does: the fallback is the value, and the call is not a site of its own.
-READS = {"get", "getenv"}
 # Sites flagged on purpose: (file relative to tests/, the function it is in, the site's
 # source text) -> reason. Each covers exactly one site: another site of the same text in
 # the same function is flagged.
@@ -559,7 +559,7 @@ def _ts_unique_dirs(tree) -> set[int]:
 def _ts_port(node, names=frozenset()) -> bool:
     """A fixed unprivileged port: a number or a string of digits, a module-level name given
     one, String() or Number() of either, a template showing one alone, either after ?? or
-    ||, or either cast."""
+    || or as the fallback of a call in READS, or either cast."""
     if not node:
         return False
     kind = node["type"]
@@ -571,6 +571,8 @@ def _ts_port(node, names=frozenset()) -> bool:
         return _port_number(node["value"])
     if kind == "CallExpression" and _ts_name(node) in ("String", "Number"):
         return len(node["arguments"]) == 1 and _ts_port(node["arguments"][0], names)
+    if kind == "CallExpression" and _ts_name(node) in READS:
+        return len(node["arguments"]) >= 2 and _ts_port(node["arguments"][1], names)
     if kind == "TemplateLiteral":
         return _port_number(_ts_shown(node, names))
     if kind == "LogicalExpression" and node["operator"] in ("??", "||"):
@@ -608,23 +610,30 @@ def _ts_ending(node) -> str | None:
 
 
 def _ts_module_declarations(tree) -> list[dict]:
-    """The declarations of module-level names, exported or not."""
+    """What gives module-level names a value: a declaration, exported or not, and a plain
+    assignment to a name standing as a statement of its own."""
     found = []
     for node in tree["body"]:
         if node["type"] == "ExportNamedDeclaration":
             node = node.get("declaration") or {}
         if node.get("type") == "VariableDeclaration":
             found += node["declarations"]
+        given = node.get("expression") if node.get("type") == "ExpressionStatement" else None
+        if given and given["type"] == "AssignmentExpression" and given["operator"] == "=":
+            found += [given] if given["left"]["type"] == "Identifier" else []
     return found
 
 
 def _ts_port_names(tree) -> frozenset[str]:
     """The module-level names given a fixed port."""
-    return frozenset(
-        d["id"]["name"]
-        for d in _ts_module_declarations(tree)
-        if d["id"]["type"] == "Identifier" and _ts_port(d["init"])
-    )
+    names = set()
+    for given in _ts_module_declarations(tree):
+        name, value = (
+            (given["id"], given["init"]) if "id" in given else (given["left"], given["right"])
+        )
+        if name["type"] == "Identifier" and _ts_port(value):
+            names.add(name["name"])
+    return frozenset(names)
 
 
 def _ts_what(node, names, module_level) -> str | None:
@@ -658,19 +667,22 @@ def _ts_what(node, names, module_level) -> str | None:
         if node["callee"]["type"] == "MemberExpression" and _ts_name(node) == "listen":
             if args and port(args[0]):
                 return "port"
-    if kind in ("CallExpression", "NewExpression"):
+    if kind in ("CallExpression", "NewExpression") and _ts_name(node) not in READS:
         args = node["arguments"]
         if len(args) >= 2 and _port_named(_ts_string(args[0])) and port(args[1]):
             return "port"
         if _side_by_side(args, _ts_string, port):
             return "port"
-    if kind in ("AssignmentExpression", "AssignmentPattern") and _port_named(_ts_name(node)):
-        return "port" if port(node["right"]) else None
+    if kind in ("AssignmentExpression", "AssignmentPattern") and id(node) not in module_level:
+        if _port_named(_ts_name(node)):
+            return "port" if port(node["right"]) else None
     if kind == "VariableDeclarator" and id(node) not in module_level:
         if _port_named(_ts_name(node["id"])):
             return "port" if port(node["init"]) else None
-    if kind in ("Property", "PropertyDefinition") and _port_named(_ts_name(node["key"])):
-        return "port" if port(node["value"]) else None
+    if kind in ("Property", "PropertyDefinition"):
+        key = node["key"]
+        if _port_named(_ts_string(key) if node.get("computed") else _ts_name(key)):
+            return "port" if port(node["value"]) else None
     return None
 
 
@@ -1035,6 +1047,8 @@ FORMS = {
             'url = "http://127.0.0.1:<port>/api"',
             'httpx.get("http://localhost:<port>")',
             'url = "https://rcman.test:<port>/"',
+            'url = "http://web:<port>/"',
+            'url = "http://RCMAN.test:<port>/"',
             'url = "http://user@[::1]:<port>/api"',
             'rules = "MAP rcman.test:443 127.0.0.1:<port>"',
             'url = f"http://127.0.0.1:<port>/{path}"',
@@ -1051,6 +1065,8 @@ FORMS = {
             'const url = "http://127.0.0.1:<port>/api";',
             'const config = { baseURL: "http://localhost:<port>" };',
             'const url = "https://rcman.test:<port>/";',
+            'const url = "http://web:<port>/";',
+            'const url = "http://RCMAN.test:<port>/";',
             'const url = "http://user@[::1]:<port>/api";',
             'const rules = "MAP rcman.test:443 127.0.0.1:<port>";',
             "const url = `http://127.0.0.1:<port>/${path}`;",
@@ -1088,6 +1104,7 @@ FORMS = {
         (
             "const server = { port: process.env.PORT ?? <port> };",
             'const server = { port: Number(process.env.PORT) || "<port>" };',
+            'const server = { port: settings.get("PORT", <port>) };',
         ),
     ),
     "a port formatted alone": Form(
@@ -1136,7 +1153,7 @@ PORT_USES = {
     ),
 }
 # A name for a port that is a function's own: a site, as a module-level one is not.
-LOCAL_PORT = Twins(("port = <port>",), ("const port = <port>;",))
+LOCAL_PORT = Twins(("port = <port>",), ("const port = <port>;", "let port;\nport = <port>;"))
 # What the guard leaves alone, in both languages.
 CLEAN = {
     "a uniquely named folder made in /tmp itself": Twins(
@@ -1195,8 +1212,11 @@ CLEAN = {
         ),
     ),
     "a key computed from a variable, whatever the variable's name": Twins(
-        ("def f(port):\n    settings[port] = <port>",),
-        ("function f(port: string) {\n  settings[port] = <port>;\n}",),
+        ("def f(port):\n    settings[port] = <port>", "def f(port):\n    d = {port: <port>}"),
+        (
+            "function f(port: string) {\n  settings[port] = <port>;\n}",
+            "function f(port: string) {\n  const d = { [port]: <port> };\n}",
+        ),
     ),
     "a parameter that shadows a module-level name for a port": Twins(
         ('PORT = <port>\ndef f(PORT):\n    s.bind(("127.0.0.1", PORT))',),
@@ -1224,6 +1244,7 @@ CLEAN = {
             'where = "stack.spec.ts:1234"',
             'url = "https://rcman.test/"',
             'os.environ.setdefault("TIMEOUT", "3000")',
+            'start(os.environ.get("PORT", "<port>"))',
             "clock.advance(3500)",
         ),
         (
@@ -1240,6 +1261,7 @@ CLEAN = {
             'const where = "stack.spec.ts:1234";',
             'const url = "https://rcman.test/";',
             'process.env.TIMEOUT ??= "3000";',
+            'start(settings.get("PORT", "<port>"));',
             "await vi.advanceTimersByTimeAsync(3500);",
             "await page.setViewportSize({ width: 1200, height: 800 });",
         ),
@@ -1367,8 +1389,8 @@ def ts_trees() -> dict[str, dict]:
                 for use in uses.typescript:
                     for chosen in (declaration, declaration.replace("<port>", "0")):
                         sources.append(_module_port(chosen, use, python=False))
-    (local,) = map(_spelled, LOCAL_PORT.typescript)
-    sources += [local, _in_function(local)]
+    for local in map(_spelled, LOCAL_PORT.typescript):
+        sources += [local, _in_function(local)]
     sources += [_spelled(s) for twins in CLEAN.values() for s in twins.typescript]
     names = {f"planted{i}.ts": source for i, source in enumerate(sources)}
     return {names[name]: tree for name, tree in parse_ts(names).items()}
@@ -1397,11 +1419,15 @@ def test_the_guard_finds_a_fixed_port_held_in_a_typescript_module_constant(
     assert ts_sites(chosen, ts_trees[chosen]) == []  # positive control: port 0
 
 
-def test_a_functions_own_port_name_is_a_typescript_site_and_a_modules_is_followed(ts_trees):
-    (planted,) = map(_spelled, LOCAL_PORT.typescript)
+@pytest.mark.parametrize("planted", LOCAL_PORT.typescript)
+def test_a_functions_own_port_name_is_a_typescript_site_and_a_modules_is_followed(
+    ts_trees, planted
+):
+    planted = _spelled(planted)
     assert ts_sites(planted, ts_trees[planted]) == []
+    line = 2 + next(i for i, text in enumerate(planted.splitlines()) if PLANTED_PORT in text)
     inside = _in_function(planted)
-    assert [s[:3] for s in ts_sites(inside, ts_trees[inside])] == [(2, "f", "port")]
+    assert [s[:3] for s in ts_sites(inside, ts_trees[inside])] == [(line, "f", "port")]
 
 
 @pytest.mark.parametrize(("allowance", "source"), _twins("typescript", CLEAN))
