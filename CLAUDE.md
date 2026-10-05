@@ -20,6 +20,7 @@ The `make` targets, from `make setup` to `make check`, and what each does:
 |---|---|
 | The rules that override everything else | [CONTRIBUTING.md](CONTRIBUTING.md) |
 | The full standing rules, and where documentation goes | [project-knowledge/working-rules.md](project-knowledge/working-rules.md) |
+| Taking an issue, or a task given as plain text, from plan to finished change with subagents | [.claude/skills/manage-issue/SKILL.md](.claude/skills/manage-issue/SKILL.md) |
 | How tests are organised and run, the repository guards, the edit-time hook | [project-knowledge/tests.md](project-knowledge/tests.md) |
 | The fake `claude`, its fixtures, and approving a new Claude Code version | [project-knowledge/fake-claude.md](project-knowledge/fake-claude.md) |
 | `rc-helper`: its contract, every verb — servers, folders, git, the GitHub token — isolation, sudo, test hooks | [project-knowledge/rc-helper.md](project-knowledge/rc-helper.md) |
