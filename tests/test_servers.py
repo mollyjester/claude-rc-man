@@ -100,14 +100,23 @@ def test_people_who_are_not_administrators_cannot_see_everyones_servers(client):
     assert "alice-project" not in r.text
 
 
-def unrecognised_claude(helper_homes):
-    """Every claude the helpers run from now on shows a screen rcman does not know."""
+def scenario_claude(helper_homes, scenario):
+    """Every claude the helpers run from now on runs the fake's ``scenario``."""
     from devtools import record_claude as rec
 
     wrapper = helper_homes.homes["alice"].parent.parent / "claude"
-    wrapper.write_text(
-        f'#!/bin/sh\nFAKE_CLAUDE_SCENARIO=unrecognised exec {rec.FAKE_CLAUDE} "$@"\n'
-    )
+    wrapper.write_text(f'#!/bin/sh\nFAKE_CLAUDE_SCENARIO={scenario} exec {rec.FAKE_CLAUDE} "$@"\n')
+
+
+def unrecognised_claude(helper_homes):
+    """Every claude the helpers run from now on shows a screen rcman does not know."""
+    scenario_claude(helper_homes, "unrecognised")
+
+
+def reconnected_claude(helper_homes):
+    """Every claude the helpers run from now on shows the observed screen of a server
+    that has reconnected and shows no status."""
+    scenario_claude(helper_homes, "reconnected_without_status")
 
 
 def test_an_action_ending_on_an_unrecognised_screen_is_audited_as_such(
@@ -125,3 +134,18 @@ def test_an_action_ending_on_an_unrecognised_screen_is_audited_as_such(
         .fetchall()[-1]
     )
     assert last == ("server.start", ALPHA["path"], "unrecognised_screen")
+
+
+def test_an_action_ending_reconnected_is_audited_ok(client, helper_homes, settings):
+    import sqlite3
+
+    reconnected_claude(helper_homes)
+    r = client.post("/api/servers", json=ALPHA, headers=changing(ALICE))
+    assert r.status_code == 200, r.text
+    assert r.json()["server"]["state"] == "reconnected"
+    last = (
+        sqlite3.connect(settings.database)
+        .execute("select action, target, result from audit")
+        .fetchall()[-1]
+    )
+    assert last == ("server.start", ALPHA["path"], "ok")

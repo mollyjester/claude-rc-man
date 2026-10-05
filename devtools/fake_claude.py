@@ -1,16 +1,22 @@
 """A fake `claude` that replays the recorded screens in ``tests/fakes/fixtures/``.
 
 It implements only the invocations rcman makes, as a state machine whose every
-screen is a recorded fixture with its placeholders filled in; any other
-invocation fails loudly. Its state — whether it is logged in, which folders are
-trusted, which session each folder last served — lives in ``fake-state.json``
-under ``CLAUDE_CONFIG_DIR``, or under ``~/.claude-fake`` when that is unset, so
-it never touches a real Claude configuration.
+screen is a recorded fixture, or a screen observed on a live server, with its
+placeholders filled in; any other invocation fails loudly. Its state — whether it
+is logged in, which folders are trusted, which session each folder last served —
+lives in ``fake-state.json`` under ``CLAUDE_CONFIG_DIR``, or under
+``~/.claude-fake`` when that is unset, so it never touches a real Claude
+configuration.
 
 Setting ``FAKE_CLAUDE_SCENARIO=unrecognised`` makes ``remote-control`` and
 ``auth login`` show a synthetic screen that no recording contains, for testing
-how unrecognised output is handled. ``FAKE_CLAUDE_VERSION`` replaces the
-version it reports.
+how unrecognised output is handled. ``FAKE_CLAUDE_SCENARIO=reconnected_without_status``
+makes ``remote-control`` show the screen of that name in ``tests/fakes/observed/``,
+seen on a live server (:func:`record_claude.load_observed`), and so does every
+observed screen's name; what follows Ctrl+C there was not seen, so it ends as
+the ``unrecognised`` scenario does. In both,
+Ctrl+C ends it with exit status 1. ``FAKE_CLAUDE_VERSION`` replaces the version it
+reports.
 
 An answer to the folder-trust prompt that arrives sooner than
 :data:`MIN_ANSWER_SECONDS` after the prompt is refused with the recorded
@@ -131,16 +137,20 @@ class Fake:
             + "env_fake"
             + hashlib.sha256(self.cwd.encode()).hexdigest()[:12],
             session_name="",
+            session_id="cse_fake" + hashlib.sha256(self.cwd.encode()).hexdigest()[:20],
             **FAKE_ACCOUNT,
         )
 
     def show(self, name: str, prompt: bool = False) -> int | None:
+        return self.show_lines(self.fixtures[name].lines, self.fixtures[name].exit_code, prompt)
+
+    def show_lines(self, lines: list[str], exit_code: int | None, prompt: bool = False):
         self.values["time"] = datetime.datetime.now().strftime("%H:%M:%S")
-        text = rec.fill("\n".join(self.fixtures[name].lines), self.values)
+        text = rec.fill("\n".join(lines), self.values)
         clear = CLEAR if sys.stdout.isatty() else ""
         sys.stdout.write(clear + text + ("" if prompt else "\n"))
         sys.stdout.flush()
-        return self.fixtures[name].exit_code
+        return exit_code
 
     def read_line(self) -> str:
         if not sys.stdin.isatty():
@@ -222,6 +232,11 @@ class Fake:
         if self.env.get("FAKE_CLAUDE_SCENARIO") == "unrecognised":
             sys.stdout.write(CLEAR + UNRECOGNISED_SCREEN + "\n")
             sys.stdout.flush()
+            self.wait_for_interrupt()
+            return 1
+        # Every observed screen is a scenario of its own name.
+        if screen := rec.load_observed().get(self.env.get("FAKE_CLAUDE_SCENARIO", "")):
+            self.show_lines(screen.lines, screen.exit_code)
             self.wait_for_interrupt()
             return 1
         spawn = _option(self.args, "--spawn")

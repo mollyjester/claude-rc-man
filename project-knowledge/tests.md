@@ -101,7 +101,7 @@ and run by hand with `uv run pytest -m real_claude`; what they need is in
 | Path | Contents |
 |---|---|
 | `tests/` | The test suite; `tests/test_<name>.py` tests the module `<name>.py`, wherever it is, `tests/` included, where there is one |
-| `tests/fakes/` | The fake `claude` and its recorded fixtures — see [fake-claude.md](fake-claude.md) |
+| `tests/fakes/` | The fake `claude`, its recorded fixtures and the screens observed on a live server — see [fake-claude.md](fake-claude.md) |
 | `helpers/` | `rc-helper` — see [rc-helper.md](rc-helper.md); `rc-admin` and `rcman-user` — see [rc-admin.md](rc-admin.md) |
 | `backend/` | The FastAPI application — see [backend.md](backend.md) |
 | `frontend/` | The React application, its component tests and its browser tests — see [frontend.md](frontend.md) |

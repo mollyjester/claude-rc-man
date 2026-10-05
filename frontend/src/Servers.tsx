@@ -36,6 +36,7 @@ export const ACTIONS: Record<string, Action[]> = {
   trust_declined: ["startAgain", "forget"],
   logged_out: ["startAgain", "forget"],
   exited: ["resume", "forget", "showScreen"],
+  reconnected: ["showScreen", "stop"],
   unrecognised: ["showScreen", "stop"],
 };
 
@@ -55,6 +56,8 @@ export const KIND: Record<string, Kind> = {
   trust_declined: "stopped",
   logged_out: "problem",
   exited: "problem",
+  // Its process runs, and Claude says it has reconnected.
+  reconnected: "running",
   unrecognised: "problem",
 };
 
@@ -71,6 +74,7 @@ export const PRIMARY: Record<string, Action | "openSession" | null> = {
   trust_declined: "startAgain",
   logged_out: "startAgain",
   exited: "resume",
+  reconnected: "showScreen",
   unrecognised: "showScreen",
 };
 

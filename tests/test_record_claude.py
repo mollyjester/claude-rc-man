@@ -1,6 +1,7 @@
 """The recorder: sanitising real screens into fixtures, and the fixture set itself."""
 
 import json
+import shutil
 import sys
 from pathlib import Path
 
@@ -63,6 +64,11 @@ def test_no_session_name_line_is_left_alone():
     assert sanitise(text) == text
 
 
+def test_session_ids_are_replaced():
+    text = "registration failed for session cse_01SUPH9aMdURTQY7NjA7HeMM: Request failed"
+    assert sanitise(text) == "registration failed for session {session_id}: Request failed"
+
+
 def test_account_fields_are_replaced():
     text = (
         '  "email": "someone@example.com",\n'
@@ -89,8 +95,9 @@ def test_fill_is_the_inverse_of_sanitise():
         org_id="o",
         org_name="n",
         subscription_type="t",
+        session_id="cse_01abc",
     )
-    template = "{version} {cwd} {config_dir} {login_url} {environment_url} [{time}]"
+    template = "{version} {cwd} {config_dir} {login_url} {environment_url} [{time}] {session_id}"
     assert sanitise(rec.fill(template, values)) == template
 
 
@@ -122,13 +129,35 @@ def test_manifest_records_one_claude_version():
     assert rec.VERSION_PATTERN.fullmatch(manifest["claude_version"])
 
 
-def test_no_fixture_contains_an_unsanitised_secret_or_path():
-    for path in rec.FIXTURES.glob("*.txt"):
-        text = path.read_text(encoding="utf-8")
-        assert "@" not in text, path.name  # emails
-        assert "/home/" not in text and "/tmp/" not in text, path.name
-        assert "oauth/authorize?" not in text, path.name
-        assert "environment=env_" not in text, path.name
+def leaks(path: Path) -> list[str]:
+    """What the screen in ``path`` gives away that sanitising should have replaced, each
+    found by the text that gives it away."""
+    marks = {
+        "an email address": ("@",),
+        "a home or temporary path": ("/home/", "/tmp/"),
+        "a sign-in URL": ("oauth/authorize?",),
+        "an environment ID": ("environment=env_",),
+        "a session ID": ("cse_",),
+    }
+    text = path.read_text(encoding="utf-8")
+    return [leak for leak, found in marks.items() if any(mark in text for mark in found)]
+
+
+@pytest.mark.parametrize("directory", [rec.FIXTURES, rec.OBSERVED], ids=lambda d: d.name)
+def test_no_fixture_contains_an_unsanitised_secret_or_path(directory):
+    paths = sorted(directory.glob("*.txt"))
+    assert paths, f"no screens in {directory}"
+    assert {path.name: leaks(path) for path in paths if leaks(path)} == {}
+
+
+def test_the_leak_check_finds_a_session_id(tmp_path):
+    """Planted twin: a screen still holding a session ID is caught."""
+    planted = tmp_path / "planted.txt"
+    planted.write_text("[10:00:00] failed for session cse_01ABCdef: 404", encoding="utf-8")
+    assert leaks(planted) == ["a session ID"]
+    clean = tmp_path / "clean.txt"
+    clean.write_text(rec.sanitise(planted.read_text(encoding="utf-8"), CTX), encoding="utf-8")
+    assert leaks(clean) == []
 
 
 def test_options_used_are_derived_from_the_sequences():
@@ -268,3 +297,67 @@ def test_a_repository_to_record_in_is_made_on_the_recorded_branch(tmp_path):
         check=True,
     ).stdout.strip()
     assert commits == "1"
+
+
+# --- screens observed on a live server ---------------------------------------------
+
+
+def unlisted_screens(directory: Path) -> list[str]:
+    """The screens in ``directory`` its manifest does not list. (One it lists that is not
+    there fails load_observed itself.)"""
+    on_disk = {p.stem for p in directory.glob("*.txt")}
+    return sorted(on_disk - set(rec.load_observed(directory)))
+
+
+def test_the_observed_manifest_names_exactly_the_files_beside_it():
+    assert list(rec.OBSERVED.glob("*.txt")), "no observed screens at all"
+    assert unlisted_screens(rec.OBSERVED) == []
+
+
+def observed_copy(tmp_path: Path) -> Path:
+    copy = tmp_path / "observed"
+    shutil.copytree(rec.OBSERVED, copy)
+    return copy
+
+
+def test_a_screen_the_observed_manifest_does_not_list_is_found(tmp_path):
+    """Planted twin: a screen kept beside the manifest but not listed in it."""
+    copy = observed_copy(tmp_path)
+    (copy / "planted_screen.txt").write_text("[{time}] planted", encoding="utf-8")
+    assert unlisted_screens(copy) == ["planted_screen"]
+
+
+def test_a_manifest_naming_a_file_that_is_not_there_is_refused(tmp_path):
+    """Planted twin: the manifest is the reader's list, so a screen it names must exist."""
+    copy = observed_copy(tmp_path)
+    name = sorted(rec.load_observed(copy))[0]
+    (copy / f"{name}.txt").unlink()
+    with pytest.raises(FileNotFoundError):
+        rec.load_observed(copy)
+
+
+def not_kept_for(observed: dict, version: str) -> list[str]:
+    """The observed screens whose manifest does not keep them for ``version``."""
+    return sorted(name for name, screen in observed.items() if version not in screen.kept_for)
+
+
+def test_every_observed_screen_is_kept_for_the_approved_version():
+    """An observed screen cannot be re-recorded: approving a Claude Code version means
+    recording that each is kept for it, or removing it."""
+    observed = rec.load_observed()
+    assert observed
+    assert not_kept_for(observed, rec.load_manifest()["claude_version"]) == []
+    for name, screen in observed.items():
+        assert screen.kept_for[0] == screen.seen_on, name  # kept first for where it was seen
+
+
+def test_an_observed_screen_not_kept_for_the_approved_version_is_found(tmp_path):
+    """Planted twin: a manifest that does not name the approved version fails."""
+    copy = observed_copy(tmp_path)
+    manifest = json.loads((copy / rec.MANIFEST).read_text(encoding="utf-8"))
+    name = sorted(manifest["screens"])[0]
+    manifest["screens"][name]["kept_for"] = ["0.0.1"]
+    (copy / rec.MANIFEST).write_text(json.dumps(manifest), encoding="utf-8")
+    approved = rec.load_manifest()["claude_version"]
+    assert approved != "0.0.1"
+    assert not_kept_for(rec.load_observed(copy), approved) == [name]

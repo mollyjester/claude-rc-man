@@ -5,6 +5,7 @@ a temporary home, a private tmux socket and the fake `claude`. Screen
 classification is held to every recorded fixture.
 """
 
+import contextlib
 import json
 import os
 import re
@@ -16,6 +17,7 @@ import pytest
 
 from devtools import fake_claude as fake
 from devtools import record_claude as rec
+from devtools import tmuxctl
 from helpers import git_run
 from helpers import rc_helper as h
 from tests.conftest import tmux_sockets
@@ -207,6 +209,124 @@ def test_an_unknown_exit_is_exited_with_its_code():
 
 def test_an_empty_live_screen_is_starting():
     assert h.classify([], None)["state"] == "starting"
+
+
+# --- classification against every screen observed on a live server -------------------
+
+# Screens no recording can bring about, seen on a live server (rec.load_observed).
+OBSERVED_STATES = {
+    # Claude stopped drawing its status block after a Remote Control error, and then
+    # reconnected; it draws the block again on its own tick, if at all.
+    "reconnected_without_status": "reconnected",
+}
+
+
+def observed(name):
+    screen = rec.load_observed()[name]
+    return rec.fill("\n".join(screen.lines), VALUES).split("\n"), screen.exit_code
+
+
+def unaccounted(observed_names) -> list[str]:
+    """The observed screens OBSERVED_STATES does not account for, and those it accounts
+    for that are not observed."""
+    return sorted(set(observed_names) ^ set(OBSERVED_STATES))
+
+
+def test_every_observed_screen_is_accounted_for_exactly_once():
+    names = rec.load_observed()
+    assert names, "no observed screens at all"
+    assert unaccounted(names) == []
+    assert set(OBSERVED_STATES).isdisjoint(rec.load_fixtures())
+
+
+def test_an_observed_screen_not_accounted_for_is_found(tmp_path):
+    """Planted twin: an extra observed screen fails the accounting."""
+    import shutil
+
+    copy = tmp_path / "observed"
+    shutil.copytree(rec.OBSERVED, copy)
+    manifest = json.loads((copy / rec.MANIFEST).read_text(encoding="utf-8"))
+    [(name, entry)] = list(manifest["screens"].items())[:1]
+    manifest["screens"]["planted_screen"] = entry
+    (copy / rec.MANIFEST).write_text(json.dumps(manifest), encoding="utf-8")
+    shutil.copy(copy / f"{name}.txt", copy / "planted_screen.txt")
+    assert "planted_screen" in rec.load_observed(copy)  # the plant took effect
+    assert unaccounted(rec.load_observed(copy)) == ["planted_screen"]
+
+
+@pytest.mark.parametrize("name,state", sorted(OBSERVED_STATES.items()))
+def test_observed_screens_classify_as_observed(name, state):
+    assert h.classify(*observed(name))["state"] == state
+
+
+ERROR_LINE = 1  # the observed reconnected screen's error, above its last line
+
+
+def test_the_observed_reconnected_screen_classifies_as_reconnected():
+    lines, exit_code = observed("reconnected_without_status")
+    info = h.classify(lines, exit_code)
+    assert info["state"] == "reconnected"
+    assert (info["session_name"], info["environment_url"]) == (None, None)
+    assert info["screen"] == lines
+    # Planted twin: ending on its error rather than on the reconnect, it is unrecognised.
+    assert "Error" in lines[ERROR_LINE] and "Reconnected" in lines[-1]
+    planted = [*lines[:-1], lines[ERROR_LINE]]
+    assert h.classify(planted, exit_code)["state"] == "unrecognised"
+
+
+def reconnected_variants(lines: list[str]) -> dict[str, list[str]]:
+    """Screens like the observed reconnected one that say less than it does."""
+    log, reconnected = lines[ERROR_LINE], lines[-1]
+    stamp = reconnected[: reconnected.index("]") + 1]
+    return {
+        "ending on an error": [*lines, log],
+        "a log line after the reconnect": [*lines, f"{stamp} Connecting"],
+        "a line that is no log line after the reconnect": [*lines, "something else"],
+        "a line that is no log line before it": ["something else", *lines],
+        "an untimed reconnect": [*lines[:-1], reconnected.removeprefix(stamp).strip()],
+        "a reconnect saying more": [*lines[:-1], f"{reconnected}, then lost again"],
+        "a reconnect with no time it took": [*lines[:-1], f"{stamp} Reconnected"],
+        "a reconnect after other words": [
+            *lines[:-1],
+            f"{stamp} X {reconnected.removeprefix(stamp).strip()}",
+        ],
+        "a bracketed line that is no clock time": ["[note] something", *lines],
+        "a clock time alone": [*lines[:-1], stamp, reconnected],
+    }
+
+
+@pytest.mark.parametrize(
+    "variant", sorted(reconnected_variants(observed("reconnected_without_status")[0]))
+)
+def test_screens_like_the_reconnected_one_stay_unrecognised(variant):
+    lines, exit_code = observed("reconnected_without_status")
+    assert h.classify(lines, exit_code)["state"] == "reconnected"  # positive control
+    planted = reconnected_variants(lines)[variant]
+    assert planted != lines
+    info = h.classify(planted, exit_code)
+    assert info["state"] == "unrecognised"
+    assert info["screen"] == planted
+
+
+def test_a_reconnected_screen_names_no_environment_even_when_a_log_line_does():
+    lines, exit_code = observed("reconnected_without_status")
+    url = VALUES["environment_url"]
+    planted = [*lines[:-1], f"{lines[-1].split(']')[0]}] Open {url}", lines[-1]]
+    assert url in "\n".join(planted)  # the plant took effect
+    info = h.classify(planted, exit_code)
+    assert info["state"] == "reconnected"
+    assert (info["environment_url"], info["session_name"]) == (None, None)
+
+
+@pytest.mark.parametrize("ready", ["server_ready_resumed", "git_server_ready_resumed"])
+def test_a_capacity_line_still_wins_over_log_lines(ready):
+    log = observed("reconnected_without_status")[0]
+    lines, exit_code = filled(ready)
+    for screen in ([*log, *lines], [*lines, log[-1]]):
+        info = h.classify(screen, exit_code)
+        assert (info["state"], info["session_name"]) == ("ready", VALUES["session_name"])
+        assert h.classify(screen, 0)["state"] == "exited"
+    assert h.classify(log, 1)["state"] == "exited"
 
 
 # --- paths ----------------------------------------------------------------------------
@@ -717,12 +837,233 @@ def test_unrecognised_screen_is_reported_with_its_output(env, tmp_path):
     assert fake.UNRECOGNISED_SCREEN in out["server"]["screen"]
 
 
+def in_scenario(env, scenario):
+    """Every claude rc-helper starts from now on runs the fake's ``scenario``."""
+    Path(env["RC_HELPER_CLAUDE"]).write_text(
+        f'#!/bin/sh\nFAKE_CLAUDE_SCENARIO={scenario} exec {rec.FAKE_CLAUDE} "$@"\n',
+        encoding="utf-8",
+    )
+
+
+@pytest.mark.parametrize(
+    "scenario,state",
+    [("reconnected_without_status", "reconnected"), ("unrecognised", "unrecognised")],
+)
+def test_a_server_claude_shows_no_status_for_is_reported_reconnected_and_stops(
+    env, scenario, state
+):
+    """The twin is the unrecognised scenario, run the same way."""
+    log_in(env)
+    in_scenario(env, scenario)
+    started = ok(env, "start", "projects/alpha", "--prefix", "pfx")["server"]
+    assert started["state"] == state
+    assert (started["session_name"], started["environment_url"]) == (None, None)
+    [listed] = ok(env, "list")["servers"]
+    assert listed["state"] == state
+    shown = ok(env, "output", "projects/alpha")
+    assert shown["server"]["state"] == state
+    assert shown["screen"] == listed["screen"] == shown["server"]["screen"]
+    assert any("Reconnected" in line for line in shown["screen"]) == (state == "reconnected")
+    stopped = ok(env, "stop", "projects/alpha")["server"]
+    assert (stopped["state"], stopped["exit_code"]) == ("exited", 1)
+
+
 @pytest.mark.parametrize("prefix", ["", "-x", "a b", "a;b", "x" * (h.MAX_PREFIX_LENGTH + 1)])
 def test_invalid_prefix_is_refused(env, prefix):
     assert error_code(env, "start", "projects/alpha", f"--prefix={prefix}") == "prefix_invalid"
 
 
 # --- what the server is started with ---------------------------------------------
+
+
+# --- the size of a server's window ----------------------------------------------------
+
+# The size of the terminal attached to a server's tmux session: smaller than a server's.
+TERMINAL = (80, 24)
+
+
+def rcman_tmux(env, *args, conf=h.TMUX_CONF):
+    return subprocess.run(
+        ["tmux", "-S", env["RC_HELPER_TMUX_SOCKET"], "-f", str(conf), *args],
+        capture_output=True,
+        text=True,
+    )
+
+
+def window_size(env, session) -> tuple[int, int]:
+    out = rcman_tmux(
+        env, "display-message", "-p", "-t", f"={session}:", "#{window_width}x#{window_height}"
+    )
+    width, height = out.stdout.strip().split("x")
+    return int(width), int(height)
+
+
+@contextlib.contextmanager
+def attached(env, session, tmp_path):
+    """A terminal of TERMINAL's size attached to ``session``, as a person's tmux client."""
+    import time
+
+    with tmux_sockets("rct-") as outer, tmuxctl.Pane(outer, *TERMINAL) as terminal:
+        terminal.run(
+            ["tmux", "-S", env["RC_HELPER_TMUX_SOCKET"], "attach-session", "-t", f"={session}"],
+            cwd=tmp_path,
+            env={"PATH": os.environ["PATH"], "TERM": "xterm-256color"},
+        )
+        # tmux sizes the window as it learns the client's size, so once it reports
+        # the terminal's size any resize the terminal causes has been made.
+        size = f"{TERMINAL[0]}x{TERMINAL[1]}"
+        client = "#{client_width}x#{client_height}"
+        for _ in range(100):
+            clients = rcman_tmux(env, "list-clients", "-t", f"={session}", "-F", client)
+            if clients.stdout.split() == [size]:
+                break
+            time.sleep(0.1)
+        else:
+            pytest.fail(f"no terminal of {size} attached; it shows:\n{terminal.text()}")
+        yield
+
+
+def resized(env, session) -> tuple[int, int]:
+    """The window's size once a terminal's width has reached it, or failing that, after
+    a timeout."""
+    import time
+
+    for _ in range(50):
+        if (size := window_size(env, session))[0] == TERMINAL[0]:
+            return size
+        time.sleep(0.1)
+    return window_size(env, session)
+
+
+def failing_on(word: str):
+    """A tmux runner that fails every call whose arguments include ``word``."""
+
+    def runner(argv, **kwargs):
+        if word in argv:
+            return subprocess.CompletedProcess(argv, 1, "", f"planted failure on {word}")
+        return subprocess.run(argv, **kwargs)
+
+    return runner
+
+
+def made_with_failing(env, word: str) -> list[tuple[str, str]]:
+    """Make a server's session with a runner failing on ``word``; the sessions listed after."""
+    cfg = h.config_from_env(env)
+    session = h.session_for("projects/alpha")
+    with pytest.raises(RuntimeError, match="planted failure"):
+        h.Tmux(cfg, runner=failing_on(word)).new(
+            session, cfg.home, ["sleep", "600"], {h.PATH_OPTION: "projects/alpha"}
+        )
+    assert h.Tmux(cfg).exists(session)  # the session was made all the same
+    return h.Tmux(cfg).sessions()
+
+
+def test_a_server_whose_window_cannot_be_pinned_is_still_listed(env):
+    """Its folder is recorded before its window is pinned, so a failed pin never leaves
+    a server running that list, stop and start cannot find."""
+    assert made_with_failing(env, "window-size") == [
+        (h.session_for("projects/alpha"), "projects/alpha")
+    ]
+
+
+def test_a_server_whose_folder_is_not_recorded_is_not_listed(env):
+    """Twin: a session made without its folder recorded is lost to the list."""
+    assert made_with_failing(env, h.PATH_OPTION) == []
+
+
+def test_an_attached_terminal_does_not_resize_a_server(env, tmp_path):
+    log_in(env)
+    ok(env, "start", "projects/alpha", "--prefix", "pfx")
+    session = h.session_for("projects/alpha")
+    with attached(env, session, tmp_path):
+        assert window_size(env, session) == (h.WIDTH, h.HEIGHT)
+    assert (
+        rcman_tmux(env, "show-options", "-wv", "-t", f"={session}:", "window-size").stdout.strip()
+        == "manual"
+    )
+
+
+def test_without_the_pin_an_attached_terminal_resizes_the_window(env, tmp_path):
+    """Twin: a window made as rc-helper makes one, but not pinned, takes the terminal's size."""
+    made = rcman_tmux(
+        env,
+        "new-session",
+        "-d",
+        "-s",
+        "unpinned",
+        "-x",
+        str(h.WIDTH),
+        "-y",
+        str(h.HEIGHT),
+        "sleep",
+        "600",
+    )
+    assert made.returncode == 0, made.stderr
+    assert window_size(env, "unpinned") == (h.WIDTH, h.HEIGHT)  # as made
+    with attached(env, "unpinned", tmp_path):
+        width, height = resized(env, "unpinned")
+    assert width == TERMINAL[0] and height <= TERMINAL[1]
+
+
+def test_a_server_started_again_in_an_old_session_is_pinned(env, tmp_path):
+    """A session made before servers' windows were pinned, which a terminal has resized,
+    is pinned when its server is started again, as resume starts one."""
+    log_in(env)
+    session = h.session_for("projects/alpha")
+    made = rcman_tmux(
+        env,
+        "new-session",
+        "-d",
+        "-s",
+        session,
+        "-x",
+        str(h.WIDTH),
+        "-y",
+        str(h.HEIGHT),
+        "sh",
+        "-c",
+        "exit 3",
+    )
+    assert made.returncode == 0, made.stderr
+    rcman_tmux(env, "set-option", "-t", f"={session}:", h.PATH_OPTION, "projects/alpha")
+    assert wait_state(env, "projects/alpha", "exited")["exit_code"] == 3  # the old server ended
+    with attached(env, session, tmp_path):
+        assert resized(env, session)[0] == TERMINAL[0]  # positive control: it was resized
+        assert (
+            ok(env, "start", "projects/alpha", "--prefix", "pfx")["server"]["state"]
+            == "trust_prompt"
+        )
+        assert window_size(env, session) == (h.WIDTH, h.HEIGHT)
+
+
+def test_tmux_conf_sets_no_global_window_size(env, tmp_path):
+    """A global ``window-size manual`` kills tmux 3.4's server at the next detached
+    new-session, so servers' windows are pinned one by one instead."""
+    made = rcman_tmux(
+        env, "new-session", "-d", "-s", "probe", "-x", "10", "-y", "5", "sleep", "600"
+    )
+    assert made.returncode == 0, made.stderr
+    assert rcman_tmux(env, "show-options", "-gv", "remain-on-exit").stdout.strip() == "on"  # read
+    # tmux's own default, from a server that reads no configuration
+    bare = Path(env["RC_HELPER_TMUX_SOCKET"]).parent / "bare.sock"
+    default = subprocess.run(
+        ["tmux", "-S", str(bare), "-f", "/dev/null", "start-server", ";"]
+        + ["show-options", "-gwv", "window-size"],
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    assert default and default != "manual"
+    assert rcman_tmux(env, "show-options", "-gwv", "window-size").stdout.strip() == default
+    # Twin: the same configuration with a global window-size manual.
+    planted = tmp_path / "tmux.conf"
+    planted.write_text(h.TMUX_CONF.read_text(encoding="utf-8") + "set -g window-size manual\n")
+    rcman_tmux(env, "kill-server")
+    died = rcman_tmux(
+        env, "new-session", "-d", "-s", "probe", "-x", "10", "-y", "5", "sleep", "600", conf=planted
+    )
+    assert died.returncode != 0
+    assert "server exited unexpectedly" in died.stderr
+    assert rcman_tmux(env, "has-session").returncode != 0
 
 
 def test_server_command_is_fixed_and_shell_free(tmp_path):

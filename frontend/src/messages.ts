@@ -76,6 +76,7 @@ export const m = {
     trust_declined: "Not started: folder not trusted",
     logged_out: "Not started: Claude account not connected",
     exited: "Stopped by itself",
+    reconnected: "Reconnected, status not shown",
     unrecognised: "Unrecognised screen",
   } as Record<string, string>,
   kinds: {
@@ -93,6 +94,8 @@ export const m = {
     trust_declined: "Start again to answer once more, or forget it.",
     logged_out: "Connect your Claude account above, then start again.",
     exited: "Show the screen to see why it stopped, then resume it.",
+    reconnected:
+      "Claude says it reconnected but is not showing its status. Show the screen to see what it says.",
     unrecognised: "Show the screen, stop it, and tell an administrator.",
   } as Record<string, string>,
   nextStepUnknown: "rcman does not know this state. Show the screen to see what Claude says.",

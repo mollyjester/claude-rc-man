@@ -3,18 +3,22 @@
 Tests drive a fake `claude` instead of the real one, because the real one needs
 a logged-in subscription account, creates real sessions, and cannot be made to
 show its rarer screens on demand. The fake is a liability — it can drift from
-the real binary — so it is built to be checked against it: every screen it
-shows is a recording of the real binary, and contract tests compare the two.
+the real binary — so it is built to be checked against it. Every screen it
+shows but one is a recording of the real binary, or, where no recording can
+bring a screen about, a screen seen on it; the exception is the synthetic
+screen of the `unrecognised` scenario. Contract tests compare the recordings
+with the binary.
 
 ## Where it is
 
 | Path | What it is |
 |---|---|
 | `tests/fakes/claude` | The executable tests run; a launcher for `devtools/fake_claude.py` |
-| `devtools/fake_claude.py` | The fake: a state machine that replays recorded screens |
-| `devtools/record_claude.py` | The recorder: drives the real `claude`, sanitises and writes fixtures |
+| `devtools/fake_claude.py` | The fake: a state machine that replays recorded and observed screens |
+| `devtools/record_claude.py` | The recorder: drives the real `claude`, sanitises and writes fixtures; also the one reader of the observed screens (`load_observed`) |
 | `devtools/tmuxctl.py` | Runs one program in a private tmux server and reads its screen |
 | `tests/fakes/fixtures/` | One `<capture>.txt` per recorded screen, and `manifest.json` |
+| `tests/fakes/observed/` | One `<name>.txt` per screen seen on a live server that no recording can bring about, and `manifest.json` — see [Observed screens](#observed-screens) |
 
 ## Fixtures
 
@@ -24,11 +28,11 @@ fixture exists for exactly the captures the sequences define, and tests hold
 the two to each other in both directions.
 
 Captured text is sanitised before it is written: paths, URLs, clock times,
-session names, account details and the version become `{placeholders}`, which
-the fake fills in when it replays a screen. The placeholder set is
-`PLACEHOLDERS` in `devtools/record_claude.py`. A test checks that no fixture
-contains an email address, a home or temporary path, a sign-in URL or an
-environment ID.
+session names, session IDs (`cse_…`), account details and the version become
+`{placeholders}`, which the fake fills in when it replays a screen. The
+placeholder set is `PLACEHOLDERS` in `devtools/record_claude.py`. A test
+checks that no fixture or observed screen contains an email address, a home
+or temporary path, a sign-in URL, an environment ID or a session ID.
 
 A sequence marked `git_repository` runs in a throwaway repository the
 recorder makes in its own scratch folder, on `RECORD_BRANCH`, and the branch
@@ -37,6 +41,33 @@ in a server's status line becomes `{branch}`.
 `manifest.json` records the Claude Code version the fixtures were recorded
 from, and for each capture its sequence, its exit code (`null` when the
 program was still running) and whether it needed an account.
+
+## Observed screens
+
+A screen that a live server has shown but that no sequence can bring about
+cannot be recorded. Where rcman has to recognise one, the screen as seen —
+the whole pane, read with `tmux capture-pane` as rc-helper reads it — is kept
+in `tests/fakes/observed/` as `<name>.txt`, sanitised as the fixtures are.
+That folder's `manifest.json` lists every screen in it, and for each records
+its exit code (`null` when the program was still running), the Claude Code
+version it was seen on (`seen_on`), the versions it is kept for (`kept_for`,
+starting with `seen_on`), how it was seen (`seen`), and the
+[journal](../docs/journal.md#output-rcman-does-not-recognise) line that
+reported it (`journal`: its `code`, `verb` and `fingerprint`).
+`load_observed` in `devtools/record_claude.py` is the one reader.
+
+Tests hold the manifest to exactly the files beside it
+(`tests/test_record_claude.py`), and each screen to the state rc-helper reads
+from it (`OBSERVED_STATES` in `tests/test_rc_helper.py`). An observed screen
+cannot be re-recorded when a new Claude Code version is approved, so
+`test_every_observed_screen_is_kept_for_the_approved_version` fails while a
+screen's `kept_for` does not name the version in the fixtures' manifest; see
+[Approving a new Claude Code version](#approving-a-new-claude-code-version).
+
+Every observed screen is a scenario of the fake under its own name:
+`FAKE_CLAUDE_SCENARIO=<name>` makes `remote-control` show that screen and
+wait. What follows Ctrl+C there was not seen, so the fake then ends as in the
+`unrecognised` scenario.
 
 ## What the fake does
 
@@ -78,7 +109,9 @@ state's `accept_codes`, and fails for any other.
 
 `FAKE_CLAUDE_SCENARIO=unrecognised` makes `remote-control` and `auth login`
 show a synthetic screen that matches no recording, for testing how
-unrecognised output is handled. `FAKE_CLAUDE_READY_SECONDS` sets how long the
+unrecognised output is handled; Ctrl+C then ends it with exit status 1. The
+name of an observed screen makes `remote-control` show that screen (see
+[Observed screens](#observed-screens)). `FAKE_CLAUDE_READY_SECONDS` sets how long the
 connected stage lasts, and `FAKE_CLAUDE_VERSION` the version it reports.
 
 ## Not recorded
@@ -100,13 +133,15 @@ process has ended on one as `exited` (see [rc-helper.md](rc-helper.md)):
   than `1`, and whether Claude asks it again in a folder it already trusts —
   the fake refuses these as unsupported invocations;
 - a server in a repository with a detached HEAD — the fake's status line
-  shows the commit's hash where the branch would be.
+  shows the commit's hash where the branch would be;
+- what follows Ctrl+C at an observed screen — the fake ends with exit
+  status 1, as in the `unrecognised` scenario.
 
 ## How the fake is checked against the real binary
 
 | Tests | Needs | Runs |
 |---|---|---|
-| `tests/test_fake_claude.py` | Nothing | Always. The recorder drives the fake exactly as it drives the real binary, each sequence in a test case of its own with an account of its own, and must reproduce every fixture but those of the sequences that need a person, whose screens the fake's sign-in tests check |
+| `tests/test_fake_claude.py` | Nothing | Always. The recorder drives the fake exactly as it drives the real binary, each sequence in a test case of its own with an account of its own, and must reproduce every fixture but those of the sequences that need a person, whose screens the fake's sign-in tests check; each observed screen's scenario must show that screen |
 | `tests/test_claude_contract.py` | The real `claude`, no account | Always; skipped when `claude` is not installed unless `RCMAN_REQUIRE_REAL_CLAUDE=1`, which `make check` sets. The installed version must be the manifest's; the no-account screens must match the fixtures; every option rcman passes must be in `--help`, except where help is refused without a login |
 | `tests/test_claude_real_account.py` | The real `claude`, logged in | By hand: `uv run pytest -m real_claude`. Runs the account sequences and the one that submits an invalid sign-in code, and checks every option rcman passes against `--help` while logged in |
 
@@ -127,8 +162,12 @@ version.
    sequence; a version change requires recording them all).
 3. Review the fixture diff. Every change is a change in the real binary that
    rcman's screen reading may have to follow.
-4. Run the whole suite, and `uv run pytest -m real_claude`.
-5. Commit the fixtures and the manifest together.
+4. For each [observed screen](#observed-screens), which cannot be
+   re-recorded, decide whether the new version may still show it: if so, add
+   the version to its `kept_for` in `tests/fakes/observed/manifest.json`;
+   if not, remove the screen and what recognises it, tests first.
+5. Run the whole suite, and `uv run pytest -m real_claude`.
+6. Commit the fixtures and both manifests together.
 
 Recording also leaves the scratch folders it trusted in that account's Claude
 configuration.

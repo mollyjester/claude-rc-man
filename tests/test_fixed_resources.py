@@ -34,9 +34,9 @@ UNPRIVILEGED = 1024
 EXEMPT = {
     (
         "test_record_claude.py",
-        "test_no_fixture_contains_an_unsanitised_secret_or_path",
+        "leaks",
         f'"{TMP}/"',
-    ): "searches the recorded fixtures for the text; nothing is made there",
+    ): "searches the kept screens for the text; nothing is made there",
     (
         "test_rc_helper.py",
         "test_mkdir_refuses_a_parent_outside_the_home_folder",

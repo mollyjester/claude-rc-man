@@ -161,8 +161,10 @@ longer than all of step 1 and 2 (`tests/test_helpers_client.py`,
 
 `classify` in `helpers/rc_helper.py` turns a server's screen and exit status
 into one of these states. The screen patterns it uses are held to every
-recorded fixture by `tests/test_rc_helper.py`, so a re-recording that changes
-a screen fails there first.
+recorded fixture, and to every screen observed on a live server that no
+recording can bring about (see [fake-claude.md](fake-claude.md#observed-screens)),
+by `tests/test_rc_helper.py`, so a re-recording that changes a screen fails
+there first.
 
 | State | Meaning |
 |---|---|
@@ -174,15 +176,18 @@ a screen fails there first.
 | `trust_declined` | The trust question was answered no; the server ended, and `start` starts it again |
 | `logged_out` | Claude refused because no account is connected; `start` starts it again |
 | `exited` | The server ended in a way not listed above, whatever its exit status — it stopped by itself; `exit_code` and `screen` are set, and `start` or `resume` starts it again |
+| `reconnected` | A live screen of Claude's log lines only (`LOG_LINE`), the last saying Remote Control has reconnected (`RECONNECTED`): Claude is not drawing its status block, so `session_name` and `environment_url` are `null`; `screen` is set. It is running, so `stop` and `delete` end it as any other |
 | `unrecognised` | A live screen that matches no known state; `screen` is set |
 
 A screen in transition can match no known state for a moment, so verbs that
 wait report `unrecognised` only once it has lasted
 `UNRECOGNISED_GRACE_SECONDS`.
 
-In a git repository the server's status line names the branch; the states
-are read from the capacity line under it, so a server there is `connected`
-and `ready` as anywhere else. The spawn-mode question Claude asks in a
+`connected` and `ready` are read from the capacity line of Claude's status
+block, so a screen with one keeps its state whatever log lines are above it;
+`reconnected` is read only where there is none. In a git repository the
+server's status line names the branch, and the capacity line is under it, so
+a server there is `connected` and `ready` as anywhere else. The spawn-mode question Claude asks in a
 repository when it is started without `--spawn` is no state of its own:
 rc-helper always passes `--spawn`, so a server shows it only if Claude Code
 changes, and it is then `unrecognised`, with its screen, and `stop` ends it.
@@ -220,6 +225,19 @@ if Claude asks again.
   their final screen and exit status after they exit. Each folder has its own
   session, named from a hash of its path, with the path stored in the
   session's `@rcman_path` option; at most one exists per folder.
+- Each session's window, the sign-in session's too, is pinned (`Tmux.pin`:
+  `window-size manual`) to the size it is made with, `WIDTH` by `HEIGHT`, so
+  a terminal attached to the socket does not resize it: after a resize,
+  Claude's next redraw erases log lines above its status block and for a
+  moment shows the block twice, from which a wrong session name would be
+  read. `Tmux.new` pins a window after setting the session's options, so a
+  server whose window could not be pinned is still recorded and listed, and
+  `Tmux.respawn` pins it before starting the server again, so a window that is
+  not pinned is pinned when its server is next started or resumed; rc-helper
+  does nothing to a server while it runs. `helpers/tmux.conf` sets no global
+  `window-size`: a global `window-size manual` makes the tmux server exit at
+  the next detached `new-session` (tmux 3.4), which
+  `test_tmux_conf_sets_no_global_window_size` measures.
 - Claude Code is `~/.local/bin/claude` of the user. It is started through
   `/usr/bin/env -i` with only the variables `child_env` lists — never through
   a shell, and with self-update disabled. Remote Control sessions start in
