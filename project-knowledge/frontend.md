@@ -46,7 +46,8 @@ matters, so a suppression at the site is preferred.
   `ApiError` carrying the problem details as sent, built by `problemFrom`, which also turns the
   problem details an answer reports, as Commit & Push's `push_problem`,
   into one; `src/ProblemView.tsx` shows them — the title,
-  each field error, and a raw screen, failed checks, the server a problem is
+  each field error, and a raw screen, failed checks with what each ran and
+  got back under its name and how many lines were not shown, the server a problem is
   about with its screen, what a delete left, or what git said and how many
   lines more, when the server passes one.
   Each input carries its field's name in its `name` attribute, and a form

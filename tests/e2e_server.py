@@ -244,6 +244,12 @@ def _app(root: Path, held):
                 "code": "claude_checks_failed",
                 "message": "That version failed rcman's checks.",
                 "failed": ["version"],
+                "report": {
+                    "version": {
+                        "lines": ["ran: claude --version (on a terminal); exit code 0", "0.0.0"],
+                        "more": 0,
+                    }
+                },
             }
         }
 

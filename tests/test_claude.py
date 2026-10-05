@@ -158,8 +158,15 @@ def test_upgrade_goes_through_rc_admin(client, admin_runner):
     assert admin_runner.calls == [["claude-upgrade", "--", "2.2.0"]]
 
 
-def test_a_failed_upgrade_is_a_problem_naming_the_checks(client, admin_runner):
-    error = {"code": "claude_checks_failed", "message": "x", "failed": ["sign_in_screen"]}
+def test_a_failed_upgrade_is_a_problem_naming_the_checks(client, admin_runner, settings, caplog):
+    caplog.set_level(logging.DEBUG)
+    report = {"sign_in_screen": {"lines": ["ran: claude auth login", "PLANTEDREPORT"], "more": 3}}
+    error = {
+        "code": "claude_checks_failed",
+        "message": "x",
+        "failed": ["sign_in_screen"],
+        "report": report,
+    }
     admin_runner.replies = [(1, {"error": error})]
     r = client.post("/api/claude/upgrade", json={"version": "2.2.0"}, headers=changing(ALICE))
     assert (r.status_code, r.json()["code"], r.json()["failed"]) == (
@@ -167,6 +174,12 @@ def test_a_failed_upgrade_is_a_problem_naming_the_checks(client, admin_runner):
         "claude_checks_failed",
         ["sign_in_screen"],
     )
+    assert r.json()["report"] == report
+    assert "PLANTEDREPORT" in r.text  # the administrator sees the report
+    rows = sqlite3.connect(settings.database).execute("select * from audit").fetchall()
+    assert any("claude_checks_failed" in row for row in rows)  # the refusal was audited
+    assert "claude_checks_failed" in caplog.text  # and logged
+    assert "PLANTEDREPORT" not in repr(rows) and "PLANTEDREPORT" not in caplog.text
 
 
 def test_versions_are_for_administrators(client, admin_runner):

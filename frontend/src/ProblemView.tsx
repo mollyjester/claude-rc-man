@@ -1,3 +1,5 @@
+import { useId } from "react";
+
 import { ApiError, UNEXPECTED_RESPONSE } from "./api";
 import { noteFailure, PAGE_ERROR } from "./clientErrors";
 import { m } from "./messages";
@@ -14,6 +16,7 @@ export function ProblemView({
   if (!error) return null;
   const screen = error.extra.screen;
   const failed = error.extra.failed;
+  const report = checkReports(error.extra.report);
   const left = error.extra.left;
   const git = error.extra.git;
   const gitMore = error.extra.git_more;
@@ -39,6 +42,9 @@ export function ProblemView({
           {m.versionsFailedChecks} {failed.join(", ")}
         </p>
       )}
+      {report.map(([check, entry]) => (
+        <CheckReport key={check} check={check} lines={entry.lines} more={entry.more} />
+      ))}
       {Array.isArray(screen) && <pre className="screen">{screen.join("\n")}</pre>}
       {serverPath !== null && (
         <>
@@ -70,6 +76,35 @@ export function ProblemView({
         </>
       )}
     </div>
+  );
+}
+
+// One failed check's report, under its name, which also names the figure: not
+// every reader takes a figure's name from its caption.
+function CheckReport({ check, lines, more }: { check: string; lines: string[]; more: number }) {
+  const caption = useId();
+  return (
+    <>
+      <figure aria-labelledby={caption}>
+        <figcaption id={caption}>{check}</figcaption>
+        <pre className="screen">{lines.join("\n")}</pre>
+      </figure>
+      {more > 0 && <p>{m.versionsReportMore(more)}</p>}
+    </>
+  );
+}
+
+// What each failed check ran and got back, as rc-admin reports it: its lines, and
+// how many more it left out.
+function checkReports(report: unknown): [string, { lines: string[]; more: number }][] {
+  if (typeof report !== "object" || report === null) return [];
+  return Object.entries(report).flatMap(([check, entry]) =>
+    typeof entry === "object" &&
+    entry !== null &&
+    Array.isArray(entry.lines) &&
+    typeof entry.more === "number"
+      ? [[check, { lines: entry.lines.map(String), more: entry.more }]]
+      : [],
   );
 }
 

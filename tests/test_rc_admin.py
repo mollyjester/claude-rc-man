@@ -25,7 +25,7 @@ class FakeSystem:
         self.commands: list[list[str]] = []
         self.as_user_commands: list[tuple[str, list[str]]] = []
         self.claude_versions: dict[str, str | None] = {}
-        self.check_failures: list[str] = []
+        self.check_failures: dict[str, dict] = {}  # each failed check's report
         self.checked: list[str] = []
 
     def user(self, name):
@@ -72,7 +72,7 @@ class FakeSystem:
 
     def check_candidate(self, cfg, version):
         self.checked.append(version)
-        return list(self.check_failures)
+        return dict(self.check_failures)
 
 
 @pytest.fixture
@@ -437,7 +437,7 @@ def test_approved_version_is_the_tested_one_until_an_upgrade(cfg):
 
 def test_upgrade_checks_then_approves_then_installs_where_needed(cfg, two_users):
     two_users.claude_versions.update({"alice": "9.9.9", "bob": "9.9.9"})
-    two_users.check_failures = []
+    two_users.check_failures = {}
     out = ra.upgrade(cfg, two_users, "9.9.10")
 
     assert two_users.checked == ["9.9.10"]
@@ -450,11 +450,12 @@ def test_upgrade_checks_then_approves_then_installs_where_needed(cfg, two_users)
 
 def test_a_failed_check_changes_nothing(cfg, two_users):
     two_users.claude_versions.update({"alice": "9.9.9", "bob": "9.9.9"})
-    two_users.check_failures = ["sign_in_screen"]
+    report = {"lines": ["ran: claude auth login", "planted screen"], "more": 2}
+    two_users.check_failures = {"sign_in_screen": report}
     with pytest.raises(ra.AdminError) as err:
         ra.upgrade(cfg, two_users, "9.9.10")
     assert err.value.code == "claude_checks_failed"
-    assert err.value.detail == {"failed": ["sign_in_screen"]}
+    assert err.value.detail == {"failed": ["sign_in_screen"], "report": {"sign_in_screen": report}}
     assert ra.approved_version(cfg) == "9.9.9"
     assert not cfg.approved_file.exists()
     assert two_users.claude_versions == {"alice": "9.9.9", "bob": "9.9.9"}
@@ -462,14 +463,14 @@ def test_a_failed_check_changes_nothing(cfg, two_users):
 
 def test_users_already_on_the_version_are_left_alone(cfg, two_users):
     two_users.claude_versions.update({"alice": "9.9.10", "bob": "9.9.9"})
-    two_users.check_failures = []
+    two_users.check_failures = {}
     out = ra.upgrade(cfg, two_users, "9.9.10")
     assert out["users"] == {"alice": "already", "bob": "installed"}
 
 
 def test_one_failed_install_is_reported_and_the_rest_continue(cfg, two_users):
     two_users.claude_versions.update({"alice": "9.9.9", "bob": "9.9.9"})
-    two_users.check_failures = []
+    two_users.check_failures = {}
     real_install = two_users.install_claude
 
     def flaky(info, version):
@@ -493,7 +494,7 @@ def test_invalid_versions_are_refused_before_any_check(cfg, two_users, version):
 
 
 def test_new_users_get_the_approved_version(cfg, two_users, tmp_path):
-    two_users.check_failures = []
+    two_users.check_failures = {}
     two_users.claude_versions.update({"alice": "9.9.9", "bob": "9.9.9"})
     ra.upgrade(cfg, two_users, "9.9.10")
     ra.add(cfg, two_users, "carol", "carol@example.com", admin=False)

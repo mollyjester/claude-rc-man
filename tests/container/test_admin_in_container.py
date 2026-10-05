@@ -19,6 +19,9 @@ from pathlib import Path
 
 import pytest
 
+from helpers import claude_checks as cc
+from helpers import rc_admin as ra
+
 pytestmark = pytest.mark.skipif(
     os.environ.get("RCMAN_IN_CONTAINER") != "1" or os.geteuid() != 0,
     reason="runs only as root inside the test container",
@@ -446,8 +449,31 @@ def test_a_version_failing_the_checks_changes_nothing(env, etc, two):
     code, out = admin(env, "claude-upgrade", "0.0.1")
     assert code == 1 and out["error"]["code"] == "claude_checks_failed"
     assert set(out["error"]["failed"]) >= {"version", "auth_status", "sign_in_screen"}
+    report = out["error"]["report"]
+    assert list(report) == out["error"]["failed"]
+    assert report["version"]["lines"][0].startswith("ran: claude --version")
+    assert "broken" in report["version"]["lines"]  # what the binary printed is there
+    assert "{login_url}" in report["version"]["lines"]  # and its sign-in URL, blanked
+    assert "oauth/authorize?" not in json.dumps(out) and "PLANTSTATE" not in json.dumps(out)
     assert not (etc / "claude-version").exists()
     assert installed("alice") == installed("bob") == approved_version()
+
+
+def test_a_version_that_does_not_install_reports_the_end_of_what_the_installer_said(env, etc, two):
+    code, out = admin(env, "claude-upgrade", "0.0.2")
+    assert code == 1 and out["error"]["code"] == "claude_checks_failed"
+    assert out["error"]["failed"] == [ra.INSTALL]
+    entry = out["error"]["report"][ra.INSTALL]
+    lines = entry["lines"]
+    assert lines[0] == "ran: the Claude Code installer for 0.0.2; exit code 3"
+    assert lines[1] == cc.EARLIER_NOT_SHOWN and lines[-1] == "the installer gave up on 0.0.2"
+    assert "installer line 0" not in lines and "installer line 199" in lines
+    assert len(lines) == cc.MAX_REPORT_LINES
+    printed = 200 + 2  # fake-installer's numbered lines, and its two on stderr
+    assert entry["more"] == printed - (cc.MAX_REPORT_LINES - 2)  # every line it left out
+    assert "downloading for {email}" in lines  # the planted line is there, blanked
+    assert "plant.person" not in json.dumps(out)
+    assert not (etc / "claude-version").exists()
 
 
 def test_people_added_after_an_upgrade_get_the_approved_version(env, two):

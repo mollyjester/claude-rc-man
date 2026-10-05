@@ -73,6 +73,9 @@ test("a refused change shows the server's reason", async ({ page }) => {
   await page.getByLabel(m.versionsUpgrade).fill("9.9.9");
   await page.getByRole("button", { name: m.versionsUpgradeGo }).click();
   await expect(page.getByRole("alert")).toContainText("version");
+  await expect(page.getByRole("figure", { name: "version" })).toContainText(
+    "ran: claude --version",
+  );
 });
 
 test("an address rcman does not know is refused", async ({ page }) => {

@@ -46,6 +46,7 @@ if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from devtools import tmuxctl  # noqa: E402
+from helpers.claude_checks import EMAIL_ADDRESS, SESSION_ID  # noqa: E402
 
 REPO = Path(__file__).resolve().parent.parent
 FIXTURES = REPO / "tests" / "fakes" / "fixtures"
@@ -108,7 +109,7 @@ def sanitise(text: str, ctx: Context) -> str:
     text = re.sub(re.escape(ENVIRONMENT_URL_PREFIX) + r"\S+", "{environment_url}", text)
     for key, placeholder in ACCOUNT_FIELDS.items():
         text = re.sub(rf'("{key}": )"[^"]*"', rf'\1"{{{placeholder}}}"', text)
-    text = re.sub(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+", "{email}", text)
+    text = EMAIL_ADDRESS.sub("{email}", text)
     paths = sorted([(ctx.cwd, "{cwd}"), (ctx.config_dir, "{config_dir}")], key=lambda p: -len(p[0]))
     for path, placeholder in paths:
         text = text.replace(path, placeholder)
@@ -121,7 +122,7 @@ def sanitise(text: str, ctx: Context) -> str:
             flags=re.MULTILINE,
         )
     text = re.sub(r"\[\d\d:\d\d:\d\d\]", "[{time}]", text)
-    text = re.sub(r"\bcse_[A-Za-z0-9]+", "{session_id}", text)
+    text = SESSION_ID.sub("{session_id}", text)
     text = re.sub(r"(^ *Capacity:.*\n {4})(\S+)$", r"\1{session_name}", text, flags=re.MULTILINE)
     return text.replace(ctx.version, "{version}")
 

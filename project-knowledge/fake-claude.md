@@ -30,9 +30,12 @@ the two to each other in both directions.
 Captured text is sanitised before it is written: paths, URLs, clock times,
 session names, session IDs (`cse_…`), account details and the version become
 `{placeholders}`, which the fake fills in when it replays a screen. The
-placeholder set is `PLACEHOLDERS` in `devtools/record_claude.py`. A test
-checks that no fixture or observed screen contains an email address, a home
-or temporary path, a sign-in URL, an environment ID or a session ID.
+placeholder set is `PLACEHOLDERS` in `devtools/record_claude.py`; email
+addresses and session IDs are found by `EMAIL_ADDRESS` and `SESSION_ID` in
+`helpers/claude_checks.py`, the same patterns that blank them in a refused
+upgrade's report. A test checks that no fixture or observed screen contains
+an email address, a home or temporary path, a sign-in URL, an environment ID
+or a session ID.
 
 A sequence marked `git_repository` runs in a throwaway repository the
 recorder makes in its own scratch folder, on `RECORD_BRANCH`, and the branch
