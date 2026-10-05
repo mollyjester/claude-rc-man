@@ -78,6 +78,8 @@ installation fails is reported and the others continue.
 `helpers/sudoers.rc-admin` lets the application user run `rc-admin`, and
 nothing else, as root with the environment reset. The installer
 (`sudoers()` in `installer/install.py`) fills in `@ADMIN@` and `@APP_USER@`.
+An administrator runs `rcman-user` as root through sudo by name; the installer
+puts it on sudo's path (see [installer.md](installer.md#releases)).
 
 ## Test hooks and tests
 

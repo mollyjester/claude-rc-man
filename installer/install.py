@@ -64,6 +64,9 @@ CADDY_SNIPPET = ETC / "Caddyfile.snippet"
 RUN = Path("/run/rcman")
 SOCKET = RUN / "rcman.sock"  # rcman's only listener; Caddy's group alone may enter RUN
 TMPFILES = Path("/etc/tmpfiles.d/rcman.conf")
+# Where the commands an administrator runs through sudo are put: on sudo's secure path.
+COMMAND_DIR = Path("/usr/local/sbin")
+COMMANDS = ("rcman-user",)
 
 APP_USER = "rcman"
 PROXY_USER = "rcman-proxy"
@@ -276,6 +279,26 @@ def rollback(root: Path) -> None:
         raise InstallError("there is no previous release to roll back to")
     _set_link(root, "current", previous)
     _set_link(root, "previous", current)
+
+
+def link_commands(bin_dir: Path = COMMAND_DIR, current: Path = CURRENT) -> list[str]:
+    """Each of COMMANDS in ``bin_dir``, a link to the current release's helper of that
+    name; the links it made or repaired. Through ``current``, so a switch or a rollback
+    needs no change to them. Something there that is not a link is refused, not replaced."""
+    changed = []
+    for name in COMMANDS:
+        path, target = bin_dir / name, str(current / "helpers" / name)
+        if path.is_symlink():
+            if os.readlink(path) == target:
+                continue
+        elif path.exists():
+            raise InstallError(f"{path} is there already and is not rcman's; remove it first")
+        tmp = bin_dir / f".{name}.new"
+        tmp.unlink(missing_ok=True)
+        os.symlink(target, tmp)
+        os.replace(tmp, path)
+        changed.append(str(path))
+    return changed
 
 
 # --- system ---------------------------------------------------------------------------
@@ -752,6 +775,7 @@ def main(argv: list[str]) -> int:
         if built or switched:
             changes.append(f"release {release}")
         changes += configure(settings)
+        changes += link_commands()
         start_services(restart=bool(changes))
         ensure_admin(settings)
         health(settings)

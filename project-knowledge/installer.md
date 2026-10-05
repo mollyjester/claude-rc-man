@@ -31,7 +31,9 @@ makes it current and the old current
 previous, and removes the release that falls off; `rollback` swaps the two.
 The sudoers rules and rcman's unit name paths under `/opt/rcman/current`, and
 oauth2-proxy's unit names the toolchain's binary, so a switch needs no change
-to them.
+to them. So do the links `link_commands` puts in `COMMAND_DIR`, on sudo's
+secure path, one for each of `COMMANDS`: it repairs a link that points
+elsewhere and refuses anything there that is not a link.
 
 ## The socket
 

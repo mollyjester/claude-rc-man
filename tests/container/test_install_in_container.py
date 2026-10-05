@@ -233,6 +233,13 @@ def test_the_app_reaches_the_helpers_through_sudo(first_install):
     assert status == 200, body
 
 
+def test_an_administrator_runs_rcman_user_by_name_through_sudo(first_install):
+    """As the guides say: `sudo rcman-user`, found on sudo's own secure path."""
+    proc = sh("sudo", "rcman-user", "list", check=False)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "dev@example.com" in proc.stdout  # the first administrator, added by the install
+
+
 def test_the_socket_directory_admits_only_its_group(first_install):
     import grp
 
@@ -542,6 +549,9 @@ def test_rollback_returns_to_the_previous_release(first_install):
     assert proc.returncode == 0, proc.stderr
     assert os.readlink(ROOT / "current") == previous
     assert os.readlink(ROOT / "previous") == current
+    command = Path("/usr/local/sbin/rcman-user").resolve()
+    assert command == (ROOT / previous / "helpers" / "rcman-user").resolve()
+    assert sh("sudo", "rcman-user", "list", check=False).returncode == 0
     deadline = time.monotonic() + 30
     while app("/api/health")[0] != 200 and time.monotonic() < deadline:
         time.sleep(0.5)

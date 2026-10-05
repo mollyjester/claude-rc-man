@@ -510,6 +510,47 @@ def test_rollback_without_a_previous_release_is_refused(tmp_path):
         ins.rollback(tmp_path)
 
 
+def test_each_command_put_on_the_path_is_a_helper_of_the_release():
+    assert ins.COMMANDS  # positive control: there is something to check
+    for name in ins.COMMANDS:
+        assert os.access(REPO / "helpers" / name, os.X_OK), name
+
+
+def test_the_commands_are_linked_to_the_current_releases(tmp_path):
+    bin_dir, current = tmp_path / "sbin", tmp_path / "opt" / "current"
+    (current / "helpers").mkdir(parents=True)
+    bin_dir.mkdir()
+    for name in ins.COMMANDS:
+        (current / "helpers" / name).write_text(name)
+    changed = ins.link_commands(bin_dir, current)
+    assert changed == [str(bin_dir / name) for name in ins.COMMANDS]
+    for name in ins.COMMANDS:
+        # through current, so a switch or a rollback needs no change to it
+        assert os.readlink(bin_dir / name) == str(current / "helpers" / name)
+        assert (bin_dir / name).read_text() == name
+    assert ins.link_commands(bin_dir, current) == []
+
+
+def test_a_command_linked_elsewhere_is_linked_again(tmp_path):
+    bin_dir, current = tmp_path / "sbin", tmp_path / "current"
+    bin_dir.mkdir()
+    name = ins.COMMANDS[0]
+    os.symlink(tmp_path / "elsewhere", bin_dir / name)
+    assert str(bin_dir / name) in ins.link_commands(bin_dir, current)
+    assert os.readlink(bin_dir / name) == str(current / "helpers" / name)
+
+
+def test_a_file_where_a_command_goes_is_refused_and_left_alone(tmp_path):
+    bin_dir, current = tmp_path / "sbin", tmp_path / "current"
+    bin_dir.mkdir()
+    name = ins.COMMANDS[0]
+    (bin_dir / name).write_text("someone else's")
+    with pytest.raises(ins.InstallError, match=name):
+        ins.link_commands(bin_dir, current)
+    assert not (bin_dir / name).is_symlink()
+    assert (bin_dir / name).read_text() == "someone else's"
+
+
 def test_an_incomplete_release_is_never_switched_to(tmp_path):
     (tmp_path / "releases" / "half").mkdir(parents=True)
     with pytest.raises(ins.InstallError, match="incomplete"):
@@ -554,6 +595,7 @@ def test_the_guide_names_the_paths_the_installer_uses():
         ins.SUDOERS,
         ins.SOCKET,
         ins.TMPFILES,
+        *(ins.COMMAND_DIR / name for name in ins.COMMANDS),
     ):
         assert str(path) in guide, path
     assert "/oauth2/callback" in guide
