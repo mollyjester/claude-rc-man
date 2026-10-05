@@ -102,9 +102,12 @@ run and kept.
 7. **Writes the configuration** in `/etc/rcman`, the sudoers rules in
    `/etc/sudoers.d/rcman` (checked with `visudo` first), and the two systemd
    services, `rcman` and `rcman-oauth2-proxy`.
-8. **Starts the services**, restarting them when anything changed.
-9. **Adds the first administrator**, as `rcman-user add --admin --adopt` would.
-10. **Checks** that both services answer, and prints the Caddy configuration
+8. **Puts `rcman-user` on the path**: `/usr/local/sbin/rcman-user` is a link
+   to the current release's, so `sudo rcman-user` finds it. If something else
+   is already there, the installer stops rather than replace it.
+9. **Starts the services**, restarting them when anything changed.
+10. **Adds the first administrator**, as `rcman-user add --admin --adopt` would.
+11. **Checks** that both services answer, and prints the Caddy configuration
    and what to do about Caddy, if anything.
 
 Running it again for the same commit changes nothing.
