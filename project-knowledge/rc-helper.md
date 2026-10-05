@@ -263,7 +263,9 @@ running git are `helpers/git_run.py`, tested by `tests/test_git_run.py`.
   with it. At the deadline the verb answers `git_timeout`; on SIGTERM it
   answers nothing. SIGTERM waits while git is being started, so it cannot
   fall between git starting and rc-helper holding it; git starts with
-  SIGTERM unblocked.
+  SIGTERM unblocked. This holds only because rc-helper runs one thread:
+  the kernel gives a signal one thread blocks to another that does not, so
+  its test runs it in a process of its own, of one thread.
 - **Refusals.** A git that refuses is `git_failed`, with what it wrote on
   stderr and stdout as `git` — at most `MAX_GIT_MESSAGE_LINES` lines — and
   how many lines more as `git_more`; for a git whose standard output may

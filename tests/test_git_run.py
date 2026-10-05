@@ -449,32 +449,64 @@ def test_the_fixtures_own_home_is_removed_when_the_tests_end():
     assert not home.exists()
 
 
-def test_a_sigterm_as_git_starts_still_ends_it(tmp_path, monkeypatch):
-    """SIGTERM arriving the moment git has started, before the call holds it, ends git."""
-    import signal
+# SIGTERM the moment git has started, before the call holds it, in a process
+# of one thread, as rc-helper is: a pytest process has more (the tests' GitHub
+# serves from one), and the kernel gives a signal one thread blocks to another.
+SIGTERM_AS_GIT_STARTS = """
+import json, os, signal, subprocess, sys, time
+from helpers import git_run as g
+if sys.argv[1] == "unmasked":  # the planted twin: the call no longer holds SIGTERM back
+    g.signal.pthread_sigmask = lambda how, mask: set()
+started = []
+
+class Terminated(Exception):
+    pass
+
+def terminated(signum, frame):
+    raise Terminated
+
+def popen(*args, **kwargs):
+    started.append(subprocess.Popen(*args, **kwargs))
+    os.kill(os.getpid(), signal.SIGTERM)  # as rc-helper's caller would, just then
+    return started[-1]
+
+signal.signal(signal.SIGTERM, terminated)
+env, repo = json.loads(sys.argv[2]), sys.argv[3]
+try:
+    g.Git(env, popen=popen).run(repo, ["hash-object", "--stdin"], deadline=time.monotonic() + 20)
+    raised = False
+except Terminated:
+    raised = True
+[proc] = started
+running = proc.poll() is None
+proc.kill()
+proc.wait()
+threads = len(os.listdir("/proc/self/task"))
+print(json.dumps({"raised": raised, "running": running, "threads": threads}))
+"""
+
+
+@pytest.mark.parametrize("mask,left_running", [("masked", False), ("unmasked", True)])
+def test_a_sigterm_as_git_starts_still_ends_it(tmp_path, mask, left_running):
+    """SIGTERM arriving the moment git has started, before the call holds it, ends git;
+    with SIGTERM not held back while git starts, git is left running."""
+    import json
+    import sys
 
     repo = make_repo(tmp_path / "r")
-    started = []
-
-    class Terminated(Exception):
-        pass
-
-    def terminated(signum, frame):
-        raise Terminated
-
-    def popen(*args, **kwargs):
-        started.append(subprocess.Popen(*args, **kwargs))
-        os.kill(os.getpid(), signal.SIGTERM)  # as rc-helper's caller would, just then
-        return started[-1]
-
-    previous = signal.signal(signal.SIGTERM, terminated)
-    try:
-        with pytest.raises(Terminated):
-            g.Git(ENV, popen=popen).run(repo, ["hash-object", "--stdin"], deadline=soon())
-    finally:
-        signal.signal(signal.SIGTERM, previous)
-    [proc] = started  # positive control: git started, and waits on its stdin
-    assert proc.poll() is not None, "git was left running"
+    repo_root = Path(__file__).resolve().parent.parent
+    proc = subprocess.run(
+        [sys.executable, "-c", SIGTERM_AS_GIT_STARTS, mask, json.dumps(ENV), str(repo)],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert proc.returncode == 0, proc.stderr
+    out = json.loads(proc.stdout)
+    assert out["threads"] == 1  # one thread, as rc-helper is
+    assert out["raised"]  # positive control: the SIGTERM reached the call
+    assert out["running"] is left_running, "git was left running" if out["running"] else out
 
 
 def test_git_and_its_hooks_can_be_ended_by_sigterm(tmp_path):
