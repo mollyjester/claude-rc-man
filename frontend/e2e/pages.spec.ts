@@ -80,3 +80,14 @@ test("an address rcman does not know is refused", async ({ page }) => {
   await page.goto("/");
   await expect(page.getByRole("alert")).toContainText("may not use rcman");
 });
+
+test("the tab's icon is *rc, white on a black circle", async ({ page, request }) => {
+  await signInAs(page, ALICE);
+  await page.goto("/");
+  const href = await page.locator('link[rel="icon"]').getAttribute("href");
+  const icon = await request.get(href!);
+  expect(icon.headers()["content-type"]).toContain("image/svg+xml");
+  const svg = await icon.text();
+  expect(svg).toContain("<circle");
+  expect(svg).toContain(">*rc</text>");
+});
