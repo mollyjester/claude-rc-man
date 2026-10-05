@@ -313,7 +313,9 @@ def test_in_a_repository_without_spawn_it_asks_the_spawn_mode_question(pane, tmp
     assert pane.wait_exit(timeout=10) == rec.load_fixtures()["spawn_stopped_same_dir"].exit_code
 
 
-def test_after_ctrl_c_the_spawn_mode_question_takes_no_answer_and_ends_on_sigterm(pane, tmp_path):
+def test_after_ctrl_c_the_spawn_mode_question_takes_no_answer_or_sigterm_and_ends_on_sigkill(
+    pane, tmp_path
+):
     import signal
     import time
 
@@ -329,8 +331,12 @@ def test_after_ctrl_c_the_spawn_mode_question_takes_no_answer_and_ends_on_sigter
     time.sleep(1)
     assert pane.exit_status() is None
     assert "Capacity:" not in pane.text()
-    pane.signal(signal.SIGTERM)
-    assert pane.wait_exit(timeout=10) == rec.load_fixtures()["spawn_prompt_terminated"].exit_code
+    pane.signal(signal.SIGTERM)  # changes nothing, as recorded
+    time.sleep(1)
+    assert pane.exit_status() is None
+    assert "Capacity:" not in pane.text()
+    pane.signal(signal.SIGKILL)
+    assert pane.wait_exit(timeout=10) == rec.load_fixtures()["spawn_prompt_killed"].exit_code
 
 
 def test_in_a_repository_with_spawn_same_dir_it_connects_and_shows_the_branch(pane, tmp_path):

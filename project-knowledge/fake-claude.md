@@ -70,7 +70,8 @@ It reproduces these behaviours of the real binary, each recorded:
 - In a git repository, started without `--spawn`, Claude asks for a spawn
   mode after the trust question. Answered `1`, the server goes on as
   anywhere else. Ctrl+C there changes nothing, and no answer is taken after
-  it; SIGTERM ends it. With `--spawn same-dir` it is not asked.
+  it; SIGTERM changes nothing either; SIGKILL ends it. With
+  `--spawn same-dir` it is not asked.
 
 Signing in succeeds, with the recorded screens, for a code listed in the
 state's `accept_codes`, and fails for any other.

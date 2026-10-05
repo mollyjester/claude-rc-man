@@ -151,7 +151,8 @@ when it was ended. A server that is still running after SIGKILL is
 
 Claude Code ignores Ctrl+C at some questions: at the spawn-mode question
 (see [Processes and isolation](#processes-and-isolation)), it neither exits
-nor takes an answer afterwards, as recorded (`spawn_prompt` in
+nor takes an answer afterwards, and it ignores SIGTERM there too, so only
+step 2's SIGKILL ends it, as recorded (`spawn_prompt` in
 `devtools/record_claude.py`). The backend waits for a stop and for a delete
 longer than all of step 1 and 2 (`tests/test_helpers_client.py`,
 `tests/test_folders.py`).

@@ -261,7 +261,7 @@ class Fake:
 
     def spawn_question(self) -> str:
         """The spawn-mode answer; after Ctrl+C, which changes nothing on screen,
-        every answer is ignored, and only a signal that ends it does."""
+        every answer is ignored. SIGTERM is ignored throughout; only SIGKILL ends it."""
         interrupted: list[bool] = []
 
         def interrupt(*_) -> None:
@@ -269,12 +269,14 @@ class Fake:
             self.show("spawn_prompt_interrupted", prompt=True)
 
         signal.signal(signal.SIGINT, interrupt)
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
         self.show("spawn_prompt", prompt=True)
         answer = self.read_line()
         while interrupted:
             self.show("spawn_prompt_answered_after_interrupt", prompt=True)
             self.read_line()
         signal.signal(signal.SIGINT, signal.SIG_DFL)
+        signal.signal(signal.SIGTERM, signal.SIG_DFL)
         return answer.strip()
 
     def unsupported(self) -> int:
