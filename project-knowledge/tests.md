@@ -135,37 +135,52 @@ it can fail, and a positive control that keeps an empty input from passing.
 - **No fixed shared paths or ports** (`tests/test_fixed_resources.py`). Tests
   run at the same time, so none may hold a fixed path under `/tmp` or a fixed
   unprivileged port. It reads the Python files in `tests/` but not those in
-  `tests/container/`, and catches these forms: a
-  string that is `/tmp` or a path in it, an f-string beginning with one, and a
-  call to `tempfile.gettempdir()`, except as the `dir=` of a `tempfile` call
-  that makes a uniquely named file or folder in `/tmp` itself; and a fixed
-  port, written as a number or a string of digits or held in a module-level
-  name, in a (host, port) address wherever it is written, as `port=`, after
-  `--port`, or after `-p` or `--publish`, alone or as the host port of
-  docker's mapping. It does not follow a port held in a function's own
-  variable, imported or computed, a path built in pieces, or a port in a URL;
-  review covers those. It reads, too, every TypeScript and JavaScript file
-  in `frontend/` that git does not ignore, of the kinds `SOURCES` in the
-  test names — the browser tests, their configs and the rest — parsed with
-  Vite's parser from the frontend's packages, so a file that does not
-  parse, or packages that are missing, fail it. There it catches a string
-  that is `/tmp` or a path in it, a template literal beginning with one,
-  and a call to `tmpdir()`, except `/tmp` itself or `tmpdir()` as the folder
-  of a `join()` of a folder and a prefix given to `mkdtemp` or `mkdtempSync`,
-  which make a uniquely named folder there; a path given to a call
-  is reported as the call, so `join()` is read with the rest of the path.
-  And it catches a fixed port, written as a number or a string of digits,
-  held in a module-level name, or given after `??` or `||`, as the value of
-  a property or an assignment named `port` or ending `_PORT`, as the first
-  argument of `listen`, after `--port`, `-p` or `--publish` in an array or
-  in a command written as one string, and after an address's host and its
-  colon — in a URL, after its scheme, and otherwise after an IP address or
-  `localhost` — whether written in the same string, in a template literal,
-  or joined to it with `+`. Unlike the Python guard, then, it reads a port
-  in a URL. As in Python, it does not follow a port held in a function's own
-  variable, imported or computed, or a path built in pieces. Each exemption
-  it lists covers one site, named by its file, the function or test it is
-  in and its text, and fails when that site is gone.
+  `tests/container/`, and every TypeScript and JavaScript file in `frontend/`
+  that git does not ignore, of the kinds `SOURCES` in the test names — the
+  browser tests, their configs and the rest — parsed with Vite's parser from
+  the frontend's packages, so a file that does not parse, or packages that
+  are missing, fail it. It catches the same forms in both languages. `FORMS`
+  in the test spells each form in both, and an entry one language does not
+  spell fails it; `CLEAN` does the same for what it leaves alone. The forms:
+  - a path: `/tmp` or a path in it as a string, a formatted string — an
+    f-string or a template literal — beginning with one, and the system's
+    temporary folder, `tempfile.gettempdir()` or `tmpdir()`;
+  - a fixed port, written as a number or a string of digits, held in a
+    module-level name, converted or cast, in a formatted string that shows
+    nothing else, or given as the fallback of a value that may be missing —
+    after `or`, `??` or `||`, or as the default of `get()` or `getenv()` —
+    wherever it appears:
+    - in an address: a host and the port in a tuple, a list or an array;
+    - beside an IP address or `localhost` as a call's arguments, either
+      first;
+    - given to a name, attribute, key, property, parameter or keyword
+      argument named `port` or ending `_PORT`: assigned, as a parameter's
+      default, or to a call that names it first, as `setenv` and `stubEnv`
+      do. A key counts only where it is written as a string. A module-level
+      name is not a site itself, but is followed to where it is used,
+      except into a function with a parameter of the same name;
+    - as the first argument of a `listen` method;
+    - after `--port`, and after `-p` or `--publish`, alone or as the host
+      port of docker's mapping, in a list of arguments, written whole or
+      formatted, or in a command written as one string;
+    - after a host and its colon — in a URL, after its scheme, and
+      otherwise after an IP address or `localhost` at the start of the text
+      or after a character `BEFORE_HOST` in the test names — in one string,
+      in a formatted string, or joined to it with `+`.
+
+  It leaves alone a uniquely named file or folder made in `/tmp` itself:
+  `/tmp` or the system's temporary folder given as the folder that a call
+  making a unique name makes it in — the `dir=` of such a `tempfile` call,
+  and the folder of a `join()` of a folder and a prefix given to `mkdtemp`
+  or `mkdtempSync`. It leaves alone, too, a string standing alone as a
+  statement, as a docstring does. It does not follow a port held in a
+  function's own variable not named for one, imported or computed, or a
+  path built in pieces; review covers those. In TypeScript a path given to
+  a call is reported as the call, so `join()` is read with the rest of the
+  path. Its planted twins write the path and the port as placeholders, so
+  that the guard, reading its own module, finds neither there. Each
+  exemption it lists covers one site, named by its file, the function or
+  test it is in and its text, and fails when that site is gone.
 - **The container marker is derived** (`tests/test_container_marker.py`). In
   the collected suite the tests carrying `container` are exactly those using
   the `docker` fixture, and no source under `tests/` places the marker by
