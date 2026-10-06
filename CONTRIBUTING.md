@@ -24,5 +24,10 @@ it starts with.
 ## Pull requests
 
 - One issue per pull request where possible; link it.
+- Before the pull request is opened, and again before it is merged, the
+  work-in-progress commits the pre-test hook makes are rewritten into clean
+  commits, each with the documentation for its code. The rewrite is
+  force-pushed with `--force-with-lease` at once, before any further test
+  run, to that feature branch only, never to `main`.
 - The description says which tests were written first and which documentation
   changed. A change with no documentation impact says so explicitly.

@@ -74,8 +74,13 @@ Its edits are followed by the full check again.
   requires: scratch files, processes, tmux or browser sessions, containers,
   worktrees and stale branches you or your subagents created are removed, and
   what is left afterwards is listed to verify it.
-- Commit, push and open the pull request only when the operator asks; its
-  description follows the pull-request section of CONTRIBUTING.md.
+- Beyond the work-in-progress commits and pushes the pre-test hook makes
+  before tests run, commit, push and open the pull request only when the
+  operator asks. Before it is opened, and again before it is merged, the
+  work-in-progress commits are rewritten into clean commits and force-pushed
+  with lease to the feature branch at once, before any further test run, as
+  the pull-request section of CONTRIBUTING.md says; the description follows
+  that section too.
 - Report faithfully: what was done, which tests were written first, what
   documentation changed, the full-check totals, anything skipped or unsettled,
   and anything deliberately left in place with the reason.

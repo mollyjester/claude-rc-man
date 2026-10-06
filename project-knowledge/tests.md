@@ -311,3 +311,73 @@ run nothing. The hook is silent when the
 test passes; on failure it reports to the operator and to the agent. Its own
 tests, including one that checks the wiring in `.claude/settings.json`, are in
 `tests/test_on_edit.py`.
+
+## Pre-test hook
+
+`.claude/settings.json` wires `devtools/pre_test_commit.py` as a PreToolUse
+hook on Bash commands in Claude Code sessions. Before a command that runs
+tests, it commits and pushes the checkout the tests run in, as the working
+rule [work is committed and pushed before a test command
+runs](working-rules.md#tests-and-guards) requires:
+
+- with changes, untracked files included, `git add -A` and a commit with the
+  fixed message `WIP before tests` and a `Co-Authored-By` trailer; nothing
+  of the command goes into it;
+- with a branch that has no upstream, or whose upstream on origin it is ahead
+  of, `git push -u origin` and the branch; with an upstream on another
+  remote, `git push origin` and the branch, without `-u`, when it is ahead
+  of `origin/<branch>`.
+
+It acts only in a checkout of the project's own repository, one with the
+same git common folder as `$CLAUDE_PROJECT_DIR`, so a worktree of it counts
+and another repository does not. Within that, it commits nothing on `main`,
+on origin's default branch or on a detached HEAD, nor during a merge,
+rebase, cherry-pick or revert, and says so when there are changes. An
+untracked file that is a nested repository, is larger than `MAX_FILE_BYTES`
+or has a credential's name in `CREDENTIAL_NAMES`, both in the module, is
+left out of the commit and named to the operator and the agent; the rest is
+committed and pushed. An upstream that is configured but gone, as when a
+merged branch is deleted, is reported and not pushed again. It never passes
+`--no-verify`: a commit the repository's own git hooks refuse is reported,
+and the index is put back as it was before `git add -A`.
+
+It never blocks the command: it makes no permission decision and exits 0 on
+every path, a failure of its own included, and the wired command exits 0
+without running anything when the project folder has no
+`devtools/pre_test_commit.py`, as a checkout of an older branch has. Its git calls share one deadline,
+`DEADLINE` in the module, and the longest it can run, `LONGEST_RUN`, is
+inside the timeout the wiring gives it, which a test checks; `git add`,
+`git commit` and `git push` stopped at the deadline are reported as such.
+Git runs with no terminal prompt, and ssh, unless configured otherwise, in
+batch mode. A failure is reported to the operator and to the agent; a commit
+or push it made, with the untracked files the commit added, is told to the
+agent.
+
+Which commands run tests is read from the command alone, as the shell splits
+it, and a command that runs none starts no process. One runs tests when it
+is pytest, Vitest or `playwright test`, without an option such as
+`--version`, `--help` or `--collect-only` (`NOT_A_RUN` in the module), once
+shell keywords, assignments and wrappers such as `uv run`, `npx`,
+`python -m` and `timeout` are taken off; an npm script whose text does; or a
+make target whose recipe or prerequisites do. The Makefile is read as text,
+never run: its rules and their prerequisites, followed to the end, but not
+its variables, conditionals or included files. Where the tests run follows a
+`cd` at the start of the command, outside any subshell, and make's `-C`,
+from the session's working directory; nothing else moves it, and a `cd` to
+a command substitution, `$(…)` or backticks, leaves it in that directory. The module
+docstring lists what it takes off.
+
+What it does not see: a command inside `bash -c` or another shell's
+argument, or after `xargs`, `sudo` or another wrapper it does not take off;
+a `cd` after the start of the command, in a subshell, or a `pushd`; where a
+command substitution would take it; and the
+paired test the edit-time hook runs after an edit, which is not a Bash
+command. Before such a run, the working rule is kept by hand.
+
+Its own tests are in `tests/test_pre_test_commit.py`. They act only in
+scratch repositories under `tmp_path`, each with a local bare repository as
+its origin, with git under the fixtures' configuration, which refuses every
+transport but a local repository's; an autouse fixture checks that the
+repository the tests run from has the same HEAD, branch, upstream and index
+after each test, and a planted twin shows the same check sees a commit and a
+push. One test runs the command the wiring gives, as a shell runs it.
