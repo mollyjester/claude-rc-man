@@ -9,12 +9,12 @@ corpus.
 import os
 import shutil
 import subprocess
-import tempfile
 from pathlib import Path
 
 import pytest
 
 from devtools import docs_guard
+from devtools.held_folders import held
 
 REPO = Path(__file__).resolve().parent.parent
 
@@ -236,8 +236,8 @@ def make_targets(makefile: str) -> set[str]:
     """The targets a Makefile defines, as make itself reads them: the files of make's
     database (make -p) that are targets, less special targets and target-specific
     variables."""
-    with tempfile.TemporaryDirectory() as scratch:
-        path = Path(scratch) / "Makefile"
+    with held("rcmk-") as scratch:
+        path = scratch / "Makefile"
         path.write_text(makefile, encoding="utf-8")
         proc = subprocess.run(
             [shutil.which("make"), "-pRrq", "-f", str(path), ":"],
@@ -262,6 +262,23 @@ def make_targets(makefile: str) -> set[str]:
             found.add(name)
         not_a_target = False
     return found
+
+
+def test_make_reads_its_makefile_in_a_held_folder(monkeypatch):
+    """So a run killed while make reads it leaves it for the next run to clear."""
+    from devtools import held_folders as hf
+
+    seen, run = [], subprocess.run
+
+    def running(argv, **kwargs):
+        folder = Path(kwargs["cwd"])
+        held = (folder / hf.LOCK).is_file() and not hf.unheld(folder)
+        seen.append(hf.made_with("rcmk-")(folder.name) and held)
+        return run(argv, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", running)
+    assert make_targets("a:\n\techo a\n") == {"a"}
+    assert seen == [True]
 
 
 def documented_make_targets(markdown: str) -> set[str]:

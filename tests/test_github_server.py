@@ -127,7 +127,9 @@ def test_github_url_is_the_real_one():
 
 
 def stored(home: Path, url: str, token: str) -> None:
-    """A credential for ``url``'s protocol and host in ``home``'s ~/.git-credentials."""
+    """A credential for ``url``'s protocol and host in ``home``'s ~/.git-credentials;
+    ``home`` is made if need be, as git credential-store writes into it."""
+    home.mkdir(parents=True, exist_ok=True)
     protocol, _, host = url.partition("://")
     host = host.split("/", 1)[0]
     data = f"protocol={protocol}\nhost={host}\nusername=x-access-token\npassword={token}\n\n"

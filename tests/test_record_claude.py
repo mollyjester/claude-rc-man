@@ -1,14 +1,20 @@
 """The recorder: sanitising real screens into fixtures, and the fixture set itself."""
 
 import json
+import os
+import re
 import shutil
+import signal
 import sys
+import threading
+import time
 from pathlib import Path
 
 import pytest
 
+from devtools import held_folders, tmuxctl
 from devtools import record_claude as rec
-from devtools import tmuxctl
+from tests import killed_runs as kr
 
 CTX = rec.Context(cwd="/work/proj-x", config_dir="/cfg/dir", version="9.9.9")
 
@@ -196,9 +202,11 @@ def test_a_capture_whose_screen_changes_while_settling_is_refused(tmp_path):
         "print('stage-one', flush=True); time.sleep(0.5)\n"
         "print('\\x1b[H\\x1b[2Jstage-two', flush=True); time.sleep(30)\n"
     )
-    with tmuxctl.Pane(socket_dir=tmp_path) as pane:
+    with held_folders.tmux_sockets("rcp-") as sockets, tmuxctl.Pane(socket_dir=sockets) as pane:
         argv = [sys.executable, "-c", code]
         pane.run(argv, cwd=tmp_path, env={})
+        folder = pane.socket.parent  # held, so a killed run leaves it for the next to stop
+        assert held_folders.made_with("rcp-")(folder.name) and not held_folders.unheld(folder)
         run = rec.Run(pane, argv, Path(tmp_path), {}, CTX)
         with pytest.raises(RuntimeError, match="stage-one"):
             run.capture_when(r"stage-one", "planted")
@@ -361,3 +369,191 @@ def test_an_observed_screen_not_kept_for_the_approved_version_is_found(tmp_path)
     approved = rec.load_manifest()["claude_version"]
     assert approved != "0.0.1"
     assert not_kept_for(rec.load_observed(copy), approved) == [name]
+
+
+# --- the recorder's folders in /tmp: held, and cleared after a killed run -------------
+
+
+def _held(folder: Path, prefix: str) -> bool:
+    return (
+        held_folders.made_with(prefix)(folder.name)
+        and folder.parent == held_folders.TMP
+        and (folder / held_folders.LOCK).is_file()
+        and not held_folders.unheld(folder)
+    )
+
+
+READS_THE_VERSION = """
+import os, shlex
+from pathlib import Path
+from devtools import record_claude as rec
+from tests import killed_runs as kr
+
+rec.VERSIONS = {prefix!r}
+
+def test_reads(tmp_path):
+    fake = tmp_path / "claude"
+    reports = Path(os.environ[kr.ENV_REPORTS])
+    fake.write_text(
+        "#!/bin/sh\\n"
+        + kr.shell_reporter(reports)
+        + 'report version "{{\\\\"paths\\\\": {{\\\\"folder\\\\": \\\\"$PWD\\\\"}}, '
+        + '\\\\"pids\\\\": {{\\\\"tmux\\\\": $PPID}}}}"\\n'
+        + kr.shell_hold()
+        + "echo 1.2.3\\n"
+    )
+    fake.chmod(0o755)
+    rec.installed_version(fake)
+"""
+
+
+@pytest.mark.parametrize("sig", [signal.SIGTERM, signal.SIGKILL], ids=["SIGTERM", "SIGKILL"])
+def test_the_next_run_clears_what_a_killed_version_reading_left(tmp_path, sig):
+    with kr.stem() as stem:
+        prefix = stem + rec.VERSIONS
+        source = {"test_version.py": READS_THE_VERSION.format(prefix=prefix)}
+        with kr.KilledRun(tmp_path, source, (stem,)) as run:
+            reported = run.reports.wait("version")
+            run.kill(sig)
+        folder, pid = Path(reported["paths"]["folder"]), reported["pids"]["tmux"]
+        assert held_folders.made_with(prefix)(folder.name)
+        assert folder.is_dir() and kr.running(pid)  # positive control: the kill left them
+        with held_folders.held(prefix):
+            assert not os.path.lexists(folder) and not kr.running(pid)
+
+
+def test_reading_the_version_happens_in_a_held_folder(monkeypatch):
+    seen = []
+
+    class Pane:
+        def __init__(self, socket_dir):
+            seen.append(socket_dir)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            pass
+
+        def run(self, argv, cwd, env):
+            seen.append(_held(cwd, rec.VERSIONS) and cwd == seen[0])
+
+        def wait_exit(self, timeout):
+            return 0
+
+        def text(self):
+            return "1.2.3 (Claude Code)"
+
+    monkeypatch.setattr(rec.tmuxctl, "Pane", Pane)
+    assert rec.installed_version("claude") == "1.2.3"
+    assert seen[1:] == [True] and not seen[0].exists()
+
+
+def test_help_runs_in_a_held_folder_that_is_removed_afterwards(tmp_path):
+    fake = tmp_path / "claude"
+    fake.write_text('#!/bin/sh\necho "$PWD"\nls -a\n')
+    fake.chmod(0o755)
+    text = rec.help_text(fake, ("remote-control",), rec.claude_env(None)).splitlines()
+    folder = Path(text[0])
+    assert held_folders.made_with(rec.HELP)(folder.name) and held_folders.LOCK in text
+    assert not folder.exists()
+
+
+def test_each_sequence_runs_its_tmux_server_in_a_held_folder(tmp_path, monkeypatch):
+    seen = []
+
+    class Pane:
+        def __init__(self, socket_dir):
+            seen.append((socket_dir, _held(socket_dir, rec.PANES)))
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            pass
+
+        def run(self, argv, cwd, env):
+            pass
+
+    monkeypatch.setattr(rec, "installed_version", lambda claude: "1.2.3")
+    monkeypatch.setattr(rec.tmuxctl, "Pane", Pane)
+    sequence = rec.Sequence("probe", ["--version"], (), lambda run: None)
+    rec.record("claude", [sequence], None, tmp_path / "work")
+    assert [held for _, held in seen] == [True]
+    assert not seen[0][0].exists()
+
+
+def test_a_recording_works_in_a_held_folder(tmp_path, monkeypatch):
+    seen = []
+
+    def record(claude, sequences, account_config_dir, workdir):
+        seen.append(_held(workdir, rec.WORK))
+        return {}
+
+    monkeypatch.setattr(rec, "installed_version", lambda claude: "1.2.3")
+    monkeypatch.setattr(rec, "record", record)
+    monkeypatch.setattr(rec, "write_fixtures", lambda *args, **kwargs: None)
+    assert rec.main(["--claude", "claude", "--out", str(tmp_path)]) == 0
+    assert seen == [True]
+
+
+def test_a_sign_in_hands_its_code_over_in_the_recordings_working_folder(
+    tmp_path, capsys, monkeypatch
+):
+    """Nothing fixed in /tmp: a handoff folder of its own, named on stderr."""
+    url = rec.LOGIN_URL_PREFIX + "x=1"
+    typed = []
+
+    class Pane:
+        def wait_for(self, pattern, timeout):
+            return re.search(pattern, url)
+
+        def type_line(self, text):
+            typed.append(text)
+
+        def rerun(self, *args):
+            pass
+
+        def wait_exit(self, timeout):
+            return 0
+
+    class Run:
+        pane = Pane()
+        argv = ["claude"]
+        cwd = tmp_path / "work" / "login_succeeded-x"
+        env = {}
+
+        def capture_when(self, pattern, name):
+            pass
+
+        def capture_exit(self, name):
+            pass
+
+    Run.cwd.mkdir(parents=True)
+    written, write = [], Path.write_text
+
+    def writing(path, *args, **kwargs):
+        written.append(path.name)
+        return write(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", writing)
+    signing_in = threading.Thread(target=rec._login_succeeded, args=(Run(),), daemon=True)
+    signing_in.start()
+    deadline = time.monotonic() + 30
+    while not list((tmp_path / "work").glob("handoff-*/url")):
+        assert time.monotonic() < deadline and signing_in.is_alive()
+        time.sleep(0.05)
+    (handoff,) = (tmp_path / "work").glob("handoff-*")
+    assert (handoff / "url").read_text() == url + "\n"
+    # The person writes the code in place: the line is read only once it is ended.
+    with open(handoff / "code", "w") as code:
+        code.write("THE-")
+        code.flush()
+        time.sleep(3 * rec.HANDOFF_POLL)
+        assert typed == [] and signing_in.is_alive()  # half a code is not typed
+        code.write("CODE\n")
+    signing_in.join(timeout=30)
+    assert not signing_in.is_alive()
+    assert typed[0] == "THE-CODE"
+    assert str(handoff) in capsys.readouterr().err
+    assert "url" not in written  # written elsewhere and renamed, so never read in part

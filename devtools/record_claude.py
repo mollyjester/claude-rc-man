@@ -46,6 +46,7 @@ if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from devtools import tmuxctl  # noqa: E402
+from devtools.held_folders import held, remove_tree, tmux_sockets  # noqa: E402
 from helpers.claude_checks import EMAIL_ADDRESS, SESSION_ID  # noqa: E402
 
 REPO = Path(__file__).resolve().parent.parent
@@ -62,6 +63,11 @@ PROBE_EMAIL = "user@example.com"
 PROBE_PREFIX = "rcprobe"
 INVALID_CODE = "invalidcode#invalidstate"
 TIMEOUT = 60.0
+# What the folders the recorder makes in /tmp are named with.
+PANES = "rcrs-"  # each sequence's tmux socket
+VERSIONS = "rcv-"  # reading the installed version
+HELP = "rchelp-"  # running --help
+WORK = "rcrec-"  # a recording's working folder
 
 PLACEHOLDERS = (
     "version",
@@ -349,29 +355,42 @@ def make_repository(folder: Path) -> None:
         subprocess.run(["git", *args], cwd=folder, env=env, check=True, capture_output=True)
 
 
-HANDOFF = Path("/tmp/rcman-record-handoff")  # where a person-driven sequence exchanges files
 HUMAN_TIMEOUT = 15 * 60.0
+HANDOFF_POLL = 0.5  # seconds between looks at the handoff folder
+
+
+def _ended_line(path: Path) -> str | None:
+    """What ``path`` holds once it is a non-empty line ended with a newline; else None."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None
+    return text if text.endswith("\n") and text.strip() else None
 
 
 def _login_succeeded(r: Run) -> None:
-    """A real sign-in: a person opens the URL and hands the code back through HANDOFF.
+    """A real sign-in: a person opens the URL and hands the code back through a handoff
+    folder.
 
-    The URL is written to ``HANDOFF/url``; the sequence waits for ``HANDOFF/code``,
-    types it, captures the success screens, and then logs out, which revokes the
-    sign-in it just made.
+    The folder, ``handoff-*`` in the recording's working folder, is named on stderr.
+    The URL is written to ``url`` in it; the sequence waits for ``code`` there to hold
+    a line ended with a newline, types it, captures the success screens, and then logs
+    out, which revokes the sign-in it just made.
     """
     match = r.pane.wait_for(re.escape(LOGIN_URL_PREFIX) + r"\S+", TIMEOUT)
-    HANDOFF.mkdir(mode=0o700, exist_ok=True)
-    code_file = HANDOFF / "code"
-    code_file.unlink(missing_ok=True)
-    (HANDOFF / "url").write_text(match.group(0) + "\n", encoding="utf-8")
+    handoff = Path(tempfile.mkdtemp(prefix="handoff-", dir=r.cwd.parent))
+    code_file = handoff / "code"
+    # Written under another name and renamed, so whoever reads it never reads part of it.
+    (handoff / ".url").write_text(match.group(0) + "\n", encoding="utf-8")
+    (handoff / ".url").rename(handoff / "url")
+    print(f"sign in at the URL in {handoff / 'url'}; put the code in {code_file}", file=sys.stderr)
     deadline = time.monotonic() + HUMAN_TIMEOUT
-    while not code_file.exists():
+    # Read only once the line is ended, so a code still being written is never typed.
+    while not (written := _ended_line(code_file)):
         if time.monotonic() > deadline:
             raise TimeoutError("no sign-in code was handed over")
-        time.sleep(0.5)
-    code = code_file.read_text(encoding="utf-8").strip()
-    code_file.unlink()
+        time.sleep(HANDOFF_POLL)
+    code = written.strip()
     r.pane.type_line(code)
     r.capture_when(r"Login successful", "login_succeeded")
     r.pane.type_line("")
@@ -510,7 +529,7 @@ def help_text(claude_bin: Path | str, command: tuple[str, ...], env: dict[str, s
 
     Logged in, ``remote-control --help`` waits on an inherited stdin.
     """
-    with tempfile.TemporaryDirectory(prefix="rchelp-", dir="/tmp") as cwd:
+    with held(HELP) as cwd:
         proc = subprocess.run(
             [str(claude_bin), *command, "--help"],
             env=env,
@@ -530,9 +549,9 @@ def help_refused_logged_out(text: str) -> bool:
 
 
 def installed_version(claude_bin: Path | str) -> str:
-    with tempfile.TemporaryDirectory(prefix="rcv-", dir="/tmp") as tmp:
-        with tmuxctl.Pane(socket_dir=Path(tmp)) as pane:
-            pane.run([str(claude_bin), "--version"], cwd=Path(tmp), env=claude_env(Path(tmp)))
+    with held(VERSIONS) as tmp:
+        with tmuxctl.Pane(socket_dir=tmp) as pane:
+            pane.run([str(claude_bin), "--version"], cwd=tmp, env=claude_env(tmp))
             pane.wait_exit(TIMEOUT)
             match = VERSION_PATTERN.search(pane.text())
     if not match:
@@ -560,7 +579,6 @@ def record(
         if seq.git_repository:
             make_repository(folder)
             branch = RECORD_BRANCH
-        sock = Path(tempfile.mkdtemp(prefix="s-", dir="/tmp"))
         if seq.needs_account:
             config = account_config_dir
             config_text = str(config) if config else str(Path.home() / ".claude")
@@ -569,15 +587,12 @@ def record(
             config_text = str(config)
         env = claude_env(config)
         argv = [str(claude_bin), *seq.args]
-        try:
-            with tmuxctl.Pane(socket_dir=sock) as pane:
-                pane.run(argv, cwd=folder, env=env)
-                ctx = Context(str(folder), config_text, version, branch)
-                run = Run(pane, argv, folder, env, ctx)
-                seq.steps(run)
-                out.update(run.out)
-        finally:
-            shutil.rmtree(sock, ignore_errors=True)
+        with tmux_sockets(PANES) as sock, tmuxctl.Pane(socket_dir=sock) as pane:
+            pane.run(argv, cwd=folder, env=env)
+            ctx = Context(str(folder), config_text, version, branch)
+            run = Run(pane, argv, folder, env, ctx)
+            seq.steps(run)
+            out.update(run.out)
     return out
 
 
@@ -703,8 +718,8 @@ def main(argv: list[str] | None = None) -> int:
             f"fixtures are for {current}, installed is {version}: "
             "re-record everything with --with-account and no --sequence"
         )
-    with tempfile.TemporaryDirectory(prefix="rcrec-", dir="/tmp") as work:
-        recorded = record(args.claude, sequences, None, Path(work))
+    with held(WORK, remover=remove_tree) as work:
+        recorded = record(args.claude, sequences, None, work)
     write_fixtures(recorded, version, args.out)
     for name in sorted(recorded):
         print(f"recorded {name}")

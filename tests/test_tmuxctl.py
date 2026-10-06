@@ -4,14 +4,22 @@ import sys
 
 import pytest
 
-from devtools import tmuxctl
+from devtools import held_folders, tmuxctl
 from helpers import rc_helper
 
 
 @pytest.fixture
-def pane(tmp_path):
-    with tmuxctl.Pane(socket_dir=tmp_path) as p:
+def pane():
+    with held_folders.tmux_sockets("rcp-") as sockets, tmuxctl.Pane(socket_dir=sockets) as p:
         yield p
+
+
+def test_the_panes_tmux_server_is_in_a_held_folder_of_its_own(pane, tmp_path):
+    """So a run killed by a signal leaves it for the next run to stop."""
+    pane.run(["sleep", "60"], cwd=tmp_path, env={})
+    folder = pane.socket.parent
+    assert held_folders.made_with("rcp-")(folder.name) and folder.parent == held_folders.TMP
+    assert not held_folders.unheld(folder)
 
 
 def test_screen_shows_command_output_and_exit_status(pane, tmp_path):
@@ -96,7 +104,7 @@ def test_screen_trims_trailing_blank_lines_and_spaces(pane, tmp_path):
 
 
 def test_closing_kills_the_tmux_server(tmp_path):
-    with tmuxctl.Pane(socket_dir=tmp_path) as p:
+    with held_folders.tmux_sockets("rcp-") as sockets, tmuxctl.Pane(socket_dir=sockets) as p:
         p.run([sys.executable, "-c", "import time; time.sleep(30)"], cwd=tmp_path, env={})
         socket = p.socket
     assert not tmuxctl.server_running(socket)
@@ -154,7 +162,7 @@ def test_zombie_status_reads_the_kernel_exit_code(tmp_path):
 
 
 def test_a_closed_pane_can_run_again_at_once(tmp_path):
-    with tmuxctl.Pane(socket_dir=tmp_path) as p:
+    with held_folders.tmux_sockets("rcp-") as sockets, tmuxctl.Pane(socket_dir=sockets) as p:
         for i in range(5):
             p.run([sys.executable, "-c", f"print({i})"], cwd=tmp_path, env={})
             p.wait_exit(timeout=10)

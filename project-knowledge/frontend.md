@@ -218,8 +218,9 @@ the rest. Nothing of this is shown to the person.
   that manages the users file; the container suite tests the real one.
 
   Each run has a world and a port of its own, which `e2e/world.ts` names:
-  the world a folder under `/tmp`, with a name no other run has, which the
-  backend's `WORLDS` in `tests/e2e_server.py` matches, and the port one the
+  the world a folder under `/tmp`, with a name no other run has, the prefix
+  and a random UUID, whose exact shape the backend's `WORLDS` in
+  `tests/e2e_server.py` matches, and the port one the
   system has free. Playwright loads the config again in each worker, so
   `e2e/world.ts` keeps both in the environment, `RCMAN_E2E_DIR` and
   `RCMAN_E2E_PORT`, which the workers and the backend inherit, and keeps
@@ -227,19 +228,14 @@ the rest. Nothing of this is shown to the person.
   so a test can change a file in it behind rcman's back.
 
   The backend makes the world, and refuses a folder that already exists.
-  While it runs it holds a lock on the world's lock file, which appears
-  only once the lock is held. When it shuts down — Playwright stops it with
-  SIGTERM for that — or fails to start, it stops the tmux servers on the
-  sockets in the world's `tmux/` directory and removes the world, the lock
-  file last. Before making its own, it clears the worlds beside it that a
-  killed run left: it stops and removes one whose lock nothing holds, and
-  one without a lock file for longer than `UNLOCKED_FOR` in
-  `tests/e2e_server.py`, which only a run killed while making or removing
-  its world leaves. It leaves a world whose lock is held, and anything that
-  is not a folder of the current user's with, if any, a lock file of its
-  own; it stops only tmux servers whose sockets are the current user's and
-  in the world itself, never one a link points at; and what it cannot
-  read or remove it leaves, and goes on.
+  It holds the world as a held folder is held, and clears the worlds beside
+  it that a killed run left, those whose names `WORLDS` matches, and
+  nothing else that begins the same way, as a held folder's prefix is cleared: the
+  rules are in [tests.md](tests.md#what-a-killed-run-leaves). When it shuts
+  down — Playwright stops it with SIGTERM for that — or fails to start, it
+  stops the tmux servers on the sockets in the world's `tmux/` directory
+  and removes the world; it stops only those, in the world itself, when it
+  clears a world too.
 
   So runs at the same time, from different checkouts or worktrees, or two
   in one, do not share a world, a port or a tmux server. Two runs in one

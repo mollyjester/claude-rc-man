@@ -40,3 +40,26 @@ def test_a_run_is_steered_only_by_what_the_caller_gives(monkeypatch):
     env = child_env({"RCMAN_X": "1"})
     assert "RCMAN_REQUIRE_CONTAINER" not in env and "PYTEST_XDIST_WORKER" not in env
     assert env["RCMAN_X"] == "1" and env["PATH"]
+
+
+def test_collection_writes_down_what_it_found_in_a_held_folder(monkeypatch):
+    """So a run killed while collecting leaves it for the next run to clear."""
+    from pathlib import Path
+
+    from devtools import held_folders as hf
+    from tests import collected
+
+    seen, run = [], collected.subprocess.run
+
+    def running(argv, **kwargs):
+        folder = Path(argv[3]).parent
+        lock = folder / hf.LOCK
+        seen.append(
+            hf.made_with("rccol-")(folder.name) and lock.is_file() and not hf.unheld(folder)
+        )
+        return run(argv, **kwargs)
+
+    monkeypatch.setattr(collected.subprocess, "run", running)
+    found = collected._collect.__wrapped__(("tests/test_collected.py", "-k", "uses_tmp_path"), ())
+    assert list(found) == ["tests/test_collected.py::test_uses_tmp_path"]
+    assert seen == [True]

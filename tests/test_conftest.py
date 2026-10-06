@@ -1,8 +1,9 @@
-"""The fixtures in tests/conftest.py that hold shared resources: each test's tmux sockets."""
+"""The fixtures in tests/conftest.py that hold shared resources: each test's tmux sockets,
+in a folder devtools/held_folders.py holds."""
 
 import subprocess
 
-from tests.conftest import helper_runner, tmux_sockets
+from tests.conftest import helper_runner
 
 
 def tmux(sock, *args):
@@ -46,14 +47,4 @@ def test_the_socket_folder_is_removed_after_the_test(tmp_path, github):
         folder = sock.parent
         assert folder.is_dir() and sock.exists()  # positive control
     assert not folder.exists()
-    assert tmux(sock, "has-session", "-t", "a").returncode != 0
-
-
-def test_a_sockets_folder_is_removed_with_its_tmux_servers_after_the_test():
-    with tmux_sockets("rct-") as one, tmux_sockets("rct-") as two:
-        assert one != two and one.name.startswith("rct-")
-        sock = one / "x.sock"
-        assert tmux(sock, "new-session", "-d", "-s", "a", "sleep", "600").returncode == 0
-        assert one.is_dir() and sock.exists()  # positive control
-    assert not one.exists() and not two.exists()
     assert tmux(sock, "has-session", "-t", "a").returncode != 0
