@@ -3,3 +3,5 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 *.pyc
+.claude/settings.local.json
+.claude/worktrees/

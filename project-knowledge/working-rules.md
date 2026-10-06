@@ -67,6 +67,20 @@ else; this file is the full list. Rules are referred to by their bold name.
   it is credited as coverage.
 - **A suite that did not run is not a green suite.** Read the totals and the
   collected count, not just the exit code; report failing test names.
+- **Work is committed and pushed before a test command runs.** A test run
+  can delete the checkout, `.git` with it, and work that exists only in the
+  working tree or only in the local repository goes with it. Before a command
+  that runs tests, the changes are committed on the working branch, untracked
+  files included, and the branch is pushed to `origin`. In Claude Code
+  sessions the pre-test hook does this; anyone running tests otherwise does
+  it by hand. Work on `main` or on a detached HEAD is moved onto a branch
+  first, because the hook commits on neither. Those work-in-progress commits
+  are rewritten into clean ones, and force-pushed with lease at once, before
+  the pull request is opened and again before it is merged, as
+  [CONTRIBUTING.md](../CONTRIBUTING.md#pull-requests) says. The paired test
+  the edit-time hook runs after an edit is not a command, and no commit
+  precedes it; that exception, and what the hook does and does not catch,
+  are in [tests.md](tests.md#pre-test-hook).
 - **The full check runs at the edges of a change; targeted tests run in
   between.** Before a change starts, `make check` gives the baseline: what
   already fails is recorded and reported as found, not later taken for one's
