@@ -32,11 +32,14 @@ what the container suite covers, run it directly, as in
 `uv run pytest tests/test_container_suite.py -k github`.
 The suite needs `tmux`, `git` and sudo's `visudo`. Each test's tmux sockets
 are in a folder of its own, made under `/tmp` by `tmux_sockets` in
-`tests/conftest.py`, because a socket's path has to stay short, and removed,
-with every tmux server in it, when the test ends. Everything git is tested against real git,
+`devtools/held_folders.py`, because a socket's path has to stay short, and removed,
+with every tmux server in it, when the test ends; one a killed run left is
+removed by a later run (see [What a killed run leaves](#what-a-killed-run-leaves)).
+Everything git is tested against real git,
 never a fake: `tests/git_fixtures.py`, which is not a test module, makes real
 repositories, their origins and their branches with the system's git, under
-a fixture configuration of its own, in a home removed when the tests end, so the person's configuration rc-helper
+a fixture configuration of its own, with a home, `FIXTURE_HOME`, that does
+not exist, so the person's configuration rc-helper
 reads is only what a test plants; fixture git refuses every transport but a
 local repository's, so an http, https, ssh, git or scp-like address a test
 gives it is refused before anything is connected to. GitHub is `tests/github_server.py`: the
@@ -56,7 +59,11 @@ that the tests' GitHub sees the request. The browser tests' world runs a
 GitHub of its own (see [frontend.md](frontend.md#tests)). `tests/test_container_suite.py` runs the root-only
 suite in `tests/container/` inside a throwaway Ubuntu container, through
 `docker` or `sudo -n docker`; it skips when neither works, unless
-`RCMAN_REQUIRE_CONTAINER=1`, which `make test-container` sets. Its tests take the
+`RCMAN_REQUIRE_CONTAINER=1`, which `make test-container` sets. Every
+container it starts is labelled as its run's, and one a killed run left is
+removed by a later run (see [What a killed run leaves](#what-a-killed-run-leaves));
+the image it builds from `tests/container/Dockerfile` is kept, named after
+the Dockerfile's content, and built again only when that changes. Its tests take the
 `docker` fixture, and a test that uses it, directly or through another
 fixture, carries the `container` marker, which `tests/container_marker.py`
 adds as tests are collected. It runs these, each in a
@@ -107,7 +114,69 @@ and run by hand with `uv run pytest -m real_claude`; what they need is in
 | `frontend/` | The React application, its component tests and its browser tests — see [frontend.md](frontend.md) |
 | `tests/container/` | The container image and the suite that runs as root inside it |
 | `install.sh`, `installer/` | The installer — see [installer.md](installer.md) |
-| `devtools/` | Development tooling: the documentation guards, the edit-time hook, the tmux driver, the Claude recorder and the fake's implementation |
+| `devtools/` | Development tooling, run by hand, by the edit-time hook or by the tests, which never imports the tests; each module's docstring says what it is |
+
+## What a killed run leaves
+
+A run that ends normally, or with Ctrl-C, removes what it made. A run killed
+by a signal — SIGTERM or SIGKILL to its process group, as a harness timeout
+or a closed terminal sends — runs no handler of its own, and a tmux server it
+started has detached into a session of its own and keeps running. So nothing
+a test makes depends on its own run to remove it:
+
+- What a test makes under its `tmp_path`, pytest removes in a later run.
+  Fixture git's home, `FIXTURE_HOME` in `tests/git_fixtures.py`, is a folder
+  that does not exist, so nothing is made for it.
+- What has to be in `/tmp` is a held folder, made by `held` in
+  `devtools/held_folders.py`: `tmux_sockets` there for a test's tmux
+  sockets, and every other folder the tests and the recorder make in `/tmp`.
+  A held folder is named with its prefix and the characters `mkdtemp` adds,
+  and holds a lock file, `.lock`, locked for as long as the folder is used;
+  the lock is taken under another name and then renamed, so a lock file is
+  held from the moment it appears. Afterwards the folder is removed: the tmux
+  servers on its sockets are stopped first, and the lock file is removed
+  last, so a run killed while removing it leaves a lock file nothing holds.
+- Before a run uses a held folder, it clears those of the same prefix that a
+  killed run left: one whose lock nothing holds, and one without a lock file
+  for longer than `UNLOCKED_FOR` in `devtools/held_folders.py`, which only a
+  run killed while making or removing it leaves. The name must be the prefix
+  and exactly what `mkdtemp` adds, so a sweep never takes another prefix's
+  folders. It leaves a folder whose lock is held, and anything that is not a
+  folder of the current user's with, if any, a lock file of theirs; it stops
+  only tmux servers whose sockets are the current user's, never one a link
+  points at; what it cannot read or remove, or what a removal refuses, it
+  leaves, says so on stderr, and goes on past; one another run removed first it passes over in silence. The
+  browser tests' worlds are held and cleared the same way, chosen by the
+  exact shape of their name (see [frontend.md](frontend.md#tests)).
+- A held folder a test may fill with anything, as the `world` fixture in
+  `tests/test_e2e_server.py` does, is removed with `remove_tree`, which also
+  stops a tmux server anywhere in it and makes each folder of the user's in
+  it removable, following no link.
+- Every removal refuses, and raises, for a path that is not absolute or holds
+  `.` or `..`, for the repository, the home folder, the working folder and
+  anything holding them or inside the first two, and for anything outside
+  `/tmp`, or outside the root its caller names.
+- Containers are labelled by `tests/containers.py`. Each run holds a folder of
+  its own, its holder, and labels every container it starts with the
+  holder's path (`rcman.test.holder`), the user's uid (`rcman.test.owner`)
+  and the boot and the folder the holder is in (`rcman.test.where`). Before
+  its first container, a run removes every container whose owner is the
+  current user, whose holder is a folder named with the run's own holder
+  prefix, as a held folder's sweep takes only its own prefix's, that nothing
+  holds, and whose `where` is this boot's and this `/tmp`'s; when it ends,
+  it removes its own. A container another user, another boot or another `/tmp`
+  started is never removed.
+
+`tests/killed_runs.py`, which is not a test module, tests all of this as the
+suite runs: a real `python -m pytest -n 2` over small test files, in a
+session of its own, killed with SIGTERM and with SIGKILL; the test then
+checks that the next run clears what the killed one left. It reads what the
+small tests made from reports written under another name and then renamed,
+only once a report is complete; it takes a path from a report only under the
+test's own `tmp_path`, itself a folder a removal may take, or in `/tmp` under the test's stem, a held folder
+whose name and `-` begin everything the test makes beside it, so tests that
+run at the same time never clear each other's; and its `scrub` refuses
+anything else, as every removal does.
 
 ## Repository guards
 
@@ -135,7 +204,8 @@ it can fail, and a positive control that keeps an empty input from passing.
 - **No fixed shared paths or ports** (`tests/test_fixed_resources.py`). Tests
   run at the same time, so none may hold a fixed path under `/tmp` or a fixed
   unprivileged port. It reads the Python files in `tests/` but not those in
-  `tests/container/`, and every TypeScript and JavaScript file in `frontend/`
+  `tests/container/`, every Python module in `devtools/`, which the tests and
+  the recorder run, and every TypeScript and JavaScript file in `frontend/`
   that git does not ignore, of the kinds `SOURCES` in the test names — the
   browser tests, their configs and the rest — parsed with Vite's parser from
   the frontend's packages, so a file that does not parse, or packages that

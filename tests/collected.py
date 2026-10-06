@@ -13,8 +13,9 @@ import json
 import os
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
+
+from devtools.held_folders import held
 
 REPO = Path(__file__).resolve().parent.parent
 
@@ -69,8 +70,8 @@ def child_env(env: dict[str, str] | None = None) -> dict[str, str]:
 
 @functools.cache
 def _collect(args: tuple[str, ...], env: tuple[tuple[str, str], ...]) -> dict[str, dict]:
-    with tempfile.TemporaryDirectory() as scratch:
-        out = Path(scratch) / "collected.json"
+    with held("rccol-") as scratch:
+        out = scratch / "collected.json"
         proc = subprocess.run(
             [sys.executable, "-c", _RECORDER, str(out), *_selection_args(args)],
             cwd=REPO,

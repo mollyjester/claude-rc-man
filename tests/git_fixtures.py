@@ -7,21 +7,18 @@ configuration, which rc-helper's git does read, is only what a test plants.
 
 from __future__ import annotations
 
-import atexit
-import shutil
 import subprocess
-import tempfile
 from pathlib import Path
 
 FIXTURE_AUTHOR = ("Fixture Author", "fixture@example.com")
 
 
 def fixture_env(home: Path) -> dict[str, str]:
-    """The environment fixture git runs in: system PATH, its own empty HOME, and every
-    transport refused but a local repository's (protocol.allow never, protocol.file.allow
-    always), so that git refuses an http, https, ssh, git or scp-like address before
-    connecting to anything, and no address a test gives it can reach the real GitHub."""
-    home.mkdir(parents=True, exist_ok=True)
+    """The environment fixture git runs in: system PATH, ``home`` as HOME, which it does
+    not make, and every transport refused but a local repository's (protocol.allow
+    never, protocol.file.allow always), so that git refuses an http, https, ssh, git or
+    scp-like address before connecting to anything, and no address a test gives it can
+    reach the real GitHub."""
     name, email = FIXTURE_AUTHOR
     return {
         "PATH": "/usr/bin:/bin",
@@ -41,9 +38,9 @@ def fixture_env(home: Path) -> dict[str, str]:
     }
 
 
-# An empty HOME for fixture git, outside every home the tests give rc-helper.
-FIXTURE_HOME = Path(tempfile.mkdtemp(prefix="rcman-fixture-git-home-"))
-atexit.register(shutil.rmtree, FIXTURE_HOME, ignore_errors=True)
+# Fixture git's HOME: a folder that does not exist, so git reads no configuration of a
+# person's, and nothing is made that a run killed by a signal could leave behind.
+FIXTURE_HOME = Path("/nonexistent")
 
 
 def fixture_git(cwd: Path, *args: str, input: bytes | None = None) -> str:

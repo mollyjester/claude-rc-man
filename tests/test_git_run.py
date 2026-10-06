@@ -431,24 +431,6 @@ def test_what_is_kept_of_gits_message_is_bounded_however_much_it_says():
     assert message.more == g.MAX_GIT_MESSAGE_LINES * 3 - (g.MAX_GIT_MESSAGE_LINES - 1)
 
 
-def test_the_fixtures_own_home_is_removed_when_the_tests_end():
-    import sys
-
-    repo_root = Path(__file__).resolve().parent.parent
-    probe = (
-        "from tests.git_fixtures import FIXTURE_HOME, make_repo\n"
-        "make_repo(FIXTURE_HOME / 'r')\n"  # used, so it holds something
-        "print(FIXTURE_HOME)\n"
-    )
-    proc = subprocess.run(
-        [sys.executable, "-c", probe], cwd=repo_root, capture_output=True, text=True, timeout=60
-    )
-    assert proc.returncode == 0, proc.stderr
-    home = Path(proc.stdout.strip())
-    assert home.name.startswith("rcman-fixture-git-home-")  # positive control: it was made
-    assert not home.exists()
-
-
 # SIGTERM the moment git has started, before the call holds it, in a process
 # of one thread, as rc-helper is: a pytest process has more (the tests' GitHub
 # serves from one), and the kernel gives a signal one thread blocks to another.

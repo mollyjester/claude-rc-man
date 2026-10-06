@@ -24,9 +24,7 @@ def pytest_collection_modifyitems(items):
 
 import contextlib  # noqa: E402
 import json  # noqa: E402
-import shutil  # noqa: E402
 import subprocess  # noqa: E402
-import tempfile  # noqa: E402
 from pathlib import Path  # noqa: E402
 
 REPO = Path(__file__).resolve().parent.parent
@@ -75,28 +73,13 @@ def github_hook_works(github, tmp_path_factory):
 
 
 @contextlib.contextmanager
-def tmux_sockets(prefix):
-    """A folder of its own for a test's tmux sockets, named with ``prefix``.
-
-    Made under /tmp rather than under tmp_path because a unix socket's path has to stay
-    short, and never named after tmp_path, whose name pytest-xdist's workers repeat.
-    Afterwards every tmux server with a socket in it is killed and the folder removed."""
-    folder = Path(tempfile.mkdtemp(prefix=prefix, dir="/tmp"))
-    try:
-        yield folder
-    finally:
-        for sock in folder.glob("*.sock"):
-            subprocess.run(["tmux", "-S", str(sock), "kill-server"], capture_output=True)
-        shutil.rmtree(folder)
-
-
-@contextlib.contextmanager
 def helper_runner(tmp_path, github_url):
     """A real rc-helper per mapped Linux user, each with its own home under ``tmp_path``
-    and its own tmux socket in a tmux_sockets folder, and https://github.com/ pointed at
-    ``github_url``."""
+    and its own tmux socket in a tmux_sockets folder (devtools/held_folders.py), and
+    https://github.com/ pointed at ``github_url``."""
     from devtools import fake_claude as fake
     from devtools import record_claude as rec
+    from devtools.held_folders import tmux_sockets
     from tests.helper_env import helper_env
 
     homes = {}

@@ -178,8 +178,10 @@ configuration.
 ## Sequences that need a person
 
 A sequence marked `needs_human` runs only when named with `--sequence`, never
-in an automated run. `login_succeeded` records a real sign-in: it writes the
-sign-in URL to `HANDOFF/url` (`HANDOFF` in `devtools/record_claude.py`), waits
-for a person to sign in and put Claude's code in `HANDOFF/code`, captures the
-success screens, and logs out, which revokes that sign-in. It uses a
+in an automated run. `login_succeeded` records a real sign-in: it makes a
+`handoff-*` folder in the recording's working folder and names it on stderr,
+writes the sign-in URL to `url` there, waits for a person to sign in and put
+Claude's code in `code` there, as one line ended with a newline, which is read
+only once it is ended, captures the success screens, and logs out,
+which revokes that sign-in. It uses a
 throwaway configuration, so the account's other sign-ins are untouched.

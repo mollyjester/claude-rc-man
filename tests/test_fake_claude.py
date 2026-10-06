@@ -8,17 +8,25 @@ import socket
 import pytest
 
 from devtools import fake_claude as fake
+from devtools import held_folders, tmuxctl
 from devtools import record_claude as rec
-from devtools import tmuxctl
 
 FAKE = rec.FAKE_CLAUDE
 READY = r"Capacity: [1-9]"
 
 
 @pytest.fixture
-def pane(tmp_path):
-    with tmuxctl.Pane(socket_dir=tmp_path) as p:
+def pane():
+    with held_folders.tmux_sockets("rcp-") as sockets, tmuxctl.Pane(socket_dir=sockets) as p:
         yield p
+
+
+def test_the_panes_tmux_server_is_in_a_held_folder_of_its_own(pane, tmp_path):
+    """So a run killed by a signal leaves it for the next run to stop."""
+    pane.run(["sleep", "60"], cwd=tmp_path, env={})
+    folder = pane.socket.parent
+    assert held_folders.made_with("rcp-")(folder.name) and folder.parent == held_folders.TMP
+    assert not held_folders.unheld(folder)
 
 
 def env_for(config_dir, **extra):

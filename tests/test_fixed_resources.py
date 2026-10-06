@@ -22,6 +22,8 @@ from typing import NamedTuple
 import pytest
 
 TESTS = Path(__file__).resolve().parent
+ROOT = TESTS.parent
+DEVTOOLS = ROOT / "devtools"
 OUTSIDE = "container"  # runs in a throwaway container of its own, never beside another run
 TMP = "/" + "tmp"  # built, so that this module does not name it itself
 # Ports below this need root to bind, so no other test can take one; a test may name one
@@ -157,20 +159,24 @@ def _flag_given(elements, string, shown, port) -> bool:
 
 # tempfile's calls that make a uniquely named file or folder in the dir= they are given.
 UNIQUE_IN = {"mkdtemp", "mkstemp", "TemporaryDirectory", "NamedTemporaryFile"}
-# Sites flagged on purpose: (file relative to tests/, the function it is in, the site's
-# source text) -> reason. Each covers exactly one site: another site of the same text in
+# Sites flagged on purpose: (file relative to the repository, the function it is in, the
+# site's source text) -> reason. Each covers exactly one site: another site of the same text in
 # the same function is flagged.
 EXEMPT = {
     (
-        "test_record_claude.py",
+        "tests/test_record_claude.py",
         "leaks",
         f'"{TMP}/"',
     ): "searches the kept screens for the text; nothing is made there",
     (
-        "test_rc_helper.py",
+        "tests/test_rc_helper.py",
         "test_mkdir_refuses_a_parent_outside_the_home_folder",
         f'"{TMP}"',
     ): "gives rc-helper the absolute path to show it is refused; nothing is made there",
+    ("devtools/held_folders.py", "", f'"{TMP}"'): (
+        "the folder held folders are made in, named as the bound no removal may leave;"
+        " nothing is made at the path itself"
+    ),
 }
 
 
@@ -390,7 +396,8 @@ def fixed_sites(source: str) -> list[Site]:
 
 
 def flagged(rel: str, source: str) -> list[str]:
-    """The sites in ``source``, the file ``rel`` under tests/, that no exemption covers."""
+    """The sites in ``source``, the file ``rel`` in the repository, that no exemption
+    covers."""
     out, seen = [], set()
     for site in fixed_sites(source):
         key = (rel, site.function, site.text)
@@ -403,37 +410,47 @@ def flagged(rel: str, source: str) -> list[str]:
 
 
 def scanned() -> list[Path]:
-    return [p for p in sorted(TESTS.rglob("*.py")) if p.relative_to(TESTS).parts[0] != OUTSIDE]
+    """The tests but the container suite, and every devtools module, which the tests and
+    the recorder run."""
+    tests = [p for p in sorted(TESTS.rglob("*.py")) if p.relative_to(TESTS).parts[0] != OUTSIDE]
+    return tests + sorted(DEVTOOLS.glob("*.py"))
 
 
 def test_no_test_holds_a_fixed_tmp_path_or_port():
     found, total = [], 0
     for path in scanned():
-        rel, source = path.relative_to(TESTS).as_posix(), path.read_text(encoding="utf-8")
+        rel, source = path.relative_to(ROOT).as_posix(), path.read_text(encoding="utf-8")
         total += len(fixed_sites(source))
         found += flagged(rel, source)
     assert total >= len(EXEMPT) > 0  # non-vacuity: the exempt sites are found
     assert found == []
 
 
+def test_the_scan_reads_every_devtools_module():
+    """devtools holds what the tests run and what the recorder makes in /tmp."""
+    rels = {p.relative_to(ROOT).as_posix() for p in scanned()}
+    assert {"devtools/held_folders.py", "devtools/record_claude.py"} <= rels
+    assert {f"devtools/{p.name}" for p in DEVTOOLS.glob("*.py")} <= rels
+
+
 def test_the_scan_reads_the_tests_but_not_the_container_suite():
-    rels = {p.relative_to(TESTS).as_posix() for p in scanned()}
-    assert "conftest.py" in rels and Path(__file__).name in rels
+    rels = {p.relative_to(ROOT).as_posix() for p in scanned()}
+    assert "tests/conftest.py" in rels and f"tests/{Path(__file__).name}" in rels
     assert (TESTS / OUTSIDE).is_dir()  # the exemption's subject still exists
     assert any((TESTS / OUTSIDE).rglob("*.py"))
-    assert not any(r.startswith(OUTSIDE + "/") for r in rels)
+    assert not any(r.startswith(f"tests/{OUTSIDE}/") for r in rels)
 
 
 def test_the_exemptions_still_have_their_sites():
     for rel, function, text in EXEMPT:
-        sites = fixed_sites((TESTS / rel).read_text(encoding="utf-8"))
+        sites = fixed_sites((ROOT / rel).read_text(encoding="utf-8"))
         assert [s for s in sites if (s.function, s.text) == (function, text)], (rel, function)
 
 
 def test_a_new_fixed_site_in_an_exempt_function_is_flagged():
     """Planted twin: an exemption covers its own site, not the function it is in."""
     rel, function, text = next(iter(EXEMPT))
-    source = (TESTS / rel).read_text(encoding="utf-8")
+    source = (ROOT / rel).read_text(encoding="utf-8")
     assert flagged(rel, source) == []  # positive control: the exempt site passes
     header = f"def {function}("
     assert source.count(header) == 1

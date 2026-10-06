@@ -18,9 +18,9 @@ import pytest
 from devtools import fake_claude as fake
 from devtools import record_claude as rec
 from devtools import tmuxctl
+from devtools.held_folders import tmux_sockets
 from helpers import git_run
 from helpers import rc_helper as h
-from tests.conftest import tmux_sockets
 from tests.github_server import UNREACHABLE
 from tests.helper_env import helper_env
 

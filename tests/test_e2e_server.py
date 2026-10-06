@@ -2,53 +2,61 @@
 Playwright configs that run them."""
 
 import fcntl
+import hashlib
 import json
 import os
 import re
-import shutil
 import signal
 import socket
 import subprocess
 import sys
-import tempfile
 import threading
-from fnmatch import fnmatch
 from pathlib import Path
 from urllib.parse import urlsplit
 
 import pytest
 from fastapi.testclient import TestClient
 
+from devtools import held_folders
+from devtools.held_folders import held, remove_tree
 from tests import e2e_server as e2e
+from tests import killed_runs as kr
 
 REPO = Path(__file__).resolve().parent.parent
 FRONTEND = REPO / "frontend"
 CONFIGS = ("playwright.config.ts", "playwright.stack.config.ts")
 TOKEN = "the-worlds-github-token"
 ORIGIN = "http://rcman.test"  # what the browser would send; nothing listens there
-WORLDS = e2e.WORLDS
+
+
+def _named(tag: str, lead: str = "7") -> str:
+    """A world's name, shaped as frontend/e2e/world.ts makes one, told apart by ``tag``;
+    ``lead`` decides where it sorts."""
+    tail = hashlib.sha256(tag.encode()).hexdigest()[:12]
+    return f"rcman-e2e-{lead * 8}-0000-4000-8000-{tail}"
+
+
+# What the folder each test's world is made in is named with.
+WORLD_PARENTS = "rce2e-test-"
 
 
 @pytest.fixture
 def world(monkeypatch):
-    """Where a run of the browser tests would name its world, not yet made, in a folder of
-    its own that stands for /tmp: worlds a killed run left are looked for beside it."""
+    """Where a run of the browser tests would name its world, not yet made, in a held
+    folder of its own that stands for /tmp: worlds a killed run left are looked for
+    beside it. Afterwards the folder is removed with every tmux server and changed
+    permission in it, and one a killed test left is removed by the next."""
     # Under /tmp, not tmp_path: a unix socket's path has to stay short.
-    parent = Path(tempfile.mkdtemp(prefix="rce2e-test-", dir="/tmp"))
-    root = parent / WORLDS.replace("*", "this-run")
-    monkeypatch.setenv("RCMAN_E2E_DIR", str(root))
-    monkeypatch.setenv("RCMAN_PUBLIC_ORIGIN", ORIGIN)
-    monkeypatch.setenv("RCMAN_E2E_GITHUB_TOKEN", TOKEN)
-    started = []
-    yield root, started
-    for pid in started:
-        if _running(pid):
-            os.killpg(pid, signal.SIGKILL)
-    for folder, children, _ in os.walk(parent):  # top down: opened before it is listed
-        for child in children:
-            if not os.path.islink(os.path.join(folder, child)):
-                os.chmod(os.path.join(folder, child), 0o700)
-    shutil.rmtree(parent)
+    with held(WORLD_PARENTS, remover=remove_tree) as parent:
+        root = parent / _named("this-run")
+        monkeypatch.setenv("RCMAN_E2E_DIR", str(root))
+        monkeypatch.setenv("RCMAN_PUBLIC_ORIGIN", ORIGIN)
+        monkeypatch.setenv("RCMAN_E2E_GITHUB_TOKEN", TOKEN)
+        started = []
+        yield root, started
+        for pid in started:
+            if _running(pid):
+                os.killpg(pid, signal.SIGKILL)
 
 
 def _start_tmux(sock: Path, started: list[int]) -> int:
@@ -176,18 +184,48 @@ def _abandoned(parent: Path, name: str, started: list[int]) -> tuple[Path, int]:
 
 def test_building_a_world_stops_and_removes_one_a_killed_run_left(world):
     root, started = world
-    left, pid = _abandoned(root.parent, WORLDS.replace("*", "killed"), started)
+    left, pid = _abandoned(root.parent, _named("killed"), started)
     unlike, unlike_pid = _abandoned(root.parent, "not-a-world", started)
-    assert fnmatch(left.name, WORLDS) and not fnmatch(unlike.name, WORLDS)
+    assert e2e.is_world(left.name) and not e2e.is_world(unlike.name)
     with TestClient(e2e.create_app()):
         assert not _running(pid) and not left.exists()
         assert _running(unlike_pid) and unlike.exists()  # only what the pattern names
 
 
+@pytest.mark.parametrize(
+    "name",
+    [
+        "rcman-e2e-x",
+        "rcman-e2e-worktree",
+        "rcman-e2e-77777777-0000-4000-8000-00000000000",
+        "rcman-e2e-77777777-0000-4000-8000-0000000000000",
+        "rcman-e2e-77777777-0000-4000-8000-00000000000G",
+        "xrcman-e2e-77777777-0000-4000-8000-000000000000",
+    ],
+)
+def test_a_folder_named_unlike_a_world_is_left(world, name):
+    """Only the shape frontend/e2e/world.ts names a world with is cleared, so a folder
+    such as a checkout that happens to begin like one is never taken for one."""
+    root, started = world
+    left, pid = _abandoned(root.parent, _named("killed"), started)
+    unlike, unlike_pid = _abandoned(root.parent, name, started)
+    e2e.clear_abandoned(root.parent)
+    assert not left.exists() and not _running(pid)  # positive control
+    assert unlike.is_dir() and _running(unlike_pid)
+
+
+def test_the_world_shape_is_the_one_world_ts_names():
+    source = (REPO / "frontend" / "e2e" / "world.ts").read_text(encoding="utf-8")
+    assert "`rcman-e2e-${randomUUID()}`" in source
+    import uuid
+
+    assert e2e.is_world(f"rcman-e2e-{uuid.uuid4()}")
+
+
 def test_a_world_is_removed_while_its_lock_is_held(world, monkeypatch):
     """So no other run clearing at the same time takes it for abandoned meanwhile."""
     root, started = world
-    left, _ = _abandoned(root.parent, WORLDS.replace("*", "killed"), started)
+    left, _ = _abandoned(root.parent, _named("killed"), started)
     seen, stop = [], e2e._stop_tmux
 
     def stopping(world):
@@ -208,7 +246,7 @@ def test_a_world_cleared_and_made_again_meanwhile_is_left_alone(world):
     """Between opening a world's lock file and locking it, another run may clear the
     world and a new one make it again under the same name, holding a lock of its own."""
     root, started = world
-    left, _ = _abandoned(root.parent, WORLDS.replace("*", "reused"), started)
+    left, _ = _abandoned(root.parent, _named("reused"), started)
     lock, again = fcntl.flock, []
 
     def meanwhile(fd, operation):
@@ -268,10 +306,10 @@ def test_removing_a_world_takes_its_lock_file_last(world):
 def test_a_world_long_without_a_lock_file_is_cleared(world):
     """One a run was killed in the instant between making it and taking its lock."""
     root, _ = world
-    left = root.parent / WORLDS.replace("*", "killed-while-making")
+    left = root.parent / _named("killed-while-making")
     left.mkdir()
     (left / ".locking").touch()
-    old = left.stat().st_mtime - e2e.UNLOCKED_FOR - 1
+    old = left.stat().st_mtime - held_folders.UNLOCKED_FOR - 1
     os.utime(left, (old, old))
     with TestClient(e2e.create_app()):
         assert root.is_dir()  # positive control: the world was built
@@ -287,7 +325,7 @@ def _victim(parent: Path, started: list[int]) -> tuple[Path, int]:
 def _later_world(parent: Path, started: list[int]) -> tuple[Path, int]:
     """An abandoned world that sorts after every odd one, so clearing it shows the odd
     ones did not stop the clearing."""
-    return _abandoned(parent, WORLDS.replace("*", "zz-killed"), started)
+    return _abandoned(parent, _named("zz-killed", lead="f"), started)
 
 
 def _locked_world(parent: Path, name: str) -> Path:
@@ -359,7 +397,7 @@ def test_clearing_harms_nothing_but_abandoned_worlds_of_its_own(world, odd):
     """What a name like a world's may be besides: none of it stops the clearing, nothing
     outside a world is touched, and no tmux server outside one is stopped."""
     root, started = world
-    kept, victims = odd(root.parent, WORLDS.replace("*", "a-odd"), started)
+    kept, victims = odd(root.parent, _named("a-odd", lead="0"), started)
     later, later_pid = _later_world(root.parent, started)
     clearing = threading.Thread(target=e2e.clear_abandoned, args=(root.parent,), daemon=True)
     clearing.start()
@@ -376,7 +414,7 @@ def test_a_world_another_user_owns_is_left(world):
     """Only the clearing user's own worlds are cleared: here a world of the current user,
     cleared as though by another, since the tests have no second user to make one."""
     root, started = world
-    left, pid = _abandoned(root.parent, WORLDS.replace("*", "killed"), started)
+    left, pid = _abandoned(root.parent, _named("killed"), started)
     e2e.clear_abandoned(root.parent, uid=os.getuid() + 1)
     assert left.is_dir() and _running(pid)
     e2e.clear_abandoned(root.parent)
@@ -387,7 +425,7 @@ def test_a_world_whose_backend_still_runs_is_left_alone(world, monkeypatch):
     root, started = world
     running = e2e.create_app()  # holds its world's lock while it lives
     pid = _start_tmux(e2e.sockets(root) / "alice.sock", started)
-    other = root.parent / WORLDS.replace("*", "other-run")
+    other = root.parent / _named("other-run")
     monkeypatch.setenv("RCMAN_E2E_DIR", str(other))
     with TestClient(e2e.create_app()):
         assert other.is_dir()  # positive control: the second world was built beside it
@@ -401,7 +439,7 @@ def test_a_world_still_being_made_is_left_alone(world):
     """A world gets its lock file only once its lock is held, so one without is being
     made by a run that has not taken it yet."""
     root, _ = world
-    making = root.parent / WORLDS.replace("*", "making")
+    making = root.parent / _named("making")
     making.mkdir()
     (making / "users.toml").write_text("")
     with TestClient(e2e.create_app()):
@@ -438,18 +476,6 @@ def test_alice_has_a_repository_with_an_origin(world):
         assert known.split() == ["origin/feature", "origin/main"]  # later needs a fetch
         assert fixture_git(repo, "branch", "--show-current").strip() == "main"
         assert not (root / "homes" / "bob" / "projects" / "alice-repo").exists()
-
-
-def test_shutting_down_removes_the_fixtures_git_home(world):
-    """uvicorn ends itself with the signal it was stopped by, so no exit handler runs:
-    the backend's own shutdown removes what the world's git fixtures left."""
-    from tests.git_fixtures import FIXTURE_HOME
-
-    app = e2e.create_app()
-    assert FIXTURE_HOME.exists()  # positive control: building the world used it
-    with TestClient(app):
-        pass
-    assert not FIXTURE_HOME.exists()
 
 
 def test_the_worlds_github_serves_alices_origin_and_takes_a_push_with_its_token_only(world):
@@ -587,10 +613,52 @@ def test_two_runs_of_the_browser_tests_name_different_worlds_and_ports():
     assert world != other_world and port != other_port
     for named in (world, other_world):
         assert Path(named).is_absolute() and not Path(named).exists()  # the backend makes it
-        assert fnmatch(Path(named).name, WORLDS)  # so a killed run's is cleared
+        assert e2e.is_world(Path(named).name)  # so a killed run's is cleared
 
 
 def test_a_run_keeps_the_world_and_port_it_is_given(tmp_path):
     given = (str(tmp_path / "given"), str(_free_port()))
     env = {**_without_a_world(), "RCMAN_E2E_DIR": given[0], "RCMAN_E2E_PORT": given[1]}
     assert _identity(env) == given
+
+
+# --- what a killed run leaves of a test's world ---------------------------------------
+
+USES_A_WORLD = """
+import os
+from pathlib import Path
+from tests import killed_runs as kr
+from tests import test_e2e_server as t
+from tests.test_e2e_server import world  # noqa: F401 -- the fixture itself
+
+t.WORLD_PARENTS = {prefix!r}
+
+def test_one(world):
+    root, started = world
+    left = os.environ.get("LEFT")
+    if left:  # the next run: its world's fixture has cleared what the killed one left
+        kr.report("next", {{"cleared": not os.path.lexists(left)}})
+        return
+    pid = t._start_tmux(t.e2e.sockets(root) / "alice.sock", started)
+    (root / "shut").mkdir()
+    (root / "shut").chmod(0)
+    kr.report("one", {{"paths": {{"parent": str(root.parent)}}, "pids": {{"tmux": pid}}}})
+    kr.hold()
+"""
+
+
+@pytest.mark.parametrize("sig", [signal.SIGTERM, signal.SIGKILL], ids=["SIGTERM", "SIGKILL"])
+def test_the_next_world_clears_what_a_killed_runs_world_left(tmp_path, sig):
+    """Its folder, the tmux servers in it and a folder the test shut are all cleared."""
+    with kr.stem() as stem:
+        source = {"test_world.py": USES_A_WORLD.format(prefix=stem + WORLD_PARENTS)}
+        with kr.KilledRun(tmp_path / "killed", source, (stem,)) as run:
+            reported = run.reports.wait("one")
+            run.kill(sig)
+        parent, pid = Path(reported["paths"]["parent"]), reported["pids"]["tmux"]
+        assert parent.is_dir() and kr.running(pid)  # positive control: the kill left them
+        with kr.KilledRun(tmp_path / "next", source, (stem,), env={"LEFT": str(parent)}) as run:
+            assert run.reports.wait("next") == {"cleared": True}
+            code, output = run.finish()
+        assert code == 0, output
+        assert not os.path.lexists(parent) and not kr.running(pid)
