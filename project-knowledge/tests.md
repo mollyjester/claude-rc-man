@@ -345,7 +345,8 @@ and another repository does not. Within that, it commits nothing on `main`,
 on origin's default branch or on a detached HEAD, nor during a merge,
 rebase, cherry-pick or revert, and says so when there are changes. An
 untracked file that is a nested repository, is larger than `MAX_FILE_BYTES`
-or has a credential's name in `CREDENTIAL_NAMES`, both in the module, is
+or has a credential's name — one `CREDENTIAL_NAMES` matches, in any case,
+as `named_like_a_credential` judges it — all in the module, is
 left out of the commit and named to the operator and the agent; the rest is
 committed and pushed. An upstream that is configured but gone, as when a
 merged branch is deleted, is reported and not pushed again. It never passes

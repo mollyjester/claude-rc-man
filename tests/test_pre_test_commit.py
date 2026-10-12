@@ -727,6 +727,21 @@ def test_an_untracked_file_it_should_not_add_is_left_out_and_the_rest_committed(
     assert no_decision(out)
 
 
+@pytest.mark.parametrize(
+    ("path", "named"),
+    [
+        ("conf/.env", True),
+        ("deep/er/Server.PEM", True),
+        ("id_rsa.pub", True),
+        ("id_rsa/notes.txt", False),  # a folder's name is not the file's
+        ("environment.txt", False),
+    ],
+)
+def test_named_like_a_credential_reads_the_file_name_in_any_case(path, named):
+    """The judgement tests/snapshot.py shares with the hook."""
+    assert pre_test_commit.named_like_a_credential(path) is named
+
+
 def test_only_a_refused_file_commits_nothing_and_says_so(repo, origin):
     before = head(repo)
     write(repo / ".env", "secret\n")

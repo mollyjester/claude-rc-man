@@ -481,14 +481,20 @@ def _in_progress(top: Path, git: Git) -> str | None:
     return None
 
 
+def named_like_a_credential(path: str) -> bool:
+    """Whether the file at ``path``, a relative path, has a name in ``CREDENTIAL_NAMES``,
+    in any case; the names of the folders it is in do not count."""
+    name = path.rstrip("/").rsplit("/", 1)[-1].lower()
+    return any(fnmatch.fnmatch(name, pattern) for pattern in CREDENTIAL_NAMES)
+
+
 def _unaddable(top: Path, untracked: list[str]) -> dict[str, str]:
     """The untracked paths ``git add -A`` must not take, each with why."""
     found = {}
     for rel in untracked:
-        name = rel.rstrip("/").rsplit("/", 1)[-1].lower()
         if rel.endswith("/"):
             found[rel] = "a nested repository"
-        elif any(fnmatch.fnmatch(name, pattern) for pattern in CREDENTIAL_NAMES):
+        elif named_like_a_credential(rel):
             found[rel] = "named like a credential"
         else:
             try:
