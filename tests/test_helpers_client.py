@@ -127,17 +127,26 @@ def child_alive(pid_file, deadline=5.0):
 def test_child_alive_reads_a_child_that_exits_while_its_stat_is_read(tmp_path, monkeypatch):
     # A process that exits between opening /proc/<pid>/stat and reading it makes
     # the read fail with ESRCH; that child is gone, not a failure of the test.
+    # This process's own pid: it is alive, so only the patched read can report it gone.
     import io
+    import os
     import sys
+
+    opened = []
 
     class Vanishing(io.StringIO):
         def read(self, *args):
             raise ProcessLookupError(3, "No such process")
 
+    def vanishing(*args, **kw):
+        opened.append(args)
+        return Vanishing()
+
     pid_file = tmp_path / "child.pid"
-    pid_file.write_text("4242")
-    monkeypatch.setattr(sys.modules[__name__], "open", lambda *a, **kw: Vanishing(), raising=False)
-    assert child_alive(pid_file, deadline=1.0) == (False, 4242)
+    pid_file.write_text(str(os.getpid()))
+    monkeypatch.setattr(sys.modules[__name__], "open", vanishing, raising=False)
+    assert child_alive(pid_file, deadline=1.0) == (False, os.getpid())
+    assert opened  # the patch took effect
 
 
 def test_a_timed_out_helper_does_not_leave_its_child_running(tmp_path):

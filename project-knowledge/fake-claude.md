@@ -34,8 +34,8 @@ placeholder set is `PLACEHOLDERS` in `devtools/record_claude.py`; email
 addresses and session IDs are found by `EMAIL_ADDRESS` and `SESSION_ID` in
 `helpers/claude_checks.py`, the same patterns that blank them in a refused
 upgrade's report. A test checks that no fixture or observed screen contains
-an email address, a home or temporary path, a sign-in URL, an environment ID
-or a session ID.
+any kind of leak `LEAK_MARKS` in `tests/test_record_claude.py` names, each
+found by its marks, and that each mark finds a planted sample of its kind.
 
 A sequence marked `git_repository` runs in a throwaway repository the
 recorder makes in its own scratch folder, on `RECORD_BRANCH`, and the branch

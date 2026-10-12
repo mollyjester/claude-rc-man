@@ -531,7 +531,10 @@ def test_the_worlds_github_has_a_repository_to_clone_that_no_home_holds(world):
         refs = ("for-each-ref", "--format=%(refname:short)", "refs/heads")
         assert fixture_git(origin, *refs).split() == ["feature", "main"]
         assert fixture_git(origin, "show", "main:README.md")  # a file to find in the clone
-        for home in (root / "homes").iterdir():
+        assert list(root.rglob("demo")) == [root / "sources" / "demo"]  # the search finds it
+        homes = sorted((root / "homes").iterdir())
+        assert [home.name for home in homes] == sorted(e2e.PEOPLE)  # every home is searched
+        for home in homes:
             assert not list(home.rglob("demo")), home
 
 

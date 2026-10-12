@@ -135,18 +135,37 @@ def test_manifest_records_one_claude_version():
     assert rec.VERSION_PATTERN.fullmatch(manifest["claude_version"])
 
 
+# What a screen can give away that sanitising should have replaced: each kind, with the
+# marks, the text that gives it away.
+LEAK_MARKS = {
+    "an email address": ("@",),
+    "a home or temporary path": ("/home/", "/tmp/"),
+    "a sign-in URL": ("oauth/authorize?",),
+    "an environment ID": ("environment=env_",),
+    "a session ID": ("cse_",),
+}
+# Planted screen lines, each giving away what one mark finds and nothing else.
+LEAK_SAMPLES = (
+    "Logged in as alice@example.com",
+    "cwd: /home/alice/project",
+    f"cwd: {held_folders.TMP}/claude-1001/scratch",  # built: no fixed path here
+    "Open https://claude.ai/oauth/authorize?code=true&client_id=x",
+    "https://claude.ai/code?environment=env_01ABCdef",
+    "[10:00:00] failed for session cse_01ABCdef: 404",
+)
+
+
+def sample_of(mark: str) -> str:
+    """The one planted sample that holds ``mark``."""
+    [sample] = [sample for sample in LEAK_SAMPLES if mark in sample]
+    return sample
+
+
 def leaks(path: Path) -> list[str]:
     """What the screen in ``path`` gives away that sanitising should have replaced, each
     found by the text that gives it away."""
-    marks = {
-        "an email address": ("@",),
-        "a home or temporary path": ("/home/", "/tmp/"),
-        "a sign-in URL": ("oauth/authorize?",),
-        "an environment ID": ("environment=env_",),
-        "a session ID": ("cse_",),
-    }
     text = path.read_text(encoding="utf-8")
-    return [leak for leak, found in marks.items() if any(mark in text for mark in found)]
+    return [leak for leak, found in LEAK_MARKS.items() if any(mark in text for mark in found)]
 
 
 @pytest.mark.parametrize("directory", [rec.FIXTURES, rec.OBSERVED], ids=lambda d: d.name)
@@ -156,14 +175,33 @@ def test_no_fixture_contains_an_unsanitised_secret_or_path(directory):
     assert {path.name: leaks(path) for path in paths if leaks(path)} == {}
 
 
-def test_the_leak_check_finds_a_session_id(tmp_path):
-    """Planted twin: a screen still holding a session ID is caught."""
-    planted = tmp_path / "planted.txt"
-    planted.write_text("[10:00:00] failed for session cse_01ABCdef: 404", encoding="utf-8")
-    assert leaks(planted) == ["a session ID"]
+def test_a_sanitised_session_id_is_no_leak(tmp_path):
+    """The session ID sample, a leak as it is, is none once sanitised."""
+    sample = sample_of("cse_")
     clean = tmp_path / "clean.txt"
-    clean.write_text(rec.sanitise(planted.read_text(encoding="utf-8"), CTX), encoding="utf-8")
+    clean.write_text(rec.sanitise(sample, CTX), encoding="utf-8")
+    assert clean.read_text(encoding="utf-8") != sample  # sanitising replaced something
     assert leaks(clean) == []
+
+
+def test_every_leak_mark_has_a_planted_sample():
+    marks = [mark for kinds in LEAK_MARKS.values() for mark in kinds]
+    held = [[mark for mark in marks if mark in sample] for sample in LEAK_SAMPLES]
+    assert sorted(mark for found in held for mark in found) == sorted(marks)
+    assert all(len(found) == 1 for found in held), held  # one mark to a sample
+
+
+@pytest.mark.parametrize(
+    ("kind", "mark"),
+    [(kind, mark) for kind, marks in LEAK_MARKS.items() for mark in marks],
+    ids=lambda value: value,
+)
+def test_the_leak_check_finds_each_mark_as_its_kind(tmp_path, kind, mark):
+    """Planted twins: a screen holding only one mark's sample is caught as that mark's
+    kind, and as nothing else."""
+    planted = tmp_path / "planted.txt"
+    planted.write_text(sample_of(mark), encoding="utf-8")
+    assert leaks(planted) == [kind]
 
 
 def test_options_used_are_derived_from_the_sequences():

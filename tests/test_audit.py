@@ -435,10 +435,11 @@ def test_retention_runs_when_the_app_starts(settings, helper_homes, admin_runner
     from fastapi.testclient import TestClient
     from rcman.main import create_app
 
-    seed(settings.database, [settings.audit_retention_days + 1], dt.datetime.now(dt.UTC)).close()
+    now = dt.datetime.now(dt.UTC)
+    seed(settings.database, [settings.audit_retention_days + 1, 0], now).close()
     with TestClient(create_app(settings, helper=helper_homes, admin=admin_runner)):
         pass
-    assert rows(settings) == []
+    assert [r["at"] for r in rows(settings)] == [now.isoformat()]  # the expired row only goes
 
 
 def test_git_changes_are_recorded_with_the_folder(client, settings, helper_homes, tmp_path):
