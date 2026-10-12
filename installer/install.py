@@ -86,10 +86,10 @@ UV_VERSION = "0.12.21"
 OAUTH2_PROXY_VERSION = "v7.15.5"
 HEALTH_TIMEOUT = 60.0
 CADDY_ADMIN_PORT = 2019  # Caddy's default admin API address is localhost:2019
-CADDY_ADMIN_HOSTS = ("127.0.0.1", "::1")  # what localhost may be
+CADDY_ADMIN_HOST = "127.0.0.1"  # what localhost is
 CADDY_ADMIN_WARNING = (
-    "Something answers on Caddy's admin API address, localhost:2019 (127.0.0.1 or [::1]). "
-    "Any local user can "
+    f"Something answers on Caddy's admin API address, localhost:{CADDY_ADMIN_PORT} "
+    f"({CADDY_ADMIN_HOST}:{CADDY_ADMIN_PORT}). Any local user can "
     "rewrite Caddy's configuration through it, and so reach rcman as anyone. Put `admin off` "
     "(or an admin address on a unix socket) in the global options of your Caddyfile."
 )
@@ -711,17 +711,14 @@ def health(settings: dict[str, str]) -> None:
 
 
 def caddy_admin_exposed(port: int = CADDY_ADMIN_PORT) -> bool:
-    """Whether something accepts connections on Caddy's default admin API address,
-    localhost, on either loopback address."""
+    """Whether something accepts connections on Caddy's default admin API address."""
     import socket
 
-    for host in CADDY_ADMIN_HOSTS:
-        try:
-            socket.create_connection((host, port), timeout=2).close()
-            return True
-        except OSError:
-            continue
-    return False
+    try:
+        socket.create_connection((CADDY_ADMIN_HOST, port), timeout=2).close()
+    except OSError:
+        return False
+    return True
 
 
 def caddy_notices(changes: list[str], caddy_user: str) -> list[str]:
