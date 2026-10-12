@@ -1,7 +1,9 @@
-"""A git origin made from the working tree at /src, and a clone of it owned by ``dev``.
+"""A git origin made from the files at /src, and a clone of it owned by ``dev``.
 
-Uncommitted changes in the working tree are included, so what is tested is what
-is on disk. Used inside the test container only.
+/src holds a snapshot of the checkout's files as they are on disk, uncommitted
+changes included, with no ``.git`` (tests/snapshot.py), so what is tested is
+what is on disk. Every file there is committed. Used inside the test container
+only.
 """
 
 import os
@@ -39,17 +41,10 @@ def make_clone() -> Path:
         sh("git", "config", "--global", key, value, user="dev")
     sh("git", "config", "--system", "--add", "safe.directory", "*")
     work = Path("/tmp/src-snapshot")
-    files = sh(
-        "git", "-C", str(SRC), "ls-files", "-z", "--cached", "--others", "--exclude-standard"
-    ).stdout
-    for name in filter(None, files.split("\0")):
-        source = SRC / name
-        if source.is_file():
-            (work / name).parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(source, work / name)
+    shutil.copytree(SRC, work)
     sh("chown", "-R", "dev:dev", str(work))
     git("init", "-q", cwd=work)
-    git("add", "-A", cwd=work)
+    git("add", "-A", "-f", cwd=work)  # a tracked file its .gitignore names, too
     git("commit", "-qm", "snapshot", cwd=work)
     ORIGIN.parent.mkdir(parents=True, exist_ok=True)
     sh("chown", "dev:dev", str(ORIGIN.parent))

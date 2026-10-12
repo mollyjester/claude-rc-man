@@ -5,7 +5,8 @@ Every test here takes the ``docker`` fixture, so it carries the ``container`` ma
 otherwise ``sudo -n docker``. When neither works the tests skip, unless
 ``RCMAN_REQUIRE_CONTAINER=1`` (set by ``make test-container``, which ``make check``
 runs), in which case they fail. Every container started here is labelled as its run's,
-so a later run removes one a killed run left (tests/containers.py).
+so a later run removes one a killed run left (tests/containers.py). The checkout reaches
+a container as a snapshot of its files (tests/snapshot.py), mounted read-only at /src.
 """
 
 import hashlib
@@ -20,6 +21,8 @@ import pytest
 from devtools import held_folders
 from tests import containers
 from tests import killed_runs as kr
+from tests.git_fixtures import fixture_git, make_repo, write
+from tests.snapshot import snapshot
 
 REPO = Path(__file__).resolve().parent.parent
 CONTEXT = REPO / "tests" / "container"
@@ -63,19 +66,31 @@ def labelled(docker) -> list[str]:
         yield containers.labels(folder)
 
 
+@pytest.fixture(scope="session")
+def source(tmp_path_factory) -> Path:
+    """The checkout's files as they are on disk (tests/snapshot.py), made once for the
+    session and removed when it ends."""
+    folder = tmp_path_factory.mktemp("src")
+    try:
+        yield snapshot(REPO, folder)
+    finally:
+        held_folders.remove_tree(folder, roots=[tmp_path_factory.getbasetemp()])
+
+
 def test_docker_is_usable(docker):
     assert docker
 
 
-def run_suite(
+def run_args(
     docker: list[str],
-    image: str,
     labelled: list[str],
-    module: str,
+    source: Path,
     mounts: list[tuple[Path, str]] = (),
     env: dict[str, str] | None = None,
     docker_args: list[str] = (),
-):
+) -> list[str]:
+    """docker run's arguments up to the image: a container removed when it ends, with
+    ``source`` read-only at /src as its working folder."""
     args = [
         *docker,
         "run",
@@ -84,7 +99,7 @@ def run_suite(
         *labelled,
         *docker_args,
         "-v",
-        f"{REPO}:/src:ro",
+        f"{source}:/src:ro",
     ]  # an init reaps orphans, as on a real host
     for host, container in mounts:
         args += ["-v", f"{host}:{container}"]
@@ -94,9 +109,21 @@ def run_suite(
         **(env or {}),
     }.items():
         args += ["-e", f"{key}={value}"]
-    args += [
-        "-w",
-        "/src",
+    return [*args, "-w", "/src"]
+
+
+def run_suite(
+    docker: list[str],
+    image: str,
+    labelled: list[str],
+    source: Path,
+    module: str,
+    mounts: list[tuple[Path, str]] = (),
+    env: dict[str, str] | None = None,
+    docker_args: list[str] = (),
+):
+    args = [
+        *run_args(docker, labelled, source, mounts, env, docker_args),
         image,
         "python3",
         "-m",
@@ -113,23 +140,26 @@ def run_suite(
     assert " skipped" not in output.splitlines()[-1], output  # it ran, rather than skipping
 
 
-def test_user_management_suite_passes(docker, container_image, labelled):
-    run_suite(docker, container_image, labelled, "tests/container/test_admin_in_container.py")
+def test_user_management_suite_passes(docker, container_image, labelled, source):
+    run_suite(
+        docker, container_image, labelled, source, "tests/container/test_admin_in_container.py"
+    )
 
 
-def test_github_suite_passes(docker, container_image, labelled):
+def test_github_suite_passes(docker, container_image, labelled, source):
     """No network, and github.com is this container's own 127.0.0.1, where the suite
     serves the tests' GitHub."""
     run_suite(
         docker,
         container_image,
         labelled,
+        source,
         "tests/container/test_github_in_container.py",
         docker_args=["--network", "none", "--add-host", "github.com:127.0.0.1"],
     )
 
 
-def test_install_suite_passes(docker, container_image, labelled):
+def test_install_suite_passes(docker, container_image, labelled, source):
     """A fresh container; the toolchain comes from a host cache the installer's code fills."""
     from installer import install as ins
 
@@ -141,6 +171,7 @@ def test_install_suite_passes(docker, container_image, labelled):
         docker,
         container_image,
         labelled,
+        source,
         "tests/container/test_install_in_container.py",
         mounts=[
             (cache / "toolchain", str(ins.TOOLCHAIN)),
@@ -151,7 +182,7 @@ def test_install_suite_passes(docker, container_image, labelled):
     )
 
 
-def test_the_whole_stack_in_a_browser(docker, container_image, labelled):
+def test_the_whole_stack_in_a_browser(docker, container_image, labelled, source):
     """tests/container/stack.py in a fresh container; the browser specs in frontend/e2e-stack."""
     import socket
     import time
@@ -166,7 +197,7 @@ def test_the_whole_stack_in_a_browser(docker, container_image, labelled):
     name = f"rcman-stack-{os.getpid()}"
     args = [*docker, "run", "-d", "--name", name, "--init", *labelled]
     args += ["-p", f"127.0.0.1:{port}:443"]
-    args += ["-v", f"{REPO}:/src:ro", "-v", f"{cache / 'toolchain'}:{ins.TOOLCHAIN}"]
+    args += ["-v", f"{source}:/src:ro", "-v", f"{cache / 'toolchain'}:{ins.TOOLCHAIN}"]
     args += ["-v", f"{cache / 'npm'}:/home/dev/.npm", "-v", f"{cache / 'uv'}:/root/.cache/uv"]
     args += ["-e", f"HOST_UID={os.getuid()}", "-e", "PYTHONDONTWRITEBYTECODE=1"]
     args += [container_image, "python3", "/src/tests/container/stack.py"]
@@ -212,6 +243,80 @@ def test_the_whole_stack_in_a_browser(docker, container_image, labelled):
         assert inside("test", "-e", "/home/dave").returncode != 0  # deleted
     finally:
         subprocess.run([*docker, "rm", "-f", name], capture_output=True)
+
+
+# --- a checkout that is a git worktree ---------------------------------------------------
+
+# Run in a container with a checkout at /src and tests/container at /tools: the clone
+# make_clone makes, and git run from /src, as make_clone runs it.
+CLONES = """
+import json, sys
+sys.path.insert(0, "/tools")
+import clone
+made = clone.make_clone()
+user = clone.sh("git", "config", "--global", "--get", "user.name", user="dev").stdout.strip()
+print(json.dumps({
+    "files": clone.git("ls-tree", "-r", "--name-only", "HEAD", cwd=made).splitlines(),
+    "readme": (made / "README.md").read_text(),
+    "user": user,
+}))
+"""
+
+
+def _worktree(tmp_path: Path) -> Path:
+    """A git worktree, its .git a file naming a folder in its main checkout, with a
+    tracked file changed and a file added on disk. forced.txt is tracked though its
+    own .gitignore names it, as a file added with ``git add -f`` is."""
+    main = make_repo(tmp_path / "main")
+    write(main / ".gitignore", "forced.txt\n")
+    write(main / "forced.txt")
+    fixture_git(main, "add", ".gitignore")
+    fixture_git(main, "add", "-f", "forced.txt")
+    fixture_git(main, "commit", "-q", "-m", "forced")
+    worktree = tmp_path / "wt"
+    fixture_git(main, "worktree", "add", "-q", "-b", "wt", str(worktree))
+    write(worktree / "README.md", "changed on disk\n")
+    write(worktree / "added.txt")
+    assert (worktree / ".git").is_file()
+    return worktree
+
+
+def _clone_at_src(docker, image, labelled, source, checkout):
+    tools = source / "tests" / "container"
+    args = run_args(docker, labelled, checkout, mounts=[(tools, "/tools:ro")])
+    return subprocess.run(
+        [*args, image, "python3", "-c", CLONES], capture_output=True, text=True, timeout=600
+    )
+
+
+def test_a_worktrees_snapshot_is_cloned_in_a_container(
+    docker, container_image, labelled, source, tmp_path
+):
+    worktree = _worktree(tmp_path)
+    copy = tmp_path / "copy"
+    copy.mkdir()
+    snapshot(worktree, copy)
+
+    proc = _clone_at_src(docker, container_image, labelled, source, copy)
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    found = json.loads(proc.stdout.splitlines()[-1])
+    assert sorted(found["files"]) == [".gitignore", "README.md", "added.txt", "forced.txt"]
+    assert found["readme"] == "changed on disk\n"
+    assert found["user"] == "dev"
+
+
+def test_a_worktree_mounted_as_it_is_is_not_a_repository_in_a_container(
+    docker, container_image, labelled, source, tmp_path
+):
+    """The twin: the worktree itself at /src, its .git naming a folder the container
+    does not have."""
+    worktree = _worktree(tmp_path)
+
+    proc = _clone_at_src(docker, container_image, labelled, source, worktree)
+
+    assert proc.returncode != 0
+    assert "not a git repository" in proc.stdout + proc.stderr
 
 
 # --- containers a killed run left -------------------------------------------------------

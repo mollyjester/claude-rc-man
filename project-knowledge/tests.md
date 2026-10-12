@@ -80,9 +80,19 @@ to the system's with `update-ca-certificates`, so that rc-helper runs with
 no `RC_HELPER_GITHUB`, as in production;
 a real installation (see
 [installer.md](installer.md)); and the whole stack in a browser.
-Run it from a full clone, not a git worktree: it mounts the checkout into the
-container and installs from it with git, and a worktree's `.git` is a file
-pointing outside that mount, so git fails inside the container.
+What a container sees of the checkout is a snapshot of its files, made once
+per pytest session by the `source` fixture in `tests/test_container_suite.py`
+with `tests/snapshot.py`, which is not a test module, and mounted read-only
+at `/src`: the files git tracks and those untracked that it does
+not ignore, as they are on disk, chosen by the host's git under the
+fixtures' environment, so that no inherited `GIT_*` variable, global
+configuration or personal ignore file changes the choice. An untracked file
+named like a credential, as the pre-test hook judges one (see
+[Pre-test hook](#pre-test-hook)), is left out. The snapshot holds no `.git`,
+so the suite runs the same from a clone and from a git worktree, whose
+`.git` is a file pointing outside it; inside the container,
+`tests/container/clone.py` commits every one of the snapshot's files to a
+repository of its own. The snapshot is removed when the session ends.
 
 The **whole stack** is `tests/container/stack.py`: rcman installed from a
 clone, people added with `rcman-user` as real Linux accounts with the fake
@@ -345,7 +355,8 @@ and another repository does not. Within that, it commits nothing on `main`,
 on origin's default branch or on a detached HEAD, nor during a merge,
 rebase, cherry-pick or revert, and says so when there are changes. An
 untracked file that is a nested repository, is larger than `MAX_FILE_BYTES`
-or has a credential's name in `CREDENTIAL_NAMES`, both in the module, is
+or has a credential's name — one `CREDENTIAL_NAMES` matches, in any case,
+as `named_like_a_credential` judges it — all in the module, is
 left out of the commit and named to the operator and the agent; the rest is
 committed and pushed. An upstream that is configured but gone, as when a
 merged branch is deleted, is reported and not pushed again. It never passes

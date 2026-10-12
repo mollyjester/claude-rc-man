@@ -1,8 +1,9 @@
 """Installing rcman for real, as root, inside the test container.
 
 ``tests/test_container_suite.py`` runs this module in a fresh container of its
-own. The working tree at /src becomes a git origin; a user ``dev`` clones it
-and runs ``install.sh`` through the real path. The toolchain comes from a
+own. The checkout's files at /src become a git origin
+(tests/container/clone.py); a user ``dev`` clones it and runs ``install.sh``
+through the real path. The toolchain comes from a
 cache the host fills with the installer's own download code. systemctl is the
 stand-in in tests/container/fake-systemctl, which starts each service from
 the unit file the installer wrote.

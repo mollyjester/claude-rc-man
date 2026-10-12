@@ -1,6 +1,7 @@
 # A throwaway Ubuntu for testing as root: user management with real useradd,
 # userdel, runuser, sudo and tmux, and installing rcman with git, Caddy and a
-# stand-in for systemctl. The repository is mounted read-only at /src.
+# stand-in for systemctl. A snapshot of the checkout's files is mounted read-only
+# at /src (tests/snapshot.py).
 FROM ubuntu:24.04
 RUN apt-get update -qq \
  && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
