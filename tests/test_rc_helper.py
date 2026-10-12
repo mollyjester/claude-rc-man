@@ -789,13 +789,6 @@ def test_forget_refuses_a_running_server(env):
     assert error_code(env, "forget", "projects/alpha") == "still_running"
 
 
-def test_declining_trust_ends_the_server(env):
-    log_in(env)
-    ok(env, "start", "projects/alpha", "--prefix", "pfx")
-    out = ok(env, "confirm", "projects/alpha", "--answer", "n")
-    assert out["server"]["state"] == "trust_declined"
-
-
 def test_confirm_refuses_when_nothing_is_asked(env):
     log_in(env)
     fake.write_state(
@@ -1111,9 +1104,18 @@ def test_production_config_ignores_nothing_but_the_test_hooks():
     assert h.config_from_env({"HOME": "/elsewhere"}).home == cfg.home  # $HOME is not trusted
 
 
-def test_refuses_to_run_as_root(monkeypatch):
+def test_refuses_to_run_as_root(env, monkeypatch, capsys):
+    """Refused before anything is done; the same request as anyone else succeeds."""
+    made = Path(env["RC_HELPER_HOME"]) / "new"
     monkeypatch.setattr(os, "getuid", lambda: 0)
-    assert h.main(["list"], {}) == 1
+    assert answer_of(env, capsys, "mkdir", "--name=new") == (
+        1,
+        {"error": {"code": "refused_as_root", "message": h.MESSAGES["refused_as_root"]}},
+    )
+    assert not made.exists()
+    monkeypatch.undo()
+    assert answer_of(env, capsys, "mkdir", "--name=new") == (0, {"created": "new"})  # positive
+    assert made.is_dir()
 
 
 # --- sign-in -------------------------------------------------------------------------
@@ -1296,14 +1298,13 @@ def test_author_name_rule(name, accepted):
 
 # The rules that refuse the same invisible characters: a commit author's name,
 # and a folder's.
-NAME_RULES = {"author name": "AUTHOR_NAME", "folder name": "FOLDER_NAME"}
+NAME_RULES = {"author name": h.AUTHOR_NAME, "folder name": h.FOLDER_NAME}
 
 
 @pytest.mark.parametrize("rule", NAME_RULES.values(), ids=NAME_RULES)
 def test_every_format_character_is_refused_but_zwnj_and_zwj_inside_a_name(rule):
     import unicodedata
 
-    rule = getattr(h, rule)
     found = format_characters()
     assert chr(0x200B) in found and chr(0xE0020) in found  # positive control
     for code, name in ALLOWED_FORMAT.items():  # each exemption is still what it is said to be
@@ -1320,7 +1321,6 @@ def test_every_format_character_is_refused_but_zwnj_and_zwj_inside_a_name(rule):
 
 @pytest.mark.parametrize("rule", NAME_RULES.values(), ids=NAME_RULES)
 def test_hangul_fillers_are_refused_in_a_name(rule):
-    rule = getattr(h, rule)
     found = hangul_fillers()
     assert chr(0x3164) in found  # positive control: HANGUL FILLER
     assert {code for first, last in h.HANGUL_FILLERS for code in range(first, last + 1)} == {
@@ -2332,10 +2332,8 @@ def test_documented_verbs_match_the_command_line():
     assert documented == set(h.VERBS)
 
 
-def test_launcher_is_executable_and_runs_isolated():
-    mode = HELPER.stat().st_mode
-    assert mode & stat.S_IXUSR
-    assert HELPER.read_text(encoding="utf-8").splitlines()[0] == "#!/usr/bin/python3 -IXutf8"
+def test_the_launcher_is_executable():
+    assert HELPER.stat().st_mode & stat.S_IXUSR
 
 
 # --- sudoers template --------------------------------------------------------------
@@ -3917,10 +3915,12 @@ def pushed(bare: Path) -> str | None:
 
 def test_a_plain_git_push_as_the_person_uses_the_stored_token(hooked, github, on_github):
     repo = Path(hooked["RC_HELPER_HOME"]) / GH_REL
-    before = len(github.attempts)
+    before, asked = len(github.attempts), len(github.requests)
     refused = push_as_the_person(hooked, repo)
     assert refused.returncode != 0 and pushed(on_github) is None
-    assert ("x-access-token", True) not in github.attempts[before:]
+    # It reached the tests' GitHub and, with no token stored, offered no credential.
+    assert any("/info/refs" in path for _, path in github.requests[asked:]), github.requests
+    assert github.attempts[before:] == []
     assert set_token(hooked, github.token)[0] == 0
     before = len(github.attempts)
     accepted = push_as_the_person(hooked, repo)

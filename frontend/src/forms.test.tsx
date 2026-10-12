@@ -1,12 +1,16 @@
 // Validation belongs to the server: no input may carry a rule of its own.
 // Each form leads with what it does: its submit button is its one primary
 // button, or its one danger button where what it does cannot be undone.
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { readdirSync, readFileSync } from "node:fs";
+import { resolve, sep } from "node:path";
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { useState } from "react";
+import { type FormEvent, useCallback, useState } from "react";
+import { parseAst } from "vite";
 import { vi } from "vitest";
 
-import { type ApiError, api as client } from "./api";
+import { type ApiError, api as client, forgetSending } from "./api";
+import { forgetReports } from "./clientErrors";
 import { m } from "./messages";
 import { asApiError, ProblemView } from "./ProblemView";
 import { FIELDS } from "./Settings";
@@ -478,9 +482,387 @@ test.each(PAGES)("a refused field on %s (%s) is named by its label", async (_, p
   for (const form of forms) expect(await labelFaults(form)).toEqual([]);
 });
 
-test("the label check finds every form that names a field", () => {
-  const checked = PAGES.map(([page]) => page);
-  expect(checked).toEqual(expect.arrayContaining(["settings", "people", "Claude Code versions"]));
+// --- every form, found in the source -------------------------------------------------
+// A form is known by its component and its submit handler, "Component.handler":
+// in the source, the component whose render holds the <form> and the function
+// its onSubmit names; on screen, the same two as React's development build
+// records them on the form's element.
+
+type AstNode = { type: string; start: number } & Record<string, unknown>;
+
+const isNode = (value: unknown): value is AstNode =>
+  typeof value === "object" &&
+  value !== null &&
+  typeof (value as { type?: unknown }).type === "string" &&
+  typeof (value as { start?: unknown }).start === "number";
+
+// A property of an object or a function, or undefined for anything else.
+function property(value: unknown, name: string): unknown {
+  if ((typeof value !== "object" || value === null) && typeof value !== "function") return;
+  return (value as Record<string, unknown>)[name];
+}
+
+const capitalised = (name: unknown): name is string =>
+  typeof name === "string" && /^[A-Z]/.test(name);
+
+// The component a node is rendered by: the nearest function around it named
+// with a capital, as a function declaration or a const bound to a function.
+function componentOf(ancestors: AstNode[]): { name: string; node: AstNode } | null {
+  for (let i = ancestors.length - 1; i >= 0; i--) {
+    const node = ancestors[i];
+    const own = property(property(node, "id"), "name");
+    if (node.type === "FunctionDeclaration" || node.type === "FunctionExpression") {
+      if (capitalised(own)) return { name: own, node };
+    }
+    if (node.type === "ArrowFunctionExpression" || node.type === "FunctionExpression") {
+      const parent = ancestors[i - 1];
+      const bound = property(property(parent, "id"), "name");
+      if (parent?.type === "VariableDeclarator" && capitalised(bound)) return { name: bound, node };
+    }
+  }
+  return null;
+}
+
+// Every node under a node, the node first.
+function* nodesIn(node: AstNode): Generator<AstNode> {
+  yield node;
+  for (const value of Object.values(node)) {
+    for (const child of Array.isArray(value) ? value : [value]) {
+      if (isNode(child)) yield* nodesIn(child);
+    }
+  }
+}
+
+const FUNCTIONS = ["ArrowFunctionExpression", "FunctionExpression"];
+
+// How a name is declared in a component: as a function, which carries the name
+// React shows; as a const bound to anything else, such as a handler wrapped in
+// useCallback, whose function has no name of its own; or not at all.
+function declared(component: AstNode, name: string): "function" | "other" | "none" {
+  for (const node of nodesIn(component)) {
+    if (property(property(node, "id"), "name") !== name) continue;
+    if (node.type === "FunctionDeclaration") return "function";
+    if (node.type === "VariableDeclarator")
+      return FUNCTIONS.includes(String(property(property(node, "init"), "type")))
+        ? "function"
+        : "other";
+  }
+  return "none";
+}
+
+// The forms in the source files, each as "Component.handler", and what keeps a
+// form from being known so: an onSubmit that is missing or not the bare name of
+// a function its component declares, a form outside a component, or two forms
+// known by the same name.
+function sourceForms(files: [string, string][]): { ids: Set<string>; faults: string[] } {
+  const ids = new Set<string>();
+  const faults: string[] = [];
+  for (const [file, source] of files) {
+    const at = (node: AstNode) => `${file}:${source.slice(0, node.start).split("\n").length}`;
+    const visit = (node: AstNode, ancestors: AstNode[]) => {
+      const opening = property(node, "openingElement");
+      if (node.type === "JSXElement" && property(property(opening, "name"), "name") === "form") {
+        const attributes = property(opening, "attributes");
+        const onSubmit = (Array.isArray(attributes) ? attributes : []).find(
+          (a) => property(property(a, "name"), "name") === "onSubmit",
+        );
+        const expression = property(property(onSubmit, "value"), "expression");
+        const handler = property(expression, "name");
+        const component = componentOf(ancestors);
+        if (property(expression, "type") !== "Identifier" || typeof handler !== "string")
+          faults.push(`${at(node)}: a form whose onSubmit is not a function's name`);
+        else if (component === null) faults.push(`${at(node)}: a form outside a component`);
+        else {
+          const how = declared(component.node, handler);
+          const id = `${component.name}.${handler}`;
+          if (how === "other")
+            faults.push(
+              `${at(node)}: ${id} is not bound to a function, as a wrapped handler is not`,
+            );
+          else if (how === "none")
+            faults.push(`${at(node)}: ${id} is not a function the component declares`);
+          else if (ids.has(id)) faults.push(`${at(node)}: a second form known as ${id}`);
+          else ids.add(id);
+        }
+      }
+      for (const value of Object.values(node)) {
+        for (const child of Array.isArray(value) ? value : [value]) {
+          if (isNode(child)) visit(child, [...ancestors, node]);
+        }
+      }
+    };
+    visit(parseAst(source, { lang: "tsx" }) as unknown as AstNode, []);
+  }
+  return { ids, faults };
+}
+
+// The page's own source files: every .tsx under src but the tests and their tools.
+const SOURCES: [string, string][] = readdirSync(__dirname, { recursive: true, encoding: "utf-8" })
+  .filter((f) => f.endsWith(".tsx") && !f.endsWith(".test.tsx") && !f.startsWith(`test${sep}`))
+  .map((f) => [f, readFileSync(resolve(__dirname, f), "utf-8")]);
+
+// The form on screen as "Component.handler": the handler's name from the
+// element's current props, and the component that rendered it from its fiber's
+// owner. The fiber's own props are not read: React reuses a form's element for
+// the next form rendered in its place, and they may be the earlier form's.
+function formId(form: HTMLFormElement): string {
+  const react = (prefix: string) => {
+    const key = Object.keys(form).find((k) => k.startsWith(prefix));
+    return key === undefined ? undefined : property(form, key);
+  };
+  const props = react("__reactProps$");
+  const fiber = react("__reactFiber$");
+  const where = form.outerHTML.slice(0, 80);
+  if (props === undefined || fiber === undefined)
+    throw new Error(`a form React did not render: ${where}`);
+  const onSubmit = property(props, "onSubmit");
+  if (typeof onSubmit !== "function") throw new Error(`a form with no onSubmit: ${where}`);
+  if (!onSubmit.name)
+    throw new Error(
+      `a form whose onSubmit has no function name, a wrapped or anonymous handler: ${where}`,
+    );
+  const owner = property(property(property(fiber, "_debugOwner"), "type"), "name");
+  if (typeof owner !== "string" || !owner)
+    throw new Error(`a form whose component React does not name: ${where}`);
+  return `${owner}.${onSubmit.name}`;
+}
+
+// A form seen on screen: the entry that opened it, whether that entry is one of
+// PAGES, which the label check visits, and whether the form has a field.
+type Seen = { entry: string; fromPages: boolean; id: string; fields: boolean };
+
+// Opens every entry of PAGES and CHOICES in turn, and notes each form shown;
+// once stopped, it opens no further entry, so renders nothing more.
+async function observe(stopped: () => boolean): Promise<Seen[]> {
+  const seen: Seen[] = [];
+  for (const [entries, fromPages] of [
+    [PAGES, true],
+    [CHOICES, false],
+  ] as const) {
+    for (const [entry, path, open] of entries) {
+      if (stopped()) throw new Error("stopped before every page was visited");
+      api();
+      renderApp(path);
+      try {
+        await open();
+        if (fromPages) await inputs();
+        for (const form of document.querySelectorAll("form"))
+          seen.push({ entry, fromPages, id: formId(form), fields: fieldInputs(form).length > 0 });
+      } finally {
+        cleanup();
+        forgetReports();
+        forgetSending();
+      }
+    }
+  }
+  return seen;
+}
+
+// What the tests' pages miss of the forms in the source: forms none of them
+// opens, forms opened that the source does not have, and forms with a field
+// that no entry of PAGES shows with it, which the label check would not reach.
+function coverageFaults(source: Set<string>, seen: Seen[]) {
+  const ids = new Set(seen.map((s) => s.id));
+  const labelled = new Set(seen.filter((s) => s.fromPages && s.fields).map((s) => s.id));
+  return {
+    missing: [...source].filter((id) => !ids.has(id)).sort(),
+    unknown: [...ids].filter((id) => !source.has(id)).sort(),
+    unlabelled: [...new Set(seen.filter((s) => s.fields).map((s) => s.id))]
+      .filter((id) => !labelled.has(id))
+      .sort(),
+  };
+}
+
+test("the source check names each form by its component and handler, and reports what it cannot name", () => {
+  const planted = `
+function Planted() {
+  function send(event) {
+    event.preventDefault();
+  }
+  return (
+    <form
+      noValidate
+      onSubmit={send}
+    >
+      <form onSubmit={(event) => event.preventDefault()} />
+    </form>
+  );
+}
+const Arrow = () => {
+  const go = () => {};
+  return <form onSubmit={go} />;
+};
+function Bare() {
+  return <form />;
+}
+function helper() {
+  const send = () => {};
+  return <form onSubmit={send} />;
+}
+function Wrapped() {
+  const save = useCallback(() => {}, []);
+  return <form onSubmit={save} />;
+}
+function Passed({ onSave }) {
+  return <form onSubmit={onSave} />;
+}
+`;
+  const again =
+    "export function Planted() {\n  const send = function () {};\n  return <form onSubmit={send} />;\n}\n";
+  expect(sourceForms([["planted.tsx", planted]])).toEqual({
+    ids: new Set(["Planted.send", "Arrow.go"]),
+    faults: [
+      "planted.tsx:11: a form whose onSubmit is not a function's name",
+      "planted.tsx:20: a form whose onSubmit is not a function's name",
+      "planted.tsx:24: a form outside a component",
+      "planted.tsx:28: Wrapped.save is not bound to a function, as a wrapped handler is not",
+      "planted.tsx:31: Passed.onSave is not a function the component declares",
+    ],
+  });
+  expect(sourceForms([["again.tsx", again]]).faults).toEqual([]); // positive control: alone it is fine
+  expect(
+    sourceForms([
+      ["planted.tsx", planted],
+      ["again.tsx", again],
+    ]).faults,
+  ).toContain("again.tsx:3: a second form known as Planted.send");
+});
+
+// How long a visit to every page may take, on a slow or busy machine.
+const EVERY_PAGE_MS = 60_000;
+
+// The tests that need the forms on screen share one visit to every page, made
+// before the first of them, whichever runs. A visit that outlives its time is
+// stopped and waited for, so that it renders nothing into a later test.
+describe("the forms on screen", () => {
+  let seen: Seen[] = [];
+  let stop = false;
+  let visit: Promise<unknown> = Promise.resolve();
+
+  beforeAll(async () => {
+    const visiting = observe(() => stop);
+    visit = visiting.catch(() => {});
+    seen = await visiting;
+  }, EVERY_PAGE_MS);
+
+  afterAll(async () => {
+    stop = true;
+    await visit;
+  }, EVERY_PAGE_MS);
+
+  test("every form in the source is opened by a page these tests visit, each with a field by one the label check visits", () => {
+    const source = sourceForms(SOURCES);
+    expect(source.faults).toEqual([]);
+    expect(source.ids).toContain("Versions.upgrade"); // positive control: the source was read
+    expect(coverageFaults(source.ids, seen)).toEqual({
+      missing: [],
+      unknown: [],
+      unlabelled: [],
+    });
+  });
+
+  test("the coverage check reports a form in the source no page opens", () => {
+    const source = sourceForms(SOURCES).ids;
+    const real = coverageFaults(source, seen);
+    expect(source.has("Planted.send")).toBe(false); // the plant is new
+    expect(coverageFaults(new Set([...source, "Planted.send"]), seen)).toEqual({
+      ...real,
+      missing: [...real.missing, "Planted.send"].sort(),
+    });
+  });
+
+  test("the coverage check reports the form of a page left out of those visited", () => {
+    const source = sourceForms(SOURCES).ids;
+    // positive control: the page is visited, and shows the form
+    expect(seen).toContainEqual(
+      expect.objectContaining({ entry: "Claude Code versions", id: "Versions.upgrade" }),
+    );
+    const without = seen.filter((s) => s.entry !== "Claude Code versions");
+    expect(coverageFaults(source, without).missing).toContain("Versions.upgrade");
+  });
+
+  test("the coverage check reports a form opened that the source does not have, and one with a field seen only from CHOICES", () => {
+    const source = sourceForms(SOURCES).ids;
+    const real = coverageFaults(source, seen);
+    const planted: Seen = { entry: "planted", fromPages: false, id: "Planted.send", fields: true };
+    expect(coverageFaults(source, [...seen, planted])).toEqual({
+      ...real,
+      unknown: [...real.unknown, "Planted.send"].sort(),
+      unlabelled: [...real.unlabelled, "Planted.send"].sort(),
+    });
+    // positive control: the same form seen from PAGES, with its field, is labelled
+    expect(
+      coverageFaults(new Set([...source, "Planted.send"]), [
+        ...seen,
+        planted,
+        { ...planted, fromPages: true },
+      ]),
+    ).toEqual(real);
+  });
+});
+
+function PlantedForm() {
+  const send = (event: FormEvent) => event.preventDefault();
+  return (
+    <form noValidate onSubmit={send}>
+      <button type="submit">Send</button>
+    </form>
+  );
+}
+
+// A form whose handler is wrapped, so its function has no name of its own.
+function WrappedForm() {
+  const send = useCallback((event: FormEvent) => event.preventDefault(), []);
+  return (
+    <form noValidate onSubmit={send}>
+      <button type="submit">Send</button>
+    </form>
+  );
+}
+
+// A form with nothing to do on submit.
+function HandlerlessForm() {
+  return (
+    <form noValidate>
+      <button type="submit">Send</button>
+    </form>
+  );
+}
+
+// A component made by a function, as an arrow it returns, which has no name.
+function made() {
+  return () => {
+    const send = (event: FormEvent) => event.preventDefault();
+    return (
+      <form noValidate onSubmit={send}>
+        <button type="submit">Send</button>
+      </form>
+    );
+  };
+}
+const UnnamedForm = made();
+
+test("a form on screen is known by the component that rendered it and its handler", () => {
+  render(<PlantedForm />);
+  expect(formId(document.querySelector("form")!)).toBe("PlantedForm.send");
+});
+
+test("a form on screen that cannot be known so says why", () => {
+  render(<WrappedForm />);
+  expect(() => formId(document.querySelector("form")!)).toThrow(
+    "a form whose onSubmit has no function name, a wrapped or anonymous handler",
+  );
+  cleanup();
+  render(<HandlerlessForm />);
+  expect(() => formId(document.querySelector("form")!)).toThrow("a form with no onSubmit");
+  cleanup();
+  expect(UnnamedForm.name).toBe(""); // the plant took effect: the component has no name
+  render(<UnnamedForm />);
+  expect(() => formId(document.querySelector("form")!)).toThrow(
+    "a form whose component React does not name",
+  );
+  cleanup();
+  expect(() => formId(document.createElement("form"))).toThrow("a form React did not render");
 });
 
 // A form whose ProblemView is given no labels.

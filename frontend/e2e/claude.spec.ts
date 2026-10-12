@@ -21,7 +21,11 @@ test("connecting a Claude account", async ({ page }) => {
 
   await page.getByLabel(m.connectCode).fill("WRONG");
   await page.getByRole("button", { name: m.connectSubmit }).click();
-  await expect(page.getByRole("alert")).toBeVisible();
+  // rc-helper's own sentence for a code Claude did not take, MESSAGES["login_failed"]
+  // in helpers/rc_helper.py
+  await expect(page.getByRole("alert")).toContainText(
+    "Signing in to Claude failed. Start again and use a fresh code.",
+  );
 
   await page.getByRole("button", { name: m.connectGo }).click();
   await page.getByLabel(m.connectCode).fill("GOOD-CODE");

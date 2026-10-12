@@ -182,7 +182,7 @@ def _app(root: Path, held):
         return 1, {
             "error": {
                 "code": "claude_checks_failed",
-                "message": "That version failed rcman's checks.",
+                "message": ra.MESSAGES["claude_checks_failed"],
                 "failed": ["version"],
                 "report": {
                     "version": {

@@ -64,15 +64,15 @@ test("another person sees only their own home and servers", async ({ page }) => 
   await expect(page.getByRole("link", { name: m.navUsers })).toHaveCount(0);
 
   // Even asked directly, from bob's own signed-in page, rcman acts only in bob's home.
-  const status = await page.evaluate(async () => {
+  const refused = await page.evaluate(async () => {
     const r = await fetch("/api/servers/stop", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ path: "projects/alice-demo" }),
     });
-    return r.status;
+    return [r.status, (await r.json()).code];
   });
-  expect(status).toBe(404);
+  expect(refused).toEqual([404, "unknown_server"]); // bob's home has no such server
 });
 
 test("administrators see everyone's servers, and act on none of them", async ({
@@ -172,7 +172,16 @@ test("the audit trail records what people did", async ({ page }) => {
   ]) {
     await expect(page.getByRole("cell", { name: action, exact: true }).first()).toBeVisible();
   }
-  await expect(page.getByRole("cell", { name: "bob@example.com (bob)" }).first()).toBeVisible(); // bob's refused stop
+  // bob's refused stop: the whole row, as rcman recorded it
+  let refusedStop = page.getByRole("row");
+  for (const cell of [
+    "bob@example.com (bob)",
+    "server.stop",
+    "projects/alice-demo",
+    "unknown_server",
+  ])
+    refusedStop = refusedStop.filter({ has: page.getByRole("cell", { name: cell, exact: true }) });
+  await expect(refusedStop).toHaveCount(1);
 });
 
 test("people are removed, with and without their home", async ({ page }) => {

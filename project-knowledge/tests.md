@@ -200,7 +200,17 @@ it can fail, and a positive control that keeps an empty input from passing.
   `helper_env`, any rc-helper `Config` made in a test without saying where
   GitHub is, and any git run in a test with GitHub's address written into
   its arguments outside the modules that keep it local and the exemptions it
-  lists.
+  lists. For `Config`, it reads how a test names rc-helper in its source,
+  and reports as a failure any reach of rc-helper that could hide a
+  `Config` from that reading; the docstring of `config_sites` in the test
+  says exactly what it reads, what it follows and what it reports.
+  `CONFIG_EXEMPT` names, with a reason, the
+  sites that hand the module on; each covers its own statement — of a
+  compound statement, the header up to the end of the site's expression —
+  not the function it is in. It is a static reading with a boundary:
+  rc-helper reached through what is built at run time, such as a name bound
+  other than by an import or code run as text, is outside it. Its positive
+  control is `helper_env.py`'s own `Config`, which it must read as one.
 - **No fixed shared paths or ports** (`tests/test_fixed_resources.py`). Tests
   run at the same time, so none may hold a fixed path under `/tmp` or a fixed
   unprivileged port. It reads the Python files in `tests/` but not those in
@@ -251,7 +261,8 @@ it can fail, and a positive control that keeps an empty input from passing.
   the rest of the path. Its planted twins write the path and the port as
   placeholders, so that the guard, reading its own module, finds neither
   there. Each exemption it lists covers one site, named by its file, the
-  function or test it is in and its text, and fails when that site is gone.
+  function or test it is in, if any, and its text, and fails when that site
+  is gone.
 - **The container marker is derived** (`tests/test_container_marker.py`). In
   the collected suite the tests carrying `container` are exactly those using
   the `docker` fixture, and no source under `tests/` places the marker by

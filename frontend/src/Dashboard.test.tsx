@@ -926,8 +926,20 @@ test("confirming deletes the folder, refreshes, and selects the folder above in 
   expect(await screen.findByRole("region", { name: m.home })).toBeInTheDocument();
 });
 
-test("a folder made where one was deleted starts empty and closed", async () => {
-  dashboard([], changingFolders());
+test("a folder made where one was deleted starts closed, without the deleted one's contents", async () => {
+  const routes = changingFolders();
+  const make = routes["POST /api/folders"] as (c: Call) => { created: string };
+  // A folder is made in the new gamma behind the app's back as gamma is made, an
+  // outside change, so that the tree lists gamma with folders in it and gives it
+  // a toggle. Making it through the page's own New folder would select it, which
+  // opens gamma.
+  routes["POST /api/folders"] = (c) => {
+    const made = make(c);
+    if (made.created === "projects/gamma")
+      make({ ...c, body: { parent: "projects/gamma", name: "later" } });
+    return made;
+  };
+  dashboard([], routes);
   renderApp("/?folder=projects");
   await expand("projects");
   await expand("gamma");
@@ -948,11 +960,17 @@ test("a folder made where one was deleted starts empty and closed", async () => 
   await userEvent.type(within(projects).getByLabelText(m.newFolderName), "gamma");
   await userEvent.click(within(projects).getByRole("button", { name: m.create }));
   expect(await panel("projects/gamma")).toBeInTheDocument();
+  // gamma is back in the tree once projects is fetched again, which lists it with
+  // folders in it, so its toggle is there from then on
   expect(await folder("gamma")).toHaveAttribute("aria-current", "true");
-  expect(
-    within(await tree()).queryByRole("button", { name: m.collapse("gamma") }),
-  ).not.toBeInTheDocument();
-  expect(within(await tree()).queryByRole("button", { name: "deep" })).not.toBeInTheDocument();
+  const listed = within(await tree());
+  expect(listed.getByRole("button", { name: m.expand("gamma") })).toBeVisible();
+  expect(listed.queryByRole("button", { name: m.collapse("gamma") })).not.toBeInTheDocument();
+  expect(listed.queryByRole("button", { name: "deep" })).not.toBeInTheDocument();
+
+  await expand("gamma");
+  expect(await folder("later")).toBeInTheDocument();
+  expect(listed.queryByRole("button", { name: "deep" })).not.toBeInTheDocument();
 });
 
 test("deleting a folder at the top selects Home", async () => {

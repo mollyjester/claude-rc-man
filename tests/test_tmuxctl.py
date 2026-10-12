@@ -1,6 +1,7 @@
 """The tmux driver used to record the real `claude` and to drive the fake."""
 
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -104,10 +105,33 @@ def test_screen_trims_trailing_blank_lines_and_spaces(pane, tmp_path):
 
 
 def test_closing_kills_the_tmux_server(tmp_path):
-    with held_folders.tmux_sockets("rcp-") as sockets, tmuxctl.Pane(socket_dir=sockets) as p:
-        p.run([sys.executable, "-c", "import time; time.sleep(30)"], cwd=tmp_path, env={})
-        socket = p.socket
-    assert not tmuxctl.server_running(socket)
+    """The server process itself ends, not only its socket file."""
+    import os
+    import signal
+    import subprocess
+
+    from tests.test_helpers_client import child_alive
+
+    pid_file = tmp_path / "server.pid"
+    pid = None
+    try:
+        with held_folders.tmux_sockets("rcp-") as sockets, tmuxctl.Pane(socket_dir=sockets) as p:
+            p.run([sys.executable, "-c", "import time; time.sleep(30)"], cwd=tmp_path, env={})
+            server = ["tmux", "-S", str(p.socket), "display-message", "-p", "#{pid}"]
+            pid = int(subprocess.run(server, capture_output=True, text=True, check=True).stdout)
+            pid_file.write_text(str(pid))
+            assert child_alive(pid_file, deadline=0.5) == (True, pid)  # positive control
+            socket = p.socket
+        assert child_alive(pid_file, deadline=10.0) == (False, pid)
+        assert not tmuxctl.server_running(socket)
+    finally:
+        if pid is not None:
+            try:
+                comm = (Path("/proc") / str(pid) / "comm").read_text().strip()
+            except OSError:
+                comm = ""
+            if comm.startswith("tmux"):  # the server names itself "tmux: server"
+                os.kill(pid, signal.SIGKILL)
 
 
 def test_rerun_replaces_the_program_on_a_cleared_screen(pane, tmp_path):

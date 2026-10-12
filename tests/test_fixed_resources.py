@@ -159,15 +159,15 @@ def _flag_given(elements, string, shown, port) -> bool:
 
 # tempfile's calls that make a uniquely named file or folder in the dir= they are given.
 UNIQUE_IN = {"mkdtemp", "mkstemp", "TemporaryDirectory", "NamedTemporaryFile"}
-# Sites flagged on purpose: (file relative to the repository, the function it is in, the
-# site's source text) -> reason. Each covers exactly one site: another site of the same text in
-# the same function is flagged.
+# Sites flagged on purpose: (file relative to the repository, the function it is in or ""
+# at module level, the site's source text) -> reason. Each covers exactly one site: another
+# site of the same text in the same function, or at module level, is flagged.
 EXEMPT = {
     (
         "tests/test_record_claude.py",
-        "leaks",
+        "",
         f'"{TMP}/"',
-    ): "searches the kept screens for the text; nothing is made there",
+    ): "a leak mark the kept screens are searched for; nothing is made there",
     (
         "tests/test_rc_helper.py",
         "test_mkdir_refuses_a_parent_outside_the_home_folder",
@@ -449,7 +449,9 @@ def test_the_exemptions_still_have_their_sites():
 
 def test_a_new_fixed_site_in_an_exempt_function_is_flagged():
     """Planted twin: an exemption covers its own site, not the function it is in."""
-    rel, function, text = next(iter(EXEMPT))
+    in_functions = [key for key in EXEMPT if key[1]]
+    assert in_functions  # non-vacuity: an exemption inside a function to plant beside
+    rel, function, text = in_functions[0]
     source = (ROOT / rel).read_text(encoding="utf-8")
     assert flagged(rel, source) == []  # positive control: the exempt site passes
     header = f"def {function}("
@@ -459,6 +461,19 @@ def test_a_new_fixed_site_in_an_exempt_function_is_flagged():
         planted = source[:body] + extra + source[body:]
         assert planted != source  # the plant took effect
         assert len(flagged(rel, planted)) == 1, extra
+
+
+def test_a_new_fixed_site_beside_a_module_level_exemption_is_flagged():
+    """Planted twin: a module-level exemption covers its own site, not the module."""
+    at_module = [key for key in EXEMPT if not key[1]]
+    assert at_module  # non-vacuity: an exemption at module level to plant beside
+    for rel, _, text in at_module:
+        source = (ROOT / rel).read_text(encoding="utf-8")
+        assert flagged(rel, source) == []  # positive control: the exempt site passes
+        for extra in ('s.bind(("127.0.0.1", 8765))\n', f"x = {text}\n"):
+            planted = f"{source}\n{extra}"
+            assert planted != source  # the plant took effect
+            assert len(flagged(rel, planted)) == 1, (rel, extra)
 
 
 # The frontend's TypeScript and JavaScript: the browser tests, their configs and the rest.

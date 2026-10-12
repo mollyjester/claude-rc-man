@@ -4,7 +4,6 @@ Real installations are tested in the container suite.
 """
 
 import contextlib
-import errno
 import os
 import socket
 import stat
@@ -341,109 +340,44 @@ def test_caddy_is_told_to_restart_when_it_joins_the_socket_group():
     assert ins.WEB_GROUP == "rcman-web"
 
 
-def ipv6_loopback() -> bool:
-    """Whether this host has IPv6's loopback address to bind."""
-    try:
-        with socket.socket(socket.AF_INET6) as sock:
-            sock.bind(("::1", 0))
-    except OSError:
-        return False
-    return True
+# What localhost, the host of Caddy's default admin API address, is bound to.
+CADDY_LOCALHOST = "127.0.0.1"
 
 
 @contextlib.contextmanager
 def reserved_port():
-    """A port bound on each loopback address the host has, 127.0.0.1 and, where there is
-    IPv6, ::1, without listening: a connection to it is refused, and while it is held no
-    other process, a parallel test included, can take it. Yields the port and its socket
-    for each address family."""
-    ipv6 = ipv6_loopback()
-    for _ in range(20):
-        held = {socket.AF_INET: socket.socket(socket.AF_INET)}
-        held[socket.AF_INET].bind(("127.0.0.1", 0))
-        port = held[socket.AF_INET].getsockname()[1]
-        try:
-            if ipv6:
-                held[socket.AF_INET6] = socket.socket(socket.AF_INET6)
-                held[socket.AF_INET6].bind(("::1", port))
-        except OSError:  # taken on ::1; try another
-            for sock in held.values():
-                sock.close()
-            continue
-        try:
-            yield port, held
-        finally:
-            for sock in held.values():
-                sock.close()
-        return
-    raise RuntimeError("no port free on every loopback address")
+    """A port bound on Caddy's admin host without listening: a connection to it is
+    refused, and while it is held no other process, a parallel test included, can take
+    it. Yields the port and its socket."""
+    with socket.socket(socket.AF_INET) as held:
+        held.bind((CADDY_LOCALHOST, 0))
+        yield held.getsockname()[1], held
 
 
-def no_ipv6(monkeypatch):
-    """This process as on a host without IPv6: an IPv6 socket cannot be made."""
-    real = socket.socket
-
-    def refusing(family=socket.AF_INET, *args, **kwargs):
-        if family == socket.AF_INET6:
-            raise OSError(errno.EAFNOSUPPORT, "Address family not supported by protocol")
-        return real(family, *args, **kwargs)
-
-    monkeypatch.setattr(socket, "socket", refusing)
-
-
-def test_ipv6_loopback_is_found_where_it_binds_and_not_where_it_does_not(monkeypatch):
-    try:
-        with socket.socket(socket.AF_INET6) as sock:
-            sock.bind(("::1", 0))
-        expected = True
-    except OSError:
-        expected = False
-    assert ipv6_loopback() is expected
-    no_ipv6(monkeypatch)
-    assert ipv6_loopback() is False
-
-
-def test_without_ipv6_a_port_is_reserved_and_caddy_noticed_on_ipv4_alone(monkeypatch):
-    no_ipv6(monkeypatch)
-    with reserved_port() as (port, held):
-        assert set(held) == {socket.AF_INET}
-        with pytest.raises(OSError):
-            bind(socket.AF_INET, "127.0.0.1", port)
-        assert ins.caddy_admin_exposed(port=port) is False
-        held[socket.AF_INET].listen()
-        assert ins.caddy_admin_exposed(port=port) is True
-
-
-def bind(family, host, port):
-    with socket.socket(family) as other:
+def bind(host, port):
+    with socket.socket(socket.AF_INET) as other:
         other.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         other.bind((host, port))
 
 
-IPV6 = pytest.mark.skipif(not ipv6_loopback(), reason="this host has no IPv6 loopback")
-
-
-@pytest.mark.parametrize(
-    ("family", "host"),
-    [(socket.AF_INET, "127.0.0.1"), pytest.param(socket.AF_INET6, "::1", marks=IPV6)],
-)
-def test_a_reserved_port_cannot_be_taken_and_refuses_connections(family, host):
-    bind(family, host, 0)  # positive control: the same bind succeeds on a port not held
+def test_a_reserved_port_cannot_be_taken_and_refuses_connections():
+    host = CADDY_LOCALHOST
+    bind(host, 0)  # positive control: the same bind succeeds on a port not held
     with reserved_port() as (port, _):
         with pytest.raises(OSError):
-            bind(family, host, port)
+            bind(host, port)
         with pytest.raises(ConnectionRefusedError):
             socket.create_connection((host, port), timeout=2).close()
 
 
-@pytest.mark.parametrize("family", [socket.AF_INET, pytest.param(socket.AF_INET6, marks=IPV6)])
-def test_a_caddy_admin_api_on_loopback_is_noticed(family):
+def test_a_caddy_admin_api_on_loopback_is_noticed():
     with reserved_port() as (port, held):
         assert ins.caddy_admin_exposed(port=port) is False
-        held[family].listen()
-        assert ins.caddy_admin_exposed(port=port) is True
+        held.listen()
+        assert ins.caddy_admin_exposed(port=port) is True  # positive control
+    assert ins.CADDY_ADMIN_PORT == 2019  # Caddy's default
     assert "admin off" in ins.CADDY_ADMIN_WARNING
-    assert "127.0.0.1" in ins.CADDY_ADMIN_WARNING and "[::1]" in ins.CADDY_ADMIN_WARNING
+    assert f"{CADDY_LOCALHOST}:{ins.CADDY_ADMIN_PORT}" in ins.CADDY_ADMIN_WARNING
 
 
 def test_sudoers_render_and_validate(tmp_path):
