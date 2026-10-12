@@ -56,7 +56,14 @@ matters, so a suppression at the site is preferred.
   has no label; `src/forms.test.tsx` refuses every field of every form and
   checks each error is shown under its input's label.
   Forms are `noValidate` and no input carries a validation attribute;
-  `src/forms.test.tsx` checks every form.
+  `src/forms.test.tsx` checks every form. It finds every form in the source:
+  each `<form>` in the page's own `.tsx` files under `src/`, known by the
+  component that renders it and the function its `onSubmit` names, which a
+  form must have, declared in that component as a function of its own, not
+  wrapped, so that it keeps its name. A page the test visits must open each
+  of them, and each that has a field must be opened by a page the label
+  check visits; on screen the test knows a form by the same two, as React's
+  development build records them on the form's element.
 - **Every failure is an `ApiError`, and the page names its own.** `request()`
   in `src/api.ts` gives a failure that is not the server's problem details one
   of the page's own codes, each with its message in `src/messages.ts`:

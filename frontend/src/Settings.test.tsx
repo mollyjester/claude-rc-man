@@ -269,10 +269,12 @@ test("the token field has its help below it, as every other field", async () => 
 
 test("until the server says whether a token is stored, the part claims neither and offers no Remove", async () => {
   let answer: (value: unknown) => void = () => {};
-  api({ "GET /api/github": () => new Promise((resolve) => (answer = resolve)) });
+  const fake = api({ "GET /api/github": () => new Promise((resolve) => (answer = resolve)) });
   renderApp("/settings");
   const github = await part(m.settingsGithubTitle);
   expect(within(github).getByLabelText(m.githubTokenLabel)).toBeInTheDocument(); // positive control
+  // the question is asked, so the answer below has a request to go to
+  await waitFor(() => expect(fake.made("GET", "/api/github")).toHaveLength(1));
   expect(within(github).queryByText(m.githubTokenStored)).not.toBeInTheDocument();
   expect(within(github).queryByText(m.githubTokenNotStored)).not.toBeInTheDocument();
   expect(

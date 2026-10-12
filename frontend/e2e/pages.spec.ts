@@ -72,7 +72,11 @@ test("a refused change shows the server's reason", async ({ page }) => {
   await page.goto("/admin/claude");
   await page.getByLabel(m.versionsUpgrade).fill("9.9.9");
   await page.getByRole("button", { name: m.versionsUpgradeGo }).click();
-  await expect(page.getByRole("alert")).toContainText("version");
+  // rc-admin's own sentence for the refusal, MESSAGES["claude_checks_failed"] in
+  // helpers/rc_admin.py, which the stand-in in tests/e2e_server.py answers with
+  await expect(page.getByRole("alert")).toContainText(
+    "That Claude Code version failed rcman's checks; nothing was changed.",
+  );
   await expect(page.getByRole("figure", { name: "version" })).toContainText(
     "ran: claude --version",
   );
