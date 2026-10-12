@@ -14,7 +14,7 @@ chunked body is not decoded, and git sends one only for a push larger than
 its ``http.postBuffer``.
 
 Python standard library only, so that the container suite can run it as it is
-from the mounted checkout.
+from the checkout's files mounted at /src.
 """
 
 from __future__ import annotations

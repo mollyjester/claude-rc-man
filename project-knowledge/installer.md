@@ -57,7 +57,8 @@ through the socket.
   git check, the Caddy notices and two callers filling one toolchain at once
   — and the guide held to the installer.
 - `tests/container/test_install_in_container.py`: a real installation in a
-  fresh container. The working tree becomes a git origin and a user `dev`
+  fresh container. The checkout's files, as the container suite sees them
+  (see [tests.md](tests.md#running)), become a git origin, and a user `dev`
   clones it and runs `install.sh`. `tests/container/fake-systemctl` stands in
   for systemd, starting each service exactly as its unit file says. The host
   fills a toolchain cache with the installer's own download code and mounts it
