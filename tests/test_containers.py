@@ -96,8 +96,9 @@ def test_a_container_without_our_labels_is_never_abandoned():
     assert ct.abandoned({"x": {}, "y": {"other": "label"}}) == []
 
 
-def test_a_removal_waits_until_the_container_is_gone(tmp_path):
-    """Another run removing it at the same time leaves it listed for a while."""
+def test_a_removal_waits_until_the_container_and_its_anonymous_volumes_are_gone(tmp_path):
+    """Another run removing it at the same time leaves it listed for a while. Its
+    anonymous volumes go with it."""
     state = tmp_path / "state"
     state.mkdir()
     docker = tmp_path / "docker"
@@ -105,7 +106,7 @@ def test_a_removal_waits_until_the_container_is_gone(tmp_path):
         "#!/bin/sh\n"
         f"cd {state}\n"
         'case "$1" in\n'
-        "  rm) touch removed ;;\n"
+        '  rm) echo "$*" > removal; touch removed ;;\n'
         "  ps) if [ -e removed ] && [ -e listed-twice ]; then exit 0; fi\n"
         "      [ -e removed ] && { [ -e listed ] && touch listed-twice; touch listed; }\n"
         "      echo c1 ;;\n"
@@ -115,3 +116,4 @@ def test_a_removal_waits_until_the_container_is_gone(tmp_path):
     ct._remove([str(docker)], ["c1"])
     assert (state / "listed-twice").exists()  # it was still listed after the rm
     assert ct._listed([str(docker)]) == []
+    assert (state / "removal").read_text().split() == ["rm", "-f", "-v", "c1"]
