@@ -7,7 +7,7 @@ test:  ## every Python test that runs on the host, in parallel
 	uv run pytest -n auto -m "not container and not real_claude"
 
 test-container: export RCMAN_REQUIRE_CONTAINER = 1
-# In one process, as the container tests share the image their session fixture builds,
+# In one process, as the container tests share the images their session fixtures build,
 # which each pytest-xdist worker would build again.
 test-container:  ## the Python tests that need a container; they fail rather than skip
 	uv run pytest -m "container and not real_claude"

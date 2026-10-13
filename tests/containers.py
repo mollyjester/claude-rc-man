@@ -13,8 +13,10 @@ devtools/held_folders.py, and labels each container it starts (labels()) with:
 holder() takes the folder, removes first every container whose labels are all the
 run's own kind, whose holder its own prefix, HOLDERS, names, and whose holder nothing
 holds any longer (abandoned()), and removes
-the run's own containers when it ends. The rules are in project-knowledge/tests.md,
-"What a killed run leaves".
+the run's own containers when it ends. A container is removed with its anonymous
+volumes, never a named one, so a volume a run gives a container goes wherever the
+container goes, Docker's own removal of a --rm container included. The rules are in
+project-knowledge/tests.md, "What a killed run leaves".
 """
 
 from __future__ import annotations
@@ -111,11 +113,12 @@ def _labelled(docker: list[str], *label: str) -> dict[str, dict[str, str]]:
 
 
 def _remove(docker: list[str], containers: list[str]) -> None:
-    """Remove ``containers``, and wait until they are gone: another run removing one of
-    them at the same time leaves it listed, its removal in progress, for a while."""
+    """Remove ``containers``, with their anonymous volumes, and wait until they are gone:
+    another run removing one of them at the same time leaves it listed, its removal in
+    progress, for a while."""
     if not containers:
         return
-    subprocess.run([*docker, "rm", "-f", *containers], capture_output=True, timeout=120)
+    subprocess.run([*docker, "rm", "-f", "-v", *containers], capture_output=True, timeout=120)
     deadline = time.monotonic() + GONE_WITHIN
     while left := set(containers) & set(_listed(docker)):
         if time.monotonic() > deadline:

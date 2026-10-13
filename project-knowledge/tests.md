@@ -57,13 +57,14 @@ in `tests/conftest.py` checks, without reaching anything, that git as
 rc-helper runs it would send GitHub to the hook's address, and only then
 that the tests' GitHub sees the request. The browser tests' world runs a
 GitHub of its own (see [frontend.md](frontend.md#tests)). `tests/test_container_suite.py` runs the root-only
-suite in `tests/container/` inside a throwaway Ubuntu container, through
+suites in `tests/container/`, each inside a throwaway Ubuntu container, through
 `docker` or `sudo -n docker`; it skips when neither works, unless
 `RCMAN_REQUIRE_CONTAINER=1`, which `make test-container` sets. Every
 container it starts is labelled as its run's, and one a killed run left is
-removed by a later run (see [What a killed run leaves](#what-a-killed-run-leaves));
-the image it builds from `tests/container/Dockerfile` is kept, named after
-the Dockerfile's content, and built again only when that changes. Its tests take the
+removed by a later run, with its anonymous volumes (see
+[What a killed run leaves](#what-a-killed-run-leaves)); the images it builds,
+each from a Dockerfile under `tests/container/`, are kept, each named after its
+Dockerfile's content, and built again only when that changes. Its tests take the
 `docker` fixture, and a test that uses it, directly or through another
 fixture, carries the `container` marker, which `tests/container_marker.py`
 adds as tests are collected. It runs these, each in a
@@ -79,7 +80,8 @@ a certificate from a certificate authority it makes with `openssl` and adds
 to the system's with `update-ca-certificates`, so that rc-helper runs with
 no `RC_HELPER_GITHUB`, as in production;
 a real installation (see
-[installer.md](installer.md)); and the whole stack in a browser.
+[installer.md](installer.md)); the whole stack in a browser; and rootless
+Podman under systemd, in the podman host.
 What a container sees of the checkout is a snapshot of its files, made once
 per pytest session by the `source` fixture in `tests/test_container_suite.py`
 with `tests/snapshot.py`, which is not a test module, and mounted read-only
@@ -108,6 +110,28 @@ another person cannot delete, an administrator seeing everyone's
 servers without being able to act on them, an address that is not on the list, the
 audit trail, and removing people with and without their home folder.
 
+The **podman host** is a container from `tests/container/podman/Dockerfile`
+that runs systemd as PID 1, privileged and with a cgroup namespace of its
+own; its entrypoint enables every cgroup controller at the container's root
+before systemd starts, for the reason the Dockerfile gives, and root's own
+Podman units are disabled in the image. The `podman_host` fixture in
+`tests/test_container_suite.py` waits for systemd to finish booting with no
+unit failed, then runs `tests/container/podman_host.py`, which is not a test
+module, to set up rootless Podman for a service account: a subordinate id
+range, linger and so a user manager of the account's own, and
+`podman.socket` in it. The account's home, and Podman's storage in it, is an
+anonymous volume of the container, so that Podman's overlay is never on the
+image's own, and the volume goes wherever the container goes. The image the
+Dockerfile starts from, which the fixture pulls on the host when Docker does
+not have it, is loaded into the account's Podman, through the socket, with
+`docker save | podman load`, so nothing inside needs a registry.
+`tests/container/test_podman_in_container.py` runs in it: Podman rootless
+as the account, its storage off the image's overlay, linger and the socket
+active, the memory, cpu and pids controllers delegated to the
+account's user manager, and a container that a system service starts through
+the socket running in that user manager, outside the service's cgroup, and
+running on when the service stops.
+
 What needs a real Claude account is checked by hand:
 [real-claude-checklist.md](real-claude-checklist.md). Tests marked `real_claude` are deselected by default
 and run by hand with `uv run pytest -m real_claude`; what they need is in
@@ -122,7 +146,7 @@ and run by hand with `uv run pytest -m real_claude`; what they need is in
 | `helpers/` | `rc-helper` — see [rc-helper.md](rc-helper.md); `rc-admin` and `rcman-user` — see [rc-admin.md](rc-admin.md) |
 | `backend/` | The FastAPI application — see [backend.md](backend.md) |
 | `frontend/` | The React application, its component tests and its browser tests — see [frontend.md](frontend.md) |
-| `tests/container/` | The container image and the suite that runs as root inside it |
+| `tests/container/` | The container images and the suites that run as root inside them |
 | `install.sh`, `installer/` | The installer — see [installer.md](installer.md) |
 | `devtools/` | Development tooling, run by hand, by the edit-time hook or by the tests, which never imports the tests; each module's docstring says what it is |
 
@@ -175,7 +199,10 @@ a test makes depends on its own run to remove it:
   prefix, as a held folder's sweep takes only its own prefix's, that nothing
   holds, and whose `where` is this boot's and this `/tmp`'s; when it ends,
   it removes its own. A container another user, another boot or another `/tmp`
-  started is never removed.
+  started is never removed. A container is removed with its anonymous
+  volumes, and never with a named one, so the only volumes the tests give a
+  container are anonymous: one goes wherever its container goes, Docker's own
+  removal of a `--rm` container after a reboot included.
 
 `tests/killed_runs.py`, which is not a test module, tests all of this as the
 suite runs: a real `python -m pytest -n 2` over small test files, in a
