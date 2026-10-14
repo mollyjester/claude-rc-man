@@ -94,7 +94,6 @@ def report(body: ClientErrorBody, identity: Identity = Depends(current_user)) ->
         "event": "client_error",
         "at": dt.datetime.now(dt.UTC).isoformat(),
         "email": identity.email,
-        "linux": identity.linux,
         **body.model_dump(),
     }
     log.info(json.dumps(event))

@@ -1,17 +1,17 @@
 """Checks a candidate Claude Code version must pass before rcman rolls it out.
 
 They run the candidate with a throwaway configuration, so no account is
-needed, as rc-helper runs it: ``auth status`` through pipes, with no terminal,
-and the rest on a pseudo-terminal of the size rc-helper gives Claude's screens
-(``WIDTH`` and ``HEIGHT`` in rc_helper). They look for exactly what
+needed, as rcman runs it: ``auth status`` through pipes, with no terminal,
+and the rest on a pseudo-terminal of the size rcman gives Claude's screens
+(``WIDTH`` and ``HEIGHT`` in screens.py). They look for exactly what
 rcman relies on: the version, ``auth status`` JSON, the logged-out refusal of
 ``remote-control``, the sign-in screen, the options rcman passes to
 ``auth login``, and ``auth logout``. What needs a signed-in account — the
 trust question and the server screens — is covered by the recorded tests
 only.
 
-Python standard library and the helpers' own modules only: rc-admin runs these
-as root.
+Python standard library and the helpers' own modules only. Nothing runs them yet:
+rolling out a Claude Code version to workspaces is a step of its own.
 """
 
 from __future__ import annotations
@@ -30,7 +30,7 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
-from helpers import rc_helper
+from helpers import screens
 
 # One control token at a time: CSI sequences, OSC strings, other escapes, or a
 # single control character: C0, DEL or C1.
@@ -52,7 +52,7 @@ class Screen:
 
     Renders what the checks depend on — carriage return, newline, tab and
     cursor moves along a line (``C``, ``D``, ``G``), which go no further right
-    than the terminal is wide (``WIDTH`` in rc_helper) or than the cursor
+    than the terminal is wide (``WIDTH`` in screens.py) or than the cursor
     already is, and erasing in the line (``K``: to its end, to the cursor, or
     all of it) — and ignores every other control, moves between lines among
     them.
@@ -112,7 +112,7 @@ class Screen:
             self._put(text[pos:])
 
     def _move_right(self, to: int) -> None:
-        self.col = min(to, max(self.col, rc_helper.WIDTH - 1))
+        self.col = min(to, max(self.col, screens.WIDTH - 1))
 
     def line(self, index: int) -> str:
         return "".join(self.lines[index]).rstrip()
@@ -246,14 +246,14 @@ def _read(
 def run_in_pty(
     argv: list[str], env: dict[str, str], cwd: Path, until: str | None, timeout: float
 ) -> Ran:
-    """Run ``argv`` on a pseudo-terminal of the size rc-helper gives Claude's screens; stop
+    """Run ``argv`` on a pseudo-terminal of the size rcman gives Claude's screens; stop
     at ``until``, at ``timeout``, or once it has exited and what it wrote last is read
     (see _read). Output as the terminal shows it, from at most MAX_CAPTURE_BYTES of what
     it wrote."""
     pattern = re.compile(until) if until else None
     master, slave = os.openpty()
     try:
-        size = struct.pack("HHHH", rc_helper.HEIGHT, rc_helper.WIDTH, 0, 0)
+        size = struct.pack("HHHH", screens.HEIGHT, screens.WIDTH, 0, 0)
         fcntl.ioctl(slave, termios.TIOCSWINSZ, size)
         proc = subprocess.Popen(
             argv, stdin=slave, stdout=slave, stderr=slave, env=env, cwd=cwd, start_new_session=True
@@ -381,7 +381,7 @@ def run_command(
     """Run ``argv`` on a terminal, or through pipes where ``terminal`` is false."""
     if terminal:
         return run_in_pty(argv, env, cwd, until, timeout)
-    # as rc-helper runs ``auth status``: stdin empty, stdout read
+    # as rcman runs ``auth status``: stdin empty, stdout read
     return capture(argv, env, cwd, timeout)
 
 
@@ -421,15 +421,14 @@ def _logged_out_refusal(run: Runner, version: str) -> bool:
     ]
     code, out = run(args)
     return (
-        code not in (None, 0)
-        and rc_helper.classify(out.splitlines(), code)["state"] == "logged_out"
+        code not in (None, 0) and screens.classify(out.splitlines(), code)["state"] == "logged_out"
     )
 
 
 def _sign_in_screen(run: Runner, version: str) -> bool:
     args = ["auth", "login", "--claudeai", "--email", CHECK_EMAIL]
-    _code, out = run(args, until=re.escape(rc_helper.LOGIN_PROMPT))
-    return rc_helper.classify_login(out.splitlines(), None)["state"] == "awaiting_code"
+    _code, out = run(args, until=re.escape(screens.LOGIN_PROMPT))
+    return screens.classify_login(out.splitlines(), None)["state"] == "awaiting_code"
 
 
 def _login_options(run: Runner, version: str) -> bool:
@@ -570,7 +569,7 @@ def _credentials_in(text: str) -> set[str] | None:
 
 
 def redact_screen(text: str, raw: str) -> str:
-    """``text``, as a terminal of rc-helper's width showed what was written to it,
+    """``text``, as a terminal of rcman's width showed what was written to it,
     ``raw``, redacted.
 
     A line exactly as wide as the terminal ran on to the next, as the program wrapped
@@ -585,7 +584,7 @@ def redact_screen(text: str, raw: str) -> str:
     lines, out, i = text.split("\n"), [], 0
     while i < len(lines):
         j = i
-        while len(lines[j]) == rc_helper.WIDTH and j + 1 < len(lines):
+        while len(lines[j]) == screens.WIDTH and j + 1 < len(lines):
             j += 1
         group = lines[i : j + 1]
         if len(group) > 1 and redact(joined := "".join(group)) != joined:

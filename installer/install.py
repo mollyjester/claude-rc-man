@@ -1,10 +1,12 @@
 """Install or upgrade rcman on this machine. Run through ``install.sh``, as root.
 
 ``install.sh`` updates the clone first; this module does everything else:
-settings, system users and groups, the toolchain, a release built from the
-clone's commit, configuration, sudoers rules, systemd services, the first
-administrator, and a health check. Every step leaves things as they are when
-they are already right, so running it again changes nothing.
+settings, the packages rootless Podman needs, system users and groups, rcman's
+subordinate ids, linger and Podman socket, the toolchain, a release built from
+the clone's commit, the static tools and the default workspace image, the
+Claude Code store, configuration, systemd services, the first administrator,
+and a health check. Every step leaves things as they are when they are already
+right, so running it again changes nothing.
 
 Python standard library and the clone's helpers only: it runs under the system
 interpreter.
@@ -32,25 +34,23 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 # install.sh runs this in isolated mode, which puts nothing of the clone on the
-# path; the rules for addresses and Linux user names, and how git is found and
-# which git rcman needs, are the helpers'. It runs as
-# root, so it writes no bytecode into the clone, which is someone else's, and
-# takes the clone off the path again once it has them.
+# path; the rule for addresses is the clone's helpers/rules.py. It runs as root, so
+# it writes no bytecode into the clone, which is someone else's, and takes the
+# clone off the path again once it has it.
 _on_path = str(REPO) in sys.path
 if not _on_path:
     sys.path.insert(0, str(REPO))
 _write_bytecode, sys.dont_write_bytecode = sys.dont_write_bytecode, True
 try:
-    from helpers import git_run
-    from helpers.git_run import GIT_MIN_VERSION
-    from helpers.rules import Rule
-    from helpers.users_file import EMAIL, LINUX_NAME
+    from helpers.rules import EMAIL, Rule
 finally:
     sys.dont_write_bytecode = _write_bytecode
     if not _on_path:
         sys.path.remove(str(REPO))
 
 TEMPLATES_DIR = Path(__file__).resolve().parent / "templates"
+# The default workspace image's build file: its content names its tag (workspace_image).
+CONTAINERFILE = Path(__file__).resolve().parent / "workspace" / "Containerfile"
 
 ROOT = Path("/opt/rcman")
 CURRENT = ROOT / "current"
@@ -59,18 +59,20 @@ ETC = Path("/etc/rcman")
 STATE = Path("/var/lib/rcman")
 SETTINGS_FILE = ETC / "install.env"
 SYSTEMD = Path("/etc/systemd/system")
-SUDOERS = Path("/etc/sudoers.d/rcman")
+# The static tools mounted into every workspace, and the Claude Code store.
+TOOLS = STATE / "tools"
+CLAUDE_STORE = STATE / "claude"
 CADDY_SNIPPET = ETC / "Caddyfile.snippet"
 RUN = Path("/run/rcman")
 SOCKET = RUN / "rcman.sock"  # rcman's only listener; Caddy's group alone may enter RUN
 TMPFILES = Path("/etc/tmpfiles.d/rcman.conf")
-# Where the commands an administrator runs through sudo are put: on sudo's secure path.
+# Where the commands an administrator runs as root are put: on root's path. Each is a
+# script of the project (pyproject.toml), in the release's virtualenv.
 COMMAND_DIR = Path("/usr/local/sbin")
-COMMANDS = ("rcman-user",)
+COMMANDS = ("rcman-admin",)
 
 APP_USER = "rcman"
 PROXY_USER = "rcman-proxy"
-USER_GROUP = "rcusers"
 WEB_GROUP = "rcman-web"  # its only member is Caddy's account
 COMPLETE = ".complete"  # marks a release that was fully built
 UNITS = ("rcman.service", "rcman-oauth2-proxy.service")
@@ -84,6 +86,46 @@ TEMPLATES = (
 
 UV_VERSION = "0.12.21"
 OAUTH2_PROXY_VERSION = "v7.15.5"
+# tmux, built statically for the workspaces from its release's source, which is
+# checked against this sha256: tmux publishes no checksum of its own.
+TMUX_VERSION = "3.5a"
+TMUX_SHA256 = "16216bd0877170dfcc64157085ba9013610b12b082548c7c9542cc0103198951"
+TMUX_URL = (
+    f"https://github.com/tmux/tmux/releases/download/{TMUX_VERSION}/tmux-{TMUX_VERSION}.tar.gz"
+)
+# What tmux is built in: musl, so that the static binary needs nothing of any image.
+BUILDER_IMAGE = "docker.io/library/alpine:3.20"
+TMUX_BUILD = (
+    "apk add -q build-base libevent-dev libevent-static ncurses-dev ncurses-static bison "
+    ">/dev/null && cd /tmp && tar xzf /tmux.tar.gz && cd tmux-* && "
+    "./configure --enable-static >/dev/null && make -j4 >/dev/null && cp tmux /out/tmux"
+)
+# The terminal descriptions a workspace's tmux and Claude need, from the host's ncurses-base.
+TERMINFO = ("x/xterm-256color", "t/tmux", "t/tmux-256color", "s/screen", "s/screen-256color")
+TERMINFO_DIRS = (Path("/usr/share/terminfo"), Path("/lib/terminfo"))
+# What rootless Podman, its network and the workspaces' tools need.
+PACKAGES = (
+    "podman",
+    "uidmap",
+    "catatonit",
+    "slirp4netns",
+    "dbus-user-session",
+    "busybox-static",
+    "ncurses-base",
+)
+BUSYBOX = Path("/bin/busybox")
+# rcman's subordinate ids: room for every person's range and rcman's own
+# (rcman/people.py MAX_PEOPLE, rcman/runtime.py RANGE), from the first id useradd
+# leaves to such ranges.
+RANGE = 65536
+SUBORDINATE_COUNT = 65 * RANGE
+SUBORDINATE_FIRST = 100000
+SUBORDINATE_FILES = (Path("/etc/subuid"), Path("/etc/subgid"))
+LINGER = Path("/var/lib/systemd/linger")
+# How long rcman's user manager may take to bring up its Podman socket.
+SOCKET_WITHIN = 60.0
+# Where Claude Code's releases are, and the platform rcman takes from them.
+CLAUDE_DOWNLOAD = "https://downloads.claude.ai/claude-code-releases"
 HEALTH_TIMEOUT = 60.0
 CADDY_ADMIN_PORT = 2019  # Caddy's default admin API address is localhost:2019
 CADDY_ADMIN_HOST = "127.0.0.1"  # what localhost is
@@ -97,24 +139,62 @@ CADDY_ADMIN_WARNING = (
 LABEL = r"(?!-)[A-Za-z0-9-]+(?<!-)"  # a host name label: no leading or trailing hyphen
 HOSTNAME = re.compile(LABEL + r"(?:\." + LABEL + r")+")
 PORT = re.compile(r"[1-9][0-9]{1,4}")
+ACCOUNT = re.compile(r"[a-z_][a-z0-9_-]{0,31}")  # a Linux account's name
+# An address releases are downloaded from: http or https, with no slash at its end.
+DOWNLOAD_ADDRESS = re.compile(r"https?://[A-Za-z0-9.-]+(?::[0-9]+)?(?:/[A-Za-z0-9._~%-]+)*")
 
 
 class InstallError(Exception):
     pass
 
 
+# What only an rcman from before workspaces left: there is no upgrade from one.
+OLD_INSTALL_FILES = (Path("/etc/sudoers.d/rcman"), Path("/etc/rcman/users.toml"))
+# What a release of rcman with workspaces has.
+WORKSPACES_MARK = Path("backend/rcman/workspaces.py")
+FRESH = (
+    "install rcman afresh: remove the old installation first, as docs/installation.md "
+    "says, since there is no upgrade from it"
+)
+
+
+def check_not_an_old_install() -> None:
+    """Refuse a machine an rcman from before workspaces is installed on."""
+    found = [str(path) for path in OLD_INSTALL_FILES if path.exists()]
+    database = STATE / "rcman.db"
+    if database.exists():
+        import sqlite3
+
+        con = sqlite3.connect(f"file:{database}?mode=ro", uri=True)
+        try:
+            tables = {row[0] for row in con.execute("select name from sqlite_master")}
+        finally:
+            con.close()
+        if "people" not in tables:
+            found.append(str(database))
+    if found:
+        raise InstallError(
+            f"this machine has an rcman from before workspaces ({', '.join(found)}); {FRESH}"
+        )
+
+
 # --- settings -----------------------------------------------------------------------
 
 # key: (question, secret, default, pattern). A default of None means it must be given.
-# A pattern that is a helpers' Rule explains a refusal with its sentence.
+# A pattern that is a Rule (helpers/rules.py) explains a refusal with its sentence.
 FIELDS = {
     "DOMAIN": ("Public host name of rcman (such as rcman.example.com)", False, None, HOSTNAME),
     "GOOGLE_CLIENT_ID": ("Google OAuth client ID", False, None, None),
     "GOOGLE_CLIENT_SECRET": ("Google OAuth client secret", True, None, None),
     "ADMIN_EMAIL": ("Google email address of the first administrator", False, None, EMAIL),
-    "ADMIN_LINUX": ("Linux user of the first administrator", False, "", LINUX_NAME),
     "PROXY_PORT": ("Local port for oauth2-proxy", False, "4180", PORT),
-    "CADDY_USER": ("Linux account Caddy runs as", False, "caddy", LINUX_NAME),
+    "CADDY_USER": ("Linux account Caddy runs as", False, "caddy", ACCOUNT),
+    "CLAUDE_DOWNLOAD": (
+        "Address Claude Code's releases are downloaded from",
+        False,
+        CLAUDE_DOWNLOAD,
+        DOWNLOAD_ADDRESS,
+    ),
 }
 
 
@@ -137,7 +217,7 @@ def save_settings(path: Path, values: dict[str, str]) -> bool:
 
 
 def gather(
-    saved: Path, environ: dict[str, str], flags: dict[str, str | None], ask, sudo_user: str
+    saved: Path, environ: dict[str, str], flags: dict[str, str | None], ask
 ) -> dict[str, str]:
     """Settings from flags, then RCMAN_INSTALL_* variables, then the saved file, then questions.
 
@@ -156,7 +236,7 @@ def gather(
         if values.get(key):
             continue
         if default is not None:
-            values[key] = default or sudo_user
+            values[key] = default
         elif ask is not None:
             values[key] = ask(key, question, secret)
         else:
@@ -188,12 +268,16 @@ def _paths() -> dict[str, str]:
         "CURRENT": str(CURRENT),
         "ETC": str(ETC),
         "STATE": str(STATE),
+        "TOOLS": str(TOOLS),
+        "CLAUDE_STORE": str(CLAUDE_STORE),
         "SOCKET": str(SOCKET),
         "OAUTH2_PROXY": str(oauth2_proxy_binary()),
     }
 
 
 def render(name: str, settings: dict[str, str]) -> str:
+    """A template with the settings, and what the installer found out — rcman's uid as
+    APP_UID and the default image as WORKSPACE_IMAGE — filled in."""
     text = (TEMPLATES_DIR / name).read_text(encoding="utf-8")
     values = {**settings, **_paths()}
 
@@ -201,21 +285,6 @@ def render(name: str, settings: dict[str, str]) -> str:
         return values[match.group(1)]
 
     return re.sub(r"@([A-Z0-9_]+)@", replace, text)
-
-
-def sudoers() -> str:
-    parts = []
-    for template, placeholder, helper in (
-        ("sudoers.rc-helper", "@HELPER@", "rc-helper"),
-        ("sudoers.rc-admin", "@ADMIN@", "rc-admin"),
-    ):
-        text = (REPO / "helpers" / template).read_text(encoding="utf-8")
-        parts.append(
-            text.replace(placeholder, str(CURRENT / "helpers" / helper)).replace(
-                "@APP_USER@", APP_USER
-            )
-        )
-    return "# Written by install.sh.\n" + "\n".join(parts)
 
 
 def tmpfiles() -> str:
@@ -277,17 +346,19 @@ def rollback(root: Path) -> None:
     current, previous = _link(root, "current"), _link(root, "previous")
     if not previous:
         raise InstallError("there is no previous release to roll back to")
+    if not (root / previous / WORKSPACES_MARK).exists():
+        raise InstallError(f"the previous release is from before workspaces; {FRESH}")
     _set_link(root, "current", previous)
     _set_link(root, "previous", current)
 
 
 def link_commands(bin_dir: Path = COMMAND_DIR, current: Path = CURRENT) -> list[str]:
-    """Each of COMMANDS in ``bin_dir``, a link to the current release's helper of that
+    """Each of COMMANDS in ``bin_dir``, a link to the current release's script of that
     name; the links it made or repaired. Through ``current``, so a switch or a rollback
     needs no change to them. Something there that is not a link is refused, not replaced."""
     changed = []
     for name in COMMANDS:
-        path, target = bin_dir / name, str(current / "helpers" / name)
+        path, target = bin_dir / name, str(current / ".venv" / "bin" / name)
         if path.is_symlink():
             if os.readlink(path) == target:
                 continue
@@ -330,29 +401,9 @@ def check_caddy_user(name: str) -> None:
         )
 
 
-def check_git() -> None:
-    """The system's git, which rc-helper runs, is one that has everything rcman asks of it."""
-    try:
-        git = git_run.find_git()
-    except git_run.GitMissing:
-        raise InstallError(
-            f"there is no git on {git_run.GIT_SEARCH_PATH}; install git and run install.sh again"
-        ) from None
-    found = git_run.version_of(run([git, "--version"]).stdout)
-    if found < GIT_MIN_VERSION:
-        need = ".".join(map(str, GIT_MIN_VERSION))
-        raise InstallError(
-            f"git {'.'.join(map(str, found))} is too old: rcman needs git {need} or later"
-        )
-
-
 def ensure_accounts(caddy_user: str) -> list[str]:
     check_caddy_user(caddy_user)
-    check_git()
     changes = []
-    if not _exists("group", USER_GROUP):
-        run(["groupadd", USER_GROUP])
-        changes.append(f"group {USER_GROUP}")
     if not _exists("passwd", APP_USER):
         run(
             [
@@ -391,7 +442,7 @@ def ensure_accounts(caddy_user: str) -> list[str]:
             run(["gpasswd", "--delete", member, WEB_GROUP])
             changes.append(f"{member} removed from group {WEB_GROUP}")
     proxy_groups = run(["id", "-nG", PROXY_USER]).stdout.split()
-    if APP_USER not in proxy_groups:  # to read the allowlist, which belongs to group rcman
+    if APP_USER not in proxy_groups:  # to read the allowed list, which belongs to group rcman
         run(["usermod", "--append", "--groups", APP_USER, PROXY_USER])
         changes.append(f"{PROXY_USER} in group {APP_USER}")
     app = pwd.getpwnam(APP_USER)
@@ -416,6 +467,104 @@ def ensure_runtime_dir() -> list[str]:
         os.chown(RUN, uid, gid)
         os.chmod(RUN, 0o750)
         changes.append(str(RUN))
+    return changes
+
+
+# --- rootless Podman for rcman -----------------------------------------------------------
+
+
+def ensure_packages() -> list[str]:
+    """PACKAGES, those missing installed with apt."""
+    missing = []
+    for package in PACKAGES:
+        found = subprocess.run(
+            ["dpkg-query", "-W", "-f=${db:Status-Status}", package], capture_output=True, text=True
+        )
+        if found.stdout.strip() != "installed":
+            missing.append(package)
+    if not missing:
+        return []
+    env = {**os.environ, "DEBIAN_FRONTEND": "noninteractive"}
+    run(["apt-get", "update", "-qq"], env=env)
+    run(["apt-get", "install", "-y", "-qq", "--no-install-recommends", *missing], env=env)
+    return [f"package {name}" for name in missing]
+
+
+def subordinate_start(lines: list[str], name: str, count: int) -> int | None:
+    """Where a new subordinate range of ``count`` ids for ``name`` starts, after every
+    range in ``lines``, as /etc/subuid has them; None when ``name`` has one that big."""
+    ends = [SUBORDINATE_FIRST]
+    for line in lines:
+        fields = line.strip().split(":")
+        if len(fields) != 3 or line.lstrip().startswith("#"):
+            continue
+        try:
+            start, size = int(fields[1]), int(fields[2])
+        except ValueError:
+            continue
+        if fields[0] == name and size >= count:
+            return None
+        ends.append(start + size)
+    return max(ends)
+
+
+def ensure_subordinate_ids() -> list[str]:
+    """rcman's subordinate uids and gids: SUBORDINATE_COUNT of each, a range of its own."""
+    changes = []
+    for path, option in zip(SUBORDINATE_FILES, ("--add-subuids", "--add-subgids"), strict=True):
+        lines = path.read_text().splitlines() if path.exists() else []
+        start = subordinate_start(lines, APP_USER, SUBORDINATE_COUNT)
+        if start is None:
+            continue
+        run(["usermod", option, f"{start}-{start + SUBORDINATE_COUNT - 1}", APP_USER])
+        changes.append(f"{path} {APP_USER}")
+    return changes
+
+
+def app_uid() -> int:
+    return pwd.getpwnam(APP_USER).pw_uid
+
+
+def podman_socket(uid: int) -> Path:
+    return Path(f"/run/user/{uid}/podman/podman.sock")
+
+
+def as_rcman_podman(uid: int, *args: str) -> list[str]:
+    """``podman --remote`` as rcman, through its own user manager's socket."""
+    return [
+        "runuser", "-u", APP_USER, "--", "/usr/bin/env", "-i", "PATH=/usr/bin:/bin",
+        f"HOME={STATE}", f"XDG_RUNTIME_DIR=/run/user/{uid}",
+        "podman", "--remote", "--url", f"unix://{podman_socket(uid)}", *args,
+    ]  # fmt: skip
+
+
+def ensure_podman(subordinate_changed: bool) -> list[str]:
+    """Linger for rcman, so its user manager runs from boot, and Podman's socket enabled in
+    it; Podman told of rcman's subordinate ids when they changed."""
+    changes = []
+    uid = app_uid()
+    if not (LINGER / APP_USER).exists():
+        run(["loginctl", "enable-linger", APP_USER])
+        changes.append(f"linger {APP_USER}")
+    run(["systemctl", "start", f"user@{uid}.service"])
+    manager = ["systemctl", "--user", "--machine", f"{APP_USER}@"]
+    if subordinate_changed:  # Podman takes new subordinate ids only once told to, locally
+        run(
+            ["runuser", "-u", APP_USER, "--", "/usr/bin/env", "-i", "PATH=/usr/bin:/bin",
+             f"HOME={STATE}", f"XDG_RUNTIME_DIR=/run/user/{uid}", "podman", "system", "migrate"]
+        )  # fmt: skip
+        subprocess.run([*manager, "stop", "podman.service"], capture_output=True)
+    enabled = subprocess.run([*manager, "is-enabled", "podman.socket"], capture_output=True)
+    if enabled.returncode != 0:
+        run([*manager, "enable", "--now", "podman.socket"])
+        changes.append("podman.socket")
+    else:
+        run([*manager, "start", "podman.socket"])
+    deadline = time.monotonic() + SOCKET_WITHIN
+    while not podman_socket(uid).is_socket():
+        if time.monotonic() > deadline:
+            raise InstallError(f"rcman's Podman socket {podman_socket(uid)} did not appear")
+        time.sleep(0.5)
     return changes
 
 
@@ -460,6 +609,10 @@ def oauth2_proxy_binary(toolchain: Path = TOOLCHAIN) -> Path:
     return toolchain / f"oauth2-proxy-{OAUTH2_PROXY_VERSION}" / "oauth2-proxy"
 
 
+def tmux_tarball(toolchain: Path = TOOLCHAIN) -> Path:
+    return toolchain / f"tmux-{TMUX_VERSION}.tar.gz"
+
+
 def _unpack(
     data: bytes, dest: Path, mode: str, strip: int, members: list[str] | None = None
 ) -> None:
@@ -495,7 +648,8 @@ TOOLCHAIN_LOCK = ".lock"
 
 
 def ensure_toolchain(toolchain: Path = TOOLCHAIN) -> list[str]:
-    """Node.js (to build the frontend), uv and oauth2-proxy, each checksum-verified.
+    """Node.js (to build the frontend), uv, oauth2-proxy and tmux's source, each
+    checksum-verified.
     Callers filling the same toolchain take turns, holding a lock in it."""
     toolchain.mkdir(parents=True, exist_ok=True)
     with open(toolchain / TOOLCHAIN_LOCK, "a") as lock:
@@ -537,6 +691,12 @@ def _fill_toolchain(toolchain: Path) -> list[str]:
             members=["oauth2-proxy"],
         )
         changes.append(f"oauth2-proxy {OAUTH2_PROXY_VERSION}")
+    if not tmux_tarball(toolchain).exists():
+        data = _verified(TMUX_URL, TMUX_SHA256)
+        partial = tmux_tarball(toolchain).with_suffix(".partial")
+        partial.write_bytes(data)
+        partial.rename(tmux_tarball(toolchain))
+        changes.append(f"tmux {TMUX_VERSION} source")
     open_up(toolchain)
     return changes
 
@@ -604,6 +764,161 @@ def build_release(repo: Path, owner: str) -> tuple[str, bool]:
     return name, True
 
 
+# --- what workspaces are made of -------------------------------------------------------
+
+PT_INTERP = 3  # the program header naming a dynamic loader
+
+
+def is_static(path: Path) -> bool:
+    """Whether ``path`` is a 64-bit little-endian ELF program that needs no dynamic loader,
+    so that it runs in any image."""
+    import struct
+
+    with open(path, "rb") as program:
+        head = program.read(64)
+        if len(head) < 64 or head[:4] != b"\x7fELF" or head[4] != 2 or head[5] != 1:
+            return False
+        offset = struct.unpack_from("<Q", head, 0x20)[0]
+        size, count = struct.unpack_from("<HH", head, 0x36)
+        program.seek(offset)
+        table = program.read(size * count)
+    if len(table) < size * count:
+        return False
+    return all(struct.unpack_from("<I", table, i * size)[0] != PT_INTERP for i in range(count))
+
+
+def tmux_build_argv(tarball: Path, out: Path) -> list[str]:
+    """podman's arguments that build tmux statically from ``tarball`` into ``out``."""
+    return [
+        "run", "--rm", f"--volume={tarball}:/tmux.tar.gz:ro", f"--volume={out}:/out",
+        BUILDER_IMAGE, "sh", "-c", TMUX_BUILD,
+    ]  # fmt: skip
+
+
+def _install_file(source: Path, dest: Path, mode: int) -> None:
+    tmp = dest.with_name(f".{dest.name}.new")
+    shutil.copyfile(source, tmp)
+    os.chmod(tmp, mode)
+    os.replace(tmp, dest)
+
+
+def ensure_tools(tools: Path = TOOLS, conf: Path | None = None) -> list[str]:
+    """The static tools every workspace mounts read-only: tmux, built here from its pinned
+    source, busybox and a shell that is busybox, the terminal descriptions, and tmux's
+    configuration ``conf``, by default the release's. Root's, and readable by everyone."""
+    changes = []
+    (tools / "bin").mkdir(parents=True, exist_ok=True)
+    os.chmod(tools, 0o755)
+    os.chmod(tools / "bin", 0o755)
+    built = f"{TMUX_VERSION} {TMUX_SHA256}\n"
+    stamp = tools / ".tmux-version"
+    if not (tools / "bin" / "tmux").exists() or not stamp.exists() or stamp.read_text() != built:
+        out = Path(tempfile.mkdtemp(dir=STATE, prefix=".tmux-build."))
+        try:
+            app = pwd.getpwnam(APP_USER)
+            os.chown(out, app.pw_uid, app.pw_gid)
+            run(as_rcman_podman(app.pw_uid, *tmux_build_argv(tmux_tarball(), out)))
+            if not is_static(out / "tmux"):
+                raise InstallError("tmux was not built static")
+            _install_file(out / "tmux", tools / "bin" / "tmux", 0o755)
+        finally:
+            shutil.rmtree(out, ignore_errors=True)
+        stamp.write_text(built)
+        changes.append(f"tmux {TMUX_VERSION}")
+    if not is_static(BUSYBOX):
+        raise InstallError(f"{BUSYBOX} is not static; install busybox-static")
+    busybox = tools / "bin" / "busybox"
+    if not busybox.exists() or busybox.read_bytes() != BUSYBOX.read_bytes():
+        _install_file(BUSYBOX, busybox, 0o755)
+        changes.append("busybox")
+    if not (tools / "bin" / "sh").is_symlink():
+        (tools / "bin" / "sh").unlink(missing_ok=True)
+        os.symlink("busybox", tools / "bin" / "sh")
+        changes.append("sh")
+    for entry in TERMINFO:
+        source = next((d / entry for d in TERMINFO_DIRS if (d / entry).exists()), None)
+        if source is None:
+            raise InstallError(f"there is no terminal description {entry}; install ncurses-base")
+        dest = tools / "terminfo" / entry
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        os.chmod(dest.parent, 0o755)
+        os.chmod(dest.parent.parent, 0o755)
+        if not dest.exists() or dest.read_bytes() != source.read_bytes():
+            _install_file(source, dest, 0o644)
+            changes.append(f"terminfo {entry}")
+    conf = conf or CURRENT / "backend" / "rcman" / "tmux.conf"
+    if write_if_changed(tools / "tmux.conf", conf.read_text(encoding="utf-8"), 0o644):
+        changes.append("tmux.conf")
+    return changes
+
+
+def workspace_image() -> str:
+    """The default workspace image's name, tagged after its build file's content, so a
+    changed build file makes a new image and the old one stays the workspaces' it is."""
+    digest = hashlib.sha256(CONTAINERFILE.read_bytes()).hexdigest()[:12]
+    return f"localhost/rcman-workspace:{digest}"
+
+
+def ensure_image() -> list[str]:
+    """The default workspace image, built with rcman's Podman unless it is there."""
+    uid, image = app_uid(), workspace_image()
+    if subprocess.run(as_rcman_podman(uid, "image", "exists", image)).returncode == 0:
+        return []
+    context = Path(tempfile.mkdtemp(prefix="rcman-image."))
+    try:
+        shutil.copy(CONTAINERFILE, context / "Containerfile")
+        os.chmod(context, 0o755)
+        os.chmod(context / "Containerfile", 0o644)
+        run(as_rcman_podman(uid, "build", "--tag", image, "--file",
+                            str(context / "Containerfile"), str(context)))  # fmt: skip
+    finally:
+        shutil.rmtree(context, ignore_errors=True)
+    return [f"image {image}"]
+
+
+def claude_platform() -> str:
+    return f"linux-{_arch()}"
+
+
+def claude_version() -> str:
+    """The Claude Code version the store holds: the tested one, which the recorded
+    fixtures of the fake claude come from."""
+    return (REPO / "helpers" / "claude-version").read_text(encoding="utf-8").strip()
+
+
+def ensure_claude_store(
+    store: Path = CLAUDE_STORE, download: str = CLAUDE_DOWNLOAD, version: str | None = None
+) -> list[str]:
+    """The Claude Code store: ``versions/<version>``, downloaded from ``download`` and
+    checked against its release's manifest; ``current`` naming it, switched in one step;
+    and ``bin/claude`` leading to it. Root's, and readable by everyone."""
+    version = version or claude_version()
+    target = store / "versions" / version
+    changes = []
+    if not target.exists():
+        manifest = json.loads(_download(f"{download}/{version}/manifest.json"))
+        try:
+            expected = manifest["platforms"][claude_platform()]["checksum"]
+        except (KeyError, TypeError):
+            platform = claude_platform()
+            raise InstallError(f"Claude Code {version} has no build for {platform}") from None
+        data = _verified(f"{download}/{version}/{claude_platform()}/claude", expected)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        partial = target.with_name(f".{version}.partial")
+        partial.write_bytes(data)
+        os.chmod(partial, 0o755)
+        partial.rename(target)
+        changes.append(f"claude {version}")
+    if _link(store, "current") != f"versions/{version}":
+        _set_link(store, "current", f"versions/{version}")
+    (store / "bin").mkdir(exist_ok=True)
+    if _link(store / "bin", "claude") != "../current":
+        _set_link(store / "bin", "claude", "../current")
+    for folder in (store, store / "versions", store / "bin"):
+        os.chmod(folder, 0o755)
+    return changes
+
+
 # --- configuration, services, first administrator ------------------------------------
 
 
@@ -612,6 +927,7 @@ def _gid(group: str) -> int:
 
 
 def configure(settings: dict[str, str]) -> list[str]:
+    """Every file the installer renders; ``settings`` with APP_UID and WORKSPACE_IMAGE."""
     changes = []
     app_gid, proxy_gid = _gid(APP_USER), _gid(PROXY_USER)
     files = [
@@ -624,24 +940,12 @@ def configure(settings: dict[str, str]) -> list[str]:
     for path, text, mode, gid in files:
         if write_if_changed(path, text, mode, gid):
             changes.append(str(path))
-    allowlist = ETC / "allowed-emails"
-    if not allowlist.exists():  # rc-admin regenerates it; oauth2-proxy needs it to exist
-        write_if_changed(allowlist, "", 0o640, app_gid)
-        changes.append(str(allowlist))
-    text = sudoers()
-    current = SUDOERS.read_text(encoding="utf-8") if SUDOERS.exists() else None
-    if current != text:
-        with tempfile.NamedTemporaryFile("w", suffix=".sudoers", delete=False) as tmp:
-            tmp.write(text)
-        try:
-            run(["visudo", "-c", "-f", tmp.name])
-        finally:
-            os.unlink(tmp.name)
-        write_if_changed(SUDOERS, text, 0o440)
-        changes.append(str(SUDOERS))
-    elif (SUDOERS.stat().st_mode & 0o777) != 0o440:
-        os.chmod(SUDOERS, 0o440)
-        changes.append(str(SUDOERS))
+    allowed = STATE / "allowed-emails"
+    if not allowed.exists():  # rcman writes it as it starts; oauth2-proxy needs it to exist
+        app = pwd.getpwnam(APP_USER)
+        write_if_changed(allowed, "", 0o640, app_gid)
+        os.chown(allowed, app.pw_uid, app_gid)
+        changes.append(str(allowed))
     return changes
 
 
@@ -654,17 +958,25 @@ def start_services(restart: bool) -> None:
             run(["systemctl", "restart", unit])
 
 
-def ensure_admin(settings: dict[str, str]) -> None:
-    run(
-        [
-            str(CURRENT / "helpers" / "rc-admin"),
-            "add",
-            settings["ADMIN_LINUX"],
-            settings["ADMIN_EMAIL"],
-            "--admin",
-            "--adopt",
-        ]
-    )
+def admin_argv(email: str) -> list[str]:
+    """rcman-admin adding ``email`` as an administrator, run as rcman with its settings."""
+    return [
+        "runuser", "-u", APP_USER, "--", str(CURRENT / ".venv" / "bin" / "rcman-admin"),
+        "--env-file", str(ETC / "rcman.env"), "add", "--admin", "--", email,
+    ]  # fmt: skip
+
+
+def ensure_admin(settings: dict[str, str]) -> list[str]:
+    """The first administrator, unless they are there already."""
+    listing = [
+        "runuser", "-u", APP_USER, "--", str(CURRENT / ".venv" / "bin" / "rcman-admin"),
+        "--env-file", str(ETC / "rcman.env"), "list",
+    ]  # fmt: skip
+    email = settings["ADMIN_EMAIL"].lower()
+    if email in [line.split()[0] for line in run(listing).stdout.splitlines() if line.strip()]:
+        return []
+    run(admin_argv(settings["ADMIN_EMAIL"]))
+    return [f"administrator {email}"]
 
 
 def _status_over_socket(path: Path, url: str) -> int:
@@ -760,21 +1072,32 @@ def main(argv: list[str]) -> int:
         if not owner or owner == "root":
             raise InstallError("run install.sh with sudo from the account that owns the clone")
         ask = _ask_terminal if sys.stdin.isatty() else None
-        settings = gather(SETTINGS_FILE, dict(os.environ), vars(args), ask, owner)
+        check_not_an_old_install()
+        settings = gather(SETTINGS_FILE, dict(os.environ), vars(args), ask)
         changes = []
         if save_settings(SETTINGS_FILE, settings):
             changes.append(str(SETTINGS_FILE))
+        check_caddy_user(settings["CADDY_USER"])
+        changes += ensure_packages()
         changes += ensure_accounts(settings["CADDY_USER"])
+        subordinate = ensure_subordinate_ids()
+        changes += subordinate
+        changes += ensure_podman(subordinate_changed=bool(subordinate))
         changes += ensure_runtime_dir()
         changes += ensure_toolchain()
         release, built = build_release(REPO, owner)
         switched = switch(ROOT, release)
         if built or switched:
             changes.append(f"release {release}")
-        changes += configure(settings)
+        changes += ensure_tools()
+        changes += ensure_image()
+        changes += ensure_claude_store(CLAUDE_STORE, settings["CLAUDE_DOWNLOAD"])
+        found = {"APP_UID": str(app_uid()), "WORKSPACE_IMAGE": workspace_image()}
+        changes += configure({**settings, **found})
         changes += link_commands()
+        added = ensure_admin(settings)
         start_services(restart=bool(changes))
-        ensure_admin(settings)
+        changes += added
         health(settings)
         print(json.dumps({"release": release, "changed": changes}))
         print(f"\nAdd this to your Caddyfile ({CADDY_SNIPPET}):\n")

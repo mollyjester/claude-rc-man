@@ -55,7 +55,7 @@ export function Versions() {
           <table>
             <thead>
               <tr>
-                <th>{m.usersLinux}</th>
+                <th>{m.versionsLinux}</th>
                 <th>{m.versionsInstalled}</th>
               </tr>
             </thead>

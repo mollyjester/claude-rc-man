@@ -1,199 +1,54 @@
-"""Connecting a Claude account, its expiry, and Claude Code versions."""
+"""The Claude account and versions routes: not there yet in workspaces, each answers
+not_available_yet, its body checked as it will be."""
 
-import datetime as dt
-import json
-import logging
-import sqlite3
-
-import pytest
-from rcman.problems import FIELD_MESSAGES
-
-from devtools import fake_claude as fake
-from devtools import record_claude as rec
-from helpers import rc_admin
-from helpers import users_file as uf
-from tests.conftest import ALICE, BOB, as_user, changing
+from helpers import rules
+from tests.conftest import ALICE, BOB, changing
+from tests.test_git import area_routes, call
 
 
-def logged_out(helper_homes, linux, accept=()):
-    fake.write_state(
-        helper_homes.homes[linux] / ".claude-fake", logged_in=False, accept_codes=list(accept)
-    )
+def test_every_claude_route_answers_not_available_yet(client, app):
+    for method, path in area_routes(app, "/api/claude"):
+        r = call(client, method, path)
+        assert (r.status_code, r.json()["code"]) == (501, "not_available_yet"), (method, path)
 
 
-def expires_in(helper_homes, linux, days):
-    at = dt.datetime.now(dt.UTC) + dt.timedelta(days=days)
-    path = helper_homes.homes[linux] / ".claude" / ".credentials.json"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps({"claudeAiOauth": {"refreshTokenExpiresAt": int(at.timestamp() * 1000)}})
-    )
+def test_the_versions_are_still_for_administrators_only(client):
+    r = client.get("/api/claude/versions", headers=changing(BOB))
+    assert (r.status_code, r.json()["code"]) == (403, "admin_only")
 
 
-# --- connection state -----------------------------------------------------------------
-
-
-def test_not_connected(client, helper_homes):
-    logged_out(helper_homes, "bob")
-    assert client.get("/api/claude", headers=as_user(BOB)).json() == {
-        "connection": "not_connected",
-        "account": None,
-        "login_expires_at": None,
-    }
-
-
-def test_connected_reports_the_account(client, helper_homes):
-    expires_in(helper_homes, "bob", 20)
-    out = client.get("/api/claude", headers=as_user(BOB)).json()
-    assert out["connection"] == "connected"
-    assert out["account"]["email"] == fake.FAKE_ACCOUNT["email"]
-    assert out["login_expires_at"]
-
-
-@pytest.mark.parametrize("days,state", [(20, "connected"), (2, "expiring"), (-1, "expired")])
-def test_expiry_states_follow_the_warning_setting(client, helper_homes, settings, days, state):
-    assert settings.login_warning_days > 2
-    expires_in(helper_homes, "bob", days)
-    assert client.get("/api/claude", headers=as_user(BOB)).json()["connection"] == state
-
-
-def test_unknown_expiry_is_connected_without_a_date(client):
-    out = client.get("/api/claude", headers=as_user(BOB)).json()
-    assert (out["connection"], out["login_expires_at"]) == ("connected", None)
-
-
-# --- connecting ----------------------------------------------------------------------
-
-
-def test_connect_flow(client, helper_homes):
-    logged_out(helper_homes, "bob", accept=["GOOD-CODE"])
-    url = client.post("/api/claude/login", json={}, headers=changing(BOB)).json()["url"]
-    assert url.startswith(rec.LOGIN_URL_PREFIX)
-    assert "bob%40example.com" in url  # the Google address unless another is given
-    out = client.post("/api/claude/code", json={"code": "GOOD-CODE"}, headers=changing(BOB)).json()
-    assert out["connection"] == "connected"
-
-
-def test_another_claude_address_can_be_given(client, helper_homes):
-    logged_out(helper_homes, "bob")
-    url = client.post(
-        "/api/claude/login", json={"email": "work@example.org"}, headers=changing(BOB)
-    ).json()["url"]
-    assert "work%40example.org" in url
-
-
-def test_a_wrong_code_is_a_problem(client, helper_homes):
-    logged_out(helper_homes, "bob", accept=["GOOD-CODE"])
-    client.post("/api/claude/login", json={}, headers=changing(BOB))
-    r = client.post("/api/claude/code", json={"code": "BAD-CODE"}, headers=changing(BOB))
-    assert (r.status_code, r.json()["code"]) == (409, "login_failed")
-
-
-def test_the_code_is_never_stored_or_logged(client, helper_homes, settings, caplog):
-    caplog.set_level(logging.DEBUG)
-    logged_out(helper_homes, "bob", accept=["SECRET-CODE-42"])
-    client.post("/api/claude/login", json={}, headers=changing(BOB))
-    client.post("/api/claude/code", json={"code": "SECRET-CODE-42"}, headers=changing(BOB))
-    rows = sqlite3.connect(settings.database).execute("select * from audit").fetchall()
-    assert rows  # non-vacuity: the connect was audited
-    assert "SECRET-CODE-42" not in json.dumps(rows)
-    assert "SECRET-CODE-42" not in caplog.text
-
-
-def test_an_unrecognised_sign_in_screen_is_shown_and_audited(client, helper_homes, settings):
-    wrapper = helper_homes.homes["bob"].parent.parent / "claude"
-    wrapper.write_text(
-        f'#!/bin/sh\nFAKE_CLAUDE_SCENARIO=unrecognised exec {rec.FAKE_CLAUDE} "$@"\n'
-    )
-    logged_out(helper_homes, "bob")
-    r = client.post("/api/claude/login", json={}, headers=changing(BOB))
-    assert (r.status_code, r.json()["code"]) == (502, "claude_unrecognised_output")
-    assert fake.UNRECOGNISED_SCREEN in r.json()["screen"]
-    last = (
-        sqlite3.connect(settings.database)
-        .execute("select action, result from audit")
-        .fetchall()[-1]
-    )
-    assert last == ("claude.login", "claude_unrecognised_output")
-
-
-def test_code_and_email_are_validated(client):
-    r = client.post("/api/claude/code", json={"code": ""}, headers=changing(BOB))
-    assert r.status_code == 422
-    assert r.json()["errors"] == [{"field": "code", "message": FIELD_MESSAGES["string_empty"]}]
-    r = client.post("/api/claude/login", json={"email": "nope"}, headers=changing(BOB))
-    assert r.status_code == 422
-    assert r.json()["errors"] == [{"field": "email", "message": uf.EMAIL.sentence}]
-
-
-# --- versions (administrators) -------------------------------------------------------
-
-
-def test_versions_flag_who_differs_and_untested_approval(client, admin_runner):
-    admin_runner.replies = [
-        (
-            0,
-            {
-                "approved": "2.2.0",
-                "tested": "2.1.0",
-                "users": [
-                    {"linux": "alice", "installed": "2.2.0"},
-                    {"linux": "bob", "installed": "2.1.0"},
-                ],
-            },
-        )
-    ]
-    out = client.get("/api/claude/versions", headers=as_user(ALICE)).json()
-    assert admin_runner.calls == [["claude-status"]]
-    assert out["differs"] == ["bob"]
-    assert out["untested"] is True
-
-
-def test_upgrade_goes_through_rc_admin(client, admin_runner):
-    admin_runner.replies = [
-        (0, {"approved": "2.2.0", "tested": "2.1.0", "users": {"alice": "installed"}})
-    ]
-    r = client.post("/api/claude/upgrade", json={"version": "2.2.0"}, headers=changing(ALICE))
-    assert r.status_code == 200
-    assert admin_runner.calls == [["claude-upgrade", "--", "2.2.0"]]
-
-
-def test_a_failed_upgrade_is_a_problem_naming_the_checks(client, admin_runner, settings, caplog):
-    caplog.set_level(logging.DEBUG)
-    report = {"sign_in_screen": {"lines": ["ran: claude auth login", "PLANTEDREPORT"], "more": 3}}
-    error = {
-        "code": "claude_checks_failed",
-        "message": "x",
-        "failed": ["sign_in_screen"],
-        "report": report,
-    }
-    admin_runner.replies = [(1, {"error": error})]
-    r = client.post("/api/claude/upgrade", json={"version": "2.2.0"}, headers=changing(ALICE))
-    assert (r.status_code, r.json()["code"], r.json()["failed"]) == (
-        409,
-        "claude_checks_failed",
-        ["sign_in_screen"],
-    )
-    assert r.json()["report"] == report
-    assert "PLANTEDREPORT" in r.text  # the administrator sees the report
-    rows = sqlite3.connect(settings.database).execute("select * from audit").fetchall()
-    assert any("claude_checks_failed" in row for row in rows)  # the refusal was audited
-    assert "claude_checks_failed" in caplog.text  # and logged
-    assert "PLANTEDREPORT" not in repr(rows) and "PLANTEDREPORT" not in caplog.text
-
-
-def test_versions_are_for_administrators(client, admin_runner):
-    assert client.get("/api/claude/versions", headers=as_user(BOB)).status_code == 403
-    assert (
-        client.post(
-            "/api/claude/upgrade", json={"version": "2.2.0"}, headers=changing(BOB)
-        ).status_code
-        == 403
-    )
-    assert admin_runner.calls == []
-
-
-def test_upgrade_version_is_validated(client, admin_runner):
+def test_a_version_is_still_checked_by_its_rule(client):
     r = client.post("/api/claude/upgrade", json={"version": "latest"}, headers=changing(ALICE))
-    assert r.status_code == 422 and admin_runner.calls == []
-    assert r.json()["errors"] == [{"field": "version", "message": rc_admin.VERSION.sentence}]
+    assert r.status_code == 422
+    assert r.json()["errors"] == [{"field": "version", "message": rules.VERSION.sentence}]
+
+
+# --- the account's state, as signing in will report it --------------------------------
+
+NOW = __import__("datetime").datetime(2026, 10, 1, tzinfo=__import__("datetime").UTC)
+
+
+def status_expiring_in(days: float | None) -> dict:
+    import datetime as dt
+
+    expires = None if days is None else (NOW + dt.timedelta(days=days)).isoformat()
+    return {"logged_in": True, "email": "a@example.com", "login_expires_at": expires}
+
+
+def test_the_account_states_follow_the_sign_ins_expiry_and_the_warning_setting():
+    from rcman.routers.claude import connection
+
+    assert connection({"logged_in": False}, 3, NOW)["connection"] == "not_connected"
+    for days, state in ((10, "connected"), (2, "expiring"), (-1, "expired"), (None, "connected")):
+        assert connection(status_expiring_in(days), 3, NOW)["connection"] == state, days
+    assert connection(status_expiring_in(2), 1, NOW)["connection"] == "connected"
+
+
+def test_the_warning_setting_is_a_positive_number_of_days():
+    import pytest
+    from pydantic import ValidationError
+    from rcman.settings import Settings
+
+    assert Settings(public_origin="https://x.example.com").login_warning_days >= 1
+    with pytest.raises(ValidationError):
+        Settings(public_origin="https://x.example.com", login_warning_days=0)

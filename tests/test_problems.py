@@ -46,7 +46,7 @@ def test_validation_errors_are_problems_with_field_errors(client):
     body = assert_problem(
         client.post("/api/servers", json={}, headers=changing(ALICE)), 422, "validation_failed"
     )
-    assert body["errors"] and body["errors"][0]["field"] == "path"
+    assert body["errors"] and body["errors"][0]["field"] == "workspace"
     assert body["errors"][0]["message"]
 
 
@@ -55,7 +55,8 @@ def test_every_route_answers_a_missing_identity_with_a_problem(app, client):
     assert found  # non-vacuity
     for route in found:
         method = sorted(route.methods)[0]
-        path = route.path.replace("{linux}", "x").replace("{slug}", "x")
+        path = route.path.replace("{person}", "1").replace("{workspace}", "1")
+        path = path.replace("{slug}", "x")
         response = client.request(method, path)
         assert_problem(response, 401, "not_authenticated")
 
@@ -158,7 +159,6 @@ def test_library_text_is_recognised():
     from fastapi.testclient import TestClient
     from pydantic import Field, TypeAdapter, ValidationError
 
-    from helpers import rc_admin, rc_helper
     from tests.test_rules import helpers_rules
 
     with pytest.raises(ValidationError) as refused:
@@ -180,8 +180,6 @@ def test_library_text_is_recognised():
         *(rule.sentence for rule in helpers_rules().values()),
         *problems.MESSAGES.values(),
         *problems.FIELD_MESSAGES.values(),
-        *rc_helper.MESSAGES.values(),
-        *rc_admin.MESSAGES.values(),
     ]
     for message in ours:
         assert not library_text(message), message
@@ -189,7 +187,9 @@ def test_library_text_is_recognised():
 
 def test_a_missing_field_says_it_is_required(client):
     r = client.post("/api/servers", json={}, headers=changing(ALICE))
-    assert r.json()["errors"] == [{"field": "path", "message": problems.FIELD_MESSAGES["missing"]}]
+    assert r.json()["errors"] == [
+        {"field": "workspace", "message": problems.FIELD_MESSAGES["missing"]}
+    ]
 
 
 def test_a_body_that_is_not_json_is_about_the_request(client):
@@ -214,33 +214,11 @@ def test_a_value_too_long_says_how_long_it_may_be(client):
     )
 
 
-def test_every_path_field_refuses_a_null_character_with_the_path_rule(app, client):
-    from helpers import rc_helper
+def test_a_ruled_field_refuses_a_null_character_with_its_rule(client):
+    from helpers import rules
 
-    rules = {r.anchored: r for r in (rc_helper.PATH, rc_helper.FOLDER_PATH)}
-    checked = [f for f in request_fields(app) if f.schema.get("pattern") in rules]
-    names = {(f.method, f.path, f.name) for f in checked}
-    known = {
-        ("POST", "/api/servers", "path"),
-        ("POST", "/api/folders", "parent"),
-        ("GET", "/api/folders", "path"),
-        ("DELETE", "/api/folders", "path"),
-        ("GET", "/api/servers/output", "path"),
-    }
-    assert known <= names, known - names  # non-vacuity
-    for f in checked:
-        r = send(client, f, "a\x00b", CALLS, changing(ALICE))
-        sentence = rules[f.schema["pattern"]].sentence
-        assert r.json().get("errors") == [{"field": f.name, "message": sentence}], f
-
-
-def test_an_empty_path_where_a_folder_is_needed_says_why(client):
-    from helpers import rc_helper
-
-    r = client.post("/api/servers", json={"path": ""}, headers=changing(ALICE))
-    assert r.json()["errors"] == [{"field": "path", "message": rc_helper.FOLDER_PATH.sentence}]
-    r = client.get("/api/folders", params={"path": ""}, headers=changing(ALICE))
-    assert r.status_code == 200  # positive control: where the home is meant, it is taken
+    r = client.post("/api/workspaces", json={"name": "a\x00b"}, headers=changing(ALICE))
+    assert r.json()["errors"] == [{"field": "name", "message": rules.WORKSPACE_NAME.sentence}]
 
 
 def test_a_null_character_is_never_an_internal_error(app):
@@ -257,7 +235,8 @@ def test_a_null_character_is_never_an_internal_error(app):
         for f in texts:
             r = send(client, f, "a\x00b", CALLS, changing(ALICE))
             what = f"{f.method} {f.path} {f.where} {f.name}"
-            if r.status_code >= 500:
+            # A route that is not there yet answers so whatever it is sent: no crash.
+            if r.status_code >= 500 and r.json().get("code") != "not_available_yet":
                 found.append(f"{what}: {r.status_code} {r.text[:120]}")
             elif r.status_code == 422:
                 for e in r.json()["errors"]:
@@ -285,11 +264,11 @@ def test_half_a_character_is_refused_in_plain_words(client):
 
 
 def test_half_a_character_in_a_ruled_field_is_refused_with_its_rule(client):
-    from helpers import rc_helper
+    from helpers import rules
 
     headers = {**changing(ALICE), "content-type": "application/json"}
-    r = client.post("/api/folders", content=b'{"name": "\\ud800"}', headers=headers)
-    assert r.json()["errors"] == [{"field": "name", "message": rc_helper.FOLDER_NAME.sentence}]
+    r = client.post("/api/workspaces", content=b'{"name": "\\ud800"}', headers=headers)
+    assert r.json()["errors"] == [{"field": "name", "message": rules.WORKSPACE_NAME.sentence}]
 
 
 def test_an_empty_value_where_one_is_needed_says_so(client):
@@ -337,12 +316,13 @@ def test_an_error_without_the_context_its_message_needs_gets_a_readable_one(capl
 
 
 def test_a_ruled_field_refuses_a_length_with_its_rules_sentence(client):
-    from helpers import rc_helper
+    from helpers import rules
 
-    name = "a" * (rc_helper.MAX_PATH_LENGTH + 1)
-    assert rc_helper.FOLDER_NAME.fullmatch(name)  # only its length is refused
-    r = client.post("/api/folders", json={"name": name}, headers=changing(ALICE))
-    assert r.json()["errors"] == [{"field": "name", "message": rc_helper.FOLDER_NAME.sentence}]
+    message = "a" * (rules.MAX_COMMIT_MESSAGE_LENGTH + 1)
+    assert rules.COMMIT_MESSAGE.fullmatch(message)  # only its length is refused
+    body = {"path": "repo", "message": message}
+    r = client.post("/api/git/commit", json=body, headers=changing(ALICE))
+    assert r.json()["errors"] == [{"field": "message", "message": rules.COMMIT_MESSAGE.sentence}]
 
 
 # --- every field of every route, as validated and as published --------------------
@@ -567,10 +547,10 @@ def _published_path_schema(app) -> dict:
 
 def test_no_parameter_has_its_constraints_dropped(app):
     hints = typing.get_type_hints(
-        next(c.route.endpoint for c in routes.api_routes(app) if c.path == "/api/users/{linux}"),
+        next(c.route.endpoint for c in routes.api_routes(app) if c.path == "/api/people/{person}"),
         include_extras=True,
     )
-    assert _constraints(hints["linux"])  # non-vacuity: the guard sees the users route's rule
+    assert _constraints(hints["person"])  # non-vacuity: the guard sees the people route's bound
     assert dropped_constraints(app) == []
 
 
@@ -722,9 +702,9 @@ def test_the_fields_are_found_and_agree_with_the_published_api(app):
     found = {(f.method, f.path, f.where, f.name) for f in request_fields(app)}
     known = {
         ("PATCH", "/api/me/settings", "body", "prefix"),
-        ("DELETE", "/api/users/{linux}", "path", "linux"),
-        ("DELETE", "/api/users/{linux}", "query", "home"),
-        ("POST", "/api/folders", "body", "name"),
+        ("DELETE", "/api/people/{person}", "path", "person"),
+        ("GET", "/api/servers/output", "query", "workspace"),
+        ("POST", "/api/workspaces", "body", "name"),
         ("GET", "/api/audit", "query", "limit"),
         ("POST", "/api/git/stage", "body", "files"),
     }
@@ -735,21 +715,21 @@ def test_the_fields_are_found_and_agree_with_the_published_api(app):
 
 def test_every_route_that_takes_parameters_has_a_valid_request(app, client):
     taking = {(f.method, f.path) for f in request_fields(app)}
-    assert ("GET", "/api/folders") in taking  # non-vacuity
+    assert ("GET", "/api/servers/output") in taking  # non-vacuity
     assert taking <= set(CALLS), taking - set(CALLS)
     for method, path in sorted(taking):
         r = client.request(method, concrete(path), headers=changing(ALICE), **CALLS[(method, path)])
         assert r.status_code != 422, (method, path, r.text)
 
 
+# A few values that break most patterns, tried in order.
+REFUSAL_CANDIDATES = ("\x01", " ", "", "/")
 OMIT = object()  # a violation that leaves the field out
 LONE_SURROGATE = object()  # a violation only raw JSON can send: "\ud800", half a character
 
 
 def refused_value(pattern: str) -> str:
     """A value the published pattern refuses, from a few that break most patterns."""
-    from tests.test_rc_helper import REFUSAL_CANDIDATES
-
     for value in REFUSAL_CANDIDATES:
         if not re.search(pattern, value):
             return value
@@ -970,10 +950,11 @@ def pattern_problems(client, calls, headers) -> tuple[list[str], set[str]]:
             found.append(f"{what}: its pattern is no helpers' rule")
             continue
         matched.update(named)
-        rule = rules[named[0]]
+        # Rules may share a pattern and differ in words: any of theirs is the field's.
+        sentences = [[{"field": f.name, "message": rules[name].sentence}] for name in named]
         response = send(client, f, refused_value(f.schema["pattern"]), calls, headers)
         errors = response.json().get("errors") if response.status_code == 422 else None
-        if errors != [{"field": f.name, "message": rule.sentence}]:
+        if errors not in sentences:
             found.append(f"{what}: {response.status_code} {errors}")
     return found, matched
 
@@ -983,8 +964,7 @@ def test_every_published_pattern_is_explained_by_a_helpers_rule(client):
     names = {
         "PREFIX",
         "EMAIL",
-        "LINUX_NAME",
-        "FOLDER_NAME",
+        "WORKSPACE_NAME",
         "AUTHOR_NAME",
         "VERSION",
         "COMMIT_MESSAGE",

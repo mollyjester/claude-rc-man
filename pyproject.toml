@@ -9,6 +9,9 @@ dependencies = [
     "uvicorn>=0.54.0",
 ]
 
+[project.scripts]
+rcman-admin = "rcman.admin:main"
+
 [dependency-groups]
 dev = [
     "httpx2>=2.13.1",

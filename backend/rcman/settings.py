@@ -19,12 +19,28 @@ class Settings(BaseSettings):
         description="The scheme, host and port browsers use to reach rcman, such as "
         "https://rcman.example.com. Requests that change something must come from it."
     )
-    users_file: Path = Field(
-        Path("/etc/rcman/users.toml"), description="The list of people who may use rcman."
-    )
     database: Path = Field(Path("/var/lib/rcman/rcman.db"), description="The SQLite database file.")
-    helpers_dir: Path = Field(
-        APP_ROOT / "helpers", description="The directory holding rc-helper and rc-admin."
+    allowed_emails: Path = Field(
+        Path("/var/lib/rcman/allowed-emails"),
+        description="The list of addresses oauth2-proxy lets in, which rcman writes from its "
+        "people.",
+    )
+    podman_socket: Path | None = Field(
+        None,
+        description="The socket of the Podman service rcman runs its workspaces with: "
+        "rcman's own user manager's, under XDG_RUNTIME_DIR, when unset.",
+    )
+    workspace_image: str = Field(
+        "localhost/rcman-workspace", description="The image new workspaces are made from."
+    )
+    tools_dir: Path = Field(
+        Path("/var/lib/rcman/tools"),
+        description="The static tools mounted read-only into every workspace: tmux, busybox "
+        "and terminfo.",
+    )
+    claude_store: Path = Field(
+        Path("/var/lib/rcman/claude"),
+        description="The Claude Code versions store mounted read-only into every workspace.",
     )
     docs_dir: Path = Field(
         APP_ROOT / "docs", description="The directory of documentation pages served to users."
@@ -35,12 +51,11 @@ class Settings(BaseSettings):
     audit_retention_days: int = Field(
         90, ge=1, description="Audit events older than this many days are deleted."
     )
-    audit_max_rows: int = Field(
-        100_000, ge=1, description="At most this many audit events are kept; the oldest go first."
-    )
-
     login_warning_days: int = Field(
         3, ge=1, description="Warn this many days before someone's Claude sign-in expires."
+    )
+    audit_max_rows: int = Field(
+        100_000, ge=1, description="At most this many audit events are kept; the oldest go first."
     )
 
     @field_validator("public_origin")

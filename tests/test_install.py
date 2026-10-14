@@ -33,7 +33,6 @@ def test_flags_beat_environment_beat_saved_file(tmp_path):
         },
         flags={"domain": "flag.example.com"},
         ask=None,
-        sudo_user="dev",
     )
     assert settings["DOMAIN"] == "flag.example.com"
     assert settings["ADMIN_EMAIL"] == "env@example.com"
@@ -47,9 +46,7 @@ def test_saved_settings_outside_the_fields_are_dropped(tmp_path):
         "DOMAIN=saved.example.com\nADMIN_EMAIL=saved@example.com\nGOOGLE_CLIENT_ID=id\n"
         "GOOGLE_CLIENT_SECRET=secret\nCOOKIE_SECRET=" + "c" * 32 + "\nAPP_PORT=8001\n"
     )
-    settings = ins.gather(
-        saved, environ={"RCMAN_INSTALL_APP_PORT": "901"}, flags={}, ask=None, sudo_user="dev"
-    )
+    settings = ins.gather(saved, environ={"RCMAN_INSTALL_APP_PORT": "901"}, flags={}, ask=None)
     assert "APP_PORT" not in settings
     assert settings["COOKIE_SECRET"] == "c" * 32  # kept: generated once, not a field
     assert set(settings) == {*ins.FIELDS, "COOKIE_SECRET"}
@@ -72,13 +69,9 @@ def test_caddy_runs_as_caddy_unless_told_otherwise(tmp_path):
         "RCMAN_INSTALL_ADMIN_EMAIL": "a@example.com",
     }
     saved = tmp_path / "install.env"
-    assert ins.gather(saved, environ=env, flags={}, ask=None, sudo_user="dev")["CADDY_USER"] == (
-        "caddy"
-    )
+    assert ins.gather(saved, environ=env, flags={}, ask=None)["CADDY_USER"] == ("caddy")
     flags = {"caddy_user": "www-data"}
-    assert ins.gather(saved, environ=env, flags=flags, ask=None, sudo_user="dev")["CADDY_USER"] == (
-        "www-data"
-    )
+    assert ins.gather(saved, environ=env, flags=flags, ask=None)["CADDY_USER"] == ("www-data")
 
 
 def test_caddys_account_must_exist():
@@ -99,15 +92,15 @@ def test_missing_values_are_asked_for_when_there_is_a_terminal(tmp_path):
             key, "x.example.com"
         )
 
-    settings = ins.gather(tmp_path / "install.env", environ={}, flags={}, ask=ask, sudo_user="dev")
+    settings = ins.gather(tmp_path / "install.env", environ={}, flags={}, ask=ask)
     assert ("GOOGLE_CLIENT_SECRET", True) in asked
     assert ("DOMAIN", False) in asked
-    assert settings["ADMIN_LINUX"] == "dev"  # defaults are not asked for
+    assert settings["CLAUDE_DOWNLOAD"] == ins.CLAUDE_DOWNLOAD  # defaults are not asked for
 
 
 def test_without_a_terminal_every_missing_value_is_named(tmp_path):
     with pytest.raises(ins.InstallError) as err:
-        ins.gather(tmp_path / "install.env", environ={}, flags={}, ask=None, sudo_user="dev")
+        ins.gather(tmp_path / "install.env", environ={}, flags={}, ask=None)
     for key in ("DOMAIN", "GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "ADMIN_EMAIL"):
         assert key in str(err.value)
 
@@ -119,9 +112,9 @@ def test_cookie_secret_is_generated_once_and_kept(tmp_path):
         for k in ("DOMAIN", "GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET")
     }
     env["RCMAN_INSTALL_ADMIN_EMAIL"] = "a@example.com"
-    first = ins.gather(saved, environ=env, flags={}, ask=None, sudo_user="dev")
+    first = ins.gather(saved, environ=env, flags={}, ask=None)
     ins.save_settings(saved, first)
-    second = ins.gather(saved, environ=env, flags={}, ask=None, sudo_user="dev")
+    second = ins.gather(saved, environ=env, flags={}, ask=None)
     assert len(first["COOKIE_SECRET"]) == 32  # oauth2-proxy wants 16, 24 or 32 bytes
     assert second["COOKIE_SECRET"] == first["COOKIE_SECRET"]
 
@@ -141,7 +134,8 @@ def test_saved_settings_are_private_and_round_trip(tmp_path):
         ("ADMIN_EMAIL", "nope"),
         ("PROXY_PORT", "80a"),
         ("CADDY_USER", "Caddy!"),
-        ("ADMIN_LINUX", "Root!"),
+        ("CLAUDE_DOWNLOAD", "ftp://downloads.example.com"),
+        ("CLAUDE_DOWNLOAD", "https://downloads.example.com/"),
     ],
 )
 def test_invalid_values_are_refused(tmp_path, key, value):
@@ -153,14 +147,14 @@ def test_invalid_values_are_refused(tmp_path, key, value):
         f"RCMAN_INSTALL_{key}": value,
     }
     with pytest.raises(ins.InstallError, match=key):
-        ins.gather(tmp_path / "install.env", environ=env, flags={}, ask=None, sudo_user="dev")
+        ins.gather(tmp_path / "install.env", environ=env, flags={}, ask=None)
 
 
-def test_a_value_refused_by_a_helpers_rule_is_explained_by_it(tmp_path):
+def test_a_value_refused_by_a_rule_is_explained_by_it(tmp_path):
     from helpers.rules import Rule
 
     ruled = {key: field[3] for key, field in ins.FIELDS.items() if isinstance(field[3], Rule)}
-    assert {"ADMIN_EMAIL", "ADMIN_LINUX", "CADDY_USER"} <= set(ruled)  # non-vacuity
+    assert {"ADMIN_EMAIL"} <= set(ruled)  # non-vacuity
     for key, rule in ruled.items():
         env = {
             "RCMAN_INSTALL_DOMAIN": "x.example.com",
@@ -170,29 +164,29 @@ def test_a_value_refused_by_a_helpers_rule_is_explained_by_it(tmp_path):
             f"RCMAN_INSTALL_{key}": "Not one!",
         }
         with pytest.raises(ins.InstallError) as error:
-            ins.gather(tmp_path / "install.env", environ=env, flags={}, ask=None, sudo_user="dev")
+            ins.gather(tmp_path / "install.env", environ=env, flags={}, ask=None)
         assert key in str(error.value) and rule.sentence in str(error.value)
 
 
-def test_the_installer_takes_its_rules_from_the_users_file():
-    from tests.test_rc_helper import rule_copy_problems
+def test_the_installer_takes_its_email_rule_from_the_rules():
+    import ast
 
     source = (REPO / "installer" / "install.py").read_text(encoding="utf-8")
-    assert "LINUX_NAME" in source and "EMAIL" in source  # positive control: it uses both
-    assert rule_copy_problems(source, ("EMAIL", "LINUX_NAME")) == []
-
-
-def test_the_installer_rule_check_catches_a_copy():
-    """Planted twin: an installer keeping its own copy of either rule is caught."""
-    from tests.test_rc_helper import rule_copy_problems
-
-    names = ("EMAIL", "LINUX_NAME")
-    right = "import re\nfrom helpers.users_file import EMAIL, LINUX_NAME\n"
-    assert rule_copy_problems(right, names) == []
-    copy = 'LINUX_NAME = re.compile(r"[a-z][a-z0-9_-]{0,31}")\n'
-    assert rule_copy_problems(right + copy, names) != []
-    alone = right.replace(", LINUX_NAME", "")
-    assert alone != right and rule_copy_problems(alone + copy, names) != []
+    tree = ast.parse(source)
+    imported = {
+        alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.module == "helpers.rules"
+        for alias in node.names
+    }
+    assigned = {
+        target.id
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Assign)
+        for target in node.targets
+        if isinstance(target, ast.Name)
+    }
+    assert "EMAIL" in imported and "EMAIL" not in assigned
 
 
 def test_the_installer_runs_as_install_sh_runs_it_and_writes_nothing_into_the_clone(tmp_path):
@@ -246,17 +240,23 @@ SETTINGS = {
     "GOOGLE_CLIENT_SECRET": "client-secret",
     "COOKIE_SECRET": "c" * 32,
     "ADMIN_EMAIL": "admin@example.com",
-    "ADMIN_LINUX": "dev",
     "PROXY_PORT": "444",
     "CADDY_USER": "caddy",
+    "CLAUDE_DOWNLOAD": "https://downloads.example.com/releases",
+    # what the installer finds out and renders along with the settings
+    "APP_UID": "990",
+    "WORKSPACE_IMAGE": "localhost/rcman-workspace:0123456789ab",
 }
 
 
 def test_app_environment_points_at_the_current_release():
     env = ins.render("rcman.env", SETTINGS)
     assert "RCMAN_PUBLIC_ORIGIN=https://rcman.example.com\n" in env
-    assert f"RCMAN_HELPERS_DIR={ins.CURRENT}/helpers\n" in env
     assert f"RCMAN_FRONTEND_DIR={ins.CURRENT}/frontend/dist\n" in env
+    assert f"RCMAN_ALLOWED_EMAILS={ins.STATE}/allowed-emails\n" in env
+    assert "RCMAN_WORKSPACE_IMAGE=localhost/rcman-workspace:0123456789ab\n" in env
+    assert f"RCMAN_TOOLS_DIR={ins.TOOLS}\n" in env
+    assert f"RCMAN_CLAUDE_STORE={ins.CLAUDE_STORE}\n" in env
 
 
 def test_every_rendered_app_setting_exists_in_the_settings_model():
@@ -273,7 +273,7 @@ def test_every_rendered_app_setting_exists_in_the_settings_model():
 def test_oauth2_proxy_config_allows_only_the_allowlist():
     cfg = ins.render("oauth2-proxy.cfg", SETTINGS)
     assert 'provider = "google"' in cfg
-    assert f'authenticated_emails_file = "{ins.ETC}/allowed-emails"' in cfg
+    assert f'authenticated_emails_file = "{ins.STATE}/allowed-emails"' in cfg
     assert 'redirect_url = "https://rcman.example.com/oauth2/callback"' in cfg
     assert 'http_address = "127.0.0.1:444"' in cfg
     assert "email_domains" not in cfg  # any domain would bypass the allowlist
@@ -290,9 +290,11 @@ def test_units_run_as_their_own_users_and_the_app_on_its_socket():
     assert str(ins.SOCKET) == "/run/rcman/rcman.sock"
     assert "--port" not in app and "--host" not in app  # no TCP listener at all
     assert f"EnvironmentFile={ins.ETC}/rcman.env" in app
-    assert not any(
-        line.startswith("NoNewPrivileges=") for line in app.splitlines()
-    )  # sudo needs it
+    assert "NoNewPrivileges=yes\n" in app
+    # rcman reaches its own user manager's Podman socket
+    assert "Environment=XDG_RUNTIME_DIR=/run/user/990\n" in app
+    wants = next(line for line in app.splitlines() if line.startswith("Wants="))
+    assert "user@990.service" in wants.split("=", 1)[1].split()
 
 
 def test_caddy_snippet_strips_the_identity_header_before_authenticating():
@@ -380,18 +382,6 @@ def test_a_caddy_admin_api_on_loopback_is_noticed():
     assert f"{CADDY_LOCALHOST}:{ins.CADDY_ADMIN_PORT}" in ins.CADDY_ADMIN_WARNING
 
 
-def test_sudoers_render_and_validate(tmp_path):
-    text = ins.sudoers()
-    path = tmp_path / "sudoers"
-    path.write_text(text)
-    check = subprocess.run(
-        ["/usr/sbin/visudo", "-c", "-f", str(path)], capture_output=True, text=True
-    )
-    assert check.returncode == 0, check.stdout + check.stderr
-    assert f"rcman ALL=(%rcusers) NOPASSWD: {ins.CURRENT}/helpers/rc-helper" in text
-    assert f"rcman ALL=(root) NOPASSWD: {ins.CURRENT}/helpers/rc-admin" in text
-
-
 def test_every_template_is_used():
     templates = {p.name for p in (REPO / "installer" / "templates").iterdir()}
     assert templates == set(ins.TEMPLATES)
@@ -400,9 +390,12 @@ def test_every_template_is_used():
 # --- releases --------------------------------------------------------------------------
 
 
-def make_release(root, name):
+def make_release(root, name, workspaces=True):
+    """A complete release; with ``workspaces``, one of rcman with workspaces."""
     path = root / "releases" / name
-    (path / "helpers").mkdir(parents=True)
+    (path / "backend" / "rcman").mkdir(parents=True)
+    if workspaces:
+        (path / ins.WORKSPACES_MARK).write_text("")
     (path / ins.COMPLETE).write_text(name)
     return path
 
@@ -444,23 +437,25 @@ def test_rollback_without_a_previous_release_is_refused(tmp_path):
         ins.rollback(tmp_path)
 
 
-def test_each_command_put_on_the_path_is_a_helper_of_the_release():
+def test_each_command_put_on_the_path_is_a_script_of_the_project():
+    import tomllib
+
+    scripts = tomllib.loads((REPO / "pyproject.toml").read_text())["project"]["scripts"]
     assert ins.COMMANDS  # positive control: there is something to check
-    for name in ins.COMMANDS:
-        assert os.access(REPO / "helpers" / name, os.X_OK), name
+    assert set(ins.COMMANDS) <= set(scripts)
 
 
 def test_the_commands_are_linked_to_the_current_releases(tmp_path):
     bin_dir, current = tmp_path / "sbin", tmp_path / "opt" / "current"
-    (current / "helpers").mkdir(parents=True)
+    (current / ".venv" / "bin").mkdir(parents=True)
     bin_dir.mkdir()
     for name in ins.COMMANDS:
-        (current / "helpers" / name).write_text(name)
+        (current / ".venv" / "bin" / name).write_text(name)
     changed = ins.link_commands(bin_dir, current)
     assert changed == [str(bin_dir / name) for name in ins.COMMANDS]
     for name in ins.COMMANDS:
         # through current, so a switch or a rollback needs no change to it
-        assert os.readlink(bin_dir / name) == str(current / "helpers" / name)
+        assert os.readlink(bin_dir / name) == str(current / ".venv" / "bin" / name)
         assert (bin_dir / name).read_text() == name
     assert ins.link_commands(bin_dir, current) == []
 
@@ -471,7 +466,7 @@ def test_a_command_linked_elsewhere_is_linked_again(tmp_path):
     name = ins.COMMANDS[0]
     os.symlink(tmp_path / "elsewhere", bin_dir / name)
     assert str(bin_dir / name) in ins.link_commands(bin_dir, current)
-    assert os.readlink(bin_dir / name) == str(current / "helpers" / name)
+    assert os.readlink(bin_dir / name) == str(current / ".venv" / "bin" / name)
 
 
 def test_a_file_where_a_command_goes_is_refused_and_left_alone(tmp_path):
@@ -526,7 +521,8 @@ def test_the_guide_names_the_paths_the_installer_uses():
         ins.ETC / "install.env",
         ins.CADDY_SNIPPET,
         ins.STATE,
-        ins.SUDOERS,
+        ins.TOOLS,
+        ins.CLAUDE_STORE,
         ins.SOCKET,
         ins.TMPFILES,
         *(ins.COMMAND_DIR / name for name in ins.COMMANDS),
@@ -607,6 +603,8 @@ def fake_downloads(monkeypatch):
     }
     sums = {name: hashlib.sha256(data).hexdigest() for name, data in archives.items()}
     fetched, started = [], threading.Event()
+    tmux = b"tmux source"
+    monkeypatch.setattr(ins, "TMUX_SHA256", hashlib.sha256(tmux).hexdigest())
 
     def download(url: str) -> bytes:
         name = url.rsplit("/", 1)[1]
@@ -620,6 +618,8 @@ def fake_downloads(monkeypatch):
                 while started.is_set() and time.monotonic() < deadline:
                     time.sleep(0.01)
             return "".join(f"{sums[n]}  {n}\n" for n in archives).encode()
+        if name == f"tmux-{ins.TMUX_VERSION}.tar.gz":
+            return tmux
         for archive_name, digest in sums.items():
             if name in (f"{archive_name}.sha256", f"{archive_name}-sha256sum.txt"):
                 return f"{digest}  {archive_name}\n".encode()
@@ -633,11 +633,11 @@ def test_the_toolchain_is_fetched_once_and_complete(tmp_path, monkeypatch):
     """Positive control for the fake downloads: one call fills an empty toolchain."""
     fetched = fake_downloads(monkeypatch)
     toolchain = tmp_path / "toolchain"
-    assert len(ins.ensure_toolchain(toolchain)) == 3
+    assert len(ins.ensure_toolchain(toolchain)) == 4
     for binary in (ins.node_bin(toolchain) / "node", ins.uv_binary(toolchain)):
         assert binary.read_bytes() == b"ok"
     assert ins.oauth2_proxy_binary(toolchain).read_bytes() == b"ok"
-    assert len(fetched) == len(set(fetched)) == 6
+    assert len(fetched) == len(set(fetched)) == 7
     assert ins.ensure_toolchain(toolchain) == []  # and finds it there the next time
 
 
@@ -662,45 +662,225 @@ def test_two_callers_at_once_make_one_complete_toolchain(tmp_path, monkeypatch):
     for thread in threads:
         thread.join(timeout=60)
     assert errors == []
-    assert sorted(len(r) for r in results) == [0, 3]
-    assert len(fetched) == len(set(fetched)) == 6
+    assert sorted(len(r) for r in results) == [0, 4]
+    assert len(fetched) == len(set(fetched)) == 7
     assert ins.oauth2_proxy_binary(toolchain).read_bytes() == b"ok"
     assert [p.name for p in toolchain.iterdir() if p.name.startswith(".") and p.is_dir()] == []
 
 
-# --- prerequisites ---------------------------------------------------------------------
+def test_the_installer_runs_python_in_utf8_mode():
+    script = (REPO / "install.sh").read_text(encoding="utf-8")
+    runs = [line for line in script.splitlines() if "/usr/bin/python3" in line]
+    assert runs  # non-vacuity
+    for line in runs:
+        assert "/usr/bin/python3 -I -X utf8 " in line, line
 
 
-def test_this_machines_git_is_new_enough():
-    ins.check_git()  # positive control for the refusals below
+# --- rootless Podman for rcman -----------------------------------------------------------
 
 
-def test_a_git_older_than_rcman_needs_is_refused(monkeypatch):
-    monkeypatch.setattr(ins, "GIT_MIN_VERSION", (99, 0))
-    with pytest.raises(ins.InstallError, match=r"git .* rcman needs git 99\.0 or later"):
-        ins.check_git()
+def test_rcman_gets_a_subordinate_range_for_every_persons_slot():
+    from rcman.people import MAX_PEOPLE
+    from rcman.runtime import RANGE
+
+    assert ins.SUBORDINATE_COUNT >= (MAX_PEOPLE + 1) * RANGE
 
 
-def test_no_git_on_the_system_path_is_refused(monkeypatch, tmp_path):
-    from helpers import git_run
+@pytest.mark.parametrize(
+    "lines,start",
+    [
+        ([], ins.SUBORDINATE_FIRST),
+        (["dev:100000:65536"], 165536),
+        (["dev:100000:65536", "other:9000000:65536"], 9065536),
+        (["dev:100000:65536", "rcman:5000000:10"], 5000010),  # one too small: another after
+        (["# a comment", "", "dev:100000:65536"], 165536),
+        (["dev:1000:10"], ins.SUBORDINATE_FIRST),  # never below the first useradd leaves
+    ],
+)
+def test_a_new_subordinate_range_starts_after_every_range_there(lines, start):
+    assert ins.subordinate_start(lines, "rcman", ins.SUBORDINATE_COUNT) == start
 
-    monkeypatch.setattr(git_run, "GIT_SEARCH_PATH", str(tmp_path))
-    with pytest.raises(ins.InstallError, match="no git"):
-        ins.check_git()
+
+def test_a_range_big_enough_is_kept():
+    lines = ["dev:100000:65536", f"rcman:900000:{ins.SUBORDINATE_COUNT}"]
+    assert ins.subordinate_start(lines, "rcman", ins.SUBORDINATE_COUNT) is None
 
 
-def test_git_is_checked_before_anything_is_changed(monkeypatch):
-    import pwd
+def test_the_packages_are_those_podman_and_the_tools_need():
+    assert {"podman", "uidmap", "catatonit", "slirp4netns", "busybox-static"} <= set(ins.PACKAGES)
 
-    ran, real = [], ins.run
 
-    def recording(argv, *args, **kwargs):
-        if argv[1:] == ["--version"]:  # asking git its version changes nothing
-            return real(argv, *args, **kwargs)
-        ran.append(argv)
+def elf(interpreter: bool) -> bytes:
+    """The head of a 64-bit ELF program: its header and its program headers, a loaded
+    segment and, with ``interpreter``, the dynamic loader's."""
+    import struct
 
-    monkeypatch.setattr(ins, "run", recording)
-    monkeypatch.setattr(ins, "GIT_MIN_VERSION", (99, 0))
-    with pytest.raises(ins.InstallError, match="git"):
-        ins.ensure_accounts(pwd.getpwuid(os.getuid()).pw_name)
-    assert ran == []
+    types = [1, 3] if interpreter else [1]  # PT_LOAD, PT_INTERP
+    header = b"\x7fELF" + bytes([2, 1, 1]) + bytes(9)
+    header += struct.pack("<HHIQQQIHHHHHH", 2, 62, 1, 0, 64, 0, 0, 64, 56, len(types), 0, 0, 0)
+    return header + b"".join(struct.pack("<II", t, 5) + bytes(48) for t in types)
+
+
+def test_a_static_program_is_told_from_a_dynamic_one(tmp_path):
+    import shutil
+
+    assert not ins.is_static(Path(shutil.which("ls")))  # positive control: a dynamic one
+    static = tmp_path / "static"
+    static.write_bytes(elf(interpreter=False))
+    dynamic = tmp_path / "dynamic"
+    dynamic.write_bytes(elf(interpreter=True))
+    assert not ins.is_static(dynamic)
+    assert ins.is_static(static)
+    text = tmp_path / "script"
+    text.write_text("#!/bin/sh\n")
+    assert not ins.is_static(text)
+
+
+def test_tmux_is_built_from_the_pinned_tarball():
+    assert ins.TMUX_VERSION and len(ins.TMUX_SHA256) == 64
+    assert ins.TMUX_URL.endswith(f"/{ins.TMUX_VERSION}/tmux-{ins.TMUX_VERSION}.tar.gz")
+    assert ins.tmux_tarball(Path("/x")).name == f"tmux-{ins.TMUX_VERSION}.tar.gz"
+    argv = ins.tmux_build_argv(Path("/t/tmux.tar.gz"), Path("/out"))
+    assert argv[:2] == ["run", "--rm"]
+    assert ins.BUILDER_IMAGE in argv
+    assert "--volume=/t/tmux.tar.gz:/tmux.tar.gz:ro" in argv
+    assert any("--enable-static" in a for a in argv)
+
+
+def test_the_tmux_tarball_is_checked_against_its_pin(tmp_path, monkeypatch):
+    fake_downloads(monkeypatch)
+    toolchain = tmp_path / "toolchain"
+    ins.ensure_toolchain(toolchain)
+    assert ins.tmux_tarball(toolchain).read_bytes() == b"tmux source"
+    monkeypatch.setattr(ins, "TMUX_SHA256", "0" * 64)
+    other = tmp_path / "other"
+    with pytest.raises(ins.InstallError, match="checksum"):
+        ins.ensure_toolchain(other)
+    assert not ins.tmux_tarball(other).exists()
+
+
+def test_the_default_image_is_ubuntu_pinned_by_tag_with_what_rcman_needs():
+    containerfile = (REPO / "installer" / "workspace" / "Containerfile").read_text()
+    assert containerfile.splitlines()[0] == "FROM docker.io/library/ubuntu:24.04"
+    for package in ("git", "ca-certificates", "curl", "python3"):
+        assert f" {package}" in containerfile, package
+    image = ins.workspace_image()
+    assert image.startswith("localhost/rcman-workspace:") and len(image.split(":")[1]) == 12
+
+
+def test_the_image_tag_follows_the_containerfile(tmp_path, monkeypatch):
+    first = ins.workspace_image()
+    changed = tmp_path / "Containerfile"
+    changed.write_text(ins.CONTAINERFILE.read_text() + "RUN true\n")
+    monkeypatch.setattr(ins, "CONTAINERFILE", changed)
+    assert ins.workspace_image() != first
+
+
+def claude_release(version: str, binary: bytes, checksum: str | None = None) -> dict:
+    import hashlib
+    import json
+
+    digest = checksum or hashlib.sha256(binary).hexdigest()
+    base = "https://downloads.example.com/releases"
+    platform = ins.claude_platform()
+    manifest = {"version": version, "platforms": {platform: {"checksum": digest}}}
+    return {
+        f"{base}/{version}/manifest.json": json.dumps(manifest).encode(),
+        f"{base}/{version}/{platform}/claude": binary,
+    }
+
+
+def test_the_claude_store_holds_the_version_checked_against_its_release(tmp_path, monkeypatch):
+    served = claude_release("2.1.0", b"#!/bin/sh\necho 2.1.0\n")
+    fetched = []
+    monkeypatch.setattr(ins, "_download", lambda url: (fetched.append(url), served[url])[1])
+    store = tmp_path / "claude"
+    changed = ins.ensure_claude_store(store, "https://downloads.example.com/releases", "2.1.0")
+    assert changed == ["claude 2.1.0"]
+    assert (store / "versions" / "2.1.0").read_bytes() == b"#!/bin/sh\necho 2.1.0\n"
+    assert os.readlink(store / "current") == "versions/2.1.0"
+    assert os.readlink(store / "bin" / "claude") == "../current"
+    assert (store / "bin" / "claude").read_text().endswith("echo 2.1.0\n")
+    assert stat.S_IMODE((store / "versions" / "2.1.0").stat().st_mode) == 0o755
+    fetched.clear()
+    assert ins.ensure_claude_store(store, "https://downloads.example.com/releases", "2.1.0") == []
+    assert fetched == []  # nothing fetched again
+
+
+def test_a_claude_that_does_not_match_its_release_is_refused(tmp_path, monkeypatch):
+    served = claude_release("2.1.0", b"tampered", checksum="0" * 64)
+    monkeypatch.setattr(ins, "_download", lambda url: served[url])
+    store = tmp_path / "claude"
+    with pytest.raises(ins.InstallError, match="checksum"):
+        ins.ensure_claude_store(store, "https://downloads.example.com/releases", "2.1.0")
+    assert not (store / "versions" / "2.1.0").exists() and not (store / "current").exists()
+
+
+def test_the_store_holds_the_tested_version():
+    assert ins.claude_version() == (REPO / "helpers" / "claude-version").read_text().strip()
+
+
+def test_the_first_administrator_is_added_by_rcman_admin_as_rcman():
+    argv = ins.admin_argv("Admin@Example.com")
+    assert argv[:4] == ["runuser", "-u", ins.APP_USER, "--"]
+    assert argv[4] == str(ins.CURRENT / ".venv" / "bin" / "rcman-admin")
+    assert argv[5:] == ["--env-file", str(ins.ETC / "rcman.env"), "add", "--admin", "--",
+                        "Admin@Example.com"]  # fmt: skip
+
+
+def test_podman_runs_as_rcman_through_its_own_socket():
+    argv = ins.as_rcman_podman(990, "image", "exists", "x")
+    assert argv[:5] == ["runuser", "-u", ins.APP_USER, "--", "/usr/bin/env"]
+    assert "XDG_RUNTIME_DIR=/run/user/990" in argv
+    assert argv[argv.index("podman") :] == [
+        "podman", "--remote", "--url", "unix:///run/user/990/podman/podman.sock",
+        "image", "exists", "x",
+    ]  # fmt: skip
+
+
+def test_rcman_makes_its_files_private_to_itself():
+    app = ins.render("rcman.service", SETTINGS)
+    assert "UMask=0077\n" in app
+
+
+@pytest.mark.parametrize("left", ["sudoers", "users", "database"])
+def test_an_install_from_before_workspaces_is_refused(tmp_path, monkeypatch, left):
+    import sqlite3
+
+    sudoers, users, state = (
+        tmp_path / "sudoers.d-rcman",
+        tmp_path / "users.toml",
+        tmp_path / "state",
+    )
+    state.mkdir()
+    monkeypatch.setattr(ins, "OLD_INSTALL_FILES", (sudoers, users))
+    monkeypatch.setattr(ins, "STATE", state)
+    ins.check_not_an_old_install()  # positive control: nothing of one
+    if left == "database":
+        con = sqlite3.connect(state / "rcman.db")
+        con.execute("create table user_settings (email text primary key)")
+        con.close()
+    else:
+        {"sudoers": sudoers, "users": users}[left].write_text("x")
+    with pytest.raises(ins.InstallError, match="install rcman afresh"):
+        ins.check_not_an_old_install()
+
+
+def test_a_database_of_workspaces_is_no_old_install(tmp_path, monkeypatch):
+    from rcman import db
+
+    monkeypatch.setattr(ins, "OLD_INSTALL_FILES", ())
+    monkeypatch.setattr(ins, "STATE", tmp_path)
+    db.migrate(tmp_path / "rcman.db")
+    ins.check_not_an_old_install()
+
+
+def test_rollback_refuses_a_release_from_before_workspaces(tmp_path):
+    old = make_release(tmp_path, "old", workspaces=False)
+    make_release(tmp_path, "new")
+    ins.switch(tmp_path, "old")
+    ins.switch(tmp_path, "new")
+    with pytest.raises(ins.InstallError, match="before workspaces"):
+        ins.rollback(tmp_path)
+    assert os.readlink(tmp_path / "current") == "releases/new"
+    assert old.exists()

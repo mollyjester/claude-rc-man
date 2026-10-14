@@ -18,7 +18,7 @@ BODY = CALLS[("POST", "/api/client-errors")]["json"]
 LOGGER = "rcman.client"
 HEADING = "## Errors reported by the page"
 # What every line holds besides the report itself.
-ADDED = {"event", "at", "email", "linux"}
+ADDED = {"event", "at", "email"}
 
 
 def reported(caplog) -> list[dict]:
@@ -36,7 +36,7 @@ def test_a_report_is_one_json_line_with_who_sent_it(client, caplog):
     assert (r.status_code, r.json()) == (200, {})
     [line] = reported(caplog)
     assert line["event"] == "client_error"
-    assert (line["email"], line["linux"]) == (ALICE, "alice")
+    assert line["email"] == ALICE
     assert dt.datetime.fromisoformat(line["at"]).tzinfo is not None
     assert {k: v for k, v in line.items() if k not in ADDED} == BODY
 

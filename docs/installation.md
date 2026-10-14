@@ -1,9 +1,11 @@
 # Installing rcman
 
-rcman runs on one Ubuntu machine. Caddy, already running there, serves it on a
-public host name with HTTPS; Google sign-in goes through oauth2-proxy, which
-the installer sets up. The installer is `install.sh` in a clone of this
-repository, and the same command upgrades an installation.
+rcman runs on one Ubuntu 24.04 machine. Caddy, already running there, serves it
+on a public host name with HTTPS; Google sign-in goes through oauth2-proxy,
+which the installer sets up. People's workspaces are containers of rootless
+Podman, run by rcman's own account; the installer sets that up too. The
+installer is `install.sh` in a clone of this repository, and the same command
+upgrades an installation.
 
 ## Before you start
 
@@ -13,13 +15,16 @@ repository, and the same command upgrades an installation.
   git able to pull from GitHub as you (for a private repository, for example
   through `gh auth login`).
 - **sudo** for your account.
-- **git** from the system's packages, recent enough for what rcman runs. The
-  installer checks it and names the version it needs when it is older
-  (`GIT_MIN_VERSION` in `helpers/git_run.py`).
+- **Access to the internet** while it runs, for the packages and the downloads
+  below.
 
-Everything else — the Node.js that builds the web interface, uv for the
-Python environment, oauth2-proxy, and Claude Code for each person — the
-installer downloads itself and checks against its published checksum.
+The installer installs the system packages Podman and the workspaces need
+(`PACKAGES` in `installer/install.py`) when they are missing. Everything else —
+the Node.js that builds the web interface, uv for the Python environment,
+oauth2-proxy, tmux's source, and Claude Code — it downloads itself and checks
+against its published checksum, or, for tmux, which publishes none, against
+the one the installer names (`TMUX_SHA256`). The images workspaces are built
+from come from Docker Hub.
 
 ## Creating the Google OAuth client
 
@@ -66,13 +71,14 @@ The installer asks for what it needs the first time, and saves the answers in
 | The Google OAuth client ID | `--google-client-id` | `RCMAN_INSTALL_GOOGLE_CLIENT_ID` |
 | The Google OAuth client secret | `--google-client-secret` | `RCMAN_INSTALL_GOOGLE_CLIENT_SECRET` |
 | The first administrator's Google address | `--admin-email` | `RCMAN_INSTALL_ADMIN_EMAIL` |
-| Their Linux user; you, unless given | `--admin-linux` | `RCMAN_INSTALL_ADMIN_LINUX` |
 | The local port oauth2-proxy listens on | `--proxy-port` | `RCMAN_INSTALL_PROXY_PORT` |
 | The Linux account Caddy runs as | `--caddy-user` | `RCMAN_INSTALL_CADDY_USER` |
+| Where Claude Code's releases are downloaded from | `--claude-download` | `RCMAN_INSTALL_CLAUDE_DOWNLOAD` |
 
 An option wins over a variable, a variable over the saved answer, and the
-saved answer over asking. The port and Caddy's account have defaults and are
-not asked for; the account must exist. Anything else saved in
+saved answer over asking. The port, Caddy's account and the download address
+have defaults (`FIELDS` in `installer/install.py`) and are not asked for;
+Caddy's account must exist. Anything else saved in
 `/etc/rcman/install.env` is dropped from it.
 Without a terminal the installer does not ask; it names what is missing and
 stops. The secret oauth2-proxy signs its cookies with is generated on the first
@@ -84,33 +90,58 @@ run and kept.
    credentials are used. It refuses when the clone has uncommitted changes, is
    on another branch, or cannot be fast-forwarded. If the update changed
    `install.sh`, it starts again with the new version.
-2. **Checks git** on the system path is new enough, and stops there when it
-   is not.
-3. **Creates the accounts it needs**: the `rcusers` group every person's Linux
-   account belongs to, a system user `rcman` for rcman itself (its data lives
-   in `/var/lib/rcman`), a system user `rcman-proxy` for oauth2-proxy, and a
-   group `rcman-web` whose only member is Caddy's account; anyone else in it is
-   taken out.
-4. **Makes the directory of rcman's socket**, `/run/rcman`: it belongs to
+2. **Installs the packages** rootless Podman and the workspaces need, those
+   that are missing.
+3. **Creates the accounts it needs**: a system user `rcman` for rcman itself
+   (its data, and its containers' storage, live in `/var/lib/rcman`), a system
+   user `rcman-proxy` for oauth2-proxy, and a group `rcman-web` whose only
+   member is Caddy's account; anyone else in it is taken out.
+4. **Sets up rootless Podman for `rcman`**: a range of subordinate user and
+   group ids of its own in `/etc/subuid` and `/etc/subgid`, big enough for a
+   range for each person rcman has room for; lingering, so its user manager
+   runs from boot, without anyone signed in; and Podman's socket in that user
+   manager. Workspaces run there, outside rcman's own service, so they keep
+   running while rcman restarts or upgrades.
+5. **Makes the directory of rcman's socket**, `/run/rcman`: it belongs to
    `rcman` and the group `rcman-web`, and no one else may enter it.
    `/etc/tmpfiles.d/rcman.conf` makes it again at every boot.
-5. **Builds a release** of the clone's commit under `/opt/rcman/releases`: the
+6. **Builds a release** of the clone's commit under `/opt/rcman/releases`: the
    files rcman runs, the built web interface, and its Python environment — and
    nothing used only for development. Everything in it belongs to root.
-6. **Makes it current** — `/opt/rcman/current` — and keeps the release before
+7. **Makes it current** — `/opt/rcman/current` — and keeps the release before
    it as `/opt/rcman/previous`; older ones are removed.
-7. **Writes the configuration** in `/etc/rcman`, the sudoers rules in
-   `/etc/sudoers.d/rcman` (checked with `visudo` first), and the two systemd
-   services, `rcman` and `rcman-oauth2-proxy`.
-8. **Puts `rcman-user` on the path**: `/usr/local/sbin/rcman-user` is a link
-   to the current release's, so `sudo rcman-user` finds it. If something else
-   is already there, the installer stops rather than replace it.
-9. **Starts the services**, restarting them when anything changed.
-10. **Adds the first administrator**, as `rcman-user add --admin --adopt` would.
-11. **Checks** that both services answer, and prints the Caddy configuration
+8. **Makes what workspaces are built from**:
+   - the tools every workspace has, whatever its image: tmux, built here into a
+     program that needs nothing of any image, with busybox and the terminal
+     descriptions, in `/var/lib/rcman/tools`;
+   - the default workspace image, Ubuntu with git and what Claude Code needs,
+     from `installer/workspace/Containerfile`, named after that file's
+     content, so that a changed file makes a new image and workspaces made
+     before keep theirs;
+   - the Claude Code store, `/var/lib/rcman/claude`: the version rcman is
+     tested with (`helpers/claude-version`), downloaded and checked against its
+     release's checksum. Every workspace has the store, read-only.
+9. **Writes the configuration** in `/etc/rcman` and the two systemd services,
+   `rcman` and `rcman-oauth2-proxy`.
+10. **Puts `rcman-admin` on root's path**: `/usr/local/sbin/rcman-admin` is a
+   link to the current release's, so `sudo rcman-admin` finds it. If something
+   else is already there, the installer stops rather than replace it.
+11. **Adds the first administrator** with `rcman-admin`, unless they are there.
+12. **Starts the services**, restarting them when anything changed.
+13. **Checks** that both services answer, and prints the Caddy configuration
    and what to do about Caddy, if anything.
 
 Running it again for the same commit changes nothing.
+
+## What a workspace can reach
+
+A workspace has the network, as Claude Code and git need: it reaches the
+internet, and nothing reaches it, since it publishes no port. It cannot reach
+another workspace, nor anything on this machine's loopback addresses, such as
+oauth2-proxy. It can reach **anything this machine serves on its other
+addresses**, and anything on the networks this machine is on, as rcman's own
+account could. If that matters, keep such services on loopback, or limit what
+rcman's account (`rcman`) may connect to with the machine's firewall.
 
 ## Caddy
 
@@ -168,6 +199,19 @@ restart Caddy:
 The installer warns, on every run, while something answers on that address,
 at `127.0.0.1:2019`.
 
+## A machine with an rcman from before workspaces
+
+An rcman from before workspaces — where people had Linux accounts of their own —
+cannot be upgraded. The installer refuses to run on a machine that has one: one
+with `/etc/sudoers.d/rcman`, `/etc/rcman/users.toml`, or a database in
+`/var/lib/rcman` without people in it. rcman itself refuses such a database.
+Remove that installation first — stop and disable its services `rcman` and
+`rcman-oauth2-proxy`, and remove `/etc/systemd/system/rcman*.service`,
+`/opt/rcman`, `/etc/rcman`, `/var/lib/rcman`, `/etc/sudoers.d/rcman`,
+`/usr/local/sbin/rcman-user`, and the Linux accounts it made for people — and
+then install as above. `--rollback` refuses to go back to a release from before
+workspaces for the same reason.
+
 ## Upgrading and rolling back
 
 To upgrade, run `sudo ./install.sh` again: it pulls `main` and installs it.
@@ -183,7 +227,7 @@ Rolling back again returns to the newer release.
 
 ## Afterwards
 
-Add people with `sudo rcman-user add` or on the **People** page, under
+Add people with `sudo rcman-admin add` or on the **People** page, under
 **Admin** in rcman's navigation — see [Adding and removing people](users.md).
 rcman's own settings, which administrators set, are described in
 [Configuration](configuration.md).

@@ -305,7 +305,7 @@ def test_fill_puts_the_branch_back():
     assert rec.fill("· {branch}", values) == "· topic"
 
 
-def test_a_server_is_recorded_as_rc_helper_starts_one_with_spawn_mode_same_dir():
+def test_a_server_is_recorded_as_rcman_starts_one_with_spawn_mode_same_dir():
     assert rec.RC_ARGS[rec.RC_ARGS.index("--spawn") + 1] == "same-dir"
     assert "--spawn" in rec.options_used()[("remote-control",)]
 

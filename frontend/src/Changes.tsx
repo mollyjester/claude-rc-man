@@ -104,7 +104,7 @@ function useGitStatus(path: string, pollMs: number) {
 const selectable = (file: GitFile) => file.selectable !== false;
 
 // A file's change: its letter, coloured, with its word as what it says and its
-// title; a change the page has no letter for, as rc-helper names it.
+// title; a change the page has no letter for, as the server names it.
 function ChangeMark({ change }: { change: string }) {
   const word = m.changes[change];
   const letter = m.changeLetters[change];

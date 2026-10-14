@@ -49,7 +49,7 @@ program was still running) and whether it needed an account.
 
 A screen that a live server has shown but that no sequence can bring about
 cannot be recorded. Where rcman has to recognise one, the screen as seen —
-the whole pane, read with `tmux capture-pane` as rc-helper reads it — is kept
+the whole pane, read with `tmux capture-pane` as rcman reads it — is kept
 in `tests/fakes/observed/` as `<name>.txt`, sanitised as the fixtures are.
 That folder's `manifest.json` lists every screen in it, and for each records
 its exit code (`null` when the program was still running), the Claude Code
@@ -60,8 +60,8 @@ reported it (`journal`: its `code`, `verb` and `fingerprint`).
 `load_observed` in `devtools/record_claude.py` is the one reader.
 
 Tests hold the manifest to exactly the files beside it
-(`tests/test_record_claude.py`), and each screen to the state rc-helper reads
-from it (`OBSERVED_STATES` in `tests/test_rc_helper.py`). An observed screen
+(`tests/test_record_claude.py`), and each screen to the state rcman reads
+from it (`OBSERVED_STATES` in `tests/test_screens.py`). An observed screen
 cannot be re-recorded when a new Claude Code version is approved, so
 `test_every_observed_screen_is_kept_for_the_approved_version` fails while a
 screen's `kept_for` does not name the version in the fixtures' manifest; see
@@ -119,9 +119,9 @@ connected stage lasts, and `FAKE_CLAUDE_VERSION` the version it reports.
 
 ## Not recorded
 
-The fake has no recording of these, so it cannot show them. rc-helper
+The fake has no recording of these, so it cannot show them. rcman
 reports a live one as `unrecognised`, and a server whose
-process has ended on one as `exited` (see [rc-helper.md](rc-helper.md)):
+process has ended on one as `exited` (see [runtime.md](runtime.md#server-states)):
 
 - the one-time "Enable Remote Control?" confirmation of an account that has
   never used Remote Control;
@@ -185,3 +185,14 @@ Claude's code in `code` there, as one line ended with a newline, which is read
 only once it is ended, captures the success screens, and logs out,
 which revokes that sign-in. It uses a
 throwaway configuration, so the account's other sign-ins are untouched.
+
+## In a workspace
+
+In the container suite, the fake is the Claude Code release the installer
+downloads: `tests/claude_download.py` lays it out as a release —
+`<version>/manifest.json` with its checksum, and `<version>/<platform>/claude`
+— and the suite serves it and gives the installer its address. The binary is
+one file, as Claude Code's is: a shell script holding the fake and what it
+reads, which unpacks itself under `$TMPDIR` the first time it runs and runs it
+with the image's `python3`. The default workspace image has `python3` for it.
+

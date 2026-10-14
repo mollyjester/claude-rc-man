@@ -55,13 +55,12 @@ def write(con: sqlite3.Connection, record: Record, result: str) -> None:
     event = {
         "at": dt.datetime.now(dt.UTC).isoformat(),
         "email": record.identity.email,
-        "linux": record.identity.linux,
         "action": record.action,
         "target": record.target,
         "result": result,
     }
     con.execute(
-        "insert into audit (at, email, linux, action, target, result) values (?, ?, ?, ?, ?, ?)",
+        "insert into audit (at, email, action, target, result) values (?, ?, ?, ?, ?)",
         tuple(event.values()),
     )
     con.commit()

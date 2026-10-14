@@ -1,10 +1,10 @@
-"""Running git for rc-helper: finding it, starting and ending it, and reading what it writes.
+"""Running git: finding it, starting and ending it, and reading what it writes.
 
 Mechanics only. git is looked for on the system path, never on the person's
 own. Every call has a deadline; a call past it, or one whose output is left
 unread, ends git and everything it started, hooks and remote helpers among
-them, since each git runs in a process group of its own. What rc-helper
-makes of a refusal is rc-helper's: this module raises its own exceptions.
+them, since each git runs in a process group of its own. What a caller
+makes of a refusal is its own: this module raises its own exceptions.
 
 Python standard library only: it runs under the system interpreter.
 """
@@ -27,7 +27,7 @@ GIT_SEARCH_PATH = "/usr/local/bin:/usr/bin:/bin"
 # How much of what git says when it refuses is passed on; the rest is counted.
 MAX_GIT_MESSAGE_LINES = 40
 MAX_GIT_LINE_LENGTH = 500
-# The oldest git that has everything rc-helper runs: rev-parse --path-format.
+# The oldest git that has everything run through this module: rev-parse --path-format.
 GIT_MIN_VERSION = (2, 31)
 _READ_SIZE = 65536
 
@@ -40,7 +40,7 @@ LETTER_CHANGES = {
     "R": "renamed",
     "C": "copied",
 }
-# Every change rc-helper reports a file with.
+# Every change a file is reported with.
 CHANGES = (*LETTER_CHANGES.values(), "unmerged", "untracked")
 # for-each-ref's format for parse_branches: name, symbolic target, upstream, current.
 BRANCH_FORMAT = "%(refname)%00%(symref)%00%(upstream)%00%(HEAD)"
@@ -169,15 +169,15 @@ class Git:
 
         stdin, stdout and stderr are served by one loop against the deadline.
         git runs in a session of its own; at the deadline, or when the caller
-        stops reading, or on any exception (SIGTERM among them, which rc-helper
-        turns into one), the whole process group is killed.
+        stops reading, or on any exception (SIGTERM among them, where the caller
+        turns it into one), the whole process group is killed.
         """
         argv = [find_git(), *args]
         env = {**self.env, **(extra_env or {})}
         proc = None
         # SIGTERM waits while git starts, so that it cannot arrive between git
         # starting and this call holding it; git itself starts with the mask it
-        # would have had. Sound only as rc-helper is: one thread.
+        # would have had. Sound only in a process of one thread.
         mask = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGTERM})
         try:
             try:

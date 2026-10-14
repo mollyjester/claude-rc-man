@@ -168,11 +168,6 @@ EXEMPT = {
         "",
         f'"{TMP}/"',
     ): "a leak mark the kept screens are searched for; nothing is made there",
-    (
-        "tests/test_rc_helper.py",
-        "test_mkdir_refuses_a_parent_outside_the_home_folder",
-        f'"{TMP}"',
-    ): "gives rc-helper the absolute path to show it is refused; nothing is made there",
     ("devtools/held_folders.py", "", f'"{TMP}"'): (
         "the folder held folders are made in, named as the bound no removal may leave;"
         " nothing is made at the path itself"
@@ -447,15 +442,14 @@ def test_the_exemptions_still_have_their_sites():
         assert [s for s in sites if (s.function, s.text) == (function, text)], (rel, function)
 
 
-def test_a_new_fixed_site_in_an_exempt_function_is_flagged():
-    """Planted twin: an exemption covers its own site, not the function it is in."""
-    in_functions = [key for key in EXEMPT if key[1]]
-    assert in_functions  # non-vacuity: an exemption inside a function to plant beside
-    rel, function, text = in_functions[0]
-    source = (ROOT / rel).read_text(encoding="utf-8")
+def test_a_new_fixed_site_in_an_exempt_function_is_flagged(monkeypatch):
+    """Planted twin: an exemption covers its own site, not the function it is in. The
+    exemption and its function are planted, so the twin holds whatever EXEMPT lists."""
+    rel, function, text = "tests/planted_module.py", "planted", f'"{TMP}"'
+    source = f"def {function}():\n    y = {text}\n"
+    monkeypatch.setitem(EXEMPT, (rel, function, text), "planted")
     assert flagged(rel, source) == []  # positive control: the exempt site passes
     header = f"def {function}("
-    assert source.count(header) == 1
     body = source.index(":\n", source.index(header)) + 2
     for extra in ('    s.bind(("127.0.0.1", 8765))\n', f"    x = {text}\n"):
         planted = source[:body] + extra + source[body:]

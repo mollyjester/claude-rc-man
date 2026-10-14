@@ -15,7 +15,7 @@ import subprocess
 import time
 from pathlib import Path
 
-from helpers.rc_helper import pane_exit_status
+from helpers.screens import pane_exit_status
 
 WIDTH = 200
 HEIGHT = 50

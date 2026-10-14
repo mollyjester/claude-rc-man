@@ -6,7 +6,9 @@ built from ``tests/container/podman/Dockerfile`` once systemd has booted there:
 - ``setup`` makes the service account, with a subordinate id range, linger, and so a
   user manager of its own, and ``podman.socket`` enabled in it;
 - ``load`` loads the image archive on stdin into the account's Podman, through the
-  socket, and prints what ``podman load`` prints.
+  socket, and prints what ``podman load`` prints;
+- ``run`` runs the rest of its command line as the account, with its user manager's
+  runtime folder.
 """
 
 from __future__ import annotations
@@ -53,5 +55,9 @@ def load() -> None:
     os.execvp("runuser", as_account("podman", "--remote", "load"))
 
 
+def run_as_account() -> None:
+    os.execvp("runuser", as_account(*sys.argv[2:]))
+
+
 if __name__ == "__main__":
-    {"setup": setup, "load": load}[sys.argv[1]]()
+    {"setup": setup, "load": load, "run": run_as_account}[sys.argv[1]]()

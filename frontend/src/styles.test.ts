@@ -283,9 +283,10 @@ test("a rule is found by its selector list wherever the list breaks its lines", 
   expect(ruleOf("a, b", "a,\n  b\n{ color: red; }")).toMatch(/color/);
 });
 
-test("what git said wraps, where a server's screen scrolls", () => {
+test("what git said, and why a workspace could not be made, wrap, where a server's screen scrolls", () => {
   expect(ruleOf(".screen")).toMatch(/overflow-x:\s*auto/); // positive control
   expect(ruleOf(".git-said")).toMatch(/white-space:\s*pre-wrap/);
+  expect(ruleOf(".workspace-error")).toMatch(/white-space:\s*pre-wrap/);
 });
 
 test("a commit message's box stands apart from its label", () => {

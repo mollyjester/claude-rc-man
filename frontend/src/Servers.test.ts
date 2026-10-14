@@ -1,7 +1,7 @@
 import { m } from "./messages";
-import { ACTIONS, dotFor, KIND, KIND_ORDER, LIVE, PRIMARY, serversIn } from "./Servers";
+import { ACTIONS, dotFor, KIND, KIND_ORDER, LIVE, PRIMARY, type Workspace } from "./Servers";
 
-// Whether a table keyed by state covers exactly the states rc-helper reports.
+// Whether a table keyed by state covers exactly the states the server reports.
 function sameStates(table: Record<string, unknown>) {
   const states = Object.keys(ACTIONS).sort();
   const keys = Object.keys(table).sort();
@@ -45,84 +45,43 @@ test.each(Object.entries(PRIMARY))(
   },
 );
 
-describe("the dot a folder carries", () => {
-  const at = (path: string, state: string) => ({
-    path,
+describe("the dot a workspace carries", () => {
+  const at = (extra: Partial<Workspace>): Workspace => ({
+    id: 1,
+    name: "alpha",
+    state: "ready",
+    error: null,
+    server: null,
+    server_error: null,
+    ...extra,
+  });
+  const server = (state: string) => ({
+    workspace: 1,
     state,
     environment_url: null,
     session_name: null,
     exit_code: null,
   });
 
-  test("is its own server's, whether open or not", () => {
-    const servers = [at("projects", "ready")];
-    expect(dotFor("projects", servers, false)).toBe("running");
-    expect(dotFor("projects", servers, true)).toBe("running");
+  test.each(Object.entries(KIND))("is its %s server's kind, %s", (state, kind) => {
+    expect(dotFor(at({ server: server(state) }))).toBe(kind);
   });
 
-  test("includes the servers below it only while it is closed", () => {
-    const servers = [at("projects/alpha", "trust_prompt")];
-    expect(dotFor("projects", servers, true)).toBe("waiting");
-    expect(dotFor("projects", servers, false)).toBeNull();
-  });
-
-  test("is the most urgent of several", () => {
-    const servers = [
-      at("projects", "stopped"),
-      at("projects/alpha", "ready"),
-      at("projects/beta", "exited"),
-    ];
-    expect(dotFor("projects", servers, true)).toBe("problem");
-    expect(dotFor("projects", servers.slice(0, 2), true)).toBe("running");
-  });
-
-  test("does not come from a folder whose name merely starts the same", () => {
-    const servers = [at("projects/x", "unrecognised")];
-    expect(dotFor("projects", servers, true)).toBe("problem"); // positive control: it is below projects
-    expect(dotFor("proj", servers, true)).toBeNull();
+  test("is a problem for a state rcman does not know", () => {
+    expect(dotFor(at({ server: server("something_new") }))).toBe("problem");
   });
 
   test("is none where there is no server", () => {
-    expect(dotFor("projects", [], true)).toBeNull();
-    expect(dotFor("projects", [at("other", "ready")], true)).toBeNull();
-  });
-});
-
-describe("the servers in a folder", () => {
-  const at = (path: string) => ({
-    path,
-    state: "ready",
-    environment_url: null,
-    session_name: null,
-    exit_code: null,
-  });
-  const servers = [
-    at("projects"),
-    at("projects/alpha"),
-    at("projects/alpha/deep"),
-    at("projects/alpha2"),
-    at("proj"),
-  ];
-  const paths = (path: string) => serversIn(path, servers).map((s) => s.path);
-
-  test("are its own and every one below it", () => {
-    expect(paths("projects/alpha")).toEqual(["projects/alpha", "projects/alpha/deep"]);
-    expect(paths("projects")).toEqual([
-      "projects",
-      "projects/alpha",
-      "projects/alpha/deep",
-      "projects/alpha2",
-    ]);
+    expect(dotFor(at({}))).toBeNull();
+    expect(dotFor(at({ state: "creating" }))).toBeNull();
+    expect(dotFor(at({ state: "deleting" }))).toBeNull();
   });
 
-  test("are not those of a folder whose name merely starts the same, nor those above it", () => {
-    expect(paths("projects/alpha")).not.toContain("projects/alpha2");
-    expect(paths("proj")).toEqual(["proj"]);
-    expect(paths("projects/alpha/deep")).toEqual(["projects/alpha/deep"]);
-  });
-
-  test("are none where there is no server", () => {
-    expect(paths("other")).toEqual([]);
-    expect(serversIn("projects", [])).toEqual([]);
+  test("is a problem where the workspace failed, or its server could not be read", () => {
+    expect(dotFor(at({ state: "failed", error: "planted" }))).toBe("problem");
+    const unread = { code: "workspace_failed", title: "Planted." };
+    expect(dotFor(at({ server_error: unread }))).toBe("problem");
+    // even over a server that would be running
+    expect(dotFor(at({ server_error: unread, server: server("ready") }))).toBe("problem");
   });
 });

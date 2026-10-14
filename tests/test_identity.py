@@ -1,8 +1,7 @@
-"""Who is asking: the proxy's email header, the users file, the origin."""
+"""Who is asking: the proxy's email header, the people table, the origin."""
 
-from rcman import routes
+from rcman import db, people, routes
 
-from helpers import users_file as uf
 from tests.conftest import ALICE, BOB, CALLS, ORIGIN, as_user, changing, concrete
 
 
@@ -16,20 +15,34 @@ def test_unknown_email_is_403(client):
 
 
 def test_email_matching_is_case_insensitive(client):
-    assert client.get("/api/me", headers=as_user("ALICE@Example.com")).json()["linux"] == "alice"
+    assert client.get("/api/me", headers=as_user("ALICE@Example.com")).json()["email"] == ALICE
 
 
-def test_removed_user_is_refused_at_once(client, settings):
+def test_a_person_removed_is_refused_at_once(client, settings):
     assert client.get("/api/me", headers=as_user(BOB)).status_code == 200
-    uf.save(settings.users_file, [u for u in uf.load(settings.users_file) if u.email != BOB])
+    con = db.connect(settings.database)
+    try:
+        people.remove(con, people.by_email(con, BOB))
+    finally:
+        con.close()
     assert client.get("/api/me", headers=as_user(BOB)).status_code == 403
+
+
+def test_a_person_being_deleted_is_refused(client, settings):
+    con = db.connect(settings.database)
+    try:
+        people.mark_deleting(con, people.by_email(con, BOB))
+    finally:
+        con.close()
+    r = client.get("/api/me", headers=as_user(BOB))
+    assert (r.status_code, r.json()["code"]) == (403, "not_allowed")
 
 
 KNOWN_ADMIN_ROUTES = {
     ("GET", "/api/audit"),
-    ("GET", "/api/users"),
-    ("POST", "/api/users"),
-    ("DELETE", "/api/users/{linux}"),
+    ("GET", "/api/people"),
+    ("POST", "/api/people"),
+    ("DELETE", "/api/people/{person}"),
     ("GET", "/api/claude/versions"),
     ("POST", "/api/claude/upgrade"),
     ("GET", "/api/servers/everyone"),
@@ -49,7 +62,7 @@ def admin_routes(app):
 def test_admin_routes_are_found_in_the_route_table(app):
     found = admin_routes(app)
     assert KNOWN_ADMIN_ROUTES <= found  # non-vacuity: every known one is found
-    assert ("GET", "/api/me") not in found and ("GET", "/api/servers") not in found
+    assert ("GET", "/api/me") not in found and ("GET", "/api/workspaces") not in found
 
 
 def test_admin_routes_refuse_non_admins(client, app):
@@ -80,12 +93,6 @@ def test_changes_need_the_public_origin(client):
 
 def test_reads_do_not_need_an_origin(client):
     assert client.get("/api/me", headers=as_user(ALICE)).status_code == 200
-
-
-def test_invalid_users_file_is_a_500_problem(client, settings):
-    settings.users_file.write_text("not toml [")
-    r = client.get("/api/me", headers=as_user(ALICE))
-    assert (r.status_code, r.json()["code"]) == (500, "users_file_invalid")
 
 
 def test_health_needs_no_identity(client):

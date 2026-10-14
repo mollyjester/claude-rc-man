@@ -2,15 +2,16 @@
 
 rcman runs as the systemd service `rcman`, and what it writes goes to the
 system journal on the server. Besides the service's own messages — starting,
-stopping, and anything that went wrong inside rcman — it writes three kinds of
-event there, each as one line of JSON:
+stopping, and anything that went wrong inside rcman, such as a workspace it
+could not make or bring back when it started, or that it is waiting for Podman
+to answer — it writes three kinds of event there, each as one line of JSON:
 
 - **Audit events**: each request that changed something, as the
   [audit trail](audit.md) records it.
 - **Errors reported by the page**: failures a person's browser saw that rcman
   itself could not, described [below](#errors-reported-by-the-page).
 - **Output rcman does not recognise**: a server on a screen rcman does not
-  recognise, or Claude Code or git answering in a way it does not, described
+  recognise, or Claude Code answering in a way it does not, described
   [below](#output-rcman-does-not-recognise).
 
 Only the audit events are also in the audit trail. The journal keeps what it
@@ -81,7 +82,6 @@ and adds who sent it. A line holds:
 | `event` | `client_error` |
 | `at` | When rcman wrote the line |
 | `email` | The address of the person whose page sent it |
-| `linux` | Their Linux user |
 | `kind` | What kind of failure it was, from the list above |
 | `method` | The request's method, or `null` for a `page_error` |
 | `path` | The request's path, without its query, or `null` for a `page_error` |
@@ -103,24 +103,21 @@ rcman writes a line when something it relies on enters a state it does not
 recognise:
 
 - a server is on a screen rcman does not recognise — in the person's own
-  listing, in **Everyone's servers** or the administrators' warning, or after
-  an action on it (see [Servers](servers.md#when-something-looks-unfamiliar));
-- Claude Code answers in a way rcman does not recognise, such as a sign-in
-  screen it does not know (see
-  [Connecting your Claude account](claude-account.md#when-something-looks-unfamiliar));
-- git answers in a way rcman does not recognise (see
-  [Git](git.md#when-git-refuses)).
+  list of workspaces, in **Everyone** or the administrators' warning, or after
+  an action on it (see [Workspaces](workspaces.md#when-something-looks-unfamiliar));
+- Claude Code answers in a way rcman does not recognise, such as when rcman asks
+  it whether it is signed in before starting a server.
 
 It writes the line once, when the state begins, and nothing more while it
 lasts. A server is written again only once it has been seen in another state,
 or not at all, and then on an unrecognised screen again; a call is written
-again only once the same call by the same person, on the same folder, has
+again only once the same call by the same person, in the same workspace, has
 worked and then failed that way again. rcman remembers what it has written
 only while it runs, so after it restarts a state that is still there is
 written again; two answers arriving out of order can also repeat a line.
 
-A line never holds the screen or what git said: they show a person's own
-work, which may be anything, and administrators never see a person's screen.
+A line never holds the screen or what Claude Code said: they show a person's
+own work, which may be anything, and administrators never see a person's screen.
 The person sees it themselves, with **Show screen** or where the page shows
 the failure, and can tell an administrator what it said. The line counts its
 lines and holds a fingerprint of them instead, so that lines about the same
@@ -130,11 +127,10 @@ output can be told apart from lines about different output:
 |---|---|
 | `event` | `unrecognised` |
 | `at` | When rcman wrote the line |
-| `email` | The person's address, or `null` when they are not in the users file |
-| `linux` | Their Linux user |
-| `code` | `server_unrecognised` for a server on such a screen; `claude_unrecognised_output` or `git_unrecognised_output` for a call that failed with output from Claude Code or git |
-| `verb` | The `rc-helper` command that showed it, such as `list` |
-| `path` | The folder it is about, inside the person's home, or `null` for a call about none, such as connecting a Claude account |
+| `email` | The person's address |
+| `code` | `server_unrecognised` for a server on such a screen; `claude_unrecognised_output` for an action that failed with output from Claude Code |
+| `verb` | What showed it: `list` for a list of workspaces, or the action, such as `start` or `output` |
+| `workspace` | The name of the workspace it is about |
 | `lines` | How many lines the screen or the output had |
 | `fingerprint` | The start of a SHA-256 hash of those lines, each without its trailing spaces: two lines with the same fingerprint are very likely about the same output |
 

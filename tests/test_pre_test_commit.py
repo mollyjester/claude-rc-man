@@ -2,8 +2,8 @@
 
 Every repository it acts in here is a scratch one under ``tmp_path``, with a
 local bare repository as its origin, and git runs with the fixtures'
-configuration, which refuses every transport but a local repository's, as
-``tests/test_helper_env.py`` shows. Each run names its project folder, as
+configuration, which refuses every transport but a local repository's
+(``tests/git_fixtures.py``). Each run names its project folder, as
 Claude Code's ``CLAUDE_PROJECT_DIR`` does, and the hook acts only in a
 checkout of that project's repository. The autouse
 ``real_repository_untouched`` holds the hook to all of that: the repository

@@ -1,18 +1,26 @@
 #!/usr/bin/python3
-"""The whole of rcman in one container, for the browser test on the host.
+"""The whole of rcman in the podman host, for the browser tests on the host.
 
-Installs rcman from a clone as install.sh does, adds people with rcman-user,
-points oauth2-proxy's Google provider at a stand-in (tests/container/oidc_stub.py),
-and puts Caddy, with its own certificate authority and its admin API off,
-running as its own account, in front of rcman.test and auth.test. Prints READY
-and keeps everything running.
+Run as root inside the podman host by tests/test_container_suite.py:
+
+- with no argument, it installs rcman from a clone as install.sh does
+  (tests/container/installed.py), with alice@example.com its first administrator,
+  adds bob and carol with rcman-admin, points oauth2-proxy's Google provider at a
+  stand-in (tests/container/oidc_stub.py), and puts Caddy, with its own certificate
+  authority and its admin API off, running as its own account, in front of
+  rcman.test and auth.test; each runs as a service of its own, so this returns once
+  everything answers. Signing in to Claude in a workspace is not there yet, so a
+  service of the test's signs in the fake claude of every workspace whose name
+  begins with SIGNED as soon as it is made;
+- with ``check``, after the browser tests, it checks what they left: carol, whom they
+  deleted, has nothing labelled hers left.
 
 The only change to what the installer wrote is the three Google endpoints in
 oauth2-proxy's configuration.
 """
 
 import json
-import os
+import sqlite3
 import subprocess
 import sys
 import time
@@ -20,66 +28,67 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from clone import CLONE, SRC, make_clone, sh  # noqa: E402
+from clone import SRC, make_clone, sh  # noqa: E402
+from installed import (  # noqa: E402
+    SETTINGS,
+    STATE,
+    install,
+    podman,
+    serve_releases,
+    signed_in,
+)
 
 DOMAIN = "rcman.test"
 AUTH = "auth.test"
 STUB_PORT = 9100
-PEOPLE = {  # linux user: (email, administrator)
-    "alice": ("alice@example.com", True),
-    "bob": ("bob@example.com", False),
-    "carol": ("carol@example.com", False),
-    "dave": ("dave@example.com", False),
-}
-GOOD_CODE = "GOOD-CODE"
-INSTALLER = SRC / "tests" / "container" / "fake-installer"
-ENV = {
-    "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-    "RC_ADMIN_INSTALLER": str(INSTALLER),
-}
+ADMIN = "alice@example.com"
+OTHERS = ("bob@example.com", "carol@example.com")
+# The names of the workspaces whose fake claude is signed in as they are made.
+SIGNED = "signed-"
+LEFT = Path("/var/tmp/rcman-stack.json")
+
+
+def people() -> dict[str, int]:
+    con = sqlite3.connect(f"file:{STATE / 'rcman.db'}?mode=ro", uri=True)
+    try:
+        return dict(con.execute("select email, id from people"))
+    finally:
+        con.close()
+
+
+def sign_in_forever() -> None:
+    """Sign in the fake claude of each workspace named SIGNED..., once it is ready."""
+    done: set[int] = set()
+    while True:
+        try:
+            con = sqlite3.connect(f"file:{STATE / 'rcman.db'}?mode=ro", uri=True)
+            try:
+                rows = con.execute(
+                    "select id from workspaces where state = 'ready' and name like ?",
+                    (f"{SIGNED}%",),
+                ).fetchall()
+            finally:
+                con.close()
+            for (workspace,) in rows:
+                if workspace not in done:
+                    signed_in(workspace)
+                    done.add(workspace)
+        except Exception as error:  # noqa: BLE001 - it tries again on its next round
+            print(f"signing in: {error}", flush=True)
+        time.sleep(0.5)
 
 
 def main() -> None:
+    SETTINGS["RCMAN_INSTALL_CLAUDE_DOWNLOAD"] = serve_releases()
+    SETTINGS["RCMAN_INSTALL_DOMAIN"] = DOMAIN
+    SETTINGS["RCMAN_INSTALL_ADMIN_EMAIL"] = ADMIN
     make_clone()
-    install = subprocess.run(
-        [str(CLONE / "install.sh")],
-        env={
-            **ENV,
-            "SUDO_USER": "dev",
-            "RCMAN_INSTALL_DOMAIN": DOMAIN,
-            "RCMAN_INSTALL_GOOGLE_CLIENT_ID": "test-client-id",
-            "RCMAN_INSTALL_GOOGLE_CLIENT_SECRET": "test-client-secret",
-            "RCMAN_INSTALL_ADMIN_EMAIL": PEOPLE["alice"][0],
-            "RCMAN_INSTALL_ADMIN_LINUX": "alice",
-        },
-        stdin=subprocess.DEVNULL,
-        capture_output=True,
-        text=True,
-    )
-    if install.returncode != 0:
-        sys.exit(f"install.sh failed:\n{install.stdout}{install.stderr}")
-
-    for linux, (email, admin) in PEOPLE.items():
-        if linux != "alice":
-            sh(
-                "/opt/rcman/current/helpers/rcman-user",
-                "add",
-                linux,
-                email,
-                *(["--admin"] if admin else []),
-                env=ENV,
-            )
-        home = Path(f"/home/{linux}")
-        demo = home / "projects" / f"{linux}-demo"
-        demo.mkdir(parents=True, exist_ok=True)
-        state = home / ".claude-fake" / "fake-state.json"
-        state.parent.mkdir(exist_ok=True)
-        state.write_text(
-            json.dumps(
-                {"logged_in": False, "trusted": [], "servers": {}, "accept_codes": [GOOD_CODE]}
-            )
-        )
-        sh("chown", "-R", f"{linux}:{linux}", str(demo.parent), str(state.parent))
+    proc = install()
+    if proc.returncode != 0:
+        sys.exit(f"install.sh failed:\n{proc.stdout}{proc.stderr}")
+    for email in OTHERS:
+        sh("rcman-admin", "add", "--", email)
+    LEFT.write_text(json.dumps(people()))
 
     cfg = Path("/etc/rcman/oauth2-proxy.cfg")
     cfg.write_text(
@@ -89,18 +98,10 @@ def main() -> None:
         + f'redeem_url = "http://127.0.0.1:{STUB_PORT}/token"\n'
         + f'validate_url = "http://127.0.0.1:{STUB_PORT}/tokeninfo"\n'
     )
-    subprocess.Popen(
-        [
-            "runuser",
-            "-u",
-            "nobody",
-            "--",
-            sys.executable,
-            str(SRC / "tests/container/oidc_stub.py"),
-            str(STUB_PORT),
-        ]
-    )
+    sh("systemd-run", "--unit=rcman-test-oidc", "--uid=nobody",
+       sys.executable, str(SRC / "tests/container/oidc_stub.py"), str(STUB_PORT))  # fmt: skip
     sh("systemctl", "restart", "rcman-oauth2-proxy.service")
+    sh("systemd-run", "--unit=rcman-test-sign-in", sys.executable, __file__, "sign-in")
 
     caddyfile = Path("/etc/caddy/Caddyfile")
     caddyfile.parent.mkdir(parents=True, exist_ok=True)
@@ -109,25 +110,38 @@ def main() -> None:
         + Path("/etc/rcman/Caddyfile.snippet").read_text()
         + f"\n{AUTH} {{\n\treverse_proxy 127.0.0.1:{STUB_PORT}\n}}\n"
     )
-    # Caddy as its own account, as on a real host: it reaches rcman's socket only
-    # through the group the installer made it a member of.
+    # Caddy as its own account, as on a real host: it reaches rcman's socket only through
+    # the group the installer made it a member of.
     data = Path("/var/lib/caddy")
     data.mkdir(parents=True, exist_ok=True)
     sh("chown", "-R", "caddy:caddy", str(data))
-    caddy = subprocess.Popen(
-        [
-            "runuser", "-u", "caddy", "--", "/usr/bin/env", f"HOME={data}",
-            f"XDG_DATA_HOME={data}/.local/share", f"XDG_CONFIG_HOME={data}/.config",
-            "caddy", "run", "--adapter", "caddyfile", "--config", str(caddyfile),
-        ]
+    sh(
+        "systemd-run", "--unit=rcman-test-caddy", "--uid=caddy", f"--setenv=HOME={data}",
+        f"--setenv=XDG_DATA_HOME={data}/.local/share", f"--setenv=XDG_CONFIG_HOME={data}/.config",
+        "--property=AmbientCapabilities=CAP_NET_BIND_SERVICE",
+        "caddy", "run", "--adapter", "caddyfile", "--config", str(caddyfile),
     )  # fmt: skip
-    time.sleep(3)
-    if caddy.poll() is not None:
-        sys.exit("caddy did not start")
+    deadline = time.monotonic() + 60
+    probe = ["curl", "-sk", "-o", "/dev/null", "--resolve", f"{DOMAIN}:443:127.0.0.1"]
+    while subprocess.run([*probe, f"https://{DOMAIN}/"], capture_output=True).returncode != 0:
+        if time.monotonic() > deadline:
+            journal = sh("journalctl", "--no-pager", "-u", "rcman-test-caddy", check=False)
+            sys.exit(f"caddy does not answer:\n{journal.stdout}")
+        time.sleep(1)
     print("READY", flush=True)
-    caddy.wait()
+
+
+def check() -> None:
+    """What the browser tests left: nothing of carol's, whom they deleted."""
+    carol = json.loads(LEFT.read_text())["carol@example.com"]
+    label = f"label=rcman.person={carol}"
+    left = podman("ps", "--all", "--quiet", "--filter", label).stdout.split()
+    volumes = podman("volume", "ls", "--quiet", "--filter", label).stdout.split()
+    assert left == [] and volumes == [], (left, volumes)
+    assert "carol@example.com" not in people()
+    assert "carol@example.com" not in (STATE / "allowed-emails").read_text()
+    print("CHECKED", flush=True)
 
 
 if __name__ == "__main__":
-    os.environ.update(ENV)
-    main()
+    {"": main, "check": check, "sign-in": sign_in_forever}[(sys.argv[1:] or [""])[0]]()

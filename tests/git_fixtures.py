@@ -2,7 +2,7 @@
 
 Not a test module: the tests that need a repository import it. Git runs here
 with a fixed author and an empty configuration of its own, so the person's
-configuration, which rc-helper's git does read, is only what a test plants.
+configuration, which git under test reads, is only what a test plants.
 """
 
 from __future__ import annotations

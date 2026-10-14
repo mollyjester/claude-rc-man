@@ -6,7 +6,7 @@ import { m } from "./messages";
 import { asApiError, ProblemView } from "./ProblemView";
 
 export type Server = {
-  path: string;
+  workspace: number;
   state: string;
   environment_url: string | null;
   session_name: string | null;
@@ -16,17 +16,7 @@ export type Server = {
 
 type Action = "stop" | "resume" | "startAgain" | "forget" | "showScreen" | "trustYes" | "trustNo";
 
-// The actions that start Claude, which the server refuses while the account cannot.
-const STARTS = ["resume", "startAgain"] as const satisfies readonly Action[];
-type StartAction = (typeof STARTS)[number];
-const startsClaude = (action: Action): action is StartAction =>
-  (STARTS as readonly Action[]).includes(action);
-
-// Why nothing can start Claude, said in place of each control that would: Start
-// in a folder with no server, and a server's own actions that start it again.
-export type StartBlocked = Record<"start" | StartAction, string>;
-
-// What each state reported by rc-helper allows; the server refuses anything else.
+// What each state of a server allows; the server refuses anything else.
 export const ACTIONS: Record<string, Action[]> = {
   starting: ["stop"],
   trust_prompt: ["trustYes", "trustNo", "stop"],
@@ -43,7 +33,7 @@ export const ACTIONS: Record<string, Action[]> = {
 // States in which the server is running and its environment on claude.ai takes sessions.
 export const LIVE = ["connected", "ready"];
 
-// The kinds of state a badge or a folder's dot shows, most urgent first.
+// The kinds of state a badge or a workspace's dot shows, most urgent first.
 export const KIND_ORDER = ["problem", "waiting", "running", "stopped"] as const;
 export type Kind = (typeof KIND_ORDER)[number];
 
@@ -97,17 +87,21 @@ export const LABELS: Record<Action, string> = {
   trustNo: m.trustNo,
 };
 
-// The servers in a folder: its own, and every one in a folder inside it.
-export function serversIn(path: string, servers: Server[]): Server[] {
-  return servers.filter((s) => s.path === path || s.path.startsWith(`${path}/`));
-}
+// What a workspace is, as the page lists it: its server, or why that could not be read.
+export type Workspace = {
+  id: number;
+  name: string;
+  state: "creating" | "ready" | "failed" | "deleting";
+  error: string | null;
+  server: Server | null;
+  server_error: { code: string; title: string } | null;
+};
 
-// The dot a folder carries: the most urgent kind among its own server and,
-// while includeBelow, every server inside it; none where there is no server.
-export function dotFor(path: string, servers: Server[], includeBelow: boolean): Kind | null {
-  const counted = includeBelow ? serversIn(path, servers) : servers.filter((s) => s.path === path);
-  const kinds = new Set(counted.map((s) => kindOf(s.state)));
-  return KIND_ORDER.find((kind) => kinds.has(kind)) ?? null;
+// The dot a workspace carries: its server's kind, a problem where the workspace
+// failed or its server could not be read, and none otherwise.
+export function dotFor(workspace: Workspace): Kind | null {
+  if (workspace.state === "failed" || workspace.server_error) return "problem";
+  return workspace.server ? kindOf(workspace.server.state) : null;
 }
 
 export function StateBadge({ state }: { state: string }) {
@@ -128,25 +122,21 @@ export function StatusDot({ kind, id }: { kind: Kind; id: string }) {
   );
 }
 
-// A server and the actions its state allows; startReason, when there is one,
-// is why those that start Claude are not offered.
+// A workspace's server and the actions its state allows.
 export function ServerCard({
+  workspace,
   server,
-  startReason,
   onChange,
 }: {
+  workspace: { id: number; name: string };
   server: Server;
-  startReason: StartBlocked | null;
   onChange: () => void;
 }) {
   const [error, setError] = useState<ApiError | null>(null);
   const [busy, setBusy] = useState(false);
   const [showScreen, setShowScreen] = useState(false);
   const screenId = useId();
-  const allowed = ACTIONS[server.state] ?? ["showScreen"];
-  // The actions that would start Claude, when the account cannot: they are not offered.
-  const blocked = startReason ? allowed.filter(startsClaude) : [];
-  const actions = allowed.filter((action) => !(blocked as Action[]).includes(action));
+  const actions = ACTIONS[server.state] ?? ["showScreen"];
   const primary = PRIMARY[server.state];
 
   async function act(action: Action) {
@@ -158,7 +148,7 @@ export function ServerCard({
     setBusy(true);
     setError(null);
     try {
-      await api.post(path, { path: server.path, ...extra });
+      await api.post(path, { workspace: workspace.id, ...extra });
       onChange();
     } catch (e) {
       setError(asApiError(e));
@@ -168,21 +158,17 @@ export function ServerCard({
   }
 
   return (
-    <article aria-label={server.path} className="server">
+    <article aria-label={workspace.name} className="server">
       <p>
         <StateBadge state={server.state} />
       </p>
-      <p>
-        {startReason && blocked.length > 0
-          ? blocked.map((action) => startReason[action]).join(" ")
-          : (m.nextStep[server.state] ?? m.nextStepUnknown)}
-      </p>
+      <p>{m.nextStep[server.state] ?? m.nextStepUnknown}</p>
       {server.state === "trust_prompt" && (
         <div className="question">
           <p>
             <strong>{m.trustTitle}</strong>
           </p>
-          <p>{m.trustBody(server.path)}</p>
+          <p>{m.trustBody(workspace.name)}</p>
         </div>
       )}
       {server.session_name && (
@@ -221,7 +207,7 @@ export function ServerCard({
         ))}
       </div>
       {server.screen && (
-        <figure id={screenId} aria-label={m.screenTitle(server.path)} hidden={!showScreen}>
+        <figure id={screenId} aria-label={m.screenTitle(workspace.name)} hidden={!showScreen}>
           <pre className="screen">{server.screen.join("\n")}</pre>
         </figure>
       )}

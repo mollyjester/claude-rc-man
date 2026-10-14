@@ -156,8 +156,13 @@ else; this file is the full list. Rules are referred to by their bold name.
 - **Credentials and one-time codes never appear in argv, URLs or logs.** They
   reach child processes through the environment or stdin and are held in
   memory only as long as needed.
-- **Resolve and confine every user-supplied path** to the owning user's home
-  before using it; the home directory itself is never a valid target.
+- **A person reaches only their own workspaces.** Every route that names a
+  workspace finds it among the signed-in person's, and answers as if it were
+  not there otherwise; every workspace of a person runs in their own uid
+  range, and no workspace mounts another's volume.
+- **rcman drives containers through `podman --remote` only**, as its own
+  account, with an argv and never a shell; a command in a workspace is an argv
+  too, and no text a person sent is ever run by a shell there.
 - **Every mutating endpoint is audited**, and a test over the route table
   checks it. An exemption carries a reason that also appears in `docs/`.
 - **The interface offers only what the server will allow.** A control shown to

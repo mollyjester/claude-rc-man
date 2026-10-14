@@ -1,12 +1,15 @@
-"""A rule the helpers apply: a regular expression and the sentence that explains it."""
+"""The rules values are refused by: each a regular expression and the sentence that
+explains it (helpers/rules.py)."""
 
 import re
+import subprocess
 import typing
 from typing import Annotated
 
 import pytest
 from pydantic import AfterValidator, Field, TypeAdapter, ValidationError
 
+from helpers import rules
 from helpers.rules import Rule
 
 DIGITS = Rule(re.compile(r"[0-9]+"), "Use digits only.")
@@ -62,7 +65,7 @@ def test_a_rule_cannot_be_changed():
         DIGITS.sentence = "Anything."  # type: ignore[misc]
 
 
-# --- the helpers' rules -------------------------------------------------------------
+# --- the rules ----------------------------------------------------------------------
 
 
 def held_rules(module) -> dict[str, Rule]:
@@ -71,23 +74,18 @@ def held_rules(module) -> dict[str, Rule]:
 
 
 def helpers_rules() -> dict[str, Rule]:
-    """Every rule the helpers define, by name."""
-    from helpers import rc_admin, rc_helper, users_file
-
-    found = {}
-    for module in (users_file, rc_helper, rc_admin):
-        found.update(held_rules(module))
+    """Every rule there is, by name."""
+    found = held_rules(rules)
     # Non-vacuity for every check that runs over them: the rules known to exist.
     names = {
         "PREFIX",
         "EMAIL",
-        "LINUX_NAME",
-        "FOLDER_NAME",
+        "WORKSPACE_NAME",
         "AUTHOR_NAME",
         "VERSION",
-        "PATH",
-        "FOLDER_PATH",
         "COMMIT_MESSAGE",
+        "BRANCH_NAME",
+        "GITHUB_TOKEN",
         "GITHUB_URL",
     }
     assert names <= set(found), names - set(found)
@@ -120,14 +118,11 @@ def test_no_helpers_rule_sentence_is_in_a_librarys_words():
 
 
 def _limits():
-    from helpers import rc_helper, users_file
-
     return [
-        (rc_helper.PREFIX, rc_helper.MAX_PREFIX_LENGTH),
-        (users_file.LINUX_NAME, users_file.MAX_LINUX_NAME_LENGTH),
-        (rc_helper.AUTHOR_NAME, rc_helper.MAX_AUTHOR_NAME_LENGTH),
-        (rc_helper.PATH, rc_helper.MAX_PATH_LENGTH),
-        (rc_helper.GITHUB_TOKEN, rc_helper.MAX_GITHUB_TOKEN_LENGTH),
+        (rules.PREFIX, rules.MAX_PREFIX_LENGTH),
+        (rules.WORKSPACE_NAME, rules.MAX_WORKSPACE_NAME_LENGTH),
+        (rules.AUTHOR_NAME, rules.MAX_AUTHOR_NAME_LENGTH),
+        (rules.GITHUB_TOKEN, rules.MAX_GITHUB_TOKEN_LENGTH),
     ]
 
 
@@ -230,7 +225,7 @@ def test_the_agreement_test_has_a_case_for_every_rule_in_both_forms():
     test = "tests/test_rules.py::test_the_backend_and_the_helpers_read_the_rule_alike"
     cases = {n.removeprefix(test) for n in collect(["tests/test_rules.py"]) if n.startswith(test)}
     names = helpers_rules()
-    assert len(names) >= 10  # non-vacuity: helpers_rules checks the known ones are there
+    assert names  # non-vacuity: helpers_rules checks the known ones are there
     assert cases == {f"[{n}]" for n in names} | {f"[{n}.or_empty()]" for n in names}
 
 
@@ -252,15 +247,14 @@ def test_a_sentence_that_allows_the_joiners_says_so():
             assert "joiner" in rule.sentence, name
         else:
             assert "joiner" not in rule.sentence, name
-    assert {"AUTHOR_NAME", "FOLDER_NAME"} <= set(found)  # non-vacuity
+    assert {"AUTHOR_NAME"} <= set(found)  # non-vacuity
 
 
 def test_a_sentence_about_letters_says_which_case():
-    from helpers import rc_helper, users_file
-
-    assert rc_helper.PREFIX.fullmatch("Ab") and "either case" in rc_helper.PREFIX.sentence
-    assert not users_file.LINUX_NAME.fullmatch("Ab")
-    assert "lowercase" in users_file.LINUX_NAME.sentence
+    for rule in (rules.PREFIX, rules.WORKSPACE_NAME):
+        assert rule.fullmatch("Ab") and "either case" in rule.sentence
+    lower = Rule(re.compile("[a-z]+"), "Use lowercase letters a to z.")
+    assert not lower.fullmatch("Ab") and "lowercase" in lower.sentence  # the words for the other
 
 
 def test_a_sentence_that_states_a_limit_states_the_real_one():
@@ -268,3 +262,156 @@ def test_a_sentence_that_states_a_limit_states_the_real_one():
         assert re.search(rf"\b{limit}\b", rule.sentence), rule.sentence
         assert rule.fullmatch("a" * limit)
         assert not rule.fullmatch("a" * (limit + 1))
+
+
+# --- a commit author's name ----------------------------------------------------------
+
+AUTHOR_NAMES_ACCEPTED = [
+    "Bob B",
+    "Сергей Лихарев",
+    "O'Brien",
+    "Bob Jr.",
+    "(Bob)",
+    "x",
+    "x" * rules.MAX_AUTHOR_NAME_LENGTH,
+    f"a{chr(0x200C)}b",  # ZERO WIDTH NON-JOINER, see ALLOWED_FORMAT
+    f"a{chr(0x200D)}b",  # ZERO WIDTH JOINER
+]
+AUTHOR_NAMES_REFUSED = [
+    "",
+    " ",
+    " Bob",
+    "Bob ",
+    "a\nb",
+    "a\rb",
+    "a\tb",
+    "a\x00b",
+    "a\x85b",
+    f"a{chr(0x2028)}b",  # LINE SEPARATOR
+    f"a{chr(0x2029)}b",  # PARAGRAPH SEPARATOR
+    "a<b",
+    "a>b",
+    f"a{chr(0x200B)}b",  # ZERO WIDTH SPACE
+    f"a{chr(0x202E)}b",  # RIGHT-TO-LEFT OVERRIDE
+    f"a{chr(0x2066)}b",  # LEFT-TO-RIGHT ISOLATE
+    f"a{chr(0xFEFF)}b",  # ZERO WIDTH NO-BREAK SPACE
+    f"a{chr(0x00AD)}b",  # SOFT HYPHEN
+    f"a{chr(0x1D173)}b",  # MUSICAL SYMBOL BEGIN BEAM, beyond the BMP
+    f"a{chr(0xE0020)}b",  # TAG SPACE
+    f"a{chr(0x3164)}b",  # HANGUL FILLER
+    chr(0x3164),
+    chr(0x200C),  # ZWNJ and ZWJ: not alone, not at either end
+    chr(0x200C) + chr(0x200D),
+    chr(0x200C) + "Bob",
+    "Bob" + chr(0x200D),
+    "'Bob'",
+    '"Bob"',
+    "Bob;",
+    "Bob\\",
+    ",Bob",
+    ":Bob",
+    "x" * (rules.MAX_AUTHOR_NAME_LENGTH + 1),
+]
+AUTHOR_NAMES = [(n, True) for n in AUTHOR_NAMES_ACCEPTED] + [
+    (n, False) for n in AUTHOR_NAMES_REFUSED
+]
+
+# Format characters (Unicode category Cf) a name may hold, and why: Persian and
+# Indic names are written with them.
+ALLOWED_FORMAT = {0x200C: "ZERO WIDTH NON-JOINER", 0x200D: "ZERO WIDTH JOINER"}
+
+
+def hangul_fillers() -> list[str]:
+    """The Hangul fillers: letters by category, but they show as nothing."""
+    import sys
+    import unicodedata
+
+    return [
+        chr(c)
+        for c in range(sys.maxunicode + 1)
+        if {"HANGUL", "FILLER"} <= set(unicodedata.name(chr(c), "").split())
+    ]
+
+
+def format_characters() -> list[str]:
+    """Every invisible format character this Python's Unicode database knows."""
+    import sys
+    import unicodedata
+
+    return [chr(c) for c in range(sys.maxunicode + 1) if unicodedata.category(chr(c)) == "Cf"]
+
+
+@pytest.mark.parametrize(("name", "accepted"), AUTHOR_NAMES)
+def test_author_name_rule(name, accepted):
+    assert bool(rules.AUTHOR_NAME.fullmatch(name)) is accepted
+
+
+# The rules that refuse invisible characters but the joiners: a commit author's name.
+NAME_RULES = {"author name": rules.AUTHOR_NAME}
+
+
+@pytest.mark.parametrize("rule", NAME_RULES.values(), ids=NAME_RULES)
+def test_every_format_character_is_refused_but_zwnj_and_zwj_inside_a_name(rule):
+    import unicodedata
+
+    found = format_characters()
+    assert chr(0x200B) in found and chr(0xE0020) in found  # positive control
+    for code, name in ALLOWED_FORMAT.items():  # each exemption is still what it is said to be
+        assert chr(code) in found and unicodedata.name(chr(code)) == name
+        assert rule.fullmatch(f"a{chr(code)}b")
+    let_through = [
+        (f"U+{ord(c):04X}", name)
+        for c in found
+        for name in (f"a{c}b", c, f"{c}b", f"a{c}")
+        if rule.fullmatch(name) and (ord(c) not in ALLOWED_FORMAT or name != f"a{c}b")
+    ]
+    assert let_through == []  # the allowed ones only inside a name, never alone or at an end
+
+
+@pytest.mark.parametrize("rule", NAME_RULES.values(), ids=NAME_RULES)
+def test_hangul_fillers_are_refused_in_a_name(rule):
+    found = hangul_fillers()
+    assert chr(0x3164) in found  # positive control: HANGUL FILLER
+    assert {code for first, last in rules.HANGUL_FILLERS for code in range(first, last + 1)} == {
+        ord(c) for c in found
+    }
+    for c in found:
+        assert not rule.fullmatch(f"a{c}b"), f"U+{ord(c):04X}"
+        assert not rule.fullmatch(c), f"U+{ord(c):04X}"
+
+
+def recorded_by_git(tmp_path, name: str) -> str:
+    """The author name real git records for ``name``."""
+    proc = subprocess.run(
+        ["git", "var", "GIT_AUTHOR_IDENT"],
+        env={
+            "PATH": "/usr/bin:/bin",
+            "HOME": str(tmp_path),
+            "GIT_AUTHOR_NAME": name,
+            "GIT_AUTHOR_EMAIL": "bob@example.com",
+        },
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 0, proc.stderr
+    return proc.stdout.rpartition(" <bob@example.com>")[0]
+
+
+def test_git_records_every_accepted_name_as_given(tmp_path):
+    assert recorded_by_git(tmp_path, ";Bob;") == "Bob"  # positive control: git does change some
+    for name in AUTHOR_NAMES_ACCEPTED:
+        assert rules.AUTHOR_NAME.fullmatch(name), name
+        assert recorded_by_git(tmp_path, name) == name
+
+
+def test_names_git_would_trim_are_refused(tmp_path):
+    """The printable characters git strips from the ends of a name are refused there."""
+    printable = [chr(c) for c in range(0x21, 0x7F)]
+    trimmed = [c for c in printable if recorded_by_git(tmp_path, f"{c}Bob{c}") == "Bob"]
+    assert ";" in trimmed and "." not in trimmed  # positive control, and git keeps a dot
+    for c in printable:
+        refused = not rules.AUTHOR_NAME.fullmatch(f"{c}Bob") and not rules.AUTHOR_NAME.fullmatch(
+            f"Bob{c}"
+        )
+        assert refused is (c in trimmed), repr(c)

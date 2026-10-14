@@ -25,7 +25,6 @@ from tests import killed_runs as kr
 REPO = Path(__file__).resolve().parent.parent
 FRONTEND = REPO / "frontend"
 CONFIGS = ("playwright.config.ts", "playwright.stack.config.ts")
-TOKEN = "the-worlds-github-token"
 ORIGIN = "http://rcman.test"  # what the browser would send; nothing listens there
 
 
@@ -51,7 +50,6 @@ def world(monkeypatch):
         root = parent / _named("this-run")
         monkeypatch.setenv("RCMAN_E2E_DIR", str(root))
         monkeypatch.setenv("RCMAN_PUBLIC_ORIGIN", ORIGIN)
-        monkeypatch.setenv("RCMAN_E2E_GITHUB_TOKEN", TOKEN)
         started = []
         yield root, started
         for pid in started:
@@ -90,7 +88,7 @@ def test_the_backend_makes_the_world_and_removes_it_when_it_shuts_down(world):
     root, _ = world
     assert not root.exists()
     app = e2e.create_app()
-    assert root.is_dir() and (root / "users.toml").is_file()
+    assert root.is_dir() and (root / "rcman.db").is_file()
     assert root.stat().st_mode & 0o777 == 0o700
     with TestClient(app):
         assert root.is_dir()
@@ -113,11 +111,11 @@ def test_a_world_that_fails_to_build_is_removed(world, monkeypatch):
 
     def broken(*args, **kwargs):
         assert root.is_dir()  # positive control: the world was made before this
-        raise RuntimeError("no repository today")
+        raise RuntimeError("no runtime today")
 
-    monkeypatch.setattr(e2e, "make_repo", broken)
+    monkeypatch.setattr(e2e, "WorldRuntime", broken)
     held = _holding_locks(monkeypatch)
-    with pytest.raises(RuntimeError, match="no repository today"):
+    with pytest.raises(RuntimeError, match="no runtime today"):
         e2e.create_app()
     assert not root.exists()
     assert len(held) == 1 and held[0].closed  # the lock is released, not left to the GC
@@ -441,10 +439,10 @@ def test_a_world_still_being_made_is_left_alone(world):
     root, _ = world
     making = root.parent / _named("making")
     making.mkdir()
-    (making / "users.toml").write_text("")
+    (making / "rcman.db").write_text("")
     with TestClient(e2e.create_app()):
         assert root.is_dir()  # positive control: the world was built
-    assert (making / "users.toml").exists()
+    assert (making / "rcman.db").exists()
 
 
 def test_shutting_down_stops_the_tmux_servers_it_started(world):
@@ -461,81 +459,37 @@ def test_playwright_stops_the_backend_so_its_shutdown_runs():
     assert 'gracefulShutdown: { signal: "SIGTERM"' in config
 
 
-def test_alice_has_a_repository_with_an_origin(world):
-    from tests.git_fixtures import fixture_git
+def test_alices_workspaces_are_signed_in_and_bobs_are_not(world):
+    from tests.conftest import as_user
 
-    root, _ = world
-    with TestClient(e2e.create_app()):
-        repo = root / "homes" / "alice" / "projects" / "alice-repo"
-        origin = root / "origins" / "alice" / "alice-repo.git"
-        url = "https://github.com/alice/alice-repo.git"
-        assert fixture_git(repo, "remote", "get-url", "origin").strip() == url
-        refs = ("for-each-ref", "--format=%(refname:short)")
-        assert fixture_git(origin, *refs, "refs/heads").split() == ["feature", "later", "main"]
-        known = fixture_git(repo, *refs, "refs/remotes")
-        assert known.split() == ["origin/feature", "origin/main"]  # later needs a fetch
-        assert fixture_git(repo, "branch", "--show-current").strip() == "main"
-        assert not (root / "homes" / "bob" / "projects" / "alice-repo").exists()
-
-
-def test_the_worlds_github_serves_alices_origin_and_takes_a_push_with_its_token_only(world):
-    import subprocess
-
-    from tests.conftest import ALICE, as_user
-    from tests.git_fixtures import fixture_env, fixture_git, write
-
-    root, _ = world
-    app = e2e.create_app()
-    repo = root / "homes" / "alice" / "projects" / "alice-repo"
-    origin = root / "origins" / "alice" / "alice-repo.git"
-    with TestClient(app) as client:
-        github = app.state.github
-        assert github.token == TOKEN
-        status = client.get(
-            "/api/git/status", params={"path": "projects/alice-repo"}, headers=as_user(ALICE)
-        )
-        assert status.json()["push_to_github"] is True  # the helper has the hook
-        fetched = client.post(
-            "/api/git/fetch",
-            json={"path": "projects/alice-repo"},
-            headers={**as_user(ALICE), "Origin": ORIGIN},
-        )
-        assert fetched.status_code == 200, fetched.text  # read from the world's GitHub
-        write(repo / "pushed.txt")
-        fixture_git(repo, "add", "pushed.txt")
-        fixture_git(repo, "commit", "-q", "-m", "Pushed")
-        env = {
-            **fixture_env(root / "pusher"),
-            "GIT_TERMINAL_PROMPT": "0",
-            "GIT_CONFIG_COUNT": "2",
-            "GIT_CONFIG_KEY_0": f"url.{github.url}.insteadOf",
-            "GIT_CONFIG_VALUE_0": "https://github.com/",
-            "GIT_CONFIG_KEY_1": "credential.helper",
-            "GIT_CONFIG_VALUE_1": '!f() { echo username=alice; echo "password=$P"; }; f',
-        }
-        args = ["git", "-C", str(repo), "push", "origin", "HEAD:refs/heads/pushed"]
-        refused = subprocess.run(args, env={**env, "P": "wrong"}, capture_output=True, text=True)
-        assert refused.returncode != 0
-        accepted = subprocess.run(args, env={**env, "P": TOKEN}, capture_output=True, text=True)
-        assert accepted.returncode == 0, accepted.stderr
-        head = fixture_git(repo, "rev-parse", "HEAD").strip()
-        assert fixture_git(origin, "rev-parse", "refs/heads/pushed").strip() == head
+    with TestClient(e2e.create_app()) as client:
+        for who, code in (("alice@example.com", 200), ("bob@example.com", 409)):
+            made = _made(client, who)
+            r = client.post(
+                "/api/servers",
+                json={"workspace": made["id"]},
+                headers={**as_user(who), "Origin": ORIGIN},
+            )
+            assert r.status_code == code, (who, r.text)
+            if code == 409:
+                assert r.json()["code"] == "claude_not_logged_in"
 
 
-def test_the_worlds_github_has_a_repository_to_clone_that_no_home_holds(world):
-    from tests.git_fixtures import fixture_git
+def _made(client, who):
+    import time
 
-    root, _ = world
-    with TestClient(e2e.create_app()):
-        origin = root / "origins" / "alice" / "demo.git"
-        refs = ("for-each-ref", "--format=%(refname:short)", "refs/heads")
-        assert fixture_git(origin, *refs).split() == ["feature", "main"]
-        assert fixture_git(origin, "show", "main:README.md")  # a file to find in the clone
-        assert list(root.rglob("demo")) == [root / "sources" / "demo"]  # the search finds it
-        homes = sorted((root / "homes").iterdir())
-        assert [home.name for home in homes] == sorted(e2e.PEOPLE)  # every home is searched
-        for home in homes:
-            assert not list(home.rglob("demo")), home
+    from tests.conftest import as_user
+
+    r = client.post(
+        "/api/workspaces", json={"name": "work"}, headers={**as_user(who), "Origin": ORIGIN}
+    )
+    assert r.status_code == 202, r.text
+    for _ in range(200):
+        [found] = client.get("/api/workspaces", headers=as_user(who)).json()["workspaces"]
+        if found["state"] == "ready":
+            return found
+        time.sleep(0.05)
+    raise AssertionError(found)
 
 
 def _free_port() -> int:
@@ -593,7 +547,7 @@ def _identity(env: dict[str, str]) -> tuple[str, str]:
     """The world and port a run of the browser tests names, and the checks that the
     backend, its address and the browser's origin all agree on them."""
     listing = listed("playwright.config.ts", env)
-    assert "servers.spec.ts" in {s["file"] for s in listing["suites"]}  # positive control
+    assert "workspaces.spec.ts" in {s["file"] for s in listing["suites"]}  # positive control
     server = listing["config"]["webServer"]
     port = re.search(r" --port (\S+)", server["command"])[1]
     origin = server["env"]["RCMAN_PUBLIC_ORIGIN"]

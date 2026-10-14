@@ -6,7 +6,6 @@ import { m } from "./messages";
 
 import {
   ADMIN_USER,
-  CONNECTED,
   fakeApi,
   ME,
   NOTHING_TO_ATTEND,
@@ -19,61 +18,34 @@ import { renderApp } from "./test/render";
 function api(me: Reply, attention: Reply = NOTHING_TO_ATTEND) {
   return fakeApi({
     "GET /api/me": me,
-    "GET /api/claude": CONNECTED,
-    "GET /api/folders": { path: "", entries: [] },
-    "GET /api/servers": { servers: [] },
+    "GET /api/workspaces": { workspaces: [] },
     "GET /api/docs": { pages: [] },
     "GET /api/me/settings": SETTINGS,
     "GET /api/attention": attention,
   });
 }
 
-test("administrators are told who is on an unrecognised screen and whose version differs", async () => {
-  api(ADMIN_USER, {
-    unrecognised: [{ linux: "bob", path: "projects/beta" }],
-    versions_differ: ["carol"],
-    untested: true,
-  });
+const UNRECOGNISED = {
+  unrecognised: [
+    { email: "bob@example.com", workspace: "beta" },
+    { email: "carol@example.com", workspace: "gamma" },
+  ],
+};
+
+test("administrators are told whose workspace's server is on an unrecognised screen, with a link to everyone's workspaces", async () => {
+  api(ADMIN_USER, UNRECOGNISED);
   renderApp();
   const banner = await screen.findByRole("region", { name: m.attentionTitle });
   expect(
-    within(banner).getByText(m.attentionUnrecognised(["bob: projects/beta"])),
+    within(banner).getByText(
+      m.attentionUnrecognised(["bob@example.com: beta", "carol@example.com: gamma"]),
+      { exact: false },
+    ),
   ).toBeInTheDocument();
-  expect(within(banner).getByText(m.attentionVersionsDiffer(["carol"]))).toBeInTheDocument();
-  expect(within(banner).getByText(m.attentionUntested)).toBeInTheDocument();
-  expect(within(banner).getByRole("link", { name: m.navEveryone })).toBeInTheDocument();
-  expect(within(banner).getAllByRole("link", { name: m.navVersions }).length).toBeGreaterThan(0);
-});
-
-test.each([
-  [
-    "unrecognised screens",
-    { unrecognised: [{ linux: "bob", path: "projects/beta" }] },
-    m.attentionUnrecognised(["bob: projects/beta"]),
-    "everyone",
-  ],
-  [
-    "a version that differs",
-    { versions_differ: ["carol"] },
-    m.attentionVersionsDiffer(["carol"]),
-    "versions",
-  ],
-  ["an untested version", { untested: true }, m.attentionUntested, "versions"],
-  [
-    "a version report that failed",
-    { versions_error: { code: "helper_timeout", title: "Too long." } },
-    m.attentionVersionsFailed,
-    "versions",
-  ],
-] as const)("the warning about %s links to its page", async (_about, report, said, page) => {
-  api(ADMIN_USER, { ...NOTHING_TO_ATTEND, ...report });
-  renderApp();
-  const banner = await screen.findByRole("region", { name: m.attentionTitle });
   const links = within(banner).getAllByRole("link");
   expect(links).toHaveLength(1);
-  expect(links[0].closest("p")).toHaveTextContent(said);
-  expect(links[0]).toHaveAttribute("href", ADMIN[page].path);
-  expect(links[0]).toHaveTextContent(ADMIN[page].label);
+  expect(links[0]).toHaveAttribute("href", ADMIN.everyone.path);
+  expect(links[0]).toHaveTextContent(ADMIN.everyone.label);
 });
 
 test("it is fetched again on every change of page", async () => {
@@ -95,7 +67,7 @@ test("nothing is shown when nothing needs attention", async () => {
 });
 
 test("people who are not administrators never ask", async () => {
-  const fake = api(ME);
+  const fake = api(ME, UNRECOGNISED);
   renderApp();
   expect(await screen.findByText(m.signedInAs(ME.email))).toBeInTheDocument();
   await userEvent.click(screen.getByRole("link", { name: m.navSettings }));
@@ -118,24 +90,9 @@ test("however long a page stays open, it is not fetched again", async () => {
 });
 
 test("when it cannot be fetched, the server's reason is shown", async () => {
-  api(ADMIN_USER, problem(500, "users_file_invalid", "The users file is invalid."));
+  api(ADMIN_USER, problem(500, "database_unavailable", "planted: the database is unavailable."));
   renderApp();
-  expect(await screen.findByRole("alert")).toHaveTextContent("The users file is invalid.");
-});
-
-test("when the version report fails, the unrecognised screens are still named, with its reason", async () => {
-  api(ADMIN_USER, {
-    ...NOTHING_TO_ATTEND,
-    unrecognised: [{ linux: "bob", path: "projects/beta" }],
-    versions_error: { code: "helper_timeout", title: "rcman's helper took too long to answer." },
-  });
-  renderApp();
-  const banner = await screen.findByRole("region", { name: m.attentionTitle });
-  expect(
-    within(banner).getByText(m.attentionUnrecognised(["bob: projects/beta"])),
-  ).toBeInTheDocument();
-  expect(within(banner).getByText(m.attentionVersionsFailed)).toBeInTheDocument();
-  expect(within(banner).getByRole("alert")).toHaveTextContent(
-    "rcman's helper took too long to answer.",
+  expect(await screen.findByRole("alert")).toHaveTextContent(
+    "planted: the database is unavailable.",
   );
 });

@@ -7,11 +7,11 @@ from types import SimpleNamespace
 import pytest
 from rcman.problems import FIELD_MESSAGES, SETTINGS_NONE_SENT
 
-from helpers import rc_helper, users_file
+from helpers import rules
 from tests.conftest import ALICE, BOB, as_user, changing
-from tests.test_rc_helper import AUTHOR_NAMES, format_characters, hangul_fillers
+from tests.test_rules import AUTHOR_NAMES, format_characters, hangul_fillers
 
-UNSET = {"prefix": "bob", "author_name": "", "author_email": "", "effective_author": None}
+UNSET = {"prefix": "", "author_name": "", "author_email": "", "effective_author": None}
 
 
 def settings_body():
@@ -27,9 +27,8 @@ def patch(client, body, who=BOB):
 def test_me_reports_identity_role_and_prefix(client):
     assert client.get("/api/me", headers=as_user(ALICE)).json() == {
         "email": ALICE,
-        "linux": "alice",
         "admin": True,
-        "prefix": "alice",
+        "prefix": None,
     }
     assert client.get("/api/me", headers=as_user(BOB)).json()["admin"] is False
 
@@ -38,25 +37,25 @@ def test_settings_are_their_defaults_until_set(client):
     assert client.get("/api/me/settings", headers=as_user(BOB)).json() == UNSET
 
 
-def test_prefix_defaults_to_the_linux_user_and_can_be_changed(client):
+def test_a_prefix_can_be_set_and_cleared_again(client):
     r = patch(client, {"prefix": "bobs-box"})
     assert r.json() == {**UNSET, "prefix": "bobs-box"}
     assert client.get("/api/me", headers=as_user(BOB)).json()["prefix"] == "bobs-box"
-    assert client.get("/api/me", headers=as_user(ALICE)).json()["prefix"] == "alice"  # per user
+    assert client.get("/api/me", headers=as_user(ALICE)).json()["prefix"] is None  # per person
+    assert patch(client, {"prefix": ""}).json() == UNSET  # each workspace's name again
+    assert client.get("/api/me", headers=as_user(BOB)).json()["prefix"] is None
 
 
-@pytest.mark.parametrize(
-    "prefix", ["", "-x", "a b", "a;b", "x" * (rc_helper.MAX_PREFIX_LENGTH + 1)]
-)
+@pytest.mark.parametrize("prefix", ["-x", "a b", "a;b", "x" * (rules.MAX_PREFIX_LENGTH + 1)])
 def test_invalid_prefix_is_refused_by_the_server(client, prefix):
     r = patch(client, {"prefix": prefix})
     assert r.status_code == 422
-    assert r.json()["errors"] == [{"field": "prefix", "message": rc_helper.PREFIX.sentence}]
+    assert r.json()["errors"] == [{"field": "prefix", "message": rules.PREFIX.sentence}]
 
 
-def test_the_prefix_rule_is_the_helpers_rule():
+def test_the_prefix_rule_is_the_rule_or_nothing():
     pattern = settings_body().model_json_schema()["properties"]["prefix"]["pattern"]
-    assert pattern == rc_helper.PREFIX.anchored
+    assert pattern == rules.PREFIX.or_empty().anchored
 
 
 def test_the_commit_author_is_set_and_reported(client):
@@ -72,8 +71,8 @@ def test_the_commit_author_is_set_and_reported(client):
     assert client.get("/api/me/settings", headers=as_user(ALICE)).json()["author_name"] == ""
 
 
-def test_an_empty_email_is_the_users_file_address(client):
-    """Signed in with the address in other letters, the author's is the users file's."""
+def test_an_empty_email_is_the_persons_own_address(client):
+    """Signed in with the address in other letters, the author's is the one rcman knows."""
     r = patch(client, {"author_name": "Bob B", "author_email": ""}, who=BOB.upper())
     assert r.status_code == 200, r.text
     assert r.json()["author_email"] == ""
@@ -108,8 +107,8 @@ def test_an_author_set_first_leaves_the_prefix_its_default(client):
     r = patch(client, {"author_name": "Bob B"})
     assert r.status_code == 200, r.text
     assert r.json()["effective_author"] == {"name": "Bob B", "email": BOB}
-    assert r.json()["prefix"] == "bob"
-    assert client.get("/api/me", headers=as_user(BOB)).json()["prefix"] == "bob"
+    assert r.json()["prefix"] == ""
+    assert client.get("/api/me", headers=as_user(BOB)).json()["prefix"] is None
 
 
 def stored(settings, email):
@@ -131,41 +130,41 @@ def test_an_empty_email_is_stored_as_unset(client, settings):
 
 
 @pytest.mark.parametrize(("name", "accepted"), AUTHOR_NAMES)
-def test_the_server_accepts_exactly_the_names_the_helpers_rule_does(client, name, accepted):
-    assert bool(rc_helper.AUTHOR_NAME.fullmatch(name)) is accepted  # the helper's own verdict
+def test_the_server_accepts_exactly_the_names_the_rule_does(client, name, accepted):
+    assert bool(rules.AUTHOR_NAME.fullmatch(name)) is accepted  # the rule's own verdict
     r = patch(client, {"author_name": name})
     if accepted:
         assert (r.status_code, r.json()["author_name"]) == (200, name)
     else:
         assert r.status_code == 422, name
         assert r.json()["errors"] == [
-            {"field": "author_name", "message": rc_helper.AUTHOR_NAME.sentence}
+            {"field": "author_name", "message": rules.AUTHOR_NAME.sentence}
         ]
 
 
-def test_the_server_refuses_exactly_the_format_characters_the_helpers_rule_does(client):
+def test_the_server_refuses_exactly_the_format_characters_the_rule_does(client):
     found = format_characters() + hangul_fillers()
     assert found  # non-vacuity
     disagree = []
     for c in found:
         name = f"a{c}b"
         status = patch(client, {"author_name": name}).status_code
-        if (status == 200) is not bool(rc_helper.AUTHOR_NAME.fullmatch(name)):
+        if (status == 200) is not bool(rules.AUTHOR_NAME.fullmatch(name)):
             disagree.append((f"U+{ord(c):04X}", status))
     assert disagree == []
 
 
-def test_the_author_rules_are_the_helpers_rules():
+def test_the_author_rules_are_the_rules():
     properties = settings_body().model_json_schema()["properties"]
-    assert properties["author_name"]["pattern"] == rc_helper.AUTHOR_NAME.anchored
-    assert properties["author_email"]["pattern"] == users_file.EMAIL.or_empty().anchored
+    assert properties["author_name"]["pattern"] == rules.AUTHOR_NAME.anchored
+    assert properties["author_email"]["pattern"] == rules.EMAIL.or_empty().anchored
 
 
 @pytest.mark.parametrize("email", ["no-at", "a@b", "a b@c.d", "bob@example.com\n", " "])
 def test_an_invalid_author_email_is_refused(client, email):
     r = patch(client, {"author_name": "Bob B", "author_email": email})
     assert r.status_code == 422
-    assert r.json()["errors"] == [{"field": "author_email", "message": users_file.EMAIL.sentence}]
+    assert r.json()["errors"] == [{"field": "author_email", "message": rules.EMAIL.sentence}]
     assert client.get("/api/me/settings", headers=as_user(BOB)).json() == UNSET  # nothing saved
 
 
@@ -203,7 +202,7 @@ def test_author_of_is_what_the_settings_report(app, client):
     from rcman.routers.me import Author, author_of
 
     request = SimpleNamespace(app=app)
-    bob = Identity(email=BOB, linux="bob", admin=False)
+    bob = Identity(email=BOB, admin=False, person=2, slot=2)
     assert author_of(request, bob) is None
     patch(client, {"prefix": "bobs-box"})
     assert author_of(request, bob) is None  # a row with no name is still no author

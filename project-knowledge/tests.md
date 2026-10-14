@@ -30,58 +30,48 @@ marked `container` (see below). `tests/test_make.py` holds the split: every
 test is in exactly one of the two, and `make check` runs both. To work on
 what the container suite covers, run it directly, as in
 `uv run pytest tests/test_container_suite.py -k github`.
-The suite needs `tmux`, `git` and sudo's `visudo`. Each test's tmux sockets
-are in a folder of its own, made under `/tmp` by `tmux_sockets` in
+The suite needs `tmux`, `git` and procps' `kill` on the host. Each test's tmux
+sockets are in a folder of its own, made under `/tmp` by `tmux_sockets` in
 `devtools/held_folders.py`, because a socket's path has to stay short, and removed,
 with every tmux server in it, when the test ends; one a killed run left is
 removed by a later run (see [What a killed run leaves](#what-a-killed-run-leaves)).
+
+Workspaces in the backend's tests run on the host runtime (see
+[runtime.md](runtime.md#the-runtime)): a folder and a tmux socket per workspace,
+the fake `claude`, real tmux, and a real channel through the host's `sh`.
+`tests/runtime_contract.py`, which is not a test module, holds the cases every
+runtime keeps, which `tests/test_runtime.py` runs against the host runtime and
+the podman host against real Podman.
+
 Everything git is tested against real git,
 never a fake: `tests/git_fixtures.py`, which is not a test module, makes real
 repositories, their origins and their branches with the system's git, under
 a fixture configuration of its own, with a home, `FIXTURE_HOME`, that does
-not exist, so the person's configuration rc-helper
-reads is only what a test plants; fixture git refuses every transport but a
-local repository's, so an http, https, ssh, git or scp-like address a test
-gives it is refused before anything is connected to. GitHub is `tests/github_server.py`: the
+not exist, so the configuration git reads is only what a test plants;
+fixture git refuses every transport but a local repository's, so an http,
+https, ssh, git or scp-like address a test gives it is refused before anything
+is connected to. GitHub is `tests/github_server.py`: the
 system's `git http-backend` behind a small server, which serves anyone a
 read of a public repository, and takes a push, or a read of one made
 private, only with its token as the password, under any
 non-empty username, as GitHub takes a personal access token. The `github` fixture in
-`tests/conftest.py` runs one for the session, with `GITHUB_TOKEN`. Every
-rc-helper a test runs gets its environment from `helper_env` in
-`tests/helper_env.py`, which always sets `RC_HELPER_GITHUB` (see
-[rc-helper.md](rc-helper.md#test-hooks)) to it or to `UNREACHABLE`, so that
-no test reaches the real GitHub; a guard holds the tests to that (see
-[Repository guards](#repository-guards)). Before the first test, `github_hook_works`
-in `tests/conftest.py` checks, without reaching anything, that git as
-rc-helper runs it would send GitHub to the hook's address, and only then
-that the tests' GitHub sees the request. The browser tests' world runs a
-GitHub of its own (see [frontend.md](frontend.md#tests)). `tests/test_container_suite.py` runs the root-only
-suites in `tests/container/`, each inside a throwaway Ubuntu container, through
-`docker` or `sudo -n docker`; it skips when neither works, unless
+`tests/conftest.py` runs one for the session, with `GITHUB_TOKEN`.
+`tests/test_container_suite.py` runs the suites in `tests/container/`, each
+inside a throwaway container of the podman host's image, through `docker` or
+`sudo -n docker`; it skips when neither works, unless
 `RCMAN_REQUIRE_CONTAINER=1`, which `make test-container` sets. Every
 container it starts is labelled as its run's, and one a killed run left is
 removed by a later run, with its anonymous volumes (see
-[What a killed run leaves](#what-a-killed-run-leaves)); the images it builds,
-each from a Dockerfile under `tests/container/`, are kept, each named after its
+[What a killed run leaves](#what-a-killed-run-leaves)); the image it builds,
+from `tests/container/podman/Dockerfile`, is kept, named after its
 Dockerfile's content, and built again only when that changes. Its tests take the
 `docker` fixture, and a test that uses it, directly or through another
 fixture, carries the `container` marker, which `tests/container_marker.py`
 adds as tests are collected. It runs these, each in a
-fresh container: user management and Claude Code versions with `rc-admin`
-and `rcman-user`, and everything rc-helper does as a person through sudo
-under the sudoers rules — folders made and deleted, git run with the
-person's own configuration;
-the GitHub token, pushing and cloning through sudo, against `https://github.com`
-itself, in a container with no network — `--add-host` makes `github.com` the
-container's own address, which the suite checks before running git, where
-`tests/container/test_github_in_container.py` serves the tests' GitHub with
-a certificate from a certificate authority it makes with `openssl` and adds
-to the system's with `update-ca-certificates`, so that rc-helper runs with
-no `RC_HELPER_GITHUB`, as in production;
-a real installation (see
-[installer.md](installer.md)); the whole stack in a browser; and rootless
-Podman under systemd, in the podman host.
+fresh podman host: rootless Podman for a service account; the Podman runtime
+against real Podman, as that account; a real installation, and the
+installation after the whole host has restarted (see
+[installer.md](installer.md#tests)); and the whole stack in a browser.
 What a container sees of the checkout is a snapshot of its files, made once
 per pytest session by the `source` fixture in `tests/test_container_suite.py`
 with `tests/snapshot.py`, which is not a test module, and mounted read-only
@@ -96,41 +86,50 @@ so the suite runs the same from a clone and from a git worktree, whose
 `tests/container/clone.py` commits every one of the snapshot's files to a
 repository of its own. The snapshot is removed when the session ends.
 
-The **whole stack** is `tests/container/stack.py`: rcman installed from a
-clone, people added with `rcman-user` as real Linux accounts with the fake
-`claude`, real oauth2-proxy whose Google endpoints point at
+The **whole stack** is `tests/container/stack.py`, in a podman host that
+publishes its port 443: rcman installed from a clone through the real
+installer and systemd, alice its first administrator, bob and carol added with
+`rcman-admin`, real oauth2-proxy whose Google endpoints point at
 `tests/container/oidc_stub.py`, and real Caddy, running as its own account
 with its admin API off, with its own certificate authority for `rcman.test`
-and `auth.test`. Playwright on the host drives it
-through the container's published port with `frontend/playwright.stack.config.ts`
-and the specs in `frontend/e2e-stack/`: signing in through Caddy and
-oauth2-proxy, connecting Claude, a server's lifecycle, one person unable to
-reach another's servers through sudo, making and deleting a folder, which
-another person cannot delete, an administrator seeing everyone's
-servers without being able to act on them, an address that is not on the list, the
-audit trail, and removing people with and without their home folder.
+and `auth.test`, each a service of its own. Signing in to Claude in a workspace
+is not there yet, so a service of the test's signs in the fake `claude` of each
+workspace whose name begins `signed-` as soon as it is ready. Playwright on the
+host drives it through the published port with
+`frontend/playwright.stack.config.ts` and the specs in `frontend/e2e-stack/`;
+`stack.py check` then checks what they left.
 
 The **podman host** is a container from `tests/container/podman/Dockerfile`
 that runs systemd as PID 1, privileged and with a cgroup namespace of its
-own; its entrypoint enables every cgroup controller at the container's root
-before systemd starts, for the reason the Dockerfile gives, and root's own
-Podman units are disabled in the image. The `podman_host` fixture in
-`tests/test_container_suite.py` waits for systemd to finish booting with no
-unit failed, then runs `tests/container/podman_host.py`, which is not a test
-module, to set up rootless Podman for a service account: a subordinate id
-range, linger and so a user manager of the account's own, and
-`podman.socket` in it. The account's home, and Podman's storage in it, is an
-anonymous volume of the container, so that Podman's overlay is never on the
-image's own, and the volume goes wherever the container goes. The image the
-Dockerfile starts from, which the fixture pulls on the host when Docker does
-not have it, is loaded into the account's Podman, through the socket, with
-`docker save | podman load`, so nothing inside needs a registry.
-`tests/container/test_podman_in_container.py` runs in it: Podman rootless
-as the account, its storage off the image's overlay, linger and the socket
-active, the memory, cpu and pids controllers delegated to the
-account's user manager, and a container that a system service starts through
-the socket running in that user manager, outside the service's cgroup, and
-running on when the service stops.
+own, with the toolchain cache the host fills mounted at the installer's
+toolchain; its entrypoint enables every cgroup controller at the container's
+root before systemd starts, for the reason the Dockerfile gives, and root's own
+Podman units are disabled in the image. It holds what the installer would
+install, so the installer installs no package there. `podman_container` in
+`tests/test_container_suite.py` starts one and waits for systemd to finish
+booting with no unit failed. The account's home, and Podman's storage in it, is
+an anonymous volume of the container, so that Podman's overlay is never on the
+image's own, and the volume goes wherever the container goes, and stays across
+a restart of the container. For the suites that do not install rcman, the
+`podman_host` fixture runs `tests/container/podman_host.py` to set up rootless
+Podman for a service account — a subordinate id range, linger and so a user
+manager of the account's own, and `podman.socket` in it — and loads into the
+account's Podman, through the socket, with `docker save | podman load`, the
+image the Dockerfile starts from and the one the installer builds tmux in, so
+nothing inside needs a registry. `tests/container/test_podman_in_container.py`
+runs in it: Podman rootless as the account, its storage off the image's
+overlay, linger and the socket active, the memory, cpu and pids controllers
+delegated to the account's user manager, and a container that a system service
+starts through the socket running in that user manager, outside the service's
+cgroup, and running on when the service stops.
+`tests/container/test_runtime_in_podman.py` runs in it as the account, once
+root has made the tools with the installer's own code: the runtime contract,
+and what only Podman has — a workspace's uid range and its volume's owner,
+its init, no port published, the read-only mounts and the tmpfs, no way to the
+host's loopback, an unreachable socket told from a missing workspace, the
+channel's latency and its podman client's memory. The installation suites
+install with network access: the installer's images come from their registry
+there.
 
 What needs a real Claude account is checked by hand:
 [real-claude-checklist.md](real-claude-checklist.md). Tests marked `real_claude` are deselected by default
@@ -143,10 +142,10 @@ and run by hand with `uv run pytest -m real_claude`; what they need is in
 |---|---|
 | `tests/` | The test suite; `tests/test_<name>.py` tests the module `<name>.py`, wherever it is, `tests/` included, where there is one |
 | `tests/fakes/` | The fake `claude`, its recorded fixtures and the screens observed on a live server — see [fake-claude.md](fake-claude.md) |
-| `helpers/` | `rc-helper` — see [rc-helper.md](rc-helper.md); `rc-admin` and `rcman-user` — see [rc-admin.md](rc-admin.md) |
+| `helpers/` | What the backend shares with the installer and the fake `claude`, the standard library only: the rules values are refused by, what Claude's screens mean, running git, and the checks a Claude Code version is held to |
 | `backend/` | The FastAPI application — see [backend.md](backend.md) |
 | `frontend/` | The React application, its component tests and its browser tests — see [frontend.md](frontend.md) |
-| `tests/container/` | The container images and the suites that run as root inside them |
+| `tests/container/` | The podman host's image and the suites that run inside it |
 | `install.sh`, `installer/` | The installer — see [installer.md](installer.md) |
 | `devtools/` | Development tooling, run by hand, by the edit-time hook or by the tests, which never imports the tests; each module's docstring says what it is |
 
@@ -232,22 +231,6 @@ it can fail, and a positive control that keeps an empty input from passing.
   `devtools/docs_guard.py` catches known phrasings only; review enforces the
   rule itself. `CONTRIBUTING.md` and `project-knowledge/` are outside the scan
   because they quote those phrasings in order to forbid them.
-- **No test reaches the real GitHub** (`tests/test_helper_env.py`). It finds
-  any place in `tests/` that builds an rc-helper environment other than
-  `helper_env`, any rc-helper `Config` made in a test without saying where
-  GitHub is, and any git run in a test with GitHub's address written into
-  its arguments outside the modules that keep it local and the exemptions it
-  lists. For `Config`, it reads how a test names rc-helper in its source,
-  and reports as a failure any reach of rc-helper that could hide a
-  `Config` from that reading; the docstring of `config_sites` in the test
-  says exactly what it reads, what it follows and what it reports.
-  `CONFIG_EXEMPT` names, with a reason, the
-  sites that hand the module on; each covers its own statement — of a
-  compound statement, the header up to the end of the site's expression —
-  not the function it is in. It is a static reading with a boundary:
-  rc-helper reached through what is built at run time, such as a name bound
-  other than by an import or code run as text, is outside it. Its positive
-  control is `helper_env.py`'s own `Config`, which it must read as one.
 - **No fixed shared paths or ports** (`tests/test_fixed_resources.py`). Tests
   run at the same time, so none may hold a fixed path under `/tmp` or a fixed
   unprivileged port. It reads the Python files in `tests/` but not those in

@@ -100,7 +100,7 @@ export function fakeApi(routes: Routes) {
   };
 }
 
-export const ME = { email: "alice@example.com", linux: "alice", admin: false, prefix: "alice" };
+export const ME = { email: "alice@example.com", admin: false, prefix: null };
 export const ADMIN_USER = { ...ME, admin: true };
 export const CONNECTED = {
   connection: "connected",
@@ -111,15 +111,10 @@ export const CONNECTED = {
 export const NOT_CONNECTED = { connection: "not_connected", account: null, login_expires_at: null };
 // What /api/me/settings answers for someone who has set nothing.
 export const SETTINGS = {
-  prefix: "alice",
+  prefix: "",
   author_name: "",
   author_email: "",
   effective_author: null,
 };
 // What /api/attention answers when nothing needs an administrator's attention.
-export const NOTHING_TO_ATTEND = {
-  unrecognised: [],
-  versions_differ: [],
-  untested: false,
-  versions_error: null,
-};
+export const NOTHING_TO_ATTEND = { unrecognised: [] };

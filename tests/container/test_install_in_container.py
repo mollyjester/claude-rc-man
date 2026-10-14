@@ -1,16 +1,17 @@
-"""Installing rcman for real, as root, inside the test container.
+"""rcman installed for real, as root, in the podman host, where systemd runs.
 
-``tests/test_container_suite.py`` runs this module in a fresh container of its
-own. The checkout's files at /src become a git origin
-(tests/container/clone.py); a user ``dev`` clones it and runs ``install.sh``
-through the real path. The toolchain comes from a
-cache the host fills with the installer's own download code. systemctl is the
-stand-in in tests/container/fake-systemctl, which starts each service from
-the unit file the installer wrote.
-
-The tests share one installation and run in order.
+``tests/test_container_suite.py`` runs this module in a fresh podman host. The
+checkout's files at /src become a git origin (tests/container/clone.py); a user
+``dev`` clones it and runs ``install.sh`` through the real path, with the fake claude
+as the Claude Code release it downloads (tests/container/installed.py). The
+toolchain comes from a cache the host fills with the installer's own download code;
+the images Podman builds from come from their registry. The tests share one
+installation and run in order; the last leaves a workspace whose server runs, for
+tests/container/test_restored_in_container.py to find again once the whole host has
+restarted.
 """
 
+import grp
 import json
 import os
 import pwd
@@ -28,46 +29,41 @@ import pytest
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("RCMAN_IN_CONTAINER") != "1" or os.geteuid() != 0,
-    reason="runs only as root inside the test container",
+    reason="runs only as root inside the podman host",
 )
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-ROOT = Path("/opt/rcman")
-ETC = Path("/etc/rcman")
-DOMAIN = "rcman.example.com"
-SETTINGS = {
-    "RCMAN_INSTALL_DOMAIN": DOMAIN,
-    "RCMAN_INSTALL_GOOGLE_CLIENT_ID": "test-client-id",
-    "RCMAN_INSTALL_GOOGLE_CLIENT_SECRET": "test-client-secret",
-    "RCMAN_INSTALL_ADMIN_EMAIL": "dev@example.com",
-}
-
-
 from clone import CLONE, ORIGIN, SRC, git, make_clone, sh  # noqa: E402
+from installed import (  # noqa: E402
+    ADMIN,
+    DOMAIN,
+    ETC,
+    ROOT,
+    SETTINGS,
+    SOCKET,
+    STATE,
+    api,
+    app,
+    changes,
+    claude_processes,
+    healthy,
+    in_workspace,
+    install,
+    podman,
+    rcman_uid,
+    serve_releases,
+    signed_in,
+    until,
+    workspace_of,
+)
 
+sys.path.insert(0, str(SRC))
+from installer import install as ins  # noqa: E402
 
-def install(*args, env=None):
-    full = {
-        "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-        "SUDO_USER": "dev",
-        "RC_ADMIN_INSTALLER": str(SRC / "tests" / "container" / "fake-installer"),
-        **SETTINGS,
-        **(env or {}),
-    }
-    return subprocess.run(
-        [str(CLONE / "install.sh"), *args],
-        env=full,
-        stdin=subprocess.DEVNULL,
-        capture_output=True,
-        text=True,
-        timeout=1500,
-    )
-
-
-def changes(proc):
-    line = next(line for line in proc.stdout.splitlines() if line.startswith("{"))
-    return json.loads(line)
+# What test_restored_in_container.py reads, once the host has restarted.
+LEFT_RUNNING = Path("/var/tmp/rcman-left-running.json")
+BOB = "bob@example.com"
 
 
 def get(url, headers=None):
@@ -79,63 +75,24 @@ def get(url, headers=None):
         return error.code, error.read().decode()
 
 
-SOCKET = "/run/rcman/rcman.sock"
-# One HTTP request over a unix socket, run as another user; prints status, headers, body.
-UDS_CLIENT = """
-import http.client, json, socket, sys
-path, method, url, headers, body = json.loads(sys.argv[1])
-class C(http.client.HTTPConnection):
-    def connect(self):
-        self.sock = socket.socket(socket.AF_UNIX)
-        self.sock.settimeout(10)
-        self.sock.connect(path)
-try:
-    c = C("rcman")
-    c.request(method, url, body=body, headers=headers)
-    r = c.getresponse()
-    print(json.dumps([r.status, dict(r.headers), r.read().decode(errors="replace")]))
-except OSError as e:
-    print(json.dumps([None, {}, type(e).__name__ + ": " + str(e)]))
-except Exception as e:
-    print(json.dumps([None, {}, "not HTTP: " + type(e).__name__]))
-"""
-
-
-def app(url, headers=None, method="GET", body=None, user="caddy", path=SOCKET):
-    """A request to rcman over a unix socket as ``user``: (status, body); status None if refused."""
-    request = json.dumps([path, method, url, headers or {}, body])
-    proc = sh("runuser", "-u", user, "--", sys.executable, "-c", UDS_CLIENT, request)
-    status, _headers, text = json.loads(proc.stdout)
-    return status, text
-
-
-def commit_in_origin(path, text, message):
-    work = Path("/tmp/origin-work")
-    if work.exists():
-        shutil.rmtree(work)
-    sh("git", "clone", "-q", str(ORIGIN), str(work), user="dev")
-    target = work / path
-    target.write_text(target.read_text() + text)
-    git("commit", "-qam", message, cwd=work)
-    git("push", "-q", "origin", "main", cwd=work)
-
-
 @pytest.fixture(scope="module")
 def first_install():
+    download = serve_releases()
+    SETTINGS["RCMAN_INSTALL_CLAUDE_DOWNLOAD"] = download
     make_clone()
     proc = install()
-    assert proc.returncode == 0, proc.stdout + proc.stderr + service_logs()
+    assert proc.returncode == 0, proc.stdout + proc.stderr + journal()
     return proc
 
 
-def service_logs():
-    """What the services printed, from the systemctl stand-in, for failure messages."""
-    logs = (
-        sorted(Path("/run/fake-systemd").glob("*.log"))
-        if Path("/run/fake-systemd").exists()
-        else []
+def journal(unit: str = "rcman.service") -> str:
+    """The end of what a unit wrote, for failure messages."""
+    found = subprocess.run(
+        ["journalctl", "--no-pager", "-o", "cat", "-n", "200", "-u", unit],
+        capture_output=True,
+        text=True,
     )
-    return "".join(f"\n--- {log.name}\n{log.read_text(errors='replace')[-3000:]}" for log in logs)
+    return f"\n--- {unit}\n{found.stdout}"
 
 
 # --- the first installation ---------------------------------------------------------
@@ -160,8 +117,8 @@ def test_installs_the_clones_commit_as_the_current_release(first_install):
     release = ROOT / "current"
     assert (release / ".complete").read_text().strip() == commit
     assert (release / "frontend" / "dist" / "index.html").is_file()
-    assert (release / ".venv" / "bin" / "uvicorn").is_file()
-    assert (release / "helpers" / "rc-helper").is_file()
+    for script in ("uvicorn", "rcman-admin"):
+        assert (release / ".venv" / "bin" / script).is_file(), script
 
 
 def test_the_release_holds_only_runtime_files_owned_by_root(first_install):
@@ -184,12 +141,57 @@ def test_the_release_holds_only_runtime_files_owned_by_root(first_install):
 
 
 def test_accounts_exist(first_install):
-    assert sh("getent", "group", "rcusers").returncode == 0
     assert sh("id", "-nG", "rcman-proxy").stdout.split().count("rcman") == 1
-    assert "rcusers" in sh("id", "-nG", "dev").stdout.split()  # the first administrator, adopted
+    assert grp.getgrnam("rcman-web").gr_mem == ["caddy"]
     state = Path("/var/lib/rcman")
     assert state.stat().st_uid == pwd.getpwnam("rcman").pw_uid
     assert stat.S_IMODE(state.stat().st_mode) == 0o750
+
+
+def test_rcman_has_rootless_podman_of_its_own(first_install):
+    uid = rcman_uid()
+    for path in ins.SUBORDINATE_FILES:
+        mine = [line.split(":") for line in path.read_text().splitlines()]
+        assert sum(int(f[2]) for f in mine if f[0] == "rcman") >= ins.SUBORDINATE_COUNT, path
+    assert (ins.LINGER / "rcman").exists()
+    manager = ["systemctl", "--user", "--machine", "rcman@"]
+    assert sh(*manager, "is-active", "podman.socket").stdout.strip() == "active"
+    assert ins.podman_socket(uid).is_socket()
+    info = json.loads(podman("info", "--format", "json").stdout)
+    assert info["host"]["security"]["rootless"] is True
+
+
+def test_rcman_runs_with_no_new_privileges_and_its_podman_socket(first_install):
+    shown = sh("systemctl", "show", "rcman.service", "--property", "NoNewPrivileges,Environment")
+    assert "NoNewPrivileges=yes" in shown.stdout
+    assert f"XDG_RUNTIME_DIR=/run/user/{rcman_uid()}" in shown.stdout
+
+
+def test_the_tools_are_static_and_root_s(first_install):
+    for name in ("tmux", "busybox"):
+        program = ins.TOOLS / "bin" / name
+        assert ins.is_static(program), name
+        assert program.stat().st_uid == 0 and stat.S_IMODE(program.stat().st_mode) == 0o755
+    assert os.readlink(ins.TOOLS / "bin" / "sh") == "busybox"
+    for entry in ins.TERMINFO:
+        assert (ins.TOOLS / "terminfo" / entry).is_file(), entry
+    conf = (ROOT / "current" / "backend" / "rcman" / "tmux.conf").read_text()
+    assert (ins.TOOLS / "tmux.conf").read_text() == conf
+
+
+def test_the_default_image_is_built_and_named_in_rcmans_settings(first_install):
+    image = ins.workspace_image()
+    assert podman("image", "exists", image, check=False).returncode == 0
+    assert f"RCMAN_WORKSPACE_IMAGE={image}\n" in (ETC / "rcman.env").read_text()
+
+
+def test_the_claude_store_holds_the_tested_version(first_install):
+    version = (SRC / "helpers" / "claude-version").read_text().strip()
+    store = ins.CLAUDE_STORE
+    assert os.readlink(store / "current") == f"versions/{version}"
+    assert os.readlink(store / "bin" / "claude") == "../current"
+    binary = store / "versions" / version
+    assert binary.stat().st_uid == 0 and stat.S_IMODE(binary.stat().st_mode) == 0o755
 
 
 def test_settings_are_saved_privately(first_install):
@@ -197,22 +199,24 @@ def test_settings_are_saved_privately(first_install):
     assert stat.S_IMODE(saved.stat().st_mode) == 0o600
     text = saved.read_text()
     assert f"DOMAIN={DOMAIN}\n" in text and "COOKIE_SECRET=" in text
+    assert "CLAUDE_DOWNLOAD=" in text
 
 
 def test_configuration_files_and_their_owners(first_install):
-    import grp
-
     cfg = ETC / "oauth2-proxy.cfg"
     assert stat.S_IMODE(cfg.stat().st_mode) == 0o640
     assert grp.getgrgid(cfg.stat().st_gid).gr_name == "rcman-proxy"
     env = ETC / "rcman.env"
     assert grp.getgrgid(env.stat().st_gid).gr_name == "rcman"
     assert f"RCMAN_PUBLIC_ORIGIN=https://{DOMAIN}" in env.read_text()
-    sudoers = Path("/etc/sudoers.d/rcman")
-    assert stat.S_IMODE(sudoers.stat().st_mode) == 0o440
-    assert sh("visudo", "-c").returncode == 0
-    assert "dev@example.com" in (ETC / "users.toml").read_text()
-    assert (ETC / "allowed-emails").read_text() == "dev@example.com\n"
+    allowed = STATE / "allowed-emails"
+    assert allowed.read_text() == f"{ADMIN}\n"
+    assert pwd.getpwuid(allowed.stat().st_uid).pw_name == "rcman"
+    assert grp.getgrgid(allowed.stat().st_gid).gr_name == "rcman"
+    assert stat.S_IMODE(allowed.stat().st_mode) == 0o640
+    assert not Path("/etc/sudoers.d/rcman").exists()
+    for database in STATE.glob("rcman.db*"):  # oauth2-proxy shares rcman's group
+        assert stat.S_IMODE(database.stat().st_mode) == 0o600, database
 
 
 def test_services_answer(first_install):
@@ -222,34 +226,24 @@ def test_services_answer(first_install):
     assert status == 200 and '<div id="root">' in body
 
 
-def test_the_app_reaches_the_helpers_through_sudo(first_install):
-    me = {"X-Forwarded-Email": "dev@example.com"}
-    status, body = app("/api/me", me)
-    assert status == 200 and json.loads(body)["admin"] is True
-    status, body = app("/api/folders", me)  # rcman -> sudo -u dev rc-helper
-    assert status == 200, body
-    # dev's own home: the clone and the projects folder rc-admin created
-    assert [e["path"] for e in json.loads(body)["entries"]] == ["projects", "rcman"]
-    status, body = app("/api/users", me)  # rcman -> sudo rc-admin
-    assert status == 200, body
+def test_the_first_administrator_is_there(first_install):
+    status, me = api("GET", "/api/me")
+    assert status == 200 and me["admin"] is True
 
 
-def test_an_administrator_runs_rcman_user_by_name_through_sudo(first_install):
-    """As the guides say: `sudo rcman-user`, found on sudo's own secure path."""
-    proc = sh("sudo", "rcman-user", "list", check=False)
+def test_an_administrator_runs_rcman_admin_by_name_as_root(first_install):
+    """As the guides say: `sudo rcman-admin`, found on root's path, run as rcman."""
+    proc = sh("rcman-admin", "list", check=False)
     assert proc.returncode == 0, proc.stdout + proc.stderr
-    assert "dev@example.com" in proc.stdout  # the first administrator, added by the install
+    assert ADMIN in proc.stdout
 
 
 def test_the_socket_directory_admits_only_its_group(first_install):
-    import grp
-
     run = Path("/run/rcman")
     st = run.stat()
     assert pwd.getpwuid(st.st_uid).pw_name == "rcman"
     assert grp.getgrgid(st.st_gid).gr_name == "rcman-web"
     assert stat.S_IMODE(st.st_mode) == 0o750  # the socket itself is 0666; this is what guards it
-    assert grp.getgrnam("rcman-web").gr_mem == ["caddy"]
     tmpfiles = Path("/etc/tmpfiles.d/rcman.conf").read_text()
     assert tmpfiles == "d /run/rcman 0750 rcman rcman-web -\n"
     assert app("/api/health", user="caddy")[0] == 200  # positive control
@@ -260,106 +254,12 @@ def test_the_socket_directory_admits_only_its_group(first_install):
 
 
 def test_the_socket_group_is_kept_to_caddy_alone(first_install):
-    import grp
-
     sh("usermod", "--append", "--groups", "rcman-web", "dev")
     assert "dev" in grp.getgrnam("rcman-web").gr_mem  # the plant took effect
     proc = install()
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert grp.getgrnam("rcman-web").gr_mem == ["caddy"]
     assert "dev removed from group rcman-web" in changes(proc)["changed"]
-
-
-SLOW = """#!/usr/bin/python3
-import os, sys, time
-open(sys.argv[1], "w").write(str(os.getpid()))
-time.sleep(120)
-"""
-BOUNDED = """
-import subprocess, sys
-from rcman.helpers_client import run_bounded
-runner = run_bounded if sys.argv[1] == "bounded" else subprocess.run
-try:
-    runner(sys.argv[2:], input=None, capture_output=True, text=True, timeout=2)
-except subprocess.TimeoutExpired:
-    print("timed out")
-"""
-
-
-def slow_survives(how, tmp_path):
-    """Run a slow command through real sudo, as rcman runs a helper, and time it out."""
-    pid_file = Path(f"/tmp/slow-{how}.pid")
-    pid_file.unlink(missing_ok=True)
-    out = sh(
-        "runuser", "-u", "rcman", "--", str(ROOT / "current" / ".venv" / "bin" / "python"),
-        "-c", BOUNDED, how, "sudo", "-n", "-u", "dev", "/tmp/slow-helper", str(pid_file),
-    ).stdout  # fmt: skip
-    assert out.strip() == "timed out"
-    pid = int(pid_file.read_text())
-    deadline = time.monotonic() + 5
-    while time.monotonic() < deadline:
-        try:
-            state = Path(f"/proc/{pid}/stat").read_text().split(")")[-1].split()[0]
-        except FileNotFoundError:
-            return False
-        if state == "Z":
-            return False
-        time.sleep(0.1)
-    os.kill(pid, 9)
-    return True
-
-
-def test_a_timed_out_helper_call_ends_the_helper_behind_sudo(first_install, tmp_path):
-    slow = Path("/tmp/slow-helper")
-    slow.write_text(SLOW)
-    slow.chmod(0o755)
-    rule = Path("/etc/sudoers.d/zz-slow-helper")
-    rule.write_text("rcman ALL=(dev) NOPASSWD: /tmp/slow-helper\n")
-    rule.chmod(0o440)
-    try:
-        assert slow_survives("plain", tmp_path)  # planted twin: killing sudo leaves it running
-        assert not slow_survives("bounded", tmp_path)
-    finally:
-        rule.unlink()
-
-
-STUBBORN = """#!/usr/bin/python3
-import os, signal, sys, time
-signal.signal(signal.SIGTERM, signal.SIG_IGN)
-open(sys.argv[1], "w").write(str(os.getpid()))
-time.sleep(120)
-"""
-
-
-def test_a_helper_ignoring_sigterm_behind_sudo_does_not_hold_the_call(first_install):
-    """It is left behind, but the call still ends soon after its timeout."""
-    stubborn = Path("/tmp/stubborn-helper")
-    stubborn.write_text(STUBBORN)
-    stubborn.chmod(0o755)
-    rule = Path("/etc/sudoers.d/zz-stubborn-helper")
-    rule.write_text("rcman ALL=(dev) NOPASSWD: /tmp/stubborn-helper\n")
-    rule.chmod(0o440)
-    pid_file = Path("/tmp/stubborn.pid")
-    pid_file.unlink(missing_ok=True)
-    python = str(ROOT / "current" / ".venv" / "bin" / "python")
-    grace = float(
-        sh("runuser", "-u", "rcman", "--", python, "-c",
-           "from rcman.helpers_client import TERMINATE_GRACE_SECONDS as g; print(g)").stdout
-    )  # fmt: skip
-    started = time.monotonic()
-    try:
-        out = sh(
-            "runuser", "-u", "rcman", "--", "setsid", python, "-c", BOUNDED, "bounded",
-            "sudo", "-n", "-u", "dev", str(stubborn), str(pid_file),
-            stdin=subprocess.DEVNULL, timeout=120,
-        ).stdout  # fmt: skip
-        elapsed = time.monotonic() - started
-    finally:
-        rule.unlink()
-        if pid_file.exists() and pid_file.read_text():
-            sh("kill", "-9", pid_file.read_text(), check=False)
-    assert out.strip() == "timed out"
-    assert elapsed < 2 + grace + 5, elapsed  # the call's timeout, the grace period, a margin
 
 
 def listeners():
@@ -456,36 +356,25 @@ def test_the_installer_warns_about_a_caddy_admin_api_on_loopback(first_install):
 
 def test_audit_events_reach_the_journal(first_install):
     """The service's output is what systemd sends to the journal; an audit event is a line in it."""
-    log = Path("/run/fake-systemd/rcman.service.log")
-    before = log.read_text(errors="replace").splitlines()
-    status, text = app(
-        "/api/me/settings",
-        {
-            "X-Forwarded-Email": "dev@example.com",
-            "Origin": f"https://{DOMAIN}",
-            "Content-Type": "application/json",
-        },
-        method="PATCH",
-        body=json.dumps({"prefix": "journal"}),
-    )
-    assert status == 200, text
-    deadline = time.monotonic() + 10
-    while True:  # the event is written as the request finishes, which may follow the response
-        after = log.read_text(errors="replace").splitlines()[len(before) :]
-        events = []
-        for line in after:
+    cursor = sh("journalctl", "--show-cursor", "-n", "0", "-o", "cat").stdout.split()[-1]
+    status, settings = api("PATCH", "/api/me/settings", body={"prefix": "journal"})
+    assert status == 200, settings
+    api("PATCH", "/api/me/settings", body={"prefix": ""})
+
+    def events():
+        lines = sh("journalctl", "--after-cursor", cursor, "-u", "rcman.service", "-o", "cat")
+        found = []
+        for line in lines.stdout.splitlines():
             try:
                 event = json.loads(line)
             except ValueError:
                 continue
-            if isinstance(event, dict) and event.get("action") == "settings.update":
-                events.append(event)
-        if events or time.monotonic() > deadline:
-            break
-        time.sleep(0.2)
-    assert any("PATCH /api/me/settings" in line for line in after), after  # positive control
-    assert len(events) == 1, after
-    assert (events[0]["target"], events[0]["result"]) == ('{"prefix": "journal"}', "ok")
+            if isinstance(event, dict) and event.get("target") == '{"prefix": "journal"}':
+                found.append(event)
+        return found
+
+    [event] = until(events, within=30)
+    assert (event["action"], event["result"]) == ("settings.update", "ok")
 
 
 def test_the_caddy_snippet_is_printed_and_valid(first_install):
@@ -550,13 +439,10 @@ def test_rollback_returns_to_the_previous_release(first_install):
     assert proc.returncode == 0, proc.stderr
     assert os.readlink(ROOT / "current") == previous
     assert os.readlink(ROOT / "previous") == current
-    command = Path("/usr/local/sbin/rcman-user").resolve()
-    assert command == (ROOT / previous / "helpers" / "rcman-user").resolve()
-    assert sh("sudo", "rcman-user", "list", check=False).returncode == 0
-    deadline = time.monotonic() + 30
-    while app("/api/health")[0] != 200 and time.monotonic() < deadline:
-        time.sleep(0.5)
-    assert app("/api/health")[0] == 200
+    command = Path("/usr/local/sbin/rcman-admin").resolve()
+    assert command == (ROOT / previous / ".venv" / "bin" / "rcman-admin").resolve()
+    assert sh("rcman-admin", "list", check=False).returncode == 0
+    healthy()
 
 
 def test_a_clone_that_cannot_fast_forward_is_refused(first_install):
@@ -566,6 +452,129 @@ def test_a_clone_that_cannot_fast_forward_is_refused(first_install):
     git("commit", "-qam", "local", cwd=CLONE)
     proc = install()
     assert proc.returncode == 1 and "fast-forward" in proc.stderr
+
+
+# --- people and workspaces, in the installation ----------------------------------------
+
+
+def made(name: str, who: str = ADMIN) -> dict:
+    status, answer = api("POST", "/api/workspaces", who, {"name": name})
+    assert status == 202, answer
+
+    def ready():
+        found = workspace_of(name, who)
+        return found if found and found["state"] != "creating" else None
+
+    found = until(ready)
+    assert found["state"] == "ready", found
+    return found
+
+
+def server_state(name: str, who: str = ADMIN) -> str | None:
+    found = workspace_of(name, who)
+    return found and found["server"] and found["server"]["state"]
+
+
+def test_a_person_is_added_and_can_come_in(first_install):
+    status, answer = api("POST", "/api/people", body={"email": BOB})
+    assert status == 200, answer
+    assert BOB in (STATE / "allowed-emails").read_text()
+    assert api("GET", "/api/me", BOB)[0] == 200
+
+
+def test_a_workspace_is_made_and_its_server_is_refused_until_claude_is_signed_in(first_install):
+    alpha = made("alpha")
+    status, answer = api("POST", "/api/servers", body={"workspace": alpha["id"]})
+    assert (status, answer["code"]) == (409, "claude_not_logged_in"), answer
+
+
+def test_a_server_reaches_ready_with_the_fake_claude_from_the_store(first_install):
+    alpha = workspace_of("alpha")
+    signed_in(alpha["id"])
+    status, answer = api("POST", "/api/servers", body={"workspace": alpha["id"]})
+    assert status == 200 and answer["server"]["state"] == "trust_prompt", answer
+    status, answer = api(
+        "POST", "/api/servers/confirm", body={"workspace": alpha["id"], "answer": "y"}
+    )
+    assert status == 200, answer
+    until(lambda: server_state("alpha") == "ready")
+    assert claude_processes(alpha["id"])
+
+
+def test_a_servers_processes_run_outside_rcmans_service(first_install):
+    alpha = workspace_of("alpha")
+    found = json.loads(podman("container", "inspect", f"rcman-ws-{alpha['id']}").stdout)[0]
+    manager = f"/user.slice/user-{rcman_uid()}.slice/user@{rcman_uid()}.service/"
+    for pid in (found["State"]["Pid"], found["State"]["ConmonPid"]):
+        cgroup = Path(f"/proc/{pid}/cgroup").read_text().strip().removeprefix("0::")
+        assert cgroup.startswith(manager) and "rcman.service" not in cgroup, cgroup
+
+
+def test_restarting_rcman_leaves_the_server_running_as_it_was(first_install):
+    alpha = workspace_of("alpha")
+    before = claude_processes(alpha["id"])
+    assert before  # positive control
+    sh("systemctl", "restart", "rcman.service")
+    healthy()
+    until(lambda: server_state("alpha") == "ready", within=60)
+    assert claude_processes(alpha["id"]) == before
+
+
+def test_a_stop_leaves_no_claude_process_in_the_workspace(first_install):
+    alpha = workspace_of("alpha")
+    assert claude_processes(alpha["id"])  # positive control
+    status, answer = api("POST", "/api/servers/stop", body={"workspace": alpha["id"]})
+    assert status == 200 and answer["server"]["state"] == "stopped", answer
+    assert claude_processes(alpha["id"]) == []
+    status, answer = api("POST", "/api/servers/resume", body={"workspace": alpha["id"]})
+    assert status == 200, answer
+    until(lambda: server_state("alpha") == "ready")
+
+
+def test_one_person_cannot_reach_anothers_workspace(first_install):
+    alpha = workspace_of("alpha")
+    signed_in_bob = made("beta", BOB)
+    assert workspace_of("beta") is None  # not in the administrator's own list
+    for method, url, body in (
+        ("POST", "/api/servers", {"workspace": signed_in_bob["id"]}),
+        ("GET", f"/api/servers/output?workspace={signed_in_bob['id']}", None),
+        ("DELETE", f"/api/workspaces/{signed_in_bob['id']}", None),
+    ):
+        status, answer = api(method, url, body=body)
+        assert (status, answer["code"]) == (404, "workspace_not_found"), (url, answer)
+    mappings = {}
+    for workspace in (alpha, signed_in_bob):
+        name = f"rcman-ws-{workspace['id']}"
+        found = json.loads(podman("container", "inspect", name).stdout)[0]
+        mounts = {m.get("Name") for m in found["Mounts"] if m.get("Type") == "volume"}
+        assert mounts == {name}, mounts  # its own volume, and no one else's
+        mappings[name] = in_workspace(workspace["id"], "cat /proc/self/uid_map").split()
+    first, second = mappings.values()
+    assert first[0] == second[0] == "0" and first[1] != second[1]  # ranges of their own
+    for path in (SOCKET, f"/run/user/{rcman_uid()}/podman/podman.sock", str(STATE)):
+        assert in_workspace(alpha["id"], f"test -e {path} && echo there", check=False) == ""
+
+
+def test_deleting_a_person_leaves_nothing_labelled_theirs(first_install):
+    status, everyone = api("GET", "/api/people")
+    bob = next(p for p in everyone["people"] if p["email"] == BOB)
+    label = f"label=rcman.person={bob['id']}"
+    assert podman("ps", "--all", "--quiet", "--filter", label).stdout.split()  # positive control
+    status, answer = api("DELETE", f"/api/people/{bob['id']}")
+    assert status == 200, answer
+    assert podman("ps", "--all", "--quiet", "--filter", label).stdout.split() == []
+    assert podman("volume", "ls", "--quiet", "--filter", label).stdout.split() == []
+    assert BOB not in (STATE / "allowed-emails").read_text()
+    assert api("GET", "/api/me", BOB)[0] == 403
+
+
+def test_the_server_is_left_running_for_the_restart(first_install):
+    alpha = workspace_of("alpha")
+    assert server_state("alpha") == "ready"
+    marker = Path("/run/rcman-test-before-the-restart")
+    marker.touch()
+    left = {"workspace": alpha["id"], "name": "alpha", "marker": str(marker)}
+    LEFT_RUNNING.write_text(json.dumps(left))
 
 
 # --- Caddy in front -------------------------------------------------------------------
@@ -664,3 +673,14 @@ def test_caddy_lets_only_oauth2_proxy_set_the_identity(tmp_path):
     finally:
         for proc in procs:
             proc.terminate()
+
+
+def commit_in_origin(path, text, message):
+    work = Path("/tmp/origin-work")
+    if work.exists():
+        shutil.rmtree(work)
+    sh("git", "clone", "-q", str(ORIGIN), str(work), user="dev")
+    target = work / path
+    target.write_text(target.read_text() + text)
+    git("commit", "-qam", message, cwd=work)
+    git("push", "-q", "origin", "main", cwd=work)

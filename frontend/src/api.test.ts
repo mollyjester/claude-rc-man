@@ -22,8 +22,8 @@ async function failure(promise: Promise<unknown>): Promise<ApiError> {
 }
 
 test("returns the JSON body on success", async () => {
-  fakeApi({ "GET /api/me": { linux: "alice" } });
-  expect(await api.get("/api/me")).toEqual({ linux: "alice" });
+  fakeApi({ "GET /api/me": { email: "alice@example.com" } });
+  expect(await api.get("/api/me")).toEqual({ email: "alice@example.com" });
 });
 
 test("sends JSON bodies and the query", async () => {
@@ -242,7 +242,7 @@ test("a problem rcman sent is not reported", async () => {
 test("an unreachable request is reported after the next request that works", async () => {
   let down = true;
   const fake = fakeApi({
-    "GET /api/me": () => (down ? UNREACHABLE_REPLY : { linux: "alice" }),
+    "GET /api/me": () => (down ? UNREACHABLE_REPLY : { email: "alice@example.com" }),
     "POST /api/client-errors": {},
   });
   await failure(api.get("/api/me"));
@@ -297,7 +297,7 @@ test("a report that cannot be sent waits for the next success, and is not report
   let rcman = false;
   let reports = false;
   const fake = fakeApi({
-    "GET /api/me": () => (rcman ? { linux: "alice" } : UNREACHABLE_REPLY),
+    "GET /api/me": () => (rcman ? { email: "alice@example.com" } : UNREACHABLE_REPLY),
     "POST /api/client-errors": () => (reports ? {} : UNREACHABLE_REPLY),
   });
   await failure(api.get("/api/me"));
@@ -320,7 +320,7 @@ test("a report that cannot be sent waits for the next success, and is not report
 test("a report rcman refuses is dropped", async () => {
   let down = true;
   const fake = fakeApi({
-    "GET /api/me": () => (down ? UNREACHABLE_REPLY : { linux: "alice" }),
+    "GET /api/me": () => (down ? UNREACHABLE_REPLY : { email: "alice@example.com" }),
     "POST /api/client-errors": problem(
       422,
       "validation_failed",
@@ -344,7 +344,7 @@ test("reports are sent one at a time, by one sender, and those noted meanwhile f
   let mostOutstanding = 0;
   const answers: (() => void)[] = [];
   const fake = fakeApi({
-    "GET /api/me": () => (down ? UNREACHABLE_REPLY : { linux: "alice" }),
+    "GET /api/me": () => (down ? UNREACHABLE_REPLY : { email: "alice@example.com" }),
     "GET /api/servers": UNREACHABLE_REPLY,
     "POST /api/client-errors": () => {
       outstanding += 1;
@@ -388,7 +388,7 @@ test("a sign-in that has ended is said so, not taken for rcman unreachable", asy
 test("a report that meets an ended sign-in waits to be sent", async () => {
   let down = true;
   const fake = fakeApi({
-    "GET /api/me": () => (down ? UNREACHABLE_REPLY : { linux: "alice" }),
+    "GET /api/me": () => (down ? UNREACHABLE_REPLY : { email: "alice@example.com" }),
     "POST /api/client-errors": SIGNED_OUT_REPLY,
   });
   await failure(api.get("/api/me"));
@@ -417,7 +417,7 @@ test("a report that gets no answer in time waits for the next success", async ()
   let down = true;
   let hang = true;
   const fake = fakeApi({
-    "GET /api/me": () => (down ? UNREACHABLE_REPLY : { linux: "alice" }),
+    "GET /api/me": () => (down ? UNREACHABLE_REPLY : { email: "alice@example.com" }),
     "POST /api/client-errors": () => (hang ? new Promise(() => {}) : {}),
   });
   const posts = () => fake.made("POST", "/api/client-errors");
@@ -454,7 +454,7 @@ test("a sender forgotten while a report is out drops it, rather than queueing it
   let down = true;
   let fail = () => {};
   const fake = fakeApi({
-    "GET /api/me": () => (down ? UNREACHABLE_REPLY : { linux: "alice" }),
+    "GET /api/me": () => (down ? UNREACHABLE_REPLY : { email: "alice@example.com" }),
     "POST /api/client-errors": () =>
       new Promise((resolve) => {
         fail = () => resolve(UNREACHABLE_REPLY);

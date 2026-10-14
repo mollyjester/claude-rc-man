@@ -12,7 +12,7 @@ import { asApiError, ProblemView } from "./ProblemView";
 import { Settings } from "./Settings";
 import { usePopup } from "./usePopup";
 
-export type Me = { email: string; linux: string; admin: boolean; prefix: string };
+export type Me = { email: string; admin: boolean; prefix: string | null };
 
 const MeContext = createContext<Me | null>(null);
 export const useMe = () => useContext(MeContext);

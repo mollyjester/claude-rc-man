@@ -12,8 +12,7 @@ import pytest
 
 from devtools import record_claude as rec
 from helpers import claude_checks as cc
-from helpers import rc_admin as ra
-from helpers import rc_helper
+from helpers import screens
 
 REAL = shutil.which("claude")
 
@@ -257,18 +256,18 @@ def test_lines_after_a_url_are_kept_where_nothing_wrapped():
 
 
 def wrapped_sign_in(tail):
-    """A sign-in URL that fills a line of rc-helper's terminal, ``tail`` on the next."""
+    """A sign-in URL that fills a line of rcman's terminal, ``tail`` on the next."""
     start = "visit: https://claude.com/cai/oauth/authorize?code=true&state="
-    return start + "A" * (rc_helper.WIDTH - len(start)), tail
+    return start + "A" * (screens.WIDTH - len(start)), tail
 
 
 def wrapped_token():
     token = "sk-ant-oat01-" + "Q" * 30
-    return "x" * (rc_helper.WIDTH - 20) + " " + token[:19], token[19:]
+    return "x" * (screens.WIDTH - 20) + " " + token[:19], token[19:]
 
 
 def wrapped_email():
-    return "x" * (rc_helper.WIDTH - 10) + " secret.pe", "rson@example.org"
+    return "x" * (screens.WIDTH - 10) + " secret.pe", "rson@example.org"
 
 
 WRAPS = {
@@ -281,7 +280,7 @@ WRAPS = {
 @pytest.mark.parametrize("kind", WRAPS)
 def test_a_secret_a_terminal_wrapped_is_blanked_whole(tmp_path, kind):
     first, tail, secrets = WRAPS[kind]
-    assert len(first) == rc_helper.WIDTH  # it reaches the edge
+    assert len(first) == screens.WIDTH  # it reaches the edge
     wraps = script(tmp_path, f"print({first!r})\nprint({tail!r})\nprint('Paste code here')")
     run = runner_for(wraps, tmp_path)
     _code, output = run(["--version"])
@@ -295,13 +294,13 @@ def test_a_secret_a_terminal_wrapped_is_blanked_whole(tmp_path, kind):
 def test_a_line_longer_than_the_terminal_is_not_joined_to_the_next(tmp_path):
     """The terminal itself never wraps what is written, so a longer line was not
     wrapped by the program."""
-    first = "visit: https://claude.com/cai/oauth/authorize?state=" + "A" * rc_helper.WIDTH
+    first = "visit: https://claude.com/cai/oauth/authorize?state=" + "A" * screens.WIDTH
     long = script(tmp_path, f"print({first!r})\nprint('PLAINNEXT')")
     detail = said(cc.candidate_failures(runner_for(long, tmp_path), "1.2.3")["version"])
     assert "PLAINNEXT" in detail and "AAAA" not in detail
 
 
-# The sign-in URL the real Claude Code prints, as rc-helper's terminal showed it.
+# The sign-in URL the real Claude Code prints, as rcman's terminal showed it.
 REAL_SIGN_IN = (
     "https://claude.com/cai/oauth/authorize?code=true&client_id=9d1c250a-e61b-44d9-88ed-"
     "5944d1962f5e&response_type=code&redirect_uri=https%3A%2F%2Fplatform.claude.com%2Foauth"
@@ -347,7 +346,7 @@ def test_redacting_a_screen_of_many_lines_takes_no_longer_than_its_size_does():
 
 def test_a_line_after_a_url_that_did_not_reach_the_edge_is_kept(tmp_path):
     first = "visit: https://claude.com/cai/oauth/authorize?state=PLANTSTATE"
-    assert len(first) < rc_helper.WIDTH
+    assert len(first) < screens.WIDTH
     short = script(tmp_path, f"print({first!r})\nprint('PLAINNEXT')")
     detail = said(cc.candidate_failures(runner_for(short, tmp_path), "1.2.3")["version"])
     assert "PLAINNEXT" in detail and "PLANTSTATE" not in detail
@@ -683,16 +682,16 @@ def test_erase_in_line_clears_the_line_or_up_to_the_cursor():
 
 
 def test_a_cursor_move_too_large_to_read_is_still_read():
-    assert render("a\x1b[" + "9" * 5000 + "Cb") == "a" + " " * (rc_helper.WIDTH - 2) + "b"
+    assert render("a\x1b[" + "9" * 5000 + "Cb") == "a" + " " * (screens.WIDTH - 2) + "b"
 
 
 def test_a_tab_goes_no_further_than_the_terminal_is_wide():
-    assert render("a" + "\t" * 100 + "b") == "a" + " " * (rc_helper.WIDTH - 2) + "b"
+    assert render("a" + "\t" * 100 + "b") == "a" + " " * (screens.WIDTH - 2) + "b"
 
 
 def test_a_cursor_move_goes_no_further_than_the_terminal_is_wide():
-    assert render("a\x1b[99999999Cb") == "a" + " " * (rc_helper.WIDTH - 2) + "b"
-    assert render("a\x1b[99999999Gb") == "a" + " " * (rc_helper.WIDTH - 2) + "b"
+    assert render("a\x1b[99999999Cb") == "a" + " " * (screens.WIDTH - 2) + "b"
+    assert render("a\x1b[99999999Gb") == "a" + " " * (screens.WIDTH - 2) + "b"
 
 
 def test_the_pty_runner_finds_its_pattern_across_reads(tmp_path):
@@ -703,8 +702,8 @@ def test_the_pty_runner_finds_its_pattern_across_reads(tmp_path):
     )
     run = cc.local_runner(str(slow), env={}, cwd=tmp_path, config_dir=tmp_path / "cfg")
     started = time.monotonic()
-    exit_code, output = run([], until=re.escape(rc_helper.LOGIN_PROMPT), timeout=20)
-    assert exit_code is None and rc_helper.LOGIN_PROMPT in output
+    exit_code, output = run([], until=re.escape(screens.LOGIN_PROMPT), timeout=20)
+    assert exit_code is None and screens.LOGIN_PROMPT in output
     assert time.monotonic() - started < 10
 
 
@@ -735,18 +734,18 @@ def test_the_installed_real_claude_passes(tmp_path):
 def test_the_installed_real_claude_passes_with_a_long_configuration_path(tmp_path):
     """auth status prints the configuration's path in its JSON; on a terminal a path
     longer than a line wraps inside a string, and the JSON no longer reads. The path
-    here is longer than rc-helper's terminal is wide."""
+    here is longer than rcman's terminal is wide."""
     version = rec.installed_version(REAL)
-    deep = tmp_path / ("d" * rc_helper.WIDTH)
+    deep = tmp_path / ("d" * screens.WIDTH)
     deep.mkdir()
     assert cc.candidate_failures(runner_for(REAL, deep), version) == {}
 
 
-def test_the_terminal_is_the_size_rc_helper_gives_claude(tmp_path):
-    """The screens are read on a terminal of the size rc-helper runs Claude's in."""
+def test_the_terminal_is_the_size_rcman_gives_claude(tmp_path):
+    """The screens are read on a terminal of the size rcman runs Claude's in."""
     run = cc.local_runner("/bin/sh", env={}, cwd=tmp_path, config_dir=tmp_path / "cfg")
     _code, output = run(["-c", "stty size"])
-    assert output.split() == [str(rc_helper.HEIGHT), str(rc_helper.WIDTH)], output
+    assert output.split() == [str(screens.HEIGHT), str(screens.WIDTH)], output
 
 
 TERMINAL_PROBE = f"""#!{sys.executable}
@@ -756,8 +755,8 @@ if sys.argv[1:] == ["auth", "status"]:
 """
 
 
-def test_auth_status_is_read_through_pipes_as_rc_helper_reads_it(tmp_path):
-    """rc-helper runs auth status with no terminal; the check runs it the same way."""
+def test_auth_status_is_read_through_pipes_as_rcman_reads_it(tmp_path):
+    """rcman runs auth status with no terminal; the check runs it the same way."""
     probe = tmp_path / "claude"
     probe.write_text(TERMINAL_PROBE, encoding="utf-8")
     probe.chmod(0o755)
@@ -804,45 +803,3 @@ def test_absolute_column_moves_are_rendered():
 def test_carriage_return_overwrites_and_erase_clears():
     assert render("loading...\rdone\x1b[K\n") == "done\n"
     assert render("abc\x1b[2Dz\n") == "azc\n"
-
-
-# --- the guide's table of checks ------------------------------------------------------
-
-GUIDE = Path(__file__).resolve().parent.parent / "docs" / "claude-version.md"
-HEADER = "| Check | What it checks |"
-
-
-def guide_checks(markdown: str) -> list[str]:
-    """The checks the guide's table names, in order: the first cell of each row, in code."""
-    lines = markdown.splitlines()
-    if HEADER not in lines:
-        return []
-    rows = []
-    for line in lines[lines.index(HEADER) + 2 :]:
-        if not line.startswith("|"):
-            break
-        rows.append(line.split("|")[1].strip().strip("`"))
-    return rows
-
-
-def reported_checks():
-    """Every name a refused upgrade can report, in the order they are tried: installing
-    the candidate, then the checks."""
-    return [ra.INSTALL, *(name for name, _ in cc.CHECKS)]
-
-
-def test_the_guide_lists_every_check_in_order():
-    names = reported_checks()
-    assert len(names) > 1  # non-vacuity
-    assert guide_checks(GUIDE.read_text(encoding="utf-8")) == names
-
-
-def test_the_guide_check_fails_on_a_drifted_table():
-    names = reported_checks()
-    table = "\n".join([HEADER, "|---|---|", *(f"| `{n}` | what |" for n in names)])
-    assert guide_checks(table) == names
-    missing = table.replace(f"| `{names[-1]}` | what |", "")
-    assert missing != table  # the plant took effect
-    assert guide_checks(missing) != names
-    assert guide_checks(table + "\n| `extra` | what |") != names
-    assert guide_checks("") == []
