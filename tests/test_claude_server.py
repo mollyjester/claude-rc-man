@@ -585,3 +585,76 @@ def test_an_answer_of_claude_that_is_not_json_is_unrecognised_output(world):
 def test_no_claude_in_the_workspace_is_claude_not_installed(world):
     world.claude.unlink()
     assert refused(world.server.start, "pfx").code == "claude_not_installed"
+
+
+def _gone(pid: int) -> bool:
+    for _ in range(50):
+        if not alive(pid):
+            return True
+        time.sleep(0.1)
+    return False
+
+
+def test_a_stop_ends_a_sessions_command_in_a_session_of_its_own(world, monkeypatch):
+    """As seen with a real account: a session stays in the pane's process group, and the
+    commands it runs are in a session of their own (setsid), whose parent the group's
+    kill ends first, so they are collected before anything is signalled."""
+    quick_stop(monkeypatch)
+    log_in(world)
+    pid_file = world.tmp_path / "command.pid"
+    session = (
+        f"sh -c 'setsid sleep 600 </dev/null >/dev/null 2>&1 & echo $! > {pid_file}; wait' "
+        "</dev/null >/dev/null 2>&1 &\n"
+    )
+    write_claude(
+        world.claude,
+        before=f"if [ \"$1\" = remote-control ]; then\n  {session}fi\ntrap '' INT TERM\n",
+    )
+    world.server.start("pfx")
+    pid = child_pid(pid_file)
+    try:
+        assert os.getsid(pid) == pid  # the plant took effect: a session of its own
+        world.server.stop()
+        assert _gone(pid)
+    finally:
+        if alive(pid):
+            os.kill(pid, signal.SIGKILL)
+
+
+def test_a_stop_ends_what_the_server_started_after_the_stop_began(world, monkeypatch):
+    """A server may start a command while it is being stopped: what runs is collected
+    again before each signal, while the server still holds it as a descendant."""
+    quick_stop(monkeypatch)
+    log_in(world)
+    pid_file = world.tmp_path / "late.pid"
+    # The command writes its pid and its session's id, then becomes sleep.
+    command = world.tmp_path / "command.sh"
+    command.write_text(
+        f"read -r a b c d e sid rest < /proc/$$/stat\necho $$ $sid > {pid_file}\nexec sleep 600\n"
+    )
+    quiet = "</dev/null >/dev/null 2>&1"
+    late = f'sh -c "setsid sh {command} {quiet} & wait" {quiet} &'
+    write_claude(
+        world.claude,
+        before=(
+            'if [ "$1" = remote-control ]; then\n'
+            f"  trap '{late}' INT\n"
+            "  echo a server that starts a command on Ctrl+C\n"
+            "  while :; do sleep 1; done\n"
+            "fi\n"
+        ),
+    )
+    world.server.start("pfx")
+    try:
+        world.server.stop()
+        for _ in range(50):
+            if pid_file.exists() and len(pid_file.read_text().split()) == 2:
+                break
+            time.sleep(0.1)
+        pid, sid = (int(x) for x in pid_file.read_text().split())
+        assert sid == pid  # the plant took effect: a session of its own
+        assert _gone(pid)
+    finally:
+        found = pid_file.read_text().split() if pid_file.exists() else []
+        if found and alive(int(found[0])):
+            os.kill(int(found[0]), signal.SIGKILL)

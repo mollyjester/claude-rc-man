@@ -14,7 +14,10 @@ people: [the user guide](../docs/users.md).
 
 `people` (`backend/rcman/db.py`) holds each person's address, unique whatever
 its case and kept in lowercase; whether they are an administrator; their slot;
-and their state, `active` or `deleting`. An address is checked by `EMAIL` in
+their state, `active` or `deleting`; their Claude account as their last sign-in
+named it (`claude_account`, the `oauthAccount` Claude wrote, or null); and
+whether a sign-out of it waits for their running servers (`claude_signing_out`;
+see [backend.md](backend.md#claude-accounts)). An address is checked by `EMAIL` in
 `helpers/rules.py`, the rule the installer checks the first administrator's by
 too.
 
@@ -46,8 +49,12 @@ removal takes effect at once in rcman whatever oauth2-proxy has read.
 `deleting`, from when they are let in nowhere, off the allowed list, and no
 workspace is made for them (`not_allowed`); deletes
 every workspace of theirs, container and volume, waiting for one still being
-made; then removes their row and their settings, and writes the allowed list
-again. A person with workspaces cannot be removed from the table: the
+made; then their Claude sign-in (see
+[runtime.md](runtime.md#a-persons-claude-sign-in)); then removes their row and
+their settings, and writes the allowed list again. The sign-in goes before the
+row because ids and slots are given again: a file left behind would sign the
+next person in. One that cannot be removed leaves the row `deleting`, for
+rcman's next start. A person with workspaces cannot be removed from the table: the
 workspaces' rows refer to theirs. A deletion that could not remove a workspace answers `workspace_failed`
 and leaves the person `deleting`, let in nowhere; that, and a deletion that
 rcman's restart cut short, is finished when rcman next starts (see [runtime.md](runtime.md#what-rcman-keeps-and-brings-back)). Anyone may be deleted — oneself, and the
@@ -76,6 +83,7 @@ start.
 | Tests | What they prove |
 |---|---|
 | `tests/test_db.py` | The schema: one address and one slot per person, no slot 0, no person removed while workspaces are theirs |
+| `tests/test_accounts.py` | A person's sign-in removed before their row, and a leftover one never reaching the next person given the same id and slot |
 | `tests/test_people.py` | Slots, addresses, the bound on people, the allowed list written whole by rename, and the People page's routes, deleting a person's workspaces and settings among them |
 | `tests/test_identity.py` | Who is let in: an active person, by address in any case, and no one else from the moment they are removed or being deleted |
 | `tests/test_admin.py` | `rcman-admin`'s verbs, its words, running itself again as rcman, and the installed script |

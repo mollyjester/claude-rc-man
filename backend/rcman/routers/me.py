@@ -140,3 +140,25 @@ def patch_settings(
     finally:
         con.close()
     return _settings(request, record.identity)
+
+
+# Where oauth2-proxy ends the web session (installer/templates/Caddyfile sends /oauth2/*
+# to it).
+SIGN_OUT_URL = "/oauth2/sign_out"
+
+
+class SignOutBody(BaseModel):
+    keep_sessions: bool = Field(
+        True, description="Leave running servers running; otherwise they are stopped first."
+    )
+
+
+@router.post("/sign-out")
+def sign_out(
+    body: SignOutBody, request: Request, record: Record = Depends(Recorder("me.sign_out"))
+) -> dict:
+    """Signing out of rcman: running servers never depend on the web session, so they
+    keep running unless asked otherwise. The page then goes to ``sign_out_url``."""
+    if not body.keep_sessions:
+        request.app.state.workspaces.stop_running(record.identity.person)
+    return {"sign_out_url": SIGN_OUT_URL}

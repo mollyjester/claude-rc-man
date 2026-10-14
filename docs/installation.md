@@ -143,6 +143,14 @@ addresses**, and anything on the networks this machine is on, as rcman's own
 account could. If that matters, keep such services on loopback, or limit what
 rcman's account (`rcman`) may connect to with the machine's firewall.
 
+## Podman's volumes are rcman's
+
+rcman keeps each workspace, and each person's Claude sign-in, in volumes of its
+own account's Podman. A person's sign-in is a volume no container mounts by
+name, so to Podman it looks unused: **never run `podman volume prune` as
+`rcman`**, or everyone is signed out of Claude. rcman removes a person's volumes
+itself when they are removed.
+
 ## Caddy
 
 rcman listens on no network port. Its only listener is the unix socket

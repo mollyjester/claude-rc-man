@@ -322,8 +322,11 @@ def test_an_installation_works_and_comes_back_after_the_host_restarts(
 
 def test_the_whole_stack_in_a_browser(docker, podman_image, labelled, source):
     """tests/container/stack.py in a fresh podman host; the browser specs in
-    frontend/e2e-stack, from the host, through the port it publishes."""
+    frontend/e2e-stack, from the host, through the port it publishes, signing in to the
+    fake claude with the code it accepts."""
     import socket
+
+    from devtools.fake_claude import ACCEPTED_CODE as CODE
 
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
@@ -339,7 +342,7 @@ def test_the_whole_stack_in_a_browser(docker, podman_image, labelled, source):
             ["npx", "playwright", "test", "--config", "playwright.stack.config.ts",
              "--reporter=line"],
             cwd=REPO / "frontend",
-            env={**os.environ, "RCMAN_STACK_PORT": str(port)},
+            env={**os.environ, "RCMAN_STACK_PORT": str(port), "RCMAN_FAKE_CLAUDE_CODE": CODE},
             capture_output=True,
             text=True,
             timeout=1200,

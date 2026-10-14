@@ -45,7 +45,8 @@ test("a page is rendered, with links between pages kept inside rcman", async () 
     "href",
     "/help/users#adding",
   );
-  expect(screen.getByRole("link", { name: "Claude" })).toHaveAttribute(
+  // the page's own link, not the navigation's to the Claude page
+  expect(within(screen.getByRole("main")).getByRole("link", { name: "Claude" })).toHaveAttribute(
     "href",
     "https://claude.ai/code",
   );

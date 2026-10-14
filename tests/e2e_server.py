@@ -18,7 +18,7 @@ from pathlib import Path
 
 from rcman import db, people
 from rcman.main import create_app as rcman_app
-from rcman.runtime import HostRuntime, Spec
+from rcman.runtime import HostRuntime
 from rcman.settings import Settings
 
 from devtools import fake_claude as fake
@@ -28,7 +28,7 @@ from devtools import record_claude as rec
 REPO = Path(__file__).resolve().parent.parent
 # Who the world lets in, and whether each is an administrator.
 PEOPLE = {"alice@example.com": True, "bob@example.com": False}
-# Whose workspaces' Claude is signed in.
+# Whose Claude account is signed in.
 SIGNED_IN = "alice@example.com"
 # Every world's name, as frontend/e2e/world.ts makes one: the prefix and a random
 # UUID. Worlds a killed run left are cleared by it, so nothing else that begins the
@@ -79,24 +79,24 @@ def clear_abandoned(parent: Path, uid: int | None = None) -> None:
     )
 
 
-class WorldRuntime(HostRuntime):
-    """The host runtime, signing in the fake claude of each of SIGNED_IN's workspaces."""
+def record_sign_in(database: Path, person: int) -> None:
+    """The person's account as a sign-in records it (backend/rcman/accounts.py), which
+    a server's start needs besides the credentials file."""
+    con = db.connect(database)
+    try:
+        account = {"oauthAccount": fake.oauth_account(fake.FAKE_ACCOUNT["email"])}
+        people.set_claude_account(con, person, account)
+    finally:
+        con.close()
 
-    signed_in_person: int | None = None
 
-    def create(self, spec: Spec) -> None:
-        super().create(spec)
-        if spec.person == self.signed_in_person:
-            fake.write_state(Path(self.layout(spec.name).config), logged_in=True)
-
-
-def _world(root: Path, settings: Settings) -> WorldRuntime:
+def _world(root: Path, settings: Settings) -> HostRuntime:
     db.migrate(settings.database)
     con = db.connect(settings.database)
     try:
         for email, admin in PEOPLE.items():
             people.add(con, email, admin)
-        signed_in = people.by_email(con, SIGNED_IN).id
+        signed_in = people.by_email(con, SIGNED_IN)
     finally:
         con.close()
     wrapper = root / "claude"
@@ -104,10 +104,13 @@ def _world(root: Path, settings: Settings) -> WorldRuntime:
     wrapper.chmod(0o755)
     (root / "workspaces").mkdir()
     sockets(root).mkdir()
-    runtime = WorldRuntime(
+    runtime = HostRuntime(
         root / "workspaces", sockets(root), wrapper, REPO / "backend" / "rcman" / "tmux.conf"
     )
-    runtime.signed_in_person = signed_in
+    # SIGNED_IN's Claude account, as a sign-in leaves it (backend/rcman/accounts.py).
+    runtime.ensure_account(signed_in.id, signed_in.slot)
+    fake.write_credentials(runtime._account_file(signed_in.id), fake.credentials())
+    record_sign_in(settings.database, signed_in.id)
     return runtime
 
 

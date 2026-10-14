@@ -146,9 +146,13 @@ def signed_in(app, workspace: dict, trusted: bool = False) -> None:
 
     from devtools import fake_claude as fake
 
-    layout = app.state.workspaces.runtime.layout(container_name(workspace["id"]))
+    workspaces = app.state.workspaces
+    layout = workspaces.runtime.layout(container_name(workspace["id"]))
     folders = [layout.work] if trusted else []
     fake.write_state(Path(layout.config), logged_in=True, trusted=folders)
+    from tests.e2e_server import record_sign_in
+
+    record_sign_in(workspaces.settings.database, workspaces.get(workspace["id"]).person)
 
 
 # A valid request for each route that takes one: (method, path) -> keyword
@@ -165,6 +169,7 @@ CALLS = {
     ("POST", "/api/workspaces"): {"json": {"name": "another"}},
     ("DELETE", "/api/workspaces/{workspace}"): {},
     ("PATCH", "/api/me/settings"): {"json": {"prefix": "alice"}},
+    ("POST", "/api/me/sign-out"): {"json": {"keep_sessions": True}},
     ("POST", "/api/git/stage"): {"json": {"path": "repo", "files": ["README.md"]}},
     ("POST", "/api/git/unstage"): {"json": {"path": "repo", "files": ["README.md"]}},
     ("POST", "/api/git/commit"): {"json": {"path": "repo", "message": "A message"}},
@@ -184,6 +189,7 @@ CALLS = {
     ("GET", "/api/claude"): {},
     ("POST", "/api/claude/login"): {"json": {}},
     ("POST", "/api/claude/code"): {"json": {"code": "x"}},
+    ("POST", "/api/claude/logout"): {"json": {"keep_sessions": True}},
     ("POST", "/api/claude/upgrade"): {"json": {"version": "2.2.0"}},
     ("GET", "/api/docs/{slug}"): {},
     ("GET", "/api/audit"): {},

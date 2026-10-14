@@ -106,9 +106,17 @@ export const CONNECTED = {
   connection: "connected",
   account: { email: "alice@claude.test", org_name: "Org", subscription_type: "max" },
   login_expires_at: "2030-01-01T00:00:00+00:00",
+  signing_out: false,
 };
+// A sign-out that waits for the person's last running server to stop.
+export const SIGNING_OUT = { ...CONNECTED, signing_out: true };
 // What /api/claude answers before anyone has connected a Claude account.
-export const NOT_CONNECTED = { connection: "not_connected", account: null, login_expires_at: null };
+export const NOT_CONNECTED = {
+  connection: "not_connected",
+  account: null,
+  login_expires_at: null,
+  signing_out: false,
+};
 // What /api/me/settings answers for someone who has set nothing.
 export const SETTINGS = {
   prefix: "",

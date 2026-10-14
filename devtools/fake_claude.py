@@ -2,11 +2,20 @@
 
 It implements only the invocations rcman makes, as a state machine whose every
 screen is a recorded fixture, or a screen observed on a live server, with its
-placeholders filled in; any other invocation fails loudly. Its state — whether it
-is logged in, which folders are trusted, which session each folder last served —
-lives in ``fake-state.json`` under ``CLAUDE_CONFIG_DIR``, or under
-``~/.claude-fake`` when that is unset, so it never touches a real Claude
-configuration.
+placeholders filled in; any other invocation fails loudly. Its configuration folder
+is ``CLAUDE_CONFIG_DIR``, or ``~/.claude-fake`` when that is unset, so it never
+touches a real Claude configuration. Whether it is signed in is its credentials
+file there, CREDENTIALS, as the real one's is: signed in while it holds
+``claudeAiOauth``, and signed out when it is empty, ``{}`` or not there. Which
+folders are trusted, and which session each folder last served, is
+``fake-state.json`` there.
+
+The credentials file is written as the real one writes it, by rename
+(:func:`write_credentials`), and in place, truncated first, when the rename is
+refused with EBUSY, as it is over a file bound into a workspace; a link is followed,
+for the host runtime's links to a person's one file. ``auth logout`` removes it,
+and leaves one it cannot remove (EBUSY). A sign-in also writes ``oauthAccount``
+into ``.claude.json`` there, keeping every other key.
 
 Setting ``FAKE_CLAUDE_SCENARIO=unrecognised`` makes ``remote-control`` and
 ``auth login`` show a synthetic screen that no recording contains, for testing
@@ -29,20 +38,22 @@ A server shows the recorded *connected* screen (no session yet) for
 the *ready* screen. Interrupting a server before it is ready has not been
 recorded, so the fake finishes becoming ready before it handles the interrupt.
 
-Signing in succeeds for a code listed in the state's ``accept_codes`` and fails
-for any other, each with the recorded screens. Tests that need a logged-in fake
-call :func:`write_state`.
+Signing in succeeds for ACCEPTED_CODE and fails for any other, each with the
+recorded screens. Tests that need a logged-in fake call :func:`write_state`.
 """
 
 from __future__ import annotations
 
+import contextlib
 import datetime
+import errno
 import hashlib
 import json
 import os
 import signal
 import socket
 import sys
+import tempfile
 import termios
 import time
 from pathlib import Path
@@ -50,6 +61,12 @@ from pathlib import Path
 from devtools import record_claude as rec
 
 STATE_FILE = "fake-state.json"
+CREDENTIALS = ".credentials.json"
+CONFIG_FILE = ".claude.json"
+# The one code a sign-in accepts.
+ACCEPTED_CODE = "fake-accepted-code#fake-state"
+# How long the refresh token of a sign-in lasts.
+REFRESH_DAYS = 365
 FAKE_ACCOUNT = {
     "email": "fake-user@example.com",
     "org_id": "00000000-0000-0000-0000-000000000000",
@@ -73,23 +90,113 @@ def write_state(
     logged_in: bool,
     trusted: list[str] | None = None,
     servers: dict[str, str] | None = None,
-    accept_codes: list[str] | None = None,
 ) -> None:
+    """The fake's folder as a sign-in, or none, leaves it; and its trusted folders and
+    their sessions."""
     config_dir.mkdir(parents=True, exist_ok=True)
-    state = {
-        "logged_in": logged_in,
-        "trusted": trusted or [],
-        "servers": servers or {},
-        "accept_codes": accept_codes or [],
-    }
+    state = {"trusted": trusted or [], "servers": servers or {}}
     (config_dir / STATE_FILE).write_text(json.dumps(state), encoding="utf-8")
+    if logged_in:
+        sign_in(config_dir, FAKE_ACCOUNT["email"])
+    elif (config_dir / CREDENTIALS).exists():
+        (config_dir / CREDENTIALS).write_text("", encoding="utf-8")
+
+
+def credentials() -> dict:
+    """A sign-in's credentials, with the keys a real sign-in writes."""
+    now = int(time.time() * 1000)
+    return {
+        "claudeAiOauth": {
+            "accessToken": "fake-access-token",
+            "refreshToken": "fake-refresh-token",
+            "expiresAt": now + 8 * 3600 * 1000,
+            "refreshTokenExpiresAt": now + REFRESH_DAYS * 86400 * 1000,
+            "scopes": ["user:inference", "user:profile", "user:sessions:claude_code"],
+            "subscriptionType": FAKE_ACCOUNT["subscription_type"],
+            "rateLimitTier": "default_claude_max_20x",
+        }
+    }
+
+
+def oauth_account(email: str) -> dict:
+    """The account a sign-in names in ``.claude.json``, with the keys a real one writes."""
+    return {
+        "accountUuid": "00000000-0000-0000-0000-000000000001",
+        "emailAddress": email,
+        "organizationUuid": FAKE_ACCOUNT["org_id"],
+        "organizationName": FAKE_ACCOUNT["org_name"],
+        "accountCreatedAt": "2026-01-01T00:00:00.000Z",
+        "billingType": "stripe_subscription",
+        "ccOnboardingFlags": {},
+        "claudeCodeTrialDurationDays": None,
+        "claudeCodeTrialEndsAt": None,
+        "displayName": "Fake",
+        "fullName": "Fake User",
+        "hasExtraUsageEnabled": False,
+        "organizationRateLimitTier": "default_claude_max_20x",
+        "organizationRole": "admin",
+        "organizationType": "claude_max",
+        "profileFetchedAt": 0,
+        "seatTier": None,
+        "subscriptionCreatedAt": "2026-01-01T00:00:00.000Z",
+        "userRateLimitTier": None,
+        "workspaceRole": None,
+    }
+
+
+def sign_in(config_dir: Path, email: str) -> None:
+    """Write what a sign-in as ``email`` writes: the credentials, and ``oauthAccount``."""
+    write_credentials(config_dir / CREDENTIALS, credentials())
+    path = config_dir / CONFIG_FILE
+    try:
+        config = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        config = {}
+    path.write_text(json.dumps({**config, "oauthAccount": oauth_account(email)}), "utf-8")
+
+
+def signed_in(config_dir: Path) -> bool:
+    try:
+        found = json.loads((config_dir / CREDENTIALS).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return isinstance(found, dict) and isinstance(found.get("claudeAiOauth"), dict)
+
+
+def write_credentials(path: Path, data: dict) -> None:
+    """Replace the file, owner-only, by rename; in place when the rename is EBUSY."""
+    target = Path(os.path.realpath(path))
+    text = json.dumps(data)
+    fd, tmp = tempfile.mkstemp(dir=target.parent, prefix=f"{CREDENTIALS}.")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(text)
+        os.replace(tmp, target)
+    except OSError as error:
+        with contextlib.suppress(FileNotFoundError):
+            os.unlink(tmp)
+        if error.errno != errno.EBUSY:
+            raise
+        with open(target, "w", encoding="utf-8") as handle:
+            handle.write(text)
+
+
+def remove_credentials(path: Path) -> None:
+    """As ``auth logout`` does: remove the file; one that cannot be removed is left."""
+    try:
+        os.unlink(path)
+    except FileNotFoundError:
+        pass
+    except OSError as error:
+        if error.errno != errno.EBUSY:
+            raise
 
 
 def _load_state(directory: str) -> dict:
     path = Path(directory) / STATE_FILE
     if path.exists():
         return json.loads(path.read_text(encoding="utf-8"))
-    return {"logged_in": False, "trusted": [], "servers": {}}
+    return {"trusted": [], "servers": {}}
 
 
 def _save_state(directory: str, state: dict) -> None:
@@ -179,16 +286,14 @@ class Fake:
         if a == ["--version"]:
             return self.show("version")
         if a[:2] == ["auth", "status"]:
-            return self.show(
-                "auth_status_logged_in" if self.state["logged_in"] else "auth_status_logged_out"
-            )
+            signed = signed_in(Path(self.state_dir))
+            return self.show("auth_status_logged_in" if signed else "auth_status_logged_out")
         if a == ["auth", "login", "--help"]:
             return self.show("auth_login_help")
         if a[:2] == ["auth", "login"]:
             return self.login()
         if a[:2] == ["auth", "logout"]:
-            self.state["logged_in"] = False
-            _save_state(self.state_dir, self.state)
+            remove_credentials(Path(self.state_dir) / CREDENTIALS)
             return self.show("auth_logout")
         if a[:1] == ["remote-control"]:
             return self.remote_control()
@@ -206,13 +311,20 @@ class Fake:
         )
         self.show("login_prompt", prompt=True)
         code = self.read_line().strip()
-        if code not in self.state.get("accept_codes", []):
+        if code != ACCEPTED_CODE:
             return self.show("login_failed")
-        self.state["logged_in"] = True
-        _save_state(self.state_dir, self.state)
+        Path(self.state_dir).mkdir(parents=True, exist_ok=True)
+        sign_in(Path(self.state_dir), email or FAKE_ACCOUNT["email"])
         self.show("login_succeeded", prompt=True)
         self.read_line()  # Claude Code waits for Enter
         return self.show("login_succeeded_done")
+
+    def config(self) -> dict:
+        try:
+            found = json.loads((Path(self.state_dir) / CONFIG_FILE).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+        return found if isinstance(found, dict) else {}
 
     def session_name(self) -> str:
         if existing := self.state["servers"].get(self.cwd):
@@ -227,8 +339,12 @@ class Fake:
         return f"{prefix}-fake-session"
 
     def remote_control(self) -> int:
-        if not self.state["logged_in"]:
+        if not signed_in(Path(self.state_dir)):
             return self.show("rc_logged_out")
+        if not isinstance(self.config().get("oauthAccount"), dict):
+            refusal = self.fixtures["rc_no_oauth_account"]
+            sys.stderr.write(rec.fill("\n".join(refusal.lines), self.values) + "\n")
+            return refusal.exit_code
         if self.env.get("FAKE_CLAUDE_SCENARIO") == "unrecognised":
             sys.stdout.write(CLEAR + UNRECOGNISED_SCREEN + "\n")
             sys.stdout.flush()

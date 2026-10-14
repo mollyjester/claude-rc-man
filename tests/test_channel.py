@@ -197,7 +197,9 @@ def test_an_idle_channel_says_how_long_it_has_been_idle(channel):
 
 def test_the_channels_latency_on_the_host(channel):
     """A command through the channel costs a few milliseconds, not the hundreds a new exec
-    costs; the podman host pins the same through podman (test_runtime_in_podman.py)."""
+    costs; the podman host pins the same through podman (test_runtime_in_podman.py).
+    Flaky on slow or busy hosts: under ``make test``'s parallel workers a few scheduler
+    stalls can push the 95th percentile past the bound, and a lone failure is that noise."""
     true = shutil.which("true")
     channel.run([true])
     times = []

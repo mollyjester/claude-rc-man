@@ -92,9 +92,9 @@ installer and systemd, alice its first administrator, bob and carol added with
 `rcman-admin`, real oauth2-proxy whose Google endpoints point at
 `tests/container/oidc_stub.py`, and real Caddy, running as its own account
 with its admin API off, with its own certificate authority for `rcman.test`
-and `auth.test`, each a service of its own. Signing in to Claude in a workspace
-is not there yet, so a service of the test's signs in the fake `claude` of each
-workspace whose name begins `signed-` as soon as it is ready. Playwright on the
+and `auth.test`, each a service of its own. The specs connect the fake
+`claude` on the **Claude** page with the code it accepts, which the suite
+passes them in `RCMAN_FAKE_CLAUDE_CODE`. Playwright on the
 host drives it through the published port with
 `frontend/playwright.stack.config.ts` and the specs in `frontend/e2e-stack/`;
 `stack.py check` then checks what they left.
@@ -126,7 +126,9 @@ cgroup, and running on when the service stops.
 root has made the tools with the installer's own code: the runtime contract,
 and what only Podman has — a workspace's uid range and its volume's owner,
 its init, no port published, the read-only mounts and the tmpfs, no way to the
-host's loopback, an unreachable socket told from a missing workspace, the
+host's loopback, a person's credentials file their range's root's alone, a
+rename over it refused busy and a write in place shared, a sign-in container
+that removes itself, an unreachable socket told from a missing workspace, the
 channel's latency and its podman client's memory. The installation suites
 install with network access: the installer's images come from their registry
 there.

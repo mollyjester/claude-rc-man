@@ -97,7 +97,7 @@ def podman_runtime(tmp_path, recorder) -> rt.PodmanRuntime:
 
 
 def test_every_podman_call_is_remote_through_rcmans_own_socket(tmp_path):
-    recorder = Recorder(tmp_path, {"volume exists": (1, "", "")})
+    recorder = account_recorder(tmp_path)
     runtime = podman_runtime(tmp_path, recorder)
     runtime.create(rt.Spec(name="rcman-ws-7", slot=3, workspace=7, person=2))
     calls = recorder.calls()
@@ -107,10 +107,10 @@ def test_every_podman_call_is_remote_through_rcmans_own_socket(tmp_path):
 
 
 def test_a_workspace_container_is_made_as_the_design_says(tmp_path):
-    recorder = Recorder(tmp_path, {"volume exists": (1, "", "")})
+    recorder = account_recorder(tmp_path)
     runtime = podman_runtime(tmp_path, recorder)
     runtime.create(rt.Spec(name="rcman-ws-7", slot=3, workspace=7, person=2))
-    run = next(c[3:] for c in recorder.calls() if c[3] == "run")
+    run = next(c[3:] for c in recorder.calls() if c[3] == "run" and "--name=rcman-ws-7" in c)
     base = 3 * rt.RANGE
     for option in (
         "--init",
@@ -167,3 +167,95 @@ def test_podman_runs_with_the_allowlisted_environment(tmp_path, monkeypatch):
     assert "RCMAN_SECRET_OF_THE_SERVICE" not in env
     assert env["XDG_RUNTIME_DIR"] == "/run/user/990"
     assert set(env) <= {"PATH", "LANG", "HOME", "XDG_RUNTIME_DIR"}
+
+
+# --- a person's Claude sign-in --------------------------------------------------------
+
+MOUNTPOINT = "/var/lib/rcman/.local/share/containers/storage/volumes/rcman-person-2/_data"
+
+
+def account_recorder(tmp_path: Path, volume_exists: int = 1) -> Recorder:
+    return Recorder(
+        tmp_path,
+        {
+            "volume exists": (volume_exists, "", ""),
+            "volume inspect": (0, MOUNTPOINT + "\n", ""),
+        },
+    )
+
+
+def runs(recorder: Recorder) -> list[list[str]]:
+    return [c[3:] for c in recorder.calls() if c[3] == "run"]
+
+
+def test_a_persons_account_is_a_labelled_volume_holding_a_private_file(tmp_path):
+    recorder = account_recorder(tmp_path)
+    podman_runtime(tmp_path, recorder).ensure_account(2, 3)
+    created = next(c[3:] for c in recorder.calls() if c[3:5] == ["volume", "create"])
+    assert created[-1] == rt.account_volume(2) == "rcman-person-2"
+    assert "--label=rcman.person=2" in created
+    (made,) = runs(recorder)
+    base = 3 * rt.RANGE
+    assert "--rm" in made and "--network=none" in made
+    assert f"--uidmap=0:{base}:{rt.RANGE}" in made and f"--gidmap=0:{base}:{rt.RANGE}" in made
+    assert not [a for a in made if a.startswith("--label")]  # never taken for a workspace
+    script = made[made.index("-c") + 1]
+    assert "umask 077" in script and ": >>" in script  # made 0600, never truncated
+    assert made[-1].endswith(f"/{rt.CREDENTIALS}")
+
+
+def test_an_existing_account_volume_is_not_made_again(tmp_path):
+    recorder = account_recorder(tmp_path, volume_exists=0)
+    podman_runtime(tmp_path, recorder).ensure_account(2, 3)
+    assert not [c for c in recorder.calls() if c[3:5] == ["volume", "create"]]
+    assert len(runs(recorder)) == 1  # the file is still made sure of
+
+
+def test_a_workspace_binds_only_its_persons_credentials_file(tmp_path):
+    recorder = account_recorder(tmp_path)
+    podman_runtime(tmp_path, recorder).create(rt.Spec("rcman-ws-7", slot=3, workspace=7, person=2))
+    workspace = next(r for r in runs(recorder) if "--name=rcman-ws-7" in r)
+    target = f"{rt.VOLUME_MOUNT}/{rt.CONFIG}/{rt.CREDENTIALS}"
+    assert f"--volume={MOUNTPOINT}/{rt.CREDENTIALS}:{target}" in workspace
+    assert not [a for a in workspace if a.startswith("--volume=rcman-person-")]  # not by name
+    made_first = [i for i, r in enumerate(runs(recorder)) if "--rm" in r]
+    assert made_first and made_first[0] < runs(recorder).index(workspace)
+
+
+def test_a_sign_in_container_removes_itself_and_is_labelled_with_its_person_only(tmp_path):
+    recorder = account_recorder(tmp_path, volume_exists=0)
+    name = podman_runtime(tmp_path, recorder).start_sign_in(2, 3, seconds=900)
+    assert name == rt.sign_in_name(2)
+    started = next(r for r in runs(recorder) if f"--name={name}" in r)
+    assert "--rm" in started and "--detach" in started and "--init" in started
+    assert started[-2:] == ["sleep", "900"]
+    labels = [a for a in started if a.startswith("--label")]
+    assert labels == ["--label=rcman.person=2"]
+    assert f"--uidmap=0:{3 * rt.RANGE}:{rt.RANGE}" in started
+    target = f"{rt.VOLUME_MOUNT}/{rt.CONFIG}/{rt.CREDENTIALS}"
+    assert f"--volume={MOUNTPOINT}/{rt.CREDENTIALS}:{target}" in started
+    removed = [c[3:] for c in recorder.calls() if c[3] == "rm"]
+    assert removed and removed[0][-1] == name  # one left from before goes first
+
+
+def test_clearing_an_account_empties_its_file_in_place(tmp_path):
+    recorder = account_recorder(tmp_path, volume_exists=0)
+    podman_runtime(tmp_path, recorder).clear_account(2, 3)
+    (cleared,) = runs(recorder)
+    assert cleared[cleared.index("-c") + 1] == 'umask 077 && : > "$1"'
+    assert "--volume=rcman-person-2:/account" in cleared
+
+
+def test_removing_an_account_removes_its_volume(tmp_path):
+    recorder = account_recorder(tmp_path, volume_exists=0)
+    podman_runtime(tmp_path, recorder).remove_account(2)
+    assert ["volume", "rm", "--force", "rcman-person-2"] in [c[3:] for c in recorder.calls()]
+
+
+def test_the_host_runtime_shares_one_private_file_per_person(host):
+    host.create(rt.Spec(name="rcman-ws-1", slot=1, workspace=1, person=4))
+    found = host.root / ".accounts" / "4" / rt.CREDENTIALS
+    assert found.exists() and (found.stat().st_mode & 0o777) == 0o600
+    assert (found.parent.stat().st_mode & 0o777) == 0o700
+    assert host.read_account(4, 1) == b""
+    assert ".accounts" not in host.labelled()

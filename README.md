@@ -13,9 +13,10 @@ Built: people kept by rcman, added and removed on the People page or with
 `rcman-admin`; workspaces as containers of rootless Podman run by rcman's own
 account, made empty, which keep running while rcman restarts and which rcman
 brings back, with their servers, when it starts; a server in each, its screens
-read and its trust question answered, and everyone's for administrators; the
+read and its trust question answered, and everyone's for administrators; one
+Claude sign-in per person, which every workspace of theirs shares; the
 backend API with its audit trail; the web interface; the installer; and the
-end-to-end checks. Not there yet in workspaces: signing in to Claude, git, the
+end-to-end checks. Not there yet in workspaces: git, the
 GitHub token, a workspace cloned from GitHub, devcontainer.json, rolling out
 Claude Code versions, and limits. How to install it:
 [docs/installation.md](docs/installation.md). Screens of Claude Code that

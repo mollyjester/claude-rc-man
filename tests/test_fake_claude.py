@@ -283,29 +283,127 @@ def test_output_to_a_pipe_is_plain_text(tmp_path):
     assert json.loads(proc.stdout)["loggedIn"] is False
 
 
-def test_logout_disconnects_the_account(pane, tmp_path):
+def test_logout_removes_the_credentials_file_as_the_real_one_does(pane, tmp_path):
+    """tests/test_claude_contract.py holds the real binary to the same."""
     cfg = logged_in(tmp_path / "cfg")
+    assert (cfg / fake.CREDENTIALS).exists()  # positive control
     run(pane, ["auth", "logout"], tmp_path, cfg)
     assert pane.wait_exit(timeout=10) == rec.load_fixtures()["auth_logout"].exit_code
-    assert json.loads((cfg / fake.STATE_FILE).read_text())["logged_in"] is False
+    assert not (cfg / fake.CREDENTIALS).exists()
 
 
-def test_an_accepted_code_signs_in_with_the_recorded_screens(pane, tmp_path):
+def test_logout_leaves_a_file_it_cannot_remove(tmp_path, monkeypatch):
+    """A bound file cannot be removed (EBUSY); rcman empties it in place afterwards."""
+    import errno
+
+    cfg = logged_in(tmp_path / "cfg")
+
+    def busy(path):
+        raise OSError(errno.EBUSY, "Device or resource busy", str(path))
+
+    monkeypatch.setattr(fake.os, "unlink", busy)
+    fake.remove_credentials(cfg / fake.CREDENTIALS)
+    assert fake.signed_in(cfg)
+
+
+@pytest.mark.parametrize("content", ["", "{}"])
+def test_an_empty_credentials_file_is_signed_out(tmp_path, content):
+    """As the real binary reads one (tests/test_claude_contract.py)."""
+    import subprocess
+
     cfg = tmp_path / "cfg"
-    fake.write_state(cfg, logged_in=False, accept_codes=["GOOD-CODE"])
+    cfg.mkdir()
+    (cfg / fake.CREDENTIALS).write_text(content)
+    proc = subprocess.run(
+        [str(FAKE), "auth", "status"], env=env_for(cfg), capture_output=True, text=True
+    )
+    assert json.loads(proc.stdout)["loggedIn"] is False
+    assert proc.returncode == rec.load_fixtures()["auth_status_logged_out"].exit_code
+    assert (cfg / fake.CREDENTIALS).read_text() == content  # left as it was
+
+
+def test_the_accepted_code_signs_in_with_the_recorded_screens(pane, tmp_path):
+    cfg = tmp_path / "cfg"
+    cfg.mkdir()
+    (cfg / ".claude.json").write_text(json.dumps({"numStartups": 3}))
     run(pane, ["auth", "login", "--claudeai", "--email", "x@example.com"], tmp_path, cfg)
     pane.wait_for(r"Paste code here", timeout=10)
-    pane.type_line("GOOD-CODE")
+    pane.type_line(fake.ACCEPTED_CODE)
     pane.wait_for(r"Login successful", timeout=10)
     pane.type_line("")
     assert pane.wait_exit(timeout=10) == rec.load_fixtures()["login_succeeded_done"].exit_code
-    assert json.loads((cfg / fake.STATE_FILE).read_text())["logged_in"] is True
-    assert "GOOD-CODE" not in pane.text()
+    credentials = cfg / fake.CREDENTIALS
+    assert json.loads(credentials.read_text())["claudeAiOauth"]["refreshToken"]
+    assert (credentials.stat().st_mode & 0o777) == 0o600
+    config = json.loads((cfg / ".claude.json").read_text())
+    assert config["numStartups"] == 3  # every other key kept
+    assert config["oauthAccount"]["emailAddress"] == "x@example.com"
+    assert fake.ACCEPTED_CODE not in pane.text()
+
+
+def test_a_sign_in_through_a_link_writes_the_file_linked_to(pane, tmp_path):
+    """The host runtime links each workspace's file to the person's one."""
+    shared = tmp_path / "account" / fake.CREDENTIALS
+    shared.parent.mkdir()
+    shared.write_text("")
+    cfg = tmp_path / "cfg"
+    cfg.mkdir()
+    (cfg / fake.CREDENTIALS).symlink_to(shared)
+    run(pane, ["auth", "login", "--claudeai", "--email", "x@example.com"], tmp_path, cfg)
+    pane.wait_for(r"Paste code here", timeout=10)
+    pane.type_line(fake.ACCEPTED_CODE)
+    pane.wait_for(r"Login successful", timeout=10)
+    pane.type_line("")
+    pane.wait_exit(timeout=10)
+    assert (cfg / fake.CREDENTIALS).is_symlink()
+    assert "claudeAiOauth" in json.loads(shared.read_text())
+
+
+def test_credentials_are_replaced_by_rename(tmp_path):
+    path = tmp_path / fake.CREDENTIALS
+    path.write_text("old")
+    before = path.stat().st_ino
+    fake.write_credentials(path, {"claudeAiOauth": {}})
+    assert path.stat().st_ino != before
+    assert json.loads(path.read_text()) == {"claudeAiOauth": {}}
+    assert (path.stat().st_mode & 0o777) == 0o600
+
+
+def test_a_rename_refused_busy_writes_in_place_and_leaves_nothing_of_the_old(tmp_path, monkeypatch):
+    """A bound file cannot be renamed over (EBUSY), as in a workspace."""
+    import errno
+
+    path = tmp_path / fake.CREDENTIALS
+    path.write_text("x" * 500)
+    before = path.stat().st_ino
+
+    def busy(src, dst):
+        raise OSError(errno.EBUSY, "Device or resource busy", str(dst))
+
+    monkeypatch.setattr(fake.os, "replace", busy)
+    fake.write_credentials(path, {"claudeAiOauth": {}})
+    assert path.stat().st_ino == before
+    assert json.loads(path.read_text()) == {"claudeAiOauth": {}}
+    assert [p.name for p in tmp_path.iterdir()] == [fake.CREDENTIALS]  # no temporary left
+
+
+def test_any_other_failure_of_the_rename_is_not_hidden(tmp_path, monkeypatch):
+    import errno
+
+    path = tmp_path / fake.CREDENTIALS
+    path.write_text("old")
+
+    def refused(src, dst):
+        raise OSError(errno.EACCES, "Permission denied", str(dst))
+
+    monkeypatch.setattr(fake.os, "replace", refused)
+    with pytest.raises(PermissionError):
+        fake.write_credentials(path, {"claudeAiOauth": {}})
+    assert path.read_text() == "old"
 
 
 def test_a_code_not_accepted_still_fails(pane, tmp_path):
     cfg = tmp_path / "cfg"
-    fake.write_state(cfg, logged_in=False, accept_codes=["GOOD-CODE"])
     run(pane, ["auth", "login", "--claudeai", "--email", "x@example.com"], tmp_path, cfg)
     pane.wait_for(r"Paste code here", timeout=10)
     pane.type_line("BAD-CODE")
@@ -427,3 +525,38 @@ def test_a_trusted_repository_without_spawn_fails_loudly(pane, tmp_path):
     run(pane, ["remote-control"], folder, cfg)
     assert pane.wait_exit(timeout=10) == 2
     assert "unsupported" in pane.text()
+
+
+# The keys a real sign-in writes, as seen with a real account (real-claude-checklist.md,
+# The shared sign-in).
+REAL_CREDENTIAL_KEYS = {
+    "accessToken", "expiresAt", "rateLimitTier", "refreshToken", "refreshTokenExpiresAt",
+    "scopes", "subscriptionType",
+}  # fmt: skip
+REAL_OAUTH_ACCOUNT_KEYS = {
+    "accountCreatedAt", "accountUuid", "billingType", "ccOnboardingFlags",
+    "claudeCodeTrialDurationDays", "claudeCodeTrialEndsAt", "displayName", "emailAddress",
+    "fullName", "hasExtraUsageEnabled", "organizationName", "organizationRateLimitTier",
+    "organizationRole", "organizationType", "organizationUuid", "profileFetchedAt",
+    "seatTier", "subscriptionCreatedAt", "userRateLimitTier", "workspaceRole",
+}  # fmt: skip
+
+
+def test_a_sign_in_writes_the_keys_the_real_one_writes():
+    assert set(fake.credentials()) == {"claudeAiOauth"}
+    assert set(fake.credentials()["claudeAiOauth"]) == REAL_CREDENTIAL_KEYS
+    assert set(fake.oauth_account("x@example.com")) == REAL_OAUTH_ACCOUNT_KEYS
+
+
+def test_remote_control_without_oauth_account_is_refused_as_the_real_one_is(tmp_path):
+    import subprocess
+
+    cfg = logged_in(tmp_path / "cfg")
+    (cfg / fake.CONFIG_FILE).write_text(json.dumps({"numStartups": 1}))
+    proc = subprocess.run(
+        [str(FAKE), "remote-control"], env=env_for(cfg), cwd=tmp_path,
+        capture_output=True, text=True, timeout=30,
+    )  # fmt: skip
+    recorded = rec.load_fixtures()["rc_no_oauth_account"]
+    assert (proc.returncode, proc.stdout) == (recorded.exit_code, "")
+    assert proc.stderr.rstrip("\n").split("\n") == recorded.lines

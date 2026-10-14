@@ -14,9 +14,19 @@ def test_migrate_creates_the_schema(tmp_path):
     assert con.execute("pragma user_version").fetchone()[0] == len(db.MIGRATIONS)
 
 
-def test_the_schema_is_one_migration():
-    """A fresh schema: no migration of an older one is kept."""
-    assert len(db.MIGRATIONS) == 1
+def test_a_database_of_the_first_schema_gains_each_persons_claude_account(tmp_path):
+    """Migration 2 keeps every person, with no Claude account and none signing out."""
+    path = tmp_path / "x.db"
+    con = sqlite3.connect(path)
+    con.executescript(f"begin;\n{db.MIGRATIONS[0]}\npragma user_version = 1;\ncommit;")
+    con.execute("insert into people (email, admin, slot, state) values ('a@x.org', 1, 1, 'active')")
+    con.commit()
+    con.close()
+    db.migrate(path)
+    con = sqlite3.connect(path)
+    assert con.execute("pragma user_version").fetchone()[0] == len(db.MIGRATIONS) >= 2
+    found = con.execute("select email, claude_account, claude_signing_out from people")
+    assert found.fetchall() == [("a@x.org", None, 0)]
 
 
 def test_migrate_is_idempotent(tmp_path):

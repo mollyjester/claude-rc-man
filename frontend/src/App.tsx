@@ -1,10 +1,11 @@
-import { createContext, useContext, useEffect, useState } from "react";
+import { createContext, type FormEvent, useContext, useEffect, useState } from "react";
 import { matchPath, Navigate, NavLink, Route, Routes, useLocation } from "react-router-dom";
 
 import { ADMIN_PAGES } from "./AdminPages";
 import { Attention } from "./Attention";
 import { type ApiError, api } from "./api";
 import { Caret } from "./Caret";
+import { ClaudePage } from "./Claude";
 import { Dashboard } from "./Dashboard";
 import { Docs } from "./Docs";
 import { m } from "./messages";
@@ -18,6 +19,47 @@ const MeContext = createContext<Me | null>(null);
 export const useMe = () => useContext(MeContext);
 
 export const POLL_MS = 5000;
+
+// Leaving rcman for another address, as signing out does; tests replace it.
+export const away = { to: (url: string) => window.location.assign(url) };
+
+// Signing out of rcman ends the web session only: running servers never depend
+// on it, so they keep running unless the person asks for them to be stopped.
+function SignOut() {
+  const [keep, setKeep] = useState(true);
+  const [error, setError] = useState<ApiError | null>(null);
+
+  async function signOut(event: FormEvent) {
+    event.preventDefault();
+    setError(null);
+    try {
+      const reply = await api.post<{ sign_out_url: string }>("/api/me/sign-out", {
+        keep_sessions: keep,
+      });
+      away.to(reply.sign_out_url);
+    } catch (e) {
+      setError(asApiError(e));
+    }
+  }
+
+  return (
+    <form noValidate onSubmit={signOut} className="sign-out">
+      <label>
+        <input
+          type="checkbox"
+          name="keep_sessions"
+          checked={keep}
+          onChange={(e) => setKeep(e.target.checked)}
+        />
+        {m.keepSessions}
+      </label>
+      <button type="submit" className="primary">
+        {m.signOut}
+      </button>
+      <ProblemView error={error} labels={{ keep_sessions: m.keepSessions }} />
+    </form>
+  );
+}
 
 // The administrators' pages behind one button: a pop-up (src/usePopup.ts) that
 // also closes when a page is chosen and when the page changes.
@@ -57,11 +99,13 @@ function Nav({ me }: { me: Me }) {
         <NavLink to="/" end>
           {m.navDashboard}
         </NavLink>
+        <NavLink to="/claude">{m.navClaude}</NavLink>
         <NavLink to="/settings">{m.navSettings}</NavLink>
         <NavLink to="/help">{m.navDocs}</NavLink>
         {me.admin && <AdminMenu />}
       </nav>
       <span className="muted">{m.signedInAs(me.email)}</span>
+      <SignOut />
     </header>
   );
 }
@@ -90,6 +134,7 @@ export function App({ pollMs = POLL_MS }: { pollMs?: number }) {
         {me.admin && <Attention />}
         <Routes>
           <Route path="/" element={<Dashboard pollMs={pollMs} />} />
+          <Route path="/claude" element={<ClaudePage />} />
           <Route path="/settings" element={<Settings />} />
           <Route path="/help" element={<Docs />} />
           <Route path="/help/:slug" element={<Docs />} />

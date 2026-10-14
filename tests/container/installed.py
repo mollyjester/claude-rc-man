@@ -191,9 +191,3 @@ def claude_processes(workspace_id: int) -> list[int]:
         'p="${f#/proc/}"; echo "${p%/cmdline}"; fi; done',
     )
     return sorted(int(pid) for pid in out.split())
-
-
-def signed_in(workspace_id: int) -> None:
-    """The fake claude of the workspace signed in, as signing in will leave it."""
-    state = json.dumps({"logged_in": True, "trusted": [], "servers": {}, "accept_codes": []})
-    in_workspace(workspace_id, f"printf '%s' '{state}' > /rcman/claude/fake-state.json")

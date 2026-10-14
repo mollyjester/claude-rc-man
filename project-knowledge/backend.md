@@ -32,7 +32,8 @@ the OpenAPI description it serves at `/api/openapi.json`, browsable at
 | `routers/` | One module per area: `me`, `workspaces`, `servers`, `git`, `github`, `claude`, `people`, `audit_log`, `attention`, `docs`, `client_errors` |
 | `routers/workspaces.py` | The person's workspaces, under `/api/workspaces`: listing them with their servers, making one, deleting one |
 | `routers/servers.py` | A workspace's server, under `/api/servers`: start, resume, stop, forget, confirm and output, each by the workspace's id; and everyone's, for administrators |
-| `routers/git.py`, `routers/github.py`, `routers/claude.py` | git, the GitHub token, signing in to Claude and Claude Code versions: not available in workspaces yet (see [Not available yet](#not-available-yet)) |
+| `accounts.py`, `routers/claude.py` | Each person's Claude sign-in, signing in and out of it, and its state; `routers/me.py` signs out of rcman — see [Claude accounts](#claude-accounts) |
+| `routers/git.py`, `routers/github.py`, `routers/claude.py` | git, the GitHub token and Claude Code versions: not available in workspaces yet (see [Not available yet](#not-available-yet)) |
 | `routers/client_errors.py` | A page's reports of failures rcman could not see, `POST /api/client-errors`, written to the journal (see [Errors from the page](#errors-from-the-page)) |
 | `routers/me.py` | Each person's own settings, changed with `PATCH /api/me/settings`, which changes only the settings sent; `prefix_of` and `author_of` are how the rest of the backend reads them |
 
@@ -114,10 +115,53 @@ threads; a workspace whose server cannot be read is listed with why, as
 screen or its claude.ai address. The listing is read-only: no route lets one
 person act on another's workspaces.
 
+## Claude accounts
+
+`accounts.py` signs each person in and out of their one Claude sign-in, the
+credentials file every workspace of theirs shares (see
+[runtime.md](runtime.md#a-persons-claude-sign-in)).
+
+- **Signing in.** `POST /api/claude/login` starts a sign-in container, runs
+  `claude auth login` in tmux there and answers its link; one begun before
+  ends. `POST /api/claude/code` puts the code into a tmux buffer through
+  `exec`'s stdin, never an argv, and pastes it; on success the
+  `oauthAccount` Claude wrote is kept in the person's `claude_account`, and the
+  container is removed whatever happened. It ends itself after
+  `CODE_WAIT_SECONDS` should rcman not. A sign-in to another account stops
+  nothing.
+- **Its state.** `GET /api/claude` reads the file with `read_account`, only when
+  the Claude page opens: connected while it holds `claudeAiOauth`, with the
+  refresh token's expiry (`refreshTokenExpiresAt`), or none without one, against
+  `login_warning_days`; and `signing_out`.
+- **A server's start** (`Workspaces.start_server`) refuses `claude_not_logged_in`
+  while the person has no `claude_account`, and `claude_signing_out` while a
+  sign-out waits; otherwise it seeds `oauthAccount` into the workspace's
+  `.claude.json`, keeping every other key, owner-only, before the server starts.
+- **Signing out of Claude** (`POST /api/claude/logout`, `claude.disconnect`):
+  with `keep_sessions`, the default, the person is marked signing out and
+  `settle` finishes once none of their servers runs and no sign-in of theirs
+  waits for its code — after a stop, a forget or a deletion, never failing
+  them; every `IDLE_CHECK_SECONDS`, which catches a server that ended by
+  itself and leaves a person whose lock is held for its next round; when the
+  Claude page reads the state; and when rcman starts. Without it, their running
+  servers are stopped first and it finishes at once; the page offers that while
+  one waits, so a sign-out is never stuck. Finishing runs `claude auth logout`
+  in a sign-in container, its answer only advisory, empties the file in place
+  with `clear_account`, and forgets the account.
+- **Order.** A start, from its account check until its server runs, and every
+  sign-in and sign-out of the same person take turns under
+  `Workspaces.person_lock`, taken before any workspace's lock, so no start
+  slips past a sign-out and a start seeds the account a sign-in has finished.
+  A code is taken only until two of `LOGIN_TIMEOUT` before the sign-in
+  container ends itself.
+- **Signing out of rcman** (`POST /api/me/sign-out`, `me.sign_out`) stops the
+  person's running servers unless `keep_sessions`, the default, and answers
+  oauth2-proxy's sign-out address, which the page goes to.
+
 ## Not available yet
 
-Signing in to Claude, Claude Code versions, git and the GitHub token are not
-available in workspaces yet. Their routes — `routers/claude.py`,
+Claude Code versions, git and the GitHub token are not available in workspaces
+yet. Their routes — `routers/claude.py`,
 `routers/git.py` and `routers/github.py` — keep the shape they will have, their
 bodies validated by the rules they will be, and answer `not_available_yet`; the
 changing ones are audited with that result. What a person writes for them — a

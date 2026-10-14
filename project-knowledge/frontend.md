@@ -90,13 +90,16 @@ matters, so a suppression at the site is preferred.
   section names in bold is text from `src/messages.ts`. A workspace's panel
   offers **Start** only while the workspace is ready, has no server, and its
   server could be read; **Delete workspace** only while it is ready or
-  failed; nothing while it is being made or deleted. Whether Claude is signed
-  in in a workspace the server alone knows, so **Start** is offered regardless
-  and its refusal shown. Administration is offered only to administrators,
+  failed; nothing while it is being made or deleted. Whether a server may start
+  — the Claude account connected and not signing out — the server decides, so
+  **Start** is offered regardless and its refusal shown. **Sign out of Claude**
+  is offered only while an account is connected and not already signing out;
+  while a sign-out waits, **Stop my servers and sign out now** is offered
+  instead, so it is never stuck. Administration is offered only to administrators,
   and the server refuses everyone else regardless. What the server refuses
-  everyone, it is not offered at all: the Claude Code versions page, the
-  Claude account's section and the Changes section are on no page while the
-  server answers `not_available_yet` for them; their components and tests are
+  everyone, it is not offered at all: the Claude Code versions page and the
+  Changes section are on no page while the server answers `not_available_yet`
+  for them; their components and tests are
   kept for when it does not. The Settings page's GitHub token part stays: it
   asks whether a token is stored, and offers its field and Remove only once the
   server answers; while the server answers `not_available_yet`, the part shows
@@ -154,7 +157,7 @@ matters, so a suppression at the site is preferred.
 
 | File | What it is |
 |---|---|
-| `src/App.tsx` | Who is signed in, the navigation, whose **Admin** menu is a `usePopup` that also closes when a page is chosen and when the page changes, and the routes |
+| `src/App.tsx` | Who is signed in, the navigation, whose **Admin** menu is a `usePopup` that also closes when a page is chosen and when the page changes, and the routes; **Sign out** beside the person's name, with **Keep sessions running**, which leaves through `away` for oauth2-proxy's sign-out |
 | `src/AdminPages.tsx` | `ADMIN`, the administrators' pages by name, which the links in the administrators' warning use, and `ADMIN_PAGES`, the same pages in order, which the navigation's **Admin** menu and the routes are built from |
 | `src/Dashboard.tsx` | The Workspaces page: the person's workspaces, each with its dot (`dotFor` in `src/Servers.tsx`) and its state while it is not ready, and **New workspace**'s form, beside the selected workspace's panel; the selection kept in the address as `?workspace=`; the workspaces refreshed every `POLL_MS`, a refresh's failure shown until a later refresh works, and an answer older than one asked for since dropped. A new workspace is selected once the server takes its name. The panel says what a workspace being made, deleted or failed is, and for a ready one has its **Claude server** section; **Delete workspace** asks first, and after a delete no workspace is selected and the page says what was deleted |
 | `src/Changes.tsx` | A repository's Changes section, on no page while the server refuses git in workspaces: its heading with the branch bar (`src/BranchBar.tsx`) beside it, the staged and not staged files, each list folding under a heading that counts its files and more, with its Stage selected or Unstage selected beside it, a checkbox for each file that can be selected and Select all, and each file's change as its letter (`m.changeLetters`) in a colour of its own, with its word (`m.changes`) as its accessible text and title; Commit, a split button whose menu holds Commit & Push; and the status line, "Checked …" (`m.checkedAgo`) worked out again every `CHECKED_TICK_MS` while the section is shown, and Refresh changes. `src/Changes.test.tsx` holds every change to a letter and a word, and the letters to differing. A list is open at first while it has files, opens when files come to it, and otherwise stays as the person left it. The status is fetched when the section opens, every `POLL_MS` while it is open and after every action; an answer older than one asked for since is dropped. Its branches are fetched when it opens, after every action and when the current branch changes. What is checked is kept across refreshes, for files still listed. A refusal is shown beside what was tried until any later action there works |
@@ -164,7 +167,7 @@ matters, so a suppression at the site is preferred.
 | `src/Icons.tsx` | rcman's own icons, inline SVG drawn in the text's colour and hidden from assistive technology; the button or text they are in carries the name, from `src/messages.ts` |
 | `src/Servers.tsx` | A server's states, what each allows and shows, and its card; a workspace as the page lists it, and `dotFor`, the dot it carries |
 | `src/Caret.tsx` | The caret of a disclosure button, wherever one has a caret, turned by its `aria-expanded` |
-| `src/Claude.tsx` | The Claude account's state and the connect flow, on no page while the server refuses signing in to Claude |
+| `src/Claude.tsx` | The **Claude** page (`ClaudePage`): the account's state, read once as the page opens, the connect flow, and **Sign out of Claude** with **Keep sessions running** |
 | `src/Settings.tsx` | The person's own settings, in parts that are each saved on their own; `FIELDS` is every setting it shows, and a test holds `docs/settings.md` to it |
 | `src/People.tsx`, `src/Everyone.tsx`, `src/Audit.tsx` | Administration: the people, each with their role and how many workspaces they have, added by address and removed after a confirmation; everyone's workspaces and their servers, with no actions; the audit trail |
 | `src/Versions.tsx` | The Claude Code versions page, on no page while the server refuses it |

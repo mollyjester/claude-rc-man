@@ -37,6 +37,11 @@ upgrade's report. A test checks that no fixture or observed screen contains
 any kind of leak `LEAK_MARKS` in `tests/test_record_claude.py` names, each
 found by its marks, and that each mark finds a planted sample of its kind.
 
+A sequence marked `without_oauth_account` runs with the account's credentials
+file linked into a configuration folder of its own that has no `.claude.json`,
+as a workspace's is before rcman seeds `oauthAccount`: Remote Control refuses
+there (`rc_no_oauth_account`), on stderr.
+
 A sequence marked `git_repository` runs in a throwaway repository the
 recorder makes in its own scratch folder, on `RECORD_BRANCH`, and the branch
 in a server's status line becomes `{branch}`.
@@ -76,15 +81,19 @@ wait. What follows Ctrl+C there was not seen, so the fake then ends as in the
 
 It implements only the invocations rcman makes — `--version`, `auth status`,
 `auth login` and its `--help`, `auth logout`, `remote-control` — and fails
-loudly on anything else. Its state
-(logged in or not, trusted folders, the session each folder last served) is
-`fake-state.json` under `CLAUDE_CONFIG_DIR`, or under `~/.claude-fake` when
-that is unset, so it never touches a real Claude configuration. Tests set a
-logged-in state with `write_state`.
+loudly on anything else. Its configuration folder is `CLAUDE_CONFIG_DIR`, or
+`~/.claude-fake` when that is unset, so it never touches a real Claude
+configuration. Whether it is signed in is its credentials file there,
+`.credentials.json`, as the real one's is: signed in while the file holds
+`claudeAiOauth`, signed out while it is empty, `{}` or not there. Its trusted
+folders and the session each folder last served are `fake-state.json` there.
+Tests set a signed-in state with `write_state`.
 
 It reproduces these behaviours of the real binary, each recorded:
 
-- `remote-control` refuses without a login before it asks about trust.
+- `remote-control` refuses without a login before it asks about trust, and,
+  signed in, refuses on stderr, exit status 1, while `.claude.json` holds no
+  `oauthAccount`.
 - The folder-trust prompt refuses an answer that arrives too quickly after the
   question and asks again. An instant answer is refused; one a fraction of a
   second later is accepted. Anything that answers this prompt has to wait.
@@ -107,8 +116,14 @@ It reproduces these behaviours of the real binary, each recorded:
   it; SIGTERM changes nothing either; SIGKILL ends it. With
   `--spawn same-dir` it is not asked.
 
-Signing in succeeds, with the recorded screens, for a code listed in the
-state's `accept_codes`, and fails for any other.
+Signing in succeeds, with the recorded screens, for `ACCEPTED_CODE`, and fails
+for any other. It writes the credentials file by rename, owner-only, and in
+place, truncated first, when the rename is refused with EBUSY, as it is over a
+file bound into a workspace; a link is followed, for the host runtime's links to
+a person's file. It writes `oauthAccount` into `.claude.json` there, keeping
+every other key. `auth logout` removes the file, as the real one is seen to do
+(`tests/test_claude_contract.py`), and leaves one it cannot remove (EBUSY),
+as the real one leaves a bound file, answering exit status 0 either way.
 
 `FAKE_CLAUDE_SCENARIO=unrecognised` makes `remote-control` and `auth login`
 show a synthetic screen that matches no recording, for testing how
@@ -138,14 +153,23 @@ process has ended on one as `exited` (see [runtime.md](runtime.md#server-states)
 - a server in a repository with a detached HEAD — the fake's status line
   shows the commit's hash where the branch would be;
 - what follows Ctrl+C at an observed screen — the fake ends with exit
-  status 1, as in the `unrecognised` scenario.
+  status 1, as in the `unrecognised` scenario;
+- a refresh of the sign-in — the real one writes it in place over a bound
+  file, truncated first, keeping keys it does not know; the fake never
+  refreshes;
+- the values of a sign-in — the fake's credentials and `oauthAccount` carry
+  the keys a real sign-in writes (`tests/test_fake_claude.py` holds them to
+  the names seen), with values of its own.
+
+What is seen of the shared sign-in with a real account, and how to see it again,
+is in [real-claude-checklist.md](real-claude-checklist.md#the-shared-sign-in).
 
 ## How the fake is checked against the real binary
 
 | Tests | Needs | Runs |
 |---|---|---|
 | `tests/test_fake_claude.py` | Nothing | Always. The recorder drives the fake exactly as it drives the real binary, each sequence in a test case of its own with an account of its own, and must reproduce every fixture but those of the sequences that need a person, whose screens the fake's sign-in tests check; each observed screen's scenario must show that screen |
-| `tests/test_claude_contract.py` | The real `claude`, no account | Always; skipped when `claude` is not installed unless `RCMAN_REQUIRE_REAL_CLAUDE=1`, which `make check` sets. The installed version must be the manifest's; the no-account screens must match the fixtures; every option rcman passes must be in `--help`, except where help is refused without a login |
+| `tests/test_claude_contract.py` | The real `claude`, no account | Always; skipped when `claude` is not installed unless `RCMAN_REQUIRE_REAL_CLAUDE=1`, which `make check` sets. The installed version must be the manifest's; the no-account screens must match the fixtures; every option rcman passes must be in `--help`, except where help is refused without a login; an empty and a `{}` credentials file read as signed out and are left as they are; `auth logout` removes the file |
 | `tests/test_claude_real_account.py` | The real `claude`, logged in | By hand: `uv run pytest -m real_claude`. Runs the account sequences and the one that submits an invalid sign-in code, and checks every option rcman passes against `--help` while logged in |
 
 The contract tests compare the installed `claude` with `manifest.json`. A

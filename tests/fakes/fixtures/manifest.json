@@ -80,6 +80,11 @@
       "exit_code": 1,
       "needs_account": false
     },
+    "rc_no_oauth_account": {
+      "sequence": "rc_no_oauth_account",
+      "exit_code": 1,
+      "needs_account": true
+    },
     "server_connected_after_trust": {
       "sequence": "server",
       "exit_code": null,

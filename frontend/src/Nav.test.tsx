@@ -1,13 +1,17 @@
 import { fireEvent, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
+import { vi } from "vitest";
+
 import { ADMIN, ADMIN_PAGES } from "./AdminPages";
+import { away } from "./App";
 import { m } from "./messages";
 import { ADMIN_USER, fakeApi, ME, NOTHING_TO_ATTEND, type Reply } from "./test/fakeApi";
 import { renderApp } from "./test/render";
 
 function api(me: Reply) {
   return fakeApi({
+    "POST /api/me/sign-out": { sign_out_url: "/oauth2/sign_out" },
     "GET /api/me": me,
     "GET /api/workspaces": { workspaces: [] },
     "GET /api/attention": NOTHING_TO_ATTEND,
@@ -156,4 +160,30 @@ test("an account rcman refuses sees the server's reason", async () => {
   fakeApi({ "GET /api/me": problem(403, "not_allowed", "This account may not use rcman.") });
   renderApp();
   expect(await screen.findByRole("alert")).toHaveTextContent("This account may not use rcman.");
+});
+
+test("everyone reaches the Claude page from the navigation", async () => {
+  api(ME);
+  renderApp();
+  const link = await within(await screen.findByRole("banner")).findByRole("link", {
+    name: m.navClaude,
+  });
+  expect(link).toHaveAttribute("href", "/claude");
+});
+
+test("signing out of rcman keeps sessions running unless asked, then leaves for oauth2-proxy", async () => {
+  for (const keep of [true, false]) {
+    const fake = api(ME);
+    const left = vi.spyOn(away, "to").mockImplementation(() => {});
+    const { unmount } = renderApp();
+    const banner = await screen.findByRole("banner");
+    const box = within(banner).getByRole("checkbox", { name: m.keepSessions });
+    expect(box).toBeChecked();
+    if (!keep) await userEvent.click(box);
+    await userEvent.click(within(banner).getByRole("button", { name: m.signOut }));
+    await vi.waitFor(() => expect(left).toHaveBeenCalledWith("/oauth2/sign_out"));
+    expect(fake.made("POST", "/api/me/sign-out")[0].body).toEqual({ keep_sessions: keep });
+    left.mockRestore();
+    unmount();
+  }
 });

@@ -68,6 +68,7 @@ def workspace(podman):
         yield made.name
     finally:
         podman.remove(made.name)
+        podman.remove_account(made.person)
 
 
 def podman_cli(*args: str) -> subprocess.CompletedProcess:
@@ -189,3 +190,53 @@ def test_a_channels_podman_client_holds_little_memory(podman, workspace):
         assert 0 < rss * 1024 < CLIENT_MAX_RSS_BYTES, rss
     finally:
         channel.close()
+
+
+# --- a person's Claude sign-in --------------------------------------------------------
+
+
+def credentials_in(layout: rt.Layout) -> str:
+    return f"{layout.config}/{rt.CREDENTIALS}"
+
+
+def test_a_persons_credentials_file_is_their_ranges_roots_alone(podman, workspace):
+    who = spec(2)
+    mount = podman_cli("volume", "inspect", "--format", "{{.Mountpoint}}", rt.account_volume(2))
+    assert mount.returncode == 0, mount.stderr
+    owner = subprocess.run(
+        ["podman", "unshare", "stat", "-c", "%u %g %a", f"{mount.stdout.strip()}/{rt.CREDENTIALS}"],
+        capture_output=True,
+        text=True,
+    )
+    base = who.slot * rt.RANGE
+    assert owner.stdout.split() == [str(base), str(base), "600"], owner.stderr
+    labels = podman_cli("volume", "inspect", "--format", "{{json .Labels}}", rt.account_volume(2))
+    assert json.loads(labels.stdout) == {rt.LABEL_PERSON: str(who.person)}
+    seen = in_it(podman, workspace, f"stat -c '%u %a' {credentials_in(podman.layout(workspace))}")
+    assert seen.out.split() == [b"0", b"600"]  # root's, as the workspace sees it
+
+
+def test_a_rename_over_the_bound_file_is_refused_busy_and_a_write_in_place_is_shared(
+    podman, workspace
+):
+    """Why the fake claude, and the real one as recorded, write in place when a rename
+    fails: the file is a bind mount, and a rename over a mount point is EBUSY."""
+    target = credentials_in(podman.layout(workspace))
+    renamed = in_it(podman, workspace, f"echo new > {target}.new && mv {target}.new {target}")
+    assert renamed.code != 0 and b"busy" in renamed.err.lower(), renamed
+    assert in_it(podman, workspace, f"printf kept > {target}").code == 0  # positive control
+    assert podman.read_account(2, spec(2).slot) == b"kept"
+
+
+def test_a_sign_in_container_removes_itself_when_its_time_is_up(podman):
+    who = spec(3)
+    name = podman.start_sign_in(who.person, who.slot, seconds=3)
+    try:
+        assert podman.exists(name)  # positive control
+        deadline = time.monotonic() + 60
+        while podman.exists(name):
+            assert time.monotonic() < deadline, "the sign-in container is still there"
+            time.sleep(0.5)
+    finally:
+        podman.end_sign_in(name)
+        podman.remove_account(who.person)
