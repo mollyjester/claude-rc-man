@@ -9,20 +9,40 @@ export const m = {
   save: "Save",
   saved: "Saved.",
 
-  navDashboard: "Servers",
+  navDashboard: "Workspaces",
   navSettings: "Settings",
   navDocs: "Help",
   navAdmin: "Admin",
   navUsers: "People",
   navAudit: "Audit trail",
-  navVersions: "Claude Code",
-  navEveryone: "Everyone's servers",
+  navEveryone: "Everyone's workspaces",
   signedInAs: (email: string) => `Signed in as ${email}`,
 
-  foldersTitle: "Folders",
-  foldersEmpty: "No folders here.",
-  expand: (name: string) => `Show folders in ${name}`,
-  collapse: (name: string) => `Hide folders in ${name}`,
+  workspacesTitle: "Your workspaces",
+  workspacesEmpty: "No workspaces yet. Make one below.",
+  newWorkspace: "New workspace",
+  newWorkspaceName: "Name of the new workspace",
+  create: "Create",
+  creating: "Creating…",
+  workspacePanelEmpty: "Select a workspace to see its Claude server, or make one.",
+  workspaceUnknown: "You have no workspace at this address. Select one from the list.",
+  workspaceStates: {
+    creating: "Being made",
+    ready: "Ready",
+    failed: "Failed",
+    deleting: "Being deleted",
+  } as Record<string, string>,
+  workspaceCreating: "This workspace is being made. It is ready in a moment.",
+  workspaceFailed: "Making this workspace failed:",
+  workspaceDeleting: "This workspace is being deleted.",
+  workspaceActions: "Workspace actions",
+  deleteWorkspace: "Delete workspace",
+  deleteWorkspaceTitle: (name: string) => `Delete ${name}?`,
+  deleteWorkspaceBody:
+    "The workspace and everything in it are deleted, and its server is stopped and deleted with it. This cannot be undone.",
+  deleteWorkspaceConfirm: "Delete",
+  deleting: "Deleting…",
+  workspaceDeleted: (name: string) => `${name} was deleted.`,
   start: "Start",
   notConnected: {
     start: "Connect your Claude account above to start a server here.",
@@ -30,51 +50,16 @@ export const m = {
     startAgain: "Connect your Claude account above to start it again.",
   },
 
-  yourServersTitle: "Your servers",
-  yourServersEmpty: "No servers yet. Select a folder and start one.",
-  home: "Home",
-  breadcrumb: "Folder",
-  panelEmpty: "Select a folder to see its Claude server, or to start one.",
-  folderActions: "Folder actions",
-  newFolder: "New folder",
-  newFolderName: "Name of the new folder",
-  create: "Create",
-  creating: "Creating…",
-  cloneFromGithub: "Clone from GitHub",
-  cloneUrl: "Repository address on GitHub",
-  cloneParent: "Folder to clone into",
-  clone: "Clone",
-  cloning: "Cloning…",
-  // Two sentences; the second ends with the link to Settings.
-  cloneNote: {
-    before:
-      "git names the new folder after the repository, as git clone does. A private repository is cloned with ",
-    link: "your GitHub token",
-    after: ".",
-  },
-  deleteFolder: "Delete folder",
-  deleteFolderTitle: (path: string) => `Delete ${path}?`,
-  deleteFolderBody: "The folder and everything in it are deleted. This cannot be undone.",
-  deleteFolderServers: (count: number) =>
-    count === 0
-      ? "No server runs in it or in any folder inside it."
-      : count === 1
-        ? "This server in it is stopped and forgotten first:"
-        : `These ${count} servers in it are stopped and forgotten first:`,
-  deleteFolderServersList: "Servers to stop and forget",
-  deleteFolderConfirm: "Delete",
-  deleting: "Deleting…",
-  folderDeleted: (path: string) => `${path} was deleted.`,
   serverTitle: "Claude server",
-  noServer: "No Claude server runs in this folder.",
+  noServer: "No Claude server runs in this workspace.",
   states: {
     starting: "Starting",
     trust_prompt: "Waiting for your answer",
     connected: "Ready to accept sessions",
     ready: "In use",
     stopped: "Stopped",
-    trust_declined: "Not started: folder not trusted",
-    logged_out: "Not started: Claude account not connected",
+    trust_declined: "Not started: workspace not trusted",
+    logged_out: "Not started: Claude not signed in",
     exited: "Stopped by itself",
     reconnected: "Reconnected, status not shown",
     unrecognised: "Unrecognised screen",
@@ -87,12 +72,12 @@ export const m = {
   },
   nextStep: {
     starting: "Claude is starting. Wait a moment.",
-    trust_prompt: "Answer whether you trust this folder.",
+    trust_prompt: "Answer whether you trust this workspace.",
     connected: "Open it in claude.ai to start a session.",
     ready: "A session is attached; continue it in claude.ai.",
     stopped: "Resume to pick up its sessions, or forget it.",
     trust_declined: "Start again to answer once more, or forget it.",
-    logged_out: "Connect your Claude account above, then start again.",
+    logged_out: "Claude is not signed in in this workspace. Start again once it is, or forget it.",
     exited: "Show the screen to see why it stopped, then resume it.",
     reconnected:
       "Claude says it reconnected but is not showing its status. Show the screen to see what it says.",
@@ -107,11 +92,11 @@ export const m = {
   openSession: "Open in claude.ai",
   sessionName: "Session",
   exitCode: (code: number) => `Exit status ${code}`,
-  screenTitle: (path: string) => `Screen of ${path}`,
+  screenTitle: (name: string) => `Screen of ${name}`,
 
-  trustTitle: "Trust this folder?",
-  trustBody: (path: string) =>
-    `Sessions started in ${path} can read, edit and run the files in it, and the folder's own Claude settings apply to them.`,
+  trustTitle: "Trust this workspace?",
+  trustBody: (name: string) =>
+    `Sessions started in ${name} can read, edit and run the files in it, and its own Claude settings apply to them.`,
   trustYes: "Yes, trust it",
   trustNo: "No",
 
@@ -133,7 +118,8 @@ export const m = {
 
   settingsTitle: "Settings",
   prefixLabel: "Session name prefix",
-  prefixHelp: "New Remote Control sessions are named with this prefix.",
+  prefixHelp:
+    "New Remote Control sessions are named with this prefix. Leave it empty to name them after each workspace.",
   settingsPrefixTitle: "Session names",
   settingsAuthorTitle: "Commit author",
   authorNameLabel: "Commit author name",
@@ -143,6 +129,7 @@ export const m = {
     "The address commits are recorded under. Leave it empty to use the address you sign in with.",
   authorEffective: (name: string, email: string) => `Commits are recorded as ${name} <${email}>.`,
   authorNotSet: "No commit author is set.",
+
   settingsGithubTitle: "GitHub token",
   githubTokenLabel: "GitHub token",
   githubTokenHelp:
@@ -157,26 +144,20 @@ export const m = {
   githubTokenRemoveConfirm: "Remove",
 
   usersTitle: "People",
-  usersLinux: "Linux user",
   usersEmail: "Google email",
   usersRole: "Role",
-  usersAccount: "Account",
+  usersWorkspaces: "Workspaces",
   usersAdmin: "Administrator",
   usersUser: "User",
-  usersAccountOk: "OK",
-  usersAccountMissing: "Missing",
   usersAdd: "Add person",
   usersAddAdmin: "Administrator",
-  usersAddAdopt: "Take over an existing Linux account",
-  usersAdded: (linux: string) => `${linux} is set up.`,
+  usersAdded: (email: string) => `${email} was added.`,
   usersRemove: "Remove",
-  usersRemoveTitle: (linux: string) => `Remove ${linux}?`,
+  usersRemoveTitle: (email: string) => `Remove ${email}?`,
   usersRemoveBody:
-    "Their servers are stopped, their Claude account is signed out here, and their Linux account is removed.",
-  usersKeepHome: "Keep their home folder",
-  usersDeleteHome: "Delete their home folder",
+    "Their workspaces are deleted, with everything in them and their servers, and they can no longer sign in. This cannot be undone.",
   usersRemoveConfirm: "Remove",
-  usersRemoved: (linux: string) => `${linux} was removed.`,
+  usersRemoved: (email: string) => `${email} was removed.`,
 
   auditTitle: "Audit trail",
   auditWhen: "When",
@@ -190,21 +171,17 @@ export const m = {
   attentionTitle: "Needs attention",
   attentionUnrecognised: (servers: string[]) =>
     `Servers on a screen rcman does not recognise: ${servers.join(", ")}.`,
-  attentionVersionsDiffer: (people: string[]) =>
-    `Claude Code differs from the approved version for: ${people.join(", ")}.`,
-  attentionVersionsFailed: "rcman could not check the Claude Code versions:",
-  attentionUntested:
-    "The approved Claude Code version is not the one rcman's recorded tests cover.",
 
-  everyoneTitle: "Everyone's servers",
+  everyoneTitle: "Everyone's workspaces",
   everyoneIntro:
-    "Each person's servers, to look at only. Only the person a server belongs to can act on it.",
-  everyonePerson: (linux: string, email: string) => `${linux} (${email})`,
-  everyoneNone: "No servers.",
-  everyoneFolder: "Folder",
+    "Each person's workspaces and their servers, to look at only. Only the person a workspace belongs to can act on it.",
+  everyoneNone: "No workspaces.",
+  everyoneWorkspace: "Workspace",
   everyoneState: "State",
+  everyoneNoServer: "No server",
 
   versionsTitle: "Claude Code",
+  versionsLinux: "Linux user",
   versionsApproved: "Approved version",
   versionsTested: "Tested version",
   versionsUntested:
@@ -220,8 +197,6 @@ export const m = {
 
   docsTitle: "Help",
 
-  repositoryMark: "git",
-  repository: "Git repository",
   changesTitle: "Changes",
   refreshStatus: "Refresh changes",
   // When the status was last answered, from how many seconds ago.
@@ -242,7 +217,7 @@ export const m = {
   selectAll: "Select all",
   stageSelected: "Stage selected",
   unstageSelected: "Unstage selected",
-  // Each change a file is listed with, by the code rc-helper gives it.
+  // Each change a file is listed with, by the code the server gives it.
   changes: {
     modified: "Modified",
     type_changed: "Type changed",

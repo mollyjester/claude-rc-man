@@ -20,7 +20,7 @@ export function ProblemView({
   const left = error.extra.left;
   const git = error.extra.git;
   const gitMore = error.extra.git_more;
-  // The server a problem is about, as rc-helper describes one, when it names one.
+  // The server a problem is about, as rcman describes one, when it names one.
   const server = error.extra.server as { path?: unknown; screen?: unknown } | null | undefined;
   const serverPath =
     typeof server === "object" && server !== null && typeof server.path === "string"
@@ -94,7 +94,7 @@ function CheckReport({ check, lines, more }: { check: string; lines: string[]; m
   );
 }
 
-// What each failed check ran and got back, as rc-admin reports it: its lines, and
+// What each failed check ran and got back, as rcman reports it: its lines, and
 // how many more it left out.
 function checkReports(report: unknown): [string, { lines: string[]; more: number }][] {
   if (typeof report !== "object" || report === null) return [];

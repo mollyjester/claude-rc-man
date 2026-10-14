@@ -15,16 +15,16 @@ from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic_core import PydanticCustomError
 
-from helpers import rc_helper
+from helpers import rules
 from rcman import db
 from rcman.audit import Record, Recorder
 from rcman.identity import Identity, current_user
 from rcman.problems import SETTINGS_NONE_SENT, ruled
 
 router = APIRouter(prefix="/api/me", tags=["me"])
-Prefix = ruled(rc_helper.PREFIX)
-AuthorName = ruled(rc_helper.AUTHOR_NAME)
-AuthorEmail = ruled(rc_helper.EMAIL.or_empty())
+Prefix = ruled(rules.PREFIX.or_empty())
+AuthorName = ruled(rules.AUTHOR_NAME)
+AuthorEmail = ruled(rules.EMAIL.or_empty())
 
 
 def _published(schema: dict) -> None:
@@ -38,14 +38,16 @@ class SettingsBody(BaseModel):
     model_config = ConfigDict(json_schema_extra=_published)
 
     prefix: Prefix = Field(
-        default=None, description="Prefix of the names of new Remote Control sessions."
+        default=None,
+        description="Prefix of the names of new Remote Control sessions; empty for each "
+        "workspace's own name.",
     )
     author_name: AuthorName = Field(
         default=None, description="Name commits made from rcman are recorded under."
     )
     author_email: AuthorEmail = Field(
         default=None,
-        description="Email address commits are recorded under; empty for the users file's.",
+        description="Email address commits are recorded under; empty for your own.",
     )
 
     @model_validator(mode="after")
@@ -71,8 +73,8 @@ def _row(request: Request, identity: Identity) -> sqlite3.Row | None:
         con.close()
 
 
-def _prefix(row: sqlite3.Row | None, identity: Identity) -> str:
-    return row["prefix"] if row and row["prefix"] is not None else identity.linux
+def _prefix(row: sqlite3.Row | None) -> str | None:
+    return row["prefix"] if row else None
 
 
 def _author(row: sqlite3.Row | None, identity: Identity) -> Author | None:
@@ -81,9 +83,10 @@ def _author(row: sqlite3.Row | None, identity: Identity) -> Author | None:
     return Author(name=row["author_name"], email=row["author_email"] or identity.email)
 
 
-def prefix_of(request: Request, identity: Identity) -> str:
-    """The prefix of the person's new session names: the Linux user until one is set."""
-    return _prefix(_row(request, identity), identity)
+def prefix_of(request: Request, identity: Identity, workspace) -> str:
+    """The prefix of the names of the sessions of a server in ``workspace``: the person's,
+    or the workspace's name while they have set none."""
+    return _prefix(_row(request, identity)) or workspace.name
 
 
 def author_of(request: Request, identity: Identity) -> Author | None:
@@ -95,7 +98,7 @@ def _settings(request: Request, identity: Identity) -> dict:
     row = _row(request, identity)
     author = _author(row, identity)
     return {
-        "prefix": _prefix(row, identity),
+        "prefix": _prefix(row) or "",
         "author_name": (row and row["author_name"]) or "",
         "author_email": (row and row["author_email"]) or "",
         "effective_author": author and {"name": author.name, "email": author.email},
@@ -106,9 +109,8 @@ def _settings(request: Request, identity: Identity) -> dict:
 def me(request: Request, identity: Identity = Depends(current_user)) -> dict:
     return {
         "email": identity.email,
-        "linux": identity.linux,
         "admin": identity.admin,
-        "prefix": prefix_of(request, identity),
+        "prefix": _prefix(_row(request, identity)),
     }
 
 
@@ -125,7 +127,7 @@ def patch_settings(
     record.target = json.dumps(sent, ensure_ascii=False)
     # Column names are the model's own fields, never anything from the request.
     columns = [name for name in SettingsBody.model_fields if name in sent]
-    values = [sent[name] or None for name in columns]  # an empty email is the default
+    values = [sent[name] or None for name in columns]  # empty is the default
     con = db.connect(request.app.state.settings.database)
     try:
         con.execute(

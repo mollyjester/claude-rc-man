@@ -399,7 +399,7 @@ def _login_succeeded(r: Run) -> None:
     r.pane.wait_exit(TIMEOUT)
 
 
-# As rc-helper starts a server (tests/test_rc_helper.py holds the two together).
+# As rcman starts a server (tests/test_claude_server.py holds the two together).
 RC_ARGS = [
     "remote-control",
     "--remote-control-session-name-prefix",

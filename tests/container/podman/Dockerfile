@@ -1,17 +1,21 @@
 # The podman host: a throwaway Ubuntu that runs systemd as PID 1, for rootless Podman
-# under a service account (tests/container/podman_host.py). It is run privileged, with
-# a cgroup namespace of its own. A snapshot of the checkout's files is mounted
-# read-only at /src (tests/snapshot.py); git is there for tests/conftest.py, which runs it
-# before any test.
+# under a service account, set up either by tests/container/podman_host.py or by the
+# real installer. It is run privileged, with a cgroup namespace of its own. A snapshot
+# of the checkout's files is mounted read-only at /src (tests/snapshot.py). It holds
+# what the installer installs or needs already, so that it installs no package: git,
+# Caddy, busybox-static, xz-utils, curl and ca-certificates; and pytest.
 FROM ubuntu:24.04
 RUN apt-get update -qq \
  && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
       systemd systemd-sysv dbus dbus-user-session podman uidmap catatonit slirp4netns \
-      python3 python3-pytest git \
+      busybox-static ncurses-base python3 python3-pytest git caddy curl ca-certificates \
+      xz-utils procps \
  && rm -rf /var/lib/apt/lists/*
 # Root's own Podman is not used; its units would keep its storage on the image's overlay.
+# Caddy is started by the tests that need it, with their own configuration.
 RUN systemctl disable podman.service podman.socket podman-restart.service \
-      podman-auto-update.timer podman-auto-update.service podman-clean-transient.service
+      podman-auto-update.timer podman-auto-update.service podman-clean-transient.service \
+      caddy.service
 STOPSIGNAL SIGRTMIN+3
 # A cgroup that holds a process cannot enable controllers for its children, and docker
 # exec can put one in the container's root cgroup while systemd is booting, which would

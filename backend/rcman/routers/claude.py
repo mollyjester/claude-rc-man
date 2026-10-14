@@ -1,23 +1,27 @@
-"""The signed-in user's Claude account, and Claude Code versions for administrators."""
+"""The signed-in person's Claude account, and Claude Code versions for administrators.
+
+Signing in to Claude in workspaces, and rolling out Claude Code versions, are not
+there yet: every route keeps the shape it will have and answers
+``not_available_yet``. ``connection`` is how the account's state will be read from
+its status, against the ``login_warning_days`` setting.
+"""
 
 from __future__ import annotations
 
 import datetime as dt
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
-from helpers import rc_admin
-from helpers import users_file as uf
+from helpers import rules
 from rcman.audit import Record, Recorder
-from rcman.helpers_client import ADMIN_TIMEOUT, call_admin, call_helper
 from rcman.identity import Identity, admin_user, current_user
-from rcman.problems import ruled
+from rcman.problems import Problem, ruled
 
 router = APIRouter(prefix="/api/claude", tags=["claude"])
 MAX_CODE_LENGTH = 512
-Email = ruled(uf.EMAIL)
-Version = ruled(rc_admin.VERSION)
+Email = ruled(rules.EMAIL)
+Version = ruled(rules.VERSION)
 
 
 class LoginBody(BaseModel):
@@ -52,51 +56,28 @@ def connection(status: dict, warning_days: int, now: dt.datetime | None = None) 
     return {"connection": state, "account": account, "login_expires_at": expires}
 
 
-def _status(request: Request, identity: Identity) -> dict:
-    status = call_helper(request.app.state.helper, identity, ["auth-status"])
-    return connection(status, request.app.state.settings.login_warning_days)
-
-
 @router.get("")
-def get_connection(request: Request, identity: Identity = Depends(current_user)) -> dict:
-    return _status(request, identity)
+def get_connection(identity: Identity = Depends(current_user)) -> dict:
+    raise Problem("not_available_yet")
 
 
 @router.post("/login")
-def login(
-    body: LoginBody, request: Request, record: Record = Depends(Recorder("claude.login"))
-) -> dict:
-    email = body.email or record.identity.email
-    record.target = email
-    return call_helper(
-        request.app.state.helper, record.identity, ["auth-login", f"--email={email}"]
-    )
+def login(body: LoginBody, record: Record = Depends(Recorder("claude.login"))) -> dict:
+    record.target = body.email or record.identity.email
+    raise Problem("not_available_yet")
 
 
 @router.post("/code")
-def code(
-    body: CodeBody, request: Request, record: Record = Depends(Recorder("claude.connect"))
-) -> dict:
-    call_helper(request.app.state.helper, record.identity, ["auth-code"], stdin=body.code + "\n")
-    return _status(request, record.identity)
-
-
-def version_report(request: Request, timeout: float = ADMIN_TIMEOUT) -> dict:
-    """rc-admin's claude-status, with who differs from the approved version and whether
-    the approved version is the tested one."""
-    status = call_admin(request.app.state.admin, ["claude-status"], timeout=timeout)
-    differs = [u["linux"] for u in status["users"] if u["installed"] != status["approved"]]
-    return {**status, "differs": differs, "untested": status["approved"] != status["tested"]}
+def code(body: CodeBody, record: Record = Depends(Recorder("claude.connect"))) -> dict:
+    raise Problem("not_available_yet")
 
 
 @router.get("/versions", dependencies=[Depends(admin_user)])
-def versions(request: Request) -> dict:
-    return version_report(request)
+def versions() -> dict:
+    raise Problem("not_available_yet")
 
 
 @router.post("/upgrade", dependencies=[Depends(admin_user)])
-def upgrade(
-    body: UpgradeBody, request: Request, record: Record = Depends(Recorder("claude.upgrade"))
-) -> dict:
+def upgrade(body: UpgradeBody, record: Record = Depends(Recorder("claude.upgrade"))) -> dict:
     record.target = body.version
-    return call_admin(request.app.state.admin, ["claude-upgrade", "--", body.version])
+    raise Problem("not_available_yet")

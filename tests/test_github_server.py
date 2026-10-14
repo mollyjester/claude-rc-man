@@ -147,7 +147,7 @@ def test_a_credential_for_github_com_is_not_offered_to_the_rewritten_url(
     server, remote, local, tmp_path
 ):
     """The load-bearing assumption: insteadOf rewrites the URL before git looks up a
-    credential, so rc-helper must store the token for the address it rewrites to."""
+    credential, so a token must be stored for the address git rewrites to."""
     bare, _ = remote
     github_url = f"https://github.com/owner/{bare.name}"
     hooked = {f"url.{server.url}.insteadOf": "https://github.com/"}

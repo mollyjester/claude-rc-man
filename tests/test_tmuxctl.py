@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from devtools import held_folders, tmuxctl
-from helpers import rc_helper
+from helpers import screens
 
 
 @pytest.fixture
@@ -110,8 +110,6 @@ def test_closing_kills_the_tmux_server(tmp_path):
     import signal
     import subprocess
 
-    from tests.test_helpers_client import child_alive
-
     pid_file = tmp_path / "server.pid"
     pid = None
     try:
@@ -165,7 +163,7 @@ def test_exit_status_of_an_unreaped_process_comes_from_proc(monkeypatch, pane, t
         return out
 
     monkeypatch.setattr(pane, "_tmux", unreaped)
-    monkeypatch.setattr(rc_helper, "_zombie_status", lambda pid: 5 << 8)  # wait status
+    monkeypatch.setattr(screens, "_zombie_status", lambda pid: 5 << 8)  # wait status
     assert pane.exit_status() == 5
 
 
@@ -176,13 +174,13 @@ def test_zombie_status_reads_the_kernel_exit_code(tmp_path):
 
     child = subprocess.Popen([sys.executable, "-c", "raise SystemExit(7)"])
     for _ in range(100):  # wait for it to become a zombie, without reaping it
-        if rc_helper._zombie_status(child.pid) is not None:
+        if screens._zombie_status(child.pid) is not None:
             break
         time.sleep(0.05)
-    status = rc_helper._zombie_status(child.pid)
+    status = screens._zombie_status(child.pid)
     child.wait()
     assert status is not None and os.waitstatus_to_exitcode(status) == 7
-    assert rc_helper._zombie_status(child.pid) is None  # reaped: no longer readable
+    assert screens._zombie_status(child.pid) is None  # reaped: no longer readable
 
 
 def test_a_closed_pane_can_run_again_at_once(tmp_path):
@@ -207,3 +205,38 @@ def test_signal_reaches_the_program_itself(pane, tmp_path):
     pane.interrupt()  # ignored: it is the signal that ends it
     pane.signal(signal.SIGTERM)
     assert pane.wait_exit(timeout=10) == 128 + signal.SIGTERM
+
+
+def child_alive(pid_file, deadline=5.0):
+    import time
+
+    start = time.monotonic()
+    while not pid_file.exists() or not pid_file.read_text():
+        assert time.monotonic() - start < deadline, "the child never started"
+        time.sleep(0.05)
+    pid = int(pid_file.read_text())
+    while time.monotonic() - start < deadline:
+        try:
+            with open(f"/proc/{pid}/stat") as stat:
+                if stat.read().split(")")[-1].split()[0] == "Z":
+                    return False, pid
+        except (FileNotFoundError, ProcessLookupError):
+            return False, pid
+        time.sleep(0.1)
+    return True, pid
+
+
+def test_child_alive_reads_a_child_that_exits_while_its_stat_is_read(tmp_path, monkeypatch):
+    # A process that exits between opening /proc/<pid>/stat and reading it makes
+    # the read fail with ESRCH; that child is gone, not a failure of the test.
+    import io
+    import sys
+
+    class Vanishing(io.StringIO):
+        def read(self, *args):
+            raise ProcessLookupError(3, "No such process")
+
+    pid_file = tmp_path / "child.pid"
+    pid_file.write_text("4242")
+    monkeypatch.setattr(sys.modules[__name__], "open", lambda *a, **kw: Vanishing(), raising=False)
+    assert child_alive(pid_file, deadline=1.0) == (False, 4242)

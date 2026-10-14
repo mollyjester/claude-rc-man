@@ -1,151 +1,189 @@
-"""Servers, through the real rc-helper and the fake claude, per user."""
+"""A workspace's server through the routes, on the host runtime with the fake claude."""
 
+import sqlite3
 import time
 
+from rcman import db
 from rcman.problems import FIELD_MESSAGES
 
-from tests.conftest import ALICE, BOB, as_user, changing
-
-ALPHA = {"path": "projects/alice-project"}
+from tests.conftest import ALICE, BOB, as_user, changing, fake_claude, made_workspace, signed_in
 
 
-def servers(client, who):
-    return client.get("/api/servers", headers=as_user(who)).json()["servers"]
+def workspaces(client, who=ALICE) -> list[dict]:
+    return client.get("/api/workspaces", headers=as_user(who)).json()["workspaces"]
 
 
-def wait_ready(client, who, path):
+def server_of(client, workspace, who=ALICE):
+    return next(w for w in workspaces(client, who) if w["id"] == workspace["id"])["server"]
+
+
+def wait_state(client, workspace, state, who=ALICE):
+    server = None
     for _ in range(100):
-        s = next((x for x in servers(client, who) if x["path"] == path), None)
-        if s and s["state"] == "ready":
-            return s
+        server = server_of(client, workspace, who)
+        if server and server["state"] == state:
+            return server
         time.sleep(0.1)
-    raise AssertionError(f"{path} never ready: {s}")
+    raise AssertionError(f"never {state}: {server}")
 
 
-def test_lifecycle_uses_the_users_prefix(client):
-    client.patch("/api/me/settings", json={"prefix": "alpha"}, headers=changing(ALICE))
-    r = client.post("/api/servers", json=ALPHA, headers=changing(ALICE))
+def post(client, verb, workspace, who=ALICE, **body):
+    path = "/api/servers" + (f"/{verb}" if verb else "")
+    return client.post(path, json={"workspace": workspace["id"], **body}, headers=changing(who))
+
+
+def wanted(settings, workspace) -> tuple[int, int, str | None]:
+    con = db.connect(settings.database)
+    try:
+        found = con.execute(
+            "select server, wanted, prefix from workspaces where id = ?", (workspace["id"],)
+        ).fetchone()
+        return tuple(found)
+    finally:
+        con.close()
+
+
+def test_a_start_answers_not_signed_in_until_claude_is(client, app):
+    made = made_workspace(client, ALICE, "alpha")
+    r = post(client, "", made)
+    assert (r.status_code, r.json()["code"]) == (409, "claude_not_logged_in")
+    assert server_of(client, made) is None
+    signed_in(app, made)
+    assert post(client, "", made).status_code == 200  # positive control
+
+
+def test_the_lifecycle_records_what_should_be_running(client, app, settings):
+    made = made_workspace(client, ALICE, "alpha")
+    signed_in(app, made)
+    r = post(client, "", made)
     assert r.status_code == 200, r.text
     assert r.json()["server"]["state"] == "trust_prompt"
-    r = client.post("/api/servers/confirm", json={**ALPHA, "answer": "y"}, headers=changing(ALICE))
+    assert wanted(settings, made) == (1, 1, "alpha")  # named after the workspace by default
+    r = post(client, "confirm", made, answer="y")
     assert r.json()["server"]["state"] in ("connected", "ready")
-    ready = wait_ready(client, ALICE, ALPHA["path"])
+    ready = wait_state(client, made, "ready")
     assert ready["session_name"].startswith("alpha-")
 
-    output = client.get("/api/servers/output", params=ALPHA, headers=as_user(ALICE)).json()
-    assert output["screen"]
-
-    assert (
-        client.post("/api/servers/stop", json=ALPHA, headers=changing(ALICE)).json()["server"][
-            "state"
-        ]
-        == "stopped"
+    output = client.get(
+        "/api/servers/output", params={"workspace": made["id"]}, headers=as_user(ALICE)
     )
-    resumed = client.post("/api/servers/resume", json=ALPHA, headers=changing(ALICE)).json()[
-        "server"
-    ]
+    assert output.json()["screen"]
+
+    assert post(client, "stop", made).json()["server"]["state"] == "stopped"
+    assert wanted(settings, made) == (1, 0, "alpha")
+    resumed = post(client, "resume", made).json()["server"]
     assert resumed["state"] in ("connected", "ready")
-    client.post("/api/servers/stop", json=ALPHA, headers=changing(ALICE))
-    assert (
-        client.post("/api/servers/forget", json=ALPHA, headers=changing(ALICE)).status_code == 200
-    )
-    assert servers(client, ALICE) == []
+    assert wanted(settings, made)[:2] == (1, 1)
+    post(client, "stop", made)
+    assert post(client, "forget", made).status_code == 200
+    assert server_of(client, made) is None
+    assert wanted(settings, made)[:2] == (0, 0)
 
 
-def test_users_never_see_each_others_servers(client):
-    client.post("/api/servers", json=ALPHA, headers=changing(ALICE))
-    assert [s["path"] for s in servers(client, ALICE)] == [ALPHA["path"]]
-    assert servers(client, BOB) == []
-    r = client.post("/api/servers/stop", json=ALPHA, headers=changing(BOB))
-    assert r.status_code == 404  # bob has no such folder
+def test_the_prefix_set_names_the_sessions(client, app, settings):
+    client.patch("/api/me/settings", json={"prefix": "mine"}, headers=changing(ALICE))
+    made = made_workspace(client, ALICE, "alpha")
+    signed_in(app, made, trusted=True)
+    post(client, "", made)
+    assert wait_state(client, made, "ready")["session_name"].startswith("mine-")
+    assert wanted(settings, made)[2] == "mine"
 
 
-def test_conflicts_are_409(client):
-    client.post("/api/servers", json=ALPHA, headers=changing(ALICE))
-    r = client.post("/api/servers", json=ALPHA, headers=changing(ALICE))
+def test_conflicts_are_409(client, app):
+    made = made_workspace(client, ALICE, "alpha")
+    signed_in(app, made)
+    post(client, "", made)
+    r = post(client, "", made)
     assert (r.status_code, r.json()["code"]) == (409, "already_running")
 
 
-def test_answer_is_validated_by_the_server(client):
-    r = client.post(
-        "/api/servers/confirm", json={**ALPHA, "answer": "maybe"}, headers=changing(ALICE)
-    )
+def test_a_workspace_that_is_not_ready_has_no_server(client, app):
+    import threading
+
+    release = threading.Event()
+    runtime = app.state.workspaces.runtime
+    real = runtime.create
+    runtime.create = lambda spec: (release.wait(30), real(spec))
+    try:
+        made = client.post("/api/workspaces", json={"name": "slow"}, headers=changing(ALICE))
+        r = post(client, "", made.json()["workspace"])
+        assert (r.status_code, r.json()["code"]) == (409, "workspace_not_ready")
+    finally:
+        release.set()
+
+
+def test_the_answer_is_validated(client):
+    made = made_workspace(client, ALICE, "alpha")
+    r = post(client, "confirm", made, answer="maybe")
     assert r.status_code == 422
     expected = FIELD_MESSAGES["literal_error"].format(expected="'y' or 'n'")
     assert r.json()["errors"] == [{"field": "answer", "message": expected}]
 
 
-def test_helper_detail_is_passed_on(client, helper_homes):
-    from devtools import fake_claude as fake
-
-    fake.write_state(helper_homes.homes["alice"] / ".claude-fake", logged_in=False)
-    r = client.post("/api/servers", json=ALPHA, headers=changing(ALICE))
-    assert (r.status_code, r.json()["code"]) == (409, "claude_not_logged_in")
-
-
-def test_administrators_see_every_persons_servers(client):
-    client.post("/api/servers", json=ALPHA, headers=changing(ALICE))
+def test_administrators_see_every_persons_workspaces_and_servers(client, app):
+    made = made_workspace(client, ALICE, "alpha")
+    made_workspace(client, BOB, "beta")
+    signed_in(app, made)
+    post(client, "", made)
     r = client.get("/api/servers/everyone", headers=as_user(ALICE))
     assert r.status_code == 200, r.text
-    people = {p["linux"]: p for p in r.json()["people"]}
-    assert set(people) == {"alice", "bob", "carol"}
-    assert [s["path"] for s in people["alice"]["servers"]] == [ALPHA["path"]]
-    assert people["bob"]["servers"] == []
+    people = {p["email"]: p for p in r.json()["people"]}
+    assert set(people) == {ALICE, BOB, "carol@example.com"}
+    [alpha] = people[ALICE]["workspaces"]
+    assert alpha["name"] == "alpha" and alpha["server"]["state"] == "trust_prompt"
+    assert set(alpha["server"]) == {"state", "session_name", "exit_code"}  # never its screen
+    assert [(w["name"], w["server"]) for w in people[BOB]["workspaces"]] == [("beta", None)]
+    assert people["carol@example.com"]["workspaces"] == []
 
 
-def test_people_who_are_not_administrators_cannot_see_everyones_servers(client):
-    client.post("/api/servers", json=ALPHA, headers=changing(ALICE))
+def test_people_who_are_not_administrators_cannot_see_everyone(client):
+    made_workspace(client, ALICE, "alpha")
     r = client.get("/api/servers/everyone", headers=as_user(BOB))
     assert (r.status_code, r.json()["code"]) == (403, "admin_only")
-    assert "alice-project" not in r.text
+    assert "alpha" not in r.text
 
 
-def scenario_claude(helper_homes, scenario):
-    """Every claude the helpers run from now on runs the fake's ``scenario``."""
-    from devtools import record_claude as rec
-
-    wrapper = helper_homes.homes["alice"].parent.parent / "claude"
-    wrapper.write_text(f'#!/bin/sh\nFAKE_CLAUDE_SCENARIO={scenario} exec {rec.FAKE_CLAUDE} "$@"\n')
+def in_scenario(app, tmp_path, scenario):
+    """Every claude the workspaces run from now on runs the fake's ``scenario``."""
+    fake_claude(app.state.workspaces.runtime.claude, env=f"FAKE_CLAUDE_SCENARIO={scenario}")
 
 
-def unrecognised_claude(helper_homes):
-    """Every claude the helpers run from now on shows a screen rcman does not know."""
-    scenario_claude(helper_homes, "unrecognised")
-
-
-def reconnected_claude(helper_homes):
-    """Every claude the helpers run from now on shows the observed screen of a server
-    that has reconnected and shows no status."""
-    scenario_claude(helper_homes, "reconnected_without_status")
+def last_audit(settings):
+    return (
+        sqlite3.connect(settings.database)
+        .execute("select action, target, result from audit")
+        .fetchall()[-1]
+    )
 
 
 def test_an_action_ending_on_an_unrecognised_screen_is_audited_as_such(
-    client, helper_homes, settings
+    client, app, settings, tmp_path
 ):
-    import sqlite3
-
-    unrecognised_claude(helper_homes)
-    r = client.post("/api/servers", json=ALPHA, headers=changing(ALICE))
+    made = made_workspace(client, ALICE, "alpha")
+    signed_in(app, made)
+    in_scenario(app, tmp_path, "unrecognised")
+    r = post(client, "", made)
     assert r.status_code == 200, r.text
     assert r.json()["server"]["state"] == "unrecognised"
-    last = (
-        sqlite3.connect(settings.database)
-        .execute("select action, target, result from audit")
-        .fetchall()[-1]
-    )
-    assert last == ("server.start", ALPHA["path"], "unrecognised_screen")
+    assert last_audit(settings) == ("server.start", "alpha", "unrecognised_screen")
 
 
-def test_an_action_ending_reconnected_is_audited_ok(client, helper_homes, settings):
-    import sqlite3
-
-    reconnected_claude(helper_homes)
-    r = client.post("/api/servers", json=ALPHA, headers=changing(ALICE))
-    assert r.status_code == 200, r.text
+def test_an_action_ending_reconnected_is_audited_ok(client, app, settings, tmp_path):
+    made = made_workspace(client, ALICE, "alpha")
+    signed_in(app, made)
+    in_scenario(app, tmp_path, "reconnected_without_status")
+    r = post(client, "", made)
     assert r.json()["server"]["state"] == "reconnected"
-    last = (
-        sqlite3.connect(settings.database)
-        .execute("select action, target, result from audit")
-        .fetchall()[-1]
-    )
-    assert last == ("server.start", ALPHA["path"], "ok")
+    assert last_audit(settings) == ("server.start", "alpha", "ok")
+
+
+def test_a_workspace_that_cannot_be_reached_is_listed_with_why(client, app):
+    made = made_workspace(client, ALICE, "alpha")
+    signed_in(app, made)
+    post(client, "", made)
+    app.state.workspaces.runtime.stop(f"rcman-ws-{made['id']}")
+    app.state.workspaces.close_channels()
+    [found] = workspaces(client)
+    assert found["server"] is None
+    assert found["server_error"]["code"] == "workspace_failed"
+    assert workspaces(client, BOB) == []

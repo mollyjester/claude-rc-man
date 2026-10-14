@@ -1,157 +1,357 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  type FormEvent,
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useId,
+  useRef,
+  useState,
+} from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 
-import { type ApiError, api, SIGNED_OUT, UNREACHABLE } from "./api";
-import { ClaudeConnection, type Connection, START_REASON } from "./Claude";
-import { type FolderChanges, FolderPanel, HomePanel } from "./FolderPanel";
-import {
-  FolderTree,
-  folderLink,
-  isRepository,
-  parentOf,
-  ServerSummary,
-  useFolderTree,
-} from "./Folders";
+import { ApiError, api } from "./api";
 import { m } from "./messages";
 import { asApiError, ProblemView } from "./ProblemView";
-import type { Server } from "./Servers";
+import { dotFor, ServerCard, StatusDot, type Workspace } from "./Servers";
 
-// Whether two failures would be shown alike, so that one of them is enough.
-const sameFailure = (a: ApiError | null, b: ApiError | null) =>
-  a !== null && b !== null && a.code === b.code && a.title === b.title;
+// Where a workspace's panel is: the Workspaces page, with the workspace in the address.
+const workspaceLink = (id: number | null) => ({
+  pathname: "/",
+  search: id === null ? "" : `?workspace=${id}`,
+});
 
-// The Servers page: the folder tree and its summary on one side, and the
-// selected folder's panel on the other. The selected folder is in the address.
+// The Workspaces page: the person's workspaces and the form that makes one on
+// one side, and the selected workspace's panel on the other. The selected
+// workspace is in the address.
 export function Dashboard({ pollMs }: { pollMs: number }) {
-  const [connection, setConnection] = useState<Connection | null>(null);
-  const [servers, setServers] = useState<Server[] | null>(null);
-  // The Claude account's, which is loaded once, and the servers', polled.
-  const [connectionError, setConnectionError] = useState<ApiError | null>(null);
-  const [serversError, setServersError] = useState<ApiError | null>(null);
-  // What was done, shown while the folder it left selected stays selected.
-  const [notice, setNotice] = useState<{ text: string; folder: string | null } | null>(null);
+  const [workspaces, setWorkspaces] = useState<Workspace[] | null>(null);
+  const [error, setError] = useState<ApiError | null>(null);
+  // What was done, shown while nothing is selected after it.
+  const [notice, setNotice] = useState<string | null>(null);
   const [params] = useSearchParams();
   const navigate = useNavigate();
-  const selected = params.get("folder") || null;
-  const tree = useFolderTree();
-  const { reveal } = tree;
-
-  // The Claude account is loaded once, and again after a poll works if the page
-  // did not reach rcman for it; a problem rcman sent stays.
-  const connectionUnreached = useRef(false);
-  const loadConnection = useCallback(() => {
-    api.get<Connection>("/api/claude").then(
-      (loaded) => {
-        setConnection(loaded);
-        setConnectionError(null);
-      },
-      (e) => {
-        const error = asApiError(e);
-        connectionUnreached.current = error.code === UNREACHABLE || error.code === SIGNED_OUT;
-        setConnectionError(error);
-      },
-    );
-  }, []);
+  const asked = params.get("workspace");
+  const selectedId = asked && /^\d+$/.test(asked) ? Number(asked) : null;
 
   // A poll's failure is shown until a later poll works; an answer older than one
   // asked for since is dropped.
   const latest = useRef(0);
   const refresh = useCallback(async () => {
-    const asked = ++latest.current;
+    const mine = ++latest.current;
     try {
-      const answer = await api.get<{ servers: Server[] }>("/api/servers");
-      if (asked === latest.current) {
-        setServers(answer.servers);
-        setServersError(null);
-        if (connectionUnreached.current) {
-          connectionUnreached.current = false;
-          loadConnection();
-        }
+      const answer = await api.get<{ workspaces: Workspace[] }>("/api/workspaces");
+      if (mine === latest.current) {
+        setWorkspaces(answer.workspaces);
+        setError(null);
       }
     } catch (e) {
-      const error = asApiError(e);
-      if (asked === latest.current) setServersError(error);
+      const failed = asApiError(e);
+      if (mine === latest.current) setError(failed);
     }
-  }, [loadConnection]);
+  }, []);
 
   useEffect(() => {
-    loadConnection();
     refresh();
     if (pollMs > 0) {
       const timer = setInterval(refresh, pollMs);
       return () => clearInterval(timer);
     }
-  }, [pollMs, refresh, loadConnection]);
+  }, [pollMs, refresh]);
 
   useEffect(() => {
-    if (selected) reveal(selected);
-    setNotice((shown) => (shown && shown.folder !== selected ? null : shown));
-  }, [selected, reveal]);
+    if (asked !== null) setNotice(null);
+  }, [asked]);
 
-  function select(path: string) {
-    if (path !== selected) navigate(folderLink(path));
+  function select(id: number) {
+    if (id !== selectedId) navigate(workspaceLink(id));
   }
 
-  // A folder's contents, and its entry in the folder above, which says whether
-  // it has folders in it.
-  function reloadWithParent(path: string) {
-    tree.reload(path);
-    const above = parentOf(path);
-    if (above !== null) tree.reload(above);
+  function made(workspace: Workspace) {
+    setWorkspaces((current) =>
+      current && !current.some((w) => w.id === workspace.id) ? [...current, workspace] : current,
+    );
+    navigate(workspaceLink(workspace.id));
+    refresh();
   }
 
-  // What is selected now, for a request that ends after another folder was selected.
-  const current = useRef(selected);
-  current.current = selected;
+  function deleted(workspace: Workspace) {
+    setWorkspaces((current) => current?.filter((w) => w.id !== workspace.id) ?? null);
+    navigate(workspaceLink(null), { replace: true });
+    setNotice(m.workspaceDeleted(workspace.name));
+    refresh();
+  }
 
-  const changes: FolderChanges = {
-    // The new folder is selected only while its parent still is: a clone takes a
-    // while, and the person may have moved on.
-    created(parent, folder) {
-      reloadWithParent(parent);
-      if ((current.current ?? "") === parent) navigate(folderLink(folder));
-    },
-    deleted(path) {
-      const parent = parentOf(path) ?? "";
-      tree.forget(path);
-      reloadWithParent(parent);
-      refresh();
-      setNotice({ text: m.folderDeleted(path), folder: parent || null });
-      navigate(folderLink(parent || null), { replace: true });
-    },
-    deleteFailed(path) {
-      tree.reload(path);
-      reloadWithParent(parentOf(path) ?? "");
-      refresh();
-    },
-  };
+  const selected = workspaces?.find((w) => w.id === selectedId);
+  let shown: ReactNode;
+  if (asked === null) shown = <p>{m.workspacePanelEmpty}</p>;
+  else if (workspaces === null) shown = <p>{m.loading}</p>;
+  else if (!selected) shown = <p>{m.workspaceUnknown}</p>;
 
   return (
     <>
-      <ClaudeConnection connection={connection} onChange={setConnection} />
-      <ProblemView error={connectionError} />
-      {!sameFailure(connectionError, serversError) && <ProblemView error={serversError} />}
-      {notice && notice.folder === selected && <p role="status">{notice.text}</p>}
-      <div className="workspace">
+      <ProblemView error={error} />
+      {notice && asked === null && <p role="status">{notice}</p>}
+      <div className="dashboard">
         <div className="pane">
-          <FolderTree tree={tree} servers={servers ?? []} selected={selected} onSelect={select} />
-          <ServerSummary servers={servers} selected={selected} onSelect={select} />
+          <WorkspaceList workspaces={workspaces} selected={selectedId} onSelect={select} />
+          <NewWorkspace onMade={made} />
         </div>
         {selected ? (
-          <FolderPanel
-            key={selected}
-            path={selected}
-            servers={servers}
-            startReason={connection ? START_REASON[connection.connection] : undefined}
+          <WorkspacePanel
+            key={selected.id}
+            workspace={selected}
             onChange={refresh}
-            changes={changes}
-            repository={isRepository(tree, selected)}
-            pollMs={pollMs}
+            onDeleted={() => deleted(selected)}
           />
         ) : (
-          <HomePanel changes={changes} />
+          <section className="panel">{shown}</section>
         )}
       </div>
     </>
+  );
+}
+
+// Each workspace, selecting it, with its dot and, while it is not ready, its state.
+function WorkspaceList({
+  workspaces,
+  selected,
+  onSelect,
+}: {
+  workspaces: Workspace[] | null;
+  selected: number | null;
+  onSelect: (id: number) => void;
+}) {
+  return (
+    <section aria-label={m.workspacesTitle}>
+      <h2>{m.workspacesTitle}</h2>
+      {workspaces?.length === 0 && <p>{m.workspacesEmpty}</p>}
+      {workspaces && workspaces.length > 0 && (
+        <ul className="workspaces">
+          {workspaces.map((workspace) => (
+            <WorkspaceEntry
+              key={workspace.id}
+              workspace={workspace}
+              current={workspace.id === selected}
+              onSelect={onSelect}
+            />
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}
+
+function WorkspaceEntry({
+  workspace,
+  current,
+  onSelect,
+}: {
+  workspace: Workspace;
+  current: boolean;
+  onSelect: (id: number) => void;
+}) {
+  const id = useId();
+  const dot = dotFor(workspace);
+  return (
+    <li>
+      <button
+        type="button"
+        className="name"
+        aria-current={current ? "true" : undefined}
+        aria-describedby={dot ? id : undefined}
+        onClick={() => onSelect(workspace.id)}
+      >
+        {workspace.name}
+      </button>
+      {dot && <StatusDot kind={dot} id={id} />}
+      {workspace.state !== "ready" && (
+        <span className="muted"> {m.workspaceStates[workspace.state] ?? workspace.state}</span>
+      )}
+    </li>
+  );
+}
+
+// Makes a workspace with the name typed, which is the server's to judge.
+function NewWorkspace({ onMade }: { onMade: (workspace: Workspace) => void }) {
+  const [name, setName] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<ApiError | null>(null);
+
+  async function create(event: FormEvent) {
+    event.preventDefault();
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const answer = await api.post<{ workspace: Workspace }>("/api/workspaces", { name });
+      setName("");
+      onMade(answer.workspace);
+    } catch (e) {
+      setError(asApiError(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <section aria-label={m.newWorkspace}>
+      <h2>{m.newWorkspace}</h2>
+      <form noValidate onSubmit={create}>
+        <label>
+          {m.newWorkspaceName}
+          <input type="text" name="name" value={name} onChange={(e) => setName(e.target.value)} />
+        </label>
+        <div className="actions">
+          <button type="submit" className="primary" disabled={busy}>
+            {busy ? m.creating : m.create}
+          </button>
+        </div>
+        <ProblemView error={error} labels={{ name: m.newWorkspaceName }} />
+      </form>
+    </section>
+  );
+}
+
+function PanelSection({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <section className="panel-section" aria-label={title}>
+      <h3>{title}</h3>
+      {children}
+    </section>
+  );
+}
+
+function StartServer({ workspace, onStarted }: { workspace: number; onStarted: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<ApiError | null>(null);
+
+  async function start() {
+    setBusy(true);
+    setError(null);
+    try {
+      await api.post("/api/servers", { workspace });
+    } catch (e) {
+      setError(asApiError(e));
+    } finally {
+      setBusy(false);
+    }
+    onStarted();
+  }
+
+  return (
+    <>
+      <button type="button" className="primary" disabled={busy} onClick={start}>
+        {m.start}
+      </button>
+      <ProblemView error={error} />
+    </>
+  );
+}
+
+// Asks before deleting a workspace, which takes everything in it and its server.
+function DeleteWorkspaceDialog({
+  workspace,
+  onDeleted,
+  onFailed,
+  onCancel,
+}: {
+  workspace: Workspace;
+  onDeleted: () => void;
+  onFailed: () => void;
+  onCancel: () => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<ApiError | null>(null);
+
+  async function remove(event: FormEvent) {
+    event.preventDefault();
+    setBusy(true);
+    setError(null);
+    try {
+      await api.delete(`/api/workspaces/${workspace.id}`);
+      onDeleted();
+    } catch (e) {
+      setError(asApiError(e));
+      setBusy(false);
+      onFailed();
+    }
+  }
+
+  return (
+    <div role="dialog" aria-label={m.deleteWorkspaceTitle(workspace.name)} className="dialog">
+      <h3>{m.deleteWorkspaceTitle(workspace.name)}</h3>
+      <form noValidate onSubmit={remove}>
+        <p>{m.deleteWorkspaceBody}</p>
+        <div className="actions">
+          <button type="submit" className="danger" disabled={busy}>
+            {busy ? m.deleting : m.deleteWorkspaceConfirm}
+          </button>
+          <button type="button" disabled={busy} onClick={onCancel}>
+            {m.cancel}
+          </button>
+        </div>
+      </form>
+      <ProblemView error={error} />
+    </div>
+  );
+}
+
+// The selected workspace: what its state allows, and, once it is ready, its
+// Claude server or the offer to start one. Delete workspace is offered for a
+// workspace that is ready or failed.
+function WorkspacePanel({
+  workspace,
+  onChange,
+  onDeleted,
+}: {
+  workspace: Workspace;
+  onChange: () => void;
+  onDeleted: () => void;
+}) {
+  const [deleting, setDeleting] = useState(false);
+  const deletable = workspace.state === "ready" || workspace.state === "failed";
+  const { server, server_error: unread } = workspace;
+  return (
+    <section aria-label={workspace.name} className="panel">
+      <h2>{workspace.name}</h2>
+      {deletable && (
+        <>
+          {/* biome-ignore lint/a11y/useSemanticElements: a row of buttons outside any form, not a form's fields, which a fieldset is for */}
+          <div role="group" aria-label={m.workspaceActions} className="actions">
+            <button type="button" className="secondary-danger" onClick={() => setDeleting(true)}>
+              {m.deleteWorkspace}
+            </button>
+          </div>
+          {deleting && (
+            <DeleteWorkspaceDialog
+              workspace={workspace}
+              onDeleted={onDeleted}
+              onFailed={onChange}
+              onCancel={() => setDeleting(false)}
+            />
+          )}
+        </>
+      )}
+      {workspace.state === "creating" && <p>{m.workspaceCreating}</p>}
+      {workspace.state === "deleting" && <p>{m.workspaceDeleting}</p>}
+      {workspace.state === "failed" && (
+        <>
+          <p>{m.workspaceFailed}</p>
+          <pre className="workspace-error">{workspace.error}</pre>
+        </>
+      )}
+      {workspace.state === "ready" && (
+        <PanelSection title={m.serverTitle}>
+          {unread && <ProblemView error={new ApiError(0, unread.code, unread.title)} />}
+          {server && <ServerCard workspace={workspace} server={server} onChange={onChange} />}
+          {!server && !unread && (
+            <>
+              <p>{m.noServer}</p>
+              <StartServer workspace={workspace.id} onStarted={onChange} />
+            </>
+          )}
+        </PanelSection>
+      )}
+    </section>
   );
 }

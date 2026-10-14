@@ -3,13 +3,16 @@ import { type FormEvent, useState } from "react";
 import { type ApiError, api } from "./api";
 import { m } from "./messages";
 import { asApiError, ProblemView } from "./ProblemView";
-import type { StartBlocked } from "./Servers";
+
+// Why nothing can start Claude, said in place of each control that would: Start
+// where there is no server, and a server's own actions that start it again.
+export type StartBlocked = Record<"start" | "resume" | "startAgain", string>;
 
 export const CONNECTION_STATES = ["not_connected", "connected", "expiring", "expired"] as const;
 export type ConnectionState = (typeof CONNECTION_STATES)[number];
 
 // Why no server can start while the account is in each state; null where one
-// can. rc-helper starts one with an expired sign-in, and the account's section
+// can. A server starts with an expired sign-in, and the account's section
 // already warns about it.
 export const START_REASON: Record<ConnectionState, StartBlocked | null> = {
   not_connected: m.notConnected,

@@ -85,24 +85,28 @@ function GitHubToken() {
     <section aria-labelledby={heading}>
       <h2 id={heading}>{m.settingsGithubTitle}</h2>
       {stored !== null && <p>{stored ? m.githubTokenStored : m.githubTokenNotStored}</p>}
-      <form noValidate onSubmit={save}>
-        <div>
-          <label>
-            {m.githubTokenLabel}
-            <input
-              type="password"
-              name="token"
-              autoComplete="new-password"
-              value={token}
-              onChange={(e) => setToken(e.target.value)}
-            />
-          </label>
-          <p className="muted">{m.githubTokenHelp}</p>
-        </div>
-        <button type="submit" className="primary">
-          {m.save}
-        </button>
-      </form>
+      {/* Offered only once the server says whether a token is stored: while it cannot
+      store one, the part shows its reason alone. */}
+      {stored !== null && (
+        <form noValidate onSubmit={save}>
+          <div>
+            <label>
+              {m.githubTokenLabel}
+              <input
+                type="password"
+                name="token"
+                autoComplete="new-password"
+                value={token}
+                onChange={(e) => setToken(e.target.value)}
+              />
+            </label>
+            <p className="muted">{m.githubTokenHelp}</p>
+          </div>
+          <button type="submit" className="primary">
+            {m.save}
+          </button>
+        </form>
+      )}
       {stored && (
         <div className="actions">
           <button

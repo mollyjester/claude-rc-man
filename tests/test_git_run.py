@@ -432,7 +432,7 @@ def test_what_is_kept_of_gits_message_is_bounded_however_much_it_says():
 
 
 # SIGTERM the moment git has started, before the call holds it, in a process
-# of one thread, as rc-helper is: a pytest process has more (the tests' GitHub
+# of one thread, as the module requires: a pytest process has more (the tests' GitHub
 # serves from one), and the kernel gives a signal one thread blocks to another.
 SIGTERM_AS_GIT_STARTS = """
 import json, os, signal, subprocess, sys, time
@@ -449,7 +449,7 @@ def terminated(signum, frame):
 
 def popen(*args, **kwargs):
     started.append(subprocess.Popen(*args, **kwargs))
-    os.kill(os.getpid(), signal.SIGTERM)  # as rc-helper's caller would, just then
+    os.kill(os.getpid(), signal.SIGTERM)  # as whatever started the process would, just then
     return started[-1]
 
 signal.signal(signal.SIGTERM, terminated)
@@ -486,7 +486,7 @@ def test_a_sigterm_as_git_starts_still_ends_it(tmp_path, mask, left_running):
     )
     assert proc.returncode == 0, proc.stderr
     out = json.loads(proc.stdout)
-    assert out["threads"] == 1  # one thread, as rc-helper is
+    assert out["threads"] == 1  # one thread, as the module requires
     assert out["raised"]  # positive control: the SIGTERM reached the call
     assert out["running"] is left_running, "git was left running" if out["running"] else out
 

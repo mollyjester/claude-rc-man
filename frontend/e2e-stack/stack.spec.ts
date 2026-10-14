@@ -1,11 +1,17 @@
-// rcman as installed, signed in to through Caddy and oauth2-proxy, with each
-// person a Linux account of their own. Runs in order against one installation.
+// rcman as installed, signed in to through Caddy and oauth2-proxy, with the
+// people tests/container/stack.py adds and no workspace made beforehand. The
+// stack signs in the fake claude of every workspace whose name begins with
+// "signed-" as it is made, and of no other. Runs in order against one
+// installation.
 import { expect, type Page, test } from "@playwright/test";
 
-import { openAdminPage, panel, selectInProjects, summary, tree } from "../e2e/nav";
+import { makeWorkspace, openAdminPage, workspaces } from "../e2e/nav";
 import { m } from "../src/messages";
 
-const GOOD_CODE = "GOOD-CODE";
+const ALICE = "alice@example.com"; // an administrator
+const BOB = "bob@example.com";
+const CAROL = "carol@example.com";
+const DAVE = "dave@example.com"; // added by the People page
 
 async function signIn(page: Page, email: string) {
   await page.goto("/");
@@ -14,136 +20,88 @@ async function signIn(page: Page, email: string) {
   await page.getByRole("button", { name: "Sign in" }).click();
 }
 
-async function connectClaude(page: Page) {
-  await page.getByRole("button", { name: m.connect }).click();
-  await page.getByRole("button", { name: m.connectGo }).click();
-  await page.getByLabel(m.connectCode).fill(GOOD_CODE);
-  await page.getByRole("button", { name: m.connectSubmit }).click();
-  await expect(page.getByText(m.claudeConnectedAs("fake-user@example.com"))).toBeVisible();
+// The id of one of the signed-in person's workspaces, by name.
+async function idOf(page: Page, name: string): Promise<number> {
+  return page.evaluate(async (wanted) => {
+    const listed = (await (await fetch("/api/workspaces")).json()).workspaces;
+    return listed.find((w: { name: string }) => w.name === wanted).id;
+  }, name);
 }
 
-test("a person signs in, connects Claude, and runs a server", async ({ page }) => {
-  await signIn(page, "alice@example.com");
-  await expect(page.getByText(m.signedInAs("alice@example.com"))).toBeVisible();
-  await expect(page.getByText(m.claudeNotConnected)).toBeVisible();
-  await connectClaude(page);
+test("a person signs in, makes a workspace, and runs its server", async ({ page }) => {
+  await signIn(page, ALICE);
+  await expect(page.getByText(m.signedInAs(ALICE))).toBeVisible();
+  await expect(workspaces(page).getByText(m.workspacesEmpty)).toBeVisible();
 
-  await selectInProjects(page, "alice-demo");
-  const opened = panel(page, "projects/alice-demo");
-  await opened.getByRole("button", { name: m.start }).click();
-  const card = opened.getByRole("article", { name: "projects/alice-demo" });
+  const alpha = await makeWorkspace(page, "signed-alpha");
+  await alpha.getByRole("button", { name: m.start }).click();
+  const card = alpha.getByRole("article", { name: "signed-alpha" });
   await card.getByRole("button", { name: m.trustYes }).click();
-  await expect(card.getByText(m.states.ready, { exact: true })).toBeVisible();
-  await expect(card.getByText(/^alice-/)).toBeVisible();
+  const live = card
+    .getByText(m.states.ready, { exact: true })
+    .or(card.getByText(m.states.connected, { exact: true }));
+  await expect(live).toBeVisible();
+  await expect(card.getByText(/^signed-alpha-/)).toBeVisible();
   await card.getByRole("button", { name: m.stop }).click();
   await expect(card.getByText(m.states.stopped, { exact: true })).toBeVisible();
   await card.getByRole("button", { name: m.resume }).click();
-  await expect(card.getByText(m.states.ready, { exact: true })).toBeVisible();
-  await card.getByRole("button", { name: m.stop }).click();
-  await expect(card.getByText(m.states.stopped, { exact: true })).toBeVisible();
-  await card.getByRole("button", { name: m.forget }).click();
-  await expect(card).toHaveCount(0);
-
-  // The folder is trusted now, so starting it again goes straight to ready.
-  await opened.getByRole("button", { name: m.start }).click();
-  await expect(card.getByText(m.states.ready, { exact: true })).toBeVisible();
+  await expect(live).toBeVisible();
   await card.getByRole("button", { name: m.stop }).click();
   await expect(card.getByText(m.states.stopped, { exact: true })).toBeVisible();
 });
 
-test("another person sees only their own home and servers", async ({ page }) => {
-  await signIn(page, "bob@example.com");
-  await expect(page.getByText(m.signedInAs("bob@example.com"))).toBeVisible();
-  await selectInProjects(page, "bob-demo");
-  const opened = panel(page, "projects/bob-demo");
-  await expect(opened.getByText(m.notConnected.start)).toBeVisible();
-  await expect(opened.getByRole("button", { name: m.start })).toHaveCount(0);
-  await expect(page.getByText("alice-demo")).toHaveCount(0);
-  await expect(summary(page).getByText(m.yourServersEmpty)).toBeVisible();
-  await expect(page.getByRole("button", { name: m.navAdmin })).toHaveCount(0);
-  await expect(page.getByRole("link", { name: m.navUsers })).toHaveCount(0);
-
-  // Even asked directly, from bob's own signed-in page, rcman acts only in bob's home.
-  const refused = await page.evaluate(async () => {
-    const r = await fetch("/api/servers/stop", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ path: "projects/alice-demo" }),
-    });
-    return [r.status, (await r.json()).code];
-  });
-  expect(refused).toEqual([404, "unknown_server"]); // bob's home has no such server
+test("a workspace whose Claude is not signed in starts no server, and says why", async ({
+  page,
+}) => {
+  await signIn(page, ALICE);
+  const plain = await makeWorkspace(page, "plain");
+  await plain.getByRole("button", { name: m.start }).click();
+  await expect(plain.getByRole("alert")).toContainText(
+    "Claude is not signed in in this workspace.",
+  );
+  await expect(plain.getByRole("article")).toHaveCount(0);
 });
 
-test("administrators see everyone's servers, and act on none of them", async ({
+test("another person sees none of it, and reaching it by its id finds nothing", async ({
   page,
   browser,
 }) => {
-  // bob runs a server, as his own Linux account.
-  await signIn(page, "bob@example.com");
-  await expect(page.getByText(m.signedInAs("bob@example.com"))).toBeVisible();
+  const alice = await browser.newPage();
+  await signIn(alice, ALICE);
+  await expect(alice.getByText(m.signedInAs(ALICE))).toBeVisible();
+  const theirs = await idOf(alice, "signed-alpha");
+  await alice.close();
+
+  await signIn(page, BOB);
+  await expect(page.getByText(m.signedInAs(BOB))).toBeVisible();
+  await expect(workspaces(page).getByText(m.workspacesEmpty)).toBeVisible();
   await expect(page.getByRole("button", { name: m.navAdmin })).toHaveCount(0);
-  await connectClaude(page);
-  await selectInProjects(page, "bob-demo");
-  const start = panel(page, "projects/bob-demo").getByRole("button", { name: m.start });
-  await expect(start).toBeVisible(); // now that his account is connected
-  await start.click();
-  const card = page.getByRole("article", { name: "projects/bob-demo" });
-  await card.getByRole("button", { name: m.trustYes }).click();
-  await expect(card.getByText(m.states.ready, { exact: true })).toBeVisible();
+  await page.goto(`/?workspace=${theirs}`);
+  await expect(page.getByText(m.workspaceUnknown)).toBeVisible();
+  await expect(page.getByText("signed-alpha")).toHaveCount(0);
 
-  // alice, an administrator, sees it: rcman listed it through sudo -u bob.
-  const admin = await browser.newPage();
-  await signIn(admin, "alice@example.com");
-  await openAdminPage(admin, m.navEveryone);
-  const bob = admin.getByRole("region", { name: m.everyonePerson("bob", "bob@example.com") });
-  await expect(
-    bob.getByRole("row", { name: /projects\/bob-demo/ }).getByText(m.states.ready, { exact: true }),
-  ).toBeVisible();
-  const alice = admin.getByRole("region", { name: m.everyonePerson("alice", "alice@example.com") });
-  await expect(alice.getByRole("row", { name: /projects\/alice-demo/ })).toBeVisible();
-  await expect(admin.getByRole("main").getByRole("button")).toHaveCount(0);
-  await admin.close();
-
-  await card.getByRole("button", { name: m.stop }).click();
-  await expect(card.getByText(m.states.stopped, { exact: true })).toBeVisible();
-});
-
-test("a person makes and deletes a folder in their own home, and nobody else can", async ({
-  page,
-  browser,
-}) => {
-  await signIn(page, "alice@example.com");
-  await expect(page.getByText(m.signedInAs("alice@example.com"))).toBeVisible();
-  await selectInProjects(page, "alice-demo"); // opens projects
-  await tree(page).getByRole("button", { name: "projects", exact: true }).click();
-  const projects = panel(page, "projects");
-  await projects.getByRole("button", { name: m.newFolder }).click();
-  await projects.getByLabel(m.newFolderName).fill("alice-made");
-  await projects.getByRole("button", { name: m.create }).click();
-  const made = panel(page, "projects/alice-made");
-  await expect(made).toBeVisible();
-
-  // bob, signed in on his own, cannot reach alice's folders through the API either.
-  const bob = await browser.newPage();
-  await signIn(bob, "bob@example.com");
-  await expect(bob.getByText(m.signedInAs("bob@example.com"))).toBeVisible();
-  const refused = await bob.evaluate(async () => {
-    const r = await fetch(
-      `/api/folders?path=${encodeURIComponent("../alice/projects/alice-demo")}`,
-      { method: "DELETE" },
-    );
-    return [r.status, (await r.json()).code];
+  // Even asked directly, from bob's own signed-in page, rcman finds no such workspace.
+  const answers = await page.evaluate(async (id) => {
+    const post = async (path: string) => {
+      const r = await fetch(path, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ workspace: id }),
+      });
+      return [r.status, (await r.json()).code];
+    };
+    const removed = await fetch(`/api/workspaces/${id}`, { method: "DELETE" });
+    return {
+      start: await post("/api/servers"),
+      stop: await post("/api/servers/stop"),
+      remove: [removed.status, (await removed.json()).code],
+    };
+  }, theirs);
+  expect(answers).toEqual({
+    start: [404, "workspace_not_found"],
+    stop: [404, "workspace_not_found"],
+    remove: [404, "workspace_not_found"],
   });
-  expect(refused).toEqual([400, "path_outside_home"]);
-  await bob.close();
-
-  await made.getByRole("button", { name: m.deleteFolder }).click();
-  const dialog = page.getByRole("dialog", { name: m.deleteFolderTitle("projects/alice-made") });
-  await dialog.getByRole("button", { name: m.deleteFolderConfirm }).click();
-  await expect(projects).toBeVisible();
-  await expect(tree(page).getByRole("button", { name: "alice-made", exact: true })).toHaveCount(0);
-  await expect(tree(page).getByRole("button", { name: "alice-demo", exact: true })).toBeVisible(); // bob deleted nothing
 });
 
 test("an address that is not on the list gets nowhere", async ({ page }) => {
@@ -156,49 +114,83 @@ test("an address that is not on the list gets nowhere", async ({ page }) => {
   expect(redirected).toBe("opaqueredirect");
 });
 
+test("administrators see everyone's workspaces, and act on none of them", async ({
+  page,
+  browser,
+}) => {
+  // carol has a workspace of her own, which the People page later removes with her.
+  const carol = await browser.newPage();
+  await signIn(carol, CAROL);
+  await makeWorkspace(carol, "carol-box");
+  await carol.close();
+
+  await signIn(page, ALICE);
+  await openAdminPage(page, m.navEveryone);
+  await expect(page.getByRole("heading", { name: m.everyoneTitle })).toBeVisible();
+  const alice = page.getByRole("region", { name: ALICE });
+  await expect(alice.getByRole("row", { name: /signed-alpha/ })).toContainText(m.states.stopped);
+  await expect(alice.getByRole("row", { name: /plain/ })).toContainText(m.everyoneNoServer);
+  await expect(
+    page.getByRole("region", { name: CAROL }).getByRole("row", { name: /carol-box/ }),
+  ).toBeVisible();
+  await expect(page.getByRole("region", { name: BOB }).getByText(m.everyoneNone)).toBeVisible();
+  await expect(page.getByRole("main").getByRole("button")).toHaveCount(0);
+});
+
+test("the People page adds a person and removes another, with her workspaces", async ({
+  page,
+  browser,
+}) => {
+  await signIn(page, ALICE);
+  await openAdminPage(page, m.navUsers);
+  await page.getByLabel(m.usersEmail).fill(DAVE);
+  await page.getByRole("button", { name: m.usersAdd }).click();
+  await expect(page.getByText(m.usersAdded(DAVE))).toBeVisible();
+  await expect(page.getByRole("row", { name: new RegExp(DAVE) })).toBeVisible();
+
+  // dave is let in at once
+  const dave = await browser.newPage();
+  await signIn(dave, DAVE);
+  await expect(dave.getByText(m.signedInAs(DAVE))).toBeVisible();
+  await dave.close();
+
+  const carol = page.getByRole("row", { name: new RegExp(CAROL) });
+  await expect(carol.getByRole("cell", { name: "1", exact: true })).toBeVisible();
+  await carol.getByRole("button", { name: m.usersRemove }).click();
+  const dialog = page.getByRole("dialog", { name: m.usersRemoveTitle(CAROL) });
+  await expect(dialog.getByText(m.usersRemoveBody)).toBeVisible();
+  await dialog.getByRole("button", { name: m.usersRemoveConfirm }).click();
+  await expect(page.getByText(m.usersRemoved(CAROL))).toBeVisible();
+  await expect(carol).toHaveCount(0);
+
+  await openAdminPage(page, m.navEveryone);
+  await expect(page.getByRole("region", { name: ALICE })).toBeVisible(); // positive control
+  await expect(page.getByRole("region", { name: CAROL })).toHaveCount(0);
+  await expect(page.getByText("carol-box")).toHaveCount(0);
+});
+
 test("the audit trail records what people did", async ({ page }) => {
-  await signIn(page, "alice@example.com");
+  await signIn(page, ALICE);
   await openAdminPage(page, m.navAudit);
   for (const action of [
-    "claude.login",
-    "claude.connect",
+    "workspace.create",
     "server.start",
     "server.confirm",
     "server.stop",
     "server.resume",
-    "server.forget",
-    "folder.create",
-    "folder.delete",
+    "person.add",
+    "person.delete",
   ]) {
     await expect(page.getByRole("cell", { name: action, exact: true }).first()).toBeVisible();
   }
   // bob's refused stop: the whole row, as rcman recorded it
   let refusedStop = page.getByRole("row");
-  for (const cell of [
-    "bob@example.com (bob)",
-    "server.stop",
-    "projects/alice-demo",
-    "unknown_server",
-  ])
+  for (const cell of [BOB, "server.stop", "workspace_not_found"])
     refusedStop = refusedStop.filter({ has: page.getByRole("cell", { name: cell, exact: true }) });
   await expect(refusedStop).toHaveCount(1);
-});
-
-test("people are removed, with and without their home", async ({ page }) => {
-  await signIn(page, "alice@example.com");
-  await openAdminPage(page, m.navUsers);
-  for (const [linux, choice] of [
-    ["carol", m.usersKeepHome],
-    ["dave", m.usersDeleteHome],
-  ]) {
-    await page
-      .getByRole("row", { name: new RegExp(linux) })
-      .getByRole("button", { name: m.usersRemove })
-      .click();
-    const dialog = page.getByRole("dialog", { name: m.usersRemoveTitle(linux) });
-    await dialog.getByLabel(choice).check();
-    await dialog.getByRole("button", { name: m.usersRemoveConfirm }).click();
-    await expect(page.getByText(m.usersRemoved(linux))).toBeVisible();
-    await expect(page.getByRole("row", { name: new RegExp(linux) })).toHaveCount(0);
-  }
+  // carol's removal, by her address
+  let removal = page.getByRole("row");
+  for (const cell of [ALICE, "person.delete", CAROL])
+    removal = removal.filter({ has: page.getByRole("cell", { name: cell, exact: true }) });
+  await expect(removal).toHaveCount(1);
 });

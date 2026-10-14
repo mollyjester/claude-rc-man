@@ -1,7 +1,7 @@
 # Audit trail
 
-rcman records every request that changes something: who made it, as which
-Linux user, what they did, to what, and whether it worked. Requests that only
+rcman records every request that changes something: who made it, what they
+did, to what, and whether it worked. Requests that only
 read are not recorded. Administrators read the trail on the **Audit trail**
 page in rcman, under **Admin** in the navigation, newest first.
 
@@ -18,30 +18,34 @@ changes nothing: a page's report of a failure rcman could not see, written to th
 
 | Action | Recorded when someone | Target |
 |---|---|---|
-| `server.start` | starts a server | the folder |
-| `server.resume` | resumes a server that stopped | the folder |
-| `server.stop` | stops a server | the folder |
-| `server.forget` | removes a stopped server from their list | the folder |
-| `server.confirm` | answers a server's folder-trust question | the folder |
-| `folder.create` | creates a folder | the new folder, as asked |
-| `folder.delete` | deletes a folder, stopping and forgetting every server in it or below it | the folder |
-| `git.stage` | stages files in a repository (see [Git](git.md)) | the repository's folder |
+| `workspace.create` | makes a workspace (see [Workspaces](workspaces.md)) | the workspace's name |
+| `workspace.delete` | deletes a workspace, with everything in it and its server | the workspace's name |
+| `server.start` | starts a workspace's server | the workspace's name |
+| `server.resume` | resumes a server that stopped | the workspace's name |
+| `server.stop` | stops a server | the workspace's name |
+| `server.forget` | removes a stopped server from their list | the workspace's name |
+| `server.confirm` | answers a server's folder-trust question | the workspace's name |
+| `settings.update` | changes their settings (see [Settings](settings.md)) | the settings they sent, as JSON; none when they were refused |
+| `person.add` | adds a person (administrators; see [Adding and removing people](users.md)) | the person's address |
+| `person.delete` | removes a person, with all their workspaces (administrators) | the person's address |
+| `git.stage` | stages files in a repository | the repository's folder |
 | `git.unstage` | unstages files | the repository's folder |
 | `git.commit` | commits what is staged | the repository's folder — the message is never recorded |
 | `git.switch` | switches to a branch | the repository's folder |
 | `git.branch` | makes a branch and switches to it | the repository's folder |
-| `git.fetch` | refreshes the remote branches with **Refresh branches** in the branch bar | the repository's folder |
-| `git.push` | pushes the current branch with **Push** in the branch bar | the repository's folder |
-| `git.commit_push` | commits what is staged and pushes it with **Commit & Push**, in the menu beside **Commit** | the repository's folder — the message is never recorded |
+| `git.fetch` | refreshes the remote branches | the repository's folder |
+| `git.push` | pushes the current branch | the repository's folder |
+| `git.commit_push` | commits what is staged and pushes it | the repository's folder — the message is never recorded |
 | `git.clone` | clones a repository from GitHub | the repository's address, as given — an address with a user or a token in it is refused, and so recorded with none |
-| `github.token` | adds or replaces their GitHub token (see [Git](git.md#github-token)) | none — the token is never recorded |
+| `github.token` | adds or replaces their GitHub token | none — the token is never recorded |
 | `github.forget` | removes their GitHub token | none |
-| `settings.update` | changes their settings (see [Settings](settings.md)) | the settings they sent, as JSON; none when they were refused |
 | `claude.login` | starts connecting their Claude account | the Claude account's email address |
 | `claude.connect` | finishes connecting with Claude's code | none — the code is never recorded |
 | `claude.upgrade` | rolls out a Claude Code version (administrators) | the version |
-| `user.add` | adds or repairs a person (administrators) | the Linux user |
-| `user.delete` | removes a person (administrators) | the Linux user |
+
+git, the GitHub token, signing in to Claude and rolling out a Claude Code
+version are not available in workspaces yet: rcman answers each of those
+requests with `not_available_yet`, and records it with that result.
 
 The result is one of these, or the code of the error the request failed with —
 a refused request is recorded too:
@@ -53,7 +57,7 @@ a refused request is recorded too:
 | `committed_not_pushed` | **Commit & Push** made the commit, and the push failed |
 
 Administrators are warned about servers on an unrecognised screen, as described
-in [Servers](servers.md#for-administrators).
+in [Workspaces](workspaces.md#for-administrators).
 
 ## How long events are kept
 

@@ -5,25 +5,29 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import datetime as dt
+import os
+from pathlib import Path
 
 from fastapi import FastAPI
 
-from rcman import audit, db, journal, problems, spa, unrecognised
-from rcman.helpers_client import AdminRunner, HelperRunner, sudo_admin, sudo_helper
+from rcman import audit, db, journal, people, problems, spa, unrecognised
 from rcman.routers import (
     attention,
     audit_log,
     claude,
     client_errors,
     docs,
-    folders,
     git,
     github,
     me,
     servers,
-    users,
+    workspaces,
 )
+from rcman.routers import people as people_router
+from rcman.runtime import PodmanConfig, PodmanRuntime, Runtime
 from rcman.settings import Settings
+from rcman.workspaces import Workspaces
+from rcman.workspaces import log as workspaces_log
 
 RETENTION_INTERVAL_SECONDS = 24 * 60 * 60
 
@@ -41,19 +45,46 @@ def _retention(settings: Settings) -> None:
         con.close()
 
 
-def create_app(
-    settings: Settings | None = None,
-    helper: HelperRunner | None = None,
-    admin: AdminRunner | None = None,
-) -> FastAPI:
+def podman_socket(settings: Settings) -> Path:
+    """Podman's socket: the setting's, or rcman's own user manager's."""
+    if settings.podman_socket is not None:
+        return settings.podman_socket
+    runtime_dir = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
+    return Path(runtime_dir) / "podman" / "podman.sock"
+
+
+def podman_runtime(settings: Settings) -> PodmanRuntime:
+    return PodmanRuntime(
+        PodmanConfig(
+            socket=podman_socket(settings),
+            image=settings.workspace_image,
+            tools_dir=settings.tools_dir,
+            claude_store=settings.claude_store,
+        )
+    )
+
+
+def _start(settings: Settings) -> None:
+    """Migrate the database, write the allowed list from it, and apply audit retention."""
+    db.migrate(settings.database)
+    con = db.connect(settings.database)
+    try:
+        people.write_allowed(con, settings.allowed_emails)
+    finally:
+        con.close()
+    _retention(settings)
+
+
+def create_app(settings: Settings | None = None, runtime: Runtime | None = None) -> FastAPI:
     settings = settings or Settings()
-    for log in (audit.log, client_errors.log, unrecognised.log):
+    for log in (audit.log, client_errors.log, unrecognised.log, workspaces_log):
         journal.install(log)
+    service = Workspaces(settings, runtime or podman_runtime(settings))
 
     @contextlib.asynccontextmanager
     async def lifespan(app: FastAPI):
-        db.migrate(settings.database)
-        _retention(settings)
+        _start(settings)
+        service.start_background()  # restore: HTTP answers meanwhile
 
         async def daily():
             while True:
@@ -65,6 +96,7 @@ def create_app(
             yield
         finally:
             task.cancel()
+            await asyncio.to_thread(service.close)
 
     app = FastAPI(
         title="rcman",
@@ -75,10 +107,8 @@ def create_app(
         swagger_ui_oauth2_redirect_url=None,
     )
     app.state.settings = settings
-    app.state.helper = unrecognised.watched(
-        helper or sudo_helper(settings.helpers_dir), unrecognised.Watch(settings)
-    )
-    app.state.admin = admin or sudo_admin(settings.helpers_dir)
+    app.state.workspaces = service
+    app.state.watch = unrecognised.Watch()
     problems.install(app)
 
     @app.get("/api/health", tags=["health"])
@@ -87,12 +117,12 @@ def create_app(
 
     for module in (
         me,
-        folders,
+        workspaces,
+        servers,
         git,
         github,
-        servers,
         claude,
-        users,
+        people_router,
         audit_log,
         attention,
         docs,

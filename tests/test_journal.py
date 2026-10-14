@@ -49,19 +49,19 @@ def test_install_leaves_other_loggers_alone(planted):
     assert logging.getLogger().handlers == root
 
 
-def test_the_app_sends_each_of_its_journal_loggers_to_stderr(settings, admin_runner):
-    from rcman import audit, unrecognised
+def test_the_app_sends_each_of_its_journal_loggers_to_stderr(settings, runtime):
+    from rcman import audit, unrecognised, workspaces
     from rcman.main import create_app
     from rcman.routers import client_errors
 
-    logs = (audit.log, client_errors.log, unrecognised.log)
+    logs = (audit.log, client_errors.log, unrecognised.log, workspaces.log)
     # An app made earlier in this process installed them with the standard error of
     # its time; they are taken off here, so that this app installs them afresh.
     earlier = {log: list(log.handlers) for log in logs}
     for log in logs:
         log.handlers.clear()
     try:
-        create_app(settings, helper=lambda *a, **k: (0, {}), admin=admin_runner)
+        create_app(settings, runtime=runtime)
         for log in logs:
             assert len(log.handlers) == 1, log.name
             assert len(bare_stderr_handlers(log)) == 1, log.name

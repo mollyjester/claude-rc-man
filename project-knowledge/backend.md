@@ -3,7 +3,9 @@
 A FastAPI application in `backend/rcman/`, built by `create_app` in
 `backend/rcman/main.py` and run with `uvicorn --factory rcman.main:create_app`.
 The project is a Python package (`pyproject.toml`) holding `rcman` and
-`helpers`, so `uv sync` makes both importable from the environment. Its settings come
+`helpers` — what the installer and the fake `claude` share with it, Python's
+standard library only — so `uv sync` makes both importable from the
+environment, and installs `rcman-admin` (see [people.md](people.md)). Its settings come
 from `RCMAN_*` environment variables — see `backend/rcman/settings.py` and
 [the configuration guide](../docs/configuration.md). The HTTP API reference is
 the OpenAPI description it serves at `/api/openapi.json`, browsable at
@@ -13,21 +15,24 @@ the OpenAPI description it serves at `/api/openapi.json`, browsable at
 
 | Module | What it is |
 |---|---|
-| `main.py` | `create_app(settings, helper, admin)`: the app, its lifespan (migrations, audit retention) and its routers |
+| `main.py` | `create_app(settings, runtime)`: the app, its lifespan (migrations, the allowed list, audit retention, restoring workspaces) and its routers |
 | `settings.py` | The settings model |
-| `db.py` | SQLite connections and the migration list |
+| `db.py` | SQLite connections and the schema, one migration; `migrate` refuses a database newer than the code |
 | `identity.py` | Who is asking, and whether they may |
+| `people.py`, `admin.py` | The people who may use rcman, the allowed list, and `rcman-admin` — see [people.md](people.md) |
+| `workspaces.py` | Workspaces made, deleted and brought back, and their servers' verbs — see [runtime.md](runtime.md) |
+| `runtime.py`, `channel.py`, `claude_server.py` | Where workspaces run, the shell commands go through, and a workspace's server — see [runtime.md](runtime.md) |
 | `problems.py` | RFC 9457 problem details for every error |
 | `audit.py` | The audit trail: recording, coverage, retention |
 | `journal.py` | `install(log)`: sends a logger's events to standard error, one bare line each, which systemd sends to the journal |
-| `unrecognised.py` | The watch on every rc-helper answer that writes output rcman does not recognise to the journal (see [Output rcman does not recognise](#output-rcman-does-not-recognise)) |
-| `helpers_client.py` | Calling `rc-helper` and `rc-admin`, and mapping their errors to HTTP statuses |
-| `everyone.py` | Everyone's servers, for administrators: one `rc-helper list` per person, side by side |
+| `unrecognised.py` | The watch on every server rcman reads, which writes output rcman does not recognise to the journal (see [Output rcman does not recognise](#output-rcman-does-not-recognise)) |
+| `everyone.py` | Everyone's workspaces and servers, for administrators |
 | `spa.py` | Serving the built frontend: its files, and `index.html` for every other path not under `/api`; installed after every router |
 | `routes.py` | The app's routes as FastAPI resolves them after including routers, and which of them are for administrators |
-| `routers/` | One module per area: `me`, `folders`, `git`, `github`, `servers`, `claude`, `users`, `audit_log`, `attention`, `docs`, `client_errors` |
-| `routers/git.py` | The git repositories in the person's home, under `/api/git`: status, branches, stage, unstage, commit, switch, a new branch, fetch, push and clone, each one rc-helper git verb, and Commit & Push (see [Git](#git)) |
-| `routers/github.py` | The person's GitHub token, under `/api/github`: whether one is stored, storing one, and removing it (see [GitHub token](#github-token)) |
+| `routers/` | One module per area: `me`, `workspaces`, `servers`, `git`, `github`, `claude`, `people`, `audit_log`, `attention`, `docs`, `client_errors` |
+| `routers/workspaces.py` | The person's workspaces, under `/api/workspaces`: listing them with their servers, making one, deleting one |
+| `routers/servers.py` | A workspace's server, under `/api/servers`: start, resume, stop, forget, confirm and output, each by the workspace's id; and everyone's, for administrators |
+| `routers/git.py`, `routers/github.py`, `routers/claude.py` | git, the GitHub token, signing in to Claude and Claude Code versions: not available in workspaces yet (see [Not available yet](#not-available-yet)) |
 | `routers/client_errors.py` | A page's reports of failures rcman could not see, `POST /api/client-errors`, written to the journal (see [Errors from the page](#errors-from-the-page)) |
 | `routers/me.py` | Each person's own settings, changed with `PATCH /api/me/settings`, which changes only the settings sent; `prefix_of` and `author_of` are how the rest of the backend reads them |
 
@@ -38,9 +43,9 @@ the OpenAPI description it serves at `/api/openapi.json`, browsable at
   removing any the browser sent. rcman trusts the
   header because, installed, it listens only on a unix socket in a directory
   that only Caddy's group may enter — see
-  [the installer](installer.md#the-socket). The address must be
-  in the users file, which is read on every request, so a removal takes effect
-  at once. The routes that need no identity are `problems.PUBLIC_PATHS`:
+  [the installer](installer.md#the-socket). The address must be an active
+  person's in the people table, which is read on every request, so a removal
+  takes effect at once (see [people.md](people.md)). The routes that need no identity are `problems.PUBLIC_PATHS`:
   `/api/health` and the frontend's files.
 - **Origin.** A `POST`, `PUT`, `PATCH` or `DELETE` must carry an `Origin`
   header equal to `RCMAN_PUBLIC_ORIGIN`.
@@ -49,12 +54,11 @@ the OpenAPI description it serves at `/api/openapi.json`, browsable at
   `tests/test_identity.py` drives each one as someone who is not an
   administrator, with a valid request from `CALLS` in `tests/conftest.py`.
 - **Validation** happens here, in Pydantic models and query parameters; the
-  frontend shows what comes back. Every rule the helpers also apply is a
-  `Rule` (`helpers/rules.py`) taken from the helpers' modules, never restated,
+  frontend shows what comes back. Every rule a value is refused by is a
+  `Rule` in `helpers/rules.py`, which the installer reads too, never restated,
   and a field takes it as `problems.ruled(rule, ...)`: the field publishes and
   validates the rule's anchored pattern and any length it is given, and a
-  value either refuses is refused with the rule's sentence, which is also what
-  the helper itself says. A parameter takes it inside an `Annotated` with its
+  value either refuses is refused with the rule's sentence. A parameter takes it inside an `Annotated` with its
   FastAPI parameter marker, such as `Annotated[<ruled>, Path()]`: any marker
   given as the parameter's default instead leaves the type's constraints
   unchecked. Constraints given to the marker itself, such as
@@ -76,135 +80,57 @@ the OpenAPI description it serves at `/api/openapi.json`, browsable at
   type with no message gets `field_invalid`'s, and a warning is logged on
   `rcman.problems`. `tests/test_problems.py` finds every field of every
   route in the route table, paired with the schema the API publishes, and
-  holds them to this: every published pattern is a helpers' rule refused with
-  its sentence; every violation each field's schema implies, and every body
+  holds them to this: every published pattern is a rule refused with its
+  sentence — of any rule with that pattern, where two share one, as the
+  prefix and a workspace's name do; every violation each field's schema implies, and every body
   that is not a JSON object, is refused at its field in a rule's sentence or
   `FIELD_MESSAGES`' text and never in the library's words; and every
-  `FIELD_MESSAGES` entry is used. The backend's own codes are `MESSAGES` and
-  `STATUS` in `problems.py`; errors from the helpers keep the helper's code and
-  message and get their status from `HELPER_STATUS` and `ADMIN_STATUS` in
-  `helpers_client.py`. A test keeps those tables complete.
+  `FIELD_MESSAGES` entry is used. Every code rcman answers with is in
+  `MESSAGES` and `STATUS` in `problems.py`, a workspace's and its server's
+  among them, and a test keeps the two tables to each other. A failure of the
+  runtime or a channel is `runtime_unavailable`, `workspace_failed` or
+  `timeout` (`workspaces.answered`).
 
-## Calling the helpers
+## Workspaces and servers
 
-`create_app` takes the two ways of reaching the helpers as arguments. In
-production they are `sudo_helper` — `sudo -n -u <linux-user> rc-helper ...` —
-and `sudo_admin` — `sudo -n rc-admin ...`. Positional values — paths, user names, addresses, versions — are passed after
-`--`, and option values as `--option=value`, so nothing a person sends can be
-read as an option. `app.state.helper`, the runner every route calls
-`rc-helper` through, is the one given wrapped by `unrecognised.watched`, which
-shows each answer to the watch before returning it (see
-[Output rcman does not recognise](#output-rcman-does-not-recognise)).
+`create_app` takes the runtime workspaces run in: by default Podman, through
+rcman's own user manager's socket (`main.podman_runtime`); the tests and
+`make e2e` give it the host runtime. Everything about workspaces, their
+channels and servers, and what rcman brings back when it starts, is in
+[runtime.md](runtime.md).
 
-A call that outlasts its timeout — `HELPER_TIMEOUT` and `ADMIN_TIMEOUT` in
-`helpers_client.py` unless the caller passes one to `call_helper` or
-`call_admin` — is the problem `helper_timeout`. Deleting a folder
-(`DELETE /api/folders`) waits for its servers to stop and removes all of it,
-so it has its own timeout, `FOLDER_DELETE_TIMEOUT_SECONDS` in
-`helpers_client.py`. `call_helper` and `call_admin` both run through
-`run_bounded`, which ends a call that times out with SIGTERM, which sudo
-passes on to the helper, and SIGKILL only after `TERMINATE_GRACE_SECONDS`:
-sudo cannot pass SIGKILL on, so killing it outright would leave the helper
-running; the container suite checks this through real sudo (see
-[the installer](installer.md#tests)). A helper that
-ignores SIGTERM is not waited for: once sudo is killed, `run_bounded` closes
-the pipes without reading them and raises the timeout. That helper is left
-behind as an orphan until it ends or `rcman.service` stops. What a helper
-reads on stdin and writes is UTF-8, whatever the service's locale: the
-backend's pipes are opened as UTF-8, and the helpers run in Python's UTF-8
-mode.
+A workspace belongs to one person, and a route reaches only the signed-in
+person's: another's is `workspace_not_found`, as if it were not there. A
+server's verbs need the workspace `ready`, or answer `workspace_not_ready`. The
+prefix of a server's sessions is the person's, or the workspace's name while
+they have set none (`prefix_of`). A start, a resume, a stop and a forget record
+what should run in the workspace's row, which restoring reads. The listing
+reads every workspace's server side by side, in at most `LISTING_WORKERS`
+threads; a workspace whose server cannot be read is listed with why, as
+`server_error`.
 
-A git call's timeout is the helper's own deadline for it —
-`rc_helper.GIT_TIMEOUT`, `rc_helper.GIT_NETWORK_TIMEOUT` for a fetch and
-for every `git-push`, `--check` too, whose deadline in the helper it is, or
-`rc_helper.CLONE_TIMEOUT` for a clone — and
-`GIT_ANSWER_MARGIN_SECONDS` in `helpers_client.py` besides, so the helper's
-`git_timeout` reaches the person before rcman stops waiting.
+`everyone.py` lists every person's workspaces for administrators
+(`GET /api/servers/everyone`), each server with only `SERVER_FIELDS` — never its
+screen or its claude.ai address. The listing is read-only: no route lets one
+person act on another's workspaces.
 
-`everyone.py` lists every person's servers for administrators
-(`GET /api/servers/everyone`). It runs `rc-helper list` as each person in the
-users file in a thread pool of at most `EVERYONE_WORKERS`, and waits
-`EVERYONE_TIMEOUT_SECONDS`, which is also each call's own timeout. A person
-whose call fails is listed with the error's code and title instead of their
-servers, and one still running when the wait ends with `helper_timeout`, so
-one person never hides or stalls the others; a call still queued when the
-wait ends is cancelled and is `helper_timeout` too. Each server is passed on
-with only `SERVER_FIELDS` — never its screen or its claude.ai address. The
-listing is read-only: no route lets one person act on another's servers.
+## Not available yet
 
-## Claude account and versions
-
-`routers/claude.py` reports the signed-in user's connection — `not_connected`,
-`connected`, `expiring` (within `RCMAN_LOGIN_WARNING_DAYS` of the sign-in's
-expiry) or `expired` — and drives the connect flow through rc-helper's
-`auth-login` and `auth-code`; the code goes to rc-helper on stdin and is
-neither audited nor logged. For administrators it reports versions through
-rc-admin's `claude-status`, flagging who differs from the approved version and
-whether that version is the tested one, and rolls one out with
-`claude-upgrade`, whose refusal keeps rc-admin's `failed` and `report` as it
-gave them (see [rc-admin.md](rc-admin.md#claude-code-versions)).
-
-## Git
-
-`routers/git.py` runs one rc-helper git verb per request, as the signed-in
-person, on a folder in their own home. The files to stage or unstage go to
-the helper on stdin as a JSON list, and a commit's message on stdin as it
-is; neither is ever in an argument. The commit message is validated by
-`rc_helper.COMMIT_MESSAGE` and `MAX_COMMIT_MESSAGE_LENGTH`, and is never
-recorded or logged: the audit target of every git action but a clone is
-the folder.
-`GET /api/git/status` adds `author`, from `author_of`: who commits are
-recorded as, or `null` while no name is set; `POST /api/git/commit` is
-then refused with `author_not_set`, without asking the helper, and
-otherwise passes the name and address as `--author-name` and
-`--author-email`. git's refusals, a network failure among them, come back
-as `git_failed` with git's own words as `git`.
-
-`POST /api/git/push` runs `git-push`. `POST /api/git/commit-push`, audited
-once as `git.commit_push`, takes the commit's message and, in this order,
-refuses with `author_not_set` without asking the helper; runs
-`git-push --check`, so that a push refused before it is tried —
-`detached_head`, `no_push_remote` or `github_token_not_set` — commits
-nothing, while a branch with no commit yet passes, its first commit about
-to be made; runs
-`git-commit`, whose refusal is the request's; and runs `git-push`. It
-answers 200 with the `path`, the `commit`, and `push`, `git-push`'s answer,
-or `null` and `push_problem`, the push's problem details as a failed
-request would have them (`problems.body`), when the commit was made and the
-push failed; the audit row's result is then `committed_not_pushed`.
-
-`POST /api/git/clone` runs `git-clone` with the address as `--url` and the
-parent folder, when one is given, after `--`. The address is validated by
-`rc_helper.GITHUB_URL`, which takes none with a user or a password in it,
-so the audit target of `git.clone`, the address as given, never holds a
-token; an address the rule refuses is recorded with no target, and never
-logged.
-
-## GitHub token
-
-`routers/github.py` stores, reports and removes the person's GitHub token
-through rc-helper's `github-token`, `github-status` and `github-forget`
-(see [rc-helper.md](rc-helper.md#github-token)). `POST /api/github/token`
-validates the token by `rc_helper.GITHUB_TOKEN` and passes it to the helper
-on stdin only; it is never recorded or logged, so neither `github.token` nor
-`github.forget` has an audit target. `GET /api/github` answers whether a
-token is stored, never the token.
+Signing in to Claude, Claude Code versions, git and the GitHub token are not
+available in workspaces yet. Their routes — `routers/claude.py`,
+`routers/git.py` and `routers/github.py` — keep the shape they will have, their
+bodies validated by the rules they will be, and answer `not_available_yet`; the
+changing ones are audited with that result. What a person writes for them — a
+commit's message, a token, a sign-in code — is never recorded or logged.
 
 ## Attention
 
-`routers/attention.py` (`GET /api/attention`, for administrators) reports what
-administrators are warned about: servers on an unrecognised screen, by person
-and folder, from `everyone.everyone`; and, from the same report as
-`/api/claude/versions`, who differs from the approved version and whether it is
-untested. The two run side by side, and when the version report fails the
-unrecognised screens are still reported, with the failure as `versions_error`.
-The version report has its own timeout, `ATTENTION_VERSIONS_TIMEOUT_SECONDS` in
-`everyone.py`, past which it is `helper_timeout`; when the listing fails, the
-request fails at once without waiting for the version report.
-It is built on every request and never stored, and it carries no screen text.
-A server action that ends on an unrecognised screen sets
-`Record.result` to `unrecognised_screen`, which the audit row records in place
-of `ok`.
+`routers/attention.py` (`GET /api/attention`, for administrators) reports the
+servers on a screen rcman does not recognise, by person and workspace, from
+`everyone.everyone`. It is built on every request and never stored, and it
+carries no screen text. A server action that ends on an unrecognised screen
+sets `Record.result` to `unrecognised_screen`, which the audit row records in
+place of `ok`.
 
 ## Audit
 
@@ -212,8 +138,8 @@ A route that changes something depends on `Recorder("<action>")`, which writes
 one row when the request finishes, with `ok` or the error code, and logs the
 same event as a JSON line on the `rcman.audit` logger. uvicorn configures only
 its own loggers, so `create_app` calls `journal.install` on each logger whose
-events go to the journal — `rcman.audit`, `rcman.client` and
-`rcman.unrecognised` — which gives it one handler writing the bare line to
+events go to the journal — `rcman.audit`, `rcman.client`, `rcman.unrecognised`
+and `rcman.workspaces` — which gives it one handler writing the bare line to
 standard error; systemd sends it to the journal. `tests/test_journal.py` checks
 that the app installs each of them. `tests/test_audit.py` starts the app with the unit's own
 `ExecStart` and reads the line from its output. It also finds every changing
@@ -233,8 +159,8 @@ aborts any `UPDATE`, so rows are only added, and deleted only by retention
 `routers/client_errors.py` takes the page's reports of failures rcman could not
 see (see [the frontend](frontend.md#reporting-failures)) at
 `POST /api/client-errors` and writes each as one JSON line on the
-`rcman.client` logger — `"event": "client_error"`, `at`, the sender's `email`
-and `linux`, then the report's fields — and nothing else: it keeps nothing and
+`rcman.client` logger — `"event": "client_error"`, `at`, the sender's `email`,
+then the report's fields — and nothing else: it keeps nothing and
 is in `audit.EXEMPT`. [The journal guide](../docs/journal.md#errors-reported-by-the-page)
 lists every field, and `tests/test_client_errors.py` holds its table to
 `ClientErrorBody` and the fields the route adds.
@@ -251,44 +177,42 @@ add a line or a field.
 
 Anyone signed in can write to the journal this way, so what one request can
 write is bounded: every field is bounded, the request needs a signed-in person
-in the users file and the public `Origin`, like every changing request, and
+in the people table and the public `Origin`, like every changing request, and
 each line names who sent it. There is no throttle per person; journald's own
 rate limit and size limits bound the rest.
 
 ## Output rcman does not recognise
 
 `unrecognised.py` writes one JSON line on the `rcman.unrecognised` logger —
-`"event": "unrecognised"`, `at`, `email` (from the users file, `null` when the
-person is not in it), `linux`, `code`, `verb`, `path`, `lines` and
-`fingerprint` — when something enters a state rcman does not recognise.
-`watched` wraps the helper runner, and its `Watch`, one per app, is shown every
-answer. A `list` is all of a person's servers, so it replaces what is
-remembered for them; a server in another answer is noted on its own. A server
-seen in state `unrecognised` that was not remembered as such is written, as
-`server_unrecognised`; a call — person, verb and the folder after `--` —
-failing with a code in `UNRECOGNISED_OUTPUT` is written once per code, and
-forgotten when the same call succeeds. `failing` is bounded by
-`MAX_REMEMBERED`: past it, every remembered call is forgotten, so a long-lived
-failure may be written again. What is remembered is in the process, so the
-watch assumes rcman runs as one process, and starts empty after a restart.
-Answers are noted in the order their calls end, so an older `list` landing
-after a newer one can, at worst, repeat a line.
+`"event": "unrecognised"`, `at`, `email`, `code`, `verb`, `workspace`,
+`lines` and `fingerprint` — when something enters a state rcman does not
+recognise. The app's `Watch` is shown every server rcman reads: a listing of a
+person's workspaces (`listed`), which is all of their servers and so replaces
+what is remembered for them; a server an action or its output answers with
+(`seen`); and a server verb that failed (`failed`) or worked (`answered`). A
+server seen in state `unrecognised` that was not remembered as such is
+written, as `server_unrecognised`; a verb failing with a code in
+`UNRECOGNISED_OUTPUT` is written once per code, and forgotten when the same
+call works. `failing` is bounded by `MAX_REMEMBERED`: past it, every
+remembered call is forgotten, so a long-lived failure may be written again.
+What is remembered is in the process, so the watch assumes rcman runs as one
+process, and starts empty after a restart.
 
-A line never holds the screen, git's output, stdin or any argument but the
-verb and the folder: `lines` counts the output and `fingerprint` is the first
-`FINGERPRINT_CHARS` hexadecimal characters of the SHA-256 of its lines, each
-without its trailing spaces. `observe` never raises: a fault in it is logged
-with its traceback and the request goes on. The audit row's
-`unrecognised_screen` result (see [Attention](#attention)) is separate from
-this. [The journal guide](../docs/journal.md#output-rcman-does-not-recognise)
-lists every field, and `tests/test_unrecognised.py` holds its table to a line
-the watch writes.
+A line never holds the screen or anything a person sent: `lines` counts the
+output and `fingerprint` is the first `FINGERPRINT_CHARS` hexadecimal
+characters of the SHA-256 of its lines, each without its trailing spaces.
+Nothing the watch is shown makes it raise: a fault in it is logged with its
+traceback and the request goes on. [The journal
+guide](../docs/journal.md#output-rcman-does-not-recognise) lists every field,
+and `tests/test_unrecognised.py` holds its table to a line the watch writes.
 
 ## Tests
 
-The app fixtures in `tests/conftest.py` build the app on temporary settings.
-`rc-helper` runs for real, against the fake `claude`, with a separate
-temporary home and tmux socket for each mapped Linux user, so isolation
-between people is tested for real. `rc-admin` needs root, so the backend's
-tests replace it with a recording stand-in; the container suite tests the real
-one.
+The app fixtures in `tests/conftest.py` build the app on temporary settings,
+with alice, an administrator, bob and carol in its people, and the host
+runtime (`host_runtime`) with the fake `claude`, so workspaces, their channels
+and servers run for real against real tmux; `made_workspace` makes one through
+the routes and waits until it is ready, and `signed_in` signs its fake
+`claude` in. `tests/test_claude_server.py` drives a server's verbs on the host
+runtime through a real channel; the container suite runs the same Podman
+runtime against real Podman (see [tests.md](tests.md#running)).

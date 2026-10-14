@@ -10,8 +10,13 @@ def test_migrate_creates_the_schema(tmp_path):
     db.migrate(path)
     con = sqlite3.connect(path)
     tables = {r[0] for r in con.execute("select name from sqlite_master where type='table'")}
-    assert {"audit", "user_settings"} <= tables
+    assert {"audit", "user_settings", "people", "workspaces"} <= tables
     assert con.execute("pragma user_version").fetchone()[0] == len(db.MIGRATIONS)
+
+
+def test_the_schema_is_one_migration():
+    """A fresh schema: no migration of an older one is kept."""
+    assert len(db.MIGRATIONS) == 1
 
 
 def test_migrate_is_idempotent(tmp_path):
@@ -21,14 +26,81 @@ def test_migrate_is_idempotent(tmp_path):
     assert sqlite3.connect(path).execute("pragma user_version").fetchone()[0] == len(db.MIGRATIONS)
 
 
-def test_migrate_applies_only_what_is_missing(tmp_path):
+def test_migrate_refuses_a_database_newer_than_the_code(tmp_path):
+    import pytest
+
     path = tmp_path / "x.db"
-    con = sqlite3.connect(path)
-    con.executescript(db.MIGRATIONS[0])
-    con.execute("pragma user_version = 1")
-    con.commit()
     db.migrate(path)
-    assert sqlite3.connect(path).execute("pragma user_version").fetchone()[0] == len(db.MIGRATIONS)
+    db.migrate(path)  # positive control: its own version is taken
+    con = sqlite3.connect(path)
+    con.execute(f"pragma user_version = {len(db.MIGRATIONS) + 1}")
+    con.commit()
+    con.close()
+    with pytest.raises(db.DatabaseTooNew):
+        db.migrate(path)
+    assert sqlite3.connect(path).execute("pragma user_version").fetchone()[0] == (
+        len(db.MIGRATIONS) + 1
+    )
+
+
+def _person(con, email, slot, admin=0):
+    con.execute(
+        "insert into people (email, admin, slot, state) values (?, ?, ?, 'active')",
+        (email, admin, slot),
+    )
+
+
+def test_an_email_is_one_persons_whatever_its_case(tmp_path):
+    import pytest
+
+    path = tmp_path / "x.db"
+    db.migrate(path)
+    con = db.connect(path)
+    _person(con, "bob@example.com", 1)
+    _person(con, "carol@example.com", 2)  # positive control: another address is taken
+    with pytest.raises(sqlite3.IntegrityError):
+        _person(con, "BOB@Example.com", 3)
+
+
+def test_a_slot_is_one_persons_and_never_zero(tmp_path):
+    import pytest
+
+    path = tmp_path / "x.db"
+    db.migrate(path)
+    con = db.connect(path)
+    _person(con, "bob@example.com", 1)
+    with pytest.raises(sqlite3.IntegrityError):
+        _person(con, "carol@example.com", 1)
+    with pytest.raises(sqlite3.IntegrityError):
+        _person(con, "carol@example.com", 0)  # rcman's own range
+
+
+def test_a_person_with_workspaces_cannot_be_removed(tmp_path):
+    import pytest
+
+    path = tmp_path / "x.db"
+    db.migrate(path)
+    con = db.connect(path)
+    _person(con, "bob@example.com", 1)
+    con.execute("insert into workspaces (person, name, state) values (1, 'one', 'ready')")
+    with pytest.raises(sqlite3.IntegrityError):
+        con.execute("delete from people where id = 1")
+    con.execute("delete from workspaces")
+    con.execute("delete from people where id = 1")  # positive control: without them it goes
+
+
+def test_a_persons_workspace_names_are_unique(tmp_path):
+    import pytest
+
+    path = tmp_path / "x.db"
+    db.migrate(path)
+    con = db.connect(path)
+    _person(con, "bob@example.com", 1)
+    _person(con, "carol@example.com", 2)
+    con.execute("insert into workspaces (person, name, state) values (1, 'one', 'ready')")
+    con.execute("insert into workspaces (person, name, state) values (2, 'one', 'ready')")
+    with pytest.raises(sqlite3.IntegrityError):
+        con.execute("insert into workspaces (person, name, state) values (1, 'one', 'creating')")
 
 
 def test_connections_use_wal_and_foreign_keys(tmp_path):
@@ -52,8 +124,8 @@ def test_audit_rows_cannot_be_changed(tmp_path):
     db.migrate(path)
     con = db.connect(path)
     con.execute(
-        "insert into audit (at, email, linux, action, target, result) "
-        "values ('2026-10-01', 'e', 'l', 'a', 't', 'ok')"
+        "insert into audit (at, email, action, target, result) "
+        "values ('2026-10-01', 'e', 'a', 't', 'ok')"
     )  # positive control: rows are added as usual
     con.commit()
     assert con.execute("select count(*) from audit").fetchone()[0] == 1
@@ -96,8 +168,8 @@ def transaction_control(script: str) -> list[str]:
 
 def test_no_migration_controls_its_own_transaction():
     """migrate runs each script in a transaction with its version; a script must not end it."""
-    trigger = next(s for s in db.MIGRATIONS if "create trigger" in s)
-    assert any("begin" in s and "end;" in s for s in statements(trigger))  # positive control
+    trigger = next(s for s in statements(db.MIGRATIONS[0]) if "create trigger" in s)
+    assert "begin" in trigger and "end;" in trigger  # positive control
     assert transaction_control(trigger) == []  # a trigger's begin ... end is not flagged
     flagged = {i: transaction_control(s) for i, s in enumerate(db.MIGRATIONS)}
     assert db.MIGRATIONS and all(v == [] for v in flagged.values()), flagged
@@ -147,29 +219,37 @@ def test_a_migration_that_fails_part_way_changes_nothing(tmp_path, monkeypatch):
     assert sqlite3.connect(path).execute("pragma user_version").fetchone()[0] == version + 1
 
 
-def test_author_migration_keeps_existing_prefixes(tmp_path):
-    found = [i for i, script in enumerate(db.MIGRATIONS) if "author_name" in script]
-    assert len(found) == 1, found
-    number = found[0]
+def test_the_database_is_its_owners_alone_whatever_the_umask(tmp_path):
+    """oauth2-proxy shares rcman's group, to read the allowed list; the database, which
+    names everyone, is not for it."""
+    import os
+    import stat
+
+    path = tmp_path / "x.db"
+    old = os.umask(0o022)
+    try:
+        db.migrate(path)
+        con = db.connect(path)
+        con.execute("insert into audit (at, email, action, result) values ('t', 'e', 'a', 'ok')")
+        con.commit()
+        db.migrate(path)
+    finally:
+        os.umask(old)
+    found = [p for p in tmp_path.iterdir() if p.name.startswith("x.db")]
+    assert path in found  # positive control
+    for file in found:
+        assert stat.S_IMODE(file.stat().st_mode) == 0o600, file
+
+
+def test_a_database_of_the_old_model_is_named_as_one_not_as_newer(tmp_path):
+    """One written before workspaces, with no people table, cannot be upgraded."""
+    import pytest
+
     path = tmp_path / "x.db"
     con = sqlite3.connect(path)
-    for script in db.MIGRATIONS[:number]:
-        con.executescript(script)
-    con.execute(f"pragma user_version = {number}")
-    con.execute("insert into user_settings (email, prefix) values ('bob@example.com', 'bobs')")
+    con.executescript("create table user_settings (email text primary key, prefix text);")
+    con.execute("pragma user_version = 4")
     con.commit()
-    columns = {r[1] for r in con.execute("pragma table_info(user_settings)")}
-    assert "prefix" in columns and "author_name" not in columns  # positive control
     con.close()
-
-    db.migrate(path)
-    con = sqlite3.connect(path)
-    con.row_factory = sqlite3.Row
-    assert dict(con.execute("select * from user_settings").fetchone()) == {
-        "email": "bob@example.com",
-        "prefix": "bobs",
-        "author_name": None,
-        "author_email": None,
-    }
-    con.execute("insert into user_settings (email, prefix) values ('carol@example.com', null)")
-    assert con.execute("pragma user_version").fetchone()[0] == len(db.MIGRATIONS)
+    with pytest.raises(db.DatabaseOfAnOldInstall, match="install rcman afresh"):
+        db.migrate(path)

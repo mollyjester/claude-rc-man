@@ -16,10 +16,8 @@ def dist(tmp_path):
 
 
 @pytest.fixture
-def spa_client(settings, helper_homes, admin_runner, dist):
-    app = create_app(
-        settings.model_copy(update={"frontend_dir": dist}), helper=helper_homes, admin=admin_runner
-    )
+def spa_client(settings, runtime, dist):
+    app = create_app(settings.model_copy(update={"frontend_dir": dist}), runtime=runtime)
     with TestClient(app) as c:
         yield c
 
@@ -31,7 +29,7 @@ def test_root_serves_the_app(spa_client):
 
 
 def test_app_routes_fall_back_to_the_app(spa_client):
-    for path in ("/help/servers", "/admin/people", "/settings", "/?folder=projects/alpha"):
+    for path in ("/help/workspaces", "/admin/people", "/settings", "/?workspace=1"):
         r = spa_client.get(path)
         assert r.status_code == 200 and "id=root" in r.text, path
 
@@ -52,11 +50,9 @@ def test_nothing_outside_the_build_is_served(spa_client):
         assert "outside" not in r.text, path
 
 
-def test_without_a_build_the_app_is_a_problem(settings, helper_homes, admin_runner, tmp_path):
+def test_without_a_build_the_app_is_a_problem(settings, runtime, tmp_path):
     app = create_app(
-        settings.model_copy(update={"frontend_dir": tmp_path / "none"}),
-        helper=helper_homes,
-        admin=admin_runner,
+        settings.model_copy(update={"frontend_dir": tmp_path / "none"}), runtime=runtime
     )
     with TestClient(app) as c:
         r = c.get("/")

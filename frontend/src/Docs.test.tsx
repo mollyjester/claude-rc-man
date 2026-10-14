@@ -1,7 +1,7 @@
 import { screen, within } from "@testing-library/react";
 
 import { m } from "./messages";
-import { CONNECTED, fakeApi, ME, problem } from "./test/fakeApi";
+import { fakeApi, ME, problem } from "./test/fakeApi";
 import { renderApp } from "./test/render";
 
 const PAGES = {
@@ -12,7 +12,7 @@ const PAGES = {
 };
 
 test("help lists every page", async () => {
-  fakeApi({ "GET /api/me": ME, "GET /api/claude": CONNECTED, "GET /api/docs": PAGES });
+  fakeApi({ "GET /api/me": ME, "GET /api/docs": PAGES });
   renderApp("/help");
   const nav = await screen.findByRole("navigation", { name: m.docsTitle });
   expect(await within(nav).findByRole("link", { name: "Servers" })).toHaveAttribute(
@@ -28,7 +28,6 @@ test("help lists every page", async () => {
 test("a page is rendered, with links between pages kept inside rcman", async () => {
   fakeApi({
     "GET /api/me": ME,
-    "GET /api/claude": CONNECTED,
     "GET /api/docs": PAGES,
     "GET /api/docs/servers": {
       slug: "servers",
@@ -55,7 +54,6 @@ test("a page is rendered, with links between pages kept inside rcman", async () 
 test("a missing page shows the server's reason, and no page", async () => {
   fakeApi({
     "GET /api/me": ME,
-    "GET /api/claude": CONNECTED,
     "GET /api/docs": PAGES,
     "GET /api/docs/nope": problem(404, "not_found", "There is nothing here."),
   });

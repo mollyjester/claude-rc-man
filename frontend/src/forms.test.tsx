@@ -5,20 +5,23 @@ import { readdirSync, readFileSync } from "node:fs";
 import { resolve, sep } from "node:path";
 import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { type FormEvent, useCallback, useState } from "react";
+import { type FormEvent, type ReactElement, useCallback, useState } from "react";
 import { parseAst } from "vite";
 import { vi } from "vitest";
 
 import { type ApiError, api as client, forgetSending } from "./api";
+import { Changes } from "./Changes";
+import { ClaudeConnection, type Connection } from "./Claude";
 import { forgetReports } from "./clientErrors";
 import { m } from "./messages";
 import { asApiError, ProblemView } from "./ProblemView";
 import { FIELDS } from "./Settings";
 import { ADMIN_USER, fakeApi, NOT_CONNECTED, NOTHING_TO_ATTEND, SETTINGS } from "./test/fakeApi";
-import { renderApp } from "./test/render";
+import { renderAlone, renderApp } from "./test/render";
+import { Versions } from "./Versions";
 
-// A repository, whose panel has the commit and new-branch forms.
-const REPOSITORY = { name: "repo", path: "projects/repo", has_children: false, repository: true };
+// A repository, whose Changes section has the commit and new-branch forms.
+const REPOSITORY = "projects/repo";
 
 const RULE_ATTRIBUTES = ["required", "pattern", "min", "max", "minlength", "maxlength", "step"];
 
@@ -27,8 +30,8 @@ function api() {
     "GET /api/me": ADMIN_USER,
     "GET /api/claude": NOT_CONNECTED,
     "GET /api/me/settings": SETTINGS,
-    "GET /api/users": {
-      users: [{ linux: "bob", email: "bob@example.com", admin: false, account: true }],
+    "GET /api/people": {
+      people: [{ id: 2, email: "bob@example.com", admin: false, state: "active", workspaces: 1 }],
     },
     "GET /api/claude/versions": {
       approved: "1.0.0",
@@ -38,14 +41,14 @@ function api() {
       users: [],
     },
     "POST /api/claude/login": { url: "https://claude.com/x" },
-    "GET /api/folders": (c) =>
-      c.query.get("path") === "projects"
-        ? { path: "projects", entries: [REPOSITORY] }
-        : { path: "", entries: [] },
-    "GET /api/servers": { servers: [] },
+    "GET /api/workspaces": {
+      workspaces: [
+        { id: 1, name: "alpha", state: "ready", error: null, server: null, server_error: null },
+      ],
+    },
     "GET /api/attention": NOTHING_TO_ATTEND,
     "GET /api/git/status": {
-      path: REPOSITORY.path,
+      path: REPOSITORY,
       branch: { name: "main", commit: "0123456789", upstream: null, ahead: null, behind: null },
       staged: { files: [{ path: "a.txt", change: "added" }], more: 0 },
       not_staged: { files: [{ path: "b.txt", change: "untracked" }], more: 0 },
@@ -57,7 +60,7 @@ function api() {
       push_ahead: 1,
     },
     "GET /api/git/branches": {
-      path: REPOSITORY.path,
+      path: REPOSITORY,
       local: { branches: [], more: 0 },
       remote: { branches: [], more: 0 },
     },
@@ -70,8 +73,23 @@ async function inputs() {
   return [...document.querySelectorAll("input, textarea, select")];
 }
 
+// Where a page is: a path in the app, or, for a part the app does not show while
+// the server refuses what it does, that part on its own. Each is held to the
+// same rules, so that it is ready to be shown again.
+type Where = string | (() => ReactElement);
+
+function show(where: Where) {
+  return typeof where === "string" ? renderApp(where) : renderAlone(where(), ["/settings"]);
+}
+
+const versions = () => <Versions />;
+const account = () => (
+  <ClaudeConnection connection={NOT_CONNECTED as Connection} onChange={() => {}} />
+);
+const changes = () => <Changes path={REPOSITORY} pollMs={0} />;
+
 // Every page with a form, and what opens the forms that are not there at first.
-const PAGES: [string, string, () => Promise<void>][] = [
+const PAGES: [string, Where, () => Promise<void>][] = [
   ["settings", "/settings", async () => {}],
   ["people", "/admin/people", async () => {}],
   [
@@ -83,10 +101,11 @@ const PAGES: [string, string, () => Promise<void>][] = [
       await screen.findByRole("dialog");
     },
   ],
-  ["Claude Code versions", "/admin/claude", async () => {}],
+  ["a new workspace", "/", async () => void (await screen.findByLabelText(m.newWorkspaceName))],
+  ["Claude Code versions", versions, async () => {}],
   [
     "connecting Claude, its address",
-    "/",
+    account,
     async () => {
       await userEvent.click(await screen.findByRole("button", { name: m.connect }));
       await screen.findByLabelText(m.connectEmail);
@@ -94,61 +113,18 @@ const PAGES: [string, string, () => Promise<void>][] = [
   ],
   [
     "connecting Claude, its code",
-    "/",
+    account,
     async () => {
       await userEvent.click(await screen.findByRole("button", { name: m.connect }));
       await userEvent.click(screen.getByRole("button", { name: m.connectGo }));
       await screen.findByLabelText(m.connectCode);
     },
   ],
-  [
-    "a new folder in the home folder",
-    "/",
-    async () => {
-      const home = await screen.findByRole("region", { name: m.home });
-      await userEvent.click(within(home).getByRole("button", { name: m.newFolder }));
-      await screen.findByLabelText(m.newFolderName);
-    },
-  ],
-  [
-    "a new folder in a folder",
-    "/?folder=projects",
-    async () => {
-      const panel = await screen.findByRole("region", { name: "projects" });
-      await userEvent.click(within(panel).getByRole("button", { name: m.newFolder }));
-      await screen.findByLabelText(m.newFolderName);
-    },
-  ],
-  [
-    "a clone into the home folder",
-    "/",
-    async () => {
-      const home = await screen.findByRole("region", { name: m.home });
-      await userEvent.click(within(home).getByRole("button", { name: m.cloneFromGithub }));
-      await screen.findByLabelText(m.cloneUrl);
-    },
-  ],
-  [
-    "a clone into a folder",
-    "/?folder=projects",
-    async () => {
-      const panel = await screen.findByRole("region", { name: "projects" });
-      await userEvent.click(within(panel).getByRole("button", { name: m.cloneFromGithub }));
-      await screen.findByLabelText(m.cloneUrl);
-    },
-  ],
-];
-
-// The forms of a repository's Changes section, each found by its field.
-PAGES.push(
-  [
-    "a commit",
-    "/?folder=projects/repo",
-    async () => void (await screen.findByLabelText(m.commitMessage)),
-  ],
+  // The forms of a repository's Changes section, each found by its field.
+  ["a commit", changes, async () => void (await screen.findByLabelText(m.commitMessage))],
   [
     "a new branch",
-    "/?folder=projects/repo",
+    changes,
     async () => {
       const plus = await screen.findByRole("button", { name: m.newBranch });
       expect(plus.textContent).toBe(""); // the + of the branch bar, an icon only
@@ -158,20 +134,20 @@ PAGES.push(
   ],
   [
     "a commit, its menu open",
-    "/?folder=projects/repo",
+    changes,
     async () => {
       await userEvent.click(await screen.findByRole("button", { name: m.commitMenu }));
       await screen.findByRole("button", { name: m.commitPush });
     },
   ],
-);
+];
 
 // Pages with an input outside any form, and what opens it: held only to having
 // no validation rule of its own, since they add no form.
-const OUTSIDE_FORMS: [string, string, () => Promise<void>][] = [
+const OUTSIDE_FORMS: [string, Where, () => Promise<void>][] = [
   [
     "the branch lookup's filter",
-    "/?folder=projects/repo",
+    changes,
     async () => {
       await userEvent.click(await screen.findByRole("button", { name: m.onBranch("main") }));
       await screen.findByRole("textbox", { name: m.findBranch });
@@ -180,7 +156,7 @@ const OUTSIDE_FORMS: [string, string, () => Promise<void>][] = [
 ];
 
 // Pages with a form that has nothing to type in, and what opens it.
-const CHOICES: [string, string, () => Promise<void>][] = [
+const CHOICES: [string, Where, () => Promise<void>][] = [
   [
     "removing the GitHub token",
     "/settings",
@@ -193,21 +169,21 @@ const CHOICES: [string, string, () => Promise<void>][] = [
     },
   ],
   [
-    "deleting a folder",
-    "/?folder=projects",
+    "deleting a workspace",
+    "/?workspace=1",
     async () => {
-      const panel = await screen.findByRole("region", { name: "projects" });
-      await userEvent.click(await within(panel).findByRole("button", { name: m.deleteFolder }));
+      const panel = await screen.findByRole("region", { name: "alpha" });
+      await userEvent.click(within(panel).getByRole("button", { name: m.deleteWorkspace }));
       await screen.findByRole("dialog");
     },
   ],
 ];
 
 test.each([...PAGES, ...OUTSIDE_FORMS])(
-  "no input on %s (%s) carries its own validation rule",
-  async (_, path, open) => {
+  "no input on %s carries its own validation rule",
+  async (_, where, open) => {
     api();
-    renderApp(path);
+    show(where);
     await open();
     const found = await inputs();
     expect(found.length).toBeGreaterThan(0); // non-vacuity
@@ -250,10 +226,10 @@ function hierarchyFaults(root: ParentNode): string[] {
 }
 
 test.each([...PAGES, ...CHOICES])(
-  "each form on %s (%s) leads with one button, its submit button",
-  async (page, path, open) => {
+  "each form on %s leads with one button, its submit button",
+  async (page, where, open) => {
     api();
-    renderApp(path);
+    show(where);
     await open();
     if (!CHOICES.some(([choice]) => choice === page)) await inputs();
     expect(document.querySelectorAll("form").length).toBeGreaterThan(0); // non-vacuity
@@ -262,7 +238,7 @@ test.each([...PAGES, ...CHOICES])(
 );
 
 // The forms whose submit cannot be undone, which lead with danger instead.
-const DESTRUCTIVE = ["removing someone", "deleting a folder", "removing the GitHub token"];
+const DESTRUCTIVE = ["removing someone", "deleting a workspace", "removing the GitHub token"];
 
 test("every form said to be destructive is one of those checked", () => {
   const pages = [...PAGES, ...CHOICES].map(([page]) => page);
@@ -270,10 +246,10 @@ test("every form said to be destructive is one of those checked", () => {
 });
 
 test.each([...PAGES, ...CHOICES].filter(([page]) => DESTRUCTIVE.includes(page)))(
-  "the form for %s (%s) leads with danger, not primary",
-  async (_, path, open) => {
+  "the form for %s leads with danger, not primary",
+  async (_, where, open) => {
     api();
-    renderApp(path);
+    show(where);
     await open();
     const dialog = screen.getByRole("dialog");
     const submit = dialog.querySelector('button[type="submit"]');
@@ -295,10 +271,10 @@ function openerFaults(opener: Element | undefined): string[] {
 }
 
 test.each([...PAGES, ...CHOICES].filter(([page]) => DESTRUCTIVE.includes(page)))(
-  "what opens the form for %s (%s) is a danger outline",
-  async (_, path, open) => {
+  "what opens the form for %s is a danger outline",
+  async (_, where, open) => {
     api();
-    renderApp(path);
+    show(where);
     const clicked: Element[] = [];
     const click = userEvent.click;
     const spy = vi.spyOn(userEvent, "click").mockImplementation(async (element) => {
@@ -326,10 +302,10 @@ test("the opener check fails on a plain, primary or danger button, or none", () 
 });
 
 test.each([...PAGES, ...CHOICES].filter(([page]) => !DESTRUCTIVE.includes(page)))(
-  "the forms on %s (%s) lead with primary, not danger",
-  async (page, path, open) => {
+  "the forms on %s lead with primary, not danger",
+  async (page, where, open) => {
     api();
-    renderApp(path);
+    show(where);
     await open();
     if (!CHOICES.some(([choice]) => choice === page)) await inputs();
     expect(document.querySelectorAll("form button.primary").length).toBeGreaterThan(0); // non-vacuity
@@ -401,7 +377,11 @@ test("the settings page has an input for every field it describes, and the token
   const token = found.filter((input) => github.contains(input));
   expect(token.map((input) => (input as HTMLInputElement).type)).toEqual(["password"]);
   expect(Object.keys(FIELDS).length).toBeGreaterThan(0); // non-vacuity
-  expect(found.length - token.length).toBe(Object.keys(FIELDS).length);
+  expect(
+    found
+      .filter((input) => !token.includes(input))
+      .map((input) => (input as HTMLInputElement).name),
+  ).toEqual(Object.keys(FIELDS));
   expect(document.querySelectorAll("form").length).toBeGreaterThan(1);
   expect(document.querySelectorAll("form[novalidate]").length).toBe(
     document.querySelectorAll("form").length,
@@ -471,9 +451,9 @@ async function labelFaults(form: HTMLFormElement): Promise<string[]> {
   return faults;
 }
 
-test.each(PAGES)("a refused field on %s (%s) is named by its label", async (_, path, open) => {
+test.each(PAGES)("a refused field on %s is named by its label", async (_, where, open) => {
   api();
-  renderApp(path);
+  show(where);
   await open();
   await inputs();
   const forms = [...document.querySelectorAll("form")].filter(
@@ -639,10 +619,10 @@ async function observe(stopped: () => boolean): Promise<Seen[]> {
     [PAGES, true],
     [CHOICES, false],
   ] as const) {
-    for (const [entry, path, open] of entries) {
+    for (const [entry, where, open] of entries) {
       if (stopped()) throw new Error("stopped before every page was visited");
       api();
-      renderApp(path);
+      show(where);
       try {
         await open();
         if (fromPages) await inputs();

@@ -160,46 +160,23 @@ main {
 }
 
 /* minmax(0, …): a wide screen scrolls inside its card rather than widening the column. */
-.workspace {
+.dashboard {
   display: grid;
   grid-template-columns: minmax(16rem, 2fr) minmax(0, 3fr);
   gap: 2rem;
   align-items: start;
 }
 @media (max-width: 48rem) {
-  .workspace {
+  .dashboard {
     grid-template-columns: minmax(0, 1fr);
   }
 }
-.tree,
-.tree ul,
-.summary {
+.workspaces {
   list-style: none;
   padding-left: 0;
 }
-.tree ul {
-  padding-left: 1.5rem;
-}
-.tree li,
-.summary li {
+.workspaces li {
   margin: 0.2rem 0;
-}
-/* A folder's name with the slash after it: an atom of the line, so a path wraps
-   only after a slash, broken inside only when it is wider than a line by itself. */
-.path-part {
-  display: inline-block;
-  max-width: 100%;
-  overflow-wrap: anywhere;
-}
-.toggle {
-  display: inline-block;
-  width: 1.5rem;
-}
-button.toggle {
-  background: none;
-  border: none;
-  padding: 0;
-  color: var(--fg);
 }
 button.name {
   background: none;
@@ -214,8 +191,12 @@ button.name[aria-current="true"] {
   color: var(--accent-fg);
   font-weight: 600;
 }
+/* A workspace's name lines up with the heading, its button's padding outside it. */
+.workspaces button.name {
+  margin-left: -0.35rem;
+}
 /* Each kind of dot has its own shape as well as its own colour; the guide's
-   table of shapes is held to these rules by src/servers-guide.test.ts. */
+   table of shapes is held to these rules by src/workspaces-guide.test.ts. */
 .dot {
   display: inline-block;
   box-sizing: border-box;
@@ -240,16 +221,6 @@ button.name[aria-current="true"] {
   border: 0.15rem solid var(--stopped);
   border-radius: 0.1rem;
 }
-.repository-marker {
-  margin-left: 0.3rem;
-  padding: 0 0.25rem;
-  font-size: 0.75rem;
-  color: var(--muted);
-  border: 1px solid var(--border);
-  border-radius: 0.25rem;
-  vertical-align: middle;
-}
-
 .panel-section label > textarea {
   display: block;
   width: 100%;
@@ -258,6 +229,10 @@ button.name[aria-current="true"] {
   font: inherit;
 }
 .git-said {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.workspace-error {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
@@ -273,18 +248,6 @@ button.name[aria-current="true"] {
 .panel-section h3 {
   font-size: 1rem;
   margin: 0.75rem 0 0.5rem;
-}
-.breadcrumb ol {
-  list-style: none;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.25rem;
-  padding: 0;
-  margin: 0;
-}
-.breadcrumb [aria-hidden="true"] {
-  margin-left: 0.25rem;
-  color: var(--muted);
 }
 .server {
   border: 1px solid var(--border);
@@ -314,17 +277,6 @@ button.name[aria-current="true"] {
 }
 .badge-stopped {
   color: var(--stopped);
-}
-/* A path's text lines up with the heading, its button's padding outside it.
-   The path and then its badge flow as text does: the badge follows the path on
-   its line after a space, and goes to the next only when it does not fit there,
-   where the space falls away so that it lines up with the path. */
-.summary button.name {
-  margin-left: -0.35rem;
-  vertical-align: middle;
-}
-.summary .badge {
-  vertical-align: middle;
 }
 .actions {
   display: flex;

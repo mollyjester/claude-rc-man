@@ -3,15 +3,13 @@ import userEvent from "@testing-library/user-event";
 
 import { ADMIN, ADMIN_PAGES } from "./AdminPages";
 import { m } from "./messages";
-import { ADMIN_USER, CONNECTED, fakeApi, ME, NOTHING_TO_ATTEND, type Reply } from "./test/fakeApi";
+import { ADMIN_USER, fakeApi, ME, NOTHING_TO_ATTEND, type Reply } from "./test/fakeApi";
 import { renderApp } from "./test/render";
 
 function api(me: Reply) {
   return fakeApi({
     "GET /api/me": me,
-    "GET /api/claude": CONNECTED,
-    "GET /api/folders": { path: "", entries: [] },
-    "GET /api/servers": { servers: [] },
+    "GET /api/workspaces": { workspaces: [] },
     "GET /api/attention": NOTHING_TO_ATTEND,
   });
 }
@@ -128,14 +126,29 @@ test("Escape closes the menu and returns to its button", async () => {
   expect(admin).toHaveFocus();
 });
 
-test("the administration pages include everyone's servers", () => {
-  const labels = ADMIN_PAGES.map((p) => p.label);
-  // non-vacuity: the table holds every page administrators are known to have
-  for (const label of [m.navUsers, m.navAudit, m.navVersions, m.navEveryone]) {
-    expect(labels).toContain(label);
-  }
-  expect(ADMIN.everyone.path).toBe("/admin/servers");
+test("the administration pages are People, everyone's workspaces and the audit trail, in that order", () => {
+  expect(ADMIN_PAGES.map((p) => p.label)).toEqual([m.navUsers, m.navEveryone, m.navAudit]);
+  expect(ADMIN.everyone.path).toBe("/admin/workspaces");
   expect(ADMIN_PAGES).toEqual(Object.values(ADMIN));
+});
+
+test("the Claude Code versions page, which the server refuses, is not offered", async () => {
+  api(ADMIN_USER);
+  const { location } = renderApp("/admin/claude");
+  await screen.findByRole("region", { name: m.workspacesTitle }); // sent on to the Workspaces page
+  expect(location().pathname).toBe("/");
+  await userEvent.click(await adminButton());
+  expect(screen.getAllByRole("link", { name: m.navUsers })).toHaveLength(1); // positive control
+  expect(screen.queryByRole("link", { name: m.versionsTitle })).not.toBeInTheDocument();
+});
+
+test("the navigation leads to the Workspaces page", async () => {
+  api(ME);
+  renderApp("/settings");
+  await userEvent.click(
+    within(await screen.findByRole("banner")).getByRole("link", { name: m.navDashboard }),
+  );
+  expect(await screen.findByRole("region", { name: m.workspacesTitle })).toBeInTheDocument();
 });
 
 test("an account rcman refuses sees the server's reason", async () => {

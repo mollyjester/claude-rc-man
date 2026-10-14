@@ -1,7 +1,8 @@
 import { defineConfig } from "@playwright/test";
 
-// The whole stack in one container (tests/container/stack.py): Caddy with its
-// own certificate authority, oauth2-proxy, rcman, real Linux accounts and sudo.
+// The whole stack in the podman host (tests/container/stack.py): Caddy with its
+// own certificate authority, oauth2-proxy, rcman as installed, and its workspaces
+// in real Podman.
 // tests/test_container_suite.py starts it and passes its published HTTPS port,
 // which only that run knows.
 const port = process.env.RCMAN_STACK_PORT;

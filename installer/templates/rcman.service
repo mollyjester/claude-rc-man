@@ -1,15 +1,20 @@
 # Written by install.sh.
 [Unit]
 Description=rcman
-After=network-online.target
-Wants=network-online.target
+After=network-online.target user@@APP_UID@.service
+Wants=network-online.target user@@APP_UID@.service
 
 [Service]
 User=rcman
 Group=rcman
 WorkingDirectory=@CURRENT@
 EnvironmentFile=@ETC@/rcman.env
-# No NoNewPrivileges: rcman runs rc-helper and rc-admin through sudo.
+# rcman drives its workspaces through its own user manager's Podman socket, whose
+# containers run outside this service, so they outlive a restart of it.
+Environment=XDG_RUNTIME_DIR=/run/user/@APP_UID@
+NoNewPrivileges=yes
+# What rcman makes is its own: its database is no one else's to read.
+UMask=0077
 # Its only listener is the unix socket @SOCKET@, in a directory only Caddy's group
 # may enter, made at boot by /etc/tmpfiles.d/rcman.conf.
 ExecStart=@CURRENT@/.venv/bin/uvicorn --factory rcman.main:create_app --uds @SOCKET@

@@ -3,42 +3,54 @@ import { useEffect, useState } from "react";
 import { ApiError, api } from "./api";
 import { m } from "./messages";
 import { asApiError, ProblemView } from "./ProblemView";
-import { type Server, StateBadge } from "./Servers";
+import { StateBadge } from "./Servers";
 
-export type Person = {
-  linux: string;
-  email: string;
-  servers?: Server[];
-  error?: { code: string; title: string };
+type Workspace = {
+  id: number;
+  name: string;
+  state: string;
+  server: { state: string; session_name: string | null; exit_code: number | null } | null;
+  server_error: { code: string; title: string } | null;
 };
 
-// Everyone's servers, for administrators, to look at only: the server lets
-// no one act on another person's servers, so nothing here offers to.
-function PersonServers({ person }: { person: Person }) {
-  const name = m.everyonePerson(person.linux, person.email);
-  const error = person.error ? new ApiError(0, person.error.code, person.error.title) : null;
+export type Person = { email: string; workspaces: Workspace[] };
+
+// A workspace's state as this page shows it: while it is not ready, that; once it
+// is, its server's state, why it could not be read, or that it has none.
+function StateOf({ workspace }: { workspace: Workspace }) {
+  const { state, server, server_error: unread } = workspace;
+  if (state !== "ready") return <>{m.workspaceStates[state] ?? state}</>;
+  if (unread) return <ProblemView error={new ApiError(0, unread.code, unread.title)} />;
+  if (server) return <StateBadge state={server.state} />;
+  return <>{m.everyoneNoServer}</>;
+}
+
+// Everyone's workspaces, for administrators, to look at only: the server lets
+// no one act on another person's workspace, so nothing here offers to.
+function PersonWorkspaces({ person }: { person: Person }) {
   return (
-    <section aria-label={name}>
-      <h2>{name}</h2>
-      <ProblemView error={error} />
-      {person.servers && person.servers.length === 0 && <p>{m.everyoneNone}</p>}
-      {person.servers && person.servers.length > 0 && (
+    <section aria-label={person.email}>
+      <h2>{person.email}</h2>
+      {person.workspaces.length === 0 && <p>{m.everyoneNone}</p>}
+      {person.workspaces.length > 0 && (
         <table>
           <thead>
             <tr>
-              <th>{m.everyoneFolder}</th>
+              <th>{m.everyoneWorkspace}</th>
               <th>{m.everyoneState}</th>
               <th>{m.sessionName}</th>
             </tr>
           </thead>
           <tbody>
-            {person.servers.map((server) => (
-              <tr key={server.path}>
-                <td>{server.path}</td>
+            {person.workspaces.map((workspace) => (
+              <tr key={workspace.id}>
+                <td>{workspace.name}</td>
                 <td>
-                  <StateBadge state={server.state} />
+                  <StateOf workspace={workspace} />
                 </td>
-                <td>{server.session_name && <code>{server.session_name}</code>}</td>
+                <td>
+                  {workspace.server?.session_name && <code>{workspace.server.session_name}</code>}
+                </td>
               </tr>
             ))}
           </tbody>
@@ -66,7 +78,7 @@ export function Everyone() {
       <ProblemView error={error} />
       {people === null && !error && <p>{m.loading}</p>}
       {people?.map((person) => (
-        <PersonServers key={person.linux} person={person} />
+        <PersonWorkspaces key={person.email} person={person} />
       ))}
     </section>
   );

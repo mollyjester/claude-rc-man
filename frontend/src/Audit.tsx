@@ -8,7 +8,6 @@ type Event = {
   id: number;
   at: string;
   email: string;
-  linux: string;
   action: string;
   target: string | null;
   result: string;
@@ -53,9 +52,7 @@ export function Audit() {
           {events.map((e) => (
             <tr key={e.id}>
               <td>{new Date(e.at).toLocaleString()}</td>
-              <td>
-                {e.email} ({e.linux})
-              </td>
+              <td>{e.email}</td>
               <td>{e.action}</td>
               <td>{e.target}</td>
               <td>{e.result}</td>

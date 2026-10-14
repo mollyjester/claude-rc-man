@@ -79,21 +79,30 @@ matters, so a suppression at the site is preferred.
   `asApiError` in `src/ProblemView.tsx` turns anything that is not an
   `ApiError` into `UNEXPECTED_RESPONSE`, and notes it as a `page_error`.
 - **Only what the server allows is offered.** `ACTIONS` in `src/Servers.tsx`
-  maps every server state rc-helper reports to the actions it allows; its
-  states are kept to the table in [rc-helper.md](rc-helper.md#server-states)
-  by hand, and `src/Dashboard.test.tsx` checks that each card offers exactly
-  its state's actions. Beside it, `KIND` gives each state its badge colour,
-  `PRIMARY` the one action it leads with, and `m.states` and `m.nextStep` its
-  name and what to do; `src/Servers.test.ts` holds each of them to the states
-  in `ACTIONS`, and `src/servers-guide.test.ts` holds the table in
-  `docs/servers.md` to all of them, and checks that every control its
-  *The Servers page* section names in bold is text from `src/messages.ts`. `START_REASON` in `src/Claude.tsx` says,
-  for each state of the Claude account in `CONNECTION_STATES`, why no server
-  can start, or null where one can; Start, and the actions that start Claude
-  again, are offered only where it is null. Otherwise it says why in place of
-  each: in the panel instead of Start, and on a server's card instead of the
-  sentence saying what to do. The Changes section is shown only for a
-  folder the tree lists as a repository; Commit is offered only with
+  maps every server state to the actions it allows; its states are kept to
+  the table in [runtime.md](runtime.md#server-states) by hand, and
+  `src/Dashboard.test.tsx` checks that each card offers exactly its state's
+  actions. Beside it, `KIND` gives each state its badge colour, `PRIMARY` the
+  one action it leads with, and `m.states` and `m.nextStep` its name and what
+  to do; `src/Servers.test.ts` holds each of them to the states in `ACTIONS`,
+  and `src/workspaces-guide.test.ts` holds the table in `docs/workspaces.md`
+  to all of them, and checks that every control its *The Workspaces page*
+  section names in bold is text from `src/messages.ts`. A workspace's panel
+  offers **Start** only while the workspace is ready, has no server, and its
+  server could be read; **Delete workspace** only while it is ready or
+  failed; nothing while it is being made or deleted. Whether Claude is signed
+  in in a workspace the server alone knows, so **Start** is offered regardless
+  and its refusal shown. Administration is offered only to administrators,
+  and the server refuses everyone else regardless. What the server refuses
+  everyone, it is not offered at all: the Claude Code versions page, the
+  Claude account's section and the Changes section are on no page while the
+  server answers `not_available_yet` for them; their components and tests are
+  kept for when it does not. The Settings page's GitHub token part stays: it
+  asks whether a token is stored, and offers its field and Remove only once the
+  server answers; while the server answers `not_available_yet`, the part shows
+  that sentence alone.
+- **The Changes section's rules**, which hold wherever it is shown: Commit is
+  offered only with
   something staged and a commit author name set, and otherwise the section
   says why; a push can be tried on a branch that, as the status says, has
   a remote to push to (`push_has_remote`), and, when the status says it
@@ -113,20 +122,15 @@ matters, so a suppression at the site is preferred.
   is gone (`ahead` and `behind` null); with no upstream it shows nothing,
   since the status says only whether one is set, not whether the branch is
   on the remote. git's own refusals, which
-  rcman cannot know in advance, are shown as git gave them. Clone from
-  GitHub is always offered, since a public repository needs no token; a
-  private one GitHub refuses without one is git's refusal, shown as such. Delete folder is offered only for a folder,
-  never for the home folder, and only once the servers are listed, since its
-  confirmation names those it stops and forgets. Administration is offered
-  only to administrators, and the server refuses everyone else regardless.
+  rcman cannot know in advance, are shown as git gave them.
 - **Each form leads with what it does.** Its submit button is its one
   `primary` button, or its one `danger` button where what it does cannot be
-  undone, such as deleting a folder; its other buttons are plain or
+  undone, such as deleting a workspace; its other buttons are plain or
   `secondary`, such as Commit & Push in Commit's menu, and a dialog's choice is
   a form too. `src/forms.test.tsx` checks every form, and
   that only the forms it lists as destructive use `danger`. A button outside
-  a form that opens such a form, such as a panel's **Delete folder** or
-  Settings' **Remove token**, is a
+  a form that opens such a form, such as a panel's **Delete workspace** or
+  the People page's **Remove**, is a
   danger outline, `secondary-danger`; `src/forms.test.tsx` checks the button
   that opens each form it lists as destructive. `src/styles.test.ts` checks
   that both look unlike any other button in both schemes.
@@ -140,9 +144,9 @@ matters, so a suppression at the site is preferred.
   `background` as system colours. Each pair of colours text is drawn in meets
   WCAG AA contrast in both schemes; that is checked by hand when a colour
   changes.
-- **Each kind of status dot has its own shape.** `src/servers-guide.test.ts`
+- **Each kind of status dot has its own shape.** `src/workspaces-guide.test.ts`
   reads each `.dot-<kind>` rule in `src/styles.css`, requires the shapes to
-  differ, and holds the shape table in `docs/servers.md` to them.
+  differ, and holds the shape table in `docs/workspaces.md` to them.
 - Links between help pages — a page's file name, optionally followed by a
   `#part` — stay inside rcman; other links open in a new tab.
 
@@ -152,20 +156,19 @@ matters, so a suppression at the site is preferred.
 |---|---|
 | `src/App.tsx` | Who is signed in, the navigation, whose **Admin** menu is a `usePopup` that also closes when a page is chosen and when the page changes, and the routes |
 | `src/AdminPages.tsx` | `ADMIN`, the administrators' pages by name, which the links in the administrators' warning use, and `ADMIN_PAGES`, the same pages in order, which the navigation's **Admin** menu and the routes are built from |
-| `src/Dashboard.tsx` | The Servers page: the folder tree and its summary beside the selected folder's panel, the selection kept in the address as `?folder=`, the servers refreshed every `POLL_MS`; a refresh's failure is shown until a later refresh works, and an answer older than one asked for since is dropped; the Claude account is loaded once, and again after a refresh works when the page did not reach rcman for it (`UNREACHABLE` or `SIGNED_OUT`); its failure and the refresh's are shown once when they are alike, by code and title; after a folder is made or cloned, the folder it was made in is fetched again, and the new one selected if the folder it was made in still is, and after one is deleted the folder above it replaces it in the address |
-| `src/Folders.tsx` | The folder tree, fetched a folder at a time and opened to whatever is selected — `reload` fetches a folder again after a folder is made or deleted in it, and `forget` drops a deleted folder and all below it — each folder's status dot and repository marker, and the summary of every server |
-| `src/FolderPanel.tsx` | A folder's panel: its breadcrumb, its actions (**New folder**, **Clone from GitHub** and **Delete folder**, with its confirmation), its Claude server section and, for a repository, its Changes section; and the Home panel, shown while no folder is selected, with **New folder** and **Clone from GitHub** only. New folder's and Clone from GitHub's forms are one `FolderForm`: a field, a note where the form has one (Clone from GitHub's links to Settings for the token), its submit button, which says the request is running while it runs, when it and Cancel are disabled, and the server's refusal with the form's labels; while its request runs, the header's actions wait too, so no other form can take its place |
-| `src/Changes.tsx` | A repository's Changes section: its heading with the branch bar (`src/BranchBar.tsx`) beside it, the staged and not staged files, each list folding under a heading that counts its files and more, with its Stage selected or Unstage selected beside it, a checkbox for each file that can be selected and Select all, and each file's change as its letter (`m.changeLetters`) in a colour of its own, with its word (`m.changes`) as its accessible text and title; Commit, a split button whose menu holds Commit & Push; and the status line, "Checked …" (`m.checkedAgo`) worked out again every `CHECKED_TICK_MS` while the section is shown, and Refresh changes. `src/git-guide.test.ts` holds the table of changes in `docs/git.md` to the letters and words. A list is open at first while it has files, opens when files come to it, and otherwise stays as the person left it. Only the selected folder's status is fetched, when its panel opens, every `POLL_MS` while it is open and after every action; an answer older than one asked for since is dropped. Its branches are fetched when it opens, after every action and when the current branch changes. What is checked is kept across refreshes, for files still listed. A refusal is shown beside what was tried until any later action there works |
+| `src/Dashboard.tsx` | The Workspaces page: the person's workspaces, each with its dot (`dotFor` in `src/Servers.tsx`) and its state while it is not ready, and **New workspace**'s form, beside the selected workspace's panel; the selection kept in the address as `?workspace=`; the workspaces refreshed every `POLL_MS`, a refresh's failure shown until a later refresh works, and an answer older than one asked for since dropped. A new workspace is selected once the server takes its name. The panel says what a workspace being made, deleted or failed is, and for a ready one has its **Claude server** section; **Delete workspace** asks first, and after a delete no workspace is selected and the page says what was deleted |
+| `src/Changes.tsx` | A repository's Changes section, on no page while the server refuses git in workspaces: its heading with the branch bar (`src/BranchBar.tsx`) beside it, the staged and not staged files, each list folding under a heading that counts its files and more, with its Stage selected or Unstage selected beside it, a checkbox for each file that can be selected and Select all, and each file's change as its letter (`m.changeLetters`) in a colour of its own, with its word (`m.changes`) as its accessible text and title; Commit, a split button whose menu holds Commit & Push; and the status line, "Checked …" (`m.checkedAgo`) worked out again every `CHECKED_TICK_MS` while the section is shown, and Refresh changes. `src/Changes.test.tsx` holds every change to a letter and a word, and the letters to differing. A list is open at first while it has files, opens when files come to it, and otherwise stays as the person left it. The status is fetched when the section opens, every `POLL_MS` while it is open and after every action; an answer older than one asked for since is dropped. Its branches are fetched when it opens, after every action and when the current branch changes. What is checked is kept across refreshes, for files still listed. A refusal is shown beside what was tried until any later action there works |
 | `src/BranchBar.tsx` | The branch bar: the branch lookup, a button naming where the repository is, whose pop-up has a filter, which asks rcman nothing, over the local and remote branches listed, each a switch where one is offered; **+**, New branch's form in a pop-up; Refresh branches, its icon turning while the fetch runs; ahead and behind as arrows, with `m.tracking` as their accessible text; and Push. It is shown once either the status or the branches are known, so a status that cannot be had leaves the branches to switch to; the arrows and Push wait for the status |
 | `src/usePopup.ts` | A pop-up opened by a button, as a disclosure: it closes on Escape, putting focus back on the button, on a press outside it and when focus moves outside it. Every pop-up a button opens uses it, the **Admin** menu among them. The stylesheet places the branch bar's pop-ups against the Changes heading's row, so they stay inside the section at any width |
 | `public/favicon.svg` | The tab's icon, `*rc` in white on a black circle, which `index.html` links; Vite copies `public/` into the build as it is |
 | `src/Icons.tsx` | rcman's own icons, inline SVG drawn in the text's colour and hidden from assistive technology; the button or text they are in carries the name, from `src/messages.ts` |
-| `src/Servers.tsx` | A server's states, what each allows and shows, and its card; `serversIn`, the servers in a folder or below it, which both a folder's dot and the delete confirmation count |
+| `src/Servers.tsx` | A server's states, what each allows and shows, and its card; a workspace as the page lists it, and `dotFor`, the dot it carries |
 | `src/Caret.tsx` | The caret of a disclosure button, wherever one has a caret, turned by its `aria-expanded` |
-| `src/Claude.tsx` | The Claude account's state and the connect flow |
-| `src/Settings.tsx` | The person's own settings, in parts that are each saved on their own; `FIELDS` is every setting it shows, and a test holds `docs/settings.md` to it. The GitHub token is a part of its own, outside `FIELDS`: a password field never filled from the server, which `/api/github` tells only whether a token is stored, and **Remove token**, which asks first |
-| `src/People.tsx`, `src/Everyone.tsx`, `src/Audit.tsx`, `src/Versions.tsx` | Administration; `src/Everyone.tsx` shows everyone's servers with no actions |
-| `src/Attention.tsx` | The administrators' warning at the top of every page, from `/api/attention`, fetched on load and on every change of page |
+| `src/Claude.tsx` | The Claude account's state and the connect flow, on no page while the server refuses signing in to Claude |
+| `src/Settings.tsx` | The person's own settings, in parts that are each saved on their own; `FIELDS` is every setting it shows, and a test holds `docs/settings.md` to it |
+| `src/People.tsx`, `src/Everyone.tsx`, `src/Audit.tsx` | Administration: the people, each with their role and how many workspaces they have, added by address and removed after a confirmation; everyone's workspaces and their servers, with no actions; the audit trail |
+| `src/Versions.tsx` | The Claude Code versions page, on no page while the server refuses it |
+| `src/Attention.tsx` | The administrators' warning at the top of every page, from `/api/attention`, naming each server on an unrecognised screen by its person and workspace, with a link to everyone's workspaces; fetched on load and on every change of page |
 | `src/Docs.tsx` | The help pages, from `/api/docs` |
 | `src/clientErrors.ts` | The failures noted for rcman, kept until they are sent (see [Reporting failures](#reporting-failures)) |
 
@@ -196,12 +199,15 @@ the rest. Nothing of this is shown to the person.
 ## Tests
 
 - **Component tests** (Vitest, Testing Library, jsdom): `src/*.test.ts(x)`.
-  Those that render anything render the whole app at a route against
+  Those that render anything render the whole app at a route, or, for a part
+  that is on no page, that part on its own (`renderAlone` in
+  `src/test/render.tsx`, with a page at each other path a test names to
+  follow a link to, or to leave it for), against
   `src/test/fakeApi.ts`, which
   answers from a table of routes in the backend's problem-details shape and
   records every call; a route answering `UNREACHABLE_REPLY` makes `fetch`
   reject, as a browser's does, and one answering `SIGNED_OUT_REPLY` answers an
-  opaque redirect, as oauth2-proxy's redirect is seen. `renderApp` in `src/test/render.tsx` also returns the
+  opaque redirect, as oauth2-proxy's redirect is seen. `renderApp` and `renderAlone` also return the
   router's current location and a `navigate`, whose `navigate(-1)` is the
   browser's back button, and takes `pollMs`, 0 unless a test gives one. `src/test/setup.ts` runs the role queries once
   before each file's first test and sets how long a `findBy*` waits, both
@@ -213,16 +219,13 @@ the rest. Nothing of this is shown to the person.
   `src/styles.css` take its comments out with `uncommented` in
   `src/test/css.ts`.
 - **Browser tests** (Playwright): `e2e/*.spec.ts`, against the built frontend
-  served by the real backend from `tests/e2e_server.py` — a real `rc-helper`
-  per person with the fake `claude`, two people with their own homes, one of
-  them with a git repository whose origin is on GitHub and another there to
-  clone, and oauth2-proxy's
-  identity header set per test. GitHub is the world's own
-  `tests/github_server.py`, serving the world's `origins/` while the backend
-  runs, and taking a push with `GITHUB_TOKEN` in `e2e/people.ts`, which
-  `playwright.config.ts` gives the backend, so a test can enter the token.
-  `rc-admin` there is a stand-in
-  that manages the users file; the container suite tests the real one.
+  served by the real backend from `tests/e2e_server.py` — workspaces on the
+  host runtime with the fake `claude`, the people in `e2e/people.ts`, an
+  administrator whose workspaces' Claude the world signs in as each is made
+  and another person whose it does not, and oauth2-proxy's identity header
+  set per test. The parts that are on no page are not in the browser tests.
+  No fake `claude` there shows a screen rcman does not recognise, so the
+  test of the administrators' warning plants `/api/attention`'s answer.
 
   Each run has a world and a port of its own, which `e2e/world.ts` names:
   the world a folder under `/tmp`, with a name no other run has, the prefix
@@ -231,8 +234,8 @@ the rest. Nothing of this is shown to the person.
   system has free. Playwright loads the config again in each worker, so
   `e2e/world.ts` keeps both in the environment, `RCMAN_E2E_DIR` and
   `RCMAN_E2E_PORT`, which the workers and the backend inherit, and keeps
-  any already given there. A spec finds the world as `WORLD` from there,
-  so a test can change a file in it behind rcman's back.
+  any already given there; `playwright.config.ts` gives the backend the
+  world as `WORLD` from there.
 
   The backend makes the world, and refuses a folder that already exists.
   It holds the world as a held folder is held, and clears the worlds beside

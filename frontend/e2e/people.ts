@@ -1,5 +1,7 @@
 import type { Page } from "@playwright/test";
 
+// The people in the world tests/e2e_server.py makes: alice, an administrator,
+// whose workspaces' Claude is signed in as each is made, and bob, whose are not.
 export const ALICE = "alice@example.com";
 export const BOB = "bob@example.com";
 
@@ -7,6 +9,3 @@ export const BOB = "bob@example.com";
 export async function signInAs(page: Page, email: string) {
   await page.setExtraHTTPHeaders({ "X-Forwarded-Email": email });
 }
-
-// The token the world's GitHub takes for a push, which playwright.config.ts gives it.
-export const GITHUB_TOKEN = "e2e-github-token-of-the-world";

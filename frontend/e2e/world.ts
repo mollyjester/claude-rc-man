@@ -25,8 +25,8 @@ function freePort(): Promise<number> {
 process.env.RCMAN_E2E_DIR ??= join("/tmp", `rcman-e2e-${randomUUID()}`);
 process.env.RCMAN_E2E_PORT ??= String(await freePort());
 
-// The world: each person's home under homes/, and the origins of their repositories
-// under origins/, which the world's GitHub serves as https://github.com/<owner>/<name>.git.
+// The world: rcman's database, and the workspaces and their tmux sockets, which
+// tests/e2e_server.py makes.
 export const WORLD: string = process.env.RCMAN_E2E_DIR;
 export const PORT: string = process.env.RCMAN_E2E_PORT;
 export const ORIGIN = `http://127.0.0.1:${PORT}`;

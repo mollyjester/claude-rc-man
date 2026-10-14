@@ -12,6 +12,7 @@ from pydantic import Field, ValidationError, WrapValidator
 from pydantic_core import PydanticCustomError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from helpers import rules
 from helpers.rules import Rule
 
 log = logging.getLogger("rcman.problems")
@@ -23,6 +24,7 @@ STRING_EMPTY = "string_empty"  # string_too_short, where the shortest allowed is
 FIELD_INVALID = "field_invalid"  # any type FIELD_MESSAGES has no message for
 PUBLIC_PATHS = {"/api/health", "/{path:path}"}  # the frontend's files need no identity
 
+# Every problem rcman answers with: its words, and its HTTP status.
 MESSAGES = {
     "not_authenticated": "Sign in first.",
     "not_allowed": "This account may not use rcman.",
@@ -32,11 +34,33 @@ MESSAGES = {
     "method_not_allowed": "That is not allowed here.",
     "validation_failed": "Some of what was sent is not valid.",
     "body_unreadable": "What was sent could not be read as text.",
-    "users_file_invalid": "The users file is invalid.",
-    "helper_unavailable": "rcman could not reach its helper.",
-    "helper_timeout": "rcman's helper took too long to answer.",
     "author_not_set": "Set your commit author name in Settings before committing.",
+    "not_available_yet": "rcman cannot do this with workspaces yet.",
     "internal_error": "Something went wrong in rcman.",
+    # people
+    "email_invalid": rules.EMAIL.sentence,
+    "email_taken": "Someone with that address is there already.",
+    "people_full": "rcman has room for no more people.",
+    "person_not_found": "There is no such person.",
+    # workspaces
+    "workspace_not_found": "There is no such workspace.",
+    "workspace_name_taken": "You have a workspace with that name already.",
+    "workspace_not_ready": "The workspace is not ready: it is being made, or deleted, or failed.",
+    "runtime_unavailable": "rcman cannot reach its containers just now. Try again in a moment.",
+    "workspace_failed": "The workspace did not do what rcman asked of it.",
+    # servers
+    "claude_not_installed": "Claude Code is not installed in the workspace.",
+    "claude_not_logged_in": "Claude is not signed in in this workspace.",
+    "claude_unrecognised_output": "Claude Code answered with output rcman does not recognise.",
+    "already_running": "A server is already running in this workspace.",
+    "not_running": "No server is running in this workspace.",
+    "not_stopped": "There is no server in this workspace that stopped and can be resumed.",
+    "still_running": "Stop the server before forgetting it.",
+    "unknown_server": "There is no server in this workspace.",
+    "nothing_to_confirm": "The server is not asking anything.",
+    "confirm_not_accepted": "The server did not accept the answer.",
+    "timeout": "The workspace did not answer in time.",
+    "prefix_invalid": rules.PREFIX.sentence,
 }
 STATUS = {
     "not_authenticated": 401,
@@ -47,11 +71,30 @@ STATUS = {
     "method_not_allowed": 405,
     "validation_failed": 422,
     "body_unreadable": 400,
-    "users_file_invalid": 500,
-    "helper_unavailable": 502,
-    "helper_timeout": 504,
     "author_not_set": 409,
+    "not_available_yet": 501,
     "internal_error": 500,
+    "email_invalid": 400,
+    "email_taken": 409,
+    "people_full": 409,
+    "person_not_found": 404,
+    "workspace_not_found": 404,
+    "workspace_name_taken": 409,
+    "workspace_not_ready": 409,
+    "runtime_unavailable": 503,
+    "workspace_failed": 502,
+    "claude_not_installed": 409,
+    "claude_not_logged_in": 409,
+    "claude_unrecognised_output": 502,
+    "already_running": 409,
+    "not_running": 409,
+    "not_stopped": 409,
+    "still_running": 409,
+    "unknown_server": 404,
+    "nothing_to_confirm": 409,
+    "confirm_not_accepted": 409,
+    "timeout": 504,
+    "prefix_invalid": 400,
 }
 
 

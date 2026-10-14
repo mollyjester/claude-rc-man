@@ -1,25 +1,34 @@
 import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
-import { CONNECTION_STATES, START_REASON } from "./Claude";
+import { useEffect, useState } from "react";
+
+import { api as client } from "./api";
+import { ClaudeConnection, CONNECTION_STATES, type Connection, START_REASON } from "./Claude";
 import { m } from "./messages";
 import {
   CONNECTED,
   fakeApi,
-  ME,
   NOT_CONNECTED,
   problem,
   type Reply,
   type Routes,
 } from "./test/fakeApi";
-import { renderApp } from "./test/render";
+import { renderAlone } from "./test/render";
+
+// The Claude account's section is on no page while signing in to Claude in a
+// workspace is not there; here it is loaded once and shown on its own.
+function Account() {
+  const [connection, setConnection] = useState<Connection | null>(null);
+  useEffect(() => {
+    client.get<Connection>("/api/claude").then(setConnection);
+  }, []);
+  return <ClaudeConnection connection={connection} onChange={setConnection} />;
+}
 
 function api(claude: Reply, extra: Routes = {}) {
   return fakeApi({
-    "GET /api/me": ME,
     "GET /api/claude": claude,
-    "GET /api/folders": { path: "", entries: [] },
-    "GET /api/servers": { servers: [] },
     ...extra,
   });
 }
@@ -36,7 +45,7 @@ test("every state of the account says whether a server can start, and why not", 
   }
 });
 
-test("an expiring or expired sign-in still starts a server: rc-helper refuses only an account not signed in", () => {
+test("an expiring or expired sign-in still starts a server: the server refuses only an account not signed in", () => {
   expect(START_REASON.expiring).toBeNull();
   expect(START_REASON.expired).toBeNull();
   expect(START_REASON.connected).toBeNull();
@@ -52,7 +61,7 @@ test("connecting: link, then code, then connected", async () => {
       return CONNECTED;
     },
   });
-  renderApp();
+  renderAlone(<Account />);
   expect(await screen.findByText(m.claudeNotConnected)).toBeInTheDocument();
   await userEvent.click(screen.getByRole("button", { name: m.connect }));
   await userEvent.click(screen.getByRole("button", { name: m.connectGo }));
@@ -70,7 +79,7 @@ test("connecting: link, then code, then connected", async () => {
 
 test("another Claude address can be given", async () => {
   const fake = api(NOT_CONNECTED, { "POST /api/claude/login": { url: "https://claude.com/x" } });
-  renderApp();
+  renderAlone(<Account />);
   await userEvent.click(await screen.findByRole("button", { name: m.connect }));
   await userEvent.type(screen.getByLabelText(m.connectEmail), "work@example.org");
   await userEvent.click(screen.getByRole("button", { name: m.connectGo }));
@@ -84,7 +93,7 @@ test("a refused code shows the server's problem", async () => {
     "POST /api/claude/login": { url: "https://claude.com/x" },
     "POST /api/claude/code": problem(409, "login_failed", "Signing in to Claude failed."),
   });
-  renderApp();
+  renderAlone(<Account />);
   await userEvent.click(await screen.findByRole("button", { name: m.connect }));
   await userEvent.click(screen.getByRole("button", { name: m.connectGo }));
   await userEvent.type(await screen.findByLabelText(m.connectCode), "BAD");
@@ -101,7 +110,7 @@ test("an unrecognised sign-in screen is shown as it is", async () => {
       screen: ["odd screen"],
     }),
   });
-  renderApp();
+  renderAlone(<Account />);
   await userEvent.click(await screen.findByRole("button", { name: m.connect }));
   await userEvent.click(screen.getByRole("button", { name: m.connectGo }));
   expect(await screen.findByText("odd screen")).toBeInTheDocument();
@@ -109,14 +118,14 @@ test("an unrecognised sign-in screen is shown as it is", async () => {
 
 test("an expiring sign-in warns and offers to connect again", async () => {
   api({ ...CONNECTED, connection: "expiring" });
-  renderApp();
+  renderAlone(<Account />);
   expect(await screen.findByText(/Your Claude sign-in expires/)).toBeInTheDocument();
   expect(screen.getByRole("button", { name: m.reconnect })).toBeInTheDocument();
 });
 
 test("an expired sign-in says so", async () => {
   api({ ...CONNECTED, connection: "expired" });
-  renderApp();
+  renderAlone(<Account />);
   expect(await screen.findByText(m.claudeExpired)).toBeInTheDocument();
   expect(screen.getByRole("button", { name: m.reconnect })).toBeInTheDocument();
 });

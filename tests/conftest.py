@@ -23,25 +23,17 @@ def pytest_collection_modifyitems(items):
 # --- backend fixtures ------------------------------------------------------------
 
 import contextlib  # noqa: E402
-import json  # noqa: E402
-import subprocess  # noqa: E402
+import time  # noqa: E402
 from pathlib import Path  # noqa: E402
 
 REPO = Path(__file__).resolve().parent.parent
 ORIGIN = "https://rcman.example.com"
 ALICE, BOB, CAROL = "alice@example.com", "bob@example.com", "carol@example.com"
-
-
-class RecordingAdmin:
-    """Stands in for `sudo rc-admin`; records argv and answers from a script."""
-
-    def __init__(self):
-        self.calls: list[list[str]] = []
-        self.replies: list[tuple[int, dict]] = []
-
-    def __call__(self, args, timeout=None):
-        self.calls.append(list(args))
-        return self.replies.pop(0) if self.replies else (0, {"users": []})
+# Who the app fixtures start with: (email, administrator).
+PEOPLE = ((ALICE, True), (BOB, False), (CAROL, False))
+TMUX_CONF = REPO / "backend" / "rcman" / "tmux.conf"
+# How long the tests wait for a workspace to be made.
+MADE_WITHIN = 30.0
 
 
 # The token the tests' GitHub takes for a push.
@@ -59,91 +51,68 @@ def github(tmp_path_factory):
     server.stop()
 
 
-@pytest.fixture(scope="session", autouse=True)
-def github_hook_works(github, tmp_path_factory):
-    """Before any test: git as rc-helper runs it sends GitHub to the address the hook
-    gives, the tests' GitHub or UNREACHABLE, so a broken hook stops the session before
-    any test could reach the real GitHub."""
-    from tests.github_server import UNREACHABLE
-    from tests.helper_env import assert_github_hooked
+def fake_claude(path: Path, env: str = "FAKE_CLAUDE_READY_SECONDS=0.3") -> Path:
+    """A `claude` at ``path`` that runs the fake (devtools/fake_claude.py) with ``env``."""
+    from devtools import record_claude as rec
 
-    scratch = tmp_path_factory.mktemp("hook-check")
-    assert_github_hooked(scratch, github.url, github)
-    assert_github_hooked(scratch, UNREACHABLE)
+    path.write_text(f'#!/bin/sh\n{env} exec {rec.FAKE_CLAUDE} "$@"\n', encoding="utf-8")
+    path.chmod(0o755)
+    return path
 
 
 @contextlib.contextmanager
-def helper_runner(tmp_path, github_url):
-    """A real rc-helper per mapped Linux user, each with its own home under ``tmp_path``
-    and its own tmux socket in a tmux_sockets folder (devtools/held_folders.py), and
-    https://github.com/ pointed at ``github_url``."""
-    from devtools import fake_claude as fake
-    from devtools import record_claude as rec
+def host_runtime(tmp_path: Path):
+    """The host runtime (backend/rcman/runtime.py) for a test: workspaces under
+    ``tmp_path`` with the fake `claude`, their tmux sockets in a tmux_sockets folder
+    (devtools/held_folders.py), every workspace removed afterwards."""
+    from rcman.runtime import HostRuntime
+
     from devtools.held_folders import tmux_sockets
-    from tests.helper_env import helper_env
 
-    homes = {}
-    wrapper = tmp_path / "claude"
-    wrapper.write_text(f'#!/bin/sh\nFAKE_CLAUDE_READY_SECONDS=0.3 exec {rec.FAKE_CLAUDE} "$@"\n')
-    wrapper.chmod(0o755)
-    for linux in ("alice", "bob", "carol"):
-        home = tmp_path / "homes" / linux
-        (home / "projects" / f"{linux}-project").mkdir(parents=True)
-        fake.write_state(home / ".claude-fake", logged_in=True)
-        homes[linux] = home
-
-    def runner(linux, args, stdin=None, timeout=60):
-        sock = runner.socket(linux)
-        env = helper_env(homes[linux], wrapper, sock, github_url)
-        proc = subprocess.run(
-            [str(REPO / "helpers" / "rc-helper"), *args],
-            env=env, input=stdin, capture_output=True, text=True, timeout=timeout,
-        )  # fmt: skip
-        return proc.returncode, json.loads(proc.stdout)
-
-    runner.homes = homes
-    with tmux_sockets("rcb-") as sock_root:
-        runner.socket = lambda linux: sock_root / f"{linux}.sock"
-        yield runner
+    root = tmp_path / "workspaces"
+    root.mkdir()
+    claude = fake_claude(tmp_path / "claude")
+    with tmux_sockets("rcb-") as sockets:
+        runtime = HostRuntime(root, sockets, claude, TMUX_CONF)
+        try:
+            yield runtime
+        finally:
+            for name in runtime.labelled():
+                runtime.remove(name)
 
 
 @pytest.fixture
-def helper_homes(tmp_path, github):
-    """helper_runner for the test's tmp_path, with the tests' GitHub."""
-    with helper_runner(tmp_path, github.url) as runner:
-        yield runner
+def runtime(tmp_path):
+    with host_runtime(tmp_path) as made:
+        yield made
 
 
 @pytest.fixture
 def settings(tmp_path):
+    from rcman import db, people
     from rcman.settings import Settings
 
-    from helpers import users_file as uf
-
-    users = tmp_path / "users.toml"
-    uf.save(
-        users,
-        [uf.User(ALICE, "alice", True), uf.User(BOB, "bob", False), uf.User(CAROL, "carol", False)],
-    )
-    return Settings(
+    made = Settings(
         public_origin=ORIGIN,
-        users_file=users,
         database=tmp_path / "rcman.db",
-        helpers_dir=REPO / "helpers",
+        allowed_emails=tmp_path / "allowed-emails",
         docs_dir=REPO / "docs",
     )
+    db.migrate(made.database)
+    con = db.connect(made.database)
+    try:
+        for email, admin in PEOPLE:
+            people.add(con, email, admin)
+    finally:
+        con.close()
+    return made
 
 
 @pytest.fixture
-def admin_runner():
-    return RecordingAdmin()
-
-
-@pytest.fixture
-def app(settings, helper_homes, admin_runner):
+def app(settings, runtime):
     from rcman.main import create_app
 
-    return create_app(settings, helper=helper_homes, admin=admin_runner)
+    return create_app(settings, runtime=runtime)
 
 
 @pytest.fixture
@@ -151,55 +120,74 @@ def client(app):
     from fastapi.testclient import TestClient
 
     with TestClient(app) as c:
+        assert app.state.workspaces.restored.wait(30)
         yield c
+
+
+def made_workspace(client, who: str, name: str = "work") -> dict:
+    """A workspace of ``who``'s called ``name``, once it is ready."""
+    r = client.post("/api/workspaces", json={"name": name}, headers=changing(who))
+    assert r.status_code == 202, r.text
+    workspace = r.json()["workspace"]
+    deadline = time.monotonic() + MADE_WITHIN
+    while True:
+        listed = client.get("/api/workspaces", headers=as_user(who)).json()["workspaces"]
+        found = next(w for w in listed if w["id"] == workspace["id"])
+        if found["state"] != "creating":
+            assert found["state"] == "ready", found
+            return found
+        assert time.monotonic() < deadline, found
+        time.sleep(0.05)
+
+
+def signed_in(app, workspace: dict, trusted: bool = False) -> None:
+    """The fake `claude` of ``workspace`` signed in, with its folder trusted if ``trusted``."""
+    from rcman.runtime import container_name
+
+    from devtools import fake_claude as fake
+
+    layout = app.state.workspaces.runtime.layout(container_name(workspace["id"]))
+    folders = [layout.work] if trusted else []
+    fake.write_state(Path(layout.config), logged_in=True, trusted=folders)
 
 
 # A valid request for each route that takes one: (method, path) -> keyword
 # arguments for the test client. Tests that drive every route of a kind, found
-# in the route table, take their requests from here.
+# in the route table, take their requests from here. A workspace's id is 1, the
+# first one a test makes.
 CALLS = {
-    ("POST", "/api/servers"): {"json": {"path": "projects/alice-project"}},
-    ("POST", "/api/servers/resume"): {"json": {"path": "projects/alice-project"}},
-    ("POST", "/api/servers/stop"): {"json": {"path": "projects/alice-project"}},
-    ("POST", "/api/servers/forget"): {"json": {"path": "projects/alice-project"}},
-    ("POST", "/api/servers/confirm"): {"json": {"path": "projects/alice-project", "answer": "y"}},
-    ("POST", "/api/folders"): {"json": {"parent": "projects", "name": "new"}},
-    ("DELETE", "/api/folders"): {"params": {"path": "projects/alice-project"}},
+    ("POST", "/api/servers"): {"json": {"workspace": 1}},
+    ("POST", "/api/servers/resume"): {"json": {"workspace": 1}},
+    ("POST", "/api/servers/stop"): {"json": {"workspace": 1}},
+    ("POST", "/api/servers/forget"): {"json": {"workspace": 1}},
+    ("POST", "/api/servers/confirm"): {"json": {"workspace": 1, "answer": "y"}},
+    ("GET", "/api/servers/output"): {"params": {"workspace": 1}},
+    ("POST", "/api/workspaces"): {"json": {"name": "another"}},
+    ("DELETE", "/api/workspaces/{workspace}"): {},
     ("PATCH", "/api/me/settings"): {"json": {"prefix": "alice"}},
-    ("POST", "/api/git/stage"): {
-        "json": {"path": "projects/alice-project", "files": ["README.md"]}
-    },
-    ("POST", "/api/git/unstage"): {
-        "json": {"path": "projects/alice-project", "files": ["README.md"]}
-    },
-    ("POST", "/api/git/commit"): {
-        "json": {"path": "projects/alice-project", "message": "A message"}
-    },
-    ("POST", "/api/git/switch"): {"json": {"path": "projects/alice-project", "branch": "main"}},
-    ("POST", "/api/git/branch"): {"json": {"path": "projects/alice-project", "name": "new-branch"}},
-    ("POST", "/api/git/fetch"): {"json": {"path": "projects/alice-project"}},
-    ("POST", "/api/git/push"): {"json": {"path": "projects/alice-project"}},
-    ("POST", "/api/git/commit-push"): {
-        "json": {"path": "projects/alice-project", "message": "A message"}
-    },
-    ("POST", "/api/git/clone"): {
-        "json": {"parent": "projects/alice-project", "url": "https://github.com/alice/a-clone"}
-    },
-    ("GET", "/api/git/status"): {"params": {"path": "projects/alice-project"}},
-    ("GET", "/api/git/branches"): {"params": {"path": "projects/alice-project"}},
+    ("POST", "/api/git/stage"): {"json": {"path": "repo", "files": ["README.md"]}},
+    ("POST", "/api/git/unstage"): {"json": {"path": "repo", "files": ["README.md"]}},
+    ("POST", "/api/git/commit"): {"json": {"path": "repo", "message": "A message"}},
+    ("POST", "/api/git/switch"): {"json": {"path": "repo", "branch": "main"}},
+    ("POST", "/api/git/branch"): {"json": {"path": "repo", "name": "new-branch"}},
+    ("POST", "/api/git/fetch"): {"json": {"path": "repo"}},
+    ("POST", "/api/git/push"): {"json": {"path": "repo"}},
+    ("POST", "/api/git/commit-push"): {"json": {"path": "repo", "message": "A message"}},
+    ("POST", "/api/git/clone"): {"json": {"url": "https://github.com/alice/a-clone"}},
+    ("GET", "/api/git/status"): {"params": {"path": "repo"}},
+    ("GET", "/api/git/branches"): {"params": {"path": "repo"}},
     ("GET", "/api/github"): {},
     ("POST", "/api/github/token"): {"json": {"token": "a-github-token"}},
     ("DELETE", "/api/github/token"): {},
-    ("POST", "/api/users"): {"json": {"linux": "dave", "email": "dave@example.com"}},
-    ("DELETE", "/api/users/{linux}"): {"params": {"home": "keep"}},
+    ("POST", "/api/people"): {"json": {"email": "dave@example.com"}},
+    ("DELETE", "/api/people/{person}"): {},
+    ("GET", "/api/claude"): {},
     ("POST", "/api/claude/login"): {"json": {}},
     ("POST", "/api/claude/code"): {"json": {"code": "x"}},
     ("POST", "/api/claude/upgrade"): {"json": {"version": "2.2.0"}},
-    ("GET", "/api/folders"): {"params": {"path": "projects"}},
-    ("GET", "/api/servers/output"): {"params": {"path": "projects/alice-project"}},
     ("GET", "/api/docs/{slug}"): {},
     ("GET", "/api/audit"): {},
-    ("GET", "/api/users"): {},
+    ("GET", "/api/people"): {},
     ("GET", "/api/claude/versions"): {},
     ("GET", "/api/servers/everyone"): {},
     ("GET", "/api/attention"): {},
@@ -207,7 +195,7 @@ CALLS = {
         "json": {
             "kind": "unreachable",
             "method": "GET",
-            "path": "/api/servers",
+            "path": "/api/workspaces",
             "status": None,
             "name": "TypeError",
             "message": "Failed to fetch",
@@ -225,8 +213,9 @@ CALLS = {
 
 
 def concrete(path):
-    """A route's path with its parameters filled in."""
-    return path.replace("{linux}", "bob").replace("{slug}", "servers")
+    """A route's path with its parameters filled in: bob, the second person, and the
+    first workspace."""
+    return path.replace("{person}", "2").replace("{workspace}", "1").replace("{slug}", "workspaces")
 
 
 def as_user(email):

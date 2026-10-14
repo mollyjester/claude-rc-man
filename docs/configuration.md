@@ -11,11 +11,14 @@ when a value is invalid.
 | Variable | What it sets |
 |---|---|
 | `RCMAN_PUBLIC_ORIGIN` | The address browsers use to reach rcman — scheme, host and port, with no path, such as `https://rcman.example.com`. Required. Requests that change something are accepted only when they come from this origin |
-| `RCMAN_USERS_FILE` | The list of people who may use rcman, managed with `rcman-user` (see [Adding and removing people](users.md)) |
-| `RCMAN_DATABASE` | The SQLite database holding the audit trail and each person's settings |
-| `RCMAN_HELPERS_DIR` | Where `rc-helper` and `rc-admin` are installed |
+| `RCMAN_DATABASE` | The SQLite database: the people who may use rcman, their workspaces and settings, and the audit trail |
+| `RCMAN_ALLOWED_EMAILS` | The list of addresses oauth2-proxy lets sign in, which rcman writes from its people (see [Adding and removing people](users.md)) |
+| `RCMAN_PODMAN_SOCKET` | The socket of the Podman service workspaces run in: rcman's own user manager's, under `XDG_RUNTIME_DIR`, when unset |
+| `RCMAN_WORKSPACE_IMAGE` | The image new workspaces are made from; the installer names its default image here |
+| `RCMAN_TOOLS_DIR` | The tools every workspace has, read-only: tmux, busybox and terminal descriptions, which the installer makes |
+| `RCMAN_CLAUDE_STORE` | The Claude Code store every workspace has, read-only, which the installer fills |
 | `RCMAN_DOCS_DIR` | Where the documentation pages shown in rcman are |
 | `RCMAN_FRONTEND_DIR` | Where the built web interface is |
 | `RCMAN_AUDIT_RETENTION_DAYS` | How long audit events are kept (see [Audit trail](audit.md)) |
 | `RCMAN_AUDIT_MAX_ROWS` | The most audit events kept at once (see [Audit trail](audit.md)) |
-| `RCMAN_LOGIN_WARNING_DAYS` | How many days before a Claude sign-in expires people are warned (see [Connecting your Claude account](claude-account.md)) |
+| `RCMAN_LOGIN_WARNING_DAYS` | How many days before a Claude sign-in expires people will be warned, once signing in to Claude in workspaces is there (see [Connecting your Claude account](claude-account.md)) |

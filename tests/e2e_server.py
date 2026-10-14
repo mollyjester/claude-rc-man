@@ -1,47 +1,35 @@
-"""The backend for the browser tests: real rcman, real rc-helper, fake claude.
+"""The backend for the browser tests: real rcman on the host runtime, fake claude.
 
 ``uvicorn --factory tests.e2e_server:create_app`` makes the world
 ``RCMAN_E2E_DIR`` names and removes it when it shuts down; how each run keeps a
-world of its own is in project-knowledge/frontend.md. The world holds a
-users file with alice (administrator, Claude connected) and bob (Claude not
-connected; the code ``GOOD-CODE`` connects him), a home and a tmux socket for
-each, and the fake claude. alice also has a git
-repository, projects/alice-repo, whose origin is
-https://github.com/alice/alice-repo.git: it holds main and feature, and
-later, which alice's repository has not fetched; https://github.com/alice/demo,
-which holds main and feature, is in no home, to be cloned. While the backend runs, the
-world's GitHub (tests/github_server.py) serves the world's origins/ and takes
-a push with the token in ``RCMAN_E2E_GITHUB_TOKEN``; rc-helper's
-``RC_HELPER_GITHUB`` points https://github.com/ at it. rc-helper runs for
-real as the current user against those homes. rc-admin needs root, so a
-stand-in manages the users file itself and reports versions; the container
-suite tests the real one.
+world of its own is in project-knowledge/frontend.md. The world holds rcman's
+database with alice (administrator) and bob, the host runtime's workspaces
+(backend/rcman/runtime.py) with their tmux sockets, and the fake claude. Signing
+in to Claude in a workspace is not there yet, so the world signs in the fake
+claude of every workspace of alice's as it is made, and none of bob's.
 """
 
 from __future__ import annotations
 
 import contextlib
-import json
 import os
 import re
-import subprocess
 from pathlib import Path
 
+from rcman import db, people
 from rcman.main import create_app as rcman_app
+from rcman.runtime import HostRuntime, Spec
 from rcman.settings import Settings
 
 from devtools import fake_claude as fake
 from devtools import held_folders
 from devtools import record_claude as rec
-from helpers import rc_admin as ra
-from helpers import users_file as uf
-from tests.git_fixtures import make_repo, push_branch_to_origin
-from tests.github_server import UNREACHABLE, GitHubServer
-from tests.helper_env import helper_env
 
 REPO = Path(__file__).resolve().parent.parent
-PEOPLE = {"alice": ("alice@example.com", True), "bob": ("bob@example.com", False)}
-GOOD_CODE = "GOOD-CODE"
+# Who the world lets in, and whether each is an administrator.
+PEOPLE = {"alice@example.com": True, "bob@example.com": False}
+# Whose workspaces' Claude is signed in.
+SIGNED_IN = "alice@example.com"
 # Every world's name, as frontend/e2e/world.ts makes one: the prefix and a random
 # UUID. Worlds a killed run left are cleared by it, so nothing else that begins the
 # same way is taken for one.
@@ -54,13 +42,8 @@ def is_world(name: str) -> bool:
 
 
 def sockets(root: Path) -> Path:
-    """Each person's tmux socket is here: inside the world, so each run has its own."""
+    """Each workspace's tmux socket is here: inside the world, so each run has its own."""
     return root / "tmux"
-
-
-def origins(root: Path) -> Path:
-    """The bare repositories the world's GitHub serves, as <owner>/<name>.git."""
-    return root / "origins"
 
 
 # A world is held, and one a killed run left cleared, as devtools/held_folders.py holds
@@ -96,29 +79,36 @@ def clear_abandoned(parent: Path, uid: int | None = None) -> None:
     )
 
 
-def _world(root: Path) -> dict[str, Path]:
-    homes = {}
-    for linux in PEOPLE:
-        home = root / "homes" / linux
-        for folder in ("alpha", "beta"):
-            (home / "projects" / f"{linux}-{folder}").mkdir(parents=True)
-        homes[linux] = home
-    repo = homes["alice"] / "projects" / "alice-repo"
-    origin = origins(root) / "alice" / "alice-repo.git"
-    make_repo(repo, origin=origin, url=GitHubServer.github_url("alice", "alice-repo"))
-    push_branch_to_origin(repo, origin, "later")
-    # A repository on the world's GitHub that no home holds, to clone.
-    make_repo(root / "sources" / "demo", origin=origins(root) / "alice" / "demo.git")
-    fake.write_state(homes["alice"] / ".claude-fake", logged_in=True)
-    fake.write_state(homes["bob"] / ".claude-fake", logged_in=False, accept_codes=[GOOD_CODE])
-    uf.save(
-        root / "users.toml",
-        [uf.User(email, linux, admin) for linux, (email, admin) in PEOPLE.items()],
-    )
+class WorldRuntime(HostRuntime):
+    """The host runtime, signing in the fake claude of each of SIGNED_IN's workspaces."""
+
+    signed_in_person: int | None = None
+
+    def create(self, spec: Spec) -> None:
+        super().create(spec)
+        if spec.person == self.signed_in_person:
+            fake.write_state(Path(self.layout(spec.name).config), logged_in=True)
+
+
+def _world(root: Path, settings: Settings) -> WorldRuntime:
+    db.migrate(settings.database)
+    con = db.connect(settings.database)
+    try:
+        for email, admin in PEOPLE.items():
+            people.add(con, email, admin)
+        signed_in = people.by_email(con, SIGNED_IN).id
+    finally:
+        con.close()
     wrapper = root / "claude"
     wrapper.write_text(f'#!/bin/sh\nFAKE_CLAUDE_READY_SECONDS=0.5 exec {rec.FAKE_CLAUDE} "$@"\n')
     wrapper.chmod(0o755)
-    return homes
+    (root / "workspaces").mkdir()
+    sockets(root).mkdir()
+    runtime = WorldRuntime(
+        root / "workspaces", sockets(root), wrapper, REPO / "backend" / "rcman" / "tmux.conf"
+    )
+    runtime.signed_in_person = signed_in
+    return runtime
 
 
 def create_app():
@@ -139,68 +129,13 @@ def create_app():
 
 
 def _app(root: Path, held):
-    homes = _world(root)
-    sockets(root).mkdir()
-    github = GitHubServer()
-
-    def helper(linux, args, stdin=None, timeout=60):
-        sock = sockets(root) / f"{linux}.sock"
-        env = helper_env(homes[linux], root / "claude", sock, github.url or UNREACHABLE)
-        proc = subprocess.run(
-            [str(REPO / "helpers" / "rc-helper"), *args],
-            env=env, input=stdin, capture_output=True, text=True, timeout=timeout,
-        )  # fmt: skip
-        return proc.returncode, json.loads(proc.stdout)
-
-    def admin(argv, timeout=None):
-        # Read as rc-admin reads its command line, so the backend's argv is held to it.
-        args = ra.parser("rc-admin", requester=True).parse_args(argv)
-        users = uf.load(root / "users.toml")
-        if args.verb == "list":
-            return 0, {
-                "users": [
-                    {"linux": u.linux, "email": u.email, "admin": u.admin, "account": True}
-                    for u in users
-                ]
-            }
-        if args.verb == "add":
-            users = [u for u in users if u.linux != args.linux_user] + [
-                uf.User(args.email, args.linux_user, args.admin)
-            ]
-            uf.save(root / "users.toml", users)
-            return 0, {"user": {"linux": args.linux_user}, "created": True}
-        if args.verb == "del":
-            uf.save(root / "users.toml", [u for u in users if u.linux != args.linux_user])
-            return 0, {"deleted": args.linux_user, "home_deleted": args.delete}
-        version = rec.load_manifest()["claude_version"]
-        if args.verb == "claude-status":
-            return 0, {
-                "approved": version,
-                "tested": version,
-                "users": [{"linux": u.linux, "installed": version} for u in users],
-            }
-        return 1, {
-            "error": {
-                "code": "claude_checks_failed",
-                "message": ra.MESSAGES["claude_checks_failed"],
-                "failed": ["version"],
-                "report": {
-                    "version": {
-                        "lines": ["ran: claude --version (on a terminal); exit code 0", "0.0.0"],
-                        "more": 0,
-                    }
-                },
-            }
-        }
-
     settings = Settings(
         public_origin=os.environ["RCMAN_PUBLIC_ORIGIN"],
-        users_file=root / "users.toml",
         database=root / "rcman.db",
+        allowed_emails=root / "allowed-emails",
         frontend_dir=REPO / "frontend" / "dist",
     )
-    app = rcman_app(settings, helper=helper, admin=admin)
-    app.state.github = github
+    app = rcman_app(settings, runtime=_world(root, settings))
     app.state.world_lock = held
     rcman_lifespan = app.router.lifespan_context
 
@@ -208,12 +143,8 @@ def _app(root: Path, held):
     async def lifespan(app):
         # uvicorn shuts the app down when it cannot bind, too, so this runs then.
         try:
-            github.start(origins(root), os.environ["RCMAN_E2E_GITHUB_TOKEN"])
-            try:
-                async with rcman_lifespan(app) as state:
-                    yield state
-            finally:
-                github.stop()
+            async with rcman_lifespan(app) as state:
+                yield state
         finally:
             try:
                 _remove(root)

@@ -2,7 +2,7 @@ import { expect, test } from "@playwright/test";
 
 import { m } from "../src/messages";
 import { FIELDS } from "../src/Settings";
-import { openAdminPage } from "./nav";
+import { makeWorkspace, openAdminPage } from "./nav";
 import { ALICE, BOB, signInAs } from "./people";
 
 test("settings: the server's verdict is shown as given", async ({ page }) => {
@@ -10,7 +10,7 @@ test("settings: the server's verdict is shown as given", async ({ page }) => {
   await page.goto("/settings");
   const part = page.getByRole("region", { name: m.settingsPrefixTitle });
   const prefix = part.getByLabel(FIELDS.prefix.label);
-  await expect(prefix).toHaveValue("bob");
+  await expect(prefix).toHaveValue("");
   await prefix.fill("not valid!");
   await part.getByRole("button", { name: m.save }).click();
   await expect(part.getByRole("alert")).toContainText(`${FIELDS.prefix.label}:`);
@@ -18,6 +18,23 @@ test("settings: the server's verdict is shown as given", async ({ page }) => {
   await prefix.fill("bobs-box");
   await part.getByRole("button", { name: m.save }).click();
   await expect(part.getByText(m.saved)).toBeVisible();
+  // and cleared again, to name sessions after each workspace
+  await page.reload();
+  await expect(prefix).toHaveValue("bobs-box");
+  await prefix.fill("");
+  await part.getByRole("button", { name: m.save }).click();
+  await expect(part.getByText(m.saved)).toBeVisible();
+  await page.reload();
+  await expect(prefix).toHaveValue("");
+});
+
+test("settings: the GitHub token part says rcman cannot store one yet", async ({ page }) => {
+  await signInAs(page, BOB);
+  await page.goto("/settings");
+  const github = page.getByRole("region", { name: m.settingsGithubTitle });
+  await expect(github.getByText("rcman cannot do this with workspaces yet.")).toBeVisible();
+  await expect(github.getByRole("button", { name: m.githubTokenRemove })).toHaveCount(0);
+  await expect(page.locator('input[type="password"]')).toHaveCount(0);
 });
 
 test("settings: the commit author falls back to the sign-in address", async ({ page }) => {
@@ -41,10 +58,10 @@ test("help: pages from docs/, with links between them", async ({ page }) => {
   await signInAs(page, BOB);
   await page.goto("/help");
   const nav = page.getByRole("navigation", { name: m.docsTitle });
-  await nav.getByRole("link", { name: "Servers" }).click();
-  await expect(page.getByRole("heading", { name: "Servers", level: 1 })).toBeVisible();
+  await nav.getByRole("link", { name: "Workspaces" }).click();
+  await expect(page.getByRole("heading", { name: "Workspaces", level: 1 })).toBeVisible();
   await page.reload();
-  await expect(page.getByRole("heading", { name: "Servers", level: 1 })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Workspaces", level: 1 })).toBeVisible();
 });
 
 test("administration is offered to administrators only", async ({ page }) => {
@@ -61,25 +78,68 @@ test("administration is offered to administrators only", async ({ page }) => {
   await page.goto("/");
   await openAdminPage(page, m.navUsers);
   await expect(page.getByRole("row", { name: /bob@example.com/ })).toBeVisible();
+  await openAdminPage(page, m.navEveryone);
+  await expect(page.getByRole("heading", { name: m.everyoneTitle })).toBeVisible();
   await openAdminPage(page, m.navAudit);
   await expect(page.getByRole("heading", { name: m.auditTitle })).toBeVisible();
-  await openAdminPage(page, m.navVersions);
-  await expect(page.getByText(m.versionsApproved)).toBeVisible();
+  await page.getByRole("banner").getByRole("button", { name: m.navAdmin }).click();
+  const menu = page.getByRole("banner").getByRole("listitem");
+  await expect(menu).toHaveCount(3);
+  await expect(page.getByRole("link", { name: m.versionsTitle })).toHaveCount(0);
 });
 
-test("a refused change shows the server's reason", async ({ page }) => {
+test("people are added and removed, and the audit trail shows it", async ({ page, browser }) => {
   await signInAs(page, ALICE);
-  await page.goto("/admin/claude");
-  await page.getByLabel(m.versionsUpgrade).fill("9.9.9");
-  await page.getByRole("button", { name: m.versionsUpgradeGo }).click();
-  // rc-admin's own sentence for the refusal, MESSAGES["claude_checks_failed"] in
-  // helpers/rc_admin.py, which the stand-in in tests/e2e_server.py answers with
-  await expect(page.getByRole("alert")).toContainText(
-    "That Claude Code version failed rcman's checks; nothing was changed.",
+  await page.goto("/");
+  await openAdminPage(page, m.navUsers);
+  await page.getByLabel(m.usersEmail).fill("dave@example.com");
+  await page.getByRole("button", { name: m.usersAdd }).click();
+  await expect(page.getByText(m.usersAdded("dave@example.com"))).toBeVisible();
+  const dave = page.getByRole("row", { name: /dave@example.com/ });
+  await expect(dave.getByText(m.usersUser)).toBeVisible();
+
+  // dave can sign in now, and makes a workspace
+  const signedIn = await browser.newPage();
+  await signInAs(signedIn, "dave@example.com");
+  await signedIn.goto("/");
+  await makeWorkspace(signedIn, "dave-box");
+  await page.reload();
+  await expect(dave.getByRole("cell", { name: "1", exact: true })).toBeVisible();
+
+  await dave.getByRole("button", { name: m.usersRemove }).click();
+  const dialog = page.getByRole("dialog", { name: m.usersRemoveTitle("dave@example.com") });
+  await expect(dialog.getByText(m.usersRemoveBody)).toBeVisible();
+  await dialog.getByRole("button", { name: m.usersRemoveConfirm }).click();
+  await expect(page.getByText(m.usersRemoved("dave@example.com"))).toBeVisible();
+  await expect(dave).toHaveCount(0);
+
+  // dave is let in no more
+  await signedIn.reload();
+  await expect(signedIn.getByRole("alert")).toContainText("may not use rcman");
+  await signedIn.close();
+
+  await openAdminPage(page, m.navAudit);
+  for (const action of ["person.add", "workspace.create", "person.delete"]) {
+    await expect(
+      page.getByRole("row").filter({ hasText: action }).filter({ hasText: "dave@example.com" }),
+    ).not.toHaveCount(0);
+  }
+});
+
+test("administrators are warned, with a link to everyone's workspaces, while a server is on an unrecognised screen", async ({
+  page,
+}) => {
+  await signInAs(page, ALICE);
+  // No workspace's fake claude here shows a screen rcman does not recognise, so the
+  // report is planted; what the page does with it is real.
+  await page.route("**/api/attention", (route) =>
+    route.fulfill({ json: { unrecognised: [{ email: BOB, workspace: "bob-odd" }] } }),
   );
-  await expect(page.getByRole("figure", { name: "version" })).toContainText(
-    "ran: claude --version",
-  );
+  await page.goto("/");
+  const banner = page.getByRole("region", { name: m.attentionTitle });
+  await expect(banner).toContainText(m.attentionUnrecognised([`${BOB}: bob-odd`]));
+  await banner.getByRole("link", { name: m.navEveryone }).click();
+  await expect(page.getByRole("heading", { name: m.everyoneTitle })).toBeVisible();
 });
 
 test("an address rcman does not know is refused", async ({ page }) => {
