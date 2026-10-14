@@ -25,6 +25,7 @@ changes nothing: a page's report of a failure rcman could not see, written to th
 | `server.stop` | stops a server | the workspace's name |
 | `server.forget` | removes a stopped server from their list | the workspace's name |
 | `server.confirm` | answers a server's folder-trust question | the workspace's name |
+| `me.sign_out` | signs out of rcman, keeping their running servers or stopping them first | none |
 | `settings.update` | changes their settings (see [Settings](settings.md)) | the settings they sent, as JSON; none when they were refused |
 | `person.add` | adds a person (administrators; see [Adding and removing people](users.md)) | the person's address |
 | `person.delete` | removes a person, with all their workspaces (administrators) | the person's address |
@@ -41,10 +42,11 @@ changes nothing: a page's report of a failure rcman could not see, written to th
 | `github.forget` | removes their GitHub token | none |
 | `claude.login` | starts connecting their Claude account | the Claude account's email address |
 | `claude.connect` | finishes connecting with Claude's code | none — the code is never recorded |
+| `claude.disconnect` | signs their Claude account out, at once or once their last running server stops | none |
 | `claude.upgrade` | rolls out a Claude Code version (administrators) | the version |
 
-git, the GitHub token, signing in to Claude and rolling out a Claude Code
-version are not available in workspaces yet: rcman answers each of those
+git, the GitHub token and rolling out a Claude Code version are not available in
+workspaces yet: rcman answers each of those
 requests with `not_available_yet`, and records it with that result.
 
 The result is one of these, or the code of the error the request failed with —

@@ -16,7 +16,15 @@ import { forgetReports } from "./clientErrors";
 import { m } from "./messages";
 import { asApiError, ProblemView } from "./ProblemView";
 import { FIELDS } from "./Settings";
-import { ADMIN_USER, fakeApi, NOT_CONNECTED, NOTHING_TO_ATTEND, SETTINGS } from "./test/fakeApi";
+import {
+  ADMIN_USER,
+  CONNECTED,
+  fakeApi,
+  NOT_CONNECTED,
+  NOTHING_TO_ATTEND,
+  SETTINGS,
+  SIGNING_OUT,
+} from "./test/fakeApi";
 import { renderAlone, renderApp } from "./test/render";
 import { Versions } from "./Versions";
 
@@ -68,9 +76,12 @@ function api() {
   });
 }
 
+// Every input on screen, once the page has one of its own besides the header's:
+// a form may hold only a checkbox.
 async function inputs() {
-  await screen.findAllByRole("textbox");
-  return [...document.querySelectorAll("input, textarea, select")];
+  const all = () => [...document.querySelectorAll("input, textarea, select")];
+  await waitFor(() => expect(all().some((input) => !input.closest("header"))).toBe(true));
+  return all();
 }
 
 // Where a page is: a path in the app, or, for a part the app does not show while
@@ -85,6 +96,12 @@ function show(where: Where) {
 const versions = () => <Versions />;
 const account = () => (
   <ClaudeConnection connection={NOT_CONNECTED as Connection} onChange={() => {}} />
+);
+const connected = () => (
+  <ClaudeConnection connection={CONNECTED as Connection} onChange={() => {}} />
+);
+const signingOut = () => (
+  <ClaudeConnection connection={SIGNING_OUT as Connection} onChange={() => {}} />
 );
 const changes = () => <Changes path={REPOSITORY} pollMs={0} />;
 
@@ -103,6 +120,7 @@ const PAGES: [string, Where, () => Promise<void>][] = [
   ],
   ["a new workspace", "/", async () => void (await screen.findByLabelText(m.newWorkspaceName))],
   ["Claude Code versions", versions, async () => {}],
+  ["signing out of Claude", connected, async () => {}],
   [
     "connecting Claude, its address",
     account,
@@ -157,6 +175,11 @@ const OUTSIDE_FORMS: [string, Where, () => Promise<void>][] = [
 
 // Pages with a form that has nothing to type in, and what opens it.
 const CHOICES: [string, Where, () => Promise<void>][] = [
+  [
+    "finishing a sign-out at once",
+    signingOut,
+    async () => void (await screen.findByRole("button", { name: m.claudeSignOutNow })),
+  ],
   [
     "removing the GitHub token",
     "/settings",
@@ -372,7 +395,8 @@ test("the check fails on a form with no leading button, two, or one that does no
 test("the settings page has an input for every field it describes, and the token's, and nothing else", async () => {
   api();
   renderApp("/settings");
-  const found = await inputs();
+  const banner = await screen.findByRole("banner");
+  const found = (await inputs()).filter((input) => !banner.contains(input)); // the page's own
   const github = await screen.findByRole("region", { name: m.settingsGithubTitle });
   const token = found.filter((input) => github.contains(input));
   expect(token.map((input) => (input as HTMLInputElement).type)).toEqual(["password"]);

@@ -14,9 +14,11 @@ workspace whose table row records no server is never reached at all to list it.
 from __future__ import annotations
 
 import contextlib
+import json
 import logging
 import sqlite3
 import threading
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
@@ -40,7 +42,8 @@ log.setLevel(logging.INFO)
 CREATING, READY, FAILED, DELETING = "creating", "ready", "failed", "deleting"
 # A channel unused this long is closed; it is opened again when next needed.
 CHANNEL_IDLE_SECONDS = 300.0
-# How often idle channels are looked for.
+# How often idle channels, and sign-outs that wait for servers that have ended, are
+# looked for.
 IDLE_CHECK_SECONDS = 30.0
 # How long one wait for the runtime lasts before restore tries again, or stops when
 # rcman does; and how long rcman's shutdown waits for restore to stop.
@@ -106,9 +109,13 @@ class Workspaces:
         self._lock = threading.Lock()
         self._channels: dict[str, Channel] = {}
         self._locks: dict[int, threading.RLock] = {}
+        self._person_locks: dict[int, threading.RLock] = {}
         self._making: dict[int, threading.Thread] = {}  # by workspace
         self._closing = threading.Event()
         self._restoring: threading.Thread | None = None
+        # Called with a person's id once a server of theirs may have stopped: accounts.py
+        # finishes a sign-out that waits for their last running server.
+        self.on_stopped: Callable[[int], None] = lambda person: None
 
     # --- the table ---------------------------------------------------------------------
 
@@ -162,6 +169,21 @@ class Workspaces:
     def lock(self, workspace_id: int) -> threading.RLock:
         with self._lock:
             return self._locks.setdefault(workspace_id, threading.RLock())
+
+    def person_lock(self, person: int) -> threading.RLock:
+        """The person's lock: a start, from its account check until its server runs,
+        and everything that signs them in or out (accounts.py) take turns. Always taken
+        before a workspace's lock, never while one is held."""
+        with self._lock:
+            return self._person_locks.setdefault(person, threading.RLock())
+
+    def _stopped(self, person: int) -> None:
+        """``on_stopped``, which never makes what called it fail: what it would finish
+        is finished later by the periodic check, the Claude page or restore."""
+        try:
+            self.on_stopped(person)
+        except Exception:  # noqa: BLE001 - see above
+            log.exception("finishing a sign-out of person %s failed; it is tried again", person)
 
     def _being_made(self, workspace_id: int) -> bool:
         with self._lock:
@@ -229,6 +251,7 @@ class Workspaces:
             if now.state == CREATING:
                 return
             self._remove(now)
+        self._stopped(workspace.person)
 
     def _remove(self, workspace: Workspace) -> None:
         self.close_channel(workspace.container)
@@ -258,12 +281,24 @@ class Workspaces:
                 making.join(MADE_WITHIN_SECONDS)
         if self.of_person(person.id):  # one could not be removed: rcman's next start tries
             raise Problem("workspace_failed")
+        self._remove_account(person.id)
         con = self._con()
         try:
             people.remove(con, person)
             people.write_allowed(con, self.settings.allowed_emails)
         finally:
             con.close()
+
+    def _remove_account(self, person_id: int) -> None:
+        """Remove the person's sign-in before their row: ids and slots are given again, so
+        a file left behind would sign the next person in. One that cannot be removed
+        leaves the row, for rcman's next start."""
+        try:
+            with answered():
+                self.runtime.remove_account(person_id)
+        except Problem:
+            log.warning("the sign-in of person %s could not be removed", person_id)
+            raise
 
     # --- channels and servers ------------------------------------------------------------
 
@@ -331,8 +366,19 @@ class Workspaces:
             return list(pool.map(shown, workspaces))
 
     def start_server(self, workspace: Workspace, prefix: str, resume: bool = False) -> dict:
-        with self.lock(workspace.id), answered():
+        with self.person_lock(workspace.person), self.lock(workspace.id), answered():
+            con = self._con()
+            try:
+                account, signing_out = people.claude_account(con, workspace.person)
+            finally:
+                con.close()
+            if account is None:
+                raise Problem("claude_not_logged_in")
+            if signing_out:
+                raise Problem("claude_signing_out")
             server = self.server(workspace)
+            if server.status() is None or server.tmux.exit_status() is not None:
+                self._seed(workspace, account)
             try:
                 answer = server.resume(prefix) if resume else server.start(prefix)
             finally:
@@ -340,16 +386,75 @@ class Workspaces:
             self._set(workspace.id, wanted=1, prefix=prefix)
             return answer
 
+    def _seed(self, workspace: Workspace, account: dict) -> None:
+        """Put the account the sign-in named into the workspace's ``.claude.json``, owner-
+        only, keeping every other key, before its server starts: Claude's Remote Control
+        needs it, and the credentials file alone does not hold it."""
+        name = workspace.container
+        layout = self.runtime.layout(name)
+        path = f"{layout.config}/.claude.json"
+        found = self.runtime.exec(name, [*layout.tool("cat"), path])
+        config: dict = {}
+        if found.code == 0 and found.out.strip():
+            try:
+                config = json.loads(found.out)
+            except ValueError:
+                config = None
+            if not isinstance(config, dict):
+                log.warning("workspace %s: its .claude.json is not an object", workspace.id)
+                raise Problem("workspace_failed")
+        elif found.code != 0 and b"No such file" not in found.err:
+            raise RuntimeFailed(found.err.decode("utf-8", "replace").strip())
+        text = json.dumps({**config, "oauthAccount": account.get("oauthAccount")})
+        cat, mv = " ".join(layout.tool("cat")), " ".join(layout.tool("mv"))
+        script = f'umask 077 && {cat} > "$1.rcman" && {mv} -f "$1.rcman" "$1"'
+        written = self.runtime.exec(
+            name, [layout.shell, "-c", script, "sh", path], stdin=text.encode()
+        )
+        if written.code != 0:
+            raise RuntimeFailed(written.err.decode("utf-8", "replace").strip())
+
     def stop_server(self, workspace: Workspace) -> dict:
         with self.lock(workspace.id), answered():
             self._set(workspace.id, wanted=0)
-            return self.server(workspace).stop()
+            answer = self.server(workspace).stop()
+        self._stopped(workspace.person)
+        return answer
 
     def forget_server(self, workspace: Workspace) -> dict:
         with self.lock(workspace.id), answered():
             answer = self.server(workspace).forget()
             self._set(workspace.id, server=0, wanted=0)
-            return answer
+        self._stopped(workspace.person)
+        return answer
+
+    def running(self, person: int) -> list[Workspace]:
+        """The person's workspaces whose server runs; one that cannot be read counts as
+        running, so nothing waiting for them all to stop goes on too soon."""
+        found = []
+        for workspace in self.of_person(person):
+            if workspace.state != READY or not workspace.server:
+                continue
+            try:
+                status = self.server_status(workspace)
+            except Problem:
+                found.append(workspace)
+                continue
+            if status is not None and status.get("exit_code") is None:
+                found.append(workspace)
+        return found
+
+    def stop_running(self, person: int) -> None:
+        """Stop every running server of the person's, under their lock, so no start slips
+        in meanwhile; one that does not stop is logged."""
+        with self.person_lock(person):
+            for workspace in self.running(person):
+                try:
+                    self.stop_server(workspace)
+                except Problem as refused:
+                    log.warning(
+                        "the server of workspace %s did not stop: %s", workspace.id, refused.code
+                    )
 
     def confirm(self, workspace: Workspace, answer: str) -> dict:
         with self.lock(workspace.id), answered():
@@ -392,6 +497,7 @@ class Workspaces:
             for name, labels in self.runtime.labelled().items():
                 self._step(self._remove_orphan, name, labels)
             self._step(self._finish_deleting_people)
+            self._step(self.settle_signing_out)
         except Exception:  # noqa: BLE001 - restore never stops rcman from answering
             log.exception("restoring the workspaces failed")
         finally:
@@ -451,6 +557,27 @@ class Workspaces:
             elif not self.runtime.running(workspace.container):
                 self.runtime.start(workspace.container)
 
+    def settle_signing_out(self) -> None:
+        """Finish each sign-out that waits for servers that no longer run, those that
+        ended by themselves among them. A person whose lock is held, as a sign-in holds it
+        for a while, is left for the next round rather than waited for."""
+        for person in self._people_signing_out():
+            lock = self.person_lock(person)
+            if not lock.acquire(blocking=False):
+                continue
+            try:
+                self._stopped(person)
+            finally:
+                lock.release()
+
+    def _people_signing_out(self) -> list[int]:
+        con = self._con()
+        try:
+            rows = con.execute("select id from people where claude_signing_out = 1").fetchall()
+        finally:
+            con.close()
+        return [row[0] for row in rows]
+
     def _finish_deleting(self, person_id: int) -> None:
         """Remove the person, if they are being deleted and none of their workspaces is
         left, and write the allowed list again."""
@@ -459,6 +586,7 @@ class Workspaces:
             person = people.by_id(con, person_id)
             if person is None or person.state != people.DELETING or self.of_person(person_id):
                 return
+            self._remove_account(person.id)
             people.remove(con, person)
             people.write_allowed(con, self.settings.allowed_emails)
         finally:
@@ -471,6 +599,10 @@ class Workspaces:
         try:
             for person in people.everyone(con):
                 if person.state == people.DELETING and not self.of_person(person.id):
+                    try:
+                        self._remove_account(person.id)
+                    except Problem:
+                        continue  # the next start tries again
                     people.remove(con, person)
             people.write_allowed(con, self.settings.allowed_emails)
         finally:
@@ -493,8 +625,11 @@ class Workspaces:
         threading.Thread(target=self._close_idle_channels, daemon=True).start()
 
     def _close_idle_channels(self) -> None:
+        """Every IDLE_CHECK_SECONDS: close idle channels, and finish the sign-outs that
+        wait for servers that have ended."""
         while not self._closing.wait(IDLE_CHECK_SECONDS):
             self.close_idle()
+            self.settle_signing_out()
 
     def close(self) -> None:
         """Stop: let restore finish the step it is on, wait for the workspaces being made,

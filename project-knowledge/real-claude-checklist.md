@@ -22,23 +22,63 @@ claude.ai/code list; archive them afterwards.
 
 ## On an installed server
 
-Signing in to Claude in a workspace is not there yet, so what an installed
-server is checked for by hand needs no Claude account. With a person added for
-the test (`sudo rcman-admin add`):
+With a person added for the test (`sudo rcman-admin add`):
 
 1. Sign in to rcman with their Google address.
 2. **New workspace**: it is listed as being made, then ready. The first of a
    person's takes longest, while Podman copies the image for their range.
-3. **Start**: rcman says Claude is not signed in in this workspace.
-4. Restart rcman (`sudo systemctl restart rcman`) and reboot the machine: the
-   workspace is ready again afterwards, without anyone doing anything.
-5. **Delete workspace**, and remove the person (`sudo rcman-admin delete`).
+3. **Start**: rcman says to connect the Claude account on the Claude page.
+4. Connect the test Claude account on the **Claude** page; start the
+   workspace's server, then make a second workspace and start its server: both
+   reach ready.
+5. Restart rcman (`sudo systemctl restart rcman`) and reboot the machine: the
+   workspaces are ready again afterwards, and their servers running, without
+   anyone doing anything.
+6. **Sign out of Claude** with **Keep sessions running** ticked: both servers
+   keep running and **Start** is refused; stop both, and the page shows the
+   account not connected.
+7. **Delete workspace**, and remove the person (`sudo rcman-admin delete`):
+   `podman volume ls` as `rcman` lists nothing of theirs.
 
 Write down what differed from this list. A screen rcman shows as
 **Unrecognised screen** is recorded as a new fixture, or, where no sequence
 can bring it about, kept as an
 [observed screen](fake-claude.md#observed-screens), and handled before the
 version is approved.
+
+## The shared sign-in
+
+What Claude Code does with one credentials file bound into several workspaces,
+each with its own `CLAUDE_CONFIG_DIR`, as seen with a real account on the version
+in `tests/fakes/fixtures/manifest.json`. rcman and the fake follow it; check it
+again when a version is approved, in an installed rcman with the test account
+connected on the **Claude** page.
+
+1. **What a sign-in writes.** The credentials file holds `claudeAiOauth`, whose
+   keys, and those of `oauthAccount` in `.claude.json`, are the ones
+   `tests/test_fake_claude.py` names. Through the bind the file stays the same
+   file, owner-only.
+2. **No `oauthAccount`.** `claude remote-control` in a configuration whose
+   `.claude.json` holds none refuses on stderr with exit status 1: the fixture
+   `rc_no_oauth_account`, which `uv run pytest -m real_claude` records again.
+   rcman seeds `oauthAccount` before every start.
+3. **A session's commands.** The sessions Remote Control spawns stay in the
+   pane's process group; the commands a session runs are in a session of their
+   own (setsid). The stop collects every process the server started, by parent,
+   before it signals anything, and kills what is left (see
+   [runtime.md](runtime.md#a-workspaces-server)). Check that a stop with a
+   command running leaves no process in the workspace.
+4. **A refresh.** A refresh from one workspace writes the file in place,
+   truncated first and keeping keys it does not know; a server in another
+   workspace stays connected.
+5. **Another account under a running server.** A server keeps working when
+   another account is connected under it; it takes the new account's details
+   at its next start.
+6. **`auth logout` over the bound file.** It answers exit status 0 and leaves
+   the file as it is, and `auth status` still says signed in, though the
+   sign-in is revoked. rcman therefore empties the file in place after it, and
+   reads whether someone is signed in from the file and its own record, never
+   from `auth status` alone.
 
 ## Screens with no recording yet
 

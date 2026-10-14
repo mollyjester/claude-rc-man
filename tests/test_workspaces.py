@@ -232,6 +232,7 @@ def test_restore_starts_a_wanted_server_with_its_prefix_and_leaves_a_running_one
     from pathlib import Path
 
     from devtools import fake_claude as fake
+    from tests.e2e_server import record_sign_in
 
     wanted = insert(settings, 1, "wanted", "ready", wanted=1, server=1, prefix="pfx")
     running = insert(settings, 1, "running", "ready", wanted=1, server=1, prefix="pfx")
@@ -240,6 +241,7 @@ def test_restore_starts_a_wanted_server_with_its_prefix_and_leaves_a_running_one
         runtime.create(spec(workspace_id))
         layout = runtime.layout(rt.container_name(workspace_id))
         fake.write_state(Path(layout.config), logged_in=True, trusted=[layout.work])
+    record_sign_in(settings.database, 1)
     service.start_server(service.get(running), "pfx")
     pid = service.server(service.get(running)).tmux.pane()[1]
 

@@ -113,7 +113,7 @@ def test_a_world_that_fails_to_build_is_removed(world, monkeypatch):
         assert root.is_dir()  # positive control: the world was made before this
         raise RuntimeError("no runtime today")
 
-    monkeypatch.setattr(e2e, "WorldRuntime", broken)
+    monkeypatch.setattr(e2e, "HostRuntime", broken)
     held = _holding_locks(monkeypatch)
     with pytest.raises(RuntimeError, match="no runtime today"):
         e2e.create_app()

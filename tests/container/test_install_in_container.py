@@ -53,7 +53,6 @@ from installed import (  # noqa: E402
     podman,
     rcman_uid,
     serve_releases,
-    signed_in,
     until,
     workspace_of,
 )
@@ -488,17 +487,42 @@ def test_a_workspace_is_made_and_its_server_is_refused_until_claude_is_signed_in
     assert (status, answer["code"]) == (409, "claude_not_logged_in"), answer
 
 
-def test_a_server_reaches_ready_with_the_fake_claude_from_the_store(first_install):
-    alpha = workspace_of("alpha")
-    signed_in(alpha["id"])
-    status, answer = api("POST", "/api/servers", body={"workspace": alpha["id"]})
+def ready_server(name: str) -> None:
+    found = workspace_of(name)
+    status, answer = api("POST", "/api/servers", body={"workspace": found["id"]})
     assert status == 200 and answer["server"]["state"] == "trust_prompt", answer
     status, answer = api(
-        "POST", "/api/servers/confirm", body={"workspace": alpha["id"], "answer": "y"}
+        "POST", "/api/servers/confirm", body={"workspace": found["id"], "answer": "y"}
     )
     assert status == 200, answer
-    until(lambda: server_state("alpha") == "ready")
-    assert claude_processes(alpha["id"])
+    until(lambda: server_state(name) == "ready")
+    assert claude_processes(found["id"])
+
+
+def test_signing_in_once_lets_workspaces_made_before_and_after_reach_ready(first_install):
+    """One sign-in, through a sign-in container that is gone afterwards, reaches alpha,
+    made before it, and gamma, made after it."""
+    import sys
+
+    sys.path.insert(0, str(SRC))
+    from devtools.fake_claude import ACCEPTED_CODE
+
+    status, answer = api("POST", "/api/claude/login", body={})
+    assert status == 200 and answer["url"].startswith("https://claude.com/"), answer
+    status, answer = api("POST", "/api/claude/code", body={"code": ACCEPTED_CODE})
+    assert status == 200 and answer["connection"] == "connected", answer
+    assert api("GET", "/api/claude")[1]["account"]["email"] == ADMIN
+    me = next(p for p in api("GET", "/api/people")[1]["people"] if p["email"] == ADMIN)
+    label = f"label=rcman.person={me['id']}"
+    containers = podman("ps", "--all", "--format", "{{.Names}}", "--filter", label).stdout.split()
+    assert containers and not [c for c in containers if "sign-in" in c], containers
+    ready_server("alpha")
+    made("gamma")
+    ready_server("gamma")
+    status, answer = api(
+        "POST", "/api/servers/stop", body={"workspace": workspace_of("gamma")["id"]}
+    )
+    assert status == 200, answer
 
 
 def test_a_servers_processes_run_outside_rcmans_service(first_install):
@@ -548,6 +572,10 @@ def test_one_person_cannot_reach_anothers_workspace(first_install):
         found = json.loads(podman("container", "inspect", name).stdout)[0]
         mounts = {m.get("Name") for m in found["Mounts"] if m.get("Type") == "volume"}
         assert mounts == {name}, mounts  # its own volume, and no one else's
+        person = found["Config"]["Labels"]["rcman.person"]
+        own = podman("volume", "inspect", "--format", "{{.Mountpoint}}", f"rcman-person-{person}")
+        binds = [m["Source"] for m in found["Mounts"] if m.get("Type") == "bind"]
+        assert f"{own.stdout.strip()}/.credentials.json" in binds, binds  # their own sign-in
         mappings[name] = in_workspace(workspace["id"], "cat /proc/self/uid_map").split()
     first, second = mappings.values()
     assert first[0] == second[0] == "0" and first[1] != second[1]  # ranges of their own
@@ -560,6 +588,8 @@ def test_deleting_a_person_leaves_nothing_labelled_theirs(first_install):
     bob = next(p for p in everyone["people"] if p["email"] == BOB)
     label = f"label=rcman.person={bob['id']}"
     assert podman("ps", "--all", "--quiet", "--filter", label).stdout.split()  # positive control
+    volumes = podman("volume", "ls", "--quiet", "--filter", label).stdout.split()
+    assert f"rcman-person-{bob['id']}" in volumes  # positive control: his sign-in's
     status, answer = api("DELETE", f"/api/people/{bob['id']}")
     assert status == 200, answer
     assert podman("ps", "--all", "--quiet", "--filter", label).stdout.split() == []

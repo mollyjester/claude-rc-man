@@ -70,7 +70,9 @@ test("a start in a workspace whose Claude is not signed in is refused, saying so
   const made = await makeWorkspace(page, "bob-alpha");
   await made.getByRole("button", { name: m.start }).click();
   // the server's own sentence for it, PROBLEMS["claude_not_logged_in"] in backend/rcman/problems.py
-  await expect(made.getByRole("alert")).toContainText("Claude is not signed in in this workspace.");
+  await expect(made.getByRole("alert")).toContainText(
+    "Connect your Claude account on the Claude page.",
+  );
   await expect(made.getByRole("article")).toHaveCount(0);
   await expect(made.getByRole("button", { name: m.start })).toBeVisible();
 });

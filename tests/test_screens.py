@@ -12,6 +12,9 @@ from helpers import screens as h
 
 SERVER_STATES = {
     "rc_logged_out": "logged_out",
+    # rcman seeds oauthAccount before every start, so Claude does not refuse this way;
+    # shown all the same, the server has ended.
+    "rc_no_oauth_account": "exited",
     "trust_prompt": "trust_prompt",
     "trust_answer_too_fast": "trust_prompt",
     "trust_declined": "trust_declined",

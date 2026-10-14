@@ -11,6 +11,7 @@ When `claude` is not installed these tests skip, unless
 
 import os
 import shutil
+import subprocess
 
 import pytest
 
@@ -73,3 +74,46 @@ def test_every_option_rcman_passes_is_in_help(tmp_path):
             missing[" ".join(command) or "(top level)"] = absent
     assert missing == {}
     assert gated == HELP_NEEDS_LOGIN
+
+
+# --- the credentials file rcman shares and empties (backend/rcman/accounts.py) ---------
+
+
+def _claude(args: list[str], config_dir) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        [REAL, *args],
+        env=rec.claude_env(config_dir),
+        cwd=config_dir,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+
+@pytest.mark.parametrize("content", ["", "{}"])
+def test_an_empty_credentials_file_is_signed_out_and_left_as_it_is(tmp_path, content):
+    """rcman makes the file empty, and empties it to sign out: the real binary reads
+    both an empty file and ``{}`` as no sign-in, and does not rewrite either."""
+    import json
+
+    from devtools import fake_claude as fake
+
+    (tmp_path / fake.CREDENTIALS).write_text(content)
+    (tmp_path / fake.CREDENTIALS).chmod(0o600)
+    found = _claude(["auth", "status"], tmp_path)
+    assert json.loads(found.stdout)["loggedIn"] is False
+    assert found.returncode == rec.load_fixtures()["auth_status_logged_out"].exit_code
+    assert (tmp_path / fake.CREDENTIALS).read_text() == content
+
+
+def test_logout_removes_the_credentials_file(tmp_path):
+    """What the fake's logout copies; over a bound file the removal is refused, and
+    rcman empties the file in place afterwards."""
+    from devtools import fake_claude as fake
+
+    (tmp_path / fake.CREDENTIALS).write_text("{}")
+    assert (tmp_path / fake.CREDENTIALS).exists()  # positive control
+    found = _claude(["auth", "logout"], tmp_path)
+    assert found.returncode == rec.load_fixtures()["auth_logout"].exit_code
+    assert not (tmp_path / fake.CREDENTIALS).exists()

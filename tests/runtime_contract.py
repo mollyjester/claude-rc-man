@@ -10,6 +10,7 @@ and removes what it made. Python standard library and the backend only.
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import time
 
 from rcman import runtime as rt
@@ -147,6 +148,74 @@ def a_whole_process_group_is_ended_by_kill_group_of(runtime, spec):
             time.sleep(0.1)
 
 
+def _credentials(layout: rt.Layout) -> str:
+    return f"{layout.config}/{rt.CREDENTIALS}"
+
+
+def _read(runtime, name: str) -> bytes:
+    layout = runtime.layout(name)
+    found = runtime.exec(name, [*layout.tool("cat"), _credentials(layout)])
+    assert found.code == 0, found
+    return found.out
+
+
+def _write_in_place(runtime, name: str, text: str) -> None:
+    layout = runtime.layout(name)
+    written = runtime.exec(name, _sh(layout, f"printf %s {text} > {_credentials(layout)}"))
+    assert written.code == 0, written
+
+
+def a_persons_workspaces_share_one_credentials_file_written_in_place(runtime, spec):
+    first = spec(8)
+    second = dataclasses.replace(spec(9), slot=first.slot, person=first.person)
+    other = spec(10)
+    try:
+        with made(runtime, first) as a:
+            assert runtime.read_account(first.person, first.slot) == b""  # made empty
+            _write_in_place(runtime, a, "signed-in")
+            with made(runtime, second) as b, made(runtime, other) as c:
+                assert _read(runtime, b) == b"signed-in"  # made after it was written
+                assert _read(runtime, c) == b""  # another person's is their own
+                _write_in_place(runtime, b, "re")  # shorter: nothing of the old is left
+                assert _read(runtime, a) == b"re"  # made before, it sees the change
+                assert runtime.read_account(first.person, first.slot) == b"re"
+                assert runtime.read_account(other.person, other.slot) == b""
+                runtime.clear_account(first.person, first.slot)  # emptied in place
+                assert _read(runtime, a) == _read(runtime, b) == b""
+    finally:
+        runtime.remove_account(first.person)
+        runtime.remove_account(other.person)
+
+
+def a_sign_in_container_has_the_persons_file_and_is_no_workspace(runtime, spec):
+    who = spec(11)
+    name = runtime.start_sign_in(who.person, who.slot, seconds=600)
+    try:
+        assert runtime.exists(name) and runtime.running(name)
+        assert name not in runtime.labelled()  # restore never takes it for an orphan
+        layout = runtime.layout(name)
+        for folder in (layout.work, layout.config, layout.home):
+            assert runtime.exec(name, _sh(layout, f"test -d {folder}")).code == 0, folder
+        assert _read(runtime, name) == b""
+        _write_in_place(runtime, name, "signed-in")
+        assert runtime.read_account(who.person, who.slot) == b"signed-in"
+        channel = runtime.channel(name)
+        try:
+            found = channel.run([*layout.tool("cat"), _credentials(layout)])
+            assert found == rt.Result(0, b"signed-in", b"")
+        finally:
+            channel.close()
+    finally:
+        runtime.end_sign_in(name)
+    assert not runtime.exists(name)
+    runtime.end_sign_in(name)  # ending one that is gone is nothing
+    assert runtime.read_account(who.person, who.slot) == b"signed-in"  # it outlives it
+    runtime.remove_account(who.person)
+    runtime.remove_account(who.person)  # removing one that is gone is nothing
+    assert runtime.read_account(who.person, who.slot) == b""  # never the old one again
+    runtime.remove_account(who.person)
+
+
 CASES = [
     a_workspace_that_is_made_exists_runs_and_is_labelled,
     removing_what_is_not_there_is_nothing,
@@ -155,4 +224,6 @@ CASES = [
     a_tmux_server_started_through_a_channel_outlives_it_and_not_a_stop,
     a_workspaces_files_outlive_a_stop,
     a_whole_process_group_is_ended_by_kill_group_of,
+    a_persons_workspaces_share_one_credentials_file_written_in_place,
+    a_sign_in_container_has_the_persons_file_and_is_no_workspace,
 ]

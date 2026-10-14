@@ -11,6 +11,7 @@ from pathlib import Path
 from fastapi import FastAPI
 
 from rcman import audit, db, journal, people, problems, spa, unrecognised
+from rcman.accounts import Accounts
 from rcman.routers import (
     attention,
     audit_log,
@@ -80,6 +81,7 @@ def create_app(settings: Settings | None = None, runtime: Runtime | None = None)
     for log in (audit.log, client_errors.log, unrecognised.log, workspaces_log):
         journal.install(log)
     service = Workspaces(settings, runtime or podman_runtime(settings))
+    sign_ins = Accounts(service)
 
     @contextlib.asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -96,6 +98,7 @@ def create_app(settings: Settings | None = None, runtime: Runtime | None = None)
             yield
         finally:
             task.cancel()
+            await asyncio.to_thread(sign_ins.close)
             await asyncio.to_thread(service.close)
 
     app = FastAPI(
@@ -108,6 +111,7 @@ def create_app(settings: Settings | None = None, runtime: Runtime | None = None)
     )
     app.state.settings = settings
     app.state.workspaces = service
+    app.state.accounts = sign_ins
     app.state.watch = unrecognised.Watch()
     problems.install(app)
 

@@ -61,6 +61,14 @@ MIGRATIONS = [
         unique (person, name)
     );
     """,
+    """
+    -- Each person's Claude account, as their last sign-in named it ({"oauthAccount": ...},
+    -- seeded into a workspace before its server starts; null before a sign-in and after
+    -- a sign-out), and whether a sign-out waits for their running servers to stop.
+    alter table people add column claude_account text;
+    alter table people add column claude_signing_out integer not null default 0
+        check (claude_signing_out in (0, 1));
+    """,
 ]
 
 

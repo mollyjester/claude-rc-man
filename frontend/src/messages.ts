@@ -10,6 +10,7 @@ export const m = {
   saved: "Saved.",
 
   navDashboard: "Workspaces",
+  navClaude: "Claude",
   navSettings: "Settings",
   navDocs: "Help",
   navAdmin: "Admin",
@@ -44,11 +45,6 @@ export const m = {
   deleting: "Deleting…",
   workspaceDeleted: (name: string) => `${name} was deleted.`,
   start: "Start",
-  notConnected: {
-    start: "Connect your Claude account above to start a server here.",
-    resume: "Connect your Claude account above to resume it.",
-    startAgain: "Connect your Claude account above to start it again.",
-  },
 
   serverTitle: "Claude server",
   noServer: "No Claude server runs in this workspace.",
@@ -107,6 +103,12 @@ export const m = {
     `Your Claude sign-in expires ${when}. Connect again to renew it.`,
   claudeExpired: "Your Claude sign-in has expired. Connect again to keep your servers working.",
   claudeExpires: (when: string) => `Sign-in expires ${when}`,
+  claudeSigningOut:
+    "Signing out: your running servers keep this account until the last one stops, and no new server starts meanwhile.",
+  claudeSignOut: "Sign out of Claude",
+  claudeSignOutNow: "Stop my servers and sign out now",
+  keepSessions: "Keep sessions running",
+  signOut: "Sign out",
   connect: "Connect Claude account",
   reconnect: "Connect again",
   connectEmail: "Claude account email (leave empty to use your sign-in address)",

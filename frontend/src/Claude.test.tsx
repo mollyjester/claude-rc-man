@@ -1,10 +1,7 @@
 import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
-import { useEffect, useState } from "react";
-
-import { api as client } from "./api";
-import { ClaudeConnection, CONNECTION_STATES, type Connection, START_REASON } from "./Claude";
+import { ClaudePage } from "./Claude";
 import { m } from "./messages";
 import {
   CONNECTED,
@@ -13,18 +10,12 @@ import {
   problem,
   type Reply,
   type Routes,
+  SIGNING_OUT,
 } from "./test/fakeApi";
 import { renderAlone } from "./test/render";
 
-// The Claude account's section is on no page while signing in to Claude in a
-// workspace is not there; here it is loaded once and shown on its own.
-function Account() {
-  const [connection, setConnection] = useState<Connection | null>(null);
-  useEffect(() => {
-    client.get<Connection>("/api/claude").then(setConnection);
-  }, []);
-  return <ClaudeConnection connection={connection} onChange={setConnection} />;
-}
+// The Claude page: the account's state, read once as the page opens.
+const Account = ClaudePage;
 
 function api(claude: Reply, extra: Routes = {}) {
   return fakeApi({
@@ -32,25 +23,6 @@ function api(claude: Reply, extra: Routes = {}) {
     ...extra,
   });
 }
-
-test("every state of the account says whether a server can start, and why not", () => {
-  expect(Object.keys(START_REASON).sort()).toEqual([...CONNECTION_STATES].sort());
-  // non-vacuity: some states let a server start and some do not
-  const reasons = Object.values(START_REASON);
-  expect(reasons).toContain(null);
-  const blocked = reasons.filter((r) => r !== null);
-  expect(blocked.length).toBeGreaterThan(0);
-  for (const reason of blocked) {
-    for (const said of [reason.start, reason.resume, reason.startAgain]) expect(said).toMatch(/\S/);
-  }
-});
-
-test("an expiring or expired sign-in still starts a server: the server refuses only an account not signed in", () => {
-  expect(START_REASON.expiring).toBeNull();
-  expect(START_REASON.expired).toBeNull();
-  expect(START_REASON.connected).toBeNull();
-  expect(START_REASON.not_connected).toBe(m.notConnected);
-});
 
 test("connecting: link, then code, then connected", async () => {
   let connected = false;
@@ -128,4 +100,56 @@ test("an expired sign-in says so", async () => {
   renderAlone(<Account />);
   expect(await screen.findByText(m.claudeExpired)).toBeInTheDocument();
   expect(screen.getByRole("button", { name: m.reconnect })).toBeInTheDocument();
+});
+
+test("the account's state is read once, as the page opens, never polled", async () => {
+  const fake = api(CONNECTED);
+  renderAlone(<Account />);
+  expect(await screen.findByText(m.claudeConnectedAs("alice@claude.test"))).toBeInTheDocument();
+  await new Promise((done) => setTimeout(done, 50));
+  expect(fake.made("GET", "/api/claude")).toHaveLength(1);
+});
+
+test("signing out of Claude keeps sessions running unless asked otherwise", async () => {
+  const fake = api(CONNECTED, { "POST /api/claude/logout": SIGNING_OUT });
+  renderAlone(<Account />);
+  const keep = await screen.findByRole("checkbox", { name: m.keepSessions });
+  expect(keep).toBeChecked();
+  await userEvent.click(screen.getByRole("button", { name: m.claudeSignOut }));
+  await waitFor(() =>
+    expect(fake.made("POST", "/api/claude/logout")[0].body).toEqual({ keep_sessions: true }),
+  );
+  expect(await screen.findByText(m.claudeSigningOut)).toBeInTheDocument();
+  // No new server can start meanwhile; connecting again ends the wait.
+  expect(screen.getByRole("button", { name: m.reconnect })).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: m.claudeSignOut })).not.toBeInTheDocument();
+});
+
+test("signing out of Claude without keeping sessions stops them and signs out at once", async () => {
+  const fake = api(CONNECTED, { "POST /api/claude/logout": NOT_CONNECTED });
+  renderAlone(<Account />);
+  await userEvent.click(await screen.findByRole("checkbox", { name: m.keepSessions }));
+  await userEvent.click(screen.getByRole("button", { name: m.claudeSignOut }));
+  await waitFor(() =>
+    expect(fake.made("POST", "/api/claude/logout")[0].body).toEqual({ keep_sessions: false }),
+  );
+  expect(await screen.findByText(m.claudeNotConnected)).toBeInTheDocument();
+});
+
+test("an account not connected is offered no sign-out", async () => {
+  api(NOT_CONNECTED);
+  renderAlone(<Account />);
+  expect(await screen.findByText(m.claudeNotConnected)).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: m.claudeSignOut })).not.toBeInTheDocument();
+});
+
+test("a sign-out that waits can be finished at once, stopping the servers", async () => {
+  const fake = api(SIGNING_OUT, { "POST /api/claude/logout": NOT_CONNECTED });
+  renderAlone(<Account />);
+  expect(await screen.findByText(m.claudeSigningOut)).toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: m.claudeSignOutNow }));
+  await waitFor(() =>
+    expect(fake.made("POST", "/api/claude/logout")[0].body).toEqual({ keep_sessions: false }),
+  );
+  expect(await screen.findByText(m.claudeNotConnected)).toBeInTheDocument();
 });

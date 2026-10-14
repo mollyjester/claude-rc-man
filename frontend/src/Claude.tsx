@@ -1,25 +1,11 @@
-import { type FormEvent, useState } from "react";
+import { type FormEvent, useEffect, useState } from "react";
 
 import { type ApiError, api } from "./api";
 import { m } from "./messages";
 import { asApiError, ProblemView } from "./ProblemView";
 
-// Why nothing can start Claude, said in place of each control that would: Start
-// where there is no server, and a server's own actions that start it again.
-export type StartBlocked = Record<"start" | "resume" | "startAgain", string>;
-
 export const CONNECTION_STATES = ["not_connected", "connected", "expiring", "expired"] as const;
 export type ConnectionState = (typeof CONNECTION_STATES)[number];
-
-// Why no server can start while the account is in each state; null where one
-// can. A server starts with an expired sign-in, and the account's section
-// already warns about it.
-export const START_REASON: Record<ConnectionState, StartBlocked | null> = {
-  not_connected: m.notConnected,
-  connected: null,
-  expiring: null,
-  expired: null,
-};
 
 export type Connection = {
   connection: ConnectionState;
@@ -29,6 +15,8 @@ export type Connection = {
     subscription_type: string | null;
   } | null;
   login_expires_at: string | null;
+  // A sign-out waits for the last running server to stop; no server starts meanwhile.
+  signing_out: boolean;
 };
 
 function when(iso: string) {
@@ -120,17 +108,24 @@ export function ClaudeConnection({
   if (!connection) return null;
   const state = connection.connection;
   const expires = connection.login_expires_at;
+  const signingOut = connection.signing_out;
   let message: string;
-  if (state === "not_connected") message = m.claudeNotConnected;
+  if (signingOut) message = m.claudeSigningOut;
+  else if (state === "not_connected") message = m.claudeNotConnected;
   else if (state === "expired") message = m.claudeExpired;
   else if (state === "expiring") message = m.claudeExpiring(expires ? when(expires) : "");
   else message = m.claudeConnectedAs(connection.account?.email ?? "");
-  const offer = state === "not_connected" ? m.connect : state === "connected" ? null : m.reconnect;
+  const offer =
+    state === "not_connected"
+      ? m.connect
+      : state === "connected" && !signingOut
+        ? null
+        : m.reconnect;
 
   return (
     <section aria-label={m.claudeTitle} className={`claude claude-${state}`}>
       <p>{message}</p>
-      {state === "connected" && expires && (
+      {state === "connected" && !signingOut && expires && (
         <p className="muted">{m.claudeExpires(when(expires))}</p>
       )}
       {offer && !connecting && (
@@ -146,6 +141,89 @@ export function ClaudeConnection({
           }}
         />
       )}
+      {state !== "not_connected" && !signingOut && !connecting && (
+        <ClaudeSignOut onSignedOut={onChange} />
+      )}
+      {signingOut && !connecting && <SignOutNow onSignedOut={onChange} />}
+    </section>
+  );
+}
+
+// Signing out of Claude: running servers keep the account until the last one
+// stops, unless the person asks for them to be stopped first.
+function ClaudeSignOut({ onSignedOut }: { onSignedOut: (c: Connection) => void }) {
+  const [keep, setKeep] = useState(true);
+  const [error, setError] = useState<ApiError | null>(null);
+
+  async function signOut(event: FormEvent) {
+    event.preventDefault();
+    setError(null);
+    try {
+      onSignedOut(await api.post<Connection>("/api/claude/logout", { keep_sessions: keep }));
+    } catch (e) {
+      setError(asApiError(e));
+    }
+  }
+
+  return (
+    <form noValidate onSubmit={signOut} className="sign-out">
+      <label>
+        <input
+          type="checkbox"
+          name="keep_sessions"
+          checked={keep}
+          onChange={(e) => setKeep(e.target.checked)}
+        />
+        {m.keepSessions}
+      </label>
+      <button type="submit" className="primary">
+        {m.claudeSignOut}
+      </button>
+      <ProblemView error={error} labels={{ keep_sessions: m.keepSessions }} />
+    </form>
+  );
+}
+
+// A sign-out that waits for running servers is never stuck: it can be finished at
+// once, stopping them.
+function SignOutNow({ onSignedOut }: { onSignedOut: (c: Connection) => void }) {
+  const [error, setError] = useState<ApiError | null>(null);
+
+  async function signOutNow(event: FormEvent) {
+    event.preventDefault();
+    setError(null);
+    try {
+      onSignedOut(await api.post<Connection>("/api/claude/logout", { keep_sessions: false }));
+    } catch (e) {
+      setError(asApiError(e));
+    }
+  }
+
+  return (
+    <form noValidate onSubmit={signOutNow} className="sign-out">
+      <button type="submit" className="primary">
+        {m.claudeSignOutNow}
+      </button>
+      <ProblemView error={error} />
+    </form>
+  );
+}
+
+// The Claude page: the account's state is read once, as the page opens.
+export function ClaudePage() {
+  const [connection, setConnection] = useState<Connection | null>(null);
+  const [error, setError] = useState<ApiError | null>(null);
+  useEffect(() => {
+    api
+      .get<Connection>("/api/claude")
+      .then(setConnection)
+      .catch((e) => setError(asApiError(e)));
+  }, []);
+  return (
+    <section>
+      <h1>{m.claudeTitle}</h1>
+      <ProblemView error={error} />
+      <ClaudeConnection connection={connection} onChange={setConnection} />
     </section>
   );
 }

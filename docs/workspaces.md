@@ -98,9 +98,9 @@ deleted.
 - Servers keep running when you close your browser, and while rcman restarts or
   is upgraded. When the machine restarts, rcman brings your workspaces back, and
   starts again each server that was running.
-- Claude has to be signed in in a workspace before its server can start, and
-  rcman has no way to sign it in, so **Start** in a workspace answers that
-  Claude is not signed in in this workspace.
+- A server starts only once you have connected your Claude account, which every
+  workspace of yours shares: see
+  [Connecting your Claude account](claude-account.md).
 - The names of a server's sessions begin with your session name prefix, or,
   while you have set none, with the workspace's name: see
   [Settings](settings.md).

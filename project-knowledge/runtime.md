@@ -31,6 +31,8 @@ conmon and the network helper with them, live in rcman's user manager, not in
 - its volume at `VOLUME_MOUNT`, with its folders `work` (where the server runs),
   `claude` (`CLAUDE_CONFIG_DIR`) and `home` (`HOME`), the volume's root
   readable by the range's root alone;
+- the person's credentials file bound over `claude/.credentials.json` (see
+  [A person's Claude sign-in](#a-persons-claude-sign-in));
 - the tools (`tools_dir`) at `TOOLS_MOUNT` and the Claude Code store
   (`claude_store`) at `CLAUDE_MOUNT`, both read-only;
 - a tmpfs at `RUN_MOUNT` for the tmux socket and the channel's files;
@@ -42,6 +44,36 @@ conmon and the network helper with them, live in rcman's user manager, not in
 Podman copies an image for each range the first time a range uses it, so a
 person's first workspace takes longest to make.
 
+### A person's Claude sign-in
+
+Each person has one sign-in, Claude Code's credentials file (`CREDENTIALS`),
+alone in a volume of theirs, `account_volume`, labelled with the person.
+`ensure_account` makes it, empty and owner-only, if it is not there: a
+container that removes itself runs `ENSURE_SCRIPT` in the person's range, with
+no network, so the file is their range's root's with mode 0600; `create`
+calls it before making a workspace. `read_account` and `clear_account` are
+such containers too, reading the file and emptying it in place.
+
+Every workspace of the person's binds that one file over its own
+`claude/.credentials.json`, by the volume's mountpoint, since the Podman the
+installer installs refuses the volume `subpath` option; each keeps its own
+`CLAUDE_CONFIG_DIR` otherwise. A workspace made before a sign-in sees the empty
+file and the sign-in once it is written. A rename over a bound file is refused
+(EBUSY), so Claude writes it in place there; nothing replaces it. The volume is
+mounted by name by nothing that lasts, so Podman takes it for unused: it must
+never be pruned, as [the installation guide](../docs/installation.md) says.
+`remove_account` removes it; a person's is removed before their row (see
+[people.md](people.md#deleting-a-person)).
+
+`start_sign_in` starts the person's sign-in container, `sign_in_name`:
+`podman run --rm --detach`, in the person's range, its process the mounted
+busybox's `sleep` for the seconds it is given, so it removes itself even if
+rcman does not; a tmpfs at `VOLUME_MOUNT` with a workspace's folders, the
+person's file bound as a workspace's, and the tools and the Claude Code store.
+It is labelled with the person only, never `rcman.workspace`, so `labelled`
+and restore never see it. `end_sign_in` removes it. What runs in it is
+[backend.md](backend.md#claude-accounts)'s.
+
 `exists` answers from `podman container exists`: exit 1 alone means missing,
 and anything else that is not 0, exit 125 among it, is `RuntimeUnavailable`.
 `exec` runs one command with stdin, for what a channel cannot carry, and runs
@@ -49,7 +81,9 @@ it once more when conmon says it could not start it (`CONMON_FAILED`), as
 nothing ran then.
 
 `HostRuntime` keeps the same interface with a folder per workspace and the
-host's own programs, for the tests and `make e2e`; `tests/runtime_contract.py`
+host's own programs — a person's credentials file in `ACCOUNTS` under its
+folder, linked to from each workspace's, and a sign-in container a folder that
+only `end_sign_in` removes — for the tests and `make e2e`; `tests/runtime_contract.py`
 holds both runtimes to the same cases, on the host in `tests/test_runtime.py`
 and against real Podman in the podman host in
 `tests/container/test_runtime_in_podman.py`. A `Layout` says where a runtime's
@@ -97,8 +131,10 @@ test holds to the recorder's, so the contract tests check each is in Claude's
 `--help`.
 
 - **Signed in.** `start` asks Claude with `auth status`, and refuses with
-  `claude_not_logged_in` when no account is. Nothing signs Claude in in a
-  workspace yet, so a start answers that until it does.
+  `claude_not_logged_in` when no account is. `Workspaces.start_server` refuses
+  before that while the person has not connected their account, and seeds the
+  account into the workspace's `.claude.json` (see
+  [backend.md](backend.md#claude-accounts)).
 - **Pinned.** Each window is pinned to its size (`Tmux.pin`), so a terminal
   attached to the socket does not resize it; `tmux.conf` sets no global
   `window-size`, since a global `window-size manual` makes tmux 3.4's server
@@ -106,10 +142,11 @@ test holds to the recorder's, so the contract tests check each is in Claude's
 - **Stopping.** `stop` sends Ctrl+C and waits up to `STOP_TIMEOUT` for the
   pane's process to exit; one still running is sent SIGTERM, and then SIGKILL
   to its whole process group, each followed by `END_GRACE_SECONDS`. Whatever
-  the server started that is still running afterwards — found from the
-  workspace's `/proc` before the stop began, and still the same process by its
-  start time — is killed too, so no Claude process is left, one in a session
-  of its own included. The pane's process is read once, and only it is
+  the server started that is still running afterwards — found by parent from
+  the workspace's `/proc` before the stop began and again before each signal,
+  while the server still holds it, and still the same process by its start
+  time — is killed too, so no Claude process is left, a session's command in a
+  session of its own included. The pane's process is read once, and only it is
   signalled. A server still running after all that is `timeout`.
 - **Answering.** `confirm` answers the folder-trust question after
   `ANSWER_PACE_SECONDS`, and once more if Claude asks again.
@@ -149,7 +186,7 @@ the prefix it was started with.
   it in a thread of its own; it becomes `ready`, or `failed` with what the
   runtime said.
 - **Deleting.** `delete` marks it `deleting` and removes its container and
-  volume, which ends its server, then its row; one still being made goes once
+  volume, which ends its server, then its row — never the person's sign-in; one still being made goes once
   it is made. Deleting a person deletes each of theirs (see
   [people.md](people.md)).
 - **Restoring.** When rcman starts, `restore` runs in the background, so rcman
@@ -157,11 +194,16 @@ the prefix it was started with.
   unavailable; finishes rows still `creating` or `deleting`; makes again a
   `ready` workspace whose container is gone, and starts one that is stopped;
   starts each server that should be running and is not, with its prefix;
-  removes every labelled container no row is for; and removes each person an
-  earlier rcman was deleting, once none of their workspaces is left. A step that fails is logged
+  removes every labelled container no row is for; removes each person an
+  earlier rcman was deleting, once none of their workspaces is left, their
+  sign-in first; and finishes each Claude sign-out that waits for servers that
+  no longer run. A step that fails is logged
   on `rcman.workspaces`, and the others go on.
 
-Each workspace has a lock of its own, so its server's verbs, its deletion and
+Each person has a lock (`person_lock`) that a start holds from its account
+check until its server runs, and signing in and out holds (see
+[backend.md](backend.md#claude-accounts)); it is always taken before a
+workspace's. Each workspace has a lock of its own, so its server's verbs, its deletion and
 restoring it take turns. Restore leaves a workspace a request is making to that
 request, brings back each other one under its lock as its row is then, and
 looks again, under the lock, just before removing a container no row is for, so

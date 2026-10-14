@@ -172,6 +172,10 @@ def claude_env(config_dir: Path | None) -> dict[str, str]:
     return env
 
 
+# Claude Code's credentials file, in its configuration folder.
+CREDENTIALS = ".credentials.json"
+
+
 # --- sequences --------------------------------------------------------------------
 
 
@@ -218,6 +222,9 @@ class Sequence:
     submits_code: bool = False
     needs_human: bool = False  # recorded only when named, with a person signing in
     git_repository: bool = False  # run in a throwaway repository (make_repository)
+    # run with the account's credentials file, linked, and a configuration of its own
+    # with no `.claude.json`, so no `oauthAccount`, as a workspace before rcman seeds it
+    without_oauth_account: bool = False
 
 
 def _exit_only(capture: str) -> Callable[[Run], None]:
@@ -422,6 +429,14 @@ SEQUENCES: list[Sequence] = [
         _exit_only("auth_status_logged_out"),
     ),
     Sequence("rc_logged_out", RC_ARGS, ("rc_logged_out",), _exit_only("rc_logged_out")),
+    Sequence(
+        "rc_no_oauth_account",
+        RC_ARGS,
+        ("rc_no_oauth_account",),
+        _exit_only("rc_no_oauth_account"),
+        needs_account=True,
+        without_oauth_account=True,
+    ),
     Sequence("auth_logout", ["auth", "logout"], ("auth_logout",), _exit_only("auth_logout")),
     Sequence(
         "auth_login_help",
@@ -579,7 +594,12 @@ def record(
         if seq.git_repository:
             make_repository(folder)
             branch = RECORD_BRANCH
-        if seq.needs_account:
+        if seq.without_oauth_account:
+            config = Path(tempfile.mkdtemp(prefix="cfg-", dir=workdir))
+            account = account_config_dir or Path.home() / ".claude"
+            (config / CREDENTIALS).symlink_to(account / CREDENTIALS)
+            config_text = str(config)
+        elif seq.needs_account:
             config = account_config_dir
             config_text = str(config) if config else str(Path.home() / ".claude")
         else:

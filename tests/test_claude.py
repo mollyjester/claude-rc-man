@@ -1,13 +1,18 @@
-"""The Claude account and versions routes: not there yet in workspaces, each answers
-not_available_yet, its body checked as it will be."""
+"""The Claude account's state, and the Claude Code versions routes: not there yet in
+workspaces, each answers not_available_yet, its body checked as it will be. Signing in
+and out: tests/test_accounts.py."""
 
 from helpers import rules
 from tests.conftest import ALICE, BOB, changing
 from tests.test_git import area_routes, call
 
 
-def test_every_claude_route_answers_not_available_yet(client, app):
-    for method, path in area_routes(app, "/api/claude"):
+def test_every_versions_route_answers_not_available_yet(client, app):
+    found = [
+        (m, p) for m, p in area_routes(app, "/api/claude") if p.endswith(("versions", "upgrade"))
+    ]
+    assert len(found) == 2  # non-vacuity
+    for method, path in found:
         r = call(client, method, path)
         assert (r.status_code, r.json()["code"]) == (501, "not_available_yet"), (method, path)
 

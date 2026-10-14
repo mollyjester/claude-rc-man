@@ -1,0 +1,1 @@
+Error: Unable to determine your organization for Remote Control eligibility. Run `claude auth login` to refresh your account information.

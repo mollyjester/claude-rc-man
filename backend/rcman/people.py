@@ -10,6 +10,7 @@ the table (identity.py).
 
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 import tempfile
@@ -87,6 +88,28 @@ def remove(con: sqlite3.Connection, person: Person) -> None:
     """The person's row and settings; their workspaces must be gone first."""
     con.execute("delete from user_settings where email = ?", (person.email,))
     con.execute("delete from people where id = ?", (person.id,))
+    con.commit()
+
+
+def claude_account(con: sqlite3.Connection, person_id: int) -> tuple[dict | None, bool]:
+    """The person's Claude account as their last sign-in named it, or None; and whether
+    a sign-out of it waits for their running servers."""
+    row = con.execute(
+        "select claude_account, claude_signing_out from people where id = ?", (person_id,)
+    ).fetchone()
+    if row is None:
+        return None, False
+    found = json.loads(row[0]) if row[0] else None
+    return found, bool(row[1])
+
+
+def set_claude_account(
+    con: sqlite3.Connection, person_id: int, account: dict | None, signing_out: bool = False
+) -> None:
+    con.execute(
+        "update people set claude_account = ?, claude_signing_out = ? where id = ?",
+        (None if account is None else json.dumps(account), int(signing_out), person_id),
+    )
     con.commit()
 
 

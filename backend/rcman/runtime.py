@@ -1,7 +1,10 @@
 """Where workspaces run: rootless Podman, or folders on the host for the tests.
 
 A workspace is one container, named after its row (``container_name``), with a
-volume of its own and the person's uid range. rcman reaches Podman only through
+volume of its own and the person's uid range. Each person has one Claude sign-in,
+the file CREDENTIALS in a volume of theirs (``account_volume``), which every
+workspace of theirs binds as its own, and a short-lived sign-in container
+(``start_sign_in``) writes. rcman reaches Podman only through
 ``podman --remote`` against its own user manager's socket, with a fixed argv
 and an allowlisted environment, never through a shell. ``HostRuntime`` keeps
 the same interface with a folder and a tmux socket per workspace, for the tests
@@ -34,9 +37,20 @@ VOLUME_MOUNT = "/rcman"  # the workspace's volume
 # The folders of a workspace's volume: the one its server works in, Claude's
 # configuration (CLAUDE_CONFIG_DIR) and the home of the programs rcman runs there.
 WORK, CONFIG, HOME = "work", "claude", "home"
-# Labels every workspace container and volume carries: whose it is, and which row.
+# Claude Code's credentials file, in its configuration folder: a person's sign-in.
+CREDENTIALS = ".credentials.json"
+# Labels every workspace container and volume carries: whose it is, and which row. A
+# person's account volume and sign-in container carry only the person's.
 LABEL_WORKSPACE = "rcman.workspace"
 LABEL_PERSON = "rcman.person"
+# Where a one-off container that makes or reads a person's credentials file mounts
+# their account volume.
+ACCOUNT_MOUNT = "/account"
+# Makes the credentials file, owner-only, if it is not there, and never truncates it.
+ENSURE_SCRIPT = 'umask 077 && : >> "$1"'
+READ_SCRIPT = f'{ENSURE_SCRIPT} && cat "$1"'
+# Empties it in place, so every file bound to it, by inode, sees it empty.
+CLEAR_SCRIPT = 'umask 077 && : > "$1"'
 # Each person's uid range: slot k maps the container's ids 0 to RANGE - 1 onto rcman's
 # subordinate ids from k * RANGE. Slot 0 would be rcman's own ids, so no person has it.
 RANGE = 65536
@@ -55,6 +69,16 @@ READY_POLL_SECONDS = 1.0
 
 def container_name(workspace_id: int) -> str:
     return f"rcman-ws-{workspace_id}"
+
+
+def account_volume(person: int) -> str:
+    """The volume that holds the person's credentials file, and nothing else."""
+    return f"rcman-person-{person}"
+
+
+def sign_in_name(person: int) -> str:
+    """The person's short-lived sign-in container; one at a time."""
+    return f"rcman-sign-in-{person}"
 
 
 class RuntimeUnavailable(Exception):
@@ -91,7 +115,7 @@ class Layout:
     terminfo: str | None
     path: str
     user: str  # who the programs run as there
-    tools: dict  # name -> the argv that runs it there: env, kill, cat, wc, rm, mkdir, chmod
+    tools: dict  # name -> the argv that runs it there: env, kill, cat, wc, rm, mkdir, chmod, mv
     # The argv, but for the group's id, that sends SIGKILL to a whole process group:
     # busybox's kill refuses a "--" before it, and procps' kill needs one.
     kill_group: tuple = ()
@@ -123,7 +147,9 @@ class Runtime(ABC):
 
     @abstractmethod
     def create(self, spec: Spec) -> None:
-        """Make the workspace and its volume, start it, and make its folders."""
+        """Make the workspace and its volume, start it, and make its folders; the person's
+        credentials file is made sure of first, and bound at the workspace's
+        ``config``/CREDENTIALS."""
 
     @abstractmethod
     def start(self, name: str) -> None: ...
@@ -146,6 +172,33 @@ class Runtime(ABC):
     @abstractmethod
     def channel(self, name: str) -> Channel:
         """A new channel to the workspace (channel.py), not yet opened."""
+
+    @abstractmethod
+    def ensure_account(self, person: int, slot: int) -> None:
+        """Make the person's credentials file, empty and theirs alone, if it is not there."""
+
+    @abstractmethod
+    def read_account(self, person: int, slot: int) -> bytes:
+        """The person's credentials file, made sure of first."""
+
+    @abstractmethod
+    def clear_account(self, person: int, slot: int) -> None:
+        """Empty the person's credentials file in place: the same file, not a new one."""
+
+    @abstractmethod
+    def remove_account(self, person: int) -> None:
+        """Remove the person's credentials file; nothing for one that is not there."""
+
+    @abstractmethod
+    def start_sign_in(self, person: int, slot: int, seconds: float) -> str:
+        """Start the person's sign-in container, which ends itself after ``seconds``, with
+        the layout of a workspace and their credentials file bound as a workspace's; one
+        left from before is removed first. Its name, for ``exec``, ``channel`` and
+        ``end_sign_in``. It is not labelled a workspace."""
+
+    @abstractmethod
+    def end_sign_in(self, name: str) -> None:
+        """Remove a sign-in container; nothing for one that is gone."""
 
 
 # --- Podman ---------------------------------------------------------------------------
@@ -188,7 +241,7 @@ PODMAN_LAYOUT = Layout(
     user="root",
     tools={
         name: _busybox(name)
-        for name in ("env", "kill", "cat", "wc", "rm", "mkdir", "chmod", "wget")
+        for name in ("env", "kill", "cat", "wc", "rm", "mkdir", "chmod", "mv", "wget")
     },
     kill_group=(*_busybox("kill"), "-KILL"),
 )
@@ -252,31 +305,55 @@ class PodmanRuntime(Runtime):
             f"--label={LABEL_WORKSPACE}={spec.workspace}",
             f"--label={LABEL_PERSON}={spec.person}",
         ]
-        if spec.slot < 1:
-            raise RuntimeFailed("slot 0 is rcman's own uid range")
-        base = spec.slot * RANGE
+        self._ids(spec.slot)  # refuses slot 0 before anything is made
         if self._podman("volume", "exists", spec.name, check=False).returncode != 0:
             self._podman("volume", "create", *labels, spec.name)
+        self.ensure_account(spec.person, spec.slot)
         self._podman(
             "run",
             "--detach",
             f"--name={spec.name}",
             f"--hostname={spec.name}",
             *labels,
-            "--init",
-            "--network=slirp4netns:allow_host_loopback=false",
-            f"--uidmap=0:{base}:{RANGE}",
-            f"--gidmap=0:{base}:{RANGE}",
+            *self._isolated(spec.slot),
             f"--volume={spec.name}:{VOLUME_MOUNT}",
-            f"--volume={self.config.tools_dir}:{TOOLS_MOUNT}:ro",
-            f"--volume={self.config.claude_store}:{CLAUDE_MOUNT}:ro",
-            f"--tmpfs={RUN_MOUNT}:mode=0700",
+            *self._mounts(spec.person),
             self.config.image,
             f"{TOOLS_MOUNT}/bin/busybox",
             "sleep",
             "2147483647",
         )
         self._folders(spec.name)
+
+    @staticmethod
+    def _ids(slot: int) -> list[str]:
+        if slot < 1:
+            raise RuntimeFailed("slot 0 is rcman's own uid range")
+        base = slot * RANGE
+        return [f"--uidmap=0:{base}:{RANGE}", f"--gidmap=0:{base}:{RANGE}"]
+
+    def _isolated(self, slot: int) -> list[str]:
+        """What every container a person's programs run in has: an init, the network
+        with no way to the host's loopback, and the person's uid range."""
+        return ["--init", "--network=slirp4netns:allow_host_loopback=false", *self._ids(slot)]
+
+    def _mounts(self, person: int) -> list[str]:
+        """The person's credentials file, bound by its path, as the volume's ``subpath``
+        option is refused by the Podman this runs on; the tools; the Claude Code store;
+        and the tmpfs for the runtime folder."""
+        found = self._podman(
+            "volume", "inspect", "--format", "{{.Mountpoint}}", account_volume(person)
+        )
+        mountpoint = found.stdout.decode().strip()
+        if not mountpoint.startswith("/"):
+            raise RuntimeFailed(f"the volume {account_volume(person)} has no mountpoint")
+        credentials = f"{VOLUME_MOUNT}/{CONFIG}/{CREDENTIALS}"
+        return [
+            f"--volume={mountpoint}/{CREDENTIALS}:{credentials}",
+            f"--volume={self.config.tools_dir}:{TOOLS_MOUNT}:ro",
+            f"--volume={self.config.claude_store}:{CLAUDE_MOUNT}:ro",
+            f"--tmpfs={RUN_MOUNT}:mode=0700",
+        ]
 
     def _folders(self, name: str) -> None:
         layout = self.layout(name)
@@ -333,6 +410,71 @@ class PodmanRuntime(Runtime):
         argv = self._argv("exec", "--interactive", name, f"{TOOLS_MOUNT}/bin/busybox", "sh", "-s")
         return Channel(argv, _busybox, RUN_MOUNT, env=podman_env())
 
+    # --- a person's Claude sign-in ----------------------------------------------------
+
+    def _account_run(self, person: int, slot: int, script: str) -> bytes:
+        """``script`` run by a container that removes itself, in the person's uid range
+        with no network, their account volume at ACCOUNT_MOUNT and the credentials
+        file's path as ``$1``; made labelled with the person if it is not there."""
+        ids = self._ids(slot)
+        volume = account_volume(person)
+        if self._podman("volume", "exists", volume, check=False).returncode != 0:
+            self._podman("volume", "create", f"--label={LABEL_PERSON}={person}", volume)
+        proc = self._podman(
+            "run",
+            "--rm",
+            "--network=none",
+            *ids,
+            f"--volume={volume}:{ACCOUNT_MOUNT}",
+            f"--volume={self.config.tools_dir}:{TOOLS_MOUNT}:ro",
+            self.config.image,
+            *_busybox("sh"),
+            "-c",
+            script,
+            "sh",
+            f"{ACCOUNT_MOUNT}/{CREDENTIALS}",
+        )
+        return proc.stdout
+
+    def ensure_account(self, person: int, slot: int) -> None:
+        self._account_run(person, slot, ENSURE_SCRIPT)
+
+    def read_account(self, person: int, slot: int) -> bytes:
+        return self._account_run(person, slot, READ_SCRIPT)
+
+    def clear_account(self, person: int, slot: int) -> None:
+        self._account_run(person, slot, CLEAR_SCRIPT)
+
+    def remove_account(self, person: int) -> None:
+        volume = account_volume(person)
+        if self._podman("volume", "exists", volume, check=False).returncode == 0:
+            self._podman("volume", "rm", "--force", volume)
+
+    def start_sign_in(self, person: int, slot: int, seconds: float) -> str:
+        name = sign_in_name(person)
+        self.end_sign_in(name)
+        self.ensure_account(person, slot)
+        self._podman(
+            "run",
+            "--rm",
+            "--detach",
+            f"--name={name}",
+            f"--hostname={name}",
+            f"--label={LABEL_PERSON}={person}",
+            *self._isolated(slot),
+            f"--tmpfs={VOLUME_MOUNT}:mode=0700",
+            *self._mounts(person),
+            self.config.image,
+            f"{TOOLS_MOUNT}/bin/busybox",
+            "sleep",
+            str(int(seconds)),
+        )
+        self._folders(name)
+        return name
+
+    def end_sign_in(self, name: str) -> None:
+        self._podman("rm", "--force", "--ignore", "--time=0", name)
+
 
 # --- the host -------------------------------------------------------------------------
 
@@ -347,9 +489,15 @@ def _host_tool(name: str) -> list[str]:
 class HostRuntime(Runtime):
     """A workspace is a folder under ``root``, holding what its volume would and a runtime
     folder, with its tmux socket in ``sockets``, whose path must stay short; a stopped
-    one is marked so. Programs run on the host, as the user rcman runs as."""
+    one is marked so. Programs run on the host, as the user rcman runs as.
+
+    A person's credentials file is in ACCOUNTS under ``root``, and a workspace's is a
+    symbolic link to it, since nothing here can bind one file over another; a sign-in
+    container is a folder like a workspace's with no labels, and ends only when
+    ``end_sign_in`` removes it."""
 
     MARK_STOPPED = ".stopped"
+    ACCOUNTS = ".accounts"
 
     def __init__(self, root: Path, sockets: Path, claude: Path, tmux_conf: Path):
         self.root, self.sockets, self.claude, self.tmux_conf = root, sockets, claude, tmux_conf
@@ -369,7 +517,9 @@ class HostRuntime(Runtime):
             terminfo=None,
             path="/usr/local/bin:/usr/bin:/bin",
             user=pwd.getpwuid(os.getuid()).pw_name,
-            tools={n: _host_tool(n) for n in ("env", "kill", "cat", "wc", "rm", "mkdir", "chmod")},
+            tools={
+                n: _host_tool(n) for n in ("env", "kill", "cat", "wc", "rm", "mkdir", "chmod", "mv")
+            },
             kill_group=(*_host_tool("kill"), "-KILL", "--"),
         )
 
@@ -398,9 +548,17 @@ class HostRuntime(Runtime):
         layout = self.layout(spec.name)
         for folder in (layout.work, layout.config, layout.home):
             Path(folder).mkdir(parents=True)
+        self._link_account(spec.name, spec.person)
         labels = {LABEL_WORKSPACE: str(spec.workspace), LABEL_PERSON: str(spec.person)}
         (self.root / spec.name / ".labels").write_text(json.dumps(labels))
         self.start(spec.name)
+
+    def _account_file(self, person: int) -> Path:
+        return self.root / self.ACCOUNTS / str(person) / CREDENTIALS
+
+    def _link_account(self, name: str, person: int) -> None:
+        self.ensure_account(person, 1)
+        Path(self.layout(name).config, CREDENTIALS).symlink_to(self._account_file(person))
 
     def start(self, name: str) -> None:
         Path(self.layout(name).run).mkdir(mode=0o700, exist_ok=True)
@@ -458,3 +616,33 @@ class HostRuntime(Runtime):
             raise RuntimeFailed(f"the workspace {name} is not running")
         layout = self.layout(name)
         return Channel([layout.shell, "-s"], _host_tool, layout.run, env={"PATH": "/usr/bin:/bin"})
+
+    def ensure_account(self, person: int, slot: int) -> None:
+        found = self._account_file(person)
+        found.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        os.close(os.open(found, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600))
+
+    def read_account(self, person: int, slot: int) -> bytes:
+        self.ensure_account(person, slot)
+        return self._account_file(person).read_bytes()
+
+    def clear_account(self, person: int, slot: int) -> None:
+        self.ensure_account(person, slot)
+        with open(self._account_file(person), "r+b") as handle:
+            handle.truncate(0)
+
+    def remove_account(self, person: int) -> None:
+        shutil.rmtree(self._account_file(person).parent, ignore_errors=True)
+
+    def start_sign_in(self, person: int, slot: int, seconds: float) -> str:
+        name = sign_in_name(person)
+        self.end_sign_in(name)
+        layout = self.layout(name)
+        for folder in (layout.work, layout.config, layout.home):
+            Path(folder).mkdir(parents=True)
+        self._link_account(name, person)
+        self.start(name)
+        return name
+
+    def end_sign_in(self, name: str) -> None:
+        self.remove(name)

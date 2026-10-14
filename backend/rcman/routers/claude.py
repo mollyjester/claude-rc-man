@@ -1,19 +1,20 @@
 """The signed-in person's Claude account, and Claude Code versions for administrators.
 
-Signing in to Claude in workspaces, and rolling out Claude Code versions, are not
-there yet: every route keeps the shape it will have and answers
-``not_available_yet``. ``connection`` is how the account's state will be read from
-its status, against the ``login_warning_days`` setting.
+Signing in and out is accounts.py's; ``connection`` reads the account's state from
+its status, against the ``login_warning_days`` setting. Rolling out Claude Code
+versions is not there yet: those routes keep the shape they will have and answer
+``not_available_yet``.
 """
 
 from __future__ import annotations
 
 import datetime as dt
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, Field
 
 from helpers import rules
+from rcman import db, people
 from rcman.audit import Record, Recorder
 from rcman.identity import Identity, admin_user, current_user
 from rcman.problems import Problem, ruled
@@ -33,6 +34,13 @@ class LoginBody(BaseModel):
 class CodeBody(BaseModel):
     code: str = Field(
         min_length=1, max_length=MAX_CODE_LENGTH, description="The code Claude showed."
+    )
+
+
+class LogoutBody(BaseModel):
+    keep_sessions: bool = Field(
+        True,
+        description="Leave running servers running; the sign-out waits until the last stops.",
     )
 
 
@@ -56,20 +64,50 @@ def connection(status: dict, warning_days: int, now: dt.datetime | None = None) 
     return {"connection": state, "account": account, "login_expires_at": expires}
 
 
+def _person(request: Request, identity: Identity) -> people.Person:
+    con = db.connect(request.app.state.settings.database)
+    try:
+        return people.by_id(con, identity.person)
+    finally:
+        con.close()
+
+
+def _answer(request: Request, status: dict) -> dict:
+    found = connection(status, request.app.state.settings.login_warning_days)
+    return {**found, "signing_out": status.get("signing_out", False)}
+
+
 @router.get("")
-def get_connection(identity: Identity = Depends(current_user)) -> dict:
-    raise Problem("not_available_yet")
+def get_connection(request: Request, identity: Identity = Depends(current_user)) -> dict:
+    """The account's state, read from its credentials file; read when the Claude page
+    opens, never polled."""
+    accounts = request.app.state.accounts
+    return _answer(request, accounts.status(_person(request, identity)))
 
 
 @router.post("/login")
-def login(body: LoginBody, record: Record = Depends(Recorder("claude.login"))) -> dict:
-    record.target = body.email or record.identity.email
-    raise Problem("not_available_yet")
+def login(
+    body: LoginBody, request: Request, record: Record = Depends(Recorder("claude.login"))
+) -> dict:
+    email = body.email or record.identity.email
+    record.target = email
+    return request.app.state.accounts.begin(_person(request, record.identity), email)
 
 
 @router.post("/code")
-def code(body: CodeBody, record: Record = Depends(Recorder("claude.connect"))) -> dict:
-    raise Problem("not_available_yet")
+def code(
+    body: CodeBody, request: Request, record: Record = Depends(Recorder("claude.connect"))
+) -> dict:
+    person = _person(request, record.identity)
+    return _answer(request, request.app.state.accounts.finish(person, body.code.strip()))
+
+
+@router.post("/logout")
+def logout(
+    body: LogoutBody, request: Request, record: Record = Depends(Recorder("claude.disconnect"))
+) -> dict:
+    person = _person(request, record.identity)
+    return _answer(request, request.app.state.accounts.sign_out(person, body.keep_sessions))
 
 
 @router.get("/versions", dependencies=[Depends(admin_user)])

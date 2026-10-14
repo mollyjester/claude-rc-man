@@ -116,8 +116,10 @@ through the socket.
   self-update and rollback, and — with Caddy and stand-ins for oauth2-proxy and
   rcman — that a browser cannot set the identity header itself and that only
   Caddy's account can reach rcman's socket. Then, through the API as Caddy
-  passes it on: a person added, a workspace made, its server refused until its
-  fake `claude` is signed in and then reaching ready, its processes outside
+  passes it on: a person added, a workspace made, its server refused until the
+  person connects the fake `claude` once, through the API, after which it and a
+  workspace made afterwards both reach ready, each binding the person's own
+  credentials file, its processes outside
   `rcman.service`, a restart of rcman leaving them as they were, a stop leaving
   no Claude process, one person unable to reach another's workspace, and
   deleting a person leaving nothing labelled theirs.

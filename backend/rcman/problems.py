@@ -50,7 +50,11 @@ MESSAGES = {
     "workspace_failed": "The workspace did not do what rcman asked of it.",
     # servers
     "claude_not_installed": "Claude Code is not installed in the workspace.",
-    "claude_not_logged_in": "Claude is not signed in in this workspace.",
+    "claude_not_logged_in": "Connect your Claude account on the Claude page.",
+    "claude_signing_out": "Your Claude account is being signed out: connect it again on the "
+    "Claude page to start servers.",
+    "login_failed": "Signing in to Claude failed. Get a new link and try again.",
+    "no_login_in_progress": "No sign-in to Claude is waiting for a code. Get a new link.",
     "claude_unrecognised_output": "Claude Code answered with output rcman does not recognise.",
     "already_running": "A server is already running in this workspace.",
     "not_running": "No server is running in this workspace.",
@@ -85,6 +89,9 @@ STATUS = {
     "workspace_failed": 502,
     "claude_not_installed": 409,
     "claude_not_logged_in": 409,
+    "claude_signing_out": 409,
+    "login_failed": 409,
+    "no_login_in_progress": 409,
     "claude_unrecognised_output": 502,
     "already_running": 409,
     "not_running": 409,

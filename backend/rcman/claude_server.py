@@ -320,9 +320,11 @@ class Server:
         ended: SIGTERM, then SIGKILL to its process group, each followed by
         END_GRACE_SECONDS. Waits for the process to exit rather than for a screen,
         which may be one rcman does not recognise. The pane's process is read once,
-        here, and only it is waited for and signalled. Whatever it started that is
-        still running afterwards, in its process group or not, is killed: it is the
-        server's own, and Claude's sessions are among it."""
+        here, and only it is waited for and signalled. Every process it started, by
+        parent, is collected before anything is signalled and again before each
+        signal; whatever of them still runs afterwards, in its process group or in a
+        session of its own, as a session's commands are, is killed: it is the
+        server's own."""
         dead, pid = self.tmux.pane()
         if dead or self.tmux.exit_status() is not None:
             return True
@@ -332,6 +334,9 @@ class Server:
         for sig in (signals.SIGTERM, signals.SIGKILL):
             if not running:
                 break
+            # What it started meanwhile, collected while it is still theirs: once its
+            # parent dies, a process is init's and no longer found as a descendant.
+            started.update(self._descendants(pid))
             self.tmux.signal(pid, sig)
             running = self._still_runs(pid, END_GRACE_SECONDS)
         if not running:
