@@ -22,10 +22,12 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
+from helpers import git_run
 from rcman import db, people
 from rcman.channel import Channel, ChannelBroken, ChannelTimeout
 from rcman.claude_server import Server, TmuxFailed
 from rcman.problems import Problem
+from rcman.repository import Repository
 from rcman.runtime import (
     LABEL_WORKSPACE,
     Runtime,
@@ -222,6 +224,7 @@ class Workspaces:
         spec = Spec(workspace.container, slot=slot, workspace=workspace.id, person=workspace.person)
         try:
             self.runtime.create(spec)
+            self._check_git(workspace)
             error = None
         except Exception as failed:  # noqa: BLE001 - whatever it is, the workspace failed
             log.warning("workspace %s could not be made: %s", workspace.id, failed)
@@ -239,6 +242,26 @@ class Workspaces:
                 self._set(workspace.id, state=READY, error=None)
             else:
                 self._set(workspace.id, state=FAILED, error=error)
+
+    def _check_git(self, workspace: Workspace) -> None:
+        """The image must hold a git that rcman can use: one new enough, which the workspace
+        is failed without otherwise."""
+        run, run_stdin = self._execs(workspace.container)
+        repository = Repository(self.runtime.layout(workspace.container), run, run_stdin)
+        try:
+            found = repository.version()
+        except Problem as refused:
+            if refused.code == "git_not_installed":
+                raise RuntimeFailed("git is not installed in the image") from None
+            said = " ".join(refused.extra.get("git") or []) or refused.title
+            raise RuntimeFailed(
+                f"git in the image does not answer as rcman needs: {said}"
+            ) from None
+        if found < git_run.GIT_MIN_VERSION:
+            raise RuntimeFailed(
+                f"git {found[0]}.{found[1]} in the image is older than the "
+                f"{git_run.GIT_MIN_VERSION[0]}.{git_run.GIT_MIN_VERSION[1]} rcman needs"
+            )
 
     def delete(self, workspace: Workspace) -> None:
         """Delete the workspace: its container and volume, its server with them, and its
@@ -333,6 +356,23 @@ class Workspaces:
         name = workspace.container
         channel = self._channel(name)
         return Server(self.runtime.layout(name), channel.run, workspace.id)
+
+    def _execs(self, name: str):
+        """The runtime's exec as a repository's runners: without and with stdin."""
+
+        def run(argv: list[str], timeout: float):
+            return self.runtime.exec(name, argv, timeout=timeout)
+
+        def run_stdin(argv: list[str], stdin: bytes, timeout: float):
+            return self.runtime.exec(name, argv, stdin, timeout=timeout)
+
+        return run, run_stdin
+
+    def repository(self, workspace: Workspace) -> Repository:
+        """The git repository at the root of the workspace's work folder, run through its
+        channel, and through ``exec`` for what carries stdin. Nothing is started for it."""
+        name = workspace.container
+        return Repository(self.runtime.layout(name), self._channel(name).run, self._execs(name)[1])
 
     def server_status(self, workspace: Workspace) -> dict | None:
         """The workspace's server, or None; a workspace that records none is not reached."""

@@ -28,7 +28,6 @@ export type Branch = {
   behind: number | null;
 };
 export type GitStatus = {
-  path: string;
   branch: Branch;
   merging: boolean;
   staged: FileList;
@@ -39,9 +38,8 @@ export type GitStatus = {
   github_token: boolean | null;
   push_ahead: number | null;
 };
-type Pushed = { path: string; branch: string; upstream: string | null; upstream_set: boolean };
+type Pushed = { branch: string; upstream: string | null; upstream_set: boolean };
 type CommitPushed = {
-  path: string;
   commit: string;
   push: Pushed | null;
   push_problem: Record<string, unknown> | null;
@@ -69,7 +67,7 @@ type Action =
 // answer that arrives after a newer request was made is dropped, as is any
 // that arrives once the section has closed. checkedAt is when the status was
 // last answered, which a failure leaves as it was.
-function useGitStatus(path: string, pollMs: number) {
+function useGitStatus(workspace: number, pollMs: number) {
   const [status, setStatus] = useState<GitStatus | null>(null);
   const [checkedAt, setCheckedAt] = useState<number | null>(null);
   const [error, setError] = useState<ApiError | null>(null);
@@ -78,7 +76,7 @@ function useGitStatus(path: string, pollMs: number) {
   const refresh = useCallback(async () => {
     const asked = ++latest.current;
     try {
-      const answer = await api.get<GitStatus>("/api/git/status", { path });
+      const answer = await api.get<GitStatus>("/api/git/status", { workspace });
       if (asked === latest.current) {
         setStatus(answer);
         setCheckedAt(Date.now());
@@ -87,7 +85,7 @@ function useGitStatus(path: string, pollMs: number) {
     } catch (e) {
       if (asked === latest.current) setError(asApiError(e));
     }
-  }, [path]);
+  }, [workspace]);
 
   useEffect(() => {
     refresh();
@@ -327,8 +325,8 @@ const somethingToPush = (status: GitStatus) => status.push_ahead !== 0;
 // rcman's own rules — Commit only with something staged and an author name
 // set, Push and Commit & Push only as pushReason allows; git's own refusals
 // are shown as it gave them, beside what was tried.
-export function Changes({ path, pollMs }: { path: string; pollMs: number }) {
-  const { status, checkedAt, error: statusError, refresh } = useGitStatus(path, pollMs);
+export function Changes({ workspace, pollMs }: { workspace: number; pollMs: number }) {
+  const { status, checkedAt, error: statusError, refresh } = useGitStatus(workspace, pollMs);
   const [branches, setBranches] = useState<Branches | null>(null);
   const [staged, setStaged] = useState<ReadonlySet<string>>(new Set());
   const [notStaged, setNotStaged] = useState<ReadonlySet<string>>(new Set());
@@ -342,16 +340,20 @@ export function Changes({ path, pollMs }: { path: string; pollMs: number }) {
 
   const listBranches = useCallback(async () => {
     try {
-      setBranches(await api.get<Branches>("/api/git/branches", { path }));
+      setBranches(await api.get<Branches>("/api/git/branches", { workspace }));
       setErrors((e) => ({ ...e, branches: undefined }));
     } catch (e) {
       setErrors((current) => ({ ...current, branches: asApiError(e) }));
     }
-  }, [path]);
+  }, [workspace]);
 
+  // A workspace with no repository in it, as a new one has none, is said quietly.
+  const empty = statusError?.code === "not_a_repository";
+
+  // The branches when the section opens, and again once a repository has come to be.
   useEffect(() => {
-    listBranches();
-  }, [listBranches]);
+    if (!empty) listBranches();
+  }, [listBranches, empty]);
 
   // The branches again when the current branch changes, as when Claude switches.
   const branchName = status?.branch.name;
@@ -392,26 +394,29 @@ export function Changes({ path, pollMs }: { path: string; pollMs: number }) {
   async function stage() {
     if (!status) return;
     const files = inOrder(status.not_staged, notStaged);
-    if (await act("stage", () => api.post("/api/git/stage", { path, files })))
+    if (await act("stage", () => api.post("/api/git/stage", { workspace, files })))
       setNotStaged(new Set());
   }
 
   async function unstage() {
     if (!status) return;
     const files = inOrder(status.staged, staged);
-    if (await act("unstage", () => api.post("/api/git/unstage", { path, files })))
+    if (await act("unstage", () => api.post("/api/git/unstage", { workspace, files })))
       setStaged(new Set());
   }
 
   async function commit(event: FormEvent) {
     event.preventDefault();
-    if (await act("commit", () => api.post("/api/git/commit", { path, message }))) setMessage("");
+    if (await act("commit", () => api.post("/api/git/commit", { workspace, message })))
+      setMessage("");
   }
 
   async function push() {
     setPushed(null);
     setNotPushed(null);
-    await act("push", async () => setPushed(await api.post<Pushed>("/api/git/push", { path })));
+    await act("push", async () =>
+      setPushed(await api.post<Pushed>("/api/git/push", { workspace })),
+    );
   }
 
   // Commit & Push: a commit made whose push failed is a commit made, so the box
@@ -422,7 +427,7 @@ export function Changes({ path, pollMs }: { path: string; pollMs: number }) {
     setErrors((current) => ({ ...current, push: undefined }));
     let answer: CommitPushed | null = null;
     await act("commit", async () => {
-      answer = await api.post<CommitPushed>("/api/git/commit-push", { path, message });
+      answer = await api.post<CommitPushed>("/api/git/commit-push", { workspace, message });
     });
     const done = answer as CommitPushed | null;
     if (done === null) return;
@@ -436,7 +441,7 @@ export function Changes({ path, pollMs }: { path: string; pollMs: number }) {
   }
 
   const createBranch = (name: string) =>
-    act("branch", () => api.post("/api/git/branch", { path, name }));
+    act("branch", () => api.post("/api/git/branch", { workspace, name }));
 
   // New branch opened or closed, in whatever way: its refusal goes.
   const forgetCreateError = useCallback(
@@ -446,10 +451,22 @@ export function Changes({ path, pollMs }: { path: string; pollMs: number }) {
 
   function switchTo(branch: string, remote: boolean) {
     setSwitching(branch);
-    return act("switch", () => api.post("/api/git/switch", { path, branch, remote }));
+    return act("switch", () => api.post("/api/git/switch", { workspace, branch, remote }));
   }
 
   const reason = status === null ? null : pushReason(status);
+
+  if (empty) {
+    return (
+      <section className="panel-section changes" aria-label={m.changesTitle}>
+        <div className="changes-head">
+          <h3>{m.changesTitle}</h3>
+        </div>
+        <p>{m.notARepository}</p>
+        <StatusLine checkedAt={checkedAt} onRefresh={() => refresh()} />
+      </section>
+    );
+  }
 
   return (
     <section className="panel-section changes" aria-label={m.changesTitle}>
@@ -469,7 +486,7 @@ export function Changes({ path, pollMs }: { path: string; pollMs: number }) {
             onSwitch={switchTo}
             onCreate={createBranch}
             onCreateForget={forgetCreateError}
-            onFetch={() => act("fetch", () => api.post("/api/git/fetch", { path }))}
+            onFetch={() => act("fetch", () => api.post("/api/git/fetch", { workspace }))}
             onPush={push}
           />
         )}

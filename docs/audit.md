@@ -29,14 +29,14 @@ changes nothing: a page's report of a failure rcman could not see, written to th
 | `settings.update` | changes their settings (see [Settings](settings.md)) | the settings they sent, as JSON; none when they were refused |
 | `person.add` | adds a person (administrators; see [Adding and removing people](users.md)) | the person's address |
 | `person.delete` | removes a person, with all their workspaces (administrators) | the person's address |
-| `git.stage` | stages files in a repository | the repository's folder |
-| `git.unstage` | unstages files | the repository's folder |
-| `git.commit` | commits what is staged | the repository's folder — the message is never recorded |
-| `git.switch` | switches to a branch | the repository's folder |
-| `git.branch` | makes a branch and switches to it | the repository's folder |
-| `git.fetch` | refreshes the remote branches | the repository's folder |
-| `git.push` | pushes the current branch | the repository's folder |
-| `git.commit_push` | commits what is staged and pushes it | the repository's folder — the message is never recorded |
+| `git.stage` | stages files in a workspace's repository | the workspace's name |
+| `git.unstage` | unstages files | the workspace's name |
+| `git.commit` | commits what is staged | the workspace's name — the message is never recorded |
+| `git.switch` | switches to a branch | the workspace's name |
+| `git.branch` | makes a branch and switches to it | the workspace's name |
+| `git.fetch` | refreshes the remote branches | the workspace's name |
+| `git.push` | pushes the current branch | the workspace's name |
+| `git.commit_push` | commits what is staged and pushes it | the workspace's name — the message is never recorded |
 | `git.clone` | clones a repository from GitHub | the repository's address, as given — an address with a user or a token in it is refused, and so recorded with none |
 | `github.token` | adds or replaces their GitHub token | none — the token is never recorded |
 | `github.forget` | removes their GitHub token | none |
@@ -45,9 +45,9 @@ changes nothing: a page's report of a failure rcman could not see, written to th
 | `claude.disconnect` | signs their Claude account out, at once or once their last running server stops | none |
 | `claude.upgrade` | rolls out a Claude Code version (administrators) | the version |
 
-git, the GitHub token and rolling out a Claude Code version are not available in
-workspaces yet: rcman answers each of those
-requests with `not_available_yet`, and records it with that result.
+Cloning a repository from GitHub into a workspace and rolling out a Claude Code
+version are not available yet: rcman answers each of those requests with
+`not_available_yet`, and records it with that result.
 
 The result is one of these, or the code of the error the request failed with —
 a refused request is recorded too:

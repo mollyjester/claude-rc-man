@@ -443,18 +443,26 @@ def test_retention_runs_when_the_app_starts(settings, runtime):
 
 
 def test_what_git_and_github_routes_are_sent_is_never_recorded_or_logged(client, settings, caplog):
+    workspace = made_workspace(client, ALICE, "hers")
     caplog.set_level("DEBUG")
-    message, token = "SECRET-COMMIT-MESSAGE-7", "a-token-never-recorded"
+    message, token, files = "SECRET-COMMIT-MESSAGE-7", "a-token-never-recorded", ["SECRET-FILE.txt"]
     requests = [
-        ("/api/git/commit", {"path": "repo", "message": message}, "git.commit", "repo"),
-        ("/api/github/token", {"token": token}, "github.token", None),
+        ("/api/git/stage", {"workspace": workspace["id"], "files": files}, "git.stage", None),
+        ("/api/git/commit", {"workspace": workspace["id"], "message": message}, "git.commit", None),
+        ("/api/github/token", {"token": token}, "github.token", "ok"),
     ]
+    results = []
     for url, body, _, _ in requests:
         r = client.post(url, json=body, headers=changing(ALICE))
-        assert r.json()["code"] == "not_available_yet", r.text
-    recorded = [(r["action"], r["target"], r["result"]) for r in rows(settings)[-2:]]
-    assert recorded == [(a, t, "not_available_yet") for _, _, a, t in requests]
+        results.append(r.json().get("code", "ok") if r.status_code >= 400 else "ok")
+    recorded = [(r["action"], r["target"], r["result"]) for r in rows(settings)[-3:]]
+    assert recorded == [
+        ("git.stage", "hers", results[0]),
+        ("git.commit", "hers", results[1]),
+        ("github.token", None, "ok"),
+    ]
+    assert results[:2] == ["not_a_repository", "author_not_set"]  # they were refused, not made up
     assert caplog.records  # positive control: the audit events were logged
-    for secret in (message, token):
+    for secret in (message, token, *files):
         assert all(secret not in str(v) for row in rows(settings) for v in row.values())
         assert secret not in caplog.text

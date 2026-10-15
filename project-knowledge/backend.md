@@ -33,7 +33,10 @@ the OpenAPI description it serves at `/api/openapi.json`, browsable at
 | `routers/workspaces.py` | The person's workspaces, under `/api/workspaces`: listing them with their servers, making one, deleting one |
 | `routers/servers.py` | A workspace's server, under `/api/servers`: start, resume, stop, forget, confirm and output, each by the workspace's id; and everyone's, for administrators |
 | `accounts.py`, `routers/claude.py` | Each person's Claude sign-in, signing in and out of it, and its state; `routers/me.py` signs out of rcman — see [Claude accounts](#claude-accounts) |
-| `routers/git.py`, `routers/github.py`, `routers/claude.py` | git, the GitHub token and Claude Code versions: not available in workspaces yet (see [Not available yet](#not-available-yet)) |
+| `repository.py` | A workspace's git repository: the verbs of the Changes section, run in the workspace through its channel and `exec`, each wrapped in the workspace's `timeout` tool (see [git in workspaces](#git-in-workspaces)) |
+| `gitaccount.py` | A person's commit author and GitHub token, kept in SQLite and written into their volume's git folder (see [git in workspaces](#git-in-workspaces)) |
+| `routers/git.py`, `routers/github.py` | The git routes, by workspace id, and the person's GitHub token (see [git in workspaces](#git-in-workspaces)) |
+| `routers/claude.py` | Claude Code versions: not available in workspaces yet (see [Not available yet](#not-available-yet)) |
 | `routers/client_errors.py` | A page's reports of failures rcman could not see, `POST /api/client-errors`, written to the journal (see [Errors from the page](#errors-from-the-page)) |
 | `routers/me.py` | Each person's own settings, changed with `PATCH /api/me/settings`, which changes only the settings sent; `prefix_of` and `author_of` are how the rest of the backend reads them |
 
@@ -158,14 +161,57 @@ credentials file every workspace of theirs shares (see
   person's running servers unless `keep_sessions`, the default, and answers
   oauth2-proxy's sign-out address, which the page goes to.
 
+## git in workspaces
+
+`routers/git.py` names a workspace by its id (`workspace`, a query parameter or a
+body field, never a path) and runs git in it. `_run` finds the workspace among the
+signed-in person's ready ones (`Workspaces.ready`: `workspace_not_found` for another's
+or none, `workspace_not_ready` otherwise), and calls a verb of `repository.Repository` on
+`Workspaces.repository(workspace)`: nothing is started and no server or workspace lock
+is taken. A change's audit target is the workspace's name; a commit's message and the
+files to stage reach git on stdin and are never recorded or logged.
+
+- **Where git runs.** In the workspace, at the root of its work folder, as the
+  workspace's user, through the workspace's channel for reads and through
+  `Runtime.exec` for what carries stdin. Every call is wrapped in the layout's
+  `timeout` tool (`GIT_TIMEOUT`, `GIT_NETWORK_TIMEOUT` for fetch and push, shared by
+  the calls of one verb), and `exec` itself has a `timeout` of its own that ends a
+  call whose tool did not. `helpers/git_run.py` keeps the parsers and the rules for
+  git's output and refusals; `repository.py` is the process half.
+- **A repository is the workspace's own `.git`.** A workspace with none, as a new
+  one has, answers `not_a_repository` (409). `git init` is not rcman's: Claude runs
+  it. Cloning (`/api/git/clone`) validates its address and answers
+  `not_available_yet`, audited with that result.
+- **The image check.** After `runtime.create`, `Workspaces._check_git` runs
+  `git --version`: no git, or one that does not answer as rcman needs, or one older
+  than `git_run.GIT_MIN_VERSION`, fails the workspace with the reason.
+- **Author and token.** `gitaccount.GitAccount` keeps the commit author
+  (`user_settings`) and the token (`github_tokens`, removed with the person's row)
+  and writes them into the git folder of the person's volume with
+  `Runtime.put_account` (see [runtime.md](runtime.md#the-git-folder)); the volume
+  first, SQLite second, under the person's lock, and a failed SQLite write puts the
+  volume's file back. `PATCH /api/me/settings` goes through it as well. A write
+  that races a person's deletion removes what it wrote and answers `not_allowed`.
+  `GET /api/github` answers whether a token is stored from SQLite alone, never from
+  the runtime. A commit is refused with `author_not_set` until a name is set; a
+  push to GitHub with `github_token_not_set` while no token is stored.
+- **Problem codes** are `problems.py`'s: `git_not_installed`, `git_failed` (what git
+  said is in the problem's extra), `git_timeout`, `git_unrecognised_output`,
+  `not_a_repository`, `file_invalid`, `file_outside_repository`, `nothing_staged`,
+  `branch_invalid`, `branch_not_found`, `branch_name_taken`, `detached_head`,
+  `no_push_remote`, `no_commits_yet` and `github_token_not_set`.
+- **`commit-push`** commits and pushes; when the commit is made and the push fails,
+  the answer carries the push's problem and the audit row's result is
+  `committed_not_pushed`.
+
 ## Not available yet
 
-Claude Code versions, git and the GitHub token are not available in workspaces
-yet. Their routes — `routers/claude.py`,
-`routers/git.py` and `routers/github.py` — keep the shape they will have, their
-bodies validated by the rules they will be, and answer `not_available_yet`; the
+Claude Code versions, and cloning a repository into a workspace, are not available
+yet. `routers/claude.py` and `POST /api/git/clone` keep the shape they will have,
+their bodies validated by the rules they will be, and answer `not_available_yet`; the
 changing ones are audited with that result. What a person writes for them — a
-commit's message, a token, a sign-in code — is never recorded or logged.
+repository's address, a sign-in code — is never recorded or logged beyond that
+address, which `GITHUB_URL` makes safe.
 
 ## Attention
 

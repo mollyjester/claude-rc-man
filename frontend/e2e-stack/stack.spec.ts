@@ -2,6 +2,8 @@
 // people tests/container/stack.py adds and no workspace made beforehand. Claude
 // is the fake one, which takes the code tests/test_container_suite.py passes in
 // RCMAN_FAKE_CLAUDE_CODE. Runs in order against one installation.
+import { execFileSync } from "node:child_process";
+
 import { expect, type Locator, type Page, test } from "@playwright/test";
 
 import { makeWorkspace, openAdminPage, panel, workspaces } from "../e2e/nav";
@@ -25,6 +27,22 @@ async function idOf(page: Page, name: string): Promise<number> {
     const listed = (await (await fetch("/api/workspaces")).json()).workspaces;
     return listed.find((w: { name: string }) => w.name === wanted).id;
   }, name);
+}
+
+// What the container suite gives to run a command in the podman host, as JSON: the
+// command up to the one to run (tests/test_container_suite.py).
+const IN_HOST: string[] = JSON.parse(process.env.RCMAN_STACK_EXEC ?? "[]");
+
+// Makes a repository in a workspace with a bare origin of its own, and changes to stage
+// (tests/container/stack.py), as Claude would leave one.
+function makeRepository(workspace: number) {
+  expect(IN_HOST).not.toEqual([]);
+  const [command, ...rest] = IN_HOST;
+  execFileSync(
+    command,
+    [...rest, "python3", "tests/container/stack.py", "repository", String(workspace)],
+    { stdio: "pipe" },
+  );
 }
 
 // The fake claude's one accepted code (devtools/fake_claude.py, ACCEPTED_CODE).
@@ -83,6 +101,48 @@ test("a person connects Claude once, and workspaces made before and after both r
   const after = await runs(await makeWorkspace(page, "after"), "after");
   await after.card.getByRole("button", { name: m.stop }).click();
   await expect(after.card.getByText(m.states.stopped, { exact: true })).toBeVisible();
+});
+
+test("changes in a workspace's repository are staged, committed and pushed from its panel", async ({
+  page,
+}) => {
+  await signIn(page, ALICE);
+  const id = await idOf(page, "after");
+  await page.goto(`/?workspace=${id}`);
+  const opened = panel(page, "after");
+  const changes = opened.getByRole("region", { name: m.changesTitle });
+  // A new workspace holds no repository, which the panel says without raising an alert.
+  await expect(changes.getByText(m.notARepository)).toBeVisible();
+  await expect(opened.getByRole("alert")).toHaveCount(0);
+
+  makeRepository(id);
+  await changes.getByRole("button", { name: m.refreshStatus }).click();
+  await expect(changes.getByText(m.notARepository)).toHaveCount(0);
+  await expect(changes.getByRole("button", { name: m.onBranch("main") })).toBeVisible();
+
+  // Committing needs an author name, which the section links to Settings for.
+  await changes.getByRole("link", { name: m.commitNeedsAuthor.link }).click();
+  await page.getByLabel(m.authorNameLabel).fill("Alice");
+  const author = page.getByRole("region", { name: m.settingsAuthorTitle });
+  await author.getByRole("button", { name: m.save }).click();
+  await expect(author.getByText(m.saved)).toBeVisible();
+  await page.goto(`/?workspace=${id}`);
+
+  const notStaged = changes.getByRole("group", { name: m.notStagedTitle });
+  await expect(notStaged.getByText("notes.txt")).toBeVisible();
+  await expect(notStaged.getByText("hello.txt")).toBeVisible();
+  await notStaged.getByRole("checkbox", { name: m.selectAll }).check();
+  await notStaged.getByRole("button", { name: m.stageSelected }).click();
+  const staged = changes.getByRole("group", { name: m.stagedTitle });
+  await expect(staged.getByText("notes.txt")).toBeVisible();
+  await expect(staged.getByText("hello.txt")).toBeVisible();
+
+  await changes.getByLabel(m.commitMessage).fill("Add notes");
+  await changes.getByRole("button", { name: m.commit, exact: true }).click();
+  await expect(changes.getByText(m.commitNothingStaged)).toBeVisible();
+
+  await changes.getByRole("button", { name: m.push, exact: true }).click();
+  await expect(changes.getByText(m.pushed("main", "origin/main"))).toBeVisible();
 });
 
 test("another person sees none of it, and reaching it by its id finds nothing", async ({
@@ -201,6 +261,9 @@ test("the audit trail records what people did", async ({ page }) => {
     "server.confirm",
     "server.stop",
     "server.resume",
+    "git.stage",
+    "git.commit",
+    "git.push",
     "person.add",
     "person.delete",
   ]) {

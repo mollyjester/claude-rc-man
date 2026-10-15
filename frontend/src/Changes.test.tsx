@@ -11,13 +11,13 @@ import { renderAlone } from "./test/render";
 // Where leaving the section goes, a page of its own.
 const AWAY = "/elsewhere";
 
-// The Changes section is not on any page while git in workspaces is not there;
-// it is rendered on its own, with the Settings page its links lead to.
+// The Changes section is rendered on its own, with the Settings page its links
+// lead to; Dashboard.test.tsx shows it in a workspace's panel.
 function renderChanges({ pollMs = 0 }: { pollMs?: number } = {}) {
-  return renderAlone(<Changes path={REPO} pollMs={pollMs} />, ["/settings", AWAY]);
+  return renderAlone(<Changes workspace={WORKSPACE} pollMs={pollMs} />, ["/settings", AWAY]);
 }
 
-const REPO = "projects/repo";
+const WORKSPACE = 7;
 type Files = {
   path: string;
   change: string;
@@ -28,7 +28,6 @@ type Files = {
 
 function status(staged: Files = [], notStaged: Files = [], extra: Record<string, unknown> = {}) {
   return {
-    path: REPO,
     branch: {
       name: "main",
       commit: "0123456789abcdef",
@@ -46,7 +45,6 @@ function status(staged: Files = [], notStaged: Files = [], extra: Record<string,
 }
 
 const BRANCHES = {
-  path: REPO,
   local: {
     branches: [
       { name: "main", current: true, upstream: "origin/main" },
@@ -105,8 +103,59 @@ test("the Changes section asks git about its repository", async () => {
   renderChanges();
   expect(await changes()).toBeTruthy();
   await waitFor(() => expect(fake.made("GET", "/api/git/branches").length).toBeGreaterThan(0));
-  expect(fake.made("GET", "/api/git/status")[0].query.get("path")).toBe(REPO);
-  expect(fake.made("GET", "/api/git/branches")[0].query.get("path")).toBe(REPO);
+  expect(fake.made("GET", "/api/git/status")[0].query.get("workspace")).toBe(String(WORKSPACE));
+  expect(fake.made("GET", "/api/git/branches")[0].query.get("workspace")).toBe(String(WORKSPACE));
+});
+
+test("a workspace that is not a repository says so quietly, with no alert and no branch bar", async () => {
+  const fake = fakeApi({
+    "GET /api/git/status": problem(409, "not_a_repository", "planted: not a repository"),
+    "GET /api/git/branches": problem(409, "not_a_repository", "planted: not a repository"),
+  });
+  renderChanges();
+  const section = await changes();
+  expect(await section.findByText(m.notARepository)).toBeInTheDocument();
+  await waitFor(() => expect(fake.made("GET", "/api/git/branches").length).toBeGreaterThan(0));
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  expect(section.queryByText("planted: not a repository")).not.toBeInTheDocument();
+  expect(section.queryByRole("button", { name: m.newBranch })).not.toBeInTheDocument();
+  expect(section.queryByText(m.loading)).not.toBeInTheDocument();
+  expect(section.getByRole("button", { name: m.refreshStatus })).toBeInTheDocument();
+});
+
+test("a repository made later is shown at the next refresh, and the quiet line goes", async () => {
+  let repository = false;
+  const notARepository = () => problem(409, "not_a_repository", "planted: not a repository");
+  repoApi({
+    "GET /api/git/status": () =>
+      repository ? status([], [{ path: "new.txt", change: "untracked" }]) : notARepository(),
+    "GET /api/git/branches": () => (repository ? BRANCHES : notARepository()),
+  });
+  renderChanges();
+  const section = await changes();
+  expect(await section.findByText(m.notARepository)).toBeInTheDocument();
+  repository = true;
+  await userEvent.click(section.getByRole("button", { name: m.refreshStatus }));
+  expect(await section.findByText("new.txt")).toBeInTheDocument();
+  expect(section.queryByText(m.notARepository)).not.toBeInTheDocument();
+});
+
+test("any other refusal of the status is shown as the server said it", async () => {
+  fakeApi({
+    "GET /api/git/status": problem(502, "workspace_failed", "planted: the workspace failed"),
+    "GET /api/git/branches": problem(502, "workspace_failed", "planted: the workspace failed"),
+  });
+  renderChanges();
+  const section = await changes();
+  expect((await screen.findAllByRole("alert"))[0]).toHaveTextContent(
+    "planted: the workspace failed",
+  );
+  expect(section.queryByText(m.notARepository)).not.toBeInTheDocument();
+});
+
+test("the push needs-token line no longer says git forgets a token", () => {
+  expect(m.pushNeedsToken.after).not.toMatch(/forget/i);
+  expect(m.githubTokenRemoveBody).toMatch(/next git command/);
 });
 
 test("each file is listed with its change and its name as it is", async () => {
@@ -163,7 +212,7 @@ test("Stage selected sends exactly the files checked, then lists again", async (
       ),
     "POST /api/git/stage": (c) => {
       staged = (c.body as { files: string[] }).files.map((path) => ({ path, change: "added" }));
-      return { path: REPO };
+      return {};
     },
   });
   renderChanges();
@@ -177,7 +226,7 @@ test("Stage selected sends exactly the files checked, then lists again", async (
   await userEvent.click(button);
   await waitFor(() => expect(fake.made("POST", "/api/git/stage")).toHaveLength(1));
   expect(fake.made("POST", "/api/git/stage")[0].body).toEqual({
-    path: REPO,
+    workspace: WORKSPACE,
     files: ["a.txt", "c.txt"],
   });
   await waitFor(() => expect(fake.made("GET", "/api/git/status").length).toBeGreaterThan(before));
@@ -191,7 +240,7 @@ test("Unstage selected sends exactly the files checked", async () => {
       { path: "a.txt", change: "added" },
       { path: "b.txt", change: "modified" },
     ]),
-    "POST /api/git/unstage": { path: REPO },
+    "POST /api/git/unstage": {},
   });
   renderChanges();
   const staged = await list(m.stagedTitle);
@@ -200,7 +249,10 @@ test("Unstage selected sends exactly the files checked", async () => {
   await userEvent.click(staged.getByRole("checkbox", { name: /b\.txt/ }));
   await userEvent.click(button);
   await waitFor(() => expect(fake.made("POST", "/api/git/unstage")).toHaveLength(1));
-  expect(fake.made("POST", "/api/git/unstage")[0].body).toEqual({ path: REPO, files: ["b.txt"] });
+  expect(fake.made("POST", "/api/git/unstage")[0].body).toEqual({
+    workspace: WORKSPACE,
+    files: ["b.txt"],
+  });
 });
 
 test("Select all checks every selectable file of its list, and again clears them", async () => {
@@ -233,7 +285,7 @@ test("what is checked survives a refresh, and a file no longer listed is dropped
   ];
   const fake = repoApi({
     "GET /api/git/status": () => status([], files),
-    "POST /api/git/stage": { path: REPO },
+    "POST /api/git/stage": {},
   });
   renderChanges();
   const notStaged = await list(m.notStagedTitle);
@@ -249,7 +301,10 @@ test("what is checked survives a refresh, and a file no longer listed is dropped
   expect(notStaged.getByRole("checkbox", { name: /b\.txt/ })).toBeChecked();
   await userEvent.click(notStaged.getByRole("button", { name: m.stageSelected }));
   await waitFor(() => expect(fake.made("POST", "/api/git/stage")).toHaveLength(1));
-  expect(fake.made("POST", "/api/git/stage")[0].body).toEqual({ path: REPO, files: ["b.txt"] });
+  expect(fake.made("POST", "/api/git/stage")[0].body).toEqual({
+    workspace: WORKSPACE,
+    files: ["b.txt"],
+  });
 });
 
 test("without a commit author, Commit is not offered and the section says where to set one", async () => {
@@ -278,7 +333,7 @@ test("with nothing staged, Commit is not offered and the section says why", asyn
 test("Commit sends the message and empties the box", async () => {
   const fake = repoApi({
     "GET /api/git/status": status([{ path: "a.txt", change: "added" }]),
-    "POST /api/git/commit": { path: REPO, commit: "abc", branch: "main" },
+    "POST /api/git/commit": { commit: "abc", branch: "main" },
   });
   renderChanges();
   const box = await (await changes()).findByLabelText(m.commitMessage);
@@ -288,7 +343,7 @@ test("Commit sends the message and empties the box", async () => {
   await userEvent.click(commit);
   await waitFor(() => expect(fake.made("POST", "/api/git/commit")).toHaveLength(1));
   expect(fake.made("POST", "/api/git/commit")[0].body).toEqual({
-    path: REPO,
+    workspace: WORKSPACE,
     message: "Add a.txt\nWith a body",
   });
   await waitFor(() => expect(box).toHaveValue(""));
@@ -309,7 +364,10 @@ test("an empty message is sent, and the server's refusal is shown by the box's l
   renderChanges();
   await userEvent.click(await (await changes()).findByRole("button", { name: m.commit }));
   await waitFor(() => expect(fake.made("POST", "/api/git/commit")).toHaveLength(1));
-  expect(fake.made("POST", "/api/git/commit")[0].body).toEqual({ path: REPO, message: "" });
+  expect(fake.made("POST", "/api/git/commit")[0].body).toEqual({
+    workspace: WORKSPACE,
+    message: "",
+  });
   expect(
     await screen.findByText(`${m.commitMessage}: planted reason for the message`),
   ).toBeInTheDocument();
@@ -431,13 +489,13 @@ test("the current branch is marked and not switchable; a remote branch says whic
 });
 
 test("Switch from the lookup sends the branch, whether it is remote, and closes the lookup", async () => {
-  const fake = repoApi({ "POST /api/git/switch": { path: REPO, branch: "x" } });
+  const fake = repoApi({ "POST /api/git/switch": { branch: "x" } });
   renderChanges();
   let popup = await openLookup();
   await userEvent.click(popup.getByRole("button", { name: m.switchTo("topic") }));
   await waitFor(() => expect(fake.made("POST", "/api/git/switch")).toHaveLength(1));
   expect(fake.made("POST", "/api/git/switch")[0].body).toEqual({
-    path: REPO,
+    workspace: WORKSPACE,
     branch: "topic",
     remote: false,
   });
@@ -448,7 +506,7 @@ test("Switch from the lookup sends the branch, whether it is remote, and closes 
   await userEvent.click(popup.getByRole("button", { name: m.switchTo("origin/feature") }));
   await waitFor(() => expect(fake.made("POST", "/api/git/switch")).toHaveLength(2));
   expect(fake.made("POST", "/api/git/switch")[1].body).toEqual({
-    path: REPO,
+    workspace: WORKSPACE,
     branch: "origin/feature",
     remote: true,
   });
@@ -500,7 +558,7 @@ test("a group with no branches at all says so", async () => {
 });
 
 test("New branch is a + that opens a form; Create sends the name and closes it", async () => {
-  const fake = repoApi({ "POST /api/git/branch": { path: REPO, branch: "topic/new" } });
+  const fake = repoApi({ "POST /api/git/branch": { branch: "topic/new" } });
   renderChanges();
   const section = await changes();
   const plus = await section.findByRole("button", { name: m.newBranch });
@@ -512,7 +570,10 @@ test("New branch is a + that opens a form; Create sends the name and closes it",
   await userEvent.type(section.getByLabelText(m.newBranchName), "topic/new");
   await userEvent.click(section.getByRole("button", { name: m.create }));
   await waitFor(() => expect(fake.made("POST", "/api/git/branch")).toHaveLength(1));
-  expect(fake.made("POST", "/api/git/branch")[0].body).toEqual({ path: REPO, name: "topic/new" });
+  expect(fake.made("POST", "/api/git/branch")[0].body).toEqual({
+    workspace: WORKSPACE,
+    name: "topic/new",
+  });
   await waitFor(() => expect(section.queryByLabelText(m.newBranchName)).not.toBeInTheDocument());
   expect(plus).toHaveAttribute("aria-expanded", "false");
 });
@@ -594,10 +655,10 @@ test("Refresh branches fetches, lists them again, and waits while it runs", asyn
   const listed = fake.made("GET", "/api/git/branches").length;
   await userEvent.click(refresh);
   await waitFor(() => expect(fake.made("POST", "/api/git/fetch")).toHaveLength(1));
-  expect(fake.made("POST", "/api/git/fetch")[0].body).toEqual({ path: REPO });
+  expect(fake.made("POST", "/api/git/fetch")[0].body).toEqual({ workspace: WORKSPACE });
   expect(refresh).toBeDisabled();
   expect(refresh).toHaveClass("spinning");
-  await act(async () => answer({ path: REPO }));
+  await act(async () => answer({}));
   await waitFor(() => expect(refresh).toBeEnabled());
   expect(refresh).not.toHaveClass("spinning");
   await waitFor(() => expect(fake.made("GET", "/api/git/branches").length).toBeGreaterThan(listed));
@@ -688,14 +749,17 @@ test("Select all leaves out a file that cannot be selected, and Stage sends only
         { path: "caf�.txt", change: "untracked", selectable: false },
       ],
     ),
-    "POST /api/git/stage": { path: REPO },
+    "POST /api/git/stage": {},
   });
   renderChanges();
   const notStaged = await list(m.notStagedTitle);
   await userEvent.click(notStaged.getByRole("checkbox", { name: m.selectAll }));
   await userEvent.click(notStaged.getByRole("button", { name: m.stageSelected }));
   await waitFor(() => expect(fake.made("POST", "/api/git/stage")).toHaveLength(1));
-  expect(fake.made("POST", "/api/git/stage")[0].body).toEqual({ path: REPO, files: ["a.txt"] });
+  expect(fake.made("POST", "/api/git/stage")[0].body).toEqual({
+    workspace: WORKSPACE,
+    files: ["a.txt"],
+  });
 });
 
 test("each list's heading is a disclosure that says how many files it holds, those not shown too", async () => {
@@ -773,7 +837,7 @@ test("a list stays as it was left across refreshes, and opens when files come to
 });
 
 test("a list's action is beside its heading, not in it, and does not fold the list", async () => {
-  const fake = repoApi({ "POST /api/git/stage": { path: REPO } });
+  const fake = repoApi({ "POST /api/git/stage": {} });
   renderChanges();
   const notStaged = await list(m.notStagedTitle);
   const toggle = notStaged.getByRole("button", { name: m.listHeading(m.notStagedTitle, 1) });
@@ -859,7 +923,7 @@ test("a refusal goes once a later action in the section works", async () => {
       git: ["no"],
       git_more: 0,
     }),
-    "POST /api/git/stage": { path: REPO },
+    "POST /api/git/stage": {},
   });
   renderChanges();
   const section = await changes();
@@ -898,7 +962,7 @@ test("the no-author sentence is one message, its link a part of it", async () =>
 // --- push ----------------------------------------------------------------------
 
 const STAGED: Files = [{ path: "a.txt", change: "added" }];
-const PUSHED = { path: REPO, branch: "main", upstream: "origin/main", upstream_set: false };
+const PUSHED = { branch: "main", upstream: "origin/main", upstream_set: false };
 // What git-status says of a push: where it goes, and for GitHub whether a token is stored.
 const ELSEWHERE = { push_to_github: false, github_token: null };
 const NO_TOKEN = { push_to_github: true, github_token: false };
@@ -917,7 +981,7 @@ test("Push is offered on a branch whose pushes go elsewhere than GitHub, with no
   expect(section.getByRole("button", { name: m.commitMenu })).toBeInTheDocument();
   await userEvent.click(push);
   await waitFor(() => expect(fake.made("POST", "/api/git/push")).toHaveLength(1));
-  expect(fake.made("POST", "/api/git/push")[0].body).toEqual({ path: REPO });
+  expect(fake.made("POST", "/api/git/push")[0].body).toEqual({ workspace: WORKSPACE });
   expect(await section.findByText(m.pushed("main", "origin/main"))).toBeInTheDocument();
 });
 
@@ -1049,7 +1113,6 @@ test("Commit & Push sends the message, says what was pushed, and empties the box
   const fake = repoApi({
     "GET /api/git/status": status(STAGED, [], ELSEWHERE),
     "POST /api/git/commit-push": {
-      path: REPO,
       commit: "abcdef1234",
       push: PUSHED,
       push_problem: null,
@@ -1062,7 +1125,7 @@ test("Commit & Push sends the message, says what was pushed, and empties the box
   await commitAndPush();
   await waitFor(() => expect(fake.made("POST", "/api/git/commit-push")).toHaveLength(1));
   expect(fake.made("POST", "/api/git/commit-push")[0].body).toEqual({
-    path: REPO,
+    workspace: WORKSPACE,
     message: "Add a.txt",
   });
   expect(fake.made("POST", "/api/git/commit")).toHaveLength(0);
@@ -1074,7 +1137,6 @@ test("a commit made whose push failed says both, with what git said", async () =
   repoApi({
     "GET /api/git/status": status(STAGED, [], ELSEWHERE),
     "POST /api/git/commit-push": {
-      path: REPO,
       commit: "abcdef1234",
       push: null,
       push_problem: {
@@ -1365,7 +1427,7 @@ test("a new branch made after its form was left takes no focus", async () => {
   act(() => elsewhere.focus());
   hold = true;
   const asked = fake.made("GET", "/api/git/status").length;
-  await act(async () => answer({ path: REPO, branch: "topic/new" }));
+  await act(async () => answer({ branch: "topic/new" }));
   await waitFor(() => expect(fake.made("GET", "/api/git/status").length).toBeGreaterThan(asked));
   await waitFor(() => expect(plus).toBeEnabled()); // the + could take focus now
   hold = false;
@@ -1413,7 +1475,7 @@ test("while a request runs, New branch and Commit's menu wait too", async () => 
   await userEvent.click(notStaged.getByRole("button", { name: m.stageSelected }));
   expect(plus).toBeDisabled();
   expect(toggle).toBeDisabled();
-  await act(async () => answer({ path: REPO }));
+  await act(async () => answer({}));
   await waitFor(() => expect(plus).toBeEnabled());
 });
 
@@ -1437,7 +1499,7 @@ test("New branch puts focus in its field as it opens", async () => {
 test("Commit & Push closes Commit's menu", async () => {
   const fake = repoApi({
     "GET /api/git/status": status(STAGED, [], ELSEWHERE),
-    "POST /api/git/commit-push": { path: REPO, commit: "abc", push: PUSHED, push_problem: null },
+    "POST /api/git/commit-push": { commit: "abc", push: PUSHED, push_problem: null },
   });
   renderChanges();
   const section = await changes();

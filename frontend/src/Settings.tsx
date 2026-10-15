@@ -85,8 +85,7 @@ function GitHubToken() {
     <section aria-labelledby={heading}>
       <h2 id={heading}>{m.settingsGithubTitle}</h2>
       {stored !== null && <p>{stored ? m.githubTokenStored : m.githubTokenNotStored}</p>}
-      {/* Offered only once the server says whether a token is stored: while it cannot
-      store one, the part shows its reason alone. */}
+      {/* Offered only once the server says whether a token is stored. */}
       {stored !== null && (
         <form noValidate onSubmit={save}>
           <div>

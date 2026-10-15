@@ -36,10 +36,15 @@ function withServer(state: string, extra: Record<string, unknown> = {}) {
   return [workspace(1, "alpha", { server: server(1, state, extra) }), workspace(2, "beta")];
 }
 
+// What git answers in a workspace that holds no repository, which is what a new one is.
+const NOT_A_REPOSITORY = () => problem(409, "not_a_repository", "planted: not a repository");
+
 function dashboard(workspaces: Workspace[], extra: Routes = {}) {
   return fakeApi({
     "GET /api/me": ME,
     "GET /api/workspaces": { workspaces },
+    "GET /api/git/status": NOT_A_REPOSITORY,
+    "GET /api/git/branches": NOT_A_REPOSITORY,
     ...extra,
   });
 }
@@ -346,6 +351,76 @@ test("a server that could not be read is shown with the reason, and Start is not
   );
   expect(within(opened).queryByRole("button", { name: m.start })).not.toBeInTheDocument();
   expect(within(opened).queryByText(m.noServer)).not.toBeInTheDocument();
+});
+
+// --- the Changes section ------------------------------------------------------------
+
+const REPOSITORY_STATUS = {
+  branch: { name: "main", commit: "0123456789", upstream: null, ahead: null, behind: null },
+  merging: false,
+  staged: { files: [], more: 0 },
+  not_staged: { files: [{ path: "new.txt", change: "untracked" }], more: 0 },
+  author: { name: "Alice", email: "alice@example.com" },
+  push_has_remote: false,
+  push_to_github: false,
+  github_token: null,
+  push_ahead: null,
+};
+const NO_BRANCHES = { local: { branches: [], more: 0 }, remote: { branches: [], more: 0 } };
+
+test("a ready workspace's panel has the Changes section, asking for the workspace by its id", async () => {
+  const fake = dashboard([workspace(4, "gamma")], {
+    "GET /api/git/status": REPOSITORY_STATUS,
+    "GET /api/git/branches": NO_BRANCHES,
+  });
+  renderApp("/?workspace=4");
+  const opened = await panel("gamma");
+  const section = await within(opened).findByRole("region", { name: m.changesTitle });
+  expect(await within(section).findByText("new.txt")).toBeInTheDocument();
+  expect(fake.made("GET", "/api/git/status")[0].query.get("workspace")).toBe("4");
+  expect(fake.made("GET", "/api/git/branches")[0].query.get("workspace")).toBe("4");
+});
+
+test("the Changes section is there whether or not a server runs in the workspace", async () => {
+  dashboard([workspace(1, "alpha", { server: server(1, "stopped") })], {
+    "GET /api/git/status": REPOSITORY_STATUS,
+    "GET /api/git/branches": NO_BRANCHES,
+  });
+  renderApp("/?workspace=1");
+  const opened = await panel("alpha");
+  expect(await within(opened).findByRole("region", { name: m.changesTitle })).toBeInTheDocument();
+  expect(within(opened).getByRole("region", { name: m.serverTitle })).toBeInTheDocument();
+});
+
+test("a workspace that holds no repository says so quietly in its panel", async () => {
+  dashboard([workspace(1, "alpha")]);
+  renderApp("/?workspace=1");
+  const opened = await panel("alpha");
+  expect(await within(opened).findByText(m.notARepository)).toBeInTheDocument();
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+});
+
+test.each(["creating", "failed", "deleting"])(
+  "a workspace that is %s has no Changes section and git is not asked",
+  async (state) => {
+    const fake = dashboard([workspace(1, "alpha", { state, error: "planted" })]);
+    renderApp("/?workspace=1");
+    const opened = await panel("alpha");
+    // the panel is up: its state is said, and the section is not there
+    expect(within(opened).getByRole("heading", { name: "alpha", level: 2 })).toBeInTheDocument();
+    expect(within(opened).queryByRole("region", { name: m.changesTitle })).not.toBeInTheDocument();
+    expect(fake.made("GET", "/api/git/status")).toHaveLength(0);
+  },
+);
+
+test("the Changes section is checked again as the page refreshes", async () => {
+  const fake = dashboard([workspace(1, "alpha")], {
+    "GET /api/git/status": REPOSITORY_STATUS,
+    "GET /api/git/branches": NO_BRANCHES,
+  });
+  renderApp("/?workspace=1", { pollMs: 50 });
+  await panel("alpha");
+  await waitFor(() => expect(fake.made("GET", "/api/git/status").length).toBeGreaterThanOrEqual(3));
 });
 
 // --- a server's card ----------------------------------------------------------------

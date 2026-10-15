@@ -28,9 +28,6 @@ import {
 import { renderAlone, renderApp } from "./test/render";
 import { Versions } from "./Versions";
 
-// A repository, whose Changes section has the commit and new-branch forms.
-const REPOSITORY = "projects/repo";
-
 const RULE_ATTRIBUTES = ["required", "pattern", "min", "max", "minlength", "maxlength", "step"];
 
 function api() {
@@ -56,7 +53,6 @@ function api() {
     },
     "GET /api/attention": NOTHING_TO_ATTEND,
     "GET /api/git/status": {
-      path: REPOSITORY,
       branch: { name: "main", commit: "0123456789", upstream: null, ahead: null, behind: null },
       staged: { files: [{ path: "a.txt", change: "added" }], more: 0 },
       not_staged: { files: [{ path: "b.txt", change: "untracked" }], more: 0 },
@@ -68,7 +64,6 @@ function api() {
       push_ahead: 1,
     },
     "GET /api/git/branches": {
-      path: REPOSITORY,
       local: { branches: [], more: 0 },
       remote: { branches: [], more: 0 },
     },
@@ -103,7 +98,9 @@ const connected = () => (
 const signingOut = () => (
   <ClaudeConnection connection={SIGNING_OUT as Connection} onChange={() => {}} />
 );
-const changes = () => <Changes path={REPOSITORY} pollMs={0} />;
+// A workspace's Changes section on its own: its pop-up forms are closed by a press
+// on any other form, so the others on a page would shut them before they are checked.
+const changes = () => <Changes workspace={1} pollMs={0} />;
 
 // Every page with a form, and what opens the forms that are not there at first.
 const PAGES: [string, Where, () => Promise<void>][] = [

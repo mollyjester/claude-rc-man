@@ -10,6 +10,7 @@ import {
 import { useNavigate, useSearchParams } from "react-router-dom";
 
 import { ApiError, api } from "./api";
+import { Changes } from "./Changes";
 import { m } from "./messages";
 import { asApiError, ProblemView } from "./ProblemView";
 import { dotFor, ServerCard, StatusDot, type Workspace } from "./Servers";
@@ -100,6 +101,7 @@ export function Dashboard({ pollMs }: { pollMs: number }) {
           <WorkspacePanel
             key={selected.id}
             workspace={selected}
+            pollMs={pollMs}
             onChange={refresh}
             onDeleted={() => deleted(selected)}
           />
@@ -297,14 +299,16 @@ function DeleteWorkspaceDialog({
 }
 
 // The selected workspace: what its state allows, and, once it is ready, its
-// Claude server or the offer to start one. Delete workspace is offered for a
-// workspace that is ready or failed.
+// Claude server or the offer to start one, and the Changes of its repository.
+// Delete workspace is offered for a workspace that is ready or failed.
 function WorkspacePanel({
   workspace,
+  pollMs,
   onChange,
   onDeleted,
 }: {
   workspace: Workspace;
+  pollMs: number;
   onChange: () => void;
   onDeleted: () => void;
 }) {
@@ -352,6 +356,7 @@ function WorkspacePanel({
           )}
         </PanelSection>
       )}
+      {workspace.state === "ready" && <Changes workspace={workspace.id} pollMs={pollMs} />}
     </section>
   );
 }

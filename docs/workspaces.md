@@ -41,7 +41,9 @@ selected before.
 
 The panel of a workspace that is ready has its **Claude server** section,
 which shows the workspace's server, or **Start** when it has none. If rcman
-could not read the server, the section says why instead. A workspace that
+could not read the server, the section says why instead. Below it is the
+**Changes** section, for the git repository in the workspace (see
+[Git](git.md)). A workspace that
 failed to be made says what went wrong, and offers only
 **Delete workspace**. A workspace being made or being deleted says so, and
 offers nothing.

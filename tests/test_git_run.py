@@ -1,8 +1,7 @@
-"""helpers/git_run.py: starting git, ending it, and reading what it writes, against real git."""
+"""helpers/git_run.py: reading what git writes, against real git, and the refusal built from
+a command's result."""
 
-import os
 import subprocess
-import time
 from pathlib import Path
 
 import pytest
@@ -29,13 +28,14 @@ ENV = {
 }
 
 
-def soon(seconds: float = 20.0) -> float:
-    return time.monotonic() + seconds
+def run_git(repo: Path, args: list[str]) -> bytes:
+    proc = subprocess.run(["git", *args], cwd=repo, env=ENV, capture_output=True, check=True)
+    return proc.stdout
 
 
 def status_records(repo: Path) -> list[bytes]:
     args = ["status", "--porcelain=v2", "-z", "--branch", "--untracked-files=normal"]
-    return list(g.Git(ENV).stream(repo, args, sep=b"\0", deadline=soon()))
+    return [r for r in run_git(repo, args).split(b"\0") if r]
 
 
 def parsed(repo: Path) -> tuple[g.Branch, list[g.Change]]:
@@ -48,22 +48,6 @@ def hook(repo: Path, name: str, body: str) -> Path:
     path.write_text("#!/bin/sh\n" + body, encoding="utf-8")
     path.chmod(0o755)
     return path
-
-
-def gone(pid: int, within: float = 10.0) -> bool:
-    deadline = time.monotonic() + within
-    while time.monotonic() < deadline:
-        try:
-            os.kill(pid, 0)
-        except ProcessLookupError:
-            return True
-        try:
-            if Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0] == "Z":
-                return True
-        except OSError:
-            return True
-        time.sleep(0.05)
-    return False
 
 
 # --- what git writes ------------------------------------------------------------
@@ -213,7 +197,7 @@ def test_branches_are_read_and_symbolic_refs_left_out(tmp_path):
     fixture_git(repo, "remote", "set-head", "origin", "main")
     assert "refs/remotes/origin/HEAD" in fixture_git(repo, "for-each-ref")  # the plant
     args = ["for-each-ref", f"--format={g.BRANCH_FORMAT}", "refs/heads", "refs/remotes"]
-    records = g.Git(ENV).stream(repo, args, sep=b"\n", deadline=soon())
+    records = [r for r in run_git(repo, args).split(b"\n") if r]
     refs = list(g.parse_branches(records))
     assert [(r.remote, r.name, r.current, r.upstream) for r in refs] == [
         (False, "main", True, "refs/remotes/origin/main"),
@@ -230,142 +214,8 @@ def test_a_branch_record_of_another_shape_is_refused():
         list(g.parse_branches(iter([b"refs/tags/v1\0\0\0 "])))
 
 
-# --- starting and ending git --------------------------------------------------------
-
-
-def test_input_reaches_git_and_its_answer_comes_back(tmp_path):
-    repo = make_repo(tmp_path / "r")
-    expected = fixture_git(repo, "hash-object", "--stdin", input=b"hello\n")
-    assert g.Git(ENV).run(repo, ["hash-object", "--stdin"], deadline=soon(), input=b"hello\n") == (
-        expected
-    )
-
-
-def test_extra_variables_reach_git(tmp_path):
-    repo = make_repo(tmp_path / "r")
-    out = g.Git(ENV).run(
-        repo, ["var", "GIT_AUTHOR_IDENT"], deadline=soon(), extra_env={"GIT_AUTHOR_NAME": "Zed"}
-    )
-    assert out.startswith("Zed <")
-
-
-def test_a_refusal_carries_what_git_said_and_its_exit_status(tmp_path):
-    repo = make_repo(tmp_path / "r")
-    with pytest.raises(g.GitFailed) as failed:
-        g.Git(ENV).run(repo, ["switch", "no-such-branch"], deadline=soon())
-    assert failed.value.exit_code != 0
-    assert any("no-such-branch" in line for line in failed.value.lines)
-    assert failed.value.more == 0
-
-
-def test_what_git_wrote_on_standard_output_is_part_of_its_refusal(tmp_path):
-    repo = make_repo(tmp_path / "r")
-    with pytest.raises(g.GitFailed) as failed:
-        g.Git(ENV).run(repo, ["commit", "-q", "-m", "nothing"], deadline=soon())
-    assert any("nothing to commit" in line for line in failed.value.lines), failed.value.lines
-
-
-# A git that writes a secret on standard output, says something on standard
-# error, and refuses.
-SAYS_A_SECRET = ["-c", "alias.secret=!echo SECRET-OUT; echo said-on-stderr >&2; exit 1", "secret"]
-
-
-def test_a_refusal_with_secret_output_carries_only_what_git_said_on_stderr(tmp_path):
-    repo = make_repo(tmp_path / "r")
-    with pytest.raises(g.GitFailed) as failed:
-        g.Git(ENV).run(repo, SAYS_A_SECRET, deadline=soon(), secret_output=True)
-    assert failed.value.lines == ["said-on-stderr"] and failed.value.more == 0
-
-
-def test_the_secret_output_check_sees_standard_output_without_it(tmp_path):
-    """Planted twin: the same git without secret_output has its standard output in the
-    refusal, so the check above can fail."""
-    repo = make_repo(tmp_path / "r")
-    with pytest.raises(g.GitFailed) as failed:
-        g.Git(ENV).run(repo, SAYS_A_SECRET, deadline=soon())
-    assert "SECRET-OUT" in failed.value.lines and "said-on-stderr" in failed.value.lines
-
-
-def test_secret_output_still_answers_with_standard_output(tmp_path):
-    repo = make_repo(tmp_path / "r")
-    args = ["-c", "alias.says=!echo the-answer", "says"]
-    assert g.Git(ENV).run(repo, args, deadline=soon(), secret_output=True) == "the-answer\n"
-
-
-def test_gits_message_is_capped_and_says_how_much_more_there_was(tmp_path):
-    repo = make_repo(tmp_path / "r")
-    total = g.MAX_GIT_MESSAGE_LINES + 7
-    hook(
-        repo,
-        "pre-commit",
-        f"i=0; while [ $i -lt {total} ]; do echo line $i >&2; i=$((i+1)); done; exit 1\n",
-    )
-    write(repo / "x.txt")
-    fixture_git(repo, "add", "x.txt")
-    with pytest.raises(g.GitFailed) as failed:
-        g.Git(ENV).run(repo, ["commit", "-q", "-m", "x"], deadline=soon())
-    assert failed.value.lines == [f"line {i}" for i in range(g.MAX_GIT_MESSAGE_LINES)]
-    assert failed.value.more == 7
-
-
-def test_a_call_past_its_deadline_ends_everything_it_started(tmp_path):
-    repo = make_repo(tmp_path / "r")
-    pid_file = tmp_path / "hook.pid"
-    hook(repo, "pre-commit", f"echo $$ > {pid_file}; exec sleep 60\n")
-    write(repo / "x.txt")
-    fixture_git(repo, "add", "x.txt")
-    began = time.monotonic()
-    with pytest.raises(g.GitTimedOut):
-        g.Git(ENV).run(repo, ["commit", "-q", "-m", "x"], deadline=time.monotonic() + 2)
-    assert time.monotonic() - began < 10
-    pid = int(pid_file.read_text())  # positive control: the hook ran
-    assert gone(pid), f"the hook {pid} still runs"
-
-
-def test_a_stream_left_early_ends_git(tmp_path):
-    repo = make_repo(tmp_path / "r")
-    for i in range(50):
-        write(repo / f"f{i}.txt")
-    started = []
-
-    def popen(*args, **kwargs):
-        started.append(subprocess.Popen(*args, **kwargs))
-        return started[-1]
-
-    records = g.Git(ENV, popen=popen).stream(
-        repo, ["status", "--porcelain=v2", "-z"], sep=b"\0", deadline=soon()
-    )
-    assert next(records)
-    records.close()
-    assert started and started[0].returncode is not None
-
-
-def test_git_is_looked_for_on_the_system_path_only(tmp_path):
-    bin_dir = tmp_path / "home" / ".local" / "bin"
-    bin_dir.mkdir(parents=True)
-    marker = tmp_path / "decoy-ran"
-    decoy = bin_dir / "git"
-    decoy.write_text(f"#!/bin/sh\ntouch {marker}\necho decoy\n", encoding="utf-8")
-    decoy.chmod(0o755)
-    repo = make_repo(tmp_path / "r")
-    env = {**ENV, "PATH": f"{bin_dir}:/usr/local/bin:/usr/bin:/bin"}
-    out = g.Git(env).run(repo, ["rev-parse", "--is-inside-work-tree"], deadline=soon())
-    assert out.strip() == "true" and not marker.exists()
-    assert Path(g.find_git()).parent.as_posix() in g.GIT_SEARCH_PATH.split(":")
-    subprocess.run([str(decoy)], check=True)  # positive control: the decoy does run when called
-    assert marker.exists()
-
-
-def test_no_git_on_the_system_path_is_git_missing(tmp_path, monkeypatch):
-    monkeypatch.setattr(g, "GIT_SEARCH_PATH", str(tmp_path))
-    with pytest.raises(g.GitMissing):
-        g.Git(ENV).run(tmp_path, ["--version"], deadline=soon())
-
-
 def test_the_system_git_is_at_least_the_version_rcman_needs():
-    assert g.version_of(g.Git(ENV).run(Path("/"), ["--version"], deadline=soon())) >= (
-        g.GIT_MIN_VERSION
-    )
+    assert g.version_of(run_git(Path("/"), ["--version"]).decode()) >= g.GIT_MIN_VERSION
 
 
 @pytest.mark.parametrize(
@@ -385,37 +235,51 @@ def test_an_answer_with_no_version_is_unrecognised():
         g.version_of("hello\n")
 
 
-def test_a_line_git_says_is_cut_at_its_length(tmp_path):
+# --- a command's refusal ----------------------------------------------------------
+
+
+def test_a_refusal_carries_what_git_said_and_its_exit_status():
+    failed = g.failure(128, b"", b"fatal: not a git repository\n")
+    assert isinstance(failed, g.GitFailed)
+    assert (failed.lines, failed.more, failed.exit_code) == (
+        ["fatal: not a git repository"],
+        0,
+        128,
+    )
+
+
+def test_what_git_wrote_on_standard_output_is_part_of_its_refusal():
+    failed = g.failure(1, b"on stdout\n", b"on stderr\n")
+    assert failed.lines == ["on stderr", "on stdout"]
+
+
+def test_gits_message_is_capped_and_says_how_much_more_there_was(tmp_path):
     repo = make_repo(tmp_path / "r")
-    long = g.MAX_GIT_LINE_LENGTH * 10
-    hook(repo, "pre-commit", f"printf '%{long}s\\n' '' | tr ' ' x >&2; echo after >&2; exit 1\n")
+    total = g.MAX_GIT_MESSAGE_LINES + 7
+    hook(
+        repo,
+        "pre-commit",
+        f"i=0; while [ $i -lt {total} ]; do echo line $i >&2; i=$((i+1)); done; exit 1\n",
+    )
     write(repo / "x.txt")
     fixture_git(repo, "add", "x.txt")
-    with pytest.raises(g.GitFailed) as failed:
-        g.Git(ENV).run(repo, ["commit", "-q", "-m", "x"], deadline=soon())
-    assert failed.value.lines == ["x" * g.MAX_GIT_LINE_LENGTH, "after"]
+    proc = subprocess.run(
+        ["git", "commit", "-q", "-m", "x"], cwd=repo, env=ENV, capture_output=True
+    )
+    assert proc.returncode == 1  # the plant took effect
+    failed = g.failure(proc.returncode, proc.stdout, proc.stderr)
+    assert failed.lines == [f"line {i}" for i in range(g.MAX_GIT_MESSAGE_LINES)]
+    assert failed.more == 7
 
 
-def test_git_is_ended_whatever_stops_the_call_once_it_has_started(tmp_path, monkeypatch):
-    """Even an exception right after git starts, as SIGTERM would raise there, ends it."""
-    repo = make_repo(tmp_path / "r")
-    started = []
+def test_a_line_git_says_is_cut_at_its_length():
+    long = b"x" * (g.MAX_GIT_LINE_LENGTH * 10)
+    failed = g.failure(1, b"", long + b"\nafter\n")
+    assert failed.lines == ["x" * g.MAX_GIT_LINE_LENGTH, "after"]
 
-    def popen(*args, **kwargs):
-        started.append(subprocess.Popen(*args, **kwargs))
-        return started[-1]
 
-    class Stopped(Exception):
-        pass
-
-    def stop(*args, **kwargs):
-        raise Stopped
-
-    monkeypatch.setattr(g, "_Message", stop)
-    with pytest.raises(Stopped):
-        g.Git(ENV, popen=popen).run(repo, ["hash-object", "--stdin"], deadline=soon())
-    [proc] = started  # positive control: git started, and waits on its stdin
-    assert proc.poll() is not None, "git was left running"
+def test_a_message_that_is_not_text_is_read_as_far_as_it_goes():
+    assert g.failure(1, b"", b"caf\xe9\n").lines == ["caf\ufffd"]
 
 
 def test_what_is_kept_of_gits_message_is_bounded_however_much_it_says():
@@ -431,76 +295,6 @@ def test_what_is_kept_of_gits_message_is_bounded_however_much_it_says():
     assert message.more == g.MAX_GIT_MESSAGE_LINES * 3 - (g.MAX_GIT_MESSAGE_LINES - 1)
 
 
-# SIGTERM the moment git has started, before the call holds it, in a process
-# of one thread, as the module requires: a pytest process has more (the tests' GitHub
-# serves from one), and the kernel gives a signal one thread blocks to another.
-SIGTERM_AS_GIT_STARTS = """
-import json, os, signal, subprocess, sys, time
-from helpers import git_run as g
-if sys.argv[1] == "unmasked":  # the planted twin: the call no longer holds SIGTERM back
-    g.signal.pthread_sigmask = lambda how, mask: set()
-started = []
-
-class Terminated(Exception):
-    pass
-
-def terminated(signum, frame):
-    raise Terminated
-
-def popen(*args, **kwargs):
-    started.append(subprocess.Popen(*args, **kwargs))
-    os.kill(os.getpid(), signal.SIGTERM)  # as whatever started the process would, just then
-    return started[-1]
-
-signal.signal(signal.SIGTERM, terminated)
-env, repo = json.loads(sys.argv[2]), sys.argv[3]
-try:
-    g.Git(env, popen=popen).run(repo, ["hash-object", "--stdin"], deadline=time.monotonic() + 20)
-    raised = False
-except Terminated:
-    raised = True
-[proc] = started
-running = proc.poll() is None
-proc.kill()
-proc.wait()
-threads = len(os.listdir("/proc/self/task"))
-print(json.dumps({"raised": raised, "running": running, "threads": threads}))
-"""
-
-
-@pytest.mark.parametrize("mask,left_running", [("masked", False), ("unmasked", True)])
-def test_a_sigterm_as_git_starts_still_ends_it(tmp_path, mask, left_running):
-    """SIGTERM arriving the moment git has started, before the call holds it, ends git;
-    with SIGTERM not held back while git starts, git is left running."""
-    import json
-    import sys
-
-    repo = make_repo(tmp_path / "r")
-    repo_root = Path(__file__).resolve().parent.parent
-    proc = subprocess.run(
-        [sys.executable, "-c", SIGTERM_AS_GIT_STARTS, mask, json.dumps(ENV), str(repo)],
-        cwd=repo_root,
-        capture_output=True,
-        text=True,
-        timeout=60,
-    )
-    assert proc.returncode == 0, proc.stderr
-    out = json.loads(proc.stdout)
-    assert out["threads"] == 1  # one thread, as the module requires
-    assert out["raised"]  # positive control: the SIGTERM reached the call
-    assert out["running"] is left_running, "git was left running" if out["running"] else out
-
-
-def test_git_and_its_hooks_can_be_ended_by_sigterm(tmp_path):
-    """Whatever the call does with SIGTERM around starting git, git itself takes it."""
-    import signal
-
-    repo = make_repo(tmp_path / "r")
-    mask = tmp_path / "mask"
-    # git's own mask, its hook's parent: git resets the mask of what it starts
-    hook(repo, "pre-commit", f"grep SigBlk /proc/$PPID/status > {mask}\n")
-    write(repo / "x.txt")
-    fixture_git(repo, "add", "x.txt")
-    g.Git(ENV).run(repo, ["commit", "-q", "-m", "x"], deadline=soon())
-    blocked = int(mask.read_text().split()[1], 16)
-    assert not blocked & (1 << (signal.SIGTERM - 1))
+def test_the_process_half_is_gone():
+    for name in ("Git", "find_git", "GitMissing", "GitTimedOut", "GIT_SEARCH_PATH"):
+        assert not hasattr(g, name), name

@@ -12,6 +12,7 @@ from fastapi import FastAPI
 
 from rcman import audit, db, journal, people, problems, spa, unrecognised
 from rcman.accounts import Accounts
+from rcman.gitaccount import GitAccount
 from rcman.routers import (
     attention,
     audit_log,
@@ -112,6 +113,7 @@ def create_app(settings: Settings | None = None, runtime: Runtime | None = None)
     app.state.settings = settings
     app.state.workspaces = service
     app.state.accounts = sign_ins
+    app.state.git_account = GitAccount(service)
     app.state.watch = unrecognised.Watch()
     problems.install(app)
 

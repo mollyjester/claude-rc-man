@@ -125,7 +125,8 @@ export const m = {
   settingsPrefixTitle: "Session names",
   settingsAuthorTitle: "Commit author",
   authorNameLabel: "Commit author name",
-  authorNameHelp: "The name commits made from rcman are recorded under.",
+  authorNameHelp:
+    "The name commits are recorded under, whether made from rcman or by git in your workspaces.",
   authorEmailLabel: "Commit author email",
   authorEmailHelp:
     "The address commits are recorded under. Leave it empty to use the address you sign in with.",
@@ -135,14 +136,14 @@ export const m = {
   settingsGithubTitle: "GitHub token",
   githubTokenLabel: "GitHub token",
   githubTokenHelp:
-    "A personal access token git uses to push to GitHub and clone private repositories as you, from rcman and from your Claude sessions. rcman never shows it again once saved.",
+    "A personal access token git uses in all your workspaces to push to GitHub and clone private repositories as you, from rcman and from your Claude sessions. rcman never shows it again once saved.",
   githubTokenStored: "A GitHub token is stored.",
   githubTokenNotStored: "No GitHub token is stored.",
   githubTokenSaved: "Token saved.",
   githubTokenRemove: "Remove token",
   githubTokenRemoveTitle: "Remove your GitHub token?",
   githubTokenRemoveBody:
-    "git, here and in your Claude sessions, can no longer push to GitHub with it. It still works on GitHub until you revoke it there.",
+    "git in your workspaces, and in your Claude sessions, can no longer push to GitHub with it, from the next git command on. It still works on GitHub until you revoke it there.",
   githubTokenRemoveConfirm: "Remove",
 
   usersTitle: "People",
@@ -201,6 +202,8 @@ export const m = {
 
   changesTitle: "Changes",
   refreshStatus: "Refresh changes",
+  notARepository:
+    "There is no git repository in this workspace yet. Changes appear here once Claude or you make one.",
   // When the status was last answered, from how many seconds ago.
   checkedAgo: (seconds: number) =>
     seconds < 10
@@ -269,7 +272,7 @@ export const m = {
   pushNeedsToken: {
     before: "Pushing to GitHub needs a GitHub token, and none is stored: ",
     link: "add one in Settings",
-    after: ". When GitHub refuses a token, git forgets it.",
+    after: ".",
   },
   pushNeedsBranch: "You are not on a branch, so there is nothing to push.",
   pushNeedsRemote:

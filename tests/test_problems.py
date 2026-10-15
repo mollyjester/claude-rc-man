@@ -320,7 +320,7 @@ def test_a_ruled_field_refuses_a_length_with_its_rules_sentence(client):
 
     message = "a" * (rules.MAX_COMMIT_MESSAGE_LENGTH + 1)
     assert rules.COMMIT_MESSAGE.fullmatch(message)  # only its length is refused
-    body = {"path": "repo", "message": message}
+    body = {"workspace": 1, "message": message}
     r = client.post("/api/git/commit", json=body, headers=changing(ALICE))
     assert r.json()["errors"] == [{"field": "message", "message": rules.COMMIT_MESSAGE.sentence}]
 

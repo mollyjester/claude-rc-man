@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from dataclasses import dataclass
 
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -18,6 +17,7 @@ from pydantic_core import PydanticCustomError
 from helpers import rules
 from rcman import db
 from rcman.audit import Record, Recorder
+from rcman.gitaccount import Author, author_in
 from rcman.identity import Identity, current_user
 from rcman.problems import SETTINGS_NONE_SENT, ruled
 
@@ -57,12 +57,6 @@ class SettingsBody(BaseModel):
         return self
 
 
-@dataclass(frozen=True)
-class Author:
-    name: str
-    email: str
-
-
 def _row(request: Request, identity: Identity) -> sqlite3.Row | None:
     con = db.connect(request.app.state.settings.database)
     try:
@@ -77,12 +71,6 @@ def _prefix(row: sqlite3.Row | None) -> str | None:
     return row["prefix"] if row else None
 
 
-def _author(row: sqlite3.Row | None, identity: Identity) -> Author | None:
-    if row is None or row["author_name"] is None:
-        return None
-    return Author(name=row["author_name"], email=row["author_email"] or identity.email)
-
-
 def prefix_of(request: Request, identity: Identity, workspace) -> str:
     """The prefix of the names of the sessions of a server in ``workspace``: the person's,
     or the workspace's name while they have set none."""
@@ -91,12 +79,12 @@ def prefix_of(request: Request, identity: Identity, workspace) -> str:
 
 def author_of(request: Request, identity: Identity) -> Author | None:
     """Who the person's commits are recorded as: None until a name is set."""
-    return _author(_row(request, identity), identity)
+    return author_in(_row(request, identity), identity.email)
 
 
 def _settings(request: Request, identity: Identity) -> dict:
     row = _row(request, identity)
-    author = _author(row, identity)
+    author = author_in(row, identity.email)
     return {
         "prefix": _prefix(row) or "",
         "author_name": (row and row["author_name"]) or "",
@@ -128,17 +116,9 @@ def patch_settings(
     # Column names are the model's own fields, never anything from the request.
     columns = [name for name in SettingsBody.model_fields if name in sent]
     values = [sent[name] or None for name in columns]  # empty is the default
-    con = db.connect(request.app.state.settings.database)
-    try:
-        con.execute(
-            f"insert into user_settings (email, {', '.join(columns)}) "
-            f"values (?{', ?' * len(columns)}) on conflict (email) do update set "
-            + ", ".join(f"{name} = excluded.{name}" for name in columns),
-            (record.identity.email, *values),
-        )
-        con.commit()
-    finally:
-        con.close()
+    request.app.state.git_account.save_settings(
+        record.identity, dict(zip(columns, values, strict=True))
+    )
     return _settings(request, record.identity)
 
 

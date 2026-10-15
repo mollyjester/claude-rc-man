@@ -61,10 +61,10 @@ def fake_claude(path: Path, env: str = "FAKE_CLAUDE_READY_SECONDS=0.3") -> Path:
 
 
 @contextlib.contextmanager
-def host_runtime(tmp_path: Path):
-    """The host runtime (backend/rcman/runtime.py) for a test: workspaces under
-    ``tmp_path`` with the fake `claude`, their tmux sockets in a tmux_sockets folder
-    (devtools/held_folders.py), every workspace removed afterwards."""
+def host_runtime(tmp_path: Path, kind=None):
+    """The host runtime (backend/rcman/runtime.py) for a test, or ``kind``, a subclass of
+    it: workspaces under ``tmp_path`` with the fake `claude`, their tmux sockets in a
+    tmux_sockets folder (devtools/held_folders.py), every workspace removed afterwards."""
     from rcman.runtime import HostRuntime
 
     from devtools.held_folders import tmux_sockets
@@ -73,7 +73,7 @@ def host_runtime(tmp_path: Path):
     root.mkdir()
     claude = fake_claude(tmp_path / "claude")
     with tmux_sockets("rcb-") as sockets:
-        runtime = HostRuntime(root, sockets, claude, TMUX_CONF)
+        runtime = (kind or HostRuntime)(root, sockets, claude, TMUX_CONF)
         try:
             yield runtime
         finally:
@@ -170,17 +170,17 @@ CALLS = {
     ("DELETE", "/api/workspaces/{workspace}"): {},
     ("PATCH", "/api/me/settings"): {"json": {"prefix": "alice"}},
     ("POST", "/api/me/sign-out"): {"json": {"keep_sessions": True}},
-    ("POST", "/api/git/stage"): {"json": {"path": "repo", "files": ["README.md"]}},
-    ("POST", "/api/git/unstage"): {"json": {"path": "repo", "files": ["README.md"]}},
-    ("POST", "/api/git/commit"): {"json": {"path": "repo", "message": "A message"}},
-    ("POST", "/api/git/switch"): {"json": {"path": "repo", "branch": "main"}},
-    ("POST", "/api/git/branch"): {"json": {"path": "repo", "name": "new-branch"}},
-    ("POST", "/api/git/fetch"): {"json": {"path": "repo"}},
-    ("POST", "/api/git/push"): {"json": {"path": "repo"}},
-    ("POST", "/api/git/commit-push"): {"json": {"path": "repo", "message": "A message"}},
+    ("POST", "/api/git/stage"): {"json": {"workspace": 1, "files": ["README.md"]}},
+    ("POST", "/api/git/unstage"): {"json": {"workspace": 1, "files": ["README.md"]}},
+    ("POST", "/api/git/commit"): {"json": {"workspace": 1, "message": "A message"}},
+    ("POST", "/api/git/switch"): {"json": {"workspace": 1, "branch": "main"}},
+    ("POST", "/api/git/branch"): {"json": {"workspace": 1, "name": "new-branch"}},
+    ("POST", "/api/git/fetch"): {"json": {"workspace": 1}},
+    ("POST", "/api/git/push"): {"json": {"workspace": 1}},
+    ("POST", "/api/git/commit-push"): {"json": {"workspace": 1, "message": "A message"}},
     ("POST", "/api/git/clone"): {"json": {"url": "https://github.com/alice/a-clone"}},
-    ("GET", "/api/git/status"): {"params": {"path": "repo"}},
-    ("GET", "/api/git/branches"): {"params": {"path": "repo"}},
+    ("GET", "/api/git/status"): {"params": {"workspace": 1}},
+    ("GET", "/api/git/branches"): {"params": {"workspace": 1}},
     ("GET", "/api/github"): {},
     ("POST", "/api/github/token"): {"json": {"token": "a-github-token"}},
     ("DELETE", "/api/github/token"): {},

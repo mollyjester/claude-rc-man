@@ -10,6 +10,11 @@ test("a workspace is made, and is ready", async ({ page }) => {
   const made = await makeWorkspace(page, "alice-made");
   await expect(made.getByRole("button", { name: m.start })).toBeVisible();
   await expect(made.getByText(m.noServer)).toBeVisible();
+  // it holds no repository yet, which its Changes section says without an alert
+  await expect(
+    made.getByRole("region", { name: m.changesTitle }).getByText(m.notARepository),
+  ).toBeVisible();
+  await expect(made.getByRole("alert")).toHaveCount(0);
   const entry = workspaces(page).getByRole("button", { name: "alice-made", exact: true });
   await expect(entry).toHaveAttribute("aria-current", "true");
   expect(new URL(page.url()).searchParams.get("workspace")).toMatch(/^\d+$/);

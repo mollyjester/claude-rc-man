@@ -40,6 +40,14 @@ recorded, so the fake finishes becoming ready before it handles the interrupt.
 
 Signing in succeeds for ACCEPTED_CODE and fails for any other, each with the
 recorded screens. Tests that need a logged-in fake call :func:`write_state`.
+
+``fake-exec COMMAND [ARGUMENT...]`` is the one verb the real `claude` has no
+counterpart of: it runs the command with the environment the fake was started with,
+and with the standard streams it has, and ends with the command's exit status. A
+workspace starts Claude through ``env -i`` with exactly ``claude_server.child_env``,
+so a command run this way sees what a command Claude itself runs, as git does for it,
+would see. It needs no sign-in and writes nothing. No command, or one that cannot be
+run, fails loudly.
 """
 
 from __future__ import annotations
@@ -52,6 +60,7 @@ import json
 import os
 import signal
 import socket
+import subprocess
 import sys
 import tempfile
 import termios
@@ -297,7 +306,18 @@ class Fake:
             return self.show("auth_logout")
         if a[:1] == ["remote-control"]:
             return self.remote_control()
+        if a[:1] == ["fake-exec"] and len(a) > 1:
+            return self.fake_exec(a[1:])
         return self.unsupported()
+
+    def fake_exec(self, command: list[str]) -> int:
+        """``command`` run as a child of Claude: in the fake's own environment, on its
+        own streams."""
+        try:
+            return subprocess.run(command, env=self.env, check=False).returncode
+        except OSError as e:
+            sys.stderr.write(f"fake claude: cannot run {command[0]}: {e}\n")
+            return 127
 
     def login(self) -> int:
         if self.env.get("FAKE_CLAUDE_SCENARIO") == "unrecognised":

@@ -110,6 +110,59 @@ def test_a_workspace_that_could_not_be_made_is_failed_and_can_be_deleted(client,
     assert listed(client) == []
 
 
+def git_answering(runtime, code: int, out: bytes, err: bytes = b""):
+    """``runtime`` with what the workspace's ``git --version`` says replaced; every other
+    command is run as before. The commands that asked are the returned list."""
+    asked = []
+    real = runtime.exec
+
+    def exec_(name, argv, stdin=None, timeout=rt.PODMAN_TIMEOUT):
+        if argv and argv[-1] == "--version" and "git" in argv:
+            asked.append(argv)
+            return rt.Result(code, out, err)
+        return real(name, argv, stdin, timeout)
+
+    runtime.exec = exec_
+    return asked
+
+
+def test_an_image_with_a_new_enough_git_makes_a_ready_workspace(client, app):
+    asked = git_answering(app.state.workspaces.runtime, 0, b"git version 2.31.0\n")
+    r = client.post("/api/workspaces", json={"name": "fine"}, headers=changing(ALICE))
+    assert made_workspace_ready(client, r.json()["workspace"]["id"])["state"] == "ready"
+    assert asked  # positive control for the refusals below: git was asked its version
+
+
+def test_an_image_without_git_makes_a_failed_workspace_that_says_so(client, app):
+    asked = git_answering(app.state.workspaces.runtime, 127, b"", b"timeout: can't execute 'git'")
+    r = client.post("/api/workspaces", json={"name": "nogit"}, headers=changing(ALICE))
+    failed = made_workspace_ready(client, r.json()["workspace"]["id"])
+    assert asked and failed["state"] == "failed"
+    assert "git is not installed" in failed["error"]
+    assert (
+        client.delete(f"/api/workspaces/{failed['id']}", headers=changing(ALICE)).status_code == 200
+    )
+
+
+def test_an_image_with_an_older_git_than_rcman_needs_makes_a_failed_workspace(client, app):
+    from helpers import git_run
+
+    minimum = ".".join(str(n) for n in git_run.GIT_MIN_VERSION)
+    older = f"git version {git_run.GIT_MIN_VERSION[0]}.{git_run.GIT_MIN_VERSION[1] - 1}.9\n"
+    git_answering(app.state.workspaces.runtime, 0, older.encode())
+    r = client.post("/api/workspaces", json={"name": "old"}, headers=changing(ALICE))
+    failed = made_workspace_ready(client, r.json()["workspace"]["id"])
+    assert failed["state"] == "failed"
+    assert older.split()[2].rsplit(".", 1)[0] in failed["error"] and minimum in failed["error"]
+
+
+def test_an_image_whose_git_says_something_else_makes_a_failed_workspace(client, app):
+    git_answering(app.state.workspaces.runtime, 0, b"hello\n")
+    r = client.post("/api/workspaces", json={"name": "odd"}, headers=changing(ALICE))
+    failed = made_workspace_ready(client, r.json()["workspace"]["id"])
+    assert failed["state"] == "failed" and "git" in failed["error"]
+
+
 # --- deleting --------------------------------------------------------------------------
 
 

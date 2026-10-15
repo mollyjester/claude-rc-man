@@ -307,10 +307,10 @@ test("until the server says whether a token is stored, the part claims neither a
 });
 
 test("when the server cannot say whether a token is stored, the part shows why and offers no field and no Remove", async () => {
-  api({ "GET /api/github": problem(501, "not_available_yet", "planted: not available yet") });
+  api({ "GET /api/github": problem(503, "runtime_unavailable", "planted: not available") });
   renderApp("/settings");
   const github = await part(m.settingsGithubTitle);
-  expect(await within(github).findByText("planted: not available yet")).toBeInTheDocument();
+  expect(await within(github).findByText("planted: not available")).toBeInTheDocument();
   expect(github.querySelector('input[type="password"]')).toBeNull();
   expect(within(github).queryByRole("button", { name: m.save })).not.toBeInTheDocument();
   expect(within(github).queryByText(m.githubTokenStored)).not.toBeInTheDocument();
@@ -318,4 +318,10 @@ test("when the server cannot say whether a token is stored, the part shows why a
   expect(
     within(github).queryByRole("button", { name: m.githubTokenRemove }),
   ).not.toBeInTheDocument();
+});
+
+test("the commit author's help says it is also the author of commits git makes in the workspaces", () => {
+  expect(FIELDS.author_name.help).toMatch(/workspaces/);
+  expect(FIELDS.author_name.help).not.toMatch(/from rcman are/);
+  expect(m.githubTokenHelp).toMatch(/workspaces/);
 });
