@@ -13,13 +13,18 @@ export async function openAdminPage(page: Page, label: string) {
 }
 
 // Makes a workspace from the Workspaces page, which it is on, and waits until it
-// is ready; it is then selected, and its panel is returned.
-export async function makeWorkspace(page: Page, name: string) {
+// is ready; it is then selected, and its panel is returned. `wait` is how long to
+// wait for that, in milliseconds, and the expectation timeout when it is not given;
+// a caller whose workspace takes longer than that says so (e2e-stack/timing.ts).
+export async function makeWorkspace(page: Page, name: string, wait?: number) {
   const form = page.getByRole("region", { name: m.newWorkspace });
   await form.getByLabel(m.newWorkspaceName).fill(name);
   await form.getByRole("button", { name: m.create }).click();
   const opened = panel(page, name);
-  await expect(opened.getByRole("heading", { name: m.serverTitle })).toBeVisible();
+  await expect(
+    opened.getByRole("heading", { name: m.serverTitle }),
+    `workspace "${name}" was not ready${wait === undefined ? "" : ` within ${wait} ms`}`,
+  ).toBeVisible({ timeout: wait });
   return opened;
 }
 

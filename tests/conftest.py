@@ -20,6 +20,40 @@ def pytest_collection_modifyitems(items):
     container_marker.mark(items)
 
 
+@pytest.fixture(scope="session", autouse=True)
+def collections_shared_by_the_workers(tmp_path_factory):
+    """Where the workers of a run share what pytest collects for a command line
+    (tests/collected.py), so that each collection is worked out once, not by each worker."""
+    from tests import collected
+
+    base = tmp_path_factory.getbasetemp()
+    collected.shared = (
+        base.parent if os.environ.get("PYTEST_XDIST_WORKER") else base
+    ) / "collected"
+    yield
+    collected.shared = None
+
+
+@pytest.fixture(scope="session", autouse=True)
+def databases_that_do_not_wait_for_the_disk():
+    """Every database the backend opens takes ``synchronous = off`` in the tests: a commit
+    otherwise waits for the disk, which costs many times the work it commits and is slower
+    still with every worker's commits waiting for the same disk. No test is about a
+    database surviving a crash."""
+    from rcman import db
+
+    real = db.connect
+
+    def connect(path):
+        con = real(path)
+        con.execute("pragma synchronous = off")
+        return con
+
+    db.connect = connect
+    yield
+    db.connect = real
+
+
 # --- backend fixtures ------------------------------------------------------------
 
 import contextlib  # noqa: E402

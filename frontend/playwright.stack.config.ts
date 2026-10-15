@@ -1,5 +1,7 @@
 import { defineConfig } from "@playwright/test";
 
+import { TEST_WITHIN } from "./e2e-stack/timing";
+
 // The whole stack in the podman host (tests/container/stack.py): Caddy with its
 // own certificate authority, oauth2-proxy, rcman as installed, and its workspaces
 // in real Podman.
@@ -18,7 +20,7 @@ export default defineConfig({
   outputDir: "test-results/stack",
   workers: 1,
   fullyParallel: false,
-  timeout: 90_000,
+  timeout: TEST_WITHIN,
   expect: { timeout: 20_000 },
   use: {
     baseURL: "https://rcman.test",

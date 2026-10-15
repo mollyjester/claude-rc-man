@@ -87,13 +87,30 @@ else; this file is the full list. Rules are referred to by their bold name.
   own. While working, run the tests the change touches — the test written
   first, its module, the paired test the edit-time hook runs — and
   `make test`, the tests that run on the host, when a step is done. Before
-  the change is handed over, `make check`, which runs everything, the
-  container tests of `make test-container` included, runs again, and again
-  in full after any fix to a red run: a fix checked only by the tests it
-  aimed at is not checked. A targeted run, `make test` or
-  `make test-container` is never reported as the full suite; every run is
-  read by its totals, its collected count and its failing test names. What
-  each target runs is in [tests.md](tests.md#running).
+  the change is handed over, `make check`, the gating check, runs again, and
+  again in full after any fix to a red run: a fix checked only by the tests
+  it aimed at is not checked. A targeted run or `make test` is never reported
+  as the full check; every run is read by its totals, its collected count and
+  its failing test names. What each target runs is in
+  [tests.md](tests.md#running).
+- **The on-demand runs happen once, at the end, when required.** `make check`
+  holds no container test. The container tests (`make test-container`) and
+  the whole-stack browser test (`make check-ui`) are the on-demand runs, and
+  `make check-all` runs `make check` and both. They are required when the
+  change touches the runtime, the uid mapping, the installer, the restore
+  after a restart or reboot, or the container-based stack, and before the live
+  reinstall; otherwise they are not run. They run once, at the end of the
+  implementation, after the gating check is green. They have no baseline: a
+  red on-demand test is triaged by running that test on `main`. When an
+  on-demand run is red, everything red is fixed together, and the run is
+  repeated only after the operator confirms. The pull request says whether
+  they were required and, if so, their totals
+  ([CONTRIBUTING.md](../CONTRIBUTING.md#pull-requests)).
+- **A test that patches a constant the service reads when it starts does so
+  before the `client` fixture starts the service.** The service takes the
+  value once, at start; a patch made afterwards changes nothing the running
+  service uses, and the test passes or fails by timing. Such a patch goes in a
+  fixture the test lists before `client`.
 - **Throwaway probes go in a scratch directory** outside the repository and are
   deleted when done.
 

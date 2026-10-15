@@ -11,7 +11,8 @@ Control servers. What it does and how far it is implemented: [README.md](README.
 
 ## Commands
 
-The `make` targets, from `make setup` to `make check`, and what each does:
+The `make` targets, from `make setup` to `make check-all`, the gating `make check`
+and the on-demand runs among them, and what each does:
 [project-knowledge/tests.md](project-knowledge/tests.md).
 
 ## Where to look

@@ -1,8 +1,11 @@
 """The Makefile's test targets: make test runs every test that runs on the host, make
-test-container every test that needs a container, and make check both, with a
-container test that cannot run, or a test of the real claude, failing rather than
-skipping, and none of them running a test that needs a real Claude account. make lint
-and make format cover both the Python code and the frontend.
+test-container the tests that need a container but not the whole stack, make check-ui
+the whole-stack browser test, make check the host tests with the lint and the frontend's
+tests, and make check-all all of those. The two on-demand runs, test-container and
+check-ui, are not part of make check. A container test that cannot run, or a test of the
+real claude, fails rather than skips where make requires it, and none of the runs runs a
+test that needs a real Claude account. make lint and make format cover both the Python
+code and the frontend.
 
 Each target is run by the real make with uv, npm and npx replaced by recorders, so
 what a target would run is read from what it ran; which tests a pytest command line
@@ -83,80 +86,154 @@ def selected(calls: list[Call]) -> dict[Call, set[str]]:
     }
 
 
-def everything() -> tuple[set[str], set[str]]:
-    """Every test a bare pytest collects, and those of them carrying the marker."""
-    full = collect()
-    return set(full), {n for n, t in full.items() if MARKER in t["markers"]}
+STACK = "stack"
+RUNS = ("test", "test-container", "check-ui")
 
 
-def split_problems(test: list[Call], container: list[Call]) -> list[str]:
-    """What is wrong with the split between the two targets' pytest calls: a test in
-    neither, a container test run by make test, make test-container running other than
-    exactly the container tests, or either running a test a bare pytest leaves out."""
-    full, marked = everything()
-    host = set().union(*selected(test).values()) if test else set()
-    ran = set().union(*selected(container).values()) if container else set()
-    problems = [f"in neither: {n}" for n in sorted(full - host - marked)]
-    problems += [f"a container test in make test: {n}" for n in sorted(marked & host)]
-    problems += [f"not in make test-container: {n}" for n in sorted(marked - ran)]
+@dataclass(frozen=True)
+class Collected:
+    """What a bare pytest collects: every test, those carrying the container marker and
+    those carrying the stack marker."""
+
+    full: set[str]
+    container: set[str]
+    stack: set[str]
+
+    @property
+    def host(self) -> set[str]:
+        return self.full - self.container
+
+
+def everything() -> Collected:
+    found = collect()
+    return Collected(
+        set(found),
+        {n for n, t in found.items() if MARKER in t["markers"]},
+        {n for n, t in found.items() if STACK in t["markers"]},
+    )
+
+
+def ran_by(calls: list[Call]) -> set[str]:
+    return set().union(*selected(calls).values()) if calls else set()
+
+
+def split_problems(test: list[Call], container: list[Call], ui: list[Call]) -> list[str]:
+    """What is wrong with the split between the three targets' pytest calls: every test
+    belongs to exactly one run, which is make test for a test that runs on the host, make
+    test-container for a container test but the whole-stack one, and make check-ui for
+    the whole-stack one; and none of the runs runs a test a bare pytest leaves out."""
+    tests = everything()
+    host, ran, shown = ran_by(test), ran_by(container), ran_by(ui)
+    problems = [f"in none of the runs: {n}" for n in sorted(tests.full - host - ran - shown)]
+    problems += [f"a container test in make test: {n}" for n in sorted(tests.container & host)]
     problems += [
-        f"not a container test, in make test-container: {n}" for n in sorted((ran & full) - marked)
+        f"not in make test-container: {n}" for n in sorted(tests.container - tests.stack - ran)
     ]
-    problems += left_out(host, full, "make test") + left_out(ran, full, "make test-container")
+    problems += [f"a stack test in make test-container: {n}" for n in sorted(tests.stack & ran)]
+    problems += [
+        f"not a container test, in make test-container: {n}"
+        for n in sorted((ran & tests.full) - tests.container)
+    ]
+    problems += [f"not in make check-ui: {n}" for n in sorted(tests.stack - shown)]
+    problems += [
+        f"not a stack test, in make check-ui: {n}"
+        for n in sorted((shown & tests.full) - tests.stack)
+    ]
+    for tests_run, target in (
+        (host, "make test"),
+        (ran, "make test-container"),
+        (shown, "make check-ui"),
+    ):
+        problems += left_out(tests_run, tests.full, target)
     return problems
 
 
 def left_out(ran: set[str], full: set[str], target: str) -> list[str]:
-    """Tests a target runs that a bare pytest leaves out. A target's own -m replaces the
+    """Collected a target runs that a bare pytest leaves out. A target's own -m replaces the
     -m 'not real_claude' of pyproject's addopts, so without its own 'not real_claude' a
     target runs the tests that need a real Claude account."""
     return [f"left out of a bare run, in {target}: {n}" for n in sorted(ran - full)]
 
 
+def without_real_claude(runs: dict[Call, set[str]], only: set[str] | None = None) -> list[str]:
+    """The calls (those selecting a test of ``only``, if given) without
+    RCMAN_REQUIRE_REAL_CLAUDE=1, where the tests of the real claude would skip."""
+    return [
+        f"without RCMAN_REQUIRE_REAL_CLAUDE=1: {' '.join(call.argv)}"
+        for call, found in runs.items()
+        if (only is None or found & only) and ("RCMAN_REQUIRE_REAL_CLAUDE", "1") not in call.env
+    ]
+
+
 def check_problems(check: list[Call]) -> list[str]:
-    """What make check would get wrong: a test none of its pytest calls selects, a test a
-    bare pytest leaves out, a call selecting container tests without
-    RCMAN_REQUIRE_CONTAINER=1, where they would skip, or a call without
-    RCMAN_REQUIRE_REAL_CLAUDE=1, where the tests of the real claude would."""
-    full, marked = everything()
+    """What make check would get wrong: a host test none of its pytest calls selects, an
+    on-demand test (a container test) it runs, a test a bare pytest leaves out, or a call
+    without RCMAN_REQUIRE_REAL_CLAUDE=1, where the tests of the real claude would skip."""
+    tests = everything()
     runs = selected(check)
     ran = set().union(*runs.values()) if runs else set()
-    problems = [f"not run by make check: {n}" for n in sorted(full - ran)]
-    problems += left_out(ran, full, "make check")
+    problems = [f"not run by make check: {n}" for n in sorted(tests.host - ran)]
+    problems += [f"an on-demand test in make check: {n}" for n in sorted(tests.container & ran)]
+    return problems + left_out(ran, tests.full, "make check") + without_real_claude(runs)
+
+
+def check_all_problems(check_all: list[Call]) -> list[str]:
+    """What make check-all would get wrong: a test none of its pytest calls selects, a
+    test a bare pytest leaves out, a call selecting container tests without
+    RCMAN_REQUIRE_CONTAINER=1, where they would skip, or a call selecting host tests
+    without RCMAN_REQUIRE_REAL_CLAUDE=1, where the tests of the real claude would."""
+    tests = everything()
+    runs = selected(check_all)
+    ran = set().union(*runs.values()) if runs else set()
+    problems = [f"not run by make check-all: {n}" for n in sorted(tests.full - ran)]
+    problems += left_out(ran, tests.full, "make check-all")
     problems += [
         f"container tests without RCMAN_REQUIRE_CONTAINER=1: {' '.join(call.argv)}"
-        for call, tests in runs.items()
-        if tests & marked and ("RCMAN_REQUIRE_CONTAINER", "1") not in call.env
+        for call, found in runs.items()
+        if found & tests.container and ("RCMAN_REQUIRE_CONTAINER", "1") not in call.env
     ]
-    problems += [
-        f"without RCMAN_REQUIRE_REAL_CLAUDE=1: {' '.join(call.argv)}"
-        for call in runs
-        if ("RCMAN_REQUIRE_REAL_CLAUDE", "1") not in call.env
-    ]
-    return problems
+    return problems + without_real_claude(runs, tests.host)
 
 
-def known_positives(host: set[str], marked: set[str]) -> None:
-    """Non-vacuity: both sides hold tests known to belong there."""
-    assert "tests/test_container_suite.py::test_docker_is_usable" in marked
-    assert "tests/test_container_suite.py::test_the_whole_stack_in_a_browser" in marked
-    assert "tests/test_make.py::test_every_test_is_in_exactly_one_of_the_two_runs" in host
-    assert any(n.startswith("tests/test_rules.py::test_the_backend_and_") for n in host)
+def split_of(tmp_path: Path, **makefiles: Path) -> list[str]:
+    """split_problems for the three targets, each from its entry of ``makefiles`` (by
+    the target's name with _ for -) or else the real Makefile."""
+    calls = {
+        target: recorded(tmp_path, target, makefiles.get(target.replace("-", "_"), MAKEFILE))
+        for target in RUNS
+    }
+    return split_problems(*calls.values())
 
 
-def test_every_test_is_in_exactly_one_of_the_two_runs(tmp_path):
-    test, container = recorded(tmp_path, "test"), recorded(tmp_path, "test-container")
-    assert [c.pytest_args() is not None for c in test] == [True]
-    assert all(c.cwd == str(REPO) for c in test + container)
-    full, marked = everything()
-    known_positives(set().union(*selected(test).values()), marked)
-    assert split_problems(test, container) == []
+def known_positives(tests: Collected) -> None:
+    """Non-vacuity: every set holds tests known to belong there."""
+    assert "tests/test_container_suite.py::test_docker_is_usable" in tests.container
+    assert "tests/test_container_suite.py::test_docker_is_usable" not in tests.stack
+    assert "tests/test_container_suite.py::test_the_whole_stack_in_a_browser" in tests.stack
+    assert tests.stack <= tests.container  # a stack test needs the container too
+    assert "tests/test_make.py::test_every_test_is_in_exactly_one_of_the_three_runs" in tests.host
+    assert any(n.startswith("tests/test_rules.py::test_the_backend_and_") for n in tests.host)
 
 
-def test_make_check_runs_every_test_and_container_tests_cannot_skip(tmp_path):
+def test_every_test_is_in_exactly_one_of_the_three_runs(tmp_path):
+    runs = {target: recorded(tmp_path, target) for target in RUNS}
+    for calls in runs.values():
+        assert [c.pytest_args() is not None for c in calls] == [True]
+        assert all(c.cwd == str(REPO) for c in calls)
+    known_positives(everything())
+    assert split_problems(*runs.values()) == []
+
+
+def test_make_check_runs_the_host_tests_and_no_on_demand_run(tmp_path):
     check = recorded(tmp_path, "check")
-    assert len([c for c in check if c.pytest_args() is not None]) >= 2  # non-vacuity
+    assert len([c for c in check if c.pytest_args() is not None]) >= 1  # non-vacuity
     assert check_problems(check) == []
+
+
+def test_make_check_all_runs_every_test_and_container_tests_cannot_skip(tmp_path):
+    check_all = recorded(tmp_path, "check-all")
+    assert len([c for c in check_all if c.pytest_args() is not None]) >= 3  # non-vacuity
+    assert check_all_problems(check_all) == []
 
 
 def planted(tmp_path: Path, old: str, new: str, count: int = 1) -> Path:
@@ -170,43 +247,110 @@ def planted(tmp_path: Path, old: str, new: str, count: int = 1) -> Path:
     return path
 
 
+TEST_M = '-m "not container and not real_claude"'
+CONTAINER_M = '-m "container and not stack and not real_claude"'
+UI_M = '-m "stack and not real_claude"'
+CHECK_REAL = "check: export RCMAN_REQUIRE_REAL_CLAUDE = 1\n"
+
+
+def runs_in_parallel(makefile: Path) -> bool:
+    """Whether make -j may run targets beside each other: the Makefile has no .NOTPARALLEL."""
+    return re.search(r"^\.NOTPARALLEL:", makefile.read_text(encoding="utf-8"), re.M) is None
+
+
+def test_no_target_runs_beside_another_under_make_j():
+    """The on-demand runs share docker, so make -j check-all must not start them together."""
+    assert not runs_in_parallel(MAKEFILE)
+
+
+def test_a_makefile_without_notparallel_is_reported(tmp_path):
+    """Planted twin: without the line, make -j may run the on-demand runs together."""
+    assert runs_in_parallel(planted(tmp_path, ".NOTPARALLEL:\n", ""))
+
+
 def test_a_test_dropped_from_make_test_is_reported(tmp_path):
-    """Planted twin: make test deselecting one test leaves it in neither run."""
+    """Planted twin: make test deselecting one test leaves it in none of the runs."""
     dropped = "tests/test_make.py::test_a_test_dropped_from_make_test_is_reported"
     makefile = planted(
-        tmp_path,
-        'uv run pytest -n auto -m "not container and not real_claude"',
-        f'uv run pytest -n auto -m "not container and not real_claude" --deselect {dropped}',
+        tmp_path, f"--dist worksteal {TEST_M}", f"--dist worksteal {TEST_M} --deselect {dropped}"
     )
-    test = recorded(tmp_path, "test", makefile)
-    assert any(dropped in c.argv for c in test)  # the plant reached pytest
-    container = recorded(tmp_path, "test-container")
-    assert split_problems(test, container) == [f"in neither: {dropped}"]
+    (tmp_path / "probe").mkdir()
+    assert any(dropped in c.argv for c in recorded(tmp_path / "probe", "test", makefile))  # it took
+    assert split_of(tmp_path, test=makefile) == [f"in none of the runs: {dropped}"]
 
 
 def test_container_tests_run_by_make_test_are_reported(tmp_path):
     """Planted twin: make test without the container filter runs the container tests."""
-    makefile = planted(tmp_path, '-m "not container and not real_claude"', "")
-    test = recorded(tmp_path, "test", makefile)
-    _, marked = everything()
-    problems = split_problems(test, recorded(tmp_path, "test-container"))
-    assert problems == [f"a container test in make test: {n}" for n in sorted(marked)]
+    makefile = planted(tmp_path, TEST_M, "")
+    problems = split_of(tmp_path, test=makefile)
+    assert problems == [
+        f"a container test in make test: {n}" for n in sorted(everything().container)
+    ]
 
 
-def test_make_check_without_the_container_run_is_reported(tmp_path):
-    """Planted twin: make check without test-container misses every container test."""
-    makefile = planted(tmp_path, "check: lint test test-container", "check: lint test")
-    _, marked = everything()
+def test_the_stack_test_run_by_make_test_container_is_reported(tmp_path):
+    """Planted twin: make test-container without 'and not stack' runs the whole-stack test
+    too, which make check-ui runs."""
+    makefile = planted(tmp_path, CONTAINER_M, '-m "container and not real_claude"')
+    problems = split_of(tmp_path, test_container=makefile)
+    assert problems == [
+        f"a stack test in make test-container: {n}" for n in sorted(everything().stack)
+    ]
+
+
+def test_make_check_with_the_container_run_is_reported(tmp_path):
+    """Planted twin: make check gaining test-container holds an on-demand run."""
+    makefile = planted(tmp_path, "check: lint test ", "check: lint test test-container ")
+    tests = everything()
     problems = check_problems(recorded(tmp_path, "check", makefile))
-    assert problems == [f"not run by make check: {n}" for n in sorted(marked)]
+    assert problems == [
+        f"an on-demand test in make check: {n}" for n in sorted(tests.container - tests.stack)
+    ]
+
+
+def test_make_check_with_the_whole_stack_run_is_reported(tmp_path):
+    """Planted twin: make check gaining check-ui holds an on-demand run."""
+    makefile = planted(tmp_path, "check: lint test ", "check: lint test check-ui ")
+    problems = check_problems(recorded(tmp_path, "check", makefile))
+    assert problems == [f"an on-demand test in make check: {n}" for n in sorted(everything().stack)]
+
+
+def test_make_check_without_the_host_run_is_reported(tmp_path):
+    """Planted twin: make check without test misses every host test."""
+    makefile = planted(tmp_path, "check: lint test ", "check: lint ")
+    problems = check_problems(recorded(tmp_path, "check", makefile))
+    assert problems == [f"not run by make check: {n}" for n in sorted(everything().host)]
+
+
+def test_make_check_all_without_the_container_run_is_reported(tmp_path):
+    """Planted twin: make check-all without test-container misses those container tests."""
+    makefile = planted(tmp_path, "check-all: check test-container ", "check-all: check ")
+    tests = everything()
+    problems = check_all_problems(recorded(tmp_path, "check-all", makefile))
+    assert problems == [
+        f"not run by make check-all: {n}" for n in sorted(tests.container - tests.stack)
+    ]
+
+
+def test_make_check_all_without_the_whole_stack_run_is_reported(tmp_path):
+    """Planted twin: make check-all without check-ui misses the whole-stack test."""
+    makefile = planted(
+        tmp_path, "check-all: check test-container check-ui", "check-all: check test-container"
+    )
+    problems = check_all_problems(recorded(tmp_path, "check-all", makefile))
+    assert problems == [f"not run by make check-all: {n}" for n in sorted(everything().stack)]
 
 
 def test_container_tests_that_could_skip_are_reported(tmp_path):
-    """Planted twin: make test-container without RCMAN_REQUIRE_CONTAINER=1."""
-    makefile = planted(tmp_path, "test-container: export RCMAN_REQUIRE_CONTAINER = 1\n", "")
-    problems = check_problems(recorded(tmp_path, "check", makefile))
-    assert len(problems) == 1
-    assert problems[0].startswith("container tests without RCMAN_REQUIRE_CONTAINER=1")
+    """Planted twin: make test-container, then make check-ui, without
+    RCMAN_REQUIRE_CONTAINER=1, where the tests would skip rather than fail."""
+    for target in ("test-container", "check-ui"):
+        (tmp_path / target).mkdir()
+        makefile = planted(tmp_path / target, f"{target}: export RCMAN_REQUIRE_CONTAINER = 1\n", "")
+        problems = check_all_problems(recorded(tmp_path / target, "check-all", makefile))
+        assert len(problems) == 1, problems
+        assert problems[0].startswith("container tests without RCMAN_REQUIRE_CONTAINER=1")
+        assert "pytest" in problems[0]
 
 
 def real_claude_tests() -> list[str]:
@@ -216,30 +360,27 @@ def real_claude_tests() -> list[str]:
     return found
 
 
-def test_real_claude_tests_run_by_make_test_are_reported(tmp_path):
-    """Planted twin: a target's own -m replaces addopts' -m 'not real_claude', so make
-    test without its own 'and not real_claude' runs the tests that need a real account."""
-    makefile = planted(tmp_path, '-m "not container and not real_claude"', '-m "not container"')
-    test = recorded(tmp_path, "test", makefile)
-    problems = split_problems(test, recorded(tmp_path, "test-container"))
-    assert problems == [f"left out of a bare run, in make test: {n}" for n in real_claude_tests()]
-
-
-def test_real_claude_tests_run_by_make_test_container_are_reported(tmp_path):
-    """Planted twin: make test-container selecting the real-account tests too."""
-    makefile = planted(
-        tmp_path, '-m "container and not real_claude"', '-m "container or real_claude"'
-    )
-    container = recorded(tmp_path, "test-container", makefile)
-    problems = split_problems(recorded(tmp_path, "test"), container)
+@pytest.mark.parametrize(
+    ("target", "old", "new"),
+    [
+        ("test", TEST_M, '-m "not container"'),
+        ("test-container", CONTAINER_M, '-m "container and not stack or real_claude"'),
+        ("check-ui", UI_M, '-m "stack or real_claude"'),
+    ],
+)
+def test_real_claude_tests_run_by_a_target_are_reported(tmp_path, target, old, new):
+    """Planted twin: a target's own -m replaces addopts' -m 'not real_claude', so the
+    target without its own 'and not real_claude' runs the tests that need a real account."""
+    makefile = planted(tmp_path, old, new)
+    problems = split_of(tmp_path, **{target.replace("-", "_"): makefile})
     assert problems == [
-        f"left out of a bare run, in make test-container: {n}" for n in real_claude_tests()
+        f"left out of a bare run, in make {target}: {n}" for n in real_claude_tests()
     ]
 
 
 def test_real_claude_tests_run_by_make_check_are_reported(tmp_path):
     """Planted twin: make check running make test without 'and not real_claude'."""
-    makefile = planted(tmp_path, '-m "not container and not real_claude"', '-m "not container"')
+    makefile = planted(tmp_path, TEST_M, '-m "not container"')
     problems = check_problems(recorded(tmp_path, "check", makefile))
     assert problems == [f"left out of a bare run, in make check: {n}" for n in real_claude_tests()]
 
@@ -247,15 +388,23 @@ def test_real_claude_tests_run_by_make_check_are_reported(tmp_path):
 def test_make_check_without_the_real_claude_requirement_is_reported(tmp_path):
     """Planted twin: make check not setting RCMAN_REQUIRE_REAL_CLAUDE=1, where the tests
     of the real claude would skip rather than fail without it."""
-    makefile = planted(tmp_path, "check: export RCMAN_REQUIRE_REAL_CLAUDE = 1\n", "")
+    makefile = planted(tmp_path, CHECK_REAL, "")
     calls = [c for c in recorded(tmp_path, "check", makefile) if c.pytest_args() is not None]
-    assert len(calls) >= 2  # non-vacuity: the host run and the container run
+    assert len(calls) >= 1  # non-vacuity
     assert check_problems(calls) == [
         f"without RCMAN_REQUIRE_REAL_CLAUDE=1: {' '.join(c.argv)}" for c in calls
     ]
 
 
-@pytest.mark.parametrize("target", ["test", "test-container"])
+def test_make_check_all_without_the_real_claude_requirement_is_reported(tmp_path):
+    """Planted twin: make check, which make check-all runs, not setting it."""
+    makefile = planted(tmp_path, CHECK_REAL, "")
+    problems = check_all_problems(recorded(tmp_path, "check-all", makefile))
+    assert len(problems) == 1, problems
+    assert problems[0].startswith("without RCMAN_REQUIRE_REAL_CLAUDE=1: uv run pytest")
+
+
+@pytest.mark.parametrize("target", RUNS)
 def test_a_program_the_recorder_does_not_stand_in_for_fails_the_target(tmp_path, target):
     """Positive control for the recorder: a recipe running anything else fails make."""
     makefile = planted(tmp_path, "\tuv run pytest", "\tpytest", -1)

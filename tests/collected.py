@@ -3,12 +3,15 @@
 Not a test module. collect() runs pytest's collection in a child process from the
 repository root, with the environment the tests themselves were started with less
 anything that steers a run (RCMAN_*, PYTEST_* and COV_*), plus what the caller gives,
-and returns each selected test's markers and fixtures by node ID.
+and returns each selected test's markers and fixtures by node ID. The workers of a run
+share the answers (``shared``), so that each command line is collected once.
 """
 
 from __future__ import annotations
 
+import fcntl
 import functools
+import hashlib
 import json
 import os
 import subprocess
@@ -68,8 +71,13 @@ def child_env(env: dict[str, str] | None = None) -> dict[str, str]:
     return {**base, **(env or {})}
 
 
-@functools.cache
-def _collect(args: tuple[str, ...], env: tuple[tuple[str, str], ...]) -> dict[str, dict]:
+# A folder the workers of one run share, which tests/conftest.py sets: each collection
+# is then worked out by one of them, and read by the others. None: each process works out
+# its own.
+shared: Path | None = None
+
+
+def _child_collect(args: tuple[str, ...], env: tuple[tuple[str, str], ...]) -> dict[str, dict]:
     with held("rccol-") as scratch:
         out = scratch / "collected.json"
         proc = subprocess.run(
@@ -85,6 +93,27 @@ def _collect(args: tuple[str, ...], env: tuple[tuple[str, str], ...]) -> dict[st
                 f"collection failed ({proc.returncode}):\n{proc.stdout}{proc.stderr}"
             )
         return json.loads(out.read_text(encoding="utf-8"))
+
+
+def _shared_collect(args: tuple[str, ...], env: tuple[tuple[str, str], ...]) -> dict[str, dict]:
+    """What _child_collect finds, worked out once among the processes that share ``shared``:
+    the first to ask holds the key's lock while it does, the others wait and read."""
+    if shared is None:
+        return _child_collect(args, env)
+    shared.mkdir(parents=True, exist_ok=True)
+    key = hashlib.sha256(json.dumps([args, env]).encode()).hexdigest()
+    found = shared / f"{key}.json"
+    with open(shared / f"{key}.lock", "w", encoding="utf-8") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        if not found.exists():
+            result = _child_collect(args, env)
+            partial = shared / f"{key}.partial"
+            partial.write_text(json.dumps(result), encoding="utf-8")
+            partial.replace(found)
+        return json.loads(found.read_text(encoding="utf-8"))
+
+
+_collect = functools.cache(_shared_collect)
 
 
 def collect(args=(), env: dict[str, str] | None = None) -> dict[str, dict]:

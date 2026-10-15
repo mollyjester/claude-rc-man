@@ -360,6 +360,8 @@ from rcman import accounts as acc  # noqa: E402
 from rcman import claude_server  # noqa: E402
 from rcman import workspaces as ws  # noqa: E402
 
+from helpers.screens import LOGIN_SUCCEEDED  # noqa: E402
+
 
 def in_thread(call, *args) -> tuple[threading.Thread, list]:
     out: list = []
@@ -406,9 +408,17 @@ def test_a_start_in_progress_does_not_escape_a_sign_out(client, app, monkeypatch
         assert account_file(app, ALICE).read_bytes() == b""
 
 
-def test_a_server_that_ends_by_itself_finishes_a_waiting_sign_out(client, app, monkeypatch):
-    """Nothing but rcman's own periodic checks: no stop, and no Claude page read."""
+@pytest.fixture
+def quick_periodic_checks(monkeypatch):
+    """rcman's periodic checks every fraction of a second. The service reads the interval
+    when it starts, so a test takes this before ``client``, which starts it."""
     monkeypatch.setattr(ws, "IDLE_CHECK_SECONDS", 0.2)
+
+
+def test_a_server_that_ends_by_itself_finishes_a_waiting_sign_out(
+    quick_periodic_checks, client, app
+):
+    """Nothing but rcman's own periodic checks: no stop, and no Claude page read."""
     work = made_workspace(client, ALICE)
     connect(client)
     trusted(app, work)
@@ -566,3 +576,32 @@ def test_a_workspace_not_seeded_is_refused_by_claude_and_a_seeded_one_starts(
     monkeypatch.undo()
     r = start(client, work)
     assert r.status_code == 200 and r.json()["server"]["state"] in ("connected", "ready"), r.text
+
+
+class LoginEndingAfterTheFirstRead:
+    """A tmux whose login prints its success line and exits right after the first thing it
+    is asked: what is read first is what it looked like before, what second, after."""
+
+    def __init__(self):
+        self.asked = 0
+
+    def _ended(self) -> bool:
+        self.asked += 1
+        return self.asked > 1
+
+    def screen(self):
+        return [LOGIN_SUCCEEDED] if self._ended() else []
+
+    def exit_status(self):
+        return 0 if self._ended() else None
+
+
+def test_a_login_that_ends_between_the_two_reads_is_never_an_exit_with_a_screen_from_before():
+    """The state of a login is its screen and its exit status, read one after the other: one
+    that ends between them must not be read as exited with the screen it had before its
+    success line, as happens when the screen is read first."""
+    from types import SimpleNamespace
+
+    sign_in = SimpleNamespace(tmux=LoginEndingAfterTheFirstRead())
+    found = acc.Accounts.__new__(acc.Accounts)._wait(sign_in, lambda state: True)
+    assert found["state"] == "succeeded", found

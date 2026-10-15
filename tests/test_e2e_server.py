@@ -25,6 +25,17 @@ from tests import killed_runs as kr
 REPO = Path(__file__).resolve().parent.parent
 FRONTEND = REPO / "frontend"
 CONFIGS = ("playwright.config.ts", "playwright.stack.config.ts")
+# Playwright as `npx playwright` runs it, without npx's own start-up.
+PLAYWRIGHT = str(FRONTEND / "node_modules" / ".bin" / "playwright")
+
+
+def playwright_binary(path: str = PLAYWRIGHT) -> str:
+    """Playwright's binary, or a failure that says to make frontend-setup."""
+    if not Path(path).exists():
+        pytest.fail(f"the frontend's packages are not installed: run make frontend-setup ({path})")
+    return path
+
+
 ORIGIN = "http://rcman.test"  # what the browser would send; nothing listens there
 
 
@@ -587,10 +598,16 @@ def _free_port() -> int:
         return s.getsockname()[1]
 
 
+def test_a_missing_playwright_binary_says_to_run_make_frontend_setup(tmp_path):
+    with pytest.raises(pytest.fail.Exception, match="make frontend-setup"):
+        playwright_binary(str(tmp_path / "playwright"))
+    assert playwright_binary() == PLAYWRIGHT  # installed here
+
+
 def listed(config: str, env: dict[str, str]) -> dict:
     """What Playwright makes of a config, read with --list, which starts no web server."""
     proc = subprocess.run(
-        ["npx", "playwright", "test", "--config", config, "--list", "--reporter=json"],
+        [playwright_binary(), "test", "--config", config, "--list", "--reporter=json"],
         cwd=FRONTEND, env=env, capture_output=True, text=True, timeout=120,
     )  # fmt: skip
     assert proc.returncode == 0, proc.stderr
@@ -602,7 +619,7 @@ def test_the_stack_browser_config_refuses_to_run_without_the_stack_port():
     container published."""
     env = {k: v for k, v in os.environ.items() if k != "RCMAN_STACK_PORT"}
     proc = subprocess.run(
-        ["npx", "playwright", "test", "--config", "playwright.stack.config.ts", "--list"],
+        [playwright_binary(), "test", "--config", "playwright.stack.config.ts", "--list"],
         cwd=FRONTEND, env=env, capture_output=True, text=True, timeout=120,
     )  # fmt: skip
     assert proc.returncode != 0, proc.stdout
@@ -610,7 +627,7 @@ def test_the_stack_browser_config_refuses_to_run_without_the_stack_port():
     assert "tests/test_container_suite.py" in proc.stdout + proc.stderr
     env["RCMAN_STACK_PORT"] = str(_free_port())
     listing = subprocess.run(
-        ["npx", "playwright", "test", "--config", "playwright.stack.config.ts", "--list"],
+        [playwright_binary(), "test", "--config", "playwright.stack.config.ts", "--list"],
         cwd=FRONTEND, env=env, capture_output=True, text=True, timeout=120,
     )  # fmt: skip
     assert listing.returncode == 0, listing.stderr  # positive control: given one, it loads
