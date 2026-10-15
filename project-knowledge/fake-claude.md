@@ -132,6 +132,15 @@ name of an observed screen makes `remote-control` show that screen (see
 [Observed screens](#observed-screens)). `FAKE_CLAUDE_READY_SECONDS` sets how long the
 connected stage lasts, and `FAKE_CLAUDE_VERSION` the version it reports.
 
+`fake-exec COMMAND [ARGUMENT...]` is the one verb the real `claude` has no
+counterpart of, and nothing in it is recorded: it runs the command in the
+environment the fake was started with, on its own streams, and ends with the
+command's exit status. A workspace starts Claude through `env -i` with exactly
+`claude_server.child_env`, so the command sees what a command Claude runs, as git
+does for it, would see; the container test of git uses it to show Claude's own git
+using the person's token (`tests/container/test_github_in_podman.py`).
+`tests/test_fake_claude.py` holds it.
+
 ## Not recorded
 
 The fake has no recording of these, so it cannot show them. rcman

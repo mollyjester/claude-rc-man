@@ -49,11 +49,12 @@ removal takes effect at once in rcman whatever oauth2-proxy has read.
 `deleting`, from when they are let in nowhere, off the allowed list, and no
 workspace is made for them (`not_allowed`); deletes
 every workspace of theirs, container and volume, waiting for one still being
-made; then their Claude sign-in (see
-[runtime.md](runtime.md#a-persons-claude-sign-in)); then removes their row and
-their settings, and writes the allowed list again. The sign-in goes before the
-row because ids and slots are given again: a file left behind would sign the
-next person in. One that cannot be removed leaves the row `deleting`, for
+made; then their Claude sign-in and git folder (see
+[runtime.md](runtime.md#a-persons-claude-sign-in)); then removes their row, their
+settings and, with the row (`on delete cascade`), their GitHub token, and
+writes the allowed list again. The sign-in and git folder go before the row
+because ids and slots are given again: a file left behind would sign the next
+person in, or give them the last one's token. One that cannot be removed leaves the row `deleting`, for
 rcman's next start. A person with workspaces cannot be removed from the table: the
 workspaces' rows refer to theirs. A deletion that could not remove a workspace answers `workspace_failed`
 and leaves the person `deleting`, let in nowhere; that, and a deletion that

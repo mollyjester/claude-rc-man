@@ -14,6 +14,7 @@ import dataclasses
 import time
 
 from rcman import runtime as rt
+from rcman.runtime import TIMED_OUT
 
 # How long a tmux server started through a channel is waited for.
 SETTLES_WITHIN = 10.0
@@ -216,6 +217,93 @@ def a_sign_in_container_has_the_persons_file_and_is_no_workspace(runtime, spec):
     runtime.remove_account(who.person)
 
 
+def _git_dir(layout: rt.Layout) -> str:
+    return f"{layout.home}/.config/git"
+
+
+def _git_file(runtime, name: str, file: str) -> rt.Result:
+    layout = runtime.layout(name)
+    return runtime.exec(name, [*layout.tool("cat"), f"{_git_dir(layout)}/{file}"])
+
+
+def a_persons_workspaces_share_one_git_directory_written_by_rename(runtime, spec):
+    first = spec(12)
+    second = dataclasses.replace(spec(13), slot=first.slot, person=first.person)
+    other = spec(14)
+    try:
+        # With no workspace at all, and so before the account's folder is bound anywhere.
+        runtime.put_account(first.person, first.slot, "config", b"before\n")
+        with made(runtime, first) as a:
+            assert _git_file(runtime, a, "config") == rt.Result(0, b"before\n", b"")
+            runtime.put_account(first.person, first.slot, "config", b"after, and longer\n")
+            runtime.put_account(first.person, first.slot, "credential", b"password=x\n")
+            assert _git_file(runtime, a, "config").out == b"after, and longer\n"  # a running one
+            runtime.put_account(first.person, first.slot, "credential", b"")  # emptied
+            assert _git_file(runtime, a, "credential") == rt.Result(0, b"", b"")
+            layout = runtime.layout(a)
+            mode = runtime.exec(a, _sh(layout, f"stat -c %a {_git_dir(layout)}/config"))
+            assert mode.out.strip() == b"600", mode
+            with made(runtime, second) as b, made(runtime, other) as c:
+                assert _git_file(runtime, b, "config").out == b"after, and longer\n"
+                assert _git_file(runtime, c, "config").code != 0  # another person's is their own
+                # A workspace replaces a file in the directory by a rename, which a bound
+                # file does not allow.
+                swap = f"cd {_git_dir(layout)} && echo mine > t.new && mv -f t.new t"
+                assert runtime.exec(b, _sh(runtime.layout(b), swap)).code == 0
+                assert _git_file(runtime, a, "t").out == b"mine\n"
+    finally:
+        runtime.remove_account(first.person)
+        runtime.remove_account(other.person)
+
+
+def a_git_file_is_a_name_in_the_directory_and_nothing_else(runtime, spec):
+    who = spec(12)
+    try:
+        for name in ("../config", "a/b", "", ".", "credential.new", "other"):
+            try:
+                runtime.put_account(who.person, who.slot, name, b"x")
+            except ValueError:
+                continue
+            raise AssertionError(f"{name!r} was written")
+    finally:
+        runtime.remove_account(who.person)
+
+
+def an_exec_that_outlasts_its_timeout_fails(runtime, spec):
+    with made(runtime, spec(13)) as name:
+        layout = runtime.layout(name)
+        began = time.monotonic()
+        try:
+            runtime.exec(name, _sh(layout, "exec sleep 30"), timeout=1.0)
+        except rt.RuntimeFailed:
+            pass
+        else:
+            raise AssertionError("an exec past its timeout answered")
+        assert time.monotonic() - began < 10
+        assert runtime.exec(name, _sh(layout, "echo after")).out == b"after\n"  # still usable
+
+
+def the_timeout_tool_ends_a_program_that_outlasts_it_and_one_that_ignores_term(runtime, spec):
+    with made(runtime, spec(13)) as name:
+        layout = runtime.layout(name)
+        timeout = [*layout.tool("timeout"), "-s", "TERM", "-k", "1"]
+        # exec, so that nothing is left behind holding the exec's streams open
+        ignoring = _sh(layout, "trap '' TERM; exec sleep 30")
+        for argv in (_sh(layout, "exec sleep 30"), ignoring):
+            began = time.monotonic()
+            ended = runtime.exec(name, [*timeout, "1", *argv])
+            assert time.monotonic() - began < 10, ended
+            assert ended.code in TIMED_OUT, ended  # GNU timeout's and busybox's differ
+        done = runtime.exec(name, [*timeout, "5", *_sh(layout, "exit 7")])
+        assert done.code == 7  # a program that ends in time keeps its status
+        missing = runtime.exec(name, [*timeout, "5", "no-such-program"])
+        assert missing.code == 127, missing
+        # A program named without a path is found on the PATH of the environment it is
+        # given, as git is when a repository's verbs run it.
+        listing = layout.with_env({"PATH": layout.path}, [*timeout, "5", "ls", "/"])
+        assert runtime.exec(name, listing).code == 0
+
+
 CASES = [
     a_workspace_that_is_made_exists_runs_and_is_labelled,
     removing_what_is_not_there_is_nothing,
@@ -226,4 +314,8 @@ CASES = [
     a_whole_process_group_is_ended_by_kill_group_of,
     a_persons_workspaces_share_one_credentials_file_written_in_place,
     a_sign_in_container_has_the_persons_file_and_is_no_workspace,
+    a_persons_workspaces_share_one_git_directory_written_by_rename,
+    a_git_file_is_a_name_in_the_directory_and_nothing_else,
+    an_exec_that_outlasts_its_timeout_fails,
+    the_timeout_tool_ends_a_program_that_outlasts_it_and_one_that_ignores_term,
 ]

@@ -33,7 +33,7 @@ sudo rcman-admin delete <google-email>
 
 From the moment the removal starts, they cannot sign in. **Every
 workspace of theirs is deleted**, with everything in it and its server, and
-their settings and their Claude sign-in with them. Anyone may be removed — yourself and the last
+their settings, their GitHub token and their Claude sign-in with them. Anyone may be removed — yourself and the last
 administrator too: root can always add an administrator again with
 `rcman-admin`.
 

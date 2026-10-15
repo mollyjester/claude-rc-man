@@ -97,14 +97,18 @@ matters, so a suppression at the site is preferred.
   while a sign-out waits, **Stop my servers and sign out now** is offered
   instead, so it is never stuck. Administration is offered only to administrators,
   and the server refuses everyone else regardless. What the server refuses
-  everyone, it is not offered at all: the Claude Code versions page and the
-  Changes section are on no page while the server answers `not_available_yet`
-  for them; their components and tests are
-  kept for when it does not. The Settings page's GitHub token part stays: it
-  asks whether a token is stored, and offers its field and Remove only once the
-  server answers; while the server answers `not_available_yet`, the part shows
-  that sentence alone.
-- **The Changes section's rules**, which hold wherever it is shown: Commit is
+  everyone, it is not offered at all: the Claude Code versions page is on no
+  page while the server answers `not_available_yet` for it; its component and
+  tests are kept for when it does not. The Changes section is in the panel of
+  every workspace that is ready, and in none other. The Settings page's GitHub
+  token part asks whether a token is stored, and offers its field and Remove only
+  once the server answers; when the server refuses the question, the part shows
+  the refusal and no field.
+- **The Changes section's rules**, which hold wherever it is shown: it names its
+  workspace by id and holds no path; a workspace with no repository (the server
+  answers `not_a_repository`) is said quietly (`m.notARepository`), with no
+  error and no branch bar, and its branches are fetched once a repository has
+  come to be. Commit is
   offered only with
   something staged and a commit author name set, and otherwise the section
   says why; a push can be tried on a branch that, as the status says, has
@@ -159,8 +163,8 @@ matters, so a suppression at the site is preferred.
 |---|---|
 | `src/App.tsx` | Who is signed in, the navigation, whose **Admin** menu is a `usePopup` that also closes when a page is chosen and when the page changes, and the routes; **Sign out** beside the person's name, with **Keep sessions running**, which leaves through `away` for oauth2-proxy's sign-out |
 | `src/AdminPages.tsx` | `ADMIN`, the administrators' pages by name, which the links in the administrators' warning use, and `ADMIN_PAGES`, the same pages in order, which the navigation's **Admin** menu and the routes are built from |
-| `src/Dashboard.tsx` | The Workspaces page: the person's workspaces, each with its dot (`dotFor` in `src/Servers.tsx`) and its state while it is not ready, and **New workspace**'s form, beside the selected workspace's panel; the selection kept in the address as `?workspace=`; the workspaces refreshed every `POLL_MS`, a refresh's failure shown until a later refresh works, and an answer older than one asked for since dropped. A new workspace is selected once the server takes its name. The panel says what a workspace being made, deleted or failed is, and for a ready one has its **Claude server** section; **Delete workspace** asks first, and after a delete no workspace is selected and the page says what was deleted |
-| `src/Changes.tsx` | A repository's Changes section, on no page while the server refuses git in workspaces: its heading with the branch bar (`src/BranchBar.tsx`) beside it, the staged and not staged files, each list folding under a heading that counts its files and more, with its Stage selected or Unstage selected beside it, a checkbox for each file that can be selected and Select all, and each file's change as its letter (`m.changeLetters`) in a colour of its own, with its word (`m.changes`) as its accessible text and title; Commit, a split button whose menu holds Commit & Push; and the status line, "Checked …" (`m.checkedAgo`) worked out again every `CHECKED_TICK_MS` while the section is shown, and Refresh changes. `src/Changes.test.tsx` holds every change to a letter and a word, and the letters to differing. A list is open at first while it has files, opens when files come to it, and otherwise stays as the person left it. The status is fetched when the section opens, every `POLL_MS` while it is open and after every action; an answer older than one asked for since is dropped. Its branches are fetched when it opens, after every action and when the current branch changes. What is checked is kept across refreshes, for files still listed. A refusal is shown beside what was tried until any later action there works |
+| `src/Dashboard.tsx` | The Workspaces page: the person's workspaces, each with its dot (`dotFor` in `src/Servers.tsx`) and its state while it is not ready, and **New workspace**'s form, beside the selected workspace's panel; the selection kept in the address as `?workspace=`; the workspaces refreshed every `POLL_MS`, a refresh's failure shown until a later refresh works, and an answer older than one asked for since dropped. A new workspace is selected once the server takes its name. The panel says what a workspace being made, deleted or failed is, and for a ready one has its **Claude server** section and its **Changes** section (`src/Changes.tsx`, polled at the page's own `pollMs`); **Delete workspace** asks first, and after a delete no workspace is selected and the page says what was deleted |
+| `src/Changes.tsx` | The Changes section of a ready workspace's panel, for the repository of the workspace it is given by id: its heading with the branch bar (`src/BranchBar.tsx`) beside it, the staged and not staged files, each list folding under a heading that counts its files and more, with its Stage selected or Unstage selected beside it, a checkbox for each file that can be selected and Select all, and each file's change as its letter (`m.changeLetters`) in a colour of its own, with its word (`m.changes`) as its accessible text and title; Commit, a split button whose menu holds Commit & Push; and the status line, "Checked …" (`m.checkedAgo`) worked out again every `CHECKED_TICK_MS` while the section is shown, and Refresh changes. `src/Changes.test.tsx` holds every change to a letter and a word, and the letters to differing. A list is open at first while it has files, opens when files come to it, and otherwise stays as the person left it. The status is fetched when the section opens, every `POLL_MS` while it is open and after every action; an answer older than one asked for since is dropped. Its branches are fetched when it opens, after every action and when the current branch changes. What is checked is kept across refreshes, for files still listed. A refusal is shown beside what was tried until any later action there works |
 | `src/BranchBar.tsx` | The branch bar: the branch lookup, a button naming where the repository is, whose pop-up has a filter, which asks rcman nothing, over the local and remote branches listed, each a switch where one is offered; **+**, New branch's form in a pop-up; Refresh branches, its icon turning while the fetch runs; ahead and behind as arrows, with `m.tracking` as their accessible text; and Push. It is shown once either the status or the branches are known, so a status that cannot be had leaves the branches to switch to; the arrows and Push wait for the status |
 | `src/usePopup.ts` | A pop-up opened by a button, as a disclosure: it closes on Escape, putting focus back on the button, on a press outside it and when focus moves outside it. Every pop-up a button opens uses it, the **Admin** menu among them. The stylesheet places the branch bar's pop-ups against the Changes heading's row, so they stay inside the section at any width |
 | `public/favicon.svg` | The tab's icon, `*rc` in white on a black circle, which `index.html` links; Vite copies `public/` into the build as it is |
@@ -168,7 +172,7 @@ matters, so a suppression at the site is preferred.
 | `src/Servers.tsx` | A server's states, what each allows and shows, and its card; a workspace as the page lists it, and `dotFor`, the dot it carries |
 | `src/Caret.tsx` | The caret of a disclosure button, wherever one has a caret, turned by its `aria-expanded` |
 | `src/Claude.tsx` | The **Claude** page (`ClaudePage`): the account's state, read once as the page opens, the connect flow, and **Sign out of Claude** with **Keep sessions running** |
-| `src/Settings.tsx` | The person's own settings, in parts that are each saved on their own; `FIELDS` is every setting it shows, and a test holds `docs/settings.md` to it |
+| `src/Settings.tsx` | The person's own settings, in parts that are each saved on their own; `FIELDS` is every setting it shows, and a test holds `docs/settings.md` to it; the GitHub token part, which stores or removes the token through `/api/github` and never shows it |
 | `src/People.tsx`, `src/Everyone.tsx`, `src/Audit.tsx` | Administration: the people, each with their role and how many workspaces they have, added by address and removed after a confirmation; everyone's workspaces and their servers, with no actions; the audit trail |
 | `src/Versions.tsx` | The Claude Code versions page, on no page while the server refuses it |
 | `src/Attention.tsx` | The administrators' warning at the top of every page, from `/api/attention`, naming each server on an unrecognised screen by its person and workspace, with a link to everyone's workspaces; fetched on load and on every change of page |
@@ -260,7 +264,10 @@ the rest. Nothing of this is shown to the person.
   `playwright.stack.config.ts`, against an installed rcman behind real Caddy
   and oauth2-proxy in a container — see [tests.md](tests.md). The config
   takes the container's published port from `RCMAN_STACK_PORT`, which
-  `tests/test_container_suite.py` sets, and refuses to load without it.
+  `tests/test_container_suite.py` sets, and refuses to load without it. A spec that
+  needs something done inside the container, such as a repository in a workspace
+  (`stack.py repository`), runs the command in `RCMAN_STACK_EXEC`, a JSON argv
+  prefix that runs a command in the podman host.
 
 Each Playwright config writes to an output folder of its own under
 `test-results/`, its `outputDir`, because Playwright empties a run's output

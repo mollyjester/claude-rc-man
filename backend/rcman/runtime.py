@@ -46,11 +46,28 @@ LABEL_PERSON = "rcman.person"
 # Where a one-off container that makes or reads a person's credentials file mounts
 # their account volume.
 ACCOUNT_MOUNT = "/account"
-# Makes the credentials file, owner-only, if it is not there, and never truncates it.
-ENSURE_SCRIPT = 'umask 077 && : >> "$1"'
+# The folder of the account volume that holds the person's git configuration and
+# credential, bound at HOME/GIT_HOME in every workspace of theirs; and the only files
+# rcman puts in it.
+GIT_DIR = "git"
+GIT_HOME = ".config/git"
+GIT_FILES = ("config", "credential")
+# The scripts of an account container get the credentials file's path as $1, the git
+# folder's as $2 and, for a write, the name of the file in it as $3.
+# Makes the credentials file, owner-only, if it is not there, and never truncates it;
+# makes the git folder and its credential file, which git's credential helper reads, so
+# that there is always one to read.
+ENSURE_SCRIPT = 'umask 077 && mkdir -p "$2" && : >> "$1" && : >> "$2/credential"'
 READ_SCRIPT = f'{ENSURE_SCRIPT} && cat "$1"'
 # Empties it in place, so every file bound to it, by inode, sees it empty.
 CLEAR_SCRIPT = 'umask 077 && : > "$1"'
+# Writes standard input as a file of the git folder, made if it is not there: whole and
+# owner-only, by a rename inside the folder, so that a reader never sees half of it; a copy
+# that could not be put in place is removed, so no token is left in a temporary file.
+PUT_SCRIPT = (
+    f"{ENSURE_SCRIPT} && trap 'rm -f \"$2/$3.new\"' EXIT "
+    '&& cat > "$2/$3.new" && mv -f "$2/$3.new" "$2/$3"'
+)
 # Each person's uid range: slot k maps the container's ids 0 to RANGE - 1 onto rcman's
 # subordinate ids from k * RANGE. Slot 0 would be rcman's own ids, so no person has it.
 RANGE = 65536
@@ -60,6 +77,11 @@ MISSING = 1
 UNAVAILABLE = 125
 PODMAN_TIMEOUT = 300.0
 STOP_TIMEOUT_SECONDS = 10
+# What a command run under the ``timeout`` tool exits with when it was ended for taking too
+# long: GNU timeout's 124 and busybox's 128 + the signal, which a process that exec reports
+# as the negative signal, and GNU timeout, which kills itself with KILL after it has killed
+# the command, as -9 (the host runtime).
+TIMED_OUT = (124, 137, 143, -9, -15)
 # What conmon says when it could not start an exec at all: nothing ran, so it is tried
 # once more (channel.CONMON_FAILED).
 CONMON_FAILED = "no logs from conmon"
@@ -74,6 +96,13 @@ def container_name(workspace_id: int) -> str:
 def account_volume(person: int) -> str:
     """The volume that holds the person's credentials file, and nothing else."""
     return f"rcman-person-{person}"
+
+
+def _checked(name: str) -> str:
+    """``name``, a file of the git folder rcman writes; nothing else is."""
+    if name not in GIT_FILES:
+        raise ValueError(f"{name!r} is not a file rcman writes in the git folder")
+    return name
 
 
 def sign_in_name(person: int) -> str:
@@ -115,7 +144,8 @@ class Layout:
     terminfo: str | None
     path: str
     user: str  # who the programs run as there
-    tools: dict  # name -> the argv that runs it there: env, kill, cat, wc, rm, mkdir, chmod, mv
+    # name -> the argv that runs it there: env, kill, cat, wc, rm, mkdir, chmod, mv, timeout
+    tools: dict
     # The argv, but for the group's id, that sends SIGKILL to a whole process group:
     # busybox's kill refuses a "--" before it, and procps' kill needs one.
     kill_group: tuple = ()
@@ -166,8 +196,15 @@ class Runtime(ABC):
         """Every workspace there is, by name, with its labels."""
 
     @abstractmethod
-    def exec(self, name: str, argv: list[str], stdin: bytes | None = None) -> Result:
-        """``argv`` run once in the workspace, with ``stdin`` on its standard input."""
+    def exec(
+        self,
+        name: str,
+        argv: list[str],
+        stdin: bytes | None = None,
+        timeout: float = PODMAN_TIMEOUT,
+    ) -> Result:
+        """``argv`` run once in the workspace, with ``stdin`` on its standard input;
+        RuntimeFailed if it has not ended within ``timeout`` seconds."""
 
     @abstractmethod
     def channel(self, name: str) -> Channel:
@@ -186,8 +223,15 @@ class Runtime(ABC):
         """Empty the person's credentials file in place: the same file, not a new one."""
 
     @abstractmethod
+    def put_account(self, person: int, slot: int, name: str, data: bytes) -> None:
+        """Write ``data`` as the file ``name`` (one of GIT_FILES) of the person's git
+        folder, which their workspaces bind at HOME/GIT_HOME: whole, owner-only, and by a
+        rename inside the folder. It needs no workspace, and ``data`` is never in an argv."""
+
+    @abstractmethod
     def remove_account(self, person: int) -> None:
-        """Remove the person's credentials file; nothing for one that is not there."""
+        """Remove the person's credentials file and git folder; nothing for one that is not
+        there."""
 
     @abstractmethod
     def start_sign_in(self, person: int, slot: int, seconds: float) -> str:
@@ -241,7 +285,7 @@ PODMAN_LAYOUT = Layout(
     user="root",
     tools={
         name: _busybox(name)
-        for name in ("env", "kill", "cat", "wc", "rm", "mkdir", "chmod", "mv", "wget")
+        for name in ("env", "kill", "cat", "wc", "rm", "mkdir", "chmod", "mv", "wget", "timeout")
     },
     kill_group=(*_busybox("kill"), "-KILL"),
 )
@@ -257,14 +301,21 @@ class PodmanRuntime(Runtime):
     def _argv(self, *args: str) -> list[str]:
         return [self.config.podman, "--remote", "--url", f"unix://{self.config.socket}", *args]
 
-    def _podman(self, *args: str, check: bool = True, timeout: float = PODMAN_TIMEOUT):
+    def _podman(
+        self,
+        *args: str,
+        check: bool = True,
+        timeout: float = PODMAN_TIMEOUT,
+        stdin: bytes | None = None,
+    ):
         try:
             proc = subprocess.run(
                 self._argv(*args),
                 capture_output=True,
                 env=podman_env(),
                 timeout=timeout,
-                stdin=subprocess.DEVNULL,
+                input=stdin,
+                stdin=None if stdin is not None else subprocess.DEVNULL,
             )
         except FileNotFoundError:
             raise RuntimeUnavailable(f"{self.config.podman} is not installed") from None
@@ -338,9 +389,9 @@ class PodmanRuntime(Runtime):
         return ["--init", "--network=slirp4netns:allow_host_loopback=false", *self._ids(slot)]
 
     def _mounts(self, person: int) -> list[str]:
-        """The person's credentials file, bound by its path, as the volume's ``subpath``
-        option is refused by the Podman this runs on; the tools; the Claude Code store;
-        and the tmpfs for the runtime folder."""
+        """The person's credentials file and git folder, bound by their paths, as the
+        volume's ``subpath`` option is refused by the Podman this runs on; the tools; the
+        Claude Code store; and the tmpfs for the runtime folder."""
         found = self._podman(
             "volume", "inspect", "--format", "{{.Mountpoint}}", account_volume(person)
         )
@@ -348,8 +399,10 @@ class PodmanRuntime(Runtime):
         if not mountpoint.startswith("/"):
             raise RuntimeFailed(f"the volume {account_volume(person)} has no mountpoint")
         credentials = f"{VOLUME_MOUNT}/{CONFIG}/{CREDENTIALS}"
+        git = f"{VOLUME_MOUNT}/{HOME}/{GIT_HOME}"
         return [
             f"--volume={mountpoint}/{CREDENTIALS}:{credentials}",
+            f"--volume={mountpoint}/{GIT_DIR}:{git}",
             f"--volume={self.config.tools_dir}:{TOOLS_MOUNT}:ro",
             f"--volume={self.config.claude_store}:{CLAUDE_MOUNT}:ro",
             f"--tmpfs={RUN_MOUNT}:mode=0700",
@@ -384,7 +437,13 @@ class PodmanRuntime(Runtime):
                 found[names[0]] = dict(entry.get("Labels") or {})
         return found
 
-    def exec(self, name: str, argv: list[str], stdin: bytes | None = None) -> Result:
+    def exec(
+        self,
+        name: str,
+        argv: list[str],
+        stdin: bytes | None = None,
+        timeout: float = PODMAN_TIMEOUT,
+    ) -> Result:
         args = ["exec", *(["--interactive"] if stdin is not None else []), name, *argv]
         for attempt in (1, 2):
             try:
@@ -394,7 +453,7 @@ class PodmanRuntime(Runtime):
                     stdin=None if stdin is not None else subprocess.DEVNULL,
                     capture_output=True,
                     env=podman_env(),
-                    timeout=PODMAN_TIMEOUT,
+                    timeout=timeout,
                 )
             except subprocess.TimeoutExpired:
                 raise RuntimeFailed("podman exec did not finish in time") from None
@@ -412,10 +471,13 @@ class PodmanRuntime(Runtime):
 
     # --- a person's Claude sign-in ----------------------------------------------------
 
-    def _account_run(self, person: int, slot: int, script: str) -> bytes:
+    def _account_run(
+        self, person: int, slot: int, script: str, *more: str, stdin: bytes | None = None
+    ) -> bytes:
         """``script`` run by a container that removes itself, in the person's uid range
-        with no network, their account volume at ACCOUNT_MOUNT and the credentials
-        file's path as ``$1``; made labelled with the person if it is not there."""
+        with no network, their account volume at ACCOUNT_MOUNT, the credentials file's
+        path as ``$1``, the git folder's as ``$2`` and ``more`` after them, with ``stdin``
+        on its standard input; made labelled with the person if it is not there."""
         ids = self._ids(slot)
         volume = account_volume(person)
         if self._podman("volume", "exists", volume, check=False).returncode != 0:
@@ -423,6 +485,7 @@ class PodmanRuntime(Runtime):
         proc = self._podman(
             "run",
             "--rm",
+            *(["--interactive"] if stdin is not None else []),
             "--network=none",
             *ids,
             f"--volume={volume}:{ACCOUNT_MOUNT}",
@@ -433,6 +496,9 @@ class PodmanRuntime(Runtime):
             script,
             "sh",
             f"{ACCOUNT_MOUNT}/{CREDENTIALS}",
+            f"{ACCOUNT_MOUNT}/{GIT_DIR}",
+            *more,
+            stdin=stdin,
         )
         return proc.stdout
 
@@ -444,6 +510,10 @@ class PodmanRuntime(Runtime):
 
     def clear_account(self, person: int, slot: int) -> None:
         self._account_run(person, slot, CLEAR_SCRIPT)
+
+    def put_account(self, person: int, slot: int, name: str, data: bytes) -> None:
+        _checked(name)
+        self._account_run(person, slot, PUT_SCRIPT, name, stdin=data)
 
     def remove_account(self, person: int) -> None:
         volume = account_volume(person)
@@ -518,7 +588,8 @@ class HostRuntime(Runtime):
             path="/usr/local/bin:/usr/bin:/bin",
             user=pwd.getpwuid(os.getuid()).pw_name,
             tools={
-                n: _host_tool(n) for n in ("env", "kill", "cat", "wc", "rm", "mkdir", "chmod", "mv")
+                n: _host_tool(n)
+                for n in ("env", "kill", "cat", "wc", "rm", "mkdir", "chmod", "mv", "timeout")
             },
             kill_group=(*_host_tool("kill"), "-KILL", "--"),
         )
@@ -556,9 +627,16 @@ class HostRuntime(Runtime):
     def _account_file(self, person: int) -> Path:
         return self.root / self.ACCOUNTS / str(person) / CREDENTIALS
 
+    def _git_folder(self, person: int) -> Path:
+        return self.root / self.ACCOUNTS / str(person) / GIT_DIR
+
     def _link_account(self, name: str, person: int) -> None:
         self.ensure_account(person, 1)
-        Path(self.layout(name).config, CREDENTIALS).symlink_to(self._account_file(person))
+        layout = self.layout(name)
+        Path(layout.config, CREDENTIALS).symlink_to(self._account_file(person))
+        link = Path(layout.home, GIT_HOME)
+        link.parent.mkdir(parents=True, exist_ok=True)
+        link.symlink_to(self._git_folder(person))
 
     def start(self, name: str) -> None:
         Path(self.layout(name).run).mkdir(mode=0o700, exist_ok=True)
@@ -594,7 +672,13 @@ class HostRuntime(Runtime):
                 found[folder.name] = json.loads((folder / ".labels").read_text())
         return found
 
-    def exec(self, name: str, argv: list[str], stdin: bytes | None = None) -> Result:
+    def exec(
+        self,
+        name: str,
+        argv: list[str],
+        stdin: bytes | None = None,
+        timeout: float = PODMAN_TIMEOUT,
+    ) -> Result:
         if not self.running(name):
             raise RuntimeFailed(f"the workspace {name} is not running")
         try:
@@ -605,8 +689,10 @@ class HostRuntime(Runtime):
                 capture_output=True,
                 env={"PATH": "/usr/bin:/bin"},
                 cwd=self.layout(name).work,
-                timeout=PODMAN_TIMEOUT,
+                timeout=timeout,
             )
+        except subprocess.TimeoutExpired:
+            raise RuntimeFailed("the command did not finish in time") from None
         except FileNotFoundError:
             return Result(127, b"", f"{argv[0]}: not found\n".encode())
         return Result(proc.returncode, proc.stdout, proc.stderr)
@@ -620,7 +706,9 @@ class HostRuntime(Runtime):
     def ensure_account(self, person: int, slot: int) -> None:
         found = self._account_file(person)
         found.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        os.close(os.open(found, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600))
+        self._git_folder(person).mkdir(mode=0o700, exist_ok=True)
+        for file in (found, self._git_folder(person) / "credential"):
+            os.close(os.open(file, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600))
 
     def read_account(self, person: int, slot: int) -> bytes:
         self.ensure_account(person, slot)
@@ -630,6 +718,20 @@ class HostRuntime(Runtime):
         self.ensure_account(person, slot)
         with open(self._account_file(person), "r+b") as handle:
             handle.truncate(0)
+
+    def put_account(self, person: int, slot: int, name: str, data: bytes) -> None:
+        _checked(name)
+        self.ensure_account(person, slot)
+        folder = self._git_folder(person)
+        temporary = folder / f"{name}.new"
+        try:
+            fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "wb") as handle:
+                handle.write(data)
+            os.replace(temporary, folder / name)
+        except BaseException:
+            temporary.unlink(missing_ok=True)  # as the container's script does
+            raise
 
     def remove_account(self, person: int) -> None:
         shutil.rmtree(self._account_file(person).parent, ignore_errors=True)

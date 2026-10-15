@@ -290,6 +290,66 @@ def test_the_podman_runtime_keeps_the_contract_against_real_podman(docker, podma
     )
 
 
+# The store as the installer leaves it, but for what it holds: the fake claude, as the one
+# program a workspace runs as `claude`.
+FAKE_IN_STORE = """
+from pathlib import Path
+from tests import claude_download
+binary = Path("/var/lib/rcman/claude/bin")
+binary.mkdir(mode=0o755, exist_ok=True)
+(binary / "claude").write_bytes(claude_download.bundle())
+(binary / "claude").chmod(0o755)
+"""
+
+
+# The dependencies of rcman's backend, which the module imports, in a virtual environment
+# that also sees the host's pytest, made as the installer makes rcman's (its uv, the lock
+# file) but for rcman itself, which the module reads from /src.
+BACKEND_VENV = "/opt/rcman-test-venv"
+BACKEND_DEPENDENCIES = f"""
+import os, subprocess
+from installer import install as ins
+uv, python = str(ins.uv_binary()), "/usr/bin/python3"
+subprocess.run([uv, "venv", "--system-site-packages", "--python", python, "{BACKEND_VENV}"],
+               check=True)
+subprocess.run([uv, "sync", "--frozen", "--no-dev", "--no-install-project", "--python", python],
+               check=True, cwd="/src",
+               env={{**os.environ, "UV_PROJECT_ENVIRONMENT": "{BACKEND_VENV}",
+                    "UV_LINK_MODE": "copy"}})
+"""
+
+
+def test_git_in_a_workspace_pushes_to_the_tests_github_with_the_persons_token(docker, podman_host):
+    """tests/container/test_github_in_podman.py, run as the service account: github.com is
+    the podman host's own address in its /etc/hosts, where the tests' GitHub listens."""
+    _run([*podman_host, "python3", "-c", TOOLS_AND_STORE + FAKE_IN_STORE])
+    _run([*podman_host, "python3", "-c", BACKEND_DEPENDENCIES])
+    address = _run([*podman_host, "hostname", "-I"]).stdout.split()[0]
+    _run([*podman_host, "sh", "-c", f"echo '{address} github.com' >> /etc/hosts"])
+    module = "tests/container/test_github_in_podman.py"
+    as_account = [
+        "python3", "tests/container/podman_host.py", "run", "env", "RCMAN_IN_CONTAINER=1",
+        "PYTHONDONTWRITEBYTECODE=1", "PYTHONPATH=/src/backend:/src", "HOME=/var/lib/rcman",
+        f"RCMAN_GITHUB_ADDRESS={address}",
+    ]  # fmt: skip
+    environment = [a for a in podman_host if a.startswith("RCMAN_PODMAN_IMAGE=")]
+    _passed(
+        subprocess.run(
+            [
+                *podman_host,
+                *as_account,
+                *environment,
+                f"{BACKEND_VENV}/bin/python",
+                *PYTEST[1:],
+                module,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=2400,
+        )
+    )
+
+
 # --- rcman installed for real, in the podman host -------------------------------------
 
 
@@ -342,7 +402,12 @@ def test_the_whole_stack_in_a_browser(docker, podman_image, labelled, source):
             ["npx", "playwright", "test", "--config", "playwright.stack.config.ts",
              "--reporter=line"],
             cwd=REPO / "frontend",
-            env={**os.environ, "RCMAN_STACK_PORT": str(port), "RCMAN_FAKE_CLAUDE_CODE": CODE},
+            env={
+                **os.environ,
+                "RCMAN_STACK_PORT": str(port),
+                "RCMAN_FAKE_CLAUDE_CODE": CODE,
+                "RCMAN_STACK_EXEC": json.dumps([*inside, container]),
+            },
             capture_output=True,
             text=True,
             timeout=1200,

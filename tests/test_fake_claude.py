@@ -234,6 +234,64 @@ def test_unsupported_invocation_fails_loudly(pane, tmp_path):
     assert "unsupported" in pane.text()
 
 
+def fake_exec(tmp_path, *command, stdin=None, **env):
+    """The fake's ``fake-exec`` verb run as a workspace's Claude is: through ``env -i``
+    with exactly the variables given, signed out and with no state of its own."""
+    import subprocess
+
+    variables = [f"{name}={value}" for name, value in env.items()]
+    return subprocess.run(
+        ["/usr/bin/env", "-i", *variables, str(FAKE), "fake-exec", *command],
+        capture_output=True,
+        text=True,
+        input=stdin,
+        cwd=tmp_path,
+    )
+
+
+def test_fake_exec_runs_the_command_with_the_environment_the_fake_was_started_with(tmp_path):
+    """That is the environment a Claude child gets, so what a command run by it sees is
+    what a command run by Claude would see: no more, and no less."""
+    # LANG as a workspace's Claude has it: without one, Python itself adds LC_CTYPE.
+    given = {
+        "HOME": str(tmp_path),
+        "PATH": os.environ["PATH"],
+        "LANG": "C.UTF-8",
+        "RCMAN_PLANTED": "kept as given",
+    }
+    proc = fake_exec(tmp_path, "env", **given)
+    assert proc.returncode == 0, proc.stderr
+    seen = dict(line.split("=", 1) for line in proc.stdout.splitlines())
+    assert {k: v for k, v in seen.items() if k != "PWD"} == given
+
+
+def test_fake_exec_passes_the_commands_output_input_and_exit_status_through(tmp_path):
+    proc = fake_exec(
+        tmp_path,
+        "sh",
+        "-c",
+        'cat; echo "to stderr" >&2; exit 7',
+        stdin="from stdin\n",
+        PATH=os.environ["PATH"],
+    )
+    assert (proc.stdout, proc.stderr, proc.returncode) == ("from stdin\n", "to stderr\n", 7)
+
+
+def test_fake_exec_needs_no_sign_in_and_leaves_no_state(tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    proc = fake_exec(tmp_path, "true", HOME=str(home), PATH=os.environ["PATH"])
+    assert proc.returncode == 0
+    assert list(home.iterdir()) == []
+
+
+def test_fake_exec_with_no_command_or_a_missing_one_fails_loudly(tmp_path):
+    bare = fake_exec(tmp_path, PATH=os.environ["PATH"])
+    assert bare.returncode == 2 and "unsupported" in bare.stdout
+    missing = fake_exec(tmp_path, "no-such-command-here", PATH=os.environ["PATH"])
+    assert missing.returncode == 127 and "no-such-command-here" in missing.stderr
+
+
 def test_fake_never_touches_the_real_claude_directory(tmp_path):
     env = rec.claude_env(None)
     assert "CLAUDE_CONFIG_DIR" not in env  # real account runs use the default

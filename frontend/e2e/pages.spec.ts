@@ -28,13 +28,28 @@ test("settings: the server's verdict is shown as given", async ({ page }) => {
   await expect(prefix).toHaveValue("");
 });
 
-test("settings: the GitHub token part says rcman cannot store one yet", async ({ page }) => {
+test("settings: a GitHub token is stored, never shown again, and removed", async ({ page }) => {
+  const token = "ghp_e2e-token-never-shown";
   await signInAs(page, BOB);
   await page.goto("/settings");
   const github = page.getByRole("region", { name: m.settingsGithubTitle });
-  await expect(github.getByText("rcman cannot do this with workspaces yet.")).toBeVisible();
+  await expect(github.getByText(m.githubTokenNotStored)).toBeVisible();
+  await github.getByLabel(m.githubTokenLabel).fill(token);
+  await github.getByRole("button", { name: m.save }).click();
+  await expect(github.getByText(m.githubTokenSaved)).toBeVisible();
+  await expect(github.getByText(m.githubTokenStored)).toBeVisible();
+  await expect(github.getByLabel(m.githubTokenLabel)).toHaveValue("");
+  await page.reload();
+  await expect(github.getByText(m.githubTokenStored)).toBeVisible();
+  await expect(github.getByLabel(m.githubTokenLabel)).toHaveValue("");
+  await expect(page.getByText(token)).toHaveCount(0);
+  await github.getByRole("button", { name: m.githubTokenRemove }).click();
+  const dialog = page.getByRole("dialog", { name: m.githubTokenRemoveTitle });
+  await dialog.getByRole("button", { name: m.githubTokenRemoveConfirm }).click();
+  await expect(github.getByText(m.githubTokenNotStored)).toBeVisible();
   await expect(github.getByRole("button", { name: m.githubTokenRemove })).toHaveCount(0);
-  await expect(page.locator('input[type="password"]')).toHaveCount(0);
+  await page.reload();
+  await expect(github.getByText(m.githubTokenNotStored)).toBeVisible();
 });
 
 test("settings: the commit author falls back to the sign-in address", async ({ page }) => {

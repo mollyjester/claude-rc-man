@@ -32,7 +32,8 @@ conmon and the network helper with them, live in rcman's user manager, not in
   `claude` (`CLAUDE_CONFIG_DIR`) and `home` (`HOME`), the volume's root
   readable by the range's root alone;
 - the person's credentials file bound over `claude/.credentials.json` (see
-  [A person's Claude sign-in](#a-persons-claude-sign-in));
+  [A person's Claude sign-in](#a-persons-claude-sign-in)), and the person's git
+  folder bound at `~/.config/git` (see [The git folder](#the-git-folder));
 - the tools (`tools_dir`) at `TOOLS_MOUNT` and the Claude Code store
   (`claude_store`) at `CLAUDE_MOUNT`, both read-only;
 - a tmpfs at `RUN_MOUNT` for the tmux socket and the channel's files;
@@ -74,11 +75,45 @@ It is labelled with the person only, never `rcman.workspace`, so `labelled`
 and restore never see it. `end_sign_in` removes it. What runs in it is
 [backend.md](backend.md#claude-accounts)'s.
 
+### The git folder
+
+The same volume holds a folder, `GIT_DIR`, which every workspace of the person's
+binds at `HOME/GIT_HOME` (`~/.config/git`), by its path in the volume's
+mountpoint like the credentials file. It is a folder and not a single bound
+file because a bound file cannot be replaced by rename, and `git config
+--global` needs to write beside its file. rcman owns two files in it
+(`GIT_FILES`): `config`, which git reads as its global configuration (the commit
+author, and a credential helper for `https://github.com` that only reads the
+other file), and `credential`, the GitHub token in git's credential format,
+owner-only, and empty when none is stored (see
+[backend.md](backend.md#git-in-workspaces)).
+
+`ENSURE_SCRIPT` makes the folder and an empty `credential` as well, so the
+helper always has a file to read. `put_account(person, slot, name, data)` writes
+one of `GIT_FILES` from stdin, in a container of the same kind as the others
+(`PUT_SCRIPT`: no network, the person's range, removing itself), whole and
+owner-only by a rename inside the folder, so a reader never sees half a file and
+no copy of a token is left in a temporary one. Nothing about it needs a
+workspace to be running, and the data is never in an argv. Forgetting the token
+writes an empty `credential`; git in every workspace, running or not, has no
+token from its next call. The helper only reads, so git never rewrites the
+token. `remove_account` removes the folder with the credentials file. A
+container made without the bind, as one made before git was bound is, has no
+git configuration of its person's and must be made again; rcman does not bind a
+folder into a container that exists.
+
+`HostRuntime` keeps the folder in the person's folder under `ACCOUNTS` and links
+`HOME/GIT_HOME` of each workspace to it.
+
 `exists` answers from `podman container exists`: exit 1 alone means missing,
 and anything else that is not 0, exit 125 among it, is `RuntimeUnavailable`.
 `exec` runs one command with stdin, for what a channel cannot carry, and runs
 it once more when conmon says it could not start it (`CONMON_FAILED`), as
-nothing ran then.
+nothing ran then. It takes a `timeout` in seconds (default `PODMAN_TIMEOUT`);
+a command that has not ended by then is `RuntimeFailed`. git runs under the
+layout's `timeout` tool (busybox's applet in a container, the host's program on
+the host runtime), which ends it first; `TIMED_OUT` lists the exit statuses
+that mean it did.
 
 `HostRuntime` keeps the same interface with a folder per workspace and the
 host's own programs — a person's credentials file in `ACCOUNTS` under its
@@ -184,7 +219,9 @@ the prefix it was started with.
 
 - **Making.** `Workspaces.create` records the workspace as `creating` and makes
   it in a thread of its own; it becomes `ready`, or `failed` with what the
-  runtime said.
+  runtime said, or with why the image's git does not do (none, or older than
+  `GIT_MIN_VERSION` in `helpers/git_run.py`; see
+  [backend.md](backend.md#git-in-workspaces)).
 - **Deleting.** `delete` marks it `deleting` and removes its container and
   volume, which ends its server, then its row — never the person's sign-in; one still being made goes once
   it is made. Deleting a person deletes each of theirs (see

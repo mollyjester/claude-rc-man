@@ -44,7 +44,11 @@ runtime keeps, which `tests/test_runtime.py` runs against the host runtime and
 the podman host against real Podman.
 
 Everything git is tested against real git,
-never a fake: `tests/git_fixtures.py`, which is not a test module, makes real
+never a fake: `tests/test_git_run.py` holds the parsers of `helpers/git_run.py`,
+`tests/test_repository.py` every verb of `repository.py` in host-runtime workspaces
+through a real channel and `exec`, `tests/test_git_account.py` `gitaccount.py`
+against a host runtime that records what it is asked, and `tests/test_git.py` the
+git routes. `tests/git_fixtures.py`, which is not a test module, makes real
 repositories, their origins and their branches with the system's git, under
 a fixture configuration of its own, with a home, `FIXTURE_HOME`, that does
 not exist, so the configuration git reads is only what a test plants;
@@ -71,7 +75,8 @@ adds as tests are collected. It runs these, each in a
 fresh podman host: rootless Podman for a service account; the Podman runtime
 against real Podman, as that account; a real installation, and the
 installation after the whole host has restarted (see
-[installer.md](installer.md#tests)); and the whole stack in a browser.
+[installer.md](installer.md#tests)); git in a workspace against the tests' GitHub
+(below); and the whole stack in a browser.
 What a container sees of the checkout is a snapshot of its files, made once
 per pytest session by the `source` fixture in `tests/test_container_suite.py`
 with `tests/snapshot.py`, which is not a test module, and mounted read-only
@@ -86,6 +91,23 @@ so the suite runs the same from a clone and from a git worktree, whose
 `tests/container/clone.py` commits every one of the snapshot's files to a
 repository of its own. The snapshot is removed when the session ends.
 
+`tests/container/test_github_in_podman.py` runs in a podman host too, as the
+account, once root has made the tools and a store holding the fake `claude`: git in a workspace
+of the Podman runtime against `tests/github_server.py` served as
+`https://github.com`. The module's imports need rcman's backend dependencies, so
+the suite makes a virtual environment for it with the installer's own `uv` and the
+lock file (`BACKEND_VENV` in `tests/test_container_suite.py`, seeing the host's
+pytest), derives a workspace image from the base image with git, python3 for the
+fake `claude` and a certificate authority minted by the module, and adds
+`github.com` at the podman host's own address to the host's `/etc/hosts`, which
+`RCMAN_GITHUB_ADDRESS` names and workspaces share (Podman's containers get the
+host's hosts file). It shows rcman's push (`Repository`), Claude's git (the fake
+`claude`'s `fake-exec`) and the credential helper using the person's token, the
+token written by `GitAccount` through `put_account`, no push without a token,
+the environment of Claude's children holding no token, the image check, and
+forgetting the token making the very next push fail for both. It skips anywhere
+else.
+
 The **whole stack** is `tests/container/stack.py`, in a podman host that
 publishes its port 443: rcman installed from a clone through the real
 installer and systemd, alice its first administrator, bob and carol added with
@@ -97,7 +119,12 @@ and `auth.test`, each a service of its own. The specs connect the fake
 passes them in `RCMAN_FAKE_CLAUDE_CODE`. Playwright on the
 host drives it through the published port with
 `frontend/playwright.stack.config.ts` and the specs in `frontend/e2e-stack/`;
-`stack.py check` then checks what they left.
+`stack.py check` then checks what they left. `stack.py repository <workspace id>`
+is the verb a browser spec runs, through `RCMAN_STACK_EXEC` (the argv prefix that
+runs a command in the podman host, which the suite passes the specs): it makes a
+repository in that workspace with a bare origin of its own and changes to stage,
+and `check` finds the changes the specs staged, committed and pushed in the
+origin, as the author the spec set, with an audit row for each step.
 
 The **podman host** is a container from `tests/container/podman/Dockerfile`
 that runs systemd as PID 1, privileged and with a cgroup namespace of its

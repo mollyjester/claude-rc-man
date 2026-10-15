@@ -240,3 +240,80 @@ def test_a_sign_in_container_removes_itself_when_its_time_is_up(podman):
     finally:
         podman.end_sign_in(name)
         podman.remove_account(who.person)
+
+
+# --- a person's git account -----------------------------------------------------------
+
+
+def unshare_stat(path: str) -> list[str]:
+    """``%u %g %a`` of ``path``, as the person's range sees ids: root's are the range's base."""
+    found = subprocess.run(
+        ["podman", "unshare", "stat", "-c", "%u %g %a", path], capture_output=True, text=True
+    )
+    assert found.returncode == 0, found.stderr
+    return found.stdout.split()
+
+
+def account_mount(person: int) -> str:
+    mount = podman_cli(
+        "volume", "inspect", "--format", "{{.Mountpoint}}", rt.account_volume(person)
+    )
+    assert mount.returncode == 0, mount.stderr
+    return mount.stdout.strip()
+
+
+def test_a_persons_git_folder_and_its_files_are_their_ranges_roots_alone(podman, workspace):
+    who = spec(2)
+    podman.put_account(who.person, who.slot, "credential", b"password=x\n")
+    base = str(who.slot * rt.RANGE)
+    folder = f"{account_mount(who.person)}/{rt.GIT_DIR}"
+    assert unshare_stat(folder) == [base, base, "700"]
+    assert unshare_stat(f"{folder}/credential") == [base, base, "600"]
+    layout = podman.layout(workspace)
+    seen = in_it(podman, workspace, f"stat -c '%u %a' {layout.home}/{rt.GIT_HOME}")
+    assert seen.out.split() == [b"0", b"700"]  # root's, as the workspace sees it
+    seen = in_it(podman, workspace, f"stat -c '%u %a' {layout.home}/{rt.GIT_HOME}/credential")
+    assert seen.out.split() == [b"0", b"600"]
+
+
+def test_the_git_folder_is_bound_and_a_rename_inside_it_works(podman, workspace):
+    """Unlike the credentials file, which is one bound file and so cannot be replaced by a
+    rename, the folder is a mount point of its own and what is in it can be."""
+    who = spec(2)
+    layout = podman.layout(workspace)
+    target = f"{layout.home}/{rt.GIT_HOME}"
+    mounted = [m for m in inspect(workspace)["Mounts"] if m["Destination"] == target]
+    assert [m["Source"] for m in mounted] == [f"{account_mount(who.person)}/{rt.GIT_DIR}"]
+    renamed = in_it(podman, workspace, f"cd {target} && echo new > t.new && mv t.new t")
+    assert renamed.code == 0, renamed
+    podman.put_account(who.person, who.slot, "config", b"[user]\n")  # a rename, from outside
+    assert in_it(podman, workspace, f"cat {target}/config").out == b"[user]\n"
+    assert in_it(podman, workspace, f"cat {target}/t").out == b"new\n"  # nothing else lost
+
+
+def test_a_git_file_is_written_with_no_container_left_and_the_data_not_on_a_command_line(
+    podman,
+):
+    who = spec(3)
+    secret = b"password=SECRET-FOR-THE-PODMAN-TEST\n"
+    before = podman_cli("ps", "--all", "--format", "{{.Names}}").stdout.split()
+    try:
+        podman.put_account(who.person, who.slot, "credential", secret)
+        left = podman_cli("ps", "--all", "--format", "{{.Names}}")
+        assert left.stdout.split() == before  # the container that wrote it removed itself
+        assert (
+            subprocess.run(
+                [
+                    "podman",
+                    "unshare",
+                    "cat",
+                    f"{account_mount(who.person)}/{rt.GIT_DIR}/credential",
+                ],
+                capture_output=True,
+            ).stdout
+            == secret
+        )
+        commands = subprocess.run(["ps", "-eo", "args"], capture_output=True, text=True).stdout
+        assert "SECRET-FOR-THE-PODMAN-TEST" not in commands
+    finally:
+        podman.remove_account(who.person)

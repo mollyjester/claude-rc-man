@@ -69,6 +69,14 @@ MIGRATIONS = [
     alter table people add column claude_signing_out integer not null default 0
         check (claude_signing_out in (0, 1));
     """,
+    """
+    -- A person's GitHub token, kept for git in their workspaces (gitaccount.py): it is
+    -- written into their volume first, and recorded here only once it is there.
+    create table github_tokens (
+        person integer primary key references people (id) on delete cascade,
+        token text not null
+    );
+    """,
 ]
 
 

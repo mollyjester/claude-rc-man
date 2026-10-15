@@ -5,6 +5,8 @@ tests/container/test_runtime_in_podman.py runs the same contract against real Po
 """
 
 import json
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -70,6 +72,7 @@ class Recorder:
             "#!/usr/bin/env python3\n"
             "import json, sys\n"
             f"open({str(self.log)!r}, 'a').write(json.dumps(sys.argv[1:]) + '\\n')\n"
+            f"open({str(self.log) + '.stdin'!r}, 'ab').write(sys.stdin.buffer.read())\n"
             f"answers = {json.dumps(script)}\n"
             "words = [a for a in sys.argv[1:] if not a.startswith(('-', 'unix:'))]\n"
             "verb = ' '.join(words[:2]) if ' '.join(words[:2]) in answers else words[0]\n"
@@ -77,6 +80,11 @@ class Recorder:
             "sys.stdout.write(out); sys.stderr.write(err); sys.exit(code)\n"
         )
         self.program.chmod(0o755)
+
+    def stdin(self) -> bytes:
+        """Everything the recorded calls were given on standard input."""
+        found = Path(str(self.log) + ".stdin")
+        return found.read_bytes() if found.exists() else b""
 
     def calls(self) -> list[list[str]]:
         if not self.log.exists():
@@ -201,7 +209,9 @@ def test_a_persons_account_is_a_labelled_volume_holding_a_private_file(tmp_path)
     assert not [a for a in made if a.startswith("--label")]  # never taken for a workspace
     script = made[made.index("-c") + 1]
     assert "umask 077" in script and ": >>" in script  # made 0600, never truncated
-    assert made[-1].endswith(f"/{rt.CREDENTIALS}")
+    assert made[-2].endswith(f"/{rt.CREDENTIALS}")
+    assert made[-1] == f"{rt.ACCOUNT_MOUNT}/{rt.GIT_DIR}"  # the git directory is made sure of too
+    assert 'mkdir -p "$2"' in script and ': >> "$2/credential"' in script
 
 
 def test_an_existing_account_volume_is_not_made_again(tmp_path):
@@ -217,6 +227,8 @@ def test_a_workspace_binds_only_its_persons_credentials_file(tmp_path):
     workspace = next(r for r in runs(recorder) if "--name=rcman-ws-7" in r)
     target = f"{rt.VOLUME_MOUNT}/{rt.CONFIG}/{rt.CREDENTIALS}"
     assert f"--volume={MOUNTPOINT}/{rt.CREDENTIALS}:{target}" in workspace
+    git = f"{rt.VOLUME_MOUNT}/{rt.HOME}/.config/git"
+    assert f"--volume={MOUNTPOINT}/{rt.GIT_DIR}:{git}" in workspace  # a folder, not a file
     assert not [a for a in workspace if a.startswith("--volume=rcman-person-")]  # not by name
     made_first = [i for i, r in enumerate(runs(recorder)) if "--rm" in r]
     assert made_first and made_first[0] < runs(recorder).index(workspace)
@@ -234,6 +246,8 @@ def test_a_sign_in_container_removes_itself_and_is_labelled_with_its_person_only
     assert f"--uidmap=0:{3 * rt.RANGE}:{rt.RANGE}" in started
     target = f"{rt.VOLUME_MOUNT}/{rt.CONFIG}/{rt.CREDENTIALS}"
     assert f"--volume={MOUNTPOINT}/{rt.CREDENTIALS}:{target}" in started
+    git = f"{rt.VOLUME_MOUNT}/{rt.HOME}/.config/git"
+    assert f"--volume={MOUNTPOINT}/{rt.GIT_DIR}:{git}" in started
     removed = [c[3:] for c in recorder.calls() if c[3] == "rm"]
     assert removed and removed[0][-1] == name  # one left from before goes first
 
@@ -259,3 +273,116 @@ def test_the_host_runtime_shares_one_private_file_per_person(host):
     assert (found.parent.stat().st_mode & 0o777) == 0o700
     assert host.read_account(4, 1) == b""
     assert ".accounts" not in host.labelled()
+
+
+# --- a person's git account -------------------------------------------------------------
+
+
+def test_a_git_file_is_written_by_a_container_from_stdin_by_a_rename(tmp_path):
+    recorder = account_recorder(tmp_path, volume_exists=0)
+    secret = b"password=SECRET-TOKEN-1\n"
+    podman_runtime(tmp_path, recorder).put_account(2, 3, "credential", secret)
+    (written,) = runs(recorder)
+    base = 3 * rt.RANGE
+    assert "--rm" in written and "--network=none" in written
+    assert "--interactive" in written or "-i" in written
+    assert f"--uidmap=0:{base}:{rt.RANGE}" in written
+    assert not [a for a in written if a.startswith("--label")]
+    assert "--volume=rcman-person-2:/account" in written
+    script = written[written.index("-c") + 1]
+    assert script.startswith("umask 077") and ".new" in script and "mv -f" in script
+    assert 'mkdir -p "$2"' in script  # the folder is made if it is not there
+    assert written[-2:] == [f"{rt.ACCOUNT_MOUNT}/{rt.GIT_DIR}", "credential"]
+    assert recorder.stdin() == secret  # the data went in on stdin
+    assert "SECRET-TOKEN-1" not in " ".join(sum(recorder.calls(), []))  # and in no argv
+
+
+def test_a_git_file_nobody_asked_for_is_refused_before_podman_is_run(tmp_path):
+    recorder = account_recorder(tmp_path)
+    for name in ("../credential", "x", ""):
+        with pytest.raises(ValueError):
+            podman_runtime(tmp_path, recorder).put_account(2, 3, name, b"x")
+    assert recorder.calls() == []
+
+
+def test_every_layout_has_the_timeout_tool(host):
+    assert rt.PODMAN_LAYOUT.tool("timeout") == [f"{rt.TOOLS_MOUNT}/bin/busybox", "timeout"]
+    assert host.layout("rcman-ws-1").tool("timeout")[0].endswith("/timeout")
+
+
+def test_the_host_runtime_shares_one_private_git_directory_per_person(host):
+    host.create(rt.Spec(name="rcman-ws-1", slot=1, workspace=1, person=4))
+    shared = host.root / ".accounts" / "4" / rt.GIT_DIR
+    assert shared.is_dir() and (shared.stat().st_mode & 0o777) == 0o700
+    linked = Path(host.layout("rcman-ws-1").home) / ".config" / "git"
+    assert linked.is_symlink() and linked.resolve() == shared.resolve()
+    host.put_account(4, 1, "credential", b"password=x\n")
+    assert (shared / "credential").read_bytes() == b"password=x\n"
+    assert ((shared / "credential").stat().st_mode & 0o777) == 0o600
+    assert sorted(p.name for p in shared.iterdir()) == ["credential"]  # no .new left behind
+
+
+def run_put_script(tmp_path: Path, mv_fails: bool) -> subprocess.CompletedProcess:
+    """rt.PUT_SCRIPT run by a shell, as the account container runs it, with a ``mv`` that
+    fails if ``mv_fails``; the git folder is ``tmp_path/git``."""
+    tools = tmp_path / "tools"
+    tools.mkdir(exist_ok=True)
+    for tool in ("mkdir", "cat", "rm"):
+        (tools / tool).unlink(missing_ok=True)
+        (tools / tool).symlink_to(shutil.which(tool))
+    (tools / "mv").unlink(missing_ok=True)
+    if mv_fails:
+        (tools / "mv").write_text("#!/bin/sh\nexit 1\n")
+        (tools / "mv").chmod(0o755)
+    else:
+        (tools / "mv").symlink_to(shutil.which("mv"))
+    return subprocess.run(
+        [
+            "/bin/sh",
+            "-c",
+            rt.PUT_SCRIPT,
+            "sh",
+            str(tmp_path / "cred"),
+            str(tmp_path / "git"),
+            "credential",
+        ],
+        input=b"password=LEFT-BEHIND\n",
+        capture_output=True,
+        env={"PATH": str(tools)},
+    )
+
+
+def test_a_git_file_that_cannot_be_put_in_place_leaves_no_temporary_copy(tmp_path):
+    done = run_put_script(tmp_path, mv_fails=False)
+    assert done.returncode == 0, done.stderr
+    assert sorted(p.name for p in (tmp_path / "git").iterdir()) == ["credential"]  # control
+    (tmp_path / "second").mkdir()
+    failed = run_put_script(tmp_path / "second", mv_fails=True)
+    assert failed.returncode != 0
+    left = [p.name for p in (tmp_path / "second" / "git").iterdir()]
+    assert "credential.new" not in left, left
+    assert b"LEFT-BEHIND" not in b"".join(
+        p.read_bytes() for p in (tmp_path / "second" / "git").iterdir()
+    )
+
+
+@pytest.mark.parametrize("fault", ["write", "replace"])
+def test_the_host_runtime_leaves_no_temporary_copy_of_a_git_file_that_failed(
+    host, monkeypatch, fault
+):
+    host.put_account(4, 1, "credential", b"password=old\n")  # positive control: it works
+    folder = host.root / ".accounts" / "4" / rt.GIT_DIR
+    assert sorted(p.name for p in folder.iterdir()) == ["credential"]
+    if fault == "replace":
+
+        def refused(*args):
+            raise OSError("refused")
+
+        monkeypatch.setattr(rt.os, "replace", refused)
+        data = b"password=LEFT-BEHIND\n"
+    else:
+        data = "password=LEFT-BEHIND\n"  # text, which the file refuses
+    with pytest.raises((OSError, TypeError)):
+        host.put_account(4, 1, "credential", data)
+    assert sorted(p.name for p in folder.iterdir()) == ["credential"]
+    assert (folder / "credential").read_bytes() == b"password=old\n"

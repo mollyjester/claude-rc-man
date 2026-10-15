@@ -65,6 +65,31 @@ MESSAGES = {
     "confirm_not_accepted": "The server did not accept the answer.",
     "timeout": "The workspace did not answer in time.",
     "prefix_invalid": rules.PREFIX.sentence,
+    # git
+    "git_not_installed": "git is not installed in the workspace.",
+    "git_failed": "git refused. What it said is below.",
+    "git_timeout": "git did not finish in time, so it was stopped.",
+    "git_unrecognised_output": "git answered with output rcman does not recognise.",
+    "not_a_repository": "This workspace is not a git repository: it has no .git of its own at "
+    "its top.",
+    "file_invalid": "A file name is not one rcman can stage or unstage.",
+    "file_outside_repository": "A file is outside the repository.",
+    "nothing_staged": "Nothing is staged, so there is nothing to commit.",
+    "branch_invalid": "git does not take that as a branch name.",
+    "branch_not_found": "There is no such branch.",
+    "branch_name_taken": (
+        "A local branch has the name a branch tracking this one would get, or a name "
+        "git cannot keep beside it, so git cannot make it."
+    ),
+    "detached_head": (
+        "You are not on a branch, so there is nothing to push. Switch to a branch first."
+    ),
+    "no_push_remote": (
+        "This branch tracks no remote branch, and the repository has no remote named "
+        "origin to push it to."
+    ),
+    "no_commits_yet": "This branch has no commits yet, so there is nothing to push.",
+    "github_token_not_set": "Add a GitHub token in Settings before pushing to GitHub.",
 }
 STATUS = {
     "not_authenticated": 401,
@@ -102,6 +127,21 @@ STATUS = {
     "confirm_not_accepted": 409,
     "timeout": 504,
     "prefix_invalid": 400,
+    "git_not_installed": 409,
+    "git_failed": 409,
+    "git_timeout": 504,
+    "git_unrecognised_output": 502,
+    "not_a_repository": 409,
+    "file_invalid": 400,
+    "file_outside_repository": 400,
+    "nothing_staged": 409,
+    "branch_invalid": 400,
+    "branch_not_found": 404,
+    "branch_name_taken": 409,
+    "detached_head": 409,
+    "no_push_remote": 409,
+    "no_commits_yet": 409,
+    "github_token_not_set": 409,
 }
 
 
