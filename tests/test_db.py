@@ -263,3 +263,43 @@ def test_a_database_of_the_old_model_is_named_as_one_not_as_newer(tmp_path):
     con.close()
     with pytest.raises(db.DatabaseOfAnOldInstall, match="install rcman afresh"):
         db.migrate(path)
+
+
+def test_a_workspace_made_before_plans_has_none_after_the_migration(tmp_path):
+    path = tmp_path / "x.db"
+    con = sqlite3.connect(path)
+    last = len(db.MIGRATIONS) - 1
+    for number, script in enumerate(db.MIGRATIONS[:last], start=1):
+        con.executescript(f"begin;\n{script}\npragma user_version = {number};\ncommit;")
+    con.execute("insert into people (email, admin, slot, state) values ('a@x.org', 1, 1, 'active')")
+    con.execute("insert into workspaces (person, name, state) values (1, 'old', 'ready')")
+    con.commit()
+    assert "environment" not in [r[1] for r in con.execute("pragma table_info(workspaces)")]
+    con.close()
+    db.migrate(path)
+    con = sqlite3.connect(path)
+    found = con.execute("select name, state, environment from workspaces").fetchall()
+    assert found == [("old", "ready", None)]
+
+
+def test_a_connection_survives_a_wal_file_that_another_connection_removes_meanwhile(
+    tmp_path, monkeypatch
+):
+    """The -wal and -shm files vanish when the last connection closes: one that was looked at
+    and gone by the time it is touched is not a failure."""
+    from pathlib import Path
+
+    path = tmp_path / "x.db"
+    db.migrate(path)
+    real = Path.exists
+    seen = []
+
+    def exists(self):
+        if self.name.endswith(("-shm", "-wal")) and not real(self):
+            seen.append(self.name)
+            return True  # looked at, and gone before it is touched
+        return real(self)
+
+    monkeypatch.setattr(Path, "exists", exists)
+    db.connect(path).close()
+    assert seen  # the plant took effect

@@ -304,6 +304,64 @@ def the_timeout_tool_ends_a_program_that_outlasts_it_and_one_that_ignores_term(r
         assert runtime.exec(name, listing).code == 0
 
 
+def an_exec_runs_in_the_folder_it_is_given(runtime, spec):
+    with made(runtime, spec(11)) as name:
+        layout = runtime.layout(name)
+        pwd = _sh(layout, "pwd")
+        asked = runtime.exec(name, pwd, cwd=layout.home)
+        assert asked.out.decode().strip() == layout.home and asked.code == 0
+        missing = runtime.exec(name, pwd, cwd=f"{layout.work}/no/such/folder")
+        assert missing.code != 0
+
+
+def an_exec_that_prints_a_great_deal_keeps_only_the_tail_it_is_asked_to(runtime, spec):
+    with made(runtime, spec(14)) as name:
+        layout = runtime.layout(name)
+        script = "i=0; while [ $i -lt 3000 ]; do echo line-$i-xxxxxxxxxxxxxxxx; i=$((i+1)); done"
+        both = _sh(layout, f"{script}; {script} >&2; exit 3")
+        kept = runtime.exec(name, both, keep=500)
+        assert kept.code == 3
+        for stream in (kept.out, kept.err):
+            assert len(stream) <= 500
+            assert stream.endswith(b"line-2999-xxxxxxxxxxxxxxxx\n") and b"line-0-" not in stream
+        whole = runtime.exec(name, both)  # the control: without keep, all of it
+        assert len(whole.out) > 50_000 and whole.code == 3
+        short = runtime.exec(name, _sh(layout, "echo small"), keep=500)
+        assert short == rt.Result(0, b"small\n", b"")
+
+
+def a_discarded_workspace_keeps_its_volume_and_is_made_again_on_it(runtime, spec):
+    workspace = spec(12)
+    try:
+        runtime.create(workspace)
+        layout = runtime.layout(workspace.name)
+        written = runtime.exec(workspace.name, _sh(layout, f"echo kept > {layout.work}/file"))
+        assert written.code == 0, written
+        runtime.discard(workspace.name)
+        assert not runtime.exists(workspace.name)
+        assert workspace.name not in runtime.labelled()
+        runtime.discard(workspace.name)  # nothing more to do the second time
+        runtime.create(workspace)
+        assert runtime.exists(workspace.name) and runtime.running(workspace.name)
+        assert workspace.name in runtime.labelled()
+        read = runtime.exec(workspace.name, [*layout.tool("cat"), f"{layout.work}/file"])
+        assert read == rt.Result(0, b"kept\n", b"")
+        runtime.remove(workspace.name)  # a remove takes the volume with it
+        runtime.create(workspace)
+        gone = runtime.exec(workspace.name, [*layout.tool("cat"), f"{layout.work}/file"])
+        assert gone.code != 0
+    finally:
+        runtime.remove(workspace.name)
+    assert not runtime.exists(workspace.name)
+
+
+def discarding_what_is_not_there_is_nothing(runtime, spec):
+    workspace = spec(13)
+    assert not runtime.exists(workspace.name)  # positive control for the absence below
+    runtime.discard(workspace.name)
+    assert not runtime.exists(workspace.name)
+
+
 CASES = [
     a_workspace_that_is_made_exists_runs_and_is_labelled,
     removing_what_is_not_there_is_nothing,
@@ -318,4 +376,8 @@ CASES = [
     a_git_file_is_a_name_in_the_directory_and_nothing_else,
     an_exec_that_outlasts_its_timeout_fails,
     the_timeout_tool_ends_a_program_that_outlasts_it_and_one_that_ignores_term,
+    an_exec_runs_in_the_folder_it_is_given,
+    a_discarded_workspace_keeps_its_volume_and_is_made_again_on_it,
+    discarding_what_is_not_there_is_nothing,
+    an_exec_that_prints_a_great_deal_keeps_only_the_tail_it_is_asked_to,
 ]

@@ -117,7 +117,9 @@ run and kept.
    - the default workspace image, Ubuntu with git and what Claude Code needs,
      from `installer/workspace/Containerfile`, named after that file's
      content, so that a changed file makes a new image and workspaces made
-     before keep theirs;
+     before keep theirs. A repository's devcontainer.json can name another
+     image, which rcman pulls when a workspace is made (see
+     [devcontainer.json support](devcontainer.md));
    - the Claude Code store, `/var/lib/rcman/claude`: the version rcman is
      tested with (`helpers/claude-version`), downloaded and checked against its
      release's checksum. Every workspace has the store, read-only.

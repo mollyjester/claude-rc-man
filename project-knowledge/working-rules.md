@@ -162,7 +162,11 @@ else; this file is the full list. Rules are referred to by their bold name.
   range, and no workspace mounts another's volume.
 - **rcman drives containers through `podman --remote` only**, as its own
   account, with an argv and never a shell; a command in a workspace is an argv
-  too, and no text a person sent is ever run by a shell there.
+  too, and no text a person sent through rcman's interface is ever run by a
+  shell there. The lifecycle commands of a repository's devcontainer.json are
+  not such text: the person chose them by choosing the repository, and a
+  string command is run by a shell in the workspace, as the container's user,
+  with a time limit.
 - **Every mutating endpoint is audited**, and a test over the route table
   checks it. An exemption carries a reason that also appears in `docs/`.
 - **The interface offers only what the server will allow.** A control shown to

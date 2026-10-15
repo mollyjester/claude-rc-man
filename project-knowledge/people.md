@@ -63,7 +63,7 @@ last administrator too: there is no such check, and root can always add an
 administrator with `rcman-admin`.
 
 A deleted person's copy of an image (see [runtime.md](runtime.md#the-runtime))
-stays in Podman's storage until the image is removed.
+stays in Podman's storage until the image is removed; that holds for the image of a repository's devcontainer.json as for the default one.
 
 ## rcman-admin
 

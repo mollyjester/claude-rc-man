@@ -204,7 +204,17 @@ files to stage reach git on stdin and are never recorded or logged.
   (`log` never for a ready one), and the poll the page already makes shows them.
 - **The image check.** After `runtime.create`, `Workspaces._check_git` runs
   `git --version`: no git, or one that does not answer as rcman needs, or one older
-  than `git_run.GIT_MIN_VERSION`, fails the workspace with the reason.
+  than `git_run.GIT_MIN_VERSION`, fails the workspace with the reason. The same check
+  holds the image a repository's devcontainer.json names.
+- **A repository's devcontainer.json.** After the clone, `Workspaces._configure` reads
+  the file with `devcontainer.read`, holds it to `devcontainer.POLICY` and makes the
+  workspace from the image it names (see
+  [runtime.md](runtime.md#a-repositorys-devcontainerjson)). Its plan is the `environment`
+  column of `workspaces` (null for a workspace of the default image), which a restore
+  reads. `problems.DEVCONTAINER_MESSAGES` is what a refusal or a failed command says in
+  plain words, and holds no number; the workspace's `error` carries it and the steps in
+  `log` carry the rest. Nothing here adds a route: the file is read inside the clone's
+  own thread, so the audit and the permission rules of `git.clone` cover it.
 - **Author and token.** `gitaccount.GitAccount` keeps the commit author
   (`user_settings`) and the token (`github_tokens`, removed with the person's row)
   and writes them into the git folder of the person's volume with

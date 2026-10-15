@@ -224,10 +224,11 @@ class Repository:
 
     @property
     def env(self) -> dict[str, str]:
-        """The only environment git is run with: git unable to ask anything on a terminal,
-        taking no lock it does not need, and unable to find a repository above the
-        workspace's work folder."""
+        """The only environment git is run with: the variables the workspace's plan sets, git
+        unable to ask anything on a terminal, taking no lock it does not need, and unable to
+        find a repository above the workspace's work folder."""
         return {
+            **self.layout.env,
             "HOME": self.layout.home,
             "PATH": self.layout.path,
             "LC_ALL": "C",

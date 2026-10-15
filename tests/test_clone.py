@@ -55,7 +55,7 @@ class Recording(rt.HostRuntime):
         self.gate: threading.Event | None = None
         self.cloning = threading.Event()
 
-    def exec(self, name, argv, stdin=None, timeout=rt.PODMAN_TIMEOUT):
+    def exec(self, name, argv, stdin=None, timeout=rt.PODMAN_TIMEOUT, cwd=None):
         self.execs.append((argv, stdin))
         if "git" in argv and "clone" in argv:
             self.cloning.set()
@@ -65,7 +65,7 @@ class Recording(rt.HostRuntime):
                     return rt.Result(137, b"", b"Killed\n")
             if self.answer is not None:
                 return self.answer
-        return super().exec(name, argv, stdin, timeout)
+        return super().exec(name, argv, stdin, timeout, cwd)
 
     def remove(self, name):
         self.removed.append(name)
@@ -226,7 +226,8 @@ def test_a_clone_that_succeeds_logs_that_it_is_done_before_the_log_is_cleared(
 
     monkeypatch.setattr(ws.Workspaces, "_set", set_)
     assert cloned(client)["state"] == "ready"
-    assert seen and seen[0].splitlines()[-1] == "Cloned"
+    assert seen and "Cloned" in seen[0].splitlines()
+    assert seen[0].splitlines()[-1] == "There is no devcontainer.json"  # then it looked
 
 
 # --- failing, loudly ---------------------------------------------------------------------
@@ -623,7 +624,7 @@ def test_a_restart_that_interrupted_a_clone_fails_the_workspace_and_deleting_it_
     now = row(settings, cloning)
     assert now["state"] == "failed"
     assert now["error"] == problems.CLONE_MESSAGES["restarted"]
-    assert "rcman restarted while this workspace was being cloned" in now["error"]
+    assert "rcman restarted while this workspace was being made" in now["error"]
     assert now["source"] == URL
     assert runtime.exists(name)  # left, for the deletion to remove with its volume
     service.delete(service.get(cloning))
