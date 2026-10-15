@@ -12,12 +12,24 @@ type Workspace = {
   name: string;
   state: string;
   error: string | null;
+  source: string | null;
+  log: string | null;
   server: Record<string, unknown> | null;
   server_error: { code: string; title: string } | null;
 };
 
 function workspace(id: number, name: string, extra: Partial<Workspace> = {}): Workspace {
-  return { id, name, state: "ready", error: null, server: null, server_error: null, ...extra };
+  return {
+    id,
+    name,
+    state: "ready",
+    error: null,
+    source: null,
+    log: null,
+    server: null,
+    server_error: null,
+    ...extra,
+  };
 }
 
 function server(id: number, state: string, extra: Record<string, unknown> = {}) {
@@ -211,6 +223,154 @@ test("New workspace sends the name as typed, then selects the new workspace", as
   expect(form.getByLabelText(m.newWorkspaceName)).toHaveValue("");
 });
 
+const ADDRESS = "https://github.com/octo/widget";
+
+test("an address makes the workspace by cloning it, named after the repository when no name is given", async () => {
+  const workspaces: Workspace[] = [];
+  const fake = dashboard([], {
+    "GET /api/workspaces": () => ({ workspaces }),
+    "POST /api/git/clone": (c) => {
+      const { url } = c.body as { url: string };
+      const made = workspace(8, "widget", {
+        state: "creating",
+        source: url,
+        log: "Making the workspace",
+      });
+      workspaces.push(made);
+      return { workspace: made };
+    },
+  });
+  const { location } = renderApp();
+  const form = within(await screen.findByRole("region", { name: m.newWorkspace }));
+  await userEvent.type(form.getByLabelText(m.newWorkspaceSource), ADDRESS);
+  await userEvent.click(form.getByRole("button", { name: m.create }));
+  await waitFor(() => expect(fake.made("POST", "/api/git/clone")).toHaveLength(1));
+  expect(fake.made("POST", "/api/git/clone")[0].body).toEqual({ url: ADDRESS });
+  expect(fake.made("POST", "/api/workspaces")).toHaveLength(0);
+  const made = await panel("widget");
+  expect(within(made).getByText(m.workspaceCreating)).toBeInTheDocument();
+  expect(selectedOf(location().search)).toBe("8");
+  expect(form.getByLabelText(m.newWorkspaceSource)).toHaveValue("");
+  expect(form.getByLabelText(m.newWorkspaceName)).toHaveValue("");
+});
+
+test("an address and a name make the cloned workspace with that name", async () => {
+  const workspaces: Workspace[] = [];
+  const fake = dashboard([], {
+    "GET /api/workspaces": () => ({ workspaces }),
+    "POST /api/git/clone": (c) => {
+      const made = workspace(8, (c.body as { name: string }).name, {
+        state: "creating",
+        source: ADDRESS,
+      });
+      workspaces.push(made);
+      return { workspace: made };
+    },
+  });
+  renderApp();
+  const form = within(await screen.findByRole("region", { name: m.newWorkspace }));
+  await userEvent.type(form.getByLabelText(m.newWorkspaceSource), ADDRESS);
+  await userEvent.type(form.getByLabelText(m.newWorkspaceName), "mine");
+  await userEvent.click(form.getByRole("button", { name: m.create }));
+  await waitFor(() => expect(fake.made("POST", "/api/git/clone")).toHaveLength(1));
+  expect(fake.made("POST", "/api/git/clone")[0].body).toEqual({ url: ADDRESS, name: "mine" });
+  await panel("mine");
+});
+
+test("a pasted space around the address and the name is not sent", async () => {
+  const fake = dashboard([], {
+    "POST /api/git/clone": (c) => ({
+      workspace: workspace(8, (c.body as { name: string }).name, { state: "creating" }),
+    }),
+  });
+  renderApp();
+  const form = within(await screen.findByRole("region", { name: m.newWorkspace }));
+  await userEvent.type(form.getByLabelText(m.newWorkspaceSource), `  ${ADDRESS} `);
+  await userEvent.type(form.getByLabelText(m.newWorkspaceName), " mine  ");
+  await userEvent.click(form.getByRole("button", { name: m.create }));
+  await waitFor(() => expect(fake.made("POST", "/api/git/clone")).toHaveLength(1));
+  expect(fake.made("POST", "/api/git/clone")[0].body).toEqual({ url: ADDRESS, name: "mine" });
+});
+
+test("an address typed as spaces only is no address", async () => {
+  const fake = dashboard([], { "POST /api/workspaces": problem(422, "validation_failed", "x") });
+  renderApp();
+  const form = within(await screen.findByRole("region", { name: m.newWorkspace }));
+  await userEvent.type(form.getByLabelText(m.newWorkspaceSource), "   ");
+  await userEvent.click(form.getByRole("button", { name: m.create }));
+  await waitFor(() => expect(fake.made("POST", "/api/workspaces")).toHaveLength(1));
+  expect(fake.made("POST", "/api/git/clone")).toHaveLength(0);
+});
+
+test("each help line of the new workspace form describes its field", async () => {
+  dashboard([]);
+  renderApp();
+  const form = within(await screen.findByRole("region", { name: m.newWorkspace }));
+  expect(form.getByLabelText(m.newWorkspaceName)).toHaveAccessibleDescription(
+    m.newWorkspaceNameHelp,
+  );
+  expect(form.getByLabelText(m.newWorkspaceSource)).toHaveAccessibleDescription(
+    m.newWorkspaceSourceHelp,
+  );
+});
+
+test("with no address a name makes an empty workspace, and an address typed and cleared is not sent", async () => {
+  const fake = dashboard([], {
+    "POST /api/workspaces": (c) => ({
+      workspace: workspace(9, (c.body as { name: string }).name, { state: "creating" }),
+    }),
+  });
+  renderApp();
+  const form = within(await screen.findByRole("region", { name: m.newWorkspace }));
+  await userEvent.type(form.getByLabelText(m.newWorkspaceSource), "https://x");
+  await userEvent.clear(form.getByLabelText(m.newWorkspaceSource));
+  await userEvent.type(form.getByLabelText(m.newWorkspaceName), "empty");
+  await userEvent.click(form.getByRole("button", { name: m.create }));
+  await waitFor(() => expect(fake.made("POST", "/api/workspaces")).toHaveLength(1));
+  expect(fake.made("POST", "/api/workspaces")[0].body).toEqual({ name: "empty" });
+  expect(fake.made("POST", "/api/git/clone")).toHaveLength(0);
+});
+
+test("a refused address is shown under its label in the form, which keeps what was typed", async () => {
+  const fake = dashboard([], {
+    "POST /api/git/clone": problem(
+      422,
+      "validation_failed",
+      "Some of what was sent is not valid.",
+      { errors: [{ field: "url", message: "planted reason for the address" }] },
+    ),
+  });
+  renderApp();
+  const form = within(await screen.findByRole("region", { name: m.newWorkspace }));
+  await userEvent.type(form.getByLabelText(m.newWorkspaceSource), "ftp://nope");
+  await userEvent.type(form.getByLabelText(m.newWorkspaceName), "kept");
+  await userEvent.click(form.getByRole("button", { name: m.create }));
+  expect(await form.findByRole("alert")).toHaveTextContent(
+    `${m.newWorkspaceSource}: planted reason for the address`,
+  );
+  expect(form.getByLabelText(m.newWorkspaceSource)).toHaveValue("ftp://nope");
+  expect(form.getByLabelText(m.newWorkspaceName)).toHaveValue("kept");
+  expect(fake.made("POST", "/api/git/clone")).toHaveLength(1);
+});
+
+test("a name taken for a cloned workspace is shown under the name's label", async () => {
+  dashboard([], {
+    "POST /api/git/clone": problem(
+      409,
+      "workspace_name_taken",
+      "You already have a workspace of that name.",
+    ),
+  });
+  renderApp();
+  const form = within(await screen.findByRole("region", { name: m.newWorkspace }));
+  await userEvent.type(form.getByLabelText(m.newWorkspaceSource), ADDRESS);
+  await userEvent.type(form.getByLabelText(m.newWorkspaceName), "alpha");
+  await userEvent.click(form.getByRole("button", { name: m.create }));
+  expect(await form.findByRole("alert")).toHaveTextContent(
+    "You already have a workspace of that name.",
+  );
+});
+
 test("a refused name is shown under its label in the form, which keeps it", async () => {
   const fake = dashboard([], {
     "POST /api/workspaces": problem(
@@ -284,6 +444,102 @@ test("a workspace that failed shows why, and offers Delete but not Start", async
   expect(within(opened).getByText("planted: the image is missing")).toBeInTheDocument();
   expect(within(opened).getByRole("button", { name: m.deleteWorkspace })).toBeInTheDocument();
   expect(within(opened).queryByRole("button", { name: m.start })).not.toBeInTheDocument();
+});
+
+const STEPS = "Making the workspace\nChecking git\nCloning https://github.com/octo/widget";
+
+test("a workspace being cloned shows the steps so far, in order, and keeps them as the page refreshes", async () => {
+  let log = "Making the workspace";
+  dashboard([], {
+    "GET /api/workspaces": () => ({
+      workspaces: [workspace(1, "alpha", { state: "creating", source: ADDRESS, log })],
+    }),
+  });
+  renderApp("/?workspace=1", { pollMs: 50 });
+  const opened = await panel("alpha");
+  const steps = await within(opened).findByRole("figure", { name: m.workspaceLog });
+  expect(steps).toHaveTextContent("Making the workspace");
+  log = STEPS;
+  await waitFor(() => expect(steps.querySelector("pre")?.textContent).toBe(STEPS));
+});
+
+test("a workspace being made with no steps yet shows no log", async () => {
+  dashboard([workspace(1, "alpha", { state: "creating" })]);
+  renderApp("/?workspace=1");
+  const opened = await panel("alpha");
+  expect(within(opened).getByText(m.workspaceCreating)).toBeInTheDocument();
+  expect(within(opened).queryByRole("figure")).not.toBeInTheDocument();
+});
+
+test("a workspace being cloned offers Delete, as the way to cancel, and deleting it asks first", async () => {
+  const workspaces = [workspace(1, "alpha", { state: "creating", source: ADDRESS, log: STEPS })];
+  const fake = dashboard([], {
+    "GET /api/workspaces": () => ({ workspaces }),
+    "DELETE /api/workspaces/1": () => {
+      workspaces.length = 0;
+      return {};
+    },
+  });
+  renderApp("/?workspace=1");
+  const opened = await panel("alpha");
+  expect(within(opened).getByText(m.workspaceCloningCancel)).toBeInTheDocument();
+  expect(within(opened).queryByRole("button", { name: m.start })).not.toBeInTheDocument();
+  const open = within(opened).getByRole("button", { name: m.deleteWorkspace });
+  expect(open).toHaveClass("secondary-danger");
+  await userEvent.click(open);
+  expect(fake.made("DELETE", "/api/workspaces/1")).toHaveLength(0);
+  await userEvent.click(
+    within(await screen.findByRole("dialog")).getByRole("button", {
+      name: m.deleteWorkspaceConfirm,
+    }),
+  );
+  await waitFor(() => expect(fake.made("DELETE", "/api/workspaces/1")).toHaveLength(1));
+  expect(await screen.findByText(m.workspaceDeleted("alpha"))).toBeInTheDocument();
+});
+
+test("a workspace being deleted offers nothing, a clone that is being cancelled included", async () => {
+  dashboard([workspace(1, "alpha", { state: "deleting", source: ADDRESS, log: STEPS })]);
+  renderApp("/?workspace=1");
+  const opened = await panel("alpha");
+  expect(within(opened).getByText(m.workspaceDeleting)).toBeInTheDocument();
+  expect(within(opened).queryAllByRole("button")).toEqual([]);
+});
+
+const CLONE_ERROR = [
+  "GitHub asked for a sign-in: the repository is private, or the address is wrong.",
+  "git clone failed, exit code 128:",
+  "Cloning into 'widget'...",
+  "fatal: could not read Username for 'https://github.com': terminal prompts disabled",
+].join("\n");
+
+test("a clone that failed shows what was done and why, with git's lines kept apart and Delete offered", async () => {
+  dashboard([
+    workspace(1, "alpha", {
+      state: "failed",
+      source: ADDRESS,
+      log: `${STEPS}\nThe clone failed`,
+      error: CLONE_ERROR,
+    }),
+  ]);
+  renderApp("/?workspace=1");
+  const opened = await panel("alpha");
+  expect(within(opened).getByText(m.workspaceFailed)).toBeInTheDocument();
+  const steps = within(opened).getByRole("figure", { name: m.workspaceLog });
+  expect(steps.querySelector("pre")?.textContent).toBe(`${STEPS}\nThe clone failed`);
+  const said = opened.querySelector("pre.workspace-error");
+  expect(said?.textContent).toBe(CLONE_ERROR); // every line break kept
+  expect(said).toHaveClass("screen"); // a block of its own, as a screen is
+  expect(within(opened).getByRole("button", { name: m.deleteWorkspace })).toBeInTheDocument();
+  expect(within(opened).queryByText(m.workspaceCloningCancel)).not.toBeInTheDocument();
+  expect(within(opened).queryByRole("button", { name: m.start })).not.toBeInTheDocument();
+});
+
+test("a workspace that is ready shows no log", async () => {
+  dashboard([workspace(1, "alpha", { source: ADDRESS, log: null })]);
+  renderApp("/?workspace=1");
+  const opened = await panel("alpha");
+  await within(opened).findByRole("button", { name: m.start });
+  expect(within(opened).queryByRole("figure", { name: m.workspaceLog })).not.toBeInTheDocument();
 });
 
 test("a workspace being deleted says so, and offers nothing", async () => {

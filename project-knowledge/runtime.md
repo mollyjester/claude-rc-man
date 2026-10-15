@@ -221,14 +221,28 @@ the prefix it was started with.
   it in a thread of its own; it becomes `ready`, or `failed` with what the
   runtime said, or with why the image's git does not do (none, or older than
   `GIT_MIN_VERSION` in `helpers/git_run.py`; see
-  [backend.md](backend.md#git-in-workspaces)).
+  [backend.md](backend.md#git-in-workspaces)). Each step is a line of the row's
+  `log`, which `ready` clears.
+- **Cloning.** A workspace with a `source` is cloned after the git check, into
+  its work folder, by `Repository.clone` (see
+  [backend.md](backend.md#git-in-workspaces)). The clone runs under no lock, the
+  person's and the workspace's alike, so that nothing waits for as long as it
+  takes; `_cloning`, under the service's own lock, holds the ids whose git is
+  running. A failure fails the workspace with the cause, the exit code and git's
+  words; the workspace and its folder stay until it is deleted.
 - **Deleting.** `delete` marks it `deleting` and removes its container and
   volume, which ends its server, then its row — never the person's sign-in; one still being made goes once
-  it is made. Deleting a person deletes each of theirs (see
-  [people.md](people.md)).
+  it is made. One being cloned is cancelled by deleting it: `_stop_cloning`
+  force-removes its container, which ends git, and the making thread finds it
+  `deleting` and finishes the removal; if the container cannot be removed now,
+  the workspace goes when git ends, at the latest at `CLONE_TIMEOUT`. Deleting a
+  person deletes each of theirs (see [people.md](people.md)).
 - **Restoring.** When rcman starts, `restore` runs in the background, so rcman
   answers at once: it waits for the runtime, trying again while it is
-  unavailable; finishes rows still `creating` or `deleting`; makes again a
+  unavailable; finishes rows still `deleting`, and `creating` ones with no `source`, which are
+  made again; fails a `creating` one with a `source`, which a restart interrupted
+  in its clone, with `CLONE_MESSAGES["restarted"]` (it is not cloned again, whatever
+  it had cloned: the person deletes it and decides); makes again a
   `ready` workspace whose container is gone, and starts one that is stopped;
   starts each server that should be running and is not, with its prefix;
   removes every labelled container no row is for; removes each person an

@@ -32,6 +32,9 @@ GITHUB = "https://github.com/"
 # An address nothing answers on, for RC_HELPER_GITHUB where a test needs no GitHub,
 # so that no test can reach the real one.
 UNREACHABLE = "http://127.0.0.1:1/"
+# The longest a request waits for a closed gate, so that a test that forgets to open it
+# ends a server's threads all the same.
+GATE_WAIT = 120.0
 
 
 class _Server(ThreadingMixIn, WSGIServer):
@@ -54,6 +57,10 @@ class GitHubServer:
     def __init__(self):
         self.attempts: list[tuple[str, bool]] = []
         self.requests: list[tuple[str, str]] = []
+        # Closed (cleared) by a test that needs a slow GitHub: every request is logged and then
+        # waits for it, up to GATE_WAIT seconds, so that a git clone is under way and stays so.
+        self.gate = threading.Event()
+        self.gate.set()
         self._private: set[str] = set()  # "/<owner>/<name>.git" of each private repository
         self.url = ""
         self.root: Path | None = None
@@ -140,6 +147,7 @@ class GitHubServer:
             parts[1] += ".git"  # GitHub's address without .git reaches the same repository
         path = "/" + "/".join(parts)
         self.requests.append((environ.get("REQUEST_METHOD", "GET"), path))
+        self.gate.wait(GATE_WAIT)
         pushing = path.endswith("/git-receive-pack") or "service=git-receive-pack" in query
         private = "/" + "/".join(parts[:2]) in self._private
         needs_token = pushing or private

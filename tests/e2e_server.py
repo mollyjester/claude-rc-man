@@ -14,6 +14,7 @@ from __future__ import annotations
 import contextlib
 import os
 import re
+import shutil
 from pathlib import Path
 
 from rcman import db, people
@@ -24,12 +25,16 @@ from rcman.settings import Settings
 from devtools import fake_claude as fake
 from devtools import held_folders
 from devtools import record_claude as rec
+from tests import git_fixtures
 
 REPO = Path(__file__).resolve().parent.parent
 # Who the world lets in, and whether each is an administrator.
 PEOPLE = {"alice@example.com": True, "bob@example.com": False}
 # Whose Claude account is signed in.
 SIGNED_IN = "alice@example.com"
+# A public repository the world has at this address on GitHub, for the browser tests that
+# make a workspace from one; no other address is reachable (keep_off_github).
+SEEDED_ADDRESS = "https://github.com/octo/widget"
 # Every world's name, as frontend/e2e/world.ts makes one: the prefix and a random
 # UUID. Worlds a killed run left are cleared by it, so nothing else that begins the
 # same way is taken for one.
@@ -90,6 +95,31 @@ def record_sign_in(database: Path, person: int) -> None:
         con.close()
 
 
+def keep_off_github(runtime, github: Path) -> None:
+    """Every git clone ``runtime`` is asked to run takes GitHub from the folder ``github``
+    - a repository at ``<owner>/<name>.git`` in it is what ``https://github.com/<owner>/<name>``
+    clones - and may not connect by ssh or git; one that was not told so is an
+    AssertionError, not run. The browser tests are driven through a real browser, which no
+    test guard of the backend covers, so a clone typed into the page never reaches the
+    real github.com. It is set on the instance, so that the runtime's own ``exec`` is
+    what runs after it."""
+    run = runtime.exec
+
+    def exec_(name, argv, *args, **kwargs):
+        argv = git_fixtures.through_stand_in(argv, github)
+        git_fixtures.assert_through_stand_in(argv, github)
+        return run(name, argv, *args, **kwargs)
+
+    runtime.exec = exec_
+
+
+def _seed_github(root: Path, github: Path) -> None:
+    """The one repository the world has on GitHub, public, with main and feature."""
+    seed = root / "seed"
+    git_fixtures.make_repo(seed, origin=github / "octo" / "widget.git")
+    shutil.rmtree(seed)  # the world itself is removed whole, but a clone need not see it
+
+
 def _world(root: Path, settings: Settings) -> HostRuntime:
     db.migrate(settings.database)
     con = db.connect(settings.database)
@@ -107,6 +137,9 @@ def _world(root: Path, settings: Settings) -> HostRuntime:
     runtime = HostRuntime(
         root / "workspaces", sockets(root), wrapper, REPO / "backend" / "rcman" / "tmux.conf"
     )
+    github = root / "github"
+    _seed_github(root, github)
+    keep_off_github(runtime, github)
     # SIGNED_IN's Claude account, as a sign-in leaves it (backend/rcman/accounts.py).
     runtime.ensure_account(signed_in.id, signed_in.slot)
     fake.write_credentials(runtime._account_file(signed_in.id), fake.credentials())

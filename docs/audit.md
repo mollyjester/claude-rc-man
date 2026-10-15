@@ -37,7 +37,7 @@ changes nothing: a page's report of a failure rcman could not see, written to th
 | `git.fetch` | refreshes the remote branches | the workspace's name |
 | `git.push` | pushes the current branch | the workspace's name |
 | `git.commit_push` | commits what is staged and pushes it | the workspace's name — the message is never recorded |
-| `git.clone` | clones a repository from GitHub | the repository's address, as given — an address with a user or a token in it is refused, and so recorded with none |
+| `git.clone` | makes a workspace by cloning a repository from GitHub — recorded when rcman takes the request; whether the clone worked is the workspace's state | the repository's address, as given — an address with a user or a token in it is refused, and so recorded with none |
 | `github.token` | adds or replaces their GitHub token | none — the token is never recorded |
 | `github.forget` | removes their GitHub token | none |
 | `claude.login` | starts connecting their Claude account | the Claude account's email address |
@@ -45,9 +45,8 @@ changes nothing: a page's report of a failure rcman could not see, written to th
 | `claude.disconnect` | signs their Claude account out, at once or once their last running server stops | none |
 | `claude.upgrade` | rolls out a Claude Code version (administrators) | the version |
 
-Cloning a repository from GitHub into a workspace and rolling out a Claude Code
-version are not available yet: rcman answers each of those requests with
-`not_available_yet`, and records it with that result.
+Rolling out a Claude Code version is not available yet: rcman answers that
+request with `not_available_yet`, and records it with that result.
 
 The result is one of these, or the code of the error the request failed with —
 a refused request is recorded too:

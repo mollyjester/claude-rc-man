@@ -90,7 +90,8 @@ matters, so a suppression at the site is preferred.
   section names in bold is text from `src/messages.ts`. A workspace's panel
   offers **Start** only while the workspace is ready, has no server, and its
   server could be read; **Delete workspace** only while it is ready or
-  failed; nothing while it is being made or deleted. Whether a server may start
+  failed, or being made from a clone (`source` set), where it cancels the clone;
+  nothing while an empty workspace is being made, or while one is being deleted. Whether a server may start
   — the Claude account connected and not signing out — the server decides, so
   **Start** is offered regardless and its refusal shown. **Sign out of Claude**
   is offered only while an account is connected and not already signing out;
@@ -163,7 +164,7 @@ matters, so a suppression at the site is preferred.
 |---|---|
 | `src/App.tsx` | Who is signed in, the navigation, whose **Admin** menu is a `usePopup` that also closes when a page is chosen and when the page changes, and the routes; **Sign out** beside the person's name, with **Keep sessions running**, which leaves through `away` for oauth2-proxy's sign-out |
 | `src/AdminPages.tsx` | `ADMIN`, the administrators' pages by name, which the links in the administrators' warning use, and `ADMIN_PAGES`, the same pages in order, which the navigation's **Admin** menu and the routes are built from |
-| `src/Dashboard.tsx` | The Workspaces page: the person's workspaces, each with its dot (`dotFor` in `src/Servers.tsx`) and its state while it is not ready, and **New workspace**'s form, beside the selected workspace's panel; the selection kept in the address as `?workspace=`; the workspaces refreshed every `POLL_MS`, a refresh's failure shown until a later refresh works, and an answer older than one asked for since dropped. A new workspace is selected once the server takes its name. The panel says what a workspace being made, deleted or failed is, and for a ready one has its **Claude server** section and its **Changes** section (`src/Changes.tsx`, polled at the page's own `pollMs`); **Delete workspace** asks first, and after a delete no workspace is selected and the page says what was deleted |
+| `src/Dashboard.tsx` | The Workspaces page: the person's workspaces, each with its dot (`dotFor` in `src/Servers.tsx`) and its state while it is not ready, and **New workspace**'s form (a name, and an optional GitHub address: with one it posts to `/api/git/clone`, naming the workspace only when a name is typed, and otherwise to `/api/workspaces`; the server judges both and its refusal of either is shown under the field's label), beside the selected workspace's panel; the selection kept in the address as `?workspace=`; the workspaces refreshed every `POLL_MS`, a refresh's failure shown until a later refresh works, and an answer older than one asked for since dropped. A new workspace is selected once the server takes its name. The panel says what a workspace being made, deleted or failed is, with the steps (`log`) in a figure while it is not ready, and for a ready one has its **Claude server** section and its **Changes** section (`src/Changes.tsx`, polled at the page's own `pollMs`); **Delete workspace** asks first, and after a delete no workspace is selected and the page says what was deleted |
 | `src/Changes.tsx` | The Changes section of a ready workspace's panel, for the repository of the workspace it is given by id: its heading with the branch bar (`src/BranchBar.tsx`) beside it, the staged and not staged files, each list folding under a heading that counts its files and more, with its Stage selected or Unstage selected beside it, a checkbox for each file that can be selected and Select all, and each file's change as its letter (`m.changeLetters`) in a colour of its own, with its word (`m.changes`) as its accessible text and title; Commit, a split button whose menu holds Commit & Push; and the status line, "Checked …" (`m.checkedAgo`) worked out again every `CHECKED_TICK_MS` while the section is shown, and Refresh changes. `src/Changes.test.tsx` holds every change to a letter and a word, and the letters to differing. A list is open at first while it has files, opens when files come to it, and otherwise stays as the person left it. The status is fetched when the section opens, every `POLL_MS` while it is open and after every action; an answer older than one asked for since is dropped. Its branches are fetched when it opens, after every action and when the current branch changes. What is checked is kept across refreshes, for files still listed. A refusal is shown beside what was tried until any later action there works |
 | `src/BranchBar.tsx` | The branch bar: the branch lookup, a button naming where the repository is, whose pop-up has a filter, which asks rcman nothing, over the local and remote branches listed, each a switch where one is offered; **+**, New branch's form in a pop-up; Refresh branches, its icon turning while the fetch runs; ahead and behind as arrows, with `m.tracking` as their accessible text; and Push. It is shown once either the status or the branches are known, so a status that cannot be had leaves the branches to switch to; the arrows and Push wait for the status |
 | `src/usePopup.ts` | A pop-up opened by a button, as a disclosure: it closes on Escape, putting focus back on the button, on a press outside it and when focus moves outside it. Every pop-up a button opens uses it, the **Admin** menu among them. The stylesheet places the branch bar's pop-ups against the Changes heading's row, so they stay inside the section at any width |
@@ -244,6 +245,13 @@ the rest. Nothing of this is shown to the person.
   any already given there; `playwright.config.ts` gives the backend the
   world as `WORLD` from there.
 
+  The world holds one public repository, `https://github.com/octo/widget`
+  (`SEEDED_ADDRESS` in `tests/e2e_server.py`), which the specs that make a
+  workspace from an address clone; `keep_off_github` gives every clone the
+  host runtime runs the world's folder in place of github.com and refuses one
+  not told so, so that nothing typed into the page reaches the real GitHub (see
+  [tests.md](tests.md)).
+
   The backend makes the world, and refuses a folder that already exists.
   It holds the world as a held folder is held, and clears the worlds beside
   it that a killed run left, those whose names `WORLDS` matches, and
@@ -267,7 +275,9 @@ the rest. Nothing of this is shown to the person.
   `tests/test_container_suite.py` sets, and refuses to load without it. A spec that
   needs something done inside the container, such as a repository in a workspace
   (`stack.py repository`), runs the command in `RCMAN_STACK_EXEC`, a JSON argv
-  prefix that runs a command in the podman host.
+  prefix that runs a command in the podman host. The specs that make a workspace
+  from a GitHub address clone from the stack's stand-in GitHub (see
+  [tests.md](tests.md)).
 
 Each Playwright config writes to an output folder of its own under
 `test-results/`, its `outputDir`, because Playwright empties a run's output

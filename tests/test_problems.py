@@ -179,6 +179,7 @@ def test_library_text_is_recognised():
     ours = [
         *(rule.sentence for rule in helpers_rules().values()),
         *problems.MESSAGES.values(),
+        *problems.CLONE_MESSAGES.values(),
         *problems.FIELD_MESSAGES.values(),
     ]
     for message in ours:

@@ -236,6 +236,10 @@ button.name[aria-current="true"] {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+.workspace-log {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
 
 .panel {
   border: 1px solid var(--border);

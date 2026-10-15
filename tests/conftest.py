@@ -51,6 +51,39 @@ def github(tmp_path_factory):
     server.stop()
 
 
+@pytest.fixture(autouse=True)
+def github_stand_in(tmp_path_factory):
+    """The folder that stands in for https://github.com/ in this test: a repository at
+    ``<folder>/<owner>/<name>.git`` is what the address ``https://github.com/<owner>/<name>``
+    clones. Every git clone the host runtime runs is given it (tests/git_fixtures.py), and a
+    clone that was not fails the test, so that nothing a test drives, a route that clones
+    among them, reaches the real github.com. It patches by a context of its own, not the
+    ``monkeypatch`` fixture, which would then outlive the fixtures a test sets up after it,
+    and be undone only after their teardown. Where rcman's backend cannot be imported, as in
+    the container suites of tests/container that need none, there is no host runtime to
+    guard."""
+    try:
+        from rcman.runtime import HostRuntime
+    except ImportError:
+        yield None
+        return
+    from tests import git_fixtures
+
+    # not in the test's tmp_path: tests list that folder's content
+    base = tmp_path_factory.mktemp("stand-in")
+    real = HostRuntime.exec
+
+    def exec_(self, name, argv, *args, **kwargs):
+        # looked up now, so that a test can take the rewrite away and see the guard fire
+        argv = git_fixtures.through_stand_in(argv, base)
+        git_fixtures.assert_through_stand_in(argv, base)
+        return real(self, name, argv, *args, **kwargs)
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(HostRuntime, "exec", exec_)
+        yield base
+
+
 def fake_claude(path: Path, env: str = "FAKE_CLAUDE_READY_SECONDS=0.3") -> Path:
     """A `claude` at ``path`` that runs the fake (devtools/fake_claude.py) with ``env``."""
     from devtools import record_claude as rec

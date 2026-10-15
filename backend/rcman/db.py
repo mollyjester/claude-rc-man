@@ -77,6 +77,13 @@ MIGRATIONS = [
         token text not null
     );
     """,
+    """
+    -- A workspace made by cloning a repository: the address as it was given (no credentials
+    -- are in one, rules.GITHUB_URL), null for an empty one; and the steps rcman wrote while
+    -- making it (workspaces.py), cut to their last characters, cleared once it is ready.
+    alter table workspaces add column source text;
+    alter table workspaces add column log text;
+    """,
 ]
 
 

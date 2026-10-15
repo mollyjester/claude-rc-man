@@ -23,6 +23,11 @@ export const m = {
   workspacesEmpty: "No workspaces yet. Make one below.",
   newWorkspace: "New workspace",
   newWorkspaceName: "Name of the new workspace",
+  newWorkspaceNameHelp:
+    "Leave it empty when you give an address: the workspace is then named after the repository.",
+  newWorkspaceSource: "GitHub address (optional)",
+  newWorkspaceSourceHelp:
+    "To start from a repository on GitHub, give its address, such as https://github.com/owner/repository. It is cloned into the workspace; without an address the workspace is empty.",
   create: "Create",
   creating: "Creating…",
   workspacePanelEmpty: "Select a workspace to see its Claude server, or make one.",
@@ -34,6 +39,8 @@ export const m = {
     deleting: "Being deleted",
   } as Record<string, string>,
   workspaceCreating: "This workspace is being made. It is ready in a moment.",
+  workspaceCloningCancel: "Delete this workspace to stop the clone.",
+  workspaceLog: "Steps so far",
   workspaceFailed: "Making this workspace failed:",
   workspaceDeleting: "This workspace is being deleted.",
   workspaceActions: "Workspace actions",

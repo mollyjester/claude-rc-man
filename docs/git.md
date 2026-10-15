@@ -44,15 +44,38 @@ does is done in that workspace, as the commit author and with the token above.
   nothing in that case, as the push could not follow.
 - When git refuses, the section shows what it said, beside what you tried.
 
-A new workspace is empty, and an empty workspace is not a git repository: the
-section says so quietly, without an error. Claude can run `git init` there, and the
-section shows the repository once it exists.
-Cloning a repository from GitHub into a workspace is not something rcman does
-yet; ask Claude to clone it, which uses your token for a private one.
+A workspace made without a GitHub address is empty, and an empty workspace is
+not a git repository: the section says so quietly, without an error. Claude can
+run `git init` there, and the section shows the repository once it exists.
+
+## Making a workspace from GitHub
+
+Give a GitHub address under **New workspace** (see
+[Workspaces](workspaces.md)) and rcman clones that repository into the new
+workspace, with git, as you: all its branches, and the default one checked out.
+The workspace is ready once the clone is done, and its **Changes** section
+shows the repository.
+
+- A private repository needs your GitHub token, set in [Settings](settings.md):
+  the clone uses it as a push does. Without one, or with one that GitHub
+  refuses or that may not read the repository, the workspace fails and says
+  which.
+- A workspace whose clone fails stays, with the reason in plain words, what
+  git said, and the steps rcman took. The reasons are: the clone took too
+  long and was stopped; GitHub asked for a sign-in (the repository is private,
+  or the address is wrong); GitHub did not accept your token; GitHub could not
+  find the repository; rcman could not reach GitHub from the workspace.
+  **Delete workspace** removes it; make it again once the cause is mended.
+- The panel does not show git's progress. **Delete workspace** stops a clone
+  that is running, and deletes the workspace.
+- If rcman restarts while a workspace is being cloned, the workspace fails and
+  says so. Delete it and make it again.
+- Your token is never in the repository, in the steps shown, or in the error.
 
 ## Images
 
 A workspace needs git in its image, new enough for rcman's use of it. The
 default image has it. For another image
 ([`RCMAN_WORKSPACE_IMAGE`](configuration.md)), a workspace whose image has no
-git, or an older one, fails to be made, and says why in its panel.
+git, or an older one, fails to be made, and says why in its panel. Cloning from
+GitHub also needs git there, and a way to reach github.com from the workspace.

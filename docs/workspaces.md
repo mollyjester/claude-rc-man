@@ -31,9 +31,20 @@ A workspace that is not ready says so beside its name: **Being made**,
 
 To make a workspace, type its name under **New workspace** and choose
 **Create**. The new workspace is selected, and is shown as being made until it
-is ready; that takes a moment, and longest for your first workspace. A
-workspace is made empty. When rcman refuses a name, the form says why and
-keeps what you typed; each of your workspaces has a name of its own.
+is ready; that takes a moment, and longest for your first workspace. Without
+an address a workspace is empty. When rcman refuses a name, the form says why
+and keeps what you typed; each of your workspaces has a name of its own.
+
+To start from a repository on GitHub, give its address in **GitHub address
+(optional)**, such as `https://github.com/owner/repository`, and choose
+**Create**. rcman clones the repository into the new workspace: all its
+branches, with the default one checked out. If you leave the name empty, the
+workspace is named after the repository, and numbered (`repository-2`,
+`repository-3`) when you already have one of that name. A private repository
+needs a GitHub token in [Settings](settings.md); see [Git](git.md). Until the
+clone is done the workspace is shown as being made, and its panel lists
+**Steps so far**. A clone of a large repository can take a while, and the panel
+does not show git's progress while it runs.
 
 The workspace you have selected is part of the page's address, so reloading
 the page keeps it, and the browser's back button returns to the workspace
@@ -44,9 +55,10 @@ which shows the workspace's server, or **Start** when it has none. If rcman
 could not read the server, the section says why instead. Below it is the
 **Changes** section, for the git repository in the workspace (see
 [Git](git.md)). A workspace that
-failed to be made says what went wrong, and offers only
-**Delete workspace**. A workspace being made or being deleted says so, and
-offers nothing.
+failed to be made says what went wrong, with **Steps so far** beneath, and
+offers only **Delete workspace**. A workspace being made or being deleted says
+so, and offers nothing, except that one being cloned from GitHub offers
+**Delete workspace** too, to stop the clone.
 
 A server shows its state as a coloured badge, a sentence saying what to do
 next, and only the actions that state allows. Its main button, the action to
@@ -89,6 +101,10 @@ workspace is selected, and the page says the workspace was deleted.
 
 The sessions of its server stay in claude.ai/code, where they are archived or
 deleted.
+
+Deleting a workspace that is still being cloned stops the clone and deletes
+the workspace. If rcman restarts while a workspace is being cloned, the
+workspace is shown as failed, and says so; delete it and make it again.
 
 ## Rules
 

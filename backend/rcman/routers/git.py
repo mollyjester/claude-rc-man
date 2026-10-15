@@ -7,7 +7,8 @@ message, the files to stage — reaches git on stdin, and is never recorded or l
 audit row names the workspace and nothing else. A commit is made as the author in the
 global git configuration rcman writes in the person's volume (gitaccount.py), and is
 refused until a name is set. A clone's address is checked by a rule that takes no user
-or password in it; cloning is not there yet, and answers ``not_available_yet``.
+or password in it, so it is recorded as it is given; the clone makes a workspace (workspaces.py),
+and is the one route here that names none.
 """
 
 from __future__ import annotations
@@ -24,6 +25,7 @@ from rcman.identity import Identity, current_user
 from rcman.problems import Problem, ruled
 from rcman.repository import MAX_FILES_PER_CALL, MAX_PATH_LENGTH, Repository
 from rcman.routers.me import author_of
+from rcman.routers.workspaces import WorkspaceName, person_of
 from rcman.workspaces import answered
 
 router = APIRouter(prefix="/api/git", tags=["git"])
@@ -64,6 +66,10 @@ class NewBranchBody(RepositoryBody):
 
 class CloneBody(BaseModel):
     url: GitHubUrl = Field(description="The repository's address on GitHub.")
+    name: WorkspaceName | None = Field(
+        default=None,
+        description="The new workspace's name; the repository's name when it is left out.",
+    )
 
 
 WorkspaceQuery = Annotated[int, Query(ge=1, description="The workspace's id.")]
@@ -196,11 +202,16 @@ def commit_push(
     return answer
 
 
-@router.post("/clone")
+@router.post("/clone", status_code=202)
 def clone(
     body: CloneBody, request: Request, record: Record = Depends(Recorder("git.clone"))
 ) -> dict:
-    """Cloning into workspaces is not there yet; the address is recorded as it is, which
+    """Make a workspace by cloning a repository from GitHub into it: all its branches, the
+    default one checked out. The workspace is made in the background and listed as
+    creating until it is cloned; one that fails says why, and is deleted like any other,
+    which also stops a clone that is running. The address is recorded as it is, which
     GITHUB_URL makes safe: it takes none with a user or a password in it."""
     record.target = body.url
-    raise Problem("not_available_yet")
+    service = request.app.state.workspaces
+    made = service.create(person_of(request, record.identity), body.name, body.url)
+    return {"workspace": service.listing([made])[0]}

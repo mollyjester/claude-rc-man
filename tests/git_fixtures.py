@@ -7,6 +7,7 @@ configuration, which git under test reads, is only what a test plants.
 
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 
@@ -109,4 +110,52 @@ def add_submodule(repo: Path, sub_source: Path, name: str) -> None:
     """``sub_source``, a repository, added to ``repo`` as the submodule ``name``."""
     fixture_git(
         repo, "-c", "protocol.file.allow=always", "submodule", "add", "-q", str(sub_source), name
+    )
+
+
+# --- the stand-in for github.com ---------------------------------------------------------
+
+# Every address under this is a folder of the stand-in's instead, for a git clone run
+# through the host runtime; and the transports a clone could otherwise reach GitHub by.
+GITHUB = "https://github.com/"
+STAND_IN_CONFIG = ("protocol.ssh.allow=never", "protocol.git.allow=never")
+
+
+def _clone_at(argv: list[str]) -> int | None:
+    """Where the subcommand of the git in ``argv`` is, when it is clone; None for any other
+    argv, and for one with no git in it. git's options before it (-C and -c, which take
+    a value, and the rest, which do not) are skipped."""
+    gits = [i for i, token in enumerate(argv) if os.path.basename(token) == "git"]
+    if not gits:
+        return None
+    at = gits[0] + 1
+    while at < len(argv) and argv[at].startswith("-"):
+        at += 2 if argv[at] in ("-C", "-c") else 1
+    return at if at < len(argv) and argv[at] == "clone" else None
+
+
+def _rule(base: Path) -> str:
+    return f"url.{base}/.insteadOf={GITHUB}"
+
+
+def through_stand_in(argv: list[str], base: Path) -> list[str]:
+    """``argv``, if it is a git clone, with git told that GITHUB is the folder ``base`` and
+    that it may not connect by ssh or git; any other argv as it is."""
+    at = _clone_at(argv)
+    if at is None:
+        return argv
+    configs = [_rule(base), *STAND_IN_CONFIG]
+    return [*argv[:at], *(t for c in configs for t in ("-c", c)), *argv[at:]]
+
+
+def assert_through_stand_in(argv: list[str], base: Path) -> None:
+    """The guard: a git clone in ``argv`` that is not told to take GITHUB from ``base`` would
+    connect to the real github.com, and is an AssertionError."""
+    at = _clone_at(argv)
+    if at is None:
+        return
+    before = argv[:at]
+    told = set(zip(before, before[1:], strict=False))
+    assert all(("-c", c) in told for c in (_rule(base), *STAND_IN_CONFIG)), (
+        f"a git clone that is not taken from the stand-in would reach github.com: {argv}"
     )

@@ -6,6 +6,7 @@ make every test that relies on it meaningless.
 """
 
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -203,3 +204,38 @@ def test_every_request_is_logged_by_its_path(server, remote, tmp_path):
     git_as(tmp_path, tmp_path / "home", "ls-remote", url)
     path = url.removeprefix(server.url.removesuffix("/"))
     assert any(p.startswith(path.removesuffix(".git")) for _, p in server.requests[before:])
+
+
+def test_requests_wait_while_the_gate_is_closed_and_go_on_once_it_is_opened(
+    server, remote, tmp_path
+):
+    """A test that needs a slow GitHub closes the gate: a request is logged, then waits."""
+    _, url = remote
+    server.gate.clear()
+    try:
+        before = len(server.requests)
+        waiting = subprocess.Popen(
+            ["git", "ls-remote", url],
+            cwd=tmp_path,
+            env={
+                **fixture_env(tmp_path / "home"),
+                "GIT_TERMINAL_PROMPT": "0",
+                "GIT_CONFIG_COUNT": "0",
+            },
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        for _ in range(100):
+            if len(server.requests) > before:
+                break
+            time.sleep(0.05)
+        assert len(server.requests) > before  # positive control: it reached the server
+        time.sleep(0.5)
+        assert waiting.poll() is None  # and has no answer yet
+    finally:
+        server.gate.set()
+    assert waiting.wait(timeout=30) == 0, waiting.stderr.read()
+
+
+def test_the_gate_is_open_by_default(server):
+    assert server.gate.is_set()

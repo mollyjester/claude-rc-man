@@ -387,6 +387,7 @@ def test_the_whole_stack_in_a_browser(docker, podman_image, labelled, source):
     import socket
 
     from devtools.fake_claude import ACCEPTED_CODE as CODE
+    from tests.container import github_stand_in as stand_in
 
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
@@ -406,6 +407,14 @@ def test_the_whole_stack_in_a_browser(docker, podman_image, labelled, source):
                 **os.environ,
                 "RCMAN_STACK_PORT": str(port),
                 "RCMAN_FAKE_CLAUDE_CODE": CODE,
+                # the stand-in GitHub the stack holds (tests/container/stack.py)
+                "RCMAN_STACK_GITHUB": json.dumps(
+                    {
+                        "token": stand_in.STACK_TOKEN,
+                        "public": f"https://github.com/{stand_in.STACK_OWNER}/{stand_in.STACK_PUBLIC}",
+                        "private": f"https://github.com/{stand_in.STACK_OWNER}/{stand_in.STACK_PRIVATE}",
+                    }
+                ),
                 "RCMAN_STACK_EXEC": json.dumps([*inside, container]),
             },
             capture_output=True,

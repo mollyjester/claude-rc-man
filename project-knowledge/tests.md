@@ -46,7 +46,10 @@ the podman host against real Podman.
 Everything git is tested against real git,
 never a fake: `tests/test_git_run.py` holds the parsers of `helpers/git_run.py`,
 `tests/test_repository.py` every verb of `repository.py` in host-runtime workspaces
-through a real channel and `exec`, `tests/test_git_account.py` `gitaccount.py`
+through a real channel and `exec`, `tests/test_clone.py` a workspace made by cloning
+(a phase of `creating`: its log, failures and their causes, token redaction, names,
+the route, cancel by deletion, restart recovery) on a host runtime that runs real git
+and can answer a clone with what git would say or hold it as a running git, `tests/test_git_account.py` `gitaccount.py`
 against a host runtime that records what it is asked, and `tests/test_git.py` the
 git routes. `tests/git_fixtures.py`, which is not a test module, makes real
 repositories, their origins and their branches with the system's git, under
@@ -58,7 +61,14 @@ is connected to. GitHub is `tests/github_server.py`: the
 system's `git http-backend` behind a small server, which serves anyone a
 read of a public repository, and takes a push, or a read of one made
 private, only with its token as the password, under any
-non-empty username, as GitHub takes a personal access token. The `github` fixture in
+non-empty username, as GitHub takes a personal access token. Its `gate` event, when a
+test clears it, makes every request wait, so that a clone is under way and stays so.
+Nothing a host test drives reaches the real github.com: the autouse
+`github_stand_in` fixture in `tests/conftest.py` gives every git clone the host
+runtime runs a folder in place of `https://github.com/` and forbids the ssh and git
+transports (`through_stand_in` in `tests/git_fixtures.py`), and a clone not given it
+is an `AssertionError` (`assert_through_stand_in`); `tests/test_stand_in.py` holds the
+rewrite and plants a clone it missed to see the guard fire. The `github` fixture in
 `tests/conftest.py` runs one for the session, with `GITHUB_TOKEN`.
 `tests/test_container_suite.py` runs the suites in `tests/container/`, each
 inside a throwaway container of the podman host's image, through `docker` or
@@ -105,7 +115,15 @@ host's hosts file). It shows rcman's push (`Repository`), Claude's git (the fake
 `claude`'s `fake-exec`) and the credential helper using the person's token, the
 token written by `GitAccount` through `put_account`, no push without a token,
 the environment of Claude's children holding no token, the image check, and
-forgetting the token making the very next push fail for both. It skips anywhere
+forgetting the token making the very next push fail for both. It also makes
+workspaces by cloning through `Workspaces` and a real Podman: a public repository
+cloned into a workspace that then works, a private one failing without a token and
+cloning with one (which is kept out of the repository), a refused token, a
+repository that is not there and a GitHub that cannot be reached, each said in plain
+words, and the deletion of a workspace being cloned stopping git and leaving nothing.
+The certificates, the derived image's build file and the service that serves the
+repositories are `tests/container/github_stand_in.py`, which is standard library
+only so that the podman host can run it as it is from `/src`. It skips anywhere
 else.
 
 The **whole stack** is `tests/container/stack.py`, in a podman host that
@@ -125,6 +143,17 @@ runs a command in the podman host, which the suite passes the specs): it makes a
 repository in that workspace with a bare origin of its own and changes to stage,
 and `check` finds the changes the specs staged, committed and pushed in the
 origin, as the author the spec set, with an audit row for each step.
+
+The stack also has its own stand-in GitHub: the setup's `github` step serves
+`tests/github_server.py` (through `github_stand_in.py serve`, with a public and a
+private repository) behind Caddy as `github.com`, with a certificate of an
+authority of its own; derives the workspace image from the installed one with that
+authority trusted and sets it as `RCMAN_WORKSPACE_IMAGE`; and makes `github.com` the
+host's own address in `/etc/hosts`, which workspaces share. The specs make
+workspaces by cloning from it; `check` finds each ready with the repository's commit,
+an audit row for each clone naming the address, and the token the specs stored in
+no audit row, workspace row or journal line. The suite passes the specs the token and the two addresses as JSON in
+`RCMAN_STACK_GITHUB`.
 
 The **podman host** is a container from `tests/container/podman/Dockerfile`
 that runs systemd as PID 1, privileged and with a cgroup namespace of its

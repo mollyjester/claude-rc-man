@@ -22,3 +22,7 @@ export async function makeWorkspace(page: Page, name: string) {
   await expect(opened.getByRole("heading", { name: m.serverTitle })).toBeVisible();
   return opened;
 }
+
+// The public repository the browser tests' backend has at this address on GitHub
+// (SEEDED_ADDRESS in tests/e2e_server.py), the only one a clone there can reach.
+export const GITHUB_ADDRESS = "https://github.com/octo/widget";
