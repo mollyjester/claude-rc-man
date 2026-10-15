@@ -658,3 +658,31 @@ def test_a_stop_ends_what_the_server_started_after_the_stop_began(world, monkeyp
         found = pid_file.read_text().split() if pid_file.exists() else []
         if found and alive(int(found[0])):
             os.kill(int(found[0]), signal.SIGKILL)
+
+
+class EndsAfterTheFirstRead:
+    """A tmux whose server ends, having written its last words, right after the first thing
+    it is asked: what is read first is what it looked like before, what second, after."""
+
+    def __init__(self):
+        self.asked = 0
+
+    def _ended(self) -> bool:
+        self.asked += 1
+        return self.asked > 1
+
+    def screen(self):
+        return ["Unable to determine your organization"] if self._ended() else []
+
+    def exit_status(self):
+        return 1 if self._ended() else None
+
+
+def test_a_server_that_ends_between_the_two_reads_is_never_an_exit_with_a_screen_from_before(world):
+    """The status of a server is its screen and its exit status, read one after the other:
+    one that ends between them must not be reported as ended with the screen it had before
+    it wrote its last words, as happens when the screen is read first."""
+    world.server.tmux = EndsAfterTheFirstRead()
+    info = world.server._server()
+    shown = "\n".join(info.get("screen", []))
+    assert info["exit_code"] is None or "Unable to determine" in shown, info

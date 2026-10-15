@@ -31,3 +31,8 @@ it starts with.
   run, to that feature branch only, never to `main`.
 - The description says which tests were written first and which documentation
   changed. A change with no documentation impact says so explicitly.
+- `make check` is the gating check. The on-demand runs (`make test-container`,
+  `make check-ui`, together `make check-all`) are required for some changes;
+  [the working rules](project-knowledge/working-rules.md#tests-and-guards)
+  say which and when. The description says whether they were required and, if
+  so, gives their totals, or says they were not required and why.

@@ -195,20 +195,57 @@ def test_an_idle_channel_says_how_long_it_has_been_idle(channel):
     assert channel.idle_seconds() < 0.2
 
 
-def test_the_channels_latency_on_the_host(channel):
-    """A command through the channel costs a few milliseconds, not the hundreds a new exec
-    costs; the podman host pins the same through podman (test_runtime_in_podman.py).
-    Flaky on slow or busy hosts: under ``make test``'s parallel workers a few scheduler
-    stalls can push the 95th percentile past the bound, and a lone failure is that noise."""
-    true = shutil.which("true")
-    channel.run([true])
+def p95_of_a_hundred(channel, true: str) -> float:
     times = []
     for _ in range(100):
         started = time.perf_counter()
         channel.run([true])
         times.append(time.perf_counter() - started)
     times.sort()
-    assert times[94] < ch.LATENCY_P95_SECONDS, times[94]
+    return times[94]
+
+
+# How many batches of a hundred requests the latency test may take before the bound is
+# judged broken: noise on a busy host passes in one of them, a slow channel in none.
+LATENCY_BATCHES = 3
+
+
+def batches_over_the_bound(measure) -> list[float]:
+    """The 95th percentiles ``measure()`` gave, each over the bound, until one was under it,
+    which ends them; the list is empty then."""
+    over = []
+    for _ in range(LATENCY_BATCHES):
+        p95 = measure()
+        if p95 < ch.LATENCY_P95_SECONDS:
+            return []
+        over.append(p95)
+    return over
+
+
+def test_the_channels_latency_on_the_host(channel):
+    """A command through the channel costs a few milliseconds, not the hundreds a new exec
+    costs; the podman host pins the same through podman (test_runtime_in_podman.py).
+    On a busy host, as under ``make test``'s parallel workers, a few scheduler stalls can
+    push one batch's 95th percentile past the bound, so a batch may be taken again; a
+    channel that is slow is over the bound in every batch."""
+    true = shutil.which("true")
+    channel.run([true])
+    assert batches_over_the_bound(lambda: p95_of_a_hundred(channel, true)) == []
+
+
+def test_only_a_channel_over_the_bound_in_every_batch_is_reported():
+    """Planted twin: the verdict of the latency test is over the bound in every batch only."""
+    bound = ch.LATENCY_P95_SECONDS
+    slow, fast = 2 * bound, bound / 10
+
+    def measuring(*results):
+        batches = iter(results)
+        return lambda: next(batches)
+
+    assert batches_over_the_bound(measuring(slow, slow, slow)) == [slow] * LATENCY_BATCHES
+    assert batches_over_the_bound(measuring(slow, fast)) == []
+    assert batches_over_the_bound(measuring(slow, slow, fast)) == []
+    assert batches_over_the_bound(measuring(fast)) == []
 
 
 def test_closing_does_not_wait_for_a_request_in_flight(run_dir):

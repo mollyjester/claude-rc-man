@@ -1,16 +1,29 @@
-.PHONY: setup test test-container lint format frontend-setup frontend-test frontend-build e2e check
+# No target runs beside another under make -j: the on-demand runs share docker.
+.NOTPARALLEL:
+
+.PHONY: setup test test-container check-ui lint format frontend-setup frontend-test frontend-build e2e check check-all
 
 setup: frontend-setup  ## install the development environment
 	uv sync
 
+# More workers than the machine has cores: a test spends much of its time on processes it
+# started (tmux, git, the fake claude) and the kernel's work for them, which workers overlap.
+# worksteal hands the tests still queued for a busy worker to an idle one, so a few long
+# tests do not leave the rest waiting at the end.
+TEST_WORKERS ?= 8
 test:  ## every Python test that runs on the host, in parallel
-	uv run pytest -n auto -m "not container and not real_claude"
+	uv run pytest -n $(TEST_WORKERS) --dist worksteal -m "not container and not real_claude"
 
 test-container: export RCMAN_REQUIRE_CONTAINER = 1
 # In one process, as the container tests share the images their session fixtures build,
 # which each pytest-xdist worker would build again.
-test-container:  ## the Python tests that need a container; they fail rather than skip
-	uv run pytest -m "container and not real_claude"
+test-container:  ## on demand: the Python tests that need a container but not the whole stack; they fail rather than skip
+	uv run pytest -m "container and not stack and not real_claude"
+
+check-ui: export RCMAN_REQUIRE_CONTAINER = 1
+# In one process, like test-container, whose images it shares.
+check-ui:  ## on demand: the whole stack in a browser; needs make frontend-setup once, like e2e
+	uv run pytest -m "stack and not real_claude"
 
 lint:  ## check formatting and lint: ruff for the Python code, Biome for the frontend
 	uv run ruff format --check .
@@ -35,4 +48,9 @@ e2e: frontend-build  ## the built frontend in a browser, against the real backen
 	cd frontend && npx playwright test
 
 check: export RCMAN_REQUIRE_REAL_CLAUDE = 1
-check: lint test test-container frontend-test e2e  ## everything; tests that would skip fail instead
+check: lint test frontend-test e2e  ## lint and every test that runs on the host; tests that would skip fail instead
+
+# One after the other: test-container and check-ui share docker. It stops at the first part
+# that is red; make -k check-all runs every part and reports each red one, so that
+# everything red is fixed together.
+check-all: check test-container check-ui  ## check and both on-demand runs, stopping at the first red part (make -k: all parts): for the end of a change and before the live reinstall

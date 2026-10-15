@@ -8,6 +8,7 @@ import { expect, type Locator, type Page, test } from "@playwright/test";
 
 import { makeWorkspace, openAdminPage, panel, workspaces } from "../e2e/nav";
 import { m } from "../src/messages";
+import { FIRST_WORKSPACE_WITHIN, TEST_WITH_FIRST_WORKSPACE_WITHIN } from "./timing";
 
 const ALICE = "alice@example.com"; // an administrator
 const BOB = "bob@example.com";
@@ -58,11 +59,12 @@ const CODE = process.env.RCMAN_FAKE_CLAUDE_CODE ?? "";
 test("a workspace made before Claude is connected starts no server, and says why", async ({
   page,
 }) => {
+  test.setTimeout(TEST_WITH_FIRST_WORKSPACE_WITHIN); // "plain" is alice's first workspace
   expect(CODE).not.toBe("");
   await signIn(page, ALICE);
   await expect(page.getByText(m.signedInAs(ALICE))).toBeVisible();
   await expect(workspaces(page).getByText(m.workspacesEmpty)).toBeVisible();
-  await makeWorkspace(page, "plain");
+  await makeWorkspace(page, "plain", FIRST_WORKSPACE_WITHIN);
   const before = await makeWorkspace(page, "before");
   await before.getByRole("button", { name: m.start }).click();
   await expect(before.getByRole("alert")).toContainText(
@@ -264,10 +266,11 @@ test("administrators see everyone's workspaces, and act on none of them", async 
   page,
   browser,
 }) => {
+  test.setTimeout(TEST_WITH_FIRST_WORKSPACE_WITHIN); // "carol-box" is carol's first workspace
   // carol has a workspace of her own, which the People page later removes with her.
   const carol = await browser.newPage();
   await signIn(carol, CAROL);
-  await makeWorkspace(carol, "carol-box");
+  await makeWorkspace(carol, "carol-box", FIRST_WORKSPACE_WITHIN);
   await carol.close();
 
   await signIn(page, ALICE);

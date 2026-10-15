@@ -60,6 +60,31 @@ def test_collection_writes_down_what_it_found_in_a_held_folder(monkeypatch):
         return run(argv, **kwargs)
 
     monkeypatch.setattr(collected.subprocess, "run", running)
-    found = collected._collect.__wrapped__(("tests/test_collected.py", "-k", "uses_tmp_path"), ())
+    found = collected._child_collect(("tests/test_collected.py", "-k", "uses_tmp_path"), ())
     assert list(found) == ["tests/test_collected.py::test_uses_tmp_path"]
     assert seen == [True]
+
+
+def test_a_collection_is_worked_out_once_among_the_processes_sharing_a_folder(
+    tmp_path, monkeypatch
+):
+    """The second to ask for the same command line reads what the first found; another
+    command line, or no shared folder, is worked out again."""
+    from tests import collected
+
+    runs, run = [], collected.subprocess.run
+
+    def counting(argv, **kwargs):
+        runs.append(argv)
+        return run(argv, **kwargs)
+
+    monkeypatch.setattr(collected.subprocess, "run", counting)
+    monkeypatch.setattr(collected, "shared", tmp_path / "shared")
+    args = ("tests/test_collected.py", "-k", "uses_tmp_path")
+    first = collected._shared_collect(args, ())
+    assert collected._shared_collect(args, ()) == first and len(runs) == 1
+    other = collected._shared_collect(("tests/test_collected.py", "-k", "honoured"), ())
+    assert len(runs) == 2 and other != first
+    assert collected._shared_collect(args, (("A", "1"),)) == first and len(runs) == 3  # env
+    monkeypatch.setattr(collected, "shared", None)
+    assert collected._shared_collect(args, ()) == first and len(runs) == 4

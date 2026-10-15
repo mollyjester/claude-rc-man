@@ -143,7 +143,10 @@ class Accounts:
         deadline = time.monotonic() + LOGIN_TIMEOUT
         unrecognised_since = None
         while True:
-            found = screens.classify_login(sign_in.tmux.screen(), sign_in.tmux.exit_status())
+            # The exit status first: a login that ends between the two reads is then read
+            # as running with its last screen, not as ended with a screen from before.
+            exit_status = sign_in.tmux.exit_status()
+            found = screens.classify_login(sign_in.tmux.screen(), exit_status)
             if found["state"] == "unrecognised":
                 unrecognised_since = unrecognised_since or time.monotonic()
                 if time.monotonic() - unrecognised_since >= UNRECOGNISED_GRACE_SECONDS:

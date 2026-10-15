@@ -643,6 +643,26 @@ socketserver.UnixStreamServer(sys.argv[1], H).serve_forever()
 """
 
 
+# How long the fake servers and Caddy get to start listening, and then to stop answering a
+# request with a gateway error because a server behind Caddy was not ready.
+STARTUP_DEADLINE = 20
+
+
+def wait_accepting(family, address, what):
+    """Waits until something accepts connections at the address, or fails naming what."""
+    deadline = time.monotonic() + STARTUP_DEADLINE
+    while True:
+        try:
+            with socket.socket(family) as s:
+                s.settimeout(1)
+                s.connect(address)
+            return
+        except OSError as error:
+            if time.monotonic() > deadline:
+                raise AssertionError(f"{what} at {address} did not accept: {error}") from error
+            time.sleep(0.1)
+
+
 def test_caddy_lets_only_oauth2_proxy_set_the_identity(tmp_path):
     sys.path.insert(0, str(SRC))
     from installer import install as ins
@@ -656,23 +676,23 @@ def test_caddy_lets_only_oauth2_proxy_set_the_identity(tmp_path):
     snippet = rendered.replace(str(ins.SOCKET), str(fake_socket))
     config = tmp_path / "Caddyfile"
     config.write_text("{\n\tadmin off\n\tauto_https off\n}\n" + snippet)
+    # Each fake server is accepting before Caddy starts, so that no request through
+    # Caddy can reach one that is still starting.
     procs = [
         subprocess.Popen([sys.executable, "-c", FAKE_AUTH, str(auth)]),
         subprocess.Popen([sys.executable, "-c", FAKE_APP, str(fake_socket)]),
-        subprocess.Popen(
-            ["caddy", "run", "--adapter", "caddyfile", "--config", str(config)],
-            stderr=subprocess.DEVNULL,
-        ),
     ]
     try:
+        wait_accepting(socket.AF_INET, ("127.0.0.1", auth), "the fake oauth2-proxy")
+        wait_accepting(socket.AF_UNIX, str(fake_socket), "the fake app")
+        procs.append(
+            subprocess.Popen(
+                ["caddy", "run", "--adapter", "caddyfile", "--config", str(config)],
+                stderr=subprocess.DEVNULL,
+            )
+        )
+        wait_accepting(socket.AF_INET, ("127.0.0.1", site), "Caddy")
         base = f"http://127.0.0.1:{site}"
-        deadline = time.monotonic() + 20
-        while time.monotonic() < deadline:
-            try:
-                socket.create_connection(("127.0.0.1", site), timeout=1).close()
-                break
-            except OSError:
-                time.sleep(0.2)
         opener = urllib.request.build_opener(
             type(
                 "NoRedirect",
@@ -697,7 +717,8 @@ def test_caddy_lets_only_oauth2_proxy_set_the_identity(tmp_path):
         )  # not signed in
         assert "evil" not in body
         status, body, _ = fetch("/api/me", {**spoof, "Cookie": "session=alice"})
-        assert (status, body) == (200, "email=alice@example.com")  # the spoofed value never arrives
+        # The spoofed value never arrives.
+        assert (status, body) == (200, "email=alice@example.com"), (status, body)
         status, body, _ = fetch("/oauth2/start", {})
         assert (status, body) == (200, "oauth2-proxy page")
     finally:

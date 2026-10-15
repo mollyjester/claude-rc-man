@@ -8,28 +8,49 @@ How the test suite is organised and run. The rules the suite follows are in
 | Command | What it does |
 |---|---|
 | `make setup` | Creates the development environment: `make frontend-setup`, then `uv sync` |
-| `make test` | Runs every Python test that runs on the host, in parallel with pytest-xdist: all but those marked `container`, and those marked `real_claude`, which no target runs |
-| `make test-container` | Runs the Python tests marked `container`, which need a container, in one process; the `Makefile` says why. It sets `RCMAN_REQUIRE_CONTAINER=1`, so they fail instead of skipping where Docker is not usable |
+| `make test` | Runs every Python test that runs on the host, in parallel with pytest-xdist: all but those marked `container`, and those marked `real_claude`, which no target runs. `TEST_WORKERS` (in the `Makefile`, which says why) is the number of workers; `--dist worksteal` gives an idle worker the queue of a busy one |
+| `make test-container` | On demand: runs the Python tests marked `container`, except the whole-stack one, in one process; the `Makefile` says why. It sets `RCMAN_REQUIRE_CONTAINER=1`, so they fail instead of skipping where Docker is not usable |
+| `make check-ui` | On demand: runs the whole-stack test, the one marked `stack`, in one process; it needs `make frontend-setup` once, like `make e2e`. It sets `RCMAN_REQUIRE_CONTAINER=1` |
 | `make lint` | Checks formatting and lint: ruff for the Python code, Biome for the frontend, with the frontend's packages `make frontend-setup` installs |
 | `make format` | Applies formatting and safe lint fixes: ruff for the Python code, Biome for the frontend |
 | `make frontend-setup` | Installs the frontend's packages and Playwright's browser |
 | `make frontend-test` | Type-checks the frontend and runs its component tests |
 | `make frontend-build` | Builds the frontend into `frontend/dist` |
 | `make e2e` | Builds the frontend and runs the browser tests |
-| `make check` | Lint, `make test`, `make test-container`, the frontend tests and the browser tests. It sets `RCMAN_REQUIRE_REAL_CLAUDE=1`, so tests that would skip for want of the real `claude` fail instead |
+| `make check` | Lint, `make test`, the frontend tests and the browser tests; no on-demand run. It sets `RCMAN_REQUIRE_REAL_CLAUDE=1`, so tests that would skip for want of the real `claude` fail instead |
+| `make check-all` | `make check`, `make test-container` and `make check-ui`, one after the other: for the end of a change and before the live reinstall |
 
-When the full suite runs, and how a run is read, is a working rule:
-[the full check runs at the edges of a change](working-rules.md#tests-and-guards).
+`make check` is the gating check; `make test-container` and `make check-ui` are
+the on-demand runs. When each runs, and how a run is read, are working rules:
+[the full check runs at the edges of a change](working-rules.md#tests-and-guards),
+and the on-demand runs happen once, at the end, when required. The pre-test
+hook counts every one of these targets as a test run (see
+[Pre-test hook](#pre-test-hook)).
 
 Run pytest from the repository root; `pyproject.toml` holds its configuration.
 The Python tests are split by where they run, not by how long they take:
 `make test` runs everything that runs on the host, slow tests included, and a
 slow host test is made cheaper or split into cases that workers share rather
-than moved out; `make test-container` runs what needs a container, the tests
-marked `container` (see below). `tests/test_make.py` holds the split: every
-test is in exactly one of the two, and `make check` runs both. To work on
+than moved out; the tests that need a container, marked `container` (see
+below), run on demand: `make test-container` runs them but the whole-stack
+test, which carries the `stack` marker as well and which `make check-ui` runs.
+`tests/test_make.py` holds the split: every test is in exactly one of
+`make test`, `make test-container` and `make check-ui`, `make check` holds no
+on-demand run, and `make check-all` runs every test. To work on
 what the container suite covers, run it directly, as in
 `uv run pytest tests/test_container_suite.py -k github`.
+
+What keeps `make test` fast, none of it losing an assertion: it runs
+`TEST_WORKERS` workers with `--dist worksteal`; an autouse fixture in
+`tests/conftest.py` opens every database the backend opens in the test process
+with SQLite's `synchronous = off` (a backend started as a subprocess keeps the
+default), since no test is about surviving a crash and production
+keeps the default; the collections `tests/test_make.py` reads are made once per
+run and shared by all the workers through pytest's basetemp
+(`tests/collected.py`); and `tests/test_e2e_server.py` calls the Playwright
+binary directly, without `npx`. The channel's latency test (`tests/test_channel.py`)
+takes up to a few batches of requests and fails only when every batch is over
+the bound, as a busy host can push one batch over it.
 The suite needs `tmux`, `git` and procps' `kill` on the host. Each test's tmux
 sockets are in a folder of its own, made under `/tmp` by `tmux_sockets` in
 `devtools/held_folders.py`, because a socket's path has to stay short, and removed,
@@ -73,7 +94,7 @@ rewrite and plants a clone it missed to see the guard fire. The `github` fixture
 `tests/test_container_suite.py` runs the suites in `tests/container/`, each
 inside a throwaway container of the podman host's image, through `docker` or
 `sudo -n docker`; it skips when neither works, unless
-`RCMAN_REQUIRE_CONTAINER=1`, which `make test-container` sets. Every
+`RCMAN_REQUIRE_CONTAINER=1`, which `make test-container` and `make check-ui` set. Every
 container it starts is labelled as its run's, and one a killed run left is
 removed by a later run, with its anonymous volumes (see
 [What a killed run leaves](#what-a-killed-run-leaves)); the image it builds,
@@ -86,7 +107,7 @@ fresh podman host: rootless Podman for a service account; the Podman runtime
 against real Podman, as that account; a real installation, and the
 installation after the whole host has restarted (see
 [installer.md](installer.md#tests)); git in a workspace against the tests' GitHub
-(below); and the whole stack in a browser.
+(below); and the whole stack in a browser, the one test `make check-ui` runs.
 What a container sees of the checkout is a snapshot of its files, made once
 per pytest session by the `source` fixture in `tests/test_container_suite.py`
 with `tests/snapshot.py`, which is not a test module, and mounted read-only
@@ -160,6 +181,11 @@ runs a command in the podman host, which the suite passes the specs): it makes a
 repository in that workspace with a bare origin of its own and changes to stage,
 and `check` finds the changes the specs staged, committed and pushed in the
 origin, as the author the spec set, with an audit row for each step.
+
+A person's first workspace in the stack is slow, because rootless Podman keeps one
+copy of the default image per range of ids and copies it into the person's range, so
+the specs wait for it as long as `FIRST_WORKSPACE_WITHIN` in
+`frontend/e2e-stack/timing.ts` says, and the test making it gets that much more time.
 
 The stack also has its own stand-in GitHub: the setup's `github` step serves
 `tests/github_server.py` (through `github_stand_in.py serve`, with a public and a
@@ -367,12 +393,15 @@ it can fail, and a positive control that keeps an empty input from passing.
   held in a variable is not followed. `tests/collected.py`, which is not a test module, collects the suite
   in a child process for it.
 - **Every test runs, and container tests cannot skip** (`tests/test_make.py`).
-  It runs `make test`, `make test-container` and `make check` with `uv`,
-  `npm` and `npx` replaced by recorders, and reads which tests each pytest
-  command they ran selects from pytest's own collection: every test is in
-  exactly one of `make test` and `make test-container`, `make test-container`
-  runs exactly the `container` tests, and `make check` runs every test, its
-  container tests with `RCMAN_REQUIRE_CONTAINER=1` and all of them with
+  It runs `make test`, `make test-container`, `make check-ui`, `make check`
+  and `make check-all` with `uv`, `npm` and `npx` replaced by recorders, and
+  reads which tests each pytest command they ran selects from pytest's own
+  collection: every test is in exactly one of `make test`,
+  `make test-container` and `make check-ui`; `make test-container` runs the
+  `container` tests but the `stack` one, which `make check-ui` runs;
+  `make check` runs the host tests and holds no on-demand run;
+  `make check-all` runs every test, its container tests with
+  `RCMAN_REQUIRE_CONTAINER=1`, and `make check` with
   `RCMAN_REQUIRE_REAL_CLAUDE=1`; none of them runs a test a
   bare `pytest` leaves out, as a target's own `-m` replaces the
   `-m 'not real_claude'` of pyproject's `addopts`. `make lint` and

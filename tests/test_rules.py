@@ -190,7 +190,8 @@ def disagreements(*rules: Rule) -> list[str]:
     found = []
     for example, group in by_example.items():
         for context in _contexts(example):
-            values = [context.format(c) for c in CODE_POINTS]
+            before, after = context.split("{}")  # concatenating is quicker than format
+            values = [before + c + after for c in CODE_POINTS]
             for rule in group:
                 result = adapters[rule].validate_python(values)
                 refused = {i for i, value in enumerate(result) if value is None}

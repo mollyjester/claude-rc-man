@@ -270,7 +270,10 @@ the rest. Nothing of this is shown to the person.
   checkout or worktree of their own.
 - **Whole-stack browser tests**: `e2e-stack/*.spec.ts` with
   `playwright.stack.config.ts`, against an installed rcman behind real Caddy
-  and oauth2-proxy in a container — see [tests.md](tests.md). The config
+  and oauth2-proxy in a container — see [tests.md](tests.md). They are run
+  on demand by `make check-ui` (not by `make e2e`, `make check` or
+  `make test-container`), which needs `make frontend-setup` once, like
+  `make e2e`. The config
   takes the container's published port from `RCMAN_STACK_PORT`, which
   `tests/test_container_suite.py` sets, and refuses to load without it. A spec that
   needs something done inside the container, such as a repository in a workspace

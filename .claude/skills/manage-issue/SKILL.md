@@ -57,16 +57,22 @@ accepted plan departs from that issue, record the plan as a comment on it.
   subagents to check the result against the issue, the plan and the working
   rules. Send findings back for fixing and review again; repeat until a
   review comes back clean and you agree with it.
-- The test runs the working rules require — baseline before, targeted while
-  working, the full check at handover — are read by their totals, never by
-  exit code alone.
+- The test runs the working rules require — the `make check` baseline before,
+  targeted while working, the gating `make check` at handover — are read by
+  their totals, never by exit code alone.
+- The on-demand runs (`make test-container`, `make check-ui`, together
+  `make check-all`) happen once, at the end of the implementation, only when
+  the working rules require them for this change, and have no baseline. If one
+  is red, fix everything red together and repeat the run only after the
+  operator confirms.
 
 ## 5. Documentation review
 
 The last subagent reviews and adjusts the documentation for the whole change:
 it searches for every page the change affects, makes the documentation match
 the code, and checks it against the documentation rules in the working rules.
-Its edits are followed by the full check again.
+Its edits are followed by the gating `make check` again; an on-demand run
+already green is not repeated for documentation edits.
 
 ## 6. Clean up and hand over
 
@@ -82,5 +88,7 @@ Its edits are followed by the full check again.
   the pull-request section of CONTRIBUTING.md says; the description follows
   that section too.
 - Report faithfully: what was done, which tests were written first, what
-  documentation changed, the full-check totals, anything skipped or unsettled,
+  documentation changed, the `make check` totals, whether the on-demand runs
+  were required and, if so, their totals (or why they were not), anything
+  skipped or unsettled,
   and anything deliberately left in place with the reason.

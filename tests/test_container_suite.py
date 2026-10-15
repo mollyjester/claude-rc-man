@@ -4,9 +4,10 @@ host, which runs systemd and rootless Podman.
 Every test here takes the ``docker`` fixture, so it carries the ``container`` marker
 (tests/container_marker.py). The fixture uses ``docker`` when the current user may,
 otherwise ``sudo -n docker``. When neither works the tests skip, unless
-``RCMAN_REQUIRE_CONTAINER=1`` (set by ``make test-container``, which ``make check``
-runs), in which case they fail. Every container started here is labelled as its run's,
-so a later run removes one a killed run left, with its anonymous volumes
+``RCMAN_REQUIRE_CONTAINER=1`` (set by ``make test-container`` and ``make check-ui``, the
+on-demand runs that ``make check-all`` runs after ``make check``), in which case they
+fail. Every container started here is labelled as its run's, so a later run removes one
+a killed run left, with its anonymous volumes
 (tests/containers.py). The checkout reaches a container as a snapshot of its files
 (tests/snapshot.py), mounted read-only at /src.
 """
@@ -49,7 +50,8 @@ def docker() -> list[str]:
     if os.environ.get("RCMAN_REQUIRE_CONTAINER") == "1":
         pytest.fail("neither docker nor sudo -n docker works")
     pytest.skip(
-        "docker is not usable (make test-container sets RCMAN_REQUIRE_CONTAINER=1 to fail instead)"
+        "docker is not usable (make test-container and make check-ui set "
+        "RCMAN_REQUIRE_CONTAINER=1 to fail instead)"
     )
 
 
@@ -394,10 +396,17 @@ def test_an_installation_works_and_comes_back_after_the_host_restarts(
         )
 
 
+# What all the stack's specs may take together: every test at its limit, and the two that
+# make a person's first workspace at theirs (frontend/e2e-stack/timing.ts), with room over.
+STACK_SPECS_WITHIN = 2400
+
+
+@pytest.mark.stack
 def test_the_whole_stack_in_a_browser(docker, podman_image, labelled, source):
     """tests/container/stack.py in a fresh podman host; the browser specs in
     frontend/e2e-stack, from the host, through the port it publishes, signing in to the
-    fake claude with the code it accepts."""
+    fake claude with the code it accepts. Run on demand by ``make check-ui``, the
+    ``stack`` marker keeping it out of ``make test-container``."""
     import socket
 
     from devtools.fake_claude import ACCEPTED_CODE as CODE
@@ -433,7 +442,7 @@ def test_the_whole_stack_in_a_browser(docker, podman_image, labelled, source):
             },
             capture_output=True,
             text=True,
-            timeout=1200,
+            timeout=STACK_SPECS_WITHIN,
         )  # fmt: skip
         assert browser.returncode == 0, browser.stdout[-8000:] + browser.stderr[-2000:]
         assert " passed" in browser.stdout and " skipped" not in browser.stdout

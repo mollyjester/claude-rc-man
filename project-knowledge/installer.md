@@ -125,3 +125,7 @@ through the socket.
   deleting a person leaving nothing labelled theirs.
   `tests/container/test_restored_in_container.py` then checks, after the whole
   host has restarted, that rcman brought the workspace and its server back.
+
+The two installation suites are container tests, so they run on demand, by
+`make test-container`, not by `make check`; when that run is required is in
+[working-rules.md](working-rules.md#tests-and-guards).

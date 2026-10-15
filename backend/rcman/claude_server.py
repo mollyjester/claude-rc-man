@@ -233,7 +233,11 @@ class Server:
     # --- reading -------------------------------------------------------------------
 
     def _server(self) -> dict:
-        info = screens.classify(self.tmux.screen(), self.tmux.exit_status())
+        # The exit status first: a server that ends between the two reads is then read
+        # as running with its last screen, not as ended with a screen from before its last
+        # words.
+        exit_status = self.tmux.exit_status()
+        info = screens.classify(self.tmux.screen(), exit_status)
         return {"workspace": self.workspace, **info}
 
     def status(self) -> dict | None:
