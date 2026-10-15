@@ -35,19 +35,23 @@ def workspaces(request: Request, identity: Identity = Depends(current_user)) -> 
     return {"workspaces": listing(request, identity)}
 
 
+def person_of(request: Request, identity: Identity) -> people.Person:
+    """The signed-in person as the people table has them, which a workspace is made for."""
+    con = db.connect(request.app.state.settings.database)
+    try:
+        return people.by_id(con, identity.person)
+    finally:
+        con.close()
+
+
 @router.post("", status_code=202)
 def create(
     body: NewWorkspace, request: Request, record: Record = Depends(Recorder("workspace.create"))
 ) -> dict:
     """Make a workspace; it is made in the background, and listed as creating until then."""
     record.target = body.name
-    con = db.connect(request.app.state.settings.database)
-    try:
-        person = people.by_id(con, record.identity.person)
-    finally:
-        con.close()
     service = request.app.state.workspaces
-    made = service.create(person, body.name)
+    made = service.create(person_of(request, record.identity), body.name)
     return {"workspace": service.listing([made])[0]}
 
 

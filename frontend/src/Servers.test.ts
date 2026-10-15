@@ -51,6 +51,8 @@ describe("the dot a workspace carries", () => {
     name: "alpha",
     state: "ready",
     error: null,
+    source: null,
+    log: null,
     server: null,
     server_error: null,
     ...extra,

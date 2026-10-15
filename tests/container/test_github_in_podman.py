@@ -19,6 +19,7 @@ import socket
 import ssl
 import subprocess
 import threading
+import time
 import types
 from pathlib import Path
 
@@ -27,11 +28,13 @@ from rcman import claude_server, db, people
 from rcman import runtime as rt
 from rcman.gitaccount import GitAccount
 from rcman.identity import Identity
-from rcman.problems import Problem
+from rcman.problems import CLONE_MESSAGES, Problem
 from rcman.repository import Repository
+from rcman.settings import Settings
 from rcman.workspaces import Workspaces
 
 from helpers import git_run
+from tests.container import github_stand_in as stand_in
 from tests.container import test_runtime_in_podman as base
 from tests.github_server import GitHubServer
 
@@ -45,38 +48,13 @@ pytestmark = pytest.mark.skipif(
 )
 
 TOKEN = "github_pat_podman-test-token"
-CA_NAME = "rcman-test-github-ca"
 EMAIL = "bob@example.com"
-
-DOCKERFILE = """\
-FROM {base}
-RUN apt-get update -qq \\
- && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \\
-      git ca-certificates python3 \\
- && rm -rf /var/lib/apt/lists/*
-COPY ca.crt /usr/local/share/ca-certificates/{ca}.crt
-RUN update-ca-certificates
-"""
-
-
-def openssl(*args, cwd):
-    proc = subprocess.run(["openssl", *args], cwd=cwd, capture_output=True, text=True)
-    assert proc.returncode == 0, proc.stderr
 
 
 @pytest.fixture(scope="module")
 def pki(tmp_path_factory) -> Path:
     """A certificate authority, and a certificate it signed for github.com."""
-    folder = tmp_path_factory.mktemp("pki")
-    openssl("req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "2", "-subj",
-            f"/CN={CA_NAME}", "-keyout", "ca.key", "-out", "ca.crt", cwd=folder)  # fmt: skip
-    openssl("req", "-newkey", "rsa:2048", "-nodes", "-subj", "/CN=github.com",
-            "-keyout", "leaf.key", "-out", "leaf.csr", cwd=folder)  # fmt: skip
-    (folder / "san.ext").write_text("subjectAltName=DNS:github.com\n")
-    openssl("x509", "-req", "-in", "leaf.csr", "-CA", "ca.crt", "-CAkey", "ca.key",
-            "-CAcreateserial", "-days", "2", "-extfile", "san.ext", "-out", "leaf.crt",
-            cwd=folder)  # fmt: skip
-    return folder
+    return stand_in.mint(tmp_path_factory.mktemp("pki"))
 
 
 @pytest.fixture(scope="module")
@@ -100,7 +78,7 @@ def image(pki, github_com) -> str:
     """The base image with git, python3 and the authority; built in the account's Podman."""
     name = f"localhost/rcman-test-git:{os.getpid()}"
     (pki / "Dockerfile").write_text(
-        DOCKERFILE.format(base=os.environ["RCMAN_PODMAN_IMAGE"], ca=CA_NAME)
+        stand_in.dockerfile(os.environ["RCMAN_PODMAN_IMAGE"], packages=True)
     )
     built = subprocess.run(
         ["podman", "--remote", "--url", f"unix://{base.socket()}", "build", "-q", "-t", name,
@@ -358,3 +336,220 @@ def test_forgetting_the_token_makes_the_very_next_push_fail_for_both(
     assert on_remote(bare, "refs/heads/main") == head  # rcman's did not reach it
     assert on_remote(bare, "refs/heads/after") == ""  # nor Claude's
     assert len([a for a in github_com.attempts if a[1]]) == accepted  # nothing was accepted
+
+
+# --- a workspace made by cloning, with the real service ----------------------------------
+#
+# rcman's own Workspaces against the account's real Podman and the tests' GitHub: the
+# workspace container, git in it, the credential helper and the volume, with nothing
+# stood in. Its rows are numbered from 1 in a database of their own, clear of the 600
+# and 601 of the tests above.
+
+
+@pytest.fixture(scope="module")
+def service(podman, person):
+    who, path = person
+    made = Workspaces(Settings(public_origin="https://rcman.test", database=path), podman)
+    yield made
+    made.close()
+
+
+def publish(github_com, tmp_path, name: str, private: bool = False) -> Path:
+    """A repository ``octo/<name>`` on the tests' GitHub with one commit on main and a
+    branch, feature: its bare repository."""
+    bare = github_com.bare("octo", name, private=private)
+    source = tmp_path / f"source-{name}"
+    author = ["-c", "user.name=Octo", "-c", "user.email=octo@example.com"]
+    (source / "docs").mkdir(parents=True)
+    (source / "README.md").write_text(f"# {name}\n")
+    (source / "docs" / "guide.txt").write_text("a file in a folder\n")
+    for argv in (
+        ["git", "init", "-q", "-b", "main", str(source)],
+        ["git", "-C", str(source), "add", "."],
+        ["git", "-C", str(source), *author, "commit", "-q", "-m", "First"],
+        ["git", "-C", str(source), "branch", "feature"],
+        ["git", "-C", str(source), "push", "-q", str(bare), "main", "feature"],
+    ):
+        subprocess.run(argv, check=True, capture_output=True)
+    return bare
+
+
+def settled(service, workspace_id: int, within: float = 300):
+    """The workspace once it is no longer being made."""
+    deadline = time.monotonic() + within
+    while True:
+        now = service.get(workspace_id)
+        if now is None or now.state != "creating":
+            return now
+        assert time.monotonic() < deadline, now
+        time.sleep(0.2)
+
+
+def gone(service, workspace_id: int, within: float = 120) -> None:
+    """Wait until the workspace's row is gone, which a deletion of one being made leaves to
+    the thread that was making it."""
+    deadline = time.monotonic() + within
+    while service.get(workspace_id) is not None:
+        assert time.monotonic() < deadline, service.get(workspace_id)
+        time.sleep(0.2)
+
+
+def exists(kind: str, name: str) -> bool:
+    return base.podman_cli(kind, "exists", name).returncode == 0
+
+
+@pytest.fixture
+def clones(service, person, account):
+    """The workspaces a test makes, which are deleted afterwards and found gone, container
+    and volume with them; the person has no token until the test saves one."""
+    account[0].forget_token(account[1])
+    made: list = []
+    yield made
+    for workspace in made:
+        now = service.get(workspace.id)
+        if now is not None:
+            service.delete(now)
+    for workspace in made:
+        gone(service, workspace.id)
+        assert not exists("container", workspace.container)
+        assert not exists("volume", workspace.container)
+
+
+def clone(service, person, clones, source: str, name: str | None = None):
+    """Make a workspace from ``source`` and wait until it is made."""
+    made = service.create(person[0], name, source)
+    clones.append(made)
+    return settled(service, made.id)
+
+
+def test_a_public_repository_is_cloned_into_a_workspace_that_then_works(
+    service, person, clones, podman, github_com, tmp_path
+):
+    bare = publish(github_com, tmp_path, "public-one")
+    source = GitHubServer.github_url("octo", "public-one").removesuffix(".git")
+    before = len(github_com.requests)
+    done = clone(service, person, clones, source)
+    assert (done.state, done.error, done.log, done.source) == ("ready", None, None, source)
+    assert done.name == "public-one"  # named after the repository
+    assert len(github_com.requests) > before  # positive control: it came from the stand-in
+    work = podman.layout(done.container).work
+    assert in_it(podman, done.container, ["cat", f"{work}/README.md"]).out == b"# public-one\n"
+    assert in_it(podman, done.container, ["cat", f"{work}/docs/guide.txt"]).code == 0
+    status = repository(podman, done.container).status()
+    assert status["branch"]["name"] == "main"
+    assert status["branch"]["upstream"] == "origin/main"
+    assert (status["staged"]["files"], status["not_staged"]["files"]) == ([], [])
+    assert on_remote(bare, "refs/heads/feature") != ""
+    branches = git_in_it(podman, done.container, "branch", "--remotes").out.decode()
+    assert "origin/feature" in branches  # every branch came, as the clone does
+    config = in_it(podman, done.container, ["cat", f"{work}/.git/config"]).out
+    assert config.count(b"url = " + source.encode()) == 1  # the address as it was given
+
+
+def test_a_private_repository_without_a_token_fails_the_workspace_and_says_why(
+    service, person, clones, podman, github_com, tmp_path
+):
+    publish(github_com, tmp_path, "private-one", private=True)
+    source = "https://github.com/octo/private-one"
+    accepted = len([a for a in github_com.attempts if a[1]])
+    attempted = len(github_com.attempts)
+    done = clone(service, person, clones, source, "private-one")
+    assert done.state == "failed", done
+    head, exit_line, *said = done.error.splitlines()
+    assert head == CLONE_MESSAGES["private_no_token"]
+    assert exit_line == "git clone failed, exit code 128:"
+    assert any("could not read Username" in line for line in said), said  # git's own words
+    assert done.log.splitlines()[-2:] == [f"Cloning {source}", "The clone failed"]
+    assert len([a for a in github_com.attempts if a[1]]) == accepted  # nothing was accepted
+    assert github_com.attempts[attempted:] == []  # no credential was even offered
+    # The failed workspace stays, with its container, until it is deleted.
+    assert exists("container", done.container)
+
+
+def test_the_same_repository_clones_once_the_token_is_saved_and_the_token_is_not_kept_in_it(
+    service, person, clones, podman, github_com, account, tmp_path
+):
+    publish(github_com, tmp_path, "private-two", private=True)
+    source = "https://github.com/octo/private-two"
+    failed = clone(service, person, clones, source, "private-two-first")
+    assert failed.state == "failed"
+    account[0].save_token(account[1], TOKEN)
+    before = len(github_com.attempts)
+    done = clone(service, person, clones, source, "private-two-second")
+    assert (done.state, done.error, done.log) == ("ready", None, None), done
+    assert set(github_com.attempts[before:]) == {("x-access-token", True)}
+    work = podman.layout(done.container).work
+    assert in_it(podman, done.container, ["cat", f"{work}/README.md"]).out == b"# private-two\n"
+    config = in_it(podman, done.container, ["cat", f"{work}/.git/config"]).out
+    assert TOKEN.encode() not in config and b"x-access-token" not in config
+    assert repository(podman, done.container).status()["branch"]["name"] == "main"
+    row = (
+        db.connect(person[1])
+        .execute("select error, log, source from workspaces where id = ?", (done.id,))
+        .fetchone()
+    )
+    assert TOKEN not in " ".join(str(v) for v in row)
+
+
+def test_a_token_github_refuses_is_told_so(service, person, clones, github_com, account, tmp_path):
+    publish(github_com, tmp_path, "private-three", private=True)
+    account[0].save_token(account[1], "github_pat_not-the-one-the-stand-in-takes")
+    accepted = len([a for a in github_com.attempts if a[1]])
+    done = clone(service, person, clones, "https://github.com/octo/private-three", "refused")
+    assert done.state == "failed"
+    assert done.error.splitlines()[0] == CLONE_MESSAGES["token_refused"], done.error
+    assert len([a for a in github_com.attempts if a[1]]) == accepted
+    assert "not-the-one" not in done.error + (done.log or "")
+
+
+def test_a_repository_that_is_not_there_is_said_not_to_be(service, person, clones, github_com):
+    done = clone(service, person, clones, "https://github.com/octo/not-there", "gone")
+    assert done.state == "failed"
+    head, exit_line, *said = done.error.splitlines()
+    assert head == CLONE_MESSAGES["not_found"], done.error  # recognised from git's real words
+    assert exit_line == "git clone failed, exit code 128:"
+    assert any("not found" in line for line in said), said
+
+
+def test_a_github_that_cannot_be_reached_is_said_not_to_be(
+    service, person, clones, github_com, pki
+):
+    context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+    context.load_cert_chain(pki / "leaf.crt", pki / "leaf.key")
+    github_com.stop()  # nothing listens on its address now: a refused connection
+    try:
+        done = clone(service, person, clones, "https://github.com/octo/anything", "unreached")
+    finally:
+        github_com.start(github_com.root, TOKEN, ssl_context=context, host=ADDRESS, port=443)
+    assert done.state == "failed"
+    assert done.error.splitlines()[0] == CLONE_MESSAGES["network"], done.error
+    assert "Failed to connect" in done.error or "unable to access" in done.error
+
+
+def test_deleting_a_workspace_that_is_being_cloned_stops_git_and_leaves_nothing(
+    service, person, clones, podman, github_com, tmp_path
+):
+    """The cancel: the clone is slow (the stand-in's gate is closed), and the workspace's
+    container is removed by force by Podman, which ends git with it."""
+    publish(github_com, tmp_path, "slow-one")
+    before = len(github_com.requests)
+    github_com.gate.clear()
+    try:
+        made = service.create(person[0], "slow", "https://github.com/octo/slow-one")
+        clones.append(made)
+        deadline = time.monotonic() + 120
+        while len(github_com.requests) == before:  # git is connected, and waits for the answer
+            assert time.monotonic() < deadline, service.get(made.id)
+            time.sleep(0.1)
+        now = service.get(made.id)
+        assert now.state == "creating" and now.log.splitlines()[-1] == f"Cloning {now.source}"
+        top = base.podman_cli("top", made.container, "args")
+        assert "clone" in top.stdout, top.stdout + top.stderr  # positive: git is running there
+        started = time.monotonic()
+        service.delete(now)
+        gone(service, made.id, 60)
+        assert time.monotonic() - started < 60  # not after the gate's wait
+        assert not exists("container", made.container)
+        assert not exists("volume", made.container)
+    finally:
+        github_com.gate.set()

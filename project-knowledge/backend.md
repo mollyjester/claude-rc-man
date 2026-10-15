@@ -17,7 +17,7 @@ the OpenAPI description it serves at `/api/openapi.json`, browsable at
 |---|---|
 | `main.py` | `create_app(settings, runtime)`: the app, its lifespan (migrations, the allowed list, audit retention, restoring workspaces) and its routers |
 | `settings.py` | The settings model |
-| `db.py` | SQLite connections and the schema, one migration; `migrate` refuses a database newer than the code |
+| `db.py` | SQLite connections and the schema, as migrations; `migrate` refuses a database newer than the code |
 | `identity.py` | Who is asking, and whether they may |
 | `people.py`, `admin.py` | The people who may use rcman, the allowed list, and `rcman-admin` — see [people.md](people.md) |
 | `workspaces.py` | Workspaces made, deleted and brought back, and their servers' verbs — see [runtime.md](runtime.md) |
@@ -180,8 +180,28 @@ files to stage reach git on stdin and are never recorded or logged.
   git's output and refusals; `repository.py` is the process half.
 - **A repository is the workspace's own `.git`.** A workspace with none, as a new
   one has, answers `not_a_repository` (409). `git init` is not rcman's: Claude runs
-  it. Cloning (`/api/git/clone`) validates its address and answers
-  `not_available_yet`, audited with that result.
+  it.
+- **Cloning makes a workspace.** `POST /api/git/clone` (`url`, optional `name`;
+  202 with the workspace, audit `git.clone`, target the address, which
+  `GITHUB_URL` makes safe to record) is the one git route that names no
+  workspace. It calls `Workspaces.create(person, name, source)`; the clone is a
+  phase of `creating`, in the workspace's own thread, and the rest is in
+  [runtime.md](runtime.md#what-rcman-keeps-and-brings-back). `Repository.clone`
+  is a verb like fetch, with `CLONE_TIMEOUT`, in its own process so it holds no
+  channel; it raises `CloneFailed` with the exit code and all git said. A name
+  left out is `workspaces.name_from(url)` (the repository's, made a valid
+  name, `DEFAULT_NAME` when nothing is left), numbered `-2`, `-3` when the
+  person has it already; a name given that is taken is `workspace_name_taken`.
+- **Why a clone failed.** `CLONE_CAUSES` in `workspaces.py` recognises a cause
+  from git's words; `problems.CLONE_MESSAGES` is what the workspace's `error`
+  says of it in plain words, ahead of the exit code and the tail of git's words,
+  all cut to `MAX_ERROR_CHARS`. The person's token is replaced by `REDACTED` in
+  the error and the log.
+- **A workspace's `source` and `log`.** Migration columns of `workspaces`:
+  `source` is the address as given (null for an empty one), `log` the steps
+  rcman wrote while making it, cut to the last `LOG_MAX_CHARS`, from a line's
+  start, and cleared once the workspace is ready. The listing answers both
+  (`log` never for a ready one), and the poll the page already makes shows them.
 - **The image check.** After `runtime.create`, `Workspaces._check_git` runs
   `git --version`: no git, or one that does not answer as rcman needs, or one older
   than `git_run.GIT_MIN_VERSION`, fails the workspace with the reason.
@@ -206,12 +226,10 @@ files to stage reach git on stdin and are never recorded or logged.
 
 ## Not available yet
 
-Claude Code versions, and cloning a repository into a workspace, are not available
-yet. `routers/claude.py` and `POST /api/git/clone` keep the shape they will have,
-their bodies validated by the rules they will be, and answer `not_available_yet`; the
-changing ones are audited with that result. What a person writes for them — a
-repository's address, a sign-in code — is never recorded or logged beyond that
-address, which `GITHUB_URL` makes safe.
+Claude Code versions are not available yet. The versions routes of
+`routers/claude.py` keep the shape they will have, their bodies validated by the
+rules they will be, and answer `not_available_yet`; the changing one is audited with
+that result.
 
 ## Attention
 

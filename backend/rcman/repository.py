@@ -29,6 +29,8 @@ from rcman.runtime import GIT_HOME, TIMED_OUT, Layout, RuntimeFailed, RuntimeUna
 # How long a verb's git calls may take, all together; fetch and push, over the network.
 GIT_TIMEOUT = 30.0
 GIT_NETWORK_TIMEOUT = 120.0
+# How long a clone may take: a whole repository, over the network.
+CLONE_TIMEOUT = 1800.0
 # How long after TERM a git that has not ended is left before it is killed, and the time
 # a runner is given beyond a call's deadline to answer.
 KILL_GRACE_SECONDS = 5
@@ -96,6 +98,15 @@ def _verb(deadline: str = "GIT_TIMEOUT"):
         return verb
 
     return wrap
+
+
+class CloneFailed(Exception):
+    """git clone ended with a refusal: its exit code, and everything it said on standard
+    error and standard output, which the caller keeps the tail of."""
+
+    def __init__(self, code: int, out: bytes, err: bytes):
+        super().__init__(f"git clone exited with {code}")
+        self.code, self.out, self.err = code, out, err
 
 
 def _name(raw: bytes) -> str:
@@ -462,6 +473,18 @@ class Repository:
     def fetch(self, deadline: float) -> dict:
         """git fetch --prune from the default remote: no files and no local branch change."""
         self._git(["fetch", "--prune"], deadline, network=True)
+        return {}
+
+    @_verb("CLONE_TIMEOUT")
+    def clone(self, deadline: float, url: str) -> dict:
+        """git clone of ``url`` into the work folder, which is empty: every branch, the
+        default one checked out. Its own process, as a fetch's, so that it does not hold
+        the workspace's channel for as long as it takes. The person's token reaches git
+        through the credential helper alone. A refusal is :class:`CloneFailed`, with the
+        exit code and all git said."""
+        result = self._git(["clone", "--", url, "."], deadline, network=True, check=False)
+        if result.code != 0:
+            raise CloneFailed(result.code, result.out, result.err)
         return {}
 
     def _push_target(self, branch: str | None, deadline: float):

@@ -93,6 +93,10 @@ export type Workspace = {
   name: string;
   state: "creating" | "ready" | "failed" | "deleting";
   error: string | null;
+  // The address it is cloned from, null for an empty one; and the steps taken while it is
+  // made, one to a line, null once it is ready.
+  source: string | null;
+  log: string | null;
   server: Server | null;
   server_error: { code: string; title: string } | null;
 };

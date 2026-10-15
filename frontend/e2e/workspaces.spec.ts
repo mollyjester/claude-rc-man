@@ -1,7 +1,7 @@
 import { expect, test } from "@playwright/test";
 
 import { m } from "../src/messages";
-import { makeWorkspace, openAdminPage, workspaces } from "./nav";
+import { GITHUB_ADDRESS, makeWorkspace, openAdminPage, panel, workspaces } from "./nav";
 import { ALICE, BOB, signInAs } from "./people";
 
 test("a workspace is made, and is ready", async ({ page }) => {
@@ -22,6 +22,56 @@ test("a workspace is made, and is ready", async ({ page }) => {
   // the address opens it again
   await page.reload();
   await expect(made.getByRole("button", { name: m.start })).toBeVisible();
+});
+
+test("a workspace is made from a repository's address, named after it, and shows its branch", async ({
+  page,
+}) => {
+  await signInAs(page, ALICE);
+  await page.goto("/");
+  const form = page.getByRole("region", { name: m.newWorkspace });
+  await form.getByLabel(m.newWorkspaceSource).fill(GITHUB_ADDRESS);
+  await form.getByRole("button", { name: m.create }).click();
+  const made = panel(page, "widget");
+  await expect(made.getByRole("button", { name: m.start })).toBeVisible();
+  await expect(made.getByRole("button", { name: m.onBranch("main") })).toBeVisible();
+  await expect(made.getByRole("figure", { name: m.workspaceLog })).toHaveCount(0);
+  await expect(form.getByLabel(m.newWorkspaceSource)).toHaveValue("");
+});
+
+test("an address rcman refuses is shown under its label, and kept", async ({ page }) => {
+  await signInAs(page, ALICE);
+  await page.goto("/");
+  const form = page.getByRole("region", { name: m.newWorkspace });
+  await form.getByLabel(m.newWorkspaceSource).fill("https://user:secret@github.com/octo/widget");
+  await form.getByRole("button", { name: m.create }).click();
+  await expect(form.getByRole("alert")).toContainText(`${m.newWorkspaceSource}:`);
+  await expect(form.getByLabel(m.newWorkspaceSource)).toHaveValue(
+    "https://user:secret@github.com/octo/widget",
+  );
+});
+
+test("a repository that is not there fails with what git said, and is deleted", async ({
+  page,
+}) => {
+  await signInAs(page, ALICE);
+  await page.goto("/");
+  const form = page.getByRole("region", { name: m.newWorkspace });
+  await form.getByLabel(m.newWorkspaceName).fill("missing");
+  await form.getByLabel(m.newWorkspaceSource).fill("https://github.com/octo/not-there");
+  await form.getByRole("button", { name: m.create }).click();
+  const failed = panel(page, "missing");
+  await expect(failed.getByText(m.workspaceFailed)).toBeVisible();
+  await expect(failed.locator("pre.workspace-error")).toContainText("git clone failed, exit code");
+  await expect(failed.getByRole("figure", { name: m.workspaceLog })).toContainText(
+    "The clone failed",
+  );
+  await failed.getByRole("button", { name: m.deleteWorkspace }).click();
+  await page
+    .getByRole("dialog", { name: m.deleteWorkspaceTitle("missing") })
+    .getByRole("button", { name: m.deleteWorkspaceConfirm })
+    .click();
+  await expect(page.getByRole("status")).toHaveText(m.workspaceDeleted("missing"));
 });
 
 test("a name rcman refuses is shown under its label, and kept", async ({ page }) => {

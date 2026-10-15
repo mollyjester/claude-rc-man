@@ -1036,6 +1036,105 @@ def test_a_status_record_git_is_not_known_to_write_is_git_unrecognised_output(gi
     assert problem.extra["git"] == ["z what is this"]
 
 
+# --- cloning ---------------------------------------------------------------------------
+
+CLONE_URL = "https://github.com/octo/widget"
+
+
+@pytest.fixture
+def widget(github_stand_in, tmp_path) -> Path:
+    """A repository on the tests' stand-in for github.com, at the address CLONE_URL."""
+    return make_repo(tmp_path / "src", origin=github_stand_in / "octo" / "widget.git")
+
+
+def test_a_clone_is_git_clone_into_the_work_folder_in_a_process_of_its_own(world, widget):
+    on_channel = []
+    real = world.run
+
+    def run(argv, timeout):
+        on_channel.append(argv)
+        return real(argv, timeout)
+
+    world.run = run
+    git = world.repository()
+    assert git.version() >= (2, 31)
+    assert on_channel  # positive control: a read goes through the channel
+    on_channel.clear()
+    world.argvs.clear()
+    assert git.clone(CLONE_URL) == {}
+    (argv,) = [a for a in world.argvs if "clone" in a]
+    start = argv.index("git")
+    assert argv[start : start + 3] == ["git", "-C", world.layout.work]
+    assert argv[argv.index("clone") :] == ["clone", "--", CLONE_URL, "."]
+    ended_by = [*world.layout.tool("timeout"), "-s", "TERM"]
+    assert argv[argv.index("-k") - len(ended_by) : argv.index("-k")] == ended_by
+    assert not [a for a in on_channel if "clone" in a]  # not the channel everything waits for
+    assert (world.work / "README.md").is_file() and (world.work / ".git").is_dir()
+    assert fixture_git(world.work, "branch", "-r").split() == [
+        "origin/HEAD",
+        "->",
+        "origin/main",
+        "origin/feature",
+        "origin/main",
+    ]  # every branch of the repository, not the default one alone
+
+
+def test_a_clone_has_its_own_deadline_read_when_called(world, widget, monkeypatch):
+    seen = []
+    real = world.run_stdin
+
+    def run_stdin(argv, stdin, timeout):
+        seen.append((argv, timeout))
+        return real(argv, stdin, timeout)
+
+    world.run_stdin = run_stdin
+    monkeypatch.setattr(repo_module, "GIT_NETWORK_TIMEOUT", 11.0)
+    monkeypatch.setattr(repo_module, "CLONE_TIMEOUT", 70.0)
+    world.repository().clone(CLONE_URL)
+    ((argv, wait),) = seen
+    seconds = int(argv[argv.index("-k") + 2])
+    assert 69 <= seconds <= 70  # CLONE_TIMEOUT, not the network deadline of a fetch
+    assert wait > seconds
+
+
+def test_the_token_is_never_in_the_argv_or_the_stdin_of_a_clone(world, widget):
+    world.credential(TOKEN)
+    seen = []
+    real = world.run_stdin
+
+    def run_stdin(argv, stdin, timeout):
+        seen.append((argv, stdin))
+        return real(argv, stdin, timeout)
+
+    world.run_stdin = run_stdin
+    world.repository().clone(CLONE_URL)
+    assert seen
+    assert not [1 for argv, stdin in seen if TOKEN in " ".join(argv) or TOKEN.encode() in stdin]
+
+
+def test_a_clone_git_refuses_keeps_its_exit_code_and_everything_it_said(world):
+    from rcman.repository import CloneFailed
+
+    answers = iter([rt.Result(128, b"", b"Cloning into '.'...\nfatal: no such place\n")])
+    world.run_stdin = lambda argv, stdin, timeout: next(answers)
+    with pytest.raises(CloneFailed) as failed:
+        world.repository().clone(CLONE_URL)
+    assert failed.value.code == 128
+    assert failed.value.err == b"Cloning into '.'...\nfatal: no such place\n"
+    assert "128" in str(failed.value)
+
+
+@pytest.mark.parametrize("code", sorted(rt.TIMED_OUT))
+def test_a_clone_the_timeout_tool_ended_is_git_timeout(world, code):
+    world.run_stdin = lambda argv, stdin, timeout: rt.Result(code, b"", b"")
+    refused(lambda: world.repository().clone(CLONE_URL), "git_timeout")
+
+
+def test_a_clone_with_no_git_in_the_workspace_is_git_not_installed(world):
+    world.run_stdin = lambda argv, stdin, timeout: rt.Result(127, b"", b"git: not found\n")
+    refused(lambda: world.repository().clone(CLONE_URL), "git_not_installed")
+
+
 def test_every_verb_is_driven_here():
     """The verbs the routes call are the ones tested: a new public verb needs a test."""
     verbs = {

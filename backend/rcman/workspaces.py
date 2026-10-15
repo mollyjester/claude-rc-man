@@ -16,18 +16,19 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
+import re
 import sqlite3
 import threading
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
-from helpers import git_run
+from helpers import git_run, rules
 from rcman import db, people
 from rcman.channel import Channel, ChannelBroken, ChannelTimeout
 from rcman.claude_server import Server, TmuxFailed
-from rcman.problems import Problem
-from rcman.repository import Repository
+from rcman.problems import CLONE_MESSAGES, Problem
+from rcman.repository import CloneFailed, Repository
 from rcman.runtime import (
     LABEL_WORKSPACE,
     Runtime,
@@ -56,6 +57,43 @@ LISTING_WORKERS = 8
 MADE_WITHIN_SECONDS = 600.0
 # Most of what the runtime said that a failed workspace keeps.
 MAX_ERROR_CHARS = 2000
+# Most of the steps rcman wrote while making a workspace that are kept: the last ones.
+LOG_MAX_CHARS = 4000
+# The name of a workspace cloned from an address that has no name to take from it, and how
+# many numbered names are tried for one made from a repository before giving up.
+DEFAULT_NAME = "workspace"
+NAME_TRIES = 1000
+# What a token is shown as where git's words are kept.
+REDACTED = "***"
+# The words of git's by which a failed clone's cause is recognised, in the order they are
+# looked for: a sign-in asked for or refused, a repository GitHub does not have, no network.
+CLONE_CAUSES = (
+    (
+        "sign_in",
+        (
+            "could not read username",
+            "terminal prompts disabled",
+            "authentication failed",
+            "invalid username or password",
+            "returned error: 401",
+            "returned error: 403",
+        ),
+    ),
+    # git's own "fatal: repository '<address>' not found", and GitHub's "Repository not found."
+    ("not_found", ("repository not found", "' not found", "does not exist", "returned error: 404")),
+    (
+        "network",
+        (
+            "could not resolve host",
+            "unable to access",
+            "failed to connect",
+            "connection refused",
+            "connection timed out",
+            "network is unreachable",
+            "could not connect",
+        ),
+    ),
+)
 
 
 @dataclass(frozen=True)
@@ -68,6 +106,8 @@ class Workspace:
     server: bool  # a server is recorded: from its start until it is forgotten
     wanted: bool  # it should be running
     prefix: str | None  # the prefix it was last started with
+    source: str | None  # the address it was cloned from, as given; None for an empty one
+    log: str | None  # the steps rcman wrote while making it; cleared once it is ready
 
     @property
     def container(self) -> str:
@@ -86,7 +126,28 @@ def _workspace(row: sqlite3.Row | None) -> Workspace | None:
         bool(row["server"]),
         bool(row["wanted"]),
         row["prefix"],
+        row["source"],
+        row["log"],
     )
+
+
+def name_from(source: str) -> str:
+    """The name a workspace cloned from ``source`` is given when it is not named: the
+    repository's, without ``.git``, anything but letters, digits and hyphens made a hyphen,
+    what is not a letter or digit trimmed from its start, and cut to the length a name may
+    be; ``DEFAULT_NAME`` for one nothing is left of."""
+    repository = source.rstrip("/").rsplit("/", 1)[-1].removesuffix(".git")
+    name = re.sub(r"^[^A-Za-z0-9]+", "", re.sub(r"[^A-Za-z0-9-]", "-", repository))
+    return name[: rules.MAX_WORKSPACE_NAME_LENGTH] or DEFAULT_NAME
+
+
+def _numbered(name: str, number: int) -> str:
+    """``name``, or for the second and later ``name-2``, ``name-3``, cut to leave room for
+    the number within the length a name may be."""
+    if number == 1:
+        return name
+    suffix = f"-{number}"
+    return name[: rules.MAX_WORKSPACE_NAME_LENGTH - len(suffix)] + suffix
 
 
 @contextlib.contextmanager
@@ -113,6 +174,7 @@ class Workspaces:
         self._locks: dict[int, threading.RLock] = {}
         self._person_locks: dict[int, threading.RLock] = {}
         self._making: dict[int, threading.Thread] = {}  # by workspace
+        self._cloning: set[int] = set()  # the workspaces whose git is running; under _lock
         self._closing = threading.Event()
         self._restoring: threading.Thread | None = None
         # Called with a person's id once a server of theirs may have stopped: accounts.py
@@ -194,21 +256,35 @@ class Workspaces:
 
     # --- making and deleting ---------------------------------------------------------
 
-    def create(self, person: people.Person, name: str) -> Workspace:
-        """Record the workspace and make it in the background."""
+    def create(
+        self, person: people.Person, name: str | None, source: str | None = None
+    ) -> Workspace:
+        """Record the workspace and make it in the background; with ``source``, an address,
+        by cloning it. Without a ``name`` it is named after the repository, numbered when
+        the person has one of that name already; a name given that is taken is refused."""
+        base = name if name is not None else name_from(source)
         con = self._con()
         try:
-            # Only for a person still let in: none for one being deleted meanwhile.
-            cursor = con.execute(
-                "insert into workspaces (person, name, state) select ?, ?, ? "
-                "where exists (select 1 from people where id = ? and state = ?)",
-                (person.id, name, CREATING, person.id, people.ACTIVE),
-            )
-            con.commit()
-            if cursor.rowcount == 0:
-                raise Problem("not_allowed")
-        except sqlite3.IntegrityError:
-            raise Problem("workspace_name_taken") from None
+            for number in range(1, NAME_TRIES + 1):
+                chosen = base if name is not None else _numbered(base, number)
+                try:
+                    # Only for a person still let in: none for one being deleted meanwhile.
+                    cursor = con.execute(
+                        "insert into workspaces (person, name, state, source) "
+                        "select ?, ?, ?, ? "
+                        "where exists (select 1 from people where id = ? and state = ?)",
+                        (person.id, chosen, CREATING, source, person.id, people.ACTIVE),
+                    )
+                    con.commit()
+                except sqlite3.IntegrityError:
+                    if name is None:
+                        continue  # the next number
+                    raise Problem("workspace_name_taken") from None
+                if cursor.rowcount == 0:
+                    raise Problem("not_allowed")
+                break
+            else:
+                raise Problem("workspace_name_taken")
         finally:
             con.close()
         made = self.get(cursor.lastrowid)
@@ -219,16 +295,42 @@ class Workspaces:
         thread.start()
         return made
 
+    def _log(self, workspace_id: int, text: str) -> None:
+        """Add a step to the workspace's log, keeping at most the last LOG_MAX_CHARS
+        characters, from the start of a line: the line the cut falls in is dropped whole,
+        unless it is the only one."""
+        con = self._con()
+        try:
+            cut = f"substr(whole, {-LOG_MAX_CHARS})"
+            con.execute(
+                f"update workspaces set log = (select case "
+                f"when length(whole) <= {LOG_MAX_CHARS} then whole "
+                f"when substr(whole, {-LOG_MAX_CHARS - 1}, 1) = char(10) then {cut} "
+                f"when instr({cut}, char(10)) = 0 then {cut} "
+                f"else substr({cut}, instr({cut}, char(10)) + 1) end "
+                f"from (select coalesce(log || char(10), '') || ? as whole)) where id = ?",
+                (text, workspace_id),
+            )
+            con.commit()
+        finally:
+            con.close()
+
     def _make(self, workspace: Workspace, slot: int) -> None:
-        """Make the workspace; one deleted meanwhile is removed once it is made."""
+        """Make the workspace, and clone its source if it has one; one deleted meanwhile is
+        removed once it is made."""
         spec = Spec(workspace.container, slot=slot, workspace=workspace.id, person=workspace.person)
         try:
+            self._log(workspace.id, "Making the workspace")
             self.runtime.create(spec)
+            self._log(workspace.id, "Checking git")
             self._check_git(workspace)
+            if workspace.source:
+                self._clone(workspace)
             error = None
         except Exception as failed:  # noqa: BLE001 - whatever it is, the workspace failed
             log.warning("workspace %s could not be made: %s", workspace.id, failed)
             error = (str(failed) or type(failed).__name__)[:MAX_ERROR_CHARS]
+            error = self._redacted(workspace.person, error)
         with self.lock(workspace.id):
             now = self.get(workspace.id)
             if now is not None and now.state == DELETING:
@@ -239,9 +341,87 @@ class Workspaces:
                     return
                 self._finish_deleting(now.person)
             elif error is None:
-                self._set(workspace.id, state=READY, error=None)
+                self._set(workspace.id, state=READY, error=None, log=None)
             else:
                 self._set(workspace.id, state=FAILED, error=error)
+
+    def _clone(self, workspace: Workspace) -> None:
+        """Clone the workspace's source into its work folder, under no lock at all, so that
+        nothing waits for it - a sign-out, a start, the deletion of another workspace - and
+        so that nothing running is touched; a failure is a RuntimeFailed saying why. A
+        workspace deleted meanwhile has its container removed by the deletion (``delete``),
+        which ends git; the caller then finds it deleting."""
+        with self._lock:
+            self._cloning.add(workspace.id)
+        try:
+            now = self.get(workspace.id)
+            if now is None or now.state == DELETING:  # deleted before git could start
+                return
+            self._log(workspace.id, f"Cloning {workspace.source}")
+            run, run_stdin = self._execs(workspace.container)
+            layout = self.runtime.layout(workspace.container)
+            try:
+                Repository(layout, run, run_stdin).clone(workspace.source)
+            except Exception as failed:  # noqa: BLE001 - whatever it is, the clone failed
+                self._log(workspace.id, "The clone failed")
+                raise RuntimeFailed(self._clone_failure(workspace, failed)) from None
+            self._log(workspace.id, "Cloned")
+        finally:
+            with self._lock:
+                self._cloning.discard(workspace.id)
+
+    def _token(self, person: int) -> str | None:
+        con = self._con()
+        try:
+            found = con.execute("select token from github_tokens where person = ?", (person,))
+            row = found.fetchone()
+        finally:
+            con.close()
+        return row[0] if row else None
+
+    def _redacted(self, person: int, text: str) -> str:
+        """``text`` without the person's GitHub token, in case what said it echoed it."""
+        token = self._token(person)
+        return text.replace(token, REDACTED) if token else text
+
+    def _clone_failure(self, workspace: Workspace, failed: Exception) -> str:
+        """Why a clone failed, for the workspace's error, at most MAX_ERROR_CHARS: the
+        cause in plain words when it is recognised, then the exit code and the tail of what
+        git said, which is where it says why."""
+        if isinstance(failed, Problem) and failed.code == "git_timeout":
+            return CLONE_MESSAGES["timeout"]
+        if not isinstance(failed, CloneFailed):
+            said = failed.title if isinstance(failed, Problem) else str(failed)
+            return self._redacted(workspace.person, said or type(failed).__name__)[:MAX_ERROR_CHARS]
+        token = self._token(workspace.person)
+        said = (failed.err + failed.out).decode("utf-8", "replace")
+        if token:
+            said = said.replace(token, REDACTED)
+        cause = self._cause(said, token is not None)
+        head = "\n".join(
+            [
+                *([CLONE_MESSAGES[cause]] if cause else []),
+                f"git clone failed, exit code {failed.code}:",
+            ]
+        )
+        room = MAX_ERROR_CHARS - len(head) - 1
+        tail = said.strip()
+        if len(tail) > room:
+            tail = tail[-room:]
+            if "\n" in tail:  # not from the middle of a line
+                tail = tail.split("\n", 1)[1]
+        return f"{head}\n{tail}"
+
+    @staticmethod
+    def _cause(said: str, token: bool) -> str | None:
+        """The key in CLONE_MESSAGES of the cause git's words show, or None."""
+        text = said.lower()
+        for cause, patterns in CLONE_CAUSES:
+            if any(pattern in text for pattern in patterns):
+                if cause == "sign_in":
+                    return "token_refused" if token else "private_no_token"
+                return cause
+        return None
 
     def _check_git(self, workspace: Workspace) -> None:
         """The image must hold a git that rcman can use: one new enough, which the workspace
@@ -272,9 +452,27 @@ class Workspaces:
                 return
             self._set(workspace.id, state=DELETING)
             if now.state == CREATING:
+                self._stop_cloning(now)
                 return
             self._remove(now)
         self._stopped(workspace.person)
+
+    def _stop_cloning(self, workspace: Workspace) -> None:
+        """End the git that is cloning into the workspace, if any, by removing its container
+        by force, which kills what runs in it: cancelling a clone is deleting the workspace.
+        The workspace's thread then finds it deleting and finishes removing it. One whose
+        container cannot be removed now is removed when git ends, at the latest at the
+        clone's timeout."""
+        with self._lock:
+            cloning = workspace.id in self._cloning
+        if not cloning:
+            return
+        try:
+            self.runtime.remove(workspace.container)
+        except (RuntimeFailed, RuntimeUnavailable) as failed:
+            log.warning(
+                "the clone into workspace %s could not be stopped: %s", workspace.id, failed
+            )
 
     def _remove(self, workspace: Workspace) -> None:
         self.close_channel(workspace.container)
@@ -390,6 +588,8 @@ class Workspaces:
                 "name": workspace.name,
                 "state": workspace.state,
                 "error": workspace.error,
+                "source": workspace.source,
+                "log": workspace.log if workspace.state != READY else None,
                 "server": None,
                 "server_error": None,
             }
@@ -578,6 +778,9 @@ class Workspaces:
     def _restore_one(self, workspace: Workspace) -> None:
         if workspace.state == DELETING:
             self._remove(workspace)
+        elif workspace.state == CREATING and workspace.source:
+            # A clone is not made again, whatever it had cloned: the person decides.
+            self._set(workspace.id, state=FAILED, error=CLONE_MESSAGES["restarted"])
         elif workspace.state == CREATING:
             self.runtime.remove(workspace.container)  # whatever was made of it
             con = self._con()

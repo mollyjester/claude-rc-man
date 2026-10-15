@@ -346,23 +346,11 @@ def test_a_workspace_is_a_whole_number_from_one(client):
     assert r.json()["errors"] == [{"field": "workspace", "message": "This is required."}]
 
 
-# --- clone: not there yet ------------------------------------------------------------
-
-
-def test_clone_still_answers_not_available_yet_and_is_audited_with_its_address(client, settings):
-    url = "https://github.com/alice/a-clone"
-    r = call(client, "POST", "/api/git/clone", json={"url": url})
-    assert codes(r) == (501, "not_available_yet")
-    last = rows(settings)[-1]
-    assert (last["action"], last["target"], last["result"]) == (
-        "git.clone",
-        url,
-        "not_available_yet",
-    )
+# --- clone: the address's rule (the workspace it makes is tests/test_clone.py's) ----------
 
 
 @pytest.mark.parametrize("url", ["https://user:pass@github.com/a/b", "http://github.com/a/b"])
-def test_a_clone_address_is_still_checked_by_its_rule(client, url):
+def test_a_clone_address_is_checked_by_its_rule(client, url):
     r = call(client, "POST", "/api/git/clone", json={"url": url})
     assert r.status_code == 422
     assert r.json()["errors"] == [{"field": "url", "message": rules.GITHUB_URL.sentence}]

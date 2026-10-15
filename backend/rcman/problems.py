@@ -91,6 +91,27 @@ MESSAGES = {
     "no_commits_yet": "This branch has no commits yet, so there is nothing to push.",
     "github_token_not_set": "Add a GitHub token in Settings before pushing to GitHub.",
 }
+# What a workspace that failed to be cloned is told, in plain words, beside what git said
+# (workspaces.py): by the cause rcman recognised in it.
+CLONE_MESSAGES = {
+    "timeout": "Cloning took too long, so it was stopped.",
+    "private_no_token": (
+        "GitHub asked for a sign-in: the repository is private, or the address is wrong. "
+        "If it is private, add a GitHub token in Settings and make the workspace again."
+    ),
+    "token_refused": (
+        "GitHub did not accept your token for this repository. Check in Settings that the "
+        "token is valid and may read it, then make the workspace again."
+    ),
+    "not_found": (
+        "GitHub could not find this repository. Check the address; a private repository "
+        "needs a GitHub token in Settings that may read it."
+    ),
+    "network": "rcman could not reach GitHub from the workspace.",
+    "restarted": (
+        "rcman restarted while this workspace was being cloned; delete it and make it again."
+    ),
+}
 STATUS = {
     "not_authenticated": 401,
     "not_allowed": 403,

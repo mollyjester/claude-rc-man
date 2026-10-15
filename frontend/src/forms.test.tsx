@@ -48,7 +48,16 @@ function api() {
     "POST /api/claude/login": { url: "https://claude.com/x" },
     "GET /api/workspaces": {
       workspaces: [
-        { id: 1, name: "alpha", state: "ready", error: null, server: null, server_error: null },
+        {
+          id: 1,
+          name: "alpha",
+          state: "ready",
+          error: null,
+          source: null,
+          log: null,
+          server: null,
+          server_error: null,
+        },
       ],
     },
     "GET /api/attention": NOTHING_TO_ATTEND,
@@ -471,6 +480,17 @@ async function labelFaults(form: HTMLFormElement): Promise<string[]> {
   }
   return faults;
 }
+
+test("the new workspace form asks for the name, then the repository's address, each under its field's name", async () => {
+  api();
+  renderApp("/");
+  const form = (await screen.findByLabelText(m.newWorkspaceName)).closest("form")!;
+  expect(fieldInputs(form).map((input) => input.name)).toEqual(["name", "url"]);
+  expect(fieldInputs(form).map((input) => input.labels?.[0]?.textContent)).toEqual([
+    m.newWorkspaceName,
+    m.newWorkspaceSource,
+  ]);
+});
 
 test.each(PAGES)("a refused field on %s is named by its label", async (_, where, open) => {
   api();

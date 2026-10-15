@@ -173,9 +173,13 @@ function WorkspaceEntry({
   );
 }
 
-// Makes a workspace with the name typed, which is the server's to judge.
+// Makes a workspace with the name typed, empty or, with a GitHub address, cloned from it; the
+// server judges both, and names a cloned workspace after its repository when none is typed.
 function NewWorkspace({ onMade }: { onMade: (workspace: Workspace) => void }) {
   const [name, setName] = useState("");
+  const [url, setUrl] = useState("");
+  const nameHelp = useId();
+  const urlHelp = useId();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<ApiError | null>(null);
 
@@ -184,9 +188,18 @@ function NewWorkspace({ onMade }: { onMade: (workspace: Workspace) => void }) {
     if (busy) return;
     setBusy(true);
     setError(null);
+    // A space pasted around either is not part of it.
+    const typedName = name.trim();
+    const typedUrl = url.trim();
     try {
-      const answer = await api.post<{ workspace: Workspace }>("/api/workspaces", { name });
+      const answer = typedUrl
+        ? await api.post<{ workspace: Workspace }>("/api/git/clone", {
+            url: typedUrl,
+            ...(typedName ? { name: typedName } : {}),
+          })
+        : await api.post<{ workspace: Workspace }>("/api/workspaces", { name: typedName });
       setName("");
+      setUrl("");
       onMade(answer.workspace);
     } catch (e) {
       setError(asApiError(e));
@@ -201,14 +214,39 @@ function NewWorkspace({ onMade }: { onMade: (workspace: Workspace) => void }) {
       <form noValidate onSubmit={create}>
         <label>
           {m.newWorkspaceName}
-          <input type="text" name="name" value={name} onChange={(e) => setName(e.target.value)} />
+          <input
+            type="text"
+            name="name"
+            value={name}
+            aria-describedby={nameHelp}
+            onChange={(e) => setName(e.target.value)}
+          />
         </label>
+        <p id={nameHelp} className="muted">
+          {m.newWorkspaceNameHelp}
+        </p>
+        <label>
+          {m.newWorkspaceSource}
+          <input
+            type="text"
+            name="url"
+            value={url}
+            aria-describedby={urlHelp}
+            onChange={(e) => setUrl(e.target.value)}
+          />
+        </label>
+        <p id={urlHelp} className="muted">
+          {m.newWorkspaceSourceHelp}
+        </p>
         <div className="actions">
           <button type="submit" className="primary" disabled={busy}>
             {busy ? m.creating : m.create}
           </button>
         </div>
-        <ProblemView error={error} labels={{ name: m.newWorkspaceName }} />
+        <ProblemView
+          error={error}
+          labels={{ name: m.newWorkspaceName, url: m.newWorkspaceSource }}
+        />
       </form>
     </section>
   );
@@ -300,7 +338,8 @@ function DeleteWorkspaceDialog({
 
 // The selected workspace: what its state allows, and, once it is ready, its
 // Claude server or the offer to start one, and the Changes of its repository.
-// Delete workspace is offered for a workspace that is ready or failed.
+// Delete workspace is offered for a workspace that is ready or failed, and for one being
+// cloned, where it cancels the clone.
 function WorkspacePanel({
   workspace,
   pollMs,
@@ -313,7 +352,8 @@ function WorkspacePanel({
   onDeleted: () => void;
 }) {
   const [deleting, setDeleting] = useState(false);
-  const deletable = workspace.state === "ready" || workspace.state === "failed";
+  const cloning = workspace.state === "creating" && workspace.source !== null;
+  const deletable = workspace.state === "ready" || workspace.state === "failed" || cloning;
   const { server, server_error: unread } = workspace;
   return (
     <section aria-label={workspace.name} className="panel">
@@ -337,12 +377,18 @@ function WorkspacePanel({
         </>
       )}
       {workspace.state === "creating" && <p>{m.workspaceCreating}</p>}
+      {cloning && <p>{m.workspaceCloningCancel}</p>}
       {workspace.state === "deleting" && <p>{m.workspaceDeleting}</p>}
       {workspace.state === "failed" && (
         <>
           <p>{m.workspaceFailed}</p>
-          <pre className="workspace-error">{workspace.error}</pre>
+          <pre className="screen workspace-error">{workspace.error}</pre>
         </>
+      )}
+      {workspace.state !== "ready" && workspace.log && (
+        <figure aria-label={m.workspaceLog}>
+          <pre className="screen workspace-log">{workspace.log}</pre>
+        </figure>
       )}
       {workspace.state === "ready" && (
         <PanelSection title={m.serverTitle}>

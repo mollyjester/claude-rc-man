@@ -220,6 +220,11 @@ def test_the_world_shape_is_the_one_world_ts_names():
     assert e2e.is_world(f"rcman-e2e-{uuid.uuid4()}")
 
 
+def test_the_address_the_browser_tests_clone_is_the_one_the_world_has():
+    source = (FRONTEND / "e2e" / "nav.ts").read_text(encoding="utf-8")
+    assert f'GITHUB_ADDRESS = "{e2e.SEEDED_ADDRESS}"' in source
+
+
 def test_a_world_is_removed_while_its_lock_is_held(world, monkeypatch):
     """So no other run clearing at the same time takes it for abandoned meanwhile."""
     root, started = world
@@ -490,6 +495,90 @@ def _made(client, who):
             return found
         time.sleep(0.05)
     raise AssertionError(found)
+
+
+def _cloned(client, who, url, name=None):
+    """The workspace a clone of ``url`` made, once it is no longer being made."""
+    import time
+
+    from tests.conftest import as_user
+
+    body = {"url": url, **({"name": name} if name else {})}
+    r = client.post("/api/git/clone", json=body, headers={**as_user(who), "Origin": ORIGIN})
+    assert r.status_code == 202, r.text
+    made = r.json()["workspace"]
+    for _ in range(400):
+        [found] = [
+            w
+            for w in client.get("/api/workspaces", headers=as_user(who)).json()["workspaces"]
+            if w["id"] == made["id"]
+        ]
+        if found["state"] != "creating":
+            return found
+        time.sleep(0.05)
+    raise AssertionError(found)
+
+
+def test_the_world_clones_an_address_on_github_from_a_repository_of_its_own(world):
+    """The world has a public repository at the address the browser tests give, and a
+    clone of it is what the page shows: ready, on main, with the files."""
+    from tests.conftest import as_user
+
+    root, _ = world
+    with TestClient(e2e.create_app()) as client:
+        found = _cloned(client, "alice@example.com", e2e.SEEDED_ADDRESS)
+        assert found["state"] == "ready" and found["name"] == "widget", found
+        assert found["source"] == e2e.SEEDED_ADDRESS and found["log"] is None
+        status = client.get(
+            "/api/git/status",
+            params={"workspace": found["id"]},
+            headers=as_user("alice@example.com"),
+        )
+        assert status.status_code == 200, status.text
+        assert status.json()["branch"]["name"] == "main"
+        assert (root / "workspaces").is_dir()
+        assert any(root.glob("workspaces/**/README.md"))
+
+
+def test_an_address_the_world_has_no_repository_for_fails_with_what_git_said_and_reaches_nothing(
+    world,
+):
+    with TestClient(e2e.create_app()) as client:
+        found = _cloned(client, "alice@example.com", "https://github.com/octo/not-there")
+    assert found["state"] == "failed", found
+    assert "git clone failed, exit code 128:" in found["error"], found["error"]
+    assert "not-there" in found["error"]  # git looked in the world's own folder, nowhere else
+    assert "github.com" not in found["error"].replace("https://github.com/octo/not-there", "")
+
+
+def test_every_git_clone_of_the_world_is_taken_from_its_repositories_or_refused(world):
+    """The guard that keeps the browser tests off the real github.com: a clone the world's
+    runtime is asked for is told to take GitHub from the world's own folder, and the very
+    wrapper refuses one that is not told so."""
+    root, _ = world
+    asked = []
+
+    class Recording:
+        def exec(self, name, argv, *args, **kwargs):
+            asked.append(argv)
+
+    runtime = Recording()
+    github = root / "github"
+    e2e.keep_off_github(runtime, github)
+    runtime.exec("w", ["timeout", "git", "-C", "/w", "clone", "--", e2e.SEEDED_ADDRESS, "."])
+    [argv] = asked
+    assert f"url.{github}/.insteadOf=https://github.com/" in argv  # the positive
+    assert argv[argv.index("clone") - 1] == "protocol.git.allow=never"
+    runtime.exec("w", ["git", "status"])  # anything but a clone as it is
+    assert asked[-1] == ["git", "status"]
+    # the planted twin: a rewrite that does nothing is refused, not run
+    from tests import git_fixtures
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(git_fixtures, "through_stand_in", lambda argv, base: argv)
+        with pytest.raises(AssertionError, match="would reach github.com"):
+            runtime.exec("w", ["git", "clone", "--", e2e.SEEDED_ADDRESS, "."])
+    assert len(asked) == 2  # the refused one was never run
 
 
 def _free_port() -> int:

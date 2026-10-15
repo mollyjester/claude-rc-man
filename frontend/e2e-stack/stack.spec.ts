@@ -45,6 +45,13 @@ function makeRepository(workspace: number) {
   );
 }
 
+// The stand-in GitHub the stack holds at github.com (tests/container/stack.py): the token it
+// takes and the addresses of its public and its private repository, which the container
+// suite passes as JSON (tests/test_container_suite.py).
+const GITHUB: { token: string; public: string; private: string } = JSON.parse(
+  process.env.RCMAN_STACK_GITHUB ?? '{"token":"","public":"","private":""}',
+);
+
 // The fake claude's one accepted code (devtools/fake_claude.py, ACCEPTED_CODE).
 const CODE = process.env.RCMAN_FAKE_CLAUDE_CODE ?? "";
 
@@ -143,6 +150,62 @@ test("changes in a workspace's repository are staged, committed and pushed from 
 
   await changes.getByRole("button", { name: m.push, exact: true }).click();
   await expect(changes.getByText(m.pushed("main", "origin/main"))).toBeVisible();
+});
+
+test("a workspace is made by cloning from GitHub, a private repository once a token is stored", async ({
+  page,
+}) => {
+  expect(GITHUB.token).not.toBe("");
+  await signIn(page, ALICE);
+  const form = page.getByRole("region", { name: m.newWorkspace });
+
+  // A public repository, with no name: named after the repository, being made, then ready.
+  await form.getByLabel(m.newWorkspaceSource).fill(GITHUB.public);
+  await form.getByRole("button", { name: m.create }).click();
+  const publicOne = panel(page, "stack-public");
+  await expect(publicOne.getByText(m.workspaceCreating)).toBeVisible();
+  await expect(publicOne.getByRole("button", { name: m.start })).toBeVisible();
+  const changes = publicOne.getByRole("region", { name: m.changesTitle });
+  await expect(changes.getByRole("button", { name: m.onBranch("main") })).toBeVisible();
+  await expect(publicOne.getByRole("figure", { name: m.workspaceLog })).toHaveCount(0);
+
+  // A private one, without a token: it fails, in plain words and with what git said.
+  await form.getByLabel(m.newWorkspaceSource).fill(GITHUB.private);
+  await form.getByRole("button", { name: m.create }).click();
+  const privateOne = panel(page, "stack-private");
+  await expect(privateOne.getByText(m.workspaceFailed)).toBeVisible();
+  const said = privateOne.locator("pre.workspace-error");
+  // the server's sentence, CLONE_MESSAGES["private_no_token"] in backend/rcman/problems.py
+  await expect(said).toContainText("GitHub asked for a sign-in");
+  await expect(said).toContainText("git clone failed, exit code 128:");
+  await expect(said).toContainText("could not read Username");
+  await expect(privateOne.getByRole("figure", { name: m.workspaceLog })).toContainText(
+    "The clone failed",
+  );
+  await privateOne.getByRole("button", { name: m.deleteWorkspace }).click();
+  await page
+    .getByRole("dialog", { name: m.deleteWorkspaceTitle("stack-private") })
+    .getByRole("button", { name: m.deleteWorkspaceConfirm })
+    .click();
+  await expect(page.getByRole("status")).toHaveText(m.workspaceDeleted("stack-private"));
+
+  // With a token stored in Settings, the same address is cloned.
+  await page.getByRole("banner").getByRole("link", { name: m.navSettings }).click();
+  const github = page.getByRole("region", { name: m.settingsGithubTitle });
+  await github.getByLabel(m.githubTokenLabel).fill(GITHUB.token);
+  await github.getByRole("button", { name: m.save }).click();
+  await expect(github.getByText(m.githubTokenSaved)).toBeVisible();
+  await page.getByRole("banner").getByRole("link", { name: m.navDashboard }).click();
+  await form.getByLabel(m.newWorkspaceSource).fill(GITHUB.private);
+  await form.getByRole("button", { name: m.create }).click();
+  const again = panel(page, "stack-private");
+  await expect(again.getByRole("button", { name: m.start })).toBeVisible();
+  await expect(
+    again.getByRole("region", { name: m.changesTitle }).getByRole("button", {
+      name: m.onBranch("main"),
+    }),
+  ).toBeVisible();
+  await expect(again.getByText(m.workspaceFailed)).toHaveCount(0);
 });
 
 test("another person sees none of it, and reaching it by its id finds nothing", async ({
@@ -264,6 +327,7 @@ test("the audit trail records what people did", async ({ page }) => {
     "git.stage",
     "git.commit",
     "git.push",
+    "git.clone",
     "person.add",
     "person.delete",
   ]) {
