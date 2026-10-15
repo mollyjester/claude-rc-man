@@ -18,7 +18,9 @@ Claude sign-in per person, which every workspace of theirs shares; the
 backend API with its audit trail; the web interface; the installer; and the
 end-to-end checks; git in workspaces, with each person's commit author and
 GitHub token shared by all their workspaces and the Changes section of a
-workspace's panel. Not there yet in workspaces: devcontainer.json, rolling out Claude Code versions, and limits. How to install it:
+workspace's panel. a repository's devcontainer.json read when a workspace is cloned, with an image,
+user, environment and lifecycle commands, and what it may not ask for refused. Not there yet in workspaces: building
+an image from a Dockerfile or features, rolling out Claude Code versions, and limits. How to install it:
 [docs/installation.md](docs/installation.md). Screens of Claude Code that
 rcman has no recording of yet are listed in
 [project-knowledge/fake-claude.md](project-knowledge/fake-claude.md). The

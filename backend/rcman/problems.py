@@ -109,7 +109,109 @@ CLONE_MESSAGES = {
     ),
     "network": "rcman could not reach GitHub from the workspace.",
     "restarted": (
-        "rcman restarted while this workspace was being cloned; delete it and make it again."
+        "rcman restarted while this workspace was being made; delete it and make it again."
+    ),
+}
+# What a workspace made from a repository's devcontainer.json is told when the file, or the
+# image it names, is refused or fails (devcontainer.py, workspaces.py), in plain words: the
+# key to remove or change, or what to do instead. {key}, {entry} and the like are filled in
+# by what raises the message.
+DEVCONTAINER_MESSAGES = {
+    "refused_key": (
+        'devcontainer.json asks for "{key}". {reason} '
+        "Remove it from the file, push the change and make the workspace again."
+    ),
+    "refused_by_image": (
+        'The image asks for "{key}" in its metadata entry "{entry}". {reason} '
+        "Use an image that does not ask for it."
+    ),
+    "unknown_key": (
+        'devcontainer.json has the key "{key}", which rcman does not know, so it cannot say '
+        "what it would do. Remove it, push the change and make the workspace again."
+    ),
+    "unknown_key_in_image": (
+        'The image\'s metadata entry "{entry}" has the key "{key}", which rcman does not '
+        "know, so it cannot say what it would do. Use another image."
+    ),
+    "invalid_file": (
+        "devcontainer.json is not valid JSON with comments: it goes wrong at line {line}, "
+        "column {column}. Fix the file, push the change and make the workspace again."
+    ),
+    "not_an_object": (
+        "devcontainer.json must hold one JSON object whose keys are the settings. "
+        "Fix the file, push the change and make the workspace again."
+    ),
+    "too_deep": "devcontainer.json is nested too deeply to be read. Simplify the file.",
+    "invalid_value": (
+        "devcontainer.json holds a number that is far too big to be one of its settings. "
+        "Fix the file, push the change and make the workspace again."
+    ),
+    "too_big": (
+        "devcontainer.json is too big to be a configuration, so rcman did not read it. "
+        "Make it smaller, push the change and make the workspace again."
+    ),
+    "symlink": (
+        "devcontainer.json is a symbolic link, or is in a folder that is one, and rcman does "
+        "not follow links there. Make it an ordinary file, push the change and make the "
+        "workspace again."
+    ),
+    "unreadable": "rcman could not read devcontainer.json in the workspace.",
+    "no_image": (
+        'devcontainer.json names no image. Name one with "image"; rcman cannot build an '
+        "image from a Dockerfile or from features."
+    ),
+    "bad_value": (
+        'devcontainer.json has a value of the wrong kind for "{key}": it must be {expected}. '
+        "Fix the file, push the change and make the workspace again."
+    ),
+    "variable": (
+        'devcontainer.json uses the variable "{variable}" in "{key}". It stands for a folder '
+        "on the machine rcman runs on, which a workspace has none of. Use "
+        '"containerWorkspaceFolder" for the work folder, push the change and make the '
+        "workspace again."
+    ),
+    "env_reserved": (
+        '"{where}" in {origin} sets "{name}", which rcman sets itself in every workspace. '
+        "Remove it from the file, push the change and make the workspace again."
+    ),
+    "user_unknown": (
+        'The image has no user or group "{user}". Name a user that is in the image\'s '
+        "passwd file, push the change and make the workspace again."
+    ),
+    "id_out_of_range": (
+        'The user "{user}" has an id beyond the ids a workspace has. Name a user whose ids '
+        "are within them."
+    ),
+    "metadata_invalid": (
+        "The image's devcontainer.metadata label is not a list of settings objects, so "
+        "rcman cannot tell what the image asks for. Use another image."
+    ),
+    "image_unreadable": 'rcman could not read the image "{image}": {said}',
+    "image_unrunnable": (
+        'rcman could not run a container from the image "{image}": {said} Use another image.'
+    ),
+    "image_gone": (
+        'The image "{image}" is no longer available, so this workspace\'s container cannot '
+        "be made again. Delete the workspace and make it again."
+    ),
+    "pull_failed": (
+        'rcman could not pull the image "{image}": {said} Check the image name and tag; an '
+        "image that needs a sign-in to its registry cannot be pulled."
+    ),
+    "git_unusable": (
+        'The image "{image}" has no git that rcman can use: {said}. Use an image with a recent git.'
+    ),
+    "musl": (
+        'The image "{image}" is built on musl, as Alpine images are, and Claude Code needs '
+        "glibc. Use an image built on glibc, such as a Debian or Ubuntu one."
+    ),
+    "hook_failed": (
+        "{command} failed, exit code {code}. What it printed last is below. The workspace "
+        "was kept so that you can look at it; delete it to remove it."
+    ),
+    "hook_timeout": (
+        "{command} took too long, so it was stopped. What it printed last is below. The "
+        "workspace was kept so that you can look at it; delete it to remove it."
     ),
 }
 STATUS = {

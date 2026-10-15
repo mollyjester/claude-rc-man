@@ -46,7 +46,7 @@ the podman host against real Podman.
 Everything git is tested against real git,
 never a fake: `tests/test_git_run.py` holds the parsers of `helpers/git_run.py`,
 `tests/test_repository.py` every verb of `repository.py` in host-runtime workspaces
-through a real channel and `exec`, `tests/test_clone.py` a workspace made by cloning
+through a real channel and `exec`, `tests/test_devcontainer.py` the pure module (`devcontainer.py`) and the guard that holds the administrators' devcontainer page equal to its policy, `tests/test_devcontainer_flow.py` a workspace made from a repository's devcontainer.json on a host runtime with planted images, `tests/test_clone.py` a workspace made by cloning
 (a phase of `creating`: its log, failures and their causes, token redaction, names,
 the route, cancel by deletion, restart recovery) on a host runtime that runs real git
 and can answer a clone with what git would say or hold it as a running git, `tests/test_git_account.py` `gitaccount.py`
@@ -125,6 +125,23 @@ The certificates, the derived image's build file and the service that serves the
 repositories are `tests/container/github_stand_in.py`, which is standard library
 only so that the podman host can run it as it is from `/src`. It skips anywhere
 else.
+
+`tests/container/test_devcontainer_in_podman.py` runs in a podman host in the same way
+(`_in_the_hosts_with_github` in `tests/test_container_suite.py` prepares both), sharing
+the fixtures and the stand-in GitHub of the module above. It derives images from the
+workspace image in the account's Podman, by name, so no registry holds them, and checks
+what a workspace made from a repository's devcontainer.json rests on, against real
+Podman: how an image is read without being run, pulled and, when only the account has
+it, used without a registry; the uid swap map with `--user` and `--group-add`; files an
+ordinary-map root made being the user's, and a user's rename in them; the tmpfs being the
+user's; the shared credentials file and git folder written in place from a root
+workspace and the user's of one person, two refreshing at once, with its owner and mode
+unchanged on the host; and, through `Workspaces` and a clone from the stand-in, Claude and
+the commands running as `remoteUser` with the file's environment and the image's, git
+with the person's author and token, the create commands running once and `postStartCommand`
+at every start across a restart of rcman, a refused key or an Alpine image leaving nothing
+behind, a failing command keeping the workspace with its token redacted, and a deletion
+killing a running command.
 
 The **whole stack** is `tests/container/stack.py`, in a podman host that
 publishes its port 443: rcman installed from a clone through the real

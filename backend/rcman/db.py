@@ -7,6 +7,7 @@ one transaction, so a script never begins or commits one of its own.
 
 from __future__ import annotations
 
+import contextlib
 import sqlite3
 from pathlib import Path
 
@@ -84,6 +85,13 @@ MIGRATIONS = [
     alter table workspaces add column source text;
     alter table workspaces add column log text;
     """,
+    """
+    -- What a workspace made from a repository's devcontainer.json is made from, as JSON
+    -- (devcontainer.Plan): the image, the user, the environment, the lifecycle commands and the
+    -- keys that were ignored. Null for a workspace made from rcman's own image. A restore makes
+    -- the container again from it.
+    alter table workspaces add column environment text;
+    """,
 ]
 
 
@@ -104,8 +112,11 @@ MODE = 0o600
 def connect(path: Path) -> sqlite3.Connection:
     con = sqlite3.connect(path, check_same_thread=False)
     for file in (path, path.with_name(path.name + "-wal"), path.with_name(path.name + "-shm")):
-        if file.exists() and (file.stat().st_mode & 0o777) != MODE:
-            file.chmod(MODE)
+        # The -wal and -shm files are removed when the last connection closes, so one that was
+        # there a moment ago may not be.
+        with contextlib.suppress(FileNotFoundError):
+            if file.exists() and (file.stat().st_mode & 0o777) != MODE:
+                file.chmod(MODE)
     con.row_factory = sqlite3.Row
     con.execute("pragma journal_mode = wal")
     con.execute("pragma foreign_keys = on")

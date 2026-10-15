@@ -27,7 +27,11 @@ conmon and the network helper with them, live in rcman's user manager, not in
 - `--init`, so orphans are reaped;
 - the network `slirp4netns:allow_host_loopback=false`, and no port published;
 - `--uidmap` and `--gidmap` `0:<slot × RANGE>:RANGE`, the person's range
-  (`runtime.RANGE`; slot 0 is rcman's own ids, so no person has it);
+  (`runtime.RANGE`; slot 0 is rcman's own ids, so no person has it). A workspace
+  made from a devcontainer.json image whose user is not root has its user's ids
+  swapped with root's by `PodmanRuntime._ids`, so that the user is the host id
+  root has in the person's other workspaces and owns what root owns there (see
+  [A repository's devcontainer.json](#a-repositorys-devcontainerjson));
 - its volume at `VOLUME_MOUNT`, with its folders `work` (where the server runs),
   `claude` (`CLAUDE_CONFIG_DIR`) and `home` (`HOME`), the volume's root
   readable by the range's root alone;
@@ -36,9 +40,12 @@ conmon and the network helper with them, live in rcman's user manager, not in
   folder bound at `~/.config/git` (see [The git folder](#the-git-folder));
 - the tools (`tools_dir`) at `TOOLS_MOUNT` and the Claude Code store
   (`claude_store`) at `CLAUDE_MOUNT`, both read-only;
-- a tmpfs at `RUN_MOUNT` for the tmux socket and the channel's files;
-- the mounted busybox's `sleep` as its process, so an image needs nothing of its
-  own to stay up;
+- a tmpfs at `RUN_MOUNT` for the tmux socket and the channel's files, the user's
+  (`U`) when the ids are swapped;
+- the mounted busybox's `sleep` as its process, with the image's own entrypoint
+  replaced by the mounted busybox, so an image needs nothing of its own to stay
+  up, and the volume's mount (`VOLUME_MOUNT`) as its working folder, which exists
+  and is the user's, whatever folder the image sets and the user cannot enter;
 - the labels `rcman.workspace` and `rcman.person`, by which `labelled` finds
   every workspace there is.
 
@@ -110,7 +117,15 @@ and anything else that is not 0, exit 125 among it, is `RuntimeUnavailable`.
 `exec` runs one command with stdin, for what a channel cannot carry, and runs
 it once more when conmon says it could not start it (`CONMON_FAILED`), as
 nothing ran then. It takes a `timeout` in seconds (default `PODMAN_TIMEOUT`);
-a command that has not ended by then is `RuntimeFailed`. git runs under the
+a command that has not ended by then is `RuntimeFailed`; and a `cwd`, the folder it
+runs in (without one, the host runtime's work folder and the image's own working folder in
+Podman, which has no work folder before `create` has made it; a caller that needs one names it). `discard` removes a container and keeps its
+volume, so that `create` makes it again on the same files; `remove` takes both.
+`pull` pulls an image, passing on each line it prints and stopping when its `cancel`
+event is set; an image the runtime already has, such as one built or loaded there, is used
+when its pull fails (`USING_LOCAL_IMAGE` is said), so no registry is needed for it, and `image_facts` reads one without running it (`ImageFacts`). The host
+runtime has no images: a test plants them in its `images`, and its `specs` hold the
+`Spec` each workspace was last made from. git runs under the
 layout's `timeout` tool (busybox's applet in a container, the host's program on
 the host runtime), which ends it first; `TIMED_OUT` lists the exit statuses
 that mean it did.
@@ -209,6 +224,66 @@ every observed screen (see [fake-claude.md](fake-claude.md)) by
 | `reconnected` | A live screen of Claude's log lines only, the last saying Remote Control has reconnected; `screen` is set |
 | `unrecognised` | A live screen that matches no known state; `screen` is set |
 
+## A repository's devcontainer.json
+
+A workspace made by cloning is read for a `devcontainer.json` after the clone
+(`Workspaces._configure`); what rcman honours, ignores and refuses, key by key, is
+`devcontainer.POLICY`, and [the administrators' page](../docs/devcontainer.md) holds
+the same table, which a test keeps equal. The pure module `backend/rcman/devcontainer.py`
+holds the reader (`read`, through the workspace's `exec` in its work folder: a link is
+never followed, the size is capped, no content reaches a message), the JSON-with-comments
+parser, the policy, the plan (`plan`: the entries of the image's `devcontainer.metadata`
+label, then the file's own, merged) and the parsing of an image's passwd and group files.
+
+- **Order.** Read and check the file (`check`: refusals before anything is pulled); pull the
+  image (`Runtime.pull`, its lines in the log); read the image without running it
+  (`Runtime.image_facts`: a container made and never started, `podman cp` of the passwd and
+  group files, which is stopped at `PODMAN_TIMEOUT` or when the workspace is deleted, and in
+  which only podman saying the file is not there means the image has none: any other failure
+  fails the reading, so a user is never reported missing because a copy merely failed; the image's labels, user and environment); make the plan; store it in the
+  row's `environment`; close the channel, `Runtime.discard` the container (the volume
+  stays) and make it again from the image as the plan's user; check libc (an image on
+  musl is refused) and git; run the create commands. The workspace stays `creating`
+  until all that is done.
+- **Failure.** A `devcontainer.Refused` - a refused or unknown key, a file that cannot
+  be read or parsed, an image that cannot be pulled, read, used or run - fails the workspace
+  with a message from `problems.DEVCONTAINER_MESSAGES` and removes its container and
+  volume, leaving only the failed row. A lifecycle command that fails or takes too long
+  fails the workspace with its exit code and the tail of its output, and keeps the
+  container and volume for the person to look at.
+- **The user.** The plan's user is the image's user for `remoteUser`, else
+  `containerUser`, else the image's own. `PodmanRuntime._ids` swaps the user's uid and gid
+  with root's in the person's range, so that the user owns the volume, the shared
+  credentials file and the git folder as root does in the person's other workspaces;
+  `Spec.user` is passed as `--user` (a name or a number keeps the user's groups;
+  `uid:gid` does not, so the groups are added with `--group-add`). The folders beside
+  the mounts are made first by the ordinary map's root, since Podman would make them as
+  the container's root, who in a swapped map is not the user. `HOME` stays the workspace's
+  home.
+- **The environment.** The image's own variables (but its `PATH`, kept as `image_path`, and
+  the names in `devcontainer.RESERVED_ENV`) come first, then `containerEnv`, the container's;
+  with `remoteEnv` it is what
+  `Layout.env` holds for the workspace (`Workspaces._layout`), and so what git, tmux,
+  Claude and the lifecycle commands get besides rcman's own variables.
+  `devcontainer.RESERVED_ENV` are the names rcman sets itself that a file may not set.
+  `LANG`, `LC_ALL` and `BROWSER` a file may: rcman sets each in only some of its programs
+  (`LANG` for tmux and Claude, `LC_ALL` for git, `BROWSER` for Claude), and there its value
+  comes after the file's and wins; everywhere else, lifecycle commands included, the file's is
+  used. `PATH` may be set, with the folder of rcman's own programs kept first. Without a `PATH`
+  of the file's, the image's is used.
+- **The image's name.** `image` must be a plain registry reference, `[host[:port]/]path[:tag]
+  [@digest]`, as written: no variable in it (it is the name that is pulled), and nothing
+  that podman would read as a transport or a file (`docker-archive:`, `oci:`, `dir:` and the
+  like).
+- **Commands.** `Workspaces._run_commands` runs each command in the work folder, as the
+  container's user, under the `timeout` tool with `HOOK_TIMEOUT_SECONDS`, with exactly
+  `_hook_env`; a string by the image's `/bin/sh` or else the mounted busybox's shell, an
+  array as a program. Only the last `HOOK_KEEP_BYTES` of each of a command's output streams
+  is ever held (`exec`'s `keep`). The create commands run once, in `_configure`;
+  `postStartCommand` runs there too and again after every start or re-creation in a restore,
+  before that workspace's server is started, and its failure is only logged. A container
+  that kept running through a restart of rcman is not started, so nothing runs.
+
 ## What rcman keeps, and brings back
 
 The `workspaces` table (`backend/rcman/db.py`) holds each workspace's state —
@@ -227,24 +302,43 @@ the prefix it was started with.
   its work folder, by `Repository.clone` (see
   [backend.md](backend.md#git-in-workspaces)). The clone runs under no lock, the
   person's and the workspace's alike, so that nothing waits for as long as it
-  takes; `_cloning`, under the service's own lock, holds the ids whose git is
-  running. A failure fails the workspace with the cause, the exit code and git's
-  words; the workspace and its folder stay until it is deleted.
+  takes; `_working`, under the service's own lock, holds for each workspace whose
+  clone, image pull or lifecycle command is running the event a deletion sets. A
+  failure fails the workspace with the cause, the exit code and git's
+  words; the workspace and its folder stay until it is deleted. What follows the
+  clone, a repository's devcontainer.json, is described under
+  [A repository's devcontainer.json](#a-repositorys-devcontainerjson).
 - **Deleting.** `delete` marks it `deleting` and removes its container and
   volume, which ends its server, then its row — never the person's sign-in; one still being made goes once
-  it is made. One being cloned is cancelled by deleting it: `_stop_cloning`
-  force-removes its container, which ends git, and the making thread finds it
-  `deleting` and finishes the removal; if the container cannot be removed now,
-  the workspace goes when git ends, at the latest at `CLONE_TIMEOUT`. Deleting a
-  person deletes each of theirs (see [people.md](people.md)).
+  it is made. One being cloned, pulled for or running a lifecycle command is
+  cancelled by deleting it: `_stop_working` sets its event, which stops a pull,
+  and force-removes its container, which ends git and the commands, and the
+  making thread finds it `deleting` and finishes the removal; if the container
+  cannot be removed now, the workspace goes when the work ends, at the latest at
+  its timeout. Deleting a person deletes each of theirs (see [people.md](people.md)).
 - **Restoring.** When rcman starts, `restore` runs in the background, so rcman
   answers at once: it waits for the runtime, trying again while it is
   unavailable; finishes rows still `deleting`, and `creating` ones with no `source`, which are
   made again; fails a `creating` one with a `source`, which a restart interrupted
-  in its clone, with `CLONE_MESSAGES["restarted"]` (it is not cloned again, whatever
-  it had cloned: the person deletes it and decides); makes again a
-  `ready` workspace whose container is gone, and starts one that is stopped;
-  starts each server that should be running and is not, with its prefix;
+  while it was being made, with `CLONE_MESSAGES["restarted"]` (it is not cloned
+  again, nor are its create commands run again, whatever it had done: the person
+  deletes it and decides); makes again a `ready` workspace whose container is
+  gone, from its stored plan if it has one, and starts one that is stopped, and
+  runs the plan's `postStartCommand` after either; removes what an interrupted
+  read of an image left (`clean_probes`). The workspaces are brought back up to
+  `RESTORE_WORKERS` at once, each in a thread of its own that goes on to start that
+  workspace's server if it should be running, so that a workspace that is slow, a start
+  command that hangs among the causes, does not keep another from being brought back; it
+  holds one of the places until it is done, and the removal of what no row is for, the
+  finishing of deletions and the settling of sign-outs wait for the last. A lost container is made again
+  only after its plan's image is pulled again (`Runtime.pull`, which uses the image the
+  runtime has when the registry cannot be reached). If the registry says the image is not there or
+  may not be had (`workspaces.image_is_gone` reads its words), the workspace is failed, saying
+  to delete it and make it again; any other failure of the pull - the network, a timeout, a
+  registry that is down - leaves it ready without its container, logged, and the next restore
+  tries again. What can be slow is done without the
+  workspace's lock and under `_working_on`, so a deletion stops it. Restore stops between
+  steps once rcman is closing;
   removes every labelled container no row is for; removes each person an
   earlier rcman was deleting, once none of their workspaces is left, their
   sign-in first; and finishes each Claude sign-out that waits for servers that
@@ -256,8 +350,8 @@ check until its server runs, and signing in and out holds (see
 [backend.md](backend.md#claude-accounts)); it is always taken before a
 workspace's. Each workspace has a lock of its own, so its server's verbs, its deletion and
 restoring it take turns. Restore leaves a workspace a request is making to that
-request, brings back each other one under its lock as its row is then, and
-looks again, under the lock, just before removing a container no row is for, so
+request, brings back each other one as its row is then (the quick steps under its lock,
+the slow ones without it, see above), and looks again, under the lock, just before removing a container no row is for, so
 a workspace made while it runs is never taken for one left over. Removing the
 last workspace of a person being deleted finishes their deletion; one whose
 container could not be removed stays `deleting`, for the next start.

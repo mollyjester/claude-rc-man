@@ -46,6 +46,13 @@ clone is done the workspace is shown as being made, and its panel lists
 **Steps so far**. A clone of a large repository can take a while, and the panel
 does not show git's progress while it runs.
 
+If the repository has a `devcontainer.json`, rcman reads it after the clone and
+makes the workspace from the image it names, running the commands it lists
+before the workspace is ready; the steps say what rcman is doing, and the
+workspace is shown as being made until it is done. A repository without one
+gets the default image. What rcman supports and refuses is in
+[devcontainer.json support](devcontainer.md).
+
 The workspace you have selected is part of the page's address, so reloading
 the page keeps it, and the browser's back button returns to the workspace
 selected before.
@@ -55,10 +62,15 @@ which shows the workspace's server, or **Start** when it has none. If rcman
 could not read the server, the section says why instead. Below it is the
 **Changes** section, for the git repository in the workspace (see
 [Git](git.md)). A workspace that
-failed to be made says what went wrong, with **Steps so far** beneath, and
-offers only **Delete workspace**. A workspace being made or being deleted says
-so, and offers nothing, except that one being cloned from GitHub offers
-**Delete workspace** too, to stop the clone.
+failed to be made says what went wrong in plain words, with **Steps so far**
+beneath, and offers only **Delete workspace**. When the repository's
+`devcontainer.json` is the cause, the reason names the setting to change, or
+the image rcman could not pull or use, or the command that failed or took too
+long, with what it printed last in the steps. After a refused configuration
+the workspace holds nothing but this entry; after a failed command it is kept
+so that you can look at what happened, and **Delete workspace** removes it. A workspace being made or being deleted says
+so, and offers nothing, except that one being made from a GitHub repository
+offers **Delete workspace** too, to stop it.
 
 A server shows its state as a coloured badge, a sentence saying what to do
 next, and only the actions that state allows. Its main button, the action to
@@ -102,9 +114,10 @@ workspace is selected, and the page says the workspace was deleted.
 The sessions of its server stay in claude.ai/code, where they are archived or
 deleted.
 
-Deleting a workspace that is still being cloned stops the clone and deletes
-the workspace. If rcman restarts while a workspace is being cloned, the
-workspace is shown as failed, and says so; delete it and make it again.
+Deleting a workspace that is still being cloned, or that is pulling its image
+or running a command of its `devcontainer.json`, stops that and deletes the
+workspace. If rcman restarts while a workspace is being made, the workspace is
+shown as failed, and says so; delete it and make it again.
 
 ## Rules
 
@@ -202,3 +215,8 @@ is worked out afresh each time a page is opened, so it lasts only while the
 server shows that screen. When a server comes onto such a screen, rcman also
 writes it once to the [system journal](journal.md), with the person and the
 workspace, and never the screen itself.
+
+What a repository's `devcontainer.json` may ask of a workspace, and what rcman
+refuses, is in [devcontainer.json support](devcontainer.md). The lifecycle
+commands in it run with the person's GitHub token within reach; the note there
+says what that means.

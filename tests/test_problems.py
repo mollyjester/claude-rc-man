@@ -180,6 +180,7 @@ def test_library_text_is_recognised():
         *(rule.sentence for rule in helpers_rules().values()),
         *problems.MESSAGES.values(),
         *problems.CLONE_MESSAGES.values(),
+        *problems.DEVCONTAINER_MESSAGES.values(),
         *problems.FIELD_MESSAGES.values(),
     ]
     for message in ours:

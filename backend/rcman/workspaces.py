@@ -14,23 +14,27 @@ workspace whose table row records no server is never reached at all to list it.
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import json
 import logging
 import re
 import sqlite3
 import threading
+import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
 from helpers import git_run, rules
-from rcman import db, people
+from rcman import db, devcontainer, people
 from rcman.channel import Channel, ChannelBroken, ChannelTimeout
 from rcman.claude_server import Server, TmuxFailed
-from rcman.problems import CLONE_MESSAGES, Problem
-from rcman.repository import CloneFailed, Repository
+from rcman.problems import CLONE_MESSAGES, DEVCONTAINER_MESSAGES, Problem
+from rcman.repository import ANSWER_MARGIN_SECONDS, KILL_GRACE_SECONDS, CloneFailed, Repository
 from rcman.runtime import (
     LABEL_WORKSPACE,
+    TIMED_OUT,
+    Layout,
     Runtime,
     RuntimeFailed,
     RuntimeUnavailable,
@@ -65,6 +69,46 @@ DEFAULT_NAME = "workspace"
 NAME_TRIES = 1000
 # What a token is shown as where git's words are kept.
 REDACTED = "***"
+# How long one lifecycle command of a repository's devcontainer.json may run before it is
+# stopped, and how long after TERM it is left before it is killed.
+HOOK_TIMEOUT_SECONDS = 1800
+HOOK_KILL_GRACE_SECONDS = KILL_GRACE_SECONDS
+# The most of a command's output the log keeps, and the most of what podman said that a failed
+# pull's message holds.
+HOOK_LOG_TAIL_CHARS = 1000
+MAX_SAID_CHARS = 500
+# The most of each of a command's output streams that is ever held, however much it prints:
+# its last bytes.
+HOOK_KEEP_BYTES = 64 * 1024
+# How many workspaces a restore brings back at once; a slow one holds one of these places until
+# it is done, and what restore does after all of them (removing what no row is for, finishing
+# deletions, settling sign-outs) waits for the last.
+RESTORE_WORKERS = 4
+# What a registry says, in these words, when an image is not there or may not be had; any
+# other failure of a pull - the network, a timeout, a registry that is down - says nothing
+# of the image.
+IMAGE_GONE_WORDS = (
+    "manifest unknown",
+    "name unknown",
+    "not found",
+    "unauthorized",
+    "denied",
+    "repository does not exist",
+)
+# How often a restore looks whether its workspaces are done, and whether rcman is closing.
+RESTORE_POLL_SECONDS = 0.2
+# Prints musl when the image has the musl loader and no glibc one, as Alpine images do, and ok
+# otherwise. Shell builtins and globs only, so that it needs nothing of the image.
+LIBC_PROBE = (
+    "glibc=; musl=; for f in /lib/ld-linux* /lib64/ld-linux* /usr/lib/ld-linux* "
+    "/usr/lib64/ld-linux* /lib/*-linux-gnu/ld-linux* /usr/lib/*-linux-gnu/ld-linux*; "
+    'do [ -e "$f" ] && glibc=1; done; '
+    'for f in /lib/ld-musl-* /usr/lib/ld-musl-*; do [ -e "$f" ] && musl=1; done; '
+    'if [ -n "$musl" ] && [ -z "$glibc" ]; then echo musl; else echo ok; fi'
+)
+# Tells whether the image has a /bin/sh to run a command written as a string with.
+SHELL_PROBE = "[ -x /bin/sh ] && echo image || echo mounted"
+IMAGE_SHELL = "/bin/sh"
 # The words of git's by which a failed clone's cause is recognised, in the order they are
 # looked for: a sign-in asked for or refused, a repository GitHub does not have, no network.
 CLONE_CAUSES = (
@@ -108,6 +152,7 @@ class Workspace:
     prefix: str | None  # the prefix it was last started with
     source: str | None  # the address it was cloned from, as given; None for an empty one
     log: str | None  # the steps rcman wrote while making it; cleared once it is ready
+    environment: str | None = None  # the devcontainer.Plan it is made from, as JSON, if any
 
     @property
     def container(self) -> str:
@@ -128,7 +173,15 @@ def _workspace(row: sqlite3.Row | None) -> Workspace | None:
         row["prefix"],
         row["source"],
         row["log"],
+        row["environment"],
     )
+
+
+def image_is_gone(said: str) -> bool:
+    """Whether what a failed pull said is the registry telling that the image is not there, or
+    that it may not be had, and not a failure that may pass."""
+    text = said.lower()
+    return any(words in text for words in IMAGE_GONE_WORDS)
 
 
 def name_from(source: str) -> str:
@@ -174,7 +227,9 @@ class Workspaces:
         self._locks: dict[int, threading.RLock] = {}
         self._person_locks: dict[int, threading.RLock] = {}
         self._making: dict[int, threading.Thread] = {}  # by workspace
-        self._cloning: set[int] = set()  # the workspaces whose git is running; under _lock
+        # The workspaces being made that a deletion has to stop: while git clones, an image is
+        # pulled or a command runs. Each has the event the deletion sets; under _lock.
+        self._working: dict[int, threading.Event] = {}
         self._closing = threading.Event()
         self._restoring: threading.Thread | None = None
         # Called with a person's id once a server of theirs may have stopped: accounts.py
@@ -318,19 +373,23 @@ class Workspaces:
     def _make(self, workspace: Workspace, slot: int) -> None:
         """Make the workspace, and clone its source if it has one; one deleted meanwhile is
         removed once it is made."""
-        spec = Spec(workspace.container, slot=slot, workspace=workspace.id, person=workspace.person)
+        refused = False
         try:
             self._log(workspace.id, "Making the workspace")
-            self.runtime.create(spec)
+            self.runtime.create(self._spec(workspace, slot))
             self._log(workspace.id, "Checking git")
             self._check_git(workspace)
             if workspace.source:
                 self._clone(workspace)
+                self._configure(workspace, slot)
             error = None
         except Exception as failed:  # noqa: BLE001 - whatever it is, the workspace failed
             log.warning("workspace %s could not be made: %s", workspace.id, failed)
             error = (str(failed) or type(failed).__name__)[:MAX_ERROR_CHARS]
             error = self._redacted(workspace.person, error)
+            refused = isinstance(failed, devcontainer.Refused)
+        if refused:
+            self._clear(workspace)
         with self.lock(workspace.id):
             now = self.get(workspace.id)
             if now is not None and now.state == DELETING:
@@ -345,17 +404,45 @@ class Workspaces:
             else:
                 self._set(workspace.id, state=FAILED, error=error)
 
+    def _clear(self, workspace: Workspace) -> None:
+        """Remove the container and the volume of a workspace whose configuration or image was
+        refused, so that only its failed row is left; one that cannot be removed now is removed
+        by its deletion."""
+        self.close_channel(workspace.container)
+        try:
+            self.runtime.remove(workspace.container)
+        except (RuntimeFailed, RuntimeUnavailable) as failed:
+            log.warning("the refused workspace %s could not be cleared: %s", workspace.id, failed)
+
+    @contextlib.contextmanager
+    def _working_on(self, workspace_id: int):
+        """While the workspace is being worked on in a way a deletion has to stop - git clones
+        into it, an image is pulled, a command runs - ``delete`` sets the event this yields
+        and removes its container by force. The work notices the event, or that the container
+        is gone, and stops; the caller then finds the workspace deleting."""
+        cancel = threading.Event()
+        with self._lock:
+            self._working[workspace_id] = cancel
+        try:
+            yield cancel
+        finally:
+            with self._lock:
+                self._working.pop(workspace_id, None)
+
+    def _cancelled(self, workspace_id: int, cancel: threading.Event) -> bool:
+        if cancel.is_set():
+            return True
+        now = self.get(workspace_id)
+        return now is None or now.state == DELETING
+
     def _clone(self, workspace: Workspace) -> None:
         """Clone the workspace's source into its work folder, under no lock at all, so that
         nothing waits for it - a sign-out, a start, the deletion of another workspace - and
         so that nothing running is touched; a failure is a RuntimeFailed saying why. A
         workspace deleted meanwhile has its container removed by the deletion (``delete``),
         which ends git; the caller then finds it deleting."""
-        with self._lock:
-            self._cloning.add(workspace.id)
-        try:
-            now = self.get(workspace.id)
-            if now is None or now.state == DELETING:  # deleted before git could start
+        with self._working_on(workspace.id) as cancel:
+            if self._cancelled(workspace.id, cancel):  # deleted before git could start
                 return
             self._log(workspace.id, f"Cloning {workspace.source}")
             run, run_stdin = self._execs(workspace.container)
@@ -366,9 +453,248 @@ class Workspaces:
                 self._log(workspace.id, "The clone failed")
                 raise RuntimeFailed(self._clone_failure(workspace, failed)) from None
             self._log(workspace.id, "Cloned")
-        finally:
-            with self._lock:
-                self._cloning.discard(workspace.id)
+
+    # --- a repository's devcontainer.json ----------------------------------------------
+
+    def _plan(self, workspace: Workspace) -> devcontainer.Plan | None:
+        """The plan the workspace is made from, or None for one made from rcman's own image;
+        a stored plan that cannot be read is a RuntimeFailed, not a guess."""
+        if not workspace.environment:
+            return None
+        try:
+            return devcontainer.Plan.from_json(workspace.environment)
+        except ValueError:
+            raise RuntimeFailed(
+                f"the plan workspace {workspace.id} is made from cannot be read"
+            ) from None
+
+    @staticmethod
+    def _plan_layout(base: Layout, plan: devcontainer.Plan) -> Layout:
+        """``base``, the runtime's layout, for a workspace made from ``plan``: its programs
+        run as the plan's user, with its environment, and with its PATH after rcman's own
+        folder. HOME stays the workspace's home."""
+        env = {k: v for k, v in plan.env.items() if k != "PATH"}
+        return base.for_plan(plan.user_name, env, plan.path)
+
+    def _layout(self, workspace: Workspace) -> Layout:
+        """Where the workspace's things are, as the programs run in it see them, with its
+        plan applied."""
+        base = self.runtime.layout(workspace.container)
+        plan = self._plan(workspace)
+        return base if plan is None else self._plan_layout(base, plan)
+
+    def _spec(self, workspace: Workspace, slot: int, plan: devcontainer.Plan | None = None) -> Spec:
+        """The container to make for the workspace: from the image of its plan, running as the
+        plan's user, or rcman's own image."""
+        plan = plan or self._plan(workspace)
+        base = Spec(workspace.container, slot, workspace.id, workspace.person)
+        if plan is None:
+            return base
+        return dataclasses.replace(
+            base,
+            image=plan.image,
+            user=plan.run_as,
+            uid=plan.uid,
+            gid=plan.gid,
+            groups=plan.groups,
+            env=plan.container_env,
+        )
+
+    def _configure(self, workspace: Workspace, slot: int) -> None:
+        """Make the cloned workspace what its devcontainer.json says, if it has one: read and
+        check the file, pull its image, make the container again from the image on the same
+        volume, check git and libc in it, and run the create commands. A file or image rcman
+        refuses is a devcontainer.Refused, which fails the workspace and removes everything
+        but its row; a failing command is a RuntimeFailed, which keeps the container and
+        volume. A workspace deleted meanwhile is left to its deletion."""
+        with self._working_on(workspace.id) as cancel:
+            if self._cancelled(workspace.id, cancel):
+                return
+            name = workspace.container
+            plan = self._read_plan(workspace, cancel)
+            if plan is None:
+                return
+            if self._cancelled(workspace.id, cancel):  # nothing is discarded for a deleted one
+                return
+            self._set(workspace.id, environment=plan.to_json())
+            self._log(workspace.id, "Making the workspace from the image")
+            self.close_channel(name)
+            self.runtime.discard(name)
+            if self._cancelled(workspace.id, cancel):
+                return
+            try:
+                self.runtime.create(self._spec(workspace, slot, plan))
+            except RuntimeFailed as failed:
+                if self._cancelled(workspace.id, cancel):
+                    return
+                said = str(failed).strip()[-MAX_SAID_CHARS:]
+                raise devcontainer.Refused(
+                    "image_unrunnable", image=plan.image, said=said
+                ) from None
+            if self._cancelled(workspace.id, cancel):
+                return
+            layout = self._plan_layout(self.runtime.layout(name), plan)
+            self._check_libc(workspace, plan)
+            self._log(workspace.id, "Checking git")
+            try:
+                self._check_git(workspace, layout)
+            except RuntimeFailed as unusable:
+                raise devcontainer.Refused(
+                    "git_unusable", image=plan.image, said=str(unusable)
+                ) from None
+            self._run_commands(
+                workspace,
+                layout,
+                plan.create_commands(),
+                cancel,
+                lambda t: self._log(workspace.id, t),
+            )
+            self._log(workspace.id, "Created")
+
+    def _read_plan(self, workspace: Workspace, cancel: threading.Event):
+        """Read the workspace's devcontainer.json and the image it names, and make the plan; None
+        for no file, or when the workspace was deleted meanwhile."""
+        name = workspace.container
+        run, _ = self._execs(name)
+        self._log(workspace.id, devcontainer.LOOKED_IN)
+        text = devcontainer.read(run, self.runtime.layout(name))
+        if text is None:
+            self._log(workspace.id, "There is no devcontainer.json")
+            return None
+        config = devcontainer.parse(text)
+        checked = devcontainer.check(config)
+        if checked.ignored:
+            self._log(workspace.id, f"Ignored in devcontainer.json: {', '.join(checked.ignored)}")
+        self._log(workspace.id, f"Pulling {checked.image}")
+        try:
+            self.runtime.pull(checked.image, lambda line: self._log(workspace.id, line), cancel)
+        except RuntimeFailed as failed:
+            if self._cancelled(workspace.id, cancel):
+                return None
+            said = str(failed).strip()[-MAX_SAID_CHARS:]
+            raise devcontainer.Refused(
+                "pull_failed", image=checked.image, said=said.rstrip(".") + "."
+            ) from None
+        if self._cancelled(workspace.id, cancel):
+            return None
+        try:
+            facts = self.runtime.image_facts(checked.image, cancel)
+        except RuntimeFailed as failed:
+            if self._cancelled(workspace.id, cancel):
+                return None
+            said = str(failed).strip()[-MAX_SAID_CHARS:]
+            raise devcontainer.Refused("image_unreadable", image=checked.image, said=said) from None
+        if self._cancelled(workspace.id, cancel):
+            return None
+        layout = self.runtime.layout(name)
+        made = devcontainer.plan(config, facts, workspace.id, layout.work)
+        return None if self._cancelled(workspace.id, cancel) else made
+
+    def _check_libc(self, workspace: Workspace, plan: devcontainer.Plan) -> None:
+        """Claude Code needs glibc: an image that has the musl loader and no glibc one, as
+        Alpine's, is refused."""
+        layout = self.runtime.layout(workspace.container)
+        found = self.runtime.exec(workspace.container, [layout.shell, "-c", LIBC_PROBE])
+        if found.out.decode("utf-8", "replace").strip() == "musl":
+            raise devcontainer.Refused("musl", image=plan.image)
+
+    @staticmethod
+    def _hook_env(layout: Layout) -> dict[str, str]:
+        """The only environment a lifecycle command is run with: the workspace's home and PATH
+        and the plan's variables."""
+        return {
+            "HOME": layout.home,
+            "USER": layout.user,
+            "LOGNAME": layout.user,
+            "PATH": layout.path,
+            "LANG": "C.UTF-8",
+            **layout.env,
+        }
+
+    def _command_shell(self, name: str, layout: Layout) -> str:
+        """The shell that runs a command written as a string: the image's /bin/sh, else the
+        mounted busybox's, since a slim image may have none."""
+        found = self.runtime.exec(name, [layout.shell, "-c", SHELL_PROBE])
+        return IMAGE_SHELL if found.out.strip() == b"image" else layout.shell
+
+    def _run_commands(
+        self,
+        workspace: Workspace,
+        layout: Layout,
+        commands: tuple[devcontainer.Command, ...],
+        cancel: threading.Event | None,
+        report: Callable[[str], None],
+    ) -> None:
+        """Run the lifecycle commands one after another in the work folder, as the container's
+        user, each under the ``timeout`` tool with HOOK_TIMEOUT_SECONDS, with exactly the
+        environment ``_hook_env`` gives; what each printed, its tail and without the person's
+        token, goes to ``report``. A command that fails or is stopped is a RuntimeFailed with the
+        exit code and the tail of its output; the commands after it do not run. A cancelled
+        workspace is left alone."""
+        if not commands:
+            return
+        name = workspace.container
+        shell = None
+        for command in commands:
+            if cancel is not None and self._cancelled(workspace.id, cancel):
+                return
+            report(f"Running {command.name}")
+            if command.argv is not None:
+                program = list(command.argv)
+            else:
+                shell = shell or self._command_shell(name, layout)
+                program = [shell, "-c", command.shell]
+            argv = layout.with_env(
+                self._hook_env(layout),
+                [
+                    *layout.tool("timeout"),
+                    "-s",
+                    "TERM",
+                    "-k",
+                    str(HOOK_KILL_GRACE_SECONDS),
+                    str(HOOK_TIMEOUT_SECONDS),
+                    *program,
+                ],
+            )
+            wait = HOOK_TIMEOUT_SECONDS + HOOK_KILL_GRACE_SECONDS + ANSWER_MARGIN_SECONDS
+            try:
+                result = self.runtime.exec(
+                    name, argv, timeout=wait, cwd=layout.work, keep=HOOK_KEEP_BYTES
+                )
+            except RuntimeFailed:
+                if cancel is not None and self._cancelled(workspace.id, cancel):
+                    return
+                raise
+            said = self._redacted(
+                workspace.person, (result.out + result.err).decode("utf-8", "replace")
+            )
+            if cancel is not None and self._cancelled(workspace.id, cancel):
+                return
+            if result.code == 0:
+                if said.strip():
+                    report(said.strip()[-HOOK_LOG_TAIL_CHARS:])
+                continue
+            kind = "hook_timeout" if result.code in TIMED_OUT else "hook_failed"
+            head = DEVCONTAINER_MESSAGES[kind].format(command=command.name, code=result.code)
+            raise RuntimeFailed(self._with_tail(head, said))
+
+    def _start_commands(self, workspace: Workspace, cancel: threading.Event | None = None) -> None:
+        """Run the workspace's postStartCommand, if its plan has one, after its container was
+        started or made again and before its server is: a failure is logged and nothing more."""
+        try:
+            plan = self._plan(workspace)
+            if plan is None or not plan.start_commands():
+                return
+            layout = self._plan_layout(self.runtime.layout(workspace.container), plan)
+            self._run_commands(
+                workspace,
+                layout,
+                plan.start_commands(),
+                cancel,
+                lambda text: log.info("workspace %s: %s", workspace.id, text),
+            )
+        except Exception as failed:  # noqa: BLE001 - a start command never stops a restore
+            log.warning("workspace %s: its start command failed: %s", workspace.id, failed)
 
     def _token(self, person: int) -> str | None:
         con = self._con()
@@ -404,6 +730,12 @@ class Workspaces:
                 f"git clone failed, exit code {failed.code}:",
             ]
         )
+        return self._with_tail(head, said)
+
+    @staticmethod
+    def _with_tail(head: str, said: str) -> str:
+        """``head`` and the tail of ``said``, the end of it where it says why, from the start
+        of a line, within MAX_ERROR_CHARS."""
         room = MAX_ERROR_CHARS - len(head) - 1
         tail = said.strip()
         if len(tail) > room:
@@ -423,11 +755,11 @@ class Workspaces:
                 return cause
         return None
 
-    def _check_git(self, workspace: Workspace) -> None:
+    def _check_git(self, workspace: Workspace, layout: Layout | None = None) -> None:
         """The image must hold a git that rcman can use: one new enough, which the workspace
         is failed without otherwise."""
         run, run_stdin = self._execs(workspace.container)
-        repository = Repository(self.runtime.layout(workspace.container), run, run_stdin)
+        repository = Repository(layout or self.runtime.layout(workspace.container), run, run_stdin)
         try:
             found = repository.version()
         except Problem as refused:
@@ -451,28 +783,28 @@ class Workspaces:
             if now is None:
                 return
             self._set(workspace.id, state=DELETING)
+            self._stop_working(now)  # what is being done to it stops: making, restoring
             if now.state == CREATING:
-                self._stop_cloning(now)
                 return
             self._remove(now)
         self._stopped(workspace.person)
 
-    def _stop_cloning(self, workspace: Workspace) -> None:
-        """End the git that is cloning into the workspace, if any, by removing its container
-        by force, which kills what runs in it: cancelling a clone is deleting the workspace.
-        The workspace's thread then finds it deleting and finishes removing it. One whose
-        container cannot be removed now is removed when git ends, at the latest at the
-        clone's timeout."""
+    def _stop_working(self, workspace: Workspace) -> None:
+        """End what is being done to the workspace that a deletion has to stop - git cloning
+        into it, an image being pulled, a command running - by telling it to stop and removing
+        the container by force, which kills what runs in it: cancelling is deleting the
+        workspace. The workspace's thread then finds it deleting and finishes removing it. One
+        whose container cannot be removed now is removed when the work ends, at the latest at
+        its timeout."""
         with self._lock:
-            cloning = workspace.id in self._cloning
-        if not cloning:
+            cancel = self._working.get(workspace.id)
+        if cancel is None:
             return
+        cancel.set()
         try:
             self.runtime.remove(workspace.container)
         except (RuntimeFailed, RuntimeUnavailable) as failed:
-            log.warning(
-                "the clone into workspace %s could not be stopped: %s", workspace.id, failed
-            )
+            log.warning("the work on workspace %s could not be stopped: %s", workspace.id, failed)
 
     def _remove(self, workspace: Workspace) -> None:
         self.close_channel(workspace.container)
@@ -553,13 +885,15 @@ class Workspaces:
     def server(self, workspace: Workspace) -> Server:
         name = workspace.container
         channel = self._channel(name)
-        return Server(self.runtime.layout(name), channel.run, workspace.id)
+        return Server(self._layout(workspace), channel.run, workspace.id)
 
     def _execs(self, name: str):
         """The runtime's exec as a repository's runners: without and with stdin."""
 
-        def run(argv: list[str], timeout: float):
-            return self.runtime.exec(name, argv, timeout=timeout)
+        def run(argv: list[str], timeout: float, cwd: str | None = None):
+            if cwd is None:
+                return self.runtime.exec(name, argv, timeout=timeout)
+            return self.runtime.exec(name, argv, timeout=timeout, cwd=cwd)
 
         def run_stdin(argv: list[str], stdin: bytes, timeout: float):
             return self.runtime.exec(name, argv, stdin, timeout=timeout)
@@ -570,7 +904,7 @@ class Workspaces:
         """The git repository at the root of the workspace's work folder, run through its
         channel, and through ``exec`` for what carries stdin. Nothing is started for it."""
         name = workspace.container
-        return Repository(self.runtime.layout(name), self._channel(name).run, self._execs(name)[1])
+        return Repository(self._layout(workspace), self._channel(name).run, self._execs(name)[1])
 
     def server_status(self, workspace: Workspace) -> dict | None:
         """The workspace's server, or None; a workspace that records none is not reached."""
@@ -723,15 +1057,8 @@ class Workspaces:
                         said = True
             if self._closing.is_set():
                 return
-            for workspace in self.everything():
-                if self._closing.is_set():
-                    return
-                self._step(self._restore_workspace, workspace)
-            for workspace in self.everything():
-                if self._closing.is_set():
-                    return
-                if workspace.state == READY and workspace.wanted:
-                    self._step(self._restore_server, workspace)
+            self._step(self.runtime.clean_probes)
+            self._restore_all()
             if self._closing.is_set():
                 return
             for name, labels in self.runtime.labelled().items():
@@ -742,6 +1069,44 @@ class Workspaces:
             log.exception("restoring the workspaces failed")
         finally:
             self.restored.set()
+
+    def _restore_all(self) -> None:
+        """Bring each workspace back, up to RESTORE_WORKERS at once, each in a thread of its own
+        with its server after it, so that one that is slow - an image to make a container from,
+        a start command that hangs - does not keep another from being brought back, though it
+        holds one of the places until it is done, and what comes after (the removal of what no
+        row is for, and the rest) waits for the last. The threads are daemons and look at
+        ``_closing`` between steps; this returns once they are done, or as soon as rcman is
+        closing."""
+        free = threading.BoundedSemaphore(RESTORE_WORKERS)
+        threads = []
+        for workspace in self.everything():
+            while not free.acquire(timeout=RESTORE_POLL_SECONDS):
+                if self._closing.is_set():
+                    return
+            if self._closing.is_set():
+                return
+            thread = threading.Thread(
+                target=self._restore_task, args=(workspace, free), daemon=True
+            )
+            thread.start()
+            threads.append(thread)
+        while any(t.is_alive() for t in threads):
+            if self._closing.is_set():
+                return
+            time.sleep(RESTORE_POLL_SECONDS)
+
+    def _restore_task(self, workspace: Workspace, free: threading.BoundedSemaphore) -> None:
+        """One workspace's restore: its container, its start command, then its server if it
+        should be running."""
+        try:
+            self._step(self._restore_workspace, workspace)
+            now = self.get(workspace.id)
+            if now is not None and now.state == READY and now.wanted:
+                if not self._closing.is_set():
+                    self._step(self._restore_server, now)
+        finally:
+            free.release()
 
     @staticmethod
     def _step(call, *args) -> None:
@@ -766,14 +1131,71 @@ class Workspaces:
             self.runtime.remove(name)
 
     def _restore_workspace(self, workspace: Workspace) -> None:
-        """Bring one workspace back, under its lock, as its row is now; one a request is
-        making meanwhile is that request's."""
+        """Bring one workspace back as its row is now; one a request is making meanwhile is that
+        request's. What is quick - the row's state, finishing a deletion, starting a container
+        that stopped - is done under the workspace's lock. What can be slow - pulling the image
+        and making the container again, the start command - is done without it, so that
+        nothing waits for it; a deletion meanwhile sets the event that stops it
+        (``_working_on``)."""
         if self._being_made(workspace.id):
             return
         with self.lock(workspace.id):
             now = self.get(workspace.id)
-            if now is not None and not self._being_made(workspace.id):
+            if now is None or self._being_made(workspace.id):
+                return
+            if now.state != READY:
                 self._restore_one(now)
+                return
+            lost = not self.runtime.exists(now.container)
+            if not lost:
+                if self.runtime.running(now.container):
+                    return
+                self.runtime.start(now.container)
+        with self._working_on(now.id) as cancel:
+            if lost and not self._remake(now, cancel):
+                return
+            self._start_commands(now, cancel)
+
+    def _remake(self, workspace: Workspace, cancel: threading.Event) -> bool:
+        """Make a ready workspace's lost container again from its stored plan, after pulling the
+        plan's image, which may be gone from the runtime's storage. If the registry says it is
+        not there, or may not be had, the workspace is failed, in words that say to delete it
+        and make it again; if the pull fails otherwise - the network, a timeout, a registry
+        that is down - nothing is decided: it stays ready, without its container, and the
+        next restore tries again. False when there is no container to go on with, because of
+        either or a deletion meanwhile."""
+        con = self._con()
+        try:
+            slot = people.by_id(con, workspace.person).slot
+        finally:
+            con.close()
+        plan = self._plan(workspace)
+        if plan is not None:
+            try:
+                self.runtime.pull(plan.image, None, cancel)
+            except RuntimeFailed as failed:
+                if self._cancelled(workspace.id, cancel):
+                    return False
+                log.warning("the image of workspace %s could not be had: %s", workspace.id, failed)
+                if not image_is_gone(str(failed)):
+                    return False  # it may pass: the next restore tries again
+                with self.lock(workspace.id):
+                    if (self.get(workspace.id) or workspace).state == READY:
+                        self._set(
+                            workspace.id,
+                            state=FAILED,
+                            error=DEVCONTAINER_MESSAGES["image_gone"].format(image=plan.image),
+                        )
+                return False
+        if self._cancelled(workspace.id, cancel):
+            return False
+        self.runtime.create(self._spec(workspace, slot, plan))
+        if self._cancelled(workspace.id, cancel):
+            with self.lock(workspace.id):  # made after a deletion removed it: nothing is for it
+                if self.get(workspace.id) is None:
+                    self.runtime.remove(workspace.container)
+            return False
+        return True
 
     def _restore_one(self, workspace: Workspace) -> None:
         if workspace.state == DELETING:
@@ -789,16 +1211,6 @@ class Workspaces:
             finally:
                 con.close()
             self._make(workspace, slot)
-        elif workspace.state == READY:
-            if not self.runtime.exists(workspace.container):
-                con = self._con()
-                try:
-                    slot = people.by_id(con, workspace.person).slot
-                finally:
-                    con.close()
-                self.runtime.create(Spec(workspace.container, slot, workspace.id, workspace.person))
-            elif not self.runtime.running(workspace.container):
-                self.runtime.start(workspace.container)
 
     def settle_signing_out(self) -> None:
         """Finish each sign-out that waits for servers that no longer run, those that

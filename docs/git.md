@@ -68,9 +68,14 @@ shows the repository.
   **Delete workspace** removes it; make it again once the cause is mended.
 - The panel does not show git's progress. **Delete workspace** stops a clone
   that is running, and deletes the workspace.
-- If rcman restarts while a workspace is being cloned, the workspace fails and
+- If rcman restarts while a workspace is being made, the workspace fails and
   says so. Delete it and make it again.
 - Your token is never in the repository, in the steps shown, or in the error.
+- A repository's `devcontainer.json` may list commands that run in the new
+  workspace (see [devcontainer.json support](devcontainer.md#lifecycle-commands)).
+  Like any command there, they can read your token, which git keeps in the
+  credential file all your workspaces share, so make workspaces only from
+  repositories you trust.
 
 ## Images
 
@@ -79,3 +84,5 @@ default image has it. For another image
 ([`RCMAN_WORKSPACE_IMAGE`](configuration.md)), a workspace whose image has no
 git, or an older one, fails to be made, and says why in its panel. Cloning from
 GitHub also needs git there, and a way to reach github.com from the workspace.
+An image a repository's `devcontainer.json` names is held to the same
+requirement (see [devcontainer.json support](devcontainer.md#the-image)).

@@ -55,8 +55,9 @@ class TmuxFailed(Exception):
 
 def tmux_env(layout: Layout) -> dict[str, str]:
     """The environment tmux runs with, and so its server: a shell of the mounted tools,
-    since a slim image has none of its own."""
+    since a slim image has none of its own, and the variables the workspace's plan sets."""
     env = {
+        **layout.env,
         "HOME": layout.home,
         "PATH": layout.path,
         "SHELL": layout.shell,
@@ -71,8 +72,10 @@ def tmux_env(layout: Layout) -> dict[str, str]:
 def child_env(layout: Layout) -> dict[str, str]:
     """The only environment Claude Code is started with. Its configuration is the
     workspace's own, and it never updates itself: the store it runs from is read-only,
-    and an update would go into the workspace unapproved."""
+    and an update would go into the workspace unapproved. The variables the workspace's plan
+    sets come first, so that none of them replaces one of these."""
     return {
+        **layout.env,
         "HOME": layout.home,
         "USER": layout.user,
         "LOGNAME": layout.user,

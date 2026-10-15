@@ -5,8 +5,10 @@ tests/container/test_runtime_in_podman.py runs the same contract against real Po
 """
 
 import json
+import os
 import shutil
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -386,3 +388,698 @@ def test_the_host_runtime_leaves_no_temporary_copy_of_a_git_file_that_failed(
         host.put_account(4, 1, "credential", data)
     assert sorted(p.name for p in folder.iterdir()) == ["credential"]
     assert (folder / "credential").read_bytes() == b"password=old\n"
+
+
+# --- a container of the user's own: the uid map, the user, the image ----------------------
+
+
+def ids_of(arguments: list[str], kind: str) -> list[tuple[int, int, int]]:
+    """The (inside, outside, length) stretches of the ``--uidmap`` or ``--gidmap`` options."""
+    found = []
+    for argument in arguments:
+        if argument.startswith(f"--{kind}map="):
+            found.append(tuple(int(n) for n in argument.split("=", 1)[1].split(":")))
+    return found
+
+
+def mapped(stretches: list[tuple[int, int, int]]) -> dict[int, int]:
+    """Container id -> host id, for the stretches; an id mapped twice fails the test."""
+    result: dict[int, int] = {}
+    for inside, outside, length in stretches:
+        for offset in range(length):
+            assert inside + offset not in result, f"{inside + offset} is mapped twice"
+            result[inside + offset] = outside + offset
+    return result
+
+
+OWN_IDS = [1, 2, 1000, rt.RANGE - 2, rt.RANGE - 1]
+
+
+def test_an_ordinary_map_is_the_one_line_it_always_was():
+    base = 3 * rt.RANGE
+    assert rt.PodmanRuntime._ids(3) == [
+        f"--uidmap=0:{base}:{rt.RANGE}",
+        f"--gidmap=0:{base}:{rt.RANGE}",
+    ]
+    assert rt.PodmanRuntime._ids(3, 0, 0) == rt.PodmanRuntime._ids(3)
+
+
+@pytest.mark.parametrize("own", OWN_IDS)
+def test_a_swapped_map_swaps_the_users_id_with_roots_and_moves_nothing_else(own):
+    base = 3 * rt.RANGE
+    options = rt.PodmanRuntime._ids(3, own, own)
+    uid = mapped(ids_of(options, "uid"))
+    assert sorted(uid) == list(range(rt.RANGE))  # every id of the container is mapped, once
+    assert sorted(uid.values()) == list(range(base, base + rt.RANGE))  # onto every host id, once
+    assert uid[own] == base  # the user is the host id root has in the ordinary map
+    assert uid[0] == base + own  # and root is the user's
+    assert all(uid[i] == base + i for i in range(1, rt.RANGE) if i != own)
+    assert mapped(ids_of(options, "gid")) == uid  # the same for groups here
+
+
+@pytest.mark.parametrize(("uid", "gid"), [(1000, 0), (0, 1000), (5, 1000)])
+def test_the_user_and_the_group_are_swapped_each_on_its_own(uid, gid):
+    options = rt.PodmanRuntime._ids(2, uid, gid)
+    base = 2 * rt.RANGE
+    assert mapped(ids_of(options, "uid"))[uid] == base
+    assert mapped(ids_of(options, "gid"))[gid] == base
+    if uid == 0:
+        assert ids_of(options, "uid") == [(0, base, rt.RANGE)]  # nothing swapped
+    if gid == 0:
+        assert ids_of(options, "gid") == [(0, base, rt.RANGE)]
+
+
+def test_the_edges_leave_out_the_stretch_that_would_be_empty():
+    base = rt.RANGE
+    first = ids_of(rt.PodmanRuntime._ids(1, 1, 1), "uid")
+    assert first == [(0, base + 1, 1), (1, base, 1), (2, base + 2, rt.RANGE - 2)]
+    last = ids_of(rt.PodmanRuntime._ids(1, rt.RANGE - 1, 1), "uid")
+    assert last == [
+        (0, base + rt.RANGE - 1, 1),
+        (1, base + 1, rt.RANGE - 2),
+        (rt.RANGE - 1, base, 1),
+    ]
+    assert all(length > 0 for _, _, length in first + last)
+
+
+@pytest.mark.parametrize("own", [rt.RANGE, rt.RANGE + 1, -1])
+def test_an_id_beyond_the_range_is_refused_before_anything_is_made(tmp_path, own):
+    with pytest.raises(rt.RuntimeFailed):
+        rt.PodmanRuntime._ids(3, own, 0)
+    with pytest.raises(rt.RuntimeFailed):
+        rt.PodmanRuntime._ids(3, 0, own)
+    recorder = account_recorder(tmp_path)
+    with pytest.raises(rt.RuntimeFailed):
+        podman_runtime(tmp_path, recorder).create(
+            rt.Spec("rcman-ws-7", slot=3, workspace=7, person=2, uid=own)
+        )
+    assert recorder.calls() == []  # nothing was asked of podman
+
+
+def test_slot_zero_is_refused_for_a_swapped_map_too():
+    with pytest.raises(rt.RuntimeFailed):
+        rt.PodmanRuntime._ids(0, 1000, 1000)
+
+
+def owned_spec(**more) -> rt.Spec:
+    return rt.Spec(
+        "rcman-ws-7",
+        slot=3,
+        workspace=7,
+        person=2,
+        image="docker.io/library/node:20",
+        user="dev",
+        uid=1234,
+        gid=1235,
+        env={"A": "b", "C": "d e"},
+        **more,
+    )
+
+
+def workspace_run(recorder: Recorder) -> list[str]:
+    return next(r for r in runs(recorder) if "--name=rcman-ws-7" in r)
+
+
+def test_a_container_of_the_users_own_is_made_from_the_image_as_the_user(tmp_path):
+    recorder = account_recorder(tmp_path)
+    podman_runtime(tmp_path, recorder).create(owned_spec(groups=(5000, 5001)))
+    run = workspace_run(recorder)
+    base = 3 * rt.RANGE
+    assert mapped(ids_of(run, "uid"))[1234] == base and mapped(ids_of(run, "uid"))[0] == base + 1234
+    assert mapped(ids_of(run, "gid"))[1235] == base and mapped(ids_of(run, "gid"))[0] == base + 1235
+    for option in (
+        "--user=dev",
+        "--group-add=5000",
+        "--group-add=5001",
+        "--env=A=b",
+        "--env=C=d e",
+        "--tmpfs=/run/rcman:mode=0700,U",  # uid= and gid= are refused where this runs
+        "--volume=rcman-ws-7:/rcman",
+        "--label=rcman.workspace=7",
+        "--init",
+    ):
+        assert option in run, option
+    # The image's own entrypoint is not run, and nothing of rcman's is the image's.
+    assert "--entrypoint=/opt/rcman/bin/busybox" in run
+    after = run.index("docker.io/library/node:20")
+    assert run[after + 1 :] == ["sleep", "2147483647"]
+    assert "localhost/rcman-workspace:test" not in run
+    assert not [a for a in run if a.startswith(("--privileged", "--cap", "--security-opt", "-p"))]
+
+
+def test_the_default_container_is_made_as_before_with_no_user_and_the_workspace_image(tmp_path):
+    recorder = account_recorder(tmp_path)
+    podman_runtime(tmp_path, recorder).create(rt.Spec("rcman-ws-7", slot=3, workspace=7, person=2))
+    run = workspace_run(recorder)
+    assert "--tmpfs=/run/rcman:mode=0700" in run  # no ,U
+    assert not [a for a in run if a.startswith(("--user", "--group-add", "--env"))]
+    assert ids_of(run, "uid") == [(0, 3 * rt.RANGE, rt.RANGE)]
+    assert "localhost/rcman-workspace:test" in run
+    assert not [r for r in runs(recorder) if "--rm" in r and "--name=rcman-ws-7" in r]
+    others = [
+        r
+        for r in runs(recorder)
+        if "--volume=rcman-ws-7:/rcman" in r and "--name=rcman-ws-7" not in r
+    ]
+    assert others == []  # the folders are made by the ordinary map's root already
+
+
+def test_the_folders_beside_the_mounts_are_made_by_the_ordinary_maps_root_first(tmp_path):
+    recorder = account_recorder(tmp_path)
+    podman_runtime(tmp_path, recorder).create(owned_spec())
+    prepare = next(r for r in runs(recorder) if "--rm" in r and "--volume=rcman-ws-7:/rcman" in r)
+    run = workspace_run(recorder)
+    assert runs(recorder).index(prepare) < runs(recorder).index(run)
+    assert ids_of(prepare, "uid") == [(0, 3 * rt.RANGE, rt.RANGE)]  # the ordinary map
+    assert not [a for a in prepare if a.startswith("--user")]
+    folders = prepare[prepare.index("sh", prepare.index("-c")) + 1 :]
+    assert folders == [
+        f"{rt.VOLUME_MOUNT}/{rt.WORK}",
+        f"{rt.VOLUME_MOUNT}/{rt.CONFIG}",
+        f"{rt.VOLUME_MOUNT}/{rt.HOME}/.config",  # where the git folder is bound
+    ]
+    assert (
+        f"{rt.VOLUME_MOUNT}/{rt.HOME}/.config/git" == f"{rt.VOLUME_MOUNT}/{rt.HOME}/{rt.GIT_HOME}"
+    )
+
+
+def test_the_first_run_of_an_image_may_take_longer_than_any_other_call(tmp_path):
+    recorder = account_recorder(tmp_path)
+    runtime = podman_runtime(tmp_path, recorder)
+    seen: dict[str, float] = {}
+    real = runtime._podman
+
+    def watched(*args, **kwargs):
+        if args[0] == "run" and "--name=rcman-ws-7" in args:
+            seen["timeout"] = kwargs.get("timeout", rt.PODMAN_TIMEOUT)
+        return real(*args, **kwargs)
+
+    runtime._podman = watched
+    runtime.create(owned_spec())
+    assert seen["timeout"] == rt.IMAGE_CREATE_TIMEOUT > rt.PODMAN_TIMEOUT
+    runtime.create(rt.Spec("rcman-ws-7", slot=3, workspace=7, person=2))
+    assert seen["timeout"] == rt.PODMAN_TIMEOUT
+
+
+def test_discarding_removes_the_container_and_keeps_the_volume_and_removing_takes_both(tmp_path):
+    recorder = Recorder(tmp_path, {"volume exists": (0, "", "")})
+    runtime = podman_runtime(tmp_path, recorder)
+    runtime.discard("rcman-ws-7")
+    calls = [c[3:] for c in recorder.calls()]
+    assert any(c[0] == "rm" and c[-1] == "rcman-ws-7" for c in calls)
+    assert not [c for c in calls if c[:2] == ["volume", "rm"]]
+    runtime.remove("rcman-ws-7")
+    calls = [c[3:] for c in recorder.calls()]
+    assert [c for c in calls if c[:2] == ["volume", "rm"]]  # the control: a remove does
+
+
+def test_an_exec_in_a_folder_asks_podman_for_it(tmp_path):
+    recorder = Recorder(tmp_path, {})
+    runtime = podman_runtime(tmp_path, recorder)
+    runtime.exec("rcman-ws-7", ["pwd"], cwd="/rcman/work")
+    runtime.exec("rcman-ws-7", ["pwd"])
+    first, second = [c[3:] for c in recorder.calls() if c[3] == "exec"]
+    assert first == ["exec", "--workdir=/rcman/work", "rcman-ws-7", "pwd"]
+    assert second == ["exec", "rcman-ws-7", "pwd"]  # no folder asked for
+
+
+def fake_podman(tmp_path: Path, body: str) -> rt.PodmanRuntime:
+    """A podman that is the Python ``body``, which has ``sys`` and ``args``, rcman's own
+    arguments after ``--remote --url <socket>``."""
+    program = tmp_path / "podman"
+    program.write_text(
+        "#!/usr/bin/env python3\nimport json, os, sys, time\n"
+        "args = sys.argv[4:]\n"
+        f"with open({str(tmp_path / 'calls')!r}, 'a') as log:\n"
+        "    log.write(json.dumps(args) + '\\n')\n" + body
+    )
+    program.chmod(0o755)
+    return rt.PodmanRuntime(
+        rt.PodmanConfig(
+            socket=Path("/run/user/990/podman/podman.sock"),
+            image="localhost/rcman-workspace:test",
+            tools_dir=Path("/var/lib/rcman/tools"),
+            claude_store=Path("/var/lib/rcman/claude"),
+            podman=str(program),
+        )
+    )
+
+
+def fake_calls(tmp_path: Path) -> list[list[str]]:
+    return [json.loads(line) for line in (tmp_path / "calls").read_text().splitlines()]
+
+
+def test_a_pull_passes_each_line_it_prints_on_and_fails_with_the_last_words(tmp_path):
+    ok = fake_podman(tmp_path, "print('Trying to pull x')\nprint('Copying blob a')\n")
+    lines: list[str] = []
+    ok.pull("docker.io/library/x", lines.append)
+    assert lines == ["Trying to pull x", "Copying blob a"]
+    assert fake_calls(tmp_path) == [["pull", "docker.io/library/x"]]
+    other = tmp_path / "bad"
+    other.mkdir()
+    bad = fake_podman(
+        other,
+        "print('Trying to pull x')\n"
+        "print('Error: manifest unknown', file=sys.stderr)\nsys.exit(125)\n",
+    )
+    with pytest.raises(rt.RuntimeFailed) as failed:
+        bad.pull("x")
+    assert "manifest unknown" in str(failed.value)
+
+
+def test_a_pull_that_cannot_reach_podman_is_unavailable(tmp_path):
+    runtime = fake_podman(
+        tmp_path, "print('Cannot connect to Podman', file=sys.stderr)\nsys.exit(125)\n"
+    )
+    with pytest.raises(rt.RuntimeUnavailable):
+        runtime.pull("x")
+
+
+def test_a_registry_that_refuses_the_connection_fails_the_pull_and_is_not_an_unreachable_podman(
+    tmp_path,
+):
+    """Podman exits with the same code for both, and says "connect" in both."""
+    refused = fake_podman(
+        tmp_path,
+        "print('Trying to pull x...')\n"
+        "print('Error: pinging container registry x: dial tcp: connect: connection refused',"
+        " file=sys.stderr)\nsys.exit(125)\n"
+        "",
+    )
+    with pytest.raises(rt.RuntimeFailed) as failed:
+        refused.pull("x")
+    assert not isinstance(failed.value, rt.RuntimeUnavailable)
+    assert "connection refused" in str(failed.value)
+
+
+def test_a_program_that_exits_as_podman_does_after_failing_to_connect_is_a_result(tmp_path):
+    runtime = fake_podman(
+        tmp_path,
+        "print('curl: could not connect to the host', file=sys.stderr)\nsys.exit(125)\n",
+    )
+    assert runtime.exec("rcman-ws-7", ["curl", "x"]).code == 125
+    (tmp_path / "gone").mkdir()
+    unreachable = fake_podman(
+        tmp_path / "gone",
+        "print('Cannot connect to Podman. Please verify', file=sys.stderr)\nsys.exit(125)\n",
+    )
+    with pytest.raises(rt.RuntimeUnavailable):
+        unreachable.exec("rcman-ws-7", ["true"])
+
+
+def test_an_image_already_here_is_used_when_its_pull_fails_and_one_not_here_is_a_failure(tmp_path):
+    body = (
+        "if args[:2] == ['image', 'exists']:\n    sys.exit(0 if args[2] == 'here' else 1)\n"
+        "print('Error: no registry', file=sys.stderr)\nsys.exit(125)\n"
+    )
+    runtime = fake_podman(tmp_path, body)
+    lines: list[str] = []
+    runtime.pull("here", lines.append)  # no failure: the copy that is here is the image
+    assert lines and lines[-1] == rt.USING_LOCAL_IMAGE
+    assert ["pull", "here"] in fake_calls(tmp_path)  # the registry was asked first
+    with pytest.raises(rt.RuntimeFailed) as failed:
+        runtime.pull("not-here")
+    assert "no registry" in str(failed.value)
+
+
+def test_a_cancelled_pull_does_not_fall_back_to_the_image_here(tmp_path):
+    import threading
+
+    runtime = fake_podman(
+        tmp_path, "if args[:2] == ['image', 'exists']:\n    sys.exit(0)\ntime.sleep(60)\n"
+    )
+    cancel = threading.Event()
+    cancel.set()
+    with pytest.raises(rt.RuntimeFailed):
+        runtime.pull("here", cancel=cancel)
+
+
+def test_a_container_made_from_an_image_never_pulls_one_itself(tmp_path):
+    recorder = account_recorder(tmp_path)
+    podman_runtime(tmp_path, recorder).create(owned_spec())
+    assert "--pull=never" in workspace_run(recorder)
+    (tmp_path / "default").mkdir()
+    recorder = account_recorder(tmp_path / "default")
+    podman_runtime(tmp_path / "default", recorder).create(
+        rt.Spec("rcman-ws-7", slot=3, workspace=7, person=2)
+    )
+    assert "--pull=never" not in workspace_run(recorder)
+
+
+LOCAL_IMAGE = "if args[:2] == ['image', 'exists']:\n    sys.exit(0)\n"  # the image is here
+
+
+def alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
+def waited_for(path: Path, seconds: float = 30.0) -> int:
+    """The process id a fake podman wrote in ``path`` once it was running: waited for, up to a
+    bound that only a fake that never ran can reach."""
+    deadline = time.monotonic() + seconds
+    while True:
+        text = path.read_text() if path.exists() else ""
+        if text.strip().isdigit():
+            return int(text)
+        assert time.monotonic() < deadline, f"{path} was never written"
+        time.sleep(0.02)
+
+
+def test_a_pull_is_stopped_when_it_is_cancelled_and_podman_ends_with_it(tmp_path, monkeypatch):
+    import threading
+
+    monkeypatch.setattr(rt, "PULL_POLL_SECONDS", 0.05)
+    marker, pid_file = tmp_path / "ended", tmp_path / "pid"
+    runtime = fake_podman(
+        tmp_path,
+        LOCAL_IMAGE  # one that is here is no reason to go on with a pull that was stopped
+        + f"open({str(pid_file)!r}, 'w').write(str(os.getpid()))\n"
+        "print('Copying blob a', flush=True)\n"
+        f"time.sleep(60)\nopen({str(marker)!r}, 'w').write('finished')\n",
+    )
+    cancel = threading.Event()
+    seen = threading.Event()
+
+    def progress(line: str) -> None:  # cancelled as soon as it is known to be running
+        seen.set()
+        cancel.set()
+
+    began = time.monotonic()
+    with pytest.raises(rt.RuntimeFailed):
+        runtime.pull("x", progress, cancel)
+    assert seen.is_set()  # positive control: it was running
+    assert time.monotonic() - began < 30
+    assert not alive(waited_for(pid_file))  # the child ended, not merely was left
+    assert not marker.exists()
+    assert [c for c in fake_calls(tmp_path) if c[:2] == ["image", "exists"]] == []
+
+
+def test_a_pull_that_takes_too_long_is_stopped_and_does_not_fall_back_to_a_local_image(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(rt, "PULL_POLL_SECONDS", 0.05)
+    monkeypatch.setattr(rt, "PULL_TIMEOUT", 3.0)
+    pid_file = tmp_path / "pid"
+    runtime = fake_podman(
+        tmp_path,
+        LOCAL_IMAGE + f"open({str(pid_file)!r}, 'w').write(str(os.getpid()))\ntime.sleep(60)\n",
+    )
+    with pytest.raises(rt.RuntimeFailed) as failed:
+        runtime.pull("x")
+    assert "in time" in str(failed.value)
+    assert not alive(waited_for(pid_file))
+    assert [c for c in fake_calls(tmp_path) if c[:2] == ["image", "exists"]] == []
+    # The control: a pull that fails by itself does use the local image, so that the above is
+    # the timeout's own doing.
+    other = tmp_path / "failing"
+    other.mkdir()
+    falls_back = fake_podman(other, LOCAL_IMAGE + "if args[0] == 'pull':\n    sys.exit(1)\n")
+    falls_back.pull("x")
+    assert [c for c in fake_calls(other) if c[:2] == ["image", "exists"]]
+
+
+def tar_of(files: dict[str, bytes]) -> bytes:
+    import io
+    import tarfile
+
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w") as archive:
+        for name, data in files.items():
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            archive.addfile(info, io.BytesIO(data))
+    return buffer.getvalue()
+
+
+def image_podman(tmp_path: Path, cp_fails: bool = False, big: bool = False) -> rt.PodmanRuntime:
+    passwd = b"root:x:0:0::/root:/bin/sh\ndev:x:1234:1234::/home/dev:/bin/sh\n"
+    inspected = {
+        "Labels": {"devcontainer.metadata": '[{"remoteUser": "dev"}]', "x": "y"},
+        "User": "dev",
+        "Config": {"Env": ["PATH=/a:/b", "EMPTY=", "NODE=20"]},
+    }
+    (tmp_path / "tar").write_bytes(
+        tar_of({"passwd": b"x" * (rt.MAX_ID_FILE_BYTES + 1) if big else passwd})
+    )
+    return fake_podman(
+        tmp_path,
+        "if args[:2] == ['image', 'inspect']:\n"
+        f"    sys.stdout.write({json.dumps(inspected)!r})\n"
+        "elif args[0] == 'cp':\n"
+        f"    if {cp_fails}:\n"
+        "        print('Error: could not be found on container x: No such file or directory',\n"
+        "              file=sys.stderr)\n"
+        "        sys.exit(125)\n"
+        f"    sys.stdout.buffer.write(open({str(tmp_path / 'tar')!r}, 'rb').read())\n",
+    )
+
+
+def test_an_image_is_read_without_being_run_or_mapped(tmp_path):
+    facts = image_podman(tmp_path).image_facts("docker.io/library/node:20")
+    assert facts.passwd.startswith("root:x:0:0") and "dev:x:1234" in facts.passwd
+    assert facts.user == "dev"
+    assert facts.env == {"PATH": "/a:/b", "EMPTY": "", "NODE": "20"}
+    assert facts.labels["devcontainer.metadata"] == '[{"remoteUser": "dev"}]'
+    calls = fake_calls(tmp_path)
+    made = next(c for c in calls if c[0] == "create")
+    assert not [a for a in made if "map" in a or a.startswith(("--user", "--userns"))]
+    assert "--network=none" in made and "--pull=never" in made
+    assert not [c for c in calls if c[0] in ("start", "run", "exec")]  # never run
+    name = next(a for a in made if a.startswith("--name=")).split("=", 1)[1]
+    assert name.startswith(rt.PROBE_PREFIX)
+    assert any(c[0] == "rm" and c[-1] == name for c in calls)  # removed when done
+    copied = [c[1] for c in calls if c[0] == "cp"]
+    assert copied == [f"{name}:/etc/passwd", f"{name}:/etc/group"] and all(
+        c[2] == "-" for c in calls if c[0] == "cp"
+    )
+
+
+def test_a_file_the_image_does_not_have_or_that_is_too_big_is_read_as_empty(tmp_path):
+    none = image_podman(tmp_path, cp_fails=True).image_facts("x")
+    assert (none.passwd, none.group) == ("", "")
+    (tmp_path / "big").mkdir()
+    big = image_podman(tmp_path / "big", big=True).image_facts("x")
+    assert big.passwd == ""
+
+
+def test_the_probe_container_is_removed_even_when_reading_fails(tmp_path):
+    runtime = fake_podman(
+        tmp_path,
+        "if args[:2] == ['image', 'inspect']:\n    sys.stdout.write('{}')\n"
+        "elif args[0] == 'cp':\n    print('Error: the storage broke', file=sys.stderr)\n"
+        "    raise SystemExit(125)\n",
+    )
+    with pytest.raises(rt.RuntimeFailed) as failed:  # not the same as an image without the file
+        runtime.image_facts("x")
+    assert "the storage broke" in str(failed.value)
+    assert any(c[0] == "rm" for c in fake_calls(tmp_path))
+    (tmp_path / "second").mkdir()
+    broken = fake_podman(tmp_path / "second", "if args[0] == 'image':\n    sys.exit(1)\n")
+    with pytest.raises(rt.RuntimeFailed):
+        broken.image_facts("x")
+
+
+def test_only_podman_saying_the_file_is_not_there_means_the_image_has_none(tmp_path):
+    for number, said in enumerate(
+        ("No such file or directory", '"/etc/group" could not be found on container x', "boom")
+    ):
+        folder = tmp_path / str(number)
+        folder.mkdir()
+        runtime = fake_podman(
+            folder,
+            "if args[:2] == ['image', 'inspect']:\n    sys.stdout.write('{}')\n"
+            f"elif args[0] == 'cp':\n    print({said!r}, file=sys.stderr)\n    sys.exit(125)\n",
+        )
+        if said == "boom":
+            with pytest.raises(rt.RuntimeFailed):
+                runtime.image_facts("x")
+        else:
+            assert runtime.image_facts("x").group == ""
+
+
+def test_a_podman_cp_that_stalls_is_stopped_at_the_timeout_and_is_a_failure(tmp_path, monkeypatch):
+    monkeypatch.setattr(rt, "PULL_POLL_SECONDS", 0.05)
+    monkeypatch.setattr(rt, "PODMAN_TIMEOUT", 3.0)
+    pid_file = tmp_path / "pid"
+    runtime = fake_podman(
+        tmp_path,
+        "if args[:2] == ['image', 'inspect']:\n    sys.stdout.write('{}')\n"
+        "elif args[0] == 'cp':\n"
+        f"    open({str(pid_file)!r}, 'w').write(str(os.getpid()))\n"
+        "    sys.stdout.buffer.write(b'partial')\n    sys.stdout.flush()\n"
+        "    time.sleep(60)\n",
+    )
+    with pytest.raises(rt.RuntimeFailed) as failed:
+        runtime.image_facts("x")
+    assert "in time" in str(failed.value)
+    assert not alive(waited_for(pid_file))
+    assert any(c[0] == "rm" for c in fake_calls(tmp_path))  # and the probe container is gone
+
+
+def test_a_podman_cp_is_stopped_when_the_workspace_is_cancelled(tmp_path, monkeypatch):
+    import threading
+
+    monkeypatch.setattr(rt, "PULL_POLL_SECONDS", 0.05)
+    pid_file = tmp_path / "pid"
+    runtime = fake_podman(
+        tmp_path,
+        "if args[:2] == ['image', 'inspect']:\n    sys.stdout.write('{}')\n"
+        "elif args[0] == 'cp':\n"
+        f"    open({str(pid_file)!r}, 'w').write(str(os.getpid()))\n"
+        "    time.sleep(60)\n",
+    )
+    cancel = threading.Event()
+
+    def cancel_once_it_runs():
+        waited_for(pid_file)
+        cancel.set()
+
+    threading.Thread(target=cancel_once_it_runs, daemon=True).start()
+    began = time.monotonic()
+    with pytest.raises(rt.RuntimeFailed):
+        runtime.image_facts("x", cancel)
+    assert time.monotonic() - began < 30  # not the timeout
+    assert not alive(waited_for(pid_file))
+    assert any(c[0] == "rm" for c in fake_calls(tmp_path))
+
+
+def test_leftover_probe_containers_are_removed(tmp_path):
+    names = json.dumps([{"Names": ["rcman-probe-abc"]}, {"Names": ["rcman-probe-def"]}])
+    runtime = fake_podman(tmp_path, f"if args[0] == 'ps':\n    sys.stdout.write({names!r})\n")
+    runtime.clean_probes()
+    calls = fake_calls(tmp_path)
+    assert [c for c in calls if c[0] == "ps"][0].count(f"--filter=label={rt.LABEL_PROBE}") == 1
+    assert sorted(c[-1] for c in calls if c[0] == "rm") == ["rcman-probe-abc", "rcman-probe-def"]
+
+
+# --- the host runtime: what reaches create, images, discarding -----------------------------
+
+
+def test_the_host_runtime_records_the_spec_each_workspace_was_made_from(host):
+    spec_ = owned_spec()
+    host.images[spec_.image] = rt.ImageFacts()
+    host.create(spec_)
+    assert host.specs[spec_.name] == spec_
+    assert host.running(spec_.name)
+
+
+@pytest.mark.parametrize("own", [rt.RANGE, -1])
+def test_the_host_runtime_refuses_the_ids_podman_would(host, own):
+    with pytest.raises(rt.RuntimeFailed):
+        host.create(rt.Spec("rcman-ws-1", slot=1, workspace=1, person=4, uid=own))
+    assert not host.exists("rcman-ws-1")
+
+
+def test_the_host_runtime_pulls_and_reads_the_images_a_test_planted(host):
+    facts = rt.ImageFacts(passwd="root:x:0:0::/root:/bin/sh\n", labels={"a": "b"})
+    host.images["planted"] = facts
+    lines: list[str] = []
+    host.pull("planted", lines.append)
+    assert host.pulled == ["planted"] and lines
+    assert host.image_facts("planted") == facts
+    with pytest.raises(rt.RuntimeFailed):
+        host.pull("not-planted")
+    with pytest.raises(rt.RuntimeFailed):
+        host.image_facts("not-planted")
+    assert host.pulled == ["planted"]
+
+
+def test_the_host_runtime_stops_a_pull_that_was_cancelled(host):
+    import threading
+
+    host.images["planted"] = rt.ImageFacts()
+    cancel = threading.Event()
+    cancel.set()
+    with pytest.raises(rt.RuntimeFailed):
+        host.pull("planted", cancel=cancel)
+    assert host.pulled == []
+
+
+def test_a_layout_made_for_a_plan_runs_as_its_user_with_its_environment_and_path(host):
+    base = rt.PODMAN_LAYOUT
+    same = base.for_plan("dev", {"A": "b"}, None)
+    assert (same.user, same.env, same.path) == ("dev", {"A": "b"}, base.path)
+    changed = base.for_plan("dev", {}, "/x/bin:/usr/bin")
+    assert changed.path == f"{rt.CLAUDE_MOUNT}/bin:/x/bin:/usr/bin"  # rcman's folder stays first
+    assert base.user == "root" and base.env == {}  # the layout itself is not changed
+    on_host = host.layout("x")
+    assert on_host.for_plan("u", {}, "/p").path == "/p"  # the host has no folder of its own
+
+
+def test_the_host_runtime_makes_no_container_from_an_image_it_does_not_have(host):
+    spec_ = owned_spec()
+    with pytest.raises(rt.RuntimeFailed):
+        host.create(spec_)
+    assert not host.exists(spec_.name) and spec_.name not in host.specs
+    host.images[spec_.image] = rt.ImageFacts()  # the control: with the image it is made
+    host.create(spec_)
+    assert host.exists(spec_.name)
+
+
+def test_a_container_starts_in_the_volumes_folder_which_always_exists(tmp_path):
+    recorder = account_recorder(tmp_path)
+    podman_runtime(tmp_path, recorder).create(owned_spec())
+    run = workspace_run(recorder)
+    assert f"--workdir={rt.VOLUME_MOUNT}" in run  # not the image's, which the user may not enter
+    assert run.index(f"--workdir={rt.VOLUME_MOUNT}") < run.index("docker.io/library/node:20")
+    other = tmp_path / "plain"
+    other.mkdir()
+    plain = account_recorder(other)
+    podman_runtime(other, plain).create(rt.Spec("rcman-ws-7", slot=3, workspace=7, person=2))
+    assert f"--workdir={rt.VOLUME_MOUNT}" in workspace_run(plain)
+
+
+def test_a_podman_exec_keeps_only_the_tail_of_what_it_printed_when_asked(tmp_path):
+    body = (
+        "if args[0] == 'exec':\n"
+        "    for i in range(30000):\n"
+        "        print(f'line-{i}-xxxxxxxxxxxxxxxx')\n"
+        "        print(f'err-{i}-xxxxxxxxxxxxxxxx', file=sys.stderr)\n"
+        "    sys.exit(3)\n"
+    )
+    runtime = fake_podman(tmp_path, body)
+    kept = runtime.exec("rcman-ws-7", ["x"], keep=1000)
+    assert kept.code == 3
+    assert len(kept.out) <= 1000 and len(kept.err) <= 1000
+    assert kept.out.endswith(b"line-29999-xxxxxxxxxxxxxxxx\n") and b"line-0-" not in kept.out
+    assert kept.err.endswith(b"err-29999-xxxxxxxxxxxxxxxx\n")
+    whole = runtime.exec("rcman-ws-7", ["x"])  # the control: without keep, all of it
+    assert len(whole.out) > 100_000
+
+
+def test_a_podman_exec_that_keeps_a_tail_still_times_out(tmp_path):
+    runtime = fake_podman(tmp_path, "if args[0] == 'exec':\n    time.sleep(60)\n")
+    began = time.monotonic()
+    with pytest.raises(rt.RuntimeFailed):
+        runtime.exec("rcman-ws-7", ["x"], timeout=0.5, keep=100)
+    assert time.monotonic() - began < 20
+
+
+def test_a_podman_exec_that_keeps_a_tail_passes_its_input_and_workdir_on(tmp_path):
+    body = "if args[0] == 'exec':\n    sys.stdout.write(sys.stdin.read().upper())\n"
+    runtime = fake_podman(tmp_path, body)
+    answer = runtime.exec("rcman-ws-7", ["x"], stdin=b"abc", cwd="/rcman/work", keep=100)
+    assert answer == rt.Result(0, b"ABC", b"")
+    assert fake_calls(tmp_path)[0][:3] == ["exec", "--interactive", "--workdir=/rcman/work"]
+
+
+def test_a_podman_cp_of_a_file_far_bigger_than_a_user_database_is_not_read_to_the_end(tmp_path):
+    finished = tmp_path / "finished"
+    body = (
+        "if args[0] == 'cp':\n"
+        "    chunk = b'x' * 65536\n"
+        f"    for _ in range({4 * rt.MAX_ID_FILE_BYTES // 65536 + 8}):\n"
+        "        sys.stdout.buffer.write(chunk)\n"
+        "        sys.stdout.buffer.flush()\n"
+        f"    open({str(finished)!r}, 'w').write('all of it was written')\n"
+        "elif args[:2] == ['image', 'inspect']:\n"
+        "    sys.stdout.write('{}')\n"
+    )
+    facts = fake_podman(tmp_path, body).image_facts("x")
+    assert (facts.passwd, facts.group) == ("", "")
+    assert not finished.exists()  # podman was stopped, not waited for
+    assert any(c[0] == "rm" for c in fake_calls(tmp_path))

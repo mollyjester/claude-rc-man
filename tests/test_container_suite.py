@@ -319,14 +319,14 @@ subprocess.run([uv, "sync", "--frozen", "--no-dev", "--no-install-project", "--p
 """
 
 
-def test_git_in_a_workspace_pushes_to_the_tests_github_with_the_persons_token(docker, podman_host):
-    """tests/container/test_github_in_podman.py, run as the service account: github.com is
-    the podman host's own address in its /etc/hosts, where the tests' GitHub listens."""
+def _in_the_hosts_with_github(podman_host: list[str], module: str, timeout: int) -> None:
+    """``module`` run as the service account, with the tools, the store holding the fake
+    `claude`, the backend's dependencies and github.com the podman host's own address in its
+    /etc/hosts, where the tests' GitHub listens."""
     _run([*podman_host, "python3", "-c", TOOLS_AND_STORE + FAKE_IN_STORE])
     _run([*podman_host, "python3", "-c", BACKEND_DEPENDENCIES])
     address = _run([*podman_host, "hostname", "-I"]).stdout.split()[0]
     _run([*podman_host, "sh", "-c", f"echo '{address} github.com' >> /etc/hosts"])
-    module = "tests/container/test_github_in_podman.py"
     as_account = [
         "python3", "tests/container/podman_host.py", "run", "env", "RCMAN_IN_CONTAINER=1",
         "PYTHONDONTWRITEBYTECODE=1", "PYTHONPATH=/src/backend:/src", "HOME=/var/lib/rcman",
@@ -345,9 +345,23 @@ def test_git_in_a_workspace_pushes_to_the_tests_github_with_the_persons_token(do
             ],
             capture_output=True,
             text=True,
-            timeout=2400,
+            timeout=timeout,
         )
     )
+
+
+def test_git_in_a_workspace_pushes_to_the_tests_github_with_the_persons_token(docker, podman_host):
+    """tests/container/test_github_in_podman.py, run as the service account."""
+    _in_the_hosts_with_github(podman_host, "tests/container/test_github_in_podman.py", 2400)
+
+
+def test_a_workspace_made_from_a_devcontainer_file_runs_as_its_user_in_real_podman(
+    docker, podman_host
+):
+    """tests/container/test_devcontainer_in_podman.py, run as the service account: images
+    built in the account's Podman, the uid swap map, the shared sign-in and the lifecycle
+    commands, with the tests' GitHub as the repositories' origin."""
+    _in_the_hosts_with_github(podman_host, "tests/container/test_devcontainer_in_podman.py", 3600)
 
 
 # --- rcman installed for real, in the podman host -------------------------------------
