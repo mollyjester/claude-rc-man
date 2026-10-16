@@ -1519,6 +1519,11 @@ def main(argv: list[str]) -> int:
         "--rollback", action="store_true", help="switch back to the previous release"
     )
     args = parser.parse_args(argv)
+    # Every command run as another account (rcman's Podman, its user manager) inherits this
+    # folder, and rcman cannot enter the installing user's home (0750): ``runuser`` then fails
+    # with "cannot chdir". Every path the installer uses is absolute, so stand in a folder that
+    # is no one's.
+    os.chdir("/")
     try:
         if os.geteuid() != 0:
             raise InstallError("run install.sh with sudo")
