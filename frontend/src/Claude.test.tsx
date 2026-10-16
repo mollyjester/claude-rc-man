@@ -136,6 +136,39 @@ test("signing out of Claude without keeping sessions stops them and signs out at
   expect(await screen.findByText(m.claudeNotConnected)).toBeInTheDocument();
 });
 
+test("a sign-in that disappeared on its own is said so, instead of the ordinary words, with the connect form offered", async () => {
+  api({ ...NOT_CONNECTED, signed_out_unexpectedly: true });
+  renderAlone(<Account />);
+  expect(await screen.findByText(m.claudeSignedOutUnexpectedly)).toBeInTheDocument();
+  expect(screen.queryByText(m.claudeNotConnected)).not.toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: m.connect }));
+  expect(await screen.findByRole("button", { name: m.connectGo })).toBeInTheDocument();
+});
+
+test("an account that was never connected says the ordinary words, not the unexpected ones", async () => {
+  api({ ...NOT_CONNECTED, signed_out_unexpectedly: false });
+  renderAlone(<Account />);
+  expect(await screen.findByText(m.claudeNotConnected)).toBeInTheDocument();
+  expect(screen.queryByText(m.claudeSignedOutUnexpectedly)).not.toBeInTheDocument();
+});
+
+test("connecting answers with the account's state, and the words go once it is connected", async () => {
+  api(
+    { ...NOT_CONNECTED, signed_out_unexpectedly: true },
+    {
+      "POST /api/claude/login": { url: "https://claude.com/x" },
+      "POST /api/claude/code": { ...CONNECTED, signed_out_unexpectedly: false },
+    },
+  );
+  renderAlone(<Account />);
+  await userEvent.click(await screen.findByRole("button", { name: m.connect }));
+  await userEvent.click(screen.getByRole("button", { name: m.connectGo }));
+  await userEvent.type(await screen.findByLabelText(m.connectCode), "abc");
+  await userEvent.click(screen.getByRole("button", { name: m.connectSubmit }));
+  expect(await screen.findByText(m.claudeConnectedAs("alice@claude.test"))).toBeInTheDocument();
+  expect(screen.queryByText(m.claudeSignedOutUnexpectedly)).not.toBeInTheDocument();
+});
+
 test("an account not connected is offered no sign-out", async () => {
   api(NOT_CONNECTED);
   renderAlone(<Account />);
@@ -152,4 +185,14 @@ test("a sign-out that waits can be finished at once, stopping the servers", asyn
     expect(fake.made("POST", "/api/claude/logout")[0].body).toEqual({ keep_sessions: false }),
   );
   expect(await screen.findByText(m.claudeNotConnected)).toBeInTheDocument();
+});
+
+test("signing out of Claude, and finishing a sign-out at once, are drawn as what they are: danger", async () => {
+  api(CONNECTED);
+  const { unmount } = renderAlone(<Account />);
+  expect(await screen.findByRole("button", { name: m.claudeSignOut })).toHaveClass("danger");
+  unmount();
+  api(SIGNING_OUT);
+  renderAlone(<Account />);
+  expect(await screen.findByRole("button", { name: m.claudeSignOutNow })).toHaveClass("danger");
 });

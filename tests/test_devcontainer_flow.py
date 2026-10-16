@@ -17,7 +17,7 @@ from rcman import devcontainer as dc
 from rcman import runtime as rt
 from rcman import workspaces as ws
 
-from tests.conftest import MADE_WITHIN, as_user, changing, host_runtime
+from tests.conftest import MADE_WITHIN, as_user, changing, host_runtime, made_workspace
 from tests.git_fixtures import fixture_git, make_repo
 from tests.test_clone import (
     ALICE,
@@ -322,6 +322,51 @@ def test_a_user_the_image_does_not_have_is_refused_after_the_pull_and_nothing_is
     assert failed["state"] == "failed" and '"nobody-here"' in failed["error"]
     assert runtime.pulled == [IMAGE]  # the image had to be read to know
     no_trace(runtime, failed)
+
+
+def test_a_runtime_that_goes_away_during_the_pull_fails_the_workspace_in_plain_words(
+    client, runtime, publish
+):
+    """Not with what podman said, which holds paths of the machine, and not as a refusal of the
+    file: the container and the clone in it stay for a person to look at, like those of any
+    failure that is not a refusal."""
+
+    def unreachable(image, progress=None, cancel=None):
+        raise rt.RuntimeUnavailable("Cannot connect to Podman: unix:///run/user/990/podman.sock")
+
+    runtime.pull = unreachable
+    publish(config())
+    failed = cloned(client)
+    assert failed["state"] == "failed"
+    assert failed["error"] == problems.DEVCONTAINER_MESSAGES["runtime_gone"]
+    assert "990" not in failed["error"] and "podman.sock" not in failed["error"]
+    assert runtime.exists(name_of(failed))  # kept
+
+
+@pytest.mark.parametrize("label", ["rcman.probe", "rcman.workspace", "rcman.person", "rcman.x"])
+def test_an_image_that_carries_a_label_of_rcmans_is_refused_and_nothing_is_left(
+    client, runtime, publish, label
+):
+    """A container inherits its image's labels: one that said it was a probe would be removed
+    at every restore, one that named another person's workspace would be taken for it."""
+    runtime.images[IMAGE] = rt.ImageFacts(
+        passwd=PASSWD, group=GROUP, labels={label: "1", "org.example.fine": "yes"}
+    )
+    publish(config())
+    failed = cloned(client)
+    assert failed["state"] == "failed"
+    assert failed["error"] == problems.DEVCONTAINER_MESSAGES["image_labels"].format(
+        image=IMAGE, label=label
+    )
+    no_trace(runtime, failed)
+
+
+def test_an_image_with_labels_that_are_not_rcmans_is_taken(client, runtime, publish):
+    runtime.images[IMAGE] = rt.ImageFacts(
+        passwd=PASSWD, group=GROUP, labels={"org.example.rcman": "1", "my.rcman.thing": "2"}
+    )
+    publish(config())
+    assert cloned(client)["state"] == "ready"
 
 
 def test_a_refusal_says_what_to_change(client, runtime, publish):
@@ -1034,6 +1079,46 @@ def test_the_orphan_probe_containers_of_an_earlier_rcman_are_cleaned_when_restor
     assert cleaned == [True]
 
 
+def test_a_container_no_row_is_for_is_discarded_and_its_volume_is_kept(service, settings, runtime):
+    insert(settings, "has-a-row", "ready", URL)
+    name = rt.container_name(999)
+    runtime.create(rt.Spec(name, slot=1, workspace=999, person=1))
+    (runtime.root / name / rt.WORK / "notes.txt").write_text("someone's work")
+    service.restore()
+    assert ("discard", name) in runtime.events and ("remove", name) not in runtime.events
+    assert not runtime.exists(name) and name not in runtime.labelled()
+    assert (runtime.root / name / rt.WORK / "notes.txt").read_text() == "someone's work"
+
+
+def test_nothing_is_removed_when_the_table_is_empty_and_workspaces_are_there(
+    service, settings, runtime, caplog
+):
+    """A database that was lost, or is not the one these containers were made for, must not
+    take every workspace and its files with it."""
+    name = rt.container_name(5)
+    runtime.create(rt.Spec(name, slot=1, workspace=5, person=1))
+    runtime.builder_ids.add(5)
+    runtime.built[5] = rt.built_name(5)
+    runtime.images[rt.built_name(5)] = rt.ImageFacts()
+    with caplog.at_level("ERROR", logger="rcman.workspaces"):
+        service.restore()
+    assert runtime.exists(name) and name in runtime.labelled()
+    assert [e for e in runtime.events if e[0] in ("remove", "discard")] == []
+    assert runtime.builders() == {5} and runtime.built_images() == {5: rt.built_name(5)}
+    said = [r.getMessage() for r in caplog.records if r.levelname == "ERROR"]
+    assert any("no workspaces" in line and name in line for line in said), said
+
+
+def test_the_control_for_the_empty_table_is_that_a_row_makes_the_orphans_go(
+    service, settings, runtime
+):
+    insert(settings, "has-a-row", "ready", URL)
+    name = rt.container_name(5)
+    runtime.create(rt.Spec(name, slot=1, workspace=5, person=1))
+    service.restore()
+    assert ("discard", name) in runtime.events
+
+
 def test_the_database_column_exists_and_is_null_for_old_rows(settings):
     from rcman import db
 
@@ -1177,6 +1262,307 @@ def test_a_lost_container_is_made_again_when_its_image_was_pulled_first(service,
     name = rt.container_name(workspace)
     order = [e[0] for e in runtime.events if e[0] in ("pull", "create")]
     assert order == ["pull", "create"] and runtime.running(name)
+
+
+# --- the plan pins the image ------------------------------------------------------------------
+
+ID_A, ID_B = "a" * 64, "b" * 64
+DIGEST = "sha256:" + "c" * 64
+REPOSITORY = "registry.example.com/team/dev"
+
+
+def pinned_plan(**keys) -> dc.Plan:
+    facts = rt.ImageFacts(
+        passwd=PASSWD, group=GROUP, env={"PATH": "/image/bin:/bin"}, id=ID_A, digest=DIGEST
+    )
+    return dc.plan({**GOOD, **keys}, facts, 1, "/rcman/work")
+
+
+def test_a_plan_keeps_the_id_and_digest_of_the_image_it_was_made_from():
+    made = pinned_plan()
+    assert (made.image_id, made.image_digest) == (ID_A, DIGEST)
+    again = dc.Plan.from_json(made.to_json())
+    assert (again.image_id, again.image_digest) == (ID_A, DIGEST) and again == made
+
+
+def test_a_lost_container_is_made_again_from_the_pinned_id_without_a_pull(
+    service, settings, runtime
+):
+    runtime.images[IMAGE] = rt.ImageFacts(passwd=PASSWD, group=GROUP, id=ID_B)  # the tag moved on
+    runtime.extra_ids.add(ID_A)  # and the image it was made from is still in the storage
+    workspace = ready_with_plan(service, settings, runtime, pinned_plan(), make_container=False)
+    service.restore()
+    spec = runtime.specs[rt.container_name(workspace)]
+    assert (spec.image, spec.image_id) == (IMAGE, ID_A)
+    assert runtime.pulled == [] and row(settings, workspace)["state"] == "ready"
+
+
+def test_an_image_gone_from_the_storage_is_pulled_by_its_digest_not_its_tag(
+    service, settings, runtime
+):
+    runtime.images.pop(IMAGE)
+    runtime.images[f"{REPOSITORY}@{DIGEST}"] = rt.ImageFacts(passwd=PASSWD, group=GROUP, id=ID_A)
+    runtime.lost_ids.add(ID_A)  # the storage lacks it until the pull brings it back
+    runtime.after_pull = lambda: runtime.lost_ids.discard(ID_A)
+    workspace = ready_with_plan(service, settings, runtime, pinned_plan(), make_container=False)
+    service.restore()
+    assert runtime.pulled == [f"{REPOSITORY}@{DIGEST}"]
+    assert runtime.specs[rt.container_name(workspace)].image_id == ID_A
+    assert row(settings, workspace)["state"] == "ready"
+
+
+def test_an_image_gone_from_the_storage_with_no_digest_fails_the_workspace_in_plain_words(
+    service, settings, runtime
+):
+    facts = rt.ImageFacts(passwd=PASSWD, group=GROUP, env={"PATH": "/image/bin:/bin"}, id=ID_A)
+    plan = dc.plan(GOOD, facts, 1, "/rcman/work")
+    workspace = ready_with_plan(service, settings, runtime, plan, make_container=False)
+    runtime.images.pop(IMAGE)
+    service.restore()
+    now = row(settings, workspace)
+    assert now["state"] == "failed"
+    assert now["error"] == problems.DEVCONTAINER_MESSAGES["image_gone"].format(image=IMAGE)
+    assert runtime.pulled == []
+
+
+def test_a_digest_that_gives_another_image_than_the_pinned_one_fails_the_workspace(
+    service, settings, runtime
+):
+    runtime.images.pop(IMAGE)
+    runtime.images[f"{REPOSITORY}@{DIGEST}"] = rt.ImageFacts(passwd=PASSWD, group=GROUP, id=ID_B)
+    runtime.lost_ids.add(ID_A)  # and the pull does not bring it back: it brings another image
+    workspace = ready_with_plan(service, settings, runtime, pinned_plan(), make_container=False)
+    service.restore()
+    now = row(settings, workspace)
+    assert now["state"] == "failed" and now["error"].startswith('The image "')
+
+
+def test_a_built_image_whose_id_is_gone_fails_the_workspace_though_its_name_is_there(
+    service, settings, runtime
+):
+    workspace = insert(settings, "built", "ready", URL)
+    facts = rt.ImageFacts(passwd=PASSWD, group=GROUP, env={"PATH": "/b:/bin"}, id=ID_A)
+    plan = dc.plan(GOOD, facts, workspace, "/rcman/work", image=rt.built_name(workspace))
+    set_environment(settings, workspace, plan.to_json())
+    runtime.images[rt.built_name(workspace)] = rt.ImageFacts(passwd=PASSWD, group=GROUP, id=ID_B)
+    runtime.built[workspace] = rt.built_name(workspace)  # the name is there; the id is not
+    service.restore()
+    now = row(settings, workspace)
+    assert (
+        now["state"] == "failed"
+        and now["error"] == problems.DEVCONTAINER_MESSAGES["built_image_gone"]
+    )
+
+
+def test_a_workspace_made_from_the_default_image_keeps_the_id_it_was_made_from(
+    client, app, runtime
+):
+    runtime.default_id = ID_A
+    made = made_workspace(client, ALICE)
+    spec = runtime.specs[rt.container_name(made["id"])]
+    assert spec.image is None and spec.image_id == ID_A
+    assert row(app.state.settings, made["id"])["image_id"] == ID_A
+
+
+def test_a_lost_default_container_is_made_again_from_the_pinned_image_not_the_newest(
+    service, settings, runtime
+):
+    workspace = insert(settings, "default", "ready", None)
+    set_environment(settings, workspace, None, image_id=ID_A)
+    runtime.default_id = ID_B  # a newer default image, for new workspaces
+    runtime.extra_ids.add(ID_A)  # the one this workspace was made from is still in the storage
+    service.restore()
+    spec = runtime.specs[rt.container_name(workspace)]
+    assert spec.image_id == ID_A and row(settings, workspace)["image_id"] == ID_A
+
+
+def test_a_lost_default_container_whose_pinned_image_is_gone_fails_the_workspace(
+    service, settings, runtime
+):
+    workspace = insert(settings, "default", "ready", None)
+    set_environment(settings, workspace, None, image_id=ID_A)
+    runtime.default_id = ID_B
+    runtime.lost_ids.add(ID_A)
+    service.restore()
+    now = row(settings, workspace)
+    assert now["state"] == "failed"
+    assert now["error"] == problems.DEVCONTAINER_MESSAGES["default_image_gone"]
+    assert not runtime.exists(rt.container_name(workspace))
+
+
+def test_a_default_workspace_with_no_pinned_image_is_pinned_to_the_default_when_it_is_remade(
+    service, settings, runtime
+):
+    workspace = insert(settings, "old", "ready", None)
+    runtime.default_id = ID_B
+    service.restore()
+    assert runtime.specs[rt.container_name(workspace)].image_id == ID_B
+    assert row(settings, workspace)["image_id"] == ID_B
+
+
+def test_workspaces_of_a_database_that_was_restored_are_not_made_on_the_volumes_of_the_old(
+    service, settings, runtime
+):
+    workspace = insert(settings, "restored", "ready", None)
+    service.restore()
+    name = rt.container_name(workspace)
+    assert runtime.exists(name)
+    assert runtime.specs[name].install  # the spec holds the database's install id
+    runtime.discard(name)
+    con = db.connect(settings.database)
+    try:
+        con.execute("update meta set install = 'the-install-of-a-backup'")
+        con.commit()
+    finally:
+        con.close()
+    with pytest.raises(rt.RuntimeFailed) as refused:
+        service._remake(service.get(workspace), threading.Event())
+    assert "another" in str(refused.value) and not runtime.exists(name)
+
+
+# --- images nothing refers to are collected ---------------------------------------------------
+
+OLD_DEFAULT, STRAY = "localhost/rcman-workspace:old", "registry.example.com/stray:1"
+
+
+def stray_images(runtime, *names: str) -> None:
+    """Images the runtime holds that it pulled or built for someone."""
+    for name in names:
+        runtime.images[name] = rt.ImageFacts(passwd=PASSWD, group=GROUP, id=f"id-of-{name}")
+        runtime.collectable.add(name)
+
+
+def test_a_restart_collects_the_images_nothing_refers_to_and_keeps_the_rest(
+    service, settings, runtime
+):
+    pinned_name, moved_name = "registry.example.com/pinned:1", "registry.example.com/moved:1"
+    stray_images(runtime, STRAY, OLD_DEFAULT, pinned_name, moved_name, IMAGE)
+    named = ready_with_plan(service, settings, runtime, a_plan(), name="named")  # names IMAGE
+    pinned = insert(settings, "pinned", "ready", None)  # made from the default image of its day
+    set_environment(settings, pinned, None, image_id=runtime.images[pinned_name].id)
+    runtime.images[moved_name] = rt.ImageFacts(id=ID_A)  # the plan's id, under another name
+    runtime.collectable.add(moved_name)
+    moved = ready_with_plan(service, settings, runtime, pinned_plan(), name="moved")
+    service.restore()
+    assert STRAY not in runtime.images and OLD_DEFAULT not in runtime.images
+    assert IMAGE in runtime.images  # a stored plan names it
+    assert pinned_name in runtime.images  # a workspace is pinned to its id
+    assert moved_name in runtime.images  # a stored plan holds its id
+    assert runtime.exists(rt.container_name(named)) and moved
+
+
+def test_an_image_a_container_is_made_from_is_not_collected(service, settings, runtime):
+    stray_images(runtime, STRAY)
+    runtime.create(rt.Spec("rcman-ws-9", slot=1, workspace=9, person=1, image=STRAY))
+    insert(settings, "has-a-row", "ready", None)
+    service._collect_images()
+    assert STRAY in runtime.images  # a container is made from it
+    runtime.remove("rcman-ws-9")
+    service._collect_images()
+    assert STRAY not in runtime.images  # the control: with the container gone it goes
+
+
+def test_deleting_a_workspace_collects_the_image_only_it_used(client, runtime, publish):
+    publish(config())
+    made = cloned(client)
+    assert made["state"] == "ready" and IMAGE in runtime.images
+    runtime.collectable.add(IMAGE)
+    other = made_workspace(client, ALICE, "other")  # a workspace of the default image
+    r = client.delete(f"/api/workspaces/{other['id']}", headers=changing(ALICE))
+    assert r.status_code == 200 and IMAGE in runtime.images  # the plan of the first names it
+    r = client.delete(f"/api/workspaces/{made['id']}", headers=changing(ALICE))
+    assert r.status_code == 200
+    assert IMAGE not in runtime.images  # nothing refers to it now
+
+
+def test_nothing_is_collected_while_a_workspace_is_being_made_or_a_plan_cannot_be_read(
+    service, settings, runtime
+):
+    stray_images(runtime, STRAY)
+    making = insert(settings, "making", "creating", None)
+    service._collect_images()
+    assert STRAY in runtime.images  # its image may be pulled and not yet in its plan
+    con = db.connect(settings.database)
+    con.execute("update workspaces set state = 'ready' where id = ?", (making,))
+    con.commit()
+    con.close()
+    set_environment(settings, making, "not json")
+    service._collect_images()
+    assert STRAY in runtime.images  # what it is made from is not known
+    set_environment(settings, making, None)
+    service._collect_images()
+    assert STRAY not in runtime.images  # the control: with nothing in the way it goes
+
+
+def test_a_workspace_is_not_recorded_while_images_are_being_collected(service, settings, runtime):
+    """The collection reads which workspaces are being made, then removes images; a workspace
+    recorded between the two would lose the image it is about to be made from."""
+    stray_images(runtime, STRAY)
+    inside, release = threading.Event(), threading.Event()
+    real = runtime.collect_images
+
+    def slow(keep_ids, keep_names):
+        inside.set()
+        assert release.wait(MADE_WITHIN)
+        return real(keep_ids, keep_names)
+
+    runtime.collect_images = slow
+    collecting = threading.Thread(target=service._collect_images, daemon=True)
+    collecting.start()
+    assert inside.wait(MADE_WITHIN)
+    con = db.connect(settings.database)
+    try:
+        alice = people.by_email(con, ALICE)
+    finally:
+        con.close()
+    made = []
+    creating = threading.Thread(
+        target=lambda: made.append(service.create(alice, "late")), daemon=True
+    )
+    creating.start()
+    creating.join(1.0)
+    assert creating.is_alive() and service.everything() == []  # held back: no row yet
+    release.set()
+    collecting.join(MADE_WITHIN)
+    creating.join(MADE_WITHIN)
+    assert made and made[0].name == "late" and STRAY not in runtime.images  # then it goes on
+
+
+def test_the_shell_does_not_collect_images_the_service_collects_at_its_next_opportunity(
+    settings, runtime
+):
+    stray_images(runtime, STRAY)
+    quiet = ws.Workspaces(settings, runtime, prunes=False)
+    try:
+        quiet._collect_images()
+        assert STRAY in runtime.images
+    finally:
+        quiet.close()
+    loud = ws.Workspaces(settings, runtime)
+    try:
+        loud._collect_images()
+        assert STRAY not in runtime.images  # the control
+    finally:
+        loud.close()
+
+
+def test_nothing_is_collected_on_the_word_of_an_empty_table(service, settings, runtime):
+    stray_images(runtime, STRAY)
+    runtime.create(rt.Spec("rcman-ws-5", slot=1, workspace=5, person=1))
+    service.restore()
+    assert STRAY in runtime.images
+
+
+def test_a_collection_that_fails_is_logged_and_fails_nothing(service, settings, runtime, caplog):
+    insert(settings, "has-a-row", "ready", None)
+
+    def broken(keep_ids, keep_names):
+        raise rt.RuntimeFailed("planted")
+
+    runtime.collect_images = broken
+    with caplog.at_level("WARNING", logger="rcman.workspaces"):
+        service.restore()
+    assert "images" in caplog.text and service.restored.is_set()
 
 
 # --- a delete that lands between the steps of making --------------------------------------

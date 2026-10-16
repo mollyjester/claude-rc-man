@@ -176,7 +176,11 @@ test("a workspace is made by cloning from GitHub, a private repository once a to
   await form.getByRole("button", { name: m.create }).click();
   const privateOne = panel(page, "stack-private");
   await expect(privateOne.getByText(m.workspaceFailed)).toBeVisible();
+  // a plain sentence in the open; the raw words are behind Details
+  await expect(privateOne.getByText(/^GitHub asked for a sign-in/).first()).toBeVisible();
+  await privateOne.getByText(m.detailsTitle, { exact: true }).click();
   const said = privateOne.locator("pre.workspace-error");
+  await expect(said).toBeVisible();
   // the server's sentence, CLONE_MESSAGES["private_no_token"] in backend/rcman/problems.py
   await expect(said).toContainText("GitHub asked for a sign-in");
   await expect(said).toContainText("git clone failed, exit code 128:");
@@ -334,16 +338,20 @@ test("the audit trail records what people did", async ({ page }) => {
     "person.add",
     "person.delete",
   ]) {
-    await expect(page.getByRole("cell", { name: action, exact: true }).first()).toBeVisible();
+    // the page says each action in plain words, from the same catalogue as the unit tests
+    await expect(
+      page.getByRole("cell", { name: m.auditActions[action], exact: true }).first(),
+    ).toBeVisible();
   }
-  // bob's refused stop: the whole row, as rcman recorded it
+  // bob's refused stop: the whole row, as rcman recorded it; a failed result is the word for a
+  // failure and the code of the error the request failed with
   let refusedStop = page.getByRole("row");
-  for (const cell of [BOB, "server.stop", "workspace_not_found"])
+  for (const cell of [BOB, m.auditActions["server.stop"], `${m.auditFailed} workspace_not_found`])
     refusedStop = refusedStop.filter({ has: page.getByRole("cell", { name: cell, exact: true }) });
   await expect(refusedStop).toHaveCount(1);
   // carol's removal, by her address
   let removal = page.getByRole("row");
-  for (const cell of [ALICE, "person.delete", CAROL])
+  for (const cell of [ALICE, m.auditActions["person.delete"], CAROL])
     removal = removal.filter({ has: page.getByRole("cell", { name: cell, exact: true }) });
   await expect(removal).toHaveCount(1);
 });

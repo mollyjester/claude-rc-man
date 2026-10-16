@@ -17,7 +17,9 @@ Claude's among them; Commit in rcman's **Changes** section needs a name.
 
 The **GitHub token** part says whether a token is stored, and takes a GitHub
 personal access token, which it never shows again once saved. Saving one
-replaces any stored before. **Remove token** asks first, then forgets it. The
+replaces any stored before. **Remove token** asks first, then forgets it: rcman empties the credential file
+it keeps for git, and nothing a credential helper you set up yourself in a
+workspace saved elsewhere (see [Git](git.md)). The
 token is what git uses for GitHub, to push and to clone private repositories as
 you, in all your workspaces and for Claude's git as well as rcman's.
 

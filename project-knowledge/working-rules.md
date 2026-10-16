@@ -186,6 +186,12 @@ else; this file is the full list. Rules are referred to by their bold name.
   not such text: the person chose them by choosing the repository, and a
   string command is run by a shell in the workspace, as the container's user,
   with a time limit.
+- **No privilege boundary in product code.** What the service ships has no command
+  that raises privilege, no root helper and no switching of accounts; rcman runs as
+  its own account and drives everything else through it. The installer is the one
+  program that makes accounts, and `rcman-admin`, started by root, runs itself again
+  as rcman, which is a named exemption. The guard and its exemptions are in
+  [tests.md](tests.md#repository-guards).
 - **Every mutating endpoint is audited**, and a test over the route table
   checks it. An exemption carries a reason that also appears in `docs/`.
 - **The interface offers only what the server will allow.** A control shown to

@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 from rcman import db, people
 from rcman import runtime as rt
+from rcman.problems import Problem
 
 from devtools import fake_claude as fake
 from tests.conftest import ALICE, BOB, CAROL, as_user, changing, made_workspace
@@ -327,7 +328,7 @@ def test_deleting_a_person_removes_their_sign_in_before_their_row(client, app):
 
 
 def test_a_sign_in_left_by_a_failed_removal_never_reaches_the_next_person(client, app, monkeypatch):
-    """People's ids and slots are given again: a leftover file would sign the next one in."""
+    """A slot is given again: a leftover file would sign the next one in."""
     connect(client, CAROL)
     carol = person(app, CAROL)
     runtime = app.state.workspaces.runtime
@@ -348,8 +349,188 @@ def test_a_sign_in_left_by_a_failed_removal_never_reaches_the_next_person(client
         again = people.add(con, "dave@example.com", False)
     finally:
         con.close()
-    assert (again.id, again.slot) == (carol.id, carol.slot)  # the same id and slot again
+    assert again.slot == carol.slot and again.id > carol.id  # the slot again, never the id
     assert runtime.read_account(again.id, again.slot) == b""
+
+
+# --- the sign-in that disappeared -------------------------------------------------------
+
+
+def test_a_connected_account_whose_file_was_emptied_is_reported_as_signed_out_unexpectedly(
+    client, app
+):
+    """Two workspaces of one person refresh the shared file with Claude's own writes, which
+    can collide and leave it empty or torn; SQLite still says the account is connected."""
+    connect(client)
+    found = client.get("/api/claude", headers=as_user(ALICE)).json()
+    assert found["connection"] == "connected" and found["signed_out_unexpectedly"] is False
+    account_file(app, ALICE).write_bytes(b"")
+    found = client.get("/api/claude", headers=as_user(ALICE)).json()
+    assert found["connection"] == "not_connected" and found["account"] is None
+    assert found["signed_out_unexpectedly"] is True
+
+
+@pytest.mark.parametrize("content", [b"{", b'{"claudeAiOauth": 5}', b"[]", b"\xff\xfe", b"null"])
+def test_a_file_that_holds_no_sign_in_is_the_same_while_the_account_is_connected(
+    client, app, content
+):
+    connect(client)
+    account_file(app, ALICE).write_bytes(content)
+    found = client.get("/api/claude", headers=as_user(ALICE)).json()
+    assert (found["connection"], found["signed_out_unexpectedly"]) == ("not_connected", True)
+
+
+def test_nothing_is_unexpected_before_a_sign_in_after_a_sign_out_or_while_one_waits(client, app):
+    assert (
+        client.get("/api/claude", headers=as_user(ALICE)).json()["signed_out_unexpectedly"] is False
+    )
+    connect(client)
+    answer = sign_out(client, False).json()
+    assert answer["connection"] == "not_connected" and answer["signed_out_unexpectedly"] is False
+    assert (
+        client.get("/api/claude", headers=as_user(ALICE)).json()["signed_out_unexpectedly"] is False
+    )
+    work = made_workspace(client, ALICE)
+    connect(client)
+    trusted(app, work)
+    start(client, work)
+    waiting = sign_out(client, True).json()  # keeps sessions: the file stays until they stop
+    assert waiting["signing_out"] is True and waiting["signed_out_unexpectedly"] is False
+    account_file(app, ALICE).write_bytes(b"")  # emptied while the sign-out waits: expected
+    found = client.get("/api/claude", headers=as_user(ALICE)).json()
+    assert found["signing_out"] is True and found["signed_out_unexpectedly"] is False
+
+
+def test_what_a_credentials_file_holds_is_one_of_three_states():
+    from rcman.runtime import credentials_state
+
+    signed_in = b'{"claudeAiOauth": {"accessToken": "x"}}'
+    assert credentials_state(signed_in) == "signed_in"
+    assert credentials_state(b"") == credentials_state(b" \n") == "empty"
+    for torn in (b"{", b"{}", b'{"claudeAiOauth": null}', b"[]", b"\xff", signed_in[:20]):
+        assert credentials_state(torn) == "unreadable", torn
+
+
+# --- a person being deleted is let into nothing of theirs ------------------------------
+
+
+def being_deleted(app, email: str) -> people.Person:
+    """The person as a request that began before the deletion still holds them, and the row as
+    the deletion left it."""
+    held = person(app, email)
+    con = db.connect(app.state.settings.database)
+    try:
+        people.mark_deleting(con, held)
+    finally:
+        con.close()
+    return held
+
+
+def test_the_status_of_a_person_being_deleted_does_not_make_their_volume_again(client, app):
+    bob = being_deleted(app, BOB)
+    runtime = app.state.workspaces.runtime
+    assert not runtime._account_file(bob.id).parent.exists()  # the control: no volume yet
+    with pytest.raises(Problem) as refused:
+        app.state.accounts.status(bob)
+    assert refused.value.code == "not_allowed"
+    assert not runtime._account_file(bob.id).parent.exists()
+    # and the control the other way: an active person's status makes it, as it always has
+    app.state.accounts.status(person(app, CAROL))
+    assert runtime._account_file(person(app, CAROL).id).parent.exists()
+
+
+def test_a_status_that_waits_for_the_deletion_of_the_person_does_not_make_their_volume_again(
+    client, app
+):
+    """The read makes the volume if it is not there: it is taken under the person's lock, and
+    the person is looked at again once the lock is had."""
+    bob = person(app, BOB)
+    runtime = app.state.workspaces.runtime
+    app.state.accounts.status(bob)  # the control: an active person's volume is there
+    folder = runtime._account_file(bob.id).parent
+    assert folder.exists()
+    lock = app.state.workspaces.person_lock(bob.id)
+    lock.acquire()
+    try:
+        reading, out = in_thread(app.state.accounts.status, bob)
+        reading.join(1.0)
+        assert reading.is_alive()  # it waits for the lock, which a deletion holds
+        being_deleted(app, BOB)
+        shutil_rmtree(folder)
+    finally:
+        lock.release()
+    reading.join(30)
+    assert len(out) == 1 and isinstance(out[0], Problem) and out[0].code == "not_allowed"
+    assert not folder.exists()
+
+
+def test_a_sign_in_begun_or_finished_for_a_person_being_deleted_is_refused_and_leaves_nothing(
+    client, app
+):
+    bob = person(app, BOB)
+    accounts = app.state.accounts
+    accounts.begin(bob, "bob@example.org")  # the control: an active person begins one
+    assert sign_ins_left(app)
+    accounts.close()
+    assert sign_ins_left(app) == []
+    held = being_deleted(app, BOB)
+    folder = app.state.workspaces.runtime._account_file(held.id).parent
+    shutil_rmtree(folder)
+    with pytest.raises(Problem) as refused:
+        accounts.begin(held, "bob@example.org")
+    assert refused.value.code == "not_allowed"
+    with pytest.raises(Problem) as refused:
+        accounts.finish(held, fake.ACCEPTED_CODE)
+    assert refused.value.code == "not_allowed"
+    assert sign_ins_left(app) == [] and not folder.exists()
+
+
+def shutil_rmtree(folder: Path) -> None:
+    import shutil
+
+    shutil.rmtree(folder, ignore_errors=True)
+
+
+def test_a_sign_in_that_was_begun_ends_with_the_deletion_of_the_person(client, app):
+    bob = person(app, BOB)
+    app.state.accounts.begin(bob, "bob@example.org")
+    assert sign_ins_left(app) and bob.id in app.state.accounts._sign_ins
+    r = client.delete(f"/api/people/{bob.id}", headers=changing(ALICE))
+    assert r.status_code == 200, r.text
+    assert sign_ins_left(app) == [] and bob.id not in app.state.accounts._sign_ins
+
+
+def test_deleting_a_person_waits_for_what_holds_their_lock(client, app):
+    bob = person(app, BOB)
+    lock = app.state.workspaces.person_lock(bob.id)
+    lock.acquire()
+    try:
+        thread, out = in_thread(app.state.workspaces.delete_person, bob)
+        thread.join(1.0)
+        assert thread.is_alive() and person(app, BOB) is not None  # held back by the lock
+    finally:
+        lock.release()
+    thread.join(30)
+    assert not thread.is_alive() and out == [None] and person(app, BOB) is None
+
+
+def test_the_status_is_given_even_when_finishing_a_sign_out_keeps_failing(client, app, monkeypatch):
+    work = made_workspace(client, ALICE)
+    connect(client)
+    trusted(app, work)
+    start(client, work)
+    sign_out(client, True)  # waits for the server
+    app.state.workspaces.runtime.stop(rt.container_name(work["id"]))  # so it could be settled
+    app.state.workspaces.runtime.start(rt.container_name(work["id"]))
+    app.state.workspaces.close_channels()
+
+    def broken(*args, **kwargs):
+        raise rt.RuntimeFailed("planted: the sign-out container cannot be made")
+
+    monkeypatch.setattr(app.state.workspaces.runtime, "start_sign_in", broken)
+    r = client.get("/api/claude", headers=as_user(ALICE))
+    assert r.status_code == 200, r.text
+    assert r.json()["signing_out"] is True  # still waiting: said as it is
 
 
 # --- races and their order ------------------------------------------------------------

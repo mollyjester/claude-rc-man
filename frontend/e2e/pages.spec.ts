@@ -13,8 +13,12 @@ test("settings: the server's verdict is shown as given", async ({ page }) => {
   await expect(prefix).toHaveValue("");
   await prefix.fill("not valid!");
   await part.getByRole("button", { name: m.save }).click();
-  await expect(part.getByRole("alert")).toContainText(`${FIELDS.prefix.label}:`);
-  await expect(part.getByRole("alert")).not.toContainText("pattern"); // rcman's words, not pydantic's
+  // under its field, where focus goes: the alert is only the summary
+  await expect(part.getByRole("alert")).toHaveText(m.problemCheckFields);
+  await expect(prefix).toHaveAttribute("aria-invalid", "true");
+  await expect(prefix).toBeFocused();
+  await expect(prefix).not.toHaveAccessibleDescription(/pattern/); // rcman's words, not pydantic's
+  await expect(prefix).not.toHaveAccessibleDescription("");
   await prefix.fill("bobs-box");
   await part.getByRole("button", { name: m.save }).click();
   await expect(part.getByText(m.saved)).toBeVisible();
@@ -60,7 +64,7 @@ test("settings: the commit author falls back to the sign-in address", async ({ p
   await expect(part.getByText(m.authorNotSet)).toBeVisible();
   await name.fill("<b>");
   await part.getByRole("button", { name: m.save }).click();
-  await expect(part.getByRole("alert")).toContainText(`${FIELDS.author_name.label}:`);
+  await expect(name).toHaveAttribute("aria-invalid", "true");
   await name.fill("Bob B");
   await expect(part.getByLabel(FIELDS.author_email.label)).toHaveValue("");
   await part.getByRole("button", { name: m.save }).click();
@@ -162,7 +166,10 @@ test("people are added and removed, and the audit trail shows it", async ({ page
   await openAdminPage(page, m.navAudit);
   for (const action of ["person.add", "workspace.create", "person.delete"]) {
     await expect(
-      page.getByRole("row").filter({ hasText: action }).filter({ hasText: "dave@example.com" }),
+      page
+        .getByRole("row")
+        .filter({ hasText: m.auditActions[action] })
+        .filter({ hasText: "dave@example.com" }),
     ).not.toHaveCount(0);
   }
 });
@@ -178,12 +185,16 @@ test("an administrator limits a person, the server refuses a limit that is too s
   const dialog = page.getByRole("dialog", { name: m.limitsTitle(BOB) });
   const scope = dialog.getByRole("form", { name: m.limitsPersonScope(BOB) });
   await expect(dialog).toBeFocused();
+  // the explanation is folded away until asked for
+  await expect(dialog.getByText(m.limitsMemoryHard)).toBeHidden();
+  await dialog.getByText(m.limitsHowTitle).click();
   await expect(dialog.getByText(m.limitsMemoryHard)).toBeVisible();
 
-  // too small: the server's own sentence is shown under the field's label
+  // too small: the server's own sentence is shown under the field
   await scope.getByLabel(m.usersMemory).fill("1M");
   await scope.getByRole("button", { name: m.save }).click();
-  await expect(scope.getByRole("alert")).toContainText(`${m.usersMemory}: `);
+  await expect(scope.getByLabel(m.usersMemory)).toHaveAttribute("aria-invalid", "true");
+  await expect(scope.getByLabel(m.usersMemory)).toBeFocused();
 
   await scope.getByLabel(m.usersMemory).fill("1G");
   await scope.getByLabel(m.usersCpu).fill("1.5");

@@ -61,8 +61,7 @@ test("the checks fail on a guide that names something the page does not show, or
 
 test("the words about limits say nothing in numbers, which would go stale: the server's refusals give the minimums", () => {
   const words = [
-    m.limitsDefault,
-    m.limitsUnits,
+    ...Object.values(m.limitsHints),
     m.limitsHeldToPerson,
     m.limitsMemoryHard,
     m.limitsBelowUse,

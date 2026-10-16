@@ -56,8 +56,10 @@ by default, and nobody sees their own limits.
 On the **People** page, **Limits** on a person's row opens a dialog with a
 form for the person and one for each of their workspaces, with what each uses
 now beside it. Fill in **Memory**, **CPU** and **Processes** and press
-**Save**: each form is saved on its own, and a field left empty is **No limit**.
-Or, as root over SSH:
+**Save**: each form is saved on its own, a field left empty is **No limit**, and
+a line under each field says what it takes. A refusal is shown under the field
+it is about. The dialog's **How limits work** holds the rest of what this
+section says, folded away. Or, as root over SSH:
 
 ```
 sudo rcman-admin limits <google-email>
@@ -99,7 +101,11 @@ value, or `none` for no limit; an option left out leaves that limit as it is.
   is set, a runaway program is bounded by the kernel alone.
 - They last. The limits are kept in rcman's database and survive a restart
   of rcman or of the machine: rcman applies them again before it starts the
-  workspaces. Deleting a workspace or a person removes theirs.
+  workspaces, and judges them as it judges a change: a memory or process limit
+  that is lower than what a group has now and than what it uses is not applied,
+  so as not to end running work; the group keeps what it has, rcman writes that to
+  the [journal](journal.md), and the limit is applied the next time rcman starts
+  when it is not below the use. Deleting a workspace or a person removes theirs.
 
 Every change is in the [audit trail](audit.md), with the values set.
 

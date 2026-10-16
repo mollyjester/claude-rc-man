@@ -42,10 +42,6 @@ def run(pane, args, cwd, config_dir, **extra):
     pane.run([str(FAKE), *args], cwd=cwd, env=env_for(config_dir, **extra))
 
 
-def screen_of(name, **values):
-    return rec.fill("\n".join(rec.load_fixtures()[name].lines), values).splitlines()
-
-
 # --- round trip: the recorder over the fake reproduces every fixture ---------
 
 

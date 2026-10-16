@@ -344,6 +344,23 @@ test("a report rcman refuses is dropped", async () => {
   expect(takeReports()).toEqual([]);
 });
 
+test("a report refused for being too many is dropped silently, not sent again, and not itself reported", async () => {
+  let down = true;
+  const fake = fakeApi({
+    "GET /api/me": () => (down ? UNREACHABLE_REPLY : { email: "alice@example.com" }),
+    "POST /api/client-errors": problem(429, "too_many_reports", "Too many reports."),
+  });
+  await failure(api.get("/api/me"));
+  down = false;
+  await api.get("/api/me");
+  await vi.waitFor(() => expect(fake.made("POST", "/api/client-errors")).toHaveLength(1));
+  await settle();
+  await api.get("/api/me");
+  await settle();
+  expect(fake.made("POST", "/api/client-errors")).toHaveLength(1);
+  expect(takeReports()).toEqual([]); // dropped, and the refusal noted nothing
+});
+
 test("reports are sent one at a time, by one sender, and those noted meanwhile follow", async () => {
   let down = true;
   let outstanding = 0;

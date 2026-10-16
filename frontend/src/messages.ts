@@ -1,6 +1,9 @@
 // Every piece of text the interface shows that does not come from the server.
 export const m = {
   appName: "rcman",
+  // The browser tab's title for a page.
+  pageTitle: (page: string) => `${page} – rcman`,
+  skipToContent: "Skip to content",
   unexpectedResponse: "rcman answered in a way the page does not understand.",
   unreachable: "The page could not reach rcman. Check the connection, then try again.",
   signedOut: "Your sign-in has ended. Reload the page to sign in again.",
@@ -44,12 +47,28 @@ export const m = {
   workspaceCloningCancel: "Delete this workspace to stop the clone.",
   workspaceLog: "Steps so far",
   workspaceFailed: "Making this workspace failed:",
+  workspaceFailedClone:
+    "rcman could not copy this repository. Check the address; a private repository needs a GitHub token in Settings.",
+  workspaceFailedMake: "rcman could not make this workspace.",
+  detailsTitle: "Details",
+  serverUnreadNextStep:
+    "This page asks again by itself. If it stays like this, tell an administrator.",
   workspaceDeleting: "This workspace is being deleted.",
-  workspaceActions: "Workspace actions",
+  deleteSectionTitle: "Delete this workspace",
+  deleteSectionBody: "Deleting it removes the workspace, everything in it and its server.",
   deleteWorkspace: "Delete workspace",
   deleteWorkspaceTitle: (name: string) => `Delete ${name}?`,
   deleteWorkspaceBody:
     "The workspace and everything in it are deleted, and its server is stopped and deleted with it. This cannot be undone.",
+  // What the Changes section knows of that would be lost, worked out from its counts.
+  deleteWorkspaceUncommitted: (files: number) =>
+    files === 1
+      ? "One file in it has changes that are not committed."
+      : `${files} files in it have changes that are not committed.`,
+  deleteWorkspaceUnpushed: (commits: number) =>
+    commits === 1
+      ? "One commit in it has not been pushed."
+      : `${commits} commits in it have not been pushed.`,
   deleteWorkspaceConfirm: "Delete",
   deleting: "Deleting…",
   workspaceDeleted: (name: string) => `${name} was deleted.`,
@@ -107,6 +126,8 @@ export const m = {
 
   claudeTitle: "Claude account",
   claudeNotConnected: "Your Claude account is not connected. Connect it to start servers.",
+  claudeSignedOutUnexpectedly:
+    "Your Claude sign-in disappeared on its own, for example because two refreshes collided. Connect your Claude account again to start servers.",
   claudeConnectedAs: (email: string) => `Connected as ${email}`,
   claudeExpiring: (when: string) =>
     `Your Claude sign-in expires ${when}. Connect again to renew it.`,
@@ -116,8 +137,11 @@ export const m = {
     "Signing out: your running servers keep this account until the last one stops, and no new server starts meanwhile.",
   claudeSignOut: "Sign out of Claude",
   claudeSignOutNow: "Stop my servers and sign out now",
-  keepSessions: "Keep sessions running",
-  signOut: "Sign out",
+  // On the Claude page: running servers keep the account until the last one stops.
+  keepSessions: "Keep servers running until the last one stops",
+  // In the header: signing out of rcman, which never ends a server by itself.
+  keepServersOnSignOut: "Keep servers running after sign-out",
+  signOut: "Sign out of rcman",
   connect: "Connect Claude account",
   reconnect: "Connect again",
   connectEmail: "Claude account email (leave empty to use your sign-in address)",
@@ -176,9 +200,13 @@ export const m = {
   usersNoLimit: "No limit",
   usersLimits: "Limits",
   limitsTitle: (email: string) => `Limits for ${email}`,
-  limitsDefault: "A field left empty is no limit, which is the default.",
-  limitsUnits:
-    "Memory is a whole number followed by M for mebibytes or G for gibibytes. CPU is a number of cores, with decimals allowed. Processes is a whole number, in which threads count as processes.",
+  // One line under each field: what it takes, and that empty is no limit.
+  limitsHints: {
+    memory: "A whole number followed by M for mebibytes or G for gibibytes. Empty means no limit.",
+    cpu: "A number of cores, decimals allowed. Empty means no limit.",
+    pids: "A whole number; threads count as processes. Empty means no limit.",
+  },
+  limitsHowTitle: "How limits work",
   limitsHeldToPerson:
     "A workspace is also held to its person's limits: all of a person's workspaces together stay within the person's limits.",
   limitsMemoryHard:
@@ -199,12 +227,53 @@ export const m = {
   limitsSaved: (scope: string) => `Limits for ${scope} saved.`,
 
   auditTitle: "Audit trail",
-  auditWhen: "When",
+  auditWhen: "When (UTC)",
   auditWho: "Who",
   auditAction: "Action",
   auditTarget: "Target",
   auditResult: "Result",
   auditOlder: "Older",
+  auditNoTarget: "None",
+  auditFailed: "Failed",
+  // Each action docs/audit.md lists, by its code, in plain words; src/audit-guide.test.ts holds
+  // the two together. An action it has no words for is shown by its code.
+  auditActions: {
+    "workspace.create": "Made a workspace",
+    "workspace.delete": "Deleted a workspace",
+    "server.start": "Started a server",
+    "server.resume": "Resumed a server",
+    "server.stop": "Stopped a server",
+    "server.forget": "Forgot a stopped server",
+    "server.confirm": "Answered a server's trust question",
+    "me.sign_out": "Signed out of rcman",
+    "settings.update": "Changed settings",
+    "person.add": "Added a person",
+    "person.delete": "Removed a person",
+    "person.limits": "Set a person's limits",
+    "workspace.limits": "Set a workspace's limits",
+    "git.stage": "Staged files",
+    "git.unstage": "Unstaged files",
+    "git.commit": "Committed",
+    "git.switch": "Switched branch",
+    "git.branch": "Made a branch",
+    "git.fetch": "Refreshed remote branches",
+    "git.push": "Pushed",
+    "git.commit_push": "Committed and pushed",
+    "git.clone": "Made a workspace from a repository",
+    "github.token": "Saved a GitHub token",
+    "github.forget": "Removed a GitHub token",
+    "claude.login": "Started connecting a Claude account",
+    "claude.connect": "Connected a Claude account",
+    "claude.disconnect": "Signed out of Claude",
+    "claude.upgrade": "Rolled out a Claude Code version",
+  } as Record<string, string>,
+  // The results docs/audit.md lists; any other result is the code of the error the request
+  // failed with, shown by its code beside the word for a failure.
+  auditResults: {
+    ok: "Done",
+    unrecognised_screen: "Done, but the server is on a screen rcman does not recognise",
+    committed_not_pushed: "Committed, but the push failed",
+  } as Record<string, string>,
   auditEmpty: "Nothing recorded.",
 
   attentionTitle: "Needs attention",
@@ -267,7 +336,18 @@ export const m = {
     `Claude Code ${approved} is approved now. Stop this server and start it again to use it.`,
   everyoneClaude: "Claude Code",
 
+  // What an empty field shows of what goes in it; the field's label still names it.
+  examples: {
+    workspaceName: "my-project",
+    address: "https://github.com/owner/repository",
+    email: "name@example.com",
+  },
   docsTitle: "Help",
+  docsIntro:
+    "How to use rcman: your workspaces and their servers, your Claude account, git and your settings, and, for administrators, installing and running it.",
+  // The name of the box a table scrolls in. It is kept apart from the names of the parts of a
+  // page, which a person or a test finds a region by.
+  tableTitle: "Table",
 
   changesTitle: "Changes",
   refreshStatus: "Refresh changes",
@@ -326,6 +406,7 @@ export const m = {
       ? `Tracking ${upstream}, which is gone`
       : `Tracking ${upstream}: ${ahead} ahead, ${behind} behind`,
   commitMessage: "Commit message",
+  commitMessageHelp: "A commit needs a message that says what changed.",
   commit: "Commit",
   // One sentence, its middle the link to Settings.
   commitNeedsAuthor: {
@@ -366,6 +447,7 @@ export const m = {
   andMoreLines: (count: number) => `and ${count} more lines`,
 
   problemFieldErrors: "Details:",
+  problemCheckFields: "Check the fields marked below.",
   problemServer: "Server:",
   problemLeft: "Not deleted:",
 };

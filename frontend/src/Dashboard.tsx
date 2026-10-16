@@ -10,10 +10,11 @@ import {
 import { useNavigate, useSearchParams } from "react-router-dom";
 
 import { ApiError, api } from "./api";
-import { Changes } from "./Changes";
+import { Changes, type Unsaved } from "./Changes";
 import { m } from "./messages";
-import { asApiError, ProblemView } from "./ProblemView";
-import { dotFor, ServerCard, StatusDot, type Workspace } from "./Servers";
+import { asApiError, ProblemView, useFieldErrors } from "./ProblemView";
+import { ACTIONS, dotFor, ServerCard, StatusDot, type Workspace } from "./Servers";
+import { failureSentence } from "./workspaceError";
 
 // Where a workspace's panel is: the Workspaces page, with the workspace in the address.
 const workspaceLink = (id: number | null) => ({
@@ -95,13 +96,11 @@ export function Dashboard({ pollMs }: { pollMs: number }) {
 
   return (
     <>
+      <h1>{m.navDashboard}</h1>
       <ProblemView error={error} />
       {notice && asked === null && <p role="status">{notice}</p>}
       <div className="dashboard">
-        <div className="pane">
-          <WorkspaceList workspaces={workspaces} selected={selectedId} onSelect={select} />
-          <NewWorkspace onMade={made} />
-        </div>
+        <WorkspaceList workspaces={workspaces} selected={selectedId} onSelect={select} />
         {selected ? (
           <WorkspacePanel
             key={selected.id}
@@ -114,6 +113,7 @@ export function Dashboard({ pollMs }: { pollMs: number }) {
         ) : (
           <section className="panel">{shown}</section>
         )}
+        <NewWorkspace onMade={made} />
       </div>
     </>
   );
@@ -130,7 +130,7 @@ function WorkspaceList({
   onSelect: (id: number) => void;
 }) {
   return (
-    <section aria-label={m.workspacesTitle}>
+    <section aria-label={m.workspacesTitle} className="list">
       <h2>{m.workspacesTitle}</h2>
       {workspaces?.length === 0 && <p>{m.workspacesEmpty}</p>}
       {workspaces && workspaces.length > 0 && (
@@ -188,6 +188,7 @@ function NewWorkspace({ onMade }: { onMade: (workspace: Workspace) => void }) {
   const urlHelp = useId();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<ApiError | null>(null);
+  const fields = useFieldErrors(error);
 
   async function create(event: FormEvent) {
     event.preventDefault();
@@ -215,19 +216,21 @@ function NewWorkspace({ onMade }: { onMade: (workspace: Workspace) => void }) {
   }
 
   return (
-    <section aria-label={m.newWorkspace}>
+    <section aria-label={m.newWorkspace} className="new">
       <h2>{m.newWorkspace}</h2>
-      <form noValidate onSubmit={create}>
+      <form noValidate onSubmit={create} ref={fields.form}>
         <label>
           {m.newWorkspaceName}
           <input
             type="text"
             name="name"
             value={name}
-            aria-describedby={nameHelp}
+            placeholder={m.examples.workspaceName}
             onChange={(e) => setName(e.target.value)}
+            {...fields.input("name", nameHelp)}
           />
         </label>
+        {fields.message("name")}
         <p id={nameHelp} className="muted">
           {m.newWorkspaceNameHelp}
         </p>
@@ -237,10 +240,12 @@ function NewWorkspace({ onMade }: { onMade: (workspace: Workspace) => void }) {
             type="text"
             name="url"
             value={url}
-            aria-describedby={urlHelp}
+            placeholder={m.examples.address}
             onChange={(e) => setUrl(e.target.value)}
+            {...fields.input("url", urlHelp)}
           />
         </label>
+        {fields.message("url")}
         <p id={urlHelp} className="muted">
           {m.newWorkspaceSourceHelp}
         </p>
@@ -252,6 +257,7 @@ function NewWorkspace({ onMade }: { onMade: (workspace: Workspace) => void }) {
         <ProblemView
           error={error}
           labels={{ name: m.newWorkspaceName, url: m.newWorkspaceSource }}
+          inline
         />
       </form>
     </section>
@@ -297,11 +303,13 @@ function StartServer({ workspace, onStarted }: { workspace: number; onStarted: (
 // Asks before deleting a workspace, which takes everything in it and its server.
 function DeleteWorkspaceDialog({
   workspace,
+  unsaved,
   onDeleted,
   onFailed,
   onCancel,
 }: {
   workspace: Workspace;
+  unsaved: Unsaved | null;
   onDeleted: () => void;
   onFailed: () => void;
   onCancel: () => void;
@@ -328,6 +336,8 @@ function DeleteWorkspaceDialog({
       <h3>{m.deleteWorkspaceTitle(workspace.name)}</h3>
       <form noValidate onSubmit={remove}>
         <p>{m.deleteWorkspaceBody}</p>
+        {unsaved && unsaved.files > 0 && <p>{m.deleteWorkspaceUncommitted(unsaved.files)}</p>}
+        {unsaved && unsaved.commits > 0 && <p>{m.deleteWorkspaceUnpushed(unsaved.commits)}</p>}
         <div className="actions">
           <button type="submit" className="danger" disabled={busy}>
             {busy ? m.deleting : m.deleteWorkspaceConfirm}
@@ -342,10 +352,38 @@ function DeleteWorkspaceDialog({
   );
 }
 
+// Why a workspace failed: a sentence in the open, and what the server said, kept behind Details.
+function FailureSaid({ error, cloned }: { error: string | null; cloned: boolean }) {
+  const { sentence, raw } = failureSentence(error, cloned);
+  return (
+    <>
+      <p>{sentence}</p>
+      {raw && (
+        <details>
+          <summary>{m.detailsTitle}</summary>
+          <pre className="screen workspace-error">{error}</pre>
+        </details>
+      )}
+    </>
+  );
+}
+
+// The steps taken while a workspace is made, named where they are seen: a figure's name is not
+// shown by itself, and not every reader takes it from its caption.
+function Steps({ log }: { log: string }) {
+  const caption = useId();
+  return (
+    <figure aria-labelledby={caption}>
+      <figcaption id={caption}>{m.workspaceLog}</figcaption>
+      <pre className="screen workspace-log">{log}</pre>
+    </figure>
+  );
+}
+
 // The selected workspace: what its state allows, and, once it is ready, its
 // Claude server or the offer to start one, and the Changes of its repository.
-// Delete workspace is offered for a workspace that is ready or failed, and for one being
-// cloned, where it cancels the clone.
+// Delete workspace is a section of its own at the foot, offered for a workspace that is
+// ready or failed, and for one being cloned, where it cancels the clone.
 function WorkspacePanel({
   workspace,
   approved,
@@ -360,47 +398,32 @@ function WorkspacePanel({
   onDeleted: () => void;
 }) {
   const [deleting, setDeleting] = useState(false);
+  // What the Changes section says would be lost, once it knows.
+  const [unsaved, setUnsaved] = useState<Unsaved | null>(null);
   const cloning = workspace.state === "creating" && workspace.source !== null;
   const deletable = workspace.state === "ready" || workspace.state === "failed" || cloning;
   const { server, server_error: unread } = workspace;
   return (
     <section aria-label={workspace.name} className="panel">
       <h2>{workspace.name}</h2>
-      {deletable && (
-        <>
-          {/* biome-ignore lint/a11y/useSemanticElements: a row of buttons outside any form, not a form's fields, which a fieldset is for */}
-          <div role="group" aria-label={m.workspaceActions} className="actions">
-            <button type="button" className="secondary-danger" onClick={() => setDeleting(true)}>
-              {m.deleteWorkspace}
-            </button>
-          </div>
-          {deleting && (
-            <DeleteWorkspaceDialog
-              workspace={workspace}
-              onDeleted={onDeleted}
-              onFailed={onChange}
-              onCancel={() => setDeleting(false)}
-            />
-          )}
-        </>
-      )}
       {workspace.state === "creating" && <p>{m.workspaceCreating}</p>}
       {cloning && <p>{m.workspaceCloningCancel}</p>}
       {workspace.state === "deleting" && <p>{m.workspaceDeleting}</p>}
       {workspace.state === "failed" && (
         <>
           <p>{m.workspaceFailed}</p>
-          <pre className="screen workspace-error">{workspace.error}</pre>
+          <FailureSaid error={workspace.error} cloned={workspace.source !== null} />
         </>
       )}
-      {workspace.state !== "ready" && workspace.log && (
-        <figure aria-label={m.workspaceLog}>
-          <pre className="screen workspace-log">{workspace.log}</pre>
-        </figure>
-      )}
+      {workspace.state !== "ready" && workspace.log && <Steps log={workspace.log} />}
       {workspace.state === "ready" && (
         <PanelSection title={m.serverTitle}>
-          {unread && <ProblemView error={new ApiError(0, unread.code, unread.title)} />}
+          {unread && (
+            <>
+              <ProblemView error={new ApiError(0, unread.code, unread.title)} />
+              <p>{m.serverUnreadNextStep}</p>
+            </>
+          )}
           {server && (
             <ServerCard
               workspace={workspace}
@@ -410,6 +433,8 @@ function WorkspacePanel({
             />
           )}
           {server &&
+            // only a server that runs can be stopped and started again to take the new version
+            ACTIONS[server.state]?.includes("stop") &&
             workspace.claude_version &&
             approved &&
             workspace.claude_version !== approved && (
@@ -423,7 +448,28 @@ function WorkspacePanel({
           )}
         </PanelSection>
       )}
-      {workspace.state === "ready" && <Changes workspace={workspace.id} pollMs={pollMs} />}
+      {workspace.state === "ready" && (
+        <Changes workspace={workspace.id} pollMs={pollMs} onUnsaved={setUnsaved} />
+      )}
+      {deletable && (
+        <PanelSection title={m.deleteSectionTitle}>
+          <p>{m.deleteSectionBody}</p>
+          <div className="actions">
+            <button type="button" className="secondary-danger" onClick={() => setDeleting(true)}>
+              {m.deleteWorkspace}
+            </button>
+          </div>
+          {deleting && (
+            <DeleteWorkspaceDialog
+              workspace={workspace}
+              unsaved={unsaved}
+              onDeleted={onDeleted}
+              onFailed={onChange}
+              onCancel={() => setDeleting(false)}
+            />
+          )}
+        </PanelSection>
+      )}
     </section>
   );
 }

@@ -13,16 +13,30 @@ import json
 import logging
 from typing import Annotated
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, BeforeValidator, Field
 from pydantic_core import PydanticKnownError
 
 from rcman.identity import Identity, current_user
+from rcman.problems import Problem
+from rcman.ratelimit import TokenBuckets
 
 log = logging.getLogger("rcman.client")
 log.setLevel(logging.INFO)
 
 router = APIRouter(prefix="/api/client-errors", tags=["client-errors"])
+
+# How many reports one person may send at once, and how many more each minute: a page that
+# fails again and again counts its failures (``count``) and sends them one at a time, so a
+# page that keeps within this loses nothing, and one that does not cannot fill the journal.
+REPORTS_BURST = 20
+REPORTS_PER_MINUTE = 20
+SECONDS_PER_MINUTE = 60
+
+
+def new_limit() -> TokenBuckets:
+    return TokenBuckets(REPORTS_BURST, REPORTS_PER_MINUTE / SECONDS_PER_MINUTE)
+
 
 # How many characters each kind of text in a report is cut to.
 SHORT_CHARS = 100
@@ -88,8 +102,16 @@ class ClientErrorBody(BaseModel):
 
 
 @router.post("")
-def report(body: ClientErrorBody, identity: Identity = Depends(current_user)) -> dict:
-    """Write a page's report of a failure to the journal."""
+def report(
+    body: ClientErrorBody, request: Request, identity: Identity = Depends(current_user)
+) -> dict:
+    """Write a page's report of a failure to the journal; a person who sends more than
+    REPORTS_BURST at once, or REPORTS_PER_MINUTE a minute, is refused with 429 and the seconds
+    to wait, and the report is dropped."""
+    limit = request.app.state.client_error_limit
+    if not limit.take(identity.email):
+        wait = limit.seconds_until_allowed(identity.email)
+        raise Problem("too_many_reports", headers={"Retry-After": str(wait)})
     event = {
         "event": "client_error",
         "at": dt.datetime.now(dt.UTC).isoformat(),

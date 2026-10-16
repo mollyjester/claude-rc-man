@@ -117,3 +117,36 @@ def test_a_removal_waits_until_the_container_and_its_anonymous_volumes_are_gone(
     assert (state / "listed-twice").exists()  # it was still listed after the rm
     assert ct._listed([str(docker)]) == []
     assert (state / "removal").read_text().split() == ["rm", "-f", "-v", "c1"]
+
+
+# --- the images the installer builds from, by digest -----------------------------------------
+
+
+def test_the_images_a_containerfile_starts_from_by_digest_are_listed_in_order_and_once(tmp_path):
+    digest = "sha256:" + "a" * 64
+    other = "sha256:" + "b" * 64
+    file = tmp_path / "Containerfile"
+    file.write_text(
+        "# FROM docker.io/library/commented:1@" + digest + "\n"
+        f"FROM docker.io/library/node:24@{digest} AS cli\n"
+        "RUN true\n"
+        f"FROM --platform=linux/amd64 docker.io/library/ubuntu:24.04@{other}\n"
+        "FROM cli AS later\n"  # a stage of the file itself
+        "FROM scratch\n"
+        "FROM docker.io/library/unpinned:1\n"
+        f"FROM docker.io/library/node:24@{digest}\n"  # again
+    )
+    assert ct.digest_references(file) == [
+        f"docker.io/library/node:24@{digest}",
+        f"docker.io/library/ubuntu:24.04@{other}",
+    ]
+
+
+def test_the_installers_containerfiles_name_images_by_digest_for_the_suite_to_have_ready():
+    root = Path(__file__).resolve().parent.parent
+    found = [
+        ref
+        for name in ("workspace", "builder")
+        for ref in ct.digest_references(root / "installer" / name / "Containerfile")
+    ]
+    assert found and all("@sha256:" in ref for ref in found)  # non-vacuity: the list is not empty

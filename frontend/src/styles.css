@@ -60,6 +60,7 @@ button,
 a.button {
   display: inline-block;
   font: inherit;
+  min-height: 1.5rem;
   padding: 0.35rem 0.85rem;
   border-radius: 0.375rem;
   border: 1px solid var(--border);
@@ -98,17 +99,49 @@ button:disabled {
 
 header {
   display: flex;
-  gap: 1.5rem;
+  gap: 0.5rem 1rem;
   align-items: center;
   padding: 0.75rem 1.5rem;
   border-bottom: 1px solid var(--border);
   flex-wrap: wrap;
 }
+/* The links wrap onto another line rather than run past the window's edge. */
 header nav {
   display: flex;
-  gap: 1rem;
-  flex: 1;
+  flex-wrap: wrap;
+  gap: 0.25rem 1rem;
+  flex: 1 1 auto;
   align-items: center;
+}
+/* Sign out and what it does to the servers are one group. */
+form.sign-out {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.25rem 0.75rem;
+  padding: 0.15rem 0.6rem;
+  font-size: 0.9rem;
+  border: 1px solid var(--border);
+  border-radius: 0.375rem;
+}
+header > form.sign-out {
+  margin-left: auto;
+}
+/* The first thing Tab reaches: out of sight until it has focus. */
+.skip-link {
+  position: absolute;
+  left: -9999px;
+  top: 0;
+  z-index: 3;
+  padding: 0.5rem 1rem;
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 0.375rem;
+}
+.skip-link:focus {
+  left: 0.5rem;
+  top: 0.5rem;
 }
 header nav a.active,
 header nav button.active {
@@ -163,28 +196,46 @@ main {
 .dashboard {
   display: grid;
   grid-template-columns: minmax(16rem, 2fr) minmax(0, 3fr);
-  gap: 2rem;
+  grid-template-rows: auto 1fr;
+  grid-template-areas:
+    "list panel"
+    "new panel";
+  column-gap: 2rem;
   align-items: start;
 }
-@media (max-width: 48rem) {
-  .dashboard {
-    grid-template-columns: minmax(0, 1fr);
-  }
+.dashboard > .list {
+  grid-area: list;
+  min-width: 0;
+}
+.dashboard > .new {
+  grid-area: new;
+  min-width: 0;
 }
 .workspaces {
   list-style: none;
   padding-left: 0;
 }
+/* A name that is too long is cut short, and its dot and state stay beside it. */
 .workspaces li {
+  display: flex;
+  align-items: center;
+  min-width: 0;
   margin: 0.2rem 0;
 }
 button.name {
   background: none;
   border: none;
+  min-height: 1.5rem;
   padding: 0.1rem 0.35rem;
   border-radius: 0.25rem;
   color: var(--fg);
   text-align: left;
+}
+.workspaces button.name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 button.name[aria-current="true"] {
   background: var(--accent);
@@ -221,6 +272,23 @@ button.name[aria-current="true"] {
   border: 0.15rem solid var(--stopped);
   border-radius: 0.1rem;
 }
+.workspaces .dot {
+  flex: none;
+}
+/* A field is drawn in the page's own colours in both schemes, and marked where refused. */
+input:not([type="checkbox"]),
+textarea,
+select {
+  background: var(--surface);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 0.25rem;
+  padding: 0.25rem 0.4rem;
+}
+input[aria-invalid="true"],
+textarea[aria-invalid="true"] {
+  border-color: var(--problem);
+}
 .panel-section label > textarea {
   display: block;
   width: 100%;
@@ -245,6 +313,9 @@ button.name[aria-current="true"] {
   border: 1px solid var(--border);
   border-radius: 0.5rem;
   padding: 0.75rem 1.25rem;
+}
+.dashboard > .panel {
+  grid-area: panel;
 }
 .panel h2 {
   margin: 0.25rem 0 0.75rem;
@@ -316,6 +387,11 @@ button.name[aria-current="true"] {
 .muted {
   color: var(--muted);
 }
+.workspaces li > .muted {
+  flex: none;
+  margin-left: 0.3rem;
+  white-space: nowrap;
+}
 .warning {
   color: var(--waiting);
 }
@@ -339,6 +415,49 @@ form label {
   display: block;
   margin: 0.5rem 0;
 }
+form.sign-out > label {
+  margin: 0;
+}
+/* A checkbox's label is the whole target, a pointer's minimum high. */
+label:has(> input[type="checkbox"]) {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  min-height: 1.5rem;
+}
+.field-error {
+  margin: 0.25rem 0;
+  font-size: 0.9rem;
+  color: var(--problem);
+}
+summary {
+  cursor: pointer;
+}
+/* A place that announces a result is there before it has one to say, and takes no room. */
+[role="status"]:empty {
+  margin: 0;
+}
+details.how {
+  margin: 0.75rem 0;
+}
+details.how > summary {
+  min-height: 1.5rem;
+}
+.limits-field {
+  flex: 1 1 12rem;
+  min-width: 0;
+}
+dl.facts {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.25rem 1rem;
+}
+dl.facts dt {
+  font-weight: 600;
+}
+dl.facts dd {
+  margin: 0;
+}
 form input[type="text"],
 form input[type="password"] {
   display: block;
@@ -357,10 +476,48 @@ td {
   padding: 0.25rem 0.75rem;
   border-bottom: 1px solid var(--border);
 }
+/* A table wider than the room it has scrolls inside its box, not the page. */
+.table-scroll {
+  max-width: 100%;
+  overflow-x: auto;
+  margin: 0.5rem 0 1rem;
+}
+.table-scroll > table {
+  margin: 0;
+}
+/* The audit trail: a date stays on one line; an address or target that is long breaks. */
+td.when {
+  white-space: nowrap;
+}
+td.wrap {
+  overflow-wrap: anywhere;
+}
+td.result-failed {
+  color: var(--problem);
+}
 .docs {
   display: grid;
   grid-template-columns: 14rem 1fr;
   gap: 2rem;
+}
+.docs article {
+  min-width: 0;
+  overflow-wrap: break-word;
+}
+.docs pre {
+  overflow-x: auto;
+}
+.docs img {
+  max-width: 100%;
+}
+/* A guide's table has its cells ruled, and its headings set apart. */
+.docs th,
+.docs td {
+  vertical-align: top;
+  border: 1px solid var(--border);
+}
+.docs th {
+  background: var(--surface);
 }
 
 /* What is there for assistive technology only, such as the word of a change
@@ -576,6 +733,7 @@ button.branch-button {
 button.disclosure {
   gap: 0.3rem;
   max-width: 100%;
+  min-height: 1.5rem;
   text-align: left;
   padding: 0.2rem 0.25rem;
   border: none;
@@ -601,6 +759,7 @@ button.disclosure[aria-expanded="true"] > .caret {
 .files-head > button.secondary {
   flex: none;
   white-space: nowrap;
+  min-height: 1.5rem;
   padding: 0.15rem 0.4rem;
   font-size: 0.85rem;
 }
@@ -754,4 +913,27 @@ button.split-toggle {
   border: none;
   background: transparent;
   color: var(--muted);
+}
+
+/* On a phone the columns stack: the workspaces, the selected one's panel, and only then the
+   form that makes another; a help page is one column; and the page has less margin. */
+@media (max-width: 48rem) {
+  .dashboard {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto;
+    grid-template-areas:
+      "list"
+      "panel"
+      "new";
+  }
+  .docs {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 1rem;
+  }
+  header {
+    padding: 0.75rem 1rem;
+  }
+  main {
+    padding: 1rem;
+  }
 }

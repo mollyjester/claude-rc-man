@@ -77,6 +77,44 @@ def test_delete_removes_the_person_and_their_workspaces(env_file, tmp_path, caps
     assert (env_file.parent / "allowed-emails").read_text() == f"{ALICE}\n"
 
 
+def test_a_deletion_from_the_shell_leaves_the_store_to_the_service_to_prune(
+    env_file, tmp_path, capsys, monkeypatch
+):
+    """The shell's process has locks of its own: the service pins a version of Claude Code
+    between its resolving and its recording under one, which a prune here would not wait for.
+    The service prunes at its next stop, roll-out or start."""
+    from rcman import claude_versions
+    from rcman.claude_versions import ClaudeVersions
+
+    from tests.conftest import fake_claude, host_runtime
+
+    monkeypatch.setattr(claude_versions, "PRUNE_GRACE_SECONDS", 0.0)  # the files are new
+    store = tmp_path / "claude-store"
+    env_file.write_text(env_file.read_text() + f"RCMAN_CLAUDE_STORE={store}\n")
+    fake_claude(store, version="1.0.0")
+    fake_claude(store, version="1.1.0")
+    fake_claude(store, version="1.0.0")  # the link names this one
+    run(env_file, "add", ALICE, "--admin", capsys=capsys)
+    run(env_file, "add", BOB, capsys=capsys)
+    with host_runtime(tmp_path) as runtime:
+        code, _, _ = run(env_file, "delete", BOB, runtime=runtime, capsys=capsys)
+    assert code == 0
+    assert sorted(p.name for p in (store / "versions").iterdir()) == ["1.0.0", "1.1.0"]
+    # the control: the same store is pruned by a service that prunes
+    from rcman.settings import Settings
+    from rcman.workspaces import Workspaces
+
+    (tmp_path / "again").mkdir()
+    with host_runtime(tmp_path / "again") as runtime:
+        service = Workspaces(Settings(_env_file=env_file), runtime)
+        try:
+            service.versions.prune()
+        finally:
+            service.close()
+    assert sorted(p.name for p in (store / "versions").iterdir()) == ["1.0.0"]
+    assert ClaudeVersions  # (the class the service prunes with)
+
+
 def test_deleting_someone_who_is_not_there_is_refused(env_file, capsys):
     code, _, err = run(env_file, "delete", BOB, capsys=capsys)
     assert code == 1 and "There is no such person." in err

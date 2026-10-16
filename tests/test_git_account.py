@@ -56,9 +56,9 @@ def written(runtime, name: str, person: int = 1) -> str:
     return (git_dir(runtime, person) / name).read_text()
 
 
-def git_config(file: Path, key: str) -> subprocess.CompletedProcess:
+def git_config(file: Path, key: str, all: bool = False) -> subprocess.CompletedProcess:
     return subprocess.run(
-        ["git", "config", "--file", str(file), "--get", key],
+        ["git", "config", "--file", str(file), "--get-all" if all else "--get", key],
         capture_output=True,
         text=True,
         env={"PATH": "/usr/bin:/bin", "HOME": "/nonexistent"},
@@ -134,6 +134,43 @@ def test_the_credential_helper_is_read_back_as_written(tmp_path):
     assert found.stdout == CREDENTIAL_HELPER + "\n"
     assert "$HOME/.config/git/credential" in CREDENTIAL_HELPER
     assert git_config(file, "user.name").returncode == 1  # no author, no [user]
+
+
+def test_the_config_empties_the_list_of_helpers_before_its_own(tmp_path):
+    file = tmp_path / "config"
+    file.write_text(config_text(None))
+    found = git_config(file, "credential.https://github.com.helper", all=True)
+    assert found.stdout.split("\n")[:-1] == ["", CREDENTIAL_HELPER]
+
+
+def test_no_helper_of_the_image_or_the_user_is_asked_for_a_github_credential(tmp_path):
+    """The image's /etc/gitconfig may name a helper that stores what git approves (store,
+    cache): the token would be saved elsewhere, in a file the person can read and rcman does
+    not forget. Git approves a credential it was given with every helper that is listed."""
+    leak = tmp_path / "leak"
+    system = tmp_path / "gitconfig"
+    system.write_text(f'[credential]\n\thelper = "!f() {{ cat >> {leak}; }}; f"\n')
+    home = tmp_path / "home"
+    (home / ".config" / "git").mkdir(parents=True)
+    env = {
+        "HOME": str(home),
+        "PATH": "/usr/bin:/bin",
+        "GIT_CONFIG_SYSTEM": str(system),
+    }
+    approval = "protocol=https\nhost=github.com\nusername=x\npassword=SECRET\n\n"
+
+    def approve() -> None:
+        subprocess.run(
+            ["git", "credential", "approve"], input=approval, text=True, env=env, check=True
+        )
+
+    approve()
+    assert "SECRET" in leak.read_text()  # the control: with no config of rcman's, it is stored
+    leak.unlink()
+    (home / ".config" / "git" / "config").write_text(config_text(None))
+    (home / ".config" / "git" / "credential").write_text(credential_text(TOKEN))
+    approve()
+    assert not leak.exists()
 
 
 def test_the_credential_is_the_token_as_the_password_of_a_fixed_user():

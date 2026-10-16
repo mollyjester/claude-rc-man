@@ -19,7 +19,7 @@ CLONE = Path("/home/dev/rcman")
 def sh(*argv, user=None, check=True, **kw):
     if user:
         argv = ("runuser", "-u", user, "--", *argv)
-    proc = subprocess.run(argv, capture_output=True, text=True, **kw)
+    proc = subprocess.run(argv, capture_output=True, text=True, errors="replace", **kw)
     if check and proc.returncode != 0:
         raise AssertionError(f"{argv} failed:\n{proc.stdout}{proc.stderr}")
     return proc
@@ -51,3 +51,33 @@ def make_clone() -> Path:
     sh("git", "clone", "-q", "--bare", str(work), str(ORIGIN), user="dev")
     sh("git", "clone", "-q", str(ORIGIN), str(CLONE), user="dev")
     return CLONE
+
+
+REPLACEMENT = "�"
+
+
+def around_replacements(text: str, context: int = 1, most: int = 5) -> list[str]:
+    """Up to ``most`` lines of ``text`` that hold the replacement character (what a byte
+    that is not UTF-8 became when it was decoded), each with ``context`` lines either side,
+    cut to 300 characters, with ``--`` between the groups. Empty when there is none."""
+    lines = text.splitlines()
+    found = [i for i, line in enumerate(lines) if REPLACEMENT in line][:most]
+    shown: list[str] = []
+    for n, i in enumerate(found):
+        if n:
+            shown.append("--")
+        shown += [line[:300] for line in lines[max(0, i - context) : i + context + 1]]
+    return shown
+
+
+def report_undecodable(journal: str) -> None:
+    """Print, never fail: the journal lines (with unit and identifier) around bytes that
+    are not UTF-8, so the log of a run shows what wrote them."""
+    if REPLACEMENT not in journal:
+        return
+    full = sh("journalctl", "--no-pager", "-o", "short-iso", check=False).stdout
+    print(
+        f"JOURNAL HOLDS {journal.count(REPLACEMENT)} BYTES THAT ARE NOT UTF-8; lines around "
+        "the first ones:\n" + "\n".join(around_replacements(full) or ["(none in short-iso)"]),
+        flush=True,
+    )

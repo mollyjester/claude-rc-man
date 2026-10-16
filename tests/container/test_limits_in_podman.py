@@ -219,6 +219,7 @@ def test_a_workspaces_container_is_under_its_slices_and_nothing_in_the_chain_has
         ["systemctl", "--user", "show", "--property", "DefaultTasksMax", "--value"],
         capture_output=True,
         text=True,
+        errors="replace",
         check=True,
     )
     assert shown.stdout.strip() == limits.INFINITY

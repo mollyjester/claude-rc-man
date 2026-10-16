@@ -29,7 +29,7 @@ starts.
 ## Signing out of Claude
 
 **Sign out of Claude** is on the **Claude** page while an account is connected.
-**Keep sessions running** is ticked at first:
+**Keep servers running until the last one stops** is ticked at first:
 
 - **ticked**: servers that are running keep the account until the last of them
   stops; then you are signed out. Meanwhile no server starts, and the page says
@@ -38,11 +38,22 @@ starts.
 - **not ticked**: your running servers are stopped, and you are signed out at
   once.
 
+## When the sign-in disappears
+
+Your workspaces share one file for the sign-in, and Claude Code in each of them writes it
+when it renews its token. Claude Code takes a lock for that, but only among the programs of one
+workspace, so two of your workspaces can renew at the same moment, and the file can be left
+empty or torn. rcman does not prevent this; it is a known risk it has accepted. What rcman does
+is notice: when the **Claude** page finds your account connected but the file holds no sign-in,
+and you did not sign out, it says: *Your Claude sign-in disappeared on its own, for example
+because two refreshes collided. Connect your Claude account again to start servers.* Choose
+**Connect Claude account** and connect again; nothing else of your workspaces is lost.
+
 ## Signing out of rcman
 
-**Sign out**, beside your name at the top of every page, ends your rcman
-session in this browser. Your servers do not depend on it: with **Keep sessions
-running** ticked, as it is at first, they keep running; untick it to have them
-stopped first. Your Claude account stays connected either way.
+**Sign out of rcman**, beside your name at the top of every page, ends your rcman
+session in this browser. Your servers do not depend on it: with **Keep servers
+running after sign-out** ticked, as it is at first, they keep running; untick it
+to have them stopped first. Your Claude account stays connected either way.
 
 You can change how your sessions' names begin in [Settings](settings.md).

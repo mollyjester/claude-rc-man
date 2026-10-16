@@ -5,6 +5,7 @@ import { vi } from "vitest";
 import { m } from "./messages";
 import { ACTIONS, KIND, LABELS, PRIMARY } from "./Servers";
 import { fakeApi, ME, problem, type Routes, UNREACHABLE_REPLY } from "./test/fakeApi";
+import { expectRefused } from "./test/fields";
 import { renderApp } from "./test/render";
 
 type Workspace = {
@@ -58,6 +59,20 @@ function server(id: number, state: string, extra: Record<string, unknown> = {}) 
 function withServer(state: string, extra: Record<string, unknown> = {}) {
   return [workspace(1, "alpha", { server: server(1, state, extra) }), workspace(2, "beta")];
 }
+
+// What git answers for a repository with nothing to commit or push, and its branches.
+const STATUS_CLEAN = {
+  branch: { name: "main", commit: "0123456789", upstream: "origin/main", ahead: 0, behind: 0 },
+  merging: false,
+  staged: { files: [], more: 0 },
+  not_staged: { files: [], more: 0 },
+  author: { name: "Alice", email: "alice@example.com" },
+  push_has_remote: true,
+  push_to_github: false,
+  github_token: null,
+  push_ahead: 0,
+};
+const BRANCHES = { local: { branches: [], more: 0 }, remote: { branches: [], more: 0 } };
 
 // What git answers in a workspace that holds no repository, which is what a new one is.
 const NOT_A_REPOSITORY = () => problem(409, "not_a_repository", "planted: not a repository");
@@ -356,9 +371,10 @@ test("a refused address is shown under its label in the form, which keeps what w
   await userEvent.type(form.getByLabelText(m.newWorkspaceSource), "ftp://nope");
   await userEvent.type(form.getByLabelText(m.newWorkspaceName), "kept");
   await userEvent.click(form.getByRole("button", { name: m.create }));
-  expect(await form.findByRole("alert")).toHaveTextContent(
-    `${m.newWorkspaceSource}: planted reason for the address`,
-  );
+  await form.findByRole("alert");
+  expectRefused(form.getByLabelText(m.newWorkspaceSource), "planted reason for the address");
+  expect(form.getByLabelText(m.newWorkspaceName)).not.toHaveAttribute("aria-invalid");
+  expect(form.getByLabelText(m.newWorkspaceSource)).toHaveFocus();
   expect(form.getByLabelText(m.newWorkspaceSource)).toHaveValue("ftp://nope");
   expect(form.getByLabelText(m.newWorkspaceName)).toHaveValue("kept");
   expect(fake.made("POST", "/api/git/clone")).toHaveLength(1);
@@ -397,9 +413,9 @@ test("a refused name is shown under its label in the form, which keeps it", asyn
   const form = within(await screen.findByRole("region", { name: m.newWorkspace }));
   await userEvent.type(form.getByLabelText(m.newWorkspaceName), "bad name!");
   await userEvent.click(form.getByRole("button", { name: m.create }));
-  expect(await form.findByRole("alert")).toHaveTextContent(
-    `${m.newWorkspaceName}: planted reason for the name`,
-  );
+  await form.findByRole("alert");
+  expectRefused(form.getByLabelText(m.newWorkspaceName), "planted reason for the name");
+  expect(form.getByLabelText(m.newWorkspaceName)).toHaveFocus();
   expect(form.getByLabelText(m.newWorkspaceName)).toHaveValue("bad name!");
   expect(fake.made("POST", "/api/workspaces")).toHaveLength(1);
 });
@@ -544,6 +560,74 @@ test("a clone that failed shows what was done and why, with git's lines kept apa
   expect(within(opened).queryByRole("button", { name: m.start })).not.toBeInTheDocument();
 });
 
+test("a failed clone says what went wrong in a sentence, and keeps the raw words behind Details", async () => {
+  dashboard([
+    workspace(1, "alpha", { state: "failed", source: ADDRESS, log: STEPS, error: CLONE_ERROR }),
+  ]);
+  renderApp("/?workspace=1");
+  const opened = await panel("alpha");
+  const sentence = within(opened).getByText(CLONE_ERROR.split("\n")[0]);
+  expect(sentence.closest("details")).toBeNull(); // in the open, above the raw words
+  const details = opened.querySelector("details")!;
+  expect(details).not.toHaveAttribute("open");
+  expect(within(details).getByText(m.detailsTitle).tagName).toBe("SUMMARY");
+  expect(details.querySelector("pre.workspace-error")?.textContent).toBe(CLONE_ERROR);
+  expect(sentence.compareDocumentPosition(details) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+});
+
+test.each([
+  [
+    "a clone git failed with no cause named",
+    ADDRESS,
+    "git clone failed, exit code 1:\nfatal: odd",
+    m.workspaceFailedClone,
+  ],
+  ["a workspace that could not be made, many lines", null, "one\ntwo", m.workspaceFailedMake],
+  ["a clone that could not be made, many lines", ADDRESS, "one\ntwo", m.workspaceFailedClone],
+])("%s is told in a plain sentence of the page's own", async (_, source, error, sentence) => {
+  dashboard([workspace(1, "alpha", { state: "failed", source, error })]);
+  renderApp("/?workspace=1");
+  const opened = await panel("alpha");
+  expect(within(opened).getByText(sentence)).toBeInTheDocument();
+  expect(opened.querySelector("details pre.workspace-error")?.textContent).toBe(error);
+});
+
+test.each([
+  [
+    "runtime_gone",
+    "The workspace's container is gone from the runtime.\nrestore could not find it\nlooked in two places",
+  ],
+  ["default_image_gone", "The default image is gone.\nrebuild it first"],
+  ["an unknown first line with no clone line", "Something rcman has no words for\nmore\nlines"],
+])(
+  "a workspace that failed with %s is told in a sentence, with the server's words behind Details",
+  async (_, error) => {
+    dashboard([workspace(1, "alpha", { state: "failed", source: null, error })]);
+    renderApp("/?workspace=1");
+    const opened = await panel("alpha");
+    expect(within(opened).getByText(m.workspaceFailedMake)).toBeInTheDocument();
+    expect(opened.querySelector("details pre.workspace-error")?.textContent).toBe(error);
+  },
+);
+
+test("a failure told in one line is shown as it is, with no Details", async () => {
+  dashboard([
+    workspace(1, "alpha", { state: "failed", error: "Cloning took too long, so it was stopped." }),
+  ]);
+  renderApp("/?workspace=1");
+  const opened = await panel("alpha");
+  expect(within(opened).getByText("Cloning took too long, so it was stopped.")).toBeInTheDocument();
+  expect(opened.querySelector("details")).toBeNull();
+});
+
+test("the steps are labelled where they are seen", async () => {
+  dashboard([workspace(1, "alpha", { state: "creating", source: ADDRESS, log: STEPS })]);
+  renderApp("/?workspace=1");
+  const opened = await panel("alpha");
+  const steps = await within(opened).findByRole("figure", { name: m.workspaceLog });
+  expect(within(steps).getByText(m.workspaceLog).tagName).toBe("FIGCAPTION");
+});
+
 test("a workspace that is ready shows no log", async () => {
   dashboard([workspace(1, "alpha", { source: ADDRESS, log: null })]);
   renderApp("/?workspace=1");
@@ -617,6 +701,7 @@ test("a server that could not be read is shown with the reason, and Start is not
   );
   expect(within(opened).queryByRole("button", { name: m.start })).not.toBeInTheDocument();
   expect(within(opened).queryByText(m.noServer)).not.toBeInTheDocument();
+  expect(within(opened).getByText(m.serverUnreadNextStep)).toBeInTheDocument(); // what to do next
 });
 
 // --- the Claude Code version a server runs ------------------------------------------
@@ -648,6 +733,32 @@ test("the note is made for a version approved after a rollback too, and names no
   await card();
   expect(await screen.findByText(m.serverVersionDiffers(APPROVED))).toBeInTheDocument();
   expect(m.serverVersionDiffers(APPROVED)).not.toMatch(/newer|older/i);
+});
+
+test.each(Object.keys(ACTIONS))(
+  "the note about restarting for the approved version is made for a server in state %s only if it is running",
+  async (state) => {
+    dashboard([running("2.1.0", state)]);
+    renderApp("/?workspace=1");
+    const opened = await panel("alpha");
+    await within(opened).findByRole("article", { name: "alpha" });
+    // a server that does not run has nothing to stop and start again
+    const note = within(opened).queryByText(m.serverVersionDiffers(APPROVED));
+    if (ACTIONS[state].includes("stop")) expect(note).toBeInTheDocument();
+    else expect(note).not.toBeInTheDocument();
+  },
+);
+
+test("the selected workspace's panel comes before the form that makes another", async () => {
+  dashboard([workspace(1, "alpha")]);
+  renderApp("/?workspace=1");
+  const opened = await panel("alpha");
+  const listed = await list();
+  const form = screen.getByRole("region", { name: m.newWorkspace });
+  const follows = (a: Element, b: Element) =>
+    Boolean(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
+  expect(follows(listed, opened)).toBe(true);
+  expect(follows(opened, form)).toBe(true);
 });
 
 test("the note goes once the server runs the approved version", async () => {
@@ -978,6 +1089,91 @@ test("Delete workspace asks first, saying everything in it and its server go, an
   expect(fake.calls.filter((c) => c.method === "DELETE")).toEqual([]);
 });
 
+test("Delete workspace is a section of its own at the foot of the panel, after the server and the changes, never its first control", async () => {
+  dashboard(withServer("ready"), {
+    "GET /api/git/status": STATUS_CLEAN,
+    "GET /api/git/branches": BRANCHES,
+  });
+  renderApp("/?workspace=1");
+  const opened = await panel("alpha");
+  const section = await within(opened).findByRole("region", { name: m.deleteSectionTitle });
+  const remove = within(section).getByRole("button", { name: m.deleteWorkspace });
+  expect(remove).toHaveClass("secondary-danger");
+  const changes = await within(opened).findByRole("region", { name: m.changesTitle });
+  const serverSection = within(opened).getByRole("region", { name: m.serverTitle });
+  for (const before of [serverSection, changes]) {
+    expect(before.compareDocumentPosition(section) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  }
+  // the first control of the panel is not the delete button
+  expect(opened.querySelector("button, a[href]")).not.toBe(remove);
+  expect(section.nextElementSibling).toBeNull(); // the last thing in the panel
+});
+
+test("a failed workspace has the delete section after what went wrong", async () => {
+  dashboard([workspace(1, "alpha", { state: "failed", error: "planted failure" })]);
+  renderApp("/?workspace=1");
+  const opened = await panel("alpha");
+  const section = within(opened).getByRole("region", { name: m.deleteSectionTitle });
+  const failure = within(opened).getByText("planted failure");
+  expect(failure.compareDocumentPosition(section) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+});
+
+test("a workspace being deleted has no delete section", async () => {
+  dashboard([workspace(1, "alpha", { state: "deleting" })]);
+  renderApp("/?workspace=1");
+  const opened = await panel("alpha");
+  expect(within(opened).queryByRole("region", { name: m.deleteSectionTitle })).toBeNull();
+});
+
+test("the question names the work that is not committed or not pushed, once the Changes section knows of any", async () => {
+  dashboard(withServer("ready"), {
+    "GET /api/git/status": {
+      ...STATUS_CLEAN,
+      staged: { files: [{ path: "a.txt", change: "modified" }], more: 0 },
+      not_staged: {
+        files: [
+          { path: "a.txt", change: "modified" },
+          { path: "b.txt", change: "untracked" },
+        ],
+        more: 1,
+      },
+      push_ahead: 2,
+    },
+    "GET /api/git/branches": BRANCHES,
+  });
+  renderApp("/?workspace=1");
+  const opened = await panel("alpha");
+  await within(opened).findByRole("region", { name: m.changesTitle });
+  await userEvent.click(within(opened).getByRole("button", { name: m.deleteWorkspace }));
+  const dialog = await screen.findByRole("dialog");
+  // a.txt and b.txt, and one more that the list did not show
+  expect(within(dialog).getByText(m.deleteWorkspaceUncommitted(3))).toBeInTheDocument();
+  expect(within(dialog).getByText(m.deleteWorkspaceUnpushed(2))).toBeInTheDocument();
+  expect(within(dialog).getByText(m.deleteWorkspaceBody)).toBeInTheDocument();
+});
+
+test("the question says nothing of unsaved work where the repository is clean, absent or unknown", async () => {
+  for (const status of [
+    STATUS_CLEAN,
+    NOT_A_REPOSITORY,
+    { ...STATUS_CLEAN, push_ahead: null },
+  ] as const) {
+    dashboard(withServer("ready"), {
+      "GET /api/git/status": status,
+      "GET /api/git/branches": status === NOT_A_REPOSITORY ? NOT_A_REPOSITORY : BRANCHES,
+    });
+    const { unmount } = renderApp("/?workspace=1");
+    const opened = await panel("alpha");
+    await within(opened).findByRole("region", { name: m.changesTitle });
+    await userEvent.click(within(opened).getByRole("button", { name: m.deleteWorkspace }));
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText(m.deleteWorkspaceBody)).toBeInTheDocument(); // positive control
+    expect(dialog).not.toHaveTextContent(m.deleteWorkspaceUncommitted(1).slice(0, 12));
+    expect(dialog).not.toHaveTextContent(m.deleteWorkspaceUnpushed(1).slice(0, 12));
+    unmount();
+  }
+});
+
 test("confirming deletes the workspace, refreshes the list, selects none and says it was deleted", async () => {
   let workspaces = withServer("ready");
   const fake = dashboard([], {
@@ -1125,3 +1321,17 @@ test("a failing poll that ends after a later one worked is not shown", () =>
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     expect(await entry("alpha")).toBeInTheDocument();
   }));
+
+test("the new workspace's fields show an example of what goes in them", async () => {
+  dashboard([]);
+  renderApp();
+  const form = within(await screen.findByRole("region", { name: m.newWorkspace }));
+  expect(form.getByLabelText(m.newWorkspaceName)).toHaveAttribute(
+    "placeholder",
+    m.examples.workspaceName,
+  );
+  expect(form.getByLabelText(m.newWorkspaceSource)).toHaveAttribute(
+    "placeholder",
+    m.examples.address,
+  );
+});

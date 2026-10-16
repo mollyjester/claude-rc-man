@@ -38,9 +38,11 @@ one sees a quiet note in the server section of their workspace, which says to
 stop the server and start it again to use the approved one.
 
 A version leaves the store only when it is neither the approved nor the
-previous version, nor the one `current` names, and no running server uses it; rcman removes such versions
-after a roll-out and when servers stop. A server whose state rcman cannot read
-counts as running.
+previous version, nor the tested one, nor the one `current` names, no running server
+uses it, and it was not put in the store within `PRUNE_GRACE_SECONDS`
+(`backend/rcman/claude_versions.py`); rcman removes such versions
+after a roll-out, when servers stop and when it starts. A server whose state rcman
+cannot read counts as running. `rcman-admin` removes none.
 
 ## The versions page
 

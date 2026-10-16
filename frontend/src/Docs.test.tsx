@@ -1,4 +1,5 @@
 import { screen, within } from "@testing-library/react";
+import { vi } from "vitest";
 
 import { m } from "./messages";
 import { fakeApi, ME, problem } from "./test/fakeApi";
@@ -61,4 +62,63 @@ test("a missing page shows the server's reason, and no page", async () => {
   renderApp("/help/nope");
   expect(await screen.findByRole("alert")).toHaveTextContent("There is nothing here.");
   expect(screen.queryByRole("heading", { level: 1 })).not.toBeInTheDocument();
+});
+
+test("a help page is titled with its own name, and the index with Help", async () => {
+  fakeApi({
+    "GET /api/me": ME,
+    "GET /api/docs": PAGES,
+    "GET /api/docs/servers": { slug: "servers", title: "Servers", markdown: "# Servers\n\nText." },
+  });
+  const { navigate } = renderApp("/help");
+  await vi.waitFor(() => expect(document.title).toBe(m.pageTitle(m.docsTitle)));
+  await navigate("/help/servers");
+  await vi.waitFor(() => expect(document.title).toBe(m.pageTitle("Servers")));
+});
+
+const WITH_TABLE = [
+  "# Servers",
+  "",
+  "Before the table.",
+  "",
+  "| State | What to do |",
+  "|---|---|",
+  "| Stopped | See [people](" + "users" + ".md#adding) or `resume` |",
+  "| Running | **Nothing** |",
+  "",
+  "After the table.",
+].join("\n");
+
+test("a table in a page is shown as a table, with its cells formatted, in a box that scrolls sideways", async () => {
+  fakeApi({
+    "GET /api/me": ME,
+    "GET /api/docs": PAGES,
+    "GET /api/docs/servers": { slug: "servers", title: "Servers", markdown: WITH_TABLE },
+  });
+  renderApp("/help/servers");
+  const table = await screen.findByRole("table");
+  expect(
+    within(table)
+      .getAllByRole("columnheader")
+      .map((h) => h.textContent),
+  ).toEqual(["State", "What to do"]);
+  const stopped = within(table).getByRole("row", { name: /Stopped/ });
+  expect(within(stopped).getByRole("link", { name: "people" })).toHaveAttribute(
+    "href",
+    "/help/users#adding",
+  );
+  expect(within(stopped).getByText("resume").tagName).toBe("CODE");
+  expect(within(table).getByText("Nothing").tagName).toBe("STRONG");
+  // nothing of the table's source is left as text, and the text around it is kept
+  expect(screen.queryByText(/\|/)).not.toBeInTheDocument();
+  expect(screen.getByText("Before the table.")).toBeInTheDocument();
+  expect(screen.getByText("After the table.")).toBeInTheDocument();
+  expect(table.closest(".table-scroll")).not.toBeNull();
+});
+
+test("the help index opens with a line on what the pages are for", async () => {
+  fakeApi({ "GET /api/me": ME, "GET /api/docs": PAGES });
+  renderApp("/help");
+  expect(await screen.findByRole("heading", { name: m.docsTitle, level: 1 })).toBeInTheDocument();
+  expect(screen.getByText(m.docsIntro)).toBeInTheDocument();
 });

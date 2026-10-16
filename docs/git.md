@@ -17,9 +17,15 @@ the token, without asking for a password.
 - A change in Settings reaches your workspaces at once, running or not: the
   next git command in any of them uses it. No server is restarted and no
   session is cut off.
-- **Remove token** takes effect the same way: git has no token from its next
-  command on, and a push to GitHub is refused for want of one. The token still
-  works on GitHub until you revoke it there.
+- **Remove token** takes effect the same way: rcman empties the credential file
+  it keeps for you, so git, which reads the token from there, has none from its
+  next command on, and a push to GitHub is refused for want of one. The token
+  still works on GitHub until you revoke it there. That is the whole of what
+  rcman forgets: if you set git up inside a workspace to use another credential
+  helper (`credential.helper store` in `~/.gitconfig`, say), what that helper
+  saved is yours, in your files, and rcman neither knows of it nor removes it.
+  A helper the workspace's image sets for the whole machine is not used for
+  GitHub, so that it cannot keep the token where rcman does not forget it.
 - git only ever reads the stored token; it does not rewrite it. If GitHub
   refuses the token, git keeps it, and the Settings page still says one is
   stored.

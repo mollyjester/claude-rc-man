@@ -20,7 +20,15 @@ import pytest
 from rcman import builder, devcontainer, people
 from rcman import runtime as rt
 
-from tests.test_builder import CONFIG, FEATURE_FAILED, IMAGE_ID, NO_NETWORK, STEP_FAILED
+from tests.test_builder import (
+    CONFIG,
+    FEATURE_FAILED,
+    IMAGE_ID,
+    LAYER_BYTES,
+    NO_NETWORK,
+    STEP_FAILED,
+    config_of,
+)
 
 STAND_IN = r"""#!/usr/bin/env python3
 import hashlib, io, json, os, sys, tarfile, time
@@ -90,19 +98,26 @@ elif verb == "ps":
              for p in STATE.glob("builder-rcman-build-*")]
     print(json.dumps(found))
 elif verb == "images":
-    found = [{"Names": [p.name[4:].replace("%", "/")]} for p in STATE.glob("tag-*")]
+    found = [{"Names": [p.name[4:].replace("%", "/")], "Id": p.read_text()}
+             for p in STATE.glob("tag-*")]
     print(json.dumps(found))
 elif verb == "tag":
     if scenario.get("tag_fails"):
         print("Error: tag went wrong", file=sys.stderr)
         sys.exit(125)
-    mark("tag-" + words[-1].replace("/", "%"))
+    (STATE / ("tag-" + words[-1].replace("/", "%"))).write_text(words[-2])
+elif verb == "untag":
+    mark("tag-" + words[-1].replace("/", "%"), False)
 elif verb == "image" and sub == "exists":
     sys.exit(0 if exists("image-" + words[-1]) else 1)
 elif verb == "image" and sub == "inspect":
-    if not exists("image-" + words[-1]):
+    tagged = STATE / ("tag-" + words[-1].replace("/", "%"))
+    if tagged.exists():
+        print("sha256:" + tagged.read_text())
+    elif not exists("image-" + words[-1]):
         sys.exit(1)
-    print("sha256:" + words[-1])
+    else:
+        print("sha256:" + words[-1])
 elif verb == "image" and sub == "rm":
     if exists("image-" + words[-1]):
         mark("image-" + words[-1], False)
@@ -110,10 +125,13 @@ elif verb == "image" and sub == "rm":
 elif verb == "load":
     assert words[1] == "-i", words
     path = Path(words[2])
+    with tarfile.open(path) as loading:
+        members = loading.getnames()
     (STATE / "load-info").write_text(json.dumps({
         "size": path.stat().st_size,
         "dir_mode": path.parent.stat().st_mode & 0o777,
         "dir": str(path.parent),
+        "members": members,
     }))
     waited = 0.0
     while waited < scenario.get("load_seconds", 0):
@@ -124,6 +142,9 @@ elif verb == "load":
         sys.exit(125)
     if not scenario.get("loads_under_another_id"):
         mark("image-" + scenario["image_id"])
+    for name, image in scenario.get("load_names", {}).items():
+        (STATE / ("tag-" + name.replace("/", "%"))).write_text(
+            scenario["image_id"] if image == "loaded" else image)
     print("Loaded image: sha256:" + scenario["image_id"])
 elif verb == "exec":
     rest = [w for w in words[1:] if w not in ("--interactive",) and not w.startswith("--workdir")]
@@ -170,9 +191,14 @@ elif verb == "exec":
             manifest = json.dumps([{"Config": scenario["image_id"] + ".json",
                                     "RepoTags": scenario.get("repo_tags"),
                                     "Layers": ["layer.tar"]}]).encode()
+            extras = {k: v.encode() for k, v in scenario.get("extra_members", {}).items()}
             with tarfile.open(fileobj=sys.stdout.buffer, mode="w|") as archive:
-                for name, content in (("layer.tar", b"\0" * scenario["image_bytes"]),
+                layer = b"\0" * scenario["image_bytes"]
+                if scenario.get("tampered_layer"):
+                    layer = b"\1" + layer[1:]
+                for name, content in (("layer.tar", layer),
                                       (scenario["image_id"] + ".json", config),
+                                      *extras.items(),
                                       ("manifest.json", manifest)):
                     info = tarfile.TarInfo(name)
                     info.size = len(content)
@@ -186,16 +212,20 @@ class StandIn:
     def __init__(self, tmp_path: Path, **scenario):
         self.state = tmp_path / "podman-state"
         self.state.mkdir()
+        size = scenario.get("image_bytes", LAYER_BYTES)
+        config, image = (CONFIG, IMAGE_ID) if size == LAYER_BYTES else config_of(b"\0" * size)
         self.scenario = {
             "repository_bytes": 20_000,
-            "image_bytes": 200_000,
-            "image_id": IMAGE_ID,
-            "config_hex": CONFIG.hex(),
+            "image_bytes": size,
+            "image_id": image,
+            "config_hex": config.hex(),
             "labels": {},
             **scenario,
         }
         self.scratch = tmp_path / "scratch"
         self.save()
+        for name, image in self.scenario.get("preexisting", {}).items():
+            self.tag(name).write_text(image)
         self.program = tmp_path / "podman"
         self.program.write_text(STAND_IN.replace("__STATE__", repr(str(self.state))))
         self.program.chmod(0o755)
@@ -227,7 +257,7 @@ class StandIn:
         return (self.state / name).exists()
 
     def tag(self, name: str) -> Path:
-        """The file that stands for the image tagged ``name``."""
+        """The file that stands for the image tagged ``name``; it holds the image's id."""
         return self.state / f"tag-{name.replace('/', '%')}"
 
     def read(self, name: str) -> str:
@@ -239,7 +269,7 @@ def runtime_with(stand_in: StandIn) -> rt.PodmanRuntime:
         rt.PodmanConfig(
             socket=Path("/run/user/990/podman/podman.sock"),
             image="localhost/rcman-workspace:test",
-            tools_dir=Path("/var/lib/rcman/tools"),
+            tools_dir=Path("/opt/rcman/tools"),
             claude_store=Path("/var/lib/rcman/claude"),
             podman=str(stand_in.program),
             builder_image="localhost/rcman-builder:test",
@@ -684,6 +714,89 @@ def test_what_is_loaded_is_found_by_the_id_and_not_by_a_word_in_what_podman_said
     assert inspect and inspect[0][-1] == IMAGE_ID
 
 
+# --- the archive that is loaded is the one rcman writes, and rcman's own names stay put ----------
+
+OCI_INDEX = json.dumps(
+    {"manifests": [{"annotations": {"org.opencontainers.image.ref.name": "localhost/x:1"}}]}
+)
+
+
+def test_an_archive_that_is_both_a_docker_archive_and_an_oci_layout_is_refused_unloaded(tmp_path):
+    stand_in = StandIn(
+        tmp_path, extra_members={"index.json": OCI_INDEX, "oci-layout": "{}"}, **SUCCESS
+    )
+    with pytest.raises(rt.BuildFailed) as refused:
+        building(runtime_with(stand_in))[0]()
+    assert refused.value.kind == "build_image_refused" and "OCI" in refused.value.fields["reason"]
+    assert "exec builder podman" in stand_in.verbs()  # the control: it was saved and read
+    assert "load" not in stand_in.verbs() and list(stand_in.scratch.iterdir()) == []
+
+
+def test_what_is_loaded_is_the_archive_rcman_wrote_from_the_parts_it_checked(tmp_path):
+    legacy = {"abc/VERSION": "1.0", "abc/json": "{}", "repositories": "{}"}
+    stand_in = StandIn(tmp_path, extra_members=legacy, **SUCCESS)
+    building(runtime_with(stand_in))[0]()
+    members = json.loads(stand_in.read("load-info"))["members"]
+    assert sorted(members) == sorted(["manifest.json", f"{IMAGE_ID}.json", "layer0.tar"])
+
+
+OWN = {
+    "default": "localhost/rcman-workspace:test",
+    "builder": "localhost/rcman-builder:test",
+    "another's built image": rt.built_name(9),
+}
+OLD, ATTACKER = "a" * 64, "b" * 64
+
+
+@pytest.mark.parametrize("name", list(OWN.values()))
+def test_a_load_that_moves_a_name_of_rcmans_own_is_put_back_and_the_build_refused(tmp_path, name):
+    stand_in = StandIn(
+        tmp_path, preexisting={n: OLD for n in OWN.values()}, load_names={name: "loaded"}, **SUCCESS
+    )
+    with pytest.raises(rt.BuildFailed) as refused:
+        building(runtime_with(stand_in))[0]()
+    assert refused.value.kind == "build_image_refused"
+    assert {n: stand_in.tag(n).read_text() for n in OWN.values()} == {n: OLD for n in OWN.values()}
+    assert not stand_in.tag(rt.built_name(7)).exists() and "tag" not in stand_in.verbs()[-3:]
+    assert rm_by_id(stand_in)  # and the image it put there is removed by its id
+    assert list(stand_in.scratch.iterdir()) == []
+
+
+def test_a_name_the_load_gives_the_new_image_is_taken_off_it_and_the_build_refused(tmp_path):
+    stand_in = StandIn(
+        tmp_path, load_names={"localhost/rcman-built/12:latest": "loaded"}, **SUCCESS
+    )
+    with pytest.raises(rt.BuildFailed):
+        building(runtime_with(stand_in))[0]()
+    assert not stand_in.tag("localhost/rcman-built/12:latest").exists()
+    assert ["untag", IMAGE_ID, "localhost/rcman-built/12:latest"] in stand_in.calls()
+
+
+def test_a_name_the_load_leaves_alone_lets_the_build_go_on_and_names_are_compared_by_id(tmp_path):
+    stand_in = StandIn(tmp_path, preexisting={n: OLD for n in OWN.values()}, **SUCCESS)
+    assert building(runtime_with(stand_in))[0]() == rt.built_name(7)
+    assert {n: stand_in.tag(n).read_text() for n in OWN.values()} == {n: OLD for n in OWN.values()}
+    assert stand_in.tag(rt.built_name(7)).read_text() == IMAGE_ID
+
+
+def test_a_load_of_an_image_that_was_there_does_not_take_the_names_it_already_had_off_it(tmp_path):
+    stand_in = StandIn(tmp_path, tag_fails=False, **SUCCESS)
+    (stand_in.state / f"image-{IMAGE_ID}").write_text("")  # another workspace's, the same image
+    stand_in.tag("localhost/rcman-built/3:latest").write_text(IMAGE_ID)
+    assert building(runtime_with(stand_in))[0]() == rt.built_name(7)
+    assert stand_in.tag("localhost/rcman-built/3:latest").read_text() == IMAGE_ID
+    assert not [c for c in stand_in.calls() if c[0] == "untag"]
+
+
+def test_a_layer_whose_bytes_are_not_the_configurations_digest_is_refused_unloaded(tmp_path):
+    stand_in = StandIn(tmp_path, tampered_layer=True, **SUCCESS)
+    with pytest.raises(rt.BuildFailed) as refused:
+        building(runtime_with(stand_in))[0]()
+    assert refused.value.kind == "build_image_refused" and "layer" in refused.value.fields["reason"]
+    assert "exec builder podman" in stand_in.verbs() and "load" not in stand_in.verbs()
+    assert list(stand_in.scratch.iterdir()) == []
+
+
 # --- the copies fail for the cause that is theirs ----------------------------------------------
 
 
@@ -777,18 +890,61 @@ def test_an_id_that_is_no_id_is_refused_and_never_given_to_podman(tmp_path, imag
 # --- what an earlier rcman left in the scratch area ---------------------------------------------
 
 
-def test_staging_folders_an_earlier_rcman_left_are_removed_when_the_old_are_swept(tmp_path):
-    stand_in = StandIn(tmp_path)
-    runtime = runtime_with(stand_in)
-    stand_in.scratch.mkdir()
-    old, new, other = (stand_in.scratch / n for n in ("rcman-image-old", "rcman-image-new", "keep"))
-    for folder in (old, new, other):
+def leftovers(stand_in: StandIn):
+    """A staging folder an earlier rcman left, as new as a build's own, and a folder that is
+    no staging folder."""
+    stand_in.scratch.mkdir(exist_ok=True)
+    left, other = stand_in.scratch / "rcman-image-left", stand_in.scratch / "keep"
+    for folder in (left, other):
         folder.mkdir()
         (folder / "image.tar").write_text("x")
-    long_ago = time.time() - 4 * builder.COPY_SECONDS
-    for folder in (old, other):
-        os.utime(folder, (long_ago, long_ago))
-    runtime.clean_probes()
-    assert not old.exists()  # the plant took effect, and was swept
-    assert new.exists()  # one that may belong to a build under way
+    return left, other
+
+
+def test_every_staging_folder_is_removed_by_the_sweep_when_no_build_is_running(tmp_path):
+    stand_in = StandIn(tmp_path)
+    left, other = leftovers(stand_in)
+    runtime_with(stand_in).clean_probes()
+    assert not left.exists()  # however new: no build can be using it
     assert other.exists()  # not a staging folder
+
+
+def test_a_build_that_ends_removes_the_staging_folders_it_found_left_and_its_own(tmp_path):
+    stand_in = StandIn(tmp_path, **SUCCESS)
+    left, other = leftovers(stand_in)
+    building(runtime_with(stand_in))[0]()
+    assert not left.exists() and other.exists()
+    assert [p.name for p in stand_in.scratch.iterdir()] == ["keep"]
+
+
+def test_the_sweep_leaves_a_folder_alone_while_a_build_is_running_unless_it_is_old(tmp_path):
+    stand_in = StandIn(tmp_path, load_seconds=60, **SUCCESS)
+    runtime = runtime_with(stand_in)
+    left, other = leftovers(stand_in)
+    old = stand_in.scratch / "rcman-image-old"
+    old.mkdir()
+    long_ago = time.time() - 4 * builder.COPY_SECONDS
+    os.utime(old, (long_ago, long_ago))
+    cancel = threading.Event()
+    run, _, _ = building(runtime)
+    building_ = threading.Thread(target=lambda: _quietly(run, cancel), daemon=True)
+    building_.start()
+    try:
+        deadline = time.monotonic() + 30
+        while not stand_in.has("load-info") and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert stand_in.has("load-info")  # the build is loading its staged image
+        runtime.clean_probes()
+        assert left.exists() and other.exists()  # one of them may be the build's own
+        assert not old.exists()  # the plant took effect: an old one still goes
+    finally:
+        cancel.set()
+        building_.join(60)
+    assert not left.exists()  # and the end of the build clears what is left
+
+
+def _quietly(run, cancel):
+    try:
+        run(cancel)
+    except rt.RuntimeFailed:
+        pass

@@ -109,3 +109,10 @@ test("nothing on the page acts on anyone's workspaces", async () => {
   expect(within(main).queryAllByRole("button")).toEqual([]);
   expect(within(main).queryAllByRole("link")).toEqual([]);
 });
+
+test("a person's table is in a box that scrolls sideways", async () => {
+  api();
+  renderApp("/admin/workspaces");
+  const alice = await person("alice@example.com");
+  expect(within(alice).getByRole("table").closest(".table-scroll")).not.toBeNull();
+});

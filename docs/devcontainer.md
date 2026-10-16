@@ -136,7 +136,13 @@ stored with the workspace's plan and apply to git, tmux, Claude and the lifecycl
 A file may not set the names rcman sets itself in every workspace: the home folder, the user
 and shell names, the terminal, Claude's configuration folder and settings, and git's
 prompting and lock settings. Such a file is refused, naming the variable and the entry that
-sets it. A file may set `LANG`, `LC_ALL` and `BROWSER`, which rcman sets itself in
+sets it. Nor may it set a variable that would move git's configuration from where rcman writes
+it for the person: `XDG_CONFIG_HOME`, and the `GIT_CONFIG` ones (`GIT_CONFIG_GLOBAL`,
+`GIT_CONFIG_SYSTEM`, `GIT_CONFIG_NOSYSTEM`, `GIT_CONFIG_COUNT`, `GIT_CONFIG_PARAMETERS` and the
+numbered `GIT_CONFIG_KEY_n` and `GIT_CONFIG_VALUE_n`) or make git print what it sends
+(`GIT_TRACE` and its kin, `GIT_CURL_VERBOSE`); an image's own are not taken. rcman's own git
+runs with none of the `GIT_` variables a file sets. A file may
+set `LANG`, `LC_ALL` and `BROWSER`, which rcman sets itself in
 only some of its programs; there its value wins over the file's, and everywhere else,
 lifecycle commands included, the file's is used. `PATH` may be set; rcman's own folder of
 programs stays first in it.
@@ -173,12 +179,22 @@ for (see [Disk](#disk)).
 
 The image is named by `image`, as a plain registry reference (`host/path:tag`, optionally
 `@digest`), as written. A name Podman would read as a transport or a file (`docker-archive:`,
-`oci:`, `dir:` and the like) is refused.
+`oci:`, `dir:` and the like) is refused, and so is a name in a registry on the machine rcman
+runs on or on its network: `localhost` with a port, a host that is an address which is not a
+public one (loopback, private and link-local ones among them, also written the short ways a
+resolver reads, such as `127.1` or a single number), a name of one label with a port, or a
+name that ends in one of `LOCAL_SUFFIXES` in `backend/rcman/devcontainer.py`. A pull runs in
+the network of that machine, which a workspace's own network is kept from. A name that
+resolves to such an address, and a registry that redirects to one, are not caught: that would
+need the name resolved and the redirect followed. A name that begins `localhost/` with no
+port names an image in rcman's storage and is never pulled.
 
 - rcman pulls it itself, as its own account, with the pull's lines in the steps. An image
   that needs a sign-in to its registry cannot be pulled.
 - An image already in rcman's storage is used when it cannot be pulled, so an image an
   administrator loaded there needs no registry.
+- An image that carries a label beginning `rcman.` is refused: a container takes its image's
+  labels, and those are the ones rcman finds its own containers by.
 - The image needs a **git** new enough for rcman (see [Git](git.md#images)), checked once the
   container runs, and **glibc**: an image built on musl, as Alpine ones are, is refused
   because Claude Code needs glibc. Anything else rcman needs comes from rcman, not the image:
@@ -345,11 +361,21 @@ and makes it again, losing what is in it. A later step will apply a changed file
 existing workspace.
 
 The plan (the image, the user, the environment and the commands) is stored with the
-workspace. When the machine restarts and a workspace's container is gone, rcman makes it
-again from the stored plan on the same volume, pulling the image again when rcman's storage no
-longer has it; if the image cannot be had, the workspace fails and says to delete it and make
-it again. An image that was built is never built again nor pulled: one that is missing from
-rcman's storage fails the workspace, which says so. Restoring also removes what a build left
-that no workspace needs: builders, their volumes, and built images that no stored plan
-names. The create commands are not run again. A workspace that rcman's restart interrupted
+workspace, with the id of the image it was made from, and the digest where the image came from a
+registry. When the machine restarts and a workspace's container is gone, rcman makes it again
+from the stored plan on the same volume, from the image of that id: a tag that names another
+image by then changes nothing, and nothing is pulled while the image is in rcman's storage. A
+workspace made from rcman's own image is made again from the image it was made from, not from a
+newer one. If rcman's storage lacks the image, it is pulled by its digest where
+there is one; if it cannot be had, the workspace fails and says to delete it and make it again.
+An image that was built is never built again nor pulled: one that is missing from
+rcman's storage fails the workspace, which says so. Restoring also removes what no workspace
+needs: builders left by a build and their volumes, built images that no stored plan names,
+and the other images in rcman's storage that nothing refers to, such as images pulled for
+workspaces that are gone and older default images; it does so after a workspace or a person
+is deleted too, and never removes an image a container is made from. It keeps every image a
+stored plan or a workspace names, by name and by id, the default and the builder images with every tag they
+have, and an image with no name for a while after it was made. It removes nothing at all
+when the table of workspaces is empty while rcman's Podman holds some, which it writes to the
+[journal](journal.md) as an error. The create commands are not run again. A workspace that rcman's restart interrupted
 while it was being made fails and says so; it is not made again.

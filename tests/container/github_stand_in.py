@@ -50,7 +50,9 @@ def dockerfile(base: str, packages: bool = False) -> str:
 
 
 def openssl(*args: str, cwd: Path) -> None:
-    proc = subprocess.run(["openssl", *args], cwd=cwd, capture_output=True, text=True)
+    proc = subprocess.run(
+        ["openssl", *args], cwd=cwd, capture_output=True, text=True, errors="replace"
+    )
     assert proc.returncode == 0, proc.stderr
 
 

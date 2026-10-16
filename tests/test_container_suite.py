@@ -162,18 +162,29 @@ def _run(argv: list[str], timeout: float = 600, **kwargs) -> subprocess.Complete
 
 def _booted(inside: list[str]) -> None:
     """Wait until the systemd ``inside`` runs has finished booting, and check that no
-    unit failed."""
+    unit failed. A boot that does not come says what the last ask printed, its exit code
+    and the end of the container's log, since the state alone is empty where ``docker exec``
+    itself failed (the container ended)."""
     deadline = time.monotonic() + BOOTS_WITHIN
     while True:
-        state = subprocess.run(
+        asked = subprocess.run(
             [*inside, "systemctl", "is-system-running", "--wait"],
             capture_output=True,
             text=True,
             timeout=BOOTS_WITHIN,
-        ).stdout.strip()
+        )
+        state = asked.stdout.strip()
         if state in ("running", "degraded"):
             break
-        assert time.monotonic() < deadline, state  # "offline" until the manager is up
+        if time.monotonic() > deadline:  # "offline" until the manager is up
+            docker, container = inside[:3], inside[-1]
+            logged = subprocess.run(
+                [*docker, "logs", "--tail", "40", container], capture_output=True, text=True
+            )
+            raise AssertionError(
+                f"systemd did not finish booting: state {state!r}, exit code {asked.returncode}, "
+                f"stderr {asked.stderr.strip()!r}\n{logged.stdout[-3000:]}{logged.stderr[-3000:]}"
+            )
         time.sleep(0.5)
     failed = subprocess.run([*inside, "systemctl", "--failed"], capture_output=True, text=True)
     assert state == "running", failed.stdout
@@ -240,7 +251,30 @@ def _load(docker, inside: list[str], container: str) -> str:
         said = loaded.stdout.strip().splitlines()[-1]
         assert said.startswith("Loaded image: "), loaded.stdout
         names.append(said.removeprefix("Loaded image: "))
+    _have_pinned_images(inside, container)
     return names[0]
+
+
+def _pinned_references() -> list[str]:
+    """The images the installer builds from, by tag and digest: what Podman looks up when it
+    builds one of them, and an image loaded from Docker's archive is not found by."""
+    from installer import install as ins
+
+    root = Path(ins.__file__).resolve().parent
+    found = [ins.TMUX_BUILD_REFERENCE]
+    for name in ("workspace", "builder"):
+        found += containers.digest_references(root / name / "Containerfile")
+    return list(dict.fromkeys(found))
+
+
+def _have_pinned_images(inside: list[str], container: str) -> None:
+    """Make every pinned reference known to the account's Podman: an image it has under the
+    reference is used, and one it has not is pulled by exactly that reference."""
+    as_account = [*inside, container, "python3", "tests/container/podman_host.py", "run"]
+    as_account += ["podman", "--remote"]
+    for reference in _pinned_references():
+        if subprocess.run([*as_account, "image", "exists", reference]).returncode != 0:
+            _run([*as_account, "pull", "-q", reference], timeout=1200)
 
 
 @pytest.fixture

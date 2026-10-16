@@ -4,13 +4,15 @@ import {
   useCallback,
   useEffect,
   useId,
+  useMemo,
   useRef,
   useState,
 } from "react";
 
-import { type ApiError, api } from "./api";
+import { ApiError, api } from "./api";
 import { m } from "./messages";
-import { asApiError, ProblemView } from "./ProblemView";
+import { asApiError, ProblemView, useFieldErrors } from "./ProblemView";
+import { TableScroll } from "./TableScroll";
 
 // The three limits as the server takes them back: text, null for no limit.
 type Held = { memory: string | null; cpu: string | null; pids: string | null };
@@ -36,6 +38,21 @@ const LIMIT_FIELDS = [
   ["pids", m.usersProcesses],
 ] as const;
 const LIMIT_LABELS = Object.fromEntries(LIMIT_FIELDS);
+
+// A refusal for being below what is in use names the field it is about; shown under that
+// field, its title, which says what is in use, is the field's message.
+function underItsField(failure: ApiError | null): ApiError | null {
+  const field = failure?.extra.limit;
+  if (failure?.code !== "limit_below_use" || typeof field !== "string") return failure;
+  if (!LIMIT_FIELDS.some(([name]) => name === field)) return failure;
+  return new ApiError(
+    failure.status,
+    failure.code,
+    failure.title,
+    [{ field, message: failure.title }],
+    failure.extra,
+  );
+}
 
 type Typed = Record<keyof Held, string>;
 const typed = (held: Held): Typed => ({
@@ -101,7 +118,6 @@ function ScopeForm({
   title,
   path,
   report,
-  describedBy,
   failure,
   onFailed,
   onSaving,
@@ -111,7 +127,6 @@ function ScopeForm({
   title: string;
   path: string;
   report: ScopeReport;
-  describedBy: string;
   failure: ApiError | null;
   onFailed: (error: ApiError | null) => void;
   onSaving: () => void;
@@ -119,6 +134,9 @@ function ScopeForm({
   onSettled: () => void;
 }) {
   const heading = useId();
+  const hints = useId();
+  const refused = useMemo(() => underItsField(failure), [failure]);
+  const fields = useFieldErrors(refused);
   const [values, setValues] = useState(typed(report.limits));
   const [status, setStatus] = useState<"idle" | "busy" | "saved">("idle");
 
@@ -143,6 +161,7 @@ function ScopeForm({
     <form
       noValidate
       onSubmit={save}
+      ref={fields.form}
       aria-labelledby={heading}
       aria-busy={status === "busy"}
       className="limits"
@@ -155,19 +174,25 @@ function ScopeForm({
       </p>
       <div className="limits-fields">
         {LIMIT_FIELDS.map(([name, label]) => (
-          <label key={name}>
-            {label}
-            <input
-              type="text"
-              name={name}
-              value={values[name]}
-              aria-describedby={describedBy}
-              onChange={(e) => {
-                setValues({ ...values, [name]: e.target.value });
-                setStatus("idle");
-              }}
-            />
-          </label>
+          <div key={name} className="limits-field">
+            <label>
+              {label}
+              <input
+                type="text"
+                name={name}
+                value={values[name]}
+                onChange={(e) => {
+                  setValues({ ...values, [name]: e.target.value });
+                  setStatus("idle");
+                }}
+                {...fields.input(name, `${hints}-${name}`)}
+              />
+            </label>
+            {fields.message(name)}
+            <p id={`${hints}-${name}`} className="muted">
+              {m.limitsHints[name]}
+            </p>
+          </div>
         ))}
       </div>
       <div className="actions">
@@ -183,7 +208,7 @@ function ScopeForm({
       <p role="status">
         {status === "busy" ? m.limitsSaving : status === "saved" ? m.limitsSaved(title) : ""}
       </p>
-      <ProblemView error={failure} labels={LIMIT_LABELS} />
+      <ProblemView error={refused} labels={LIMIT_LABELS} inline />
     </form>
   );
 }
@@ -204,7 +229,6 @@ function LimitsDialog({
   const [loadError, setLoadError] = useState<ApiError | null>(null);
   const [failure, setFailure] = useState<{ path: string; error: ApiError } | null>(null);
   const dialog = useRef<HTMLDivElement>(null);
-  const units = useId();
   const base = `/api/people/${person.id}`;
 
   const [saving, setSaving] = useState(0); // saves in flight
@@ -241,7 +265,6 @@ function LimitsDialog({
         title={title}
         path={path}
         report={held}
-        describedBy={units}
         failure={failure?.path === path ? failure.error : null}
         onFailed={(error) => setFailure(error && { path, error })}
         onSaving={() => setSaving((n) => n + 1)}
@@ -264,12 +287,6 @@ function LimitsDialog({
       onKeyDown={leave}
     >
       <h2>{m.limitsTitle(person.email)}</h2>
-      <p>{m.limitsDefault}</p>
-      <p id={units}>{m.limitsUnits}</p>
-      <p>{m.limitsHeldToPerson}</p>
-      <p>{m.limitsMemoryHard}</p>
-      <p>{m.limitsBelowUse}</p>
-      <p>{m.limitsNotLimited}</p>
       {report === null && loadError === null && <p>{m.loading}</p>}
       <ProblemView error={loadError} />
       {report && (
@@ -287,6 +304,13 @@ function LimitsDialog({
           )}
         </>
       )}
+      <details className="how">
+        <summary>{m.limitsHowTitle}</summary>
+        <p>{m.limitsHeldToPerson}</p>
+        <p>{m.limitsMemoryHard}</p>
+        <p>{m.limitsBelowUse}</p>
+        <p>{m.limitsNotLimited}</p>
+      </details>
       <div className="actions">
         <button
           type="button"
@@ -311,6 +335,7 @@ export function People() {
   const openers = useRef(new Map<number, HTMLButtonElement>());
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<ApiError | null>(null);
+  const fields = useFieldErrors(error);
 
   const load = useCallback(() => {
     api.get<{ people: Person[] }>("/api/people").then(
@@ -338,60 +363,62 @@ export function People() {
   return (
     <section>
       <h1>{m.usersTitle}</h1>
-      <table>
-        <thead>
-          <tr>
-            <th>{m.usersEmail}</th>
-            <th>{m.usersRole}</th>
-            <th>{m.usersWorkspaces}</th>
-            <th>{m.usersMemory}</th>
-            <th>{m.usersCpu}</th>
-            <th>{m.usersProcesses}</th>
-            <th />
-          </tr>
-        </thead>
-        <tbody>
-          {people.map((p) => (
-            <tr key={p.id}>
-              <td>{p.email}</td>
-              <td>{p.admin ? m.usersAdmin : m.usersUser}</td>
-              <td>{p.workspaces}</td>
-              <td>{p.limits.memory ?? m.usersNoLimit}</td>
-              <td>{p.limits.cpu ?? m.usersNoLimit}</td>
-              <td>{p.limits.pids ?? m.usersNoLimit}</td>
-              <td>
-                <div className="actions">
-                  <button
-                    type="button"
-                    ref={(button) => {
-                      if (button) openers.current.set(p.id, button);
-                      else openers.current.delete(p.id);
-                    }}
-                    onClick={() => {
-                      setNotice(null);
-                      setRemoving(null);
-                      setLimiting(p);
-                    }}
-                  >
-                    {m.usersLimits}
-                  </button>
-                  <button
-                    type="button"
-                    className="secondary-danger"
-                    onClick={() => {
-                      setNotice(null);
-                      setLimiting(null);
-                      setRemoving(p);
-                    }}
-                  >
-                    {m.usersRemove}
-                  </button>
-                </div>
-              </td>
+      <TableScroll label={m.tableTitle}>
+        <table>
+          <thead>
+            <tr>
+              <th>{m.usersEmail}</th>
+              <th>{m.usersRole}</th>
+              <th>{m.usersWorkspaces}</th>
+              <th>{m.usersMemory}</th>
+              <th>{m.usersCpu}</th>
+              <th>{m.usersProcesses}</th>
+              <th />
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {people.map((p) => (
+              <tr key={p.id}>
+                <td>{p.email}</td>
+                <td>{p.admin ? m.usersAdmin : m.usersUser}</td>
+                <td>{p.workspaces}</td>
+                <td>{p.limits.memory ?? m.usersNoLimit}</td>
+                <td>{p.limits.cpu ?? m.usersNoLimit}</td>
+                <td>{p.limits.pids ?? m.usersNoLimit}</td>
+                <td>
+                  <div className="actions">
+                    <button
+                      type="button"
+                      ref={(button) => {
+                        if (button) openers.current.set(p.id, button);
+                        else openers.current.delete(p.id);
+                      }}
+                      onClick={() => {
+                        setNotice(null);
+                        setRemoving(null);
+                        setLimiting(p);
+                      }}
+                    >
+                      {m.usersLimits}
+                    </button>
+                    <button
+                      type="button"
+                      className="secondary-danger"
+                      onClick={() => {
+                        setNotice(null);
+                        setLimiting(null);
+                        setRemoving(p);
+                      }}
+                    >
+                      {m.usersRemove}
+                    </button>
+                  </div>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </TableScroll>
       {limiting && (
         <LimitsDialog
           key={limiting.id}
@@ -416,31 +443,36 @@ export function People() {
         />
       )}
       <h2>{m.usersAdd}</h2>
-      <form noValidate onSubmit={add}>
+      <form noValidate onSubmit={add} ref={fields.form}>
         <label>
           {m.usersEmail}
           <input
             type="text"
             name="email"
             value={email}
+            placeholder={m.examples.email}
             onChange={(e) => setEmail(e.target.value)}
+            {...fields.input("email")}
           />
         </label>
+        {fields.message("email")}
         <label>
           <input
             type="checkbox"
             name="admin"
             checked={admin}
             onChange={(e) => setAdmin(e.target.checked)}
+            {...fields.input("admin")}
           />
           {m.usersAddAdmin}
         </label>
+        {fields.message("admin")}
         <button type="submit" className="primary">
           {m.usersAdd}
         </button>
       </form>
       {notice && <p role="status">{notice}</p>}
-      <ProblemView error={error} labels={{ email: m.usersEmail, admin: m.usersAddAdmin }} />
+      <ProblemView error={error} labels={{ email: m.usersEmail, admin: m.usersAddAdmin }} inline />
     </section>
   );
 }

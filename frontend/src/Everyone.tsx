@@ -4,6 +4,7 @@ import { ApiError, api } from "./api";
 import { m } from "./messages";
 import { asApiError, ProblemView } from "./ProblemView";
 import { StateBadge } from "./Servers";
+import { TableScroll } from "./TableScroll";
 
 type Workspace = {
   id: number;
@@ -34,30 +35,32 @@ function PersonWorkspaces({ person }: { person: Person }) {
       <h2>{person.email}</h2>
       {person.workspaces.length === 0 && <p>{m.everyoneNone}</p>}
       {person.workspaces.length > 0 && (
-        <table>
-          <thead>
-            <tr>
-              <th>{m.everyoneWorkspace}</th>
-              <th>{m.everyoneState}</th>
-              <th>{m.sessionName}</th>
-              <th>{m.everyoneClaude}</th>
-            </tr>
-          </thead>
-          <tbody>
-            {person.workspaces.map((workspace) => (
-              <tr key={workspace.id}>
-                <td>{workspace.name}</td>
-                <td>
-                  <StateOf workspace={workspace} />
-                </td>
-                <td>
-                  {workspace.server?.session_name && <code>{workspace.server.session_name}</code>}
-                </td>
-                <td>{workspace.claude_version}</td>
+        <TableScroll label={m.tableTitle}>
+          <table>
+            <thead>
+              <tr>
+                <th>{m.everyoneWorkspace}</th>
+                <th>{m.everyoneState}</th>
+                <th>{m.sessionName}</th>
+                <th>{m.everyoneClaude}</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {person.workspaces.map((workspace) => (
+                <tr key={workspace.id}>
+                  <td>{workspace.name}</td>
+                  <td>
+                    <StateOf workspace={workspace} />
+                  </td>
+                  <td>
+                    {workspace.server?.session_name && <code>{workspace.server.session_name}</code>}
+                  </td>
+                  <td>{workspace.claude_version}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </TableScroll>
       )}
     </section>
   );

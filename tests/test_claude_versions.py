@@ -5,6 +5,7 @@ tests/test_claude.py's, a server's pinning tests/test_workspaces.py's."""
 import hashlib
 import os
 import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -32,7 +33,8 @@ class World:
 
 
 @pytest.fixture
-def world(tmp_path, settings, runtime):
+def world(tmp_path, settings, runtime, monkeypatch):
+    monkeypatch.setattr(cv, "PRUNE_GRACE_SECONDS", 0.0)  # tests that prune age nothing
     releases = tmp_path / "releases"
     releases.mkdir()
     with claude_download.served(releases) as url:
@@ -533,7 +535,7 @@ def statuses(world, by_workspace):
         "ended": {"state": "exited", "exit_code": 1},
     }
 
-    def status(workspace):
+    def status(workspace, probe=False):
         what = by_workspace[workspace.id]
         if what == "unreadable":
             raise Problem("timeout")
@@ -562,6 +564,64 @@ def test_prune_keeps_the_approved_the_previous_and_what_running_or_unreadable_se
     # the approved 1.5.0 and the previous 1.4.0; 1.3.0 runs; 1.2.0 cannot be read
     assert present(world) == ["1.2.0", "1.3.0", "1.4.0", "1.5.0"]
     assert link(world) == "versions/1.5.0"
+
+
+def test_prune_leaves_a_version_put_in_the_store_a_moment_ago_by_an_upgrade_beside_it(
+    world, monkeypatch
+):
+    """An upgrade of rcman puts its own tested version in the store while the service of the
+    release before it runs; that service does not know the version, which no approval names."""
+    monkeypatch.setattr(cv, "PRUNE_GRACE_SECONDS", 3600.0)
+    install(world, "2.5.0", "1.1.0")
+    approve_rows(world, "1.1.0")
+    world.versions.reconcile()
+    long_ago = time.time() - 2 * cv.PRUNE_GRACE_SECONDS
+    os.utime(world.store / "versions" / FAKE_VERSION, (long_ago, long_ago))
+    os.utime(world.store / "versions" / "1.1.0", (long_ago, long_ago))
+    assert world.versions.tested() not in ("2.5.0",)  # this service's tested version is another
+    world.versions.prune()
+    assert "2.5.0" in present(world)  # new
+    os.utime(world.store / "versions" / "2.5.0", (long_ago, long_ago))
+    world.versions.prune()
+    assert "2.5.0" not in present(world)  # the control: once old it is an unapproved version
+
+
+def test_prune_keeps_the_tested_version_whatever_is_approved(world):
+    tested = world.versions.tested()
+    install(world, tested, "1.1.0", "1.2.0")
+    approve_rows(world, "1.1.0", "1.2.0")
+    world.versions.reconcile()
+    world.versions.prune()
+    assert tested in present(world)  # approved 1.2.0, previous 1.1.0; the tested one stays
+    assert present(world) == sorted({tested, "1.1.0", "1.2.0"})
+
+
+def test_a_recorded_version_counts_as_in_use_whatever_the_server_column_says(world, monkeypatch):
+    """The record of a version and the flag of a server are two writes: one that lands without
+    the other must not let the store lose a version a server may run."""
+    from types import SimpleNamespace
+
+    install(world, "1.1.0", "1.2.0")
+    approve_rows(world, "1.2.0")
+    world.versions.reconcile()
+    flagless = insert_workspace(world, 1, "flagless", "1.1.0", server=0)
+    served = {"state": "ready", "exit_code": None}
+    monkeypatch.setattr(
+        world.service,
+        "server",
+        lambda workspace, version=None: SimpleNamespace(status=lambda: served),
+    )
+    world.versions.prune()
+    assert "1.1.0" in present(world)  # it runs, by tmux's own word, whatever the column says
+    served = None  # the control: tmux says there is no server
+    monkeypatch.setattr(
+        world.service,
+        "server",
+        lambda workspace, version=None: SimpleNamespace(status=lambda: None),
+    )
+    world.versions.prune()
+    assert "1.1.0" not in present(world)
+    assert flagless  # (the row is still there: only the version went)
 
 
 def test_prune_leaves_a_version_a_server_that_is_starting_uses(world, monkeypatch):
@@ -638,7 +698,7 @@ def test_a_prune_that_fails_does_not_fail_what_triggered_it(world, caplog):
 
 def test_no_server_status_is_read_when_nothing_could_be_pruned(world):
     asked = []
-    world.service.server_status = lambda workspace: asked.append(workspace.id)
+    world.service.server_status = lambda workspace, probe=False: asked.append(workspace.id)
     insert_workspace(world, 1, "running", FAKE_VERSION)
     world.versions.prune()
     assert asked == []  # only the approved version is installed: nothing to decide
@@ -737,7 +797,7 @@ def test_a_server_that_hangs_does_not_hold_up_the_store_while_a_prune_asks_about
     other = ready_workspace(world, 2, "other")
     entered, release = threading.Event(), threading.Event()
 
-    def hangs(workspace):
+    def hangs(workspace, probe=False):
         entered.set()
         release.wait(60)
         return {"state": "ready", "exit_code": None}

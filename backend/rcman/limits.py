@@ -4,8 +4,8 @@ A limit set is three numbers, each None where there is no limit. They are kept i
 workspaces.py) and applied as properties of systemd slices in rcman's user manager (runtime.py):
 a slice for each person, ``person_slice``, and one for each of their workspaces beneath it,
 ``workspace_slice``; a workspace's container runs in the workspace's slice, so the kernel holds it
-to its own limits and its person's. The slices are named by ids, never by slots, as slots are
-given again.
+to its own limits and its person's. The slices are named by ids, never by slots: an id is never
+given again, and a slot is.
 
 Python standard library and the helpers only, so that the podman host's suite can import it with
 the system interpreter. The values are read and refused with the rules of helpers/rules.py.

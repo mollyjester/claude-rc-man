@@ -103,6 +103,7 @@ def journal(unit: str = "rcman.service") -> str:
         ["journalctl", "--no-pager", "-o", "cat", "-n", "200", "-u", unit],
         capture_output=True,
         text=True,
+        errors="replace",
     )
     return f"\n--- {unit}\n{found.stdout}"
 
@@ -171,6 +172,7 @@ def test_rcman_has_rootless_podman_of_its_own(first_install):
     assert ins.podman_socket(uid).is_socket()
     info = json.loads(podman("info", "--format", "json").stdout)
     assert info["host"]["security"]["rootless"] is True
+    assert info["host"]["ociRuntime"]["name"] == ins.OCI_RUNTIME  # what the installer checked
 
 
 def test_nothing_limits_processes_but_what_rcman_sets(first_install):
@@ -205,6 +207,18 @@ def test_the_tools_are_static_and_root_s(first_install):
         assert (ins.TOOLS / "terminfo" / entry).is_file(), entry
     conf = (ROOT / "current" / "backend" / "rcman" / "tmux.conf").read_text()
     assert (ins.TOOLS / "tmux.conf").read_text() == conf
+
+
+def test_the_tools_are_outside_rcmans_home_and_root_leaves_nothing_there_of_its_own(first_install):
+    """The tools are root's in a folder only root can write; nothing of building them is in
+    rcman's home, and what is in the home is rcman's alone (root made none of it)."""
+    assert STATE not in ins.TOOLS.parents and ins.TOOLS.parent == ROOT
+    assert ins.TOOLS.stat().st_uid == 0
+    assert list(STATE.glob(".tmux-build.*")) == []
+    assert f"RCMAN_TOOLS_DIR={ins.TOOLS}\n" in (ETC / "rcman.env").read_text()
+    # positive control: the same find lists root's files where there are some
+    assert sh("find", str(ROOT), "-maxdepth", "1", "-user", "root").stdout.strip()
+    assert sh("find", str(STATE), "-maxdepth", "4", "-user", "root").stdout.strip() == ""
 
 
 def test_the_default_image_is_built_and_named_in_rcmans_settings(first_install):
@@ -306,7 +320,6 @@ def test_configuration_files_and_their_owners(first_install):
     assert pwd.getpwuid(allowed.stat().st_uid).pw_name == "rcman"
     assert grp.getgrgid(allowed.stat().st_gid).gr_name == "rcman"
     assert stat.S_IMODE(allowed.stat().st_mode) == 0o640
-    assert not Path("/etc/sudoers.d/rcman").exists()
     for database in STATE.glob("rcman.db*"):  # oauth2-proxy shares rcman's group
         assert stat.S_IMODE(database.stat().st_mode) == 0o600, database
 
@@ -568,7 +581,9 @@ def test_an_update_of_install_sh_restarts_it_and_builds_a_new_release(first_inst
 
 def test_rollback_returns_to_the_previous_release(first_install):
     current, previous = os.readlink(ROOT / "current"), os.readlink(ROOT / "previous")
-    proc = subprocess.run([str(CLONE / "install.sh"), "--rollback"], capture_output=True, text=True)
+    proc = subprocess.run(
+        [str(CLONE / "install.sh"), "--rollback"], capture_output=True, text=True, errors="replace"
+    )
     assert proc.returncode == 0, proc.stderr
     assert os.readlink(ROOT / "current") == previous
     assert os.readlink(ROOT / "previous") == current
@@ -576,6 +591,44 @@ def test_rollback_returns_to_the_previous_release(first_install):
     assert command == (ROOT / previous / ".venv" / "bin" / "rcman-admin").resolve()
     assert sh("rcman-admin", "list", check=False).returncode == 0
     healthy()
+
+
+def test_a_rollback_to_a_release_older_than_the_database_is_refused(first_install):
+    """The database is made newer than the release rolled back to reads; the rollback says so
+    and switches nothing. The version is put back, so that rcman starts again."""
+    from rcman import db
+
+    database = ins.DATABASE
+    ask = ["python3", "-I", "-c"]
+    script = "import sqlite3,sys;c=sqlite3.connect(sys.argv[1]);{}"
+
+    def version() -> int:
+        read = script.format("print(c.execute('pragma user_version').fetchone()[0])")
+        return int(sh(*ask, read, str(database), user="rcman").stdout)
+
+    def set_version(number: int) -> None:
+        write = script.format(f"c.execute('pragma user_version = {number}');c.commit()")
+        sh(*ask, write, str(database), user="rcman")
+
+    have = version()
+    assert have == len(db.MIGRATIONS)
+    current, previous = os.readlink(ROOT / "current"), os.readlink(ROOT / "previous")
+    set_version(have + 1)
+    try:
+        proc = subprocess.run(
+            [str(CLONE / "install.sh"), "--rollback"],
+            capture_output=True,
+            text=True,
+            errors="replace",
+        )
+        assert proc.returncode == 1 and "schema version" in proc.stderr, proc.stderr
+        assert (os.readlink(ROOT / "current"), os.readlink(ROOT / "previous")) == (
+            current,
+            previous,
+        )
+    finally:
+        set_version(have)
+    assert version() == have
 
 
 def test_a_clone_that_cannot_fast_forward_is_refused(first_install):

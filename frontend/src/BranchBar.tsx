@@ -5,7 +5,7 @@ import { Caret } from "./Caret";
 import type { Branch, Branches } from "./Changes";
 import { BranchIcon, CheckIcon, DownIcon, PlusIcon, RefreshIcon, UpIcon } from "./Icons";
 import { m } from "./messages";
-import { ProblemView } from "./ProblemView";
+import { ProblemView, useFieldErrors } from "./ProblemView";
 import { usePopup } from "./usePopup";
 
 type Where = { name: string; shown: string };
@@ -235,6 +235,7 @@ function NewBranch({
   const popup = usePopup();
   const [name, setName] = useState("");
   const field = useRef<HTMLInputElement>(null);
+  const fields = useFieldErrors(error);
 
   useEffect(() => {
     onForget();
@@ -264,7 +265,7 @@ function NewBranch({
       </button>
       {popup.open && (
         <div className="popover" {...popup.panelProps}>
-          <form noValidate onSubmit={submit}>
+          <form noValidate onSubmit={submit} ref={fields.form}>
             <label>
               {m.newBranchName}
               <input
@@ -274,8 +275,10 @@ function NewBranch({
                 autoComplete="off"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
+                {...fields.input("name")}
               />
             </label>
+            {fields.message("name")}
             <div className="actions">
               <button type="submit" className="primary" disabled={busy}>
                 {m.create}
@@ -284,7 +287,7 @@ function NewBranch({
                 {m.cancel}
               </button>
             </div>
-            <ProblemView error={error} labels={{ name: m.newBranchName }} />
+            <ProblemView error={error} labels={{ name: m.newBranchName }} inline />
           </form>
         </div>
       )}

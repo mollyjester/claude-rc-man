@@ -41,6 +41,14 @@ def test_the_builder_is_named_after_the_workspace_and_so_is_its_volume():
     assert "--volume=rcman-build-7:/var/lib/containers" in argv
 
 
+def test_the_builder_has_no_limit_on_processes_of_its_own_as_a_workspace_has_none():
+    """Podman gives a container a limit on processes of its own unless it is told there is
+    none, and the limit that holds is the slice's, the person's (limits.py)."""
+    argv = run_argv()
+    assert "--pids-limit=-1" in argv
+    assert argv.index("--pids-limit=-1") < argv.index("--device=/dev/fuse")
+
+
 def test_the_builder_runs_as_the_spike_found_it_to_work():
     argv = run_argv()
     for option in (
@@ -59,7 +67,7 @@ def test_the_builder_runs_as_the_spike_found_it_to_work():
     assert argv[-3:] == ["localhost/rcman-builder:test", "sleep", "infinity"]
     # one capability, the one the nested engine needs, and nothing that turns the limits off
     assert [a for a in argv if a.startswith(("--cap", "--privileged"))] == ["--cap-add=SYS_ADMIN"]
-    assert not [a for a in argv if a.startswith(("--publish", "-p", "--userns", "--pid", "--ipc"))]
+    assert not [a for a in argv if a.startswith(("--publish", "-p", "--userns", "--pid=", "--ipc"))]
     assert not [
         a for a in argv if a.startswith("--security-opt") and a != "--security-opt=label=disable"
     ]
@@ -502,7 +510,7 @@ def test_a_line_that_is_never_ended_cannot_grow_without_bound():
         progress.feed(b"z" * 100_000)
     assert len(progress.tail().splitlines()) <= builder.TAIL_LINES
     assert len(progress.tail()) <= builder.TAIL_LINES * (builder.MAX_LINE_CHARS + 4)
-    assert progress.pending_chars() <= builder.MAX_LINE_BYTES
+    assert len(progress._partial) <= builder.MAX_LINE_BYTES  # the held part of the line
 
 
 def test_the_constants_the_prose_would_otherwise_copy_are_named():
@@ -514,8 +522,28 @@ def test_the_constants_the_prose_would_otherwise_copy_are_named():
 
 # --- the archive of an image copied out of the builder ------------------------------------------
 
-CONFIG = json.dumps({"architecture": "amd64", "os": "linux", "rootfs": {"diff_ids": []}}).encode()
-IMAGE_ID = hashlib.sha256(CONFIG).hexdigest()
+
+def diff_id(layer: bytes) -> str:
+    return "sha256:" + hashlib.sha256(layer).hexdigest()
+
+
+def config_of(*layers: bytes) -> tuple[bytes, str]:
+    """The configuration of an image of these layers, in order, and its id."""
+    config = json.dumps(
+        {
+            "architecture": "amd64",
+            "os": "linux",
+            "rootfs": {"type": "layers", "diff_ids": [diff_id(layer) for layer in layers]},
+        }
+    ).encode()
+    return config, hashlib.sha256(config).hexdigest()
+
+
+# The layer of the image most tests save, and its size: the stand-in for podman saves layers of
+# zeros of the size a scenario gives, the size of this one by default.
+LAYER_BYTES = 200_000
+LAYER = b"\0" * LAYER_BYTES
+CONFIG, IMAGE_ID = config_of(LAYER)
 
 
 def write_archive(
@@ -540,7 +568,7 @@ def docker_archive(folder: Path, tags=None, **members_more) -> Path:
     """What ``podman save --format docker-archive <id>`` writes for an image kept by its id:
     the layers, the configuration named for its digest, and a manifest with no names."""
     members = {
-        "layer.tar": b"\0" * 1024,
+        "layer.tar": LAYER,
         f"{IMAGE_ID}.json": CONFIG,
         "manifest.json": manifest(tags),
         **members_more,
@@ -566,13 +594,11 @@ def test_an_image_with_no_names_is_accepted_whether_the_key_says_null_or_nothing
 def test_a_manifest_with_no_repo_tags_key_and_names_for_the_parts_of_the_archive_are_accepted(
     tmp_path,
 ):
-    for config, member in ((f"blobs/sha256/{IMAGE_ID}", f"blobs/sha256/{IMAGE_ID}"),
-                           (f"./{IMAGE_ID}.json", f"{IMAGE_ID}.json")):  # fmt: skip
-        folder = tmp_path / member.replace("/", "_")
-        folder.mkdir()
-        body = json.dumps([{"Config": config, "Layers": ["layer.tar"]}]).encode()
-        path = write_archive(folder, {member: CONFIG, "./manifest.json": body})
-        builder.verify_archive(path, IMAGE_ID)
+    body = json.dumps([{"Config": f"./{IMAGE_ID}.json", "Layers": ["./layer.tar"]}]).encode()
+    path = write_archive(
+        tmp_path, {"layer.tar": b"", f"{IMAGE_ID}.json": CONFIG, "./manifest.json": body}
+    )
+    builder.verify_archive(path, IMAGE_ID)
 
 
 @pytest.mark.parametrize(
@@ -655,7 +681,7 @@ def test_an_archive_with_no_manifest_or_in_the_oci_layout_is_refused(tmp_path):
     oci.mkdir()
     index = json.dumps({"manifests": [{"annotations": {"org.opencontainers.image.ref.name": "x"}}]})
     path = write_archive(oci, {"index.json": index.encode(), "oci-layout": b"{}"})
-    assert "manifest" in refused_with(path)
+    assert "OCI" in refused_with(path)
 
 
 @pytest.mark.parametrize(
@@ -696,7 +722,7 @@ def test_an_archive_of_more_members_than_an_image_has_is_refused(tmp_path, monke
 
 def test_an_archive_that_is_cut_short_or_is_no_tar_or_is_compressed_is_refused(tmp_path):
     whole = docker_archive(tmp_path)
-    assert builder.verify_archive(whole, IMAGE_ID) is None  # the control
+    builder.verify_archive(whole, IMAGE_ID)  # the control
     cut = tmp_path / "cut.tar"
     cut.write_bytes(whole.read_bytes()[:700])
     assert refused_with(cut)
@@ -718,7 +744,7 @@ def test_names_of_members_that_climb_out_are_never_acted_on_since_nothing_is_ext
     members = {
         "../../escape.txt": b"x",
         "/etc/cron.d/evil": b"x",
-        "layer.tar": b"",
+        "layer.tar": LAYER,
         f"{IMAGE_ID}.json": CONFIG,
         "manifest.json": manifest(),
     }
@@ -726,6 +752,9 @@ def test_names_of_members_that_climb_out_are_never_acted_on_since_nothing_is_ext
     before = sorted(p.name for p in tmp_path.rglob("*"))
     builder.verify_archive(path, IMAGE_ID)
     assert sorted(p.name for p in tmp_path.rglob("*")) == before  # nothing was written anywhere
+    again = inside / "again.tar"
+    builder.repack_archive(path, IMAGE_ID, again)  # and the fresh archive holds none of them
+    assert sorted(names_of(again)) == sorted(["layer0.tar", "manifest.json", f"{IMAGE_ID}.json"])
     assert not (tmp_path.parent / "escape.txt").exists()
 
 
@@ -741,6 +770,221 @@ def test_a_link_or_a_folder_in_the_place_of_the_manifest_or_configuration_is_ref
             info.linkname = "/etc/passwd" if kind == tarfile.SYMTYPE else ""
             archive.addfile(info)
     assert refused_with(path)
+
+
+def names_of(path: Path) -> list[str]:
+    with tarfile.open(path, "r:") as archive:
+        return [member.name for member in archive]
+
+
+def test_a_manifest_naming_a_layer_the_archive_lacks_or_holds_as_a_link_is_refused(tmp_path):
+    missing = tmp_path / "missing"
+    missing.mkdir()
+    path = write_archive(missing, {f"{IMAGE_ID}.json": CONFIG, "manifest.json": manifest()})
+    assert "layer" in refused_with(path)
+    link = tmp_path / "link.tar"
+    with tarfile.open(link, "w") as archive:
+        info = tarfile.TarInfo("layer.tar")
+        info.type, info.linkname = tarfile.SYMTYPE, "/etc/passwd"
+        archive.addfile(info)
+        for name, content in ((f"{IMAGE_ID}.json", CONFIG), ("manifest.json", manifest())):
+            info = tarfile.TarInfo(name)
+            info.size = len(content)
+            archive.addfile(info, io.BytesIO(content))
+    assert "layer" in refused_with(link)
+
+
+@pytest.mark.parametrize("layers", ["a string", [1], [None], {"x": 1}])
+def test_a_manifest_whose_layers_are_not_a_list_of_names_is_refused(tmp_path, layers):
+    body = json.dumps([{"Config": f"{IMAGE_ID}.json", "RepoTags": None, "Layers": layers}])
+    assert "layer" in refused_with(docker_archive(tmp_path, **{"manifest.json": body.encode()}))
+
+
+# An archive that is both a docker-archive and an OCI layout: Podman tries the OCI reading first,
+# which applies the names the layout's index carries to the image it loads.
+OCI_INDEX = json.dumps(
+    {
+        "schemaVersion": 2,
+        "manifests": [
+            {
+                "digest": f"sha256:{IMAGE_ID}",
+                "annotations": {"org.opencontainers.image.ref.name": "localhost/rcman-workspace:1"},
+            }
+        ],
+    }
+).encode()
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {"index.json": OCI_INDEX},
+        {"oci-layout": b'{"imageLayoutVersion": "1.0.0"}'},
+        {"./index.json": OCI_INDEX},
+        {"blobs/sha256/" + "0" * 64: b"x"},
+        {"blobs": b""},
+        {"index.json": OCI_INDEX, "oci-layout": b"{}", "blobs/sha256/x": b""},
+    ],
+)
+def test_an_archive_that_is_also_an_oci_layout_is_refused_whatever_its_docker_archive_says(
+    tmp_path, extra
+):
+    control = tmp_path / "control"
+    control.mkdir()
+    builder.verify_archive(docker_archive(control), IMAGE_ID)  # the docker-archive alone is fine
+    both = tmp_path / "both"
+    both.mkdir()
+    assert "OCI" in refused_with(docker_archive(both, **extra))
+
+
+def test_a_directory_in_the_place_of_an_oci_marker_is_refused_as_well(tmp_path):
+    path = tmp_path / "dir.tar"
+    with tarfile.open(path, "w") as archive:
+        for name in ("blobs/", "blobs/sha256/"):
+            info = tarfile.TarInfo(name)
+            info.type = tarfile.DIRTYPE
+            archive.addfile(info)
+        for name, content in (("layer.tar", b""), (f"{IMAGE_ID}.json", CONFIG),
+                              ("manifest.json", manifest())):  # fmt: skip
+            info = tarfile.TarInfo(name)
+            info.size = len(content)
+            archive.addfile(info, io.BytesIO(content))
+    assert "OCI" in refused_with(path)
+
+
+def test_the_fresh_archive_holds_the_manifest_the_configuration_and_the_layers_and_nothing_else(
+    tmp_path,
+):
+    """What a docker-archive saved by Podman is seen to carry besides - a directory per layer
+    with a VERSION, a json and a link, and the repositories file - is read past and not
+    carried over: the archive that is loaded is the one rcman writes."""
+    legacy = tmp_path / "legacy.tar"
+    layer = b"layer one" * 100
+    config, image = config_of(layer, b"two", layer)
+    manifest_body = json.dumps(
+        [{"Config": f"{image}.json", "RepoTags": None, "Layers": ["a.tar", "b.tar", "a.tar"]}]
+    ).encode()
+    with tarfile.open(legacy, "w") as archive:
+        members = (
+            ("a.tar", layer), ("b.tar", b"two"), (f"{image}.json", config),
+            ("abc/VERSION", b"1.0"), ("abc/json", b"{}"), ("repositories", b"{}"),
+            ("manifest.json", manifest_body),
+        )  # fmt: skip
+        for name, content in members:
+            info = tarfile.TarInfo(name)
+            info.size = len(content)
+            archive.addfile(info, io.BytesIO(content))
+        info = tarfile.TarInfo("abc/layer.tar")
+        info.type, info.linkname = tarfile.SYMTYPE, "../a.tar"
+        archive.addfile(info)
+    fresh = tmp_path / "fresh.tar"
+    builder.repack_archive(legacy, image, fresh)
+    with tarfile.open(fresh, "r:") as archive:
+        found = {m.name: archive.extractfile(m).read() for m in archive}
+        assert all(m.isreg() and m.mode == 0o644 and m.uid == 0 for m in archive.getmembers())
+    assert sorted(found) == sorted(["manifest.json", f"{image}.json", "layer0.tar", "layer1.tar"])
+    assert found[f"{image}.json"] == config and found["layer0.tar"] == layer
+    assert found["layer1.tar"] == b"two"
+    assert json.loads(found["manifest.json"]) == [
+        {
+            "Config": f"{image}.json",
+            "RepoTags": None,
+            "Layers": ["layer0.tar", "layer1.tar", "layer0.tar"],
+        }
+    ]
+
+
+def test_layers_whose_bytes_are_not_the_ones_the_configuration_lists_are_refused(tmp_path):
+    """The storage takes a layer it already has by the digest the configuration gives, without
+    reading the archive's bytes for it: a layer's bytes must be what its digest says."""
+    path = docker_archive(tmp_path)
+    fresh = tmp_path / "fresh.tar"
+    builder.repack_archive(path, IMAGE_ID, fresh)  # the control: the bytes are the digest's
+    assert fresh.exists()
+    other = tmp_path / "other"
+    other.mkdir()
+    crafted = docker_archive(other, **{"layer.tar": b"somebody else's layer"})
+    target = other / "fresh.tar"
+    with pytest.raises(builder.ArchiveRefused) as refused:
+        builder.repack_archive(crafted, IMAGE_ID, target)
+    assert "layer" in str(refused.value) and not target.exists()
+
+
+def test_a_configuration_that_lists_other_layers_than_the_manifest_does_is_refused(tmp_path):
+    config, image = config_of(LAYER, LAYER)  # two layers
+    body = json.dumps([{"Config": f"{image}.json", "RepoTags": None, "Layers": ["layer.tar"]}])
+    path = write_archive(
+        tmp_path, {"layer.tar": LAYER, f"{image}.json": config, "manifest.json": body.encode()}
+    )
+    with pytest.raises(builder.ArchiveRefused) as refused:
+        builder.verify_archive(path, image)
+    assert "layer" in str(refused.value)
+    for bad in (b'{"rootfs": 5}', b"{}", b'{"rootfs": {"diff_ids": [5]}}'):
+        digest = hashlib.sha256(bad).hexdigest()
+        body = json.dumps([{"Config": f"{digest}.json", "RepoTags": None, "Layers": []}])
+        folder = tmp_path / digest[:8]
+        folder.mkdir()
+        path = write_archive(folder, {f"{digest}.json": bad, "manifest.json": body.encode()})
+        with pytest.raises(builder.ArchiveRefused):
+            builder.verify_archive(path, digest)
+
+
+def test_a_fresh_archive_is_not_made_of_an_archive_that_is_refused(tmp_path):
+    path = docker_archive(tmp_path, **{"index.json": OCI_INDEX})
+    fresh = tmp_path / "fresh.tar"
+    with pytest.raises(builder.ArchiveRefused):
+        builder.repack_archive(path, IMAGE_ID, fresh)
+    assert not fresh.exists()
+
+
+def test_a_fresh_archive_from_an_archive_cut_short_in_a_layer_is_refused_and_not_left(tmp_path):
+    whole = docker_archive(tmp_path, **{"layer.tar": b"x" * 5000})
+    cut = tmp_path / "cut.tar"
+    cut.write_bytes(whole.read_bytes()[:2000])
+    fresh = tmp_path / "fresh.tar"
+    with pytest.raises(builder.ArchiveRefused):
+        builder.repack_archive(cut, IMAGE_ID, fresh)
+    assert not fresh.exists()
+
+
+def test_a_stop_during_the_copy_into_the_fresh_archive_ends_it_and_leaves_nothing(tmp_path):
+    path = docker_archive(tmp_path, **{"layer.tar": b"x" * 5 * builder.CHUNK_BYTES})
+    fresh = tmp_path / "fresh.tar"
+    with pytest.raises(builder.PumpStopped) as stopped:
+        builder.repack_archive(path, IMAGE_ID, fresh, stop=lambda: True)
+    assert stopped.value.reason == builder.CANCELLED and not fresh.exists()
+
+
+def odd_size_header(folder: Path, size_field: bytes) -> Path:
+    """An archive whose last member, the layer, has the header ``size_field`` for its size;
+    the checksum is made right again, so only the size is odd."""
+    path = folder / "odd.tar"
+    with tarfile.open(path, "w") as archive:
+        for name, content in ((f"{IMAGE_ID}.json", CONFIG), ("manifest.json", manifest())):
+            info = tarfile.TarInfo(name)
+            info.size = len(content)
+            archive.addfile(info, io.BytesIO(content))
+        header = bytearray(tarfile.TarInfo("layer.tar").tobuf(tarfile.USTAR_FORMAT))
+        header[124:136] = size_field
+        header[148:156] = b" " * 8
+        header[148:156] = b"%06o\0 " % sum(header)
+        archive.fileobj.write(bytes(header))
+        archive.offset += len(header)
+    return path
+
+
+def test_a_size_field_that_python_and_go_read_differently_is_refused(tmp_path):
+    """A leading NUL: Python reads the size as nothing, Go's tar trims it and reads the number.
+    What one believes is a member's end the other believes is somewhere else."""
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    builder.verify_archive(odd_size_header(plain, b"00000000000\0"), IMAGE_ID)  # the control
+    odd = tmp_path / "odd"
+    odd.mkdir()
+    assert "header" in refused_with(odd_size_header(odd, b"\0" + b"0000000012" + b"\0"))
+    binary = tmp_path / "binary"
+    binary.mkdir()
+    assert "header" in refused_with(odd_size_header(binary, b"\x80" + b"\0" * 10 + b"\x0c"))
 
 
 def test_the_id_to_match_is_the_whole_id_the_configuration_hashes_to(tmp_path):

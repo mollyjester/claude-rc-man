@@ -41,7 +41,7 @@ class Settings(BaseSettings):
         "its own, started for one build and removed after it.",
     )
     tools_dir: Path = Field(
-        Path("/var/lib/rcman/tools"),
+        Path("/opt/rcman/tools"),
         description="The static tools mounted read-only into every workspace: tmux, busybox "
         "and terminfo.",
     )

@@ -203,6 +203,10 @@ def test_real_documentation_has_no_history():
         "Kept for backwards-compat.",
         "Until recently the server ran here.",
         "In the past the server ran here.",
+        "A machine with one from before workspaces.",
+        "A range from an earlier installation.",
+        "Refused on an old install.",
+        "Refused on an old installation.",
     ],
 )
 def test_history_phrasing_is_reported(sentence):
@@ -221,10 +225,66 @@ def test_history_hits_carry_line_numbers():
         "The tool was focused on speed.\n",  # substring of a word is not a match
         "Run `git log --previously` to see.\n",  # inline code
         "```\nthis used to be shown in a code block\n```\n",  # fenced code
+        "Take the bold install path.\n",  # a substring of a word is not a match
     ],
 )
 def test_non_history_text_is_not_reported(sentence):
     assert docs_guard.history_phrases(sentence) == []
+
+
+# --- every page is in CLAUDE.md's table ----------------------------------------------------
+
+
+def test_claude_md_links_every_page_under_docs_and_project_knowledge():
+    corpus = docs_guard.corpus_files(REPO)
+    claude_md = (REPO / "CLAUDE.md").read_text(encoding="utf-8")
+    pages = docs_guard.pages_of_the_contents(corpus)
+    # Known positives: an empty listing, or a table that links nothing, would pass.
+    assert {"docs/installation.md", "project-knowledge/tests.md"} <= set(pages)
+    assert "docs/installation.md" in docs_guard.linked_pages(docs_guard.CONTENTS, claude_md)
+    assert docs_guard.pages_not_linked(corpus, claude_md) == []
+
+
+def test_a_page_the_table_does_not_link_is_reported():
+    claude_md = "| Q | File |\n|---|---|\n| a | " + link("a", "docs/" + md("a")) + " |\n"
+    corpus = ["CLAUDE.md", "docs/" + md("a"), "docs/" + md("b"), "project-knowledge/" + md("c")]
+    assert docs_guard.pages_not_linked(corpus, claude_md) == [
+        "docs/" + md("b"),
+        "project-knowledge/" + md("c"),
+    ]
+    both = claude_md + link("b", "docs/" + md("b")) + link("c", "project-knowledge/" + md("c"))
+    assert docs_guard.pages_not_linked(corpus, both) == []  # positive control
+
+
+def test_a_page_named_but_not_linked_is_reported():
+    corpus = ["CLAUDE.md", "docs/" + md("a")]
+    named = "See docs/" + md("a") + " for it.\n"
+    assert docs_guard.pages_not_linked(corpus, named) == ["docs/" + md("a")]
+
+
+def test_a_link_with_an_anchor_or_a_leading_dot_counts():
+    corpus = ["CLAUDE.md", "docs/" + md("a"), "docs/" + md("b")]
+    text = link("a", "docs/" + md("a") + "#part") + link("b", "./docs/" + md("b"))
+    assert docs_guard.pages_not_linked(corpus, text) == []
+
+
+def test_pages_in_a_folder_below_the_two_are_pages_too_and_other_files_are_not():
+    corpus = [
+        "docs/deep/" + md("a"),
+        "docs/image.png",
+        md("README"),
+        "tests/" + md("x"),
+        "project-knowledge/" + md("b"),
+    ]
+    assert docs_guard.pages_of_the_contents(corpus) == [
+        "docs/deep/" + md("a"),
+        "project-knowledge/" + md("b"),
+    ]
+
+
+def test_an_empty_table_or_a_missing_one_reports_every_page():
+    corpus = ["docs/" + md("a")]
+    assert docs_guard.pages_not_linked(corpus, "") == ["docs/" + md("a")]
 
 
 # --- the make targets tests.md documents ------------------------------------

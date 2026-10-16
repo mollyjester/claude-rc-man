@@ -33,6 +33,7 @@ from rcman.claude_server import (
     claude_command,
 )
 from rcman.problems import Problem
+from rcman.runtime import SIGNED_IN, credentials_state
 from rcman.workspaces import Workspaces, answered
 
 log = logging.getLogger("rcman.accounts")
@@ -71,6 +72,7 @@ class Accounts:
         self._lock = threading.Lock()
         self._sign_ins: dict[int, SignIn] = {}
         workspaces.on_stopped = self.settle
+        workspaces.on_person_deleting = self.forget
 
     def lock(self, person: int) -> threading.RLock:
         """The person's lock (Workspaces.person_lock), which a server's start holds too."""
@@ -99,25 +101,54 @@ class Accounts:
 
     # --- status ---------------------------------------------------------------------------
 
+    def _still_let_in(self, person_id: int, written: bool = False) -> None:
+        """Refuse (``not_allowed``) a person who is being deleted or is gone: reading or
+        starting anything of theirs makes their account volume again, which the deletion has
+        removed or is about to remove, and ids are never given again, so nothing would ever
+        remove it. With ``written``, what was made for them meanwhile is removed again. The
+        deletion marks the person before it removes the volume, so a step that finishes after
+        the removal always sees the mark."""
+        found = self._person(person_id)
+        if found is not None and found.state == people.ACTIVE:
+            return
+        if written:
+            with contextlib.suppress(Exception):
+                self.runtime.remove_account(person_id)
+        raise Problem("not_allowed")
+
     def status(self, person: people.Person) -> dict:
         """What the credentials file says, with the account the sign-in named:
         ``logged_in``, ``email``, ``org_name``, ``subscription_type`` and
-        ``login_expires_at``, the refresh token's expiry, or None without one; and
-        ``signing_out``. A sign-out that waits is finished first if it can be."""
-        self.settle(person.id)
+        ``login_expires_at``, the refresh token's expiry, or None without one; ``signing_out``;
+        and ``signed_out_unexpectedly``, true when SQLite has the account connected, no sign-out
+        is under way, and the file holds no sign-in. A sign-out that waits is finished first if
+        it can be; one that cannot be (the sign-out container keeps failing) is logged and the
+        status is given as it is, still signing out."""
+        self._still_let_in(person.id)
+        try:
+            self.settle(person.id)
+        except Exception:  # noqa: BLE001 - the page must show the account whatever settling does
+            log.warning("a sign-out of person %s could not be finished", person.id, exc_info=True)
         return self._status(person)
 
     def _status(self, person: people.Person) -> dict:
-        with answered():
-            raw = self.runtime.read_account(person.id, person.slot)
-        account, signing_out = self._account(person.id)
-        try:
-            data = json.loads(raw)
-        except ValueError:
-            data = None
-        oauth = data.get("claudeAiOauth") if isinstance(data, dict) else None
-        if not isinstance(oauth, dict):
-            return {"logged_in": False, "signing_out": signing_out}
+        with self.lock(person.id):
+            # Reading makes the volume if it is not there, which a deletion that holds the lock
+            # has removed: the person is looked at again once the lock is had.
+            self._still_let_in(person.id)
+            with answered():
+                raw = self.runtime.read_account(person.id, person.slot)
+            account, signing_out = self._account(person.id)
+        if credentials_state(raw) != SIGNED_IN:
+            # Connected as far as SQLite knows, and not signing out: the file was emptied or
+            # torn by something other than rcman (two workspaces' Claude refreshing it at once).
+            lost = account is not None and not signing_out
+            if lost:
+                log.warning(
+                    "the sign-in of person %s is gone from their credentials file", person.id
+                )
+            return {"logged_in": False, "signing_out": signing_out, "signed_out_unexpectedly": lost}
+        oauth = json.loads(raw)["claudeAiOauth"]
         named = (account or {}).get("oauthAccount") or {}
         return {
             "logged_in": True,
@@ -126,6 +157,7 @@ class Accounts:
             "subscription_type": oauth.get("subscriptionType"),
             "login_expires_at": _expiry(oauth.get("refreshTokenExpiresAt")),
             "signing_out": signing_out,
+            "signed_out_unexpectedly": False,
         }
 
     # --- signing in -----------------------------------------------------------------------
@@ -162,6 +194,7 @@ class Accounts:
     def begin(self, person: people.Person, email: str) -> dict:
         """Start signing in as ``email``: the link to open; one begun before ends."""
         with self.lock(person.id):
+            self._still_let_in(person.id)
             self._end(self._sign_ins.pop(person.id, None))
             # A code is taken only while there is time to use it before the container
             # ends itself: two waits of Claude's to spare.
@@ -178,6 +211,7 @@ class Accounts:
                     found = self._wait(sign_in, lambda s: s["state"] != "starting")
                     if found["state"] != "awaiting_code":
                         raise Problem("claude_unrecognised_output", screen=sign_in.tmux.screen())
+                self._still_let_in(person.id, written=True)
             except BaseException:
                 self._end(sign_in)
                 raise
@@ -188,6 +222,7 @@ class Accounts:
         """Give Claude the code; the account's status once it is signed in. The sign-in
         ends whatever happens."""
         with self.lock(person.id):
+            self._still_let_in(person.id)
             sign_in = self._sign_ins.pop(person.id, None)
             if sign_in is None or time.monotonic() > sign_in.until:
                 self._end(sign_in)
@@ -197,6 +232,7 @@ class Accounts:
                     named = self._give_code(sign_in, code)
             finally:
                 self._end(sign_in)
+            self._still_let_in(person.id, written=True)
             # Read before anything settles: a sign-out that waited is over now.
             if not self._status(person)["logged_in"]:
                 raise Problem("login_failed")
@@ -247,6 +283,12 @@ class Accounts:
             self._set(person.id, account, signing_out=True)
         self.settle(person.id)
         return self.status(person)
+
+    def forget(self, person_id: int) -> None:
+        """End the person's sign-in that waits for a code: they are being deleted, and the
+        container holds their account volume."""
+        with self.lock(person_id):
+            self._end(self._sign_ins.pop(person_id, None))
 
     def settle(self, person_id: int) -> None:
         """Finish a sign-out that waits, once none of the person's servers runs, and

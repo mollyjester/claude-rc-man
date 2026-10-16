@@ -1,4 +1,4 @@
-import { useId } from "react";
+import { type ReactNode, type RefObject, useEffect, useId, useRef } from "react";
 
 import { ApiError, UNEXPECTED_RESPONSE } from "./api";
 import { noteFailure, PAGE_ERROR } from "./clientErrors";
@@ -6,14 +6,25 @@ import { m } from "./messages";
 
 // Shows an error exactly as the server described it. A form passes its labels,
 // by field name, so a refused field is named as the form names it.
+//
+// With `inline`, the form shows the errors of the fields it labels itself, each
+// under its input (useFieldErrors), or of just the fields `inline` names where
+// it shows only some of them now, and this shows a short summary in place of
+// the server's title where nothing else is left to say, and lists only what no
+// input of the form shows.
 export function ProblemView({
   error,
   labels = {},
+  inline = false,
 }: {
   error: ApiError | null;
   labels?: Record<string, string>;
+  inline?: boolean | readonly string[];
 }) {
   if (!error) return null;
+  const shown = inline === true ? Object.keys(labels) : inline || [];
+  const listed = error.errors.filter((e) => !shown.includes(e.field));
+  const placed = error.errors.length > 0 && listed.length === 0;
   const screen = error.extra.screen;
   const failed = error.extra.failed;
   const report = checkReports(error.extra.report);
@@ -28,10 +39,10 @@ export function ProblemView({
       : null;
   return (
     <div role="alert" className="problem">
-      <p>{error.title}</p>
-      {error.errors.length > 0 && (
+      <p>{placed ? m.problemCheckFields : error.title}</p>
+      {listed.length > 0 && (
         <ul aria-label={m.problemFieldErrors}>
-          {error.errors.map((e, i) => (
+          {listed.map((e, i) => (
             // biome-ignore lint/suspicious/noArrayIndexKey: the server's errors, shown whole and replaced whole; they can repeat, and never move
             <li key={i}>{`${labels[e.field] ?? e.field}: ${e.message}`}</li>
           ))}
@@ -39,7 +50,7 @@ export function ProblemView({
       )}
       {Array.isArray(failed) && (
         <p>
-          {m.versionsFailedChecks} {failed.join(", ")}
+          {m.versionsFailedChecks} {failed.map((check) => readable(String(check))).join(", ")}
         </p>
       )}
       {report.map(([check, entry]) => (
@@ -79,6 +90,50 @@ export function ProblemView({
   );
 }
 
+// What a form needs to show each refused field under its input: `form` goes on
+// the form, which, once a refusal is shown, moves focus to its first refused
+// field; `input(name, ...described)` is the attributes of the input of that name,
+// the ids of any help it already has among them; `message(name)` is the field's
+// message, which goes right under the input.
+export function useFieldErrors(error: ApiError | null): {
+  form: RefObject<HTMLFormElement | null>;
+  input: (name: string, ...described: (string | undefined)[]) => Record<string, unknown>;
+  message: (name: string) => ReactNode;
+} {
+  const base = useId();
+  const form = useRef<HTMLFormElement>(null);
+  const messages = (name: string) =>
+    error?.errors.filter((e) => e.field === name).map((e) => e.message) ?? [];
+  const idOf = (name: string) => `${base}-${name}`;
+
+  useEffect(() => {
+    if (error && error.errors.length > 0)
+      form.current?.querySelector<HTMLElement>('[aria-invalid="true"]')?.focus();
+  }, [error]);
+
+  return {
+    form,
+    input(name, ...described) {
+      const ids = described.filter((id): id is string => id !== undefined);
+      if (messages(name).length === 0) {
+        return ids.length > 0 ? { "aria-describedby": ids.join(" ") } : {};
+      }
+      return { "aria-invalid": true, "aria-describedby": [idOf(name), ...ids].join(" ") };
+    },
+    message(name) {
+      const found = messages(name);
+      return found.length > 0 ? (
+        <p id={idOf(name)} className="field-error">
+          {found.join(" ")}
+        </p>
+      ) : null;
+    },
+  };
+}
+
+// A check's name as the server gives it, with its underscores as the spaces they stand for.
+const readable = (check: string) => check.replace(/_/g, " ");
+
 // One failed check's report, under its name, which also names the figure: not
 // every reader takes a figure's name from its caption.
 function CheckReport({ check, lines, more }: { check: string; lines: string[]; more: number }) {
@@ -86,7 +141,7 @@ function CheckReport({ check, lines, more }: { check: string; lines: string[]; m
   return (
     <>
       <figure aria-labelledby={caption}>
-        <figcaption id={caption}>{check}</figcaption>
+        <figcaption id={caption}>{readable(check)}</figcaption>
         <pre className="screen">{lines.join("\n")}</pre>
       </figure>
       {more > 0 && <p>{m.versionsReportMore(more)}</p>}

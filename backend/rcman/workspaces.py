@@ -30,10 +30,12 @@ from rcman import builder, db, devcontainer, limits, people
 from rcman.channel import Channel, ChannelBroken, ChannelTimeout
 from rcman.claude_server import Server, TmuxFailed
 from rcman.claude_versions import ClaudeVersions
+from rcman.filelock import FileLock
 from rcman.limits import Limits
 from rcman.problems import CLONE_MESSAGES, DEVCONTAINER_MESSAGES, Problem
 from rcman.repository import ANSWER_MARGIN_SECONDS, KILL_GRACE_SECONDS, CloneFailed, Repository
 from rcman.runtime import (
+    DIGEST,
     LABEL_PERSON,
     LABEL_WORKSPACE,
     SYSTEMCTL_TIMEOUT,
@@ -47,6 +49,7 @@ from rcman.runtime import (
     Spec,
     built_name,
     container_name,
+    repository_of,
     workspace_of_built_name,
 )
 from rcman.settings import Settings
@@ -64,6 +67,8 @@ IDLE_CHECK_SECONDS = 30.0
 # other, and one that does not answer takes up to rcman's timeout for it. The readings left
 # when the time is used are not made, and are shown as not read.
 LIMITS_REPORT_SECONDS = 2 * SYSTEMCTL_TIMEOUT
+# The file, in the database's folder, that the service and rcman-admin lock to change limits.
+LOCK_FILE = "rcman.lock"
 # How long one wait for the runtime lasts before restore tries again, or stops when
 # rcman does; and how long rcman's shutdown waits for restore to stop.
 RUNTIME_WAIT_SECONDS = 5.0
@@ -175,6 +180,10 @@ class Workspace:
     claude_version: str | None = None
     # What the workspace may use (limits.py), beyond what its person's limits hold it to.
     limits: Limits = Limits()
+    # The id of rcman's default image its container was made from, so that one made again is
+    # made from it and not from a newer default; None for a workspace with a plan, whose plan
+    # holds the id, and until the first container of an older row is made.
+    image_id: str | None = None
 
     @property
     def container(self) -> str:
@@ -198,6 +207,7 @@ def _workspace(row: sqlite3.Row | None) -> Workspace | None:
         row["environment"],
         row["claude_version"],
         Limits(row["memory_mib"], row["cpu_percent"], row["pids"]),
+        row["image_id"],
     )
 
 
@@ -254,9 +264,18 @@ def limits_answered():
 
 
 class Workspaces:
-    def __init__(self, settings: Settings, runtime: Runtime):
+    def __init__(self, settings: Settings, runtime: Runtime, prunes: bool = True):
+        """``prunes`` is False in a process that is not the service (``rcman-admin``): the
+        locks that keep a prune from removing a version a start pins are the service's own
+        process's, so the service prunes, when a server stops, a version is rolled out and rcman
+        starts."""
         self.settings = settings
         self.runtime = runtime
+        self.prunes = prunes
+        # Held while images are collected and while a workspace is recorded, so that a workspace
+        # is either seen by the collection or recorded after it: its image, pulled or in the
+        # storage, is never removed between the two.
+        self._images_lock = threading.RLock()
         self.restored = threading.Event()
         self._lock = threading.Lock()
         self._channels: dict[str, Channel] = {}
@@ -269,7 +288,9 @@ class Workspaces:
         # worth anything if nothing else sets a limit before the apply; the price is that
         # another request for limits waits, and nothing else does. Taken after a person's lock
         # and a workspace's, and nothing else is taken while it is held.
-        self._limits_lock = threading.RLock()
+        # It is also held across processes, by a lock file beside the database: rcman-admin
+        # changes limits in a process of its own, beside the service.
+        self._limits_lock = FileLock(settings.database.parent / LOCK_FILE)
         self._making: dict[int, threading.Thread] = {}  # by workspace
         # The workspaces being made that a deletion has to stop: while git clones, an image is
         # pulled or a command runs. Each has the event the deletion sets; under _lock.
@@ -284,7 +305,11 @@ class Workspaces:
         # Called with a person's id once a server of theirs may have stopped: accounts.py
         # finishes a sign-out that waits for their last running server.
         self.on_stopped: Callable[[int], None] = lambda person: None
+        # Called with a person's id once they are being deleted: accounts.py ends a sign-in of
+        # theirs that waits for its code.
+        self.on_person_deleting: Callable[[int], None] = lambda person: None
         self.versions = ClaudeVersions(settings, runtime, self)
+        self.versions.prunes = prunes
 
     # --- the table ---------------------------------------------------------------------
 
@@ -371,6 +396,8 @@ class Workspaces:
         the person has one of that name already; a name given that is taken is refused."""
         base = name if name is not None else name_from(source)
         con = self._con()
+        recording = self._images_lock  # released once the row is recorded
+        recording.acquire()
         try:
             for number in range(1, NAME_TRIES + 1):
                 chosen = base if name is not None else _numbered(base, number)
@@ -394,6 +421,7 @@ class Workspaces:
                 raise Problem("workspace_name_taken")
         finally:
             con.close()
+            recording.release()
         made = self.get(cursor.lastrowid)
         thread = threading.Thread(target=self._make, args=(made, person.slot), daemon=True)
         with self._lock:
@@ -429,6 +457,7 @@ class Workspaces:
         try:
             self._log(workspace.id, "Making the workspace")
             self._apply_stored(workspace.id)  # before its container is in the slice
+            workspace = self._pinned(workspace)
             self.runtime.create(self._spec(workspace, slot))
             self._log(workspace.id, "Checking git")
             self._check_git(workspace)
@@ -437,9 +466,12 @@ class Workspaces:
                 self._configure(workspace, slot)
             error = None
         except Exception as failed:  # noqa: BLE001 - whatever it is, the workspace failed
-            log.warning("workspace %s could not be made: %s", workspace.id, failed)
-            error = (str(failed) or type(failed).__name__)[:MAX_ERROR_CHARS]
-            error = self._redacted(workspace.person, error)
+            # Redacted before it is cut, so that a token the cut would split is still found.
+            error = self._redacted(workspace.person, str(failed) or type(failed).__name__)
+            error = error[:MAX_ERROR_CHARS]
+            log.warning("workspace %s could not be made: %s", workspace.id, error)
+            if isinstance(failed, RuntimeUnavailable):  # what podman said holds paths
+                error = DEVCONTAINER_MESSAGES["runtime_gone"]
             refused = isinstance(failed, devcontainer.Refused)
         if refused:
             self._clear(workspace)
@@ -541,18 +573,42 @@ class Workspaces:
         """The container to make for the workspace: from the image of its plan, running as the
         plan's user, or rcman's own image."""
         plan = plan or self._plan(workspace)
-        base = Spec(workspace.container, slot, workspace.id, workspace.person)
+        base = Spec(
+            workspace.container, slot, workspace.id, workspace.person, install=self._install()
+        )
         if plan is None:
-            return base
+            return dataclasses.replace(base, image_id=workspace.image_id or "")
         return dataclasses.replace(
             base,
             image=plan.image,
+            image_id=plan.image_id,
             user=plan.run_as,
             uid=plan.uid,
             gid=plan.gid,
             groups=plan.groups,
             env=plan.container_env,
         )
+
+    def _install(self) -> str:
+        """The id of this database (``db.install_id``), put in the labels of what is made."""
+        con = self._con()
+        try:
+            return db.install_id(con)
+        finally:
+            con.close()
+
+    def _pinned(self, workspace: Workspace) -> Workspace:
+        """The workspace with the id of the default image its container is made from: the one
+        it has, or the default image's now, which is recorded, since a container lost later is
+        made again from this image and not from whichever default is newest by then. A runtime
+        with no default image leaves it as it is."""
+        if workspace.image_id:
+            return workspace
+        found = self.runtime.default_image_id()
+        if not found:
+            return workspace
+        self._set(workspace.id, image_id=found)
+        return dataclasses.replace(workspace, image_id=found)
 
     def _configure(self, workspace: Workspace, slot: int) -> None:
         """Make the cloned workspace what its devcontainer.json says, if it has one: read and
@@ -635,6 +691,11 @@ class Workspaces:
             raise devcontainer.Refused("image_unreadable", image=image, said=said) from None
         if self._cancelled(workspace.id, cancel):
             return None
+        for label in facts.labels:
+            if label.startswith("rcman."):
+                raise devcontainer.Refused(
+                    "image_labels", image=image, label=devcontainer.shown(label)
+                )
         made = devcontainer.plan(config, facts, workspace.id, layout.work, image=image)
         return None if self._cancelled(workspace.id, cancel) else made
 
@@ -924,6 +985,7 @@ class Workspaces:
                 return
             self._remove(now)
         self._stopped(workspace.person)
+        self._collect_images_quietly()
 
     def _stop_working(self, workspace: Workspace) -> None:
         """End what is being done to the workspace that a deletion has to stop - git cloning
@@ -970,6 +1032,7 @@ class Workspaces:
             people.write_allowed(con, self.settings.allowed_emails)
         finally:
             con.close()
+        self._person_deleting(person.id)  # a sign-in that waits for its code ends
         for workspace in self.of_person(person.id):
             self.delete(workspace)
             with self._lock:
@@ -978,17 +1041,27 @@ class Workspaces:
                 making.join(MADE_WITHIN_SECONDS)
         if self.of_person(person.id):  # one could not be removed: rcman's next start tries
             raise Problem("workspace_failed")
-        self._drop_limits(person.id, None)  # ids are given again: not to the next person
-        self._remove_account(person.id)
-        con = self._con()
+        with self.person_lock(person.id):  # not while a sign-in or a start of theirs is under way
+            self._person_deleting(person.id)
+            self._drop_limits(person.id, None)  # slots are given again: not to the next person
+            self._remove_account(person.id)
+            con = self._con()
+            try:
+                people.remove(con, person)
+                people.write_allowed(con, self.settings.allowed_emails)
+            finally:
+                con.close()
+        self._collect_images_quietly()  # what only their workspaces referred to
+
+    def _person_deleting(self, person_id: int) -> None:
+        """``on_person_deleting``, which never makes the deletion fail."""
         try:
-            people.remove(con, person)
-            people.write_allowed(con, self.settings.allowed_emails)
-        finally:
-            con.close()
+            self.on_person_deleting(person_id)
+        except Exception:  # noqa: BLE001 - the deletion goes on whatever this does
+            log.warning("a sign-in of person %s could not be ended", person_id, exc_info=True)
 
     def _remove_account(self, person_id: int) -> None:
-        """Remove the person's sign-in before their row: ids and slots are given again, so
+        """Remove the person's sign-in before their row: slots are given again, so
         a file left behind would sign the next person in. One that cannot be removed
         leaves the row, for rcman's next start."""
         try:
@@ -1030,24 +1103,42 @@ class Workspaces:
                 now = self.get(workspace_id)
                 if now is None or now.person != person.id or now.state == DELETING:
                     raise Problem("workspace_not_found")
-            self._refuse_below_use(person.id, workspace_id, held)
-            with limits_answered():
-                self.runtime.apply_limits(person.id, workspace_id, held)
-            if workspace_id is None:
-                con = self._con()
-                try:
-                    people.set_limits(con, person.id, held)
-                finally:
-                    con.close()
-            else:
-                self._set(
-                    workspace_id,
-                    memory_mib=held.memory_mib,
-                    cpu_percent=held.cpu_percent,
-                    pids=held.pids,
-                )
+            lowers = self._refuse_below_use(person.id, workspace_id, held)
+            if lowers:
+                # Applied first and recorded after: a crash between leaves the table above
+                # the slice, which the restore raises the slice to.
+                with limits_answered():
+                    self.runtime.apply_limits(person.id, workspace_id, held)
+                self._record_limits(person.id, workspace_id, held)
+                return
+            # A raise is recorded first and applied after: a crash between leaves the slice
+            # below the table, never the table below the slice, which the restore would apply
+            # to the slice as a lowering. One that cannot be applied is taken back.
+            before = now.limits
+            self._record_limits(person.id, workspace_id, held)
+            try:
+                with limits_answered():
+                    self.runtime.apply_limits(person.id, workspace_id, held)
+            except Exception:
+                self._record_limits(person.id, workspace_id, before)
+                raise
 
-    def _refuse_below_use(self, person_id: int, workspace_id: int | None, held: Limits) -> None:
+    def _record_limits(self, person_id: int, workspace_id: int | None, held: Limits) -> None:
+        if workspace_id is None:
+            con = self._con()
+            try:
+                people.set_limits(con, person_id, held)
+            finally:
+                con.close()
+        else:
+            self._set(
+                workspace_id,
+                memory_mib=held.memory_mib,
+                cpu_percent=held.cpu_percent,
+                pids=held.pids,
+            )
+
+    def _refuse_below_use(self, person_id: int, workspace_id: int | None, held: Limits) -> bool:
         """Refuse a memory or process limit that is lower than the cap the slice has now and
         lower than what is in use. The cap is the slice's own, read from the unit manager, not
         what the table holds: they differ after a restore that could not apply a limit, or a
@@ -1055,9 +1146,10 @@ class Workspaces:
         of the CPU would then be a cap below the use. A limit equal to the cap, or higher,
         lowers nothing. The caps and the use are read only for a limit that is given; the
         use is read only for one that would lower a cap, and one the kernel does not count is
-        refused (``usage_unknown``), as nothing says it is safe."""
+        refused (``usage_unknown``), as nothing says it is safe. Whether the set lowers a cap
+        of the slice's (memory or processes) is returned; one that does not only raises."""
         if held.memory_mib is None and held.pids is None:
-            return
+            return False
         with limits_answered():
             caps = self.runtime.caps(person_id, workspace_id)
         memory = held.memory_mib is not None and limits.lower_than(
@@ -1065,7 +1157,7 @@ class Workspaces:
         )
         pids = held.pids is not None and limits.lower_than(held.pids, caps.tasks)
         if not (memory or pids):
-            return
+            return False
         with limits_answered():
             used = self.runtime.usage(person_id, workspace_id)
         if (memory and not used.memory_known) or (pids and not used.tasks_known):
@@ -1092,6 +1184,7 @@ class Workspaces:
                 limit="pids",
                 used=str(used.tasks),
             )
+        return True
 
     def limits_report(self, person: people.Person) -> dict:
         """The person's limits and use, and each workspace's, as the API shows them: the use
@@ -1137,10 +1230,10 @@ class Workspaces:
 
     def _apply_stored(self, workspace_id: int | None = None, person_id: int | None = None) -> None:
         """Apply the set the table holds for the workspace, or for the person, to the slice: an
-        empty set resets it. The unit manager holds limits only until the machine restarts, and
-        an id is given again once its workspace is gone, so the slice is set before a container
-        is made in it and when rcman starts, whether or not there are limits: otherwise a slice
-        a failed drop left would hold the next workspace of that id to the last one's caps.
+        empty set resets it. The unit manager holds limits only until the machine restarts, so the
+        slice is set before a container is made in it and when rcman starts, whether or not
+        there are limits: otherwise a slice a failed drop left would keep its old caps. The
+        caps of a slice that is not lowered below what is in use are ``_not_below_use``'s.
         A set with limits that cannot be applied is the caller's failure; a reset that cannot
         be is logged, and is tried again when rcman next starts."""
         with self._limits_lock:
@@ -1159,7 +1252,9 @@ class Workspaces:
                     return
                 owner, workspace, held = found.id, None, found.limits
             try:
-                self.runtime.apply_limits(owner, workspace, held)
+                self.runtime.apply_limits(
+                    owner, workspace, self._not_below_use(owner, workspace, held)
+                )
             except (RuntimeFailed, RuntimeUnavailable) as failed:
                 if held.limited:
                     raise
@@ -1169,6 +1264,52 @@ class Workspaces:
                     workspace,
                     failed,
                 )
+
+    def _not_below_use(self, person_id: int, workspace_id: int | None, held: Limits) -> Limits:
+        """``held``, but for a memory or process limit that would lower the cap the slice has
+        now below what is in use, which stays at the slice's cap: the judgement of an edit
+        (``_refuse_below_use``), by the slice's own caps and not the table's, which the slice
+        can be above (a raise that was applied and never recorded) and a restart of rcman must
+        not end work that is running. A use the kernel does not count is no safe use, as it is
+        for an edit. A slice whose caps or use cannot be read is given ``held``, and the apply
+        says what is wrong. The table is left as it is: a later edit starts from the slice."""
+        if held.memory_mib is None and held.pids is None:
+            return held
+        try:
+            caps = self.runtime.caps(person_id, workspace_id)
+            memory = held.memory_mib is not None and limits.lower_than(
+                held.memory_mib * limits.MEBIBYTE, caps.memory_bytes
+            )
+            pids = held.pids is not None and limits.lower_than(held.pids, caps.tasks)
+            if not (memory or pids):
+                return held
+            used = self.runtime.usage(person_id, workspace_id)
+        except (RuntimeFailed, RuntimeUnavailable):
+            return held
+        memory_kept = memory and (
+            not used.memory_known or limits.memory_below(held.memory_mib, used)
+        )
+        pids_kept = pids and (not used.tasks_known or limits.pids_below(held.pids, used))
+        if not (memory_kept or pids_kept):
+            return held
+        log.warning(
+            "the %s of person %s workspace %s is held at what its slice has, as what is in use "
+            "is more than the stored limit",
+            " and ".join(
+                n for n, kept in (("memory", memory_kept), ("processes", pids_kept)) if kept
+            ),
+            person_id,
+            workspace_id,
+        )
+        return dataclasses.replace(
+            held,
+            memory_mib=(
+                None if caps.memory_bytes is None else -(-caps.memory_bytes // limits.MEBIBYTE)
+            )
+            if memory_kept
+            else held.memory_mib,
+            pids=caps.tasks if pids_kept else held.pids,
+        )
 
     def _restore_limits(self) -> None:
         """Set the table's limits on every slice there is a row for, before any container is
@@ -1187,8 +1328,8 @@ class Workspaces:
 
     def _drop_limits(self, person_id: int, workspace_id: int | None) -> None:
         """Take the limits off a slice whose person or workspace is gone, whether or not it
-        had any: ids are given again, so one left would hold the next. Never fails the
-        deletion; the unit manager forgets them at the next restart in any case."""
+        had any, so that none lingers. Never fails the deletion; the unit manager forgets them at
+        the next restart in any case."""
         try:
             with self._limits_lock:
                 self.runtime.drop_limits(person_id, workspace_id)
@@ -1259,9 +1400,10 @@ class Workspaces:
         name = workspace.container
         return Repository(self._layout(workspace), self._channel(name).run, self._execs(name)[1])
 
-    def server_status(self, workspace: Workspace) -> dict | None:
-        """The workspace's server, or None; a workspace that records none is not reached."""
-        if not workspace.server:
+    def server_status(self, workspace: Workspace, probe: bool = False) -> dict | None:
+        """The workspace's server, or None; a workspace that records none is not reached,
+        unless ``probe``: then tmux in the workspace is asked, whatever the row says."""
+        if not workspace.server and not probe:
             return None
         with answered():
             return self.server(workspace).status()
@@ -1402,7 +1544,9 @@ class Workspaces:
     def pinned_servers(self, versions: set[str] | None = None) -> list[tuple[Workspace, str]]:
         """The workspaces with a Claude Code version recorded whose server runs, cannot be read
         or is being started, each with that version; with ``versions``, only those among them.
-        A server that cannot be read counts as running, so no version it may run is lost."""
+        A server that cannot be read counts as running, so no version it may run is lost, and
+        the row's ``server`` flag is not believed: the record of a version and the flag are two
+        writes, and only tmux saying there is no server frees the version."""
         with self._lock:
             starting = set(self._starting)
         found = []
@@ -1416,7 +1560,7 @@ class Workspaces:
             if workspace.state != READY:
                 continue
             try:
-                status = self.server_status(workspace)
+                status = self.server_status(workspace, probe=True)
             except Problem:
                 found.append((workspace, version))
                 continue
@@ -1502,10 +1646,14 @@ class Workspaces:
             self._restore_all()
             if self._closing.is_set():
                 return
-            for name, labels in self.runtime.labelled().items():
-                self._step(self._remove_orphan, name, labels)
-            self._step(self._remove_orphan_builds)
-            self._step(self.versions.prune)
+            if self._table_is_empty_of_workspaces_there_are():
+                pass  # nothing is removed, or pruned, on the word of a table that is empty
+            else:
+                for name, labels in self.runtime.labelled().items():
+                    self._step(self._remove_orphan, name, labels)
+                self._step(self._remove_orphan_builds)
+                self._step(self._collect_images)
+                self._step(self.versions.prune)
             self._step(self._finish_deleting_people)
             self._step(self.settle_signing_out)
         except Exception:  # noqa: BLE001 - restore never stops rcman from answering
@@ -1558,9 +1706,28 @@ class Workspaces:
         except Exception:  # noqa: BLE001 - one workspace never stops the others
             log.exception("restoring %s failed", args)
 
+    def _table_is_empty_of_workspaces_there_are(self) -> bool:
+        """Whether the runtime has workspaces and the table has none: a database that was lost
+        or is not the one they were made for. Restore then removes nothing - not the orphans,
+        not the builds and images no plan names, not the Claude Code versions no workspace
+        uses - since every one of them would be taken for unused; the administrator decides.
+        Said loudly, once per restore."""
+        there = self.runtime.labelled()
+        if not there or self.everything():
+            return False
+        log.error(
+            "the workspaces table has no workspaces but the runtime has %d (%s); "
+            "nothing is removed - check that this is the database these workspaces belong to",
+            len(there),
+            ", ".join(sorted(there)),
+        )
+        return True
+
     def _remove_orphan(self, name: str, labels: dict) -> None:
-        """Remove a workspace no row is for, checked again just before: a request may have
-        made its row since restore read the table."""
+        """Discard the container of a workspace no row is for, checked again just before: a
+        request may have made its row since restore read the table. Its volume stays, with
+        whatever work is in it: ids are never used again, so nothing adopts it, and removing it
+        is for a person to decide."""
         try:
             workspace_id = int(labels.get(LABEL_WORKSPACE, ""))
         except ValueError:
@@ -1569,11 +1736,59 @@ class Workspaces:
             with self.lock(workspace_id):
                 if self.get(workspace_id) is not None or self._being_made(workspace_id):
                     return
-                self.runtime.remove(name)
+                self.runtime.discard(name)
                 with contextlib.suppress(ValueError):  # the slice it was in goes with it
                     self._drop_limits(int(labels.get(LABEL_PERSON, "")), workspace_id)
         elif name not in {w.container for w in self.everything()}:
-            self.runtime.remove(name)
+            self.runtime.discard(name)
+
+    def _collect_images(self) -> None:
+        """Remove the images in the runtime's storage that no workspace refers to: pulled
+        images and old default images that nothing stored names, and what a load that was
+        killed left. Kept: what a stored plan names (its image and its id), the id of the
+        default image each workspace was made from, the image built for each workspace, and
+        what the runtime itself keeps (the current default image, the builder's); an image a
+        container is made from stays whatever is said here, since it is never removed by force.
+        Nothing is collected while a workspace is being made, whose image may be pulled and not
+        yet in a plan, or when a stored plan cannot be read: what is kept is then not known."""
+        if not self.prunes:
+            return  # the service collects, at its next opportunity
+        with self._images_lock:
+            self._collect_unreferenced()
+
+    def _collect_unreferenced(self) -> None:
+        everything = self.everything()
+        with self._lock:
+            making = any(t.is_alive() for t in self._making.values())
+        if making or any(w.state == CREATING for w in everything):
+            return
+        ids: set[str] = set()
+        names: set[str] = set()
+        for workspace in everything:
+            names.add(built_name(workspace.id))
+            if workspace.image_id:
+                ids.add(workspace.image_id)
+            try:
+                plan = self._plan(workspace)
+            except RuntimeFailed:
+                return
+            if plan is not None:
+                names.add(plan.image)
+                if plan.image_id:
+                    ids.add(plan.image_id)
+        default = self.runtime.default_image_id()
+        if default:
+            ids.add(default)
+        for removed in self.runtime.collect_images(ids, names):
+            log.info("the image %s was removed: nothing refers to it", removed)
+
+    def _collect_images_quietly(self) -> None:
+        """``_collect_images``, which never makes what called it fail: what it would remove is
+        removed by the next one."""
+        try:
+            self._collect_images()
+        except Exception:  # noqa: BLE001 - see above
+            log.warning("the images nothing refers to could not be collected", exc_info=True)
 
     def _remove_orphan_builds(self) -> None:
         """Remove what builds left that no workspace needs: the builder and volume of every
@@ -1623,39 +1838,38 @@ class Workspaces:
             self._start_commands(now, cancel)
 
     def _remake(self, workspace: Workspace, cancel: threading.Event) -> bool:
-        """Make a ready workspace's lost container again from its stored plan, after pulling the
-        plan's image, which may be gone from the runtime's storage. If the registry says it is
-        not there, or may not be had, the workspace is failed, in words that say to delete it
-        and make it again; if the pull fails otherwise - the network, a timeout, a registry
-        that is down - nothing is decided: it stays ready, without its container, and is made
-        again the next time rcman starts: only a restore makes a lost container again, and it
-        runs once, as rcman starts. The same holds for limits that cannot be applied before it
-        is made. False when there is no container to go on with, because of
-        either or a deletion meanwhile."""
+        """Make a ready workspace's lost container again from the image it was made from: the
+        plan's by its id, else (a plan with none) its name pulled again, else the default image
+        the workspace was made from. An image the runtime's storage lacks is pulled by its
+        digest where the plan has one. If the registry says it is not there, or may not be had,
+        the workspace is failed, in words that say to delete it and make it again; if the pull
+        fails otherwise - the network, a timeout, a registry that is down - nothing is decided:
+        it stays ready, without its container, and is made again the next time rcman starts:
+        only a restore makes a lost container again, and it runs once, as rcman starts. The
+        same holds for limits that cannot be applied before it is made. False when there is no
+        container to go on with, because of either or a deletion meanwhile."""
         con = self._con()
         try:
             slot = people.by_id(con, workspace.person).slot
         finally:
             con.close()
         plan = self._plan(workspace)
-        if plan is not None and workspace_of_built_name(plan.image) is not None:
+        if plan is None:
+            workspace = self._pinned(workspace)
+            if workspace.image_id and not self.runtime.has_image(workspace.image_id):
+                # A new default image is for new workspaces: this one is not made from it.
+                self._image_gone(workspace, DEVCONTAINER_MESSAGES["default_image_gone"])
+                return False
+        elif plan.image_id:
+            if not self._pinned_image_is_there(workspace, plan, cancel):
+                return False
+        elif workspace_of_built_name(plan.image) is not None:
             # An image rcman built is in its storage or nowhere: there is no registry to ask.
             if plan.image not in self.runtime.built_images().values():
                 self._image_gone(workspace, DEVCONTAINER_MESSAGES["built_image_gone"])
                 return False
-        elif plan is not None:
-            try:
-                self.runtime.pull(plan.image, None, cancel)
-            except RuntimeFailed as failed:
-                if self._cancelled(workspace.id, cancel):
-                    return False
-                log.warning("the image of workspace %s could not be had: %s", workspace.id, failed)
-                if not image_is_gone(str(failed)):
-                    return False  # it may pass: the next restore tries again
-                self._image_gone(
-                    workspace, DEVCONTAINER_MESSAGES["image_gone"].format(image=plan.image)
-                )
-                return False
+        elif not self._pulled_again(workspace, plan, plan.image, cancel):
+            return False
         if self._cancelled(workspace.id, cancel):
             return False
         self._apply_stored(workspace.id)  # before its container is in the slice
@@ -1664,6 +1878,60 @@ class Workspaces:
             with self.lock(workspace.id):  # made after a deletion removed it: nothing is for it
                 if self.get(workspace.id) is None:
                     self.runtime.remove(workspace.container)
+            return False
+        return True
+
+    def _pulled_again(
+        self, workspace: Workspace, plan: devcontainer.Plan, name: str, cancel: threading.Event
+    ) -> bool:
+        """Pull ``name``, the plan's image or the same image by its digest, because the runtime's
+        storage may no longer have it. If the registry says it is not there, or may not be had,
+        the workspace is failed, in words that say to delete it and make it again; if the pull
+        fails otherwise - the network, a timeout, a registry that is down - nothing is decided:
+        False, and it stays ready without its container, made again the next time rcman starts."""
+        try:
+            self.runtime.pull(name, None, cancel)
+        except RuntimeFailed as failed:
+            if self._cancelled(workspace.id, cancel):
+                return False
+            log.warning("the image of workspace %s could not be had: %s", workspace.id, failed)
+            if not image_is_gone(str(failed)):
+                return False  # it may pass: the next restore tries again
+            self._image_gone(
+                workspace, DEVCONTAINER_MESSAGES["image_gone"].format(image=plan.image)
+            )
+            return False
+        return True
+
+    def _pinned_image_is_there(
+        self, workspace: Workspace, plan: devcontainer.Plan, cancel: threading.Event
+    ) -> bool:
+        """Whether the image a plan was made from, by its id, is in the runtime's storage, so
+        that the container is made again from it whatever its tag names now. One that is not is
+        pulled by its digest where it has one and came from a registry, and must then be the
+        very image; otherwise, or when the registry no longer has it, the workspace is failed
+        in plain words. An image rcman built is in the storage or nowhere."""
+        built = workspace_of_built_name(plan.image) is not None
+        if built and plan.image not in self.runtime.built_images().values():
+            self._image_gone(workspace, DEVCONTAINER_MESSAGES["built_image_gone"])
+            return False
+        if self.runtime.has_image(plan.image_id):
+            return True
+        if built:
+            self._image_gone(workspace, DEVCONTAINER_MESSAGES["built_image_gone"])
+            return False
+        if not DIGEST.match(plan.image_digest):
+            self._image_gone(
+                workspace, DEVCONTAINER_MESSAGES["image_gone"].format(image=plan.image)
+            )
+            return False
+        by_digest = f"{repository_of(plan.image)}@{plan.image_digest}"
+        if not self._pulled_again(workspace, plan, by_digest, cancel):
+            return False
+        if not self.runtime.has_image(plan.image_id):  # the digest names another image than this
+            self._image_gone(
+                workspace, DEVCONTAINER_MESSAGES["image_gone"].format(image=plan.image)
+            )
             return False
         return True
 

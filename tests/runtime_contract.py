@@ -18,6 +18,7 @@ import tempfile
 import time
 from pathlib import Path
 
+import pytest
 from rcman import runtime as rt
 from rcman.runtime import TIMED_OUT
 
@@ -360,6 +361,49 @@ def a_discarded_workspace_keeps_its_volume_and_is_made_again_on_it(runtime, spec
     assert not runtime.exists(workspace.name)
 
 
+def a_volume_left_for_one_person_is_not_adopted_for_another(runtime, spec):
+    workspace = spec(14)
+    other = dataclasses.replace(workspace, person=workspace.person + 100, slot=workspace.slot)
+    try:
+        runtime.create(workspace)
+        runtime.discard(workspace.name)  # its volume stays, labelled for its person
+        with pytest.raises(rt.RuntimeFailed) as refused:
+            runtime.create(other)
+        assert "another person" in str(refused.value)
+        assert not runtime.exists(workspace.name)  # nothing was made on it
+        runtime.create(workspace)  # the person it belongs to gets it back
+        assert runtime.exists(workspace.name)
+    finally:
+        runtime.remove(workspace.name)
+    assert not runtime.exists(workspace.name)
+
+
+def a_volume_of_another_install_is_not_adopted_by_the_same_person(runtime, spec):
+    workspace = dataclasses.replace(spec(14), install="a" * 32)
+    other = dataclasses.replace(workspace, install="b" * 32)
+    try:
+        runtime.create(workspace)
+        runtime.discard(workspace.name)
+        with pytest.raises(rt.RuntimeFailed):
+            runtime.create(other)  # the same person, from a database that is not this one
+        assert not runtime.exists(workspace.name)
+        runtime.create(workspace)
+        assert runtime.exists(workspace.name)
+    finally:
+        runtime.remove(workspace.name)
+
+
+def collecting_images_never_takes_the_one_a_container_is_made_from(runtime, spec):
+    workspace = spec(15)
+    with made(runtime, workspace) as name:
+        before = runtime.default_image_id()
+        runtime.collect_images(set(), set())  # nothing is kept by anyone's word
+        assert runtime.exists(name) and runtime.running(name)
+        if before:  # a runtime with images: the one the container is made from is still there
+            assert runtime.has_image(before)
+    assert not runtime.exists(workspace.name)
+
+
 def discarding_what_is_not_there_is_nothing(runtime, spec):
     workspace = spec(13)
     assert not runtime.exists(workspace.name)  # positive control for the absence below
@@ -476,6 +520,9 @@ CASES = [
     the_timeout_tool_ends_a_program_that_outlasts_it_and_one_that_ignores_term,
     an_exec_runs_in_the_folder_it_is_given,
     a_discarded_workspace_keeps_its_volume_and_is_made_again_on_it,
+    a_volume_left_for_one_person_is_not_adopted_for_another,
+    a_volume_of_another_install_is_not_adopted_by_the_same_person,
+    collecting_images_never_takes_the_one_a_container_is_made_from,
     discarding_what_is_not_there_is_nothing,
     an_exec_that_prints_a_great_deal_keeps_only_the_tail_it_is_asked_to,
     removing_a_build_that_is_not_there_is_nothing,

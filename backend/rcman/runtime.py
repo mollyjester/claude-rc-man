@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import contextlib
 import dataclasses
+import errno
 import io
 import json
 import logging
@@ -72,10 +73,30 @@ VOLUME_MOUNT = "/rcman"  # the workspace's volume
 WORK, CONFIG, HOME = "work", "claude", "home"
 # Claude Code's credentials file, in its configuration folder: a person's sign-in.
 CREDENTIALS = ".credentials.json"
+SIGNED_IN, NOT_SIGNED_IN_EMPTY, NOT_SIGNED_IN_UNREADABLE = "signed_in", "empty", "unreadable"
+
+
+def credentials_state(raw: bytes) -> str:
+    """What a credentials file holds: ``signed_in`` for a sign-in (an object with the OAuth
+    entry Claude Code writes), ``empty`` for nothing, and ``unreadable`` for anything else -
+    half of a file two workspaces' Claude wrote at once, or what is not JSON."""
+    if not raw.strip():
+        return NOT_SIGNED_IN_EMPTY
+    try:
+        data = json.loads(raw)
+    except (ValueError, RecursionError):
+        return NOT_SIGNED_IN_UNREADABLE
+    oauth = data.get("claudeAiOauth") if isinstance(data, dict) else None
+    return SIGNED_IN if isinstance(oauth, dict) else NOT_SIGNED_IN_UNREADABLE
+
+
 # Labels every workspace container and volume carries: whose it is, and which row. A
 # person's account volume and sign-in container carry only the person's.
 LABEL_WORKSPACE = "rcman.workspace"
 LABEL_PERSON = "rcman.person"
+# The id of the database a workspace's volume and container were made for (db.install_id): a
+# volume of another database is never adopted, whatever person and workspace ids it has.
+LABEL_INSTALL = "rcman.install"
 # The canary: a throwaway container that runs the checks against a candidate Claude Code
 # version. It carries only this label, so no restore sees it as a workspace.
 CANARY_NAME = "rcman-canary"
@@ -100,6 +121,10 @@ LABEL_BUILDER = "rcman.builder"
 # id (devcontainer.py), so no person's workspace is made from another's.
 BUILT_REPOSITORY = "rcman-built"
 BUILT_TAG = "latest"
+# The name Podman gives a volume it makes without being asked to.
+ANONYMOUS_VOLUME = re.compile(r"[0-9a-f]{64}\Z")
+# An image's digest as a registry names it, which a pull may be given after an "@".
+DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
 BUILT_NAME = re.compile(rf"localhost/{re.escape(BUILT_REPOSITORY)}/(\d+):{re.escape(BUILT_TAG)}\Z")
 # Where a one-off container that makes or reads a person's credentials file mounts
 # their account volume.
@@ -126,6 +151,8 @@ PUT_SCRIPT = (
     f"{ENSURE_SCRIPT} && trap 'rm -f \"$2/$3.new\"' EXIT "
     '&& cat > "$2/$3.new" && mv -f "$2/$3.new" "$2/$3"'
 )
+# What is said when a volume that is there is not labelled for the person a workspace is for.
+VOLUME_OF_ANOTHER = "the volume {name} is there and is for another person, so it is not used"
 # Each person's uid range: slot k maps the container's ids 0 to RANGE - 1 onto rcman's
 # subordinate ids from k * RANGE. Slot 0 would be rcman's own ids, so no person has it.
 RANGE = 65536
@@ -149,6 +176,11 @@ PULL_POLL_SECONDS = 1.0
 PULL_TAIL_LINES = 5
 # What a pull says when the image it could not pull is one the runtime has already.
 USING_LOCAL_IMAGE = "The pull failed; the image already here is used"
+# How long an image with no name is left alone: it may be a layer of a build under way, which an
+# upgrade runs beside the service.
+IMAGE_GRACE_SECONDS = 3600.0
+# What is said of an image named ``localhost/...``, which is never pulled.
+IN_STORAGE = "The image is in rcman's storage; nothing is pulled"
 # What podman says, with the exit code UNAVAILABLE, when it cannot reach its service at all.
 # Other failures share the code and the word "connect": a registry's refusal, and a program
 # run in a workspace that exits with that code after failing to connect somewhere.
@@ -179,6 +211,65 @@ CONMON_FAILED = "no logs from conmon"
 READY_POLL_SECONDS = 1.0
 
 
+# The variables that move git's configuration from where rcman writes it (the git folder, which
+# HOME/GIT_HOME makes the one git reads when XDG_CONFIG_HOME is not set) or add to it: the plan
+# of a workspace may not set them, and git is not run with them.
+GIT_CONFIG_NAMES = frozenset(
+    {
+        "XDG_CONFIG_HOME",
+        "GIT_CONFIG",
+        "GIT_CONFIG_GLOBAL",
+        "GIT_CONFIG_SYSTEM",
+        "GIT_CONFIG_NOSYSTEM",
+        "GIT_CONFIG_COUNT",
+        "GIT_CONFIG_PARAMETERS",
+        "GIT_CURL_VERBOSE",
+    }
+)
+# The numbered pairs of the configuration, and the traces, which print what git sends (a token
+# among it) unless told not to.
+GIT_CONFIG_PAIR = re.compile(r"GIT_CONFIG_(?:KEY|VALUE)_[0-9]+\Z|GIT_TRACE(?:_[A-Z0-9_]+)?\Z")
+
+
+def moves_git_config(name: str) -> bool:
+    """Whether the variable ``name`` moves git's configuration (``GIT_CONFIG_NAMES``, or one
+    of the numbered pairs ``GIT_CONFIG_KEY_n`` and ``GIT_CONFIG_VALUE_n``) or makes git print what
+    it sends (``GIT_TRACE`` and its kin, ``GIT_CURL_VERBOSE``)."""
+    return name in GIT_CONFIG_NAMES or GIT_CONFIG_PAIR.match(name) is not None
+
+
+def registry_host(image: str) -> str | None:
+    """The host of the registry an image name gives, lower case and without its port, or None
+    for a name of the default registry: the first part is a host when it is ``localhost`` or
+    has a dot or a port in it, and a user of the default registry otherwise."""
+    first, slash, _ = image.partition("/")
+    if not slash or not (first.lower() == "localhost" or "." in first or ":" in first):
+        return None
+    return first.rsplit(":", 1)[0].lower().rstrip(".")
+
+
+def qualified_name(image: str) -> str:
+    """``image`` as Podman lists it: the registry written out (``docker.io/library/`` for a
+    name of the default registry) and a tag (``latest``) unless a digest names it."""
+    host = registry_host(image)
+    name = image
+    if host is None:
+        name = f"docker.io/{image if '/' in image else 'library/' + image}"
+    elif host == "index.docker.io":
+        name = "docker.io" + image[len("index.docker.io") :]
+    last = name.rsplit("/", 1)[-1]
+    if "@" not in last and ":" not in last:
+        name += ":latest"
+    return name
+
+
+def repository_of(image: str) -> str:
+    """The name of ``image`` without its tag or digest."""
+    name = image.partition("@")[0]
+    head, slash, last = name.rpartition("/")
+    return f"{head}{slash}{last.partition(':')[0]}"
+
+
 def container_name(workspace_id: int) -> str:
     return f"rcman-ws-{workspace_id}"
 
@@ -195,7 +286,7 @@ def workspace_of_built_name(name: str) -> int | None:
 
 
 def account_volume(person: int) -> str:
-    """The volume that holds the person's credentials file, and nothing else."""
+    """The volume that holds the person's credentials file and git folder, and nothing else."""
     return f"rcman-person-{person}"
 
 
@@ -264,18 +355,27 @@ class Spec:
     gid: int = 0
     groups: tuple[int, ...] = ()
     env: Mapping[str, str] = field(default_factory=dict)
+    # The id of the image the container is made from, where that is known and it is to be
+    # made from exactly that image whatever its name names now (a container made again): with
+    # no ``image`` it is the default image's. It is used in place of the name.
+    image_id: str = ""
+    # The id of the database the workspace is for (``LABEL_INSTALL``); empty where there is none.
+    install: str = ""
 
 
 @dataclass(frozen=True)
 class ImageFacts:
     """What an image says about itself, read without running it: its passwd and group files
-    (empty where it has none), the user it is set to run as, its environment, and its labels."""
+    (empty where it has none), the user it is set to run as, its environment, its labels, its
+    id, and the digest it was pulled by where it came from a registry (empty otherwise)."""
 
     passwd: str = ""
     group: str = ""
     user: str = ""
     env: Mapping[str, str] = field(default_factory=dict)
     labels: Mapping[str, str] = field(default_factory=dict)
+    id: str = ""
+    digest: str = ""
 
 
 @dataclass(frozen=True)
@@ -324,7 +424,8 @@ class Layout:
         ``env`` besides their own variables, and with ``path``, if there is one, after the
         folder of rcman's own programs."""
         tail = self.path if path is None else ":".join(p for p in (self.path_prefix, path) if p)
-        return dataclasses.replace(self, user=user, env=dict(env), path=tail)
+        kept = {k: v for k, v in env.items() if not moves_git_config(k)}
+        return dataclasses.replace(self, user=user, env=kept, path=tail)
 
     def kill_group_of(self, pgid: int) -> list[str]:
         return [*self.kill_group, f"-{pgid}"]
@@ -385,6 +486,23 @@ class Runtime(ABC):
     def image_facts(self, image: str, cancel: threading.Event | None = None) -> ImageFacts:
         """What the pulled ``image`` says about itself, without running it; RuntimeFailed if it
         cannot be read, or at once, with the reading stopped, if ``cancel`` is set."""
+
+    @abstractmethod
+    def has_image(self, image: str) -> bool:
+        """Whether the runtime's storage has the image ``image``, a name or an id."""
+
+    @abstractmethod
+    def collect_images(self, keep_ids: set[str], keep_names: set[str]) -> list[str]:
+        """Remove the images in the runtime's storage that nothing keeps: those whose id is not in
+        ``keep_ids`` and none of whose names is in ``keep_names``, and that the runtime does not
+        itself keep (the default image, the builder's). Never by force: an image a container is
+        made from stays, and so does one that cannot be removed, which is not an error. The
+        names (or ids, of those with none) that were removed."""
+
+    @abstractmethod
+    def default_image_id(self) -> str:
+        """The id of the image new workspaces are made from now; empty where the runtime has
+        no such thing."""
 
     @abstractmethod
     def build_image(
@@ -645,6 +763,14 @@ PODMAN_LAYOUT = Layout(
 class PodmanRuntime(Runtime):
     def __init__(self, config: PodmanConfig):
         self.config = config
+        # Held from the names of rcman's own images being read before a ``podman load`` to the
+        # new image being named, so that no other build's naming of its image is taken for the
+        # load's doing.
+        self._naming = threading.Lock()
+        # How many builds are under way, and the lock that makes taking part in one and
+        # sweeping the staging folders exclusive of each other.
+        self._staging_lock = threading.Lock()
+        self._active_builds = 0
 
     def layout(self, name: str) -> Layout:
         return PODMAN_LAYOUT
@@ -678,6 +804,11 @@ class PodmanRuntime(Runtime):
         if check and proc.returncode != 0:
             raise RuntimeFailed(said or f"podman {args[0]} failed")
         return proc
+
+    def _remove_container(self, name: str, check: bool = True) -> None:
+        """Remove the container at once, with the anonymous volumes of its image: a volume the
+        image declares is made with the container, and is nobody's once it is gone."""
+        self._podman("rm", "--force", "--ignore", "--time=0", "--volumes", name, check=check)
 
     def _systemctl(self, *args: str) -> str:
         """``systemctl --user`` with ``args``, as rcman's own user, with an argv and the
@@ -758,11 +889,16 @@ class PodmanRuntime(Runtime):
         labels = [
             f"--label={LABEL_WORKSPACE}={spec.workspace}",
             f"--label={LABEL_PERSON}={spec.person}",
+            *([f"--label={LABEL_INSTALL}={spec.install}"] if spec.install else []),
         ]
         ids = self._ids(spec.slot, spec.uid, spec.gid)  # refuses what is wrong before anything
         # is made
+        if spec.image_id and not builder.is_image_id(spec.image_id):
+            raise RuntimeFailed("the id of the image is not an id")
         if self._podman("volume", "exists", spec.name, check=False).returncode != 0:
             self._podman("volume", "create", *labels, spec.name)
+        else:
+            self._own_volume(spec)
         self.ensure_account(spec.person, spec.slot)
         mapped = spec.uid != 0 or spec.gid != 0
         if mapped:
@@ -790,15 +926,32 @@ class PodmanRuntime(Runtime):
             # the image's own working folder may be one the user cannot enter.
             f"--workdir={VOLUME_MOUNT}",
             # The image was pulled, or is here already; nothing is pulled implicitly.
-            *(["--pull=never"] if spec.image else []),
+            *(["--pull=never"] if spec.image or spec.image_id else []),
             # The image's own entrypoint is not run: the process is rcman's.
             f"--entrypoint={TOOLS_MOUNT}/bin/busybox",
-            spec.image or self.config.image,
+            spec.image_id or spec.image or self.config.image,
             "sleep",
             "2147483647",
-            timeout=IMAGE_CREATE_TIMEOUT if spec.image else PODMAN_TIMEOUT,
+            timeout=IMAGE_CREATE_TIMEOUT if spec.image or spec.image_id else PODMAN_TIMEOUT,
         )
         self._folders(spec.name)
+
+    def _own_volume(self, spec: Spec) -> None:
+        """A volume of the name that is there already is the workspace's own only if its labels
+        say it is for the person and for this database (``LABEL_INSTALL``): it is the work of
+        whoever it was made for, and ids come round again in a database restored from a
+        backup. The labels are read from the volume and compared here: a filter of ``volume
+        ls`` is Podman's to interpret, and a volume that does not match must never pass."""
+        found = self._podman("volume", "inspect", "--format", "{{json .Labels}}", spec.name)
+        try:
+            labels = json.loads(found.stdout.decode("utf-8", "replace") or "null") or {}
+        except ValueError:
+            labels = {}
+        wanted = {LABEL_PERSON: str(spec.person)}
+        if spec.install:
+            wanted[LABEL_INSTALL] = spec.install
+        if not isinstance(labels, dict) or any(labels.get(k) != v for k, v in wanted.items()):
+            raise RuntimeFailed(VOLUME_OF_ANOTHER.format(name=spec.name))
 
     @staticmethod
     def _swap(base: int, own: int) -> list[str]:
@@ -903,7 +1056,7 @@ class PodmanRuntime(Runtime):
         self._podman("stop", f"--time={STOP_TIMEOUT_SECONDS}", name)
 
     def discard(self, name: str) -> None:
-        self._podman("rm", "--force", "--ignore", "--time=0", name)
+        self._remove_container(name)
 
     def remove(self, name: str) -> None:
         self.discard(name)
@@ -916,6 +1069,14 @@ class PodmanRuntime(Runtime):
         progress: Callable[[str], None] | None = None,
         cancel: threading.Event | None = None,
     ) -> None:
+        if registry_host(image) == "localhost":
+            # Podman would read the name as the registry on this machine's own loopback: the
+            # image is in rcman's storage, or it is nowhere.
+            if self._podman("image", "exists", image, check=False).returncode != 0:
+                raise RuntimeFailed(f"{image} is not in rcman's storage")
+            if progress is not None:
+                progress(IN_STORAGE)
+            return
         failure = self._pull(image, progress, cancel)
         if failure is None:
             return
@@ -1005,14 +1166,62 @@ class PodmanRuntime(Runtime):
         try:
             passwd, group = (self._copied(name, f"/etc/{f}", cancel) for f in ("passwd", "group"))
         finally:
-            self._podman("rm", "--force", "--ignore", "--time=0", name, check=False)
+            self._remove_container(name, check=False)
+        found = str(inspected.get("Id") or "").removeprefix("sha256:")
+        digest = str(inspected.get("Digest") or "")
         return ImageFacts(
             passwd=passwd,
             group=group,
             user=inspected.get("User") or config.get("User") or "",
             env=env,
             labels=_labels_of(inspected),
+            id=found if builder.is_image_id(found) else "",
+            # only an image that came from a registry has a digest to pull it by
+            digest=digest if inspected.get("RepoDigests") and DIGEST.match(digest) else "",
         )
+
+    def has_image(self, image: str) -> bool:
+        return self._podman("image", "exists", image, check=False).returncode == 0
+
+    def collect_images(self, keep_ids: set[str], keep_names: set[str]) -> list[str]:
+        # Whole repositories of the default and builder images, every tag: an upgrade builds the
+        # next ones under tags these settings do not name yet. Names are compared as Podman lists
+        # them, fully qualified.
+        repositories = {
+            repository_of(qualified_name(n)) for n in (self.config.image, self.config.builder_image)
+        }
+        wanted = {qualified_name(n) for n in keep_names}
+        listed = json.loads(self._podman("images", "--format=json").stdout or b"[]") or []
+        removed: list[str] = []
+        young = time.time() - IMAGE_GRACE_SECONDS
+        for entry in listed:
+            image = str(entry.get("Id") or "").removeprefix("sha256:")
+            names = [*(entry.get("Names") or []), *(entry.get("RepoTags") or [])]
+            names = list(dict.fromkeys(names))
+            if image in keep_ids or any(
+                qualified_name(n) in wanted or repository_of(qualified_name(n)) in repositories
+                for n in names
+            ):
+                continue
+            if not names and float(entry.get("Created") or 0) > young:
+                continue  # no name and not old: a layer of a build that may be under way
+            # By name where there are names: removing an image by its id when it has more than
+            # one is refused, and a name that is the last one takes the image with it.
+            for target in names or [image]:
+                if not (target == image and not builder.is_image_id(image)):
+                    gone = self._podman("image", "rm", target, check=False)
+                    if gone.returncode == 0:
+                        removed.append(target)
+                    else:
+                        log.info("the image %s stays: %s", target, self._said(gone.stderr, ""))
+        return removed
+
+    def default_image_id(self) -> str:
+        found = self._podman(
+            "image", "inspect", "--format", "{{.Id}}", self.config.image, check=False
+        )
+        image = found.stdout.decode("utf-8", "replace").strip().removeprefix("sha256:")
+        return image if found.returncode == 0 and builder.is_image_id(image) else ""
 
     def _copied(self, container: str, path: str, cancel: threading.Event | None = None) -> str:
         """A file of an image's, read from a container that was made and not run; empty where
@@ -1085,7 +1294,7 @@ class PodmanRuntime(Runtime):
 
     def remove_build(self, workspace_id: int, image: bool = False) -> None:
         name = builder.builder_name(workspace_id)
-        self._podman("rm", "--force", "--ignore", "--time=0", name)
+        self._remove_container(name)
         if self._podman("volume", "exists", name, check=False).returncode == 0:
             self._podman("volume", "rm", "--force", name)
         if image:
@@ -1131,6 +1340,16 @@ class PodmanRuntime(Runtime):
     ) -> str:
         ids = self._ids(request.slot)  # refuses what is wrong before anything is made
         name = builder.builder_name(request.id)
+        with self._staging_lock:
+            self._active_builds += 1
+        try:
+            return self._build_image(request, name, ids, progress, cancel, vet)
+        finally:
+            with self._staging_lock:
+                self._active_builds -= 1
+            self._clean_staging()  # what is left, if no other build is under way
+
+    def _build_image(self, request, name, ids, progress, cancel, vet) -> str:
         self.remove_build(request.id, image=True)  # what an earlier build of this id left
         kept = False
         staging: Path | None = None
@@ -1155,10 +1374,13 @@ class PodmanRuntime(Runtime):
             vet(found)  # before the long copy
             staging = Path(tempfile.mkdtemp(prefix=STAGING_PREFIX, dir=self._scratch()))
             archive = self._stage(request.id, image_id, size, staging, progress, cancel)
-            if not self._image_exists(image_id):
-                loaded = image_id  # set before the load: a load that is stopped may have begun
-            self._load(archive, image_id, cancel)
-            self._podman("tag", image_id, built_name(request.id))
+            with self._naming:
+                before = self._own_images()
+                if not self._image_exists(image_id):
+                    loaded = image_id  # set before the load: a load that is stopped may have begun
+                self._load(archive, image_id, cancel)
+                self._hold_names(before, image_id, loaded is not None)
+                self._podman("tag", image_id, built_name(request.id))
             kept = True
             return built_name(request.id)
         finally:
@@ -1347,9 +1569,10 @@ class PodmanRuntime(Runtime):
         self, workspace_id: int, image_id: str, size: int, staging: Path, progress, cancel
     ) -> Path:
         """The image, by its id, saved in the builder and written to a file of ``staging``, then
-        checked (``builder.verify_archive``) before anything of it is loaded: loading applies the
-        names an archive carries, and the builder's word is not to be taken for them. What was
-        copied and how long it took is logged."""
+        checked and made again from the parts that were checked (``builder.repack_archive``)
+        before anything of it is loaded: loading applies the names an archive carries, and the
+        builder's word is not to be taken for them. The file that is returned is the one rcman
+        wrote; the saved one is removed. What was copied and how long it took is logged."""
         name = builder.builder_name(workspace_id)
         archive = staging / "image.tar"
         began = time.monotonic()
@@ -1375,11 +1598,20 @@ class PodmanRuntime(Runtime):
             pumped.sent,
             time.monotonic() - began,
         )
+        fresh = staging / "fresh.tar"
         try:
-            builder.verify_archive(archive, image_id)
+            builder.repack_archive(archive, image_id, fresh, stop=cancel.is_set if cancel else None)
         except builder.ArchiveRefused as refused:
             raise BuildFailed(kind="build_image_refused", reason=str(refused)) from None
-        return archive
+        except builder.PumpStopped:
+            raise RuntimeFailed("the build was stopped") from None
+        except OSError as failed:
+            if failed.errno == errno.ENOSPC:
+                raise BuildFailed("no space left on device") from None
+            raise RuntimeFailed("the image could not be stored") from None
+        finally:
+            archive.unlink(missing_ok=True)  # only the archive rcman wrote is kept
+        return fresh
 
     def _load(self, archive: Path, image_id: str, cancel: threading.Event | None) -> None:
         """``podman load`` of the checked archive, until it ends, ``builder.COPY_SECONDS`` have
@@ -1417,22 +1649,82 @@ class PodmanRuntime(Runtime):
         if found.stdout.decode("utf-8", "replace").strip().removeprefix("sha256:") != image_id:
             raise RuntimeFailed("the image was loaded under another id than it was saved with")
 
+    def _own_images(self) -> dict[str, str]:
+        """Every name of rcman's own that an image has - the default workspace image, the
+        builder's, and each image built for a workspace - with the id of the image that has it."""
+        own = {self.config.image, self.config.builder_image}
+        own |= {f"{n}:latest" for n in own if ":" not in n.rsplit("/", 1)[-1]}
+        proc = self._podman("images", "--format=json")
+        found: dict[str, str] = {}
+        for entry in json.loads(proc.stdout or b"[]") or []:
+            image = str(entry.get("Id") or "").removeprefix("sha256:")
+            for name in [*(entry.get("Names") or []), *(entry.get("RepoTags") or [])]:
+                if name in own or workspace_of_built_name(name) is not None:
+                    found[name] = image
+        return found
+
+    def _hold_names(self, before: dict[str, str], image_id: str, new: bool) -> None:
+        """After ``podman load``: every name of rcman's own is on the image it was on before, and
+        an image the load put in the storage has no name at all (the archive was written with
+        none, so any it has was applied by something else). What was moved is put back, by id,
+        and what was named is unnamed; then the build is refused. Names that the load had no part
+        in - a workspace's image another build named meanwhile, which the lock keeps out - are
+        not read as moved."""
+        after = self._own_images()
+        wrong = {n: before.get(n) for n, i in after.items() if before.get(n) != i}
+        if new:
+            carried = [
+                name
+                for entry in json.loads(self._podman("images", "--format=json").stdout or b"[]")
+                if str(entry.get("Id") or "").removeprefix("sha256:") == image_id
+                for name in [*(entry.get("Names") or []), *(entry.get("RepoTags") or [])]
+            ]
+        else:
+            carried = []
+        if not wrong and not carried:
+            return
+        for name in dict.fromkeys([*carried, *(n for n, o in wrong.items() if o is None)]):
+            self._podman("untag", image_id, name, check=False)
+        for name, old in wrong.items():
+            if old is not None:
+                self._podman("tag", old, name, check=False)
+        raise BuildFailed(
+            kind="build_image_refused", reason="loading it changed the name of an image of rcman's"
+        )
+
     def _clean_staging(self) -> None:
-        """Remove the staging folders of images that an earlier rcman left: those no build can
+        """Remove the staging folders of images that an earlier rcman left, or a build left that
+        was killed: all of them where no build is under way, and where one is, those no build can
         still be using, which have outlasted the longest a build's copy and load may take."""
         base = self.config.scratch_dir or Path(tempfile.gettempdir())
         oldest = time.time() - 3 * builder.COPY_SECONDS
-        for folder in base.glob(f"{STAGING_PREFIX}*"):
-            with contextlib.suppress(OSError):
-                if folder.is_dir() and not folder.is_symlink() and folder.stat().st_mtime < oldest:
-                    shutil.rmtree(folder, ignore_errors=True)
+        with self._staging_lock:
+            idle = self._active_builds == 0
+            for folder in base.glob(f"{STAGING_PREFIX}*"):
+                with contextlib.suppress(OSError):
+                    if not folder.is_dir() or folder.is_symlink():
+                        continue
+                    if idle or folder.stat().st_mtime < oldest:
+                        shutil.rmtree(folder, ignore_errors=True)
 
     def clean_probes(self) -> None:
         self._clean_staging()
         found = self._podman("ps", "--all", f"--filter=label={LABEL_PROBE}", "--format=json")
         for entry in json.loads(found.stdout or b"[]") or []:
             for name in entry.get("Names") or []:
-                self._podman("rm", "--force", "--ignore", "--time=0", name, check=False)
+                self._remove_container(name, check=False)
+        self._clean_volumes()
+
+    def _clean_volumes(self) -> None:
+        """Remove the anonymous volumes nothing uses: the ones an image declares, made with a
+        container that was removed without them. Every volume rcman makes is named and
+        labelled, so a volume with no label and the random name Podman gives its anonymous
+        ones, that no container has, is one of those."""
+        found = self._podman("volume", "ls", "--filter=dangling=true", "--format=json")
+        for entry in json.loads(found.stdout or b"[]") or []:
+            name = str(entry.get("Name") or "")
+            if ANONYMOUS_VOLUME.match(name) and not entry.get("Labels"):
+                self._podman("volume", "rm", name, check=False)
 
     def labelled(self) -> dict[str, dict[str, str]]:
         proc = self._podman("ps", "--all", f"--filter=label={LABEL_WORKSPACE}", "--format=json")
@@ -1563,10 +1855,10 @@ class PodmanRuntime(Runtime):
         return name
 
     def end_sign_in(self, name: str) -> None:
-        self._podman("rm", "--force", "--ignore", "--time=0", name)
+        self._remove_container(name)
 
     def end_canary(self, name: str) -> None:
-        self._podman("rm", "--force", "--ignore", "--time=0", name)
+        self._remove_container(name)
 
     def run_canary(self, directory: Path, name: str, version: str) -> dict[str, dict]:
         from rcman import people  # not at the top: the people module needs the web framework
@@ -1663,6 +1955,15 @@ class HostRuntime(Runtime):
         # was pulled, and the last spec each workspace was made from, so that a test can see
         # what reached ``create``.
         self.images: dict[str, ImageFacts] = {}
+        # Image ids the storage has beside those of ``images`` (an image whose name moved on),
+        # ids it has lost, and the id of the default image, which is empty until a test gives
+        # one: no workspace is then pinned to an image.
+        self.extra_ids: set[str] = set()
+        # The images in ``images`` that were put there by something the runtime did for
+        # someone (a pull, a build), which ``collect_images`` may remove.
+        self.collectable: set[str] = set()
+        self.lost_ids: set[str] = set()
+        self.default_id = ""
         self.pulled: list[str] = []
         self.specs: dict[str, Spec] = {}
         # Builds: the workspaces that have a builder now, the image built for each, the builds
@@ -1741,16 +2042,23 @@ class HostRuntime(Runtime):
             raise RuntimeFailed("slot 0 is rcman's own uid range")
         if not (0 <= spec.uid < RANGE and 0 <= spec.gid < RANGE):
             raise RuntimeFailed("the user's ids are beyond the range of ids a workspace has")
-        if spec.image and spec.image not in self.images:
+        if spec.image and not spec.image_id and spec.image not in self.images:
             raise RuntimeFailed(f"{spec.image}: image not known")
+        if spec.image_id and not self.has_image(spec.image_id):
+            raise RuntimeFailed(f"{spec.image_id}: image not known")
         if self.exists(spec.name):
             raise RuntimeFailed(f"the workspace {spec.name} is there already")
+        owner = self.root / spec.name / ".owner"  # kept when the container is discarded
+        whose = f"{spec.person}:{spec.install}"
+        if owner.exists() and owner.read_text() != whose:
+            raise RuntimeFailed(VOLUME_OF_ANOTHER.format(name=spec.name))
         layout = self.layout(spec.name)
         for folder in (layout.work, layout.config, layout.home):
             Path(folder).mkdir(parents=True, exist_ok=True)
         self._link_account(spec.name, spec.person)
         labels = {LABEL_WORKSPACE: str(spec.workspace), LABEL_PERSON: str(spec.person)}
         (self.root / spec.name / ".labels").write_text(json.dumps(labels))
+        owner.write_text(whose)
         (self.root / spec.name / self.MARK_DISCARDED).unlink(missing_ok=True)
         self.specs[spec.name] = spec
         self.start(spec.name)
@@ -1823,6 +2131,38 @@ class HostRuntime(Runtime):
         if image not in self.images:
             raise RuntimeFailed(f"{image}: image not known")
         return self.images[image]
+
+    def has_image(self, image: str) -> bool:
+        if image in self.lost_ids:
+            return False
+        return (
+            image in self.images
+            or image in self.extra_ids
+            or (bool(self.default_id) and image == self.default_id)
+            or any(facts.id == image for facts in self.images.values())
+        )
+
+    def default_image_id(self) -> str:
+        return self.default_id
+
+    def collect_images(self, keep_ids: set[str], keep_names: set[str]) -> list[str]:
+        """Those of ``collectable`` that nothing keeps and no container of the host is made
+        from: the images a test says were pulled or built by the runtime for someone."""
+        used = {
+            (spec.image_id, spec.image) for name, spec in self.specs.items() if self.exists(name)
+        }
+        used_ids = {i for i, _ in used if i} | {n for _, n in used if n}
+        removed = []
+        for name in sorted(self.collectable):
+            facts = self.images.get(name)
+            if facts is None or name in keep_names or name in used_ids:
+                continue
+            if facts.id and (facts.id in keep_ids or facts.id in used_ids):
+                continue
+            del self.images[name]
+            self.collectable.discard(name)
+            removed.append(name)
+        return removed
 
     def clean_probes(self) -> None:
         """Nothing is made to read an image here, so nothing is left."""

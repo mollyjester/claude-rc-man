@@ -79,7 +79,11 @@ def _person(request: Request, identity: Identity) -> people.Person:
 
 def _answer(request: Request, status: dict) -> dict:
     found = connection(status, request.app.state.settings.login_warning_days)
-    return {**found, "signing_out": status.get("signing_out", False)}
+    return {
+        **found,
+        "signing_out": status.get("signing_out", False),
+        "signed_out_unexpectedly": status.get("signed_out_unexpectedly", False),
+    }
 
 
 @router.get("")

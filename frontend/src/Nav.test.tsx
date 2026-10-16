@@ -200,13 +200,63 @@ test("signing out of rcman keeps sessions running unless asked, then leaves for 
     const left = vi.spyOn(away, "to").mockImplementation(() => {});
     const { unmount } = renderApp();
     const banner = await screen.findByRole("banner");
-    const box = within(banner).getByRole("checkbox", { name: m.keepSessions });
+    const box = within(banner).getByRole("checkbox", { name: m.keepServersOnSignOut });
     expect(box).toBeChecked();
     if (!keep) await userEvent.click(box);
-    await userEvent.click(within(banner).getByRole("button", { name: m.signOut }));
+    const button = within(banner).getByRole("button", { name: m.signOut });
+    await userEvent.click(button);
     await vi.waitFor(() => expect(left).toHaveBeenCalledWith("/oauth2/sign_out"));
     expect(fake.made("POST", "/api/me/sign-out")[0].body).toEqual({ keep_sessions: keep });
     left.mockRestore();
     unmount();
   }
+});
+
+test("Sign out is a plain button, in one form with the box that says what happens to the servers", async () => {
+  api(ME);
+  renderApp();
+  const banner = await screen.findByRole("banner");
+  const button = within(banner).getByRole("button", { name: m.signOut });
+  expect(button).not.toHaveClass("primary");
+  expect(button).not.toHaveClass("danger");
+  const box = within(banner).getByRole("checkbox", { name: m.keepServersOnSignOut });
+  expect(box.closest("form")).toBe(button.closest("form"));
+  expect(m.signOut).not.toBe(m.claudeSignOut); // the two sign-outs are told apart by name
+});
+
+test("a link that skips to the content is the first thing Tab reaches, and moves focus to the page", async () => {
+  api(ME);
+  renderApp();
+  await screen.findByRole("main");
+  await userEvent.tab();
+  const skip = screen.getByRole("link", { name: m.skipToContent });
+  expect(skip).toHaveFocus();
+  // nothing that can take focus comes before it in the page
+  const focusable = document.querySelector("a[href], button, input, select, textarea, [tabindex]");
+  expect(focusable).toBe(skip);
+  await userEvent.keyboard("{Enter}");
+  expect(screen.getByRole("main")).toHaveFocus();
+});
+
+test.each([
+  ["/", m.navDashboard],
+  ["/claude", m.navClaude],
+  ["/settings", m.navSettings],
+  ["/help", m.navDocs],
+  ...ADMIN_PAGES.map((page) => [page.path, page.label]),
+])("the page at %s is titled with its own name", async (path, name) => {
+  api(ADMIN_USER);
+  renderApp(path);
+  await screen.findByRole("main");
+  await vi.waitFor(() => expect(document.title).toBe(m.pageTitle(name)));
+  expect(document.title).toContain(m.appName);
+});
+
+test("the Workspaces page has its own top heading", async () => {
+  api(ME);
+  renderApp();
+  expect(
+    await screen.findByRole("heading", { level: 1, name: m.navDashboard }),
+  ).toBeInTheDocument();
+  expect(screen.getAllByRole("heading", { level: 1 })).toHaveLength(1);
 });

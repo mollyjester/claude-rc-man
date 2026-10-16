@@ -1,9 +1,11 @@
-import { render, screen, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { useState } from "react";
 
 import { ApiError, UNEXPECTED_RESPONSE } from "./api";
 import { PAGE_ERROR, takeReports } from "./clientErrors";
 import { m } from "./messages";
-import { asApiError, ProblemView } from "./ProblemView";
+import { asApiError, ProblemView, useFieldErrors } from "./ProblemView";
 
 test("shows the server's title and every field error exactly as sent", () => {
   const error = new ApiError(422, "validation_failed", "Some of what was sent is not valid.", [
@@ -153,4 +155,124 @@ test("a fault in the page is not taken for rcman unreachable", () => {
   } finally {
     consoleError.mockRestore();
   }
+});
+
+// A form that shows each refused field under its input, as the pages' forms do.
+function Planted({ error }: { error: ApiError | null }) {
+  const fields = useFieldErrors(error);
+  return (
+    <form ref={fields.form} noValidate onSubmit={(event) => event.preventDefault()}>
+      <label>
+        First
+        <input type="text" name="first" {...fields.input("first")} />
+      </label>
+      {fields.message("first")}
+      <label>
+        Second
+        <input type="text" name="second" {...fields.input("second", "help-second")} />
+      </label>
+      {fields.message("second")}
+      <p id="help-second">Help for the second.</p>
+      <ProblemView error={error} labels={{ first: "First", second: "Second" }} inline />
+    </form>
+  );
+}
+
+const refused = (errors: { field: string; message: string }[]) =>
+  new ApiError(422, "validation_failed", "Some of what was sent is not valid.", errors);
+
+test("an inline form shows each field's message under its input, linked to it and marked invalid", () => {
+  render(
+    <Planted
+      error={refused([
+        { field: "second", message: "planted reason for the second" },
+        { field: "first", message: "planted reason for the first" },
+      ])}
+    />,
+  );
+  const first = screen.getByLabelText("First");
+  const second = screen.getByLabelText("Second");
+  for (const input of [first, second]) expect(input).toHaveAttribute("aria-invalid", "true");
+  expect(first).toHaveAccessibleDescription("planted reason for the first");
+  // the help the input already had is kept, after the message
+  expect(second).toHaveAccessibleDescription("planted reason for the second Help for the second.");
+  // under its own input, in the order of the fields, not of the server's list
+  expect(first.parentElement?.nextElementSibling).toHaveTextContent("planted reason for the first");
+  expect(second.parentElement?.nextElementSibling).toHaveTextContent(
+    "planted reason for the second",
+  );
+});
+
+test("an inline form's alert is a short summary, and lists no field error twice", () => {
+  render(<Planted error={refused([{ field: "first", message: "planted reason" }])} />);
+  const alert = screen.getByRole("alert");
+  expect(alert).toHaveTextContent(m.problemCheckFields);
+  expect(alert).not.toHaveTextContent("Some of what was sent is not valid.");
+  expect(within(alert).queryByRole("list")).not.toBeInTheDocument();
+  expect(screen.getAllByText("planted reason")).toHaveLength(1);
+});
+
+test("an inline form lists what no input of it shows, under the server's title", () => {
+  render(
+    <Planted
+      error={refused([
+        { field: "first", message: "planted reason" },
+        { field: "request", message: "planted reason about the whole request" },
+      ])}
+    />,
+  );
+  const alert = screen.getByRole("alert");
+  expect(alert).toHaveTextContent("Some of what was sent is not valid.");
+  expect(within(alert).getByText("request: planted reason about the whole request")).toBeVisible();
+  expect(within(alert).queryByText(/planted reason$/)).not.toBeInTheDocument();
+});
+
+test("an input of a form that was not refused carries no mark and no message", () => {
+  const { rerender } = render(<Planted error={null} />);
+  expect(screen.getByLabelText("First")).not.toHaveAttribute("aria-invalid");
+  expect(screen.getByLabelText("First")).not.toHaveAttribute("aria-describedby");
+  expect(screen.getByLabelText("Second")).toHaveAttribute("aria-describedby", "help-second");
+  rerender(<Planted error={refused([{ field: "first", message: "planted reason" }])} />);
+  expect(screen.getByLabelText("First")).toHaveAttribute("aria-invalid", "true"); // the plant took effect
+  expect(screen.getByLabelText("Second")).not.toHaveAttribute("aria-invalid");
+});
+
+test("focus goes to the first refused field, in the page's order", async () => {
+  function Host() {
+    const [error, setError] = useState<ApiError | null>(null);
+    return (
+      <>
+        <button
+          type="button"
+          onClick={() =>
+            setError(
+              refused([
+                { field: "second", message: "planted reason for the second" },
+                { field: "first", message: "planted reason for the first" },
+              ]),
+            )
+          }
+        >
+          Refuse
+        </button>
+        <Planted error={error} />
+      </>
+    );
+  }
+  render(<Host />);
+  await userEvent.click(screen.getByRole("button", { name: "Refuse" }));
+  await waitFor(() => expect(screen.getByLabelText("First")).toHaveFocus());
+});
+
+test("inline names the fields the form shows now, and the rest are listed by their labels", () => {
+  const error = refused([
+    { field: "first", message: "planted reason for the first" },
+    { field: "second", message: "planted reason for the second" },
+  ]);
+  render(
+    <ProblemView error={error} labels={{ first: "First", second: "Second" }} inline={["first"]} />,
+  );
+  const alert = screen.getByRole("alert");
+  expect(within(alert).getByText("Second: planted reason for the second")).toBeVisible();
+  expect(within(alert).queryByText(/planted reason for the first/)).not.toBeInTheDocument();
 });

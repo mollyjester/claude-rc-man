@@ -30,8 +30,9 @@ MIGRATIONS = [
 
     -- The people who may use rcman. Each has a slot of their own: the uid range their
     -- workspaces run in (workspaces.py), never another's and never rcman's own, 0.
+    -- An id is never given again (autoincrement): it names the person's volume and slice.
     create table people (
-        id integer primary key,
+        id integer primary key autoincrement,
         email text not null unique collate nocase,
         admin integer not null check (admin in (0, 1)),
         slot integer not null unique check (slot >= 1),
@@ -50,8 +51,9 @@ MIGRATIONS = [
     -- A person's workspaces, and what rcman brings back when it starts: whether a
     -- server is recorded in it (from its start until it is forgotten), whether it
     -- should be running, and the prefix it was started with.
+    -- An id is never given again (autoincrement): it names the container, volume and slice.
     create table workspaces (
-        id integer primary key,
+        id integer primary key autoincrement,
         person integer not null references people (id),
         name text not null,
         state text not null check (state in ('creating', 'ready', 'failed', 'deleting')),
@@ -126,15 +128,27 @@ MIGRATIONS = [
     alter table workspaces add column cpu_percent integer check (cpu_percent > 0);
     alter table workspaces add column pids integer check (pids > 0);
     """,
+    """
+    -- The id of the image a workspace made from rcman's default image was made from, kept so
+    -- that a container lost later is made again from that image and not from a newer default.
+    -- A workspace made from a devcontainer.json keeps the id in its plan.
+    alter table workspaces add column image_id text;
+    """,
+    """
+    -- The id of this database, made when it is: put in the labels of the volumes and containers
+    -- rcman makes, so that those of another database with the same ids (a backup that was
+    -- restored) are never taken for this one's. One row.
+    create table meta (
+        id integer primary key check (id = 1),
+        install text not null
+    );
+    insert into meta (id, install) values (1, lower(hex(randomblob(16))));
+    """,
 ]
 
 
 class DatabaseTooNew(Exception):
     """The database was written by a newer rcman than this one."""
-
-
-class DatabaseOfAnOldInstall(Exception):
-    """The database was written by an rcman from before workspaces: there is no upgrade."""
 
 
 # The database names everyone, and oauth2-proxy shares rcman's group to read the allowed
@@ -157,17 +171,16 @@ def connect(path: Path) -> sqlite3.Connection:
     return con
 
 
+def install_id(con: sqlite3.Connection) -> str:
+    """The id of this database (``meta``)."""
+    return con.execute("select install from meta where id = 1").fetchone()[0]
+
+
 def migrate(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     con = connect(path)
     try:
         version = con.execute("pragma user_version").fetchone()[0]
-        tables = {row[0] for row in con.execute("select name from sqlite_master")}
-        if version and "people" not in tables:
-            raise DatabaseOfAnOldInstall(
-                f"{path} was written by an rcman from before workspaces; install rcman "
-                "afresh, as docs/installation.md says: there is no upgrade from it"
-            )
         if version > len(MIGRATIONS):
             raise DatabaseTooNew(
                 f"{path} is at schema version {version}, newer than this rcman's "

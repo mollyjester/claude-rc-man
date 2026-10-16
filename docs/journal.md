@@ -3,8 +3,10 @@
 rcman runs as the systemd service `rcman`, and what it writes goes to the
 system journal on the server. Besides the service's own messages — starting,
 stopping, and anything that went wrong inside rcman, such as a workspace it
-could not make or bring back when it started, or that it is waiting for Podman
-to answer — it writes three kinds of event there, each as one line of JSON:
+could not make or bring back when it started, that it is waiting for Podman
+to answer, or that it removed nothing when it started because its table of
+workspaces is empty while Podman holds some (see
+[Podman's volumes](installation.md#podmans-volumes-are-rcmans)) — it writes three kinds of event there, each as one line of JSON:
 
 - **Audit events**: each request that changed something, as the
   [audit trail](audit.md) records it.
@@ -77,6 +79,12 @@ out any more until those are sent. What it keeps is lost when the page is
 reloaded or closed, so a failure the person gave up on by reloading is never
 reported. The browser's console shows each failure as it happened, for
 whoever is at the browser.
+
+rcman accepts only a limited number of reports from a person at once and each minute
+(`REPORTS_BURST` and `REPORTS_PER_MINUTE` in
+[`backend/rcman/routers/client_errors.py`](../backend/rcman/routers/client_errors.py)); it
+refuses the rest with the status 429 and writes nothing for them, so that a page that fails
+without end cannot fill the journal.
 
 rcman cuts any text in a report that is longer than it takes, to the lengths
 in [`backend/rcman/routers/client_errors.py`](../backend/rcman/routers/client_errors.py),

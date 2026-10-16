@@ -50,11 +50,19 @@ matters, so a suppression at the site is preferred.
   got back under its name and how many lines were not shown, the server a problem is
   about with its screen, what a delete left, or what git said and how many
   lines more, when the server passes one.
-  Each input carries its field's name in its `name` attribute, and a form
-  passes `ProblemView` its labels by field name, so a field error is named as
-  the form names the field, and by the server's name for it where the form
-  has no label; `src/forms.test.tsx` refuses every field of every form and
-  checks each error is shown under its input's label.
+  Each input carries its field's name in its `name` attribute. A form shows
+  each refused field's message right under its input (`useFieldErrors` in
+  `src/ProblemView.tsx`: the input is `aria-invalid` and described by the
+  message, which keeps any help it already had, and focus moves to the first
+  refused field), and passes `ProblemView` its labels by field name and
+  `inline`, so that the alert is the short summary
+  (`m.problemCheckFields`) and lists only what no input of the form shows,
+  named as the form names the field, or by the server's name for it where the
+  form has no label. A form that does not show them under its inputs, the
+  header's sign-out, lists them all. `src/forms.test.tsx` refuses every field of
+  every form and checks each error is shown under its input or named by its
+  label. A refusal that names a field only in its extras, as the limit below
+  use does (`limit`), is shown under that field too.
   Forms are `noValidate` and no input carries a validation attribute;
   `src/forms.test.tsx` checks every form. It finds every form in the source:
   each `<form>` in the page's own `.tsx` files under `src/`, known by the
@@ -139,13 +147,32 @@ matters, so a suppression at the site is preferred.
   undone, such as deleting a workspace; its other buttons are plain or
   `secondary`, such as Commit & Push in Commit's menu, and a dialog's choice is
   a form too. `src/forms.test.tsx` checks every form, and
-  that only the forms it lists as destructive use `danger`. A button outside
+  that only the forms it lists as destructive, or as leading with `danger`
+  in place, use `danger`: signing out of Claude and finishing a sign-out at
+  once have no dialog, the button is the choice. The header's sign-out form is
+  the one exemption, named in that test and held to its subject: its button is
+  plain, in one group with the box that says what happens to the servers. A button outside
   a form that opens such a form, such as a panel's **Delete workspace** or
   the People page's **Remove**, is a
   danger outline, `secondary-danger`; `src/forms.test.tsx` checks the button
   that opens each form it lists as destructive. `src/styles.test.ts` checks
   that both look unlike any other button in both schemes.
-- **Every piece of text not from the server is in `src/messages.ts`.**
+- **Every piece of text not from the server is in `src/messages.ts`.** The
+  words for each action `docs/audit.md` lists, and for each result, are there
+  by code, and `src/audit-guide.test.ts` holds the two together; a code with
+  no words is shown as it is.
+- **A page can be skipped to and named.** The first thing Tab reaches is the
+  **Skip to content** link, which moves focus to `main`; each page sets the
+  browser tab's title with `useTitle` (`src/useTitle.ts`) to its name, then
+  rcman's; the Workspaces page has its own `h1`.
+- **A table never widens the page.** Every table is inside `TableScroll`
+  (`src/TableScroll.tsx`), a named box that scrolls sideways and takes focus;
+  help pages' pipe tables, which the Markdown renderer has no syntax for, are
+  split out of the Markdown by `src/markdownTables.ts` and drawn by
+  `src/Docs.tsx`, and `src/markdownTables.test.ts` finds every table in
+  `docs/`. On a phone the stylesheet stacks the columns, the selected
+  workspace's panel before the form that makes another, and the navigation
+  wraps.
 - **Every colour is a custom property in `src/styles.css`**, with a value for
   a light scheme and one for a dark scheme, which the browser picks between by
   the system's setting; `src/styles.test.ts` holds the stylesheet to that and
@@ -165,19 +192,20 @@ matters, so a suppression at the site is preferred.
 
 | File | What it is |
 |---|---|
-| `src/App.tsx` | Who is signed in, the navigation, whose **Admin** menu is a `usePopup` that also closes when a page is chosen and when the page changes, and the routes; **Sign out** beside the person's name, with **Keep sessions running**, which leaves through `away` for oauth2-proxy's sign-out |
+| `src/App.tsx` | Who is signed in, the navigation, whose **Admin** menu is a `usePopup` that also closes when a page is chosen and when the page changes, and the routes; **Sign out of rcman** beside the person's name, a plain button in one group with **Keep servers running after sign-out**, which leaves through `away` for oauth2-proxy's sign-out; the skip link and `main`'s focus target |
 | `src/AdminPages.tsx` | `ADMIN`, the administrators' pages by name, which the links in the administrators' warning use, and `ADMIN_PAGES`, the same pages in order, which the navigation's **Admin** menu and the routes are built from |
-| `src/Dashboard.tsx` | The Workspaces page: the person's workspaces, each with its dot (`dotFor` in `src/Servers.tsx`) and its state while it is not ready, and **New workspace**'s form (a name, and an optional GitHub address: with one it posts to `/api/git/clone`, naming the workspace only when a name is typed, and otherwise to `/api/workspaces`; the server judges both and its refusal of either is shown under the field's label), beside the selected workspace's panel; the selection kept in the address as `?workspace=`; the workspaces refreshed every `POLL_MS`, a refresh's failure shown until a later refresh works, and an answer older than one asked for since dropped. A new workspace is selected once the server takes its name. The panel says what a workspace being made, deleted or failed is, with the steps (`log`) in a figure while it is not ready, and for a ready one has its **Claude server** section and its **Changes** section (`src/Changes.tsx`, polled at the page's own `pollMs`); **Delete workspace** asks first, and after a delete no workspace is selected and the page says what was deleted |
+| `src/Dashboard.tsx` | The Workspaces page, under its own `h1`: the person's workspaces, each with its dot (`dotFor` in `src/Servers.tsx`) and its state while it is not ready, and **New workspace**'s form (a name, and an optional GitHub address: with one it posts to `/api/git/clone`, naming the workspace only when a name is typed, and otherwise to `/api/workspaces`; the server judges both and its refusal of either is shown under the field's label), beside the selected workspace's panel; the selection kept in the address as `?workspace=`; the workspaces refreshed every `POLL_MS`, a refresh's failure shown until a later refresh works, and an answer older than one asked for since dropped. A new workspace is selected once the server takes its name. The panel says what a workspace being made, deleted or failed is, with the steps (`log`) in a figure while it is not ready, and for a ready one has its **Claude server** section and its **Changes** section (`src/Changes.tsx`, polled at the page's own `pollMs`); a workspace that failed says why in a sentence (`src/workspaceError.ts`) with what the server said behind **Details**; **Delete workspace** is a section of its own at the foot of the panel, and asks first, naming the files not committed and the commits not pushed that the Changes section knows of (its `onUnsaved`); after a delete no workspace is selected and the page says what was deleted |
 | `src/Changes.tsx` | The Changes section of a ready workspace's panel, for the repository of the workspace it is given by id: its heading with the branch bar (`src/BranchBar.tsx`) beside it, the staged and not staged files, each list folding under a heading that counts its files and more, with its Stage selected or Unstage selected beside it, a checkbox for each file that can be selected and Select all, and each file's change as its letter (`m.changeLetters`) in a colour of its own, with its word (`m.changes`) as its accessible text and title; Commit, a split button whose menu holds Commit & Push; and the status line, "Checked …" (`m.checkedAgo`) worked out again every `CHECKED_TICK_MS` while the section is shown, and Refresh changes. `src/Changes.test.tsx` holds every change to a letter and a word, and the letters to differing. A list is open at first while it has files, opens when files come to it, and otherwise stays as the person left it. The status is fetched when the section opens, every `POLL_MS` while it is open and after every action; an answer older than one asked for since is dropped. Its branches are fetched when it opens, after every action and when the current branch changes. What is checked is kept across refreshes, for files still listed. A refusal is shown beside what was tried until any later action there works |
 | `src/BranchBar.tsx` | The branch bar: the branch lookup, a button naming where the repository is, whose pop-up has a filter, which asks rcman nothing, over the local and remote branches listed, each a switch where one is offered; **+**, New branch's form in a pop-up; Refresh branches, its icon turning while the fetch runs; ahead and behind as arrows, with `m.tracking` as their accessible text; and Push. It is shown once either the status or the branches are known, so a status that cannot be had leaves the branches to switch to; the arrows and Push wait for the status |
 | `src/usePopup.ts` | A pop-up opened by a button, as a disclosure: it closes on Escape, putting focus back on the button, on a press outside it and when focus moves outside it. Every pop-up a button opens uses it, the **Admin** menu among them. The stylesheet places the branch bar's pop-ups against the Changes heading's row, so they stay inside the section at any width |
 | `public/favicon.svg` | The tab's icon, `*rc` in white on a black circle, which `index.html` links; Vite copies `public/` into the build as it is |
+| `src/TableScroll.tsx`, `src/markdownTables.ts`, `src/useTitle.ts`, `src/workspaceError.ts` | The box a table scrolls in; the pipe tables of a help page; the browser tab's title; a failed workspace's sentence |
 | `src/Icons.tsx` | rcman's own icons, inline SVG drawn in the text's colour and hidden from assistive technology; the button or text they are in carries the name, from `src/messages.ts` |
 | `src/Servers.tsx` | A server's states, what each allows and shows, and its card; a workspace as the page lists it, and `dotFor`, the dot it carries |
 | `src/Caret.tsx` | The caret of a disclosure button, wherever one has a caret, turned by its `aria-expanded` |
-| `src/Claude.tsx` | The **Claude** page (`ClaudePage`): the account's state, read once as the page opens, the connect flow, and **Sign out of Claude** with **Keep sessions running** |
+| `src/Claude.tsx` | The **Claude** page (`ClaudePage`): the account's state, read once as the page opens, the connect flow, and **Sign out of Claude** with **Keep servers running until the last one stops**, in the danger style, as is **Stop my servers and sign out now** |
 | `src/Settings.tsx` | The person's own settings, in parts that are each saved on their own; `FIELDS` is every setting it shows, and a test holds `docs/settings.md` to it; the GitHub token part, which stores or removes the token through `/api/github` and never shows it |
-| `src/People.tsx`, `src/Everyone.tsx`, `src/Audit.tsx` | Administration: the people, each with their role, how many workspaces they have and their stored memory, CPU and process limits ("No limit" where there is none), added by address and removed after a confirmation; **Limits** opens a dialog that reads `GET /api/people/{id}/limits` and holds a form for the person's limits and one for each workspace's, each saved on its own with `PUT` (all three fields sent as typed, null for an empty one), with what each uses beside it, one refusal shown at a time beside the scope it concerns, focus moved into the dialog and back to the row's button, and the words about limits in `src/messages.ts` (`src/users-guide.test.ts` holds `docs/users.md` to them); everyone's workspaces and their servers, with no actions; the audit trail |
+| `src/People.tsx`, `src/Everyone.tsx`, `src/Audit.tsx` | Administration: the people, each with their role, how many workspaces they have and their stored memory, CPU and process limits ("No limit" where there is none), added by address and removed after a confirmation; **Limits** opens a dialog that reads `GET /api/people/{id}/limits` and holds a form for the person's limits and one for each workspace's, each saved on its own with `PUT` (all three fields sent as typed, null for an empty one), with what each uses beside it, a hint under each field (`m.limitsHints`) and the long explanation folded under **How limits work**, one refusal shown at a time beside the scope it concerns and under the field it is about, focus moved into the dialog and back to the row's button, and the words about limits in `src/messages.ts` (`src/users-guide.test.ts` holds `docs/users.md` to them); everyone's workspaces and their servers, with no actions; the audit trail, each action in plain words, dates in UTC, a failed result marked, and a settings target read as a list |
 | `src/Versions.tsx` | The Claude Code versions page, among the administrators' pages: the approved, previous and tested versions, with a warning where the approved one is not the tested one; the newest release, which the server suggests and nothing installs by itself, with **Roll out**; the roll-out form; the installed versions, each other than the approved one with **Use**, and how many running servers use each; and the servers running another version than the approved one. A roll-out is one request that lasts as long as the checks do; a refusal, the failed checks with what each ran and got back among them, is shown by `src/ProblemView.tsx` |
 | `src/Attention.tsx` | The administrators' warning at the top of every page, from `/api/attention`, naming each server on an unrecognised screen by its person and workspace, with a link to everyone's workspaces; fetched on load and on every change of page |
 | `src/Docs.tsx` | The help pages, from `/api/docs` |

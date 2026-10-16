@@ -28,6 +28,8 @@ the OpenAPI description it serves at `/api/openapi.json`, browsable at
 | `journal.py` | `install(log)`: sends a logger's events to standard error, one bare line each, which systemd sends to the journal |
 | `unrecognised.py` | The watch on every server rcman reads, which writes output rcman does not recognise to the journal (see [Output rcman does not recognise](#output-rcman-does-not-recognise)) |
 | `everyone.py` | Everyone's workspaces and servers, for administrators |
+| `headers.py` | The security headers every answer carries (see [Requests](#requests)) |
+| `ratelimit.py`, `filelock.py` | A token bucket for each name (the limit on a page's reports), and a re-entrant lock that is also a lock file, shared with `rcman-admin` (see [Limits](#limits)) |
 | `spa.py` | Serving the built frontend: its files, and `index.html` for every other path not under `/api`; installed after every router |
 | `routes.py` | The app's routes as FastAPI resolves them after including routers, and which of them are for administrators |
 | `routers/` | One module per area: `me`, `workspaces`, `servers`, `git`, `github`, `claude`, `people`, `audit_log`, `attention`, `docs`, `client_errors` |
@@ -54,6 +56,11 @@ the OpenAPI description it serves at `/api/openapi.json`, browsable at
   `/api/health` and the frontend's files.
 - **Origin.** A `POST`, `PUT`, `PATCH` or `DELETE` must carry an `Origin`
   header equal to `RCMAN_PUBLIC_ORIGIN`.
+- **Headers.** Every answer carries `headers.SECURITY_HEADERS` (`SecurityHeaders`, an ASGI
+  middleware installed by `create_app`): a policy that forbids framing and nothing more, so
+  that the interactive description of the API, which loads scripts of its own, works;
+  `X-Frame-Options`, `X-Content-Type-Options` and `Referrer-Policy`. Neither Caddy nor
+  oauth2-proxy adds them for what rcman serves. An answer that sets one keeps its own.
 - **Administrators.** Routes for administrators depend on `admin_user`.
   `routes.admin_only` finds them in the route table, and
   `tests/test_identity.py` drives each one as someone who is not an
@@ -133,6 +140,9 @@ administrators (`routers/people.py`), and `rcman-admin limits` does the same fro
 - `PUT /api/people/{person}/limits` and `PUT /api/people/{person}/workspaces/{workspace}/limits`
   set the whole set, `LimitsBody`: a field sent null is taken away. Each field is checked by the
   rule of `helpers/rules.py` and the minimum of `limits.py`, and refused in the rule's words.
+  The lock `_limits_lock` is also a lock file beside the database (`filelock.FileLock`,
+  `workspaces.LOCK_FILE`), so `rcman-admin limits`, a process of its own, and the service
+  take turns.
 
 The problem codes are in `problems.py`: `memory_invalid`, `cpu_invalid` and `pids_invalid`
 (each the sentence of its rule), `limit_below_use`, which names the limit and what is in use (409; the rule is
@@ -160,7 +170,14 @@ credentials file every workspace of theirs shares (see
 - **Its state.** `GET /api/claude` reads the file with `read_account`, only when
   the Claude page opens: connected while it holds `claudeAiOauth`, with the
   refresh token's expiry (`refreshTokenExpiresAt`), or none without one, against
-  `login_warning_days`; and `signing_out`.
+  `login_warning_days`; `signing_out`; and `signed_out_unexpectedly`, true when SQLite has
+  the account connected, no sign-out waits and the file holds no sign-in
+  (`runtime.credentials_state`: empty or unreadable), as two workspaces' Claude writing it at
+  once can leave it (an accepted risk, see [runtime.md](runtime.md#a-persons-claude-sign-in)).
+  The state is given even when finishing a sign-out that waits keeps failing: that is logged. It
+  and `begin`, `finish` refuse a person being deleted or gone (`not_allowed`), the read under
+  the person's lock so that it cannot make the volume again after a deletion, as
+  `GitAccount` does, since reading or starting a sign-in makes their volume.
 - **A server's start** (`Workspaces.start_server`) refuses `claude_not_logged_in`
   while the person has no `claude_account`, and `claude_signing_out` while a
   sign-out waits; otherwise it seeds `oauthAccount` into the workspace's
@@ -203,6 +220,12 @@ files to stage reach git on stdin and are never recorded or logged.
   the calls of one verb), and `exec` itself has a `timeout` of its own that ends a
   call whose tool did not. `helpers/git_run.py` keeps the parsers and the rules for
   git's output and refusals; `repository.py` is the process half.
+- **What git is run with.** An environment of its own (`Repository.env`): the variables the
+  workspace's plan sets but for every `GIT_` one and every name that moves git's
+  configuration (`runtime.moves_git_config`), and the few of git's that rcman sets. The same
+  names are refused in a devcontainer.json (see [runtime.md](runtime.md#a-repositorys-devcontainerjson)).
+  Whether a token is stored is asked of the workspace's shell by exit status
+  (`HAS_PASSWORD`), so no byte of the credential file passes through the channel.
 - **A repository is the workspace's own `.git`.** A workspace with none, as a new
   one has, answers `not_a_repository` (409). `git init` is not rcman's: Claude runs
   it.
@@ -238,7 +261,8 @@ files to stage reach git on stdin and are never recorded or logged.
   [Building an image](runtime.md#building-an-image)). Its plan is the `environment`
   column of `workspaces` (null for a workspace of the default image), which a restore
   reads. A build copies its image through a staging folder in `scratch_dir`
-(see [Building an image](runtime.md#building-an-image)). `problems.DEVCONTAINER_MESSAGES` is what a refusal or a failed command says in
+  (see [Building an image](runtime.md#building-an-image)).
+  `problems.DEVCONTAINER_MESSAGES` is what a refusal or a failed command says in
   plain words, and holds no number; the workspace's `error` carries it and the steps in
   `log` carry the rest. Nothing here adds a route: the file is read inside the clone's
   own thread, so the audit and the permission rules of `git.clone` cover it.
@@ -266,7 +290,7 @@ files to stage reach git on stdin and are never recorded or logged.
 `claude_versions.ClaudeVersions` (`Workspaces.versions`, also `app.state.versions`) owns
 the store, `claude_store`: `versions/<version>`, `current` and `bin/claude`. The
 installer makes the store and rcman writes it from then on (see
-[the installer](installer.md#what-it-does)). Approvals are the append-only table
+[the installer](installer.md#what-workspaces-are-made-of)). Approvals are the append-only table
 `claude_approvals` (triggers refuse an update and a delete): the latest is the approved
 version, the previous is the latest one naming another, and a rollback is a new row. The
 database is the truth and `current` follows it (`reconcile`, run when rcman starts, before
@@ -301,9 +325,15 @@ row records the version its server started with (`claude_version`).
   reports in the problem's extra) and `claude_canary_failed` (the canary could not run).
   The checksum comes from the release site with the program: it protects against corruption,
   not against a compromised source, and nothing checks a signature.
-- **Pruning.** `prune` removes the versions that are neither approved, previous nor the one
-  `current` names and that no server in `Workspaces.pinned_servers` uses (a server that runs,
-  cannot be read, or is being started). It asks the servers for their status without holding
+- **Pruning.** `prune` removes the versions that are neither approved, previous, tested
+  (`helpers/claude-version`) nor the one `current` names and that no server in
+  `Workspaces.pinned_servers` uses (a server that runs, cannot be read, or is being started;
+  tmux is asked whatever the row's `server` flag says, since the record of a version and the
+  flag are two writes, and only tmux saying there is none frees the version). `rcman-admin`
+  does not prune or collect images (`Workspaces(prunes=False)`): its locks are not the
+  service's, which does at the next stop, roll-out or start. A version put in the store less
+  than `PRUNE_GRACE_SECONDS` ago stays: an upgrade of rcman puts its tested version there while
+  the release before it runs, which does not know it. It asks the servers for their status without holding
   `lock`, then decides again under it, also keeping a version whose workspace record changed
   meanwhile; it does nothing while a roll-out runs. It runs after a roll-out, after a server
   is stopped or forgotten (`Workspaces._stopped`) and in the restore, with `sweep`,
@@ -377,8 +407,10 @@ add a line or a field.
 Anyone signed in can write to the journal this way, so what one request can
 write is bounded: every field is bounded, the request needs a signed-in person
 in the people table and the public `Origin`, like every changing request, and
-each line names who sent it. There is no throttle per person; journald's own
-rate limit and size limits bound the rest.
+each line names who sent it. A person's reports are limited by a token bucket (`REPORTS_BURST`, refilled at
+`REPORTS_PER_MINUTE`, `ratelimit.TokenBuckets` on `app.state.client_error_limit`): the next is
+refused with `too_many_reports` (429, `Retry-After`) and writes nothing, and the page drops what
+rcman refuses. journald's own rate limit and size limits bound the rest.
 
 ## Output rcman does not recognise
 

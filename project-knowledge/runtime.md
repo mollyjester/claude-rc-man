@@ -52,6 +52,18 @@ conmon and the network helper with them, live in rcman's user manager, not in
 - the labels `rcman.workspace` and `rcman.person`, by which `labelled` finds
   every workspace there is.
 
+A volume of the workspace's name that is there already is adopted only if its labels, read from the volume
+(`volume inspect`) and compared by rcman, not by a filter of Podman's, are for the same person **and** the same database (`_own_volume`: `LABEL_PERSON` and
+`LABEL_INSTALL`, the id in the `meta` table that `db.install_id` reads, made with the database and
+put in the labels of the volume and container of every workspace); the host runtime keeps both in a
+file of the folder. One made for another person or another database, or with no install label, is
+`VOLUME_OF_ANOTHER`. Ids are never given again (`autoincrement` in `db.py`), so a name does not
+come back for someone else within a database; the install id guards against a database restored
+from a backup, which hands the ids out again. A container made again is made from an image **id**
+(`Spec.image_id`, never a name that may have moved on): the plan's, or, for a workspace of the
+default image, the one recorded in the row when it was first made, `workspaces.image_id`.
+Every container removed goes with its anonymous volumes (`_remove_container`, `--volumes`).
+
 Podman copies an image for each range the first time a range uses it, so a
 person's first workspace takes longest to make.
 
@@ -89,26 +101,32 @@ minimums) are in `helpers/rules.py`.
   edit carries the stored memory and process values and is refused if they are lower than the
   slice's caps and below use. Usage is memory plus swap, memory including page cache; where the
   unit manager cannot say what an active slice uses, a tightening is refused as `usage_unknown`.
-  There is no force. The limits are applied before they
-  are recorded, so one that could not be applied (`limits_not_applied`) changes nothing; reading
-  and writing take `_limits_lock`.
-- **Restoring and ids reused.** The user manager forgets runtime properties at a restart of the
+  There is no force. A set that lowers a memory or process cap is applied before it is
+  recorded, so one that could not be applied (`limits_not_applied`) changes nothing, and a
+  crash between the two leaves the table above the slice; a set that only raises or removes
+  caps is recorded first and applied after, so a crash between leaves the slice below the table,
+  never the table below the slice, and one that cannot be applied is taken back. Reading and
+  writing take `_limits_lock`, a lock file beside the database as well (`filelock.py`,
+  `LOCK_FILE`), since `rcman-admin` changes limits in a process of its own.
+- **Restoring.** The user manager forgets runtime properties at a restart of the
   machine, so `restore` sets the slice of every person and every workspace from the table
   (`_restore_limits`), a row with no limits resetting its slice, before it starts any container.
   A workspace made, or made again, has its stored set applied first (`_apply_stored`), an empty
-  set resetting the slice, since ids are given again and a slice may still hold a deleted
-  workspace's limits. The report of usage (`limits_report`) has a total deadline,
+  set resetting the slice. Both judge as an edit does (`_not_below_use`): a memory or process
+  limit that would lower the slice's own cap below what is in use stays at that cap, and so does
+  one when the use is not counted; the table is left as it is. The report of usage (`limits_report`) has a total deadline,
   `LIMITS_REPORT_SECONDS`, past which readings show as could not be read.
-- **Dropping.** Deleting a workspace or a person, and removing an orphaned container at restore, call `drop_limits`, which reverts the
-  slice's properties and never stops it, as stopping a slice stops the containers in it; ids
-  are given again, so one left would hold the next. It never fails the deletion.
+- **Dropping.** Deleting a workspace or a person, and removing an orphaned container at restore,
+  call `drop_limits`, which reverts the slice's properties and never stops it, as stopping a
+  slice stops the containers in it; a slice is named by ids, and a person's slot is given
+  again, so a slice left would hold the next. It never fails the deletion.
 - **What the installer prepares.** The controllers, and the lifted default ceiling on
   processes: `ensure_limits`, see [installer.md](installer.md).
 
 ### A person's Claude sign-in
 
-Each person has one sign-in, Claude Code's credentials file (`CREDENTIALS`),
-alone in a volume of theirs, `account_volume`, labelled with the person.
+Each person has one sign-in, Claude Code's credentials file (`CREDENTIALS`), in a volume
+of theirs, `account_volume`, labelled with the person, with the git folder (see below).
 `ensure_account` makes it, empty and owner-only, if it is not there: a
 container that removes itself runs `ENSURE_SCRIPT` in the person's range, with
 no network, so the file is their range's root's with mode 0600; `create`
@@ -125,6 +143,15 @@ mounted by name by nothing that lasts, so Podman takes it for unused: it must
 never be pruned, as [the installation guide](../docs/installation.md) says.
 `remove_account` removes it; a person's is removed before their row (see
 [people.md](people.md#deleting-a-person)).
+
+**An accepted risk.** Claude Code's lock on a refresh is a file in the configuration folder,
+and each workspace has a folder of its own, so two workspaces of one person can refresh the
+shared file at the same moment; Claude writes it in place, truncating first, and the file can
+be read empty, or be left with the tail of a longer text. rcman does not serialise refreshes.
+It notices instead: `credentials_state` reads the file as `signed_in`, `empty` or
+`unreadable`, and `Accounts` reports `signed_out_unexpectedly` when SQLite has the account
+connected, no sign-out waits, and the file is not a sign-in. The podman host's suite measures
+concurrent refreshes and holds turn-taking ones to whole files.
 
 `start_sign_in` starts the person's sign-in container, `sign_in_name`:
 `podman run --rm --detach`, in the person's range, its process the mounted
@@ -144,7 +171,8 @@ file because a bound file cannot be replaced by rename, and `git config
 --global` needs to write beside its file. rcman owns two files in it
 (`GIT_FILES`): `config`, which git reads as its global configuration (the commit
 author, and a credential helper for `https://github.com` that only reads the
-other file), and `credential`, the GitHub token in git's credential format,
+other file, after an empty `helper` that drops every helper the image or the person listed
+before it), and `credential`, the GitHub token in git's credential format,
 owner-only, and empty when none is stored (see
 [backend.md](backend.md#git-in-workspaces)).
 
@@ -174,7 +202,8 @@ a command that has not ended by then is `RuntimeFailed`; and a `cwd`, the folder
 runs in (without one, the host runtime's work folder and the image's own working folder in
 Podman, which has no work folder before `create` has made it; a caller that needs one names it). `discard` removes a container and keeps its
 volume, so that `create` makes it again on the same files; `remove` takes both.
-`pull` pulls an image, passing on each line it prints and stopping when its `cancel`
+`pull` pulls an image, never one named `localhost/...` (podman would read it as the registry
+on the loopback of the machine: it is in rcman's storage or nowhere), passing on each line it prints and stopping when its `cancel`
 event is set; an image the runtime already has, such as one built or loaded there, is used
 when its pull fails (`USING_LOCAL_IMAGE` is said), so no registry is needed for it, and `image_facts` reads one without running it (`ImageFacts`). The host
 runtime has no images: a test plants them in its `images`, and its `specs` hold the
@@ -333,11 +362,14 @@ label, then the file's own, merged) and the parsing of an image's passwd and gro
   row's `environment`; close the channel, `Runtime.discard` the container (the volume
   stays) and make it again from the image as the plan's user; check libc (an image on
   musl is refused) and git; run the create commands. The workspace stays `creating`
-  until all that is done.
+  until all that is done. The plan holds the image's id and, for a pulled one, its digest
+  (`ImageFacts.id`, `digest`); the container is made from the id (`Spec.image_id`).
 - **Failure.** A `devcontainer.Refused` - a refused or unknown key, a file that cannot
   be read or parsed, an image that cannot be pulled, built, read, used or run - fails the workspace
   with a message from `problems.DEVCONTAINER_MESSAGES` and removes its container and
-  volume, leaving only the failed row. A lifecycle command that fails or takes too long
+  volume, leaving only the failed row; a runtime that cannot be reached meanwhile is not a
+  refusal, and fails the workspace in plain words (`runtime_gone`) and keeps them. A lifecycle
+  command that fails or takes too long
   fails the workspace with its exit code and the tail of its output, and keeps the
   container and volume for the person to look at.
 - **The user.** The plan's user is the image's user for `remoteUser`, else
@@ -354,7 +386,10 @@ label, then the file's own, merged) and the parsing of an image's passwd and gro
   with `remoteEnv` it is what
   `Layout.env` holds for the workspace (`Workspaces._layout`), and so what git, tmux,
   Claude and the lifecycle commands get besides rcman's own variables.
-  `devcontainer.RESERVED_ENV` are the names rcman sets itself that a file may not set.
+  `devcontainer.RESERVED_ENV` are the names rcman sets itself that a file may not set, and no
+  file may set a name that moves git's configuration from the git folder (`moves_git_config`:
+  `XDG_CONFIG_HOME` and the `GIT_CONFIG` ones); an image's are not taken, `Layout.for_plan`
+  drops them and so does `Repository.env`.
   `LANG`, `LC_ALL` and `BROWSER` a file may: rcman sets each in only some of its programs
   (`LANG` for tmux and Claude, `LC_ALL` for git, `BROWSER` for Claude), and there its value
   comes after the file's and wins; everywhere else, lifecycle commands included, the file's is
@@ -364,7 +399,13 @@ label, then the file's own, merged) and the parsing of an image's passwd and gro
   [@digest]`, as written: no variable in it (it is the name that is pulled), and nothing
   that podman would read as a transport or a file (`docker-archive:`, `oci:`, `dir:` and the
   like), and no name that holds `BUILT_REPOSITORY` or is bare hexadecimal (`HEX_ID`), which
-  Podman would take for an image built for a workspace or for any image by its id.
+  Podman would take for an image built for a workspace or for any image by its id. Nor a
+  registry on this machine or its network (`_on_a_registry_of_this_machine`): a pull runs in the
+  host's network, where loopback and private addresses are the host's own services. A host that
+  is `localhost` with a port, a loopback, private or link-local address (also in the old forms a
+  resolver reads), or a name ending in one of `LOCAL_SUFFIXES` is refused; a name that resolves
+  to such an address cannot be told without resolving it. `localhost/name` with no port names an
+  image of rcman's storage, and `PodmanRuntime.pull` never pulls it.
 - **Commands.** `Workspaces._run_commands` runs each command in the work folder, as the
   container's user, under the `timeout` tool with `HOOK_TIMEOUT_SECONDS`, with exactly
   `_hook_env`; a string by the image's `/bin/sh` or else the mounted busybox's shell, an
@@ -403,11 +444,26 @@ page](../docs/devcontainer.md#building-an-image).
   image by id (`ARCHIVE_FORMAT`) in the builder into a private staging folder
   (`STAGING_PREFIX`) under `PodmanConfig.scratch_dir`, the database's parent folder by
   default, through `builder.pump`, which counts bytes, is capped by `MAX_IMAGE_BYTES` and
-  `COPY_SECONDS`, and is killed by `cancel`. `builder.verify_archive` accepts the archive
-  before anything reads it with `podman load -i` (`_load`): one image, no names, the
-  configuration's hash equal to the id, nothing extracted. The image is tagged
+  `COPY_SECONDS`, and is killed by `cancel`. `builder.repack_archive` then makes the archive that
+  is loaded (`_load`, `podman load -i`) from the saved one, which is removed: `verify_archive`
+  accepts it first - no part of an OCI layout (Podman reads that before a docker-archive and
+  applies the names its index carries), one image, no names, the configuration's hash equal to
+  the id, the configuration listing as many layers (`rootfs.diff_ids`) as the manifest, the
+  manifest, configuration and layers as plain files with plain headers (a size
+  field that Python's tar and Go's read differently is refused) - and only the manifest (written
+  again, with no names), the configuration and the layers are written to the new archive; the
+  other members, a docker-archive's legacy folders among them, are read past and not carried
+  over. Each layer is hashed as it is copied and refused unless its bytes are the digest the
+  configuration lists: the storage takes a layer it already has by that digest without reading
+  the archive's bytes for it. Nothing is extracted. A build holds `_naming` from the reading of rcman's own names
+  (the default image's, the builder's and every `built_name`) to the naming of the new image;
+  after the load `_hold_names` finds each still on the image it was on, puts back by id any
+  that moved, takes every name off the new image, and refuses the build
+  (`build_image_refused`) if anything was wrong. The image is tagged
   `built_name(id)`, one for each workspace; one loaded and not kept is removed by its id, and
-  the staging folder always. The restore sweeps stale staging folders (`_clean_staging`).
+  the staging folder always. The restore, and the end of a build when no other build runs,
+  clear every staging folder (`_clean_staging`); while a build runs only those old enough that
+  no build can be using them go.
   Feature `containerEnv` is in the image's environment, not the label, so the plan has it
   through `image_facts`.
 - **Cleanup.** A `finally` removes the builder and its volume, and the image too unless it
@@ -468,22 +524,41 @@ the prefix it was started with.
   deletes it and decides); makes again a `ready` workspace whose container is
   gone, from its stored plan if it has one, and starts one that is stopped, and
   runs the plan's `postStartCommand` after either; removes what an interrupted
-  read of an image left (`clean_probes`); applies the stored limits to the slices (see
+  read of an image left (`clean_probes`: probe containers, staging folders and the anonymous
+  volumes nothing uses, `_clean_volumes`); applies the stored limits to the slices (see
   [Limits](#limits)), before any container is started. The workspaces are brought back up to
   `RESTORE_WORKERS` at once, each in a thread of its own that goes on to start that
   workspace's server if it should be running (pinned to the approved version, as above), so that a workspace that is slow, a start
   command that hangs among the causes, does not keep another from being brought back; it
   holds one of the places until it is done, and the removal of what no row is for, the
   finishing of deletions and the settling of sign-outs wait for the last. A lost container is made again
-  only after its plan's image is pulled again (`Runtime.pull`, which uses the image the
-  runtime has when the registry cannot be reached). If the registry says the image is not there or
-  may not be had (`workspaces.image_is_gone` reads its words), the workspace is failed, saying
-  to delete it and make it again; any other failure of the pull - the network, a timeout, a
+  from the image **id** its plan holds (`Workspaces._pinned_image_is_there`), or, for a
+  workspace of the default image, from `workspaces.image_id`, recorded when it was first made
+  (`_pinned`); a newer default image is for new workspaces. An id the storage no longer has
+  is pulled again by the plan's digest (`runtime.repository_of` and the digest) and must
+  then be the very image; with no digest the workspace is failed, saying to delete it and
+  make it again (`image_gone`, `default_image_gone`, and for an image rcman built
+  `built_image_gone`). A plan with no id (one stored without) pulls its image's name as it
+  always did (`Runtime.pull`, which uses the image the runtime has when the registry cannot be
+  reached). If the registry says the image is not there or
+  may not be had (`workspaces.image_is_gone` reads its words), the workspace is failed likewise;
+  any other failure of the pull - the network, a timeout, a
   registry that is down - leaves it ready without its container, logged, and the next restore
   tries again. What can be slow is done without the
   workspace's lock and under `_working_on`, so a deletion stops it. Restore stops between
   steps once rcman is closing;
-  removes every labelled container no row is for; removes each person an
+  discards (the volume stays) every labelled container no row is for, and removes nothing at all
+  - no container, build, image or Claude Code version - when the table has no workspace but the
+  runtime has some, which is logged as an error (`_table_is_empty_of_workspaces_there_are`);
+  collects the images nothing refers to (`_collect_images`: not while a workspace is being made
+  or a plan cannot be read, never one a container is made from, never by force, and the keep
+  list is every stored plan's image and id, each workspace's `image_id`, the image built for
+  each workspace, and the runtime's own: every tag of the default and the builder repositories,
+  since an upgrade builds the next ones beside the service; an image with no name stays until it
+  is `IMAGE_GRACE_SECONDS` old, being perhaps a layer of a build under way; names are compared
+  fully qualified, as Podman lists them, `qualified_name`), which it does after a deletion too. It
+  holds `_images_lock`, which `create` holds while it records a workspace, so a workspace is either
+  seen by a collection or recorded after it; `rcman-admin` does not collect; removes each person an
   earlier rcman was deleting, once none of their workspaces is left, their
   sign-in first; finishes each Claude sign-out that waits for servers that
   no longer run; and sweeps what a roll-out of a Claude Code version cut short left and prunes the store

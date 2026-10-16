@@ -51,7 +51,7 @@ def runtime_with(tmp_path: Path, systemctl: Systemctl | str) -> rt.PodmanRuntime
         rt.PodmanConfig(
             socket=Path("/run/user/990/podman/podman.sock"),
             image="localhost/rcman-workspace:test",
-            tools_dir=Path("/var/lib/rcman/tools"),
+            tools_dir=Path("/opt/rcman/tools"),
             claude_store=Path("/var/lib/rcman/claude"),
             podman=str(tmp_path / "podman"),
             systemctl=program,

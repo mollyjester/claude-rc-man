@@ -129,7 +129,7 @@ def _run(args, settings: Settings, runtime: Runtime | None) -> int:
     from rcman.main import podman_runtime
     from rcman.workspaces import Workspaces
 
-    service = Workspaces(settings, runtime or podman_runtime(settings))
+    service = Workspaces(settings, runtime or podman_runtime(settings), prunes=False)
     try:
         if args.verb == "limits":
             return _limits(args, service, person)

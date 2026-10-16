@@ -22,7 +22,11 @@ may use together, `memory_mib`, `cpu_percent` and `pids`, each null for no limit
 `workspaces` table has the same three, for one workspace; see
 [runtime.md](runtime.md#limits)). An address is checked by `EMAIL` in
 `helpers/rules.py`, the rule the installer checks the first administrator's by
-too.
+too. A person's id, and a workspace's, is never given again (`autoincrement`): it names a
+volume, a slice and a container, so one given to a new row would adopt what the last left. The slot is
+the one thing that is given again. The database has an id of its own (`meta`,
+`db.install_id`), put in the labels of the volumes and containers rcman makes, so that those of a
+database restored from a backup, whose ids come round again, are not adopted.
 
 **The slot** is the uid range every workspace of the person runs in: slot `k`
 maps a workspace's ids from 0 onto rcman's subordinate ids from `k × RANGE`
@@ -53,15 +57,19 @@ removal takes effect at once in rcman whatever oauth2-proxy has read.
 
 `Workspaces.delete_person` (`backend/rcman/workspaces.py`) marks the person
 `deleting`, from when they are let in nowhere, off the allowed list, and no
-workspace is made for them (`not_allowed`); deletes
+workspace is made for them (`not_allowed`); ends a sign-in of theirs that waits for its code
+(`on_person_deleting`, `Accounts.forget`) and, since `Accounts` also refuses their status, a
+new sign-in and a code once they are marked (`not_allowed`, so that none makes their volume
+again); deletes
 every workspace of theirs, container and volume, waiting for one still being
-made; then their Claude sign-in and git folder (see
+made; then, under the person's lock, so that no sign-in or start of theirs is under way, their
+Claude sign-in and git folder (see
 [runtime.md](runtime.md#a-persons-claude-sign-in)); drops the person's limits (their
 slice; see [runtime.md](runtime.md#limits)); then removes their row, their
 settings and, with the row (`on delete cascade`), their GitHub token, and
-writes the allowed list again. The sign-in and git folder go before the row
-because ids and slots are given again: a file left behind would sign the next
-person in, or give them the last one's token. One that cannot be removed leaves the row `deleting`, for
+writes the allowed list again; and collects the images nothing refers to now. The sign-in and
+git folder go before the row because slots are given again: a file left behind would sign the
+next person in, or give them the last one's token. One that cannot be removed leaves the row `deleting`, for
 rcman's next start. A person with workspaces cannot be removed from the table: the
 workspaces' rows refer to theirs. A deletion that could not remove a workspace answers `workspace_failed`
 and leaves the person `deleting`, let in nowhere; that, and a deletion that
@@ -94,8 +102,8 @@ start.
 
 | Tests | What they prove |
 |---|---|
-| `tests/test_db.py` | The schema: one address and one slot per person, no slot 0, no person removed while workspaces are theirs |
-| `tests/test_accounts.py` | A person's sign-in removed before their row, and a leftover one never reaching the next person given the same id and slot |
+| `tests/test_db.py` | The schema: one address and one slot per person, no slot 0, no person removed while workspaces are theirs, no id given again |
+| `tests/test_accounts.py` | A person's sign-in removed before their row, a leftover one never reaching the next person given the same slot, nothing of a person being deleted made again, and a deletion waiting for the person's lock |
 | `tests/test_people.py` | Slots, addresses, the bound on people, the allowed list written whole by rename, and the People page's routes, deleting a person's workspaces and settings among them, and their limits |
 | `tests/test_identity.py` | Who is let in: an active person, by address in any case, and no one else from the moment they are removed or being deleted |
 | `tests/test_admin.py` | `rcman-admin`'s verbs, `limits` among them, its words, running itself again as rcman, and the installed script |

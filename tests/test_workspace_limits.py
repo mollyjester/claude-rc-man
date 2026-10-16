@@ -16,7 +16,6 @@ from rcman.problems import Problem
 
 from tests.conftest import ALICE, BOB, TMUX_CONF
 
-GIB = 1024**3
 MIB = 1024**2
 BIG = Limits(memory_mib=4096, cpu_percent=400, pids=1000)
 
@@ -609,6 +608,131 @@ def test_restore_never_stops_or_removes_a_running_container_to_apply_limits(
     assert runtime.limits  # and the limits were applied
 
 
+def test_restore_never_lowers_a_cap_of_the_slice_below_what_is_in_use(service, settings, runtime):
+    """The table says 2G; the slice has 4G, as after a raise that was applied and did not reach
+    the table, and 3G is in use. The table's 2G on the slice would end work that is running."""
+    person = person_of(settings)
+    workspace = insert(settings, person.id, "w", held=Limits(pids=100))
+    stored_only(service, person, Limits(memory_mib=2048, cpu_percent=100))
+    runtime.apply_limits(person.id, None, Limits(memory_mib=4096))
+    runtime.apply_limits(person.id, workspace, Limits(pids=500))
+    plant(runtime, person, memory_mib=3000)
+    plant(runtime, person, workspace, tasks=300)
+    service.restore()
+    held = runtime.limits[limits.person_slice(person.id)]
+    assert held.memory_mib == 4096  # the slice's own cap, not the table's
+    assert held.cpu_percent == 100  # and the rest of the set is applied
+    assert runtime.limits[limits.workspace_slice(person.id, workspace)].pids == 500
+    assert stored(service, person).memory_mib == 2048  # the table is the person's word, as set
+
+
+def test_restore_lowers_a_cap_when_what_is_in_use_is_under_the_new_one(service, settings, runtime):
+    person = person_of(settings)
+    stored_only(service, person, Limits(memory_mib=2048))
+    runtime.apply_limits(person.id, None, Limits(memory_mib=4096))
+    plant(runtime, person, memory_mib=1000)  # the control: the same, with less in use
+    service.restore()
+    assert runtime.limits[limits.person_slice(person.id)].memory_mib == 2048
+
+
+def test_restore_gives_a_slice_with_no_cap_the_tables_when_nothing_is_in_use(
+    service, settings, runtime
+):
+    person = person_of(settings)
+    stored_only(service, person, Limits(memory_mib=2048, pids=100))
+    runtime.limits.clear()  # the machine restarted: no caps, and the slices are not active
+    service.restore()
+    assert runtime.limits[limits.person_slice(person.id)] == Limits(memory_mib=2048, pids=100)
+
+
+def test_restore_does_not_lower_a_cap_when_the_use_is_not_counted(service, settings, runtime):
+    person = person_of(settings)
+    stored_only(service, person, Limits(memory_mib=2048, pids=100))
+    runtime.apply_limits(person.id, None, Limits(memory_mib=4096, pids=500))
+    runtime.used[limits.person_slice(person.id)] = Usage(memory_known=False, tasks_known=False)
+    service.restore()
+    held = runtime.limits[limits.person_slice(person.id)]
+    assert (held.memory_mib, held.pids) == (4096, 500)  # nothing says it is safe: as an edit
+
+
+def test_restore_raises_and_takes_away_caps_whatever_is_in_use(service, settings, runtime):
+    person = person_of(settings)
+    stored_only(service, person, Limits(memory_mib=8192))
+    runtime.apply_limits(person.id, None, Limits(memory_mib=4096, pids=500))
+    plant(runtime, person, memory_mib=3000, tasks=400)
+    service.restore()
+    assert runtime.limits[limits.person_slice(person.id)] == Limits(memory_mib=8192)  # pids freed
+
+
+def test_a_remade_container_is_not_put_in_a_slice_capped_below_its_persons_use(
+    service, settings, runtime
+):
+    person = person_of(settings)
+    workspace = insert(settings, person.id, "w", held=Limits(memory_mib=2048))
+    runtime.apply_limits(person.id, workspace, Limits(memory_mib=4096))
+    plant(runtime, person, workspace, memory_mib=3000)
+    service._remake(service.get(workspace), threading.Event())
+    assert runtime.limits[limits.workspace_slice(person.id, workspace)].memory_mib == 4096
+
+
+class Crash(BaseException):
+    """What the process meeting its end looks like from the code that was running."""
+
+
+def test_a_raise_is_recorded_before_it_is_applied_so_a_crash_cannot_leave_the_table_lower(
+    service, settings, runtime
+):
+    person = person_of(settings)
+    service.set_limits(person, None, Limits(memory_mib=2048))
+    real = runtime.apply_limits
+
+    def dying(person_id, workspace, held):
+        raise Crash
+
+    runtime.apply_limits = dying
+    with pytest.raises(Crash):
+        service.set_limits(person, None, Limits(memory_mib=8192))
+    runtime.apply_limits = real
+    assert stored(service, person).memory_mib == 8192  # the table is never under the slice
+    assert runtime.caps(person.id, None).memory_bytes == 2048 * MIB
+
+
+def test_a_raise_that_cannot_be_applied_is_not_left_recorded(service, settings, runtime):
+    person = person_of(settings)
+    workspace = insert(settings, person.id, "w")
+    service.set_limits(person, None, Limits(memory_mib=2048))
+    service.set_limits(person, workspace, Limits(pids=100))
+    runtime.limits_error = rt.RuntimeFailed("systemctl refused")
+    refusal(service.set_limits, person, None, Limits(memory_mib=8192))
+    refusal(service.set_limits, person, workspace, Limits(pids=900))
+    assert stored(service, person).memory_mib == 2048
+    assert service.get(workspace).limits == Limits(pids=100)
+
+
+def test_a_lowering_is_applied_before_it_is_recorded(service, settings, runtime):
+    person = person_of(settings)
+    service.set_limits(person, None, Limits(memory_mib=8192))
+    runtime.apply_limits = lambda *args: (_ for _ in ()).throw(Crash())
+    with pytest.raises(Crash):
+        service.set_limits(person, None, Limits(memory_mib=2048))
+    assert stored(service, person).memory_mib == 8192  # not recorded ahead of the slice
+
+
+def test_a_change_of_limits_waits_for_another_process_that_is_changing_them(
+    service, settings, runtime
+):
+    """rcman-admin is a process of its own; its locks do not hold back the service's."""
+    from tests.test_filelock import other_process_holding
+
+    person = person_of(settings)
+    holder = other_process_holding(settings.database.parent / ws.LOCK_FILE, 1.5)
+    began = time.monotonic()
+    service.set_limits(person, None, BIG)
+    assert time.monotonic() - began >= 1.0
+    holder.wait(10)
+    assert runtime.limits[limits.person_slice(person.id)] == BIG
+
+
 # --- dropping --------------------------------------------------------------------------
 
 
@@ -755,7 +879,7 @@ def test_a_set_applied_and_not_written_leaves_the_next_edit_judged_by_the_slice(
     assert refusal(service.set_limits, person, None, Limits(2048, 50)).code == "limit_below_use"
 
 
-def test_a_set_whose_write_failed_after_it_was_applied_is_the_slices_for_what_comes_next(
+def test_a_raise_whose_write_failed_is_not_applied_and_a_lowering_whose_write_failed_is_the_slices(
     service, settings, runtime, monkeypatch
 ):
     person = person_of(settings)
@@ -767,14 +891,16 @@ def test_a_set_whose_write_failed_after_it_was_applied_is_the_slices_for_what_co
 
     monkeypatch.setattr(people, "set_limits", failing)
     with pytest.raises(sqlite3.OperationalError):
-        service.set_limits(person, None, Limits(memory_mib=4096))  # applied, not written
+        service.set_limits(person, None, Limits(memory_mib=4096))  # a raise: recorded first
+    assert runtime.caps(person.id, None).memory_bytes == 2048 * MIB  # so never applied
+    with pytest.raises(sqlite3.OperationalError):
+        service.set_limits(person, None, Limits(memory_mib=1500))  # a lowering: applied first
     monkeypatch.undo()
     assert stored(service, person) == Limits(memory_mib=2048)
-    assert runtime.caps(person.id, None).memory_bytes == 4096 * MIB
-    plant(runtime, person, memory_mib=3000)  # work that used the room
-    assert refusal(service.set_limits, person, None, Limits(2048, 50)).code == "limit_below_use"
-    service.set_limits(person, None, Limits(memory_mib=4096, cpu_percent=50))  # as the slice is
-    assert stored(service, person) == Limits(memory_mib=4096, cpu_percent=50)
+    assert runtime.caps(person.id, None).memory_bytes == 1500 * MIB
+    plant(runtime, person, memory_mib=1800)  # work that used the room
+    service.set_limits(person, None, Limits(memory_mib=2048, cpu_percent=50))  # a raise
+    assert stored(service, person) == Limits(memory_mib=2048, cpu_percent=50)
 
 
 def test_a_value_equal_to_the_slices_cap_is_no_tightening_whatever_the_table_says(
@@ -841,6 +967,7 @@ def test_a_slice_that_is_inactive_is_zero_and_so_lets_a_limit_be_set(service, se
 
 def test_removing_a_container_no_row_is_for_drops_the_slice_it_was_in(service, settings, runtime):
     person = person_of(settings)
+    insert(settings, person.id, "has-a-row")  # an empty table removes nothing (see the restore)
     runtime.create(rt.Spec(rt.container_name(999), person.slot, 999, person.id))
     runtime.apply_limits(person.id, 999, BIG)
     service.restore()

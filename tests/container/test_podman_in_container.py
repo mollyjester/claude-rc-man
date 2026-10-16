@@ -31,7 +31,7 @@ STARTS_WITHIN = 120
 
 def as_account(*argv: str, check: bool = True) -> subprocess.CompletedProcess:
     proc = subprocess.run(
-        ph.as_account(*argv), capture_output=True, text=True, cwd="/", timeout=300
+        ph.as_account(*argv), capture_output=True, text=True, errors="replace", cwd="/", timeout=300
     )
     assert proc.returncode == 0 or not check, proc.stdout + proc.stderr
     return proc
@@ -64,7 +64,7 @@ def cgroup(pid: int) -> str:
 
 def systemctl(*args: str) -> str:
     return subprocess.run(
-        ["systemctl", *args], capture_output=True, text=True, timeout=120
+        ["systemctl", *args], capture_output=True, text=True, errors="replace", timeout=120
     ).stdout.strip()
 
 
@@ -88,6 +88,7 @@ def test_linger_and_the_podman_socket_are_active():
         ["loginctl", "show-user", ph.ACCOUNT, "--property", "Linger", "--value"],
         capture_output=True,
         text=True,
+        errors="replace",
     )
     assert linger.stdout.strip() == "yes", linger.stderr
     assert systemctl("--user", "-M", f"{ph.ACCOUNT}@", "is-active", "podman.socket") == "active"
@@ -113,7 +114,7 @@ def caller():
         ["systemd-run", f"--unit={unit}", f"--uid={ph.ACCOUNT}",
          f"--setenv=XDG_RUNTIME_DIR=/run/user/{uid()}", "--working-directory=/", "sh", "-c",
          f"podman --remote run -d --init --name {name} {image} sleep 600 && exec sleep 600"],
-        capture_output=True, text=True,
+        capture_output=True, text=True, errors="replace",
     )  # fmt: skip
     assert started.returncode == 0, started.stderr
     try:
@@ -135,7 +136,8 @@ def test_a_container_started_through_the_socket_runs_outside_the_callers_cgroup(
             break
         journal = ["journalctl", "--no-pager", "--unit", unit]
         assert systemctl("is-active", unit) == "active", (
-            found.stderr + subprocess.run(journal, capture_output=True, text=True).stdout
+            found.stderr
+            + subprocess.run(journal, capture_output=True, text=True, errors="replace").stdout
         )
         assert time.monotonic() < deadline, found.stdout + found.stderr
         time.sleep(0.5)

@@ -3,6 +3,7 @@ host-runtime workspaces, through a real channel and the runtime's exec."""
 
 from __future__ import annotations
 
+import dataclasses
 import http.server
 import os
 import subprocess
@@ -41,6 +42,7 @@ class World:
         self.work = Path(self.layout.work)
         self.home = Path(self.layout.home)
         self.argvs: list[list[str]] = []
+        self.results: list[rt.Result] = []  # what each of them answered
         self.channel = runtime.channel(NAME)
         self.decoy = True
         self.config(AUTHOR)
@@ -62,10 +64,14 @@ class World:
         return [*self.layout.tool("env"), "RCMAN_DECOY=present", *argv]
 
     def run(self, argv, timeout):
-        return self.channel.run(self._decoyed(argv), timeout)
+        result = self.channel.run(self._decoyed(argv), timeout)
+        self.results.append(result)
+        return result
 
     def run_stdin(self, argv, stdin, timeout):
-        return self.runtime.exec(NAME, self._decoyed(argv), stdin, timeout=timeout)
+        result = self.runtime.exec(NAME, self._decoyed(argv), stdin, timeout=timeout)
+        self.results.append(result)
+        return result
 
     def repository(self, layout: rt.Layout | None = None) -> Repository:
         return Repository(layout or self.layout, self.run, self.run_stdin)
@@ -774,6 +780,87 @@ def test_status_says_whether_a_push_goes_to_github_and_whether_a_token_is_there(
     fixture_git(on_github, "remote", "set-url", "--push", "origin", str(world.tmp_path / "x.git"))
     shown = git.status()
     assert (shown["push_to_github"], shown["github_token"]) == (False, None)
+
+
+def test_the_environment_git_is_run_with_does_not_move_its_configuration(world):
+    moving = {
+        "XDG_CONFIG_HOME": "/elsewhere",
+        "GIT_CONFIG_GLOBAL": "/elsewhere/config",
+        "GIT_CONFIG_SYSTEM": "/elsewhere/system",
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG_COUNT": "1",
+        "GIT_CONFIG_KEY_0": "credential.helper",
+        "GIT_CONFIG_VALUE_0": "store",
+    }
+    layout = dataclasses.replace(world.layout, env={**moving, "JAVA_HOME": "/jdk"})
+    env = world.repository(layout).env
+    assert env["JAVA_HOME"] == "/jdk"  # the control: the plan's other variables reach git
+    assert not set(moving) & set(env)
+
+
+def test_rcmans_git_gets_no_variable_of_git_that_a_plan_sets_beyond_the_ones_rcman_sets(world):
+    """An allow-list: a plan's GIT_ variables are all dropped, among them those that make git
+    print what it sends (the token with it), name a program to ask for a password, or run."""
+    sets = {
+        "GIT_TRACE_CURL": "1",
+        "GIT_TRACE": "trace.log",
+        "GIT_TRACE_REDACT": "0",
+        "GIT_CURL_VERBOSE": "1",
+        "GIT_ASKPASS": "/x/ask",
+        "GIT_EXEC_PATH": "/x",
+        "GIT_SSH_COMMAND": "evil",
+        "GIT_TERMINAL_PROMPT": "1",  # rcman's own wins
+        "GIT_OPTIONAL_LOCKS": "1",
+        "GIT_CEILING_DIRECTORIES": "/",
+        "LC_ALL": "xx",
+        "JAVA_HOME": "/jdk",
+    }
+    env = world.repository(dataclasses.replace(world.layout, env=sets)).env
+    assert {k for k in env if k.startswith("GIT_")} == {
+        "GIT_TERMINAL_PROMPT",
+        "GIT_OPTIONAL_LOCKS",
+        "GIT_CEILING_DIRECTORIES",
+    }
+    assert env["GIT_TERMINAL_PROMPT"] == "0" and env["GIT_OPTIONAL_LOCKS"] == "0"
+    assert env["GIT_CEILING_DIRECTORIES"] != "/" and env["LC_ALL"] == "C"
+    assert env["JAVA_HOME"] == "/jdk"
+
+
+def test_asking_whether_a_token_is_stored_moves_no_byte_of_the_credential_file(
+    git, world, on_github
+):
+    world.credential(TOKEN)
+    world.results.clear()
+    assert git.status()["github_token"] is True
+    touching = [
+        (argv, result)
+        for argv, result in zip(world.argvs[-len(world.results) :], world.results, strict=True)
+        if any(a.endswith("/credential") for a in argv)
+    ]
+    assert touching  # the control: the file was asked about
+    for _, result in touching:
+        assert TOKEN.encode() not in result.out + result.err and result.out == b""
+
+
+@pytest.mark.parametrize(
+    ("text", "stored"),
+    [
+        ("username=x-access-token\npassword=t\n", True),
+        ("password=t", True),
+        ("password=\n", False),
+        ("password=  \n", False),
+        ("", False),
+        ("username=x\n", False),
+        ("note=password=t\n", False),
+    ],
+)
+def test_a_credential_file_holds_a_token_only_with_a_password_that_is_not_blank(
+    git, world, on_github, text, stored
+):
+    folder = world.home / ".config" / "git"
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "credential").write_text(text)
+    assert git.status()["github_token"] is stored
 
 
 def test_an_emptied_credential_file_is_no_token(git, world, on_github):

@@ -2,7 +2,7 @@ import { type FormEvent, useEffect, useState } from "react";
 
 import { type ApiError, api } from "./api";
 import { m } from "./messages";
-import { asApiError, ProblemView } from "./ProblemView";
+import { asApiError, ProblemView, useFieldErrors } from "./ProblemView";
 
 export const CONNECTION_STATES = ["not_connected", "connected", "expiring", "expired"] as const;
 export type ConnectionState = (typeof CONNECTION_STATES)[number];
@@ -17,6 +17,9 @@ export type Connection = {
   login_expires_at: string | null;
   // A sign-out waits for the last running server to stop; no server starts meanwhile.
   signing_out: boolean;
+  // The sign-in went away on its own, as when a refresh collided with another: the account is
+  // then not connected.
+  signed_out_unexpectedly?: boolean;
 };
 
 function when(iso: string) {
@@ -28,6 +31,7 @@ function Connect({ onConnected }: { onConnected: (c: Connection) => void }) {
   const [url, setUrl] = useState<string | null>(null);
   const [code, setCode] = useState("");
   const [error, setError] = useState<ApiError | null>(null);
+  const fields = useFieldErrors(error);
 
   async function start(event: FormEvent) {
     event.preventDefault();
@@ -55,7 +59,7 @@ function Connect({ onConnected }: { onConnected: (c: Connection) => void }) {
   return (
     <div className="connect">
       {url === null ? (
-        <form noValidate onSubmit={start}>
+        <form noValidate onSubmit={start} ref={fields.form}>
           <label>
             {m.connectEmail}
             <input
@@ -63,14 +67,16 @@ function Connect({ onConnected }: { onConnected: (c: Connection) => void }) {
               name="email"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
+              {...fields.input("email")}
             />
           </label>
+          {fields.message("email")}
           <button type="submit" className="primary">
             {m.connectGo}
           </button>
         </form>
       ) : (
-        <form noValidate onSubmit={finish}>
+        <form noValidate onSubmit={finish} ref={fields.form}>
           <p>{m.connectStep}</p>
           <p>
             <a href={url} target="_blank" rel="noopener noreferrer">
@@ -85,14 +91,20 @@ function Connect({ onConnected }: { onConnected: (c: Connection) => void }) {
               autoComplete="off"
               value={code}
               onChange={(e) => setCode(e.target.value)}
+              {...fields.input("code")}
             />
           </label>
+          {fields.message("code")}
           <button type="submit" className="primary">
             {m.connectSubmit}
           </button>
         </form>
       )}
-      <ProblemView error={error} labels={{ email: m.connectEmail, code: m.connectCode }} />
+      <ProblemView
+        error={error}
+        labels={{ email: m.connectEmail, code: m.connectCode }}
+        inline={url === null ? ["email"] : ["code"]}
+      />
     </div>
   );
 }
@@ -111,7 +123,10 @@ export function ClaudeConnection({
   const signingOut = connection.signing_out;
   let message: string;
   if (signingOut) message = m.claudeSigningOut;
-  else if (state === "not_connected") message = m.claudeNotConnected;
+  else if (state === "not_connected")
+    message = connection.signed_out_unexpectedly
+      ? m.claudeSignedOutUnexpectedly
+      : m.claudeNotConnected;
   else if (state === "expired") message = m.claudeExpired;
   else if (state === "expiring") message = m.claudeExpiring(expires ? when(expires) : "");
   else message = m.claudeConnectedAs(connection.account?.email ?? "");
@@ -176,7 +191,7 @@ function ClaudeSignOut({ onSignedOut }: { onSignedOut: (c: Connection) => void }
         />
         {m.keepSessions}
       </label>
-      <button type="submit" className="primary">
+      <button type="submit" className="danger">
         {m.claudeSignOut}
       </button>
       <ProblemView error={error} labels={{ keep_sessions: m.keepSessions }} />
@@ -201,7 +216,7 @@ function SignOutNow({ onSignedOut }: { onSignedOut: (c: Connection) => void }) {
 
   return (
     <form noValidate onSubmit={signOutNow} className="sign-out">
-      <button type="submit" className="primary">
+      <button type="submit" className="danger">
         {m.claudeSignOutNow}
       </button>
       <ProblemView error={error} />

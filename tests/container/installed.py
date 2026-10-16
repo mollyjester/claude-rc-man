@@ -84,6 +84,7 @@ def install(*args, env=None) -> subprocess.CompletedProcess:
         stdin=subprocess.DEVNULL,
         capture_output=True,
         text=True,
+        errors="replace",
         timeout=2400,
     )
 
@@ -152,7 +153,7 @@ def podman(*args: str, check: bool = True) -> subprocess.CompletedProcess:
     proc = subprocess.run(
         ["runuser", "-u", "rcman", "--", "env", f"XDG_RUNTIME_DIR=/run/user/{uid}",
          f"HOME={STATE}", "podman", "--remote", *args],
-        capture_output=True, text=True, cwd="/", timeout=300,
+        capture_output=True, text=True, errors="replace", cwd="/", timeout=300,
     )  # fmt: skip
     assert proc.returncode == 0 or not check, proc.stdout + proc.stderr
     return proc

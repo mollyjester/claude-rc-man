@@ -24,9 +24,22 @@ from helpers import git_run
 from rcman import problems
 from rcman.channel import ChannelBroken, ChannelTimeout, Result
 from rcman.problems import Problem
-from rcman.runtime import GIT_HOME, TIMED_OUT, Layout, RuntimeFailed, RuntimeUnavailable
+from rcman.runtime import (
+    GIT_HOME,
+    TIMED_OUT,
+    Layout,
+    RuntimeFailed,
+    RuntimeUnavailable,
+    moves_git_config,
+)
 
 # How long a verb's git calls may take, all together; fetch and push, over the network.
+# Whether the file $1 has a line of a password that is not blank; the shell's exit code is the
+# answer, and the file is read by the shell alone.
+HAS_PASSWORD = (
+    'while IFS= read -r line || [ -n "$line" ]; do '
+    'case $line in password=*[![:space:]]*) exit 0;; esac; done < "$1"; exit 1'
+)
 GIT_TIMEOUT = 30.0
 GIT_NETWORK_TIMEOUT = 120.0
 # How long a clone may take: a whole repository, over the network.
@@ -44,9 +57,8 @@ MAX_LISTED_FILES = 500
 MAX_LISTED_BRANCHES = 200
 # The address of the GitHub rcman has a token for.
 GITHUB_ADDRESS = "https://github.com/"
-# The credential file's name in the git folder, and what git is given as the user of a token.
+# The credential file's name in the git folder.
 CREDENTIAL = "credential"
-GITHUB_USERNAME = "x-access-token"
 
 STATUS_ARGS = [
     "status",
@@ -224,11 +236,17 @@ class Repository:
 
     @property
     def env(self) -> dict[str, str]:
-        """The only environment git is run with: the variables the workspace's plan sets, git
+        """The only environment git is run with: the variables the workspace's plan sets but for
+        every one of git's own (``GIT_...``: a plan could move its configuration, make it print
+        what it sends or name a program for it to run), and the few of git's rcman sets: git
         unable to ask anything on a terminal, taking no lock it does not need, and unable to
         find a repository above the workspace's work folder."""
         return {
-            **self.layout.env,
+            **{
+                k: v
+                for k, v in self.layout.env.items()
+                if not (k.startswith("GIT_") or moves_git_config(k))
+            },
             "HOME": self.layout.home,
             "PATH": self.layout.path,
             "LC_ALL": "C",
@@ -310,18 +328,14 @@ class Repository:
         return self._out(["branch", "--show-current"], deadline).strip() or None
 
     def _token_stored(self, deadline: float) -> bool:
-        """Whether the credential file git is told to use holds a password, which is
-        dropped at once and is never part of an answer."""
+        """Whether the credential file git is told to use holds a password that is not blank,
+        asked of the workspace's shell, which answers by its exit code: no byte of the file
+        passes through the channel, whose answers are held in memory."""
         path = f"{self.layout.home}/{GIT_HOME}/{CREDENTIAL}"
-        found = self.run([*self.layout.tool("cat"), path], self._seconds(deadline))
-        if found.code != 0:
-            return False
-        stored = any(
-            line.startswith(b"password=") and line[len(b"password=") :].strip()
-            for line in found.out.split(b"\n")
+        found = self.run(
+            [self.layout.shell, "-c", HAS_PASSWORD, "sh", path], self._seconds(deadline)
         )
-        del found
-        return stored
+        return found.code == 0
 
     # --- reading -----------------------------------------------------------------------
 
