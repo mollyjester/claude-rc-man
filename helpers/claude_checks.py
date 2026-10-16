@@ -10,8 +10,9 @@ rcman relies on: the version, ``auth status`` JSON, the logged-out refusal of
 trust question and the server screens — is covered by the recorded tests
 only.
 
-Python standard library and the helpers' own modules only. Nothing runs them yet:
-rolling out a Claude Code version to workspaces is a step of its own.
+Python standard library and the helpers' own modules only. The canary
+(claude_canary.py) runs them against a candidate in a throwaway container, before the
+version is rolled out to workspaces.
 """
 
 from __future__ import annotations

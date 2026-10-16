@@ -265,10 +265,34 @@ def test_a_database_of_the_old_model_is_named_as_one_not_as_newer(tmp_path):
         db.migrate(path)
 
 
+def migrated_before(tmp_path, marker: str) -> tuple:
+    """A database migrated to just before the migration whose script holds ``marker``, with a
+    person and a ready workspace of theirs: its path and its connection."""
+    path = tmp_path / "x.db"
+    con = sqlite3.connect(path)
+    last = next(i for i, script in enumerate(db.MIGRATIONS) if marker in script)
+    for number, script in enumerate(db.MIGRATIONS[:last], start=1):
+        con.executescript(f"begin;\n{script}\npragma user_version = {number};\ncommit;")
+    con.execute("insert into people (email, admin, slot, state) values ('a@x.org', 1, 1, 'active')")
+    con.execute("insert into workspaces (person, name, state) values (1, 'old', 'ready')")
+    con.commit()
+    return path, con
+
+
+def test_a_workspace_made_before_claude_versions_has_no_version_after_the_migration(tmp_path):
+    path, con = migrated_before(tmp_path, "claude_approvals")
+    assert "claude_version" not in [r[1] for r in con.execute("pragma table_info(workspaces)")]
+    con.close()
+    db.migrate(path)
+    con = sqlite3.connect(path)
+    assert con.execute("select name, claude_version from workspaces").fetchall() == [("old", None)]
+    assert con.execute("select count(*) from claude_approvals").fetchone() == (0,)
+
+
 def test_a_workspace_made_before_plans_has_none_after_the_migration(tmp_path):
     path = tmp_path / "x.db"
     con = sqlite3.connect(path)
-    last = len(db.MIGRATIONS) - 1
+    last = next(i for i, script in enumerate(db.MIGRATIONS) if "add column environment" in script)
     for number, script in enumerate(db.MIGRATIONS[:last], start=1):
         con.executescript(f"begin;\n{script}\npragma user_version = {number};\ncommit;")
     con.execute("insert into people (email, admin, slot, state) values ('a@x.org', 1, 1, 'active')")

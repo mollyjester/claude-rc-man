@@ -15,8 +15,12 @@ devcontainer CLI, in a *builder* container of its own that rcman starts for the 
 uid range no person has, and removes after it (builder.py); the image is copied out to rcman's
 own storage and named for the workspace (``built_name``).
 
-Python standard library and the backend's own channel and builder only, so that the podman
-host's suite can import it with the system interpreter.
+A candidate Claude Code version is tried by the *canary* (``run_canary``): a throwaway container
+in the builder's uid range with no network, which runs the checks of helpers/claude_canary.py
+against the candidate and reports the ones it fails.
+
+Python standard library, the helpers and the backend's own channel and builder only, so that the
+podman host's suite can import it with the system interpreter.
 """
 
 from __future__ import annotations
@@ -32,6 +36,7 @@ import re
 import selectors
 import shutil
 import subprocess
+import sys
 import tarfile
 import tempfile
 import threading
@@ -43,6 +48,8 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import helpers
+from helpers import claude_checks, rules
 from rcman import builder
 from rcman.channel import Channel, Result
 
@@ -62,6 +69,21 @@ CREDENTIALS = ".credentials.json"
 # person's account volume and sign-in container carry only the person's.
 LABEL_WORKSPACE = "rcman.workspace"
 LABEL_PERSON = "rcman.person"
+# The canary: a throwaway container that runs the checks against a candidate Claude Code
+# version. It carries only this label, so no restore sees it as a workspace.
+CANARY_NAME = "rcman-canary"
+LABEL_CANARY = "rcman.canary"
+# The candidate's file in the folder the canary is given, and where that folder and rcman's
+# helpers are in the canary; the helpers' package is the folder ``helpers`` in CANARY_HELPERS_MOUNT,
+# which is what Python is told to import from.
+CANDIDATE = "claude"
+CANARY_CANDIDATE_MOUNT = "/candidate"
+CANARY_HELPERS_MOUNT = "/canary"
+HELPERS_DIR = Path(helpers.__file__).resolve().parent
+# The canary's home and temporary folder: a tmpfs the candidate may fill and nothing outlasts.
+CANARY_TMP = "/tmp"
+# How long the checks may take in all: every check's own limit, and one more for the container.
+CANARY_SECONDS = (len(claude_checks.CHECKS) + 1) * claude_checks.TIMEOUT
 # The name a folder starts with in which an image copied out of a builder is staged.
 STAGING_PREFIX = "rcman-image-"
 # What a builder container and its volume carry besides the person: which workspace's build it is.
@@ -256,7 +278,7 @@ class Layout:
     tmux_socket: str
     tmux: str
     tmux_conf: str
-    claude: str
+    claude: str  # the program that runs whatever the store's `current` names
     shell: str
     terminfo: str | None
     path: str
@@ -271,9 +293,20 @@ class Layout:
     # on a PATH the plan sets.
     env: Mapping[str, str] = field(default_factory=dict)
     path_prefix: str = ""
+    # The Claude Code store as the programs in the workspace see it: a version is the file
+    # ``versions/<version>`` in it.
+    claude_root: str = ""
 
     def tool(self, name: str) -> list[str]:
         return list(self.tools[name])
+
+    def pinned(self, version: str) -> Layout:
+        """This layout with Claude Code the exact file of ``version`` in the store, whatever the
+        store's `current` names: what a server is started with, so that approving another
+        version changes nothing of a server that runs."""
+        if not rules.VERSION.fullmatch(version):
+            raise ValueError(f"{version!r} is not a Claude Code version")
+        return dataclasses.replace(self, claude=f"{self.claude_root}/versions/{version}")
 
     def for_plan(self, user: str, env: Mapping[str, str], path: str | None) -> Layout:
         """This layout for a workspace made from a plan: its programs run as ``user`` with
@@ -434,6 +467,20 @@ class Runtime(ABC):
     def end_sign_in(self, name: str) -> None:
         """Remove a sign-in container; nothing for one that is gone."""
 
+    @abstractmethod
+    def run_canary(self, directory: Path, name: str, version: str) -> dict[str, dict]:
+        """Run the checks of helpers/claude_canary.py against the candidate Claude Code
+        ``version``, which is the file CANDIDATE in ``directory`` (readable and runnable by
+        anyone), in a throwaway container called ``name`` that has no network and nothing of
+        rcman's but the helpers; one left from before is removed first. The checks the
+        candidate fails, each with its report: empty when it passes them all. A canary that
+        could not report - it did not start, did not finish, or said something else - is a
+        RuntimeFailed: that says nothing about the candidate."""
+
+    @abstractmethod
+    def end_canary(self, name: str) -> None:
+        """Remove a canary container; nothing for one that is gone."""
+
 
 # --- Podman ---------------------------------------------------------------------------
 
@@ -555,6 +602,7 @@ PODMAN_LAYOUT = Layout(
     },
     kill_group=(*_busybox("kill"), "-KILL"),
     path_prefix=f"{CLAUDE_MOUNT}/bin",
+    claude_root=CLAUDE_MOUNT,
 )
 
 
@@ -1418,6 +1466,72 @@ class PodmanRuntime(Runtime):
     def end_sign_in(self, name: str) -> None:
         self._podman("rm", "--force", "--ignore", "--time=0", name)
 
+    def end_canary(self, name: str) -> None:
+        self._podman("rm", "--force", "--ignore", "--time=0", name)
+
+    def run_canary(self, directory: Path, name: str, version: str) -> dict[str, dict]:
+        from rcman import people  # not at the top: the people module needs the web framework
+
+        if not directory.is_absolute() or any(c in str(directory) for c in ":,"):
+            raise RuntimeFailed(f"{directory} is not a folder the canary can be given")
+        ids = self._ids(people.BUILDER_SLOT)
+        self.end_canary(name)
+        proc = self._podman(
+            "run",
+            "--rm",
+            f"--name={name}",
+            f"--label={LABEL_CANARY}=1",
+            f"--timeout={int(CANARY_SECONDS)}",
+            "--network=none",
+            "--read-only",
+            "--cap-drop=all",
+            "--security-opt=no-new-privileges",
+            *ids,
+            f"--tmpfs={CANARY_TMP}:rw,mode=1777",
+            f"--volume={directory}:{CANARY_CANDIDATE_MOUNT}:ro",
+            f"--volume={HELPERS_DIR}:{CANARY_HELPERS_MOUNT}/{HELPERS_DIR.name}:ro",
+            f"--workdir={CANARY_HELPERS_MOUNT}",
+            f"--env=HOME={CANARY_TMP}",
+            f"--env=TMPDIR={CANARY_TMP}",
+            "--env=DISABLE_AUTOUPDATER=1",
+            "--env=PYTHONDONTWRITEBYTECODE=1",
+            f"--env=PYTHONPATH={CANARY_HELPERS_MOUNT}",
+            self.config.image,
+            "python3",
+            "-m",
+            f"{HELPERS_DIR.name}.claude_canary",
+            f"{CANARY_CANDIDATE_MOUNT}/{CANDIDATE}",
+            version,
+            check=False,
+            timeout=CANARY_SECONDS + PODMAN_TIMEOUT,
+        )
+        return self._canary_report(proc)
+
+    def _canary_report(self, proc) -> dict[str, dict]:
+        """The checks the canary printed that the candidate fails; a RuntimeFailed where it
+        printed anything else."""
+        if proc.returncode != 0:
+            raise RuntimeFailed(
+                self._said(proc.stderr, "the canary did not finish")
+                if proc.stderr.strip()
+                else f"the canary ended with exit code {proc.returncode}"
+            )
+        return parsed_canary_report(proc.stdout)
+
+
+def parsed_canary_report(raw: bytes) -> dict[str, dict]:
+    """The JSON the canary program prints - the checks that failed, each with its report - or
+    a RuntimeFailed where it is anything else."""
+    try:
+        report = json.loads(raw)
+    except (ValueError, RecursionError):
+        raise RuntimeFailed("the canary did not report") from None
+    if not isinstance(report, dict) or not all(
+        isinstance(name, str) and isinstance(entry, dict) for name, entry in report.items()
+    ):
+        raise RuntimeFailed("the canary reported something that is not a list of failed checks")
+    return report
+
 
 # --- the host -------------------------------------------------------------------------
 
@@ -1460,6 +1574,9 @@ class HostRuntime(Runtime):
         self.built: dict[int, str] = {}
         self.builds: list[BuildRequest] = []
         self.build_script: Callable[..., ImageFacts] | None = None
+        # The canary: what stands for it where a test does not run the real one - a function
+        # of the folder, the container's name and the version that returns the failed checks.
+        self.canary_script: Callable[[Path, str, str], dict[str, dict]] | None = None
 
     def layout(self, name: str) -> Layout:
         volume = self.root / name
@@ -1471,7 +1588,8 @@ class HostRuntime(Runtime):
             tmux_socket=str(self.sockets / f"{name}.sock"),
             tmux=_host_tool("tmux")[0],
             tmux_conf=str(self.tmux_conf),
-            claude=str(self.claude),
+            claude=str(self.claude / "bin" / "claude"),
+            claude_root=str(self.claude),
             shell=_host_tool("sh")[0],
             terminfo=None,
             path="/usr/local/bin:/usr/bin:/bin",
@@ -1737,3 +1855,30 @@ class HostRuntime(Runtime):
 
     def end_sign_in(self, name: str) -> None:
         self.remove(name)
+
+    def end_canary(self, name: str) -> None:
+        """The canary is a program run to its end here, never one left behind."""
+
+    def run_canary(self, directory: Path, name: str, version: str) -> dict[str, dict]:
+        if self.canary_script is not None:
+            return self.canary_script(directory, name, version)
+        with tempfile.TemporaryDirectory(prefix="rcman-canary-") as scratch:
+            try:
+                proc = subprocess.run(
+                    [sys.executable, "-m", f"{HELPERS_DIR.name}.claude_canary",
+                     str(directory / CANDIDATE), version],
+                    cwd=HELPERS_DIR.parent,
+                    env={
+                        "PATH": "/usr/bin:/bin",
+                        "TMPDIR": scratch,
+                        "PYTHONDONTWRITEBYTECODE": "1",
+                    },
+                    stdin=subprocess.DEVNULL,
+                    capture_output=True,
+                    timeout=CANARY_SECONDS,
+                )  # fmt: skip
+            except subprocess.TimeoutExpired:
+                raise RuntimeFailed("the canary did not finish in time") from None
+        if proc.returncode != 0:
+            raise RuntimeFailed(f"the canary ended with exit code {proc.returncode}")
+        return parsed_canary_report(proc.stdout)

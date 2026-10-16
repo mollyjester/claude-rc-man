@@ -99,6 +99,8 @@ export type Workspace = {
   log: string | null;
   server: Server | null;
   server_error: { code: string; title: string } | null;
+  // The Claude Code version its server started with, null while it has none running.
+  claude_version: string | null;
 };
 
 // The dot a workspace carries: its server's kind, a problem where the workspace
@@ -130,10 +132,12 @@ export function StatusDot({ kind, id }: { kind: Kind; id: string }) {
 export function ServerCard({
   workspace,
   server,
+  claudeVersion = null,
   onChange,
 }: {
   workspace: { id: number; name: string };
   server: Server;
+  claudeVersion?: string | null;
   onChange: () => void;
 }) {
   const [error, setError] = useState<ApiError | null>(null);
@@ -167,6 +171,7 @@ export function ServerCard({
         <StateBadge state={server.state} />
       </p>
       <p>{m.nextStep[server.state] ?? m.nextStepUnknown}</p>
+      {claudeVersion && <p>{m.serverClaudeVersion(claudeVersion)}</p>}
       {server.state === "trust_prompt" && (
         <div className="question">
           <p>

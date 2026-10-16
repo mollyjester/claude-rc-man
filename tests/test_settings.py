@@ -48,3 +48,45 @@ def test_every_setting_is_documented_and_every_documented_setting_exists():
 
 def test_every_setting_has_a_description():
     assert all(f.description for f in Settings.model_fields.values())
+
+
+def test_the_release_site_defaults_to_claude_codes_own():
+    from helpers import claude_release
+
+    assert (
+        Settings(public_origin="https://x.example.com").claude_download == claude_release.DOWNLOAD
+    )
+
+
+@pytest.mark.parametrize(
+    "address",
+    ["https://downloads.example.com/releases", "http://127.0.0.1", "https://a.b/c/d"],
+)
+def test_a_release_site_is_an_http_or_https_address(address):
+    assert (
+        Settings(public_origin="https://x.example.com", claude_download=address).claude_download
+        == address
+    )
+
+
+@pytest.mark.parametrize(
+    "address",
+    [
+        "",
+        "ftp://downloads.example.com",
+        "file:///srv/releases",
+        "https://x/",
+        "https://x/a b",
+        "x.example.com",
+    ],
+)
+def test_an_address_that_is_not_one_releases_can_be_downloaded_from_is_refused(address):
+    with pytest.raises(ValidationError):
+        Settings(public_origin="https://x.example.com", claude_download=address)
+
+
+def test_the_installer_and_rcman_refuse_the_same_addresses():
+    from helpers import claude_release
+    from installer import install as ins
+
+    assert ins.DOWNLOAD_ADDRESS is claude_release.DOWNLOAD_ADDRESS

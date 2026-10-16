@@ -293,14 +293,26 @@ def test_the_podman_runtime_keeps_the_contract_against_real_podman(docker, podma
 
 
 # The store as the installer leaves it, but for what it holds: the fake claude, as the one
-# program a workspace runs as `claude`.
-FAKE_IN_STORE = """
+# version, the one `current` names and `bin/claude` leads to; all of it the service
+# account's, which writes the store from then on.
+FAKE_IN_STORE = f"""
+import os, pwd
 from pathlib import Path
 from tests import claude_download
-binary = Path("/var/lib/rcman/claude/bin")
-binary.mkdir(mode=0o755, exist_ok=True)
-(binary / "claude").write_bytes(claude_download.bundle())
-(binary / "claude").chmod(0o755)
+from tests.fake_store import FAKE_VERSION
+store = Path("/var/lib/rcman/claude")
+for folder in (store / "bin", store / "versions"):
+    folder.mkdir(mode=0o755, parents=True, exist_ok=True)
+binary = store / "versions" / FAKE_VERSION
+binary.write_bytes(claude_download.bundle(FAKE_VERSION))
+binary.chmod(0o755)
+for folder, name, target in ((store, "current", "versions/" + FAKE_VERSION),
+                             (store / "bin", "claude", "../current")):
+    (folder / name).unlink(missing_ok=True)
+    os.symlink(target, folder / name)
+owner = pwd.getpwnam("{ph.ACCOUNT}")
+for path in (store, *store.rglob("*")):
+    os.lchown(path, owner.pw_uid, owner.pw_gid)
 """
 
 
@@ -321,19 +333,21 @@ subprocess.run([uv, "sync", "--frozen", "--no-dev", "--no-install-project", "--p
 """
 
 
-def _in_the_hosts_with_github(podman_host: list[str], module: str, timeout: int) -> None:
+def _in_the_hosts(podman_host: list[str], module: str, timeout: int, github: bool = True) -> None:
     """``module`` run as the service account, with the tools, the store holding the fake
-    `claude`, the backend's dependencies and github.com the podman host's own address in its
-    /etc/hosts, where the tests' GitHub listens."""
+    `claude` (the account's, as the installer leaves it) and the backend's dependencies; with
+    ``github``, also github.com the podman host's own address in its /etc/hosts, where the tests'
+    GitHub listens."""
     _run([*podman_host, "python3", "-c", TOOLS_AND_STORE + FAKE_IN_STORE])
     _run([*podman_host, "python3", "-c", BACKEND_DEPENDENCIES])
-    address = _run([*podman_host, "hostname", "-I"]).stdout.split()[0]
-    _run([*podman_host, "sh", "-c", f"echo '{address} github.com' >> /etc/hosts"])
     as_account = [
         "python3", "tests/container/podman_host.py", "run", "env", "RCMAN_IN_CONTAINER=1",
         "PYTHONDONTWRITEBYTECODE=1", "PYTHONPATH=/src/backend:/src", "HOME=/var/lib/rcman",
-        f"RCMAN_GITHUB_ADDRESS={address}",
     ]  # fmt: skip
+    if github:
+        address = _run([*podman_host, "hostname", "-I"]).stdout.split()[0]
+        _run([*podman_host, "sh", "-c", f"echo '{address} github.com' >> /etc/hosts"])
+        as_account.append(f"RCMAN_GITHUB_ADDRESS={address}")
     environment = [a for a in podman_host if a.startswith("RCMAN_PODMAN_IMAGE=")]
     _passed(
         subprocess.run(
@@ -354,7 +368,7 @@ def _in_the_hosts_with_github(podman_host: list[str], module: str, timeout: int)
 
 def test_git_in_a_workspace_pushes_to_the_tests_github_with_the_persons_token(docker, podman_host):
     """tests/container/test_github_in_podman.py, run as the service account."""
-    _in_the_hosts_with_github(podman_host, "tests/container/test_github_in_podman.py", 2400)
+    _in_the_hosts(podman_host, "tests/container/test_github_in_podman.py", 2400)
 
 
 def test_a_workspace_made_from_a_devcontainer_file_runs_as_its_user_in_real_podman(
@@ -363,7 +377,7 @@ def test_a_workspace_made_from_a_devcontainer_file_runs_as_its_user_in_real_podm
     """tests/container/test_devcontainer_in_podman.py, run as the service account: images
     built in the account's Podman, the uid swap map, the shared sign-in and the lifecycle
     commands, with the tests' GitHub as the repositories' origin."""
-    _in_the_hosts_with_github(podman_host, "tests/container/test_devcontainer_in_podman.py", 3600)
+    _in_the_hosts(podman_host, "tests/container/test_devcontainer_in_podman.py", 3600)
 
 
 def test_a_workspace_made_from_a_dockerfile_and_features_is_built_in_a_builder_in_real_podman(
@@ -373,7 +387,19 @@ def test_a_workspace_made_from_a_dockerfile_and_features_is_built_in_a_builder_i
     its own uid range with a stand-in for the CLI, then the builder image of
     installer/builder with the real Dev Containers CLI and a Podman in it, building a Dockerfile
     and a feature of a repository that the tests' GitHub serves."""
-    _in_the_hosts_with_github(podman_host, "tests/container/test_builder_in_podman.py", 5400)
+    _in_the_hosts(podman_host, "tests/container/test_builder_in_podman.py", 5400)
+
+
+def test_claude_versions_are_rolled_out_through_a_real_canary_and_servers_keep_theirs(
+    docker, podman_host
+):
+    """tests/container/test_claude_versions_in_podman.py, run as the service account: the
+    canary container against real Podman, a server keeping its version through an approval and
+    a restart of rcman, the store pruned once the last server using a version has stopped, and a
+    candidate that is no good leaving the store as it was."""
+    _in_the_hosts(
+        podman_host, "tests/container/test_claude_versions_in_podman.py", 3600, github=False
+    )
 
 
 # --- rcman installed for real, in the podman host -------------------------------------

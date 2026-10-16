@@ -32,7 +32,13 @@ def listing(request: Request, identity: Identity) -> list[dict]:
 
 @router.get("")
 def workspaces(request: Request, identity: Identity = Depends(current_user)) -> dict:
-    return {"workspaces": listing(request, identity)}
+    """The person's workspaces, and the Claude Code version a server started now would run
+    (``claude_approved``, None where none is installed), to set beside the version each
+    server runs."""
+    return {
+        "workspaces": listing(request, identity),
+        "claude_approved": request.app.state.versions.approved(),
+    }
 
 
 def person_of(request: Request, identity: Identity) -> people.Person:

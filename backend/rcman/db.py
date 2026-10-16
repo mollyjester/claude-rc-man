@@ -92,6 +92,29 @@ MIGRATIONS = [
     -- the container again from it.
     alter table workspaces add column environment text;
     """,
+    """
+    -- The Claude Code versions an administrator approved, oldest first (claude_versions.py):
+    -- the latest row is the approved version, and a rollback is a new row. Rows are only ever
+    -- added.
+    create table claude_approvals (
+        id integer primary key,
+        version text not null,
+        at text not null,
+        by text not null
+    );
+    create trigger claude_approvals_no_update before update on claude_approvals
+    begin
+        select raise(abort, 'append-only');
+    end;
+    create trigger claude_approvals_no_delete before delete on claude_approvals
+    begin
+        select raise(abort, 'append-only');
+    end;
+
+    -- The Claude Code version the workspace's server started with, which it keeps until it is
+    -- stopped; null while none is recorded to run.
+    alter table workspaces add column claude_version text;
+    """,
 ]
 
 

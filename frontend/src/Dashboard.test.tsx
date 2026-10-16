@@ -16,6 +16,7 @@ type Workspace = {
   log: string | null;
   server: Record<string, unknown> | null;
   server_error: { code: string; title: string } | null;
+  claude_version: string | null;
 };
 
 function workspace(id: number, name: string, extra: Partial<Workspace> = {}): Workspace {
@@ -28,9 +29,19 @@ function workspace(id: number, name: string, extra: Partial<Workspace> = {}): Wo
     log: null,
     server: null,
     server_error: null,
+    claude_version: null,
     ...extra,
   };
 }
+
+// The version a server started now would run.
+const APPROVED = "2.2.0";
+
+// What /api/workspaces answers: the workspaces, and the approved version.
+const listing = (workspaces: Workspace[], claude_approved: string | null = APPROVED) => ({
+  workspaces,
+  claude_approved,
+});
 
 function server(id: number, state: string, extra: Record<string, unknown> = {}) {
   return {
@@ -54,7 +65,7 @@ const NOT_A_REPOSITORY = () => problem(409, "not_a_repository", "planted: not a 
 function dashboard(workspaces: Workspace[], extra: Routes = {}) {
   return fakeApi({
     "GET /api/me": ME,
-    "GET /api/workspaces": { workspaces },
+    "GET /api/workspaces": listing(workspaces),
     "GET /api/git/status": NOT_A_REPOSITORY,
     "GET /api/git/branches": NOT_A_REPOSITORY,
     ...extra,
@@ -201,7 +212,7 @@ test.each(["creating", "failed", "deleting"])(
 test("New workspace sends the name as typed, then selects the new workspace", async () => {
   const workspaces = [workspace(1, "alpha")];
   const fake = dashboard([], {
-    "GET /api/workspaces": () => ({ workspaces }),
+    "GET /api/workspaces": () => listing(workspaces),
     "POST /api/workspaces": (c) => {
       const made = workspace(7, (c.body as { name: string }).name, { state: "creating" });
       workspaces.push(made);
@@ -228,7 +239,7 @@ const ADDRESS = "https://github.com/octo/widget";
 test("an address makes the workspace by cloning it, named after the repository when no name is given", async () => {
   const workspaces: Workspace[] = [];
   const fake = dashboard([], {
-    "GET /api/workspaces": () => ({ workspaces }),
+    "GET /api/workspaces": () => listing(workspaces),
     "POST /api/git/clone": (c) => {
       const { url } = c.body as { url: string };
       const made = workspace(8, "widget", {
@@ -257,7 +268,7 @@ test("an address makes the workspace by cloning it, named after the repository w
 test("an address and a name make the cloned workspace with that name", async () => {
   const workspaces: Workspace[] = [];
   const fake = dashboard([], {
-    "GET /api/workspaces": () => ({ workspaces }),
+    "GET /api/workspaces": () => listing(workspaces),
     "POST /api/git/clone": (c) => {
       const made = workspace(8, (c.body as { name: string }).name, {
         state: "creating",
@@ -426,7 +437,7 @@ test("a workspace being made says so, and offers neither Start nor Delete", asyn
 test("a workspace being made becomes ready by itself as the page refreshes", async () => {
   let state = "creating";
   dashboard([], {
-    "GET /api/workspaces": () => ({ workspaces: [workspace(1, "alpha", { state })] }),
+    "GET /api/workspaces": () => listing([workspace(1, "alpha", { state })]),
   });
   renderApp("/?workspace=1", { pollMs: 50 });
   const opened = await panel("alpha");
@@ -451,9 +462,8 @@ const STEPS = "Making the workspace\nChecking git\nCloning https://github.com/oc
 test("a workspace being cloned shows the steps so far, in order, and keeps them as the page refreshes", async () => {
   let log = "Making the workspace";
   dashboard([], {
-    "GET /api/workspaces": () => ({
-      workspaces: [workspace(1, "alpha", { state: "creating", source: ADDRESS, log })],
-    }),
+    "GET /api/workspaces": () =>
+      listing([workspace(1, "alpha", { state: "creating", source: ADDRESS, log })]),
   });
   renderApp("/?workspace=1", { pollMs: 50 });
   const opened = await panel("alpha");
@@ -474,7 +484,7 @@ test("a workspace being made with no steps yet shows no log", async () => {
 test("a workspace being cloned offers Delete, as the way to cancel, and deleting it asks first", async () => {
   const workspaces = [workspace(1, "alpha", { state: "creating", source: ADDRESS, log: STEPS })];
   const fake = dashboard([], {
-    "GET /api/workspaces": () => ({ workspaces }),
+    "GET /api/workspaces": () => listing(workspaces),
     "DELETE /api/workspaces/1": () => {
       workspaces.length = 0;
       return {};
@@ -554,7 +564,7 @@ test("a ready workspace with no server offers Start, which starts one there", as
   const workspaces = [workspace(2, "beta")];
   let answer = () => {};
   const fake = dashboard([], {
-    "GET /api/workspaces": () => ({ workspaces }),
+    "GET /api/workspaces": () => listing(workspaces),
     "POST /api/servers": () =>
       new Promise((resolve) => {
         answer = () => {
@@ -607,6 +617,73 @@ test("a server that could not be read is shown with the reason, and Start is not
   );
   expect(within(opened).queryByRole("button", { name: m.start })).not.toBeInTheDocument();
   expect(within(opened).queryByText(m.noServer)).not.toBeInTheDocument();
+});
+
+// --- the Claude Code version a server runs ------------------------------------------
+
+// alpha with a server in the given state that started with a Claude Code version.
+const running = (version: string | null, state = "ready") =>
+  workspace(1, "alpha", { server: server(1, state), claude_version: version });
+
+test("a server's card says which Claude Code version it runs, and says no more when that is the approved one", async () => {
+  dashboard([running(APPROVED)]);
+  const opened = await card();
+  expect(opened.getByText(m.serverClaudeVersion(APPROVED))).toBeInTheDocument();
+  expect(screen.queryByText(m.serverVersionDiffers(APPROVED))).not.toBeInTheDocument();
+});
+
+test("a server on another version than the approved one gets a quiet note, saying what to do", async () => {
+  dashboard([running("2.1.0")]);
+  const opened = await card();
+  expect(opened.getByText(m.serverClaudeVersion("2.1.0"))).toBeInTheDocument();
+  const note = await screen.findByText(m.serverVersionDiffers(APPROVED));
+  expect(note).toHaveClass("muted");
+  expect(note.closest('[role="alert"]')).toBeNull();
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  expect(note.closest("section")).toHaveAccessibleName(m.serverTitle); // in the server's section
+});
+
+test("the note is made for a version approved after a rollback too, and names no direction", async () => {
+  dashboard([running("2.3.0")]);
+  await card();
+  expect(await screen.findByText(m.serverVersionDiffers(APPROVED))).toBeInTheDocument();
+  expect(m.serverVersionDiffers(APPROVED)).not.toMatch(/newer|older/i);
+});
+
+test("the note goes once the server runs the approved version", async () => {
+  let version = "2.1.0";
+  dashboard([], { "GET /api/workspaces": () => listing([running(version)]) });
+  renderApp("/?workspace=1", { pollMs: 50 });
+  expect(await screen.findByText(m.serverVersionDiffers(APPROVED))).toBeInTheDocument();
+  version = APPROVED;
+  await waitFor(() =>
+    expect(screen.queryByText(m.serverVersionDiffers(APPROVED))).not.toBeInTheDocument(),
+  );
+  expect(screen.getByText(m.serverClaudeVersion(APPROVED))).toBeInTheDocument(); // positive control: refreshed
+});
+
+test("no version and no note where the server has none recorded, or nothing is approved", async () => {
+  dashboard([running(null, "stopped")]);
+  renderApp("/?workspace=1");
+  const opened = await panel("alpha");
+  await within(opened).findByRole("article", { name: "alpha" });
+  expect(within(opened).queryByText(/Claude Code \d/)).not.toBeInTheDocument();
+  expect(within(opened).queryByText(m.serverVersionDiffers(APPROVED))).not.toBeInTheDocument();
+  cleanup();
+
+  dashboard([], { "GET /api/workspaces": () => listing([running("2.1.0")], null) });
+  renderApp("/?workspace=1");
+  const again = await panel("alpha");
+  expect(await within(again).findByText(m.serverClaudeVersion("2.1.0"))).toBeInTheDocument();
+  expect(within(again).queryByText(/is approved/)).not.toBeInTheDocument();
+});
+
+test("a workspace with no server shows no version", async () => {
+  dashboard([workspace(2, "beta")]);
+  renderApp("/?workspace=2");
+  const opened = await panel("beta");
+  await within(opened).findByText(m.noServer);
+  expect(within(opened).queryByText(/Claude Code \d/)).not.toBeInTheDocument();
 });
 
 // --- the Changes section ------------------------------------------------------------
@@ -904,7 +981,7 @@ test("Delete workspace asks first, saying everything in it and its server go, an
 test("confirming deletes the workspace, refreshes the list, selects none and says it was deleted", async () => {
   let workspaces = withServer("ready");
   const fake = dashboard([], {
-    "GET /api/workspaces": () => ({ workspaces }),
+    "GET /api/workspaces": () => listing(workspaces),
     "DELETE /api/workspaces/1": () => {
       workspaces = workspaces.filter((w) => w.id !== 1);
       return { deleted: 1 };
@@ -991,7 +1068,7 @@ test("a poll that cannot reach rcman says so, and the message goes once a later 
   polling(async () => {
     let down = false;
     const fake = dashboard([], {
-      "GET /api/workspaces": () => (down ? UNREACHABLE_REPLY : { workspaces: [] }),
+      "GET /api/workspaces": () => (down ? UNREACHABLE_REPLY : listing([])),
       "POST /api/client-errors": {},
     });
     renderApp("/", { pollMs: 1000 });
@@ -1022,7 +1099,7 @@ test("a failing poll that ends after a later one worked is not shown", () =>
     dashboard([], {
       "GET /api/workspaces": () => {
         asked += 1;
-        if (asked !== 2) return { workspaces: [workspace(1, "alpha")] };
+        if (asked !== 2) return listing([workspace(1, "alpha")]);
         return new Promise((resolve) => {
           failLate = () => resolve(UNREACHABLE_REPLY);
         });

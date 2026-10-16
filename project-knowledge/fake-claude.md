@@ -134,8 +134,9 @@ connected stage lasts, and `FAKE_CLAUDE_VERSION` the version it reports.
 
 `fake-exec COMMAND [ARGUMENT...]` is the one verb the real `claude` has no
 counterpart of, and nothing in it is recorded: it runs the command in the
-environment the fake was started with, on its own streams, and ends with the
-command's exit status. A workspace starts Claude through `env -i` with exactly
+environment the fake was started with but for `FAKE_CLAUDE_VERSION` (a release's
+launcher exports it for the fake alone, and the real Claude's children never see
+such a variable), on its own streams, and ends with the command's exit status. A workspace starts Claude through `env -i` with exactly
 `claude_server.child_env`, so the command sees what a command Claude runs, as git
 does for it, would see; the container test of git uses it to show Claude's own git
 using the person's token (`tests/container/test_github_in_podman.py`).
@@ -203,7 +204,10 @@ version.
    the version to its `kept_for` in `tests/fakes/observed/manifest.json`;
    if not, remove the screen and what recognises it, tests first.
 5. Run the whole suite, and `uv run pytest -m real_claude`.
-6. Commit the fixtures and both manifests together.
+6. Commit the fixtures and both manifests together, with `helpers/claude-version`
+   naming the version: it is the version the installer installs and the one the
+   Versions page calls the tested one (see [Claude Code versions](../docs/claude-version.md)).
+   Approving it for workspaces is then an administrator's roll-out, not part of this list.
 
 Recording also leaves the scratch folders it trusted in that account's Claude
 configuration.
@@ -228,4 +232,17 @@ downloads: `tests/claude_download.py` lays it out as a release —
 one file, as Claude Code's is: a shell script holding the fake and what it
 reads, which unpacks itself under `$TMPDIR` the first time it runs and runs it
 with the image's `python3`. The default workspace image has `python3` for it.
+
+A release has a kind (`KINDS` in `tests/claude_download.py`): `good`, the fake reporting the
+version it is released as, which the file bakes in (the label `FAKE_CLAUDE_VERSION`, set by
+`bundle(version)`); `broken`, a program that reports another version and does nothing else
+Claude Code does, which fails the canary's checks; and `failing`, the fake whose manifest names
+another checksum, which the download refuses. `release` writes the release and the folder's
+`latest`, `candidate` a candidate for the canary, and `served` serves a folder over HTTP: the
+container suite gives that address to the installer and to rcman (`RCMAN_CLAUDE_DOWNLOAD`),
+which roll out the fake as they do the real program.
+
+On the host, `tests/fake_store.py` (`fake_claude`) makes a Claude Code store as the installer
+leaves it, holding a version that runs the fake: `versions/<version>`, `current` and
+`bin/claude`. Not a test module.
 

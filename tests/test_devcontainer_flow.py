@@ -691,7 +691,9 @@ def test_the_commands_run_as_the_images_user_in_the_work_folder_with_exactly_the
     assert env["WHO"] == "hello there"  # ${containerEnv:} sees the file's own containerEnv
     for noise in ("PWD", "OLDPWD", "SHLVL", "_"):  # what the shell adds to what it runs
         env.pop(noise, None)
-    assert set(env) == {"HOME", "USER", "LOGNAME", "PATH", "LANG", "GREETING", "WHO"}
+    assert set(env) == {
+        "HOME", "USER", "LOGNAME", "PATH", "LANG", "DISABLE_AUTOUPDATER", "GREETING", "WHO",
+    }  # fmt: skip
     layout = runtime.layout(name_of(done))
     assert env["HOME"] == layout.home  # the workspace's home, not the image user's
     assert "RCMAN_SECRET_FOR_THE_TEST" not in env

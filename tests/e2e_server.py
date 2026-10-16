@@ -24,8 +24,8 @@ from rcman.settings import Settings
 
 from devtools import fake_claude as fake
 from devtools import held_folders
-from devtools import record_claude as rec
 from tests import git_fixtures
+from tests.fake_store import fake_claude
 
 REPO = Path(__file__).resolve().parent.parent
 # Who the world lets in, and whether each is an administrator.
@@ -129,13 +129,12 @@ def _world(root: Path, settings: Settings) -> HostRuntime:
         signed_in = people.by_email(con, SIGNED_IN)
     finally:
         con.close()
-    wrapper = root / "claude"
-    wrapper.write_text(f'#!/bin/sh\nFAKE_CLAUDE_READY_SECONDS=0.5 exec {rec.FAKE_CLAUDE} "$@"\n')
-    wrapper.chmod(0o755)
+    store = root / "claude"  # the Claude Code store, as settings.claude_store names it
+    fake_claude(store, env="FAKE_CLAUDE_READY_SECONDS=0.5")
     (root / "workspaces").mkdir()
     sockets(root).mkdir()
     runtime = HostRuntime(
-        root / "workspaces", sockets(root), wrapper, REPO / "backend" / "rcman" / "tmux.conf"
+        root / "workspaces", sockets(root), store, REPO / "backend" / "rcman" / "tmux.conf"
     )
     github = root / "github"
     _seed_github(root, github)
@@ -169,6 +168,7 @@ def _app(root: Path, held):
         public_origin=os.environ["RCMAN_PUBLIC_ORIGIN"],
         database=root / "rcman.db",
         allowed_emails=root / "allowed-emails",
+        claude_store=root / "claude",
         frontend_dir=REPO / "frontend" / "dist",
     )
     app = rcman_app(settings, runtime=_world(root, settings))

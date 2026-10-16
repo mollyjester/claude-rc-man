@@ -214,8 +214,48 @@ def test_the_claude_store_holds_the_tested_version(first_install):
     store = ins.CLAUDE_STORE
     assert os.readlink(store / "current") == f"versions/{version}"
     assert os.readlink(store / "bin" / "claude") == "../current"
-    binary = store / "versions" / version
-    assert binary.stat().st_uid == 0 and stat.S_IMODE(binary.stat().st_mode) == 0o755
+    assert stat.S_IMODE((store / "versions" / version).stat().st_mode) == 0o755
+
+
+def test_the_claude_store_is_rcmans_and_readable_by_every_workspace(first_install):
+    """rcman writes the store from the first rollout on; a workspace, whose ids are not rcman's,
+    reads it through the mode alone."""
+    store = ins.CLAUDE_STORE
+    rcman = pwd.getpwnam("rcman")
+    everything = [store, *store.rglob("*")]
+    assert len(everything) > 4  # non-vacuity: the folders, the version, the links
+    for path in everything:
+        found = path.lstat()
+        assert (found.st_uid, found.st_gid) == (rcman.pw_uid, rcman.pw_gid), path
+        if not path.is_symlink():
+            assert found.st_mode & 0o055 == 0o055, path  # read, and for a folder enter
+            assert not found.st_mode & 0o022, path  # written by its owner alone
+
+
+def test_installing_again_leaves_current_on_the_version_rcman_approved(first_install):
+    """``current`` is rcman's to switch once it runs: the installer sets it only where there is
+    none, so an administrator's approval of another version outlasts an update."""
+    store = ins.CLAUDE_STORE
+    tested = (SRC / "helpers" / "claude-version").read_text().strip()
+    approved = store / "versions" / "9.9.9"
+    shutil.copy2(store / "versions" / tested, approved)
+    link = store / ".current.new"
+
+    def point(target: str) -> None:
+        link.unlink(missing_ok=True)
+        link.symlink_to(target)
+        os.replace(link, store / "current")
+
+    point("versions/9.9.9")
+    try:
+        proc = install()
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        assert changes(proc)["changed"] == []
+        assert os.readlink(store / "current") == "versions/9.9.9"
+        assert sorted(p.name for p in (store / "versions").iterdir()) == sorted([tested, "9.9.9"])
+    finally:
+        point(f"versions/{tested}")
+        approved.unlink()
 
 
 def test_settings_are_saved_privately(first_install):

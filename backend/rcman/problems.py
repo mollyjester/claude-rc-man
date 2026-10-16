@@ -35,7 +35,6 @@ MESSAGES = {
     "validation_failed": "Some of what was sent is not valid.",
     "body_unreadable": "What was sent could not be read as text.",
     "author_not_set": "Set your commit author name in Settings before committing.",
-    "not_available_yet": "rcman cannot do this with workspaces yet.",
     "internal_error": "Something went wrong in rcman.",
     # people
     "email_invalid": rules.EMAIL.sentence,
@@ -49,10 +48,18 @@ MESSAGES = {
     "runtime_unavailable": "rcman cannot reach its containers just now. Try again in a moment.",
     "workspace_failed": "The workspace did not do what rcman asked of it.",
     # servers
-    "claude_not_installed": "Claude Code is not installed in the workspace.",
+    "claude_not_installed": "Claude Code is not installed in the workspace: the approved "
+    "version is not in the store, or the workspace cannot run it.",
     "claude_not_logged_in": "Connect your Claude account on the Claude page.",
     "claude_signing_out": "Your Claude account is being signed out: connect it again on the "
     "Claude page to start servers.",
+    "claude_install_failed": "rcman could not get that Claude Code version.",
+    "claude_checks_failed": "That Claude Code version failed the checks every version is held "
+    "to before it is approved, so it was not approved. The checks it failed are below.",
+    "claude_canary_failed": "rcman could not run the checks on that Claude Code version, so it "
+    "was not approved and nothing was changed. Try again in a moment.",
+    "claude_upgrade_busy": "Another Claude Code version is being rolled out. Try again when it "
+    "is done.",
     "login_failed": "Signing in to Claude failed. Get a new link and try again.",
     "no_login_in_progress": "No sign-in to Claude is waiting for a code. Get a new link.",
     "claude_unrecognised_output": "Claude Code answered with output rcman does not recognise.",
@@ -111,6 +118,30 @@ CLONE_MESSAGES = {
     "restarted": (
         "rcman restarted while this workspace was being made; delete it and make it again."
     ),
+}
+# Why rolling out a Claude Code version could not get it, in plain words, by the kind of
+# claude_release.ReleaseError: the problem's title when it is ``claude_install_failed``.
+CLAUDE_INSTALL_MESSAGES = {
+    "no_such_version": "Claude Code has no such version. Check the number.",
+    "no_build": "That version has no build for the platform rcman runs on.",
+    "checksum": (
+        "What was downloaded did not match the checksum its release publishes, so it was "
+        "thrown away."
+    ),
+    "too_big": "The download is bigger than rcman takes, so it was thrown away.",
+    "network": (
+        "rcman could not download it: the release site did not answer, or the download "
+        "stopped part way. Try again."
+    ),
+}
+# The status of ``claude_install_failed`` by kind: a release site that does not answer is a
+# bad gateway, and the rest is for the administrator who named the version.
+CLAUDE_INSTALL_STATUS = {
+    "no_such_version": 409,
+    "no_build": 409,
+    "checksum": 409,
+    "too_big": 409,
+    "network": 502,
 }
 # What a workspace made from a repository's devcontainer.json is told when the file, or the
 # image it names, is refused or fails (devcontainer.py, workspaces.py), in plain words: the
@@ -280,7 +311,6 @@ STATUS = {
     "validation_failed": 422,
     "body_unreadable": 400,
     "author_not_set": 409,
-    "not_available_yet": 501,
     "internal_error": 500,
     "email_invalid": 400,
     "email_taken": 409,
@@ -292,6 +322,10 @@ STATUS = {
     "runtime_unavailable": 503,
     "workspace_failed": 502,
     "claude_not_installed": 409,
+    "claude_install_failed": 409,
+    "claude_checks_failed": 409,
+    "claude_canary_failed": 502,
+    "claude_upgrade_busy": 409,
     "claude_not_logged_in": 409,
     "claude_signing_out": 409,
     "login_failed": 409,

@@ -261,6 +261,7 @@ def test_app_environment_points_at_the_current_release():
     assert "RCMAN_BUILDER_IMAGE=localhost/rcman-builder:0123456789ab\n" in env
     assert f"RCMAN_TOOLS_DIR={ins.TOOLS}\n" in env
     assert f"RCMAN_CLAUDE_STORE={ins.CLAUDE_STORE}\n" in env
+    assert "RCMAN_CLAUDE_DOWNLOAD=https://downloads.example.com/releases\n" in env
 
 
 def test_every_rendered_app_setting_exists_in_the_settings_model():
@@ -947,44 +948,160 @@ def test_the_installer_finds_out_both_images_and_rcmans_uid(monkeypatch):
     assert f"RCMAN_BUILDER_IMAGE={ins.devcontainer_builder_image()}\n" in env
 
 
-def claude_release(version: str, binary: bytes, checksum: str | None = None) -> dict:
-    import hashlib
-    import json
+@pytest.fixture
+def releases(tmp_path):
+    """A release site: ``put(version, kind)`` makes a release, and the address is served."""
+    from tests import claude_download
 
-    digest = checksum or hashlib.sha256(binary).hexdigest()
-    base = "https://downloads.example.com/releases"
-    platform = ins.claude_platform()
-    manifest = {"version": version, "platforms": {platform: {"checksum": digest}}}
-    return {
-        f"{base}/{version}/manifest.json": json.dumps(manifest).encode(),
-        f"{base}/{version}/{platform}/claude": binary,
-    }
+    folder = tmp_path / "releases"
+    folder.mkdir()
+    with claude_download.served(folder) as url:
+
+        def put(version, kind="good"):
+            claude_download.release(folder, version, kind)
+
+        yield url, put, folder
 
 
-def test_the_claude_store_holds_the_version_checked_against_its_release(tmp_path, monkeypatch):
-    served = claude_release("2.1.0", b"#!/bin/sh\necho 2.1.0\n")
-    fetched = []
-    monkeypatch.setattr(ins, "_download", lambda url: (fetched.append(url), served[url])[1])
+def test_the_claude_store_holds_the_version_checked_against_its_release(tmp_path, releases):
+    url, put, folder = releases
+    put("2.1.0")
     store = tmp_path / "claude"
-    changed = ins.ensure_claude_store(store, "https://downloads.example.com/releases", "2.1.0")
+    changed = ins.ensure_claude_store(store, url, "2.1.0")
     assert changed == ["claude 2.1.0"]
-    assert (store / "versions" / "2.1.0").read_bytes() == b"#!/bin/sh\necho 2.1.0\n"
+    expected = (folder / "2.1.0" / ins.claude_platform() / "claude").read_bytes()
+    assert (store / "versions" / "2.1.0").read_bytes() == expected
     assert os.readlink(store / "current") == "versions/2.1.0"
     assert os.readlink(store / "bin" / "claude") == "../current"
-    assert (store / "bin" / "claude").read_text().endswith("echo 2.1.0\n")
+    assert (store / "bin" / "claude").read_bytes() == expected
     assert stat.S_IMODE((store / "versions" / "2.1.0").stat().st_mode) == 0o755
-    fetched.clear()
-    assert ins.ensure_claude_store(store, "https://downloads.example.com/releases", "2.1.0") == []
-    assert fetched == []  # nothing fetched again
+    assert sorted(p.name for p in (store / "versions").iterdir()) == ["2.1.0"]  # no partial file
+    (folder / "2.1.0" / "manifest.json").unlink()
+    assert ins.ensure_claude_store(store, url, "2.1.0") == []  # nothing fetched again
 
 
-def test_a_claude_that_does_not_match_its_release_is_refused(tmp_path, monkeypatch):
-    served = claude_release("2.1.0", b"tampered", checksum="0" * 64)
-    monkeypatch.setattr(ins, "_download", lambda url: served[url])
+def test_a_claude_that_does_not_match_its_release_is_refused(tmp_path, releases):
+    url, put, _ = releases
+    put("2.1.0", "failing")
     store = tmp_path / "claude"
     with pytest.raises(ins.InstallError, match="checksum"):
-        ins.ensure_claude_store(store, "https://downloads.example.com/releases", "2.1.0")
+        ins.ensure_claude_store(store, url, "2.1.0")
     assert not (store / "versions" / "2.1.0").exists() and not (store / "current").exists()
+    assert [p.name for p in (store / "versions").iterdir()] == []  # no partial file either
+
+
+def test_a_release_the_site_does_not_have_or_has_no_build_of_is_refused_in_words(
+    tmp_path, releases
+):
+    url, put, folder = releases
+    put("2.1.0")
+    with pytest.raises(ins.InstallError, match="2.0.0"):
+        ins.ensure_claude_store(tmp_path / "a", url, "2.0.0")
+    (folder / "2.1.0" / "manifest.json").write_text('{"platforms": {}}')
+    with pytest.raises(ins.InstallError, match="no build"):
+        ins.ensure_claude_store(tmp_path / "b", url, "2.1.0")
+
+
+def test_the_store_keeps_the_version_current_names_and_only_adds_the_tested_one(tmp_path, releases):
+    """current is rcman's to switch once it runs (an approval in its database): the installer
+    sets it only where there is none."""
+    url, put, _ = releases
+    put("2.0.0")
+    put("2.1.0")
+    store = tmp_path / "claude"
+    ins.ensure_claude_store(store, url, "2.0.0")
+    assert ins.ensure_claude_store(store, url, "2.1.0") == ["claude 2.1.0"]
+    assert os.readlink(store / "current") == "versions/2.0.0"  # not reset to the tested one
+    assert sorted(p.name for p in (store / "versions").iterdir()) == ["2.0.0", "2.1.0"]
+    assert ins.ensure_claude_store(store, url, "2.1.0") == []
+    assert os.readlink(store / "current") == "versions/2.0.0"
+
+
+def test_the_store_gets_a_current_where_there_is_none_or_it_dangles(tmp_path, releases):
+    url, put, _ = releases
+    put("2.1.0")
+    store = tmp_path / "claude"
+    (store / "versions").mkdir(parents=True)
+    (store / "current").symlink_to("versions/9.9.9")  # names a version that is not there
+    ins.ensure_claude_store(store, url, "2.1.0")
+    assert os.readlink(store / "current") == "versions/2.1.0"
+
+
+def test_the_store_is_rcmans_and_readable_by_the_workspaces(tmp_path, releases, monkeypatch):
+    url, put, _ = releases
+    put("2.1.0")
+    put("2.2.0")
+    store = tmp_path / "claude"
+    ins.ensure_claude_store(store, url, "2.1.0")
+    owned = []
+    monkeypatch.setattr(
+        os, "chown", lambda path, uid, gid, **kw: owned.append((Path(path), uid, gid))
+    )
+    monkeypatch.setattr(os, "lchown", lambda path, uid, gid: owned.append((Path(path), uid, gid)))
+    ins.ensure_claude_store(store, url, "2.2.0", owner=(990, 991))
+    everything = {store, *store.rglob("*")}
+    assert {path for path, _, _ in owned} == everything  # the files, the folders, the links
+    assert {(uid, gid) for _, uid, gid in owned} == {(990, 991)}
+    assert len(everything) > 5  # non-vacuity
+    for path in everything:
+        if path.is_symlink():
+            continue
+        mode = stat.S_IMODE(path.stat().st_mode)
+        assert mode & 0o055 == 0o055, path  # readable, and for a folder enterable, by anyone
+        assert not mode & 0o022, path  # and writable by its owner alone
+
+
+def test_the_installer_downloads_with_the_code_rcman_does(monkeypatch, tmp_path):
+    """One piece of code fetches releases; the installer has no downloader of its own."""
+    from helpers import claude_release
+
+    assert ins.claude_release is claude_release
+    assert ins.CLAUDE_DOWNLOAD == claude_release.DOWNLOAD
+    assert ins.DOWNLOAD_ADDRESS is claude_release.DOWNLOAD_ADDRESS
+    seen = []
+
+    def fetch(download, version, destination):
+        seen.append((download, version, destination.name))
+        destination.write_bytes(b"#!/bin/sh\n")
+
+    monkeypatch.setattr(claude_release, "fetch", fetch)
+    ins.ensure_claude_store(tmp_path / "claude", "https://downloads.example.com", "2.1.0")
+    assert seen == [("https://downloads.example.com", "2.1.0", "2.1.0")]
+
+
+def imports_urllib(source: str) -> bool:
+    import ast
+
+    for node in ast.walk(ast.parse(source)):
+        names = (
+            [a.name for a in node.names]
+            if isinstance(node, ast.Import)
+            else [node.module or ""]
+            if isinstance(node, ast.ImportFrom)
+            else []
+        )
+        if any(name == "urllib" or name.startswith("urllib.") for name in names):
+            return True
+    return False
+
+
+def test_the_installer_has_no_downloader_of_its_own():
+    assert not imports_urllib((REPO / "installer" / "install.py").read_text(encoding="utf-8"))
+    for planted in ("import urllib.request\n", "from urllib import request\n"):
+        assert imports_urllib(planted)  # the guard fires on a plant
+
+
+def test_a_download_of_the_toolchain_is_checked_by_the_shared_code(releases):
+    import hashlib
+
+    url, _, folder = releases
+    (folder / "file").write_bytes(b"content")
+    assert ins._verified(f"{url}/file", hashlib.sha256(b"content").hexdigest()) == b"content"
+    with pytest.raises(ins.InstallError, match="checksum mismatch"):
+        ins._verified(f"{url}/file", "0" * 64)
+    with pytest.raises(ins.InstallError):
+        ins._download(f"{url}/nothing")
+    assert ins._download(f"{url}/file") == b"content"
 
 
 def test_the_store_holds_the_tested_version():

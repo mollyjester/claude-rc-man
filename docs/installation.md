@@ -81,6 +81,8 @@ The installer asks for what it needs the first time, and saves the answers in
 An option wins over a variable, a variable over the saved answer, and the
 saved answer over asking. The port, Caddy's account and the download address
 have defaults (`FIELDS` in `installer/install.py`) and are not asked for;
+the download address is also rcman's own setting `RCMAN_CLAUDE_DOWNLOAD`, which
+rcman rolls out versions from (see [Configuration](configuration.md));
 Caddy's account must exist. Anything else saved in
 `/etc/rcman/install.env` is dropped from it.
 Without a terminal the installer does not ask; it names what is missing and
@@ -137,7 +139,11 @@ run and kept.
      nothing runs from them. It is built as the default image is, with the network;
    - the Claude Code store, `/var/lib/rcman/claude`: the version rcman is
      tested with (`helpers/claude-version`), downloaded and checked against its
-     release's checksum. Every workspace has the store, read-only.
+     release's checksum (see [Claude Code versions](claude-version.md)). The store
+     belongs to rcman, which writes it when an administrator rolls out another
+     version, and every workspace has it, read-only. The installer sets the
+     version `current` names only when there is none, so running it again never
+     changes the approved version.
 9. **Writes the configuration** in `/etc/rcman` and the two systemd services,
    `rcman` and `rcman-oauth2-proxy`.
 10. **Puts `rcman-admin` on root's path**: `/usr/local/sbin/rcman-admin` is a
@@ -252,6 +258,10 @@ sudo ./install.sh --rollback
 ```
 
 Rolling back again returns to the newer release.
+
+Upgrading rcman, rolling back, and running the installer again never change
+which Claude Code version is approved, and restart no running server; see
+[Claude Code versions](claude-version.md).
 
 ## Afterwards
 

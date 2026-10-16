@@ -11,6 +11,7 @@ type Workspace = {
   state: string;
   server: { state: string; session_name: string | null; exit_code: number | null } | null;
   server_error: { code: string; title: string } | null;
+  claude_version: string | null;
 };
 
 export type Person = { email: string; workspaces: Workspace[] };
@@ -39,6 +40,7 @@ function PersonWorkspaces({ person }: { person: Person }) {
               <th>{m.everyoneWorkspace}</th>
               <th>{m.everyoneState}</th>
               <th>{m.sessionName}</th>
+              <th>{m.everyoneClaude}</th>
             </tr>
           </thead>
           <tbody>
@@ -51,6 +53,7 @@ function PersonWorkspaces({ person }: { person: Person }) {
                 <td>
                   {workspace.server?.session_name && <code>{workspace.server.session_name}</code>}
                 </td>
+                <td>{workspace.claude_version}</td>
               </tr>
             ))}
           </tbody>

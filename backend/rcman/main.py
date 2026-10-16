@@ -10,7 +10,7 @@ from pathlib import Path
 
 from fastapi import FastAPI
 
-from rcman import audit, db, journal, people, problems, spa, unrecognised
+from rcman import audit, claude_versions, db, journal, people, problems, spa, unrecognised
 from rcman.accounts import Accounts
 from rcman.gitaccount import GitAccount
 from rcman.routers import (
@@ -81,7 +81,13 @@ def _start(settings: Settings) -> None:
 
 def create_app(settings: Settings | None = None, runtime: Runtime | None = None) -> FastAPI:
     settings = settings or Settings()
-    for log in (audit.log, client_errors.log, unrecognised.log, workspaces_log):
+    for log in (
+        audit.log,
+        client_errors.log,
+        unrecognised.log,
+        workspaces_log,
+        claude_versions.log,
+    ):
         journal.install(log)
     service = Workspaces(settings, runtime or podman_runtime(settings))
     sign_ins = Accounts(service)
@@ -89,6 +95,7 @@ def create_app(settings: Settings | None = None, runtime: Runtime | None = None)
     @contextlib.asynccontextmanager
     async def lifespan(app: FastAPI):
         _start(settings)
+        service.versions.reconcile()  # the approved version is current, before any server starts
         service.start_background()  # restore: HTTP answers meanwhile
 
         async def daily():
@@ -114,6 +121,7 @@ def create_app(settings: Settings | None = None, runtime: Runtime | None = None)
     )
     app.state.settings = settings
     app.state.workspaces = service
+    app.state.versions = service.versions
     app.state.accounts = sign_ins
     app.state.git_account = GitAccount(service)
     app.state.watch = unrecognised.Watch()

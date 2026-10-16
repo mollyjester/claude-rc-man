@@ -69,8 +69,14 @@ no upgrade from one, as [the installation guide](../docs/installation.md) says.
   `versions/<version>` for the tested version, downloaded from the
   `CLAUDE_DOWNLOAD` setting's address — `<version>/manifest.json`, whose
   checksum for the platform (`claude_platform`) the binary,
-  `<version>/<platform>/claude`, must have; `current`, switched to it in one
-  step; and `bin/claude` leading to `current`.
+  `<version>/<platform>/claude`, must have, fetched by `helpers/claude_release.py`, which
+  rcman fetches a rolled-out version with too; `current`, set to it in one step only
+  where the store has none (afterwards rcman switches it to the version an administrator
+  approves, and a run of the installer leaves it); and `bin/claude` leading to `current`.
+  The store is rcman's (`owner`: the uid and gid of the service account) and readable by
+  every workspace. `CLAUDE_DOWNLOAD` is written to the app's environment as
+  `RCMAN_CLAUDE_DOWNLOAD`. How rcman changes the store is
+  [backend.md](backend.md#claude-code-versions)'s.
 
 ## Releases
 
@@ -123,7 +129,7 @@ through the socket.
   checks what an installation on a real machine does, such as the release's
   contents and ownership, the accounts, rootless Podman for rcman and a
   subordinate range that reaches the builder's slot, the tools, the image, the
-  builder image with the CLI running in it, and the store, files and modes, the services answering, the first
+  builder image with the CLI running in it, and the store, its files, modes and owner (rcman's, readable by every workspace) and a second run leaving `current` on the version rcman approved, the services answering, the first
   administrator, `rcman-admin` by name as root, a second run changing nothing,
   self-update and rollback, and — with Caddy and stand-ins for oauth2-proxy and
   rcman — that a browser cannot set the identity header itself and that only
