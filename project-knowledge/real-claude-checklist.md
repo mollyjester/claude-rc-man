@@ -3,7 +3,8 @@
 Everything automated runs against the fake `claude` or, without an account,
 against the real binary — see [fake-claude.md](fake-claude.md). What needs a
 signed-in Claude subscription is checked by hand, with this list: before
-approving a new Claude Code version, and once on a newly installed server.
+approving a new Claude Code version, once on a newly installed server, and again
+after a live reinstall.
 
 Use a Claude account set aside for testing where there is one. Every server
 started below creates a Remote Control session in that account's
@@ -31,20 +32,124 @@ With a person added for the test (`sudo rcman-admin add`):
 4. Connect the test Claude account on the **Claude** page; start the
    workspace's server, then make a second workspace and start its server: both
    reach ready.
-5. Restart rcman (`sudo systemctl restart rcman`) and reboot the machine: the
-   workspaces are ready again afterwards, and their servers running, without
-   anyone doing anything.
-6. **Sign out of Claude** with **Keep sessions running** ticked: both servers
+5. Restart rcman (`sudo systemctl restart rcman`): the workspaces stay ready,
+   and their servers keep running, without anyone doing anything.
+6. Reboot the machine, as [After the host restarts](#after-the-host-restarts)
+   says: the workspaces are ready again afterwards, and their servers running,
+   without anyone doing anything.
+7. **Sign out of Claude** with **Keep servers running until the last one stops** ticked: both servers
    keep running and **Start** is refused; stop both, and the page shows the
    account not connected.
-7. **Delete workspace**, and remove the person (`sudo rcman-admin delete`):
+8. **Delete workspace**, and remove the person (`sudo rcman-admin delete`):
    `podman volume ls` as `rcman` lists nothing of theirs.
+9. **Run `sudo ./install.sh` again** from the dedicated clone while a workspace's
+   server is running: it changes nothing and ends nothing, and the server is still
+   running afterwards, and `podman info` as `rcman` reports `crun` as its OCI
+   runtime.
 
 Write down what differed from this list. A screen rcman shows as
 **Unrecognised screen** is recorded as a new fixture, or, where no sequence
 can bring it about, kept as an
 [observed screen](fake-claude.md#observed-screens), and handled before the
 version is approved.
+
+## After a fresh install or a reinstall
+
+On a real machine, as root, after `./install.sh` has ended and its notices about Caddy
+have been done (Caddy restarted). Write down, before the install, `/etc/subuid`,
+`/etc/subgid`, `getent group` and what the machine's other services answer. Podman is
+run as `rcman` the way the installer runs it (see
+[Podman's volumes are rcman's](../docs/installation.md#podmans-volumes-are-rcmans)):
+
+```
+runuser -u rcman -- env -i PATH=/usr/bin:/bin HOME=/var/lib/rcman \
+  XDG_RUNTIME_DIR=/run/user/$(id -u rcman) podman <arguments>
+```
+
+1. **The services.** `systemctl --failed` lists nothing, and `rcman`,
+   `rcman-oauth2-proxy` and Caddy are active.
+2. **The runtime.** `podman info --format '{{.Host.OCIRuntime.Name}}'` run as `rcman` prints
+   `crun`.
+3. **A first workspace.** The first administrator signs in with the address given to the
+   installer and makes a workspace, which reaches ready.
+4. **An address that is not listed.** Sign in to Google with an account that is not on the
+   **People** page: oauth2-proxy refuses it and no page of rcman opens. Add a person for the
+   test, sign in as them, then remove them (`sudo rcman-admin delete`) while their page is
+   open: their next request is refused at once, and they cannot sign in again.
+5. **No way to the machine's loopback.** From a shell in a workspace, a connection to
+   oauth2-proxy's port (`RCMAN_INSTALL_PROXY_PORT` in `/etc/rcman/install.env`) on
+   `127.0.0.1`, and on the gateway address the workspace's network shows, fails. rcman has
+   no port to try, only its socket, which no workspace can reach.
+6. **Nothing of the operator's disturbed.** Compared with what was written down: the
+   machine's other sites answer through Caddy, Docker (where it is there) lists the same
+   containers, `/etc/subuid` and `/etc/subgid` have gained rcman's lines and no other
+   changed, and the groups are the same but for `rcman`, `rcman-proxy` and `rcman-web`
+   (with Caddy's account in the last).
+7. **Run the installer again** (step 9 of
+   [On an installed server](#on-an-installed-server)): it changes nothing.
+8. **Removal, on a spare machine.** Follow
+   [Removing rcman](../docs/installation.md#removing-rcman): the commands that check that
+   nothing is left print nothing, Caddy restarts and still serves its other sites, and
+   the packages and the operator's accounts are as they were.
+
+## After the host restarts
+
+On a real machine, not in a container: the order of boot, lingering and the user
+manager are what is checked, and a container cannot show them. With a person
+added for the test, two workspaces of theirs with their servers running, one
+more workspace stopped on purpose, and a limit set on one workspace (see
+[Limits](../docs/users.md#limits)):
+
+1. **Before.** Write down what rcman's Podman lists (`podman ps` as `rcman`) and
+   the sessions the account shows in claude.ai/code.
+2. **Restart the host** (`sudo reboot`) and touch nothing.
+3. **The services are up.** `rcman`, `rcman-oauth2-proxy` and Caddy are running,
+   and `systemctl --failed` lists nothing.
+4. **The workspaces came back.** On the dashboard the workspaces are ready, the
+   servers that were running are running again, and the one stopped on purpose is
+   still stopped. `podman ps` as `rcman` lists the same containers as before.
+5. **The limit holds.** The workspace's limit is shown, and the unit manager has
+   it again (see [Limits](runtime.md#limits)).
+6. **The sessions reconnect.** The sessions of the servers that were running
+   show again in claude.ai/code, and answer.
+7. **The journal is clean.** `sudo journalctl -u rcman -b` shows no error.
+
+## Servers surviving an rcman upgrade
+
+Needs a second release to install. With a server in the middle of a conversation:
+
+1. Write down the container ids and start times of the workspaces, and the server
+   pids, and which Claude Code version is approved.
+2. Run `sudo ./install.sh`.
+3. The container ids, the start times and the server pids are the same as
+   before, the session stays attached in claude.ai/code and answers the next
+   message, and the approved version is the one written down.
+
+## A repository with devcontainer.json and a feature
+
+What [devcontainer.json support](../docs/devcontainer.md) says, with the real
+builder and the real Claude binary. Use a small repository of your own with a
+devcontainer.json that names an image, a feature, `remoteUser`, a lifecycle
+command that leaves a marker file, and `customizations` and `forwardPorts`:
+
+1. **The steps.** Clone it as a new workspace: it passes through the building
+   states to ready.
+2. **The feature.** The tool the feature installs exists in the workspace.
+3. **The user.** `whoami` in a session shows `remoteUser`, and Claude's server
+   runs as that user.
+4. **The lifecycle command.** Its marker file exists.
+5. **Ignored keys.** `customizations` and `forwardPorts` do not block the
+   workspace, and the steps name them as skipped.
+6. **No builder is left.** `podman ps -a` as `rcman` lists no builder
+   container after the build.
+7. **The same repository again.** A second workspace from it starts.
+8. **Refused keys.** A repository that asks for `mounts` or for `privileged` is
+   refused, and the reason names the key.
+9. **A Dockerfile.** The same checks with a repository whose devcontainer.json
+   builds a Dockerfile instead of naming an image.
+10. **Claude under a non-root user.** With the real binary, a server started in
+    such a workspace reaches ready and answers a message; Claude does not run as
+    root.
 
 ## Rolling out a version
 
@@ -108,6 +213,14 @@ connected on the **Claude** page.
    sign-in is revoked. rcman therefore empties the file in place after it, and
    reads whether someone is signed in from the file and its own record, never
    from `auth status` alone.
+7. **Connected once.** Connect the account on the **Claude** page once. A
+   workspace made afterwards reaches ready and starts with no sign-in prompt.
+8. **One account.** The sessions of both servers appear under the one account in
+   claude.ai/code.
+9. **Deleting one.** Deleting a workspace leaves the other signed in and its
+   server connected.
+10. **Another person.** A second person's workspace uses their own account:
+    their sessions appear under theirs, and nothing of the first person's.
 
 ## Screens with no recording yet
 

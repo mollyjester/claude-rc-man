@@ -637,3 +637,23 @@ def test_a_restart_remakes_a_creating_workspace_that_has_no_source(service, sett
     assert row(settings, blank)["state"] == "ready"
     assert runtime.running(rt.container_name(blank))
     assert not [a for a, _ in runtime.execs if "clone" in a]
+
+
+def test_a_failure_with_the_token_in_it_reaches_the_journal_redacted(
+    client, widget, monkeypatch, caplog
+):
+    """The workspace's error is redacted before it is kept; the line in the journal, which
+    other people read, is the same words."""
+    save_token(client)
+
+    def boom(self, workspace, layout=None):
+        raise RuntimeError(f"git said https://x-access-token:{TOKEN}@github.com/octo/widget/")
+
+    monkeypatch.setattr(ws.Workspaces, "_check_git", boom)
+    with caplog.at_level("DEBUG"):
+        failed = cloned(client)
+    assert failed["state"] == "failed" and TOKEN not in failed["error"]
+    lines = [r.getMessage() for r in caplog.records if r.name == "rcman.workspaces"]
+    assert any("could not be made" in line for line in lines), lines  # the control
+    assert not [line for line in lines if TOKEN in line]
+    assert TOKEN not in caplog.text

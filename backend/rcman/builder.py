@@ -17,7 +17,9 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import io
 import json
+import pathlib
 import posixpath
 import re
 import subprocess
@@ -72,6 +74,9 @@ def run_argv(
         "--network=slirp4netns:allow_host_loopback=false",
         *ids,
         *([f"--cgroup-parent={cgroup_parent}"] if cgroup_parent else []),
+        # Podman gives a container a limit on processes of its own unless it is told there is
+        # none; the limit that holds is the slice's TasksMax (limits.py), as for a workspace.
+        "--pids-limit=-1",
         "--device=/dev/fuse",
         "--cap-add=SYS_ADMIN",
         "--security-opt=label=disable",
@@ -220,10 +225,6 @@ class ProgressLines:
 
     def tail(self) -> str:
         return "\n".join(self._lines)
-
-    def pending_chars(self) -> int:
-        """How much of a line that has not ended is held."""
-        return len(self._partial)
 
     def _line(self, raw: bytes) -> None:
         line = STAMP.sub("", raw.decode("utf-8", "replace")).strip()
@@ -492,31 +493,82 @@ def _member_bytes(
     return reader.read(limit + 1) if reader is not None else b""
 
 
-def verify_archive(path, image_id: str) -> None:
+# The members of an OCI layout. Podman reads an archive as an OCI layout before it tries a
+# docker-archive, and applies the names the layout's index carries, so an archive that has any
+# of these is not the one image rcman asked to have kept by its id, whatever else it holds.
+OCI_MEMBERS = ("index.json", "oci-layout", "blobs")
+# How a member of the fresh archive is named, and the mode, owner and time it is given.
+MANIFEST_NAME = "manifest.json"
+FRESH_MODE = 0o644
+# The fields of a tar header the size is read from (see ``_plain_size``), and its block.
+SIZE_FIELD = slice(124, 136)
+HEADER_BLOCK = 512
+
+
+class Verified(NamedTuple):
+    """What an archive that was accepted holds that is kept: the names, as the archive has
+    them, of the configuration and of each layer in the manifest's order."""
+
+    config: str
+    layers: list[str]
+    diff_ids: list[str]  # the digests of the layers' bytes, as the configuration lists them
+
+
+def _plain_size(raw: bytes, member: tarfile.TarInfo) -> bool:
+    """Whether the header ``raw`` of ``member`` has a size field every tar reads as Python did:
+    octal digits and the padding that ends it, nothing before the digits but spaces. A leading
+    NUL is read as no size by Python's tar and as the number by Go's, and a binary size is for
+    the sizes the plain field cannot hold, which an extended header carries; either way what is
+    taken for the end of the member differs."""
+    field = raw[SIZE_FIELD]
+    digits = field.rstrip(b"\0 ").lstrip(b" ")
+    if not digits or not all(chr(c) in "01234567" for c in digits):
+        return False
+    return field[-1:] in (b"\0", b" ") and int(digits, 8) == member.size
+
+
+def verify_archive(path, image_id: str) -> Verified:
     """Hold the docker-archive at ``path``, as ``podman save`` wrote it for the image ``image_id``,
-    to what rcman accepts before ``podman load`` reads it: exactly one image, under no name at
-    all - loading applies every name an archive carries, which could put a new image under a name
-    of rcman's own - whose configuration, the bytes the id is the digest of, is in the archive.
+    to what rcman accepts before it makes the archive that is loaded (``repack_archive``): no
+    part of an OCI layout (``OCI_MEMBERS``); exactly one image, under no name at all - loading
+    applies every name an archive carries, which could put a new image under a name of rcman's
+    own - whose configuration, the bytes the id is the digest of, is in the archive, and whose
+    layers are in it as files; the header of each of these members plain (``_plain_size``).
     Only the manifest and the configuration are read, within limits, and nothing is extracted,
     so the names of the other members, whatever they are, do nothing. :class:`ArchiveRefused`
     otherwise."""
     if not is_image_id(image_id):
         raise ArchiveRefused("the id of the image is not an id")
     try:
-        with tarfile.open(path, "r:") as archive:
+        with tarfile.open(path, "r:") as archive, open(path, "rb") as raw_file:
             members: dict[str, tarfile.TarInfo] = {}
             twice: set[str] = set()  # names of more than one member: which one is read is unclear
             for member in archive:
                 if len(members) >= MAX_ARCHIVE_MEMBERS:
                     raise ArchiveRefused("it has more members than an image has")
                 name = posixpath.normpath(member.name)
+                if name.split("/", 1)[0] in OCI_MEMBERS:
+                    raise ArchiveRefused("it is also an OCI layout, which names its image")
                 if name in members:
                     twice.add(name)
                 members.setdefault(name, member)
-            found = members.get("manifest.json")
+
+            def plain(name: str, what: str) -> tarfile.TarInfo:
+                member = members.get(name)
+                if member is None or not member.isreg() or member.sparse is not None:
+                    raise ArchiveRefused(f"its {what} is not in the archive as a file")
+                if member.type not in (tarfile.REGTYPE, tarfile.AREGTYPE):
+                    raise ArchiveRefused(f"its {what} is not in the archive as a file")
+                if not member.pax_headers:
+                    raw_file.seek(member.offset)
+                    if not _plain_size(raw_file.read(HEADER_BLOCK), member):
+                        raise ArchiveRefused(f"the header of its {what} is not a plain one")
+                return member
+
+            found = members.get(MANIFEST_NAME)
             if found is None:
                 raise ArchiveRefused("it has no manifest")
-            if "manifest.json" in twice:
+            if MANIFEST_NAME in twice:
                 raise ArchiveRefused("it has two manifests")
             listed = _json(
                 _member_bytes(archive, found, MAX_MANIFEST_BYTES, "manifest"), "manifest"
@@ -529,11 +581,22 @@ def verify_archive(path, image_id: str) -> None:
             config = entry.get("Config")
             if not isinstance(config, str) or posixpath.normpath(config) not in members:
                 raise ArchiveRefused("its configuration is not in the archive")
-            if posixpath.normpath(config) in twice:
+            config = posixpath.normpath(config)
+            if config in twice:
                 raise ArchiveRefused("it has two configurations")
-            raw = _member_bytes(
-                archive, members[posixpath.normpath(config)], MAX_CONFIG_BYTES, "configuration"
-            )
+            listed_layers = entry.get("Layers")
+            if not isinstance(listed_layers, list) or not all(
+                isinstance(layer, str) for layer in listed_layers
+            ):
+                raise ArchiveRefused("its manifest does not list its layers as names")
+            layers = [posixpath.normpath(layer) for layer in listed_layers]
+            if MANIFEST_NAME in layers or config in layers:
+                raise ArchiveRefused("a layer is the manifest or the configuration")
+            plain(MANIFEST_NAME, "manifest")
+            plain(config, "configuration")
+            for layer in layers:
+                plain(layer, "layer")
+            raw = _member_bytes(archive, members[config], MAX_CONFIG_BYTES, "configuration")
     except ArchiveRefused:
         raise
     except (tarfile.TarError, EOFError, OSError, ValueError):
@@ -542,3 +605,109 @@ def verify_archive(path, image_id: str) -> None:
         raise ArchiveRefused(
             "its configuration is not that of the image with the id it was saved by"
         )
+    return Verified(config, layers, _diff_ids(raw, len(layers)))
+
+
+def _diff_ids(raw: bytes, count: int) -> list[str]:
+    """The ``rootfs.diff_ids`` of the configuration ``raw``, as many as the manifest lists
+    layers; :class:`ArchiveRefused` for a configuration that lists others or none."""
+    found = _json(raw, "configuration")
+    rootfs = found.get("rootfs") if isinstance(found, dict) else None
+    ids = rootfs.get("diff_ids") if isinstance(rootfs, dict) else None
+    if not isinstance(ids, list) or not all(isinstance(i, str) for i in ids) or len(ids) != count:
+        raise ArchiveRefused("its configuration does not list the layers its manifest does")
+    return ids
+
+
+# The storage takes a layer it already has by its digest, without reading the archive's bytes
+# for it, so the bytes of each layer are held to the digest the configuration lists.
+MISMATCHED_LAYER = "the bytes of a layer are not the ones its configuration lists"
+
+
+class _Piecewise:
+    """A source of exactly ``size`` bytes for a copy, read in pieces: asks ``stop`` before each,
+    and refuses a source that ends before its size."""
+
+    def __init__(
+        self,
+        reader,
+        size: int,
+        stop: Callable[[], bool] | None,
+        so_far: Callable[[], int],
+        digest=None,
+    ):
+        self._reader, self._left, self._stop, self._so_far = reader, size, stop, so_far
+        self._digest = digest  # a hash fed every byte that passes, if one is given
+
+    def read(self, count: int = CHUNK_BYTES) -> bytes:
+        if self._stop is not None and self._stop():
+            raise PumpStopped(CANCELLED, self._so_far())
+        if self._left <= 0:
+            return b""
+        try:
+            data = self._reader.read(min(count, self._left))
+        except (tarfile.TarError, EOFError):
+            data = b""
+        if not data:
+            raise ArchiveRefused("it is cut short")
+        self._left -= len(data)
+        if self._digest is not None:
+            self._digest.update(data)
+        return data
+
+
+def repack_archive(path, image_id: str, target, stop: Callable[[], bool] | None = None) -> None:
+    """Write, at ``target``, an archive of the image ``image_id`` that rcman makes itself from
+    the parts of the archive at ``path`` that ``verify_archive`` accepted: a manifest of one
+    image with no name, the configuration, and each layer once, in plain headers, each member a
+    file of the same mode and no owner. Nothing else of ``path`` is carried over, so what Podman
+    loads is only that, read the one way; the extra members the original may hold (legacy
+    folders of layers, a repositories file, anything else) do nothing. ``stop``, if given, is
+    asked between pieces of a layer, and :class:`PumpStopped` (``CANCELLED``) raised when it
+    says so. ``target`` is not left behind when this raises."""
+    verified = verify_archive(path, image_id)
+    distinct = list(dict.fromkeys(verified.layers))
+    fresh = {name: f"layer{n}.tar" for n, name in enumerate(distinct)}
+    config_name = f"{image_id}.json"
+    body = json.dumps(
+        [{"Config": config_name, "RepoTags": None, "Layers": [fresh[n] for n in verified.layers]}]
+    ).encode()
+    expected: dict[str, str] = {}  # each layer's digest; a layer listed twice has one
+    for layer, listed in zip(verified.layers, verified.diff_ids, strict=True):
+        if expected.setdefault(layer, listed) != listed:
+            raise ArchiveRefused(MISMATCHED_LAYER)
+    copied = 0
+    try:
+        with (
+            tarfile.open(path, "r:") as source,
+            tarfile.open(target, "w", format=tarfile.PAX_FORMAT) as out,
+        ):
+            found: dict[str, tarfile.TarInfo] = {}
+            for member in source:
+                found.setdefault(posixpath.normpath(member.name), member)
+
+            def add(name: str, size: int, reader, digest=None) -> None:
+                nonlocal copied
+                info = tarfile.TarInfo(name)
+                info.size, info.mode = size, FRESH_MODE
+                piece = _Piecewise(reader, size, stop, lambda: copied, digest)
+                out.addfile(info, piece)
+                copied += size
+
+            for name in (verified.config, *distinct):
+                member = found[name]
+                reader = source.extractfile(member)
+                if reader is None:
+                    raise ArchiveRefused("it is not a readable archive")
+                if name == verified.config:
+                    add(config_name, member.size, reader)
+                    continue
+                digest = hashlib.sha256()
+                add(fresh[name], member.size, reader, digest)
+                if f"sha256:{digest.hexdigest()}" != expected[name]:
+                    raise ArchiveRefused(MISMATCHED_LAYER)
+            add(MANIFEST_NAME, len(body), io.BytesIO(body))
+    except BaseException:
+        with contextlib.suppress(OSError):
+            pathlib.Path(target).unlink(missing_ok=True)
+        raise

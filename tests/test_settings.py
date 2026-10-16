@@ -90,3 +90,9 @@ def test_the_installer_and_rcman_refuse_the_same_addresses():
     from installer import install as ins
 
     assert ins.DOWNLOAD_ADDRESS is claude_release.DOWNLOAD_ADDRESS
+
+
+def test_the_tools_default_to_where_the_installer_puts_them():
+    from installer import install as ins
+
+    assert Settings(public_origin="https://x.example.com").tools_dir == ins.TOOLS

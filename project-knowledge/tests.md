@@ -75,7 +75,7 @@ kernel does with a slice is checked only in the podman host, below.
 Everything git is tested against real git,
 never a fake: `tests/test_git_run.py` holds the parsers of `helpers/git_run.py`,
 `tests/test_repository.py` every verb of `repository.py` in host-runtime workspaces
-through a real channel and `exec`, `tests/test_devcontainer.py` the pure module (`devcontainer.py`) and the guard that holds the administrators' devcontainer page equal to its policy, `tests/test_devcontainer_flow.py` a workspace made from a repository's devcontainer.json on a host runtime with planted images, builds on a host runtime that records what it is asked (the places for builds and the waiting line, a cancel, the failures in plain words, the restore removing orphans and failing a workspace whose built image is gone), `tests/test_builder.py` the pure module `builder.py` (its argument lists, the reading of the builder's words, the pump, the copy of a repository with the host's own tar), `tests/test_runtime_build.py` `PodmanRuntime.build_image` against a stand-in for podman, `tests/test_clone.py` a workspace made by cloning
+through a real channel and `exec`, `tests/test_devcontainer.py` the pure module (`devcontainer.py`) and the guard that holds the administrators' devcontainer page equal to its policy, `tests/test_devcontainer_flow.py` a workspace made from a repository's devcontainer.json on a host runtime with planted images, builds on a host runtime that records what it is asked (the places for builds and the waiting line, a cancel, the failures in plain words, the restore removing orphans and failing a workspace whose built image is gone), `tests/test_builder.py` the pure module `builder.py` (its argument lists, the reading of the builder's words, the pump, the copy of a repository with the host's own tar), `tests/test_runtime_build.py` `PodmanRuntime.build_image` against a stand-in for podman (the archive that is loaded, rcman's own names held across the load, the staging folders), `tests/test_headers.py` the security headers of every answer and the limit on a page's reports of failures, `tests/test_filelock.py` the lock file the service shares with `rcman-admin`, `tests/test_clone.py` a workspace made by cloning
 (a phase of `creating`: its log, failures and their causes, token redaction, names,
 the route, cancel by deletion, restart recovery) on a host runtime that runs real git
 and can answer a clone with what git would say or hold it as a running git, `tests/test_git_account.py` `gitaccount.py`
@@ -263,7 +263,11 @@ Podman for a service account — a subordinate id range of the installer's own s
 manager of the account's own, and `podman.socket` in it — and loads into the
 account's Podman, through the socket, with `docker save | podman load`, the
 image the Dockerfile starts from and the one the installer builds tmux in, so
-nothing inside needs a registry. `tests/container/test_podman_in_container.py`
+nothing inside needs a registry. The installer builds from images by digest, which Podman
+looks up by the registry's own digest and an image loaded from Docker's archive does not have:
+`_have_pinned_images` asks the account's Podman for each such reference
+(`containers.digest_references` of the installer's Containerfiles, and the tmux build image) and
+pulls by exactly that reference the ones it does not find. `tests/container/test_podman_in_container.py`
 runs in it: Podman rootless as the account, its storage off the image's
 overlay, linger and the socket active, the memory, cpu and pids controllers
 delegated to the account's user manager, and a container that a system service
@@ -395,6 +399,44 @@ it can fail, and a positive control that keeps an empty input from passing.
   `devtools/docs_guard.py` catches known phrasings only; review enforces the
   rule itself. `CONTRIBUTING.md` and `project-knowledge/` are outside the scan
   because they quote those phrasings in order to forbid them.
+- **Every page is in the contents list** (`tests/test_docs_guard.py`). Every
+  Markdown file under `docs/` and `project-knowledge/` has a link in
+  `CLAUDE.md`; a page named there without a link does not count. The pages are
+  read from the file listing of the corpus, so a new page is needed in the
+  table at once.
+- **No privilege boundary** (`tests/test_no_privilege_boundary.py`). rcman
+  has no command that raises privilege, no root helper and no switching of
+  accounts in product code.
+  Two layers read the corpus of `devtools/docs_guard.py`, this module included,
+  which builds the command from pieces so that it does not hold it itself:
+  - *The command that raises privilege.* Product code — `backend/`,
+    `helpers/`, the web interface's sources but not its tests, and the
+    installer's templates, workspace image and builder — holds it in no form
+    at all, `sudo rcman-admin` included, and has no exemption. Everywhere else
+    it must be followed by a form of `ALLOWED_FORMS` or stand after a word of
+    `ALLOWED_PROSE`; both are allow-lists, each entry with its reason, so a
+    form nobody listed fails, and each entry fails the stale check when the
+    corpus no longer uses it. The variable of the account that ran it is not
+    the command.
+  - *Calls into the system's accounts.* An AST layer over the Python files of
+    `backend/` and `helpers/` finds reads of the user and group databases
+    (`pwd.getpw*`, `grp.getgr*`), changes of the process's identity
+    (`os.setuid` and its kin) and a string that is the program that makes or
+    switches accounts or raises privilege (`ACCOUNT_PROGRAMS`). `installer/` is
+    outside it: it is the one program that makes rcman's accounts. `EXEMPT`
+    lists the right sites by file, function and text (`rcman-admin` running itself again as
+    rcman is the one account switch), each with the reason;
+    each covers exactly one site, and a test fails when its site is gone.
+
+  Each layer has planted twins in a scratch repository, the plant confirmed
+  before the guard is shown firing, and an empty corpus, or one without a
+  Python file under each root, fails the guard.
+- **The guide lists everything the installer makes** (`tests/test_install.py`).
+  The "Removing rcman" section of `docs/installation.md` names every path,
+  account, group, unit, command and package the installer's constants hold, as
+  [installer.md](installer.md) says; a constant added to the installer must be
+  in the section or, for what the installer only reads, in `NOT_MADE` with a
+  reason.
 - **No fixed shared paths or ports** (`tests/test_fixed_resources.py`). Tests
   run at the same time, so none may hold a fixed path under `/tmp` or a fixed
   unprivileged port. It reads the Python files in `tests/` but not those in
@@ -567,7 +609,7 @@ a command substitution, `$(…)` or backticks, leaves it in that directory. The 
 docstring lists what it takes off.
 
 What it does not see: a command inside `bash -c` or another shell's
-argument, or after `xargs`, `sudo` or another wrapper it does not take off;
+argument, or after `xargs` or another wrapper it does not take off;
 a `cd` after the start of the command, in a subshell, or a `pushd`; where a
 command substitution would take it; and the
 paired test the edit-time hook runs after an edit, which is not a Bash

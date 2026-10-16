@@ -4,7 +4,8 @@ Both are kept in SQLite (``user_settings``, ``github_tokens``) and written into 
 git folder of the person's volume, which every workspace of theirs binds at
 ``~/.config/git`` (runtime.py), so that git there — rcman's and Claude's — uses them
 with nothing in an argv. Two files, both rcman's: ``config``, which rcman owns whole
-(the author, and a credential helper that only reads the other file), and
+(the author, and a credential helper that only reads the other file, after an empty one
+that drops every helper listed before it), and
 ``credential`` (the token, owner-only, empty once forgotten). Edits made to them in a
 workspace are replaced by the next save.
 
@@ -61,7 +62,10 @@ def config_text(author: Author | None) -> str:
     lines = ["# Written by rcman. Changes made here are replaced when rcman writes it again."]
     if author is not None:
         lines += ["[user]", f"\tname = {_quote(author.name)}", f"\temail = {_quote(author.email)}"]
-    lines += [f'[credential "{GITHUB}"]', f"\thelper = {_quote(CREDENTIAL_HELPER)}"]
+    # An empty helper empties the list git has built from the configuration read before this
+    # file (the image's /etc/gitconfig): a helper that stores or caches what git approves would
+    # keep the token where rcman does not forget it.
+    lines += [f'[credential "{GITHUB}"]', "\thelper =", f"\thelper = {_quote(CREDENTIAL_HELPER)}"]
     return "\n".join(lines) + "\n"
 
 

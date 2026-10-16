@@ -1,4 +1,4 @@
-FROM docker.io/library/ubuntu:24.04
+FROM docker.io/library/ubuntu:24.04@sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884ff530eb55
 # The default workspace image: what Claude Code and rcman need in a workspace, and
 # nothing else. tmux, busybox and Claude Code are mounted into every workspace instead.
 RUN apt-get update -qq \

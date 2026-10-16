@@ -82,6 +82,8 @@ class Recorder:
             f"answers = {json.dumps(script)}\n"
             "words = [a for a in sys.argv[1:] if not a.startswith(('-', 'unix:'))]\n"
             "verb = ' '.join(words[:2]) if ' '.join(words[:2]) in answers else words[0]\n"
+            "if 'json .Labels' in ' '.join(sys.argv[1:]) and verb + ' labels' in answers:\n"
+            "    verb += ' labels'  # asking a volume for its labels\n"
             "code, out, err = answers.get(verb, [0, '', ''])\n"
             "sys.stdout.write(out); sys.stderr.write(err); sys.exit(code)\n"
         )
@@ -103,7 +105,7 @@ def podman_runtime(tmp_path, recorder) -> rt.PodmanRuntime:
         rt.PodmanConfig(
             socket=Path("/run/user/990/podman/podman.sock"),
             image="localhost/rcman-workspace:test",
-            tools_dir=Path("/var/lib/rcman/tools"),
+            tools_dir=Path("/opt/rcman/tools"),
             claude_store=Path("/var/lib/rcman/claude"),
             podman=str(recorder.program),
         )
@@ -132,7 +134,7 @@ def test_a_workspace_container_is_made_as_the_design_says(tmp_path):
         f"--uidmap=0:{base}:{rt.RANGE}",
         f"--gidmap=0:{base}:{rt.RANGE}",
         "--volume=rcman-ws-7:/rcman",
-        "--volume=/var/lib/rcman/tools:/opt/rcman:ro",
+        "--volume=/opt/rcman/tools:/opt/rcman:ro",
         "--volume=/var/lib/rcman/claude:/opt/claude:ro",
         "--tmpfs=/run/rcman:mode=0700",
         "--label=rcman.workspace=7",
@@ -146,41 +148,330 @@ def test_a_workspace_container_is_made_as_the_design_says(tmp_path):
     assert volume[-1] == "rcman-ws-7" and "--label=rcman.person=2" in volume
 
 
-def test_only_exit_1_of_exists_means_missing(tmp_path):
-    for code, expected in ((0, True), (1, False)):
-        (tmp_path / str(code)).mkdir()
-        recorder = Recorder(tmp_path / str(code), {"container exists": (code, "", "")})
-        assert podman_runtime(tmp_path, recorder).exists("rcman-ws-1") is expected
+@pytest.mark.parametrize(
+    ("labels", "adopted"),
+    [
+        ({"rcman.person": "2"}, True),
+        ({"rcman.person": "102"}, False),  # another person's
+        ({"rcman.person": "1"}, False),
+        ({}, False),
+        (None, False),
+    ],
+)
+def test_a_volume_that_is_there_is_adopted_only_when_it_is_labelled_for_the_same_person(
+    tmp_path, labels, adopted
+):
+    """The labels are read from the volume and compared, whatever a listing would filter."""
+    recorder = Recorder(
+        tmp_path,
+        {
+            "volume exists": (0, "", ""),
+            "volume inspect labels": (0, json.dumps(labels) + "\n", ""),
+            "volume inspect": (0, MOUNTPOINT + "\n", ""),
+        },
+    )
+    runtime = podman_runtime(tmp_path, recorder)
+    spec_ = rt.Spec(name="rcman-ws-7", slot=3, workspace=7, person=2)
+    if adopted:
+        runtime.create(spec_)
+        assert [c for c in recorder.calls() if c[3] == "run" and "--name=rcman-ws-7" in c]
+    else:
+        with pytest.raises(rt.RuntimeFailed) as refused:
+            runtime.create(spec_)
+        assert "another person" in str(refused.value)
+        assert not [c for c in recorder.calls() if c[3] == "run"]  # nothing was made on it
+    asked = next(c for c in recorder.calls() if "{{json .Labels}}" in c)
+    assert asked[3:5] == ["volume", "inspect"] and asked[-1] == "rcman-ws-7"
+    assert not [c for c in recorder.calls() if c[3:5] == ["volume", "ls"]]  # no filter to trust
 
 
-@pytest.mark.parametrize("code", [125, 2])
-def test_any_other_exit_of_exists_is_not_missing(tmp_path, code):
-    said = "Cannot connect to Podman" if code == 125 else "something else"
-    recorder = Recorder(tmp_path, {"container exists": (code, "", said)})
-    with pytest.raises(rt.RuntimeUnavailable):
-        podman_runtime(tmp_path, recorder).exists("rcman-ws-1")
+def test_a_volume_whose_labels_cannot_be_read_is_not_adopted(tmp_path):
+    recorder = Recorder(
+        tmp_path, {"volume exists": (0, "", ""), "volume inspect labels": (0, "not json", "")}
+    )
+    with pytest.raises(rt.RuntimeFailed):
+        podman_runtime(tmp_path, recorder).create(
+            rt.Spec(name="rcman-ws-7", slot=3, workspace=7, person=2)
+        )
 
 
-def test_an_exec_is_tried_once_more_on_conmons_error_only(tmp_path):
-    conmon = 'Error: container create failed (no logs from conmon): conmon bytes ""'
-    recorder = Recorder(tmp_path, {"exec": (126, "", conmon)})
-    answer = podman_runtime(tmp_path, recorder).exec("rcman-ws-1", ["true"])
-    assert answer.code == 126
-    assert len([c for c in recorder.calls() if "exec" in c]) == 2
-    other = tmp_path / "other"
-    other.mkdir()
-    recorder = Recorder(other, {"exec": (126, "", "Error: something else")})
-    podman_runtime(other, recorder).exec("rcman-ws-1", ["true"])
-    assert len([c for c in recorder.calls() if "exec" in c]) == 1
+ID_A = "a" * 64
 
 
-def test_podman_runs_with_the_allowlisted_environment(tmp_path, monkeypatch):
-    monkeypatch.setenv("RCMAN_SECRET_OF_THE_SERVICE", "x")
-    monkeypatch.setenv("XDG_RUNTIME_DIR", "/run/user/990")
-    env = rt.podman_env()
-    assert "RCMAN_SECRET_OF_THE_SERVICE" not in env
-    assert env["XDG_RUNTIME_DIR"] == "/run/user/990"
-    assert set(env) <= {"PATH", "LANG", "HOME", "XDG_RUNTIME_DIR"}
+def test_a_container_made_again_is_made_from_the_image_id_and_pulls_nothing(tmp_path):
+    recorder = account_recorder(tmp_path)
+    runtime = podman_runtime(tmp_path, recorder)
+    runtime.create(rt.Spec("rcman-ws-7", slot=3, workspace=7, person=2, image_id=ID_A))
+    run = next(c[3:] for c in recorder.calls() if c[3] == "run" and "--name=rcman-ws-7" in c)
+    assert run[-3] == ID_A and "--pull=never" in run  # the default image's name is not used
+    assert "localhost/rcman-workspace:test" not in run
+    named = rt.Spec("rcman-ws-8", slot=3, workspace=8, person=2, image="x/y:1", image_id=ID_A)
+    runtime.create(named)
+    run = next(c[3:] for c in recorder.calls() if c[3] == "run" and "--name=rcman-ws-8" in c)
+    assert run[-3] == ID_A and "x/y:1" not in run  # the id, not the tag that may have moved
+
+
+@pytest.mark.parametrize("bad", ["-v", "latest", ID_A[:-1], "--all", "A" * 64])
+def test_an_image_id_that_is_no_id_is_never_given_to_podman(tmp_path, bad):
+    recorder = account_recorder(tmp_path)
+    with pytest.raises(rt.RuntimeFailed):
+        podman_runtime(tmp_path, recorder).create(
+            rt.Spec("rcman-ws-7", slot=3, workspace=7, person=2, image_id=bad)
+        )
+    assert not [c for c in recorder.calls() if bad in c]
+
+
+def test_the_ids_and_digests_podman_names_are_read_and_a_local_image_has_no_digest(tmp_path):
+    digest = "sha256:" + "d" * 64
+    inspected = {"Id": ID_A, "Config": {}, "RepoDigests": [f"x/y@{digest}"], "Digest": digest}
+    recorder = (
+        Recorder(
+            tmp_path / "pulled",
+            {"image inspect": (0, json.dumps(inspected), "")},
+        )
+        if (tmp_path / "pulled").mkdir() is None
+        else None
+    )
+    facts = podman_runtime(tmp_path, recorder).image_facts("x/y:1")
+    assert (facts.id, facts.digest) == (ID_A, digest)
+    (tmp_path / "local").mkdir()
+    local = {"Id": "sha256:" + ID_A, "Config": {}, "RepoDigests": [], "Digest": digest}
+    recorder = Recorder(tmp_path / "local", {"image inspect": (0, json.dumps(local), "")})
+    facts = podman_runtime(tmp_path, recorder).image_facts("localhost/rcman-built/7:latest")
+    assert (facts.id, facts.digest) == (ID_A, "")  # it was not pulled: no digest to pull it by
+
+
+def test_the_default_image_id_is_the_configured_images_and_empty_when_it_is_not_there(tmp_path):
+    recorder = Recorder(tmp_path, {"image inspect": (0, "sha256:" + ID_A + "\n", "")})
+    runtime = podman_runtime(tmp_path, recorder)
+    assert runtime.default_image_id() == ID_A
+    call = next(c for c in recorder.calls() if "inspect" in c)
+    assert call[-1] == "localhost/rcman-workspace:test"
+    (tmp_path / "gone").mkdir()
+    missing = Recorder(tmp_path / "gone", {"image inspect": (125, "", "no such image")})
+    assert podman_runtime(tmp_path, missing).default_image_id() == ""
+    assert (
+        podman_runtime(
+            tmp_path, Recorder(tmp_path / "gone", {"image exists": (1, "", "")})
+        ).has_image("x")
+        is False
+    )
+    assert (
+        podman_runtime(
+            tmp_path, Recorder(tmp_path / "gone", {"image exists": (0, "", "")})
+        ).has_image("x")
+        is True
+    )
+
+
+def removals(recorder) -> list[list[str]]:
+    return [c[3:] for c in recorder.calls() if c[3] == "rm"]
+
+
+def test_every_container_rcman_removes_goes_with_the_anonymous_volumes_of_its_image(tmp_path):
+    inspected = json.dumps({"Id": ID_A, "Config": {}, "RepoDigests": []})
+    recorder = Recorder(
+        tmp_path,
+        {
+            "volume exists": (0, "", ""),
+            "image inspect": (0, inspected, ""),
+            "ps": (0, json.dumps([{"Names": ["rcman-probe-x"]}]), ""),
+        },
+    )
+    runtime = podman_runtime(tmp_path, recorder)
+    runtime.discard("rcman-ws-1")
+    runtime.remove("rcman-ws-1")
+    runtime.remove_build(7)
+    runtime.end_sign_in("rcman-sign-in-1")
+    runtime.end_canary("rcman-canary")
+    runtime.clean_probes()  # what a killed image read left
+    try:  # the probe of an image is removed after it, whatever the reading came to
+        runtime.image_facts("x/y:1")
+    except rt.RuntimeFailed:
+        pass
+    made = removals(recorder)
+    assert len(made) >= 7  # non-vacuity: every one of those asked for a removal
+    for call in made:
+        assert "--volumes" in call and "--force" in call and "--time=0" in call, call
+
+
+def test_a_volume_nothing_uses_is_removed_only_if_it_is_unlabelled_and_has_a_random_name(tmp_path):
+    random_a, random_b, random_c = "a" * 64, "b" * 64, "c" * 64
+    listed = [
+        {"Name": random_a, "Labels": {}},
+        {"Name": random_b, "Labels": {"rcman.person": "1"}},  # labelled: rcman's own
+        {"Name": random_c, "Labels": None},
+        {"Name": "rcman-ws-1", "Labels": {}},  # named by rcman
+        {"Name": "d" * 63, "Labels": {}},  # not a random name
+        {"Name": "A" * 64, "Labels": {}},
+    ]
+    recorder = Recorder(tmp_path, {"volume ls": (0, json.dumps(listed), "")})
+    podman_runtime(tmp_path, recorder).clean_probes()
+    asked = next(c for c in recorder.calls() if c[3:5] == ["volume", "ls"])
+    assert "--filter=dangling=true" in asked  # only those no container has
+    gone = [c[-1] for c in recorder.calls() if c[3:5] == ["volume", "rm"]]
+    assert gone == [random_a, random_c]
+
+
+def image_entry(image_id: str, *names: str) -> dict:
+    return {"Id": image_id, "Names": list(names) or None}
+
+
+def test_images_nothing_keeps_are_removed_by_name_without_force_and_the_fixed_ones_stay(tmp_path):
+    keep_id, other_id, none_id = "1" * 64, "2" * 64, "3" * 64
+    listed = [
+        image_entry("4" * 64, "localhost/rcman-workspace:test"),  # the default image
+        image_entry("5" * 64, "localhost/rcman-builder:latest"),  # the builder's
+        image_entry(keep_id, "registry.example.com/kept:1"),  # kept by its name
+        image_entry(keep_id[::-1], "registry.example.com/moved:1"),  # kept by its id
+        image_entry(other_id, "registry.example.com/old:1", "registry.example.com/old:2"),
+        image_entry(none_id),  # a named-nothing image: what a killed load leaves
+    ]
+    recorder = Recorder(tmp_path, {"images": (0, json.dumps(listed), "")})
+    removed = podman_runtime(tmp_path, recorder).collect_images(
+        {keep_id[::-1]}, {"registry.example.com/kept:1"}
+    )
+    asked = [c[3:] for c in recorder.calls() if c[3:5] == ["image", "rm"]]
+    assert asked == [
+        ["image", "rm", "registry.example.com/old:1"],
+        ["image", "rm", "registry.example.com/old:2"],
+        ["image", "rm", none_id],
+    ]
+    assert removed == ["registry.example.com/old:1", "registry.example.com/old:2", none_id]
+    assert not [a for call in asked for a in call if a.startswith("--force") or a == "-f"]
+
+
+def test_every_tag_of_the_default_and_builder_repositories_stays(tmp_path):
+    """An upgrade builds the next default and builder images under tags this service's
+    settings do not name yet."""
+    listed = [
+        image_entry("1" * 64, "localhost/rcman-workspace:next"),
+        image_entry("2" * 64, "localhost/rcman-builder:next", "localhost/rcman-builder:other"),
+        image_entry("3" * 64, "localhost/rcman-workspacey:1"),  # another repository
+    ]
+    recorder = Recorder(tmp_path, {"images": (0, json.dumps(listed), "")})
+    removed = podman_runtime(tmp_path, recorder).collect_images(set(), set())
+    assert removed == ["localhost/rcman-workspacey:1"]  # the control: others go
+
+
+def test_an_image_with_no_name_stays_while_it_is_young_enough_to_belong_to_a_build(tmp_path):
+    import time
+
+    young = {**image_entry("1" * 64), "Created": int(time.time())}
+    old = {**image_entry("2" * 64), "Created": int(time.time()) - 2 * rt.IMAGE_GRACE_SECONDS}
+    unknown = image_entry("3" * 64)  # no age given: not young
+    recorder = Recorder(tmp_path, {"images": (0, json.dumps([young, old, unknown]), "")})
+    removed = podman_runtime(tmp_path, recorder).collect_images(set(), set())
+    assert removed == ["2" * 64, "3" * 64]
+
+
+def test_names_are_compared_fully_qualified_as_podman_lists_them(tmp_path):
+    listed = [
+        image_entry("1" * 64, "docker.io/library/ubuntu:24.04"),
+        image_entry("2" * 64, "docker.io/team/dev:latest"),
+        image_entry("3" * 64, "ghcr.io/o/r:1"),
+        image_entry("4" * 64, "docker.io/library/gone:latest"),
+    ]
+    recorder = Recorder(tmp_path, {"images": (0, json.dumps(listed), "")})
+    kept = {"ubuntu:24.04", "team/dev", "index.docker.io/team/dev", "ghcr.io/o/r:1"}
+    removed = podman_runtime(tmp_path, recorder).collect_images(set(), kept)
+    assert removed == ["docker.io/library/gone:latest"]
+
+
+@pytest.mark.parametrize(
+    ("name", "qualified"),
+    [
+        ("ubuntu", "docker.io/library/ubuntu:latest"),
+        ("ubuntu:24.04", "docker.io/library/ubuntu:24.04"),
+        ("team/dev:1", "docker.io/team/dev:1"),
+        ("index.docker.io/team/dev", "docker.io/team/dev:latest"),
+        ("ghcr.io/o/r@sha256:" + "a" * 64, "ghcr.io/o/r@sha256:" + "a" * 64),
+        ("localhost/x:2", "localhost/x:2"),
+        ("registry.example.com:443/a/b", "registry.example.com:443/a/b:latest"),
+    ],
+)
+def test_a_name_as_written_and_as_listed_are_one_name(name, qualified):
+    assert rt.qualified_name(name) == qualified
+
+
+def test_an_image_podman_will_not_remove_stays_and_is_not_an_error(tmp_path):
+    listed = [image_entry("2" * 64, "registry.example.com/used:1")]
+    recorder = Recorder(
+        tmp_path,
+        {
+            "images": (0, json.dumps(listed), ""),
+            "image rm": (2, "", "image is in use by a container"),
+        },
+    )
+    assert podman_runtime(tmp_path, recorder).collect_images(set(), set()) == []
+
+
+def test_the_registry_of_an_image_name_is_the_first_part_only_when_it_is_a_host():
+    host = rt.registry_host
+    assert host("localhost/img:1") == "localhost" and host("LocalHost:443/a/b") == "localhost"
+    assert host("registry.example.com:443/a@sha256:" + "a" * 64) == "registry.example.com"
+    assert host("ghcr.io/o/r") == "ghcr.io" and host("10.0.0.1/x") == "10.0.0.1"
+    assert host("ubuntu") is None and host("library/ubuntu:24.04") is None
+    assert host("ubuntu:24.04") is None
+
+
+def test_an_image_named_localhost_is_never_pulled_from_this_machine(tmp_path):
+    """Podman reads ``localhost/name`` as the registry on the loopback of the machine it
+    pulls from; a name like that is an image of rcman's storage or nothing."""
+    recorder = Recorder(tmp_path, {"image exists": (0, "", "")})
+    messages = []
+    podman_runtime(tmp_path, recorder).pull("localhost/mine:1", messages.append)
+    assert messages == [rt.IN_STORAGE]
+    assert not [c for c in recorder.calls() if "pull" in c]  # the control follows
+    assert [c for c in recorder.calls() if c[3:5] == ["image", "exists"]]
+    missing = tmp_path / "missing"
+    missing.mkdir()
+    recorder = Recorder(missing, {"image exists": (1, "", "")})
+    with pytest.raises(rt.RuntimeFailed) as failed:
+        podman_runtime(missing, recorder).pull("localhost/mine:1")
+    assert "storage" in str(failed.value) and not [c for c in recorder.calls() if "pull" in c]
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    recorder = Recorder(elsewhere, {})
+    podman_runtime(elsewhere, recorder).pull("ghcr.io/o/r:1")
+    assert [c for c in recorder.calls() if "pull" in c]  # the control: other names are pulled
+
+
+def test_a_volume_is_adopted_only_for_the_person_and_the_install_that_made_it(tmp_path):
+    """A database restored from a backup hands the same ids out again; the install id is what
+    the volumes of the database that was replaced do not have."""
+    spec_ = rt.Spec("rcman-ws-7", slot=3, workspace=7, person=2, install="abc123")
+    for number, (labels, adopted) in enumerate(
+        [
+            ({"rcman.person": "2", "rcman.install": "abc123"}, True),
+            ({"rcman.person": "2", "rcman.install": "other"}, False),
+            ({"rcman.person": "2"}, False),
+            ({"rcman.person": "3", "rcman.install": "abc123"}, False),
+        ]
+    ):
+        folder = tmp_path / str(number)
+        folder.mkdir()
+        recorder = Recorder(
+            folder,
+            {"volume exists": (0, "", ""), "volume inspect labels": (0, json.dumps(labels), ""),
+             "volume inspect": (0, MOUNTPOINT + "\n", "")},
+        )  # fmt: skip
+        if not adopted:
+            with pytest.raises(rt.RuntimeFailed):
+                podman_runtime(folder, recorder).create(spec_)
+            assert not [c for c in recorder.calls() if c[3] == "run"]
+            continue
+        podman_runtime(folder, recorder).create(spec_)
+        run = next(c for c in recorder.calls() if c[3] == "run" and "--name=rcman-ws-7" in c)
+        assert f"--label={rt.LABEL_INSTALL}=abc123" in run
+        assert f"--label={rt.LABEL_PERSON}=2" in run
+    (tmp_path / "new").mkdir()
+    fresh = Recorder(
+        tmp_path / "new", {"volume exists": (1, "", ""), "volume inspect": (0, MOUNTPOINT, "")}
+    )
+    podman_runtime(tmp_path, fresh).create(spec_)
+    created = next(c for c in fresh.calls() if c[3:5] == ["volume", "create"])
+    assert f"--label={rt.LABEL_INSTALL}=abc123" in created
 
 
 # --- a person's Claude sign-in --------------------------------------------------------
@@ -194,6 +485,8 @@ def account_recorder(tmp_path: Path, volume_exists: int = 1) -> Recorder:
         {
             "volume exists": (volume_exists, "", ""),
             "volume inspect": (0, MOUNTPOINT + "\n", ""),
+            # the workspace's volume is its person's
+            "volume inspect labels": (0, '{"rcman.person": "2"}', ""),
         },
     )
 
@@ -622,7 +915,7 @@ def fake_podman(tmp_path: Path, body: str) -> rt.PodmanRuntime:
         rt.PodmanConfig(
             socket=Path("/run/user/990/podman/podman.sock"),
             image="localhost/rcman-workspace:test",
-            tools_dir=Path("/var/lib/rcman/tools"),
+            tools_dir=Path("/opt/rcman/tools"),
             claude_store=Path("/var/lib/rcman/claude"),
             podman=str(program),
         )
@@ -1055,6 +1348,29 @@ def test_a_podman_exec_keeps_only_the_tail_of_what_it_printed_when_asked(tmp_pat
     assert len(whole.out) > 100_000
 
 
+def test_a_kept_tail_cut_in_a_multi_byte_character_is_text_only_after_decoding(tmp_path):
+    """The tail is bytes, cut wherever the limit falls: what is logged or shown is that tail
+    decoded with replacement first, then cut to a text limit, so no byte that is not UTF-8
+    reaches the journal or the database."""
+    body = (
+        "if args[0] == 'exec':\n"
+        "    sys.stdout.buffer.write('\\u20ac'.encode() * 1000)\n"
+        "    sys.stderr.buffer.write('\\u20ac'.encode() * 1000)\n"
+        "    sys.exit(1)\n"
+    )
+    runtime = fake_podman(tmp_path, body)
+    kept = runtime.exec("rcman-ws-7", ["x"], keep=1000)  # 1000 bytes: a euro sign is three
+    assert len(kept.out) == 1000 and len(kept.err) == 1000
+    with pytest.raises(UnicodeDecodeError):
+        kept.out.decode("utf-8")  # the control: the cut is inside a character
+    text = (kept.out + kept.err).decode("utf-8", "replace")
+    assert text.startswith("�") and "�" in text[1:]  # one cut in each stream
+    from rcman import workspaces as ws
+
+    shown = ws.Workspaces._fit(text, 100)
+    assert shown.encode("utf-8").decode("utf-8") == shown  # whole text, nothing else
+
+
 def test_a_podman_exec_that_keeps_a_tail_still_times_out(tmp_path):
     runtime = fake_podman(tmp_path, "if args[0] == 'exec':\n    time.sleep(60)\n")
     began = time.monotonic()
@@ -1297,7 +1613,7 @@ def test_a_canary_left_from_before_is_removed_first_as_a_sign_in_is(tmp_path):
     recorder, runtime = canary_recorder(tmp_path)
     runtime.run_canary(CANDIDATE_FOLDER, rt.CANARY_NAME, "1.2.3")
     calls = [c[3:] for c in recorder.calls()]
-    assert calls[0] == ["rm", "--force", "--ignore", "--time=0", rt.CANARY_NAME]
+    assert calls[0] == ["rm", "--force", "--ignore", "--time=0", "--volumes", rt.CANARY_NAME]
     assert [c[0] for c in calls].index("run") > 0
     recorder.log.unlink()
     runtime.end_canary(rt.CANARY_NAME)

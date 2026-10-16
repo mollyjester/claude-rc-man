@@ -86,11 +86,30 @@ def build(context: Path, dockerfile: str, name: str) -> str:
         ["podman", "--remote", "--url", f"unix://{base.socket()}", "build", "-q", "-t", name,
          str(context)],
         capture_output=True,
-        text=True,
+        text=True, errors="replace",
         timeout=1200,
     )  # fmt: skip
     assert built.returncode == 0, built.stdout + built.stderr
     return name
+
+
+def hold(image: str) -> str:
+    """A container made from ``image`` that is never started and is no workspace's (it has no
+    label), and its name. Deleting a workspace collects the images nothing refers to, and an
+    image made or pulled by hand for a test is one of them; the collection never removes an
+    image a container is made from, so this keeps it for the tests that use it."""
+    name = "rcman-test-hold-" + "".join(c if c.isalnum() else "-" for c in image)
+    made = base.podman_cli(
+        "create", f"--name={name}", "--pull=never", "--network=none", "--entrypoint=/bin/true",
+        image,
+    )  # fmt: skip
+    assert made.returncode == 0, made.stderr
+    return name
+
+
+def release(*names: str) -> None:
+    for name in names:
+        base.podman_cli("rm", "--force", "--ignore", name)
 
 
 @pytest.fixture(scope="module")
@@ -98,7 +117,9 @@ def dev_image(image, tmp_path_factory) -> str:
     """The workspace image with a user whose ids are not the first ordinary user's."""
     name = f"localhost/rcman-test-dev:{os.getpid()}"
     build(tmp_path_factory.mktemp("dev-image"), DOCKERFILE.format(base=image), name)
+    holding = hold(name)
     yield name
+    release(holding)
     base.podman_cli("rmi", "--force", name)
 
 
@@ -107,7 +128,9 @@ def labelled_image(dev_image, tmp_path_factory) -> str:
     """The same, carrying a devcontainer.metadata label."""
     name = f"localhost/rcman-test-labelled:{os.getpid()}"
     build(tmp_path_factory.mktemp("labelled-image"), LABELLED.replace("{base}", dev_image), name)
+    holding = hold(name)
     yield name
+    release(holding)
     base.podman_cli("rmi", "--force", name)
 
 
@@ -117,7 +140,9 @@ def locked_image(dev_image, tmp_path_factory) -> str:
     name = f"localhost/rcman-test-locked:{os.getpid()}"
     dockerfile = f"FROM {dev_image}\nRUN mkdir /locked && chmod 700 /locked\nWORKDIR /locked\n"
     build(tmp_path_factory.mktemp("locked-image"), dockerfile, name)
+    holding = hold(name)
     yield name
+    release(holding)
     base.podman_cli("rmi", "--force", name)
 
 
@@ -191,7 +216,10 @@ def on_host(path: str, format: str = "%u %g %a") -> list[str]:
     """``stat`` of a path in the volume as the person's range sees ids: root's is the range's
     base."""
     found = subprocess.run(
-        ["podman", "unshare", "stat", "-c", format, path], capture_output=True, text=True
+        ["podman", "unshare", "stat", "-c", format, path],
+        capture_output=True,
+        text=True,
+        errors="replace",
     )
     assert found.returncode == 0, found.stderr
     return found.stdout.split()
@@ -455,39 +483,54 @@ def test_the_hosts_loopback_is_not_reachable_from_a_workspace_of_the_users_own(
 
 # --- the shared sign-in, from a root workspace and from the user's ----------------------------
 
+# Claude Code's refresh of the credentials, as the file sees it: opened for reading and
+# writing, read, truncated, written, whole texts of whatever length the new tokens make. It
+# takes no lock on the file (Claude's own lock is a file beside its configuration folder, and
+# each workspace has a folder of its own), so none is taken here either.
 WRITER = r"""
-import fcntl, json, sys, time
-path, who, duration, mode, start_at = sys.argv[1:6]
-duration, start_at, locked = float(duration), float(start_at), mode == "locked"
+import json, sys, time
+path, who, duration, start_at, salt = sys.argv[1:6]
+duration, start_at, salt = float(duration), float(start_at), int(salt)
 while time.time() < start_at:  # both writers begin at one moment, however late each started
     pass
-rounds = saw_other = 0
+rounds = saw_other = empty = torn = 0
 first, end = time.time(), start_at + duration
 while time.time() < end:
     with open(path, "r+") as handle:  # in place: a rename onto the bound file is refused busy
-        if locked:
-            fcntl.flock(handle, fcntl.LOCK_EX)
         text = handle.read()
-        if text.strip():
+        if not text.strip():
+            empty += 1
+        else:
             try:
                 found = json.loads(text)
             except ValueError:
-                print("corrupt:", repr(text[:60]))
-                sys.exit(3)
-            if found.get("writer") not in (who, "start"):
-                saw_other += 1
-        payload = json.dumps({"writer": who, "n": rounds, "pad": "x" * (50 + rounds * 37 % 400)})
-        if not locked:
-            payload = payload.ljust(900)
+                torn += 1
+            else:
+                if found.get("writer") not in (who, "start"):
+                    saw_other += 1
+        # lengths that differ from round to round and between the two, a shorter text after
+        # a longer one among them
+        pad = "x" * (50 + (rounds * 37 + salt) % 400)
+        payload = json.dumps({"writer": who, "n": rounds, "claudeAiOauth": {"pad": pad}})
         handle.seek(0)
         handle.truncate(0)
         handle.write(payload)
         handle.flush()
-        if locked:
-            fcntl.flock(handle, fcntl.LOCK_UN)
     rounds += 1
-print(json.dumps({"who": who, "rounds": rounds, "saw_other": saw_other, "first": first,
-                  "last": time.time()}))
+print(json.dumps({"who": who, "rounds": rounds, "saw_other": saw_other, "empty": empty,
+                  "torn": torn, "first": first, "last": time.time()}))
+"""
+
+# One in-place write of a text of the length given, as the refresh does it.
+ONE_WRITE = r"""
+import json, sys
+path, who, length = sys.argv[1:4]
+body = json.dumps({"writer": who, "claudeAiOauth": {"pad": ""}})
+text = json.dumps({"writer": who, "claudeAiOauth": {"pad": "x" * (int(length) - len(body))}})
+assert len(text) == int(length)
+with open(path, "r+") as handle:
+    handle.truncate(0)
+    handle.write(text)
 """
 
 
@@ -534,50 +577,81 @@ WRITERS_START_AFTER, WRITERS_RUN_FOR = 6.0, 3.0
 # The least rounds each must manage in that time, and the least times each must read what the
 # other wrote, for the two to have taken part in one interleaving.
 LEAST_ROUNDS, LEAST_SEEN = 50, 5
+# The lengths, in bytes, of the texts the workspaces take turns to write, a shorter after a
+# longer among them, and how many turns they take.
+TURN_LENGTHS, TURNS = (900, 120, 500, 60, 700), 20
 
 
-def test_two_workspaces_refreshing_the_shared_credentials_at_the_same_time_never_corrupt_them(
+def test_workspaces_taking_turns_to_refresh_the_shared_credentials_leave_them_whole(
     podman, person, two
 ):
-    """Claude's refresh writes in place, truncating first, from whichever workspace's Claude
-    needs a new token. A root workspace's and the user's, two uids that are one host user, do
-    so at once: both begin at one moment and write for a while, each round reading what is
-    there first and failing on anything that is not whole. They must have overlapped (each
-    read the other's writes many times, and their running times cross); with the writers
-    taking turns (a lock on the file, which both see as the one inode) every read is whole,
-    and with none, the equal-sized texts still leave the file whole, one writer's.
-    Throughout, it stays the person's alone, mode and owner."""
+    """A root workspace's Claude and the user's, two uids that are one host user, write the
+    shared file in place by turns, each text of another length than the last, shorter ones
+    after longer ones among them. Whatever was written last is what both read, whole, with
+    nothing of a longer text left after it, and the file stays the person's alone."""
     root, own, path = two
     who = person[0]
     mount = volume_path(rt.account_volume(who.id))
     initial = json.dumps({"writer": "start", **fake.credentials()})
     assert say(podman, root, f"printf '%s' '{initial}' > {path}").code == 0
     before = on_host(f"{mount}/{rt.CREDENTIALS}", "%i %u %g %a")
+    for turn in range(TURNS):
+        writer, reader = (root, own) if turn % 2 == 0 else (own, root)
+        name, length = ("root" if writer == root else "dev"), TURN_LENGTHS[turn % len(TURN_LENGTHS)]
+        written = podman.exec(writer, ["python3", "-c", ONE_WRITE, path, name, str(length)])
+        assert written.code == 0, written
+        for seen_by in (reader, writer):
+            read = say(podman, seen_by, f"cat {path}")
+            assert len(read.out) == length, (turn, len(read.out), length)
+            assert json.loads(read.out)["writer"] == name
+        assert len(podman.read_account(who.id, who.slot)) == length
+        assert rt.credentials_state(podman.read_account(who.id, who.slot)) == rt.SIGNED_IN
+    assert on_host(f"{mount}/{rt.CREDENTIALS}", "%i %u %g %a") == before
 
-    for mode in ("locked", "free"):
-        start_at = time.time() + WRITERS_START_AFTER
-        argv = ["python3", "-c", WRITER, path]
-        with concurrent.futures.ThreadPoolExecutor(2) as pool:
-            writers = [
-                pool.submit(
-                    podman.exec,
-                    name,
-                    [*argv, who_, str(WRITERS_RUN_FOR), mode, str(start_at)],
-                )
-                for name, who_ in ((root, "root"), (own, "dev"))
-            ]
-            done = [w.result(timeout=600) for w in writers]
-        assert [d.code for d in done] == [0, 0], [(d.out, d.err) for d in done]  # none saw a tear
-        stats = {s["who"]: s for s in (json.loads(d.out) for d in done)}
-        for mine in stats.values():
-            assert mine["rounds"] >= LEAST_ROUNDS, (mode, stats)
-            assert mine["saw_other"] >= LEAST_SEEN, (mode, stats)  # it read the other's writes
-        assert max(s["first"] for s in stats.values()) < min(s["last"] for s in stats.values())
-        final = json.loads(podman.read_account(who.id, who.slot))  # whole, and one writer's
-        assert final["writer"] in ("root", "dev"), final
-        assert on_host(f"{mount}/{rt.CREDENTIALS}", "%i %u %g %a") == before, mode
-    for name in (root, own):  # and both still read it
-        assert json.loads(out(say(podman, name, f"cat {path}")))["writer"] in ("root", "dev")
+
+def test_two_workspaces_refreshing_the_shared_credentials_at_the_same_moment_are_measured(
+    podman, person, two
+):
+    """The same writes, with nobody taking turns: Claude Code locks per configuration folder, so
+    two workspaces of one person can refresh at the same moment, and the file may then be read
+    empty, or left with the tail of a longer text. This is an accepted risk (the Claude account
+    page of the documentation says so), and what rcman does about it is to notice: a file that
+    holds no sign-in while the account is connected is reported as signed out unexpectedly.
+    So what is asserted is that the two really overlapped (so that a clean run means something),
+    that the file stays the person's alone, and that rcman reads the final file as it is: a
+    sign-in if it is whole JSON of one writer's, and none if it is not. The incidents are
+    printed, for whoever reads the run."""
+    root, own, path = two
+    who = person[0]
+    mount = volume_path(rt.account_volume(who.id))
+    initial = json.dumps({"writer": "start", **fake.credentials()})
+    assert say(podman, root, f"printf '%s' '{initial}' > {path}").code == 0
+    before = on_host(f"{mount}/{rt.CREDENTIALS}", "%i %u %g %a")
+    start_at = time.time() + WRITERS_START_AFTER
+    with concurrent.futures.ThreadPoolExecutor(2) as pool:
+        writers = [
+            pool.submit(
+                podman.exec,
+                name,
+                ["python3", "-c", WRITER, path, who_, str(WRITERS_RUN_FOR), str(start_at), salt],
+            )
+            for name, who_, salt in ((root, "root", "0"), (own, "dev", "211"))
+        ]
+        done = [w.result(timeout=600) for w in writers]
+    assert [d.code for d in done] == [0, 0], [(d.out, d.err) for d in done]
+    stats = {s["who"]: s for s in (json.loads(d.out) for d in done)}
+    print("concurrent refreshes of the shared credentials:", stats)
+    for mine in stats.values():
+        assert mine["rounds"] >= LEAST_ROUNDS, stats
+        assert mine["saw_other"] + mine["empty"] + mine["torn"] >= LEAST_SEEN, stats
+    assert max(s["first"] for s in stats.values()) < min(s["last"] for s in stats.values())
+    final = podman.read_account(who.id, who.slot)
+    try:
+        whole = json.loads(final).get("writer") in ("root", "dev")
+    except ValueError:
+        whole = False
+    assert (rt.credentials_state(final) == rt.SIGNED_IN) is whole, final[:80]
+    assert on_host(f"{mount}/{rt.CREDENTIALS}", "%i %u %g %a") == before
 
 
 def test_the_users_workspace_reads_what_rcmans_own_git_folder_writes_in_it(podman, person, two):
@@ -767,7 +841,7 @@ def test_git_works_as_the_remote_user_with_the_persons_author_and_token_in_a_clo
     repo.commit_push("Edited as the remote user")
     sent = subprocess.run(
         ["git", "-C", str(bare), "log", "-1", "--format=%an <%ae>|%s", "main"],
-        capture_output=True, text=True, check=True,
+        capture_output=True, text=True, errors="replace", check=True,
     ).stdout.strip()  # fmt: skip
     assert sent == "Dev Author <dev.author@example.com>|Edited as the remote user"
     assert set(github_com.attempts[before:]) == {("x-access-token", True)}
@@ -896,11 +970,16 @@ def test_an_alpine_image_is_refused_in_plain_words_and_leaves_nothing_behind(
 ):
     alpine = "docker.io/library/alpine:3.20"
     publish_repository(github_com, tmp_path, "on-alpine", {"image": alpine})
-    before = images()
-    done = make(service, person, clones, "on-alpine")
-    assert done.state == "failed", done
-    assert done.error == DEVCONTAINER_MESSAGES["musl"].format(image=alpine)
-    assert left_of(done.container) == [] and images() == before and probes() == []
+    podman.pull(alpine)  # here before, and held, as the collection of images would take it
+    holding = hold(alpine)
+    try:
+        before = images()
+        done = make(service, person, clones, "on-alpine")
+        assert done.state == "failed", done
+        assert done.error == DEVCONTAINER_MESSAGES["musl"].format(image=alpine)
+        assert left_of(done.container) == [] and images() == before and probes() == []
+    finally:
+        release(holding)
 
 
 def test_a_failing_create_command_keeps_the_workspace_says_why_and_hides_the_token(

@@ -37,6 +37,9 @@ HISTORY_PATTERNS = [
     r"backwards?[- ]compat(?:ible|ibility)?",
     r"until recently",
     r"in the past",
+    r"from before",
+    r"earlier installations?",
+    r"old install\w*",
 ]
 HISTORY = re.compile(r"\b(?:" + "|".join(HISTORY_PATTERNS) + r")\b", re.IGNORECASE)
 FENCE = re.compile(r"^\s*(```|~~~)")
@@ -122,6 +125,33 @@ def unresolved_references(root: Path, corpus: list[str]) -> list[Ref]:
 def _parents(path: str) -> list[str]:
     parts = path.split("/")
     return ["/".join(parts[:i]) for i in range(1, len(parts))]
+
+
+CONTENTS = "CLAUDE.md"
+# The folders whose pages the contents list must link.
+PAGE_FOLDERS = ("docs/", "project-knowledge/")
+
+
+def pages_of_the_contents(corpus: list[str]) -> list[str]:
+    """The pages the contents list must link: every Markdown file under PAGE_FOLDERS."""
+    return [p for p in corpus if p.startswith(PAGE_FOLDERS) and p.endswith(".md")]
+
+
+def linked_pages(rel: str, text: str) -> set[str]:
+    """The files the links of ``text``, written in ``rel``, point at, repository-relative."""
+    found = set()
+    for ref in find_references(rel, text):
+        if ref.kind == "link":
+            target = ref.target.split("#", 1)[0]
+            found.add(posixpath.normpath(posixpath.join(posixpath.dirname(rel), target)))
+    return found
+
+
+def pages_not_linked(corpus: list[str], contents: str) -> list[str]:
+    """The pages of PAGE_FOLDERS that ``contents``, the text of CONTENTS, does not link: a
+    page named without a link is not found."""
+    linked = linked_pages(CONTENTS, contents)
+    return [p for p in pages_of_the_contents(corpus) if p not in linked]
 
 
 def history_corpus(corpus: list[str]) -> list[str]:

@@ -10,24 +10,44 @@ upgrades an installation.
 ## Before you start
 
 - **A Google OAuth client.** Creating one is free; the steps are below.
-- **A host name** pointing at the machine, served by Caddy.
-- **A clone** of this repository on `main`, owned by your own account, with
-  git able to pull from GitHub as you (for a private repository, for example
-  through `gh auth login`).
-- **sudo** for your account.
+- **A host name** pointing at the machine, served by Caddy. Caddy is installed and
+  running already; the installer does not install it, and its account must exist.
+- **A dedicated clone** of this repository on `main`, owned by your own
+  account and used for installing and nothing else, with git able to pull from
+  GitHub as you (for a private repository, for example through `gh auth
+  login`). `install.sh` runs `npm ci` in the clone, as you, and the installer
+  runs as root and imports Python from it, so no one else may be able to write
+  in it.
+- **Administrator rights**: your account runs `sudo ./install.sh`.
+- **A clean Ubuntu 24.04 machine** with systemd, on x86-64 or arm64; the
+  installer refuses another processor. Podman and `crun` are in the `universe`
+  component of Ubuntu's package archive, which must be enabled.
 - **Access to the internet** while it runs, for the packages and the downloads
-  below.
+  below. Behind a firewall that limits outbound traffic, allow Ubuntu's package
+  archive, `nodejs.org` and `github.com` (Node.js, uv, oauth2-proxy and tmux's
+  source), the npm and Python package registries, Docker Hub, the Claude Code
+  download address (`RCMAN_INSTALL_CLAUDE_DOWNLOAD`, below), and the hosts these
+  redirect to.
 
 The installer installs the system packages Podman and the workspaces need
-(`PACKAGES` in `installer/install.py`) when they are missing. Everything else —
-the Node.js that builds the web interface, uv for the Python environment,
-oauth2-proxy, tmux's source, and Claude Code — it downloads itself and checks
-against its published checksum, or, for tmux, which publishes none, against
-the one the installer names (`TMUX_SHA256`). The images workspaces are built
-from come from Docker Hub. The builder image needs the network as well, for
-the Ubuntu packages and the npm package it installs, so an installation cannot
-be done offline. Building a repository's devcontainer.json later needs the
-network too (see [devcontainer.json support](devcontainer.md#building-an-image)).
+(`PACKAGES` in `installer/install.py`) when they are missing; among them are
+`podman`, `uidmap`, which rootless Podman needs to map user ids, and `crun`, the
+OCI runtime workspaces and builds are tested with. Everything else — the Node.js
+that builds the web interface, uv for the Python environment, oauth2-proxy,
+tmux's source, and Claude Code — it downloads itself and checks against a
+checksum. Claude Code is checked against the manifest of its release.
+Node.js, uv, oauth2-proxy and tmux are checked against checksums the repository
+pins (`NODE_SHA256`, `UV_SHA256`, `OAUTH2_PROXY_SHA256` and `TMUX_SHA256` in
+`installer/install.py`), each beside the version it belongs to, so a release page
+that is not to be trusted cannot swap an archive together with its checksum. The
+images the installer builds from are named by tag and by digest (`TMUX_BUILD_DIGEST`
+for the one tmux is built in, and the `FROM` line of each Containerfile under
+`installer/`), so that a tag moved at Docker Hub changes nothing here. The images
+workspaces are built from come from Docker Hub. The builder image needs the
+network as well, for the Ubuntu packages and the npm package it installs, so an
+installation cannot be done offline. Building a repository's devcontainer.json
+later needs the network too (see
+[devcontainer.json support](devcontainer.md#building-an-image)).
 
 ## Creating the Google OAuth client
 
@@ -59,7 +79,7 @@ network too (see [devcontainer.json support](devcontainer.md#building-an-image))
 
 ## Installing
 
-From the clone, as yourself:
+From the clone made for installing, as yourself:
 
 ```
 sudo ./install.sh
@@ -75,7 +95,7 @@ The installer asks for what it needs the first time, and saves the answers in
 | The Google OAuth client secret | `--google-client-secret` | `RCMAN_INSTALL_GOOGLE_CLIENT_SECRET` |
 | The first administrator's Google address | `--admin-email` | `RCMAN_INSTALL_ADMIN_EMAIL` |
 | The local port oauth2-proxy listens on | `--proxy-port` | `RCMAN_INSTALL_PROXY_PORT` |
-| The Linux account Caddy runs as | `--caddy-user` | `RCMAN_INSTALL_CADDY_USER` |
+| The account Caddy runs as | `--caddy-user` | `RCMAN_INSTALL_CADDY_USER` |
 | Where Claude Code's releases are downloaded from | `--claude-download` | `RCMAN_INSTALL_CLAUDE_DOWNLOAD` |
 
 An option wins over a variable, a variable over the saved answer, and the
@@ -101,45 +121,70 @@ run and kept.
    (its data, and its containers' storage, live in `/var/lib/rcman`), a system
    user `rcman-proxy` for oauth2-proxy, and a group `rcman-web` whose only
    member is Caddy's account; anyone else in it is taken out.
-4. **Sets up rootless Podman for `rcman`**: a range of subordinate user and
-   group ids of its own in `/etc/subuid` and `/etc/subgid`, big enough for rcman's
-   own range, a range for each person rcman has room for, and one more for the
-   builder of devcontainer images, which no person's workspace uses; a machine that
-   has a range from an earlier installation gets another, full one; lingering, so its user manager
-   runs from boot, without anyone signed in; and Podman's socket in that user
-   manager. Workspaces run there, outside rcman's own service, so they keep
-   running while rcman restarts or upgrades.
-   The limits administrators put on memory, CPU and processes (see
-   [Limits](users.md#limits)) need that user manager to have the `cpu`, `memory`
-   and `pids` controllers; the installer checks, and prints a warning, and goes on, when
-   a controller has not been delegated to the user managers (`Delegate=` in a
-   drop-in of `user@.service`, which is for you to decide and does not change by
-   itself), when the machine does not use only cgroup v2, which limits need, or
-   when it cannot tell. Limits are off until an administrator sets one, and then
-   setting one says it could not be applied. It also lifts the default ceiling on processes of rcman's user slice
-   (`/etc/systemd/system/user-<uid>.slice.d/rcman.conf`) and of rcman's user manager
-   (`.config/systemd/user.conf.d/rcman.conf` in rcman's home), so that the
-   only limits on processes are the ones administrators set. Both drop-ins are written
-   even after such a warning, and the installer asks rcman's user manager to read
-   its configuration again on every run, which restarts nothing and ends nothing
-   running. It refuses, as it does for no other file, when a folder it writes
-   into for this is a link.
-   **Warning:** adding the builder's range to a machine that has the earlier, smaller
-   one makes the installer run `podman system migrate` as `rcman`, which stops its
-   running containers, and so every workspace's server. rcman is in an alpha without
-   upgrades: reinstall a machine rather than upgrade it.
+4. **Sets up rootless Podman for `rcman`**, in this order:
+   - a range of subordinate user and group ids of its own in `/etc/subuid` and
+     `/etc/subgid`, big enough for rcman's own range, a range for each person
+     rcman has room for, and one more for the builder of devcontainer images,
+     which no person's workspace uses; an account whose range is smaller than
+     that gets another, full one. When the installer has to add a range, it
+     first looks for containers running in rcman's Podman, and **refuses** to
+     add it if there is one: Podman takes a new range only through
+     `podman system migrate`, which stops every running container, and so every
+     workspace's server. What it did before that, the settings, the packages and
+     the accounts, stays, and it is safe to run it again. rcman's interface
+     cannot stop a container, and rcman starts the workspaces again when it
+     starts, so stop rcman first and then the containers, as root:
+
+     ```
+     systemctl stop rcman
+     runuser -u rcman -- env -i PATH=/usr/bin:/bin HOME=/var/lib/rcman \
+       XDG_RUNTIME_DIR=/run/user/$(id -u rcman) podman stop --all
+     ```
+
+     Then run `./install.sh` again: it adds the range, and starts rcman, which
+     brings the workspaces back. With the range there, a second run asks
+     nothing of Podman's containers and ends none;
+   - lingering, so its user manager runs from boot, without anyone signed in;
+     and Podman's socket in that user manager. Workspaces run there, outside
+     rcman's own service, so they keep running while rcman restarts or
+     upgrades;
+   - a check, with `podman info` as `rcman`, that rcman's Podman uses `crun` as
+     its OCI runtime, the one workspaces and the builder are tested with. The
+     installer stops with a message if it reports another;
+   - what the limits need. The limits administrators put on memory, CPU and
+     processes (see [Limits](users.md#limits)) need that user manager to have
+     the `cpu`, `memory` and `pids` controllers; the installer checks, and
+     prints a warning, and goes on, when a controller has not been delegated to
+     the user managers (`Delegate=` in a drop-in of `user@.service`, which is
+     for you to decide and does not change by itself), when the machine does not
+     use only cgroup v2, which limits need, or when it cannot tell. Limits are
+     off until an administrator sets one, and then setting one says it could not
+     be applied. It also lifts the default ceiling on processes of rcman's user
+     slice (`/etc/systemd/system/user-<uid>.slice.d/rcman.conf`) and of rcman's
+     user manager (`.config/systemd/user.conf.d/rcman.conf` in rcman's home), so
+     that the only limits on processes are the ones administrators set. Both
+     drop-ins are written even after such a warning, and the installer asks
+     rcman's user manager to read its configuration again on every run, which
+     restarts nothing and ends nothing running. The drop-in in rcman's home is
+     written by `rcman` itself, as is everything else the installer makes in
+     rcman's home: root never writes in a folder `rcman` could have put a link
+     in.
 5. **Makes the directory of rcman's socket**, `/run/rcman`: it belongs to
    `rcman` and the group `rcman-web`, and no one else may enter it.
    `/etc/tmpfiles.d/rcman.conf` makes it again at every boot.
 6. **Builds a release** of the clone's commit under `/opt/rcman/releases`: the
    files rcman runs, the built web interface, and its Python environment — and
-   nothing used only for development. Everything in it belongs to root.
+   nothing used only for development. The Node.js, uv and oauth2-proxy it builds
+   and runs with are downloaded, checked, into `/opt/rcman/toolchain` first.
+   Everything in a release belongs to root, and the built web interface is
+   copied only if it holds no symbolic link.
 7. **Makes it current** — `/opt/rcman/current` — and keeps the release before
    it as `/opt/rcman/previous`; older ones are removed.
 8. **Makes what workspaces are built from**:
    - the tools every workspace has, whatever its image: tmux, built here into a
      program that needs nothing of any image, with busybox and the terminal
-     descriptions, in `/var/lib/rcman/tools`;
+     descriptions, in `/opt/rcman/tools`. They are root's, outside rcman's
+     home, so that rcman cannot replace what every workspace mounts;
    - the default workspace image, Ubuntu with git and what Claude Code needs,
      from `installer/workspace/Containerfile`, named after that file's
      content, so that a changed file makes a new image and workspaces made
@@ -150,13 +195,16 @@ run and kept.
      Podman of its own, which rcman runs for one build of a repository's
      devcontainer.json at a time and removes after it. The CLI is installed from a
      lock file that pins it, and the image is named after the content of the
-     folder, so that a change makes a new image and older ones are removed when
-     nothing runs from them. It is built as the default image is, with the network;
+     folder, so that a change makes a new image. Older ones are removed at the
+     end, once rcman has restarted with the new one's name, and only those
+     nothing runs from. It is built as the default image is, with the network;
    - the Claude Code store, `/var/lib/rcman/claude`: the version rcman is
      tested with (`helpers/claude-version`), downloaded and checked against its
      release's checksum (see [Claude Code versions](claude-version.md)). The store
      belongs to rcman, which writes it when an administrator rolls out another
-     version, and every workspace has it, read-only. The installer sets the
+     version, and every workspace has it, read-only. The installer checks the
+     download in a folder of its own, outside the store, and has `rcman` copy
+     the checked file in and set the links. It sets the
      version `current` names only when there is none, so running it again never
      changes the approved version.
 9. **Writes the configuration** in `/etc/rcman` and the two systemd services,
@@ -166,10 +214,15 @@ run and kept.
    else is already there, the installer stops rather than replace it.
 11. **Adds the first administrator** with `rcman-admin`, unless they are there.
 12. **Starts the services**, restarting them when anything changed.
-13. **Checks** that both services answer, and prints the Caddy configuration
-   and what to do about Caddy, if anything.
+13. **Checks** that both services answer — rcman on its socket, asked as `rcman`,
+    and oauth2-proxy on its local port — and waits for them to answer. It then
+    removes the older builder images, and prints the Caddy configuration and what
+    to do about Caddy, if anything.
 
-Running it again for the same commit changes nothing.
+When something it checks is not right, or a download fails, the installer says
+what on standard error and stops with a failure. Every step leaves things as they
+are when they are already right, so mending the cause and running it again
+carries on, and running it again for the same commit changes nothing.
 
 ## What a workspace can reach
 
@@ -188,9 +241,24 @@ steps and feature scripts.
 
 rcman keeps each workspace, and each person's Claude sign-in, in volumes of its
 own account's Podman. A person's sign-in is a volume no container mounts by
-name, so to Podman it looks unused: **never run `podman volume prune` as
-`rcman`**, or everyone is signed out of Claude. rcman removes a person's volumes
-itself when they are removed.
+name, so to Podman it looks unused: **never prune volumes as `rcman`** (`podman
+volume prune`, or `podman system prune --volumes`), or everyone is signed out of
+Claude. rcman removes a person's volumes itself when they are removed. When it
+starts and finds a container of a workspace it has no record of, it removes the container
+and keeps the volume, with whatever work is in it, for you to decide about; and
+when the table of workspaces is empty while Podman holds some, it removes
+nothing at all and writes an error to the [journal](journal.md), so that a
+database that was lost or replaced does not cost anyone their files.
+
+To look at rcman's Podman, run it as `rcman` from a root shell, with the
+environment the installer runs its Podman commands with:
+
+```
+runuser -u rcman -- env -i PATH=/usr/bin:/bin HOME=/var/lib/rcman \
+  XDG_RUNTIME_DIR=/run/user/$(id -u rcman) podman ps --all
+```
+
+`podman volume ls`, `podman images` and `podman info` are asked the same way.
 
 ## Caddy
 
@@ -215,8 +283,8 @@ file itself and deletes a rotated file once there are too many of them or it is
 too old; the limits are the `roll_` settings in
 [`installer/templates/Caddyfile`](../installer/templates/Caddyfile). Caddy's
 account must be able to write to `/var/log/caddy`, as it can when Caddy comes
-from its Ubuntu package. Do not check the Caddyfile with `sudo caddy validate`:
-run as root, it creates the log file as root's, and Caddy then cannot open it
+from its Ubuntu package. Do not check the Caddyfile by running `caddy validate`
+as root: it creates the log file as root's, and Caddy then cannot open it
 and does not start. Run it as Caddy's account (`sudo -u caddy caddy validate
 --config /etc/caddy/Caddyfile`), or give the file back to that account with
 `chown` if root already made it.
@@ -248,23 +316,16 @@ restart Caddy:
 The installer warns, on every run, while something answers on that address,
 at `127.0.0.1:2019`.
 
-## A machine with an rcman from before workspaces
-
-An rcman from before workspaces — where people had Linux accounts of their own —
-cannot be upgraded. The installer refuses to run on a machine that has one: one
-with `/etc/sudoers.d/rcman`, `/etc/rcman/users.toml`, or a database in
-`/var/lib/rcman` without people in it. rcman itself refuses such a database.
-Remove that installation first — stop and disable its services `rcman` and
-`rcman-oauth2-proxy`, and remove `/etc/systemd/system/rcman*.service`,
-`/opt/rcman`, `/etc/rcman`, `/var/lib/rcman`, `/etc/sudoers.d/rcman`,
-`/usr/local/sbin/rcman-user`, and the Linux accounts it made for people — and
-then install as above. `--rollback` refuses to go back to a release from before
-workspaces for the same reason.
-
 ## Upgrading and rolling back
 
-To upgrade, run `sudo ./install.sh` again: it pulls `main` and installs it.
-Then do what it says about Caddy, as described under [Caddy](#caddy).
+To upgrade, run `sudo ./install.sh` again from the dedicated clone: it pulls
+`main` and installs it. rcman restarts, which takes a moment; the workspaces and
+their servers keep running, since they live in rcman's Podman and not in
+`rcman.service`. Then do what the installer says about Caddy, as described under
+[Caddy](#caddy). An upgrade that needs a range of subordinate ids rcman's account
+does not have yet is the one thing that would stop servers, and the installer
+refuses it while a container runs, with the commands to stop them (see step 4
+under [What the installer does](#what-the-installer-does)).
 
 To go back to the release before the current one, use `--rollback`:
 
@@ -272,13 +333,115 @@ To go back to the release before the current one, use `--rollback`:
 sudo ./install.sh --rollback
 ```
 
-Rolling back again returns to the newer release.
+It makes the previous release current and restarts the services; it neither
+updates the clone nor changes any setting. Rolling back again returns to the
+newer release. The installer **refuses** a rollback when the database is at a
+schema version newer than the previous release reads, or when it cannot tell
+what that release reads, since that release might not start; it says so and
+changes nothing. Install a newer release instead.
 
 Upgrading rcman, rolling back, and running the installer again never change
 which Claude Code version is approved, and restart no running server; see
 [Claude Code versions](claude-version.md).
 
+## Removing rcman
+
+The installer has no uninstall. To take rcman off a machine, do the following as
+root, in this order. Caddy's own configuration and the packages other software
+uses are yours to change; the steps say where. The only accounts removed are
+`rcman` and `rcman-proxy` and the group `rcman-web`: none of them is yours, and
+nothing here touches your own account, Docker, Caddy's other sites or Caddy's
+account itself. The Google OAuth client is Google's: delete it in the Google
+Cloud console when you have no use for it.
+
+1. **Stop the services**: `systemctl disable --now rcman rcman-oauth2-proxy`.
+   Workspaces run in rcman's own Podman, outside these services, so they keep
+   running; step 3 ends them.
+2. **Take rcman out of Caddy**, or keep Caddy's `import` from dangling. Remove
+   the `import` of `/etc/rcman/Caddyfile.snippet` from your Caddyfile, or the
+   copy of the site block, and leave Caddy running for now: restart Caddy after
+   step 6, which removes the group, since Caddy keeps the groups it started
+   with. If you will install rcman again, keep the `import` instead, and keep
+   the snippet, or an empty file in its place, at that path from the wipe to the
+   reinstall: Caddy does not load a Caddyfile whose `import` names a file that
+   is not there, and step 7 removes `/etc/rcman`, so make the empty file again
+   after it (`mkdir -p /etc/rcman`, then `touch /etc/rcman/Caddyfile.snippet`).
+   Never check the Caddyfile with `caddy validate` as root (see
+   [Caddy](#caddy)). Caddy's log of requests, `/var/log/caddy/rcman-access.log`
+   and its rotated files, is Caddy's: delete them if you want them gone.
+3. **Remove every workspace, image and volume.** Everything rcman's Podman holds
+   is in rcman's home, `/var/lib/rcman`: the workspaces' containers, the volumes
+   of their files and of each person's Claude sign-in, and the images (the
+   default workspace image, the builder and those built from repositories). Ask
+   Podman to remove them while rcman's user manager still runs:
+
+   ```
+   runuser -u rcman -- env -i PATH=/usr/bin:/bin HOME=/var/lib/rcman \
+     XDG_RUNTIME_DIR=/run/user/$(id -u rcman) podman system reset --force
+   ```
+
+4. **End rcman's user manager**, which runs from boot because of lingering, with
+   its `podman.socket`: `loginctl disable-linger rcman` removes the entry
+   `/var/lib/systemd/linger/rcman`, and `loginctl terminate-user rcman` ends
+   what runs for it.
+5. **Remove the files systemd and the system read**:
+   - the units `/etc/systemd/system/rcman.service` and
+     `/etc/systemd/system/rcman-oauth2-proxy.service`, then
+     `systemctl daemon-reload`;
+   - the drop-in that lifts the ceiling on processes of rcman's user slice,
+     `/etc/systemd/system/user-<uid>.slice.d/rcman.conf` (`<uid>` is rcman's
+     user id) with its folder; the user manager's own,
+     `.config/systemd/user.conf.d/rcman.conf` in rcman's home, goes with the
+     home in step 7;
+   - `/etc/tmpfiles.d/rcman.conf`, and the socket's folder `/run/rcman` with
+     rcman's socket `/run/rcman/rcman.sock`;
+   - the command `/usr/local/sbin/rcman-admin`, a link.
+6. **Remove the accounts**: `userdel rcman-proxy`, then `userdel rcman` (the
+   proxy's account is a member of rcman's group, so the group stays until the
+   proxy's account is gone), then `groupdel rcman-web`, whose only member was
+   Caddy's account. The accounts' ranges of subordinate ids in `/etc/subuid` and
+   `/etc/subgid` go with `userdel`; step 9 checks. Then **restart** Caddy, and
+   only now: a reload is not enough, and a Caddy restarted before `groupdel`
+   still holds the group's old id.
+7. **Remove rcman's folders**: `/opt/rcman` (the releases, the links
+   `/opt/rcman/current` and `previous`, the toolchain of Node.js, uv and
+   oauth2-proxy in `/opt/rcman/toolchain`, and the tools every workspace mounts
+   in `/opt/rcman/tools`), `/etc/rcman` and `/var/lib/rcman`.
+   `/etc/rcman/install.env` holds the Google OAuth client and the other answers
+   the installer saved: keep it aside to install again with the same answers.
+   `/var/lib/rcman` holds the database, the list of allowed addresses, the
+   Claude Code store `/var/lib/rcman/claude`, and rcman's home with the storage
+   of its Podman.
+8. **Leave the packages.** The installer installed the packages Podman and the
+   workspaces need, those that were missing: `podman`, `crun`, `uidmap`,
+   `catatonit`, `slirp4netns`, `dbus-user-session`, `busybox-static` and
+   `ncurses-base`.
+   Other software may use them; remove one with `apt` only when nothing does.
+9. **Check that nothing is left**, with commands that only read:
+
+   ```
+   getent passwd rcman rcman-proxy
+   getent group rcman rcman-web
+   grep rcman /etc/subuid /etc/subgid
+   ls -d /opt/rcman /etc/rcman /var/lib/rcman /run/rcman /usr/local/sbin/rcman-admin
+   ls /etc/systemd/system | grep rcman
+   ls /etc/systemd/system/user-*.slice.d/rcman.conf
+   ls /etc/tmpfiles.d | grep rcman
+   ls /var/lib/systemd/linger/rcman
+   systemctl list-unit-files 'rcman*'
+   ```
+
+   Each prints nothing, or says there is no such file. Anything it prints is
+   removed by hand.
+
 ## Afterwards
+
+Once the installer has said what to do about Caddy and you have done it, check
+that nothing failed to start — `systemctl --failed` lists nothing — and open
+`https://<your host name>/`: Google asks the first administrator to sign in, with
+the address given as `RCMAN_INSTALL_ADMIN_EMAIL`, and rcman opens on the
+Workspaces page. What rcman writes to the system journal, and how to read it, is
+in [The system journal](journal.md).
 
 Add people with `sudo rcman-admin add` or on the **People** page, under
 **Admin** in rcman's navigation — see [Adding and removing people](users.md).

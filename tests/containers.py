@@ -24,6 +24,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import re
 import subprocess
 import time
 from collections.abc import Iterator
@@ -39,6 +40,22 @@ WHERE = "rcman.test.where"
 BOOT_ID = Path("/proc/sys/kernel/random/boot_id")
 # Seconds a removed container may take to be gone.
 GONE_WITHIN = 60
+
+
+# The image a FROM line names, but for its options, when a digest pins it.
+_FROM_BY_DIGEST = re.compile(r"FROM\s+(?:--\S+\s+)*(\S+@sha256:[0-9a-f]{64})(?:\s|\Z)")
+
+
+def digest_references(containerfile: Path) -> list[str]:
+    """The images the Containerfile starts from that a digest pins, each once, in order: what
+    a podman host is given ready, since Podman looks such an image up by its digest in the
+    registry's index, which an image saved by tag and loaded is not known by."""
+    found: list[str] = []
+    for line in containerfile.read_text().splitlines():
+        named = _FROM_BY_DIGEST.match(line)
+        if named and named.group(1) not in found:
+            found.append(named.group(1))
+    return found
 
 
 def where(holder: Path) -> str:

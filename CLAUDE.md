@@ -32,8 +32,8 @@ and the on-demand runs among them, and what each does:
 | The backend: layout, requests, each area's routes (Claude Code versions among them), audit | [project-knowledge/backend.md](project-knowledge/backend.md) |
 | The frontend: formatting and lint, layout, rules, tests | [project-knowledge/frontend.md](project-knowledge/frontend.md) |
 | The installer: how it is built and tested | [project-knowledge/installer.md](project-knowledge/installer.md) |
-| Checks that need a real Claude account | [project-knowledge/real-claude-checklist.md](project-knowledge/real-claude-checklist.md) |
-| Installing and upgrading, for administrators | [docs/installation.md](docs/installation.md) |
+| Checks that need a real Claude account or a real machine: a fresh install or reinstall, a restart of the host, an upgrade | [project-knowledge/real-claude-checklist.md](project-knowledge/real-claude-checklist.md) |
+| Installing, upgrading, rolling back and removing rcman, for administrators | [docs/installation.md](docs/installation.md) |
 | Settings, for administrators | [docs/configuration.md](docs/configuration.md) |
 | The audit trail and its retention, for administrators | [docs/audit.md](docs/audit.md) |
 | What rcman writes to the system journal, and how to read it, for administrators | [docs/journal.md](docs/journal.md) |

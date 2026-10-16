@@ -76,6 +76,7 @@ def podman_cli(*args: str) -> subprocess.CompletedProcess:
         ["podman", "--remote", "--url", f"unix://{socket()}", *args],
         capture_output=True,
         text=True,
+        errors="replace",
         timeout=120,
     )
 
@@ -105,6 +106,7 @@ def test_its_volume_belongs_to_its_ranges_root_and_no_one_else(podman, workspace
         ["podman", "unshare", "stat", "-c", "%u %g %a", mount.stdout.strip()],
         capture_output=True,
         text=True,
+        errors="replace",
     )
     base = spec(2).slot * rt.RANGE
     assert owner.stdout.split() == [str(base), str(base), "700"], owner.stderr
@@ -207,6 +209,7 @@ def test_a_persons_credentials_file_is_their_ranges_roots_alone(podman, workspac
         ["podman", "unshare", "stat", "-c", "%u %g %a", f"{mount.stdout.strip()}/{rt.CREDENTIALS}"],
         capture_output=True,
         text=True,
+        errors="replace",
     )
     base = who.slot * rt.RANGE
     assert owner.stdout.split() == [str(base), str(base), "600"], owner.stderr
@@ -248,7 +251,10 @@ def test_a_sign_in_container_removes_itself_when_its_time_is_up(podman):
 def unshare_stat(path: str) -> list[str]:
     """``%u %g %a`` of ``path``, as the person's range sees ids: root's are the range's base."""
     found = subprocess.run(
-        ["podman", "unshare", "stat", "-c", "%u %g %a", path], capture_output=True, text=True
+        ["podman", "unshare", "stat", "-c", "%u %g %a", path],
+        capture_output=True,
+        text=True,
+        errors="replace",
     )
     assert found.returncode == 0, found.stderr
     return found.stdout.split()
@@ -313,7 +319,9 @@ def test_a_git_file_is_written_with_no_container_left_and_the_data_not_on_a_comm
             ).stdout
             == secret
         )
-        commands = subprocess.run(["ps", "-eo", "args"], capture_output=True, text=True).stdout
+        commands = subprocess.run(
+            ["ps", "-eo", "args"], capture_output=True, text=True, errors="replace"
+        ).stdout
         assert "SECRET-FOR-THE-PODMAN-TEST" not in commands
     finally:
         podman.remove_account(who.person)

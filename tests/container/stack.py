@@ -45,7 +45,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import github_stand_in as stand_in  # noqa: E402
-from clone import SRC, make_clone, sh  # noqa: E402
+from clone import SRC, make_clone, report_undecodable, sh  # noqa: E402
 from installed import (  # noqa: E402
     ETC,
     SETTINGS,
@@ -303,6 +303,7 @@ def cloned() -> None:
     assert [row[0] for row in stored] == [stand_in.STACK_TOKEN], "the token was not stored"
     assert stand_in.STACK_TOKEN not in everything
     journal = sh("journalctl", "--no-pager", "-o", "cat", check=False).stdout
+    report_undecodable(journal)
     assert PUBLIC_ADDRESS in journal and "git.clone" in journal  # positive: audit is journaled
     assert stand_in.STACK_TOKEN not in journal
 

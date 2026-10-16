@@ -14,7 +14,7 @@ import { Changes } from "./Changes";
 import { ClaudeConnection, type Connection } from "./Claude";
 import { forgetReports } from "./clientErrors";
 import { m } from "./messages";
-import { asApiError, ProblemView } from "./ProblemView";
+import { asApiError, ProblemView, useFieldErrors } from "./ProblemView";
 import { FIELDS } from "./Settings";
 import {
   ADMIN_USER,
@@ -270,11 +270,16 @@ test.each([...PAGES, ...OUTSIDE_FORMS])(
 // buttons — primary, or danger where what it does cannot be undone — are not
 // exactly one, or whose one is not its submit button. A dialog asks for a
 // choice, so it is a form too.
+//
+// The header's sign-out form is the one exemption: leaving rcman is not what a
+// page is for, so its button is plain, beside the box that says what happens to
+// the servers. The exemption names that form and is held below to its subject.
 function hierarchyFaults(root: ParentNode): string[] {
   const formless = [...root.querySelectorAll('[role="dialog"]')]
     .filter((dialog) => !dialog.querySelector("form"))
     .map((dialog) => `${dialog.getAttribute("aria-label")}: a dialog with no form`);
   const forms = [...root.querySelectorAll("form")].flatMap((form) => {
+    if (form.matches("header > form.sign-out")) return [];
     const leading = [...form.querySelectorAll("button.primary, button.danger")];
     const name = form.textContent?.trim().slice(0, 40);
     if (leading.length !== 1) return [`${name}: ${leading.length} leading buttons`];
@@ -299,6 +304,35 @@ test.each([...PAGES, ...CHOICES])(
 
 // The forms whose submit cannot be undone, which lead with danger instead.
 const DESTRUCTIVE = ["removing someone", "deleting a workspace", "removing the GitHub token"];
+
+// Forms that lead with danger where they are, with no dialog to ask first: the choice is the
+// danger button itself.
+const DANGER_IN_PLACE = ["signing out of Claude", "finishing a sign-out at once"];
+
+test("the header's sign-out form is exempt from leading with a primary button, and only that form is", async () => {
+  api();
+  renderApp("/settings");
+  const banner = await screen.findByRole("banner");
+  const form = banner.querySelector("form.sign-out")!;
+  expect(form).not.toBeNull(); // positive control: the form is there
+  expect(form.querySelectorAll("button.primary, button.danger")).toHaveLength(0);
+  expect(hierarchyFaults(document)).toEqual([]);
+  // the same form outside the header is a fault
+  const copy = document.createElement("div");
+  copy.append(form.cloneNode(true));
+  expect(hierarchyFaults(copy)).toHaveLength(1);
+});
+
+test.each(DANGER_IN_PLACE)("%s leads with danger, not primary", async (page) => {
+  const entry = [...PAGES, ...CHOICES].find(([name]) => name === page)!;
+  api();
+  show(entry[1]);
+  await entry[2]();
+  const submits = [...document.querySelectorAll<HTMLButtonElement>('form button[type="submit"]')];
+  expect(submits.length).toBeGreaterThan(0);
+  for (const submit of submits) expect(submit).toHaveClass("danger");
+  expect(document.querySelectorAll("form button.primary")).toHaveLength(0);
+});
 
 test("every form said to be destructive is one of those checked", () => {
   const pages = [...PAGES, ...CHOICES].map(([page]) => page);
@@ -361,17 +395,18 @@ test("the opener check fails on a plain, primary or danger button, or none", () 
   expect(openerFaults(undefined)).toEqual(["nothing opened it"]);
 });
 
-test.each([...PAGES, ...CHOICES].filter(([page]) => !DESTRUCTIVE.includes(page)))(
-  "the forms on %s lead with primary, not danger",
-  async (page, where, open) => {
-    api();
-    show(where);
-    await open();
-    if (!CHOICES.some(([choice]) => choice === page)) await inputs();
-    expect(document.querySelectorAll("form button.primary").length).toBeGreaterThan(0); // non-vacuity
-    expect(document.querySelectorAll("form button.danger")).toHaveLength(0);
-  },
-);
+test.each(
+  [...PAGES, ...CHOICES].filter(
+    ([page]) => !DESTRUCTIVE.includes(page) && !DANGER_IN_PLACE.includes(page),
+  ),
+)("the forms on %s lead with primary, not danger", async (page, where, open) => {
+  api();
+  show(where);
+  await open();
+  if (!CHOICES.some(([choice]) => choice === page)) await inputs();
+  expect(document.querySelectorAll("form button.primary").length).toBeGreaterThan(0); // non-vacuity
+  expect(document.querySelectorAll("form button.danger")).toHaveLength(0);
+});
 
 test("the check fails on a form with no leading button, two, or one that does not submit it", () => {
   const form = (buttons: string) => {
@@ -462,8 +497,10 @@ function fieldInputs(form: HTMLFormElement): Field[] {
 }
 
 // What a form's refusal shows wrongly: an input with no field name, or a field
-// error shown under anything but the input's label. Every request but a GET is
-// refused with an error for each of the form's fields.
+// error shown neither under the input, which is then marked invalid and
+// described by it, nor named by the input's label in the form's list of what
+// was refused. Every request but a GET is refused with an error for each of
+// the form's fields.
 async function labelFaults(form: HTMLFormElement): Promise<string[]> {
   const faults: string[] = [];
   // Read before submitting: a refusal may take the form away.
@@ -475,7 +512,7 @@ async function labelFaults(form: HTMLFormElement): Promise<string[]> {
       if (!input.name) faults.push(`${label(input)}: an input with no field name`);
       return Boolean(input.name);
     })
-    .map((input) => ({ name: input.name, label: label(input) }));
+    .map((input) => ({ name: input.name, label: label(input), element: input }));
   const answer = globalThis.fetch;
   const refuse = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     if ((init?.method ?? "GET").toUpperCase() === "GET") return answer(input, init);
@@ -496,15 +533,21 @@ async function labelFaults(form: HTMLFormElement): Promise<string[]> {
   try {
     // A refusal not shown before: pressing this form's button may close a pop-up
     // that held another form's, so a count of them could stay the same.
-    const before = new Set(screen.queryAllByText("Refused."));
+    const before = new Set(screen.queryAllByRole("alert"));
     await userEvent.click(form.querySelector('button[type="submit"]')!);
     await waitFor(() =>
-      expect(screen.queryAllByText("Refused.").some((shown) => !before.has(shown))).toBe(true),
+      expect(screen.queryAllByRole("alert").some((shown) => !before.has(shown))).toBe(true),
     );
     for (const input of named) {
-      if (!screen.queryByText(`${input.label}: planted reason for ${input.name}`)) {
-        faults.push(`${input.name}: not shown as ${input.label}`);
-      }
+      const message = `planted reason for ${input.name}`;
+      const under =
+        input.element.getAttribute("aria-invalid") === "true" &&
+        (input.element.getAttribute("aria-describedby") ?? "")
+          .split(" ")
+          .some((id) => document.getElementById(id)?.textContent === message);
+      const listed = screen.queryByText(`${input.label}: ${message}`) !== null;
+      if (!under && !listed)
+        faults.push(`${input.name}: not shown under its input or as ${input.label}`);
     }
   } finally {
     vi.stubGlobal("fetch", answer);
@@ -959,6 +1002,42 @@ test("the label check fails on a form that shows a field by its name, or has an 
     "Nameless: an input with no field name",
     "Nameless box: an input with no field name",
     "Nameless choice: an input with no field name",
-    "planted: not shown as Planted label",
+    "planted: not shown under its input or as Planted label",
+  ]);
+});
+
+// A form that shows a refusal under its input, as it should, and one that marks an input
+// invalid without describing it by the message.
+function Marked({ described }: { described: boolean }) {
+  const [error, setError] = useState<ApiError | null>(null);
+  const fields = useFieldErrors(error);
+  const own = fields.input("planted");
+  return (
+    <form
+      noValidate
+      onSubmit={async (event) => {
+        event.preventDefault();
+        await client.post("/planted", {}).catch((e) => setError(asApiError(e)));
+      }}
+    >
+      <label>
+        Planted label
+        <input type="text" name="planted" {...(described ? own : { "aria-invalid": true })} />
+      </label>
+      {fields.message("planted")}
+      <button type="submit">Send</button>
+      <ProblemView error={error} labels={{ planted: "Planted label" }} inline />
+    </form>
+  );
+}
+
+test("the label check passes a refusal shown under its input, and fails one that is not linked to it", async () => {
+  fakeApi({});
+  const { unmount } = render(<Marked described />);
+  expect(await labelFaults(document.querySelector("form")!)).toEqual([]);
+  unmount();
+  render(<Marked described={false} />);
+  expect(await labelFaults(document.querySelector("form")!)).toEqual([
+    "planted: not shown under its input or as Planted label",
   ]);
 });

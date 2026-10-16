@@ -10,7 +10,21 @@ from installer import install as ins
 from tests import claude_download
 
 
-def test_the_installer_puts_the_fake_release_in_the_store_and_it_runs(tmp_path):
+def as_the_test_user(monkeypatch):
+    """The store is made by rcman's account; here the same commands run as the test's user."""
+    real = ins.run
+
+    def run(argv, user=None, **kw):
+        rest = argv[4:] if argv[:4] == ["runuser", "-u", ins.APP_USER, "--"] else argv
+        command = [a for a in rest if "=" not in a and a not in ("/usr/bin/env", "-i")]
+        return real(command if rest is not argv else argv, user=user, **kw)
+
+    monkeypatch.setattr(ins, "run", run)
+    monkeypatch.setattr(ins, "app_uid", lambda: 0)
+
+
+def test_the_installer_puts_the_fake_release_in_the_store_and_it_runs(tmp_path, monkeypatch):
+    as_the_test_user(monkeypatch)
     releases = tmp_path / "releases"
     claude_download.release(releases, "9.8.7")
     store = tmp_path / "store"
@@ -29,7 +43,8 @@ def test_the_installer_puts_the_fake_release_in_the_store_and_it_runs(tmp_path):
     assert os.listdir(unpacked)  # where it unpacked itself: under TMPDIR, not elsewhere
 
 
-def test_a_release_whose_binary_changed_is_refused(tmp_path):
+def test_a_release_whose_binary_changed_is_refused(tmp_path, monkeypatch):
+    as_the_test_user(monkeypatch)
     releases = tmp_path / "releases"
     claude_download.release(releases, "9.8.7")
     binary = releases / "9.8.7" / ins.claude_platform() / "claude"

@@ -66,9 +66,11 @@ The panel of a workspace that is ready has its **Claude server** section,
 which shows the workspace's server, or **Start** when it has none. If rcman
 could not read the server, the section says why instead. Below it is the
 **Changes** section, for the git repository in the workspace (see
-[Git](git.md)). A workspace that
-failed to be made says what went wrong in plain words, with **Steps so far**
-beneath, and offers only **Delete workspace**. When the repository's
+[Git](git.md)). The last section, **Delete this workspace**, holds
+**Delete workspace**. A workspace that
+failed to be made says what went wrong in a sentence, with the words rcman
+got behind **Details**, and **Steps so far** beneath, and offers only
+**Delete workspace**. When the repository's
 `devcontainer.json` is the cause, the reason names the setting to change, or
 the image rcman could not pull or use, or the command that failed or took too
 long, with what it printed last in the steps. A build that failed says why in
@@ -116,7 +118,9 @@ administrators can see them in the [system journal](journal.md).
 ## Deleting a workspace
 
 **Delete workspace** deletes the workspace, everything in it, and its server.
-It asks first; confirming with **Delete** stops the server if it is running
+It asks first; if the **Changes** section knows of files with changes that are
+not committed, or of commits that are not pushed, the question says so.
+Confirming with **Delete** stops the server if it is running
 and deletes it with the workspace. It cannot be undone. Afterwards no
 workspace is selected, and the page says the workspace was deleted.
 
@@ -125,8 +129,9 @@ deleted.
 
 Deleting a workspace that is still being cloned, or that is pulling or
 building its image or running a command of its `devcontainer.json`, stops that and
-deletes the workspace. If rcman restarts while a workspace is being made, the workspace is
-shown as failed, and says so; delete it and make it again.
+deletes the workspace. If rcman restarts while a workspace cloned from a repository is
+being made, the workspace is shown as failed, and says so; delete it and make it again. An
+empty workspace that was being made is made again when rcman starts.
 
 ## Rules
 

@@ -10,7 +10,7 @@ from pathlib import Path
 
 from fastapi import FastAPI
 
-from rcman import audit, claude_versions, db, journal, people, problems, spa, unrecognised
+from rcman import audit, claude_versions, db, headers, journal, people, problems, spa, unrecognised
 from rcman.accounts import Accounts
 from rcman.gitaccount import GitAccount
 from rcman.routers import (
@@ -125,7 +125,9 @@ def create_app(settings: Settings | None = None, runtime: Runtime | None = None)
     app.state.accounts = sign_ins
     app.state.git_account = GitAccount(service)
     app.state.watch = unrecognised.Watch()
+    app.state.client_error_limit = client_errors.new_limit()
     problems.install(app)
+    headers.install(app)
 
     @app.get("/api/health", tags=["health"])
     def health() -> dict:

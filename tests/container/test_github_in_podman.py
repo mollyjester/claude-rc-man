@@ -84,7 +84,7 @@ def image(pki, github_com) -> str:
         ["podman", "--remote", "--url", f"unix://{base.socket()}", "build", "-q", "-t", name,
          str(pki)],
         capture_output=True,
-        text=True,
+        text=True, errors="replace",
         timeout=1200,
     )  # fmt: skip
     assert built.returncode == 0, built.stdout + built.stderr
@@ -169,7 +169,10 @@ def claude_git(podman, name: str, *args: str) -> rt.Result:
 
 def on_remote(bare: Path, ref: str) -> str:
     out = subprocess.run(
-        ["git", "-C", str(bare), "rev-parse", "--verify", "-q", ref], capture_output=True, text=True
+        ["git", "-C", str(bare), "rev-parse", "--verify", "-q", ref],
+        capture_output=True,
+        text=True,
+        errors="replace",
     )
     return out.stdout.strip()
 

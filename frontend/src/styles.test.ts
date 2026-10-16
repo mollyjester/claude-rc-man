@@ -449,3 +449,87 @@ test("the letter check fails on a change with no rule, or a colour outside a cus
     `${code}: no colour in dark`,
   ]);
 });
+
+// What a media query holds, found by matching its braces: its inner stylesheet, or "".
+function mediaOf(query: string, css = STYLES): string {
+  const text = uncommented(css);
+  const start = text.indexOf(`@media ${query}`);
+  if (start < 0) return "";
+  const open = text.indexOf("{", start);
+  let depth = 0;
+  for (let i = open; i < text.length; i++) {
+    if (text[i] === "{") depth++;
+    if (text[i] === "}" && --depth === 0) return text.slice(open + 1, i);
+  }
+  return "";
+}
+
+// The width below which the page lays itself out for a phone.
+const PHONE = "(max-width: 48rem)";
+
+test("the navigation wraps, and a table, a help page and a wide word never widen the page", () => {
+  expect(ruleOf("header nav")).toMatch(/flex-wrap:\s*wrap/);
+  expect(ruleOf(".table-scroll")).toMatch(/overflow-x:\s*auto/);
+  expect(ruleOf(".table-scroll")).toMatch(/max-width:\s*100%/);
+  // help: one column on a phone, the text in a box that may shrink
+  expect(ruleOf(".docs article")).toMatch(/min-width:\s*0/);
+  expect(ruleOf(".docs", mediaOf(PHONE))).toMatch(/grid-template-columns:\s*minmax\(0,\s*1fr\)/);
+  expect(ruleOf(".docs pre")).toMatch(/overflow-x:\s*auto/);
+});
+
+test("the check on a media query reads one, and finds none that is not there", () => {
+  expect(mediaOf(PHONE)).toContain(".dashboard"); // positive control: the phone layout is read
+  expect(mediaOf("(max-width: 1px)")).toBe("");
+});
+
+test("on a phone the selected workspace comes before the form that makes another", () => {
+  const areas = (rule: string) => rule.match(/grid-template-areas:\s*([^;]+)/)?.[1] ?? "";
+  const named = (list: string) => [...list.matchAll(/"([^"]+)"/g)].map((a) => a[1]);
+  expect(named(areas(ruleOf(".dashboard")))).toEqual(["list panel", "new panel"]);
+  expect(named(areas(ruleOf(".dashboard", mediaOf(PHONE))))).toEqual(["list", "panel", "new"]);
+});
+
+test("a skip link is out of sight until it has focus, then shown", () => {
+  expect(ruleOf(".skip-link")).toMatch(/position:\s*absolute/);
+  expect(ruleOf(".skip-link")).toMatch(/(?:left|top|inset-inline-start):\s*-/);
+  expect(ruleOf(".skip-link:focus")).toMatch(/(?:left|top):\s*[0-9.]/);
+});
+
+test("a field's refusal, a failed result and a date are drawn as they should be", () => {
+  expect(ruleOf(".field-error")).toMatch(/color:\s*var\(--problem\)/);
+  expect(ruleOf("td.result-failed")).toMatch(/color:\s*var\(--problem\)/);
+  expect(ruleOf("td.when")).toMatch(/white-space:\s*nowrap/);
+  expect(ruleOf("td.wrap")).toMatch(/overflow-wrap:\s*anywhere/);
+});
+
+test("a field takes the page's colours in both schemes, and keeps a border", () => {
+  const rule = ruleOf('input:not([type="checkbox"]), textarea, select');
+  expect(rule).toMatch(/background:\s*var\(--surface\)/);
+  expect(rule).toMatch(/color:\s*var\(--fg\)/);
+  expect(rule).toMatch(/border:\s*1px solid var\(--border\)/);
+  expect(ruleOf('input[aria-invalid="true"], textarea[aria-invalid="true"]')).toMatch(
+    /border-color:\s*var\(--problem\)/,
+  );
+});
+
+test("what is pressed is at least a pointer's minimum size, a checkbox's label included", () => {
+  const minimum = (rule: string) => {
+    const found = rule.match(/min-height:\s*([\d.]+)rem/)?.[1];
+    return found ? parseFloat(found) * 16 : 0;
+  };
+  for (const selector of [
+    'label:has(> input[type="checkbox"])',
+    "button.name",
+    "button.disclosure",
+    "button, a.button",
+  ]) {
+    expect(minimum(ruleOf(selector)), selector).toBeGreaterThanOrEqual(24);
+  }
+});
+
+test("a workspace's long name is cut short with an ellipsis, its dot staying beside it", () => {
+  expect(ruleOf(".workspaces li")).toMatch(/display:\s*flex/);
+  expect(ruleOf(".workspaces button.name")).toMatch(/text-overflow:\s*ellipsis/);
+  expect(ruleOf(".workspaces button.name")).toMatch(/min-width:\s*0/);
+  expect(ruleOf(".workspaces .dot")).toMatch(/flex:\s*none/);
+});

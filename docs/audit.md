@@ -3,7 +3,10 @@
 rcman records every request that changes something: who made it, what they
 did, to what, and whether it worked. Requests that only
 read are not recorded. Administrators read the trail on the **Audit trail**
-page in rcman, under **Admin** in the navigation, newest first.
+page in rcman, under **Admin** in the navigation, newest first. The page says
+each action in plain words, with its code as the cell's tooltip, shows
+dates in UTC, and marks a request that failed with the word *Failed* and its
+error code.
 
 Each event is also written to the [system journal](journal.md) as one line of
 JSON, so it can be read with `journalctl` on the server.

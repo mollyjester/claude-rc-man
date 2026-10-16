@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { m } from "./messages";
 import { FIELDS } from "./Settings";
 import { fakeApi, ME, problem, type Routes, SETTINGS } from "./test/fakeApi";
+import { expectRefused } from "./test/fields";
 import { renderApp } from "./test/render";
 
 const AUTHOR = { name: "Alice A", email: "alice@example.com" };
@@ -107,11 +108,12 @@ test("what the server refuses is shown as it said it, in the part that sent it",
   const prefix = await part(m.settingsPrefixTitle);
   await userEvent.type(within(author).getByLabelText(FIELDS.author_name.label), "<b>");
   await userEvent.click(within(author).getByRole("button", { name: m.save }));
-  expect(
-    await within(author).findByText(
-      `${FIELDS.author_name.label}: planted reason, as the server sent it`,
-    ),
-  ).toBeInTheDocument();
+  await within(author).findByRole("alert");
+  expectRefused(
+    within(author).getByLabelText(FIELDS.author_name.label),
+    "planted reason, as the server sent it",
+  );
+  expect(within(author).getByLabelText(FIELDS.author_name.label)).toHaveFocus();
   expect(within(prefix).queryByRole("alert")).toBeNull();
 });
 
@@ -223,9 +225,8 @@ test("a refused token stays in the field, and the refusal is shown by its label"
   const field = await within(github).findByLabelText(m.githubTokenLabel);
   await userEvent.type(field, "not a token");
   await userEvent.click(within(github).getByRole("button", { name: m.save }));
-  expect(
-    await within(github).findByText(`${m.githubTokenLabel}: planted reason, as the server sent it`),
-  ).toBeInTheDocument();
+  await within(github).findByRole("alert");
+  expectRefused(field, "planted reason, as the server sent it");
   expect(field).toHaveValue("not a token");
   expect(within(github).queryByText(m.githubTokenSaved)).toBeNull();
 });
@@ -324,4 +325,33 @@ test("the commit author's help says it is also the author of commits git makes i
   expect(FIELDS.author_name.help).toMatch(/workspaces/);
   expect(FIELDS.author_name.help).not.toMatch(/from rcman are/);
   expect(m.githubTokenHelp).toMatch(/workspaces/);
+});
+
+test("a part's saved word is spoken in a place that is there before it, and goes when the field is changed", async () => {
+  api();
+  renderApp("/settings");
+  const prefix = await part(m.settingsPrefixTitle);
+  const status = within(prefix).getByRole("status"); // there before anything is saved
+  expect(status).toBeEmptyDOMElement();
+  const input = within(prefix).getByLabelText(FIELDS.prefix.label);
+  await userEvent.type(input, "a");
+  await userEvent.click(within(prefix).getByRole("button", { name: m.save }));
+  await waitFor(() => expect(status).toHaveTextContent(m.saved));
+  expect(within(prefix).getByRole("status")).toBe(status); // the same place, so it is announced
+  await userEvent.type(input, "b");
+  expect(status).toBeEmptyDOMElement();
+});
+
+test("the token's saved word is spoken in a place that is there before it, and goes when the field is changed", async () => {
+  api({ "POST /api/github/token": { token: true } });
+  renderApp("/settings");
+  const github = await part(m.settingsGithubTitle);
+  const status = within(github).getByRole("status");
+  expect(status).toBeEmptyDOMElement();
+  const field = await within(github).findByLabelText(m.githubTokenLabel);
+  await userEvent.type(field, "a-token");
+  await userEvent.click(within(github).getByRole("button", { name: m.save }));
+  await waitFor(() => expect(status).toHaveTextContent(m.githubTokenSaved));
+  await userEvent.type(field, "x");
+  expect(status).toBeEmptyDOMElement();
 });

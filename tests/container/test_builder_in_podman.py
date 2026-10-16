@@ -166,7 +166,7 @@ def real_image(tmp_path_factory) -> str:
         ["podman", "--remote", "--url", f"unix://{base.socket()}", "build", "-q", "-t", name,
          "--file", str(context / "Containerfile"), str(context)],
         capture_output=True,
-        text=True,
+        text=True, errors="replace",
         timeout=REAL_WITHIN,
     )  # fmt: skip
     assert built.returncode == 0, built.stdout[-2000:] + built.stderr[-4000:]
@@ -765,8 +765,11 @@ def test_a_dockerfile_and_a_local_feature_are_built_for_real_and_the_workspace_r
     real_service.delete(real_service.get(two.id))
     gone(real_service, two.id)
     assert real_podman.built_images() == {} and not exists("image", names[two.id])
-    assert image_ids() == images_before
-    assert storage_layers() == layers, sorted(storage_layers() ^ layers)
+    # Nothing of the builds is left. Deleting a workspace collects the images nothing refers to,
+    # so images that were here before (the pinned ones the host loaded) may be gone too: what is
+    # asserted is that nothing is here that was not.
+    assert image_ids() <= images_before, sorted(image_ids() - images_before)
+    assert storage_layers() <= layers, sorted(storage_layers() - layers)
 
 
 def test_a_feature_that_asks_for_privileges_is_refused_naming_it_before_the_image_is_copied_out(

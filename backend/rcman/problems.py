@@ -14,6 +14,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from helpers import rules
 from helpers.rules import Rule
+from rcman.headers import SECURITY_HEADERS
 
 log = logging.getLogger("rcman.problems")
 MEDIA_TYPE = "application/problem+json"
@@ -36,6 +37,7 @@ MESSAGES = {
     "body_unreadable": "What was sent could not be read as text.",
     "author_not_set": "Set your commit author name in Settings before committing.",
     "internal_error": "Something went wrong in rcman.",
+    "too_many_reports": "Too many reports of failures just now. They are dropped.",
     # people
     "email_invalid": rules.EMAIL.sentence,
     "email_taken": "Someone with that address is there already.",
@@ -215,7 +217,8 @@ DEVCONTAINER_MESSAGES = {
         "workspace again."
     ),
     "env_reserved": (
-        '"{where}" in {origin} sets "{name}", which rcman sets itself in every workspace. '
+        '"{where}" in {origin} sets "{name}", which rcman sets itself in every workspace or '
+        "keeps for the git configuration it writes. "
         "Remove it from the file, push the change and make the workspace again."
     ),
     "user_unknown": (
@@ -255,6 +258,18 @@ DEVCONTAINER_MESSAGES = {
     ),
     "build_image_refused": (
         "The image the build made was not accepted: {reason}. It was not kept."
+    ),
+    "image_labels": (
+        'The image "{image}" carries the label "{label}", which rcman uses for its own '
+        "containers, and a container takes its image's labels. Use another image."
+    ),
+    "runtime_gone": (
+        "rcman could not reach its containers while it was making this workspace, so the "
+        "workspace was not finished. Delete it and make it again."
+    ),
+    "default_image_gone": (
+        "The image this workspace was made from is no longer in rcman's storage, so the "
+        "workspace's container cannot be made again. Delete the workspace and make it again."
     ),
     "built_image_gone": (
         "The image rcman built for this workspace is no longer in its storage, so the "
@@ -325,6 +340,7 @@ STATUS = {
     "body_unreadable": 400,
     "author_not_set": 409,
     "internal_error": 500,
+    "too_many_reports": 429,
     "email_invalid": 400,
     "email_taken": 409,
     "people_full": 409,
@@ -378,11 +394,19 @@ STATUS = {
 
 
 class Problem(Exception):
-    def __init__(self, code: str, status: int | None = None, title: str | None = None, **extra):
+    def __init__(
+        self,
+        code: str,
+        status: int | None = None,
+        title: str | None = None,
+        headers: dict[str, str] | None = None,
+        **extra,
+    ):
         super().__init__(code)
         self.code = code
         self.status = status or STATUS[code]
         self.title = title or MESSAGES[code]
+        self.headers = headers or {}
         self.extra = extra
 
 
@@ -504,7 +528,9 @@ def code_of(exc: Exception) -> str:
 def install(app: FastAPI) -> None:
     @app.exception_handler(Problem)
     async def _problem(request: Request, exc: Problem):
-        return response(exc.code, exc.status, exc.title, **exc.extra)
+        answer = response(exc.code, exc.status, exc.title, **exc.extra)
+        answer.headers.update(exc.headers)
+        return answer
 
     @app.exception_handler(RequestValidationError)
     async def _validation(request: Request, exc: RequestValidationError):
@@ -520,4 +546,7 @@ def install(app: FastAPI) -> None:
     @app.exception_handler(Exception)
     async def _unexpected(request: Request, exc: Exception):
         code = code_of(exc)
-        return response(code, STATUS[code], MESSAGES[code])
+        answer = response(code, STATUS[code], MESSAGES[code])
+        # Outside the middleware that adds them to the rest (Starlette answers this one itself).
+        answer.headers.update(SECURITY_HEADERS)
+        return answer

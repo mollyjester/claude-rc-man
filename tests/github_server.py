@@ -29,9 +29,6 @@ from socketserver import ThreadingMixIn
 from wsgiref.simple_server import WSGIRequestHandler, WSGIServer
 
 GITHUB = "https://github.com/"
-# An address nothing answers on, for RC_HELPER_GITHUB where a test needs no GitHub,
-# so that no test can reach the real one.
-UNREACHABLE = "http://127.0.0.1:1/"
 # The longest a request waits for a closed gate, so that a test that forgets to open it
 # ends a server's threads all the same.
 GATE_WAIT = 120.0

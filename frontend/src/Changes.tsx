@@ -6,7 +6,7 @@ import { BranchBar } from "./BranchBar";
 import { Caret } from "./Caret";
 import { RefreshIcon } from "./Icons";
 import { m } from "./messages";
-import { asApiError, ProblemView } from "./ProblemView";
+import { asApiError, ProblemView, useFieldErrors } from "./ProblemView";
 import { usePopup } from "./usePopup";
 
 // How often the status line's "Checked …" is worked out again.
@@ -97,6 +97,19 @@ function useGitStatus(workspace: number, pollMs: number) {
   }, [refresh, pollMs]);
 
   return { status, checkedAt, error, refresh };
+}
+
+// What deleting the workspace would lose that is not safe in git: the files with changes that
+// are not committed, and the commits that are not pushed. A file in both lists counts once; the
+// files a list did not show are counted as the server counts them.
+export type Unsaved = { files: number; commits: number };
+
+export function unsavedIn(status: GitStatus): Unsaved {
+  const shown = new Set([...status.staged.files, ...status.not_staged.files].map((f) => f.path));
+  return {
+    files: shown.size + status.staged.more + status.not_staged.more,
+    commits: status.push_ahead ?? 0,
+  };
 }
 
 const selectable = (file: GitFile) => file.selectable !== false;
@@ -325,8 +338,20 @@ const somethingToPush = (status: GitStatus) => status.push_ahead !== 0;
 // rcman's own rules — Commit only with something staged and an author name
 // set, Push and Commit & Push only as pushReason allows; git's own refusals
 // are shown as it gave them, beside what was tried.
-export function Changes({ workspace, pollMs }: { workspace: number; pollMs: number }) {
+export function Changes({
+  workspace,
+  pollMs,
+  onUnsaved,
+}: {
+  workspace: number;
+  pollMs: number;
+  // Told what the status says is not safe in git, each time the status is answered.
+  onUnsaved?: (unsaved: Unsaved) => void;
+}) {
   const { status, checkedAt, error: statusError, refresh } = useGitStatus(workspace, pollMs);
+  useEffect(() => {
+    if (status !== null) onUnsaved?.(unsavedIn(status));
+  }, [status, onUnsaved]);
   const [branches, setBranches] = useState<Branches | null>(null);
   const [staged, setStaged] = useState<ReadonlySet<string>>(new Set());
   const [notStaged, setNotStaged] = useState<ReadonlySet<string>>(new Set());
@@ -337,6 +362,8 @@ export function Changes({ workspace, pollMs }: { workspace: number; pollMs: numb
   const [notPushed, setNotPushed] = useState<string | null>(null);
   const [switching, setSwitching] = useState("");
   const busy = running !== null;
+  const commitFields = useFieldErrors(errors.commit ?? null);
+  const commitHelp = useId();
 
   const listBranches = useCallback(async () => {
     try {
@@ -545,7 +572,7 @@ export function Changes({ workspace, pollMs }: { workspace: number; pollMs: numb
           ) : status.staged.files.length === 0 ? (
             <p>{m.commitNothingStaged}</p>
           ) : (
-            <form noValidate onSubmit={commit}>
+            <form noValidate onSubmit={commit} ref={commitFields.form}>
               <label>
                 {m.commitMessage}
                 <textarea
@@ -553,8 +580,13 @@ export function Changes({ workspace, pollMs }: { workspace: number; pollMs: numb
                   value={message}
                   onChange={(e) => setMessage(e.target.value)}
                   rows={4}
+                  {...commitFields.input("message", commitHelp)}
                 />
               </label>
+              {commitFields.message("message")}
+              <p id={commitHelp} className="muted">
+                {m.commitMessageHelp}
+              </p>
               <div className="actions">
                 <div className="split">
                   <button type="submit" className="primary" disabled={busy}>
@@ -565,7 +597,7 @@ export function Changes({ workspace, pollMs }: { workspace: number; pollMs: numb
               </div>
             </form>
           )}
-          <ProblemView error={errors.commit ?? null} labels={{ message: m.commitMessage }} />
+          <ProblemView error={errors.commit ?? null} labels={{ message: m.commitMessage }} inline />
         </>
       )}
       <StatusLine checkedAt={checkedAt} onRefresh={() => refresh()} />

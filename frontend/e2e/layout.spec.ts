@@ -90,3 +90,71 @@ test("Your workspaces lines its names up with its heading, each dot on its name'
   expect(dot.x).toBeGreaterThan(button.x + button.width - 1); // beside it, not under it
   expect(dot.y).toBeLessThan(button.y + button.height);
 });
+
+test("on a phone no page is wider than the window, and a guide's table scrolls inside its box", async ({
+  page,
+}) => {
+  await signInAs(page, ALICE);
+  await page.setViewportSize({ width: 390, height: 800 });
+  const pages = [
+    "/",
+    "/claude",
+    "/settings",
+    "/help",
+    "/help/workspaces",
+    "/admin/people",
+    "/admin/workspaces",
+    "/admin/claude",
+    "/admin/audit",
+  ];
+  for (const path of pages) {
+    await page.goto(path);
+    await expect(page.getByRole("heading", { level: 1 }).first()).toBeVisible();
+    const over = await page.evaluate(
+      () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+    );
+    expect(over, `${path} is wider than the window`).toBeLessThanOrEqual(0);
+  }
+  // the Admin menu, open, is inside the window too
+  await page.goto("/");
+  await page.getByRole("banner").getByRole("button", { name: m.navAdmin }).click();
+  const menu = (await page.getByRole("banner").getByRole("list").last().boundingBox())!;
+  expect(menu.x + menu.width).toBeLessThanOrEqual(390);
+
+  // a guide's table is a table, in a box of its own
+  await page.goto("/help/workspaces");
+  const table = page.getByRole("table").first();
+  await expect(table).toBeVisible();
+  expect(await table.evaluate((el) => el.closest(".table-scroll") !== null)).toBe(true);
+});
+
+test("a skip link leads the page, each page is titled, and the Workspaces page has its own heading", async ({
+  page,
+}) => {
+  await signInAs(page, ALICE);
+  await page.goto("/");
+  await expect(page.getByRole("heading", { level: 1, name: m.navDashboard })).toBeVisible();
+  await expect(page).toHaveTitle(m.pageTitle(m.navDashboard));
+  await page.keyboard.press("Tab");
+  const skip = page.getByRole("link", { name: m.skipToContent });
+  await expect(skip).toBeFocused();
+  await expect(skip).toBeVisible(); // shown once it has focus
+  await page.keyboard.press("Enter");
+  await expect(page.getByRole("main")).toBeFocused();
+  await page.goto("/settings");
+  await expect(page).toHaveTitle(m.pageTitle(m.navSettings));
+});
+
+test("on a phone the selected workspace comes before the form that makes another", async ({
+  page,
+}) => {
+  await signInAs(page, ALICE);
+  await page.setViewportSize({ width: 390, height: 800 });
+  await page.route("**/api/workspaces", (route) =>
+    route.fulfill({ json: { workspaces: [WIDE], claude_approved: null } }),
+  );
+  await page.goto(`/?workspace=${WIDE.id}`);
+  const opened = (await panel(page, WIDE.name).boundingBox())!;
+  const form = (await page.getByRole("region", { name: m.newWorkspace }).boundingBox())!;
+  expect(opened.y).toBeLessThan(form.y);
+});

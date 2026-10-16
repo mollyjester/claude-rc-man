@@ -252,20 +252,6 @@ def test_the_database_is_its_owners_alone_whatever_the_umask(tmp_path):
         assert stat.S_IMODE(file.stat().st_mode) == 0o600, file
 
 
-def test_a_database_of_the_old_model_is_named_as_one_not_as_newer(tmp_path):
-    """One written before workspaces, with no people table, cannot be upgraded."""
-    import pytest
-
-    path = tmp_path / "x.db"
-    con = sqlite3.connect(path)
-    con.executescript("create table user_settings (email text primary key, prefix text);")
-    con.execute("pragma user_version = 4")
-    con.commit()
-    con.close()
-    with pytest.raises(db.DatabaseOfAnOldInstall, match="install rcman afresh"):
-        db.migrate(path)
-
-
 def migrated_before(tmp_path, marker: str) -> tuple:
     """A database migrated to just before the migration whose script holds ``marker``, with a
     person and a ready workspace of theirs: its path and its connection."""
@@ -362,3 +348,65 @@ def test_a_limit_is_a_positive_number_or_null(tmp_path, column, table):
     for refused in (0, -1):
         with pytest.raises(sqlite3.IntegrityError):
             con.execute(f"update {table} set {column} = ? where {row}", (refused,))
+
+
+def test_the_id_of_a_person_or_a_workspace_is_never_given_again(tmp_path):
+    """An id names a volume, a slice and a container: one given to the next row would adopt
+    what the last one left."""
+    path = tmp_path / "x.db"
+    db.migrate(path)
+    con = sqlite3.connect(path)
+    for n in range(2):
+        con.execute(
+            "insert into people (email, admin, slot, state) values (?, 0, ?, 'active')",
+            (f"p{n}@x.org", n + 1),
+        )
+    last = con.execute("select max(id) from people").fetchone()[0]
+    con.execute("insert into workspaces (person, name, state) values (1, 'w', 'ready')")
+    last_workspace = con.execute("select max(id) from workspaces").fetchone()[0]
+    con.execute("delete from workspaces")
+    con.execute("delete from people where id = ?", (last,))
+    con.execute("insert into people (email, admin, slot, state) values ('q@x.org', 0, 2, 'active')")
+    con.execute("insert into workspaces (person, name, state) values (1, 'w', 'ready')")
+    assert con.execute("select max(id) from people").fetchone()[0] > last
+    assert con.execute("select max(id) from workspaces").fetchone()[0] > last_workspace
+    con.close()
+
+
+def test_a_database_has_an_install_id_of_its_own_that_never_changes(tmp_path):
+    """What tells volumes made for this database from those of another one with the same ids,
+    a restored backup among them."""
+    first, second = tmp_path / "a.db", tmp_path / "b.db"
+    for path in (first, second):
+        db.migrate(path)
+    found = []
+    for path in (first, second):
+        con = db.connect(path)
+        try:
+            found.append(db.install_id(con))
+        finally:
+            con.close()
+    assert all(len(i) >= 16 and i.isalnum() for i in found) and found[0] != found[1]
+    db.migrate(first)  # again
+    con = db.connect(first)
+    try:
+        assert db.install_id(con) == found[0]
+        assert con.execute("select count(*) from meta").fetchone()[0] == 1
+        with pytest.raises(sqlite3.IntegrityError):
+            con.execute("insert into meta (id, install) values (2, 'x')")
+    finally:
+        con.close()
+
+
+def test_a_database_of_the_schema_before_the_install_id_gains_one(tmp_path):
+    path = tmp_path / "old.db"
+    con = sqlite3.connect(path)
+    for number, script in enumerate(db.MIGRATIONS[:-1], start=1):
+        con.executescript(f"begin;\n{script}\npragma user_version = {number};\ncommit;")
+    con.close()
+    db.migrate(path)
+    con = db.connect(path)
+    try:
+        assert db.install_id(con)
+    finally:
+        con.close()

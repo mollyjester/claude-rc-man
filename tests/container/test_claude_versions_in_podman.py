@@ -24,7 +24,7 @@ import time
 from pathlib import Path
 
 import pytest
-from rcman import db, people
+from rcman import claude_versions, db, people
 from rcman import runtime as rt
 from rcman.problems import Problem
 from rcman.settings import Settings
@@ -66,7 +66,7 @@ def image(tmp_path_factory) -> str:
         ["podman", "--remote", "--url", f"unix://{base.socket()}", "build", "-q", "-t", name,
          "-f", str(context / "Containerfile"), str(context)],
         capture_output=True,
-        text=True,
+        text=True, errors="replace",
         timeout=1200,
     )  # fmt: skip
     assert built.returncode == 0, built.stdout + built.stderr
@@ -90,9 +90,11 @@ def download(tmp_path_factory):
 
 
 @pytest.fixture
-def store():
+def store(monkeypatch):
     """The store as the installer leaves it for rcman: the one version, which ``current`` names,
-    before and after the test."""
+    before and after the test. Pruning ages nothing here: the files are new, and a version put
+    in the store within the grace is never pruned (as in the host tests)."""
+    monkeypatch.setattr(claude_versions, "PRUNE_GRACE_SECONDS", 0.0)
 
     def reset() -> None:
         versions = base.CLAUDE / "versions"

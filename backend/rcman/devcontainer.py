@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import ipaddress
 import json
 import logging
 import posixpath
@@ -28,7 +29,13 @@ from typing import NamedTuple
 
 from rcman.channel import Result
 from rcman.problems import DEVCONTAINER_MESSAGES
-from rcman.runtime import BUILT_REPOSITORY, RANGE, Layout
+from rcman.runtime import (
+    BUILT_REPOSITORY,
+    RANGE,
+    Layout,
+    moves_git_config,
+    registry_host,
+)
 
 # The two places a devcontainer.json is looked for, in this order, and nowhere else.
 FILES = (".devcontainer/devcontainer.json", ".devcontainer.json")
@@ -84,6 +91,9 @@ RESERVED_ENV = frozenset(
         "GIT_CEILING_DIRECTORIES",
     }
 )
+# A file may not set a variable that moves git's configuration (runtime.moves_git_config) either,
+# and an image's are not taken: git reads the configuration rcman writes for the person, and
+# nothing in a repository's file may send it elsewhere.
 # The lifecycle commands rcman runs, in the order the specification runs them: the first
 # three once, when the workspace is made, and the last each time its container starts.
 CREATE_EVENTS = ("onCreateCommand", "updateContentCommand", "postCreateCommand")
@@ -105,6 +115,11 @@ IMAGE_NAME = re.compile(
     r"(?::[A-Za-z0-9_][A-Za-z0-9_.-]*)?"
     rf"(?:@{_ALGORITHM}:[0-9A-Fa-f]{{32,}})?\Z"
 )
+# The endings of a registry's host that name this machine or a network it is on, and the forms
+# of an IPv4 address a resolver reads that ``ipaddress`` does not: numbers in decimal or
+# hexadecimal, joined by dots.
+LOCAL_SUFFIXES = (".localhost", ".local", ".internal", ".lan", ".localdomain", ".home.arpa")
+OLD_ADDRESS_FORM = re.compile(r"(?:0x[0-9a-f]+|[0-9]+)(?:\.(?:0x[0-9a-f]+|[0-9]+))*")
 # An image's id, whole or cut short: a name that podman takes for any image of its storage.
 HEX_ID = re.compile(r"[0-9a-f]+\Z")
 # What podman reads before a colon as how to get an image, which a name that looks like
@@ -363,11 +378,6 @@ def _text(raw: bytes) -> str:
         line = raw.count(b"\n", 0, failed.start) + 1
         column = failed.start - (raw.rfind(b"\n", 0, failed.start) + 1) + 1
         raise Refused("invalid_file", line=line, column=column) from None
-
-
-def parse_bytes(raw: bytes) -> dict:
-    """:func:`parse` of file content that has not been decoded."""
-    return parse(_text(raw))
 
 
 def _blank(text: str) -> str:
@@ -630,6 +640,35 @@ def _names_an_image_of_rcmans(value: str) -> bool:
     return BUILT_REPOSITORY in lowered or HEX_ID.match(lowered.removeprefix("sha256:")) is not None
 
 
+def _on_this_machine_or_its_network(host: str) -> bool:
+    """Whether a registry's ``host`` is this machine or on its network. A pull runs in the
+    network of the machine rcman runs on, where the machine's own loopback is a service of the
+    machine, which a workspace's network is kept from; its neighbours a workspace can reach as
+    well, so refusing those is for a name to say what it is. Not caught: a name that resolves
+    to such an address, and a registry that redirects to one; that would need the name
+    resolved, and the redirect followed. The forms of an address that a resolver reads
+    (``127.1``, a number, a hexadecimal number) are refused with it."""
+    if host == "localhost" or host.endswith(LOCAL_SUFFIXES):
+        return True  # (a bare ``localhost/name`` is not a host, see ``_image``)
+    try:
+        return not ipaddress.ip_address(host).is_global
+    except ValueError:
+        return OLD_ADDRESS_FORM.fullmatch(host) is not None
+
+
+def _on_a_registry_of_this_machine(value: str) -> bool:
+    """Whether the name puts the image in a registry on this machine or its network. A name
+    that begins ``localhost/`` with no port is not: it names an image of rcman's own storage,
+    which the runtime never pulls (``PodmanRuntime.pull``)."""
+    host = registry_host(value)
+    first = value.partition("/")[0]
+    if host is None or (host == "localhost" and ":" not in first):
+        return False
+    if ":" in first and "." not in host:
+        return True  # one label and a port: a name of the local network (or of an address)
+    return _on_this_machine_or_its_network(host)
+
+
 def _image(value) -> str:
     if (
         not isinstance(value, str)
@@ -637,11 +676,13 @@ def _image(value) -> str:
         or not IMAGE_NAME.match(value)
         or value.partition(":")[0] in TRANSPORTS
         or _names_an_image_of_rcmans(value)
+        or _on_a_registry_of_this_machine(value)
     ):
         raise _bad(
             "image",
             "the name of an image in a registry, such as ubuntu:24.04, with no variable, "
-            "file or transport in it, and not the name or the id of an image in rcman's storage",
+            "file or transport in it, not the name or the id of an image in rcman's storage, "
+            "and not in a registry on the machine rcman runs on or on its network",
         )
     return value
 
@@ -654,7 +695,7 @@ def _env(value, key: str, origin: str, nullable: bool) -> dict:
             raise _bad(
                 key, f"names of letters, digits and underscores, which {shown(name)!r} is not"
             )
-        if name in RESERVED_ENV:
+        if name in RESERVED_ENV or moves_git_config(name):
             raise Refused("env_reserved", where=key, name=shown(name), origin=shown(origin))
         if not (isinstance(item, str) or (nullable and item is None)):
             raise _bad(key, "an object whose values are strings")
@@ -1081,6 +1122,11 @@ class Plan:
     commands: tuple[Command, ...] = ()
     ignored: tuple[str, ...] = ()
     image_path: str = ""  # the PATH the image sets, which a PATH of the file replaces
+    # The image the plan was made from, by the id the runtime gave it then, and the digest it
+    # was pulled by where it was pulled from a registry: a lost container is made again from
+    # the id, not from whatever the tag names by then.
+    image_id: str = ""
+    image_digest: str = ""
 
     @property
     def path(self) -> str | None:
@@ -1126,6 +1172,8 @@ class Plan:
             ],
             "ignored": list(self.ignored),
             "image_path": self.image_path,
+            "image_id": self.image_id,
+            "image_digest": self.image_digest,
         }
         return json.dumps(data, sort_keys=True)
 
@@ -1157,6 +1205,8 @@ class Plan:
                 commands,
                 tuple(data["ignored"]),
                 data["image_path"],
+                data.get("image_id", ""),
+                data.get("image_digest", ""),
             )
         except (TypeError, KeyError, AttributeError, ValueError) as failed:
             raise ValueError("the stored plan is not one") from failed
@@ -1167,6 +1217,8 @@ class Plan:
             and isinstance(made.uid, int)
             and isinstance(made.gid, int)
             and isinstance(made.image_path, str)
+            and isinstance(made.image_id, str)
+            and isinstance(made.image_digest, str)
         ):
             raise ValueError("the stored plan is not one")
         return made
@@ -1234,7 +1286,9 @@ def _merged(image: str, parts: list[_Part], facts) -> Plan:
     # The image's own variables come first, under everything else; its PATH is the plan's
     # image_path, and the names rcman sets itself are not taken.
     container_env: dict = {
-        k: v for k, v in facts.env.items() if k != "PATH" and k not in RESERVED_ENV
+        k: v
+        for k, v in facts.env.items()
+        if k != "PATH" and k not in RESERVED_ENV and not moves_git_config(k)
     }
     remote_env: dict = {}
     remote_user = container_user = None
@@ -1265,4 +1319,6 @@ def _merged(image: str, parts: list[_Part], facts) -> Plan:
         commands=tuple(ordered),
         ignored=tuple(ignored),
         image_path=facts.env.get("PATH", ""),
+        image_id=getattr(facts, "id", ""),
+        image_digest=getattr(facts, "digest", ""),
     )

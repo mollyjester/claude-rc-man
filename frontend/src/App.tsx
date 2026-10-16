@@ -1,4 +1,4 @@
-import { createContext, type FormEvent, useContext, useEffect, useState } from "react";
+import { type FormEvent, type ReactNode, useEffect, useRef, useState } from "react";
 import { matchPath, Navigate, NavLink, Route, Routes, useLocation } from "react-router-dom";
 
 import { ADMIN_PAGES } from "./AdminPages";
@@ -12,11 +12,9 @@ import { m } from "./messages";
 import { asApiError, ProblemView } from "./ProblemView";
 import { Settings } from "./Settings";
 import { usePopup } from "./usePopup";
+import { useTitle } from "./useTitle";
 
 export type Me = { email: string; admin: boolean; prefix: string | null };
-
-const MeContext = createContext<Me | null>(null);
-export const useMe = () => useContext(MeContext);
 
 export const POLL_MS = 5000;
 
@@ -51,12 +49,10 @@ function SignOut() {
           checked={keep}
           onChange={(e) => setKeep(e.target.checked)}
         />
-        {m.keepSessions}
+        {m.keepServersOnSignOut}
       </label>
-      <button type="submit" className="primary">
-        {m.signOut}
-      </button>
-      <ProblemView error={error} labels={{ keep_sessions: m.keepSessions }} />
+      <button type="submit">{m.signOut}</button>
+      <ProblemView error={error} labels={{ keep_sessions: m.keepServersOnSignOut }} />
     </form>
   );
 }
@@ -110,9 +106,16 @@ function Nav({ me }: { me: Me }) {
   );
 }
 
+// A page, with its name in the browser tab's title.
+function Titled({ title, children }: { title: string; children: ReactNode }) {
+  useTitle(title);
+  return children;
+}
+
 export function App({ pollMs = POLL_MS }: { pollMs?: number }) {
   const [me, setMe] = useState<Me | null>(null);
   const [error, setError] = useState<ApiError | null>(null);
+  const main = useRef<HTMLElement>(null);
 
   useEffect(() => {
     api.get<Me>("/api/me").then(setMe, (e) => setError(asApiError(e)));
@@ -128,23 +131,59 @@ export function App({ pollMs = POLL_MS }: { pollMs?: number }) {
   if (!me) return <p>{m.loading}</p>;
 
   return (
-    <MeContext.Provider value={me}>
+    <>
+      {/* biome-ignore lint/a11y/useValidAnchor: the link is to the content below, and moves focus there without putting a fragment in the address */}
+      <a
+        className="skip-link"
+        href="#main"
+        onClick={(event) => {
+          event.preventDefault();
+          main.current?.focus();
+        }}
+      >
+        {m.skipToContent}
+      </a>
       <Nav me={me} />
-      <main>
+      <main id="main" tabIndex={-1} ref={main}>
         {me.admin && <Attention />}
         <Routes>
-          <Route path="/" element={<Dashboard pollMs={pollMs} />} />
-          <Route path="/claude" element={<ClaudePage />} />
-          <Route path="/settings" element={<Settings />} />
+          <Route
+            path="/"
+            element={
+              <Titled title={m.navDashboard}>
+                <Dashboard pollMs={pollMs} />
+              </Titled>
+            }
+          />
+          <Route
+            path="/claude"
+            element={
+              <Titled title={m.navClaude}>
+                <ClaudePage />
+              </Titled>
+            }
+          />
+          <Route
+            path="/settings"
+            element={
+              <Titled title={m.navSettings}>
+                <Settings />
+              </Titled>
+            }
+          />
           <Route path="/help" element={<Docs />} />
           <Route path="/help/:slug" element={<Docs />} />
           {me.admin &&
             ADMIN_PAGES.map((page) => (
-              <Route key={page.path} path={page.path} element={page.element()} />
+              <Route
+                key={page.path}
+                path={page.path}
+                element={<Titled title={page.label}>{page.element()}</Titled>}
+              />
             ))}
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </main>
-    </MeContext.Provider>
+    </>
   );
 }

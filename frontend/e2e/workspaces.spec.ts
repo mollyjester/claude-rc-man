@@ -45,7 +45,7 @@ test("an address rcman refuses is shown under its label, and kept", async ({ pag
   const form = page.getByRole("region", { name: m.newWorkspace });
   await form.getByLabel(m.newWorkspaceSource).fill("https://user:secret@github.com/octo/widget");
   await form.getByRole("button", { name: m.create }).click();
-  await expect(form.getByRole("alert")).toContainText(`${m.newWorkspaceSource}:`);
+  await expect(form.getByLabel(m.newWorkspaceSource)).toHaveAttribute("aria-invalid", "true");
   await expect(form.getByLabel(m.newWorkspaceSource)).toHaveValue(
     "https://user:secret@github.com/octo/widget",
   );
@@ -80,7 +80,7 @@ test("a name rcman refuses is shown under its label, and kept", async ({ page })
   const form = page.getByRole("region", { name: m.newWorkspace });
   await form.getByLabel(m.newWorkspaceName).fill("not a name!");
   await form.getByRole("button", { name: m.create }).click();
-  await expect(form.getByRole("alert")).toContainText(`${m.newWorkspaceName}:`);
+  await expect(form.getByLabel(m.newWorkspaceName)).toHaveAttribute("aria-invalid", "true");
   await expect(form.getByLabel(m.newWorkspaceName)).toHaveValue("not a name!");
 });
 

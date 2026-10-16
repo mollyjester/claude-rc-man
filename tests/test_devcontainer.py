@@ -71,7 +71,7 @@ def test_what_looks_like_a_comment_or_a_comma_inside_a_string_is_kept():
 
 def test_a_byte_order_mark_is_ignored():
     assert dc.parse("\ufeff" + '{"image": "x"}') == {"image": "x"}
-    assert dc.parse_bytes("\ufeff".encode() + b'{"image": "x"}') == {"image": "x"}
+    assert dc.parse(dc._text("\ufeff".encode() + b'{"image": "x"}')) == {"image": "x"}
 
 
 def test_a_syntax_error_says_where_and_never_what_the_file_holds():
@@ -105,7 +105,7 @@ def test_the_file_must_be_an_object(text):
 
 def test_bytes_that_are_not_text_are_refused_without_being_shown():
     with pytest.raises(Refused) as refused:
-        dc.parse_bytes(b'{"image": "\xff\xfe-secret"}')
+        dc._text(b'{"image": "\xff\xfe-secret"}')
     assert refused.value.kind == "invalid_file"
     assert "secret" not in str(refused.value)
 
@@ -289,6 +289,60 @@ def test_an_image_name_is_taken(image):
     assert dc.check({"image": image}).image == image
 
 
+LOCAL_REGISTRIES = [
+    "localhost:443/team/dev:1",
+    "localhost:443/dev",
+    "LocalHost:443/dev",
+    "127.0.0.1:443/dev",
+    "127.0.0.1/dev:tag",
+    "127.1/dev",
+    "0x7f000001:443/dev",
+    "10.0.0.5/dev",
+    "172.16.4.1:443/dev",
+    "192.168.1.10:443/dev",
+    "169.254.169.254/dev",
+    "0.0.0.0:443/dev",
+    "100.64.0.1/dev",
+    "dev.localhost/team/dev",
+    "registry.local/team/dev",
+    "registry.internal:443/dev",
+    "registry.lan/dev",
+    "registry.localdomain/dev",
+    "registry:443/dev",  # a name of one label, with a port: a name of the local network
+    "myregistry:80/team/dev:1",
+]
+
+
+@pytest.mark.parametrize("image", LOCAL_REGISTRIES)
+def test_an_image_in_a_registry_on_this_machine_or_its_network_is_refused(image):
+    """Podman pulls in the network of the machine rcman runs on, where a loopback address is
+    the machine's own services and a private one is its neighbours'; a workspace's own network
+    has neither."""
+    for call in (lambda: dc.check({"image": image}), lambda: planned({"image": image})):
+        with pytest.raises(Refused) as refused:
+            call()
+        assert refused.value.kind == "bad_value" and refused.value.fields["key"] == "image"
+
+
+@pytest.mark.parametrize(
+    "image",
+    [
+        "ubuntu",
+        "localhost-registry.example.com/dev",  # not named localhost
+        "locallyhosted/dev",  # a user of the default registry
+        "ghcr.io/o/r:tag",
+        "8.8.8.8:443/dev",  # an address anyone can reach
+        "registry.example.com:443/dev@sha256:" + "a" * 64,
+        "myregistry.localhost.example.com/dev",
+        "10.example.com/dev",
+        "2130706433/dev",  # a user of the default registry, not an address
+        "localhost/image:latest",  # a name of rcman's own storage, which is never pulled
+    ],
+)
+def test_the_registries_that_are_not_local_are_still_taken(image):
+    assert dc.check({"image": image}).image == image
+
+
 @pytest.mark.parametrize(
     ("fragment", "key"),
     [
@@ -411,6 +465,49 @@ def test_an_environment_variable_rcman_sets_itself_is_refused_by_name(name, wher
         planned(with_image({where: {name: "x"}}))
     assert refused.value.kind == "env_reserved"
     assert refused.value.fields["name"] == name and where in str(refused.value)
+
+
+# The variables that move git's configuration from where rcman writes it, or add to it: a file
+# may not set them, and an image's are not taken, whatever the guard below derives.
+MOVES_GIT_CONFIG = [
+    "XDG_CONFIG_HOME",
+    "GIT_CONFIG",
+    "GIT_CONFIG_GLOBAL",
+    "GIT_CONFIG_SYSTEM",
+    "GIT_CONFIG_NOSYSTEM",
+    "GIT_CONFIG_COUNT",
+    "GIT_CONFIG_PARAMETERS",
+    "GIT_CONFIG_KEY_0",
+    "GIT_CONFIG_VALUE_12",
+    "GIT_TRACE",
+    "GIT_TRACE_CURL",
+    "GIT_TRACE_REDACT",
+    "GIT_CURL_VERBOSE",
+]
+
+
+@pytest.mark.parametrize("name", MOVES_GIT_CONFIG)
+@pytest.mark.parametrize("where", ["containerEnv", "remoteEnv"])
+def test_a_variable_that_moves_gits_configuration_is_refused_by_name(name, where):
+    with pytest.raises(Refused) as refused:
+        planned(with_image({where: {name: "x"}}))
+    assert refused.value.kind == "env_reserved" and refused.value.fields["name"] == name
+
+
+def test_variables_that_only_look_like_those_are_taken():
+    taken = {"GIT_CONFIGURED": "1", "XDG_CONFIG_DIRS": "/x", "GIT_CONFIG_KEYS": "k", "MY_XDG": "y"}
+    assert planned(with_image({"containerEnv": taken})).env == taken  # the control for the names
+
+
+def test_the_variables_of_an_image_that_move_gits_configuration_are_not_taken():
+    image_env = {name: "elsewhere" for name in MOVES_GIT_CONFIG} | {"JAVA_HOME": "/jdk"}
+    assert planned(with_image({}), facts(env=image_env)).env == {"JAVA_HOME": "/jdk"}
+
+
+def test_a_layout_made_for_a_plan_has_none_of_them_whatever_it_is_given():
+    env = {name: "elsewhere" for name in MOVES_GIT_CONFIG} | {"JAVA_HOME": "/jdk"}
+    layout = rt.PODMAN_LAYOUT.for_plan("dev", env, None)
+    assert layout.env == {"JAVA_HOME": "/jdk"}
 
 
 # The names rcman's own programs set that a file may set too. Each is common in a devcontainer

@@ -30,6 +30,7 @@ import logging
 import os
 import shutil
 import threading
+import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -47,6 +48,8 @@ log.setLevel(logging.INFO)
 STAGING_FOLDER = "claude-staging"
 # Who an approval is by when rcman made it itself: adopting what the installer left.
 ADOPTED_BY = "rcman"
+# How long a version just put in the store is left alone by pruning.
+PRUNE_GRACE_SECONDS = 3600.0
 # The store's files and folders are readable by every uid range (the workspaces') and
 # writable by their owner alone.
 MODE = 0o755
@@ -80,6 +83,8 @@ class ClaudeVersions:
         self.staging = settings.database.parent / STAGING_FOLDER
         self.lock = threading.RLock()
         self._upgrading = threading.Lock()
+        # False in a process that is not the service: see ``Workspaces``.
+        self.prunes = True
 
     # --- the approvals ---------------------------------------------------------------------
 
@@ -325,19 +330,32 @@ class ClaudeVersions:
         except Exception:  # noqa: BLE001 - what it would remove is removed by the next one
             log.exception("the Claude Code store could not be pruned")
 
+    def _new(self, version: str) -> bool:
+        """Whether the version was put in the store within ``PRUNE_GRACE_SECONDS``: an upgrade
+        of rcman puts its tested version there while this service, which does not know it, runs."""
+        try:
+            return time.time() - (self.versions_dir / version).stat().st_mtime < PRUNE_GRACE_SECONDS
+        except OSError:
+            return False
+
+    def _kept(self) -> set[str | None]:
+        """The versions pruning never removes: the approved, the previous, the one the link
+        names and the tested one, which an administrator can go back to from the page."""
+        return {self.approved(), self.previous(), self._current(), self.tested()}
+
     def prune(self) -> None:
-        """Remove the versions in the store that are neither the approved, the previous nor
-        the one the link names, and that no server which runs, cannot be read or is starting
-        started with.
+        """Remove the versions in the store that are neither the approved, the previous, the
+        tested nor the one the link names, and that no server which runs, cannot be read or is
+        starting started with.
 
         What the servers say is asked without ``lock``, since a server that hangs would
         otherwise hold up every start and approval. Then, under ``lock``, what is to go is
         decided again from the database, and a version is also kept if a workspace's record
         differs from what it was before the asking: a start may have pinned it meanwhile.
         Nothing is done while a rollout runs."""
-        if self._upgrading.locked():
+        if not self.prunes or self._upgrading.locked():
             return
-        candidates = set(self.installed()) - {self.approved(), self.previous(), self._current()}
+        candidates = set(self.installed()) - self._kept()
         if not candidates:
             return
         before = self.workspaces.recorded_versions()
@@ -345,12 +363,14 @@ class ClaudeVersions:
         with self.lock:
             if self._upgrading.locked():
                 return
-            keep = {self.approved(), self.previous(), self._current()}
+            keep = self._kept()
             now = self.workspaces.recorded_versions()
             changed = {
                 version for workspace, version in now.items() if before.get(workspace) != version
             }
             for version in sorted(set(self.installed()) - keep - in_use - changed):
+                if self._new(version):
+                    continue
                 (self.versions_dir / version).unlink(missing_ok=True)
                 log.info("Claude Code %s was removed from the store", version)
 

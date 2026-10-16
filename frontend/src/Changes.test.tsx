@@ -6,6 +6,7 @@ import { vi } from "vitest";
 import { CHECKED_TICK_MS, Changes, Files as FileList } from "./Changes";
 import { m } from "./messages";
 import { fakeApi, problem, type Routes } from "./test/fakeApi";
+import { expectRefused } from "./test/fields";
 import { renderAlone } from "./test/render";
 
 // Where leaving the section goes, a page of its own.
@@ -368,9 +369,8 @@ test("an empty message is sent, and the server's refusal is shown by the box's l
     workspace: WORKSPACE,
     message: "",
   });
-  expect(
-    await screen.findByText(`${m.commitMessage}: planted reason for the message`),
-  ).toBeInTheDocument();
+  await screen.findByRole("alert");
+  expectRefused(screen.getByLabelText(m.commitMessage), "planted reason for the message");
 });
 
 test("the branch bar names the branch, and shows how far it is from its upstream", async () => {
@@ -590,10 +590,8 @@ test("a refused new branch keeps the form open, with the reason under the field'
   await userEvent.click(plus);
   await userEvent.type(section.getByLabelText(m.newBranchName), "bad name");
   await userEvent.click(section.getByRole("button", { name: m.create }));
-  const reason = await within(panelOf(plus)!).findByText(
-    `${m.newBranchName}: planted reason for the name`,
-  );
-  expect(reason).toBeInTheDocument();
+  await within(panelOf(plus)!).findByRole("alert");
+  expectRefused(section.getByLabelText(m.newBranchName), "planted reason for the name");
   expect(plus).toHaveAttribute("aria-expanded", "true");
 });
 

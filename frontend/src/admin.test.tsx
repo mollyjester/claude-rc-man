@@ -1,9 +1,10 @@
-import { act, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { vi } from "vitest";
 
 import { m } from "./messages";
 import { ADMIN_USER, fakeApi, NOTHING_TO_ATTEND, problem, type Routes } from "./test/fakeApi";
+import { expectRefused } from "./test/fields";
 import { renderApp } from "./test/render";
 import { UPGRADE_POLL_MS } from "./Versions";
 
@@ -126,9 +127,10 @@ test("a refused addition names each field by its label", async () => {
   renderApp("/admin/people");
   await userEvent.type(await screen.findByLabelText(m.usersEmail), "not an address");
   await userEvent.click(screen.getByRole("button", { name: m.usersAdd }));
-  const alert = await screen.findByRole("alert");
-  expect(alert).toHaveTextContent(`${m.usersEmail}: planted reason for the address`);
-  expect(alert).toHaveTextContent(`${m.usersAddAdmin}: planted reason for the role`);
+  await screen.findByRole("alert");
+  expectRefused(screen.getByLabelText(m.usersEmail), "planted reason for the address");
+  expectRefused(screen.getByLabelText(m.usersAddAdmin), "planted reason for the role");
+  expect(screen.getByLabelText(m.usersEmail)).toHaveFocus();
 });
 
 test("removing someone asks first, saying their workspaces go too, then removes them", async () => {
@@ -201,10 +203,73 @@ test("the audit trail pages towards older events", async () => {
   };
   const fake = api({ "GET /api/audit": (c) => (c.query.get("before") ? { events: [] } : page1) });
   renderApp("/admin/audit");
-  expect(await screen.findAllByText("server.start")).toHaveLength(2);
+  expect(await screen.findAllByText(m.auditActions["server.start"])).toHaveLength(2);
   expect(screen.getAllByRole("cell", { name: "a@x" })).toHaveLength(2); // who, by address alone
   await userEvent.click(screen.getByRole("button", { name: m.auditOlder }));
   await waitFor(() => expect(fake.made("GET", "/api/audit")[1].query.get("before")).toBe("8"));
+});
+
+const EVENT = {
+  id: 5,
+  at: "2026-10-01T10:05:09+00:00",
+  email: "a@x",
+  action: "server.start",
+  target: "projects/x",
+  result: "ok",
+};
+
+async function auditRow(event: Omit<Partial<typeof EVENT>, "target"> & { target?: string | null }) {
+  api({ "GET /api/audit": { events: [{ ...EVENT, ...event }] } });
+  renderApp("/admin/audit");
+  return within(await screen.findByRole("row", { name: /a@x/ }));
+}
+
+test("the audit trail names each action in plain words, and an action it has no words for by its code", async () => {
+  let row = await auditRow({ action: "person.add" });
+  expect(row.getByText(m.auditActions["person.add"])).toBeInTheDocument();
+  expect(row.queryByText("person.add")).not.toBeInTheDocument();
+  cleanup();
+  row = await auditRow({ action: "something.new" });
+  expect(row.getByText("something.new")).toBeInTheDocument();
+});
+
+test("a result that worked is said so, one that did not is marked as failed beside its code, and one in between says what", async () => {
+  let row = await auditRow({ result: "ok" });
+  expect(row.getByText(m.auditResults.ok)).toBeInTheDocument();
+  expect(row.queryByText(m.auditFailed)).not.toBeInTheDocument();
+  cleanup();
+  row = await auditRow({ result: "not_a_repository" });
+  const failed = row.getByText(m.auditFailed);
+  expect(failed.closest("td")).toHaveClass("result-failed");
+  expect(row.getByText("not_a_repository")).toBeInTheDocument(); // the code, not worded
+  cleanup();
+  row = await auditRow({ result: "committed_not_pushed" });
+  expect(row.getByText(m.auditResults.committed_not_pushed)).toBeInTheDocument();
+  expect(row.queryByText(m.auditFailed)).not.toBeInTheDocument();
+});
+
+test("a date is shown the same everywhere, in UTC, and is not broken across lines", async () => {
+  const row = await auditRow({ at: "2026-10-01T12:05:09+02:00" });
+  const when = row.getByText("2026-10-01 10:05:09");
+  expect(when.tagName).toBe("TIME");
+  expect(when).toHaveAttribute("datetime", "2026-10-01T12:05:09+02:00");
+  expect(when.closest("td")).toHaveClass("when");
+  expect(screen.getByRole("columnheader", { name: m.auditWhen })).toBeInTheDocument();
+});
+
+test("a target is read as it is, a list of settings as a list, and none as none", async () => {
+  let row = await auditRow({
+    action: "settings.update",
+    target: '{"prefix": "mine", "author_name": "Ann"}',
+  });
+  expect(row.getByText("prefix: mine, author_name: Ann")).toBeInTheDocument();
+  expect(row.queryByText(/[{}]/)).not.toBeInTheDocument();
+  cleanup();
+  row = await auditRow({ target: null });
+  expect(row.getByText(m.auditNoTarget)).toBeInTheDocument();
+  cleanup();
+  row = await auditRow({ target: "{not json" }); // not a list of settings: as it is
+  expect(row.getByText("{not json")).toBeInTheDocument();
 });
 
 // --- the Limits dialog ------------------------------------------------------------------
@@ -293,19 +358,33 @@ test("a Limits button on each row opens a dialog like Remove's, which asks the s
   expect(within(dialog).getAllByRole("form")).toHaveLength(3); // each named by its heading
 });
 
-test("the dialog says what a limit means, in plain words", async () => {
+test("the dialog leads with the fields, one hint under each, and keeps the long explanation folded", async () => {
   limitsApi();
   renderApp("/admin/people");
   const dialog = await openLimits();
+  const person = form(dialog, PERSON_SCOPE);
+  for (const [name, label] of [
+    ["memory", m.usersMemory],
+    ["cpu", m.usersCpu],
+    ["pids", m.usersProcesses],
+  ] as const) {
+    expect(field(person, label)).toHaveAccessibleDescription(m.limitsHints[name]);
+  }
+  const how = within(dialog).getByText(m.limitsHowTitle).closest("details")!;
+  expect(how).not.toHaveAttribute("open");
+  // the fields come before the explanation, and nothing of it is above them
+  expect(person.compareDocumentPosition(how) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  const paragraphs = [...dialog.querySelectorAll(":scope > p")].map((p) => p.textContent);
+  expect(paragraphs).not.toContain(m.limitsMemoryHard);
+  await userEvent.click(within(dialog).getByText(m.limitsHowTitle));
+  expect(how).toHaveAttribute("open");
   for (const text of [
-    m.limitsDefault,
-    m.limitsUnits,
     m.limitsHeldToPerson,
     m.limitsMemoryHard,
     m.limitsBelowUse,
     m.limitsNotLimited,
   ]) {
-    expect(within(dialog).getByText(text)).toBeInTheDocument();
+    expect(within(how).getByText(text)).toBeInTheDocument();
   }
 });
 
@@ -543,16 +622,21 @@ test("a refused field is shown beside its own scope's fields by its label, and i
   const dialog = await openLimits();
   const alpha = form(dialog, ALPHA_SCOPE);
   await userEvent.click(within(alpha).getByRole("button", { name: m.limitsSaveFor(ALPHA_SCOPE) }));
-  const alert = await within(alpha).findByRole("alert");
-  expect(alert).toHaveTextContent(`${m.usersMemory}: planted reason for memory`);
-  expect(alert).toHaveTextContent(`${m.usersCpu}: planted reason for cpu`);
-  expect(alert).toHaveTextContent(`${m.usersProcesses}: planted reason for pids`);
+  await within(alpha).findByRole("alert");
+  expectRefused(field(alpha, m.usersMemory), "planted reason for memory");
+  expectRefused(field(alpha, m.usersCpu), "planted reason for cpu");
+  expectRefused(field(alpha, m.usersProcesses), "planted reason for pids");
+  expect(field(alpha, m.usersMemory)).toHaveFocus();
+  // the hint stays with the field, after the reason
+  expect(field(alpha, m.usersMemory)).toHaveAccessibleDescription(
+    expect.stringContaining(m.limitsHints.memory),
+  );
   expect(within(form(dialog, PERSON_SCOPE)).queryByRole("alert")).not.toBeInTheDocument();
   expect(within(alpha).getByRole("button", { name: m.limitsSaveFor(ALPHA_SCOPE) })).toBeEnabled();
   expect(within(alpha).getByRole("status")).not.toHaveTextContent(m.limitsSaved(ALPHA_SCOPE));
 });
 
-test("a refusal below the use is shown with the title that names the use, and what was typed is kept", async () => {
+test("a refusal below the use is shown under the field it names, with the title that names the use, and what was typed is kept", async () => {
   const title = "The memory limit is below the 3G in use.";
   limitsApi({
     "PUT /api/people/2/limits": problem(409, "limit_below_use", title, {
@@ -567,7 +651,9 @@ test("a refusal below the use is shown with the title that names the use, and wh
   await userEvent.click(
     within(person).getByRole("button", { name: m.limitsSaveFor(PERSON_SCOPE) }),
   );
-  expect(await within(person).findByRole("alert")).toHaveTextContent(title);
+  await within(person).findByRole("alert");
+  expectRefused(field(person, m.usersMemory), title);
+  expect(field(person, m.usersProcesses)).not.toHaveAttribute("aria-invalid");
   expect(field(person, m.usersMemory)).toHaveValue("256M");
 });
 
@@ -913,9 +999,9 @@ test("a refused version names the field by its label", async () => {
   renderApp("/admin/claude");
   await userEvent.type(await screen.findByLabelText(m.versionsUpgrade), "latest");
   await userEvent.click(screen.getByRole("button", { name: m.versionsUpgradeGo }));
-  expect(await screen.findByRole("alert")).toHaveTextContent(
-    `${m.versionsUpgrade}: planted reason for the version`,
-  );
+  await screen.findByRole("alert");
+  expectRefused(screen.getByLabelText(m.versionsUpgrade), "planted reason for the version");
+  expect(screen.getByLabelText(m.versionsUpgrade)).toHaveFocus();
 });
 
 test("failed checks are shown as the server named them, with what each ran and got back, and the form is free again", async () => {
@@ -941,8 +1027,8 @@ test("failed checks are shown as the server named them, with what each ran and g
   );
   const alert = await screen.findByRole("alert");
   expect(alert).toHaveTextContent("That version failed rcman's checks.");
-  expect(alert).toHaveTextContent(`${m.versionsFailedChecks} sign_in_screen, logout`);
-  const signIn = within(alert).getByRole("figure", { name: "sign_in_screen" });
+  expect(alert).toHaveTextContent(`${m.versionsFailedChecks} sign in screen, logout`);
+  const signIn = within(alert).getByRole("figure", { name: "sign in screen" });
   expect(signIn).toHaveTextContent("planted sign-in screen");
   expect(signIn.nextElementSibling).toHaveTextContent(m.versionsReportMore(2));
   const logout = within(alert).getByRole("figure", { name: "logout" });
@@ -1152,4 +1238,41 @@ test("the report is not read again at intervals while no rollout runs", async ()
   } finally {
     vi.useRealTimers();
   }
+});
+
+// --- tables wider than a phone ----------------------------------------------------------
+
+test.each([
+  ["the people", "/admin/people", () => api({ "GET /api/people": PEOPLE })],
+  ["the installed versions", "/admin/claude", () => versionsApi()],
+])(
+  "%s are in a box that scrolls sideways, which is named and can take focus",
+  async (_, path, serve) => {
+    serve();
+    renderApp(path);
+    const [table] = await screen.findAllByRole("table");
+    const box = table.closest(".table-scroll")!;
+    expect(box).not.toBeNull();
+    expect(box).toHaveAttribute("tabindex", "0");
+    expect(within(box as HTMLElement).getByRole("table")).toBe(table);
+    expect(box).toHaveAccessibleName(m.tableTitle);
+    expect(screen.getAllByRole("region", { name: m.tableTitle })).toContain(box);
+  },
+);
+
+test("the servers on another version are in a box that scrolls sideways", async () => {
+  versionsApi();
+  renderApp("/admin/claude");
+  const tables = await screen.findAllByRole("table");
+  expect(tables.length).toBeGreaterThan(1); // positive control: the installed and the drifting
+  for (const table of tables) expect(table.closest(".table-scroll")).not.toBeNull();
+});
+
+test("the field for the address of a person to add shows an example", async () => {
+  api({ "GET /api/people": PEOPLE });
+  renderApp("/admin/people");
+  expect(await screen.findByLabelText(m.usersEmail)).toHaveAttribute(
+    "placeholder",
+    m.examples.email,
+  );
 });

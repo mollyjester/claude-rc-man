@@ -2,7 +2,7 @@ import { type FormEvent, type ReactNode, useEffect, useId, useState } from "reac
 
 import { type ApiError, api } from "./api";
 import { m } from "./messages";
-import { asApiError, ProblemView } from "./ProblemView";
+import { asApiError, ProblemView, useFieldErrors } from "./ProblemView";
 
 type Field = "prefix" | "author_name" | "author_email";
 type Reply = Record<Field, string> & { effective_author: { name: string; email: string } | null };
@@ -59,6 +59,7 @@ function GitHubToken() {
   const [removing, setRemoving] = useState(false);
   const [error, setError] = useState<ApiError | null>(null);
   const heading = useId();
+  const fields = useFieldErrors(error);
 
   useEffect(() => {
     api.get<{ token: boolean }>("/api/github").then(
@@ -87,7 +88,7 @@ function GitHubToken() {
       {stored !== null && <p>{stored ? m.githubTokenStored : m.githubTokenNotStored}</p>}
       {/* Offered only once the server says whether a token is stored. */}
       {stored !== null && (
-        <form noValidate onSubmit={save}>
+        <form noValidate onSubmit={save} ref={fields.form}>
           <div>
             <label>
               {m.githubTokenLabel}
@@ -96,9 +97,14 @@ function GitHubToken() {
                 name="token"
                 autoComplete="new-password"
                 value={token}
-                onChange={(e) => setToken(e.target.value)}
+                onChange={(e) => {
+                  setToken(e.target.value);
+                  setSaved(false);
+                }}
+                {...fields.input("token")}
               />
             </label>
+            {fields.message("token")}
             <p className="muted">{m.githubTokenHelp}</p>
           </div>
           <button type="submit" className="primary">
@@ -130,8 +136,8 @@ function GitHubToken() {
           onCancel={() => setRemoving(false)}
         />
       )}
-      {saved && <p role="status">{m.githubTokenSaved}</p>}
-      <ProblemView error={error} labels={{ token: m.githubTokenLabel }} />
+      <p role="status">{saved ? m.githubTokenSaved : ""}</p>
+      <ProblemView error={error} labels={{ token: m.githubTokenLabel }} inline />
     </section>
   );
 }
@@ -191,6 +197,7 @@ function Part(props: {
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<ApiError | null>(null);
   const heading = useId();
+  const fieldErrors = useFieldErrors(error);
 
   async function save(event: FormEvent) {
     event.preventDefault();
@@ -209,7 +216,7 @@ function Part(props: {
   return (
     <section aria-labelledby={heading}>
       <h2 id={heading}>{title}</h2>
-      <form noValidate onSubmit={save}>
+      <form noValidate onSubmit={save} ref={fieldErrors.form}>
         {fields.map((field) => (
           <div key={field}>
             <label>
@@ -218,9 +225,14 @@ function Part(props: {
                 type="text"
                 name={field}
                 value={values[field]}
-                onChange={(e) => setValues({ ...values, [field]: e.target.value })}
+                onChange={(e) => {
+                  setValues({ ...values, [field]: e.target.value });
+                  setSaved(false);
+                }}
+                {...fieldErrors.input(field)}
               />
             </label>
+            {fieldErrors.message(field)}
             <p className="muted">{FIELDS[field].help}</p>
           </div>
         ))}
@@ -229,10 +241,11 @@ function Part(props: {
         </button>
       </form>
       {children}
-      {saved && <p role="status">{m.saved}</p>}
+      <p role="status">{saved ? m.saved : ""}</p>
       <ProblemView
         error={error}
         labels={Object.fromEntries(fields.map((f) => [f, FIELDS[f].label]))}
+        inline
       />
     </section>
   );
