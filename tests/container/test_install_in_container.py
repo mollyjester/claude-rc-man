@@ -15,6 +15,7 @@ import grp
 import json
 import os
 import pwd
+import re
 import shutil
 import socket
 import stat
@@ -182,6 +183,30 @@ def test_the_default_image_is_built_and_named_in_rcmans_settings(first_install):
     image = ins.workspace_image()
     assert podman("image", "exists", image, check=False).returncode == 0
     assert f"RCMAN_WORKSPACE_IMAGE={image}\n" in (ETC / "rcman.env").read_text()
+
+
+def test_the_devcontainer_builder_image_is_built_and_named_in_rcmans_settings(first_install):
+    image = ins.devcontainer_builder_image()
+    assert podman("image", "exists", image, check=False).returncode == 0
+    assert f"RCMAN_BUILDER_IMAGE={image}\n" in (ETC / "rcman.env").read_text()
+    shown = podman("run", "--rm", "--pull=never", image, "devcontainer", "--version")
+    assert re.fullmatch(r"\d+\.\d+\.\d+", shown.stdout.strip()), shown.stdout
+
+
+def test_rcmans_subordinate_range_covers_the_builders_slot(first_install):
+    python = ROOT / "current" / ".venv" / "bin" / "python"
+    slot = int(
+        sh(
+            str(python),
+            "-c",
+            "from rcman import people; print(people.BUILDER_SLOT)",
+            cwd=ROOT / "current" / "backend",
+        ).stdout  # fmt: skip
+    )
+    for path in ins.SUBORDINATE_FILES:
+        mine = [line.split(":") for line in path.read_text().splitlines()]
+        granted = sum(int(f[2]) for f in mine if f[0] == "rcman")
+        assert granted >= (slot + 1) * ins.RANGE, path
 
 
 def test_the_claude_store_holds_the_tested_version(first_install):

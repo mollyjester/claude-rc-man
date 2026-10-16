@@ -26,7 +26,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
 from helpers import git_run, rules
-from rcman import db, devcontainer, people
+from rcman import builder, db, devcontainer, people
 from rcman.channel import Channel, ChannelBroken, ChannelTimeout
 from rcman.claude_server import Server, TmuxFailed
 from rcman.problems import CLONE_MESSAGES, DEVCONTAINER_MESSAGES, Problem
@@ -34,12 +34,16 @@ from rcman.repository import ANSWER_MARGIN_SECONDS, KILL_GRACE_SECONDS, CloneFai
 from rcman.runtime import (
     LABEL_WORKSPACE,
     TIMED_OUT,
+    BuildFailed,
+    BuildRequest,
     Layout,
     Runtime,
     RuntimeFailed,
     RuntimeUnavailable,
     Spec,
+    built_name,
     container_name,
+    workspace_of_built_name,
 )
 from rcman.settings import Settings
 
@@ -80,6 +84,11 @@ MAX_SAID_CHARS = 500
 # The most of each of a command's output streams that is ever held, however much it prints:
 # its last bytes.
 HOOK_KEEP_BYTES = 64 * 1024
+# How many images are built at once, how often a build that waits for a place looks whether it is
+# stopped, and the line the log gets when it has to wait.
+MAX_BUILDS = 2
+BUILD_QUEUE_POLL_SECONDS = 0.5
+WAITING_FOR_BUILD = "Waiting for another build to finish"
 # How many workspaces a restore brings back at once; a slow one holds one of these places until
 # it is done, and what restore does after all of them (removing what no row is for, finishing
 # deletions, settling sign-outs) waits for the last.
@@ -230,6 +239,8 @@ class Workspaces:
         # The workspaces being made that a deletion has to stop: while git clones, an image is
         # pulled or a command runs. Each has the event the deletion sets; under _lock.
         self._working: dict[int, threading.Event] = {}
+        # The places for builds: a build holds one from the moment it starts until it is done.
+        self._builds = threading.BoundedSemaphore(MAX_BUILDS)
         self._closing = threading.Event()
         self._restoring: threading.Thread | None = None
         # Called with a person's id once a server of theirs may have stopped: accounts.py
@@ -406,11 +417,12 @@ class Workspaces:
 
     def _clear(self, workspace: Workspace) -> None:
         """Remove the container and the volume of a workspace whose configuration or image was
-        refused, so that only its failed row is left; one that cannot be removed now is removed
-        by its deletion."""
+        refused, and the image built for it, so that only its failed row is left; one that cannot
+        be removed now is removed by its deletion."""
         self.close_channel(workspace.container)
         try:
             self.runtime.remove(workspace.container)
+            self.runtime.remove_build(workspace.id, image=True)  # once nothing is made from it
         except (RuntimeFailed, RuntimeUnavailable) as failed:
             log.warning("the refused workspace %s could not be cleared: %s", workspace.id, failed)
 
@@ -552,43 +564,120 @@ class Workspaces:
             self._log(workspace.id, "Created")
 
     def _read_plan(self, workspace: Workspace, cancel: threading.Event):
-        """Read the workspace's devcontainer.json and the image it names, and make the plan; None
-        for no file, or when the workspace was deleted meanwhile."""
+        """Read the workspace's devcontainer.json and the image it names or asks to have built,
+        and make the plan; None for no file, or when the workspace was deleted meanwhile."""
         name = workspace.container
         run, _ = self._execs(name)
         self._log(workspace.id, devcontainer.LOOKED_IN)
-        text = devcontainer.read(run, self.runtime.layout(name))
-        if text is None:
+        layout = self.runtime.layout(name)
+        found = devcontainer.read(run, layout)
+        if found is None:
             self._log(workspace.id, "There is no devcontainer.json")
             return None
-        config = devcontainer.parse(text)
-        checked = devcontainer.check(config)
+        config = devcontainer.parse(found.text)
+        checked = devcontainer.check(config, workspace.id, layout.work, found.path)
         if checked.ignored:
             self._log(workspace.id, f"Ignored in devcontainer.json: {', '.join(checked.ignored)}")
-        self._log(workspace.id, f"Pulling {checked.image}")
+        if checked.build is None:
+            image = self._pulled(workspace, checked.image, cancel)
+        else:
+            image = self._built(workspace, checked.build, found.path, cancel)
+        if image is None or self._cancelled(workspace.id, cancel):
+            return None
         try:
-            self.runtime.pull(checked.image, lambda line: self._log(workspace.id, line), cancel)
+            facts = self.runtime.image_facts(image, cancel)
+        except RuntimeFailed as failed:
+            if self._cancelled(workspace.id, cancel):
+                return None
+            said = str(failed).strip()[-MAX_SAID_CHARS:]
+            raise devcontainer.Refused("image_unreadable", image=image, said=said) from None
+        if self._cancelled(workspace.id, cancel):
+            return None
+        made = devcontainer.plan(config, facts, workspace.id, layout.work, image=image)
+        return None if self._cancelled(workspace.id, cancel) else made
+
+    def _pulled(self, workspace: Workspace, image: str, cancel: threading.Event) -> str | None:
+        """Pull the image the file names; None when the workspace was deleted meanwhile."""
+        self._log(workspace.id, f"Pulling {image}")
+        try:
+            self.runtime.pull(image, lambda line: self._log(workspace.id, line), cancel)
         except RuntimeFailed as failed:
             if self._cancelled(workspace.id, cancel):
                 return None
             said = str(failed).strip()[-MAX_SAID_CHARS:]
             raise devcontainer.Refused(
-                "pull_failed", image=checked.image, said=said.rstrip(".") + "."
+                "pull_failed", image=image, said=said.rstrip(".") + "."
             ) from None
-        if self._cancelled(workspace.id, cancel):
+        return image
+
+    def _built(
+        self, workspace: Workspace, spec: devcontainer.BuildSpec, path: str, cancel
+    ) -> str | None:
+        """Build the image the file asks for, in a builder of its own, once there is a place for
+        one more build; the name of the image that is kept, or None when the workspace was
+        deleted meanwhile. The label of the image is held to the policy before it is copied out
+        (``devcontainer.check_metadata``), a refusal naming the feature; any failure is a
+        :class:`devcontainer.Refused` in plain words, and leaves nothing."""
+        made = devcontainer.build_config(spec, path)
+        request = BuildRequest(
+            workspace.id,
+            workspace.person,
+            people.BUILDER_SLOT,
+            workspace.container,
+            made.path,
+            made.text,
+        )
+        if not self._wait_for_build(workspace, cancel):
             return None
         try:
-            facts = self.runtime.image_facts(checked.image, cancel)
-        except RuntimeFailed as failed:
-            if self._cancelled(workspace.id, cancel):
-                return None
-            said = str(failed).strip()[-MAX_SAID_CHARS:]
-            raise devcontainer.Refused("image_unreadable", image=checked.image, said=said) from None
+            self._log(workspace.id, "Building the image")
+            try:
+                return self.runtime.build_image(
+                    request,
+                    lambda line: self._log(workspace.id, self._shown(workspace.person, line)),
+                    cancel,
+                    devcontainer.check_metadata,
+                )
+            except RuntimeFailed as failed:
+                if self._cancelled(workspace.id, cancel):
+                    return None
+                raise self._build_refusal(workspace, failed) from None
+        finally:
+            self._builds.release()
+
+    def _wait_for_build(self, workspace: Workspace, cancel: threading.Event) -> bool:
+        """Take a place for a build, saying in the log that it waits when there is none free;
+        False, with no place taken, when the workspace was deleted meanwhile."""
+        if not self._builds.acquire(blocking=False):
+            self._log(workspace.id, WAITING_FOR_BUILD)
+            while not self._builds.acquire(timeout=BUILD_QUEUE_POLL_SECONDS):
+                if self._cancelled(workspace.id, cancel):
+                    return False
         if self._cancelled(workspace.id, cancel):
-            return None
-        layout = self.runtime.layout(name)
-        made = devcontainer.plan(config, facts, workspace.id, layout.work)
-        return None if self._cancelled(workspace.id, cancel) else made
+            self._builds.release()
+            return False
+        return True
+
+    def _shown(self, person: int, text: str) -> str:
+        """``text`` as the person is shown what a build said: without the control characters of
+        a terminal, and without their GitHub token."""
+        printable = "".join(c if c.isprintable() or c == "\n" else "?" for c in text)
+        return self._redacted(person, printable)
+
+    def _build_refusal(self, workspace: Workspace, failed: RuntimeFailed) -> devcontainer.Refused:
+        """A failed build as the refusal a person is shown: the cause in plain words, the
+        runtime's where it knows it and the one the end of what the builder said shows else, and
+        that end, as much as fits."""
+        tail = self._shown(workspace.person, getattr(failed, "tail", None) or str(failed))
+        kind, fields = getattr(failed, "kind", None), dict(getattr(failed, "fields", {}))
+        if kind is None:
+            cause = builder.explain(tail) if isinstance(failed, BuildFailed) else None
+            kind, fields = (cause.kind, dict(cause.fields)) if cause else ("build_failed", {})
+        if "feature" in fields:
+            fields["feature"] = devcontainer.shown(fields["feature"])
+        head = DEVCONTAINER_MESSAGES[kind].format(tail="", **fields)
+        room = MAX_ERROR_CHARS - len(head) - 1
+        return devcontainer.Refused(kind, tail=self._fit(tail, room), **fields)
 
     def _check_libc(self, workspace: Workspace, plan: devcontainer.Plan) -> None:
         """Claude Code needs glibc: an image that has the musl loader and no glibc one, as
@@ -736,13 +825,17 @@ class Workspaces:
     def _with_tail(head: str, said: str) -> str:
         """``head`` and the tail of ``said``, the end of it where it says why, from the start
         of a line, within MAX_ERROR_CHARS."""
-        room = MAX_ERROR_CHARS - len(head) - 1
+        return f"{head}\n{Workspaces._fit(said, MAX_ERROR_CHARS - len(head) - 1)}"
+
+    @staticmethod
+    def _fit(said: str, room: int) -> str:
+        """The end of ``said`` within ``room`` characters, from the start of a line."""
         tail = said.strip()
         if len(tail) > room:
             tail = tail[-room:]
             if "\n" in tail:  # not from the middle of a line
                 tail = tail.split("\n", 1)[1]
-        return f"{head}\n{tail}"
+        return tail
 
     @staticmethod
     def _cause(said: str, token: bool) -> str | None:
@@ -801,15 +894,22 @@ class Workspaces:
         if cancel is None:
             return
         cancel.set()
-        try:
-            self.runtime.remove(workspace.container)
-        except (RuntimeFailed, RuntimeUnavailable) as failed:
-            log.warning("the work on workspace %s could not be stopped: %s", workspace.id, failed)
+        for remove in (
+            lambda: self.runtime.remove_build(workspace.id),  # the builder: it ends a build
+            lambda: self.runtime.remove(workspace.container),
+        ):
+            try:
+                remove()
+            except (RuntimeFailed, RuntimeUnavailable) as failed:
+                log.warning(
+                    "the work on workspace %s could not be stopped: %s", workspace.id, failed
+                )
 
     def _remove(self, workspace: Workspace) -> None:
         self.close_channel(workspace.container)
         with answered():
             self.runtime.remove(workspace.container)
+            self.runtime.remove_build(workspace.id, image=True)
         con = self._con()
         try:
             con.execute("delete from workspaces where id = ?", (workspace.id,))
@@ -1063,6 +1163,7 @@ class Workspaces:
                 return
             for name, labels in self.runtime.labelled().items():
                 self._step(self._remove_orphan, name, labels)
+            self._step(self._remove_orphan_builds)
             self._step(self._finish_deleting_people)
             self._step(self.settle_signing_out)
         except Exception:  # noqa: BLE001 - restore never stops rcman from answering
@@ -1130,6 +1231,27 @@ class Workspaces:
         elif name not in {w.container for w in self.everything()}:
             self.runtime.remove(name)
 
+    def _remove_orphan_builds(self) -> None:
+        """Remove what builds left that no workspace needs: the builder and volume of every
+        workspace but those being made, and every built image that no stored plan names, those
+        of workspaces that have none among them. A workspace whose plan cannot be read keeps the
+        image named for it, since what it is made from is not known."""
+        used = set()
+        for workspace in self.everything():
+            try:
+                plan = self._plan(workspace)
+            except RuntimeFailed:
+                used.add(built_name(workspace.id))
+                continue
+            if plan is not None:
+                used.add(plan.image)
+        for workspace_id in self.runtime.builders():
+            if not self._being_made(workspace_id):
+                self._step(self.runtime.remove_build, workspace_id)
+        for workspace_id, name in self.runtime.built_images().items():
+            if name not in used and not self._being_made(workspace_id):
+                self._step(self.runtime.remove_build, workspace_id, True)
+
     def _restore_workspace(self, workspace: Workspace) -> None:
         """Bring one workspace back as its row is now; one a request is making meanwhile is that
         request's. What is quick - the row's state, finishing a deletion, starting a container
@@ -1170,7 +1292,12 @@ class Workspaces:
         finally:
             con.close()
         plan = self._plan(workspace)
-        if plan is not None:
+        if plan is not None and workspace_of_built_name(plan.image) is not None:
+            # An image rcman built is in its storage or nowhere: there is no registry to ask.
+            if plan.image not in self.runtime.built_images().values():
+                self._image_gone(workspace, DEVCONTAINER_MESSAGES["built_image_gone"])
+                return False
+        elif plan is not None:
             try:
                 self.runtime.pull(plan.image, None, cancel)
             except RuntimeFailed as failed:
@@ -1179,13 +1306,9 @@ class Workspaces:
                 log.warning("the image of workspace %s could not be had: %s", workspace.id, failed)
                 if not image_is_gone(str(failed)):
                     return False  # it may pass: the next restore tries again
-                with self.lock(workspace.id):
-                    if (self.get(workspace.id) or workspace).state == READY:
-                        self._set(
-                            workspace.id,
-                            state=FAILED,
-                            error=DEVCONTAINER_MESSAGES["image_gone"].format(image=plan.image),
-                        )
+                self._image_gone(
+                    workspace, DEVCONTAINER_MESSAGES["image_gone"].format(image=plan.image)
+                )
                 return False
         if self._cancelled(workspace.id, cancel):
             return False
@@ -1196,6 +1319,12 @@ class Workspaces:
                     self.runtime.remove(workspace.container)
             return False
         return True
+
+    def _image_gone(self, workspace: Workspace, error: str) -> None:
+        """Fail a ready workspace whose image is not to be had, with ``error``."""
+        with self.lock(workspace.id):
+            if (self.get(workspace.id) or workspace).state == READY:
+                self._set(workspace.id, state=FAILED, error=error)
 
     def _restore_one(self, workspace: Workspace) -> None:
         if workspace.state == DELETING:

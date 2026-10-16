@@ -67,7 +67,7 @@ the podman host against real Podman.
 Everything git is tested against real git,
 never a fake: `tests/test_git_run.py` holds the parsers of `helpers/git_run.py`,
 `tests/test_repository.py` every verb of `repository.py` in host-runtime workspaces
-through a real channel and `exec`, `tests/test_devcontainer.py` the pure module (`devcontainer.py`) and the guard that holds the administrators' devcontainer page equal to its policy, `tests/test_devcontainer_flow.py` a workspace made from a repository's devcontainer.json on a host runtime with planted images, `tests/test_clone.py` a workspace made by cloning
+through a real channel and `exec`, `tests/test_devcontainer.py` the pure module (`devcontainer.py`) and the guard that holds the administrators' devcontainer page equal to its policy, `tests/test_devcontainer_flow.py` a workspace made from a repository's devcontainer.json on a host runtime with planted images, builds on a host runtime that records what it is asked (the places for builds and the waiting line, a cancel, the failures in plain words, the restore removing orphans and failing a workspace whose built image is gone), `tests/test_builder.py` the pure module `builder.py` (its argument lists, the reading of the builder's words, the pump, the copy of a repository with the host's own tar), `tests/test_runtime_build.py` `PodmanRuntime.build_image` against a stand-in for podman, `tests/test_clone.py` a workspace made by cloning
 (a phase of `creating`: its log, failures and their causes, token redaction, names,
 the route, cancel by deletion, restart recovery) on a host runtime that runs real git
 and can answer a clone with what git would say or hold it as a running git, `tests/test_git_account.py` `gitaccount.py`
@@ -164,6 +164,29 @@ at every start across a restart of rcman, a refused key or an Alpine image leavi
 behind, a failing command keeping the workspace with its token redacted, and a deletion
 killing a running command.
 
+`tests/container/test_builder_in_podman.py` runs in the podman host in the same way, sharing
+the same fixtures, and checks the devcontainer builder (`builder.py`, `build_image` in
+`runtime.py`) against real Podman and the real Dev Containers CLI. Part of it uses a
+*stub builder*: the workspace image with a stand-in for the CLI that records its arguments,
+its environment, the build-only configuration it was given and a listing of the repository, and
+waits to be told to fail. With it, with no nested Podman, it shows the builder running in the
+builder's uid range with no privileges, one capability and one device more than a workspace and
+no mount but its own volume; the repository arriving as a tar archive without its top-level git
+folder, its files the builder root's, its links and modes kept; the CLI run with the argument
+list and the environment `builder.py` gives it and a configuration of only the build keys; the
+words of a failing CLI told in plain words; the size limit refusing before the CLI runs; a
+deletion removing the builder and its volume; and the formats Podman prints that `builders`,
+`built_images` and `remove_build` read, with the restore removing orphans. The rest uses the
+*real builder*, an image built from `installer/builder` in the account's Podman (the Node
+stage and the packages come from the network): a Dockerfile and a local feature built into
+an image in rcman's storage, the workspace made from it with the feature's tool on Claude's
+PATH, the label holding the feature's entry only so that each lifecycle command runs once,
+the builder, its volume and the image in it gone, the progress in the creation log, the copy
+logged, two builds of one person at once, the deletion of one removing its image and the
+copies Podman made of it in the person's range and leaving the other's, and the policy's
+refusal of a feature's request before the image is copied out and of a musl base after it,
+each leaving nothing.
+
 The **whole stack** is `tests/container/stack.py`, in a podman host that
 publishes its port 443: rcman installed from a clone through the real
 installer and systemd, alice its first administrator, bob and carol added with
@@ -211,7 +234,8 @@ an anonymous volume of the container, so that Podman's overlay is never on the
 image's own, and the volume goes wherever the container goes, and stays across
 a restart of the container. For the suites that do not install rcman, the
 `podman_host` fixture runs `tests/container/podman_host.py` to set up rootless
-Podman for a service account — a subordinate id range, linger and so a user
+Podman for a service account — a subordinate id range of the installer's own size
+(`SUBORDINATE_COUNT`), so that the builder's range is there, linger and so a user
 manager of the account's own, and `podman.socket` in it — and loads into the
 account's Podman, through the socket, with `docker save | podman load`, the
 image the Dockerfile starts from and the one the installer builds tmux in, so

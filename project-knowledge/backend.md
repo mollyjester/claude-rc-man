@@ -208,10 +208,12 @@ files to stage reach git on stdin and are never recorded or logged.
   holds the image a repository's devcontainer.json names.
 - **A repository's devcontainer.json.** After the clone, `Workspaces._configure` reads
   the file with `devcontainer.read`, holds it to `devcontainer.POLICY` and makes the
-  workspace from the image it names (see
-  [runtime.md](runtime.md#a-repositorys-devcontainerjson)). Its plan is the `environment`
+  workspace from the image it names or builds (see
+  [runtime.md](runtime.md#a-repositorys-devcontainerjson) and
+  [Building an image](runtime.md#building-an-image)). Its plan is the `environment`
   column of `workspaces` (null for a workspace of the default image), which a restore
-  reads. `problems.DEVCONTAINER_MESSAGES` is what a refusal or a failed command says in
+  reads. A build copies its image through a staging folder in `scratch_dir`
+(see [Building an image](runtime.md#building-an-image)). `problems.DEVCONTAINER_MESSAGES` is what a refusal or a failed command says in
   plain words, and holds no number; the workspace's `error` carries it and the steps in
   `log` carry the rest. Nothing here adds a route: the file is read inside the clone's
   own thread, so the audit and the permission rules of `git.clone` cover it.

@@ -122,8 +122,8 @@ DEVCONTAINER_MESSAGES = {
         "Remove it from the file, push the change and make the workspace again."
     ),
     "refused_by_image": (
-        'The image asks for "{key}" in its metadata entry "{entry}". {reason} '
-        "Use an image that does not ask for it."
+        'The image asks for "{key}" in its metadata entry "{entry}", which is the base image or '
+        "a feature. {reason} Use an image or a feature that does not ask for it."
     ),
     "unknown_key": (
         'devcontainer.json has the key "{key}", which rcman does not know, so it cannot say '
@@ -157,8 +157,8 @@ DEVCONTAINER_MESSAGES = {
     ),
     "unreadable": "rcman could not read devcontainer.json in the workspace.",
     "no_image": (
-        'devcontainer.json names no image. Name one with "image"; rcman cannot build an '
-        "image from a Dockerfile or from features."
+        'devcontainer.json names no image and no Dockerfile. Name an image with "image", or a '
+        'Dockerfile to build with "build"; features need one of them to be installed on.'
     ),
     "bad_value": (
         'devcontainer.json has a value of the wrong kind for "{key}": it must be {expected}. '
@@ -204,6 +204,62 @@ DEVCONTAINER_MESSAGES = {
     "musl": (
         'The image "{image}" is built on musl, as Alpine images are, and Claude Code needs '
         "glibc. Use an image built on glibc, such as a Debian or Ubuntu one."
+    ),
+    "bad_value_in_image": (
+        'The image\'s metadata entry "{entry}" has a value of the wrong kind for "{key}": it must '
+        "be {expected}. Use another image."
+    ),
+    "build_image_refused": (
+        "The image the build made was not accepted: {reason}. It was not kept."
+    ),
+    "built_image_gone": (
+        "The image rcman built for this workspace is no longer in its storage, so the "
+        "workspace's container cannot be made again. Delete the workspace and make it again."
+    ),
+    "build_registry_unreachable": (
+        "The build could not reach the network: a registry or an address it needs did not "
+        "answer. Try again later; the end of what the builder said is below.\n{tail}"
+    ),
+    "build_image_missing": (
+        "The build could not find an image it needs: the image that devcontainer.json or its "
+        "Dockerfile starts from, or one of its features, is not there. Check the name and tag; "
+        "the end of what the builder said is below.\n{tail}"
+    ),
+    "build_sign_in": (
+        "A registry refused the build. Either an image or a feature the build needs is not there "
+        "or it is private: rcman cannot sign in to a registry, so only what can be pulled "
+        "without signing in can be built on. The end of what the builder said is below.\n{tail}"
+    ),
+    "build_step_failed": (
+        "A step of the Dockerfile failed, so the image could not be built. Fix the step, push "
+        "the change and make the workspace again. The end of what the builder said is "
+        "below.\n{tail}"
+    ),
+    "build_feature_failed": (
+        'The feature "{feature}" failed to install, so the image could not be built. Remove it '
+        "or fix it, push the change and make the workspace again. The end of what the builder "
+        "said is below.\n{tail}"
+    ),
+    "build_no_space": (
+        "The builder ran out of disk space. Ask an administrator to free space on the machine "
+        "rcman runs on, or build less. The end of what the builder said is below.\n{tail}"
+    ),
+    "build_context_too_big": (
+        "The repository is bigger than rcman copies into a builder, so the image was not built. "
+        "Keep what the build does not need out of the repository, or out of the folder it is "
+        "built from."
+    ),
+    "build_image_too_big": (
+        "The image that was built is bigger than rcman copies out of its builder, so it was "
+        "not kept. Build a smaller image."
+    ),
+    "build_timeout": (
+        "Building the image took too long, so it was stopped. Make the build shorter, or build "
+        "on an image that has more of what it needs."
+    ),
+    "build_failed": (
+        "rcman could not build the image devcontainer.json asks for. The end of what the "
+        "builder said is below.\n{tail}"
     ),
     "hook_failed": (
         "{command} failed, exit code {code}. What it printed last is below. The workspace "

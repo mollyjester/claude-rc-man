@@ -362,6 +362,62 @@ def discarding_what_is_not_there_is_nothing(runtime, spec):
     assert not runtime.exists(workspace.name)
 
 
+def _plant_build(runtime: rt.Runtime, workspace: int) -> None:
+    """What a build in progress that rcman then lost leaves: a builder's volume carrying the
+    label, and an image named for the workspace. A runtime is planted by its own means: the host
+    runtime by what it keeps in memory, Podman by a labelled volume and a tag."""
+    if isinstance(runtime, rt.HostRuntime):
+        runtime.builder_ids.add(workspace)
+        runtime.built[workspace] = rt.built_name(workspace)
+        runtime.images[rt.built_name(workspace)] = rt.ImageFacts()
+    else:
+        runtime._podman(
+            "volume",
+            "create",
+            f"--label={rt.LABEL_BUILDER}={workspace}",
+            f"rcman-build-{workspace}",
+        )
+        runtime._podman("tag", runtime.config.image, rt.built_name(workspace))
+
+
+def removing_a_build_that_is_not_there_is_nothing(runtime, spec):
+    workspace = 9100
+    assert workspace not in runtime.builders() and workspace not in runtime.built_images()
+    runtime.remove_build(workspace)
+    runtime.remove_build(workspace, image=True)
+    assert workspace not in runtime.builders() and workspace not in runtime.built_images()
+
+
+def a_build_that_is_there_is_listed_and_goes_with_or_without_its_image(runtime, spec):
+    workspace = 9101
+    _plant_build(runtime, workspace)
+    try:
+        assert workspace in runtime.builders()  # the positive control for the absences below
+        assert runtime.built_images()[workspace] == rt.built_name(workspace)
+        runtime.remove_build(workspace)  # the builder and its volume, not the image
+        assert workspace not in runtime.builders()
+        assert runtime.built_images()[workspace] == rt.built_name(workspace)
+        runtime.remove_build(workspace)  # nothing more to do the second time
+        assert workspace in runtime.built_images()
+        runtime.remove_build(workspace, image=True)
+        assert workspace not in runtime.built_images()
+        runtime.remove_build(workspace, image=True)
+        assert workspace not in runtime.builders() and workspace not in runtime.built_images()
+    finally:
+        runtime.remove_build(workspace, image=True)
+
+
+def a_builder_and_an_image_are_removed_in_one_call_when_asked(runtime, spec):
+    workspace = 9102
+    _plant_build(runtime, workspace)
+    try:
+        assert workspace in runtime.builders() and workspace in runtime.built_images()
+        runtime.remove_build(workspace, image=True)
+        assert workspace not in runtime.builders() and workspace not in runtime.built_images()
+    finally:
+        runtime.remove_build(workspace, image=True)
+
+
 CASES = [
     a_workspace_that_is_made_exists_runs_and_is_labelled,
     removing_what_is_not_there_is_nothing,
@@ -380,4 +436,7 @@ CASES = [
     a_discarded_workspace_keeps_its_volume_and_is_made_again_on_it,
     discarding_what_is_not_there_is_nothing,
     an_exec_that_prints_a_great_deal_keeps_only_the_tail_it_is_asked_to,
+    removing_a_build_that_is_not_there_is_nothing,
+    a_build_that_is_there_is_listed_and_goes_with_or_without_its_image,
+    a_builder_and_an_image_are_removed_in_one_call_when_asked,
 ]

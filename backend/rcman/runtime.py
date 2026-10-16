@@ -10,7 +10,12 @@ and an allowlisted environment, never through a shell. ``HostRuntime`` keeps
 the same interface with a folder and a tmux socket per workspace, for the tests
 and ``make e2e``; tests/runtime_contract.py holds both to the same cases.
 
-Python standard library and the backend's own channel only, so that the podman
+A repository's devcontainer.json may ask for an image to be built (``build_image``): by the
+devcontainer CLI, in a *builder* container of its own that rcman starts for the one build, in a
+uid range no person has, and removes after it (builder.py); the image is copied out to rcman's
+own storage and named for the workspace (``built_name``).
+
+Python standard library and the backend's own channel and builder only, so that the podman
 host's suite can import it with the system interpreter.
 """
 
@@ -20,6 +25,7 @@ import contextlib
 import dataclasses
 import io
 import json
+import logging
 import os
 import pwd
 import re
@@ -27,6 +33,7 @@ import selectors
 import shutil
 import subprocess
 import tarfile
+import tempfile
 import threading
 import time
 import uuid
@@ -36,7 +43,10 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from rcman import builder
 from rcman.channel import Channel, Result
+
+log = logging.getLogger("rcman.runtime")
 
 # Where things are inside a workspace container.
 TOOLS_MOUNT = "/opt/rcman"  # the static tools, read-only: bin/tmux, bin/busybox, terminfo
@@ -52,6 +62,16 @@ CREDENTIALS = ".credentials.json"
 # person's account volume and sign-in container carry only the person's.
 LABEL_WORKSPACE = "rcman.workspace"
 LABEL_PERSON = "rcman.person"
+# The name a folder starts with in which an image copied out of a builder is staged.
+STAGING_PREFIX = "rcman-image-"
+# What a builder container and its volume carry besides the person: which workspace's build it is.
+LABEL_BUILDER = "rcman.builder"
+# An image built for a workspace is named localhost/<BUILT_REPOSITORY>/<workspace>:<BUILT_TAG>,
+# in rcman's own storage. A person's devcontainer.json may not name such an image, or any by its
+# id (devcontainer.py), so no person's workspace is made from another's.
+BUILT_REPOSITORY = "rcman-built"
+BUILT_TAG = "latest"
+BUILT_NAME = re.compile(rf"localhost/{re.escape(BUILT_REPOSITORY)}/(\d+):{re.escape(BUILT_TAG)}\Z")
 # Where a one-off container that makes or reads a person's credentials file mounts
 # their account volume.
 ACCOUNT_MOUNT = "/account"
@@ -130,6 +150,17 @@ def container_name(workspace_id: int) -> str:
     return f"rcman-ws-{workspace_id}"
 
 
+def built_name(workspace_id: int) -> str:
+    """The name of the image built for the workspace."""
+    return f"localhost/{BUILT_REPOSITORY}/{workspace_id}:{BUILT_TAG}"
+
+
+def workspace_of_built_name(name: str) -> int | None:
+    """The workspace an image built for it is named for, or None for any other name."""
+    found = BUILT_NAME.match(name)
+    return int(found.group(1)) if found else None
+
+
 def account_volume(person: int) -> str:
     """The volume that holds the person's credentials file, and nothing else."""
     return f"rcman-person-{person}"
@@ -153,6 +184,32 @@ class RuntimeUnavailable(Exception):
 
 class RuntimeFailed(Exception):
     """Podman, or the host runtime, refused or failed; the message is what it said."""
+
+
+class BuildFailed(RuntimeFailed):
+    """The build failed. ``tail`` is the end of what the builder said, as it said it; ``kind`` is
+    the key of ``problems.DEVCONTAINER_MESSAGES`` where the runtime knows the cause (a time or
+    size limit) and None where the cause is for the tail to show (``builder.explain``);
+    ``fields`` fill the message in."""
+
+    def __init__(self, tail: str = "", kind: str | None = None, **fields):
+        self.tail, self.kind, self.fields = tail, kind, fields
+        super().__init__(tail or kind or "the build failed")
+
+
+@dataclass(frozen=True)
+class BuildRequest:
+    """One build: for the workspace ``id`` of the person ``person``, in the builder's uid range
+    ``slot``, of the repository in the work folder of the container ``source``. The CLI is given
+    the file ``config_text``, which is written to ``config_path`` in the copy of the repository
+    (devcontainer.build_config)."""
+
+    id: int
+    person: int
+    slot: int
+    source: str
+    config_path: str
+    config_text: str
 
 
 @dataclass(frozen=True)
@@ -204,7 +261,7 @@ class Layout:
     terminfo: str | None
     path: str
     user: str  # who the programs run as there
-    # name -> the argv that runs it there: env, kill, cat, wc, rm, mkdir, chmod, mv, timeout
+    # name -> the argv that runs it there: env, kill, cat, wc, rm, mkdir, chmod, mv, timeout, tar
     tools: dict
     # The argv, but for the group's id, that sends SIGKILL to a whole process group:
     # busybox's kill refuses a "--" before it, and procps' kill needs one.
@@ -285,8 +342,39 @@ class Runtime(ABC):
         cannot be read, or at once, with the reading stopped, if ``cancel`` is set."""
 
     @abstractmethod
+    def build_image(
+        self,
+        request: BuildRequest,
+        progress: Callable[[str], None],
+        cancel: threading.Event | None,
+        vet: Callable[[Mapping[str, str]], None],
+    ) -> str:
+        """Build the image ``request`` asks for in a builder of its own, and keep it in the
+        runtime's storage as ``built_name(request.id)``, which is returned. It begins by removing
+        what an earlier build of the same id left. ``progress`` is told the builder's steps and
+        the copy's progress; ``vet`` is called with the image's labels before the image is
+        copied out, and may raise to refuse it. Whatever happens the builder and its volume are
+        removed, and the image too unless it is kept: a build that fails, is refused or is
+        stopped leaves nothing. A failing build is a :class:`BuildFailed`; a stop (``cancel``
+        set, or ``remove_build`` called meanwhile) is a RuntimeFailed that is not."""
+
+    @abstractmethod
+    def remove_build(self, workspace_id: int, image: bool = False) -> None:
+        """Remove the builder of the workspace's build and its volume, which ends a build in
+        progress, and with ``image`` the image built for it; nothing for what is not there."""
+
+    @abstractmethod
+    def builders(self) -> set[int]:
+        """The workspaces whose builder container or volume there is."""
+
+    @abstractmethod
+    def built_images(self) -> dict[int, str]:
+        """The images built for workspaces there are: workspace -> name."""
+
+    @abstractmethod
     def clean_probes(self) -> None:
-        """Remove what ``image_facts`` left if rcman ended while it read an image."""
+        """Remove what ``image_facts`` left if rcman ended while it read an image, and the
+        staging folders of images copied out of a builder that no build can still be using."""
 
     @abstractmethod
     def labelled(self) -> dict[str, dict[str, str]]:
@@ -357,6 +445,11 @@ class PodmanConfig:
     tools_dir: Path  # mounted read-only at TOOLS_MOUNT
     claude_store: Path  # mounted read-only at CLAUDE_MOUNT
     podman: str = "/usr/bin/podman"
+    builder_image: str = "localhost/rcman-builder"  # the image a build runs in
+    # Where an image copied out of a builder is staged and checked before it is loaded: a folder
+    # of rcman's own state, with room for the biggest image (builder.MAX_IMAGE_BYTES); the
+    # system's temporary folder where none is given.
+    scratch_dir: Path | None = None
 
 
 def podman_env() -> dict[str, str]:
@@ -422,6 +515,11 @@ def _run_keeping_tail(
     return code, bytes(tails[0]), bytes(tails[1])
 
 
+def _labels_of(inspected: dict) -> dict[str, str]:
+    """The labels in the JSON ``podman image inspect`` printed."""
+    return dict(inspected.get("Labels") or (inspected.get("Config") or {}).get("Labels") or {})
+
+
 def _busybox(name: str) -> list[str]:
     return [f"{TOOLS_MOUNT}/bin/busybox", name]
 
@@ -441,7 +539,19 @@ PODMAN_LAYOUT = Layout(
     user="root",
     tools={
         name: _busybox(name)
-        for name in ("env", "kill", "cat", "wc", "rm", "mkdir", "chmod", "mv", "wget", "timeout")
+        for name in (
+            "env",
+            "kill",
+            "cat",
+            "wc",
+            "rm",
+            "mkdir",
+            "chmod",
+            "mv",
+            "wget",
+            "timeout",
+            "tar",
+        )
     },
     kill_group=(*_busybox("kill"), "-KILL"),
     path_prefix=f"{CLAUDE_MOUNT}/bin",
@@ -760,7 +870,7 @@ class PodmanRuntime(Runtime):
             group=group,
             user=inspected.get("User") or config.get("User") or "",
             env=env,
-            labels=dict(inspected.get("Labels") or config.get("Labels") or {}),
+            labels=_labels_of(inspected),
         )
 
     def _copied(self, container: str, path: str, cancel: threading.Event | None = None) -> str:
@@ -830,7 +940,348 @@ class PodmanRuntime(Runtime):
             pass
         return ""
 
+    # --- building an image ------------------------------------------------------------------
+
+    def remove_build(self, workspace_id: int, image: bool = False) -> None:
+        name = builder.builder_name(workspace_id)
+        self._podman("rm", "--force", "--ignore", "--time=0", name)
+        if self._podman("volume", "exists", name, check=False).returncode == 0:
+            self._podman("volume", "rm", "--force", name)
+        if image:
+            # Without --force: an image a container is made from is not taken from under it.
+            self._podman("image", "rm", "--ignore", built_name(workspace_id))
+
+    def _discard_build(self, workspace_id: int, image: bool) -> None:
+        """``remove_build`` for the end of a build, which never hides how the build ended."""
+        try:
+            self.remove_build(workspace_id, image)
+        except (RuntimeFailed, RuntimeUnavailable) as failed:
+            log.warning(
+                "the build of workspace %s could not be cleaned up: %s", workspace_id, failed
+            )
+
+    def builders(self) -> set[int]:
+        found: set[int] = set()
+        for call in (("ps", "--all"), ("volume", "ls")):
+            proc = self._podman(*call, f"--filter=label={LABEL_BUILDER}", "--format=json")
+            for entry in json.loads(proc.stdout or b"[]") or []:
+                with contextlib.suppress(TypeError, ValueError):
+                    found.add(int((entry.get("Labels") or {}).get(LABEL_BUILDER)))
+        return found
+
+    def built_images(self) -> dict[int, str]:
+        proc = self._podman(
+            "images", f"--filter=reference=localhost/{BUILT_REPOSITORY}/*", "--format=json"
+        )
+        found: dict[int, str] = {}
+        for entry in json.loads(proc.stdout or b"[]") or []:
+            for name in [*(entry.get("Names") or []), *(entry.get("RepoTags") or [])]:
+                workspace = workspace_of_built_name(name)
+                if workspace is not None:
+                    found[workspace] = name
+        return found
+
+    def build_image(
+        self,
+        request: BuildRequest,
+        progress: Callable[[str], None],
+        cancel: threading.Event | None,
+        vet: Callable[[Mapping[str, str]], None],
+    ) -> str:
+        ids = self._ids(request.slot)  # refuses what is wrong before anything is made
+        name = builder.builder_name(request.id)
+        self.remove_build(request.id, image=True)  # what an earlier build of this id left
+        kept = False
+        staging: Path | None = None
+        loaded: str | None = None  # the id of an image this build put in the storage
+        try:
+            labels = {LABEL_BUILDER: str(request.id), LABEL_PERSON: str(request.person)}
+            self._podman("volume", "create", *(f"--label={k}={v}" for k, v in labels.items()), name)
+            self._podman(
+                *builder.run_argv(request.id, labels, ids, self.config.builder_image),
+                timeout=IMAGE_CREATE_TIMEOUT,
+            )
+            progress("Copying the repository into the builder")
+            self._copy_in(request, name, cancel)
+            self._build(request, name, progress, cancel)
+            found, image_id, size = self._inspected(name)
+            vet(found)  # before the long copy
+            staging = Path(tempfile.mkdtemp(prefix=STAGING_PREFIX, dir=self._scratch()))
+            archive = self._stage(request.id, image_id, size, staging, progress, cancel)
+            if not self._image_exists(image_id):
+                loaded = image_id  # set before the load: a load that is stopped may have begun
+            self._load(archive, image_id, cancel)
+            self._podman("tag", image_id, built_name(request.id))
+            kept = True
+            return built_name(request.id)
+        finally:
+            self._discard_build(request.id, image=not kept)
+            if loaded is not None and not kept:
+                self._discard_loaded(loaded)
+            if staging is not None:
+                shutil.rmtree(staging, ignore_errors=True)
+
+    def _scratch(self) -> Path:
+        """The folder images are staged in, made owner-only if it is not there."""
+        base = self.config.scratch_dir or Path(tempfile.gettempdir())
+        base.mkdir(mode=0o700, parents=True, exist_ok=True)
+        return base
+
+    def _inspected(self, name: str) -> tuple[dict[str, str], str, int]:
+        """What the builder says of the image it built: its labels, its id and its size. It is
+        the builder's word, so it is read within a limit, and the id is not passed on to podman
+        unless it is the whole of an id."""
+        try:
+            code, out, err = _run_keeping_tail(
+                self._argv(
+                    "exec", name, "podman", "image", "inspect", "--format", "{{json .}}",
+                    builder.IN_BUILDER_IMAGE,
+                ),
+                None, PODMAN_TIMEOUT, podman_env(), None, builder.MAX_INSPECT_BYTES + 1,
+            )  # fmt: skip
+        except FileNotFoundError:
+            raise RuntimeUnavailable(f"{self.config.podman} is not installed") from None
+        except subprocess.TimeoutExpired:
+            raise RuntimeFailed("podman image inspect did not finish in time") from None
+        if code != 0:
+            raise RuntimeFailed(self._said(err, "the image could not be inspected"))
+        if len(out) > builder.MAX_INSPECT_BYTES:
+            raise BuildFailed(kind="build_image_refused", reason="its description is too big")
+        try:
+            inspected = json.loads(out)
+            labels = _labels_of(inspected)
+            image_id = str(inspected["Id"]).removeprefix("sha256:")
+            size = int(inspected.get("Size") or 0)
+        except (ValueError, TypeError, KeyError, AttributeError, RecursionError):
+            raise BuildFailed(
+                kind="build_image_refused", reason="its description cannot be read"
+            ) from None
+        if not builder.is_image_id(image_id):
+            raise BuildFailed(kind="build_image_refused", reason="it has no id an image has")
+        return labels, image_id, size
+
+    def _image_exists(self, image_id: str) -> bool:
+        return self._podman("image", "exists", image_id, check=False).returncode == 0
+
+    def _discard_loaded(self, image_id: str) -> None:
+        """Remove an image this build loaded and did not keep, by its id, if no other name holds
+        it (without force, so one that does, or that a container uses, stays)."""
+        try:
+            self._podman("image", "rm", "--ignore", image_id, check=False)
+        except (RuntimeFailed, RuntimeUnavailable) as failed:
+            log.warning("the image %s of a build could not be removed: %s", image_id, failed)
+
+    def _pumped(
+        self, source: list[str], sink: list[str], limit: int, too_big: str,
+        cancel: threading.Event | None, seconds: float, progress=None,
+    ) -> builder.Pumped:  # fmt: skip
+        """``builder.pump`` of two podman commands, its stops as the build's failures."""
+        try:
+            return builder.pump(
+                source, sink, env=podman_env(), limit=limit, cancel=cancel, seconds=seconds,
+                progress=progress,
+            )  # fmt: skip
+        except FileNotFoundError:
+            raise RuntimeUnavailable(f"{self.config.podman} is not installed") from None
+        except builder.PumpStopped as stopped:
+            if stopped.reason == builder.CANCELLED:
+                raise RuntimeFailed("the build was stopped") from None
+            raise BuildFailed(
+                kind="build_timeout" if stopped.reason == builder.TIMED_OUT else too_big
+            ) from None
+
+    @staticmethod
+    def _said(raw: bytes, fallback: str) -> str:
+        return raw.decode("utf-8", "replace").strip() or fallback
+
+    @staticmethod
+    def _copy_failed(pumped: builder.Pumped, source_default: str, sink_default: str) -> None:
+        """Raise why a copy failed, if it did. When the sink failed and the source was ended by
+        the pump (or went well), the sink's failure is the cause: a sink that has no space is a
+        :class:`BuildFailed` whose tail says so, for ``builder.explain``. A source that failed
+        by itself comes first."""
+        if pumped.sink_code != 0 and pumped.source_code <= 0:
+            said = PodmanRuntime._said(pumped.sink_err, sink_default)
+            if "no space left on device" in said.lower():
+                raise BuildFailed(said)
+            raise RuntimeFailed(said)
+        if pumped.source_code != 0:
+            raise RuntimeFailed(PodmanRuntime._said(pumped.source_err, source_default))
+        if pumped.sink_code != 0:
+            raise RuntimeFailed(PodmanRuntime._said(pumped.sink_err, sink_default))
+
+    def _copy_in(self, request: BuildRequest, name: str, cancel: threading.Event | None) -> None:
+        """The repository, but for its git folder, as a tar archive from the workspace into the
+        builder; the files are the builder's own, and symbolic links stay links."""
+        layout = self.layout(request.source)
+        self._podman("exec", name, "mkdir", "-p", builder.REPOSITORY_FOLDER)
+        source = builder.source_argv(layout.shell, layout.work, [*layout.tool("tar"), "-c"])
+        pumped = self._pumped(
+            self._argv("exec", request.source, *source),
+            self._argv(
+                "exec",
+                "--interactive",
+                name,
+                *builder.sink_argv(["tar"], builder.REPOSITORY_FOLDER),
+            ),
+            builder.MAX_CONTEXT_BYTES, "build_context_too_big", cancel, builder.COPY_SECONDS,
+        )  # fmt: skip
+        self._copy_failed(
+            pumped, "the repository could not be read", "the repository could not be copied"
+        )
+        self._podman(
+            "exec", "--interactive", name, "sh", "-c", 'rm -f "$1" && cat > "$1"', "sh",
+            f"{builder.REPOSITORY_FOLDER}/{request.config_path}",
+            stdin=request.config_text.encode(),
+        )  # fmt: skip
+
+    def _build(
+        self, request: BuildRequest, name: str, progress, cancel: threading.Event | None
+    ) -> None:
+        """Run the devcontainer CLI in the builder, passing on the steps it takes, until it ends,
+        ``builder.BUILD_SECONDS`` have passed, or ``cancel`` is set. Anything but its success is
+        a :class:`BuildFailed` with the end of what it said."""
+        lines = builder.ProgressLines(progress)
+        try:
+            proc = subprocess.Popen(
+                self._argv("exec", name, *builder.cli_argv(request.config_path)),
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=podman_env(),
+            )
+        except FileNotFoundError:
+            raise RuntimeUnavailable(f"{self.config.podman} is not installed") from None
+        out = bytearray()
+        deadline = time.monotonic() + builder.BUILD_SECONDS
+        waiting = selectors.DefaultSelector()
+        waiting.register(proc.stdout, selectors.EVENT_READ, "out")
+        waiting.register(proc.stderr, selectors.EVENT_READ, "err")
+        try:
+            while waiting.get_map():
+                if cancel is not None and cancel.is_set():
+                    raise RuntimeFailed("the build was stopped")
+                if time.monotonic() > deadline:
+                    lines.close()
+                    raise BuildFailed(lines.tail(), kind="build_timeout")
+                for key, _ in waiting.select(builder.BUILD_POLL_SECONDS):
+                    chunk = os.read(key.fileobj.fileno(), 65536)
+                    if not chunk:
+                        waiting.unregister(key.fileobj)
+                    elif key.data == "err":
+                        lines.feed(chunk)
+                    else:
+                        out += chunk
+                        del out[: max(len(out) - builder.MAX_OUTCOME_BYTES, 0)]
+            code = proc.wait()
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
+            waiting.close()
+            proc.stdout.close()
+            proc.stderr.close()
+        lines.close()
+        if cancel is not None and cancel.is_set():
+            raise RuntimeFailed("the build was stopped")
+        if code != 0 or not self._succeeded(bytes(out)):
+            raise BuildFailed(lines.tail())
+
+    @staticmethod
+    def _succeeded(out: bytes) -> bool:
+        """Whether the CLI's last line of standard output, one JSON object, says it succeeded."""
+        lines = [line for line in out.decode("utf-8", "replace").splitlines() if line.strip()]
+        try:
+            return bool(lines) and json.loads(lines[-1]).get("outcome") == "success"
+        except (ValueError, AttributeError, RecursionError):
+            return False
+
+    def _stage(
+        self, workspace_id: int, image_id: str, size: int, staging: Path, progress, cancel
+    ) -> Path:
+        """The image, by its id, saved in the builder and written to a file of ``staging``, then
+        checked (``builder.verify_archive``) before anything of it is loaded: loading applies the
+        names an archive carries, and the builder's word is not to be taken for them. What was
+        copied and how long it took is logged."""
+        name = builder.builder_name(workspace_id)
+        archive = staging / "image.tar"
+        began = time.monotonic()
+        last = [began]
+        megabyte = 1024 * 1024
+
+        def counted(sent: int) -> None:
+            if time.monotonic() - last[0] >= builder.PROGRESS_SECONDS:
+                last[0] = time.monotonic()
+                progress(f"Copying the image: {sent // megabyte} of {size // megabyte} MB")
+
+        pumped = self._pumped(
+            self._argv(
+                "exec", name, "podman", "save", "--format", builder.ARCHIVE_FORMAT, image_id
+            ),
+            ["sh", "-c", 'exec cat > "$1"', "sh", str(archive)],
+            builder.MAX_IMAGE_BYTES, "build_image_too_big", cancel, builder.COPY_SECONDS, counted,
+        )  # fmt: skip
+        self._copy_failed(pumped, "the image could not be saved", "the image could not be stored")
+        log.info(
+            "workspace %s: the image was copied out of its builder, %d bytes in %.1f s",
+            workspace_id,
+            pumped.sent,
+            time.monotonic() - began,
+        )
+        try:
+            builder.verify_archive(archive, image_id)
+        except builder.ArchiveRefused as refused:
+            raise BuildFailed(kind="build_image_refused", reason=str(refused)) from None
+        return archive
+
+    def _load(self, archive: Path, image_id: str, cancel: threading.Event | None) -> None:
+        """``podman load`` of the checked archive, until it ends, ``builder.COPY_SECONDS`` have
+        passed, or ``cancel`` is set; then the image of that id must be there."""
+        try:
+            proc = subprocess.Popen(
+                self._argv("load", "-i", str(archive)),
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=podman_env(),
+            )
+        except FileNotFoundError:
+            raise RuntimeUnavailable(f"{self.config.podman} is not installed") from None
+        deadline = time.monotonic() + builder.COPY_SECONDS
+        try:
+            while True:
+                try:
+                    _, err = proc.communicate(timeout=builder.BUILD_POLL_SECONDS)
+                    break
+                except subprocess.TimeoutExpired:
+                    if cancel is not None and cancel.is_set():
+                        raise RuntimeFailed("the build was stopped") from None
+                    if time.monotonic() > deadline:
+                        raise BuildFailed(kind="build_timeout") from None
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
+        if proc.returncode != 0:
+            raise RuntimeFailed(self._said(err, "the image could not be loaded"))
+        if cancel is not None and cancel.is_set():
+            raise RuntimeFailed("the build was stopped")
+        found = self._podman("image", "inspect", "--format", "{{.Id}}", image_id, check=False)
+        if found.stdout.decode("utf-8", "replace").strip().removeprefix("sha256:") != image_id:
+            raise RuntimeFailed("the image was loaded under another id than it was saved with")
+
+    def _clean_staging(self) -> None:
+        """Remove the staging folders of images that an earlier rcman left: those no build can
+        still be using, which have outlasted the longest a build's copy and load may take."""
+        base = self.config.scratch_dir or Path(tempfile.gettempdir())
+        oldest = time.time() - 3 * builder.COPY_SECONDS
+        for folder in base.glob(f"{STAGING_PREFIX}*"):
+            with contextlib.suppress(OSError):
+                if folder.is_dir() and not folder.is_symlink() and folder.stat().st_mtime < oldest:
+                    shutil.rmtree(folder, ignore_errors=True)
+
     def clean_probes(self) -> None:
+        self._clean_staging()
         found = self._podman("ps", "--all", f"--filter=label={LABEL_PROBE}", "--format=json")
         for entry in json.loads(found.stdout or b"[]") or []:
             for name in entry.get("Names") or []:
@@ -1001,6 +1452,14 @@ class HostRuntime(Runtime):
         self.images: dict[str, ImageFacts] = {}
         self.pulled: list[str] = []
         self.specs: dict[str, Spec] = {}
+        # Builds: the workspaces that have a builder now, the image built for each, the builds
+        # asked for, and what stands for the builder - a function of the request, the progress
+        # function and the cancel event that returns the facts of the image it builds (labels
+        # among them) or raises; none builds an image of no facts.
+        self.builder_ids: set[int] = set()
+        self.built: dict[int, str] = {}
+        self.builds: list[BuildRequest] = []
+        self.build_script: Callable[..., ImageFacts] | None = None
 
     def layout(self, name: str) -> Layout:
         volume = self.root / name
@@ -1019,7 +1478,18 @@ class HostRuntime(Runtime):
             user=pwd.getpwuid(os.getuid()).pw_name,
             tools={
                 n: _host_tool(n)
-                for n in ("env", "kill", "cat", "wc", "rm", "mkdir", "chmod", "mv", "timeout")
+                for n in (
+                    "env",
+                    "kill",
+                    "cat",
+                    "wc",
+                    "rm",
+                    "mkdir",
+                    "chmod",
+                    "mv",
+                    "timeout",
+                    "tar",
+                )
             },
             kill_group=(*_host_tool("kill"), "-KILL", "--"),
         )
@@ -1131,6 +1601,48 @@ class HostRuntime(Runtime):
 
     def clean_probes(self) -> None:
         """Nothing is made to read an image here, so nothing is left."""
+
+    def remove_build(self, workspace_id: int, image: bool = False) -> None:
+        self.builder_ids.discard(workspace_id)
+        if image:
+            name = self.built.pop(workspace_id, None)
+            if name is not None:
+                self.images.pop(name, None)
+
+    def builders(self) -> set[int]:
+        return set(self.builder_ids)
+
+    def built_images(self) -> dict[int, str]:
+        return dict(self.built)
+
+    def _not_stopped(self, request: BuildRequest, cancel: threading.Event | None) -> None:
+        if (cancel is not None and cancel.is_set()) or request.id not in self.builder_ids:
+            raise RuntimeFailed("the build was stopped")
+
+    def build_image(
+        self,
+        request: BuildRequest,
+        progress: Callable[[str], None],
+        cancel: threading.Event | None,
+        vet: Callable[[Mapping[str, str]], None],
+    ) -> str:
+        self.remove_build(request.id, image=True)
+        self.builds.append(request)
+        self.builder_ids.add(request.id)
+        kept = False
+        try:
+            self._not_stopped(request, cancel)
+            script = self.build_script or (lambda request, progress, cancel: ImageFacts())
+            facts = script(request, progress, cancel)
+            self._not_stopped(request, cancel)
+            vet(facts.labels)
+            self._not_stopped(request, cancel)
+            name = built_name(request.id)
+            self.images[name], self.built[request.id] = facts, name
+            kept = True
+            return name
+        finally:
+            self.remove_build(request.id, image=not kept)
 
     def labelled(self) -> dict[str, dict[str, str]]:
         if not self.root.is_dir():

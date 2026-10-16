@@ -28,7 +28,7 @@ and the on-demand runs among them, and what each does:
 | What a workspace and its server are, for colleagues | [docs/workspaces.md](docs/workspaces.md) |
 | People, their uid-range slots, the allowed list, `rcman-admin` | [project-knowledge/people.md](project-knowledge/people.md) |
 | Adding and removing people, for administrators | [docs/users.md](docs/users.md) |
-| What a repository's devcontainer.json may ask of a workspace and what is refused, for administrators | [docs/devcontainer.md](docs/devcontainer.md) |
+| What a repository's devcontainer.json may ask of a workspace, how an image of it is built, and what is refused, for administrators | [docs/devcontainer.md](docs/devcontainer.md) |
 | The backend: layout, requests, each area's routes, audit | [project-knowledge/backend.md](project-knowledge/backend.md) |
 | The frontend: formatting and lint, layout, rules, tests | [project-knowledge/frontend.md](project-knowledge/frontend.md) |
 | The installer: how it is built and tested | [project-knowledge/installer.md](project-knowledge/installer.md) |

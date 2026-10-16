@@ -5,6 +5,8 @@ Real installations are tested in the container suite.
 
 import contextlib
 import os
+import re
+import shutil
 import socket
 import stat
 import subprocess
@@ -246,6 +248,7 @@ SETTINGS = {
     # what the installer finds out and renders along with the settings
     "APP_UID": "990",
     "WORKSPACE_IMAGE": "localhost/rcman-workspace:0123456789ab",
+    "BUILDER_IMAGE": "localhost/rcman-builder:0123456789ab",
 }
 
 
@@ -255,6 +258,7 @@ def test_app_environment_points_at_the_current_release():
     assert f"RCMAN_FRONTEND_DIR={ins.CURRENT}/frontend/dist\n" in env
     assert f"RCMAN_ALLOWED_EMAILS={ins.STATE}/allowed-emails\n" in env
     assert "RCMAN_WORKSPACE_IMAGE=localhost/rcman-workspace:0123456789ab\n" in env
+    assert "RCMAN_BUILDER_IMAGE=localhost/rcman-builder:0123456789ab\n" in env
     assert f"RCMAN_TOOLS_DIR={ins.TOOLS}\n" in env
     assert f"RCMAN_CLAUDE_STORE={ins.CLAUDE_STORE}\n" in env
 
@@ -686,6 +690,15 @@ def test_rcman_gets_a_subordinate_range_for_every_persons_slot():
     assert ins.SUBORDINATE_COUNT >= (MAX_PEOPLE + 1) * RANGE
 
 
+def test_the_subordinate_range_reaches_the_builders_slot():
+    from rcman import people
+    from rcman.runtime import RANGE
+
+    assert people.BUILDER_SLOT > people.MAX_PEOPLE  # a slot no person has
+    assert ins.SUBORDINATE_COUNT >= (people.BUILDER_SLOT + 1) * RANGE
+    assert ins.RANGE == RANGE
+
+
 @pytest.mark.parametrize(
     "lines,start",
     [
@@ -699,6 +712,12 @@ def test_rcman_gets_a_subordinate_range_for_every_persons_slot():
 )
 def test_a_new_subordinate_range_starts_after_every_range_there(lines, start):
     assert ins.subordinate_start(lines, "rcman", ins.SUBORDINATE_COUNT) == start
+
+
+def test_a_machine_with_the_old_range_gets_a_second_full_one():
+    old = ins.SUBORDINATE_COUNT - ins.RANGE  # what an install before the builder's slot had
+    lines = ["dev:100000:65536", f"rcman:165536:{old}"]
+    assert ins.subordinate_start(lines, "rcman", ins.SUBORDINATE_COUNT) == 165536 + old
 
 
 def test_a_range_big_enough_is_kept():
@@ -742,7 +761,7 @@ def test_tmux_is_built_from_the_pinned_tarball():
     assert ins.tmux_tarball(Path("/x")).name == f"tmux-{ins.TMUX_VERSION}.tar.gz"
     argv = ins.tmux_build_argv(Path("/t/tmux.tar.gz"), Path("/out"))
     assert argv[:2] == ["run", "--rm"]
-    assert ins.BUILDER_IMAGE in argv
+    assert ins.TMUX_BUILD_IMAGE in argv
     assert "--volume=/t/tmux.tar.gz:/tmux.tar.gz:ro" in argv
     assert any("--enable-static" in a for a in argv)
 
@@ -774,6 +793,158 @@ def test_the_image_tag_follows_the_containerfile(tmp_path, monkeypatch):
     changed.write_text(ins.CONTAINERFILE.read_text() + "RUN true\n")
     monkeypatch.setattr(ins, "CONTAINERFILE", changed)
     assert ins.workspace_image() != first
+
+
+# --- the devcontainer builder image ---------------------------------------------------------
+
+BUILDER_DIR = REPO / "installer" / "builder"
+
+
+def from_lines(containerfile: Path) -> list[str]:
+    return [
+        line.split()[1]
+        for line in containerfile.read_text().splitlines()
+        if line.startswith("FROM ")
+    ]
+
+
+def test_the_builder_image_is_tagged_after_every_file_of_its_folder(tmp_path, monkeypatch):
+    folder = tmp_path / "builder"
+    shutil.copytree(BUILDER_DIR, folder)
+    monkeypatch.setattr(ins, "BUILDER_DIR", folder)
+    first = ins.devcontainer_builder_image()
+    assert first.startswith("localhost/rcman-builder:") and len(first.split(":")[1]) == 12
+    assert ins.devcontainer_builder_image() == first  # stable
+    files = sorted(p.name for p in folder.iterdir())
+    assert {"Containerfile", "containers.conf", "storage.conf"} <= set(files)  # non-vacuity
+    tags = {first}
+    for name in files:
+        with (folder / name).open("a") as changed:
+            changed.write("\n")
+        tag = ins.devcontainer_builder_image()
+        assert tag not in tags, name
+        tags.add(tag)
+    (folder / "another").write_text("a new file")  # a file added counts too
+    assert ins.devcontainer_builder_image() not in tags
+
+
+def test_the_builder_image_is_tagged_after_names_as_well_as_content(tmp_path, monkeypatch):
+    folder = tmp_path / "builder"
+    folder.mkdir()
+    (folder / "a").write_text("x")
+    monkeypatch.setattr(ins, "BUILDER_DIR", folder)
+    first = ins.devcontainer_builder_image()
+    (folder / "a").rename(folder / "b")
+    assert ins.devcontainer_builder_image() != first
+
+
+def test_the_builder_image_pins_its_node_and_the_cli_by_integrity():
+    import json
+
+    node, base = from_lines(BUILDER_DIR / "Containerfile")
+    assert re.fullmatch(r"docker\.io/library/node:[\w.-]+@sha256:[0-9a-f]{64}", node), node
+    default_base = from_lines(ins.CONTAINERFILE)[0]
+    assert base == default_base  # the builder starts from what the default image does
+    lock = json.loads((BUILDER_DIR / "package-lock.json").read_text())
+    package = json.loads((BUILDER_DIR / "package.json").read_text())
+    wanted = package["dependencies"]["@devcontainers/cli"]
+    assert re.fullmatch(r"\d+\.\d+\.\d+", wanted)  # an exact version, no range
+    entry = lock["packages"]["node_modules/@devcontainers/cli"]
+    assert entry["version"] == wanted
+    assert re.fullmatch(r"sha512-[A-Za-z0-9+/]+=*", entry["integrity"])
+    assert "npm ci" in (BUILDER_DIR / "Containerfile").read_text()
+
+
+def test_the_builder_image_has_what_building_in_podman_needs():
+    text = (BUILDER_DIR / "Containerfile").read_text()
+    for package in ("podman", "crun", "fuse-overlayfs", "slirp4netns", "tar"):
+        assert f" {package}" in text, package
+    assert "VOLUME" not in text  # a stray anonymous volume per builder
+    assert "COPY --from=" in text  # Node and the CLI come from the first stage
+    conf = (BUILDER_DIR / "containers.conf").read_text()
+    assert 'userns="host"' in conf and 'runtime="crun"' in conf
+    assert 'mount_program="/usr/bin/fuse-overlayfs"' in (BUILDER_DIR / "storage.conf").read_text()
+
+
+class FakePodman:
+    """rcman's Podman as the installer drives it: images by name, and every call made."""
+
+    def __init__(self, images, undeletable=()):
+        self.images, self.undeletable, self.calls = list(images), set(undeletable), []
+
+    def argv(self, uid, *args):
+        return ["podman", *args]
+
+    def run(self, argv, **kw):
+        self.calls.append(argv)
+        args = argv[1:]
+        code, out = 0, ""
+        if args[:2] == ["image", "exists"]:
+            code = 0 if args[2] in self.images else 1
+        elif args[:2] == ["image", "ls"]:
+            out = "".join(f"{name}\n" for name in self.images)
+        elif args[0] == "rmi":
+            if args[1] in self.undeletable:
+                code = 1  # an image in use refuses
+            else:
+                self.images.remove(args[1])
+        elif args[0] == "build":
+            self.images.append(args[args.index("--tag") + 1])
+        return subprocess.CompletedProcess(argv, code, stdout=out, stderr="")
+
+    def verbs(self):
+        return [" ".join(c[1:3]) if c[1] == "image" else c[1] for c in self.calls]
+
+
+def use_fake_podman(monkeypatch, fake):
+    monkeypatch.setattr(ins, "app_uid", lambda: 990)
+    monkeypatch.setattr(ins, "as_rcman_podman", fake.argv)
+    monkeypatch.setattr(ins.subprocess, "run", fake.run)
+    monkeypatch.setattr(ins, "run", fake.run)
+
+
+def test_the_builder_image_is_built_with_rcmans_podman_and_older_ones_pruned(monkeypatch):
+    image = ins.devcontainer_builder_image()
+    old = "localhost/rcman-builder:aaaaaaaaaaaa"
+    other = "localhost/rcman-workspace:bbbbbbbbbbbb"
+    fake = FakePodman([old, other])
+    use_fake_podman(monkeypatch, fake)
+    assert ins.ensure_devcontainer_builder() == [f"image {image}"]
+    build = next(c for c in fake.calls if c[1] == "build")
+    assert build[build.index("--tag") + 1] == image
+    assert Path(build[build.index("--file") + 1]).name == "Containerfile"
+    assert fake.images == [other, image]  # the old builder gone, others left alone
+
+
+def test_a_builder_image_that_is_there_is_not_built_again(monkeypatch):
+    image = ins.devcontainer_builder_image()
+    old = "localhost/rcman-builder:aaaaaaaaaaaa"
+    fake = FakePodman([image, old])
+    use_fake_podman(monkeypatch, fake)
+    assert ins.ensure_devcontainer_builder() == []
+    assert "build" not in fake.verbs()
+    assert fake.images == [image]  # but the older one is pruned all the same
+
+
+def test_an_older_builder_image_in_use_does_not_fail_the_install(monkeypatch):
+    image = ins.devcontainer_builder_image()
+    busy, old = "localhost/rcman-builder:aaaaaaaaaaaa", "localhost/rcman-builder:bbbbbbbbbbbb"
+    fake = FakePodman([busy, old], undeletable=[busy])
+    use_fake_podman(monkeypatch, fake)
+    assert ins.ensure_devcontainer_builder() == [f"image {image}"]
+    assert fake.images == [busy, image]  # the one in use stays, the other goes
+
+
+def test_the_installer_finds_out_both_images_and_rcmans_uid(monkeypatch):
+    monkeypatch.setattr(ins, "app_uid", lambda: 990)
+    found = ins.found_out()
+    assert found == {
+        "APP_UID": "990",
+        "WORKSPACE_IMAGE": ins.workspace_image(),
+        "BUILDER_IMAGE": ins.devcontainer_builder_image(),
+    }
+    env = ins.render("rcman.env", {**SETTINGS, **found})
+    assert f"RCMAN_BUILDER_IMAGE={ins.devcontainer_builder_image()}\n" in env
 
 
 def claude_release(version: str, binary: bytes, checksum: str | None = None) -> dict:

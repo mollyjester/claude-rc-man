@@ -50,7 +50,12 @@ If the repository has a `devcontainer.json`, rcman reads it after the clone and
 makes the workspace from the image it names, running the commands it lists
 before the workspace is ready; the steps say what rcman is doing, and the
 workspace is shown as being made until it is done. A repository without one
-gets the default image. What rcman supports and refuses is in
+gets the default image. If the file describes an image to build, with a
+Dockerfile or features, rcman builds it first: the steps show the build's
+progress, which can take a long time for a big image, and when other builds are
+running, a line says that this one waits for them to finish. The build uses a
+copy of the repository's files, not the workspace itself, and cannot sign in to
+a private registry. What rcman supports and refuses is in
 [devcontainer.json support](devcontainer.md).
 
 The workspace you have selected is part of the page's address, so reloading
@@ -66,7 +71,11 @@ failed to be made says what went wrong in plain words, with **Steps so far**
 beneath, and offers only **Delete workspace**. When the repository's
 `devcontainer.json` is the cause, the reason names the setting to change, or
 the image rcman could not pull or use, or the command that failed or took too
-long, with what it printed last in the steps. After a refused configuration
+long, with what it printed last in the steps. A build that failed says why in
+plain words, with the end of what the builder said: a registry or address that
+did not answer, an image or feature that is not there or needs a sign-in, a
+Dockerfile step that failed, a feature that failed to install (named), no space
+left, a repository or image too big, or a build that took too long. After a refused configuration
 the workspace holds nothing but this entry; after a failed command it is kept
 so that you can look at what happened, and **Delete workspace** removes it. A workspace being made or being deleted says
 so, and offers nothing, except that one being made from a GitHub repository
@@ -114,9 +123,9 @@ workspace is selected, and the page says the workspace was deleted.
 The sessions of its server stay in claude.ai/code, where they are archived or
 deleted.
 
-Deleting a workspace that is still being cloned, or that is pulling its image
-or running a command of its `devcontainer.json`, stops that and deletes the
-workspace. If rcman restarts while a workspace is being made, the workspace is
+Deleting a workspace that is still being cloned, or that is pulling or
+building its image or running a command of its `devcontainer.json`, stops that and
+deletes the workspace. If rcman restarts while a workspace is being made, the workspace is
 shown as failed, and says so; delete it and make it again.
 
 ## Rules

@@ -84,5 +84,7 @@ default image has it. For another image
 ([`RCMAN_WORKSPACE_IMAGE`](configuration.md)), a workspace whose image has no
 git, or an older one, fails to be made, and says why in its panel. Cloning from
 GitHub also needs git there, and a way to reach github.com from the workspace.
-An image a repository's `devcontainer.json` names is held to the same
-requirement (see [devcontainer.json support](devcontainer.md#the-image)).
+An image a repository's `devcontainer.json` names, or builds, is held to the same
+requirement (see [devcontainer.json support](devcontainer.md#the-image)). A build
+is made from a copy of the repository's files without its top-level git folder
+(see [Building an image](devcontainer.md#building-an-image)).

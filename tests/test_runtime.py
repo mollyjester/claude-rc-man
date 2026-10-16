@@ -8,6 +8,7 @@ import json
 import os
 import shutil
 import subprocess
+import threading
 import time
 from pathlib import Path
 
@@ -1083,3 +1084,133 @@ def test_a_podman_cp_of_a_file_far_bigger_than_a_user_database_is_not_read_to_th
     assert (facts.passwd, facts.group) == ("", "")
     assert not finished.exists()  # podman was stopped, not waited for
     assert any(c[0] == "rm" for c in fake_calls(tmp_path))
+
+
+# --- the host runtime's builds ------------------------------------------------------------------
+
+
+def a_build(host, **more):
+    """``host.build_image`` for workspace 7 with a recording of what the vet was shown."""
+    said: list[str] = []
+    seen: list[dict] = []
+    asked = rt.BuildRequest(7, 2, 1, rt.container_name(7), ".devcontainer/rcman-build.json", "{}")
+
+    def vet(labels):
+        seen.append(
+            {"labels": dict(labels), "builders": host.builders(), "images": host.built_images()}
+        )
+
+    return (
+        host.build_image(asked, said.append, more.get("cancel"), more.get("vet", vet)),
+        said,
+        seen,
+    )
+
+
+def test_the_names_of_what_is_built_are_derived_from_the_workspace():
+    assert rt.LABEL_BUILDER == "rcman.builder" and rt.LABEL_BUILDER != rt.LABEL_WORKSPACE
+    assert rt.built_name(7) == f"localhost/{rt.BUILT_REPOSITORY}/7:{rt.BUILT_TAG}"
+    assert rt.built_name(7) != rt.built_name(70)
+    assert rt.workspace_of_built_name(rt.built_name(70)) == 70
+    for other in ("localhost/rcman-workspace:1", f"localhost/{rt.BUILT_REPOSITORY}/x:1", "ubuntu"):
+        assert rt.workspace_of_built_name(other) is None
+
+
+def test_the_host_runtime_builds_with_the_planted_builder_and_names_the_image_for_the_workspace(
+    host,
+):
+    host.build_script = lambda request, progress, cancel: (
+        progress("a step") or rt.ImageFacts(labels={"devcontainer.metadata": "[]"})
+    )
+    name, said, seen = a_build(host)
+    assert name == rt.built_name(7) and host.images[name].labels == {"devcontainer.metadata": "[]"}
+    assert said == ["a step"] and host.built_images() == {7: name}
+    assert host.builders() == set()  # the builder is gone when the build is
+    assert seen[0]["labels"] == {"devcontainer.metadata": "[]"}
+    assert seen[0]["builders"] == {7} and seen[0]["images"] == {}  # vetted before the image is kept
+
+
+def test_the_host_runtime_refuses_nothing_that_the_vet_does_not_and_leaves_nothing_of_a_refusal(
+    host,
+):
+    from rcman import devcontainer
+
+    def refuse(labels):
+        raise devcontainer.Refused("refused_by_image", key="privileged", entry="./f", reason="no")
+
+    with pytest.raises(devcontainer.Refused):
+        a_build(host, vet=refuse)
+    assert host.builders() == set() and host.built_images() == {}
+
+
+def test_a_build_that_fails_leaves_neither_builder_nor_image(host):
+    def fail(request, progress, cancel):
+        raise rt.BuildFailed(tail="no good")
+
+    host.build_script = fail
+    with pytest.raises(rt.BuildFailed):
+        a_build(host)
+    assert host.builders() == set() and host.built_images() == {}
+
+
+def test_a_build_begins_by_removing_a_builder_and_an_image_of_the_same_id_left_before(host):
+    host.builder_ids.add(7)
+    host.built[7] = "stale"
+    host.images["stale"] = rt.ImageFacts()
+    found: list = []
+
+    def script(request, progress, cancel):
+        found.append((host.builders(), host.built_images()))  # the builder of this build only
+        return rt.ImageFacts()
+
+    host.build_script = script
+    a_build(host)
+    assert found == [({7}, {})]
+
+
+def test_a_stop_ends_a_build_whether_it_is_asked_by_the_event_or_by_removing_the_builder(host):
+    cancel = threading.Event()
+    cancel.set()
+    with pytest.raises(rt.RuntimeFailed) as stopped:
+        a_build(host, cancel=cancel)
+    assert not isinstance(stopped.value, rt.BuildFailed)
+    assert host.builders() == set() and host.built_images() == {}
+
+    def removed(request, progress, cancel):
+        host.remove_build(request.id)  # what a deletion does while the build runs
+        return rt.ImageFacts()
+
+    host.build_script = removed
+    with pytest.raises(rt.RuntimeFailed):
+        a_build(host)
+    assert host.built_images() == {}
+
+
+def test_the_build_failure_is_a_runtime_failure_with_its_tail_and_the_kind_it_was_given():
+    failed = rt.BuildFailed(tail="the end", kind="build_timeout", feature="x")
+    assert isinstance(failed, rt.RuntimeFailed)
+    assert failed.tail == "the end" and failed.kind == "build_timeout"
+    assert failed.fields == {"feature": "x"} and "the end" in str(failed)
+    assert rt.BuildFailed(tail="t").kind is None
+
+
+def test_the_layouts_have_tar_for_the_copy_of_a_repository(host):
+    assert rt.PODMAN_LAYOUT.tool("tar")[-1] == "tar"
+    assert host.layout("x").tool("tar")
+
+
+def test_the_settings_name_the_builder_image_and_the_runtime_is_given_it(monkeypatch):
+    from rcman.settings import Settings
+
+    monkeypatch.setenv("RCMAN_PUBLIC_ORIGIN", "https://x.example.com")
+    monkeypatch.setenv("RCMAN_BUILDER_IMAGE", "localhost/rcman-builder:abc")
+    assert Settings().builder_image == "localhost/rcman-builder:abc"
+    monkeypatch.delenv("RCMAN_BUILDER_IMAGE")
+    assert Settings().builder_image  # a default beside the workspace image's
+    config = rt.PodmanConfig(Path("/s"), "i", Path("/t"), Path("/c"), builder_image="b")
+    assert config.builder_image == "b"
+    from rcman import main
+
+    made = main.podman_runtime(Settings(builder_image="localhost/rcman-builder:abc"))
+    assert made.config.builder_image == "localhost/rcman-builder:abc"
+    assert made.config.scratch_dir == Settings().database.parent  # rcman's own state folder

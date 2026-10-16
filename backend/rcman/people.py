@@ -23,6 +23,10 @@ from rcman.problems import Problem
 # How many people rcman has room for: the slots 1 to MAX_PEOPLE. The installer gives
 # rcman enough subordinate ids for every slot (installer/install.py, SUBORDINATE_COUNT).
 MAX_PEOPLE = 64
+# The slot of the devcontainer builder's uid range, above every person's and never given to
+# one: a build that broke out of its sandbox owns nothing of anyone's (runtime.py, builder.py).
+# The installer gives rcman subordinate ids for it as well.
+BUILDER_SLOT = MAX_PEOPLE + 1
 ACTIVE, DELETING = "active", "deleting"
 ALLOWED_MODE = 0o640  # oauth2-proxy reads it through rcman's group
 

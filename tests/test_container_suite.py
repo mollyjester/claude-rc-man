@@ -147,11 +147,11 @@ def _base(dockerfile: Path) -> str:
 
 # What a podman host is given to load into its account's Podman: the image the podman
 # host starts from, which the workspaces and the default image start from too, and the
-# one tmux is built in (installer/install.py BUILDER_IMAGE).
+# one tmux is built in (installer/install.py TMUX_BUILD_IMAGE).
 def _loaded_images() -> list[str]:
     from installer import install as ins
 
-    return [_base(PODMAN / "Dockerfile"), ins.BUILDER_IMAGE.removeprefix("docker.io/library/")]
+    return [_base(PODMAN / "Dockerfile"), ins.TMUX_BUILD_IMAGE.removeprefix("docker.io/library/")]
 
 
 def _run(argv: list[str], timeout: float = 600, **kwargs) -> subprocess.CompletedProcess:
@@ -364,6 +364,16 @@ def test_a_workspace_made_from_a_devcontainer_file_runs_as_its_user_in_real_podm
     built in the account's Podman, the uid swap map, the shared sign-in and the lifecycle
     commands, with the tests' GitHub as the repositories' origin."""
     _in_the_hosts_with_github(podman_host, "tests/container/test_devcontainer_in_podman.py", 3600)
+
+
+def test_a_workspace_made_from_a_dockerfile_and_features_is_built_in_a_builder_in_real_podman(
+    docker, podman_host
+):
+    """tests/container/test_builder_in_podman.py, run as the service account: the builder in
+    its own uid range with a stand-in for the CLI, then the builder image of
+    installer/builder with the real Dev Containers CLI and a Podman in it, building a Dockerfile
+    and a feature of a repository that the tests' GitHub serves."""
+    _in_the_hosts_with_github(podman_host, "tests/container/test_builder_in_podman.py", 5400)
 
 
 # --- rcman installed for real, in the podman host -------------------------------------

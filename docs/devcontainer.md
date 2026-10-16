@@ -1,11 +1,13 @@
 # devcontainer.json support
 
-A repository can say, in a devcontainer.json, which image its workspace should run in and
-what to run before the workspace is ready. When a workspace is made by cloning a repository
-(see [Workspaces](workspaces.md)), rcman reads that file, holds it to the policy below,
-pulls the image it names, and makes the workspace's container from that image instead of
-from the default one ([`RCMAN_WORKSPACE_IMAGE`](configuration.md)). A repository without
-the file gets the default image. A workspace made empty never has a file to read.
+A repository can say, in a devcontainer.json, which image its workspace should run in, or
+how to build one with a Dockerfile and features, and what to run before the workspace is
+ready. When a workspace is made by cloning a repository (see [Workspaces](workspaces.md)),
+rcman reads that file, holds it to the policy below, pulls the image it names or builds the
+one it describes ([Building an image](#building-an-image)), and makes the workspace's
+container from that image instead of from the default one
+([`RCMAN_WORKSPACE_IMAGE`](configuration.md)). A repository without the file gets the
+default image. A workspace made empty never has a file to read.
 
 This page is for administrators: what is supported, what is not, and what follows from it.
 A person sees only the steps and, when something fails, the reason (see
@@ -37,13 +39,15 @@ The tables below are the policy itself, key by key; a test holds them equal to i
   would do.
 
 The same policy holds for the settings an image carries in its `devcontainer.metadata`
-label: a refused or unknown key in it fails the workspace, naming the key and the entry.
+label: a refused or unknown key in it fails the workspace, naming the key and the entry. An
+entry of a label may not carry the keys that describe a build (`build`, `image`, `features`,
+`dockerFile`, `context`, `overrideFeatureInstallOrder`) either.
 
 ### Honoured
 
 | Key | What rcman does | Why |
 |---|---|---|
-| `image` | honoured | The image is pulled by rcman, and the workspace's container is made from it. |
+| `image` | honoured | The image is pulled by rcman, and the workspace's container is made from it. With features it is the image they are installed on, and the container is made from the result. |
 | `remoteUser` | honoured | The user rcman's commands and Claude run as. It must be in the image, and it is mapped onto the same host user as root has in your other workspaces. |
 | `containerUser` | honoured | Used as remoteUser when that is not set. |
 | `updateRemoteUserUID` | honoured | Accepted. rcman always maps the user onto the same host user as root, so no file needs a new owner. |
@@ -57,6 +61,15 @@ label: a refused or unknown key in it fails the workspace, naming the key and th
 | `postCreateCommand` | honoured | Run once, as the container's user in the work folder, before the workspace is ready. A string runs in a shell, an array as a program, and the entries of an object one after another. A command that takes too long is stopped. |
 | `postStartCommand` | honoured | Run as the create commands are, and again each time the workspace's container is started, before its Claude server is. |
 | `userEnvProbe` | honoured | Accepted but never run: commands get the environment of the file and the image, not one probed from a shell. |
+| `build` | honoured | rcman builds the image in a sandbox of its own, from a copy of the repository without its git folder, as the workspace is made. |
+| `build.dockerfile` | honoured | The Dockerfile to build, a path in the repository relative to the folder of devcontainer.json. It may not leave the repository. |
+| `build.context` | honoured | The folder the build is run in, relative to the folder of devcontainer.json and inside the repository; the Dockerfile's folder when not set. |
+| `build.args` | honoured | Build arguments, an object of names and string values. |
+| `build.target` | honoured | The stage of the Dockerfile to build. |
+| `dockerFile` | honoured | The older form of build.dockerfile. |
+| `context` | honoured | The older form of build.context, used with dockerFile. |
+| `features` | honoured | Installed on the image by the builder: a feature of the repository ('./name' in the folder of devcontainer.json), of a registry (a reference, such as ghcr.io/owner/features/name:tag) or at an https address. What a feature asks of its container is held to this policy, naming the feature. |
+| `overrideFeatureInstallOrder` | honoured | The order features are installed in. |
 
 ### Ignored
 
@@ -81,12 +94,8 @@ label: a refused or unknown key in it fails the workspace, naming the key and th
 
 | Key | What rcman does | Why |
 |---|---|---|
-| `build` | refused | rcman cannot build images yet; name a ready-made image with image. |
-| `build.options` | refused | Options for building an image, which rcman does not do. |
-| `dockerFile` | refused | rcman cannot build images yet; name a ready-made image with image. |
-| `context` | refused | rcman cannot build images yet; name a ready-made image with image. |
-| `features` | refused | Features need an image to be built, which rcman cannot do yet; name a ready-made image with image. |
-| `overrideFeatureInstallOrder` | refused | It orders features, which rcman cannot install yet. |
+| `build.options` | refused | Options for the build command could undo the limits on the builder, so rcman gives it none. |
+| `build.cacheFrom` | refused | Layers taken from other images would be pulled from registries of the repository's choosing, and rcman cannot sign in to a registry. |
 | `mounts` | refused | A workspace's volume is its only storage; rcman mounts nothing else a repository asks for. |
 | `workspaceMount` | refused | rcman decides where a workspace's files are. |
 | `workspaceFolder` | refused | rcman decides where a workspace's files are. |
@@ -102,9 +111,8 @@ label: a refused or unknown key in it fails the workspace, naming the key and th
 | `overrideCommand=false` | refused | rcman runs its own process in the container, so the image's own command is not kept. |
 | `entrypoint` | refused | An entrypoint of an image or a feature is not run: rcman starts its own process in the container. |
 
-`build`, `dockerFile`, `context` and `features` are refused until rcman can build images,
-which a later step adds; until then a file must name a ready-made image with `image`, and a
-file that names none is refused.
+A file must name an image with `image` or a Dockerfile with `build`; one that names neither
+is refused.
 
 ## Variables
 
@@ -121,7 +129,8 @@ uses them is refused. No variable is filled in `image`: the name is what is pull
 
 `containerEnv` is set for the container and for every command rcman runs in the workspace,
 Claude included; `remoteEnv` is set for those commands as well, over `containerEnv`, and a
-null value removes a variable. The image's own variables are the base of both. They are
+null value removes a variable. The image's own variables are the base of both; for an image that was built, they include
+what its features set in `containerEnv`, which the build bakes into the image. They are
 stored with the workspace's plan and apply to git, tmux, Claude and the lifecycle commands.
 
 A file may not set the names rcman sets itself in every workspace: the home folder, the user
@@ -156,8 +165,9 @@ given a new owner, and a sign-in refreshed in one workspace is the one every oth
 
 A person's range gets its own copy of an image, made the first time a workspace of theirs
 uses it. The first workspace from an image takes longer, and its copy takes space in rcman's
-storage for every person who has used it. A person's image is removed with the image, not
-with their workspaces.
+storage for every person who has used it. A person's copy is removed with the image, not
+with their workspaces. An image that was built is removed with the workspace it was built
+for (see [Disk](#disk)).
 
 ## The image
 
@@ -175,6 +185,113 @@ The image is named by `image`, as a plain registry reference (`host/path:tag`, o
   tmux, busybox and Claude Code are mounted into every workspace.
 - rcman starts its own process in the container, so the image's entrypoint and command are
   not run (`entrypoint` and `overrideCommand=false` are refused).
+- A name that could stand for an image rcman built for a workspace (its repository name is
+  reserved for that), or for an image by its id (a bare hexadecimal name), is refused in
+  `image`: either would name an image that is not a registry's, and may be another
+  person's.
+
+## Building an image
+
+A file with `build`, or with `dockerFile` (its older form), describes an image to build; one
+with `features` has them installed on the image it names with `image`, or on the one it
+builds. rcman builds with the Dev Containers CLI, the one the specification's reference
+implementation is, in a **builder**: a container made for one build and removed after it,
+which runs a Podman of its own, so that a Dockerfile's steps and a feature's scripts run
+with no more than a workspace has. Which CLI and Node the builder image holds is pinned in
+`installer/builder`, and the installer builds it (see
+[Installation](installation.md)).
+
+- **The sandbox.** The builder runs in a range of user ids of its own, which no person's
+  workspace uses and which rcman's own identity never maps; the builds of different people
+  may run at the same time in that one range, so it does not keep them apart from each
+  other. It is not privileged: it has the one capability and the one device a Podman inside
+  it needs (`run_argv` in `backend/rcman/builder.py`), and a volume of its own for what it
+  builds. Its network reaches everything outbound, as a workspace's does, the local network
+  and the addresses cloud machines serve their metadata on included; only the machine's own
+  loopback is blocked. It has no limit on CPU, memory or disk yet; limits are a later step. A
+  hostile build that got out of its nested container would still be in the builder's own
+  range, and the image it made is checked again before it is kept (see Copying out).
+- **What it sees.** Only a copy of the workspace's files, streamed to it as a tar archive
+  through rcman; nothing of the machine's is mounted. The workspace's own git folder, the
+  one in the top folder, is not copied; a git folder deeper in the repository is, as any
+  folder is. Symbolic links stay links, so a link that points outside the repository
+  points into the builder, which holds nothing of the machine's. A repository bigger than
+  `MAX_CONTEXT_BYTES` in `backend/rcman/builder.py` is not copied and fails the build.
+- **What the CLI is given.** A configuration rcman writes beside the file's, with only the
+  keys that describe the build: `build`, `image`, `features` and
+  `overrideFeatureInstallOrder`. The CLI drops, without saying so, the keys it does not
+  know, and does not refuse what rcman does (`runArgs`, `mounts`, `privileged`), so rcman
+  holds the whole file to the policy itself before anything is built. The file's own
+  lifecycle commands, user and environment are not given to the CLI: rcman applies them
+  once, from the plan, so no command runs twice. The CLI is run with `--no-lockfile`, so the
+  copy of the repository is not changed.
+- **Features.** A feature is one of the repository (`./name` in the folder of
+  devcontainer.json), one in a registry that names its host, or one at an https address. What
+  a feature asks of its container is read from the image's `devcontainer.metadata` label
+  once the build is done, and held to the policy above before the image is copied out: a
+  feature that asks for `privileged`, `capAdd`, `securityOpt`, `mounts` or an `entrypoint` is
+  refused, naming the feature. The feature's `containerEnv` is not in the label; the build
+  bakes it into the image's environment, from which the plan takes it.
+- **The network and registries.** A build reaches the network the way a workspace does: the
+  base image, a Dockerfile's `RUN` steps and features are fetched from registries and
+  addresses on the internet, so the machine needs outbound access to them while it builds.
+  rcman cannot sign in to a registry: an image, a base or a feature that needs a sign-in
+  cannot be built on, and `build.cacheFrom` is refused for the same reason. A step that
+  fetches packages from a mirror that is down may succeed without them; the build log is
+  the place to see it.
+- **Copying out.** The built image is saved by its id in the builder as an archive, which
+  rcman stages in a private folder of its scratch area (the folder of the database, by
+  default). rcman checks the archive before anything loads it (`verify_archive` in
+  `backend/rcman/builder.py`): it holds exactly one image, under no name, and its
+  configuration hashes to the id; nothing in it is extracted. Only then is it loaded into
+  rcman's storage, where rcman names the image after the workspace and keeps one image for
+  each. The label of the loaded image is held to the policy again when the workspace's plan
+  is made from it. An image that was loaded and not kept is removed by its id. An image
+  bigger than `MAX_IMAGE_BYTES` in the same file is not copied.
+- **Progress.** The steps the build takes, and the copy, are lines of the workspace's
+  creation log, as an image pull's are, with what the CLI said redacted of the person's
+  GitHub token.
+- **Waiting.** The number of builds at once is bounded (`MAX_BUILDS` in
+  `backend/rcman/workspaces.py`); a build beyond it waits for a place, with a line in its
+  log saying so, and starts when one is free.
+- **Time.** A build is stopped after `BUILD_SECONDS`, and the copy after `COPY_SECONDS`.
+- **Deleting.** Deleting a workspace that is being built stops the build: rcman removes the
+  builder, which ends everything running in it, and its volume.
+
+### Disk
+
+While a build runs, the builder's volume holds the base image, every layer of the build and
+the cache of its steps, and the image is then saved, staged as an archive in the scratch area
+and loaded: the space a build needs is a multiple of the size of the image, in the builder's
+volume, in the scratch area for a while, and in rcman's storage. When it is done the builder,
+its volume and the archive are removed; a staging folder an earlier rcman left is removed
+when rcman starts.
+What stays is one image in rcman's storage for each workspace that was built, and a copy of
+it for each person's range that has run a workspace from it (see
+[The user and the shared sign-in](#the-user-and-the-shared-sign-in)). rcman does not check
+for free space first: a build that runs out of it fails as below.
+
+### When a build fails
+
+A build that fails fails the workspace in plain words, with the end of what the builder said,
+redacted of the person's GitHub token, in the reason and the log. The causes rcman tells
+apart, from the words the builder used (`CAUSES` in `backend/rcman/builder.py`):
+
+- a registry or an address that did not answer;
+- an image or a feature that is not there (a name or tag that does not exist);
+- a registry's refusal, which for rcman means an image or a feature that needs a sign-in
+  or is not there;
+- a Dockerfile step that failed;
+- a feature that failed to install, naming it;
+- the disk of the machine full;
+- an image the build made that rcman does not accept, with the reason;
+- the repository, or the image, bigger than the limits above;
+- the build taking too long.
+
+Any other failure says that the build could not be done, with the same end of the log. The
+messages are `problems.DEVCONTAINER_MESSAGES`. The container, the builder, its volume and
+the built image are all removed, leaving the failed entry only, as for a refused
+configuration.
 
 ## Lifecycle commands
 
@@ -209,8 +326,11 @@ from the person's own.
 ## When a configuration is refused
 
 A refused or invalid configuration, which is a refused or unknown key, a file that cannot
-be read or parsed, an image that cannot be pulled, read or run, or an image without a usable
-git or glibc, fails the workspace and removes its container and its volume. Only the failed
+be read or parsed, an image that cannot be pulled, built, read or run, a feature that asks
+for what is refused, or an image without a usable git or glibc, fails the workspace and
+removes its container and its volume, and the builder and the image built for it. A base
+image built on musl, such as Alpine, is built and then refused, since the check for glibc
+is made on the result. Only the failed
 entry stays, with the reason in plain words, which names the key to change. A person fixes
 the file, pushes the change, and makes the workspace again.
 
@@ -227,5 +347,8 @@ The plan (the image, the user, the environment and the commands) is stored with 
 workspace. When the machine restarts and a workspace's container is gone, rcman makes it
 again from the stored plan on the same volume, pulling the image again when rcman's storage no
 longer has it; if the image cannot be had, the workspace fails and says to delete it and make
-it again. The create commands are not run again. A workspace that rcman's restart interrupted
+it again. An image that was built is never built again nor pulled: one that is missing from
+rcman's storage fails the workspace, which says so. Restoring also removes what a build left
+that no workspace needs: builders, their volumes, and built images that no stored plan
+names. The create commands are not run again. A workspace that rcman's restart interrupted
 while it was being made fails and says so; it is not made again.
