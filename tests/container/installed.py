@@ -22,6 +22,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from clone import CLONE, SRC, sh  # noqa: E402
 
+sys.path.insert(0, str(SRC / "backend"))
+sys.path.insert(0, str(SRC))
+from rcman import limits  # noqa: E402
+
 ROOT = Path("/opt/rcman")
 ETC = Path("/etc/rcman")
 STATE = Path("/var/lib/rcman")
@@ -191,3 +195,70 @@ def claude_processes(workspace_id: int) -> list[int]:
         'p="${f#/proc/}"; echo "${p%/cmdline}"; fi; done',
     )
     return sorted(int(pid) for pid in out.split())
+
+
+# --- limits, as the kernel holds them ----------------------------------------------------
+
+CGROUPS = Path("/sys/fs/cgroup")
+# The files a limit is read from.
+LIMIT_FILES = ("memory.max", "memory.swap.max", "cpu.max", "pids.max")
+MEBIBYTE = 1024 * 1024
+
+
+def cgroup_of(pid: int) -> Path:
+    """The cgroup a process is in, as a path of the cgroup filesystem."""
+    text = Path(f"/proc/{pid}/cgroup").read_text().strip().removeprefix("0::")
+    return CGROUPS / text.lstrip("/")
+
+
+def user_slice() -> Path:
+    return CGROUPS / "user.slice" / f"user-{rcman_uid()}.slice"
+
+
+def slice_dir(person: int, workspace: int | None = None) -> Path:
+    """The cgroup of a person's slice, or of their workspace's, in rcman's user manager."""
+    root = user_slice() / f"user@{rcman_uid()}.service" / limits.ROOT_SLICE
+    root /= limits.person_slice(person)
+    return root if workspace is None else root / limits.workspace_slice(person, workspace)
+
+
+def limit_files(directory: Path) -> dict[str, str | None]:
+    """What the kernel's limit files of a cgroup hold; None for one it does not have (cpu.max
+    may be gone once the CPU limit is taken off)."""
+    found: dict[str, str | None] = {}
+    for name in LIMIT_FILES:
+        try:
+            found[name] = (directory / name).read_text().strip()
+        except FileNotFoundError:
+            found[name] = None
+    return found
+
+
+def not_limited(directory: Path) -> bool:
+    found = limit_files(directory)
+    cpu = found.pop("cpu.max")
+    return all(v == "max" for v in found.values()) and (cpu is None or cpu.startswith("max "))
+
+
+def person_id(email: str = ADMIN) -> int:
+    status, everyone = api("GET", "/api/people")
+    assert status == 200, everyone
+    return next(p["id"] for p in everyone["people"] if p["email"] == email)
+
+
+def manager_pid() -> str:
+    return sh(
+        "systemctl", "show", "--property", "MainPID", "--value", f"user@{rcman_uid()}.service"
+    ).stdout.strip()
+
+
+def drop_in_times(person: int, workspace: int) -> dict[str, int]:
+    """When the unit manager's runtime drop-ins of a workspace's slice were written, by file, in
+    nanoseconds: they are in a tmpfs the restart empties."""
+    folder = Path(f"/run/user/{rcman_uid()}/systemd/user.control")
+    found = {
+        str(path.relative_to(folder)): path.stat().st_mtime_ns
+        for path in folder.glob(f"{limits.workspace_slice(person, workspace)}.d/*.conf")
+    }
+    assert found, "no property is set on the slice"
+    return found

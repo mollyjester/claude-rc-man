@@ -26,14 +26,17 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
 from helpers import git_run, rules
-from rcman import builder, db, devcontainer, people
+from rcman import builder, db, devcontainer, limits, people
 from rcman.channel import Channel, ChannelBroken, ChannelTimeout
 from rcman.claude_server import Server, TmuxFailed
 from rcman.claude_versions import ClaudeVersions
+from rcman.limits import Limits
 from rcman.problems import CLONE_MESSAGES, DEVCONTAINER_MESSAGES, Problem
 from rcman.repository import ANSWER_MARGIN_SECONDS, KILL_GRACE_SECONDS, CloneFailed, Repository
 from rcman.runtime import (
+    LABEL_PERSON,
     LABEL_WORKSPACE,
+    SYSTEMCTL_TIMEOUT,
     TIMED_OUT,
     BuildFailed,
     BuildRequest,
@@ -57,6 +60,10 @@ CHANNEL_IDLE_SECONDS = 300.0
 # How often idle channels, and sign-outs that wait for servers that have ended, are
 # looked for.
 IDLE_CHECK_SECONDS = 30.0
+# How long the limits report may take in all: each reading asks the unit manager, one after the
+# other, and one that does not answer takes up to rcman's timeout for it. The readings left
+# when the time is used are not made, and are shown as not read.
+LIMITS_REPORT_SECONDS = 2 * SYSTEMCTL_TIMEOUT
 # How long one wait for the runtime lasts before restore tries again, or stops when
 # rcman does; and how long rcman's shutdown waits for restore to stop.
 RUNTIME_WAIT_SECONDS = 5.0
@@ -166,6 +173,8 @@ class Workspace:
     # The Claude Code version its server started with, recorded from the start until the
     # server is stopped or forgotten; None while none is.
     claude_version: str | None = None
+    # What the workspace may use (limits.py), beyond what its person's limits hold it to.
+    limits: Limits = Limits()
 
     @property
     def container(self) -> str:
@@ -188,6 +197,7 @@ def _workspace(row: sqlite3.Row | None) -> Workspace | None:
         row["log"],
         row["environment"],
         row["claude_version"],
+        Limits(row["memory_mib"], row["cpu_percent"], row["pids"]),
     )
 
 
@@ -231,6 +241,18 @@ def answered():
         raise Problem("workspace_failed") from None
 
 
+@contextlib.contextmanager
+def limits_answered():
+    """The runtime's failures to set or read limits as problems."""
+    try:
+        yield
+    except RuntimeUnavailable:
+        raise Problem("runtime_unavailable") from None
+    except RuntimeFailed as error:
+        log.warning("limits could not be applied: %s", error)
+        raise Problem("limits_not_applied") from None
+
+
 class Workspaces:
     def __init__(self, settings: Settings, runtime: Runtime):
         self.settings = settings
@@ -240,6 +262,14 @@ class Workspaces:
         self._channels: dict[str, Channel] = {}
         self._locks: dict[int, threading.RLock] = {}
         self._person_locks: dict[int, threading.RLock] = {}
+        # What reads or changes the limits on the slices, so that a check of the caps and the
+        # use, the apply that follows and the write to the table are one step: a request
+        # between them would judge, or overwrite, what is no longer so. It is held across
+        # calls to the unit manager, each of which has a timeout, because the check is only
+        # worth anything if nothing else sets a limit before the apply; the price is that
+        # another request for limits waits, and nothing else does. Taken after a person's lock
+        # and a workspace's, and nothing else is taken while it is held.
+        self._limits_lock = threading.RLock()
         self._making: dict[int, threading.Thread] = {}  # by workspace
         # The workspaces being made that a deletion has to stop: while git clones, an image is
         # pulled or a command runs. Each has the event the deletion sets; under _lock.
@@ -398,6 +428,7 @@ class Workspaces:
         refused = False
         try:
             self._log(workspace.id, "Making the workspace")
+            self._apply_stored(workspace.id)  # before its container is in the slice
             self.runtime.create(self._spec(workspace, slot))
             self._log(workspace.id, "Checking git")
             self._check_git(workspace)
@@ -922,6 +953,7 @@ class Workspaces:
         with answered():
             self.runtime.remove(workspace.container)
             self.runtime.remove_build(workspace.id, image=True)
+        self._drop_limits(workspace.person, workspace.id)
         con = self._con()
         try:
             con.execute("delete from workspaces where id = ?", (workspace.id,))
@@ -946,6 +978,7 @@ class Workspaces:
                 making.join(MADE_WITHIN_SECONDS)
         if self.of_person(person.id):  # one could not be removed: rcman's next start tries
             raise Problem("workspace_failed")
+        self._drop_limits(person.id, None)  # ids are given again: not to the next person
         self._remove_account(person.id)
         con = self._con()
         try:
@@ -964,6 +997,208 @@ class Workspaces:
         except Problem:
             log.warning("the sign-in of person %s could not be removed", person_id)
             raise
+
+    # --- limits ------------------------------------------------------------------------
+
+    def set_limits(self, person: people.Person, workspace_id: int | None, held: Limits) -> None:
+        """Set the limits on the person's workspaces together, or on the person's workspace
+        ``workspace_id``: the whole set, a limit left out taken away. They are applied to the
+        slice first and recorded only once applied, so that a set that could not be applied
+        changes nothing. A memory or process limit lower than the one there is, and lower than
+        what is in use, is refused (``limit_below_use``): the kernel would end work that is
+        running, or a process limit would stop new commands in the workspace, rcman's own among
+        them. Raising or taking away a limit, and any change of the CPU, are always allowed."""
+        with self.person_lock(person.id):
+            if workspace_id is None:
+                self._set_limits(person, None, held)
+                return
+            found = self.owned(person.id, workspace_id)
+            with self.lock(found.id):
+                self._set_limits(person, found.id, held)
+
+    def _set_limits(self, person: people.Person, workspace_id: int | None, held: Limits) -> None:
+        with self._limits_lock:
+            if workspace_id is None:
+                con = self._con()
+                try:
+                    now = people.by_id(con, person.id)
+                finally:
+                    con.close()
+                if now is None or now.state != people.ACTIVE:
+                    raise Problem("person_not_found")
+            else:
+                now = self.get(workspace_id)
+                if now is None or now.person != person.id or now.state == DELETING:
+                    raise Problem("workspace_not_found")
+            self._refuse_below_use(person.id, workspace_id, held)
+            with limits_answered():
+                self.runtime.apply_limits(person.id, workspace_id, held)
+            if workspace_id is None:
+                con = self._con()
+                try:
+                    people.set_limits(con, person.id, held)
+                finally:
+                    con.close()
+            else:
+                self._set(
+                    workspace_id,
+                    memory_mib=held.memory_mib,
+                    cpu_percent=held.cpu_percent,
+                    pids=held.pids,
+                )
+
+    def _refuse_below_use(self, person_id: int, workspace_id: int | None, held: Limits) -> None:
+        """Refuse a memory or process limit that is lower than the cap the slice has now and
+        lower than what is in use. The cap is the slice's own, read from the unit manager, not
+        what the table holds: they differ after a restore that could not apply a limit, or a
+        set that was applied and not recorded, and a table's value sent again with a change
+        of the CPU would then be a cap below the use. A limit equal to the cap, or higher,
+        lowers nothing. The caps and the use are read only for a limit that is given; the
+        use is read only for one that would lower a cap, and one the kernel does not count is
+        refused (``usage_unknown``), as nothing says it is safe."""
+        if held.memory_mib is None and held.pids is None:
+            return
+        with limits_answered():
+            caps = self.runtime.caps(person_id, workspace_id)
+        memory = held.memory_mib is not None and limits.lower_than(
+            held.memory_mib * limits.MEBIBYTE, caps.memory_bytes
+        )
+        pids = held.pids is not None and limits.lower_than(held.pids, caps.tasks)
+        if not (memory or pids):
+            return
+        with limits_answered():
+            used = self.runtime.usage(person_id, workspace_id)
+        if (memory and not used.memory_known) or (pids and not used.tasks_known):
+            raise Problem("usage_unknown")
+        if memory and limits.memory_below(held.memory_mib, used):
+            raise Problem(
+                "limit_below_use",
+                title=(
+                    f"{used.memory_text()} of memory is in use now, so the limit cannot be set "
+                    "below it: that would end work that is running. Set a higher limit, or "
+                    "stop what uses it first."
+                ),
+                limit="memory",
+                used=used.memory_text(),
+            )
+        if pids and limits.pids_below(held.pids, used):
+            raise Problem(
+                "limit_below_use",
+                title=(
+                    f"{used.tasks} processes are in use now, so the limit cannot be set below "
+                    "that: new commands in the workspace would fail. Set a higher limit, or "
+                    "stop what uses them first."
+                ),
+                limit="pids",
+                used=str(used.tasks),
+            )
+
+    def limits_report(self, person: people.Person) -> dict:
+        """The person's limits and use, and each workspace's, as the API shows them: the use
+        is None where it could not be read, or where the report ran out of time (at most
+        LIMITS_REPORT_SECONDS in all), and a figure the kernel does not count is None. The
+        person is read again: their limits are the
+        table's."""
+        con = self._con()
+        try:
+            person = people.by_id(con, person.id) or person
+        finally:
+            con.close()
+
+        deadline = time.monotonic() + LIMITS_REPORT_SECONDS
+
+        def used(workspace_id: int | None) -> dict | None:
+            if time.monotonic() > deadline:
+                return None  # no time left for this one: not read
+            try:
+                now = self.runtime.usage(person.id, workspace_id)
+            except (RuntimeFailed, RuntimeUnavailable) as failed:
+                log.warning("what is in use could not be read: %s", failed)
+                return None
+            return {
+                "memory": now.memory_text() if now.memory_known else None,
+                "memory_bytes": now.memory_bytes if now.memory_known else None,
+                "tasks": now.tasks if now.tasks_known else None,
+            }
+
+        return {
+            "person": {"limits": person.limits.text(), "usage": used(None)},
+            "workspaces": [
+                {
+                    "id": w.id,
+                    "name": w.name,
+                    "state": w.state,
+                    "limits": w.limits.text(),
+                    "usage": used(w.id),
+                }
+                for w in self.of_person(person.id)
+            ],
+        }
+
+    def _apply_stored(self, workspace_id: int | None = None, person_id: int | None = None) -> None:
+        """Apply the set the table holds for the workspace, or for the person, to the slice: an
+        empty set resets it. The unit manager holds limits only until the machine restarts, and
+        an id is given again once its workspace is gone, so the slice is set before a container
+        is made in it and when rcman starts, whether or not there are limits: otherwise a slice
+        a failed drop left would hold the next workspace of that id to the last one's caps.
+        A set with limits that cannot be applied is the caller's failure; a reset that cannot
+        be is logged, and is tried again when rcman next starts."""
+        with self._limits_lock:
+            if workspace_id is not None:
+                now = self.get(workspace_id)
+                if now is None:
+                    return
+                owner, workspace, held = now.person, now.id, now.limits
+            else:
+                con = self._con()
+                try:
+                    found = people.by_id(con, person_id)
+                finally:
+                    con.close()
+                if found is None:
+                    return
+                owner, workspace, held = found.id, None, found.limits
+            try:
+                self.runtime.apply_limits(owner, workspace, held)
+            except (RuntimeFailed, RuntimeUnavailable) as failed:
+                if held.limited:
+                    raise
+                log.warning(
+                    "the slice of person %s workspace %s could not be reset: %s",
+                    owner,
+                    workspace,
+                    failed,
+                )
+
+    def _restore_limits(self) -> None:
+        """Set the table's limits on every slice there is a row for, before any container is
+        started; a row with none resets its slice. One that cannot be set is logged, and the
+        rest go on."""
+        con = self._con()
+        try:
+            everyone = people.everyone(con)
+        finally:
+            con.close()
+        for person in everyone:
+            self._step(self._apply_stored, None, person.id)
+        for workspace in self.everything():
+            if workspace.state != DELETING:
+                self._step(self._apply_stored, workspace.id)
+
+    def _drop_limits(self, person_id: int, workspace_id: int | None) -> None:
+        """Take the limits off a slice whose person or workspace is gone, whether or not it
+        had any: ids are given again, so one left would hold the next. Never fails the
+        deletion; the unit manager forgets them at the next restart in any case."""
+        try:
+            with self._limits_lock:
+                self.runtime.drop_limits(person_id, workspace_id)
+        except (RuntimeFailed, RuntimeUnavailable) as failed:
+            log.warning(
+                "the limits of person %s workspace %s could not be dropped: %s",
+                person_id,
+                workspace_id,
+                failed,
+            )
 
     # --- channels and servers ------------------------------------------------------------
 
@@ -1263,6 +1498,7 @@ class Workspaces:
                 return
             self._step(self.runtime.clean_probes)
             self._step(self.versions.sweep)
+            self._step(self._restore_limits)  # the unit manager forgot them; before any start
             self._restore_all()
             if self._closing.is_set():
                 return
@@ -1334,6 +1570,8 @@ class Workspaces:
                 if self.get(workspace_id) is not None or self._being_made(workspace_id):
                     return
                 self.runtime.remove(name)
+                with contextlib.suppress(ValueError):  # the slice it was in goes with it
+                    self._drop_limits(int(labels.get(LABEL_PERSON, "")), workspace_id)
         elif name not in {w.container for w in self.everything()}:
             self.runtime.remove(name)
 
@@ -1389,8 +1627,10 @@ class Workspaces:
         plan's image, which may be gone from the runtime's storage. If the registry says it is
         not there, or may not be had, the workspace is failed, in words that say to delete it
         and make it again; if the pull fails otherwise - the network, a timeout, a registry
-        that is down - nothing is decided: it stays ready, without its container, and the
-        next restore tries again. False when there is no container to go on with, because of
+        that is down - nothing is decided: it stays ready, without its container, and is made
+        again the next time rcman starts: only a restore makes a lost container again, and it
+        runs once, as rcman starts. The same holds for limits that cannot be applied before it
+        is made. False when there is no container to go on with, because of
         either or a deletion meanwhile."""
         con = self._con()
         try:
@@ -1418,6 +1658,7 @@ class Workspaces:
                 return False
         if self._cancelled(workspace.id, cancel):
             return False
+        self._apply_stored(workspace.id)  # before its container is in the slice
         self.runtime.create(self._spec(workspace, slot, plan))
         if self._cancelled(workspace.id, cancel):
             with self.lock(workspace.id):  # made after a deletion removed it: nothing is for it

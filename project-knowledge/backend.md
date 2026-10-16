@@ -20,6 +20,7 @@ the OpenAPI description it serves at `/api/openapi.json`, browsable at
 | `db.py` | SQLite connections and the schema, as migrations; `migrate` refuses a database newer than the code |
 | `identity.py` | Who is asking, and whether they may |
 | `people.py`, `admin.py` | The people who may use rcman, the allowed list, and `rcman-admin` — see [people.md](people.md) |
+| `limits.py` | The limits on what a person's workspaces and each workspace may use: reading and showing values, the slices' names, the properties set, and usage — see [Limits](#limits) |
 | `workspaces.py` | Workspaces made, deleted and brought back, and their servers' verbs — see [runtime.md](runtime.md) |
 | `runtime.py`, `channel.py`, `claude_server.py` | Where workspaces run, the shell commands go through, and a workspace's server — see [runtime.md](runtime.md) |
 | `problems.py` | RFC 9457 problem details for every error |
@@ -117,6 +118,30 @@ threads; a workspace whose server cannot be read is listed with why, as
 (`GET /api/servers/everyone`), each server with only `SERVER_FIELDS` — never its
 screen or its claude.ai address. The listing is read-only: no route lets one
 person act on another's workspaces.
+
+## Limits
+
+The administrators' account is [Limits](../docs/users.md#limits); how they are applied, the
+slices and the restore are [runtime.md](runtime.md#limits). The routes are the People page's, for
+administrators (`routers/people.py`), and `rcman-admin limits` does the same from a shell (see
+[people.md](people.md#rcman-admin)):
+
+- `GET /api/people` lists each person with their stored `limits`;
+- `GET /api/people/{person}/limits` is the report (`Workspaces.limits_report`): the person's
+  limits and what their workspaces use together, and each workspace's own; a usage that could not
+  be read is null, not zero (the report has a total deadline, after which readings are null);
+- `PUT /api/people/{person}/limits` and `PUT /api/people/{person}/workspaces/{workspace}/limits`
+  set the whole set, `LimitsBody`: a field sent null is taken away. Each field is checked by the
+  rule of `helpers/rules.py` and the minimum of `limits.py`, and refused in the rule's words.
+
+The problem codes are in `problems.py`: `memory_invalid`, `cpu_invalid` and `pids_invalid`
+(each the sentence of its rule), `limit_below_use`, which names the limit and what is in use (409; the rule is
+[runtime.md](runtime.md#limits)'s), `usage_unknown` (409) when a tightening is asked and what is in
+use cannot be told, and `limits_not_applied` when the runtime could not set them; with `person_not_found`,
+`workspace_not_found` and `runtime_unavailable`. A limit that could not be applied is not
+recorded. Both `PUT`s are audited as `person.limits` and `workspace.limits`, the target holding the
+values set (see [the audit guide](../docs/audit.md)). `tests/test_limits.py`,
+`tests/test_workspace_limits.py` and `tests/test_people.py` hold them.
 
 ## Claude accounts
 

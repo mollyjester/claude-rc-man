@@ -29,6 +29,8 @@ changes nothing: a page's report of a failure rcman could not see, written to th
 | `settings.update` | changes their settings (see [Settings](settings.md)) | the settings they sent, as JSON; none when they were refused |
 | `person.add` | adds a person (administrators; see [Adding and removing people](users.md)) | the person's address |
 | `person.delete` | removes a person, with all their workspaces (administrators) | the person's address |
+| `person.limits` | sets the limits on what a person's workspaces may use together (administrators) | the person's address and the limits set: `memory`, `cpu` and `pids`, each `none` for no limit |
+| `workspace.limits` | sets the limits on one workspace (administrators) | the person's address, a slash and the workspace's name, then the limits set as above |
 | `git.stage` | stages files in a workspace's repository | the workspace's name |
 | `git.unstage` | unstages files | the workspace's name |
 | `git.commit` | commits what is staged | the workspace's name — the message is never recorded |

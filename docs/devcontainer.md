@@ -208,7 +208,8 @@ with no more than a workspace has. Which CLI and Node the builder image holds is
   it needs (`run_argv` in `backend/rcman/builder.py`), and a volume of its own for what it
   builds. Its network reaches everything outbound, as a workspace's does, the local network
   and the addresses cloud machines serve their metadata on included; only the machine's own
-  loopback is blocked. It has no limit on CPU, memory or disk yet; limits are a later step. A
+  loopback is blocked. It counts against the limits on memory, CPU and processes of the person who asked for the
+  build, and has none of its own (see [Limits](users.md#limits)); disk cannot be limited. A
   hostile build that got out of its nested container would still be in the builder's own
   range, and the image it made is checked again before it is kept (see Copying out).
 - **What it sees.** Only a copy of the workspace's files, streamed to it as a tar archive

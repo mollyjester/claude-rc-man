@@ -109,6 +109,21 @@ run and kept.
    runs from boot, without anyone signed in; and Podman's socket in that user
    manager. Workspaces run there, outside rcman's own service, so they keep
    running while rcman restarts or upgrades.
+   The limits administrators put on memory, CPU and processes (see
+   [Limits](users.md#limits)) need that user manager to have the `cpu`, `memory`
+   and `pids` controllers; the installer checks, and prints a warning, and goes on, when
+   a controller has not been delegated to the user managers (`Delegate=` in a
+   drop-in of `user@.service`, which is for you to decide and does not change by
+   itself), when the machine does not use only cgroup v2, which limits need, or
+   when it cannot tell. Limits are off until an administrator sets one, and then
+   setting one says it could not be applied. It also lifts the default ceiling on processes of rcman's user slice
+   (`/etc/systemd/system/user-<uid>.slice.d/rcman.conf`) and of rcman's user manager
+   (`.config/systemd/user.conf.d/rcman.conf` in rcman's home), so that the
+   only limits on processes are the ones administrators set. Both drop-ins are written
+   even after such a warning, and the installer asks rcman's user manager to read
+   its configuration again on every run, which restarts nothing and ends nothing
+   running. It refuses, as it does for no other file, when a folder it writes
+   into for this is a link.
    **Warning:** adding the builder's range to a machine that has the earlier, smaller
    one makes the installer run `podman system migrate` as `rcman`, which stops its
    running containers, and so every workspace's server. rcman is in an alpha without

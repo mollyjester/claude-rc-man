@@ -41,6 +41,19 @@ MESSAGES = {
     "email_taken": "Someone with that address is there already.",
     "people_full": "rcman has room for no more people.",
     "person_not_found": "There is no such person.",
+    # limits
+    "memory_invalid": rules.MEMORY.sentence,
+    "cpu_invalid": rules.CPU.sentence,
+    "pids_invalid": rules.PIDS.sentence,
+    "limit_below_use": (
+        "A limit on memory or on processes cannot be set below what is in use now, because "
+        "that would end work that is running. Set a higher limit, or stop what uses it first."
+    ),
+    "usage_unknown": (
+        "rcman cannot tell what is in use, so it cannot lower this limit without risking "
+        "running work. Set a higher limit, or none."
+    ),
+    "limits_not_applied": "rcman could not apply the limits, so nothing was changed.",
     # workspaces
     "workspace_not_found": "There is no such workspace.",
     "workspace_name_taken": "You have a workspace with that name already.",
@@ -316,6 +329,12 @@ STATUS = {
     "email_taken": 409,
     "people_full": 409,
     "person_not_found": 404,
+    "memory_invalid": 400,
+    "cpu_invalid": 400,
+    "pids_invalid": 400,
+    "limit_below_use": 409,
+    "usage_unknown": 409,
+    "limits_not_applied": 502,
     "workspace_not_found": 404,
     "workspace_name_taken": 409,
     "workspace_not_ready": 409,

@@ -40,25 +40,37 @@ from installed import (  # noqa: E402
     ADMIN,
     DOMAIN,
     ETC,
+    MEBIBYTE,
     ROOT,
     SETTINGS,
     SOCKET,
     STATE,
     api,
     app,
+    cgroup_of,
     changes,
     claude_processes,
+    drop_in_times,
     healthy,
     in_workspace,
     install,
+    limit_files,
+    manager_pid,
+    not_limited,
+    person_id,
     podman,
     rcman_uid,
     serve_releases,
+    slice_dir,
     until,
+    user_slice,
     workspace_of,
 )
 
 sys.path.insert(0, str(SRC))
+sys.path.insert(0, str(SRC / "backend"))
+from rcman import limits  # noqa: E402
+
 from installer import install as ins  # noqa: E402
 
 # What test_restored_in_container.py reads, once the host has restarted.
@@ -159,6 +171,22 @@ def test_rcman_has_rootless_podman_of_its_own(first_install):
     assert ins.podman_socket(uid).is_socket()
     info = json.loads(podman("info", "--format", "json").stdout)
     assert info["host"]["security"]["rootless"] is True
+
+
+def test_nothing_limits_processes_but_what_rcman_sets(first_install):
+    """The drop-ins are there with the installer's text, systemd has read them, and the
+    controllers limits need are the user manager's."""
+    uid = rcman_uid()
+    slice_file = ins.SYSTEMD / f"user-{uid}.slice.d" / "rcman.conf"
+    user_file = STATE / ".config" / "systemd" / "user.conf.d" / "rcman.conf"
+    assert slice_file.read_text() == ins.USER_SLICE_DROP_IN
+    assert user_file.read_text() == ins.USER_MANAGER_DROP_IN
+    assert pwd.getpwuid(user_file.stat().st_uid).pw_name == "rcman"
+    assert ins.limits_problem(uid) is None  # the controllers limits need are the manager's
+    assert (user_slice() / "pids.max").read_text().strip() == "max"
+    manager = ["systemctl", "--user", "--machine", "rcman@"]
+    shown = sh(*manager, "show", "--property", "DefaultTasksMax", "--value").stdout.strip()
+    assert shown == limits.INFINITY
 
 
 def test_rcman_runs_with_no_new_privileges_and_its_podman_socket(first_install):
@@ -466,6 +494,47 @@ def test_running_again_changes_nothing(first_install):
     assert app("/api/health")[0] == 200
 
 
+def test_installing_again_changes_nothing_and_ends_nothing_that_runs(first_install):
+    """A workspace's container, with limits on its slices, runs through a second installation
+    as it was: the same process, the same user manager, the same limits."""
+    probe = made("limits-probe")
+    me = person_id()
+    held = {"memory": "2G", "cpu": "1.5", "pids": "3000"}
+    status, answer = api("PUT", f"/api/people/{me}/workspaces/{probe['id']}/limits", body=held)
+    assert status == 200, answer
+    directory = slice_dir(me, probe["id"])
+    files = limit_files(directory)
+    assert files["memory.max"] == str(2048 * MEBIBYTE) and files["pids.max"] == "3000"
+
+    def running() -> tuple:
+        name = f"rcman-ws-{probe['id']}"
+        state = json.loads(podman("container", "inspect", name).stdout)[0]["State"]
+        assert state["Running"]
+        return (
+            state["Pid"],
+            state["ConmonPid"],
+            state["StartedAt"],
+            manager_pid(),
+            limit_files(directory),
+        )
+
+    before = running()
+    assert before[3] != "0"
+    proc = install()
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert changes(proc)["changed"] == []
+    assert running() == before
+    assert app("/api/health")[0] == 200
+
+    # Deleting the workspace takes its limits off the slice, which a later workspace of the
+    # same id must not find.
+    status, answer = api("DELETE", f"/api/workspaces/{probe['id']}")
+    assert status == 200, answer
+    until(lambda: workspace_of("limits-probe") is None)
+    assert directory.is_dir()  # a slice stays once made, so what it holds is looked at
+    assert not_limited(directory), limit_files(directory)
+
+
 def test_saved_settings_need_no_answers(first_install):
     proc = install(env={k: "" for k in SETTINGS})
     assert proc.returncode == 0, proc.stderr
@@ -663,12 +732,59 @@ def test_deleting_a_person_leaves_nothing_labelled_theirs(first_install):
     assert api("GET", "/api/me", BOB)[0] == 403
 
 
+def test_an_administrators_limits_reach_the_kernel_through_the_api_and_the_command(first_install):
+    """A person's through the API, a workspace's through ``rcman-admin``; the workspace's server
+    runs on, and both are read back with what is in use."""
+    alpha = workspace_of("alpha")
+    me = person_id()
+    before = claude_processes(alpha["id"])
+    assert before and not_limited(slice_dir(me, alpha["id"]))  # positive control
+    held = {"memory": "4G", "cpu": "3", "pids": "6000"}
+    status, answer = api("PUT", f"/api/people/{me}/limits", body=held)
+    assert status == 200, answer
+    assert limit_files(slice_dir(me)) == {
+        "memory.max": str(4096 * MEBIBYTE),
+        "memory.swap.max": "0",
+        "cpu.max": "300000 100000",
+        "pids.max": "6000",
+    }
+    done = sh("rcman-admin", "limits", ADMIN, "--workspace", "alpha", "--memory", "2G",
+              "--cpu", "1.5", "--pids", "3000")  # fmt: skip
+    assert "memory=2G cpu=1.5 pids=3000" in done.stdout, done.stdout
+    assert limit_files(slice_dir(me, alpha["id"])) == {
+        "memory.max": str(2048 * MEBIBYTE),
+        "memory.swap.max": "0",
+        "cpu.max": "150000 100000",
+        "pids.max": "3000",
+    }
+    shown = sh("rcman-admin", "limits", ADMIN, "--workspace", "alpha").stdout
+    assert "memory=2G cpu=1.5 pids=3000" in shown and "In use: memory=" in shown, shown
+    status, report = api("GET", f"/api/people/{me}/limits")
+    assert status == 200, report
+    assert report["person"]["limits"] == held and report["person"]["usage"]["tasks"] > 0
+    (own,) = [w for w in report["workspaces"] if w["id"] == alpha["id"]]
+    assert own["usage"]["tasks"] > 0 and own["limits"]["pids"] == "3000"
+    found = json.loads(podman("container", "inspect", f"rcman-ws-{alpha['id']}").stdout)[0]
+    leaf = cgroup_of(found["State"]["Pid"])  # the cgroup inside the container's scope
+    assert leaf.parent.parent == slice_dir(me, alpha["id"]) and leaf.parent.name.startswith(
+        "libpod-"
+    )
+    assert claude_processes(alpha["id"]) == before and server_state("alpha") == "ready"
+
+
 def test_the_server_is_left_running_for_the_restart(first_install):
     alpha = workspace_of("alpha")
     assert server_state("alpha") == "ready"
     marker = Path("/run/rcman-test-before-the-restart")
     marker.touch()
-    left = {"workspace": alpha["id"], "name": "alpha", "marker": str(marker)}
+    me = person_id()
+    left = {
+        "workspace": alpha["id"],
+        "name": "alpha",
+        "marker": str(marker),
+        "person": me,
+        "drop_ins": drop_in_times(me, alpha["id"]),
+    }
     LEFT_RUNNING.write_text(json.dumps(left))
 
 

@@ -330,6 +330,11 @@ button.name[aria-current="true"] {
   padding: 1rem;
   margin: 1rem 0;
 }
+.limits-fields {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 1rem;
+}
 form label {
   display: block;
   margin: 0.5rem 0;

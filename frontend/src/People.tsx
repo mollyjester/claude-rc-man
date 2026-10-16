@@ -1,10 +1,54 @@
-import { type FormEvent, useCallback, useEffect, useState } from "react";
+import {
+  type FormEvent,
+  type KeyboardEvent,
+  useCallback,
+  useEffect,
+  useId,
+  useRef,
+  useState,
+} from "react";
 
 import { type ApiError, api } from "./api";
 import { m } from "./messages";
 import { asApiError, ProblemView } from "./ProblemView";
 
-type Person = { id: number; email: string; admin: boolean; state: string; workspaces: number };
+// The three limits as the server takes them back: text, null for no limit.
+type Held = { memory: string | null; cpu: string | null; pids: string | null };
+// Either figure is null where the server cannot tell.
+type Used = { memory: string | null; memory_bytes: number | null; tasks: number | null };
+type ScopeReport = { limits: Held; usage: Used | null };
+type WorkspaceReport = ScopeReport & { id: number; name: string; state: string };
+type Report = { person: ScopeReport; workspaces: WorkspaceReport[] };
+
+type Person = {
+  id: number;
+  email: string;
+  admin: boolean;
+  state: string;
+  workspaces: number;
+  limits: Held;
+};
+
+// The fields of the limits, in order, by the server's name for each.
+const LIMIT_FIELDS = [
+  ["memory", m.usersMemory],
+  ["cpu", m.usersCpu],
+  ["pids", m.usersProcesses],
+] as const;
+const LIMIT_LABELS = Object.fromEntries(LIMIT_FIELDS);
+
+type Typed = Record<keyof Held, string>;
+const typed = (held: Held): Typed => ({
+  memory: held.memory ?? "",
+  cpu: held.cpu ?? "",
+  pids: held.pids ?? "",
+});
+// What is sent: all three, exactly as typed, null for a field left empty.
+const sent = (values: Typed): Held => ({
+  memory: values.memory === "" ? null : values.memory,
+  cpu: values.cpu === "" ? null : values.cpu,
+  pids: values.pids === "" ? null : values.pids,
+});
 
 // Asks before removing someone, whose workspaces are deleted with them.
 function RemoveDialog({
@@ -51,11 +95,220 @@ function RemoveDialog({
   );
 }
 
+// One scope's limits (a person's, or one of their workspaces') in a form of its own, beside
+// what the scope uses now. A refusal is the dialog's to show, one at a time.
+function ScopeForm({
+  title,
+  path,
+  report,
+  describedBy,
+  failure,
+  onFailed,
+  onSaving,
+  onSaved,
+  onSettled,
+}: {
+  title: string;
+  path: string;
+  report: ScopeReport;
+  describedBy: string;
+  failure: ApiError | null;
+  onFailed: (error: ApiError | null) => void;
+  onSaving: () => void;
+  onSaved: () => void;
+  onSettled: () => void;
+}) {
+  const heading = useId();
+  const [values, setValues] = useState(typed(report.limits));
+  const [status, setStatus] = useState<"idle" | "busy" | "saved">("idle");
+
+  async function save(event: FormEvent) {
+    event.preventDefault();
+    setStatus("busy");
+    onFailed(null);
+    onSaving();
+    try {
+      const stored = await api.put<{ limits: Held }>(path, sent(values));
+      setValues(typed(stored.limits));
+      setStatus("saved");
+      onSaved();
+    } catch (e) {
+      onFailed(asApiError(e));
+      setStatus("idle");
+    }
+    onSettled();
+  }
+
+  return (
+    <form
+      noValidate
+      onSubmit={save}
+      aria-labelledby={heading}
+      aria-busy={status === "busy"}
+      className="limits"
+    >
+      <h3 id={heading}>{title}</h3>
+      <p>
+        {report.usage && report.usage.memory !== null && report.usage.tasks !== null
+          ? m.limitsUsage(report.usage.memory, report.usage.tasks)
+          : m.limitsUsageUnknown}
+      </p>
+      <div className="limits-fields">
+        {LIMIT_FIELDS.map(([name, label]) => (
+          <label key={name}>
+            {label}
+            <input
+              type="text"
+              name={name}
+              value={values[name]}
+              aria-describedby={describedBy}
+              onChange={(e) => {
+                setValues({ ...values, [name]: e.target.value });
+                setStatus("idle");
+              }}
+            />
+          </label>
+        ))}
+      </div>
+      <div className="actions">
+        <button
+          type="submit"
+          className="primary"
+          disabled={status === "busy"}
+          aria-label={m.limitsSaveFor(title)}
+        >
+          {m.save}
+        </button>
+      </div>
+      <p role="status">
+        {status === "busy" ? m.limitsSaving : status === "saved" ? m.limitsSaved(title) : ""}
+      </p>
+      <ProblemView error={failure} labels={LIMIT_LABELS} />
+    </form>
+  );
+}
+
+// The limits on a person's workspaces together and on each workspace, with what each uses
+// now, read when the dialog opens and again after every save, whatever came of it. Each scope
+// is saved on its own, and the dialog cannot be left while one is.
+function LimitsDialog({
+  person,
+  onSaved,
+  onClose,
+}: {
+  person: Person;
+  onSaved: () => void;
+  onClose: () => void;
+}) {
+  const [report, setReport] = useState<Report | null>(null);
+  const [loadError, setLoadError] = useState<ApiError | null>(null);
+  const [failure, setFailure] = useState<{ path: string; error: ApiError } | null>(null);
+  const dialog = useRef<HTMLDivElement>(null);
+  const units = useId();
+  const base = `/api/people/${person.id}`;
+
+  const [saving, setSaving] = useState(0); // saves in flight
+  const waits = useId();
+  const asked = useRef(0);
+
+  // Reads the limits and use again; an answer older than one asked for since is dropped.
+  const load = useCallback(() => {
+    const mine = ++asked.current;
+    api.get<Report>(`${base}/limits`).then(
+      (r) => {
+        if (mine !== asked.current) return;
+        setReport(r);
+        setLoadError(null);
+      },
+      (e) => {
+        if (mine === asked.current) setLoadError(asApiError(e));
+      },
+    );
+  }, [base]);
+
+  useEffect(() => dialog.current?.focus(), []);
+  useEffect(load, [load]);
+
+  // A save is not left running unseen: the dialog stays until it is answered.
+  function leave(event: KeyboardEvent) {
+    if (event.key === "Escape" && saving === 0) onClose();
+  }
+
+  function scope(title: string, path: string, held: ScopeReport) {
+    return (
+      <ScopeForm
+        key={path}
+        title={title}
+        path={path}
+        report={held}
+        describedBy={units}
+        failure={failure?.path === path ? failure.error : null}
+        onFailed={(error) => setFailure(error && { path, error })}
+        onSaving={() => setSaving((n) => n + 1)}
+        onSaved={onSaved}
+        onSettled={() => {
+          setSaving((n) => n - 1);
+          load();
+        }}
+      />
+    );
+  }
+
+  return (
+    <div
+      role="dialog"
+      aria-label={m.limitsTitle(person.email)}
+      className="dialog"
+      tabIndex={-1}
+      ref={dialog}
+      onKeyDown={leave}
+    >
+      <h2>{m.limitsTitle(person.email)}</h2>
+      <p>{m.limitsDefault}</p>
+      <p id={units}>{m.limitsUnits}</p>
+      <p>{m.limitsHeldToPerson}</p>
+      <p>{m.limitsMemoryHard}</p>
+      <p>{m.limitsBelowUse}</p>
+      <p>{m.limitsNotLimited}</p>
+      {report === null && loadError === null && <p>{m.loading}</p>}
+      <ProblemView error={loadError} />
+      {report && (
+        <>
+          {scope(m.limitsPersonScope(person.email), `${base}/limits`, report.person)}
+          {report.workspaces.map((w) =>
+            scope(
+              m.limitsWorkspaceScope(
+                w.name,
+                w.state === "ready" ? null : (m.workspaceStates[w.state] ?? w.state),
+              ),
+              `${base}/workspaces/${w.id}/limits`,
+              w,
+            ),
+          )}
+        </>
+      )}
+      <div className="actions">
+        <button
+          type="button"
+          disabled={saving > 0}
+          aria-describedby={saving > 0 ? waits : undefined}
+          onClick={onClose}
+        >
+          {m.close}
+        </button>
+      </div>
+      {saving > 0 && <p id={waits}>{m.limitsCloseWaits}</p>}
+    </div>
+  );
+}
+
 export function People() {
   const [people, setPeople] = useState<Person[]>([]);
   const [email, setEmail] = useState("");
   const [admin, setAdmin] = useState(false);
   const [removing, setRemoving] = useState<Person | null>(null);
+  const [limiting, setLimiting] = useState<Person | null>(null);
+  const openers = useRef(new Map<number, HTMLButtonElement>());
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<ApiError | null>(null);
 
@@ -91,6 +344,9 @@ export function People() {
             <th>{m.usersEmail}</th>
             <th>{m.usersRole}</th>
             <th>{m.usersWorkspaces}</th>
+            <th>{m.usersMemory}</th>
+            <th>{m.usersCpu}</th>
+            <th>{m.usersProcesses}</th>
             <th />
           </tr>
         </thead>
@@ -100,22 +356,53 @@ export function People() {
               <td>{p.email}</td>
               <td>{p.admin ? m.usersAdmin : m.usersUser}</td>
               <td>{p.workspaces}</td>
+              <td>{p.limits.memory ?? m.usersNoLimit}</td>
+              <td>{p.limits.cpu ?? m.usersNoLimit}</td>
+              <td>{p.limits.pids ?? m.usersNoLimit}</td>
               <td>
-                <button
-                  type="button"
-                  className="secondary-danger"
-                  onClick={() => {
-                    setNotice(null);
-                    setRemoving(p);
-                  }}
-                >
-                  {m.usersRemove}
-                </button>
+                <div className="actions">
+                  <button
+                    type="button"
+                    ref={(button) => {
+                      if (button) openers.current.set(p.id, button);
+                      else openers.current.delete(p.id);
+                    }}
+                    onClick={() => {
+                      setNotice(null);
+                      setRemoving(null);
+                      setLimiting(p);
+                    }}
+                  >
+                    {m.usersLimits}
+                  </button>
+                  <button
+                    type="button"
+                    className="secondary-danger"
+                    onClick={() => {
+                      setNotice(null);
+                      setLimiting(null);
+                      setRemoving(p);
+                    }}
+                  >
+                    {m.usersRemove}
+                  </button>
+                </div>
               </td>
             </tr>
           ))}
         </tbody>
       </table>
+      {limiting && (
+        <LimitsDialog
+          key={limiting.id}
+          person={limiting}
+          onSaved={load}
+          onClose={() => {
+            openers.current.get(limiting.id)?.focus();
+            setLimiting(null);
+          }}
+        />
+      )}
       {removing && (
         <RemoveDialog
           key={removing.id}

@@ -260,6 +260,11 @@ CALLS = {
     ("DELETE", "/api/github/token"): {},
     ("POST", "/api/people"): {"json": {"email": "dave@example.com"}},
     ("DELETE", "/api/people/{person}"): {},
+    ("GET", "/api/people/{person}/limits"): {},
+    ("PUT", "/api/people/{person}/limits"): {"json": {"memory": "1G", "cpu": "1", "pids": "1000"}},
+    ("PUT", "/api/people/{person}/workspaces/{workspace}/limits"): {
+        "json": {"memory": "1G", "cpu": "1", "pids": "1000"}
+    },
     ("GET", "/api/claude"): {},
     ("POST", "/api/claude/login"): {"json": {}},
     ("POST", "/api/claude/code"): {"json": {"code": "x"}},

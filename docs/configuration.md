@@ -8,6 +8,10 @@ Each variable's default and allowed values are defined in the settings model,
 `backend/rcman/settings.py`, which is the reference. rcman refuses to start
 when a value is invalid.
 
+The limits on what a person's workspaces may use are not settings of this kind:
+administrators set them per person and per workspace, and rcman keeps them in
+its database (see [Limits](users.md#limits)).
+
 | Variable | What it sets |
 |---|---|
 | `RCMAN_PUBLIC_ORIGIN` | The address browsers use to reach rcman — scheme, host and port, with no path, such as `https://rcman.example.com`. Required. Requests that change something are accepted only when they come from this origin |

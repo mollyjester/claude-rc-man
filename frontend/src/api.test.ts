@@ -38,6 +38,12 @@ test("sends JSON bodies and the query", async () => {
   expect(init.credentials).toBe("same-origin");
 });
 
+test("sends a PUT with its JSON body", async () => {
+  const fake = fakeApi({ "PUT /api/people/2/limits": { limits: {} } });
+  await api.put("/api/people/2/limits", { memory: null });
+  expect(fake.made("PUT", "/api/people/2/limits")[0].body).toEqual({ memory: null });
+});
+
 test("turns a problem into an ApiError carrying everything the server said", async () => {
   fakeApi({
     "PATCH /api/me/settings": problem(

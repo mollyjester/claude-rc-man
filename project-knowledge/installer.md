@@ -41,6 +41,23 @@ first. Everything after runs Podman as rcman through that socket
 (`as_rcman_podman`). `rcman.service` names the socket's `XDG_RUNTIME_DIR` and
 runs with `NoNewPrivileges=yes` and `UMask=0077`.
 
+`ensure_limits`, after `ensure_podman`, prepares what the limits on memory, CPU and processes
+(see [runtime.md](runtime.md#limits)) need. It first refuses, with an `InstallError`, if the folders
+and file it writes into under rcman's home are links, as root would follow one; the file's folders
+are then given to rcman with `os.lchown`. `limits_problem` says why limits cannot be applied, or
+that it cannot tell, and the installer only warns (`warn`) and goes on, since limits are off until
+set: cgroup v2 is missing, a controller of `LIMIT_CONTROLLERS` is not among those of
+`user@<uid>.service`'s control group, that group is empty (which would be the root cgroup, listing
+every controller) or its list cannot be read; delegating a controller is the administrator's to
+decide, and setting a limit later fails with `limits_not_applied`. It writes two drop-ins with
+`write_if_changed`: `USER_SLICE_DROP_IN` for `user-<uid>.slice`, which lifts the ceiling on
+processes that systemd's own defaults put there, read by the daemon-reload that starts the
+services, and `USER_MANAGER_DROP_IN` in rcman's home, which lifts the user manager's default for the
+scopes of its containers. `daemon-reexec` of rcman's user manager (`as_rcman_systemctl`) runs on every
+install after them, so a failed one is not left undone; it restarts nothing and ends nothing the
+manager runs. A second run changes nothing. The files are named so that they come after systemd's
+own in the order it reads them; `tests/test_install.py` holds that and the order of the steps.
+
 The installer refuses a machine with an rcman from before workspaces
 (`check_not_an_old_install`: `OLD_INSTALL_FILES`, or a database without people),
 and `--rollback` refuses a previous release without `WORKSPACES_MARK`: there is
@@ -140,9 +157,17 @@ through the socket.
   credentials file, its processes outside
   `rcman.service`, a restart of rcman leaving them as they were, a stop leaving
   no Claude process, one person unable to reach another's workspace, and
-  deleting a person leaving nothing labelled theirs.
+  deleting a person leaving nothing labelled theirs. Limits are checked in the
+  kernel's own files: the drop-ins `ensure_limits` writes with the user
+  slice's and the user manager's limit on processes lifted, a second run changing
+  nothing and ending nothing that runs (a workspace's container, with limits on its
+  slices, keeping its process and its limits, and the user manager its own), a
+  deleted workspace's slice back to no limit, and an administrator's limits set through the
+  API and `rcman-admin` reaching the files of the person's and the workspace's slice.
   `tests/container/test_restored_in_container.py` then checks, after the whole
-  host has restarted, that rcman brought the workspace and its server back.
+  host has restarted, that rcman brought the workspace and its server back, and
+  that the limits the restart wiped are in the kernel again, written before the
+  container started, with the container in its workspace's slice.
 
 The two installation suites are container tests, so they run on demand, by
 `make test-container`, not by `make check`; when that run is required is in

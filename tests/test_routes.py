@@ -8,6 +8,7 @@ def test_included_routers_are_enumerated_with_their_prefixes(app):
     assert ("/api/health", "GET") in found
     assert ("/api/servers/stop", "POST") in found  # from an included router
     assert ("/api/people/{person}", "DELETE") in found
+    assert ("/api/people/{person}/limits", "PUT") in found
 
 
 def test_every_route_is_under_api_except_the_frontend(app):

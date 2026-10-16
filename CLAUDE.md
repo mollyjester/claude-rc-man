@@ -24,10 +24,10 @@ and the on-demand runs among them, and what each does:
 | Taking an issue, or a task given as plain text, from plan to finished change with subagents | [.claude/skills/manage-issue/SKILL.md](.claude/skills/manage-issue/SKILL.md) |
 | How tests are organised and run, the repository guards, the edit-time and pre-test hooks | [project-knowledge/tests.md](project-knowledge/tests.md) |
 | The fake `claude`, its fixtures, and approving a new Claude Code version | [project-knowledge/fake-claude.md](project-knowledge/fake-claude.md) |
-| Workspaces: the Podman and host runtimes, each person's shared Claude sign-in, the exec channel, a workspace's server, its pinned Claude Code version and states, the canary, restoring at start | [project-knowledge/runtime.md](project-knowledge/runtime.md) |
+| Workspaces: the Podman and host runtimes, each person's shared Claude sign-in, the exec channel, a workspace's server, its pinned Claude Code version and states, the canary, limits on memory, CPU and processes, restoring at start | [project-knowledge/runtime.md](project-knowledge/runtime.md) |
 | What a workspace and its server are, for colleagues | [docs/workspaces.md](docs/workspaces.md) |
-| People, their uid-range slots, the allowed list, `rcman-admin` | [project-knowledge/people.md](project-knowledge/people.md) |
-| Adding and removing people, for administrators | [docs/users.md](docs/users.md) |
+| People, their uid-range slots, the allowed list, `rcman-admin`, their limits | [project-knowledge/people.md](project-knowledge/people.md) |
+| Adding and removing people, and limiting what they use, for administrators | [docs/users.md](docs/users.md) |
 | What a repository's devcontainer.json may ask of a workspace, how an image of it is built, and what is refused, for administrators | [docs/devcontainer.md](docs/devcontainer.md) |
 | The backend: layout, requests, each area's routes (Claude Code versions among them), audit | [project-knowledge/backend.md](project-knowledge/backend.md) |
 | The frontend: formatting and lint, layout, rules, tests | [project-knowledge/frontend.md](project-knowledge/frontend.md) |
