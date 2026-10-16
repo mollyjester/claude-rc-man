@@ -3,8 +3,10 @@ a workspace is made from.
 
 Nothing here starts anything. ``read`` asks the workspace (through the runner it is given) for
 the file; ``parse`` reads JSON with comments; ``check`` holds the file to ``POLICY``, which
-says for every key what rcman does about it, before anything is pulled; ``plan`` merges the
-file with the metadata the image carries and makes the stored :class:`Plan`.
+says for every key what rcman does about it, before anything is pulled or built, and says what
+is to be built (:class:`BuildSpec`); ``build_config`` makes the only configuration the
+devcontainer CLI is given; ``check_metadata`` holds the label of a built image to the policy;
+``plan`` merges the file with the metadata the image carries and makes the stored :class:`Plan`.
 
 The file is a repository's text, so it is never echoed: a syntax error gives a line and a
 column and nothing else, a link is not followed, and the only values shown are the names of
@@ -18,13 +20,15 @@ import base64
 import hashlib
 import json
 import logging
+import posixpath
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
+from typing import NamedTuple
 
 from rcman.channel import Result
 from rcman.problems import DEVCONTAINER_MESSAGES
-from rcman.runtime import RANGE, Layout
+from rcman.runtime import BUILT_REPOSITORY, RANGE, Layout
 
 # The two places a devcontainer.json is looked for, in this order, and nowhere else.
 FILES = (".devcontainer/devcontainer.json", ".devcontainer.json")
@@ -36,6 +40,19 @@ READ_SECONDS = 30.0
 METADATA_LABEL = "devcontainer.metadata"
 # What the file's own entry is called where an entry has to be named.
 CONFIG_ORIGIN = "devcontainer.json"
+# The name of the build-only configuration, which sits in the folder of the file it stands for:
+# the CLI resolves a Dockerfile, a context and a local feature against the configuration's own
+# folder, and a configuration outside the repository fails.
+BUILD_CONFIG_NAME = "rcman-build.json"
+# The keys of devcontainer.json that the CLI is given: what to build, and nothing else.
+BUILD_KEYS = ("build", "image", "features", "overrideFeatureInstallOrder")
+# The keys that are devcontainer.json's alone: the CLI writes none of them into an entry of the
+# label of the image it builds, so an entry that has one asks for what only the file may.
+FILE_ONLY_KEYS = frozenset((*BUILD_KEYS, "dockerFile", "context"))
+FILE_ONLY_REASON = (
+    "Building an image and choosing the one a workspace is made from are for devcontainer.json "
+    "alone; the metadata of an image cannot ask for them."
+)
 
 # What rcman does about a key.
 HONOUR, IGNORE, REFUSE = "honour", "ignore", "refuse"
@@ -88,6 +105,8 @@ IMAGE_NAME = re.compile(
     r"(?::[A-Za-z0-9_][A-Za-z0-9_.-]*)?"
     rf"(?:@{_ALGORITHM}:[0-9A-Fa-f]{{32,}})?\Z"
 )
+# An image's id, whole or cut short: a name that podman takes for any image of its storage.
+HEX_ID = re.compile(r"[0-9a-f]+\Z")
 # What podman reads before a colon as how to get an image, which a name that looks like
 # name:tag may be mistaken for.
 TRANSPORTS = frozenset(
@@ -130,7 +149,10 @@ _RUN_ONCE = (
     "after another. A command that takes too long is stopped."
 )
 _NO_PORTS = "rcman publishes no port of a workspace."
-_NO_BUILD = "rcman cannot build images yet; name a ready-made image with image."
+_BUILT = (
+    "rcman builds the image in a sandbox of its own, from a copy of the repository without its "
+    "git folder, as the workspace is made."
+)
 
 # Every key of devcontainer.json, and of an entry of an image's metadata, and what rcman does:
 # honour it, ignore it (logged by name), or refuse it, which fails the workspace naming the
@@ -140,7 +162,9 @@ _NO_BUILD = "rcman cannot build images yet; name a ready-made image with image."
 # holds docs/devcontainer.md equal to this table.
 POLICY: dict[str, Policy] = {
     "image": _honour(
-        "The image is pulled by rcman, and the workspace's container is made from it."
+        "The image is pulled by rcman, and the workspace's container is made from it. With "
+        "features it is the image they are installed on, and the container is made from the "
+        "result."
     ),
     "remoteUser": _honour(
         "The user rcman's commands and Claude run as. It must be in the image, and it is "
@@ -195,15 +219,34 @@ POLICY: dict[str, Policy] = {
     "extensions": _ignore("Settings of editors, from an older form of the file."),
     "settings": _ignore("Settings of editors, from an older form of the file."),
     "id": _ignore("Names a feature in the metadata of an image."),
-    "build": _refuse(_NO_BUILD),
-    "build.options": _refuse("Options for building an image, which rcman does not do."),
-    "dockerFile": _refuse(_NO_BUILD),
-    "context": _refuse(_NO_BUILD),
-    "features": _refuse(
-        "Features need an image to be built, which rcman cannot do yet; name a ready-made "
-        "image with image."
+    "build": _honour(_BUILT),
+    "build.dockerfile": _honour(
+        "The Dockerfile to build, a path in the repository relative to the folder of "
+        "devcontainer.json. It may not leave the repository."
     ),
-    "overrideFeatureInstallOrder": _refuse("It orders features, which rcman cannot install yet."),
+    "build.context": _honour(
+        "The folder the build is run in, relative to the folder of devcontainer.json and inside "
+        "the repository; the Dockerfile's folder when not set."
+    ),
+    "build.args": _honour("Build arguments, an object of names and string values."),
+    "build.target": _honour("The stage of the Dockerfile to build."),
+    "build.options": _refuse(
+        "Options for the build command could undo the limits on the builder, so rcman gives it "
+        "none."
+    ),
+    "build.cacheFrom": _refuse(
+        "Layers taken from other images would be pulled from registries of the repository's "
+        "choosing, and rcman cannot sign in to a registry."
+    ),
+    "dockerFile": _honour("The older form of build.dockerfile."),
+    "context": _honour("The older form of build.context, used with dockerFile."),
+    "features": _honour(
+        "Installed on the image by the builder: a feature of the repository ('./name' in the "
+        "folder of devcontainer.json), of a registry (a reference, such as ghcr.io/owner/features/"
+        "name:tag) or at an https address. What a feature asks of its container is held to this "
+        "policy, naming the feature."
+    ),
+    "overrideFeatureInstallOrder": _honour("The order features are installed in."),
     "mounts": _refuse(
         "A workspace's volume is its only storage; rcman mounts nothing else a repository asks for."
     ),
@@ -244,7 +287,7 @@ class Refused(Exception):
         super().__init__(DEVCONTAINER_MESSAGES[kind].format(**fields))
 
 
-def _shown(text) -> str:
+def shown(text) -> str:
     """A key as an error shows it: printable, and cut short."""
     cleaned = "".join(c if c.isprintable() else "?" for c in str(text))
     return cleaned if len(cleaned) <= MAX_SHOWN_CHARS else cleaned[:MAX_SHOWN_CHARS] + "..."
@@ -276,11 +319,19 @@ def _unreadable(step: str, result: Result) -> Refused:
     return Refused("unreadable")
 
 
-def read(run: Run, layout: Layout) -> str | None:
-    """The text of the workspace's devcontainer.json, or None where there is none. ``run`` runs
-    an argv in the workspace, in its work folder: ``run(argv, seconds, cwd=...)``. A link, a
-    file that is too big, one that cannot be read and one that is not text are :class:`Refused`,
-    and nothing of what is in a file reaches a message."""
+class ConfigFile(NamedTuple):
+    """The workspace's devcontainer.json: its text, and the place it was found in (one of FILES,
+    relative to the repository)."""
+
+    text: str
+    path: str
+
+
+def read(run: Run, layout: Layout) -> ConfigFile | None:
+    """The workspace's devcontainer.json, or None where there is none. ``run`` runs an argv in
+    the workspace, in its work folder: ``run(argv, seconds, cwd=...)``. A link, a file that is
+    too big, one that cannot be read and one that is not text are :class:`Refused`, and nothing
+    of what is in a file reaches a message."""
     probed = run([layout.shell, "-c", PROBE, "sh", *FILES], READ_SECONDS, cwd=layout.work)
     if probed.code != 0:
         raise _unreadable("looking", probed)
@@ -302,7 +353,7 @@ def read(run: Run, layout: Layout) -> str | None:
     content = run([*layout.tool("cat"), path], READ_SECONDS, cwd=layout.work)
     if content.code != 0:
         raise _unreadable("reading", content)
-    return _text(content.out)
+    return ConfigFile(_text(content.out), path)
 
 
 def _text(raw: bytes) -> str:
@@ -468,14 +519,42 @@ class _Part:
     init: bool = False
     commands: list = field(default_factory=list)
     ignored: list = field(default_factory=list)
+    build: dict = field(default_factory=dict)  # dockerfile, context, args, target: as given
+    features: dict = field(default_factory=dict)
+    install_order: list = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class BuildSpec:
+    """What is to be built for a file: ``config`` is the build-only configuration the devcontainer
+    CLI is given, whose keys are among BUILD_KEYS, with the file's variables filled in by rcman;
+    nothing else of the file reaches the CLI."""
+
+    config: dict
+
+    @property
+    def features(self) -> tuple[str, ...]:
+        return tuple(self.config.get("features", {}))
+
+
+@dataclass(frozen=True)
+class BuildConfig:
+    """The build-only configuration as a file of the repository's copy: its ``path`` relative to
+    the repository, and its ``text``."""
+
+    path: str
+    text: str
 
 
 @dataclass(frozen=True)
 class Checked:
-    """The file after the policy: the image it names and the keys it has that are ignored."""
+    """The file after the policy: the image it names (None for a file that builds from a
+    Dockerfile and names none), what is to be built if anything is, and the keys it has that are
+    ignored."""
 
-    image: str
+    image: str | None
     ignored: tuple[str, ...]
+    build: BuildSpec | None = None
 
 
 @dataclass(frozen=True)
@@ -526,7 +605,7 @@ def _variable(matched: re.Match, context: _Context, key: str) -> str:
             return context.env.get(matched.group("name"), default)
         return default
     if fixed.startswith("local"):
-        raise Refused("variable", variable=fixed, key=_shown(key))
+        raise Refused("variable", variable=fixed, key=shown(key))
     if fixed == "containerWorkspaceFolder":
         return context.work
     if fixed == "containerWorkspaceFolderBasename":
@@ -535,7 +614,7 @@ def _variable(matched: re.Match, context: _Context, key: str) -> str:
 
 
 def _bad(key: str, expected: str) -> Refused:
-    return Refused("bad_value", key=_shown(key), expected=expected)
+    return Refused("bad_value", key=shown(key), expected=expected)
 
 
 def _string(value, key: str) -> str:
@@ -544,17 +623,25 @@ def _string(value, key: str) -> str:
     return value
 
 
+def _names_an_image_of_rcmans(value: str) -> bool:
+    """Whether ``value`` could name an image no person may name: one rcman built, which holds
+    another person's workspace, or an image by its id, which names any image in the storage."""
+    lowered = value.lower()
+    return BUILT_REPOSITORY in lowered or HEX_ID.match(lowered.removeprefix("sha256:")) is not None
+
+
 def _image(value) -> str:
     if (
         not isinstance(value, str)
         or len(value) > MAX_IMAGE_CHARS
         or not IMAGE_NAME.match(value)
         or value.partition(":")[0] in TRANSPORTS
+        or _names_an_image_of_rcmans(value)
     ):
         raise _bad(
             "image",
             "the name of an image in a registry, such as ubuntu:24.04, with no variable, "
-            "file or transport in it",
+            "file or transport in it, and not the name or the id of an image in rcman's storage",
         )
     return value
 
@@ -565,10 +652,10 @@ def _env(value, key: str, origin: str, nullable: bool) -> dict:
     for name, item in value.items():
         if not ENV_NAME.match(name):
             raise _bad(
-                key, f"names of letters, digits and underscores, which {_shown(name)!r} is not"
+                key, f"names of letters, digits and underscores, which {shown(name)!r} is not"
             )
         if name in RESERVED_ENV:
-            raise Refused("env_reserved", where=key, name=_shown(name), origin=_shown(origin))
+            raise Refused("env_reserved", where=key, name=shown(name), origin=shown(origin))
         if not (isinstance(item, str) or (nullable and item is None)):
             raise _bad(key, "an object whose values are strings")
         if isinstance(item, str) and "\0" in item:
@@ -589,15 +676,107 @@ def _commands(value, event: str, origin: str) -> list[Command]:
         raise _bad(event, expected)
 
     if isinstance(value, dict):
-        made = [one(item, _shown(label)) for label, item in value.items()]
+        made = [one(item, shown(label)) for label, item in value.items()]
     else:
         made = [one(value, None)]
     return [c for c in made if c is not None]
 
 
-def _entry(entry: dict, origin: str, in_image: bool) -> _Part:
-    """The policy applied to one entry; ``origin`` names it, and ``in_image`` says it is an
-    image's and not the file's own."""
+# --- what is built -------------------------------------------------------------------------------
+
+# Where the folder of the file is by default, for a path that is not told which file it is in.
+DEFAULT_FOLDER = posixpath.dirname(FILES[0])
+
+
+def _path_inside(value, key: str, folder: str) -> str:
+    """``value``, a path in the repository relative to ``folder``, the folder of the file: refused
+    if it is absolute, holds a character that is no part of a name, or climbs above the top of
+    the repository, as lexical as a path can be judged, since nothing of the repository is read
+    here. A backslash counts as a separator. A link in the repository that points elsewhere is
+    followed by the CLI, but in the builder, which holds nothing of the machine's but the copy of
+    the repository: it is not refused."""
+    if not isinstance(value, str) or not value or not value.isprintable():
+        raise _bad(key, "a path in the repository")
+    flat = value.replace("\\", "/")
+    joined = posixpath.normpath(posixpath.join(folder, flat))
+    if flat.startswith("/") or joined == ".." or joined.startswith("../"):
+        raise _bad(key, "a path inside the repository, relative to the folder of devcontainer.json")
+    return value
+
+
+def _feature_id(value) -> bool:
+    """Whether ``value`` is a feature rcman will give the builder: a folder of the repository
+    in the file's own folder (``./name``, with no ``..`` in it), a reference in a registry that
+    names its host, or an https address."""
+    if not isinstance(value, str) or not value or not value.isprintable() or "\\" in value:
+        return False
+    if len(value) > MAX_IMAGE_CHARS:
+        return False
+    if value.startswith("./"):
+        return bool(value[2:]) and not {"..", "."} & set(value[2:].split("/"))
+    if value.startswith("https://"):
+        return not re.search(r"\s", value) and bool(value[len("https://") :].split("/")[0])
+    host = value.split("/")[0]
+    return (
+        "/" in value
+        and IMAGE_NAME.match(value) is not None
+        and value.partition(":")[0] not in TRANSPORTS
+        and ("." in host or ":" in host or host == "localhost")
+    )
+
+
+def _scalar(item) -> bool:
+    return isinstance(item, str | bool | int | float)
+
+
+def _build(part: _Part, value, folder: str, in_image: bool) -> None:
+    """The ``build`` object of a file: a Dockerfile, its context, arguments and target."""
+    if not isinstance(value, dict):
+        raise _bad("build", "an object")
+    for name, item in value.items():
+        key = f"build.{name}"
+        if key not in POLICY:
+            if in_image:
+                raise Refused("unknown_key_in_image", key=shown(key), entry="build")
+            raise Refused("unknown_key", key=shown(key))
+        if POLICY[key].action != HONOUR:
+            continue  # a refused one was refused by the policy
+        if name in ("dockerfile", "context"):
+            part.build[name] = _path_inside(item, key, folder)
+        elif name == "args":
+            if not isinstance(item, dict) or not all(
+                ENV_NAME.match(str(k)) and isinstance(v, str) for k, v in item.items()
+            ):
+                raise _bad(key, "an object of names and string values")
+            part.build["args"] = dict(item)
+        elif name == "target":
+            if not isinstance(item, str) or not item or not item.isprintable():
+                raise _bad(key, "the name of a stage")
+            part.build["target"] = item
+
+
+def _features(part: _Part, value, key: str) -> None:
+    if not isinstance(value, dict):
+        raise _bad(key, "an object of features and their options")
+    for feature, options in value.items():
+        if not _feature_id(feature):
+            raise _bad(
+                key,
+                "features that are a folder of the repository ('./name'), a reference in a "
+                "registry that names its host, or an https address",
+            )
+        valid = isinstance(options, str | bool) or (
+            isinstance(options, dict)
+            and all(isinstance(k, str) and _scalar(v) for k, v in options.items())
+        )
+        if not valid:
+            raise _bad(key, "features whose options are a string, a boolean or an object of values")
+    part.features = dict(value)
+
+
+def _entry(entry: dict, origin: str, in_image: bool, folder: str = DEFAULT_FOLDER) -> _Part:
+    """The policy applied to one entry; ``origin`` names it, ``in_image`` says it is an image's
+    and not the file's own, and ``folder`` is where the file is, for the paths in it."""
     part = _Part()
     for key, value in entry.items():
         _apply_policy(key, value, entry, origin, in_image)
@@ -606,15 +785,40 @@ def _entry(entry: dict, origin: str, in_image: bool) -> _Part:
             if key not in part.ignored:
                 part.ignored.append(key)
         elif policy.action == HONOUR:
-            _honoured(part, key, value, origin)
+            if in_image and key in FILE_ONLY_KEYS:
+                if not _empty(value):
+                    raise Refused(
+                        "refused_by_image",
+                        key=shown(key),
+                        entry=shown(origin),
+                        reason=FILE_ONLY_REASON,
+                    )
+                continue  # asks for nothing
+            try:
+                _honoured(part, key, value, origin, folder, in_image)
+            except Refused as refused:
+                if in_image and refused.kind == "bad_value":
+                    raise Refused(
+                        "bad_value_in_image", entry=shown(origin), **refused.fields
+                    ) from None
+                raise
+    _older_forms(part, entry, folder)
     return part
 
 
+def _older_forms(part: _Part, entry: dict, folder: str) -> None:
+    """The older ``dockerFile`` and ``context`` stand for ``build.dockerfile`` and
+    ``build.context`` where those are not set."""
+    for old, new in (("dockerFile", "dockerfile"), ("context", "context")):
+        if entry.get(old) and new not in part.build:
+            part.build[new] = _path_inside(entry[old], old, folder)
+
+
 def _refused(policy_key: str, origin: str, in_image: bool) -> Refused:
-    key = _shown(_key(policy_key))
+    key = shown(_key(policy_key))
     reason = POLICY[policy_key].reason
     if in_image:
-        return Refused("refused_by_image", key=key, entry=_shown(origin), reason=reason)
+        return Refused("refused_by_image", key=key, entry=shown(origin), reason=reason)
     return Refused("refused_key", key=key, reason=reason)
 
 
@@ -622,8 +826,8 @@ def _apply_policy(key: str, value, entry: dict, origin: str, in_image: bool) -> 
     """Raise :class:`Refused` if ``key`` or something inside it is one the policy refuses."""
     if key not in POLICY:
         if in_image:
-            raise Refused("unknown_key_in_image", key=_shown(key), entry=_shown(origin))
-        raise Refused("unknown_key", key=_shown(key))
+            raise Refused("unknown_key_in_image", key=shown(key), entry=shown(origin))
+        raise Refused("unknown_key", key=shown(key))
     for child in _children(key):
         inner = child.partition(".")[2]
         if (
@@ -639,8 +843,20 @@ def _apply_policy(key: str, value, entry: dict, origin: str, in_image: bool) -> 
         raise _refused(negative, origin, in_image)
 
 
-def _honoured(part: _Part, key: str, value, origin: str) -> None:
-    if key == "image":
+def _honoured(
+    part: _Part, key: str, value, origin: str, folder: str = DEFAULT_FOLDER, in_image: bool = False
+) -> None:
+    if key == "build":
+        _build(part, value, folder, in_image)
+    elif key == "features":
+        _features(part, value, key)
+    elif key == "overrideFeatureInstallOrder":
+        if not isinstance(value, list) or not all(_feature_id(item) for item in value):
+            raise _bad(key, "a list of the features, as they are named in features")
+        part.install_order = list(value)
+    elif key in ("dockerFile", "context"):
+        pass  # read by _older_forms, with the build
+    elif key == "image":
         part.image = _image(value)
     elif key == "remoteUser":
         part.remote_user = _string(value, key)
@@ -693,15 +909,54 @@ def _substituted_entry(entry: dict, context: _Context) -> dict:
     return {key: found[key] for key in entry}
 
 
-def check(config: dict) -> Checked:
-    """Hold the file to the policy, before anything is pulled: the first key it may not have,
-    or a value of the wrong kind, is :class:`Refused`; else the image it names and the keys
-    that are ignored. A file that names no image is refused once nothing else is."""
+def check(config: dict, workspace: int = 0, work: str = "", path: str = FILES[0]) -> Checked:
+    """Hold the file to the policy, before anything is pulled or built: the first key it may not
+    have, or a value of the wrong kind, is :class:`Refused`; else the image it names, what is to
+    be built, and the keys that are ignored. ``path`` is where the file is in the repository,
+    which its paths are relative to, and ``workspace`` and ``work`` are what its variables stand
+    for. A file that names neither an image nor a Dockerfile is refused once nothing else is."""
     _shallow(config)
-    part = _entry(_substituted_entry(config, _context(0, "")), CONFIG_ORIGIN, in_image=False)
-    if part.image is None:
+    part = _entry(
+        _substituted_entry(config, _context(workspace, work)),
+        CONFIG_ORIGIN,
+        in_image=False,
+        folder=posixpath.dirname(path) or ".",
+    )
+    if part.image is None and "dockerfile" not in part.build:
         raise Refused("no_image")
-    return Checked(part.image, tuple(part.ignored))
+    return Checked(part.image, tuple(part.ignored), _build_spec(part))
+
+
+def _build_spec(part: _Part) -> BuildSpec | None:
+    """What the CLI is to be given for the file's entry, or None where nothing is built: a
+    Dockerfile builds, features are put on an image; the other keys of ``build`` have no use
+    without a Dockerfile."""
+    dockerfile = "dockerfile" in part.build
+    if not dockerfile and not part.features:
+        return None
+    found: dict = {}
+    if dockerfile:
+        found["build"] = dict(part.build)
+    if part.image is not None:
+        found["image"] = part.image
+    if part.features:
+        found["features"] = dict(part.features)
+        if part.install_order:
+            found["overrideFeatureInstallOrder"] = list(part.install_order)
+    return BuildSpec(found)
+
+
+def build_config(spec: BuildSpec, path: str) -> BuildConfig:
+    """The build-only configuration for a file found at ``path``: the file the CLI is given in
+    its place, in the same folder, holding ``spec.config`` and nothing else. The label of the
+    image it builds then carries the features' entries and not an entry of the file's own, so
+    the file's lifecycle commands run once, from the plan."""
+    assert set(spec.config) <= set(BUILD_KEYS)
+    folder = posixpath.dirname(path)
+    return BuildConfig(
+        posixpath.join(folder, BUILD_CONFIG_NAME) if folder else BUILD_CONFIG_NAME,
+        json.dumps(spec.config),
+    )
 
 
 # --- passwd and group -------------------------------------------------------------------------
@@ -786,7 +1041,7 @@ def resolve_user(spec: str, passwd: str, group: str) -> Account:
         if found is None and who == "root":
             uid, gid, name = 0, 0, "root"
         elif found is None:
-            raise Refused("user_unknown", user=_shown(spec))
+            raise Refused("user_unknown", user=shown(spec))
         else:
             uid, gid, name = found.uid, found.gid, found.name
     if which:
@@ -795,11 +1050,11 @@ def resolve_user(spec: str, passwd: str, group: str) -> Account:
         else:
             named = next((g for g in groups if g.name == which), None)
             if named is None and which != "root":
-                raise Refused("user_unknown", user=_shown(spec))
+                raise Refused("user_unknown", user=shown(spec))
             gid = named.gid if named else 0
     extra = tuple(g.gid for g in groups if name in g.members and g.gid != gid)
     if uid >= RANGE or gid >= RANGE or any(g >= RANGE for g in extra):
-        raise Refused("id_out_of_range", user=_shown(spec))
+        raise Refused("id_out_of_range", user=shown(spec))
     if which:
         return Account(name, uid, gid, f"{uid}:{gid}", extra)
     return Account(name, uid, gid, who if _is_number(who) else (name or str(uid)), ())
@@ -932,13 +1187,31 @@ def _metadata(label: str | None) -> list[dict]:
     return found
 
 
-def plan(config: dict, facts, workspace: int, work: str) -> Plan:
+def _origin(entry: dict, number: int) -> str:
+    """What an entry of an image's metadata is called where it is named: its id, else its place."""
+    return entry["id"] if isinstance(entry.get("id"), str) and entry["id"] else f"entry {number}"
+
+
+def check_metadata(labels: Mapping[str, str]) -> None:
+    """Hold the entries of the metadata label of an image to the policy, before the image is
+    kept: :class:`Refused` naming the entry - a feature's id, for a built image - and the key it
+    asks for that the policy refuses. The keys the CLI copies from a feature are among the
+    policy's; the policy's entries are the same ones the plan applies once the image is kept."""
+    entries = _metadata(labels.get(METADATA_LABEL))
+    for entry in entries:
+        _shallow(entry)
+    for number, entry in enumerate(entries, start=1):
+        _entry(entry, _origin(entry, number), in_image=True)
+
+
+def plan(config: dict, facts, workspace: int, work: str, image: str | None = None) -> Plan:
     """The plan for the workspace ``workspace``, whose work folder is ``work``, from the file
     ``config`` and the image's ``facts`` (runtime.ImageFacts): the entries of the image's
     metadata first, in order, then the file's own, once. Booleans are ORed, environments merged
     with the last winning, the user is the last one named, and the lifecycle commands are
     collected. Anything an entry asks for that the policy refuses is :class:`Refused`, naming
-    the entry."""
+    the entry. The plan's image is the file's ``image``, or ``image`` where that is given: the
+    image built for the file, whose label holds the features' entries and not the file's own."""
     context = _context(workspace, work, dict(facts.env))
     entries = _metadata(facts.labels.get(METADATA_LABEL))
     _shallow(config)
@@ -946,16 +1219,15 @@ def plan(config: dict, facts, workspace: int, work: str) -> Plan:
         _shallow(entry)
     parts = []
     for number, entry in enumerate(entries, start=1):
-        origin = (
-            entry["id"] if isinstance(entry.get("id"), str) and entry["id"] else f"entry {number}"
+        parts.append(
+            _entry(_substituted_entry(entry, context), _origin(entry, number), in_image=True)
         )
-        parts.append(_entry(_substituted_entry(entry, context), origin, in_image=True))
         context = replace(context, env={**context.env, **parts[-1].container_env})
     own = _entry(_substituted_entry(config, context), CONFIG_ORIGIN, in_image=False)
-    if own.image is None:
+    if own.image is None and image is None:
         raise Refused("no_image")
     parts.append(own)
-    return _merged(own.image, parts, facts)
+    return _merged(image or own.image, parts, facts)
 
 
 def _merged(image: str, parts: list[_Part], facts) -> Plan:

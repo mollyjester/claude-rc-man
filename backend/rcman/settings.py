@@ -33,6 +33,11 @@ class Settings(BaseSettings):
     workspace_image: str = Field(
         "localhost/rcman-workspace", description="The image new workspaces are made from."
     )
+    builder_image: str = Field(
+        "localhost/rcman-builder",
+        description="The image devcontainer builds run in: the devcontainer CLI and a Podman of "
+        "its own, started for one build and removed after it.",
+    )
     tools_dir: Path = Field(
         Path("/var/lib/rcman/tools"),
         description="The static tools mounted read-only into every workspace: tmux, busybox "

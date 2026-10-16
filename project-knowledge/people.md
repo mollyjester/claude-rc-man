@@ -28,7 +28,10 @@ from 1 to `MAX_PEOPLE`; slot 0 is rcman's own ids, and the table refuses it.
 No two people share a slot, so no two people's workspaces share a range. The
 installer gives rcman enough subordinate ids for every slot
 (`SUBORDINATE_COUNT` in `installer/install.py`), which a test holds to
-`MAX_PEOPLE`. A slot a deleted person had is given to the next person added.
+`MAX_PEOPLE`. `BUILDER_SLOT`, the slot after the last person's, is the devcontainer
+builder's range (see [runtime.md](runtime.md#building-an-image)): the installer
+reserves it with the others, and no person is ever given it. A slot a deleted person had
+is given to the next person added.
 
 ## The allowed list
 
@@ -63,7 +66,7 @@ last administrator too: there is no such check, and root can always add an
 administrator with `rcman-admin`.
 
 A deleted person's copy of an image (see [runtime.md](runtime.md#the-runtime))
-stays in Podman's storage until the image is removed; that holds for the image of a repository's devcontainer.json as for the default one.
+stays in Podman's storage until the image is removed; that holds for the image of a repository's devcontainer.json, built or pulled, as for the default one.
 
 ## rcman-admin
 

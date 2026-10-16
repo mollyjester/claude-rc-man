@@ -235,8 +235,9 @@ never followed, the size is capped, no content reaches a message), the JSON-with
 parser, the policy, the plan (`plan`: the entries of the image's `devcontainer.metadata`
 label, then the file's own, merged) and the parsing of an image's passwd and group files.
 
-- **Order.** Read and check the file (`check`: refusals before anything is pulled); pull the
-  image (`Runtime.pull`, its lines in the log); read the image without running it
+- **Order.** Read and check the file (`check`: refusals before anything is pulled or built);
+  pull the image (`Runtime.pull`, its lines in the log), or for a file that builds one build
+  it (see [Building an image](#building-an-image)); read the image without running it
   (`Runtime.image_facts`: a container made and never started, `podman cp` of the passwd and
   group files, which is stopped at `PODMAN_TIMEOUT` or when the workspace is deleted, and in
   which only podman saying the file is not there means the image has none: any other failure
@@ -246,7 +247,7 @@ label, then the file's own, merged) and the parsing of an image's passwd and gro
   musl is refused) and git; run the create commands. The workspace stays `creating`
   until all that is done.
 - **Failure.** A `devcontainer.Refused` - a refused or unknown key, a file that cannot
-  be read or parsed, an image that cannot be pulled, read, used or run - fails the workspace
+  be read or parsed, an image that cannot be pulled, built, read, used or run - fails the workspace
   with a message from `problems.DEVCONTAINER_MESSAGES` and removes its container and
   volume, leaving only the failed row. A lifecycle command that fails or takes too long
   fails the workspace with its exit code and the tail of its output, and keeps the
@@ -274,7 +275,8 @@ label, then the file's own, merged) and the parsing of an image's passwd and gro
 - **The image's name.** `image` must be a plain registry reference, `[host[:port]/]path[:tag]
   [@digest]`, as written: no variable in it (it is the name that is pulled), and nothing
   that podman would read as a transport or a file (`docker-archive:`, `oci:`, `dir:` and the
-  like).
+  like), and no name that holds `BUILT_REPOSITORY` or is bare hexadecimal (`HEX_ID`), which
+  Podman would take for an image built for a workspace or for any image by its id.
 - **Commands.** `Workspaces._run_commands` runs each command in the work folder, as the
   container's user, under the `timeout` tool with `HOOK_TIMEOUT_SECONDS`, with exactly
   `_hook_env`; a string by the image's `/bin/sh` or else the mounted busybox's shell, an
@@ -283,6 +285,57 @@ label, then the file's own, merged) and the parsing of an image's passwd and gro
   `postStartCommand` runs there too and again after every start or re-creation in a restore,
   before that workspace's server is started, and its failure is only logged. A container
   that kept running through a restart of rcman is not started, so nothing runs.
+
+## Building an image
+
+A file with `build` or `features` is built by `Workspaces._built` instead of pulled; the
+administrators' account of it is [the building section of the devcontainer
+page](../docs/devcontainer.md#building-an-image).
+
+- **The builder.** `PodmanRuntime.build_image` runs one container, `rcman-build-<id>`
+  (`builder.builder_name`), from `PodmanConfig.builder_image` (`RCMAN_BUILDER_IMAGE`), with a
+  volume of the same name for its Podman's storage, both labelled `LABEL_BUILDER`.
+  `builder.run_argv` is the argument list: the uid range of `people.BUILDER_SLOT`, which no
+  person has and `_ids` maps like any other slot, never rcman's own; the network of a
+  workspace; `/dev/fuse` and `SYS_ADMIN` and nothing else added; no `--privileged`. The
+  installer reserves the range (see [installer.md](installer.md)) and builds the image from
+  `installer/builder`.
+- **In.** `_copy_in` streams the workspace's files from the workspace's container to the
+  builder through rcman, as a tar archive (`builder.source_argv`, `sink_argv`): the top
+  folder's git folder is left out on the sending side, the builder's tar being unable to
+  exclude, and the files are the builder root's. The count of bytes is capped by
+  `MAX_CONTEXT_BYTES`, checked before the CLI runs.
+- **What the CLI gets.** `devcontainer.build_config` writes `BUILD_CONFIG_NAME` beside the
+  file's own configuration, holding `BUILD_KEYS` only, since the CLI neither refuses nor
+  reports what it does not know and the label would otherwise carry the file's own entry. It
+  is run with `builder.cli_argv` in an environment of nothing but `PATH`.
+- **Out.** The label is read in the builder and `devcontainer.check_metadata` holds each
+  feature's entry to the policy, naming the feature, before the copy: `_stage` saves the
+  image by id (`ARCHIVE_FORMAT`) in the builder into a private staging folder
+  (`STAGING_PREFIX`) under `PodmanConfig.scratch_dir`, the database's parent folder by
+  default, through `builder.pump`, which counts bytes, is capped by `MAX_IMAGE_BYTES` and
+  `COPY_SECONDS`, and is killed by `cancel`. `builder.verify_archive` accepts the archive
+  before anything reads it with `podman load -i` (`_load`): one image, no names, the
+  configuration's hash equal to the id, nothing extracted. The image is tagged
+  `built_name(id)`, one for each workspace; one loaded and not kept is removed by its id, and
+  the staging folder always. The restore sweeps stale staging folders (`_clean_staging`).
+  Feature `containerEnv` is in the image's environment, not the label, so the plan has it
+  through `image_facts`.
+- **Cleanup.** A `finally` removes the builder and its volume, and the image too unless it
+  was kept; `remove_build` is also what a deletion calls, which ends a build in progress
+  (killing the CLI's client would not). `Workspaces._remove_orphan_builds`, a step of the
+  restore, removes `builders()` and `built_images()` that no workspace being made or stored
+  plan needs.
+- **Failures.** `BuildFailed` carries the redacted end of what the builder said and, where
+  the runtime knows it, a `kind`; otherwise `builder.explain` finds the cause in the words
+  (`CAUSES`), and `Workspaces._build_refusal` makes the `devcontainer.Refused` from
+  `problems.DEVCONTAINER_MESSAGES`. A refusal or failure removes the builder, the volume and
+  the image, and the workspace's container and volume.
+- **Places.** `Workspaces._builds`, bounded by `MAX_BUILDS`, holds a build from its start;
+  one that waits logs `WAITING_FOR_BUILD` and polls its `cancel`.
+- **Restoring.** A plan whose image is one rcman built (`workspace_of_built_name`) is
+  never pulled: if `built_images()` lacks it, the workspace fails with the
+  `built_image_gone` message.
 
 ## What rcman keeps, and brings back
 
@@ -303,16 +356,17 @@ the prefix it was started with.
   [backend.md](backend.md#git-in-workspaces)). The clone runs under no lock, the
   person's and the workspace's alike, so that nothing waits for as long as it
   takes; `_working`, under the service's own lock, holds for each workspace whose
-  clone, image pull or lifecycle command is running the event a deletion sets. A
+  clone, image pull, image build or lifecycle command is running the event a deletion sets. A
   failure fails the workspace with the cause, the exit code and git's
   words; the workspace and its folder stay until it is deleted. What follows the
   clone, a repository's devcontainer.json, is described under
   [A repository's devcontainer.json](#a-repositorys-devcontainerjson).
 - **Deleting.** `delete` marks it `deleting` and removes its container and
   volume, which ends its server, then its row — never the person's sign-in; one still being made goes once
-  it is made. One being cloned, pulled for or running a lifecycle command is
-  cancelled by deleting it: `_stop_working` sets its event, which stops a pull,
-  and force-removes its container, which ends git and the commands, and the
+  it is made. One being cloned, pulled for, built for or running a lifecycle command is
+  cancelled by deleting it: `_stop_working` sets its event, which stops a pull, and
+  force-removes its builder, which ends a build, and its container, which ends git and the
+  commands, and the
   making thread finds it `deleting` and finishes the removal; if the container
   cannot be removed now, the workspace goes when the work ends, at the latest at
   its timeout. Deleting a person deletes each of theirs (see [people.md](people.md)).

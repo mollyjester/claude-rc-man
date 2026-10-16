@@ -12,7 +12,7 @@ import time
 from pathlib import Path
 
 import pytest
-from rcman import db, problems
+from rcman import db, people, problems
 from rcman import devcontainer as dc
 from rcman import runtime as rt
 from rcman import workspaces as ws
@@ -29,6 +29,7 @@ from tests.test_clone import (
     entry,
     finished,
     insert,
+    listed,
     row,
     save_token,
 )
@@ -67,9 +68,47 @@ class Flow(rt.HostRuntime):
         self.after_facts = lambda: None  # called as the image has been read
         self.after_discard = lambda: None  # called as the container has been discarded
         self.answers: list[rt.Result] = []  # what the lifecycle commands were answered
+        # The planted builder (HostRuntime.build_script): it says its lines, may be held at
+        # the gate until the test lets it go or the build is stopped, and makes an image with
+        # the facts below or fails with ``build_error``.
+        self.build_lines = ["[1/1] STEP 1/2: FROM scratch"]
+        self.build_gate: threading.Event | None = None
+        self.building = threading.Event()
+        self.build_error: Exception | None = None
+        self.build_facts = rt.ImageFacts(
+            passwd=PASSWD, group=GROUP, env={"PATH": "/built/bin:/bin"}
+        )
+        self.builds_at_once = self.most_builds_at_once = 0
+        self.build_script = self.scripted
         self.images["registry.example.com/team/dev:latest"] = rt.ImageFacts(
             passwd=PASSWD, group=GROUP, env={"PATH": "/image/bin:/usr/bin:/bin"}
         )
+
+    def scripted(self, request, progress, cancel):
+        self.building.set()
+        self.builds_at_once += 1
+        self.most_builds_at_once = max(self.most_builds_at_once, self.builds_at_once)
+        try:
+            for line in self.build_lines:
+                progress(line)
+            if self.build_gate is not None:
+                deadline = time.monotonic() + MADE_WITHIN
+                while not self.build_gate.is_set():
+                    if (
+                        cancel is not None and cancel.is_set()
+                    ) or request.id not in self.builders():
+                        raise rt.RuntimeFailed("the build was stopped")
+                    assert time.monotonic() < deadline
+                    time.sleep(0.02)
+            if self.build_error is not None:
+                raise self.build_error
+            return self.build_facts
+        finally:
+            self.builds_at_once -= 1
+
+    def remove_build(self, workspace, image=False):
+        self.events.append(("remove_build", workspace, image))
+        super().remove_build(workspace, image)
 
     def create(self, spec):
         self.events.append(("create", spec.image, spec.user))
@@ -212,6 +251,23 @@ def config(**keys) -> dict:
     return {FILE: json.dumps({**GOOD, **keys})}
 
 
+def building(**keys) -> dict:
+    """A repository whose devcontainer.json builds its image from a Dockerfile."""
+    return {
+        FILE: json.dumps({"build": {"dockerfile": "Dockerfile"}, **keys}),
+        ".devcontainer/Dockerfile": "FROM ubuntu:24.04\n",
+    }
+
+
+def featured(**keys) -> dict:
+    """A repository whose devcontainer.json adds a feature of its own to an image."""
+    return {
+        FILE: json.dumps({**GOOD, "features": {"./feature": {"greeting": "hi"}}, **keys}),
+        ".devcontainer/feature/devcontainer-feature.json": '{"id": "feature"}',
+        ".devcontainer/feature/install.sh": "#!/bin/sh\n",
+    }
+
+
 def name_of(entry_: dict) -> str:
     return rt.container_name(entry_["id"])
 
@@ -232,8 +288,10 @@ REFUSALS = [
     ({"capAdd": ["SYS_ADMIN"]}, "capAdd"),
     ({"privileged": True}, "privileged"),
     ({"mounts": ["type=bind,source=/,target=/host"]}, "mounts"),
-    ({"features": {"ghcr.io/devcontainers/features/node:1": {}}}, "features"),
-    ({"build": {"dockerfile": "Dockerfile"}}, "build"),
+    ({"features": {"../outside": {}}}, "features"),
+    ({"build": {"dockerfile": "/etc/passwd"}}, "build.dockerfile"),
+    ({"build": {"dockerfile": "Dockerfile", "options": ["--network=host"]}}, "build.options"),
+    ({"build": {"dockerfile": "Dockerfile", "cacheFrom": ["x"]}}, "build.cacheFrom"),
     ({"runArgs": ["--net=host"]}, "runArgs"),
     ({"overrideCommand": False}, "overrideCommand"),
     ({"workspaceFolder": "/x"}, "workspaceFolder"),
@@ -1416,3 +1474,358 @@ def test_a_command_held_when_its_workspace_is_deleted_is_not_followed_by_the_nex
     assert not thread.is_alive()
     assert len(runtime.hooks_run()) == 1  # the second never ran
     assert runtime.labelled() == {}
+
+
+# --- building an image --------------------------------------------------------------------------
+
+from tests.test_builder import (  # noqa: E402 - the recorded words of the builder
+    DENIED,
+    FEATURE_FAILED,
+    NO_MANIFEST,
+    NO_NETWORK,
+    NO_SPACE,
+    STEP_FAILED,
+)
+
+
+def nothing_of_a_build_is_left(runtime, entry_: dict) -> None:
+    no_trace(runtime, entry_)
+    assert runtime.builders() == set() and runtime.built_images() == {}
+
+
+def test_a_dockerfile_is_built_and_the_workspace_is_made_from_the_image_built(
+    client, runtime, publish, settings, ready_log
+):
+    publish(building(postCreateCommand="echo after-the-build", containerEnv={"A": "b"}))
+    done = cloned(client)
+    assert done["state"] == "ready", done
+    image = rt.built_name(done["id"])
+    stored = dc.Plan.from_json(row(settings, done["id"])["environment"])
+    assert stored.image == image and stored.container_env["A"] == "b"
+    assert runtime.specs[name_of(done)].image == image
+    assert runtime.pulled == []  # the builder pulls what it builds on; rcman pulls nothing
+    assert runtime.builders() == set()  # the builder and its volume are gone
+    assert runtime.built_images() == {done["id"]: image}  # the image is the workspace's
+    assert [h for h in runtime.hooks_run() if "after-the-build" in " ".join(h)]
+    assert len(runtime.hooks_run()) == 1  # once: the image carries none of the file's own
+    assert "STEP 1/2" in ready_log[done["id"]]  # the builder's steps are in the log
+
+
+def test_what_the_builder_is_asked_is_the_build_only_configuration_of_the_workspace(
+    client, runtime, publish, settings
+):
+    publish(building(postCreateCommand="echo secret-hook", remoteUser="dev", forwardPorts=[80]))
+    done = cloned(client)
+    (request,) = runtime.builds
+    assert request.id == done["id"] and request.person == row(settings, done["id"])["person"]
+    assert request.slot == people.BUILDER_SLOT and request.source == name_of(done)
+    assert request.config_path == f".devcontainer/{dc.BUILD_CONFIG_NAME}"
+    assert json.loads(request.config_text) == {"build": {"dockerfile": "Dockerfile"}}
+    assert "secret-hook" not in request.config_text
+
+
+def test_features_on_an_image_are_built_and_the_base_is_left_to_the_builder_to_pull(
+    client, runtime, publish
+):
+    publish(featured())
+    done = cloned(client)
+    assert done["state"] == "ready", done
+    (request,) = runtime.builds
+    assert json.loads(request.config_text) == {
+        "image": IMAGE,
+        "features": {"./feature": {"greeting": "hi"}},
+    }
+    assert runtime.pulled == []
+
+
+def test_the_path_of_the_dotfile_is_where_its_build_only_file_goes(client, runtime, publish):
+    publish({".devcontainer.json": json.dumps({"build": {"dockerfile": "Dockerfile"}}),
+             "Dockerfile": "FROM ubuntu\n"})  # fmt: skip
+    cloned(client)
+    (request,) = runtime.builds
+    assert request.config_path == dc.BUILD_CONFIG_NAME
+
+
+def test_an_image_whose_label_asks_for_what_a_file_may_not_is_refused_naming_the_feature(
+    client, runtime, publish, settings
+):
+    runtime.build_facts = rt.ImageFacts(
+        labels={dc.METADATA_LABEL: json.dumps([{"id": "./feature", "privileged": True}])}
+    )
+    publish(featured())
+    failed = cloned(client)
+    assert failed["state"] == "failed"
+    assert '"privileged"' in failed["error"] and "./feature" in failed["error"]
+    nothing_of_a_build_is_left(runtime, failed)
+    assert row(settings, failed["id"])["environment"] is None
+    assert not [e for e in runtime.events if e[0] == "create" and e[1]]  # no container of it
+
+
+FAILURES = [
+    (FEATURE_FAILED, "build_feature_failed", {"feature": "./featurebad"}),
+    (STEP_FAILED, "build_step_failed", {}),
+    (NO_NETWORK, "build_registry_unreachable", {}),
+    (NO_MANIFEST, "build_image_missing", {}),
+    (DENIED, "build_sign_in", {}),
+    (NO_SPACE, "build_no_space", {}),
+    ("something nobody has heard of\n", "build_failed", {}),
+]
+
+
+@pytest.mark.parametrize(("said", "kind", "fields"), FAILURES)
+def test_a_build_that_fails_gives_its_cause_in_plain_words_and_the_end_of_what_it_said(
+    client, runtime, publish, settings, said, kind, fields
+):
+    runtime.build_error = rt.BuildFailed(tail=said)
+    publish(building())
+    failed = cloned(client)
+    assert failed["state"] == "failed"
+    head = problems.DEVCONTAINER_MESSAGES[kind].format(tail="", **fields).strip()
+    assert failed["error"].startswith(head), failed["error"]
+    assert said.strip().splitlines()[-1].split("] ")[-1].strip() in failed["error"]  # the tail
+    assert len(failed["error"]) <= ws.MAX_ERROR_CHARS
+    nothing_of_a_build_is_left(runtime, failed)
+    assert row(settings, failed["id"])["environment"] is None
+
+
+def test_the_name_of_a_feature_that_failed_is_shown_cleaned_and_cut(client, runtime, publish):
+    name = "./f\u0007" + "y" * 500
+    runtime.build_error = rt.BuildFailed(
+        tail=f'ERROR: Feature "{name}" (Unknown) failed to install!\n'
+    )
+    publish(building())
+    failed = cloned(client)
+    assert "\u0007" not in failed["error"]
+    assert failed["error"].startswith(
+        problems.DEVCONTAINER_MESSAGES["build_feature_failed"].split("{feature}")[0]
+    )
+    assert "./f?" in failed["error"] and "yyyy" in failed["error"]
+    assert len(failed["error"]) <= ws.MAX_ERROR_CHARS
+
+
+@pytest.mark.parametrize("kind", ["build_timeout", "build_context_too_big", "build_image_too_big"])
+def test_a_build_that_the_runtime_stopped_for_its_size_or_time_says_so(
+    client, runtime, publish, kind
+):
+    runtime.build_error = rt.BuildFailed(tail="", kind=kind)
+    publish(building())
+    failed = cloned(client)
+    assert failed["error"].strip() == problems.DEVCONTAINER_MESSAGES[kind].format(tail="").strip()
+    nothing_of_a_build_is_left(runtime, failed)
+
+
+def test_a_builder_that_could_not_be_run_is_a_failed_build_with_what_podman_said(
+    client, runtime, publish
+):
+    runtime.build_error = rt.RuntimeFailed("localhost/rcman-builder: image not known")
+    publish(building())
+    failed = cloned(client)
+    assert failed["state"] == "failed" and "image not known" in failed["error"]
+    nothing_of_a_build_is_left(runtime, failed)
+
+
+def test_the_token_is_redacted_from_a_failed_builds_tail_and_from_its_lines(
+    client, runtime, publish, settings
+):
+    save_token(client)
+    runtime.build_lines = [f"[1/1] STEP 1/2: RUN echo {TOKEN}"]
+    runtime.build_error = rt.BuildFailed(tail=f'Error: building at STEP "RUN {TOKEN}"\n')
+    publish(building())
+    failed = cloned(client)
+    shown = failed["error"] + (failed["log"] or "") + (row(settings, failed["id"])["log"] or "")
+    assert TOKEN not in shown and ws.REDACTED in shown
+
+
+def test_the_token_is_redacted_from_the_lines_of_a_build_that_succeeded(
+    client, runtime, publish, ready_log
+):
+    save_token(client)
+    runtime.build_lines = [f"[1/1] STEP 1/2: RUN echo {TOKEN}"]
+    publish(building())
+    done = cloned(client)
+    assert done["state"] == "ready"
+    assert TOKEN not in ready_log[done["id"]] and ws.REDACTED in ready_log[done["id"]]
+
+
+def test_an_image_on_musl_that_was_built_is_refused_and_the_image_is_removed(
+    client, runtime, publish
+):
+    runtime.libc = b"musl\n"
+    publish(building())
+    failed = cloned(client)
+    assert failed["state"] == "failed" and "musl" in failed["error"]
+    nothing_of_a_build_is_left(runtime, failed)
+
+
+def test_a_create_command_that_fails_keeps_the_container_and_the_image_it_was_made_from(
+    client, runtime, publish
+):
+    publish(building(postCreateCommand="exit 3"))
+    failed = cloned(client)
+    assert failed["state"] == "failed" and "exit code 3" in failed["error"]
+    assert runtime.exists(name_of(failed))
+    assert runtime.built_images() == {failed["id"]: rt.built_name(failed["id"])}
+
+
+def test_deleting_a_workspace_that_is_being_built_removes_its_builder_and_stops_the_build(
+    client, runtime, publish
+):
+    runtime.build_gate = threading.Event()
+    publish(building())
+    made = clone(client).json()["workspace"]
+    assert runtime.building.wait(MADE_WITHIN)
+    assert runtime.builders() == {made["id"]}  # the positive control
+    began = time.monotonic()
+    r = client.delete(f"/api/workspaces/{made['id']}", headers=changing(ALICE))
+    assert r.status_code == 200, r.text
+    assert ("remove_build", made["id"], False) in runtime.events  # the delete itself did it
+    cleared(runtime, client)
+    assert time.monotonic() - began < 15
+    assert runtime.builders() == set() and runtime.built_images() == {}
+    assert not [e for e in runtime.events if e[0] == "create" and e[1]]
+
+
+def test_deleting_a_ready_workspace_removes_the_image_built_for_it(client, runtime, publish):
+    publish(building())
+    done = cloned(client)
+    assert runtime.built_images() == {done["id"]: rt.built_name(done["id"])}  # the control
+    r = client.delete(f"/api/workspaces/{done['id']}", headers=changing(ALICE))
+    assert r.status_code == 200, r.text
+    cleared(runtime, client)
+    assert runtime.built_images() == {} and runtime.builders() == set()
+
+
+@pytest.fixture
+def one_build_at_a_time(monkeypatch):
+    monkeypatch.setattr(ws, "MAX_BUILDS", 1)  # before the service starts: it takes the value once
+
+
+def waiting_line(client, workspace: int) -> bool:
+    return ws.WAITING_FOR_BUILD in (entry(client, workspace)["log"] or "")
+
+
+def test_builds_beyond_the_bound_wait_their_turn_and_say_so_in_the_log(
+    one_build_at_a_time, client, runtime, publish
+):
+    runtime.build_gate = threading.Event()
+    publish(building())
+    first = clone(client).json()["workspace"]["id"]
+    assert runtime.building.wait(MADE_WITHIN)
+    second = clone(client).json()["workspace"]["id"]
+    deadline = time.monotonic() + MADE_WITHIN
+    while not waiting_line(client, second):
+        assert time.monotonic() < deadline
+        time.sleep(0.05)
+    assert not waiting_line(client, first)  # the one that builds does not wait
+    assert runtime.most_builds_at_once == 1 and len(runtime.builds) == 1
+    runtime.build_gate.set()
+    assert finished(client, first)["state"] == "ready"
+    assert finished(client, second)["state"] == "ready"
+    assert runtime.most_builds_at_once == 1 and len(runtime.builds) == 2
+
+
+def test_deleting_a_workspace_that_waits_for_a_build_ends_its_wait_and_builds_nothing(
+    one_build_at_a_time, client, runtime, publish
+):
+    runtime.build_gate = threading.Event()
+    publish(building())
+    first = clone(client).json()["workspace"]["id"]
+    assert runtime.building.wait(MADE_WITHIN)
+    second = clone(client).json()["workspace"]["id"]
+    deadline = time.monotonic() + MADE_WITHIN
+    while not waiting_line(client, second):
+        assert time.monotonic() < deadline
+        time.sleep(0.05)
+    r = client.delete(f"/api/workspaces/{second}", headers=changing(ALICE))
+    assert r.status_code == 200, r.text
+    deadline = time.monotonic() + MADE_WITHIN
+    while any(w["id"] == second for w in listed(client)):
+        assert time.monotonic() < deadline
+        time.sleep(0.05)
+    runtime.build_gate.set()
+    assert finished(client, first)["state"] == "ready"
+    assert [b.id for b in runtime.builds] == [first]
+
+
+def test_the_bound_on_builds_is_a_place_each_build_gives_back_even_when_it_fails(
+    one_build_at_a_time, client, runtime, publish
+):
+    runtime.build_error = rt.BuildFailed(tail="boom\n")
+    publish(building())
+    for _ in range(3):  # more failures than the bound has places
+        assert cloned(client)["state"] == "failed"
+    runtime.build_error = None
+    assert cloned(client)["state"] == "ready"
+
+
+# --- a restart --------------------------------------------------------------------------------
+
+
+def built_plan(workspace: int, **keys) -> dc.Plan:
+    facts = rt.ImageFacts(passwd=PASSWD, group=GROUP, env={"PATH": "/built/bin:/bin"})
+    return dc.plan(
+        {**GOOD, **keys}, facts, workspace, "/rcman/work", image=rt.built_name(workspace)
+    )
+
+
+def plant_built(runtime, workspace: int) -> str:
+    name = rt.built_name(workspace)
+    runtime.images[name] = rt.ImageFacts(passwd=PASSWD, group=GROUP)
+    runtime.built[workspace] = name
+    return name
+
+
+def test_a_restart_removes_the_builders_volumes_and_images_no_workspace_uses_and_keeps_the_rest(
+    service, settings, runtime
+):
+    used = insert(settings, "used", "ready", URL)
+    set_environment(settings, used, built_plan(used).to_json())
+    plant_built(runtime, used)
+    runtime.create(service._spec(service.get(used), 1, built_plan(used)))
+    failed = insert(settings, "failed", "failed", URL)  # a plan that names no built image
+    plant_built(runtime, failed)
+    plant_built(runtime, 4242)  # no row at all
+    runtime.builder_ids.update({used, 4243})  # a builder left from before, of a row and of none
+    service.restore()
+    assert runtime.builders() == set()
+    assert runtime.built_images() == {used: rt.built_name(used)}  # only the used one stays
+    assert runtime.running(rt.container_name(used))
+
+
+def test_a_restart_leaves_the_builder_of_a_workspace_that_is_being_made(
+    service, settings, runtime, monkeypatch
+):
+    making = insert(settings, "making", "creating", None)
+    runtime.builder_ids.add(making)
+    plant_built(runtime, making)
+    monkeypatch.setattr(service, "_being_made", lambda workspace: workspace == making)
+    service.restore()
+    assert runtime.builders() == {making}
+    assert runtime.built_images() == {making: rt.built_name(making)}
+
+
+def test_a_restart_that_finds_a_lost_container_makes_it_again_from_the_image_without_a_pull(
+    service, settings, runtime
+):
+    workspace = insert(settings, "built", "ready", URL)
+    set_environment(settings, workspace, built_plan(workspace).to_json())
+    plant_built(runtime, workspace)
+    service.restore()
+    assert runtime.running(rt.container_name(workspace))
+    assert runtime.pulled == []  # a built image is in the storage or it is nowhere
+    assert row(settings, workspace)["state"] == "ready"
+
+
+def test_a_lost_container_whose_built_image_is_gone_fails_the_workspace_and_pulls_nothing(
+    service, settings, runtime
+):
+    workspace = insert(settings, "built", "ready", URL)
+    set_environment(settings, workspace, built_plan(workspace).to_json())
+    runtime.images[rt.built_name(workspace)] = rt.ImageFacts()  # a pull would find this
+    assert runtime.built_images() == {}  # the control: the storage holds no built image
+    service.restore()
+    now = row(settings, workspace)
+    assert now["state"] == "failed"
+    assert now["error"] == problems.DEVCONTAINER_MESSAGES["built_image_gone"]
+    assert "delete the workspace" in now["error"].lower()
+    assert runtime.pulled == [] and not runtime.exists(rt.container_name(workspace))

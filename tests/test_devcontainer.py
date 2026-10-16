@@ -151,11 +151,19 @@ FRAGMENTS = {
     "settings": {"settings": {"editor.tabSize": 2}},
     "id": {"id": "a-feature"},
     "build": {"build": {"dockerfile": "Dockerfile", "context": ".."}},
+    "build.dockerfile": {"build": {"dockerfile": "Dockerfile"}},
+    "build.context": {"build": {"dockerfile": "Dockerfile", "context": ".."}},
+    "build.args": {"build": {"dockerfile": "Dockerfile", "args": {"A": "b"}}},
+    "build.target": {"build": {"dockerfile": "Dockerfile", "target": "dev"}},
     "build.options": {"build": {"options": ["--network=host"]}},
+    "build.cacheFrom": {"build": {"dockerfile": "Dockerfile", "cacheFrom": ["x"]}},
     "dockerFile": {"dockerFile": "Dockerfile"},
-    "context": {"context": ".."},
+    "context": {"dockerFile": "Dockerfile", "context": ".."},
     "features": {"features": {"ghcr.io/devcontainers/features/node:1": {}}},
-    "overrideFeatureInstallOrder": {"overrideFeatureInstallOrder": ["a"]},
+    "overrideFeatureInstallOrder": {
+        "features": {"ghcr.io/devcontainers/features/node:1": {}},
+        "overrideFeatureInstallOrder": ["ghcr.io/devcontainers/features/node:1"],
+    },
     "mounts": {"mounts": ["type=volume,target=/x"]},
     "workspaceMount": {"workspaceMount": "source=x,target=/y,type=bind"},
     "workspaceFolder": {"workspaceFolder": "/y"},
@@ -241,13 +249,6 @@ def test_a_refused_key_that_is_planted_is_what_stops_a_file_that_would_pass():
     assert dc.check(with_image({"remoteUser": "root"}))  # the positive control
     with pytest.raises(Refused):
         dc.check(with_image({"remoteUser": "root", "capAdd": ["SYS_ADMIN"]}))
-
-
-def test_build_and_features_say_that_images_cannot_be_built():
-    for fragment in (FRAGMENTS["build"], FRAGMENTS["features"], FRAGMENTS["dockerFile"]):
-        with pytest.raises(Refused) as refused:
-            dc.check(with_image(fragment))
-        assert "ready-made image" in str(refused.value)
 
 
 def test_an_unknown_top_level_key_is_refused_with_the_key_named():
@@ -770,8 +771,13 @@ def work(tmp_path):
     return Workspace(folder)
 
 
-def read(work: Workspace) -> str | None:
+def found(work: Workspace) -> dc.ConfigFile | None:
     return dc.read(work.run, work.layout)
+
+
+def read(work: Workspace) -> str | None:
+    file = found(work)
+    return None if file is None else file.text
 
 
 def read_by(work: Workspace, tool: str) -> list[list[str]]:
@@ -795,6 +801,15 @@ def test_the_folder_file_comes_first_and_then_the_dotfile(work):
     (work.folder / ".devcontainer").mkdir()
     (work.folder / ".devcontainer" / "devcontainer.json").write_text('{"image": "folder"}')
     assert read(work) == '{"image": "folder"}'
+
+
+def test_the_place_the_file_was_found_in_is_said(work):
+    (work.folder / ".devcontainer.json").write_text('{"image": "dotfile"}')
+    assert found(work).path == dc.FILES[1]
+    (work.folder / ".devcontainer").mkdir()
+    (work.folder / ".devcontainer" / "devcontainer.json").write_text('{"image": "folder"}')
+    assert found(work).path == dc.FILES[0]
+    assert found(work).text == '{"image": "folder"}'
 
 
 def test_a_file_that_is_too_big_is_refused_unread(work):
@@ -857,6 +872,503 @@ def test_the_places_looked_in_are_what_the_log_says():
     assert dc.FILES == (".devcontainer/devcontainer.json", ".devcontainer.json")
     for place in dc.FILES:
         assert place in dc.LOOKED_IN
+
+
+# --- building: a Dockerfile and features ------------------------------------------------------
+
+FEATURE = "ghcr.io/devcontainers/features/node:1"
+# The only keys the build-only configuration the CLI is given may hold.
+BUILD_KEYS = {"build", "image", "features", "overrideFeatureInstallOrder"}
+
+
+def built(config: dict, **more) -> dc.BuildSpec:
+    found = dc.check(config, **more).build
+    assert found is not None
+    return found
+
+
+def test_a_file_that_names_an_image_alone_builds_nothing():
+    assert dc.check({"image": "ubuntu:24.04"}).build is None
+    assert dc.check(with_image({"features": {}, "build": {}})).build is None  # asks for nothing
+
+
+def test_a_dockerfile_is_a_build_and_needs_no_image():
+    checked = dc.check({"build": {"dockerfile": "Dockerfile", "context": "..", "target": "dev"}})
+    assert checked.image is None
+    assert checked.build.config == {
+        "build": {"dockerfile": "Dockerfile", "context": "..", "target": "dev"}
+    }
+
+
+def test_the_older_form_of_a_dockerfile_is_the_same_build():
+    old = built({"dockerFile": "Dockerfile", "context": ".."})
+    assert old.config == built({"build": {"dockerfile": "Dockerfile", "context": ".."}}).config
+
+
+def test_features_on_an_image_are_a_build_that_keeps_the_image_as_their_base():
+    spec = built(
+        {
+            "image": "ubuntu:24.04",
+            "features": {FEATURE: {"version": "20"}, "./local": {}},
+            "overrideFeatureInstallOrder": ["./local", FEATURE],
+        }
+    )
+    assert spec.config == {
+        "image": "ubuntu:24.04",
+        "features": {FEATURE: {"version": "20"}, "./local": {}},
+        "overrideFeatureInstallOrder": ["./local", FEATURE],
+    }
+    assert spec.features == (FEATURE, "./local")
+
+
+def test_features_with_neither_an_image_nor_a_dockerfile_are_refused_as_naming_no_image():
+    with pytest.raises(Refused) as refused:
+        dc.check({"features": {FEATURE: {}}})
+    assert refused.value.kind == "no_image"
+    assert "build" in str(refused.value).lower()  # the message says a Dockerfile is a way
+
+
+def test_what_a_build_does_not_use_is_not_taken_from_the_file_into_the_build():
+    nothing = dc.check({"image": "ubuntu:24.04", "build": {"args": {"A": "b"}}})
+    assert nothing.build is None  # without a Dockerfile there is nothing to build
+
+
+def test_the_build_only_configuration_holds_the_build_keys_and_nothing_else_of_the_file():
+    config = {
+        "image": "ubuntu:24.04",
+        "build": {"dockerfile": "Dockerfile", "context": "..", "args": {"A": "b"}},
+        "features": {"./f": {}},
+        "overrideFeatureInstallOrder": ["./f"],
+        "onCreateCommand": "echo secret-command",
+        "postStartCommand": "true",
+        "containerEnv": {"A": "b"},
+        "remoteEnv": {"R": "r"},
+        "remoteUser": "dev",
+        "forwardPorts": [80],
+        "customizations": {"vscode": {"extensions": ["a.b"]}},
+        "name": "a name",
+        "init": True,
+        "waitFor": "onCreateCommand",
+    }
+    made = dc.build_config(built(config), dc.FILES[0])
+    written = json.loads(made.text)
+    assert set(written) == BUILD_KEYS  # the positive control: all four are there
+    for leaked in ("secret-command", "forwardPorts", "remoteUser", "vscode", "containerEnv"):
+        assert leaked not in made.text
+    assert written["build"]["args"] == {"A": "b"}
+
+
+def test_the_build_only_file_sits_in_the_folder_of_the_file_it_replaces():
+    spec = built({"build": {"dockerfile": "Dockerfile"}})
+    folder = dc.build_config(spec, ".devcontainer/devcontainer.json")
+    assert folder.path == f".devcontainer/{dc.BUILD_CONFIG_NAME}"
+    dot = dc.build_config(spec, ".devcontainer.json")
+    assert dot.path == dc.BUILD_CONFIG_NAME  # in the top folder, as the file's own is
+    assert dc.BUILD_CONFIG_NAME not in dc.FILES[0] and dc.BUILD_CONFIG_NAME not in dc.FILES[1]
+
+
+def test_the_variables_of_a_build_are_filled_in_by_rcman_for_the_workspace():
+    spec = built(
+        {
+            "build": {
+                "dockerfile": "Dockerfile",
+                "args": {"ID": "${devcontainerId}", "W": "${containerWorkspaceFolder}"},
+            },
+            "features": {FEATURE: {"x": "${devcontainerId}"}},
+            "image": "ubuntu:24.04",
+        },
+        workspace=7,
+        work=WORK,
+    )
+    assert spec.config["build"]["args"] == {"ID": dc.devcontainer_id(7), "W": WORK}
+    assert spec.config["features"][FEATURE] == {"x": dc.devcontainer_id(7)}
+
+
+def test_a_variable_that_names_a_folder_of_the_machine_is_refused_in_a_build_too():
+    with pytest.raises(Refused) as refused:
+        dc.check({"build": {"dockerfile": "Dockerfile", "args": {"A": "${localWorkspaceFolder}"}}})
+    assert refused.value.kind == "variable"
+
+
+@pytest.mark.parametrize(
+    ("build", "named"),
+    [
+        ({"dockerfile": "/etc/passwd"}, "build.dockerfile"),
+        ({"dockerfile": "../../Dockerfile"}, "build.dockerfile"),  # leaves the repository
+        ({"dockerfile": "a/../../../Dockerfile"}, "build.dockerfile"),
+        ({"dockerfile": "..\\..\\Dockerfile"}, "build.dockerfile"),
+        ({"dockerfile": ""}, "build.dockerfile"),
+        ({"dockerfile": 5}, "build.dockerfile"),
+        ({"dockerfile": "D\0x"}, "build.dockerfile"),
+        ({"dockerfile": "Dockerfile", "context": "/"}, "build.context"),
+        ({"dockerfile": "Dockerfile", "context": "../.."}, "build.context"),
+        ({"dockerfile": "Dockerfile", "context": ["."]}, "build.context"),
+        ({"dockerfile": "Dockerfile", "args": ["A=b"]}, "build.args"),
+        ({"dockerfile": "Dockerfile", "args": {"A": 1}}, "build.args"),
+        ({"dockerfile": "Dockerfile", "args": {"a b": "c"}}, "build.args"),
+        ({"dockerfile": "Dockerfile", "target": ""}, "build.target"),
+        ({"dockerfile": "Dockerfile", "target": 3}, "build.target"),
+        ("Dockerfile", "build"),
+    ],
+)
+def test_a_dockerfile_or_context_that_leaves_the_repository_or_a_value_of_the_wrong_kind_is_refused(
+    build, named
+):
+    with pytest.raises(Refused) as refused:
+        dc.check({"build": build})
+    assert refused.value.kind == "bad_value"
+    assert refused.value.fields["key"] == named
+
+
+def test_a_dockerfile_in_the_top_folder_is_taken_from_the_folder_of_the_file():
+    for place, dockerfile in ((dc.FILES[0], "../Dockerfile"), (dc.FILES[1], "Dockerfile")):
+        checked = dc.check({"build": {"dockerfile": dockerfile}}, path=place)
+        assert checked.build.config["build"]["dockerfile"] == dockerfile
+    with pytest.raises(Refused):  # from the top folder the same path leaves the repository
+        dc.check({"build": {"dockerfile": "../Dockerfile"}}, path=dc.FILES[1])
+
+
+def test_a_context_above_the_folder_of_the_file_but_inside_the_repository_is_taken():
+    for place, context in ((dc.FILES[0], ".."), (dc.FILES[1], "."), (dc.FILES[0], "../src")):
+        spec = dc.check({"build": {"dockerfile": "Dockerfile", "context": context}}, path=place)
+        assert spec.build.config["build"]["context"] == context, (place, context)
+    with pytest.raises(Refused) as refused:  # the same context, from the top folder, leaves it
+        dc.check({"build": {"dockerfile": "Dockerfile", "context": ".."}}, path=dc.FILES[1])
+    assert refused.value.kind == "bad_value"
+
+
+def test_an_unknown_key_in_build_is_refused_by_name():
+    with pytest.raises(Refused) as refused:
+        dc.check({"build": {"dockerfile": "Dockerfile", "aNewOption": 1}})
+    assert refused.value.kind == "unknown_key"
+    assert refused.value.fields["key"] == "build.aNewOption"
+
+
+@pytest.mark.parametrize("key", ["options", "cacheFrom"])
+def test_build_options_and_cache_sources_are_refused_naming_the_key(key):
+    with pytest.raises(Refused) as refused:
+        dc.check({"build": {"dockerfile": "Dockerfile", key: ["x"]}})
+    assert refused.value.kind == "refused_key"
+    assert refused.value.fields["key"] == f"build.{key}"
+
+
+@pytest.mark.parametrize(
+    "feature",
+    [
+        "./feature",
+        "./a/b",
+        FEATURE,
+        "ghcr.io/o/r/f",
+        "registry.example.com:5000/o/f:1.2",
+        "ghcr.io/o/f@sha256:" + "a" * 64,
+        "https://example.com/features/f.tgz",
+    ],
+)
+def test_a_feature_of_the_repository_a_registry_or_an_address_is_taken(feature):
+    assert built({"image": "ubuntu:24.04", "features": {feature: {}}}).features == (feature,)
+
+
+@pytest.mark.parametrize(
+    "feature",
+    [
+        "../feature",
+        "./../feature",
+        "./a/../../b",
+        "./a/..",
+        "/abs/feature",
+        "feature",
+        "owner/repo/feature",
+        "http://example.com/f.tgz",
+        "file:///etc/f",
+        "docker-archive:/x",
+        "https://exam ple.com/f",
+        "https://example.com/f\n",
+        "./a\0b",
+        "./a\\..\\b",
+        ".",
+        "./",
+        "",
+    ],
+)
+def test_a_feature_that_leaves_the_repository_or_is_no_reference_is_refused_naming_features(
+    feature,
+):
+    with pytest.raises(Refused) as refused:
+        dc.check({"image": "ubuntu:24.04", "features": {feature: {}}})
+    assert refused.value.kind == "bad_value"
+    assert refused.value.fields["key"] == "features"
+
+
+@pytest.mark.parametrize(
+    ("options", "good"),
+    [
+        ({"version": "20", "flag": True, "count": 3}, True),
+        ("20", True),
+        (True, True),
+        ({}, True),
+        (["a"], False),
+        ({"a": ["b"]}, False),
+        ({"a": {"b": "c"}}, False),
+        (None, False),
+    ],
+)
+def test_the_options_of_a_feature_are_a_string_a_boolean_or_scalars_by_name(options, good):
+    config = {"image": "ubuntu:24.04", "features": {FEATURE: options}}
+    if good:
+        assert built(config).config["features"] == {FEATURE: options}
+    else:
+        with pytest.raises(Refused) as refused:
+            dc.check(config)
+        assert refused.value.kind == "bad_value"
+
+
+def test_features_that_is_not_an_object_and_an_order_that_is_not_a_list_are_refused():
+    for fragment in (
+        {"features": [FEATURE]},
+        {"features": {FEATURE: {}}, "overrideFeatureInstallOrder": FEATURE},
+        {"features": {FEATURE: {}}, "overrideFeatureInstallOrder": [5]},
+        {"features": {FEATURE: {}}, "overrideFeatureInstallOrder": ["../x"]},
+    ):
+        with pytest.raises(Refused) as refused:
+            dc.check(with_image(fragment))
+        assert refused.value.kind == "bad_value", fragment
+
+
+def test_a_file_with_a_plain_image_is_checked_as_before_with_a_dockerfile_in_a_folder():
+    # the image of a build is the base of its features, and is held to the same rules
+    with pytest.raises(Refused):
+        dc.check({"image": "docker-archive:/x", "features": {FEATURE: {}}})
+
+
+# --- the names of images rcman builds ------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "image",
+    [
+        f"localhost/{rt.BUILT_REPOSITORY}/7:latest",
+        f"localhost/{rt.BUILT_REPOSITORY}/7",
+        f"LOCALHOST/{rt.BUILT_REPOSITORY.upper()}/7:latest",
+        f"registry.example.com/{rt.BUILT_REPOSITORY}/x:1",
+        f"{rt.BUILT_REPOSITORY}/7",
+        "0123456789ab",  # the short id of an image
+        "deadbeef",
+        "0123456789abcdef" * 4,  # a whole id
+        "sha256:" + "0123456789abcdef" * 4,
+        "DEADBEEF",
+    ],
+)
+def test_the_name_of_an_image_rcman_built_or_the_id_of_any_image_cannot_be_named(image):
+    for call in (lambda: dc.check({"image": image}), lambda: planned({"image": image})):
+        with pytest.raises(Refused) as refused:
+            call()
+        assert refused.value.kind == "bad_value" and refused.value.fields["key"] == "image"
+
+
+@pytest.mark.parametrize("image", ["ubuntu", "deadbeef:1", "ghcr.io/o/built:1", "a1b2c3d4/e"])
+def test_a_name_that_is_not_one_of_those_is_still_taken(image):
+    assert dc.check({"image": image}).image == image
+
+
+# --- the plan of a built image -----------------------------------------------------------
+
+BUILT = f"localhost/{rt.BUILT_REPOSITORY}/7:latest"
+
+
+def test_a_built_images_plan_is_made_of_the_built_image_and_the_file_whose_base_is_not_in_it():
+    config = {"build": {"dockerfile": "Dockerfile"}, "remoteUser": "dev"}
+    found = dc.plan(config, facts(), 7, WORK, image=BUILT)
+    assert found.image == BUILT and found.uid == 1234
+
+
+def test_the_base_image_of_a_build_is_not_the_image_of_its_plan():
+    config = {"image": "ubuntu:24.04", "features": {FEATURE: {}}}
+    assert dc.plan(config, facts(), 7, WORK, image=BUILT).image == BUILT
+
+
+def test_a_plan_without_an_image_and_without_a_built_one_is_refused():
+    with pytest.raises(Refused) as refused:
+        dc.plan({"build": {"dockerfile": "Dockerfile"}}, facts(), 7, WORK)
+    assert refused.value.kind == "no_image"
+
+
+def test_the_files_commands_run_once_when_the_built_image_carries_only_its_features():
+    # what the CLI writes for a build-only configuration: the features' entries and no entry
+    # of the file's own
+    entries = label({"id": "./feature", "onCreateCommand": "from-the-feature"})
+    config = {
+        "build": {"dockerfile": "Dockerfile"},
+        "features": {"./feature": {}},
+        "onCreateCommand": "from-the-file",
+        "postStartCommand": "start-from-the-file",
+    }
+    found = dc.plan(config, facts(labels=entries), 7, WORK, image=BUILT)
+    assert [c.shell for c in found.commands] == [
+        "from-the-feature",
+        "from-the-file",
+        "start-from-the-file",
+    ]
+    assert [c.origin for c in found.commands] == ["./feature", dc.CONFIG_ORIGIN, dc.CONFIG_ORIGIN]
+
+
+def test_a_features_environment_is_the_images_because_the_label_does_not_carry_it():
+    # the CLI bakes a feature's containerEnv into the image's ENV and not into the label, so
+    # the plan finds it among the image's variables and needs no expansion in label entries
+    entries = label({"id": "./feature"})
+    found = dc.plan(
+        {"build": {"dockerfile": "Dockerfile"}},
+        facts(labels=entries, env={"PATH": "/opt/tool/bin:/usr/bin", "TOOL_HOME": "/opt/tool"}),
+        7,
+        WORK,
+        image=BUILT,
+    )
+    assert found.container_env["TOOL_HOME"] == "/opt/tool"
+    assert found.image_path == "/opt/tool/bin:/usr/bin"
+
+
+# --- what the built image's label asks for, read before the image is copied ------------------
+
+# The entry the CLI writes for a feature that asks for everything it may (recorded from the
+# CLI's output, spike for the builder): the keys it copies from a feature.
+FEATURE_ENTRY = {
+    "id": "./feature2",
+    "onCreateCommand": "echo f2-create",
+    "updateContentCommand": "echo f2-update",
+    "postCreateCommand": "echo f2-post",
+    "postStartCommand": "echo f2-start",
+    "postAttachCommand": "echo f2-attach",
+    "init": True,
+    "customizations": {"vscode": {"extensions": ["a.b"]}},
+}
+REFUSED_BY_A_FEATURE = {
+    "privileged": True,
+    "capAdd": ["SYS_PTRACE", "NET_ADMIN"],
+    "securityOpt": ["seccomp=unconfined"],
+    "entrypoint": "/usr/local/share/f2-entry.sh",
+    "mounts": [{"source": "f2-data", "target": "/f2", "type": "volume"}],
+}
+
+
+def test_every_key_the_cli_copies_from_a_feature_is_accepted_or_refused_by_the_policy():
+    copied = set(FEATURE_ENTRY) | set(REFUSED_BY_A_FEATURE)
+    assert copied <= set(dc.POLICY)  # no key of a feature's entry is unknown to the policy
+    assert all(dc.POLICY[k].action == REFUSE for k in REFUSED_BY_A_FEATURE)
+    assert all(dc.POLICY[k].action != REFUSE for k in FEATURE_ENTRY)
+    dc.check_metadata(label(FEATURE_ENTRY))  # accepted whole
+
+
+def test_an_image_with_no_label_or_one_of_a_plain_feature_is_accepted():
+    dc.check_metadata({})
+    dc.check_metadata(label({"id": FEATURE}))
+
+
+@pytest.mark.parametrize("key", sorted(REFUSED_BY_A_FEATURE))
+def test_a_built_images_label_that_asks_for_what_the_file_may_not_names_the_feature(key):
+    entries = label(
+        {"id": "./ok"}, {**FEATURE_ENTRY, "id": "./greedy", key: REFUSED_BY_A_FEATURE[key]}
+    )
+    with pytest.raises(Refused) as refused:
+        dc.check_metadata(entries)
+    assert refused.value.kind == "refused_by_image"
+    assert refused.value.fields["key"] == key and refused.value.fields["entry"] == "./greedy"
+    assert "./greedy" in str(refused.value) and f'"{key}"' in str(refused.value)
+
+
+def test_a_label_that_is_not_a_list_of_objects_or_is_too_deep_is_refused_unshown():
+    for text in ("not json", '"a"', "[1]"):
+        with pytest.raises(Refused) as refused:
+            dc.check_metadata({"devcontainer.metadata": text})
+        assert refused.value.kind == "metadata_invalid"
+    with pytest.raises(Refused) as deep:
+        dc.check_metadata({"devcontainer.metadata": json.dumps([{"id": "f", "x": nested(100)}])})
+    assert deep.value.kind in {"too_deep", "unknown_key_in_image"}
+
+
+def test_the_check_of_the_label_and_the_plan_refuse_the_same_entries():
+    entries = label({"id": "./greedy", "privileged": True})
+    with pytest.raises(Refused) as early:
+        dc.check_metadata(entries)
+    with pytest.raises(Refused) as late:
+        planned({"image": BUILT}, facts(labels=entries))
+    assert str(early.value) == str(late.value)
+
+
+# --- what a label cannot ask for, and how a bad value in it is told -------------------------
+
+# The CLI writes none of these into an entry of the label (the keys it writes are in
+# FEATURE_ENTRY above and in the spike's list of the file's own entry's keys), so an entry that
+# has one was not written by it: building and installing are for devcontainer.json alone.
+FILE_ONLY = {
+    "build": {"dockerfile": "Dockerfile"},
+    "dockerFile": "Dockerfile",
+    "context": "..",
+    "features": {FEATURE: {}},
+    "overrideFeatureInstallOrder": [FEATURE],
+    "image": "ubuntu:24.04",
+}
+
+
+@pytest.mark.parametrize("key", sorted(FILE_ONLY))
+def test_an_entry_of_a_label_that_asks_to_build_or_install_is_refused_naming_the_entry(key):
+    entries = label({"id": "./odd", key: FILE_ONLY[key]})
+    for call in (
+        lambda: dc.check_metadata(entries),
+        lambda: planned({"image": "x"}, facts(labels=entries)),
+    ):
+        with pytest.raises(Refused) as refused:
+            call()
+        assert refused.value.kind == "refused_by_image"
+        assert refused.value.fields["key"] == key and refused.value.fields["entry"] == "./odd"
+    # the same key in the file is what it was: honoured
+    assert dc.check(with_image({key: FILE_ONLY[key]}))
+
+
+def test_an_entry_that_asks_for_nothing_of_those_is_not_refused_for_having_the_keys():
+    dc.check_metadata(label({"id": "f", "build": {}, "features": {}, "image": ""}))
+
+
+def test_a_value_of_the_wrong_kind_in_an_entry_of_a_label_says_it_is_the_images_label():
+    entries = label({"id": "./odd", "remoteUser": 5})
+    with pytest.raises(Refused) as refused:
+        dc.check_metadata(entries)
+    assert refused.value.kind == "bad_value_in_image"
+    text = str(refused.value)
+    assert "devcontainer.json" not in text and "./odd" in text and '"remoteUser"' in text
+    with pytest.raises(Refused) as late:
+        planned({"image": "x"}, facts(labels=entries))
+    assert str(late.value) == text
+    with pytest.raises(Refused) as file:  # in the file it is the file's
+        dc.check({"image": "x", "remoteUser": 5})
+    assert file.value.kind == "bad_value" and "devcontainer.json" in str(file.value)
+
+
+# --- the messages of a build ---------------------------------------------------------------------
+
+BUILD_MESSAGES = {
+    "build_registry_unreachable",
+    "build_image_missing",
+    "build_sign_in",
+    "build_step_failed",
+    "build_feature_failed",
+    "build_no_space",
+    "build_context_too_big",
+    "build_image_too_big",
+    "build_timeout",
+    "build_failed",
+    "build_image_refused",
+    "built_image_gone",
+}
+
+
+def test_the_messages_of_a_build_are_in_the_catalogue_in_plain_words():
+    assert BUILD_MESSAGES <= set(problems.DEVCONTAINER_MESSAGES)
+    for kind in BUILD_MESSAGES:
+        text = problems.DEVCONTAINER_MESSAGES[kind]
+        assert not re.search(r"\d", text), kind
+        assert text.strip(), kind
+    assert "{feature}" in problems.DEVCONTAINER_MESSAGES["build_feature_failed"]
+    assert "{tail}" in problems.DEVCONTAINER_MESSAGES["build_step_failed"]
+    assert "sign" in problems.DEVCONTAINER_MESSAGES["build_sign_in"].lower()
 
 
 # --- the guard that holds the administrators' page equal to the policy ----------------------

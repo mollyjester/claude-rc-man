@@ -11,12 +11,14 @@ paths to the installer's.
 |---|---|
 | `install.sh` | Checks it runs through sudo, updates the clone as `$SUDO_USER` (fast-forward only, refusing a dirty tree or another branch), starts again if that changed `install.sh`, then hands over to the Python installer; with `--rollback` it hands over at once, leaving the clone as it is |
 | `installer/install.py` | Everything else, using the standard library and the clone's `helpers/rules.py`, whose rules' sentences explain a refused setting; run with the system interpreter in isolated mode and UTF-8 mode, it writes no bytecode into the clone and takes the clone off its path once it has imported the rules |
-| `installer/templates/` | The files it writes, with `@NAME@` placeholders: the app's environment, oauth2-proxy's configuration, both systemd units, and the Caddy site block. A test keeps `TEMPLATES` and the directory equal. Besides the settings, `render` fills in what the installer found out: rcman's uid (`APP_UID`) and the default image's name (`WORKSPACE_IMAGE`) |
+| `installer/templates/` | The files it writes, with `@NAME@` placeholders: the app's environment, oauth2-proxy's configuration, both systemd units, and the Caddy site block. A test keeps `TEMPLATES` and the directory equal. Besides the settings, `render` fills in what the installer found out, which `found_out` returns: rcman's uid (`APP_UID`), the default image's name (`WORKSPACE_IMAGE`) and the builder image's (`BUILDER_IMAGE`, written as `RCMAN_BUILDER_IMAGE`) |
 | `installer/workspace/Containerfile` | The default workspace image, built with rcman's own Podman |
+| `installer/builder/` | The devcontainer builder image's build context: its `Containerfile`, the Podman configuration it carries (`containers.conf`, `storage.conf`), and `package.json` with `package-lock.json`, which pin the Dev Containers CLI by integrity |
 
 The pinned versions are `UV_VERSION`, `OAUTH2_PROXY_VERSION` and
 `TMUX_VERSION` in `installer/install.py`, `frontend/.nvmrc` for Node.js, the
-tags of `BUILDER_IMAGE` and of the Containerfile's `FROM`, and
+tags of `TMUX_BUILD_IMAGE` and of the `FROM` of each Containerfile (the builder's
+Node stage by digest), the CLI in `installer/builder/package.json` and its lock, and
 `helpers/claude-version` for Claude Code. Downloads are checked against the
 checksums their publishers list; tmux publishes none, so its source is checked
 against `TMUX_SHA256`, and Claude Code against its release's manifest. `ensure_toolchain` fills the
@@ -30,7 +32,8 @@ unpacked.
 `ensure_packages` installs `PACKAGES` that are missing. `ensure_subordinate_ids`
 gives `rcman` `SUBORDINATE_COUNT` subordinate uids and gids, a range after every
 range already in `/etc/subuid` and `/etc/subgid` (`subordinate_start`), unless it
-has one that big; a test holds the count to `MAX_PEOPLE` and `RANGE` (see
+has one that big, so a machine whose range was made for fewer slots gets a second,
+full one; a test holds the count to `MAX_PEOPLE`, `BUILDER_SLOT` and `RANGE` (see
 [people.md](people.md)). `ensure_podman` enables linger for `rcman`, starts its
 user manager, enables `podman.socket` in it and waits for the socket; when the
 subordinate ids changed, it tells Podman with a local `podman system migrate`
@@ -46,7 +49,7 @@ no upgrade from one, as [the installation guide](../docs/installation.md) says.
 ## What workspaces are made of
 
 - **The tools**, `TOOLS` (`ensure_tools`): tmux, built from its pinned source in
-  a throwaway container of `BUILDER_IMAGE`, musl and static, so that it needs
+  a throwaway container of `TMUX_BUILD_IMAGE`, musl and static, so that it needs
   nothing of any image (`is_static` checks there is no dynamic loader), and
   built again only when the version or checksum it was built from
   (`.tmux-version`) changes; the system's static busybox, and `sh` as a link
@@ -55,6 +58,13 @@ no upgrade from one, as [the installation guide](../docs/installation.md) says.
 - **The default image** (`ensure_image`): built from `CONTAINERFILE` unless
   Podman has it, named after the file's content (`workspace_image`), so that a
   changed file makes a new image, and the old one stays the workspaces' it is.
+- **The builder image** (`ensure_devcontainer_builder`): built from `BUILDER_DIR` with
+  rcman's Podman unless Podman has it, like the default image, so the installer needs
+  the network and there is no offline install. It is named `BUILDER_REPOSITORY` and
+  tagged by a hash of every file of the folder, names and content
+  (`devcontainer_builder_image`), and rcman gets the name as `RCMAN_BUILDER_IMAGE`; the
+  images of older tags are removed as far as Podman allows (`prune_devcontainer_builder_images`).
+  What runs in it is in [runtime.md](runtime.md#building-an-image).
 - **The Claude Code store**, `CLAUDE_STORE` (`ensure_claude_store`):
   `versions/<version>` for the tested version, downloaded from the
   `CLAUDE_DOWNLOAD` setting's address — `<version>/manifest.json`, whose
@@ -98,7 +108,8 @@ through the socket.
   real machine — such as settings precedence and validation, the rendered
   files, release switching and rollback, the subordinate range, telling a
   static program from another, the tmux source's and Claude Code's checksums,
-  the image's tag, the Caddy notices and two callers filling one toolchain at
+  the image's tag and the builder image's, a machine with the old range getting a
+  second one, the Caddy notices and two callers filling one toolchain at
   once — and the guide held to the installer.
 - `tests/test_claude_download.py`: the fake `claude` as a Claude Code release
   (`tests/claude_download.py`), downloaded into a store by the installer's own
@@ -110,8 +121,9 @@ through the socket.
   a user `dev` clones it and runs `install.sh`. The host fills a toolchain
   cache with the installer's own download code and mounts it in. The suite
   checks what an installation on a real machine does, such as the release's
-  contents and ownership, the accounts, rootless Podman for rcman, the tools,
-  the image and the store, files and modes, the services answering, the first
+  contents and ownership, the accounts, rootless Podman for rcman and a
+  subordinate range that reaches the builder's slot, the tools, the image, the
+  builder image with the CLI running in it, and the store, files and modes, the services answering, the first
   administrator, `rcman-admin` by name as root, a second run changing nothing,
   self-update and rollback, and — with Caddy and stand-ins for oauth2-proxy and
   rcman — that a browser cannot set the identity header itself and that only

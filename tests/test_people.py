@@ -52,6 +52,14 @@ def test_there_is_room_for_max_people_and_no_more(con, monkeypatch):
     assert people.by_email(con, "c@x.io") is None
 
 
+def test_the_builders_slot_is_above_every_persons_and_no_person_is_given_it(con):
+    assert people.BUILDER_SLOT == people.MAX_PEOPLE + 1
+    slots = [people.add(con, f"p{n}@x.io", False).slot for n in range(people.MAX_PEOPLE)]
+    assert max(slots) == people.MAX_PEOPLE and len(set(slots)) == people.MAX_PEOPLE  # all given
+    assert people.BUILDER_SLOT not in slots and 0 not in slots
+    assert refused(people.add, con, "one-more@x.io", False) == "people_full"
+
+
 @pytest.mark.parametrize("email", ["nope", "-x@example.com", "a b@example.com", ""])
 def test_an_address_the_rule_refuses_is_refused(con, email):
     assert refused(people.add, con, email, False) == "email_invalid"

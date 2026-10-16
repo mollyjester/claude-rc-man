@@ -24,7 +24,10 @@ the Node.js that builds the web interface, uv for the Python environment,
 oauth2-proxy, tmux's source, and Claude Code — it downloads itself and checks
 against its published checksum, or, for tmux, which publishes none, against
 the one the installer names (`TMUX_SHA256`). The images workspaces are built
-from come from Docker Hub.
+from come from Docker Hub. The builder image needs the network as well, for
+the Ubuntu packages and the npm package it installs, so an installation cannot
+be done offline. Building a repository's devcontainer.json later needs the
+network too (see [devcontainer.json support](devcontainer.md#building-an-image)).
 
 ## Creating the Google OAuth client
 
@@ -97,11 +100,17 @@ run and kept.
    user `rcman-proxy` for oauth2-proxy, and a group `rcman-web` whose only
    member is Caddy's account; anyone else in it is taken out.
 4. **Sets up rootless Podman for `rcman`**: a range of subordinate user and
-   group ids of its own in `/etc/subuid` and `/etc/subgid`, big enough for a
-   range for each person rcman has room for; lingering, so its user manager
+   group ids of its own in `/etc/subuid` and `/etc/subgid`, big enough for rcman's
+   own range, a range for each person rcman has room for, and one more for the
+   builder of devcontainer images, which no person's workspace uses; a machine that
+   has a range from an earlier installation gets another, full one; lingering, so its user manager
    runs from boot, without anyone signed in; and Podman's socket in that user
    manager. Workspaces run there, outside rcman's own service, so they keep
    running while rcman restarts or upgrades.
+   **Warning:** adding the builder's range to a machine that has the earlier, smaller
+   one makes the installer run `podman system migrate` as `rcman`, which stops its
+   running containers, and so every workspace's server. rcman is in an alpha without
+   upgrades: reinstall a machine rather than upgrade it.
 5. **Makes the directory of rcman's socket**, `/run/rcman`: it belongs to
    `rcman` and the group `rcman-web`, and no one else may enter it.
    `/etc/tmpfiles.d/rcman.conf` makes it again at every boot.
@@ -120,6 +129,12 @@ run and kept.
      before keep theirs. A repository's devcontainer.json can name another
      image, which rcman pulls when a workspace is made (see
      [devcontainer.json support](devcontainer.md));
+   - the builder image, from `installer/builder`: the Dev Containers CLI and a
+     Podman of its own, which rcman runs for one build of a repository's
+     devcontainer.json at a time and removes after it. The CLI is installed from a
+     lock file that pins it, and the image is named after the content of the
+     folder, so that a change makes a new image and older ones are removed when
+     nothing runs from them. It is built as the default image is, with the network;
    - the Claude Code store, `/var/lib/rcman/claude`: the version rcman is
      tested with (`helpers/claude-version`), downloaded and checked against its
      release's checksum. Every workspace has the store, read-only.
@@ -143,7 +158,10 @@ another workspace, nor anything on this machine's loopback addresses, such as
 oauth2-proxy. It can reach **anything this machine serves on its other
 addresses**, and anything on the networks this machine is on, as rcman's own
 account could. If that matters, keep such services on loopback, or limit what
-rcman's account (`rcman`) may connect to with the machine's firewall.
+rcman's account (`rcman`) may connect to with the machine's firewall. The
+builder of a repository's devcontainer.json has the same network as a
+workspace, and so the same reach, and it runs the repository's own Dockerfile
+steps and feature scripts.
 
 ## Podman's volumes are rcman's
 

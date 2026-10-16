@@ -22,8 +22,9 @@ ACCOUNT = "rcman"
 # The account's home, and Podman's storage in it: a volume, so that Podman's overlay is
 # never on the image's own overlay.
 HOME = "/var/lib/rcman"
-# The account's subordinate user and group ids: the first and how many.
-SUBORDINATE = "1000000:1000000"
+# The account's subordinate user and group ids: the first, and how many, which are the
+# installer's own count: room for every person's slot and the devcontainer builder's.
+SUBORDINATE_FIRST = 1000000
 
 
 def as_account(*argv: str) -> list[str]:
@@ -37,6 +38,9 @@ def run(*argv: str) -> None:
 
 
 def setup() -> None:
+    from installer import install as ins
+
+    subordinate = f"{SUBORDINATE_FIRST}:{ins.SUBORDINATE_COUNT}"
     # Docker makes / a private mount; on a host it is shared, as rootless Podman expects.
     run("mount", "--make-rshared", "/")
     run("useradd", "--system", "--user-group", "--home-dir", HOME,
@@ -44,7 +48,7 @@ def setup() -> None:
     run("chown", f"{ACCOUNT}:{ACCOUNT}", HOME)  # the volume, made root's
     for ids in ("/etc/subuid", "/etc/subgid"):
         with open(ids, "a") as file:
-            file.write(f"{ACCOUNT}:{SUBORDINATE}\n")
+            file.write(f"{ACCOUNT}:{subordinate}\n")
     run("loginctl", "enable-linger", ACCOUNT)
     run("systemctl", "start", f"user@{pwd.getpwnam(ACCOUNT).pw_uid}.service")
     run("systemctl", "--user", "--machine", f"{ACCOUNT}@", "enable", "--now", "podman.socket")

@@ -51,6 +51,9 @@ finally:
 TEMPLATES_DIR = Path(__file__).resolve().parent / "templates"
 # The default workspace image's build file: its content names its tag (workspace_image).
 CONTAINERFILE = Path(__file__).resolve().parent / "workspace" / "Containerfile"
+# The devcontainer builder image's build context: its Containerfile, the Podman
+# configuration it carries, and the lock that pins the Dev Containers CLI.
+BUILDER_DIR = Path(__file__).resolve().parent / "builder"
 
 ROOT = Path("/opt/rcman")
 CURRENT = ROOT / "current"
@@ -94,7 +97,7 @@ TMUX_URL = (
     f"https://github.com/tmux/tmux/releases/download/{TMUX_VERSION}/tmux-{TMUX_VERSION}.tar.gz"
 )
 # What tmux is built in: musl, so that the static binary needs nothing of any image.
-BUILDER_IMAGE = "docker.io/library/alpine:3.20"
+TMUX_BUILD_IMAGE = "docker.io/library/alpine:3.20"
 TMUX_BUILD = (
     "apk add -q build-base libevent-dev libevent-static ncurses-dev ncurses-static bison "
     ">/dev/null && cd /tmp && tar xzf /tmux.tar.gz && cd tmux-* && "
@@ -114,11 +117,11 @@ PACKAGES = (
     "ncurses-base",
 )
 BUSYBOX = Path("/bin/busybox")
-# rcman's subordinate ids: room for every person's range and rcman's own
-# (rcman/people.py MAX_PEOPLE, rcman/runtime.py RANGE), from the first id useradd
-# leaves to such ranges.
+# rcman's subordinate ids: room for rcman's own range (slot 0), every person's and the
+# devcontainer builder's, which sits above them all (rcman/people.py MAX_PEOPLE and
+# BUILDER_SLOT, rcman/runtime.py RANGE), from the first id useradd leaves to such ranges.
 RANGE = 65536
-SUBORDINATE_COUNT = 65 * RANGE
+SUBORDINATE_COUNT = (1 + 64 + 1) * RANGE
 SUBORDINATE_FIRST = 100000
 SUBORDINATE_FILES = (Path("/etc/subuid"), Path("/etc/subgid"))
 LINGER = Path("/var/lib/systemd/linger")
@@ -277,7 +280,8 @@ def _paths() -> dict[str, str]:
 
 def render(name: str, settings: dict[str, str]) -> str:
     """A template with the settings, and what the installer found out — rcman's uid as
-    APP_UID and the default image as WORKSPACE_IMAGE — filled in."""
+    APP_UID, the default image as WORKSPACE_IMAGE and the devcontainer builder image as
+    BUILDER_IMAGE — filled in."""
     text = (TEMPLATES_DIR / name).read_text(encoding="utf-8")
     values = {**settings, **_paths()}
 
@@ -791,7 +795,7 @@ def tmux_build_argv(tarball: Path, out: Path) -> list[str]:
     """podman's arguments that build tmux statically from ``tarball`` into ``out``."""
     return [
         "run", "--rm", f"--volume={tarball}:/tmux.tar.gz:ro", f"--volume={out}:/out",
-        BUILDER_IMAGE, "sh", "-c", TMUX_BUILD,
+        TMUX_BUILD_IMAGE, "sh", "-c", TMUX_BUILD,
     ]  # fmt: skip
 
 
@@ -876,6 +880,65 @@ def ensure_image() -> list[str]:
     return [f"image {image}"]
 
 
+BUILDER_REPOSITORY = "localhost/rcman-builder"
+
+
+def devcontainer_builder_image() -> str:
+    """The devcontainer builder image's name, tagged after every file of BUILDER_DIR, names
+    and content, so that a change to any of them makes a new image and the old one stays
+    the builds' it is."""
+    digest = hashlib.sha256()
+    for path in sorted(p for p in BUILDER_DIR.rglob("*") if p.is_file()):
+        name = path.relative_to(BUILDER_DIR).as_posix().encode()
+        digest.update(len(name).to_bytes(4, "big") + name)
+        content = path.read_bytes()
+        digest.update(len(content).to_bytes(8, "big") + content)
+    return f"{BUILDER_REPOSITORY}:{digest.hexdigest()[:12]}"
+
+
+def prune_devcontainer_builder_images(uid: int, keep: str) -> None:
+    """Remove the builder images but ``keep``, as far as Podman lets: an image a running
+    builder uses refuses, and stays until a later run."""
+    listed = subprocess.run(
+        as_rcman_podman(uid, "image", "ls", "--format", "{{.Repository}}:{{.Tag}}",
+                        "--filter", f"reference={BUILDER_REPOSITORY}"),
+        capture_output=True, text=True,
+    )  # fmt: skip
+    for name in listed.stdout.split():
+        if name.startswith(f"{BUILDER_REPOSITORY}:") and name != keep:
+            subprocess.run(as_rcman_podman(uid, "rmi", name), capture_output=True)
+
+
+def ensure_devcontainer_builder() -> list[str]:
+    """The devcontainer builder image, built with rcman's Podman unless it is there, like
+    the default image; it needs the network for the same reason. Older ones are pruned."""
+    uid, image = app_uid(), devcontainer_builder_image()
+    changes = []
+    if subprocess.run(as_rcman_podman(uid, "image", "exists", image)).returncode != 0:
+        context = Path(tempfile.mkdtemp(prefix="rcman-builder."))
+        try:
+            shutil.copytree(BUILDER_DIR, context, dirs_exist_ok=True)
+            for path in (context, *context.rglob("*")):  # rcman reads it, not the clone's owner
+                os.chmod(path, 0o755 if path.is_dir() else 0o644)
+            run(as_rcman_podman(uid, "build", "--tag", image, "--file",
+                                str(context / "Containerfile"), str(context)))  # fmt: skip
+        finally:
+            shutil.rmtree(context, ignore_errors=True)
+        changes.append(f"image {image}")
+    prune_devcontainer_builder_images(uid, image)
+    return changes
+
+
+def found_out() -> dict[str, str]:
+    """What the installer finds out and renders along with the settings: rcman's uid and
+    the names of the default image and of the devcontainer builder image."""
+    return {
+        "APP_UID": str(app_uid()),
+        "WORKSPACE_IMAGE": workspace_image(),
+        "BUILDER_IMAGE": devcontainer_builder_image(),
+    }
+
+
 def claude_platform() -> str:
     return f"linux-{_arch()}"
 
@@ -927,7 +990,7 @@ def _gid(group: str) -> int:
 
 
 def configure(settings: dict[str, str]) -> list[str]:
-    """Every file the installer renders; ``settings`` with APP_UID and WORKSPACE_IMAGE."""
+    """Every file the installer renders; ``settings`` with what ``found_out`` returns."""
     changes = []
     app_gid, proxy_gid = _gid(APP_USER), _gid(PROXY_USER)
     files = [
@@ -1091,9 +1154,9 @@ def main(argv: list[str]) -> int:
             changes.append(f"release {release}")
         changes += ensure_tools()
         changes += ensure_image()
+        changes += ensure_devcontainer_builder()
         changes += ensure_claude_store(CLAUDE_STORE, settings["CLAUDE_DOWNLOAD"])
-        found = {"APP_UID": str(app_uid()), "WORKSPACE_IMAGE": workspace_image()}
-        changes += configure({**settings, **found})
+        changes += configure({**settings, **found_out()})
         changes += link_commands()
         added = ensure_admin(settings)
         start_services(restart=bool(changes))

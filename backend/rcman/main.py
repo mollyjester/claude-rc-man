@@ -60,6 +60,8 @@ def podman_runtime(settings: Settings) -> PodmanRuntime:
         PodmanConfig(
             socket=podman_socket(settings),
             image=settings.workspace_image,
+            builder_image=settings.builder_image,
+            scratch_dir=settings.database.parent,
             tools_dir=settings.tools_dir,
             claude_store=settings.claude_store,
         )

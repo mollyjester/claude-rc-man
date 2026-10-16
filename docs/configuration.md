@@ -15,6 +15,7 @@ when a value is invalid.
 | `RCMAN_ALLOWED_EMAILS` | The list of addresses oauth2-proxy lets sign in, which rcman writes from its people (see [Adding and removing people](users.md)) |
 | `RCMAN_PODMAN_SOCKET` | The socket of the Podman service workspaces run in: rcman's own user manager's, under `XDG_RUNTIME_DIR`, when unset |
 | `RCMAN_WORKSPACE_IMAGE` | The image new workspaces are made from; the installer names its default image here. It must hold a git new enough for rcman, or a workspace made from it fails (see [Git](git.md#images)). A workspace cloned from a repository whose `devcontainer.json` names an image is made from that image instead (see [devcontainer.json support](devcontainer.md)) |
+| `RCMAN_BUILDER_IMAGE` | The image a build of a repository's `devcontainer.json` runs in, started for one build and removed after it; the installer builds it and names it here (see [devcontainer.json support](devcontainer.md#building-an-image)) |
 | `RCMAN_TOOLS_DIR` | The tools every workspace has, read-only: tmux, busybox and terminal descriptions, which the installer makes |
 | `RCMAN_CLAUDE_STORE` | The Claude Code store every workspace has, read-only, which the installer fills |
 | `RCMAN_DOCS_DIR` | Where the documentation pages shown in rcman are |

@@ -1,0 +1,20 @@
+# The devcontainer builder: a Podman of its own and the Dev Containers CLI, run by rcman
+# in a uid range no person has, to build a repository's devcontainer.json.
+# The CLI is installed from package-lock.json, which pins it by integrity; its Node comes
+# from the digest-pinned first stage.
+FROM docker.io/library/node:24-bookworm-slim@sha256:a5f4366e834695d5f363b920c104953a535d3a9864d1bdf74566a0ebe01daee5 AS cli
+WORKDIR /cli
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund
+
+FROM docker.io/library/ubuntu:24.04
+RUN apt-get update -qq \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
+      podman crun fuse-overlayfs slirp4netns tar ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+COPY containers.conf storage.conf /etc/containers/
+COPY --from=cli /usr/local/bin/node /usr/local/bin/node
+COPY --from=cli /cli/node_modules /opt/devcontainers-cli/node_modules
+RUN ln -s /opt/devcontainers-cli/node_modules/.bin/devcontainer /usr/local/bin/devcontainer \
+ && mkdir -p /work /var/lib/containers
+WORKDIR /work
