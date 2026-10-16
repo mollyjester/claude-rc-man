@@ -7,10 +7,26 @@ import { ADMIN_USER, fakeApi, NOTHING_TO_ATTEND, problem, type Routes } from "./
 import { renderApp } from "./test/render";
 import { UPGRADE_POLL_MS } from "./Versions";
 
+const NONE = { memory: null, cpu: null, pids: null };
+
 const PEOPLE = {
   people: [
-    { id: 1, email: "alice@example.com", admin: true, state: "active", workspaces: 2 },
-    { id: 2, email: "bob@example.com", admin: false, state: "active", workspaces: 0 },
+    {
+      id: 1,
+      email: "alice@example.com",
+      admin: true,
+      state: "active",
+      workspaces: 2,
+      limits: { memory: "4G", cpu: "1.5", pids: "500" },
+    },
+    {
+      id: 2,
+      email: "bob@example.com",
+      admin: false,
+      state: "active",
+      workspaces: 0,
+      limits: NONE,
+    },
   ],
 };
 
@@ -32,7 +48,30 @@ test("people are listed with their role and how many workspaces they have", asyn
   expect(within(bob).getByText(m.usersUser)).toBeInTheDocument();
   expect(within(bob).getByRole("cell", { name: "0" })).toBeInTheDocument();
   const headers = screen.getAllByRole("columnheader").map((h) => h.textContent);
-  expect(headers).toEqual([m.usersEmail, m.usersRole, m.usersWorkspaces, ""]);
+  expect(headers).toEqual([
+    m.usersEmail,
+    m.usersRole,
+    m.usersWorkspaces,
+    m.usersMemory,
+    m.usersCpu,
+    m.usersProcesses,
+    "",
+  ]);
+});
+
+test("each person's stored limits are listed, and no limit is said so", async () => {
+  api({ "GET /api/people": PEOPLE });
+  renderApp("/admin/people");
+  const alice = await screen.findByRole("row", { name: /alice@example.com/ });
+  const cells = within(alice)
+    .getAllByRole("cell")
+    .map((c) => c.textContent);
+  expect(cells.slice(3, 6)).toEqual(["4G", "1.5", "500"]);
+  const bob = screen.getByRole("row", { name: /bob@example.com/ });
+  const bobs = within(bob)
+    .getAllByRole("cell")
+    .map((c) => c.textContent);
+  expect(bobs.slice(3, 6)).toEqual([m.usersNoLimit, m.usersNoLimit, m.usersNoLimit]);
 });
 
 test("adding someone sends exactly what was entered, and lists them", async () => {
@@ -41,7 +80,7 @@ test("adding someone sends exactly what was entered, and lists them", async () =
     "GET /api/people": () => ({ people }),
     "POST /api/people": (c) => {
       const body = c.body as { email: string; admin: boolean };
-      const person = { id: 3, ...body, state: "active", workspaces: 0 };
+      const person = { id: 3, ...body, state: "active", workspaces: 0, limits: NONE };
       people.push(person);
       return { person };
     },
@@ -166,6 +205,476 @@ test("the audit trail pages towards older events", async () => {
   expect(screen.getAllByRole("cell", { name: "a@x" })).toHaveLength(2); // who, by address alone
   await userEvent.click(screen.getByRole("button", { name: m.auditOlder }));
   await waitFor(() => expect(fake.made("GET", "/api/audit")[1].query.get("before")).toBe("8"));
+});
+
+// --- the Limits dialog ------------------------------------------------------------------
+
+type Used = { memory: string; memory_bytes: number; tasks: number } | null;
+type Held = { memory: string | null; cpu: string | null; pids: string | null };
+type Scope = { id: number; name: string; state: string; limits: Held; usage: Used };
+
+const used = (memory: string, tasks: number): Used => ({
+  memory,
+  memory_bytes: 1024 * 1024 * 1024,
+  tasks,
+});
+
+// What GET /api/people/2/limits answers for bob: a limit of his own, one workspace that is
+// ready with limits of its own and its use, and one still being made whose use cannot be read.
+const BOB = "bob@example.com";
+const WORKSPACES: Scope[] = [
+  {
+    id: 7,
+    name: "alpha",
+    state: "ready",
+    limits: { memory: "2G", cpu: null, pids: "300" },
+    usage: used("1G", 12),
+  },
+  { id: 8, name: "beta", state: "creating", limits: NONE, usage: null },
+];
+const REPORT_OF_BOB = {
+  person: { limits: { memory: "4G", cpu: null, pids: "500" }, usage: used("1500M", 40) },
+  workspaces: WORKSPACES,
+};
+const PERSON_SCOPE = m.limitsPersonScope(BOB);
+const ALPHA_SCOPE = m.limitsWorkspaceScope("alpha", null);
+const BETA_SCOPE = m.limitsWorkspaceScope("beta", m.workspaceStates.creating);
+
+function limitsApi(extra: Routes = {}) {
+  return api({
+    "GET /api/people": PEOPLE,
+    "GET /api/people/2/limits": REPORT_OF_BOB,
+    ...extra,
+  });
+}
+
+// Opens bob's Limits dialog and waits for its forms.
+async function openLimits() {
+  const row = await screen.findByRole("row", { name: /bob@example.com/ });
+  await userEvent.click(within(row).getByRole("button", { name: m.usersLimits }));
+  const dialog = screen.getByRole("dialog", { name: m.limitsTitle(BOB) });
+  await within(dialog).findByRole("form", { name: PERSON_SCOPE });
+  return dialog;
+}
+
+const form = (dialog: HTMLElement, name: string) => within(dialog).getByRole("form", { name });
+const field = (scope: HTMLElement, label: string) => within(scope).getByLabelText(label);
+
+async function retype(input: HTMLElement, text: string) {
+  await userEvent.clear(input);
+  if (text) await userEvent.type(input, text);
+}
+
+test("a Limits button on each row opens a dialog like Remove's, which asks the server for the limits and use", async () => {
+  let answer: (report: unknown) => void = () => {};
+  const fake = limitsApi({
+    "GET /api/people/2/limits": () => new Promise((resolve) => (answer = resolve)),
+  });
+  renderApp("/admin/people");
+  const row = await screen.findByRole("row", { name: /bob@example.com/ });
+  const button = within(row).getByRole("button", { name: m.usersLimits });
+  expect(button).not.toHaveClass("secondary-danger");
+  expect(button).not.toHaveClass("primary");
+  expect(fake.made("GET", "/api/people/2/limits")).toEqual([]);
+  await userEvent.click(button);
+  const dialog = screen.getByRole("dialog", { name: m.limitsTitle(BOB) });
+  expect(within(dialog).getByRole("heading", { name: m.limitsTitle(BOB) })).toBeInTheDocument();
+  expect(within(dialog).getByText(m.loading)).toBeInTheDocument();
+  expect(within(dialog).queryAllByRole("form")).toEqual([]);
+  await act(async () => answer(REPORT_OF_BOB));
+  await within(dialog).findByRole("form", { name: PERSON_SCOPE });
+  expect(fake.made("GET", "/api/people/2/limits")).toHaveLength(1);
+  expect(within(dialog).queryByText(m.loading)).not.toBeInTheDocument();
+  expect(
+    within(dialog)
+      .getAllByRole("heading", { level: 3 })
+      .map((h) => h.textContent),
+  ).toEqual([PERSON_SCOPE, ALPHA_SCOPE, BETA_SCOPE]);
+  expect(within(dialog).getAllByRole("form")).toHaveLength(3); // each named by its heading
+});
+
+test("the dialog says what a limit means, in plain words", async () => {
+  limitsApi();
+  renderApp("/admin/people");
+  const dialog = await openLimits();
+  for (const text of [
+    m.limitsDefault,
+    m.limitsUnits,
+    m.limitsHeldToPerson,
+    m.limitsMemoryHard,
+    m.limitsBelowUse,
+    m.limitsNotLimited,
+  ]) {
+    expect(within(dialog).getByText(text)).toBeInTheDocument();
+  }
+});
+
+test("each scope's fields hold its stored limits, empty where there is none, beside what it uses", async () => {
+  limitsApi();
+  renderApp("/admin/people");
+  const dialog = await openLimits();
+  const person = form(dialog, PERSON_SCOPE);
+  expect(field(person, m.usersMemory)).toHaveValue("4G");
+  expect(field(person, m.usersCpu)).toHaveValue("");
+  expect(field(person, m.usersProcesses)).toHaveValue("500");
+  expect(person).toHaveTextContent(m.limitsUsage("1500M", 40));
+  const alpha = form(dialog, ALPHA_SCOPE);
+  expect(field(alpha, m.usersMemory)).toHaveValue("2G");
+  expect(field(alpha, m.usersProcesses)).toHaveValue("300");
+  expect(alpha).toHaveTextContent(m.limitsUsage("1G", 12));
+  const beta = form(dialog, BETA_SCOPE);
+  expect(field(beta, m.usersMemory)).toHaveValue("");
+  expect([...person.querySelectorAll("input")].map((i) => [i.name, i.type])).toEqual([
+    ["memory", "text"],
+    ["cpu", "text"],
+    ["pids", "text"],
+  ]);
+});
+
+test("a workspace whose use could not be read says so plainly", async () => {
+  limitsApi();
+  renderApp("/admin/people");
+  const dialog = await openLimits();
+  const beta = form(dialog, BETA_SCOPE);
+  expect(beta).toHaveTextContent(m.limitsUsageUnknown);
+  expect(form(dialog, ALPHA_SCOPE)).not.toHaveTextContent(m.limitsUsageUnknown);
+});
+
+test("saving a person sends exactly what was typed, null for a field left empty, and only for that person", async () => {
+  const fake = limitsApi({
+    "PUT /api/people/2/limits": (c) => ({ limits: c.body }),
+  });
+  renderApp("/admin/people");
+  const dialog = await openLimits();
+  const person = form(dialog, PERSON_SCOPE);
+  await retype(field(person, m.usersMemory), "");
+  await retype(field(person, m.usersCpu), "1.50");
+  await userEvent.click(
+    within(person).getByRole("button", { name: m.limitsSaveFor(PERSON_SCOPE) }),
+  );
+  await waitFor(() => expect(fake.made("PUT", "/api/people/2/limits")).toHaveLength(1));
+  expect(fake.made("PUT", "/api/people/2/limits")[0].body).toEqual({
+    memory: null,
+    cpu: "1.50",
+    pids: "500",
+  });
+  expect(fake.calls.filter((c) => c.method === "PUT")).toHaveLength(1);
+});
+
+test("saving a workspace sends its three fields to its own route, and no other scope's", async () => {
+  const fake = limitsApi({
+    "PUT /api/people/2/workspaces/7/limits": (c) => ({ limits: c.body }),
+  });
+  renderApp("/admin/people");
+  const dialog = await openLimits();
+  const alpha = form(dialog, ALPHA_SCOPE);
+  await retype(field(alpha, m.usersMemory), "512M");
+  await retype(field(alpha, m.usersProcesses), "");
+  await userEvent.click(within(alpha).getByRole("button", { name: m.limitsSaveFor(ALPHA_SCOPE) }));
+  await waitFor(() =>
+    expect(fake.made("PUT", "/api/people/2/workspaces/7/limits")).toHaveLength(1),
+  );
+  expect(fake.made("PUT", "/api/people/2/workspaces/7/limits")[0].body).toEqual({
+    memory: "512M",
+    cpu: null,
+    pids: null,
+  });
+  expect(fake.calls.filter((c) => c.method === "PUT")).toHaveLength(1);
+});
+
+test("a workspace that is not ready can be given limits", async () => {
+  const fake = limitsApi({
+    "PUT /api/people/2/workspaces/8/limits": (c) => ({ limits: c.body }),
+  });
+  renderApp("/admin/people");
+  const dialog = await openLimits();
+  const beta = form(dialog, BETA_SCOPE);
+  await retype(field(beta, m.usersCpu), "2");
+  await userEvent.click(within(beta).getByRole("button", { name: m.limitsSaveFor(BETA_SCOPE) }));
+  await waitFor(() =>
+    expect(fake.made("PUT", "/api/people/2/workspaces/8/limits")[0].body).toEqual({
+      memory: null,
+      cpu: "2",
+      pids: null,
+    }),
+  );
+});
+
+test("while a scope saves it is busy and says so, then it says it is saved, shows what the server stored, and the table follows", async () => {
+  let stored = NONE as Held;
+  let finish: (reply: unknown) => void = () => {};
+  const fake = limitsApi({
+    "GET /api/people": () => ({
+      people: [PEOPLE.people[0], { ...PEOPLE.people[1], limits: stored }],
+    }),
+    "PUT /api/people/2/limits": () => {
+      stored = { memory: "1G", cpu: null, pids: null };
+      return new Promise((resolve) => {
+        finish = resolve;
+      });
+    },
+  });
+  renderApp("/admin/people");
+  const dialog = await openLimits();
+  const person = form(dialog, PERSON_SCOPE);
+  const save = within(person).getByRole("button", { name: m.limitsSaveFor(PERSON_SCOPE) });
+  await retype(field(person, m.usersMemory), "1g");
+  await userEvent.click(save);
+  expect(save).toBeDisabled();
+  expect(person).toHaveAttribute("aria-busy", "true");
+  expect(within(person).getByRole("status")).toHaveTextContent(m.limitsSaving);
+  expect(fake.made("PUT", "/api/people/2/limits")).toHaveLength(1);
+  await act(async () => finish({ limits: { memory: "1G", cpu: null, pids: null } }));
+  await waitFor(() => expect(save).toBeEnabled());
+  expect(person).not.toHaveAttribute("aria-busy", "true");
+  expect(within(person).getByRole("status")).toHaveTextContent(m.limitsSaved(PERSON_SCOPE));
+  expect(field(person, m.usersMemory)).toHaveValue("1G"); // as the server keeps it
+  expect(field(person, m.usersProcesses)).toHaveValue(""); // the stored set, not what was there
+  const row = await screen.findByRole("row", { name: /bob@example.com/ });
+  await waitFor(() => expect(within(row).getByRole("cell", { name: "1G" })).toBeInTheDocument());
+  expect(screen.getByRole("dialog", { name: m.limitsTitle(BOB) })).toBeInTheDocument(); // open still
+});
+
+test("after a save the use is read again, and what was typed in other fields stays", async () => {
+  let asked = 0;
+  limitsApi({
+    "GET /api/people/2/limits": () => {
+      asked += 1;
+      return asked === 1
+        ? REPORT_OF_BOB
+        : { ...REPORT_OF_BOB, person: { ...REPORT_OF_BOB.person, usage: used("2G", 55) } };
+    },
+    "PUT /api/people/2/limits": (c) => ({ limits: c.body }),
+  });
+  renderApp("/admin/people");
+  const dialog = await openLimits();
+  const alpha = form(dialog, ALPHA_SCOPE);
+  await retype(field(alpha, m.usersMemory), "1500M"); // typed, not saved
+  const person = form(dialog, PERSON_SCOPE);
+  expect(person).toHaveTextContent(m.limitsUsage("1500M", 40));
+  await userEvent.click(
+    within(person).getByRole("button", { name: m.limitsSaveFor(PERSON_SCOPE) }),
+  );
+  await waitFor(() => expect(person).toHaveTextContent(m.limitsUsage("2G", 55)));
+  expect(field(alpha, m.usersMemory)).toHaveValue("1500M");
+  expect(within(person).getByRole("status")).toHaveTextContent(m.limitsSaved(PERSON_SCOPE));
+});
+
+test("after a refusal the use is read again, and what was typed is kept", async () => {
+  let asked = 0;
+  limitsApi({
+    "GET /api/people/2/limits": () => {
+      asked += 1;
+      return asked === 1
+        ? REPORT_OF_BOB
+        : { ...REPORT_OF_BOB, person: { ...REPORT_OF_BOB.person, usage: used("3G", 70) } };
+    },
+    "PUT /api/people/2/limits": problem(409, "limit_below_use", "planted below use", {}),
+  });
+  renderApp("/admin/people");
+  const dialog = await openLimits();
+  const person = form(dialog, PERSON_SCOPE);
+  await retype(field(person, m.usersCpu), "0.5");
+  await userEvent.click(
+    within(person).getByRole("button", { name: m.limitsSaveFor(PERSON_SCOPE) }),
+  );
+  await waitFor(() => expect(person).toHaveTextContent(m.limitsUsage("3G", 70)));
+  expect(await within(person).findByRole("alert")).toHaveTextContent("planted below use");
+  expect(field(person, m.usersCpu)).toHaveValue("0.5");
+});
+
+test("while a scope saves, Close and Escape wait, and Close says why", async () => {
+  let finish: (reply: unknown) => void = () => {};
+  limitsApi({
+    "PUT /api/people/2/limits": () => new Promise((resolve) => (finish = resolve)),
+  });
+  renderApp("/admin/people");
+  const dialog = await openLimits();
+  const person = form(dialog, PERSON_SCOPE);
+  const close = within(dialog).getByRole("button", { name: m.close });
+  expect(close).toBeEnabled();
+  expect(close).not.toHaveAccessibleDescription(m.limitsCloseWaits);
+  await userEvent.click(
+    within(person).getByRole("button", { name: m.limitsSaveFor(PERSON_SCOPE) }),
+  );
+  expect(close).toBeDisabled();
+  expect(close).toHaveAccessibleDescription(m.limitsCloseWaits);
+  await userEvent.keyboard("{Escape}");
+  expect(screen.getByRole("dialog", { name: m.limitsTitle(BOB) })).toBeInTheDocument();
+  await act(async () => finish({ limits: { memory: "4G", cpu: null, pids: "500" } }));
+  await waitFor(() => expect(close).toBeEnabled());
+  expect(close).not.toHaveAccessibleDescription(m.limitsCloseWaits);
+  await userEvent.click(close);
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+});
+
+test("a use the server cannot tell, in part or whole, is said to be unknown", async () => {
+  limitsApi({
+    "GET /api/people/2/limits": {
+      person: {
+        limits: NONE,
+        usage: { memory: null, memory_bytes: null, tasks: 4 },
+      },
+      workspaces: [{ ...WORKSPACES[0], usage: { memory: "1G", memory_bytes: 1, tasks: null } }],
+    },
+  });
+  renderApp("/admin/people");
+  const dialog = await openLimits();
+  expect(form(dialog, PERSON_SCOPE)).toHaveTextContent(m.limitsUsageUnknown);
+  expect(form(dialog, ALPHA_SCOPE)).toHaveTextContent(m.limitsUsageUnknown);
+});
+
+test("a refused field is shown beside its own scope's fields by its label, and in no other scope", async () => {
+  limitsApi({
+    "PUT /api/people/2/workspaces/7/limits": problem(
+      422,
+      "validation_failed",
+      "Some of what was sent is not valid.",
+      {
+        errors: [
+          { field: "memory", message: "planted reason for memory" },
+          { field: "cpu", message: "planted reason for cpu" },
+          { field: "pids", message: "planted reason for pids" },
+        ],
+      },
+    ),
+  });
+  renderApp("/admin/people");
+  const dialog = await openLimits();
+  const alpha = form(dialog, ALPHA_SCOPE);
+  await userEvent.click(within(alpha).getByRole("button", { name: m.limitsSaveFor(ALPHA_SCOPE) }));
+  const alert = await within(alpha).findByRole("alert");
+  expect(alert).toHaveTextContent(`${m.usersMemory}: planted reason for memory`);
+  expect(alert).toHaveTextContent(`${m.usersCpu}: planted reason for cpu`);
+  expect(alert).toHaveTextContent(`${m.usersProcesses}: planted reason for pids`);
+  expect(within(form(dialog, PERSON_SCOPE)).queryByRole("alert")).not.toBeInTheDocument();
+  expect(within(alpha).getByRole("button", { name: m.limitsSaveFor(ALPHA_SCOPE) })).toBeEnabled();
+  expect(within(alpha).getByRole("status")).not.toHaveTextContent(m.limitsSaved(ALPHA_SCOPE));
+});
+
+test("a refusal below the use is shown with the title that names the use, and what was typed is kept", async () => {
+  const title = "The memory limit is below the 3G in use.";
+  limitsApi({
+    "PUT /api/people/2/limits": problem(409, "limit_below_use", title, {
+      limit: "memory",
+      used: "3G",
+    }),
+  });
+  renderApp("/admin/people");
+  const dialog = await openLimits();
+  const person = form(dialog, PERSON_SCOPE);
+  await retype(field(person, m.usersMemory), "256M");
+  await userEvent.click(
+    within(person).getByRole("button", { name: m.limitsSaveFor(PERSON_SCOPE) }),
+  );
+  expect(await within(person).findByRole("alert")).toHaveTextContent(title);
+  expect(field(person, m.usersMemory)).toHaveValue("256M");
+});
+
+test("limits that could not be applied are shown, and a later save clears the refusal", async () => {
+  let answer: unknown = problem(502, "limits_not_applied", "rcman could not apply the limits.");
+  limitsApi({ "PUT /api/people/2/limits": () => answer });
+  renderApp("/admin/people");
+  const dialog = await openLimits();
+  const person = form(dialog, PERSON_SCOPE);
+  const save = within(person).getByRole("button", { name: m.limitsSaveFor(PERSON_SCOPE) });
+  await userEvent.click(save);
+  expect(await within(person).findByRole("alert")).toHaveTextContent(
+    "rcman could not apply the limits.",
+  );
+  answer = { limits: { memory: "4G", cpu: null, pids: "500" } };
+  await userEvent.click(save);
+  await waitFor(() => expect(within(person).queryByRole("alert")).not.toBeInTheDocument());
+  expect(within(person).getByRole("status")).toHaveTextContent(m.limitsSaved(PERSON_SCOPE));
+});
+
+test("a refusal in one scope is replaced by the next scope's save", async () => {
+  limitsApi({
+    "PUT /api/people/2/limits": problem(409, "limit_below_use", "planted below use", {}),
+    "PUT /api/people/2/workspaces/7/limits": (c) => ({ limits: c.body }),
+  });
+  renderApp("/admin/people");
+  const dialog = await openLimits();
+  await userEvent.click(
+    within(form(dialog, PERSON_SCOPE)).getByRole("button", { name: m.limitsSaveFor(PERSON_SCOPE) }),
+  );
+  expect(await screen.findByRole("alert")).toHaveTextContent("planted below use");
+  await userEvent.click(
+    within(form(dialog, ALPHA_SCOPE)).getByRole("button", { name: m.limitsSaveFor(ALPHA_SCOPE) }),
+  );
+  await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument());
+});
+
+test("when the limits cannot be had the refusal is shown, with no forms, and the dialog can be closed", async () => {
+  limitsApi({
+    "GET /api/people/2/limits": problem(
+      503,
+      "runtime_unavailable",
+      "Containers are not available.",
+    ),
+  });
+  renderApp("/admin/people");
+  const row = await screen.findByRole("row", { name: /bob@example.com/ });
+  await userEvent.click(within(row).getByRole("button", { name: m.usersLimits }));
+  const dialog = screen.getByRole("dialog", { name: m.limitsTitle(BOB) });
+  expect(await within(dialog).findByRole("alert")).toHaveTextContent(
+    "Containers are not available.",
+  );
+  expect(within(dialog).queryAllByRole("form")).toEqual([]);
+  expect(within(dialog).queryByText(m.loading)).not.toBeInTheDocument();
+  await userEvent.click(within(dialog).getByRole("button", { name: m.close }));
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+});
+
+test("closing the dialog puts focus back on the row's Limits button, by Close and by Escape", async () => {
+  limitsApi();
+  renderApp("/admin/people");
+  const dialog = await openLimits();
+  expect(dialog).toHaveFocus(); // focus moved into the dialog as it opened
+  await userEvent.click(within(dialog).getByRole("button", { name: m.close }));
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  const row = screen.getByRole("row", { name: /bob@example.com/ });
+  const button = within(row).getByRole("button", { name: m.usersLimits });
+  expect(button).toHaveFocus();
+
+  await userEvent.click(button);
+  await within(screen.getByRole("dialog")).findByRole("form", { name: PERSON_SCOPE });
+  await userEvent.keyboard("{Escape}");
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  expect(button).toHaveFocus();
+});
+
+test("Limits and Remove each close the other's dialog, and Remove still removes", async () => {
+  let people = [...PEOPLE.people];
+  const fake = limitsApi({
+    "GET /api/people": () => ({ people }),
+    "DELETE /api/people/2": () => {
+      people = people.filter((p) => p.id !== 2);
+      return { deleted: BOB };
+    },
+  });
+  renderApp("/admin/people");
+  const row = await screen.findByRole("row", { name: /bob@example.com/ });
+  await userEvent.click(within(row).getByRole("button", { name: m.usersRemove }));
+  await userEvent.click(within(row).getByRole("button", { name: m.usersLimits }));
+  expect(screen.getAllByRole("dialog")).toHaveLength(1);
+  expect(screen.getByRole("dialog", { name: m.limitsTitle(BOB) })).toBeInTheDocument();
+  await userEvent.click(within(row).getByRole("button", { name: m.usersRemove }));
+  const remove = screen.getByRole("dialog", { name: m.usersRemoveTitle(BOB) });
+  expect(screen.getAllByRole("dialog")).toHaveLength(1);
+  await userEvent.click(within(remove).getByRole("button", { name: m.usersRemoveConfirm }));
+  await waitFor(() => expect(fake.made("DELETE", "/api/people/2")).toHaveLength(1));
+  expect(await screen.findByText(m.usersRemoved(BOB))).toBeInTheDocument();
+});
+
+test("a person who is no longer there is refused when the limits are asked for", async () => {
+  limitsApi({
+    "GET /api/people/2/limits": problem(404, "person_not_found", "There is no such person."),
+  });
+  renderApp("/admin/people");
+  const row = await screen.findByRole("row", { name: /bob@example.com/ });
+  await userEvent.click(within(row).getByRole("button", { name: m.usersLimits }));
+  expect(await screen.findByRole("alert")).toHaveTextContent("There is no such person.");
 });
 
 // --- the Claude Code versions page -----------------------------------------------

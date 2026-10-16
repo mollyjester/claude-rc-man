@@ -1172,3 +1172,435 @@ def test_rollback_refuses_a_release_from_before_workspaces(tmp_path):
         ins.rollback(tmp_path)
     assert os.readlink(tmp_path / "current") == "releases/new"
     assert old.exists()
+
+
+# --- limits: what the installer leaves for the slices to work -----------------------------
+
+
+class Manager:
+    """Stands in for systemctl and the user manager's cgroup, for ensure_limits: records what
+    is run, answers where rcman's user manager's control group is (``group``), and has the
+    controllers that cgroup lists as a test plants them. ``root`` is the controllers of the
+    root cgroup, which a machine on cgroup v2 has and one on v1 or a hybrid does not (None)."""
+
+    def __init__(
+        self,
+        tmp_path,
+        monkeypatch,
+        controllers="cpuset cpu io memory pids",
+        group="/user.slice/user-990.slice/user@990.service",
+        root="cpuset cpu io memory pids",
+    ):
+        self.calls: list[list[str]] = []
+        self.chowned: list[tuple[str, tuple]] = []
+        self.systemd = tmp_path / "systemd"
+        self.state = tmp_path / "state"
+        self.cgroups = tmp_path / "cgroup"
+        self.group = group
+        self.cgroups.mkdir()
+        if root is not None:
+            (self.cgroups / "cgroup.controllers").write_text(root + "\n")
+        if controllers is not None and group.strip("/"):
+            listing = self.cgroups / group.lstrip("/") / "cgroup.controllers"
+            listing.parent.mkdir(parents=True)
+            listing.write_text(controllers + "\n")
+        for name, value in (("SYSTEMD", self.systemd), ("STATE", self.state),
+                            ("CGROUP_ROOT", self.cgroups)):  # fmt: skip
+            monkeypatch.setattr(ins, name, value)
+        monkeypatch.setattr(ins, "app_uid", lambda: 990)
+        monkeypatch.setattr(ins, "run", self.run)
+        # the account's home is the state folder; chown to an account the test is not, and
+        # only ever without following a link
+        monkeypatch.setattr(ins.os, "lchown", lambda *a, **k: self.chowned.append(("lchown", a)))
+        monkeypatch.setattr(ins.os, "chown", lambda *a, **k: self.chowned.append(("chown", a)))
+        monkeypatch.setattr(
+            ins.pwd, "getpwnam", lambda name: type("A", (), {"pw_uid": 990, "pw_gid": 990,
+                                                             "pw_dir": str(self.state)})()
+        )  # fmt: skip
+
+    def run(self, argv, user=None, **kw):
+        self.calls.append(argv)
+        out = f"{self.group}\n" if argv[:2] == ["systemctl", "show"] else ""
+        return subprocess.CompletedProcess(argv, 0, out, "")
+
+    def written(self) -> set[Path]:
+        return {
+            p for root in (self.systemd, self.state) if root.exists() for p in root.rglob("*")
+            if p.is_file()
+        }  # fmt: skip
+
+    def reexecutions(self) -> list[list[str]]:
+        return [c for c in self.calls if "daemon-reexec" in c]
+
+
+SLICE_DROP_IN = "user-990.slice.d/rcman.conf"
+USER_DROP_IN = ".config/systemd/user.conf.d/rcman.conf"
+
+
+def test_the_user_slice_has_no_limit_on_tasks_and_rcmans_own_default_has_none(
+    tmp_path, monkeypatch, capsys
+):
+    manager = Manager(tmp_path, monkeypatch)
+    changes = ins.ensure_limits()
+    slice_file = manager.systemd / SLICE_DROP_IN
+    user_file = manager.state / USER_DROP_IN
+    assert "[Slice]\nTasksMax=infinity\n" in slice_file.read_text()
+    assert "[Manager]\nDefaultTasksMax=infinity\n" in user_file.read_text()
+    assert stat.S_IMODE(slice_file.stat().st_mode) == 0o644
+    assert stat.S_IMODE(user_file.stat().st_mode) == 0o644
+    assert str(slice_file) in changes and str(user_file) in changes
+    assert manager.written() == {slice_file, user_file}  # nothing else, a Delegate drop-in least
+    assert capsys.readouterr().err == ""  # and nothing to warn of
+
+
+def test_the_slice_drop_in_sorts_after_the_one_the_distribution_ships(tmp_path, monkeypatch):
+    """systemd reads drop-ins of one name in the order of their file names; the later wins, and
+    the distribution's is 10-defaults.conf."""
+    Manager(tmp_path, monkeypatch)
+    ins.ensure_limits()
+    assert "rcman.conf" > "10-defaults.conf"
+
+
+def test_the_user_manager_reads_its_new_default_by_reexecuting_as_rcman(tmp_path, monkeypatch):
+    manager = Manager(tmp_path, monkeypatch)
+    ins.ensure_limits()
+    [reexec] = manager.reexecutions()
+    assert reexec[:5] == ["runuser", "-u", ins.APP_USER, "--", "/usr/bin/env"]
+    assert "XDG_RUNTIME_DIR=/run/user/990" in reexec and f"HOME={manager.state}" in reexec
+    assert reexec[-3:] == ["systemctl", "--user", "daemon-reexec"]
+    assert not [c for c in manager.calls if c[:1] == ["systemctl"] and "daemon-reexec" in c]
+    # never a restart or a stop of the user manager or of anything in it
+    assert not [c for c in manager.calls if {"restart", "stop", "kill", "start"} & set(c)]
+
+
+def test_the_reexecution_comes_after_the_drop_in_is_in_place(tmp_path, monkeypatch):
+    manager = Manager(tmp_path, monkeypatch)
+    seen = []
+    real = manager.run
+    manager.run = lambda argv, *a, **k: (
+        seen.append((argv, (manager.state / USER_DROP_IN).exists())) or real(argv, *a, **k)
+    )
+    monkeypatch.setattr(ins, "run", manager.run)
+    ins.ensure_limits()
+    [(_, there)] = [(c, e) for c, e in seen if "daemon-reexec" in c]
+    assert there
+
+
+def test_running_it_again_changes_nothing_but_asks_the_manager_to_reexecute_again(
+    tmp_path, monkeypatch
+):
+    """A reexecution that failed is not left undone because the file is already there: it kills
+    nothing, so it is asked for on every install."""
+    manager = Manager(tmp_path, monkeypatch)
+    ins.ensure_limits()
+    before = {p: p.read_text() for p in manager.written()}
+    manager.calls.clear()
+    assert ins.ensure_limits() == []
+    assert {p: p.read_text() for p in manager.written()} == before
+    assert len(manager.reexecutions()) == 1
+
+
+def test_a_reexecution_that_failed_is_asked_for_again_by_the_next_install(tmp_path, monkeypatch):
+    manager = Manager(tmp_path, monkeypatch)
+    real = manager.run
+
+    def failing(argv, *a, **k):
+        if "daemon-reexec" in argv:
+            manager.calls.append(argv)
+            raise ins.InstallError("daemon-reexec failed")
+        return real(argv, *a, **k)
+
+    monkeypatch.setattr(ins, "run", failing)
+    with pytest.raises(ins.InstallError):
+        ins.ensure_limits()
+    assert (manager.state / USER_DROP_IN).exists()  # the file is there, the manager has not read it
+    monkeypatch.setattr(ins, "run", real)
+    manager.calls.clear()
+    assert ins.ensure_limits() == []
+    assert len(manager.reexecutions()) == 1
+
+
+def test_a_changed_user_default_is_written_again(tmp_path, monkeypatch):
+    manager = Manager(tmp_path, monkeypatch)
+    ins.ensure_limits()
+    (manager.state / USER_DROP_IN).write_text("[Manager]\nDefaultTasksMax=100\n")
+    manager.calls.clear()
+    assert ins.ensure_limits() == [str(manager.state / USER_DROP_IN)]
+    assert "DefaultTasksMax=infinity" in (manager.state / USER_DROP_IN).read_text()
+    assert manager.reexecutions()
+
+
+@pytest.mark.parametrize("missing", ["cpu", "memory", "pids"])
+def test_a_user_manager_without_a_controller_is_a_warning_and_the_install_goes_on(
+    tmp_path, monkeypatch, capsys, missing
+):
+    """Limits are off until an administrator sets one: an install must not fail for want of
+    what only they need. The drop-ins are written, and what is missing is said."""
+    have = [c for c in ("cpuset", "cpu", "io", "memory", "pids") if c != missing]
+    manager = Manager(tmp_path, monkeypatch, controllers=" ".join(have))
+    changes = ins.ensure_limits()  # no InstallError
+    said = capsys.readouterr().err
+    assert said.startswith("Warning: ") and "limits" in said
+    assert missing in said and "user@990.service" in said
+    assert "Delegate" in said  # and what to do about it
+    assert len(changes) == 2 and manager.written() == {
+        manager.systemd / SLICE_DROP_IN,
+        manager.state / USER_DROP_IN,
+    }
+    assert len(manager.reexecutions()) == 1
+
+
+def test_the_warning_names_every_controller_that_is_missing_and_only_those(
+    tmp_path, monkeypatch, capsys
+):
+    Manager(tmp_path, monkeypatch, controllers="cpuset io memory")
+    ins.ensure_limits()
+    named = re.search(r"has not been given: ([a-z, ]+)\.", capsys.readouterr().err)
+    assert named and named.group(1).split(", ") == ["cpu", "pids"]
+
+
+def test_a_failing_systemctl_show_is_a_warning_that_cannot_tell_and_not_a_failure(
+    tmp_path, monkeypatch, capsys
+):
+    manager = Manager(tmp_path, monkeypatch)
+    real = manager.run
+
+    def refusing(argv, *a, **k):
+        if argv[:2] == ["systemctl", "show"]:
+            raise ins.InstallError("systemctl show failed")
+        return real(argv, *a, **k)
+
+    monkeypatch.setattr(ins, "run", refusing)
+    ins.ensure_limits()
+    assert "cannot tell" in capsys.readouterr().err
+    assert manager.written()
+
+
+def test_the_controllers_checked_are_those_of_the_properties_limits_set():
+    from rcman import limits
+
+    controller_of = {
+        "MemoryMax": "memory",
+        "MemorySwapMax": "memory",
+        "CPUQuota": "cpu",
+        "TasksMax": "pids",
+    }
+    assert set(limits.PROPERTIES) == set(controller_of)  # a property added needs a controller named
+    assert set(ins.LIMIT_CONTROLLERS) == {controller_of[name] for name in limits.PROPERTIES}
+
+
+def test_a_controller_whose_name_is_part_of_another_is_not_taken_for_it(
+    tmp_path, monkeypatch, capsys
+):
+    Manager(tmp_path, monkeypatch, controllers="cpuset io memory pids")  # cpuset is not cpu
+    ins.ensure_limits()
+    assert re.search(r"\bcpu\b", capsys.readouterr().err)
+
+
+def test_a_user_manager_whose_controllers_cannot_be_read_is_a_warning_that_cannot_tell(
+    tmp_path, monkeypatch, capsys
+):
+    manager = Manager(tmp_path, monkeypatch)
+    (manager.cgroups / manager.group.lstrip("/") / "cgroup.controllers").unlink()
+    ins.ensure_limits()
+    said = capsys.readouterr().err
+    assert said.startswith("Warning: ") and "cannot tell" in said
+    assert manager.written()  # the drop-ins are written all the same
+
+
+@pytest.mark.parametrize("group", ["", "/", "\n"])
+def test_an_empty_control_group_is_never_read_as_the_root_cgroup_and_passed(
+    tmp_path, monkeypatch, capsys, group
+):
+    """An empty path would be the root cgroup, which lists every controller there is: a false
+    pass. It is not known where the user manager is, which is a warning."""
+    manager = Manager(tmp_path, monkeypatch, group=group, root="cpuset cpu io memory pids")
+    ins.ensure_limits()
+    said = capsys.readouterr().err
+    assert said.startswith("Warning: ") and "cannot tell" in said
+    assert manager.written()
+
+
+def test_the_root_cgroup_does_list_the_controllers_the_check_would_have_passed_on(
+    tmp_path, monkeypatch
+):
+    """Positive control for the test above: the plant's root cgroup does hold all three."""
+    manager = Manager(tmp_path, monkeypatch, group="")
+    listed = (manager.cgroups / "cgroup.controllers").read_text().split()
+    assert set(ins.LIMIT_CONTROLLERS) <= set(listed)
+
+
+def test_a_machine_on_cgroup_v1_or_a_hybrid_is_a_warning_that_says_v2_is_needed(
+    tmp_path, monkeypatch, capsys
+):
+    manager = Manager(tmp_path, monkeypatch, root=None)  # no unified hierarchy at the root
+    changes = ins.ensure_limits()
+    said = capsys.readouterr().err
+    assert said.startswith("Warning: ") and "cgroup v2" in said
+    assert len(changes) == 2 and manager.written()
+
+
+def test_limits_are_made_ready_after_the_user_manager_runs_and_before_anything_is_built():
+    import inspect
+
+    source = inspect.getsource(ins.main)
+    order = [
+        source.index(f"{name}(") for name in ("ensure_podman", "ensure_limits", "ensure_toolchain")
+    ]
+    assert order == sorted(order) and len(set(order)) == 3
+
+
+# --- what root writes in the account's own folders ---------------------------------------
+
+
+def test_what_root_gives_to_rcman_it_gives_without_following_a_link(tmp_path, monkeypatch):
+    manager = Manager(tmp_path, monkeypatch)
+    ins.ensure_limits()
+    assert manager.chowned  # non-vacuity
+    assert {kind for kind, _ in manager.chowned} == {"lchown"}
+    chowned = {Path(args[0]) for _, args in manager.chowned}
+    config = manager.state / ".config"
+    assert chowned == {
+        config,
+        config / "systemd",
+        config / "systemd" / "user.conf.d",
+        manager.state / USER_DROP_IN,
+    }
+
+
+@pytest.mark.parametrize(
+    "link", [".config", ".config/systemd", ".config/systemd/user.conf.d", USER_DROP_IN]
+)
+def test_a_link_in_the_account_s_folders_is_refused_before_root_writes_through_it(
+    tmp_path, monkeypatch, link
+):
+    manager = Manager(tmp_path, monkeypatch)
+    ins.ensure_limits()  # there, as an install leaves them
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    target = manager.state / link
+    if target.is_dir():
+        shutil.copytree(target, elsewhere / "copy", symlinks=True)
+        shutil.rmtree(target)
+        target.symlink_to(elsewhere / "copy")
+    else:
+        (elsewhere / "file").write_text((manager.state / USER_DROP_IN).read_text())
+        target.unlink()
+        target.symlink_to(elsewhere / "file")
+    assert target.is_symlink()  # the plant took effect
+    manager.chowned.clear()
+    before = {p: p.read_text() for p in elsewhere.rglob("*") if p.is_file()}
+    with pytest.raises(ins.InstallError, match="link"):
+        ins.ensure_limits()
+    assert manager.chowned == []  # nothing was given to anyone
+    assert {p: p.read_text() for p in elsewhere.rglob("*") if p.is_file()} == before
+
+
+def test_a_link_is_refused_before_anything_is_written_or_the_manager_asked(tmp_path, monkeypatch):
+    manager = Manager(tmp_path, monkeypatch)
+    (manager.state).mkdir()
+    (manager.state / ".config").symlink_to(tmp_path)
+    with pytest.raises(ins.InstallError):
+        ins.ensure_limits()
+    assert not (manager.systemd / SLICE_DROP_IN).exists()
+    assert manager.reexecutions() == []
+
+
+# --- running it again: nothing is reported changed ---------------------------------------
+
+
+class Accounts:
+    """Stands in for the account tools, for ensure_accounts: every account and group is there
+    already, as on a second run, and rcman's home is a folder of the test's."""
+
+    def __init__(self, tmp_path, monkeypatch):
+        self.state = tmp_path / "state"
+        self.calls: list[list[str]] = []
+        monkeypatch.setattr(ins, "STATE", self.state)
+        monkeypatch.setattr(ins, "ETC", tmp_path / "etc")
+        monkeypatch.setattr(ins, "_exists", lambda kind, name: True)
+        monkeypatch.setattr(ins, "run", self.run)
+        self.chowned: list[Path] = []
+        monkeypatch.setattr(ins.os, "chown", lambda path, *a, **k: self.chowned.append(Path(path)))
+        monkeypatch.setattr(
+            ins.pwd,
+            "getpwnam",
+            lambda name: type(
+                "A", (), {"pw_uid": os.getuid(), "pw_gid": os.getgid(), "pw_dir": str(self.state)}
+            )(),
+        )
+
+    def run(self, argv, user=None, **kw):
+        self.calls.append(argv)
+        out = ""
+        if argv[:2] == ["id", "-nG"]:
+            out = "caddy rcman-web" if argv[2] == "caddy" else "rcman-proxy rcman"
+        elif argv[:2] == ["getent", "group"]:
+            out = "rcman-web:x:900:caddy"
+        return subprocess.CompletedProcess(argv, 0, out, "")
+
+
+def test_a_second_run_of_the_account_step_reports_nothing(tmp_path, monkeypatch):
+    accounts = Accounts(tmp_path, monkeypatch)
+    accounts.state.mkdir()
+    accounts.state.chmod(0o750)
+    assert ins.ensure_accounts("caddy") == []
+    assert accounts.chowned == []
+
+
+def test_a_home_podman_made_enterable_is_still_in_order_and_is_left_as_it_is(tmp_path, monkeypatch):
+    """Podman adds the right to enter to every folder above a container that runs in a user
+    namespace of its own, rcman's home among them. That lets no one read what is in it, and
+    taking it away again would be undone at the next container: it is not a change, and it is
+    not undone."""
+    accounts = Accounts(tmp_path, monkeypatch)
+    accounts.state.mkdir()
+    accounts.state.chmod(0o751)
+    assert ins.ensure_accounts("caddy") == []
+    assert stat.S_IMODE(accounts.state.stat().st_mode) == 0o751
+
+
+@pytest.mark.parametrize("mode", [0o700, 0o755, 0o770, 0o757, 0o777, 0o640])
+def test_a_home_with_any_other_mode_is_put_right_and_reported(tmp_path, monkeypatch, mode):
+    accounts = Accounts(tmp_path, monkeypatch)
+    accounts.state.mkdir()
+    accounts.state.chmod(mode)
+    assert ins.ensure_accounts("caddy") == [str(accounts.state)]
+    assert stat.S_IMODE(accounts.state.stat().st_mode) == 0o750
+
+
+def test_the_steps_that_write_in_rcmans_home_report_nothing_the_second_time(tmp_path, monkeypatch):
+    """The account step and the limits step, run twice with a container started between them
+    (which gives the home the right to be entered): the second run changes nothing."""
+    manager = Manager(tmp_path, monkeypatch)
+    monkeypatch.setattr(ins, "ETC", tmp_path / "etc")
+    monkeypatch.setattr(ins, "_exists", lambda kind, name: True)
+    real = manager.run
+
+    def answering(argv, *a, **k):
+        if argv[:2] == ["id", "-nG"]:
+            return subprocess.CompletedProcess(
+                argv, 0, "caddy rcman-web" if argv[2] == "caddy" else "rcman-proxy rcman", ""
+            )
+        if argv[:2] == ["getent", "group"]:
+            return subprocess.CompletedProcess(argv, 0, "rcman-web:x:900:caddy", "")
+        return real(argv, *a, **k)
+
+    monkeypatch.setattr(ins, "run", answering)
+    monkeypatch.setattr(
+        ins.pwd,
+        "getpwnam",
+        lambda name: type(
+            "A", (), {"pw_uid": os.getuid(), "pw_gid": os.getgid(), "pw_dir": str(manager.state)}
+        )(),
+    )
+    monkeypatch.setattr(ins.os, "chown", lambda *a, **k: None)
+    monkeypatch.setattr(ins.os, "lchown", lambda *a, **k: None)
+
+    def both() -> list[str]:
+        return [*ins.ensure_accounts("caddy"), *ins.ensure_limits()]
+
+    assert both()  # the first run changes things
+    manager.state.chmod(0o751)  # a container started
+    assert both() == []
+    assert both() == []

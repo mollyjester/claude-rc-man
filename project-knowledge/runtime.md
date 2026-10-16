@@ -47,11 +47,63 @@ conmon and the network helper with them, live in rcman's user manager, not in
   replaced by the mounted busybox, so an image needs nothing of its own to stay
   up, and the volume's mount (`VOLUME_MOUNT`) as its working folder, which exists
   and is the user's, whatever folder the image sets and the user cannot enter;
+- `--cgroup-parent` the workspace's slice and `--pids-limit=-1`, so that the slice's
+  limits are the only limits (see [Limits](#limits));
 - the labels `rcman.workspace` and `rcman.person`, by which `labelled` finds
   every workspace there is.
 
 Podman copies an image for each range the first time a range uses it, so a
 person's first workspace takes longest to make.
+
+### Limits
+
+What the administrators' guide says of them is [Limits](../docs/users.md#limits); the
+words and units are `backend/rcman/limits.py`, whose rules (`MEMORY`, `CPU`, `PIDS`, and the
+minimums) are in `helpers/rules.py`.
+
+- **Where they are kept.** In the database, as columns of `people` and `workspaces`, null
+  for no limit (see [people.md](people.md#the-table)); `Workspaces.set_limits` is the one way
+  in, for the routes and for `rcman-admin`.
+- **The slices.** A person's limits are properties of the systemd slice `person_slice`, a
+  workspace's of `workspace_slice` beneath it, both named by ids, never slots, in rcman's user
+  manager. `PodmanRuntime.apply_limits` sets them with `systemctl --user set-property
+  --runtime` (`_systemctl`: an argv, the `podman_env` environment), always all of
+  `PROPERTIES`, each reset where there is no limit; a memory limit comes with no swap. The
+  slice need not exist yet or be running, and a container made in it with `--cgroup-parent`
+  is held by its own slice's limits and its person's, the stricter in force.
+- **What is in a slice.** A workspace's container, and the builder, in the slice of the person
+  who asked for the build (`builder.run_argv`). Nothing else: not the sign-in and
+  housekeeping containers (so a full limit never blocks a sign-out), not the canary; and the
+  network helper is outside every slice.
+- **Usage.** `usage` reads `MemoryCurrent` and `TasksCurrent` of the slice (`limits.read_usage`),
+  a person's including everything of theirs beneath it; a slice not active has none and uses
+  nothing, and output it cannot read is a failure, never none. Memory in use includes the
+  kernel's cache.
+- **Refusing before setting.** `Workspaces._refuse_below_use` reads the slice's own caps
+  (`PodmanRuntime.caps`, from the unit manager; none is the highest), not the table's, since
+  they differ after a limit that could not be applied, and only for a memory or process limit
+  that is given. A limit lower than the cap and lower than what is in use is `limit_below_use`:
+  lowering memory below use ends the largest process in the group, and lowering processes below
+  use stops new commands, rcman's own among them. A value equal to the cap, a removal and a CPU
+  change lower nothing and read no usage; but the whole set is applied each time, so a CPU-only
+  edit carries the stored memory and process values and is refused if they are lower than the
+  slice's caps and below use. Usage is memory plus swap, memory including page cache; where the
+  unit manager cannot say what an active slice uses, a tightening is refused as `usage_unknown`.
+  There is no force. The limits are applied before they
+  are recorded, so one that could not be applied (`limits_not_applied`) changes nothing; reading
+  and writing take `_limits_lock`.
+- **Restoring and ids reused.** The user manager forgets runtime properties at a restart of the
+  machine, so `restore` sets the slice of every person and every workspace from the table
+  (`_restore_limits`), a row with no limits resetting its slice, before it starts any container.
+  A workspace made, or made again, has its stored set applied first (`_apply_stored`), an empty
+  set resetting the slice, since ids are given again and a slice may still hold a deleted
+  workspace's limits. The report of usage (`limits_report`) has a total deadline,
+  `LIMITS_REPORT_SECONDS`, past which readings show as could not be read.
+- **Dropping.** Deleting a workspace or a person, and removing an orphaned container at restore, call `drop_limits`, which reverts the
+  slice's properties and never stops it, as stopping a slice stops the containers in it; ids
+  are given again, so one left would hold the next. It never fails the deletion.
+- **What the installer prepares.** The controllers, and the lifted default ceiling on
+  processes: `ensure_limits`, see [installer.md](installer.md).
 
 ### A person's Claude sign-in
 
@@ -331,7 +383,8 @@ page](../docs/devcontainer.md#building-an-image).
 - **The builder.** `PodmanRuntime.build_image` runs one container, `rcman-build-<id>`
   (`builder.builder_name`), from `PodmanConfig.builder_image` (`RCMAN_BUILDER_IMAGE`), with a
   volume of the same name for its Podman's storage, both labelled `LABEL_BUILDER`.
-  `builder.run_argv` is the argument list: the uid range of `people.BUILDER_SLOT`, which no
+  `builder.run_argv` is the argument list, with the slice of the person who asked for the build
+  as its cgroup parent (see [Limits](#limits)): the uid range of `people.BUILDER_SLOT`, which no
   person has and `_ids` maps like any other slot, never rcman's own; the network of a
   workspace; `/dev/fuse` and `SYS_ADMIN` and nothing else added; no `--privileged`. The
   installer reserves the range (see [installer.md](installer.md)) and builds the image from
@@ -415,7 +468,8 @@ the prefix it was started with.
   deletes it and decides); makes again a `ready` workspace whose container is
   gone, from its stored plan if it has one, and starts one that is stopped, and
   runs the plan's `postStartCommand` after either; removes what an interrupted
-  read of an image left (`clean_probes`). The workspaces are brought back up to
+  read of an image left (`clean_probes`); applies the stored limits to the slices (see
+  [Limits](#limits)), before any container is started. The workspaces are brought back up to
   `RESTORE_WORKERS` at once, each in a thread of its own that goes on to start that
   workspace's server if it should be running (pinned to the approved version, as above), so that a workspace that is slow, a start
   command that hangs among the causes, does not keep another from being brought back; it

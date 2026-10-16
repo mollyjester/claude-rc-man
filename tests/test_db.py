@@ -2,6 +2,7 @@
 
 import sqlite3
 
+import pytest
 from rcman import db
 
 
@@ -327,3 +328,37 @@ def test_a_connection_survives_a_wal_file_that_another_connection_removes_meanwh
     monkeypatch.setattr(Path, "exists", exists)
     db.connect(path).close()
     assert seen  # the plant took effect
+
+
+def test_a_person_and_a_workspace_made_before_limits_have_none_after_the_migration(tmp_path):
+    path, con = migrated_before(tmp_path, "memory_mib")
+    for table in ("people", "workspaces"):
+        assert "memory_mib" not in [r[1] for r in con.execute(f"pragma table_info({table})")]
+    con.close()
+    db.migrate(path)
+    con = sqlite3.connect(path)
+    for table in ("people", "workspaces"):
+        columns = {r[1]: r for r in con.execute(f"pragma table_info({table})")}
+        assert {"memory_mib", "cpu_percent", "pids"} <= set(columns), table
+        for name in ("memory_mib", "cpu_percent", "pids"):
+            assert columns[name][2] == "INTEGER" and columns[name][3] == 0, (table, name)  # null
+    found = con.execute("select memory_mib, cpu_percent, pids from people").fetchall()
+    assert found == [(None, None, None)]
+    found = con.execute("select memory_mib, cpu_percent, pids from workspaces").fetchall()
+    assert found == [(None, None, None)]
+
+
+@pytest.mark.parametrize("table", ["people", "workspaces"])
+@pytest.mark.parametrize("column", ["memory_mib", "cpu_percent", "pids"])
+def test_a_limit_is_a_positive_number_or_null(tmp_path, column, table):
+    path = tmp_path / "x.db"
+    db.migrate(path)
+    con = db.connect(path)
+    _person(con, "a@x.org", 1)
+    con.execute("insert into workspaces (person, name, state) values (1, 'w', 'ready')")
+    row = "id = 1"
+    con.execute(f"update {table} set {column} = 5 where {row}")  # positive control
+    con.execute(f"update {table} set {column} = null where {row}")
+    for refused in (0, -1):
+        with pytest.raises(sqlite3.IntegrityError):
+            con.execute(f"update {table} set {column} = ? where {row}", (refused,))

@@ -87,6 +87,9 @@ def helpers_rules() -> dict[str, Rule]:
         "BRANCH_NAME",
         "GITHUB_TOKEN",
         "GITHUB_URL",
+        "MEMORY",
+        "CPU",
+        "PIDS",
     }
     assert names <= set(found), names - set(found)
     return found
@@ -128,7 +131,7 @@ def _limits():
 
 # A short value each rule accepts, to put every code point into; the first one a
 # rule accepts is its example.
-EXAMPLES = ("a", "a@b.c", "1.2.3", "https://github.com/o/r")
+EXAMPLES = ("a", "a@b.c", "1.2.3", "https://github.com/o/r", "1G", "1.5", "10")
 CODE_POINTS = [chr(c) for c in range(0x110000) if not 0xD800 <= c <= 0xDFFF]
 # Examples too long to put a code point in place of each of their characters in the
 # time a test should take, each with the places used instead: where an address's
@@ -263,6 +266,97 @@ def test_a_sentence_that_states_a_limit_states_the_real_one():
         assert re.search(rf"\b{limit}\b", rule.sentence), rule.sentence
         assert rule.fullmatch("a" * limit)
         assert not rule.fullmatch("a" * (limit + 1))
+
+
+# --- a workspace's or person's limits ------------------------------------------------
+
+LIMIT_RULES = (rules.MEMORY, rules.CPU, rules.PIDS)
+
+
+@pytest.mark.parametrize(
+    ("rule", "text", "accepted"),
+    [
+        (rules.MEMORY, "1M", True),
+        (rules.MEMORY, "2G", True),
+        (rules.MEMORY, "2g", True),
+        (rules.MEMORY, "512m", True),
+        (rules.MEMORY, "9" * rules.MAX_LIMIT_DIGITS + "G", True),
+        (rules.MEMORY, "9" * (rules.MAX_LIMIT_DIGITS + 1) + "G", False),
+        (rules.MEMORY, "2", False),
+        (rules.MEMORY, "G", False),
+        (rules.MEMORY, "2K", False),
+        (rules.MEMORY, "1.5G", False),
+        (rules.MEMORY, "-2G", False),
+        (rules.MEMORY, "2G\n", False),
+        (rules.MEMORY, "\uff12G", False),  # a full-width digit
+        (rules.CPU, "1", True),
+        (rules.CPU, "0.5", True),
+        (rules.CPU, "1.25", True),
+        (rules.CPU, "9" * rules.MAX_LIMIT_DIGITS + ".99", True),
+        (rules.CPU, "9" * (rules.MAX_LIMIT_DIGITS + 1), False),
+        (rules.CPU, "1." + "0" * (rules.MAX_CPU_DECIMALS + 1), False),
+        (rules.CPU, ".5", False),
+        (rules.CPU, "1.", False),
+        (rules.CPU, "1e1", False),
+        (rules.CPU, "-1", False),
+        (rules.PIDS, "1", True),
+        (rules.PIDS, "9" * rules.MAX_LIMIT_DIGITS, True),
+        (rules.PIDS, "9" * (rules.MAX_LIMIT_DIGITS + 1), False),
+        (rules.PIDS, "1.5", False),
+        (rules.PIDS, "-5", False),
+        (rules.PIDS, "\u0663", False),  # an Arabic-Indic digit
+        (rules.PIDS, "", False),
+    ],
+)
+def test_the_limit_rules_take_the_shape_of_a_value_and_no_other(rule, text, accepted):
+    assert bool(rule.fullmatch(text)) is accepted
+    assert accepts(rule.anchored, text) is accepted  # the backend's validator reads it alike
+
+
+def test_the_limit_rules_leave_the_minimums_to_the_parsers_and_say_them_in_their_sentences():
+    """A regular expression cannot hold a minimum: limits.py does, and each sentence says it,
+    from the constants, so that the two cannot differ."""
+    from rcman import limits
+
+    assert (
+        rules.MEMORY.fullmatch("1M") and rules.CPU.fullmatch("0.01") and rules.PIDS.fullmatch("1")
+    )
+    assert f"{rules.MIN_MEMORY_MIB}M" in rules.MEMORY.sentence
+    assert limits.format_cpu(rules.MIN_CPU_PERCENT) in rules.CPU.sentence
+    assert str(rules.MIN_PIDS) in rules.PIDS.sentence
+    for rule in LIMIT_RULES:
+        assert str(rules.MAX_LIMIT_DIGITS) in rule.sentence
+    assert str(rules.MAX_CPU_DECIMALS) in rules.CPU.sentence
+
+
+def test_a_limit_rules_sentence_says_what_it_takes_in_words():
+    assert "mebibytes" in rules.MEMORY.sentence and "gibibytes" in rules.MEMORY.sentence
+    assert "cores" in rules.CPU.sentence
+    assert "thread" in rules.PIDS.sentence
+
+
+def sentence_numbers(sentence: str) -> set[str]:
+    return set(re.findall(r"[0-9]+(?:\.[0-9]+)?", sentence))
+
+
+def test_a_limit_rules_sentence_has_no_number_but_the_constants_it_is_made_from():
+    allowed = {
+        str(rules.MAX_LIMIT_DIGITS),
+        str(rules.MAX_CPU_DECIMALS),
+        str(rules.MIN_MEMORY_MIB),
+        str(rules.MIN_PIDS),
+        f"{rules.MIN_CPU_PERCENT / 100:g}",
+    }
+    for rule in LIMIT_RULES:
+        assert sentence_numbers(rule.sentence)  # non-vacuity: each names one of its constants
+        assert sentence_numbers(rule.sentence) <= allowed, rule.sentence
+
+
+def test_a_sentence_with_a_number_of_its_own_is_found():
+    """Planted twin: the check above fires for a number that is not one of the constants."""
+    planted = Rule(re.compile("[0-9]+"), "Use up to 77 digits.")
+    assert sentence_numbers(planted.sentence) == {"77"}
+    assert not sentence_numbers(planted.sentence) <= {str(rules.MAX_LIMIT_DIGITS)}
 
 
 # --- a commit author's name ----------------------------------------------------------

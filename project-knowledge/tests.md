@@ -64,6 +64,14 @@ the fake `claude`, real tmux, and a real channel through the host's `sh`.
 runtime keeps, which `tests/test_runtime.py` runs against the host runtime and
 the podman host against real Podman.
 
+Limits (see [runtime.md](runtime.md#limits)) are tested on the host runtime and a stand-in for
+`systemctl`, which records what it is asked: `tests/test_limits.py` the pure module `limits.py`
+(reading, showing, the slices' names, the properties, usage), `tests/test_runtime_limits.py`
+`PodmanRuntime`'s calls, `tests/test_workspace_limits.py` setting, refusing below use, reporting,
+restoring and dropping in `Workspaces`, `tests/test_people.py` and `tests/test_admin.py` the
+routes and `rcman-admin limits`, and `tests/test_rules.py` the rules of the three values. What the
+kernel does with a slice is checked only in the podman host, below.
+
 Everything git is tested against real git,
 never a fake: `tests/test_git_run.py` holds the parsers of `helpers/git_run.py`,
 `tests/test_repository.py` every verb of `repository.py` in host-runtime workspaces
@@ -271,6 +279,21 @@ that removes itself, an unreachable socket told from a missing workspace, the
 channel's latency and its podman client's memory. The installation suites
 install with network access: the installer's images come from their registry
 there.
+
+`tests/container/test_limits_in_podman.py` runs in the podman host as the account, once root has
+made the tools and the store and what the installer makes for limits (`ensure_limits`, run again to
+see it change nothing the second time, and the user manager not restarted). Workspaces are rows of a
+database made there, with containers the runtime makes from the base image, and the limits are read
+from the kernel's own files, not from `systemctl`: a container under the workspace's slice, under
+the person's, under rcman's, with no limit on memory, CPU or processes in the slices, the container's
+scope or the cgroup inside it; limits set, changed and taken away on a workspace's slice and a
+person's through `Workspaces`, the container running on; the runtime's own revert, also on a slice
+nothing configured; what `usage` reports against `memory.current` and `pids.current`, a person's
+including their workspaces' and a slice nothing runs in using nothing; a limit below what is in use
+refused with nothing changed in the files or the table; a deleted workspace's slice back to no limit; and restore applying the stored limits, while
+the container is stopped and the slices have lost them, before it starts the container. Nothing is
+made to run out of memory. `tests/container/test_builder_in_podman.py` also checks that the builder
+runs in the slice of the person who asked for the build, and a workspace's container in its own.
 
 What needs a real Claude account is checked by hand:
 [real-claude-checklist.md](real-claude-checklist.md). Tests marked `real_claude` are deselected by default

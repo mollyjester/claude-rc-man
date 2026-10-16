@@ -51,11 +51,17 @@ def builder_name(workspace: int) -> str:
 
 
 def run_argv(
-    workspace: int, labels: Mapping[str, str], ids: Sequence[str], image: str
+    workspace: int,
+    labels: Mapping[str, str],
+    ids: Sequence[str],
+    image: str,
+    cgroup_parent: str | None = None,
 ) -> list[str]:
     """The arguments of ``podman run`` for the builder: detached, in the uid range ``ids`` maps
     (never a person's), with the network of every workspace and the one capability and the one
-    device a Podman inside needs; not privileged. The image is never pulled."""
+    device a Podman inside needs; not privileged. The image is never pulled. With
+    ``cgroup_parent`` it runs in that systemd slice, which is how the limits of the person who
+    asked for the build hold it (limits.py)."""
     name = builder_name(workspace)
     return [
         "run",
@@ -65,6 +71,7 @@ def run_argv(
         "--init",
         "--network=slirp4netns:allow_host_loopback=false",
         *ids,
+        *([f"--cgroup-parent={cgroup_parent}"] if cgroup_parent else []),
         "--device=/dev/fuse",
         "--cap-add=SYS_ADMIN",
         "--security-opt=label=disable",

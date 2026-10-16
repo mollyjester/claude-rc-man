@@ -765,3 +765,10 @@ def test_an_id_that_could_be_taken_for_an_option_or_a_name_is_not_an_id():
         None,
     ):
         assert not builder.is_image_id(bad), bad
+
+
+def test_the_builder_goes_under_a_slice_when_it_is_given_one_and_under_none_otherwise():
+    assert not [a for a in run_argv() if a.startswith("--cgroup-parent")]
+    argv = run_argv(cgroup_parent="rcman-p2.slice")
+    assert "--cgroup-parent=rcman-p2.slice" in argv
+    assert argv[0] == "run" and argv[-3:] == ["localhost/rcman-builder:test", "sleep", "infinity"]

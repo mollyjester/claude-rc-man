@@ -6,6 +6,7 @@ import stat
 
 import pytest
 from rcman import db, people
+from rcman.limits import Usage
 from rcman.problems import Problem
 from rcman.runtime import container_name
 
@@ -206,3 +207,318 @@ def test_a_person_whose_workspace_cannot_be_removed_stays_let_in_nowhere(
     assert client.get("/api/me", headers=as_user(BOB)).status_code == 403
     assert BOB not in settings.allowed_emails.read_text()
     assert [p["state"] for p in listed(client) if p["email"] == BOB] == ["deleting"]
+
+
+# --- limits: the routes ------------------------------------------------------------------
+
+LIMITS = {"memory": "2G", "cpu": "1.5", "pids": "500"}
+NO_LIMITS = {"memory": None, "cpu": None, "pids": None}
+
+
+def limited(runtime) -> dict:
+    """The slices that hold a limit: restore, as the app starts, sets every slice, an empty
+    set resetting it."""
+    return {name: held for name, held in runtime.limits.items() if held.limited}
+
+
+def person_id(client, email=BOB) -> int:
+    return next(p["id"] for p in listed(client) if p["email"] == email)
+
+
+def audited(settings, count=1):
+    import sqlite3
+
+    con = sqlite3.connect(settings.database)
+    try:
+        found = con.execute(
+            "select action, target, result, email from audit order by id"
+        ).fetchall()
+    finally:
+        con.close()
+    return found[-count:]
+
+
+def test_the_list_shows_each_persons_stored_limits_and_asks_the_unit_manager_nothing(client, app):
+    asked = []
+    runtime = app.state.workspaces.runtime
+    runtime.usage = lambda *a: asked.append(a) or Usage()
+    assert all(p["limits"] == NO_LIMITS for p in listed(client))
+    r = client.put(f"/api/people/{person_id(client)}/limits", json=LIMITS, headers=changing(ALICE))
+    assert r.status_code == 200, r.text
+    asked.clear()  # setting a limit may read the use; listing never does
+    found = {p["email"]: p["limits"] for p in listed(client)}
+    assert found == {ALICE: NO_LIMITS, BOB: LIMITS, CAROL: NO_LIMITS}
+    assert asked == []  # the list is the table's; the use is read by the limits route
+
+
+def test_a_persons_limits_are_set_applied_and_audited_with_the_values(client, app, settings):
+    bob = person_id(client)
+    r = client.put(f"/api/people/{bob}/limits", json=LIMITS, headers=changing(ALICE))
+    assert (r.status_code, r.json()) == (200, {"limits": LIMITS})
+    from rcman import limits
+
+    runtime = app.state.workspaces.runtime
+    assert limited(runtime) == {limits.person_slice(bob): limits.parse(*LIMITS.values())}
+    assert audited(settings) == [
+        ("person.limits", f"{BOB} memory=2G cpu=1.5 pids=500", "ok", ALICE)
+    ]
+
+
+def test_limits_left_null_are_no_limit_and_a_set_replaces_the_whole_of_the_last(client, settings):
+    bob = person_id(client)
+    client.put(f"/api/people/{bob}/limits", json=LIMITS, headers=changing(ALICE))
+    r = client.put(
+        f"/api/people/{bob}/limits",
+        json={"memory": "512M", "cpu": None, "pids": None},
+        headers=changing(ALICE),
+    )
+    assert r.json() == {"limits": {"memory": "512M", "cpu": None, "pids": None}}
+    assert audited(settings)[0][1] == f"{BOB} memory=512M cpu=none pids=none"
+    r = client.put(f"/api/people/{bob}/limits", json=NO_LIMITS, headers=changing(ALICE))
+    assert r.json() == {"limits": NO_LIMITS}
+    assert next(p for p in listed(client) if p["id"] == bob)["limits"] == NO_LIMITS
+
+
+def test_the_whole_set_is_sent_or_the_request_is_refused(client):
+    bob = person_id(client)
+    for left_out in LIMITS:
+        body = {k: v for k, v in LIMITS.items() if k != left_out}
+        r = client.put(f"/api/people/{bob}/limits", json=body, headers=changing(ALICE))
+        assert r.status_code == 422, left_out
+        assert r.json()["errors"] == [{"field": left_out, "message": "This is required."}]
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "rule"),
+    [
+        ("memory", "lots", rules.MEMORY),
+        ("memory", "2", rules.MEMORY),
+        ("memory", "1.5G", rules.MEMORY),
+        ("memory", "1M", rules.MEMORY),  # below the minimum
+        ("memory", "0G", rules.MEMORY),
+        ("cpu", "x", rules.CPU),
+        ("cpu", "1.234", rules.CPU),
+        ("cpu", "0.01", rules.CPU),  # below the minimum
+        ("cpu", "0", rules.CPU),
+        ("pids", "1.5", rules.PIDS),
+        ("pids", "-1", rules.PIDS),
+        ("pids", "1", rules.PIDS),  # below the minimum
+        ("pids", "0", rules.PIDS),
+    ],
+)
+def test_a_value_the_rule_or_the_minimum_refuses_is_refused_at_its_field_in_the_rules_words(
+    client, settings, field, value, rule
+):
+    bob = person_id(client)
+    r = client.put(
+        f"/api/people/{bob}/limits", json={**LIMITS, field: value}, headers=changing(ALICE)
+    )
+    assert (r.status_code, r.json()["code"]) == (422, "validation_failed")
+    assert r.json()["errors"] == [{"field": field, "message": rule.sentence}]
+    assert audited(settings) == [("person.limits", None, "validation_failed", ALICE)]
+    assert next(p for p in listed(client) if p["id"] == bob)["limits"] == NO_LIMITS
+
+
+def test_the_smallest_value_each_rule_allows_is_set(client):
+    from rcman import limits
+
+    bob = person_id(client)
+    smallest = {
+        "memory": limits.format_memory(rules.MIN_MEMORY_MIB),
+        "cpu": limits.format_cpu(rules.MIN_CPU_PERCENT),
+        "pids": str(rules.MIN_PIDS),
+    }
+    r = client.put(f"/api/people/{bob}/limits", json=smallest, headers=changing(ALICE))
+    assert (r.status_code, r.json()) == (200, {"limits": smallest})
+
+
+def test_limits_of_no_one_are_not_found_and_are_not_applied(client, app, settings):
+    r = client.put("/api/people/999/limits", json=LIMITS, headers=changing(ALICE))
+    assert (r.status_code, r.json()["code"]) == (404, "person_not_found")
+    assert limited(app.state.workspaces.runtime) == {}
+    assert audited(settings) == [("person.limits", None, "person_not_found", ALICE)]
+    assert client.get("/api/people/999/limits", headers=as_user(ALICE)).status_code == 404
+
+
+def test_a_limit_below_use_is_refused_in_a_problem_naming_it_and_audited_with_the_values(
+    client, app, settings
+):
+    from rcman import limits
+
+    bob = person_id(client)
+    app.state.workspaces.runtime.used[limits.person_slice(bob)] = limits.Usage(3000 * 1024**2, 7)
+    r = client.put(
+        f"/api/people/{bob}/limits",
+        json={**NO_LIMITS, "memory": "2G"},
+        headers=changing(ALICE),
+    )
+    assert (r.status_code, r.json()["code"]) == (409, "limit_below_use")
+    assert (r.json()["limit"], r.json()["used"]) == ("memory", "3000M")
+    assert "3000M" in r.json()["title"]
+    assert limited(app.state.workspaces.runtime) == {}
+    assert audited(settings) == [
+        ("person.limits", f"{BOB} memory=2G cpu=none pids=none", "limit_below_use", ALICE)
+    ]
+
+
+def test_limits_that_could_not_be_applied_are_a_problem_and_change_nothing(client, app):
+    from rcman import runtime as rt
+
+    bob = person_id(client)
+    app.state.workspaces.runtime.limits_error = rt.RuntimeFailed("systemctl refused")
+    r = client.put(f"/api/people/{bob}/limits", json=LIMITS, headers=changing(ALICE))
+    assert (r.status_code, r.json()["code"]) == (502, "limits_not_applied")
+    app.state.workspaces.runtime.limits_error = None
+    assert next(p for p in listed(client) if p["id"] == bob)["limits"] == NO_LIMITS
+
+
+def test_the_limits_route_reports_the_limits_and_the_use_of_the_person_and_their_workspaces(
+    client, app
+):
+    from rcman import limits
+
+    mine = made_workspace(client, BOB, "mine")
+    made_workspace(client, CAROL, "hers")
+    bob = person_id(client)
+    runtime = app.state.workspaces.runtime
+    runtime.used[limits.person_slice(bob)] = limits.Usage(2 * 1024**3, 9)
+    client.put(f"/api/people/{bob}/limits", json=LIMITS, headers=changing(ALICE))
+    client.put(
+        f"/api/people/{bob}/workspaces/{mine['id']}/limits",
+        json={**NO_LIMITS, "pids": "80"},
+        headers=changing(ALICE),
+    )
+    r = client.get(f"/api/people/{bob}/limits", headers=as_user(ALICE))
+    assert r.status_code == 200, r.text
+    assert r.json()["person"] == {
+        "limits": LIMITS,
+        "usage": {"memory": "2G", "memory_bytes": 2 * 1024**3, "tasks": 9},
+    }
+    [workspace] = r.json()["workspaces"]  # only Bob's
+    assert workspace["id"] == mine["id"] and workspace["name"] == "mine"
+    assert workspace["state"] == "ready"
+    assert workspace["limits"] == {**NO_LIMITS, "pids": "80"}
+    assert workspace["usage"] == {"memory": "0M", "memory_bytes": 0, "tasks": 0}
+
+
+# a workspace's
+
+
+def test_a_workspaces_limits_are_set_on_its_own_slice_and_audited_with_its_owner_and_name(
+    client, app, settings
+):
+    from rcman import limits
+
+    mine = made_workspace(client, BOB, "mine")
+    bob = person_id(client)
+    r = client.put(
+        f"/api/people/{bob}/workspaces/{mine['id']}/limits", json=LIMITS, headers=changing(ALICE)
+    )
+    assert (r.status_code, r.json()) == (200, {"limits": LIMITS})
+    runtime = app.state.workspaces.runtime
+    assert limited(runtime) == {
+        limits.workspace_slice(bob, mine["id"]): limits.parse(*LIMITS.values())
+    }
+    assert audited(settings) == [
+        ("workspace.limits", f"{BOB}/mine memory=2G cpu=1.5 pids=500", "ok", ALICE)
+    ]
+
+
+def test_a_workspace_that_is_another_persons_or_not_there_is_not_found(client, app, settings):
+    hers = made_workspace(client, CAROL, "hers")
+    bob = person_id(client)
+    for workspace in (hers["id"], 999):
+        r = client.put(
+            f"/api/people/{bob}/workspaces/{workspace}/limits",
+            json=LIMITS,
+            headers=changing(ALICE),
+        )
+        assert (r.status_code, r.json()["code"]) == (404, "workspace_not_found")
+    assert limited(app.state.workspaces.runtime) == {}
+    assert audited(settings) == [("workspace.limits", None, "workspace_not_found", ALICE)]
+    r = client.put("/api/people/999/workspaces/1/limits", json=LIMITS, headers=changing(ALICE))
+    assert (r.status_code, r.json()["code"]) == (404, "person_not_found")
+
+
+def test_a_workspace_that_is_not_ready_can_be_given_limits(client, app, settings):
+    import threading
+
+    release = threading.Event()
+    runtime = app.state.workspaces.runtime
+    real = runtime.create
+    runtime.create = lambda spec: (release.wait(30), real(spec))
+    try:
+        r = client.post("/api/workspaces", json={"name": "slow"}, headers=changing(BOB))
+        workspace = r.json()["workspace"]
+        assert workspace["state"] == "creating"
+        r = client.put(
+            f"/api/people/{person_id(client)}/workspaces/{workspace['id']}/limits",
+            json=LIMITS,
+            headers=changing(ALICE),
+        )
+        assert r.status_code == 200, r.text
+    finally:
+        release.set()
+    made_workspace_ready = made_workspace  # the workspace is made with them applied
+    assert made_workspace_ready and limited(runtime)
+
+
+def test_a_workspace_limit_is_refused_in_the_same_fields_as_a_persons(client):
+    mine = made_workspace(client, BOB, "mine")
+    r = client.put(
+        f"/api/people/{person_id(client)}/workspaces/{mine['id']}/limits",
+        json={**LIMITS, "cpu": "many"},
+        headers=changing(ALICE),
+    )
+    assert r.status_code == 422
+    assert r.json()["errors"] == [{"field": "cpu", "message": rules.CPU.sentence}]
+
+
+def test_a_workspace_limit_below_what_the_workspace_uses_is_refused(client, app):
+    from rcman import limits
+
+    mine = made_workspace(client, BOB, "mine")
+    bob = person_id(client)
+    app.state.workspaces.runtime.used[limits.workspace_slice(bob, mine["id"])] = limits.Usage(
+        0, 300
+    )
+    r = client.put(
+        f"/api/people/{bob}/workspaces/{mine['id']}/limits",
+        json={**NO_LIMITS, "pids": "100"},
+        headers=changing(ALICE),
+    )
+    assert (r.status_code, r.json()["code"]) == (409, "limit_below_use")
+    assert (r.json()["limit"], r.json()["used"]) == ("pids", "300")
+
+
+def test_limits_are_for_administrators_only_and_a_person_sees_nothing_of_theirs(client):
+    mine = made_workspace(client, BOB, "mine")
+    bob = person_id(client)
+    for method, path, body in (
+        ("GET", f"/api/people/{bob}/limits", None),
+        ("PUT", f"/api/people/{bob}/limits", LIMITS),
+        ("PUT", f"/api/people/{bob}/workspaces/{mine['id']}/limits", LIMITS),
+    ):
+        kwargs = {"json": body} if body else {}
+        r = client.request(method, path, headers=changing(BOB), **kwargs)
+        assert (r.status_code, r.json()["code"]) == (403, "admin_only"), path
+    client.put(f"/api/people/{bob}/limits", json=LIMITS, headers=changing(ALICE))
+    assert "limit" not in str(client.get("/api/workspaces", headers=as_user(BOB)).json())
+    assert "limit" not in str(client.get("/api/me", headers=as_user(BOB)).json())
+    assert "limit" not in str(client.get("/api/me/settings", headers=as_user(BOB)).json())
+
+
+def test_deleting_a_person_drops_their_limits(client, app):
+    from rcman import limits
+
+    mine = made_workspace(client, BOB, "mine")
+    bob = person_id(client)
+    client.put(f"/api/people/{bob}/limits", json=LIMITS, headers=changing(ALICE))
+    client.put(
+        f"/api/people/{bob}/workspaces/{mine['id']}/limits", json=LIMITS, headers=changing(ALICE)
+    )
+    runtime = app.state.workspaces.runtime
+    assert len(limited(runtime)) == 2  # positive control
+    assert client.delete(f"/api/people/{bob}", headers=changing(ALICE)).status_code == 200
+    assert limited(runtime) == {}
+    assert runtime.dropped[-1] == limits.person_slice(bob)

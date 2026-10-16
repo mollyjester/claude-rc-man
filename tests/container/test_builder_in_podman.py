@@ -40,6 +40,7 @@ from rcman.workspaces import Workspaces
 
 from tests.container import test_devcontainer_in_podman as dev
 from tests.container import test_github_in_podman as shared
+from tests.container import test_limits_in_podman as limited
 from tests.container import test_runtime_in_podman as base
 
 ADDRESS = shared.ADDRESS
@@ -452,6 +453,12 @@ def test_the_builder_runs_in_a_range_of_its_own_with_nothing_of_rcmans_and_the_f
         wait_recorded(name, alive=lambda: ended and pytest.fail(f"the build ended: {ended}"))
         inspected = json.loads(base.podman_cli("container", "inspect", name).stdout)[0]
         host = inspected["HostConfig"]
+        # In the slice of the person who asked for the build, beside their workspaces' slices
+        # and not in one of them (limits.py): the cgroup inside its scope is two beneath it.
+        in_slice = limited.cgroup_of(inspected["State"]["Pid"]).parent
+        assert in_slice.name.startswith("libpod-") and in_slice.parent == limited.slice_dir(who.id)
+        source_in = limited.cgroup_of(base.inspect(source)["State"]["Pid"]).parent  # the control
+        assert source_in.parent == limited.slice_dir(who.id, STUB_WORKSPACE)
         base_id = str(people.BUILDER_SLOT * rt.RANGE)
         for mapping in ("uid_map", "gid_map"):
             seen = in_builder(name, "cat", f"/proc/self/{mapping}").split()

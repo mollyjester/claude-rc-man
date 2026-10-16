@@ -402,6 +402,54 @@ def test_claude_versions_are_rolled_out_through_a_real_canary_and_servers_keep_t
     )
 
 
+# What the installer makes for limits (installer/install.py ensure_limits), made as root with
+# the installer's own code: before it the user slice and the user manager both carry a limit on
+# processes of systemd's own, after it neither does, and the manager has not been restarted.
+LIMITS_DROP_INS = f"""
+import subprocess
+from pathlib import Path
+from installer import install as ins
+
+uid = ins.app_uid()
+manager = f"user@{{uid}}.service"
+user_pids = Path(f"/sys/fs/cgroup/user.slice/user-{{uid}}.slice/pids.max")
+
+
+def shown(*args):
+    return subprocess.run(args, capture_output=True, text=True, check=True).stdout.strip()
+
+
+def default_tasks_max():
+    return shown("runuser", "-u", "{ph.ACCOUNT}", "--", "env", f"XDG_RUNTIME_DIR=/run/user/{{uid}}",
+                 "systemctl", "--user", "show", "--property", "DefaultTasksMax", "--value")
+
+
+main = shown("systemctl", "show", "--property", "MainPID", "--value", manager)
+assert main != "0", main
+assert user_pids.read_text().strip() != "max", "positive control: the user slice has a limit"
+assert default_tasks_max() != "infinity", "positive control: the user manager has a default"
+changed = ins.ensure_limits()
+written = {{
+    str(ins.SYSTEMD / f"user-{{uid}}.slice.d" / "rcman.conf"),
+    str(Path(ins.STATE) / ".config" / "systemd" / "user.conf.d" / "rcman.conf"),
+}}
+assert set(changed) == written and all(Path(path).is_file() for path in written), changed
+assert ins.ensure_limits() == [], "the second run changed something"
+subprocess.run(["systemctl", "daemon-reload"], check=True)
+assert user_pids.read_text().strip() == "max"
+assert default_tasks_max() == "infinity"
+assert shown("systemctl", "show", "--property", "MainPID", "--value", manager) == main
+"""
+
+
+def test_limits_hold_a_workspace_to_its_slices_in_real_podman_and_systemd(docker, podman_host):
+    """tests/container/test_limits_in_podman.py, run as the service account once root has made
+    what the installer makes for limits: the cgroup files of the slices, the container's scope and
+    the cgroup inside it, with the limits set, changed, taken away and restored."""
+    _run([*podman_host, "python3", "-c", LIMITS_DROP_INS])
+    _in_the_hosts(podman_host, "tests/container/test_limits_in_podman.py", 1800, github=False)
+
+
 # --- rcman installed for real, in the podman host -------------------------------------
 
 

@@ -365,6 +365,18 @@ def test_the_builder_is_started_made_to_run_in_its_own_range_with_the_image_it_i
     assert "--label=rcman.builder=7" in create and create[-1] == "rcman-build-7"
 
 
+def test_the_builder_runs_in_the_slice_of_the_person_who_asked_for_the_build(tmp_path):
+    from rcman import limits
+
+    stand_in = StandIn(tmp_path, **SUCCESS)
+    building(runtime_with(stand_in), person=5)[0]()
+    run = next(c for c in stand_in.calls() if c[0] == "run")
+    assert f"--cgroup-parent={limits.person_slice(5)}" in run
+    assert [a for a in run if a.startswith("--cgroup-parent")] == [
+        "--cgroup-parent=rcman-p5.slice"
+    ]  # the person's, not a workspace's: the builder belongs to no workspace of theirs
+
+
 def test_the_repository_goes_from_the_workspace_to_the_builder_and_the_config_after_it(tmp_path):
     stand_in = StandIn(tmp_path, repository_bytes=123_456, **SUCCESS)
     building(runtime_with(stand_in))[0]()

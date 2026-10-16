@@ -167,6 +167,44 @@ test("people are added and removed, and the audit trail shows it", async ({ page
   }
 });
 
+test("an administrator limits a person, the server refuses a limit that is too small, and the limit is kept", async ({
+  page,
+}) => {
+  await signInAs(page, ALICE);
+  await page.goto("/");
+  await openAdminPage(page, m.navUsers);
+  const bob = page.getByRole("row", { name: /bob@example.com/ });
+  await bob.getByRole("button", { name: m.usersLimits }).click();
+  const dialog = page.getByRole("dialog", { name: m.limitsTitle(BOB) });
+  const scope = dialog.getByRole("form", { name: m.limitsPersonScope(BOB) });
+  await expect(dialog).toBeFocused();
+  await expect(dialog.getByText(m.limitsMemoryHard)).toBeVisible();
+
+  // too small: the server's own sentence is shown under the field's label
+  await scope.getByLabel(m.usersMemory).fill("1M");
+  await scope.getByRole("button", { name: m.save }).click();
+  await expect(scope.getByRole("alert")).toContainText(`${m.usersMemory}: `);
+
+  await scope.getByLabel(m.usersMemory).fill("1G");
+  await scope.getByLabel(m.usersCpu).fill("1.5");
+  await scope.getByRole("button", { name: m.save }).click();
+  await expect(scope.getByRole("status")).toHaveText(m.limitsSaved(m.limitsPersonScope(BOB)));
+  await expect(bob.getByRole("cell", { name: "1G", exact: true })).toBeVisible();
+  await expect(bob.getByRole("cell", { name: "1.5", exact: true })).toBeVisible();
+  await expect(bob.getByRole("cell", { name: m.usersNoLimit })).toHaveCount(1);
+
+  await dialog.getByRole("button", { name: m.close }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(bob.getByRole("button", { name: m.usersLimits })).toBeFocused();
+
+  // kept: the dialog shows it again after a reload
+  await page.reload();
+  await bob.getByRole("button", { name: m.usersLimits }).click();
+  await expect(
+    page.getByRole("form", { name: m.limitsPersonScope(BOB) }).getByLabel(m.usersMemory),
+  ).toHaveValue("1G");
+});
+
 test("administrators are warned, with a link to everyone's workspaces, while a server is on an unrecognised screen", async ({
   page,
 }) => {

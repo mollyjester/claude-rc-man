@@ -35,7 +35,28 @@ function api() {
     "GET /api/claude": NOT_CONNECTED,
     "GET /api/me/settings": SETTINGS,
     "GET /api/people": {
-      people: [{ id: 2, email: "bob@example.com", admin: false, state: "active", workspaces: 1 }],
+      people: [
+        {
+          id: 2,
+          email: "bob@example.com",
+          admin: false,
+          state: "active",
+          workspaces: 1,
+          limits: { memory: null, cpu: null, pids: "500" },
+        },
+      ],
+    },
+    "GET /api/people/2/limits": {
+      person: { limits: { memory: null, cpu: null, pids: "500" }, usage: null },
+      workspaces: [
+        {
+          id: 1,
+          name: "alpha",
+          state: "ready",
+          limits: { memory: null, cpu: null, pids: null },
+          usage: { memory: "1G", memory_bytes: 1073741824, tasks: 3 },
+        },
+      ],
     },
     "GET /api/claude/versions": {
       approved: "1.0.0",
@@ -123,6 +144,15 @@ const PAGES: [string, Where, () => Promise<void>][] = [
       const bob = await screen.findByRole("row", { name: /bob/ });
       await userEvent.click(within(bob).getByRole("button", { name: m.usersRemove }));
       await screen.findByRole("dialog");
+    },
+  ],
+  [
+    "limiting someone",
+    "/admin/people",
+    async () => {
+      const bob = await screen.findByRole("row", { name: /bob/ });
+      await userEvent.click(within(bob).getByRole("button", { name: m.usersLimits }));
+      await screen.findAllByLabelText(m.usersMemory); // the person's and each workspace's
     },
   ],
   ["a new workspace", "/", async () => void (await screen.findByLabelText(m.newWorkspaceName))],

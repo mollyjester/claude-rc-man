@@ -705,6 +705,8 @@ def test_the_fields_are_found_and_agree_with_the_published_api(app):
     known = {
         ("PATCH", "/api/me/settings", "body", "prefix"),
         ("DELETE", "/api/people/{person}", "path", "person"),
+        ("PUT", "/api/people/{person}/limits", "body", "memory"),
+        ("PUT", "/api/people/{person}/workspaces/{workspace}/limits", "body", "cpu"),
         ("GET", "/api/servers/output", "query", "workspace"),
         ("POST", "/api/workspaces", "body", "name"),
         ("GET", "/api/audit", "query", "limit"),
@@ -970,6 +972,9 @@ def test_every_published_pattern_is_explained_by_a_helpers_rule(client):
         "AUTHOR_NAME",
         "VERSION",
         "COMMIT_MESSAGE",
+        "MEMORY",
+        "CPU",
+        "PIDS",
     }
     assert names <= {name.removesuffix(".or_empty()") for name in matched}  # non-vacuity
     assert found == []

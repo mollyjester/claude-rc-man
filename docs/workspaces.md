@@ -138,6 +138,11 @@ shown as failed, and says so; delete it and make it again.
 - Servers keep running when you close your browser, and while rcman restarts or
   is upgraded. When the machine restarts, rcman brings your workspaces back, and
   starts again each server that was running.
+- An administrator can limit the memory, CPU and processes of a workspace, and of all
+  your workspaces together. A workspace is also held to your limits, and a
+  memory limit is hard: a group that goes over it has its largest process ended,
+  which can be the session of another of your workspaces (see
+  [Limits](users.md#limits)).
 - A server starts only once you have connected your Claude account, which every
   workspace of yours shares: see
   [Connecting your Claude account](claude-account.md).
@@ -231,6 +236,9 @@ is worked out afresh each time a page is opened, so it lasts only while the
 server shows that screen. When a server comes onto such a screen, rcman also
 writes it once to the [system journal](journal.md), with the person and the
 workspace, and never the screen itself.
+
+Administrators can put limits on memory, CPU and processes on a person and on
+each of their workspaces, on the **People** page: see [Limits](users.md#limits).
 
 What a repository's `devcontainer.json` may ask of a workspace, and what rcman
 refuses, is in [devcontainer.json support](devcontainer.md). The lifecycle

@@ -17,7 +17,10 @@ its case and kept in lowercase; whether they are an administrator; their slot;
 their state, `active` or `deleting`; their Claude account as their last sign-in
 named it (`claude_account`, the `oauthAccount` Claude wrote, or null); and
 whether a sign-out of it waits for their running servers (`claude_signing_out`;
-see [backend.md](backend.md#claude-accounts)). An address is checked by `EMAIL` in
+see [backend.md](backend.md#claude-accounts)); and the limits on what their workspaces
+may use together, `memory_mib`, `cpu_percent` and `pids`, each null for no limit (the
+`workspaces` table has the same three, for one workspace; see
+[runtime.md](runtime.md#limits)). An address is checked by `EMAIL` in
 `helpers/rules.py`, the rule the installer checks the first administrator's by
 too.
 
@@ -53,7 +56,8 @@ removal takes effect at once in rcman whatever oauth2-proxy has read.
 workspace is made for them (`not_allowed`); deletes
 every workspace of theirs, container and volume, waiting for one still being
 made; then their Claude sign-in and git folder (see
-[runtime.md](runtime.md#a-persons-claude-sign-in)); then removes their row, their
+[runtime.md](runtime.md#a-persons-claude-sign-in)); drops the person's limits (their
+slice; see [runtime.md](runtime.md#limits)); then removes their row, their
 settings and, with the row (`on delete cascade`), their GitHub token, and
 writes the allowed list again. The sign-in and git folder go before the row
 because ids and slots are given again: a file left behind would sign the next
@@ -72,12 +76,16 @@ stays in Podman's storage until the image is removed; that holds for the image o
 
 `rcman-admin` is the project's script of that name (`pyproject.toml`), in the
 release's virtualenv; the installer links it into `/usr/local/sbin` (see
-[installer.md](installer.md)). Its verbs are `add`, `list` and `delete`;
+[installer.md](installer.md)). Its verbs are `add`, `list`, `delete` and `limits`;
 `rcman-admin --help` is the reference. It reads the settings the service runs
 with from its environment file, `ENV_FILE`, or the one `--env-file` names, and
 migrates the database as the service does. Run as root, it runs itself again as
 rcman with `runuser`, with rcman's own runtime folder and home, so that it
-reaches rcman's Podman socket whatever root's shell had; deleting a person reaches Podman as rcman does. It answers
+reaches rcman's Podman socket whatever root's shell had; deleting a person reaches Podman as rcman does, and `limits` reaches the user manager
+as rcman does (see [backend.md](backend.md#limits)): with no option it shows the limits of the
+person, or of their workspace with `--workspace`, and what is in use (not known where it cannot
+be read); with options it sets those and leaves the others, through `Workspaces.set_limits`, so
+a refusal is the route's. `list` shows a person's limits. It answers
 in words, and refuses with the problem's own words on stderr and exit status
 1. The installer adds the first administrator with it before the services
 start.
@@ -88,7 +96,7 @@ start.
 |---|---|
 | `tests/test_db.py` | The schema: one address and one slot per person, no slot 0, no person removed while workspaces are theirs |
 | `tests/test_accounts.py` | A person's sign-in removed before their row, and a leftover one never reaching the next person given the same id and slot |
-| `tests/test_people.py` | Slots, addresses, the bound on people, the allowed list written whole by rename, and the People page's routes, deleting a person's workspaces and settings among them |
+| `tests/test_people.py` | Slots, addresses, the bound on people, the allowed list written whole by rename, and the People page's routes, deleting a person's workspaces and settings among them, and their limits |
 | `tests/test_identity.py` | Who is let in: an active person, by address in any case, and no one else from the moment they are removed or being deleted |
-| `tests/test_admin.py` | `rcman-admin`'s verbs, its words, running itself again as rcman, and the installed script |
+| `tests/test_admin.py` | `rcman-admin`'s verbs, `limits` among them, its words, running itself again as rcman, and the installed script |
 | `tests/container/test_install_in_container.py` | The installed thing: the first administrator, `rcman-admin` by name as root, the allowed list's owner and mode, and deleting a person leaving nothing labelled theirs |

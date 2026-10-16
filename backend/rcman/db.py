@@ -115,6 +115,17 @@ MIGRATIONS = [
     -- stopped; null while none is recorded to run.
     alter table workspaces add column claude_version text;
     """,
+    """
+    -- What a person's workspaces together, and each workspace, may use (limits.py): memory in
+    -- mebibytes, CPU in percent of one core, and processes (threads count). Null is no limit.
+    -- The unit manager holds them only until the machine restarts; restore applies these again.
+    alter table people add column memory_mib integer check (memory_mib > 0);
+    alter table people add column cpu_percent integer check (cpu_percent > 0);
+    alter table people add column pids integer check (pids > 0);
+    alter table workspaces add column memory_mib integer check (memory_mib > 0);
+    alter table workspaces add column cpu_percent integer check (cpu_percent > 0);
+    alter table workspaces add column pids integer check (pids > 0);
+    """,
 ]
 
 

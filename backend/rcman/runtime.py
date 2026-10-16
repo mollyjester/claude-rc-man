@@ -15,6 +15,12 @@ devcontainer CLI, in a *builder* container of its own that rcman starts for the 
 uid range no person has, and removes after it (builder.py); the image is copied out to rcman's
 own storage and named for the workspace (``built_name``).
 
+Limits on what a person's workspaces, and each workspace, may use (limits.py) are properties of
+systemd slices in rcman's user manager, set with ``systemctl --user`` (``apply_limits``): a
+workspace's container is made in its workspace's slice, the builder in the slice of the person
+who asked for the build, and nothing else in any slice, so that signing out and the housekeeping
+are never held up by a cap that is full.
+
 A candidate Claude Code version is tried by the *canary* (``run_canary``): a throwaway container
 in the builder's uid range with no network, which runs the checks of helpers/claude_canary.py
 against the candidate and reports the ones it fails.
@@ -50,8 +56,9 @@ from pathlib import Path
 
 import helpers
 from helpers import claude_checks, rules
-from rcman import builder
+from rcman import builder, limits
 from rcman.channel import Channel, Result
+from rcman.limits import Caps, Limits, Usage
 
 log = logging.getLogger("rcman.runtime")
 
@@ -127,6 +134,10 @@ RANGE = 65536
 MISSING = 1
 UNAVAILABLE = 125
 PODMAN_TIMEOUT = 300.0
+# What systemctl is given to answer: it talks to the user manager, which answers at once.
+SYSTEMCTL_TIMEOUT = 30.0
+# What systemctl says when it cannot reach the user manager's bus.
+NO_BUS = "failed to connect to bus"
 # A container made from an image of a repository's choosing: Podman copies the image into the
 # person's uid range the first time the range uses it, which takes much longer than
 # PODMAN_TIMEOUT for a big one.
@@ -341,7 +352,8 @@ class Runtime(ABC):
     def create(self, spec: Spec) -> None:
         """Make the workspace and its volume, start it, and make its folders; the person's
         credentials file is made sure of first, and bound at the workspace's
-        ``config``/CREDENTIALS."""
+        ``config``/CREDENTIALS. The container is in the workspace's slice (``limits``), so
+        the limits set on it hold it; ``apply_limits`` before this is what puts them there."""
 
     @abstractmethod
     def start(self, name: str) -> None: ...
@@ -468,6 +480,29 @@ class Runtime(ABC):
         """Remove a sign-in container; nothing for one that is gone."""
 
     @abstractmethod
+    def apply_limits(self, person: int, workspace: int | None, held: Limits) -> None:
+        """Set ``held`` on the person's slice, or on the workspace's where ``workspace`` is
+        given: all of them, a limit left out reset. They hold until the machine restarts, and
+        apply at once to what runs in the slice. RuntimeFailed where they could not be set."""
+
+    @abstractmethod
+    def usage(self, person: int, workspace: int | None) -> Usage:
+        """What the person's slice, everything of theirs beneath it, or the workspace's uses
+        now. A slice nothing has run in uses nothing; RuntimeFailed where it cannot be read."""
+
+    @abstractmethod
+    def caps(self, person: int, workspace: int | None) -> Caps:
+        """The caps on memory and tasks the person's slice or the workspace's has now, as the
+        unit manager holds them, which may not be the ones rcman's table holds (a restart
+        clears them, and a set can be applied and not recorded). No cap is None;
+        RuntimeFailed where they cannot be read."""
+
+    @abstractmethod
+    def drop_limits(self, person: int, workspace: int | None) -> None:
+        """Take every limit off the slice, at once, without stopping anything that runs in it:
+        a slice is never stopped, as that would stop the containers in it."""
+
+    @abstractmethod
     def run_canary(self, directory: Path, name: str, version: str) -> dict[str, dict]:
         """Run the checks of helpers/claude_canary.py against the candidate Claude Code
         ``version``, which is the file CANDIDATE in ``directory`` (readable and runnable by
@@ -492,6 +527,7 @@ class PodmanConfig:
     tools_dir: Path  # mounted read-only at TOOLS_MOUNT
     claude_store: Path  # mounted read-only at CLAUDE_MOUNT
     podman: str = "/usr/bin/podman"
+    systemctl: str = "/usr/bin/systemctl"  # sets the limits of the slices (limits.py)
     builder_image: str = "localhost/rcman-builder"  # the image a build runs in
     # Where an image copied out of a builder is staged and checked before it is loaded: a folder
     # of rcman's own state, with room for the biggest image (builder.MAX_IMAGE_BYTES); the
@@ -643,6 +679,58 @@ class PodmanRuntime(Runtime):
             raise RuntimeFailed(said or f"podman {args[0]} failed")
         return proc
 
+    def _systemctl(self, *args: str) -> str:
+        """``systemctl --user`` with ``args``, as rcman's own user, with an argv and the
+        environment podman_env allows (which holds XDG_RUNTIME_DIR, without which it cannot
+        find the user manager). What it printed; RuntimeFailed with what it said when it
+        refuses, RuntimeUnavailable when the user manager cannot be reached."""
+        try:
+            proc = subprocess.run(
+                [self.config.systemctl, "--user", *args],
+                capture_output=True,
+                env=podman_env(),
+                timeout=SYSTEMCTL_TIMEOUT,
+                stdin=subprocess.DEVNULL,
+            )
+        except FileNotFoundError:
+            raise RuntimeUnavailable(f"{self.config.systemctl} is not installed") from None
+        except subprocess.TimeoutExpired:
+            raise RuntimeFailed(f"systemctl {args[0]} did not finish in time") from None
+        said = proc.stderr.decode("utf-8", "replace").strip()
+        if proc.returncode != 0:
+            if NO_BUS in said.lower():
+                raise RuntimeUnavailable(said)
+            raise RuntimeFailed(said or f"systemctl {args[0]} failed")
+        return proc.stdout.decode("utf-8", "replace")
+
+    def apply_limits(self, person: int, workspace: int | None, held: Limits) -> None:
+        self._systemctl(
+            "set-property", "--runtime", limits.slice_of(person, workspace), *held.properties()
+        )
+
+    def usage(self, person: int, workspace: int | None) -> Usage:
+        shown = self._systemctl(
+            "show", "-p", "ActiveState", "-p", "MemoryCurrent", "-p", "MemorySwapCurrent",
+            "-p", "TasksCurrent", limits.slice_of(person, workspace),
+        )  # fmt: skip
+        try:
+            return limits.read_usage(shown)
+        except ValueError as unreadable:
+            raise RuntimeFailed(str(unreadable)) from None
+
+    def caps(self, person: int, workspace: int | None) -> Caps:
+        shown = self._systemctl(
+            "show", "-p", "MemoryMax", "-p", "TasksMax", limits.slice_of(person, workspace)
+        )
+        try:
+            return limits.read_caps(shown)
+        except ValueError as unreadable:
+            raise RuntimeFailed(str(unreadable)) from None
+
+    def drop_limits(self, person: int, workspace: int | None) -> None:
+        # Only revert: a slice stopped with a container running in it stops the container.
+        self._systemctl("revert", limits.slice_of(person, workspace))
+
     def wait_ready(self, timeout: float) -> None:
         deadline = time.monotonic() + timeout
         while True:
@@ -687,6 +775,11 @@ class PodmanRuntime(Runtime):
             *labels,
             "--init",
             "--network=slirp4netns:allow_host_loopback=false",
+            # In the workspace's slice, which holds the limits (limits.py). Podman gives a
+            # container a limit on processes of its own unless it is told there is none; the
+            # slice's TasksMax is the limit, and infinity where nobody set one.
+            f"--cgroup-parent={limits.workspace_slice(spec.person, spec.workspace)}",
+            "--pids-limit=-1",
             *ids,
             *([f"--user={spec.user}"] if spec.user else []),
             *(f"--group-add={g}" for g in spec.groups),
@@ -1046,7 +1139,13 @@ class PodmanRuntime(Runtime):
             labels = {LABEL_BUILDER: str(request.id), LABEL_PERSON: str(request.person)}
             self._podman("volume", "create", *(f"--label={k}={v}" for k, v in labels.items()), name)
             self._podman(
-                *builder.run_argv(request.id, labels, ids, self.config.builder_image),
+                *builder.run_argv(
+                    request.id,
+                    labels,
+                    ids,
+                    self.config.builder_image,
+                    cgroup_parent=limits.person_slice(request.person),
+                ),
                 timeout=IMAGE_CREATE_TIMEOUT,
             )
             progress("Copying the repository into the builder")
@@ -1577,6 +1676,14 @@ class HostRuntime(Runtime):
         # The canary: what stands for it where a test does not run the real one - a function
         # of the folder, the container's name and the version that returns the failed checks.
         self.canary_script: Callable[[Path, str, str], dict[str, dict]] | None = None
+        # Limits: what is set on each slice now (by slice name), every set applied and every
+        # slice dropped in order, the usage a test plants by slice, and an error to raise
+        # instead of doing any of the three.
+        self.limits: dict[str, Limits] = {}
+        self.applied: list[tuple[str, Limits]] = []
+        self.dropped: list[str] = []
+        self.used: dict[str, Usage] = {}
+        self.limits_error: Exception | None = None
 
     def layout(self, name: str) -> Layout:
         volume = self.root / name
@@ -1855,6 +1962,35 @@ class HostRuntime(Runtime):
 
     def end_sign_in(self, name: str) -> None:
         self.remove(name)
+
+    def apply_limits(self, person: int, workspace: int | None, held: Limits) -> None:
+        if self.limits_error is not None:
+            raise self.limits_error
+        name = limits.slice_of(person, workspace)
+        self.limits[name] = held
+        self.applied.append((name, held))
+
+    def usage(self, person: int, workspace: int | None) -> Usage:
+        if self.limits_error is not None:
+            raise self.limits_error
+        return self.used.get(limits.slice_of(person, workspace), Usage())
+
+    def caps(self, person: int, workspace: int | None) -> Caps:
+        """What was last applied to the slice and not dropped since: ``limits`` is the slice as
+        it is, which a test may change to make it differ from a table."""
+        if self.limits_error is not None:
+            raise self.limits_error
+        held = self.limits.get(limits.slice_of(person, workspace), Limits())
+        return Caps(
+            None if held.memory_mib is None else held.memory_mib * limits.MEBIBYTE, held.pids
+        )
+
+    def drop_limits(self, person: int, workspace: int | None) -> None:
+        if self.limits_error is not None:
+            raise self.limits_error
+        name = limits.slice_of(person, workspace)
+        self.limits.pop(name, None)
+        self.dropped.append(name)
 
     def end_canary(self, name: str) -> None:
         """The canary is a program run to its end here, never one left behind."""

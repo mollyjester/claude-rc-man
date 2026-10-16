@@ -6,6 +6,7 @@ export const m = {
   signedOut: "Your sign-in has ended. Reload the page to sign in again.",
   loading: "Loading…",
   cancel: "Cancel",
+  close: "Close",
   save: "Save",
   saved: "Saved.",
 
@@ -169,6 +170,33 @@ export const m = {
     "Their workspaces are deleted, with everything in them and their servers, and they can no longer sign in. This cannot be undone.",
   usersRemoveConfirm: "Remove",
   usersRemoved: (email: string) => `${email} was removed.`,
+  usersMemory: "Memory",
+  usersCpu: "CPU",
+  usersProcesses: "Processes",
+  usersNoLimit: "No limit",
+  usersLimits: "Limits",
+  limitsTitle: (email: string) => `Limits for ${email}`,
+  limitsDefault: "A field left empty is no limit, which is the default.",
+  limitsUnits:
+    "Memory is a whole number followed by M for mebibytes or G for gibibytes. CPU is a number of cores, with decimals allowed. Processes is a whole number, in which threads count as processes.",
+  limitsHeldToPerson:
+    "A workspace is also held to its person's limits: all of a person's workspaces together stay within the person's limits.",
+  limitsMemoryHard:
+    "A memory limit is hard. When a group goes over it, the kernel ends the largest process in that group, which can be the session of a sibling workspace. So give each workspace a smaller memory limit than its person's.",
+  limitsBelowUse:
+    "A memory or process limit lower than what is in use now is refused, so that no running work is ended. Raising or removing a limit, and any change to CPU, is always allowed.",
+  limitsNotLimited: "Disk and I/O cannot be limited.",
+  limitsPersonScope: (email: string) => `All workspaces of ${email}`,
+  // The workspace's name, and, while it is not ready, the word for its state.
+  limitsWorkspaceScope: (name: string, state: string | null) =>
+    state === null ? name : `${name}, ${state}`,
+  limitsUsage: (memory: string, tasks: number) =>
+    `In use now: ${memory} of memory, ${tasks} processes.`,
+  limitsUsageUnknown: "What is in use now could not be read.",
+  limitsSaveFor: (scope: string) => `Save limits for ${scope}`,
+  limitsSaving: "Saving…",
+  limitsCloseWaits: "The dialog can be closed once saving is done.",
+  limitsSaved: (scope: string) => `Limits for ${scope} saved.`,
 
   auditTitle: "Audit trail",
   auditWhen: "When",

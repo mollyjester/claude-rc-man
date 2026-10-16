@@ -499,15 +499,40 @@ def test_no_workspace_is_made_for_a_person_being_deleted(service, settings):
     assert service.of_person(bob.id) == []
 
 
+# Routes that name a workspace and are not a person's own: an administrator's, behind the
+# People page. They answer anyone but an administrator as admin_only, and an administrator's
+# workspace of another person's than the person in the path as not found
+# (tests/test_people.py, test_a_workspace_that_is_another_persons_or_not_there_is_not_found).
+ADMINISTRATORS_WORKSPACE_ROUTES = {("PUT", "/api/people/{person}/workspaces/{workspace}/limits")}
+
+
+def test_the_routes_that_name_a_workspace_and_are_not_a_persons_own_are_administrators(app):
+    from rcman import routes
+
+    from tests.test_problems import request_fields
+
+    named = {(f.method, f.path) for f in request_fields(app) if f.name == "workspace"}
+    admin = {
+        (method, c.path) for c in routes.api_routes(app) if routes.admin_only(c.route)
+        for method in c.methods
+    }  # fmt: skip
+    assert ADMINISTRATORS_WORKSPACE_ROUTES  # non-vacuity
+    assert ADMINISTRATORS_WORKSPACE_ROUTES <= named  # stale-checked: each is still a route
+    assert ADMINISTRATORS_WORKSPACE_ROUTES <= admin  # and still behind the administrators' gate
+
+
 def test_every_route_taking_a_workspace_answers_anothers_as_not_found(client, app):
     """Derived from the route table: each route with a workspace id, in its path, query or
-    body, given alice's workspace by bob."""
+    body, given alice's workspace by bob; but the administrators' own."""
     import copy
 
     from tests.conftest import CALLS, concrete
     from tests.test_problems import request_fields
 
-    taking = sorted({(f.method, f.path) for f in request_fields(app) if f.name == "workspace"})
+    taking = sorted(
+        {(f.method, f.path) for f in request_fields(app) if f.name == "workspace"}
+        - ADMINISTRATORS_WORKSPACE_ROUTES
+    )
     assert ("POST", "/api/servers") in taking and (
         "DELETE",
         "/api/workspaces/{workspace}",

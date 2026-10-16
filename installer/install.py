@@ -74,6 +74,12 @@ TMPFILES = Path("/etc/tmpfiles.d/rcman.conf")
 COMMAND_DIR = Path("/usr/local/sbin")
 COMMANDS = ("rcman-admin",)
 
+# rcman's home: its own and closed to others. Podman adds the right to enter to every folder above
+# a container that runs in a user namespace of its own, rcman's home among them; that lets no
+# one read or list anything in it, so it is as right as without, and is not taken away: the
+# next container would add it again.
+STATE_MODE = 0o750
+STATE_MODES = (STATE_MODE, STATE_MODE | 0o001)
 APP_USER = "rcman"
 PROXY_USER = "rcman-proxy"
 WEB_GROUP = "rcman-web"  # its only member is Caddy's account
@@ -125,6 +131,9 @@ SUBORDINATE_COUNT = (1 + 64 + 1) * RANGE
 SUBORDINATE_FIRST = 100000
 SUBORDINATE_FILES = (Path("/etc/subuid"), Path("/etc/subgid"))
 LINGER = Path("/var/lib/systemd/linger")
+CGROUP_ROOT = Path("/sys/fs/cgroup")
+# The cgroup controllers limits on memory, CPU and processes need the user manager to have.
+LIMIT_CONTROLLERS = ("cpu", "memory", "pids")
 # How long rcman's user manager may take to bring up its Podman socket.
 SOCKET_WITHIN = 60.0
 # Where Claude Code's releases are: helpers/claude_release.py, which rcman fetches them with too.
@@ -451,9 +460,9 @@ def ensure_accounts(caddy_user: str) -> list[str]:
         changes.append(f"{PROXY_USER} in group {APP_USER}")
     app = pwd.getpwnam(APP_USER)
     STATE.mkdir(parents=True, exist_ok=True)
-    if STATE.stat().st_uid != app.pw_uid or (STATE.stat().st_mode & 0o777) != 0o750:
+    if STATE.stat().st_uid != app.pw_uid or (STATE.stat().st_mode & 0o777) not in STATE_MODES:
         os.chown(STATE, app.pw_uid, app.pw_gid)
-        os.chmod(STATE, 0o750)
+        os.chmod(STATE, STATE_MODE)
         changes.append(str(STATE))
     ETC.mkdir(parents=True, exist_ok=True)
     return changes
@@ -569,6 +578,101 @@ def ensure_podman(subordinate_changed: bool) -> list[str]:
         if time.monotonic() > deadline:
             raise InstallError(f"rcman's Podman socket {podman_socket(uid)} did not appear")
         time.sleep(0.5)
+    return changes
+
+
+def as_rcman_systemctl(uid: int, *args: str) -> list[str]:
+    """``systemctl --user`` as rcman, in its own user manager."""
+    return [
+        "runuser", "-u", APP_USER, "--", "/usr/bin/env", "-i", "PATH=/usr/bin:/bin",
+        f"HOME={STATE}", f"XDG_RUNTIME_DIR=/run/user/{uid}", "systemctl", "--user", *args,
+    ]  # fmt: skip
+
+
+def warn(text: str) -> None:
+    print(f"Warning: {text}", file=sys.stderr)
+
+
+def limits_problem(uid: int) -> str | None:
+    """Why limits on memory, CPU and processes cannot be applied on this machine, or None when
+    they can: cgroup v2 is what the unit manager's slices are limited through, and rcman's user
+    manager must have been given the controllers for them, which its control group lists. Where
+    that cannot be told - the group is not known, or its list cannot be read - it says so: a
+    path that came out empty would be the root cgroup, which lists every controller there is."""
+    if not (CGROUP_ROOT / "cgroup.controllers").is_file():
+        return (
+            "limits cannot be applied: they need cgroup v2, and this machine does not use "
+            f"only it ({CGROUP_ROOT} has no cgroup.controllers). Setting a limit will say so."
+        )
+    manager = f"user@{uid}.service"
+    try:
+        group = run(["systemctl", "show", "-p", "ControlGroup", "--value", manager])
+        path = group.stdout.strip().strip("/")
+        if not path:
+            raise InstallError("systemd names no control group for it")
+        listed = set((CGROUP_ROOT / path / "cgroup.controllers").read_text("utf-8").split())
+    except (InstallError, OSError) as error:
+        return (
+            f"limits may not be applicable: cannot tell which controllers {manager}, rcman's "
+            f"user manager, has ({error}). Setting a limit will say if it cannot be applied."
+        )
+    missing = [c for c in LIMIT_CONTROLLERS if c not in listed]
+    if not missing:
+        return None
+    return (
+        f"limits cannot be applied: {manager}, rcman's user manager, has not been given: "
+        f"{', '.join(missing)}. Delegate {' '.join(LIMIT_CONTROLLERS)} to the user managers "
+        "(Delegate= in a drop-in of user@.service) and run install.sh again; until then "
+        "setting a limit will say it could not be applied."
+    )
+
+
+USER_SLICE_DROP_IN = """\
+# Written by rcman's installer: the limits rcman sets on a person's workspaces are the only
+# limits on processes there are, so the user slice that holds rcman's user manager has none.
+[Slice]
+TasksMax=infinity
+"""
+USER_MANAGER_DROP_IN = """\
+# Written by rcman's installer: a container's scope has no limit on processes of its own
+# unless an administrator sets one (rcman's limits are on slices).
+[Manager]
+DefaultTasksMax=infinity
+"""
+
+
+def ensure_limits() -> list[str]:
+    """What limits on memory, CPU and processes need (see limits.py of the backend): no
+    default limit on processes holds rcman's user slice or the scopes of its containers, and
+    rcman's user manager reads that default. The manager is never restarted, so nothing it
+    runs is ended; asked to read its configuration again, which is asked on every install so
+    that one that failed is not left undone, it keeps everything running. Limits are off until
+    an administrator sets one, so a machine that cannot apply them is a warning and not a
+    failure of the install; the drop-ins are written all the same.
+
+    root writes into folders rcman owns, so none of them, and not the file, may be a link:
+    root would follow it, and what it gives away it gives without following one."""
+    uid = app_uid()
+    app = pwd.getpwnam(APP_USER)
+    slice_file = SYSTEMD / f"user-{uid}.slice.d" / "rcman.conf"
+    user_file = Path(app.pw_dir) / ".config" / "systemd" / "user.conf.d" / "rcman.conf"
+    owned = [*reversed(user_file.parents[:3]), user_file]  # .config, systemd, user.conf.d, file
+    for path in owned:
+        if path.is_symlink():
+            raise InstallError(
+                f"{path} is a link, and root will not write through a link in rcman's own "
+                "folders. Remove it and run install.sh again."
+            )
+    if (problem := limits_problem(uid)) is not None:
+        warn(problem)
+    changes = []
+    if write_if_changed(slice_file, USER_SLICE_DROP_IN, 0o644):
+        changes.append(str(slice_file))  # read by the daemon-reload that starts the services
+    if write_if_changed(user_file, USER_MANAGER_DROP_IN, 0o644):
+        changes.append(str(user_file))
+    for path in owned:
+        os.lchown(path, app.pw_uid, app.pw_gid)
+    run(as_rcman_systemctl(uid, "daemon-reexec"))
     return changes
 
 
@@ -1164,6 +1268,7 @@ def main(argv: list[str]) -> int:
         subordinate = ensure_subordinate_ids()
         changes += subordinate
         changes += ensure_podman(subordinate_changed=bool(subordinate))
+        changes += ensure_limits()
         changes += ensure_runtime_dir()
         changes += ensure_toolchain()
         release, built = build_release(REPO, owner)

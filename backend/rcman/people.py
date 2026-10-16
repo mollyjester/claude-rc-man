@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from helpers import rules
+from rcman.limits import Limits
 from rcman.problems import Problem
 
 # How many people rcman has room for: the slots 1 to MAX_PEOPLE. The installer gives
@@ -38,12 +39,21 @@ class Person:
     admin: bool
     slot: int
     state: str
+    # What their workspaces together may use (limits.py); no limit where a value is None.
+    limits: Limits = Limits()
 
 
 def _person(row: sqlite3.Row | None) -> Person | None:
     if row is None:
         return None
-    return Person(row["id"], row["email"], bool(row["admin"]), row["slot"], row["state"])
+    return Person(
+        row["id"],
+        row["email"],
+        bool(row["admin"]),
+        row["slot"],
+        row["state"],
+        Limits(row["memory_mib"], row["cpu_percent"], row["pids"]),
+    )
 
 
 def everyone(con: sqlite3.Connection) -> list[Person]:
@@ -80,6 +90,15 @@ def add(con: sqlite3.Connection, email: str, admin: bool) -> Person:
         con.rollback()
         raise Problem("email_taken") from None
     return by_email(con, email)
+
+
+def set_limits(con: sqlite3.Connection, person_id: int, held: Limits) -> None:
+    """Record the limits on the person's workspaces together; applying them is the runtime's."""
+    con.execute(
+        "update people set memory_mib = ?, cpu_percent = ?, pids = ? where id = ?",
+        (held.memory_mib, held.cpu_percent, held.pids, person_id),
+    )
+    con.commit()
 
 
 def mark_deleting(con: sqlite3.Connection, person: Person) -> None:

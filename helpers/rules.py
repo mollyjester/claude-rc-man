@@ -205,3 +205,32 @@ GITHUB_URL = Rule(
 )
 # A Claude Code version, as its releases are numbered.
 VERSION = Rule(re.compile(r"[0-9]+\.[0-9]+\.[0-9]+"), "A Claude Code version looks like 1.2.3.")
+# The limits an administrator sets on a person or a workspace (backend/rcman/limits.py). A
+# regular expression cannot hold a minimum, so the rules take the shape of a value and
+# limits.py refuses what is below the minimums; each sentence says its minimum, made from
+# the constants below, so that the two cannot differ.
+MIN_MEMORY_MIB = 256
+MIN_CPU_PERCENT = 10  # of one core, where 100 is one whole core
+MIN_PIDS = 64
+# Bounds the number of digits so that no value can overflow a column or a unit manager.
+MAX_LIMIT_DIGITS = 9
+MAX_CPU_DECIMALS = 2
+_MIN_CORES = f"{MIN_CPU_PERCENT / 100:g}"
+# ASCII digits only, as a limit is read in every engine alike.
+MEMORY = Rule(
+    re.compile(rf"[0-9]{{1,{MAX_LIMIT_DIGITS}}}[MmGg]"),
+    f"Memory must be a whole number of at most {MAX_LIMIT_DIGITS} digits followed by M for "
+    "mebibytes or G for gibibytes, in either case, and be at least "
+    f"{MIN_MEMORY_MIB}M.",
+)
+CPU = Rule(
+    re.compile(rf"[0-9]{{1,{MAX_LIMIT_DIGITS}}}(?:\.[0-9]{{1,{MAX_CPU_DECIMALS}}})?"),
+    f"CPU must be a number of cores, of at most {MAX_LIMIT_DIGITS} digits before the point "
+    f"and at most {MAX_CPU_DECIMALS} decimals, and be at least {_MIN_CORES}.",
+)
+PIDS = Rule(
+    re.compile(rf"[0-9]{{1,{MAX_LIMIT_DIGITS}}}"),
+    "Processes must be a whole number of at most "
+    f"{MAX_LIMIT_DIGITS} digits, in which threads count as processes, and be at least "
+    f"{MIN_PIDS}.",
+)
