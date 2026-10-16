@@ -11,6 +11,7 @@ const WIDE = {
   state: "ready",
   error: null,
   server_error: null,
+  claude_version: null,
   server: {
     workspace: 1,
     state: "exited",
@@ -33,7 +34,7 @@ for (const [width, columns] of [
     await signInAs(page, ALICE);
     await page.setViewportSize({ width, height: 800 });
     await page.route("**/api/workspaces", (route) =>
-      route.fulfill({ json: { workspaces: [WIDE] } }),
+      route.fulfill({ json: { workspaces: [WIDE], claude_approved: null } }),
     );
     await page.goto(`/?workspace=${WIDE.id}`);
     const card = page.getByRole("article", { name: WIDE.name });
@@ -61,7 +62,9 @@ test("Your workspaces lines its names up with its heading, each dot on its name'
 }) => {
   await signInAs(page, ALICE);
   await page.setViewportSize({ width: 1200, height: 800 });
-  await page.route("**/api/workspaces", (route) => route.fulfill({ json: { workspaces: [WIDE] } }));
+  await page.route("**/api/workspaces", (route) =>
+    route.fulfill({ json: { workspaces: [WIDE], claude_approved: null } }),
+  );
   await page.goto("/");
   const name = workspaces(page).getByRole("button", { name: WIDE.name });
   await expect(name).toHaveAccessibleDescription(m.kinds.problem);

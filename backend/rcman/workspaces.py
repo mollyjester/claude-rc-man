@@ -29,6 +29,7 @@ from helpers import git_run, rules
 from rcman import builder, db, devcontainer, people
 from rcman.channel import Channel, ChannelBroken, ChannelTimeout
 from rcman.claude_server import Server, TmuxFailed
+from rcman.claude_versions import ClaudeVersions
 from rcman.problems import CLONE_MESSAGES, DEVCONTAINER_MESSAGES, Problem
 from rcman.repository import ANSWER_MARGIN_SECONDS, KILL_GRACE_SECONDS, CloneFailed, Repository
 from rcman.runtime import (
@@ -162,6 +163,9 @@ class Workspace:
     source: str | None  # the address it was cloned from, as given; None for an empty one
     log: str | None  # the steps rcman wrote while making it; cleared once it is ready
     environment: str | None = None  # the devcontainer.Plan it is made from, as JSON, if any
+    # The Claude Code version its server started with, recorded from the start until the
+    # server is stopped or forgotten; None while none is.
+    claude_version: str | None = None
 
     @property
     def container(self) -> str:
@@ -183,6 +187,7 @@ def _workspace(row: sqlite3.Row | None) -> Workspace | None:
         row["source"],
         row["log"],
         row["environment"],
+        row["claude_version"],
     )
 
 
@@ -243,9 +248,13 @@ class Workspaces:
         self._builds = threading.BoundedSemaphore(MAX_BUILDS)
         self._closing = threading.Event()
         self._restoring: threading.Thread | None = None
+        # The workspaces whose server is being started, with the version recorded for it, which
+        # is in use before any server runs it; under _lock.
+        self._starting: set[int] = set()
         # Called with a person's id once a server of theirs may have stopped: accounts.py
         # finishes a sign-out that waits for their last running server.
         self.on_stopped: Callable[[int], None] = lambda person: None
+        self.versions = ClaudeVersions(settings, runtime, self)
 
     # --- the table ---------------------------------------------------------------------
 
@@ -309,11 +318,13 @@ class Workspaces:
 
     def _stopped(self, person: int) -> None:
         """``on_stopped``, which never makes what called it fail: what it would finish
-        is finished later by the periodic check, the Claude page or restore."""
+        is finished later by the periodic check, the Claude page or restore. A server that
+        stopped may have been the last to use a Claude Code version, so the store is pruned."""
         try:
             self.on_stopped(person)
         except Exception:  # noqa: BLE001 - see above
             log.exception("finishing a sign-out of person %s failed; it is tried again", person)
+        self.versions.prune_quietly()
 
     def _being_made(self, workspace_id: int) -> bool:
         with self._lock:
@@ -697,6 +708,7 @@ class Workspaces:
             "LOGNAME": layout.user,
             "PATH": layout.path,
             "LANG": "C.UTF-8",
+            "DISABLE_AUTOUPDATER": "1",
             **layout.env,
         }
 
@@ -982,10 +994,16 @@ class Workspaces:
         for name in idle:
             self.close_channel(name)
 
-    def server(self, workspace: Workspace) -> Server:
+    def server(self, workspace: Workspace, version: str | None = None) -> Server:
+        """The workspace's server; with ``version``, one that runs that exact version of
+        Claude Code. Without one it reads, and runs nothing of Claude's but what a read needs,
+        through the store's `current`."""
         name = workspace.container
         channel = self._channel(name)
-        return Server(self._layout(workspace), channel.run, workspace.id)
+        layout = self._layout(workspace)
+        return Server(
+            layout if version is None else layout.pinned(version), channel.run, workspace.id
+        )
 
     def _execs(self, name: str):
         """The runtime's exec as a repository's runners: without and with stdin."""
@@ -1026,12 +1044,15 @@ class Workspaces:
                 "log": workspace.log if workspace.state != READY else None,
                 "server": None,
                 "server_error": None,
+                "claude_version": None,
             }
             if workspace.state == READY:
                 try:
                     entry["server"] = self.server_status(workspace)
                 except Problem as problem:
                     entry["server_error"] = {"code": problem.code, "title": problem.title}
+                if entry["server"] is not None or entry["server_error"] is not None:
+                    entry["claude_version"] = workspace.claude_version
             return entry
 
         if not workspaces:
@@ -1040,6 +1061,10 @@ class Workspaces:
             return list(pool.map(shown, workspaces))
 
     def start_server(self, workspace: Workspace, prefix: str, resume: bool = False) -> dict:
+        """Start the workspace's server, or resume it. It runs the approved Claude Code
+        version, which is recorded on the workspace's row before it runs, and stays recorded
+        until the server is stopped or forgotten (or the start leaves it not running); a
+        server that runs already is refused and its record is left as it is."""
         with self.person_lock(workspace.person), self.lock(workspace.id), answered():
             con = self._con()
             try:
@@ -1051,14 +1076,50 @@ class Workspaces:
             if signing_out:
                 raise Problem("claude_signing_out")
             server = self.server(workspace)
-            if server.status() is None or server.tmux.exit_status() is not None:
+            live = server.tmux.exists() and server.tmux.exit_status() is None
+            if not live:
                 self._seed(workspace, account)
+            pinned = False
             try:
+                if not live:
+                    pinned = True  # before the pin, which may fail having recorded it
+                    server = self.server(workspace, self._pin(workspace))
                 answer = server.resume(prefix) if resume else server.start(prefix)
             finally:
-                self._set(workspace.id, server=int(server.tmux.exists()))
+                self._started(workspace, server, pinned)
             self._set(workspace.id, wanted=1, prefix=prefix)
             return answer
+
+    def _pin(self, workspace: Workspace) -> str:
+        """The approved version, which is in the store, recorded as the one the workspace's
+        server starts with: under the lock a prune holds, so it is not removed meanwhile, and
+        in use from now until the start is over (``_started``)."""
+        with self.versions.lock:
+            version = self.versions.resolve()
+            with self._lock:
+                self._starting.add(workspace.id)
+            self._set(workspace.id, claude_version=version)
+        return version
+
+    def _started(self, workspace: Workspace, server: Server, pinned: bool) -> None:
+        """What a start leaves in the row: whether a server is recorded, and, for a start that
+        pinned a version, that version only if the server runs. A server that is not
+        running, or whose state cannot be read, is never recorded as running a version wrongly:
+        one that cannot be read keeps the record, since it may run."""
+        try:
+            exists = server.tmux.exists()
+            columns: dict = {"server": int(exists)}
+            if pinned:
+                try:
+                    running = exists and server.tmux.exit_status() is None
+                except Exception:  # noqa: BLE001 - unreadable: it may run, so it keeps its record
+                    running = True
+                if not running:
+                    columns["claude_version"] = None
+            self._set(workspace.id, **columns)
+        finally:
+            with self._lock:
+                self._starting.discard(workspace.id)
 
     def _seed(self, workspace: Workspace, account: dict) -> None:
         """Put the account the sign-in named into the workspace's ``.claude.json``, owner-
@@ -1092,15 +1153,58 @@ class Workspaces:
         with self.lock(workspace.id), answered():
             self._set(workspace.id, wanted=0)
             answer = self.server(workspace).stop()
+            self._set(workspace.id, claude_version=None)
         self._stopped(workspace.person)
         return answer
 
     def forget_server(self, workspace: Workspace) -> dict:
         with self.lock(workspace.id), answered():
             answer = self.server(workspace).forget()
-            self._set(workspace.id, server=0, wanted=0)
+            self._set(workspace.id, server=0, wanted=0, claude_version=None)
         self._stopped(workspace.person)
         return answer
+
+    def pinned_servers(self, versions: set[str] | None = None) -> list[tuple[Workspace, str]]:
+        """The workspaces with a Claude Code version recorded whose server runs, cannot be read
+        or is being started, each with that version; with ``versions``, only those among them.
+        A server that cannot be read counts as running, so no version it may run is lost."""
+        with self._lock:
+            starting = set(self._starting)
+        found = []
+        for workspace in self.everything():
+            version = workspace.claude_version
+            if version is None or (versions is not None and version not in versions):
+                continue
+            if workspace.id in starting:
+                found.append((workspace, version))
+                continue
+            if workspace.state != READY:
+                continue
+            try:
+                status = self.server_status(workspace)
+            except Problem:
+                found.append((workspace, version))
+                continue
+            if status is not None and status.get("exit_code") is None:
+                found.append((workspace, version))
+        return found
+
+    def recorded_versions(self) -> dict[int, str]:
+        """The Claude Code version recorded on each workspace's row that has one, by id: read
+        from the table alone, so it is quick."""
+        return {w.id: w.claude_version for w in self.everything() if w.claude_version}
+
+    def versions_in_use(self, versions: set[str]) -> set[str]:
+        """Those of ``versions`` that a server runs, may run, or is being started with."""
+        return {version for _, version in self.pinned_servers(versions)}
+
+    def emails(self) -> dict[int, str]:
+        """Each person's address, by their id."""
+        con = self._con()
+        try:
+            return {p.id: p.email for p in people.everyone(con)}
+        finally:
+            con.close()
 
     def running(self, person: int) -> list[Workspace]:
         """The person's workspaces whose server runs; one that cannot be read counts as
@@ -1158,12 +1262,14 @@ class Workspaces:
             if self._closing.is_set():
                 return
             self._step(self.runtime.clean_probes)
+            self._step(self.versions.sweep)
             self._restore_all()
             if self._closing.is_set():
                 return
             for name, labels in self.runtime.labelled().items():
                 self._step(self._remove_orphan, name, labels)
             self._step(self._remove_orphan_builds)
+            self._step(self.versions.prune)
             self._step(self._finish_deleting_people)
             self._step(self.settle_signing_out)
         except Exception:  # noqa: BLE001 - restore never stops rcman from answering

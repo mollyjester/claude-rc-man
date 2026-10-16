@@ -39,7 +39,8 @@ conmon and the network helper with them, live in rcman's user manager, not in
   [A person's Claude sign-in](#a-persons-claude-sign-in)), and the person's git
   folder bound at `~/.config/git` (see [The git folder](#the-git-folder));
 - the tools (`tools_dir`) at `TOOLS_MOUNT` and the Claude Code store
-  (`claude_store`) at `CLAUDE_MOUNT`, both read-only;
+  (`claude_store`) at `CLAUDE_MOUNT`, both read-only (rcman itself writes the store, see
+  [backend.md](backend.md#claude-code-versions));
 - a tmpfs at `RUN_MOUNT` for the tmux socket and the channel's files, the user's
   (`U`) when the ids are swapped;
 - the mounted busybox's `sleep` as its process, with the image's own entrypoint
@@ -136,11 +137,16 @@ folder, linked to from each workspace's, and a sign-in container a folder that
 only `end_sign_in` removes — for the tests and `make e2e`; `tests/runtime_contract.py`
 holds both runtimes to the same cases, on the host in `tests/test_runtime.py`
 and against real Podman in the podman host in
-`tests/container/test_runtime_in_podman.py`. A `Layout` says where a runtime's
+`tests/container/test_runtime_in_podman.py`, apart from its canary cases (see [The canary](#the-canary)). A `Layout` says where a runtime's
 things are, as the programs in a workspace see them: the tools as argv
 prefixes (busybox's applets in a container), the tmux socket and
 configuration, Claude, the shell, terminal descriptions, and how to kill a
 process group (`kill_group`: busybox's `kill` refuses a `--` that procps' needs).
+`Layout.claude` is the program that runs whatever the store's `current` names, and
+`Layout.claude_root` the store as the workspace sees it; `Layout.pinned(version)` is the layout
+with Claude the exact file `versions/<version>`, which is what a server is started with.
+A read that runs nothing of Claude's but what it needs, such as a status, goes through
+`current` (`Workspaces.server` without a version).
 
 ## The channel
 
@@ -185,7 +191,7 @@ test holds to the recorder's, so the contract tests check each is in Claude's
   before that while the person has not connected their account, and seeds the
   account into the workspace's `.claude.json` (see
   [backend.md](backend.md#claude-accounts)).
-- **Pinned.** Each window is pinned to its size (`Tmux.pin`), so a terminal
+- **Pinned window.** Each window is pinned to its size (`Tmux.pin`), so a terminal
   attached to the socket does not resize it; `tmux.conf` sets no global
   `window-size`, since a global `window-size manual` makes tmux 3.4's server
   exit at the next detached `new-session`.
@@ -203,6 +209,16 @@ test holds to the recorder's, so the contract tests check each is in Claude's
 - **Unrecognised screens.** A screen in transition matches no known state, so
   a verb that waits reports `unrecognised` only once it has lasted
   `UNRECOGNISED_GRACE_SECONDS`.
+
+### The version a server runs
+
+`Workspaces.start_server` pins the server to a Claude Code version before it runs: it takes
+the approved version, records it as the row's `claude_version` and starts the server with
+`Layout.pinned` of it, so that approving another version changes nothing of a server that
+runs (the rules and the pruning are [backend.md](backend.md#claude-code-versions)'s). The
+record stays until the server is stopped or forgotten, and a start that leaves nothing running
+clears it; a server whose state cannot be read keeps it. A restore starts servers the same
+way, so after a reboot they run the version approved then.
 
 ### Server states
 
@@ -223,6 +239,26 @@ every observed screen (see [fake-claude.md](fake-claude.md)) by
 | `exited` | The server ended in a way not listed above; `exit_code` and `screen` are set |
 | `reconnected` | A live screen of Claude's log lines only, the last saying Remote Control has reconnected; `screen` is set |
 | `unrecognised` | A live screen that matches no known state; `screen` is set |
+
+## The canary
+
+`Runtime.run_canary(directory, name, version)` tries a candidate Claude Code version: the file
+`CANDIDATE` in `directory`. It runs the checks of `helpers/claude_canary.py` (which are
+`helpers/claude_checks.py`'s) and returns the ones the candidate fails, each with its report;
+empty means it passes them all. `ClaudeVersions` runs it only for a version never approved before (an earlier approved one still in the store is approved again without it). A canary that could not report (it did not start, did not
+finish in `CANARY_SECONDS`, or printed something else) is a `RuntimeFailed`, which says nothing
+about the candidate. `end_canary` removes the container.
+
+`PodmanRuntime` runs it as a throwaway container from the default workspace image, in the
+builder's uid range (`people.BUILDER_SLOT`), labelled `LABEL_CANARY` only so that no restore
+takes it for a workspace's: no network, a read-only root with a tmpfs home, all capabilities
+dropped, no new privileges, and mounted read-only only the candidate's folder and rcman's
+helpers; one left from before is removed first. The checks need `python3` in the image. Whether
+the real binary needs no network for them is a check of
+[the real-Claude list](real-claude-checklist.md); if it does, the canary would have to use the
+workspace network. `HostRuntime` runs the same program with the host's interpreter and a
+clean environment, or a test's `canary_script`. The cases for both are `tests/runtime_contract.py`'s,
+and against real Podman `tests/container/test_claude_versions_in_podman.py`'s.
 
 ## A repository's devcontainer.json
 
@@ -381,7 +417,7 @@ the prefix it was started with.
   runs the plan's `postStartCommand` after either; removes what an interrupted
   read of an image left (`clean_probes`). The workspaces are brought back up to
   `RESTORE_WORKERS` at once, each in a thread of its own that goes on to start that
-  workspace's server if it should be running, so that a workspace that is slow, a start
+  workspace's server if it should be running (pinned to the approved version, as above), so that a workspace that is slow, a start
   command that hangs among the causes, does not keep another from being brought back; it
   holds one of the places until it is done, and the removal of what no row is for, the
   finishing of deletions and the settling of sign-outs wait for the last. A lost container is made again
@@ -395,8 +431,9 @@ the prefix it was started with.
   steps once rcman is closing;
   removes every labelled container no row is for; removes each person an
   earlier rcman was deleting, once none of their workspaces is left, their
-  sign-in first; and finishes each Claude sign-out that waits for servers that
-  no longer run. A step that fails is logged
+  sign-in first; finishes each Claude sign-out that waits for servers that
+  no longer run; and sweeps what a roll-out of a Claude Code version cut short left and prunes the store
+  (`ClaudeVersions.sweep`, `prune`). A step that fails is logged
   on `rcman.workspaces`, and the others go on.
 
 Each person has a lock (`person_lock`) that a start holds from its account

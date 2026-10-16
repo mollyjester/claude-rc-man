@@ -148,7 +148,7 @@ only so that the podman host can run it as it is from `/src`. It skips anywhere
 else.
 
 `tests/container/test_devcontainer_in_podman.py` runs in a podman host in the same way
-(`_in_the_hosts_with_github` in `tests/test_container_suite.py` prepares both), sharing
+(`_in_the_hosts` in `tests/test_container_suite.py` prepares them all), sharing
 the fixtures and the stand-in GitHub of the module above. It derives images from the
 workspace image in the account's Podman, by name, so no registry holds them, and checks
 what a workspace made from a repository's devcontainer.json rests on, against real
@@ -186,6 +186,22 @@ logged, two builds of one person at once, the deletion of one removing its image
 copies Podman made of it in the person's range and leaving the other's, and the policy's
 refusal of a feature's request before the image is copied out and of a musl base after it,
 each leaving nothing.
+
+`tests/container/test_claude_versions_in_podman.py` runs in the podman host in the same way,
+without the stand-in GitHub, with the store the account's, as the installer leaves it, and
+builds the default workspace image from the installer's own build file in the account's Podman.
+Its releases are the fake `claude` as good, broken and checksum-failing Claude Code versions
+(`tests/claude_download.py`), served from a folder. It checks `ClaudeVersions` against real
+Podman: a server keeping the version it started with through an approval, the drift report and a
+restart of rcman, and a stop and start taking the approved version by its exact file; a version
+leaving the store once the last server that used it has stopped, the approved and previous
+ones staying; a broken or checksum-failing candidate leaving the store, the approvals, the
+containers and the staging folder as they were; the canary container as `run_canary` designs it,
+looked at from outside and inside while it runs (the builder's uid range, no network, a read-only
+root, no capabilities, only the candidate and rcman's helpers mounted read-only and readable by
+that range, a stale one removed first, none left after); `--timeout` ending a container through
+`podman --remote run`; and the canary cases of `tests/runtime_contract.py`, which need python3 in
+the image.
 
 The **whole stack** is `tests/container/stack.py`, in a podman host that
 publishes its port 443: rcman installed from a clone through the real
@@ -267,7 +283,7 @@ and run by hand with `uv run pytest -m real_claude`; what they need is in
 |---|---|
 | `tests/` | The test suite; `tests/test_<name>.py` tests the module `<name>.py`, wherever it is, `tests/` included, where there is one |
 | `tests/fakes/` | The fake `claude`, its recorded fixtures and the screens observed on a live server — see [fake-claude.md](fake-claude.md) |
-| `helpers/` | What the backend shares with the installer and the fake `claude`, the standard library only: the rules values are refused by, what Claude's screens mean, running git, and the checks a Claude Code version is held to |
+| `helpers/` | What the backend shares with the installer and the fake `claude`, the standard library only: the rules values are refused by, what Claude's screens mean, running git, Claude Code's releases and their checked download (`claude_release.py`), and the checks a Claude Code version is held to with the canary program that runs them (`claude_checks.py`, `claude_canary.py`) |
 | `backend/` | The FastAPI application — see [backend.md](backend.md) |
 | `frontend/` | The React application, its component tests and its browser tests — see [frontend.md](frontend.md) |
 | `tests/container/` | The podman host's image and the suites that run inside it |

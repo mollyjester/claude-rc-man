@@ -33,7 +33,10 @@ def spec(n: int) -> rt.Spec:
     return rt.Spec(name=rt.container_name(100 + n), slot=n, workspace=100 + n, person=n)
 
 
-@pytest.mark.parametrize("case", runtime_contract.CASES, ids=lambda case: case.__name__)
+ALL_CASES = [*runtime_contract.CASES, *runtime_contract.CANARY_CASES]
+
+
+@pytest.mark.parametrize("case", ALL_CASES, ids=lambda case: case.__name__)
 def test_the_host_runtime_keeps_the_contract(host, case):
     case(host, spec)
 
@@ -43,8 +46,8 @@ def test_every_contract_case_is_run_here():
 
     test = "tests/test_runtime.py::test_the_host_runtime_keeps_the_contract"
     cases = {n.removeprefix(test) for n in collect(["tests/test_runtime.py"]) if n.startswith(test)}
-    assert len(runtime_contract.CASES) >= 5  # non-vacuity
-    assert cases == {f"[{case.__name__}]" for case in runtime_contract.CASES}
+    assert len(runtime_contract.CASES) >= 5 and runtime_contract.CANARY_CASES  # non-vacuity
+    assert cases == {f"[{case.__name__}]" for case in ALL_CASES}
 
 
 def test_a_host_runtime_whose_folder_is_gone_is_unavailable(host):
@@ -1214,3 +1217,134 @@ def test_the_settings_name_the_builder_image_and_the_runtime_is_given_it(monkeyp
     made = main.podman_runtime(Settings(builder_image="localhost/rcman-builder:abc"))
     assert made.config.builder_image == "localhost/rcman-builder:abc"
     assert made.config.scratch_dir == Settings().database.parent  # rcman's own state folder
+
+
+# --- the version a server is pinned to ------------------------------------------------------
+
+
+def test_a_layout_names_the_store_it_pins_versions_in(host):
+    layout = host.layout(rt.container_name(1))
+    assert layout.claude_root == str(host.claude)
+    assert rt.PODMAN_LAYOUT.claude_root == rt.CLAUDE_MOUNT
+    for each, root in ((layout, str(host.claude)), (rt.PODMAN_LAYOUT, rt.CLAUDE_MOUNT)):
+        assert each.pinned("1.2.3").claude == f"{root}/versions/1.2.3"
+        assert each.claude == f"{root}/bin/claude"  # unpinned, the link the store keeps
+        assert each.pinned("1.2.3").path == each.path  # the rest is as it was
+
+
+# --- the canary ---------------------------------------------------------------------------------
+
+CANDIDATE_FOLDER = Path("/var/lib/rcman/claude-staging/0123abcd")
+CANARY_ENV = ("HOME", "TMPDIR", "DISABLE_AUTOUPDATER", "PYTHONDONTWRITEBYTECODE", "PYTHONPATH")
+
+
+def canary_recorder(tmp_path, answer=(0, "{}", "")):
+    recorder = Recorder(tmp_path, {"run": answer})
+    return recorder, podman_runtime(tmp_path, recorder)
+
+
+def test_the_canary_is_a_throwaway_container_that_can_only_run_the_checks(tmp_path):
+    from rcman import people
+
+    recorder, runtime = canary_recorder(tmp_path)
+    assert runtime.run_canary(CANDIDATE_FOLDER, rt.CANARY_NAME, "1.2.3") == {}
+    run = next(c[3:] for c in recorder.calls() if c[3] == "run")
+    base = people.BUILDER_SLOT * rt.RANGE
+    for option in (
+        "--rm",
+        f"--name={rt.CANARY_NAME}",
+        f"--timeout={int(rt.CANARY_SECONDS)}",
+        f"--label={rt.LABEL_CANARY}=1",
+        "--network=none",
+        "--read-only",
+        "--cap-drop=all",
+        "--security-opt=no-new-privileges",
+        f"--uidmap=0:{base}:{rt.RANGE}",
+        f"--gidmap=0:{base}:{rt.RANGE}",
+        f"--volume={CANDIDATE_FOLDER}:{rt.CANARY_CANDIDATE_MOUNT}:ro",
+        f"--volume={rt.HELPERS_DIR}:{rt.CANARY_HELPERS_MOUNT}/helpers:ro",
+        "--env=HOME=/tmp",
+        "--env=TMPDIR=/tmp",
+        "--env=DISABLE_AUTOUPDATER=1",
+        "--env=PYTHONDONTWRITEBYTECODE=1",
+    ):
+        assert option in run, option
+    assert any(a.startswith("--tmpfs=/tmp") for a in run)
+    assert "localhost/rcman-workspace:test" in run  # the default image
+    assert run[-5:] == [
+        "python3",
+        "-m",
+        "helpers.claude_canary",
+        f"{rt.CANARY_CANDIDATE_MOUNT}/{rt.CANDIDATE}",
+        "1.2.3",
+    ]
+
+
+def test_the_canary_has_nothing_a_workspace_has_and_no_way_out(tmp_path):
+    recorder, runtime = canary_recorder(tmp_path)
+    runtime.run_canary(CANDIDATE_FOLDER, rt.CANARY_NAME, "1.2.3")
+    run = next(c[3:] for c in recorder.calls() if c[3] == "run")
+    volumes = [a for a in run if a.startswith(("--volume", "-v"))]
+    assert len(volumes) == 2 and all(v.endswith(":ro") for v in volumes)  # the candidate, helpers
+    assert not [a for a in run if a.startswith(("-p", "--publish", "--privileged", "--cap-add"))]
+    assert not [a for a in run if a.startswith("--label=") and "workspace" in a]
+    assert [a for a in run if a.startswith("--env=")]  # positive control for the allowlist below
+    assert not [a for a in run if a.startswith("--env=") and a[6:].split("=")[0] not in CANARY_ENV]
+    assert "--detach" not in run and "--interactive" not in run
+
+
+def test_a_canary_left_from_before_is_removed_first_as_a_sign_in_is(tmp_path):
+    recorder, runtime = canary_recorder(tmp_path)
+    runtime.run_canary(CANDIDATE_FOLDER, rt.CANARY_NAME, "1.2.3")
+    calls = [c[3:] for c in recorder.calls()]
+    assert calls[0] == ["rm", "--force", "--ignore", "--time=0", rt.CANARY_NAME]
+    assert [c[0] for c in calls].index("run") > 0
+    recorder.log.unlink()
+    runtime.end_canary(rt.CANARY_NAME)
+    assert [c[3:] for c in recorder.calls()] == [calls[0]]
+
+
+def test_what_the_canary_prints_is_the_checks_it_fails(tmp_path):
+    report = {"version": {"lines": ["ran: claude --version"], "more": 0}}
+    _, runtime = canary_recorder(tmp_path, (0, json.dumps(report) + "\n", ""))
+    assert runtime.run_canary(CANDIDATE_FOLDER, rt.CANARY_NAME, "1.2.3") == report
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        (1, "", "Error: crun: the container could not start"),
+        (0, "", ""),
+        (0, "not json", ""),
+        (0, "[]", ""),
+        (0, '{"version": "no report"}', ""),
+        (124, "", ""),
+    ],
+)
+def test_a_canary_that_did_not_report_is_a_failure_of_the_runtime_not_of_the_candidate(
+    tmp_path, answer
+):
+    _, runtime = canary_recorder(tmp_path, answer)
+    with pytest.raises(rt.RuntimeFailed):
+        runtime.run_canary(CANDIDATE_FOLDER, rt.CANARY_NAME, "1.2.3")
+
+
+def test_a_candidate_folder_that_podman_would_read_as_more_than_a_path_is_refused(tmp_path):
+    recorder, runtime = canary_recorder(tmp_path)
+    for folder in (Path("/var/lib/rcman/a:b"), Path("/var/lib/rcman/a,b"), Path("relative")):
+        with pytest.raises(rt.RuntimeFailed):
+            runtime.run_canary(folder, rt.CANARY_NAME, "1.2.3")
+    assert recorder.calls() == []  # before anything was asked of podman
+
+
+def test_the_host_runtime_answers_with_the_canary_a_test_scripted(host, tmp_path):
+    seen = []
+
+    def script(folder, name, version):
+        seen.append((folder, name, version))
+        return {"x": {}}
+
+    host.canary_script = script
+    assert host.run_canary(tmp_path, rt.CANARY_NAME, "1.2.3") == {"x": {}}
+    assert seen == [(tmp_path, rt.CANARY_NAME, "1.2.3")]
+    host.end_canary(rt.CANARY_NAME)  # nothing to end

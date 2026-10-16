@@ -3,6 +3,8 @@
 Not a test module. tests/test_runtime.py runs them against the host runtime, and
 tests/container/test_runtime_in_podman.py against Podman in the podman host, so
 that the host runtime the other tests use behaves as Podman does where it matters.
+The ``CANARY_CASES`` need python3 in the runtime's image: tests/test_runtime.py runs them too,
+and tests/container/test_claude_versions_in_podman.py against Podman with the default image.
 Each case takes a runtime and a ``spec(n)``, the n-th workspace a case may make,
 and removes what it made. Python standard library and the backend only.
 """
@@ -11,7 +13,10 @@ from __future__ import annotations
 
 import contextlib
 import dataclasses
+import shutil
+import tempfile
 import time
+from pathlib import Path
 
 from rcman import runtime as rt
 from rcman.runtime import TIMED_OUT
@@ -418,6 +423,43 @@ def a_builder_and_an_image_are_removed_in_one_call_when_asked(runtime, spec):
         runtime.remove_build(workspace, image=True)
 
 
+def a_good_candidate_passes_the_canary(runtime, spec):
+    """The candidate is a folder with the one file, which anyone may read and run; a good one
+    fails no check. The canary container is no workspace, and nothing of it is left."""
+    from helpers import claude_checks
+    from tests import claude_download
+
+    folder = Path(tempfile.mkdtemp(prefix="canary-candidate-"))
+    try:
+        claude_download.candidate(folder, "7.6.5")
+        assert runtime.run_canary(folder, rt.CANARY_NAME, "7.6.5") == {}
+        # positive control: the same call names the checks a candidate fails
+        claude_download.candidate(folder, "7.6.5", kind="broken")
+        failed = runtime.run_canary(folder, rt.CANARY_NAME, "7.6.5")
+        assert set(failed) == {name for name, _ in claude_checks.CHECKS}
+        assert rt.CANARY_NAME not in runtime.labelled()
+    finally:
+        shutil.rmtree(folder, ignore_errors=True)
+
+
+def a_broken_candidate_names_the_checks_it_fails_with_their_reports(runtime, spec):
+    from tests import claude_download
+
+    folder = Path(tempfile.mkdtemp(prefix="canary-candidate-"))
+    try:
+        claude_download.candidate(folder, "7.6.5", kind="broken")
+        failed = runtime.run_canary(folder, rt.CANARY_NAME, "7.6.5")
+        assert failed and all(set(entry) == {"lines", "more"} for entry in failed.values())
+        assert all(entry["lines"] for entry in failed.values())
+    finally:
+        shutil.rmtree(folder, ignore_errors=True)
+
+
+def ending_a_canary_that_is_not_there_is_nothing(runtime, spec):
+    runtime.end_canary(rt.CANARY_NAME)
+    runtime.end_canary(rt.CANARY_NAME)
+
+
 CASES = [
     a_workspace_that_is_made_exists_runs_and_is_labelled,
     removing_what_is_not_there_is_nothing,
@@ -439,4 +481,11 @@ CASES = [
     removing_a_build_that_is_not_there_is_nothing,
     a_build_that_is_there_is_listed_and_goes_with_or_without_its_image,
     a_builder_and_an_image_are_removed_in_one_call_when_asked,
+    ending_a_canary_that_is_not_there_is_nothing,
+]
+# The cases that run the canary's program in the runtime's own image, which therefore needs
+# python3, as the default workspace image has it: the podman host's base image has none.
+CANARY_CASES = [
+    a_good_candidate_passes_the_canary,
+    a_broken_candidate_names_the_checks_it_fails_with_their_reports,
 ]

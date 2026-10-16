@@ -24,12 +24,12 @@ and the on-demand runs among them, and what each does:
 | Taking an issue, or a task given as plain text, from plan to finished change with subagents | [.claude/skills/manage-issue/SKILL.md](.claude/skills/manage-issue/SKILL.md) |
 | How tests are organised and run, the repository guards, the edit-time and pre-test hooks | [project-knowledge/tests.md](project-knowledge/tests.md) |
 | The fake `claude`, its fixtures, and approving a new Claude Code version | [project-knowledge/fake-claude.md](project-knowledge/fake-claude.md) |
-| Workspaces: the Podman and host runtimes, each person's shared Claude sign-in, the exec channel, a workspace's server and its states, restoring at start | [project-knowledge/runtime.md](project-knowledge/runtime.md) |
+| Workspaces: the Podman and host runtimes, each person's shared Claude sign-in, the exec channel, a workspace's server, its pinned Claude Code version and states, the canary, restoring at start | [project-knowledge/runtime.md](project-knowledge/runtime.md) |
 | What a workspace and its server are, for colleagues | [docs/workspaces.md](docs/workspaces.md) |
 | People, their uid-range slots, the allowed list, `rcman-admin` | [project-knowledge/people.md](project-knowledge/people.md) |
 | Adding and removing people, for administrators | [docs/users.md](docs/users.md) |
 | What a repository's devcontainer.json may ask of a workspace, how an image of it is built, and what is refused, for administrators | [docs/devcontainer.md](docs/devcontainer.md) |
-| The backend: layout, requests, each area's routes, audit | [project-knowledge/backend.md](project-knowledge/backend.md) |
+| The backend: layout, requests, each area's routes (Claude Code versions among them), audit | [project-knowledge/backend.md](project-knowledge/backend.md) |
 | The frontend: formatting and lint, layout, rules, tests | [project-knowledge/frontend.md](project-knowledge/frontend.md) |
 | The installer: how it is built and tested | [project-knowledge/installer.md](project-knowledge/installer.md) |
 | Checks that need a real Claude account | [project-knowledge/real-claude-checklist.md](project-knowledge/real-claude-checklist.md) |
@@ -40,5 +40,5 @@ and the on-demand runs among them, and what each does:
 | Connecting a Claude account, signing out of Claude and of rcman, for colleagues | [docs/claude-account.md](docs/claude-account.md) |
 | git in workspaces, for colleagues | [docs/git.md](docs/git.md) |
 | A colleague's own settings, for colleagues | [docs/settings.md](docs/settings.md) |
-| The Claude Code version workspaces run, for administrators | [docs/claude-version.md](docs/claude-version.md) |
+| The Claude Code version workspaces run, and rolling out another, for administrators | [docs/claude-version.md](docs/claude-version.md) |
 | The design and the implementation plan | GitHub issues on `mollyjester/claude-rc-man` (label `design`, label `build-step`) |

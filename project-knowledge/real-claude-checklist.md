@@ -46,6 +46,35 @@ can bring it about, kept as an
 [observed screen](fake-claude.md#observed-screens), and handled before the
 version is approved.
 
+## Rolling out a version
+
+With the real binary, in an installed rcman, as an administrator. The canary and what it
+runs are in [runtime.md](runtime.md#the-canary); the fake cannot show these.
+
+1. **The checks need no network.** Roll a real release out on the **Claude Code
+   versions** page, under **Admin**, with **Check and roll out**: it passes in the
+   canary, which has no network. Where it fails only for want of the network, the
+   real binary reaches for it during the checks: the canary has to use the
+   workspace network instead (`run_canary` in `backend/rcman/runtime.py`), and the
+   guide says so.
+2. **The canary needs only the image.** The checks run with the default workspace image's
+   `python3` and nothing else mounted but the candidate and rcman's helpers; a failing
+   check's report on the page shows what it ran and got back, with no account details.
+3. **No self-update.** After a server has run for some minutes, its `HOME` holds no
+   `.local/share/claude`: `DISABLE_AUTOUPDATER` keeps Claude from installing a version of
+   its own.
+4. **A command typed in a session.** After a roll-out, in the shell of an already
+   running session, type `claude --version`. The shell's `PATH` starts with the
+   store's `bin`, which follows `current`, so expect the new version while the server
+   keeps the old one. Then find which program the server's own children run:
+   `/proc/<pid>/exe` of a process the server spawned for a session. Write down what
+   the real product does; `docs/claude-version.md` claims only that the server
+   process and the sessions it spawns keep their version, with the typed command as
+   the exception, and it is to be softened further if this shows otherwise.
+5. **Servers keep their version.** With a server running, approve another version: the
+   server keeps running the old one, its session stays attached, and stopping and
+   starting it runs the new one.
+
 ## The shared sign-in
 
 What Claude Code does with one credentials file bound into several workspaces,

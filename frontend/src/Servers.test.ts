@@ -55,6 +55,7 @@ describe("the dot a workspace carries", () => {
     log: null,
     server: null,
     server_error: null,
+    claude_version: null,
     ...extra,
   });
   const server = (state: string) => ({

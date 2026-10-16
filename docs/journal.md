@@ -14,6 +14,11 @@ to answer — it writes three kinds of event there, each as one line of JSON:
   recognise, or Claude Code answering in a way it does not, described
   [below](#output-rcman-does-not-recognise).
 
+Among the service's own messages, those about Claude Code versions come from
+the logger `rcman.claude_versions`: a version adopted as the approved one, a
+version removed from the store, one that could not be had, or a store that could
+not be looked into (see [Claude Code versions](claude-version.md)).
+
 Only the audit events are also in the audit trail. The journal keeps what it
 is given only within its own size limits; see
 [how long events are kept](audit.md#how-long-events-are-kept).

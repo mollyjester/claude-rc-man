@@ -29,7 +29,6 @@ import sys
 import tarfile
 import tempfile
 import time
-import urllib.request
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
@@ -42,6 +41,7 @@ if not _on_path:
     sys.path.insert(0, str(REPO))
 _write_bytecode, sys.dont_write_bytecode = sys.dont_write_bytecode, True
 try:
+    from helpers import claude_release
     from helpers.rules import EMAIL, Rule
 finally:
     sys.dont_write_bytecode = _write_bytecode
@@ -127,8 +127,8 @@ SUBORDINATE_FILES = (Path("/etc/subuid"), Path("/etc/subgid"))
 LINGER = Path("/var/lib/systemd/linger")
 # How long rcman's user manager may take to bring up its Podman socket.
 SOCKET_WITHIN = 60.0
-# Where Claude Code's releases are, and the platform rcman takes from them.
-CLAUDE_DOWNLOAD = "https://downloads.claude.ai/claude-code-releases"
+# Where Claude Code's releases are: helpers/claude_release.py, which rcman fetches them with too.
+CLAUDE_DOWNLOAD = claude_release.DOWNLOAD
 HEALTH_TIMEOUT = 60.0
 CADDY_ADMIN_PORT = 2019  # Caddy's default admin API address is localhost:2019
 CADDY_ADMIN_HOST = "127.0.0.1"  # what localhost is
@@ -144,7 +144,7 @@ HOSTNAME = re.compile(LABEL + r"(?:\." + LABEL + r")+")
 PORT = re.compile(r"[1-9][0-9]{1,4}")
 ACCOUNT = re.compile(r"[a-z_][a-z0-9_-]{0,31}")  # a Linux account's name
 # An address releases are downloaded from: http or https, with no slash at its end.
-DOWNLOAD_ADDRESS = re.compile(r"https?://[A-Za-z0-9.-]+(?::[0-9]+)?(?:/[A-Za-z0-9._~%-]+)*")
+DOWNLOAD_ADDRESS = claude_release.DOWNLOAD_ADDRESS
 
 
 class InstallError(Exception):
@@ -576,24 +576,25 @@ def ensure_podman(subordinate_changed: bool) -> list[str]:
 
 
 def _arch() -> str:
-    machine = platform.machine()
-    if machine in ("x86_64", "amd64"):
-        return "x64"
-    if machine in ("aarch64", "arm64"):
-        return "arm64"
-    raise InstallError(f"unsupported machine: {machine}")
+    try:
+        return claude_release.architecture()
+    except claude_release.ReleaseError:
+        raise InstallError(f"unsupported machine: {platform.machine()}") from None
 
 
 def _download(url: str) -> bytes:
-    with urllib.request.urlopen(url, timeout=300) as response:
-        return response.read()
+    try:
+        return claude_release.read(url, claude_release.MAX_BINARY_BYTES)
+    except claude_release.ReleaseError as error:
+        raise InstallError(str(error)) from None
 
 
 def _verified(url: str, expected: str) -> bytes:
     data = _download(url)
-    actual = hashlib.sha256(data).hexdigest()
-    if actual != expected:
-        raise InstallError(f"checksum mismatch for {url}")
+    try:
+        claude_release.check(hashlib.sha256(data).hexdigest(), expected, url)
+    except claude_release.ReleaseError as error:
+        raise InstallError(str(error)) from None
     return data
 
 
@@ -949,36 +950,47 @@ def claude_version() -> str:
     return (REPO / "helpers" / "claude-version").read_text(encoding="utf-8").strip()
 
 
+def _release_failed(error: claude_release.ReleaseError, version: str) -> InstallError:
+    """What went wrong fetching Claude Code ``version``, as the installer says it."""
+    if error.kind == "no_such_version":
+        return InstallError(f"Claude Code {version} has no release at the download address")
+    if error.kind == "no_build":
+        return InstallError(f"Claude Code {version} has no build for {claude_platform()}")
+    return InstallError(str(error))
+
+
 def ensure_claude_store(
-    store: Path = CLAUDE_STORE, download: str = CLAUDE_DOWNLOAD, version: str | None = None
+    store: Path = CLAUDE_STORE,
+    download: str = CLAUDE_DOWNLOAD,
+    version: str | None = None,
+    owner: tuple[int, int] | None = None,
 ) -> list[str]:
-    """The Claude Code store: ``versions/<version>``, downloaded from ``download`` and
-    checked against its release's manifest; ``current`` naming it, switched in one step;
-    and ``bin/claude`` leading to it. Root's, and readable by everyone."""
+    """The Claude Code store: ``versions/<version>`` for the tested version, downloaded from
+    ``download`` and checked against its release's manifest (helpers/claude_release.py);
+    ``current`` naming a version, which is set only where there is none, since rcman switches
+    it to the version an administrator approves; and ``bin/claude`` leading to ``current``.
+    Readable by everyone, and with ``owner`` (a uid and gid) rcman's, which writes the store
+    from then on."""
     version = version or claude_version()
     target = store / "versions" / version
     changes = []
+    target.parent.mkdir(parents=True, exist_ok=True)
     if not target.exists():
-        manifest = json.loads(_download(f"{download}/{version}/manifest.json"))
         try:
-            expected = manifest["platforms"][claude_platform()]["checksum"]
-        except (KeyError, TypeError):
-            platform = claude_platform()
-            raise InstallError(f"Claude Code {version} has no build for {platform}") from None
-        data = _verified(f"{download}/{version}/{claude_platform()}/claude", expected)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        partial = target.with_name(f".{version}.partial")
-        partial.write_bytes(data)
-        os.chmod(partial, 0o755)
-        partial.rename(target)
+            claude_release.fetch(download, version, target)
+        except claude_release.ReleaseError as error:
+            raise _release_failed(error, version) from None
         changes.append(f"claude {version}")
-    if _link(store, "current") != f"versions/{version}":
+    if not (store / "current").exists():  # none, or one that names a version that is not there
         _set_link(store, "current", f"versions/{version}")
     (store / "bin").mkdir(exist_ok=True)
     if _link(store / "bin", "claude") != "../current":
         _set_link(store / "bin", "claude", "../current")
     for folder in (store, store / "versions", store / "bin"):
         os.chmod(folder, 0o755)
+    if owner is not None:
+        for path in (store, *store.rglob("*")):
+            os.lchown(path, *owner)
     return changes
 
 
@@ -1060,15 +1072,21 @@ def _status_over_socket(path: Path, url: str) -> int:
         connection.close()
 
 
-def _status_over_tcp(url: str) -> int:
-    with urllib.request.urlopen(url, timeout=5) as response:
-        return response.status
+def _status_over_tcp(host: str, port: str, path: str) -> int:
+    import http.client
+
+    connection = http.client.HTTPConnection(host, int(port), timeout=5)
+    try:
+        connection.request("GET", path)
+        return connection.getresponse().status
+    finally:
+        connection.close()
 
 
 def health(settings: dict[str, str]) -> None:
     checks = {
         "rcman": lambda: _status_over_socket(SOCKET, "/api/health"),
-        "oauth2-proxy": lambda: _status_over_tcp(f"http://127.0.0.1:{settings['PROXY_PORT']}/ping"),
+        "oauth2-proxy": lambda: _status_over_tcp("127.0.0.1", settings["PROXY_PORT"], "/ping"),
     }
     deadline = time.monotonic() + HEALTH_TIMEOUT
     pending = dict(checks)
@@ -1155,7 +1173,10 @@ def main(argv: list[str]) -> int:
         changes += ensure_tools()
         changes += ensure_image()
         changes += ensure_devcontainer_builder()
-        changes += ensure_claude_store(CLAUDE_STORE, settings["CLAUDE_DOWNLOAD"])
+        app = pwd.getpwnam(APP_USER)
+        changes += ensure_claude_store(
+            CLAUDE_STORE, settings["CLAUDE_DOWNLOAD"], owner=(app.pw_uid, app.pw_gid)
+        )
         changes += configure({**settings, **found_out()})
         changes += link_commands()
         added = ensure_admin(settings)

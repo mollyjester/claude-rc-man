@@ -310,7 +310,8 @@ def test_restore_waits_for_the_runtime(settings, tmp_path):
 
     root = tmp_path / "later"
     with tmux_sockets("rcw-") as sockets:
-        runtime = rt.HostRuntime(root, sockets, fake_claude(tmp_path / "claude"), tmp_path / "x")
+        fake_claude(tmp_path / "claude")
+        runtime = rt.HostRuntime(root, sockets, tmp_path / "claude", tmp_path / "x")
         service = ws.Workspaces(settings, runtime)
         creating = insert(settings, 1, "creating", "creating")
         done = threading.Thread(target=service.restore)
@@ -521,3 +522,221 @@ def test_every_route_taking_a_workspace_answers_anothers_as_not_found(client, ap
         r = client.request(method, url, headers=changing(BOB), **kwargs)
         assert (r.status_code, r.json()["code"]) == (404, "workspace_not_found"), (method, path)
     assert [w["id"] for w in listed(client)] == [made["id"]]
+
+
+# --- a server pins the Claude Code version it starts with -------------------------------------
+
+FIRST, SECOND = "1.0.0", "1.1.0"  # the versions in the store; the first is conftest's FAKE_VERSION
+
+
+@pytest.fixture
+def pinned(tmp_path, runtime, settings):
+    """The host runtime's store holding two versions, each recording the path it was run as in
+    a log; the second was approved before the first, which is approved and current. Listed
+    before ``client``."""
+    from tests.conftest import fake_claude
+
+    log = tmp_path / "ran"
+    for version in (SECOND, FIRST):
+        fake_claude(runtime.claude, version=version, before=f'echo "$0" >> {log}\n')
+    for version in (SECOND, FIRST):
+        approve(settings, version)
+    return log
+
+
+def approve(settings, version: str) -> None:
+    """``version`` approved, as a rollout does it: a row, and the link current to it."""
+    con = db.connect(settings.database)
+    try:
+        con.execute(
+            "insert into claude_approvals (version, at, by) values (?, '2026-01-01', 'a')",
+            (version,),
+        )
+        con.commit()
+    finally:
+        con.close()
+    link = settings.claude_store / "current"
+    link.unlink()
+    link.symlink_to(f"versions/{version}")
+
+
+def start(client, made, verb=""):
+    path = "/api/servers" + (f"/{verb}" if verb else "")
+    return client.post(path, json={"workspace": made["id"]}, headers=changing(ALICE))
+
+
+def record_of(settings, workspace) -> str | None:
+    return row(settings, workspace["id"])["claude_version"]
+
+
+def test_a_start_records_the_version_it_runs_and_runs_that_exact_file(
+    pinned, client, app, settings
+):
+    made = made_workspace(client, ALICE, "alpha")
+    signed_in(app, made)
+    assert record_of(settings, made) is None
+    assert start(client, made).status_code == 200
+    assert record_of(settings, made) == FIRST
+    runtime = app.state.workspaces.runtime
+    ran = pinned.read_text().split()
+    assert ran and set(ran) == {str(runtime.claude / "versions" / FIRST)}  # not the link current
+
+
+def test_a_running_server_keeps_its_version_when_another_is_approved(pinned, client, app, settings):
+    made = made_workspace(client, ALICE, "alpha")
+    signed_in(app, made)
+    start(client, made)
+    approve(settings, SECOND)
+    assert record_of(settings, made) == FIRST
+    shown = next(w for w in listed(client) if w["id"] == made["id"])
+    assert shown["claude_version"] == FIRST
+    assert client.get("/api/workspaces", headers=as_user(ALICE)).json()["claude_approved"] == SECOND
+    # it starts again on the approved version only when its person stops and starts it
+    assert start(client, made, "stop").status_code == 200
+    assert record_of(settings, made) is None
+    assert start(client, made).status_code == 200
+    assert record_of(settings, made) == SECOND
+    assert pinned.read_text().split()[-1] == str(
+        app.state.workspaces.runtime.claude / "versions" / SECOND
+    )
+
+
+def test_a_start_that_is_refused_because_a_server_runs_leaves_the_record_alone(
+    pinned, client, app, settings
+):
+    made = made_workspace(client, ALICE, "alpha")
+    signed_in(app, made)
+    start(client, made)
+    approve(settings, SECOND)
+    r = start(client, made)
+    assert (r.status_code, r.json()["code"]) == (409, "already_running")
+    assert record_of(settings, made) == FIRST  # not overwritten by the approved version
+    r = start(client, made, "resume")  # nothing stopped to resume
+    assert r.json()["code"] == "not_stopped"
+    assert record_of(settings, made) == FIRST
+
+
+def test_a_resume_runs_the_approved_version(pinned, client, app, settings):
+    made = made_workspace(client, ALICE, "alpha")
+    signed_in(app, made, trusted=True)
+    start(client, made)
+    start(client, made, "stop")
+    approve(settings, SECOND)
+    assert start(client, made, "resume").status_code == 200
+    assert record_of(settings, made) == SECOND
+
+
+def test_a_stop_and_a_forget_clear_the_record(pinned, client, app, settings):
+    made = made_workspace(client, ALICE, "alpha")
+    signed_in(app, made)
+    start(client, made)
+    assert record_of(settings, made) == FIRST
+    start(client, made, "stop")
+    assert record_of(settings, made) is None
+    start(client, made, "resume")
+    assert record_of(settings, made) == FIRST
+    start(client, made, "stop")
+    assert start(client, made, "forget").status_code == 200
+    assert record_of(settings, made) is None
+
+
+def test_a_server_that_would_not_stop_keeps_its_record(pinned, client, app, settings, monkeypatch):
+    from rcman import claude_server as cs
+
+    made = made_workspace(client, ALICE, "alpha")
+    signed_in(app, made)
+    start(client, made)
+
+    def timing_out(self):
+        raise cs.ServerError("timeout")
+
+    monkeypatch.setattr(cs.Server, "stop", timing_out)
+    assert start(client, made, "stop").json()["code"] == "timeout"
+    assert record_of(settings, made) == FIRST  # it is still running that version
+
+
+def test_a_start_that_ends_with_the_server_not_running_clears_the_record(
+    pinned, client, app, settings, tmp_path
+):
+    from devtools import fake_claude as fake
+    from tests.conftest import fake_claude
+
+    signed_out = tmp_path / "signed-out"
+    fake.write_state(signed_out, logged_in=False)
+    fake_claude(
+        app.state.workspaces.runtime.claude,
+        version=FIRST,
+        before=f'if [ "$1" = remote-control ]; then export CLAUDE_CONFIG_DIR={signed_out}; fi\n',
+    )
+    made = made_workspace(client, ALICE, "alpha")
+    signed_in(app, made)
+    r = start(client, made)
+    assert r.json()["server"]["state"] == "logged_out"
+    assert row(settings, made["id"])["server"] == 1  # the ended server is still there to see
+    assert record_of(settings, made) is None
+
+
+def test_a_start_that_is_refused_before_a_server_exists_records_nothing(
+    pinned, client, app, settings
+):
+    made = made_workspace(client, ALICE, "alpha")  # not signed in to Claude in the workspace
+    from tests.e2e_server import record_sign_in
+
+    record_sign_in(settings.database, 1)
+    r = start(client, made)
+    assert r.json()["code"] == "claude_not_logged_in"
+    assert record_of(settings, made) is None
+
+
+def test_a_start_with_the_approved_version_missing_from_the_store_is_not_installed(
+    pinned, client, app, settings
+):
+    made = made_workspace(client, ALICE, "alpha")
+    signed_in(app, made)
+    (app.state.workspaces.runtime.claude / "versions" / FIRST).unlink()
+    r = start(client, made)
+    assert (r.status_code, r.json()["code"]) == (409, "claude_not_installed")
+    assert record_of(settings, made) is None
+    assert app.state.workspaces.server_status(app.state.workspaces.get(made["id"])) is None
+
+
+def test_the_server_is_started_through_the_layout_pinned_to_the_version(pinned, client, app):
+    from rcman import claude_server as cs
+
+    made = made_workspace(client, ALICE, "alpha")
+    signed_in(app, made)
+    seen = []
+    real = cs.Server.__init__
+
+    def recording(self, layout, run, workspace):
+        seen.append(layout.claude)
+        real(self, layout, run, workspace)
+
+    cs.Server.__init__ = recording
+    try:
+        start(client, made)
+    finally:
+        cs.Server.__init__ = real
+    runtime = app.state.workspaces.runtime
+    assert str(runtime.claude / "versions" / FIRST) in seen  # the one the start ran
+    assert str(runtime.claude / "bin" / "claude") in seen  # the others read, never run it
+
+
+def test_administrators_see_the_version_each_server_runs(pinned, client, app, settings):
+    made = made_workspace(client, ALICE, "alpha")
+    made_workspace(client, BOB, "beta")
+    signed_in(app, made)
+    start(client, made)
+    people = {
+        p["email"]: p
+        for p in client.get("/api/servers/everyone", headers=as_user(ALICE)).json()["people"]
+    }
+    [alpha] = people[ALICE]["workspaces"]
+    [beta] = people[BOB]["workspaces"]
+    assert (alpha["claude_version"], beta["claude_version"]) == (FIRST, None)
+
+
+def test_a_lifecycle_command_gets_the_autoupdater_turned_off(runtime):
+    layout = runtime.layout(rt.container_name(1))
+    env = ws.Workspaces._hook_env(layout)
+    assert env["DISABLE_AUTOUPDATER"] == "1"

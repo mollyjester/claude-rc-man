@@ -16,6 +16,7 @@ const workspace = (id: number, name: string, extra: Record<string, unknown> = {}
   state: "ready",
   server: null,
   server_error: null,
+  claude_version: null,
   ...extra,
 });
 
@@ -24,7 +25,10 @@ const PEOPLE = {
     {
       email: "alice@example.com",
       workspaces: [
-        workspace(1, "alpha", { server: server("ready", "alpha-quiet-otter") }),
+        workspace(1, "alpha", {
+          server: server("ready", "alpha-quiet-otter"),
+          claude_version: "2.1.0",
+        }),
         workspace(2, "beta", { server: server("stopped") }),
         workspace(3, "gamma"),
         workspace(4, "delta", { state: "creating" }),
@@ -57,10 +61,11 @@ test("each person's workspaces are listed with their server's state and session"
   const headers = within(alice)
     .getAllByRole("columnheader")
     .map((h) => h.textContent);
-  expect(headers).toEqual([m.everyoneWorkspace, m.everyoneState, m.sessionName]);
+  expect(headers).toEqual([m.everyoneWorkspace, m.everyoneState, m.sessionName, m.everyoneClaude]);
   const alpha = within(alice).getByRole("row", { name: /alpha/ });
   expect(within(alpha).getByText(m.states.ready)).toHaveClass("badge", `badge-${KIND.ready}`);
   expect(within(alpha).getByText("alpha-quiet-otter")).toBeInTheDocument();
+  expect(within(alpha).getByRole("cell", { name: "2.1.0" })).toBeInTheDocument();
   const beta = within(alice).getByRole("row", { name: /beta/ });
   expect(within(beta).getByText(m.states.stopped)).toBeInTheDocument();
   const gamma = within(alice).getByRole("row", { name: /gamma/ });
@@ -69,6 +74,18 @@ test("each person's workspaces are listed with their server's state and session"
   expect(within(delta).getByText(m.workspaceStates.creating)).toBeInTheDocument();
   const bob = await person("bob@example.com");
   expect(within(bob).getByText(m.everyoneNone)).toBeInTheDocument();
+});
+
+test("a workspace shows the Claude Code version its server runs, and nothing where none does", async () => {
+  api();
+  renderApp("/admin/workspaces");
+  const alice = await person("alice@example.com");
+  const cells = (name: RegExp) =>
+    within(within(alice).getByRole("row", { name })).getAllByRole("cell");
+  const at = (name: RegExp) => cells(name)[3].textContent;
+  expect(at(/alpha/)).toBe("2.1.0");
+  expect(at(/beta/)).toBe(""); // its server is stopped: it has no version
+  expect(at(/gamma/)).toBe(""); // no server
 });
 
 test("a workspace whose server could not be read shows the server's reason", async () => {

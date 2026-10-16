@@ -26,6 +26,8 @@ const workspaceLink = (id: number | null) => ({
 // workspace is in the address.
 export function Dashboard({ pollMs }: { pollMs: number }) {
   const [workspaces, setWorkspaces] = useState<Workspace[] | null>(null);
+  // The Claude Code version a server started now would run, null where none is approved.
+  const [approved, setApproved] = useState<string | null>(null);
   const [error, setError] = useState<ApiError | null>(null);
   // What was done, shown while nothing is selected after it.
   const [notice, setNotice] = useState<string | null>(null);
@@ -40,9 +42,12 @@ export function Dashboard({ pollMs }: { pollMs: number }) {
   const refresh = useCallback(async () => {
     const mine = ++latest.current;
     try {
-      const answer = await api.get<{ workspaces: Workspace[] }>("/api/workspaces");
+      const answer = await api.get<{ workspaces: Workspace[]; claude_approved: string | null }>(
+        "/api/workspaces",
+      );
       if (mine === latest.current) {
         setWorkspaces(answer.workspaces);
+        setApproved(answer.claude_approved);
         setError(null);
       }
     } catch (e) {
@@ -101,6 +106,7 @@ export function Dashboard({ pollMs }: { pollMs: number }) {
           <WorkspacePanel
             key={selected.id}
             workspace={selected}
+            approved={approved}
             pollMs={pollMs}
             onChange={refresh}
             onDeleted={() => deleted(selected)}
@@ -342,11 +348,13 @@ function DeleteWorkspaceDialog({
 // cloned, where it cancels the clone.
 function WorkspacePanel({
   workspace,
+  approved,
   pollMs,
   onChange,
   onDeleted,
 }: {
   workspace: Workspace;
+  approved: string | null;
   pollMs: number;
   onChange: () => void;
   onDeleted: () => void;
@@ -393,7 +401,20 @@ function WorkspacePanel({
       {workspace.state === "ready" && (
         <PanelSection title={m.serverTitle}>
           {unread && <ProblemView error={new ApiError(0, unread.code, unread.title)} />}
-          {server && <ServerCard workspace={workspace} server={server} onChange={onChange} />}
+          {server && (
+            <ServerCard
+              workspace={workspace}
+              server={server}
+              claudeVersion={workspace.claude_version}
+              onChange={onChange}
+            />
+          )}
+          {server &&
+            workspace.claude_version &&
+            approved &&
+            workspace.claude_version !== approved && (
+              <p className="muted">{m.serverVersionDiffers(approved)}</p>
+            )}
           {!server && !unread && (
             <>
               <p>{m.noServer}</p>

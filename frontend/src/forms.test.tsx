@@ -26,7 +26,6 @@ import {
   SIGNING_OUT,
 } from "./test/fakeApi";
 import { renderAlone, renderApp } from "./test/render";
-import { Versions } from "./Versions";
 
 const RULE_ATTRIBUTES = ["required", "pattern", "min", "max", "minlength", "maxlength", "step"];
 
@@ -40,13 +39,16 @@ function api() {
     },
     "GET /api/claude/versions": {
       approved: "1.0.0",
+      previous: null,
       tested: "1.0.0",
-      untested: false,
-      differs: [],
-      users: [],
+      installed: [],
+      drift: [],
+      upgrading: false,
     },
+    "GET /api/claude/latest": { latest: null },
     "POST /api/claude/login": { url: "https://claude.com/x" },
     "GET /api/workspaces": {
+      claude_approved: "1.0.0",
       workspaces: [
         {
           id: 1,
@@ -57,6 +59,7 @@ function api() {
           log: null,
           server: null,
           server_error: null,
+          claude_version: null,
         },
       ],
     },
@@ -88,16 +91,14 @@ async function inputs() {
   return all();
 }
 
-// Where a page is: a path in the app, or, for a part the app does not show while
-// the server refuses what it does, that part on its own. Each is held to the
-// same rules, so that it is ready to be shown again.
+// Where a page is: a path in the app, or, for a part that is tried on its own, that
+// part alone. Each is held to the same rules.
 type Where = string | (() => ReactElement);
 
 function show(where: Where) {
   return typeof where === "string" ? renderApp(where) : renderAlone(where(), ["/settings"]);
 }
 
-const versions = () => <Versions />;
 const account = () => (
   <ClaudeConnection connection={NOT_CONNECTED as Connection} onChange={() => {}} />
 );
@@ -125,7 +126,7 @@ const PAGES: [string, Where, () => Promise<void>][] = [
     },
   ],
   ["a new workspace", "/", async () => void (await screen.findByLabelText(m.newWorkspaceName))],
-  ["Claude Code versions", versions, async () => {}],
+  ["Claude Code versions", "/admin/claude", async () => {}],
   ["signing out of Claude", connected, async () => {}],
   [
     "connecting Claude, its address",

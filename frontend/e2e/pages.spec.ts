@@ -99,8 +99,34 @@ test("administration is offered to administrators only", async ({ page }) => {
   await expect(page.getByRole("heading", { name: m.auditTitle })).toBeVisible();
   await page.getByRole("banner").getByRole("button", { name: m.navAdmin }).click();
   const menu = page.getByRole("banner").getByRole("listitem");
-  await expect(menu).toHaveCount(3);
-  await expect(page.getByRole("link", { name: m.versionsTitle })).toHaveCount(0);
+  await expect(menu).toHaveCount(4);
+  await expect(menu.getByRole("link", { name: m.navVersions })).toBeVisible();
+});
+
+test("the Claude Code versions page shows the approved version and the installed ones, to administrators only", async ({
+  page,
+}) => {
+  // What the release site would name is not asked of the real one from a test.
+  await page.route("**/api/claude/latest", (route) => route.fulfill({ json: { latest: null } }));
+  await signInAs(page, ALICE);
+  await page.goto("/");
+  await openAdminPage(page, m.navVersions);
+  await expect(page.getByRole("heading", { name: m.versionsTitle })).toBeVisible();
+  const approved = page
+    .getByText(m.versionsApproved, { exact: true })
+    .locator("xpath=following-sibling::dd[1]");
+  await expect(approved).toHaveText(/^\d+(\.\d+)+$/);
+  const installed = page.getByRole("region", { name: m.versionsInstalledTitle });
+  await expect(
+    installed.getByRole("row", { name: new RegExp(m.versionsStandingApproved) }),
+  ).toBeVisible();
+  await expect(installed.getByRole("button")).toHaveCount(0); // the one installed version is the approved one
+  await expect(page.getByText(m.versionsLatestUnknown)).toBeVisible();
+  await expect(page.getByText(m.versionsDriftNone)).toBeVisible();
+
+  await signInAs(page, BOB);
+  await page.goto("/admin/claude");
+  await expect(page).toHaveURL("/");
 });
 
 test("people are added and removed, and the audit trail shows it", async ({ page, browser }) => {

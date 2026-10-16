@@ -30,13 +30,13 @@ the OpenAPI description it serves at `/api/openapi.json`, browsable at
 | `spa.py` | Serving the built frontend: its files, and `index.html` for every other path not under `/api`; installed after every router |
 | `routes.py` | The app's routes as FastAPI resolves them after including routers, and which of them are for administrators |
 | `routers/` | One module per area: `me`, `workspaces`, `servers`, `git`, `github`, `claude`, `people`, `audit_log`, `attention`, `docs`, `client_errors` |
-| `routers/workspaces.py` | The person's workspaces, under `/api/workspaces`: listing them with their servers, making one, deleting one |
+| `routers/workspaces.py` | The person's workspaces, under `/api/workspaces`: listing them with their servers, making one, deleting one; the listing is an object, `workspaces` and `claude_approved` (the version a server started now would run, `null` where none is), so that the page can set each server's `claude_version` beside it |
 | `routers/servers.py` | A workspace's server, under `/api/servers`: start, resume, stop, forget, confirm and output, each by the workspace's id; and everyone's, for administrators |
 | `accounts.py`, `routers/claude.py` | Each person's Claude sign-in, signing in and out of it, and its state; `routers/me.py` signs out of rcman — see [Claude accounts](#claude-accounts) |
 | `repository.py` | A workspace's git repository: the verbs of the Changes section, run in the workspace through its channel and `exec`, each wrapped in the workspace's `timeout` tool (see [git in workspaces](#git-in-workspaces)) |
 | `gitaccount.py` | A person's commit author and GitHub token, kept in SQLite and written into their volume's git folder (see [git in workspaces](#git-in-workspaces)) |
 | `routers/git.py`, `routers/github.py` | The git routes, by workspace id, and the person's GitHub token (see [git in workspaces](#git-in-workspaces)) |
-| `routers/claude.py` | Claude Code versions: not available in workspaces yet (see [Not available yet](#not-available-yet)) |
+| `claude_versions.py` | `ClaudeVersions`: the approvals, the store, rolling out a version, pruning, and the report of the versions page (see [Claude Code versions](#claude-code-versions)) |
 | `routers/client_errors.py` | A page's reports of failures rcman could not see, `POST /api/client-errors`, written to the journal (see [Errors from the page](#errors-from-the-page)) |
 | `routers/me.py` | Each person's own settings, changed with `PATCH /api/me/settings`, which changes only the settings sent; `prefix_of` and `author_of` are how the rest of the backend reads them |
 
@@ -236,12 +236,66 @@ files to stage reach git on stdin and are never recorded or logged.
   the answer carries the push's problem and the audit row's result is
   `committed_not_pushed`.
 
-## Not available yet
+## Claude Code versions
 
-Claude Code versions are not available yet. The versions routes of
-`routers/claude.py` keep the shape they will have, their bodies validated by the
-rules they will be, and answer `not_available_yet`; the changing one is audited with
-that result.
+`claude_versions.ClaudeVersions` (`Workspaces.versions`, also `app.state.versions`) owns
+the store, `claude_store`: `versions/<version>`, `current` and `bin/claude`. The
+installer makes the store and rcman writes it from then on (see
+[the installer](installer.md#what-it-does)). Approvals are the append-only table
+`claude_approvals` (triggers refuse an update and a delete): the latest is the approved
+version, the previous is the latest one naming another, and a rollback is a new row. The
+database is the truth and `current` follows it (`reconcile`, run when rcman starts, before
+the restore); with no approval yet, `reconcile` adopts what `current` names. A workspace's
+row records the version its server started with (`claude_version`).
+
+- **Pinning.** `Workspaces.start_server` resolves the approved version (`resolve`), records
+  it on the row and starts the server with a layout that runs that exact file
+  (`Layout.pinned`, see [runtime.md](runtime.md)). `ClaudeVersions.lock` is held from the
+  resolve to the record, and the pruning holds it too, so a version is never removed between
+  the two. A stop or a forget clears the record. Restore starts servers by the same path.
+  Nothing restarts a running server.
+- **Rolling out.** `POST /api/claude/upgrade {version}` (administrators, audited as
+  `claude.upgrade` with the version as target) is `upgrade`: synchronous, one at a time
+  (`claude_upgrade_busy`). The candidate is staged outside the store, in a folder of its own
+  in `STAGING_FOLDER` beside the database, fetched by `helpers/claude_release.py` (streamed,
+  hashed, size-capped, renamed into place only whole; the installer fetches the tested version
+  with the same code) or copied from the store; run through the canary
+  (`Runtime.run_canary`, see [runtime.md](runtime.md#the-canary)); and only on a pass copied into
+  the store under a partial name and renamed. A version that was approved before and is still in
+  the store needs neither download nor canary, since it passed then: a rollback or re-approval
+  works with Podman unavailable, and a version never approved always goes through the canary.
+  The commit (`_commit`) switches `current` first and records the approval only afterwards, so
+  what is approved is what the link names: if the switch fails nothing is approved, and if the
+  recording fails the link is put back. After a crash the start of rcman repoints the link at
+  the approved version (`reconcile`; the database wins). The version field is trimmed and
+  validated before anything is done. A file of no length in the store is no version (`sweep`
+  removes it). A refusal or failure leaves the store and the approvals as they were:
+  `claude_install_failed` (whose title says why, by
+  `problems.CLAUDE_INSTALL_MESSAGES`; status 502 for the kind `network`, 409 for the others, by
+  `CLAUDE_INSTALL_STATUS`), `claude_checks_failed` (the failing checks with their
+  reports in the problem's extra) and `claude_canary_failed` (the canary could not run).
+  The checksum comes from the release site with the program: it protects against corruption,
+  not against a compromised source, and nothing checks a signature.
+- **Pruning.** `prune` removes the versions that are neither approved, previous nor the one
+  `current` names and that no server in `Workspaces.pinned_servers` uses (a server that runs,
+  cannot be read, or is being started). It asks the servers for their status without holding
+  `lock`, then decides again under it, also keeping a version whose workspace record changed
+  meanwhile; it does nothing while a roll-out runs. It runs after a roll-out, after a server
+  is stopped or forgotten (`Workspaces._stopped`) and in the restore, with `sweep`,
+  which removes what a roll-out cut short left: staging folders, partial files and a canary.
+- **Reading.** `GET /api/claude/versions` is `report`: approved, previous and tested
+  (`helpers/claude-version`) versions, the installed ones with whether each is approved or
+  previous and how many servers use it, the drift (running servers on another version) and
+  whether a roll-out runs. `GET /api/claude/latest` is the release site's newest version, only
+  a suggestion (`null` where the site does not say). Both are for administrators.
+  `GET /api/workspaces` and `everyone` carry each workspace's `claude_version`.
+- **No self-update.** `DISABLE_AUTOUPDATER=1` is in the server's environment (`child_env`), in
+  the lifecycle commands' and in the canary's; `tests/test_claude_server.py` holds every use of
+  the path of Claude to the command builder or the pinned layout.
+- **The setting** `claude_download` (`RCMAN_CLAUDE_DOWNLOAD`, validated by
+  `helpers/claude_release.DOWNLOAD_ADDRESS`) is where releases are downloaded from.
+- **The journal.** `ClaudeVersions` logs to `rcman.claude_versions`, which `create_app`
+  installs like the others (below).
 
 ## Attention
 
@@ -258,8 +312,8 @@ A route that changes something depends on `Recorder("<action>")`, which writes
 one row when the request finishes, with `ok` or the error code, and logs the
 same event as a JSON line on the `rcman.audit` logger. uvicorn configures only
 its own loggers, so `create_app` calls `journal.install` on each logger whose
-events go to the journal — `rcman.audit`, `rcman.client`, `rcman.unrecognised`
-and `rcman.workspaces` — which gives it one handler writing the bare line to
+events go to the journal — `rcman.audit`, `rcman.client`, `rcman.unrecognised`,
+`rcman.workspaces` and `rcman.claude_versions` — which gives it one handler writing the bare line to
 standard error; systemd sends it to the journal. `tests/test_journal.py` checks
 that the app installs each of them. `tests/test_audit.py` starts the app with the unit's own
 `ExecStart` and reads the line from its output. It also finds every changing

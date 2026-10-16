@@ -98,9 +98,12 @@ matters, so a suppression at the site is preferred.
   while a sign-out waits, **Stop my servers and sign out now** is offered
   instead, so it is never stuck. Administration is offered only to administrators,
   and the server refuses everyone else regardless. What the server refuses
-  everyone, it is not offered at all: the Claude Code versions page is on no
-  page while the server answers `not_available_yet` for it; its component and
-  tests are kept for when it does not. The Changes section is in the panel of
+  everyone, it is not offered at all. The Claude Code versions page shows a
+  roll-out as working while its request lasts, and offers no second one
+  meanwhile, nor while the report says another runs; a person's workspace
+  panel shows the version its server runs, and a quiet note while that is not
+  the approved version (`claude_approved` in the Workspaces
+  answer). The Changes section is in the panel of
   every workspace that is ready, and in none other. The Settings page's GitHub
   token part asks whether a token is stored, and offers its field and Remove only
   once the server answers; when the server refuses the question, the part shows
@@ -175,7 +178,7 @@ matters, so a suppression at the site is preferred.
 | `src/Claude.tsx` | The **Claude** page (`ClaudePage`): the account's state, read once as the page opens, the connect flow, and **Sign out of Claude** with **Keep sessions running** |
 | `src/Settings.tsx` | The person's own settings, in parts that are each saved on their own; `FIELDS` is every setting it shows, and a test holds `docs/settings.md` to it; the GitHub token part, which stores or removes the token through `/api/github` and never shows it |
 | `src/People.tsx`, `src/Everyone.tsx`, `src/Audit.tsx` | Administration: the people, each with their role and how many workspaces they have, added by address and removed after a confirmation; everyone's workspaces and their servers, with no actions; the audit trail |
-| `src/Versions.tsx` | The Claude Code versions page, on no page while the server refuses it |
+| `src/Versions.tsx` | The Claude Code versions page, among the administrators' pages: the approved, previous and tested versions, with a warning where the approved one is not the tested one; the newest release, which the server suggests and nothing installs by itself, with **Roll out**; the roll-out form; the installed versions, each other than the approved one with **Use**, and how many running servers use each; and the servers running another version than the approved one. A roll-out is one request that lasts as long as the checks do; a refusal, the failed checks with what each ran and got back among them, is shown by `src/ProblemView.tsx` |
 | `src/Attention.tsx` | The administrators' warning at the top of every page, from `/api/attention`, naming each server on an unrecognised screen by its person and workspace, with a link to everyone's workspaces; fetched on load and on every change of page |
 | `src/Docs.tsx` | The help pages, from `/api/docs` |
 | `src/clientErrors.ts` | The failures noted for rcman, kept until they are sent (see [Reporting failures](#reporting-failures)) |

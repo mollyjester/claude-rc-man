@@ -180,6 +180,7 @@ def test_library_text_is_recognised():
         *(rule.sentence for rule in helpers_rules().values()),
         *problems.MESSAGES.values(),
         *problems.CLONE_MESSAGES.values(),
+        *problems.CLAUDE_INSTALL_MESSAGES.values(),
         *problems.DEVCONTAINER_MESSAGES.values(),
         *problems.FIELD_MESSAGES.values(),
     ]
@@ -237,8 +238,7 @@ def test_a_null_character_is_never_an_internal_error(app):
         for f in texts:
             r = send(client, f, "a\x00b", CALLS, changing(ALICE))
             what = f"{f.method} {f.path} {f.where} {f.name}"
-            # A route that is not there yet answers so whatever it is sent: no crash.
-            if r.status_code >= 500 and r.json().get("code") != "not_available_yet":
+            if r.status_code >= 500:
                 found.append(f"{what}: {r.status_code} {r.text[:120]}")
             elif r.status_code == 422:
                 for e in r.json()["errors"]:
@@ -1033,3 +1033,25 @@ def test_a_list_too_short_too_long_or_not_a_list_is_refused_in_rcmans_words():
     found, used = refusal_problems(TestClient(_list_app()), calls, {})
     assert found == []
     assert {"too_short", "too_long", "list_type"} <= used
+
+
+def test_the_problems_of_rolling_out_a_claude_version_are_conflicts_in_plain_words():
+    from helpers import claude_release
+
+    for code in ("claude_install_failed", "claude_checks_failed", "claude_upgrade_busy"):
+        assert problems.STATUS[code] == 409
+        assert problems.MESSAGES[code]
+    # every way a version can fail to be had is told in words of its own
+    assert set(problems.CLAUDE_INSTALL_MESSAGES) == set(claude_release.KINDS)
+    assert len(set(problems.CLAUDE_INSTALL_MESSAGES.values())) == len(claude_release.KINDS)
+    # a release site that does not answer is a bad gateway; the rest is for the administrator
+    assert set(problems.CLAUDE_INSTALL_STATUS) == set(claude_release.KINDS)
+    assert problems.CLAUDE_INSTALL_STATUS["network"] == 502
+    assert {k: v for k, v in problems.CLAUDE_INSTALL_STATUS.items() if k != "network"} == {
+        k: 409 for k in claude_release.KINDS if k != "network"
+    }
+
+
+def test_nothing_answers_that_rcman_cannot_do_it_yet():
+    assert "not_available_yet" not in problems.MESSAGES
+    assert "not_available_yet" not in problems.STATUS

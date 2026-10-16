@@ -1,17 +1,112 @@
 # Claude Code versions
 
-Every workspace runs Claude Code from one store, `/var/lib/rcman/claude`,
-which every workspace has, read-only. The installer fills it with the **tested**
-version: the one rcman's own recorded tests were made with, named in
-`helpers/claude-version`. It downloads that version from Claude Code's
-releases and checks it against the checksum the release publishes; an upgrade
-of rcman that changes the tested version puts the new one in the store, and new
-servers start it.
+For administrators. Every workspace runs Claude Code from one store,
+`/var/lib/rcman/claude`, which every workspace has, read-only. Which version
+of it new servers start is the approved version, and an administrator
+chooses it on the versions page.
 
-Claude Code's own self-update is turned off in every workspace, so a workspace
-runs only the store's version. A server that is running keeps the version it
-started with until it is stopped and started again.
+## The store and the approved version
 
-Rolling out another version from rcman is not available yet: the **Claude
-Code** page is not offered, and rcman answers its requests that it cannot do
-this with workspaces yet.
+The store holds the versions rcman has installed, and `current` names the
+approved one. rcman owns the store and writes it; the installer makes it and
+fills it with the tested version, the one rcman's recorded tests were made
+with, named in `helpers/claude-version`. The installer sets `current` only
+when the store has none; on any later run, and when rcman is upgraded, the
+approved version stays as it is. Changing the tested version in a new release
+of rcman puts that version in the store, and an administrator decides whether
+to approve it.
+
+Approvals are kept in rcman's database. The latest is the approved version,
+the one before it that names another version is the previous version, and
+going back to an earlier version is a new approval, not an undo. When rcman
+starts for the first time with a store the installer filled, it takes the
+version `current` names as the first approval.
+
+Claude Code's own self-update is turned off wherever Claude runs
+(`DISABLE_AUTOUPDATER`), so a workspace runs only a version of the store.
+
+## Servers keep the version they started with
+
+A server starts on the approved version and keeps it until it is stopped and
+started again: a person's own stop and start, a resume, or the restore after
+the machine restarts. Approving another version restarts nothing and cuts no
+running session: the server's process and the sessions it starts keep the version
+the server started with. The one exception is a command `claude` typed by hand in a
+session's terminal, which follows the store's `current` and so runs the approved
+version. A person whose server runs a version other than the approved
+one sees a quiet note in the server section of their workspace, which says to
+stop the server and start it again to use the approved one.
+
+A version leaves the store only when it is neither the approved nor the
+previous version, nor the one `current` names, and no running server uses it; rcman removes such versions
+after a roll-out and when servers stop. A server whose state rcman cannot read
+counts as running.
+
+## The versions page
+
+Under **Admin**, the **Claude Code versions** page shows:
+
+- the **Approved version**, the **Previous version** and the **Tested
+  version**, with a warning when the approved one is not the tested one,
+  because screens that need a signed-in account were not checked against it;
+- the **Installed versions**, with how many running servers use each, and
+  **Use** beside each one that is not approved, which approves it again: the
+  way to go back to the previous version, or to the tested one;
+- **Servers on another version**: the running servers whose version is not the
+  approved one, with their owners, who are asked nothing and told nothing but
+  the note above;
+- the **Newest release**, which rcman asks the release site for and offers as
+  a suggestion with **Roll out**; nothing is installed or approved until an
+  administrator chooses it;
+- a page that follows a roll-out another administrator has under way, and reads
+  the versions again after an answer that one is under way;
+- a form to roll out any version by its number, with **Check and roll out**.
+
+## Rolling out a version
+
+A roll-out takes as long as it takes, often minutes, and the page waits for
+it; only one runs at a time. rcman:
+
+1. downloads the version from the release site into a staging folder outside
+   the store, as `RCMAN_CLAUDE_DOWNLOAD` names it (see
+   [Settings](configuration.md)), checks it against the checksum the release
+   publishes and refuses one bigger than it takes; a version already in the
+   store is copied from it instead;
+2. runs the version through the canary checks in a throwaway container with no
+   network, which has nothing but that version and rcman's own helpers: the
+   checks are the commands rcman uses to read a server and to sign a person in
+   and out, and each must answer as rcman expects (`helpers/claude_checks.py`);
+3. only if every check passes, copies it into the store, approves it and makes
+   it `current`.
+
+A version that was approved before and is still in the store passed the checks
+then, so going back to it, or approving it again, needs no download and no
+canary and works even while rcman cannot reach its containers; a version never
+approved always goes through the canary. A version number that is not one is
+refused at once.
+
+When a release site does not answer or a download stops part way, the request
+fails with a gateway error that tells you to try again; the other refusals are
+about the version itself. rcman switches `current` first and records the
+approval only afterwards, and puts `current` back if the recording fails, so the
+approved version is always the one `current` names. After a crash, rcman's start
+points `current` at the approved version. A file in the store with nothing in it
+is not counted as installed.
+
+A version that cannot be downloaded, does not match its checksum, is not
+there, or fails a check leaves the store, the approvals and every server
+exactly as they were. The page says why in plain words, and for failed checks
+shows what each ran and what it got back. If the checks themselves cannot be
+run, for example because the container could not start, nothing is changed
+either, and trying again is the remedy.
+
+The checksum comes from the same place as the program, the release site. It
+protects against a download that is damaged, not against a release site that
+has been compromised: rcman checks no signature. Point
+`RCMAN_CLAUDE_DOWNLOAD` only at a source you trust.
+
+## Audit and journal
+
+A roll-out is the audit action `claude.upgrade`, with the version as its
+target and `ok` or the error code as its result (see [Audit trail](audit.md)).
+What rcman logs about versions is in [The journal](journal.md).

@@ -172,6 +172,13 @@ rcman. It is then shown as **Stopped by itself**, with its exit status, and
 **Show screen** displays what Claude showed last. **Resume** starts it again
 in the same workspace.
 
+A server runs the Claude Code version that was approved when it started, and
+keeps it while it runs. Starting it again after you stopped it, resuming it, or
+the restore after a restart of the machine takes the version approved then. When
+the approved version differs from the one your server runs, its section says so
+quietly; nothing restarts by itself and no session is cut (see
+[Claude Code versions](claude-version.md)).
+
 A server that has stopped can be **forgotten**, which removes it from its
 workspace. Archiving or deleting individual sessions is done in
 claude.ai/code.

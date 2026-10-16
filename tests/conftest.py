@@ -118,13 +118,7 @@ def github_stand_in(tmp_path_factory):
         yield base
 
 
-def fake_claude(path: Path, env: str = "FAKE_CLAUDE_READY_SECONDS=0.3") -> Path:
-    """A `claude` at ``path`` that runs the fake (devtools/fake_claude.py) with ``env``."""
-    from devtools import record_claude as rec
-
-    path.write_text(f'#!/bin/sh\n{env} exec {rec.FAKE_CLAUDE} "$@"\n', encoding="utf-8")
-    path.chmod(0o755)
-    return path
+from tests.fake_store import FAKE_VERSION, fake_claude  # noqa: E402,F401 - the tests' own
 
 
 @contextlib.contextmanager
@@ -138,7 +132,8 @@ def host_runtime(tmp_path: Path, kind=None):
 
     root = tmp_path / "workspaces"
     root.mkdir()
-    claude = fake_claude(tmp_path / "claude")
+    claude = tmp_path / "claude"  # the store, where the settings fixture's claude_store is
+    fake_claude(claude)
     with tmux_sockets("rcb-") as sockets:
         runtime = (kind or HostRuntime)(root, sockets, claude, TMUX_CONF)
         try:
@@ -154,8 +149,18 @@ def runtime(tmp_path):
         yield made
 
 
+@pytest.fixture(scope="session")
+def no_releases(tmp_path_factory):
+    """The address of a release site with no release and no latest, so that nothing a test
+    drives reaches the real one."""
+    from tests import claude_download
+
+    with claude_download.served(tmp_path_factory.mktemp("no-releases")) as url:
+        yield url
+
+
 @pytest.fixture
-def settings(tmp_path):
+def settings(tmp_path, no_releases):
     from rcman import db, people
     from rcman.settings import Settings
 
@@ -164,6 +169,8 @@ def settings(tmp_path):
         database=tmp_path / "rcman.db",
         allowed_emails=tmp_path / "allowed-emails",
         docs_dir=REPO / "docs",
+        claude_store=tmp_path / "claude",  # the host runtime's (host_runtime)
+        claude_download=no_releases,
     )
     db.migrate(made.database)
     con = db.connect(made.database)
@@ -262,6 +269,7 @@ CALLS = {
     ("GET", "/api/audit"): {},
     ("GET", "/api/people"): {},
     ("GET", "/api/claude/versions"): {},
+    ("GET", "/api/claude/latest"): {},
     ("GET", "/api/servers/everyone"): {},
     ("GET", "/api/attention"): {},
     ("POST", "/api/client-errors"): {

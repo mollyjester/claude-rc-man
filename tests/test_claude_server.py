@@ -3,6 +3,7 @@
 `claude`, through a real channel, as rcman runs them in a container."""
 
 import contextlib
+import dataclasses
 import os
 import signal
 import subprocess
@@ -19,6 +20,7 @@ from devtools import record_claude as rec
 from devtools import tmuxctl
 from devtools.held_folders import tmux_sockets
 from helpers import screens
+from tests.conftest import fake_claude
 
 REPO = Path(__file__).resolve().parent.parent
 TMUX_CONF = REPO / "backend" / "rcman" / "tmux.conf"
@@ -33,20 +35,21 @@ class World:
     layout: rt.Layout
     channel: object
     server: cs.Server
-    claude: Path
+    claude: Path  # the store
+    binary: Path  # the version in it that the server runs
     tmp_path: Path
     calls: list
 
 
-def write_claude(path: Path, before: str = "", env: str = "FAKE_CLAUDE_READY_SECONDS=0.3") -> None:
-    path.write_text(f'#!/bin/sh\n{before}{env} exec {rec.FAKE_CLAUDE} "$@"\n', encoding="utf-8")
-    path.chmod(0o755)
+def write_claude(root: Path, before: str = "", env: str = "FAKE_CLAUDE_READY_SECONDS=0.3") -> Path:
+    """The store ``root`` with its one version running the fake, after ``before``."""
+    return fake_claude(root, env=env, before=before)
 
 
 @pytest.fixture
 def world(tmp_path):
     claude = tmp_path / "claude"
-    write_claude(claude)
+    binary = write_claude(claude)
     root = tmp_path / "workspaces"
     root.mkdir()
     with tmux_sockets("rcs-") as sockets:
@@ -62,7 +65,7 @@ def world(tmp_path):
         layout = runtime.layout(NAME)
         try:
             yield World(
-                runtime, layout, channel, cs.Server(layout, run, 1), claude, tmp_path, calls
+                runtime, layout, channel, cs.Server(layout, run, 1), claude, binary, tmp_path, calls
             )
         finally:
             channel.close()
@@ -376,7 +379,7 @@ def test_a_server_at_the_spawn_mode_question_is_ended_by_stop(world, monkeypatch
     repo = make_repo(world.tmp_path / "repo")
     for name in os.listdir(repo):
         os.rename(repo / name, Path(world.layout.work) / name)
-    world.claude.write_text(
+    world.binary.write_text(
         "#!/bin/sh\nfor a; do shift\n"
         '  if [ -n "$skip" ]; then skip=; continue; fi\n'
         '  if [ "$a" = --spawn ]; then skip=1; continue; fi\n'
@@ -576,14 +579,14 @@ def test_signed_in_is_what_claude_says(world):
 
 
 def test_an_answer_of_claude_that_is_not_json_is_unrecognised_output(world):
-    world.claude.write_text("#!/bin/sh\necho not json\n", encoding="utf-8")
+    world.binary.write_text("#!/bin/sh\necho not json\n", encoding="utf-8")
     error = refused(world.server.signed_in)
     assert error.code == "claude_unrecognised_output"
     assert error.detail["screen"] == ["not json"]
 
 
 def test_no_claude_in_the_workspace_is_claude_not_installed(world):
-    world.claude.unlink()
+    world.binary.unlink()
     assert refused(world.server.start, "pfx").code == "claude_not_installed"
 
 
@@ -686,3 +689,108 @@ def test_a_server_that_ends_between_the_two_reads_is_never_an_exit_with_a_screen
     info = world.server._server()
     shown = "\n".join(info.get("screen", []))
     assert info["exit_code"] is None or "Unable to determine" in shown, info
+
+
+# --- a server runs the exact file of the version it is pinned to --------------------------------
+
+
+def test_a_layout_pinned_to_a_version_names_that_versions_file_and_nothing_else_changes(world):
+    pinned = world.layout.pinned("1.2.3")
+    assert pinned.claude == str(world.claude / "versions" / "1.2.3")
+    assert world.layout.claude == str(world.claude / "bin" / "claude")  # the layout is not changed
+    assert dataclasses.replace(pinned, claude=world.layout.claude) == world.layout
+
+
+def test_the_command_of_a_server_pinned_to_a_version_runs_that_file(world):
+    argv = cs.server_command(world.layout.pinned("1.2.3"), "pfx")
+    assert str(world.claude / "versions" / "1.2.3") in argv
+    assert world.layout.claude not in argv
+
+
+def test_a_server_pinned_to_a_version_asks_and_starts_that_exact_file(world):
+    ran = world.tmp_path / "ran"
+    other = fake_claude(world.claude, version="1.1.0", before=f'echo "other $0" >> {ran}\n')
+    first = fake_claude(world.claude, before=f'echo "first $0" >> {ran}\n')  # current again
+    log_in(world)
+    assert world.server.signed_in() is True  # positive control: unpinned, it is the current one
+    assert ran.read_text().splitlines() == [f"first {world.layout.claude}"]
+    ran.unlink()
+    pinned = cs.Server(world.layout.pinned("1.1.0"), world.server.run, 1)
+    assert pinned.signed_in() is True  # auth status
+    pinned.start("pfx")
+    lines = ran.read_text().splitlines()
+    assert len(lines) >= 2  # auth status, and the server
+    assert set(lines) == {f"other {other}"}
+    assert str(first) not in ran.read_text()
+
+
+def test_the_pinned_version_must_look_like_a_version(world):
+    for bad in ("../x", "1.2", "latest", "1.2.3/../../x", ""):
+        with pytest.raises(ValueError):
+            world.layout.pinned(bad)
+
+
+# --- every use of the path of Claude goes through the command builder or the pinned layout ------
+
+
+def claude_path_uses(sources: dict[str, str]) -> list[tuple[str, str]]:
+    """Where a file's code reads an attribute called ``claude`` - the path of Claude in a
+    layout, or the store a host runtime holds - as (file, the function, class first, it is
+    in; "" at module level)."""
+    import ast
+
+    found = []
+
+    def walk(name, node, scope):
+        for child in ast.iter_child_nodes(node):
+            inner = scope
+            if isinstance(child, ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef):
+                inner = [*scope, child.name]
+            if isinstance(child, ast.Attribute) and child.attr == "claude":
+                found.append((name, ".".join(scope)))
+            walk(name, child, inner)
+
+    for name, source in sources.items():
+        walk(name, ast.parse(source), [])
+    return found
+
+
+# Where the path is read, and why: the one builder of a command
+# and the host runtime that holds the store the path starts from.
+ALLOWED_CLAUDE_PATH_USES = {
+    ("claude_server.py", "claude_command"): "the one builder of a command that runs Claude",
+    ("runtime.py", "HostRuntime.__init__"): "the store the host runtime holds",
+    ("runtime.py", "HostRuntime.layout"): "the store the host runtime's layouts start from",
+}
+
+
+def backend_sources() -> dict[str, str]:
+    return {p.name: p.read_text() for p in sorted((REPO / "backend" / "rcman").rglob("*.py"))}
+
+
+def test_the_path_of_claude_is_read_only_where_a_command_is_built_or_a_version_pinned():
+    sources = backend_sources()
+    uses = claude_path_uses(sources)
+    assert uses  # non-vacuity: the scan finds the uses there are
+    stray = sorted(set(uses) - set(ALLOWED_CLAUDE_PATH_USES))
+    assert stray == []
+    # an allowance whose use is gone is stale
+    assert set(ALLOWED_CLAUDE_PATH_USES) <= set(uses)
+
+
+def test_the_guard_of_the_path_of_claude_finds_a_planted_use():
+    planted = {
+        "claude_server.py": "def claude_command(layout):\n    return [layout.claude]\n",
+        "planted.py": "def start(layout):\n    return [layout.claude, 'remote-control']\n",
+        "also_planted.py": "class A:\n    def b(self):\n        return self.layout.claude\n",
+    }
+    uses = claude_path_uses(planted)
+    assert uses == [
+        ("claude_server.py", "claude_command"),
+        ("planted.py", "start"),
+        ("also_planted.py", "A.b"),
+    ]
+    assert sorted(set(uses) - set(ALLOWED_CLAUDE_PATH_USES)) == [
+        ("also_planted.py", "A.b"),
+        ("planted.py", "start"),
+    ]

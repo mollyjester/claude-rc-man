@@ -43,10 +43,7 @@ changes nothing: a page's report of a failure rcman could not see, written to th
 | `claude.login` | starts connecting their Claude account | the Claude account's email address |
 | `claude.connect` | finishes connecting with Claude's code | none — the code is never recorded |
 | `claude.disconnect` | signs their Claude account out, at once or once their last running server stops | none |
-| `claude.upgrade` | rolls out a Claude Code version (administrators) | the version |
-
-Rolling out a Claude Code version is not available yet: rcman answers that
-request with `not_available_yet`, and records it with that result.
+| `claude.upgrade` | rolls out a Claude Code version, or approves an installed one again (administrators; see [Claude Code versions](claude-version.md)) | the version |
 
 The result is one of these, or the code of the error the request failed with —
 a refused request is recorded too:

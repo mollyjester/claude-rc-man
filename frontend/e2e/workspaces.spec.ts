@@ -97,6 +97,9 @@ test("a server's life: start, trust, stop, resume, stop and forget", async ({ pa
     .or(card.getByText(m.states.connected, { exact: true }));
   await expect(live).toBeVisible();
   await expect(card.getByText(/^alice-alpha-/)).toBeVisible();
+  // it runs the version the store approves, so there is nothing to restart for
+  await expect(card.getByText(/^Claude Code \d+(\.\d+)+$/)).toBeVisible();
+  await expect(alpha.getByText(/is approved now/)).toHaveCount(0);
   await expect(card.getByRole("link", { name: m.openSession })).toHaveAttribute(
     "href",
     /environment=/,
@@ -216,6 +219,7 @@ test("administrators see everyone's workspaces, and act on none of them", async 
   const row = alice.getByRole("row", { name: /alice-seen/ });
   await expect(row.getByText(m.states.ready).or(row.getByText(m.states.connected))).toBeVisible();
   await expect(row.getByText(/^alice-seen-/)).toBeVisible();
+  await expect(row.getByRole("cell", { name: /^\d+(\.\d+)+$/ })).toBeVisible(); // its Claude Code version
   await expect(page.getByRole("region", { name: BOB })).toBeVisible();
   await expect(page.getByRole("main").getByRole("button")).toHaveCount(0);
 

@@ -12,7 +12,8 @@ from fastapi import Request
 from rcman import db, people
 
 # What is passed on about each server: never its screen, which may show anything
-# the person's Claude showed, nor its claude.ai address, which is theirs alone.
+# the person's Claude showed, nor its claude.ai address, which is theirs alone. Beside the
+# server, its workspace's ``claude_version`` is the version of Claude Code it started with.
 SERVER_FIELDS = ("state", "session_name", "exit_code")
 
 
@@ -42,6 +43,7 @@ def everyone(request: Request) -> list[dict]:
                         "server": w["server"]
                         and {key: w["server"].get(key) for key in SERVER_FIELDS},
                         "server_error": w["server_error"],
+                        "claude_version": w["claude_version"],
                     }
                     for w in theirs
                 ],

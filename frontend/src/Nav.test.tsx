@@ -13,7 +13,16 @@ function api(me: Reply) {
   return fakeApi({
     "POST /api/me/sign-out": { sign_out_url: "/oauth2/sign_out" },
     "GET /api/me": me,
-    "GET /api/workspaces": { workspaces: [] },
+    "GET /api/workspaces": { workspaces: [], claude_approved: "1.0.0" },
+    "GET /api/claude/versions": {
+      approved: "1.0.0",
+      previous: null,
+      tested: "1.0.0",
+      installed: [],
+      drift: [],
+      upgrading: false,
+    },
+    "GET /api/claude/latest": { latest: null },
     "GET /api/attention": NOTHING_TO_ATTEND,
   });
 }
@@ -130,20 +139,34 @@ test("Escape closes the menu and returns to its button", async () => {
   expect(admin).toHaveFocus();
 });
 
-test("the administration pages are People, everyone's workspaces and the audit trail, in that order", () => {
-  expect(ADMIN_PAGES.map((p) => p.label)).toEqual([m.navUsers, m.navEveryone, m.navAudit]);
+test("the administration pages are People, everyone's workspaces, the Claude Code versions and the audit trail, in that order", () => {
+  expect(ADMIN_PAGES.map((p) => p.label)).toEqual([
+    m.navUsers,
+    m.navEveryone,
+    m.navVersions,
+    m.navAudit,
+  ]);
   expect(ADMIN.everyone.path).toBe("/admin/workspaces");
+  expect(ADMIN.versions.path).toBe("/admin/claude");
   expect(ADMIN_PAGES).toEqual(Object.values(ADMIN));
 });
 
-test("the Claude Code versions page, which the server refuses, is not offered", async () => {
+test("the Claude Code versions page is offered to administrators, and opens", async () => {
   api(ADMIN_USER);
-  const { location } = renderApp("/admin/claude");
-  await screen.findByRole("region", { name: m.workspacesTitle }); // sent on to the Workspaces page
-  expect(location().pathname).toBe("/");
+  const { location } = renderApp();
   await userEvent.click(await adminButton());
-  expect(screen.getAllByRole("link", { name: m.navUsers })).toHaveLength(1); // positive control
-  expect(screen.queryByRole("link", { name: m.versionsTitle })).not.toBeInTheDocument();
+  await userEvent.click(screen.getByRole("link", { name: m.navVersions }));
+  expect(location().pathname).toBe("/admin/claude");
+  expect(await screen.findByRole("heading", { name: m.versionsTitle })).toBeInTheDocument();
+});
+
+test("people who are not administrators are sent on from the Claude Code versions page", async () => {
+  const fake = api(ME);
+  const { location } = renderApp("/admin/claude");
+  await screen.findByRole("region", { name: m.workspacesTitle }); // the Workspaces page
+  expect(location().pathname).toBe("/");
+  expect(fake.made("GET", "/api/claude/versions")).toHaveLength(0);
+  expect(screen.queryByRole("heading", { name: m.versionsTitle })).not.toBeInTheDocument();
 });
 
 test("the navigation leads to the Workspaces page", async () => {

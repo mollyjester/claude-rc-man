@@ -4,6 +4,7 @@ import { Audit } from "./Audit";
 import { Everyone } from "./Everyone";
 import { m } from "./messages";
 import { People } from "./People";
+import { Versions } from "./Versions";
 
 export type AdminPage = { path: string; label: string; element: () => ReactElement };
 
@@ -13,6 +14,7 @@ export type AdminPage = { path: string; label: string; element: () => ReactEleme
 export const ADMIN = {
   people: { path: "/admin/people", label: m.navUsers, element: () => <People /> },
   everyone: { path: "/admin/workspaces", label: m.navEveryone, element: () => <Everyone /> },
+  versions: { path: "/admin/claude", label: m.navVersions, element: () => <Versions /> },
   audit: { path: "/admin/audit", label: m.navAudit, element: () => <Audit /> },
 } satisfies Record<string, AdminPage>;
 
