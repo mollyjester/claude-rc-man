@@ -339,7 +339,7 @@ def test_fake_exec_does_not_hand_on_the_version_the_program_was_baked_with(tmp_p
     """A release's launcher exports ``FAKE_CLAUDE_VERSION`` for the fake alone: the real
     Claude's children never see a variable of that kind, so a command run through the
     verb must not either (a workspace test compares a child's environment with
-    ``claude_server.child_env`` exactly)."""
+    ``runtime.child_env`` exactly)."""
     given = {"HOME": str(tmp_path), "PATH": os.environ["PATH"], "LANG": "C.UTF-8"}
     proc = fake_exec(tmp_path, "env", FAKE_CLAUDE_VERSION="9.9.9", **given)
     assert proc.returncode == 0, proc.stderr

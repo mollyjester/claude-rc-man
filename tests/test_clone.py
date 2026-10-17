@@ -164,13 +164,16 @@ def test_a_clone_is_a_phase_of_creating_and_ends_ready_with_the_repository(
     assert r.status_code == 202, r.text
     made = r.json()["workspace"]
     assert (made["name"], made["state"], made["source"]) == ("widget", "creating", URL)
+    assert made["source_page"] == URL
     assert runtime.cloning.wait(MADE_WITHIN)
     during = entry(client, made["id"])
     assert (during["state"], during["source"], during["error"]) == ("creating", URL, None)
+    assert during["source_page"] == URL
     assert during["log"].splitlines() == ["Making the workspace", "Checking git", f"Cloning {URL}"]
     runtime.gate.set()
     done = finished(client, made["id"])
     assert (done["state"], done["error"], done["source"]) == ("ready", None, URL)
+    assert done["source_page"] == URL
     assert done["log"] is None  # the steps are only shown while the workspace is not ready
     assert row(settings, made["id"])["log"] is None
     folder = Path(runtime.layout(rt.container_name(made["id"])).work)
@@ -182,13 +185,26 @@ def test_a_clone_is_a_phase_of_creating_and_ends_ready_with_the_repository(
     assert out.json()["branch"]["name"] == "main"
 
 
+def test_a_clone_keeps_the_address_as_given_and_answers_the_repository_s_page(
+    client, runtime, widget
+):
+    given = f"{URL}.git/"
+    r = clone(client, given)
+    assert r.status_code == 202, r.text
+    made = r.json()["workspace"]
+    assert (made["source"], made["source_page"]) == (given, URL)
+    done = finished(client, made["id"])
+    assert (done["state"], done["source"], done["source_page"]) == ("ready", given, URL)
+
+
 def test_a_workspace_made_without_an_address_has_no_source_and_no_log_once_ready(client, settings):
     r = client.post("/api/workspaces", json={"name": "blank"}, headers=changing(ALICE))
     made = r.json()["workspace"]
-    assert made["source"] is None
+    assert (made["source"], made["source_page"]) == (None, None)
     blank = finished(client, made["id"])
-    assert (blank["state"], blank["source"], blank["log"]) == (
+    assert (blank["state"], blank["source"], blank["source_page"], blank["log"]) == (
         "ready",
+        None,
         None,
         None,
     )
@@ -452,6 +468,35 @@ def test_a_name_is_made_from_the_repository(repository, name):
     assert rules.WORKSPACE_NAME.regex.fullmatch(found)
 
 
+@pytest.mark.parametrize(
+    ("repository", "page"),
+    [
+        ("widget", URL),
+        ("widget.git", URL),
+        ("widget/", URL),
+        ("widget.git/", URL),
+        ("my_repo.v2", "https://github.com/octo/my_repo.v2"),
+        ("My-Repo", "https://github.com/octo/My-Repo"),
+    ],
+)
+def test_a_repository_s_page_is_its_address_without_git_or_a_slash(repository, page):
+    assert ws.source_page(f"https://github.com/octo/{repository}") == page
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        None,
+        "git@github.com:octo/widget.git",
+        "https://gitlab.com/octo/widget",
+        "http://github.com/octo/widget",
+    ],
+)
+def test_an_address_that_is_not_a_github_repository_s_has_no_page(source):
+    assert ws.source_page(URL) == URL  # the positive the absence below is read against
+    assert ws.source_page(source) is None
+
+
 def test_cloning_the_same_repository_again_numbers_the_names(client, runtime):
     runtime.answer = said(ODD)
     names = [cloned(client)["name"] for _ in range(3)]
@@ -506,6 +551,8 @@ def test_the_route_answers_202_with_the_workspace_and_audits_the_address(
     [
         ({"url": "https://user:pass@github.com/a/b"}, "url", rules.GITHUB_URL.sentence),
         ({"url": "http://github.com/a/b"}, "url", rules.GITHUB_URL.sentence),
+        ({"url": "git@github.com:octo/widget.git"}, "url", rules.GITHUB_URL.sentence),
+        ({"url": "https://gitlab.com/octo/widget"}, "url", rules.GITHUB_URL.sentence),
         ({"url": URL, "name": "not a name!"}, "name", rules.WORKSPACE_NAME.sentence),
         ({"url": URL, "name": ""}, "name", rules.WORKSPACE_NAME.sentence),
     ],

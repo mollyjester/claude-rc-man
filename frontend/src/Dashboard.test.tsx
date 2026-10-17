@@ -5,6 +5,7 @@ import { vi } from "vitest";
 import { m } from "./messages";
 import { ACTIONS, KIND, LABELS, PRIMARY } from "./Servers";
 import { fakeApi, ME, problem, type Routes, UNREACHABLE_REPLY } from "./test/fakeApi";
+import { sockets } from "./test/fakeSocket";
 import { expectRefused } from "./test/fields";
 import { renderApp } from "./test/render";
 
@@ -14,6 +15,7 @@ type Workspace = {
   state: string;
   error: string | null;
   source: string | null;
+  source_page: string | null;
   log: string | null;
   server: Record<string, unknown> | null;
   server_error: { code: string; title: string } | null;
@@ -27,6 +29,7 @@ function workspace(id: number, name: string, extra: Partial<Workspace> = {}): Wo
     state: "ready",
     error: null,
     source: null,
+    source_page: null,
     log: null,
     server: null,
     server_error: null,
@@ -260,6 +263,7 @@ test("an address makes the workspace by cloning it, named after the repository w
       const made = workspace(8, "widget", {
         state: "creating",
         source: url,
+        source_page: url,
         log: "Making the workspace",
       });
       workspaces.push(made);
@@ -288,6 +292,7 @@ test("an address and a name make the cloned workspace with that name", async () 
       const made = workspace(8, (c.body as { name: string }).name, {
         state: "creating",
         source: ADDRESS,
+        source_page: ADDRESS,
       });
       workspaces.push(made);
       return { workspace: made };
@@ -642,6 +647,58 @@ test("a workspace being deleted says so, and offers nothing", async () => {
   const opened = await panel("alpha");
   expect(within(opened).getByText(m.workspaceDeleting)).toBeInTheDocument();
   expect(within(opened).queryAllByRole("button")).toEqual([]);
+});
+
+// --- the repository's page ---------------------------------------------------------
+
+// The page's link in alpha's panel, found by its full address.
+async function sourceLink(page: string) {
+  return within(await panel("alpha")).findByRole("link", { name: page });
+}
+
+test("a cloned workspace's panel links to its repository's page, right under its name, in a new tab", async () => {
+  dashboard([workspace(1, "alpha", { source: `${ADDRESS}.git/`, source_page: ADDRESS })]);
+  renderApp("/?workspace=1");
+  const link = await sourceLink(ADDRESS);
+  expect(link).toHaveAttribute("href", ADDRESS);
+  expect(link).toHaveAttribute("target", "_blank");
+  expect(link).toHaveAttribute("rel", "noopener noreferrer");
+  const name = within(await panel("alpha")).getByRole("heading", { name: "alpha", level: 2 });
+  expect(name.nextElementSibling).toContainElement(link);
+  expect(name.nextElementSibling).toHaveClass("source-page"); // which wraps a long address
+  expect(name.nextElementSibling).toHaveTextContent(new RegExp(`^${ADDRESS}$`)); // no label
+  // the page the server gave, not the address as it was typed
+  const opened = within(await panel("alpha"));
+  expect(opened.queryByRole("link", { name: `${ADDRESS}.git/` })).not.toBeInTheDocument();
+  expect(opened.queryByText(`${ADDRESS}.git/`)).not.toBeInTheDocument();
+});
+
+test.each([
+  ["creating", { log: STEPS }],
+  ["failed", { log: STEPS, error: CLONE_ERROR }],
+  ["ready", {}],
+  ["deleting", { log: STEPS }],
+])("a cloned workspace that is %s links to its repository's page", async (state, extra) => {
+  dashboard([workspace(1, "alpha", { state, source: ADDRESS, source_page: ADDRESS, ...extra })]);
+  renderApp("/?workspace=1");
+  expect(await sourceLink(ADDRESS)).toHaveAttribute("href", ADDRESS);
+});
+
+test.each([
+  ["an empty workspace", null],
+  ["a workspace whose address has no page", "git@github.com:octo/widget.git"],
+])("%s links nothing", async (_, source) => {
+  // the same panel with a page has the link, so its absence below can be seen
+  dashboard([workspace(1, "alpha", { source: ADDRESS, source_page: ADDRESS })]);
+  renderApp("/?workspace=1");
+  await sourceLink(ADDRESS);
+  expect(within(await panel("alpha")).getAllByRole("link")).toHaveLength(1);
+  cleanup();
+  dashboard([workspace(1, "alpha", { source, source_page: null })]);
+  renderApp("/?workspace=1");
+  const opened = await panel("alpha");
+  await within(opened).findByRole("button", { name: m.start });
+  expect(within(opened).queryAllByRole("link")).toEqual([]);
 });
 
 test("a ready workspace with no server offers Start, which starts one there", async () => {
@@ -1373,4 +1430,158 @@ test("the new workspace's fields show an example of what goes in them", async ()
     "placeholder",
     m.examples.address,
   );
+});
+
+// --- the panel's tabs ----------------------------------------------------------------
+
+const tabs = async (name = "alpha") => within(await panel(name)).findByRole("tablist");
+const tab = async (label: string) => within(await tabs()).getByRole("tab", { name: label });
+const tabOf = (search: string) => new URLSearchParams(search).get("tab");
+
+test("a ready workspace's panel has the tabs Overview and Terminal, Overview chosen first", async () => {
+  dashboard(withServer("ready"));
+  const { location } = renderApp("/?workspace=1");
+  const list = await tabs();
+  expect(list).toHaveAccessibleName(m.workspaceTabs);
+  const names = within(list)
+    .getAllByRole("tab")
+    .map((t) => t.textContent);
+  expect(names).toEqual([m.tabOverview, m.tabTerminal]);
+  const overview = await tab(m.tabOverview);
+  const terminal = await tab(m.tabTerminal);
+  expect(overview).toHaveAttribute("aria-selected", "true");
+  expect(terminal).toHaveAttribute("aria-selected", "false");
+  expect(overview).toHaveAttribute("tabindex", "0");
+  expect(terminal).toHaveAttribute("tabindex", "-1");
+  const shown = screen.getByRole("tabpanel", { name: m.tabOverview });
+  expect(overview).toHaveAttribute("aria-controls", shown.id);
+  expect(within(shown).getByRole("region", { name: m.serverTitle })).toBeInTheDocument();
+  expect(tabOf(location().search)).toBeNull();
+  expect(sockets()).toEqual([]); // the terminal is not opened until its tab is shown
+});
+
+test("choosing Terminal shows it, keeps the choice in the address, and opens one terminal", async () => {
+  dashboard(withServer("ready"));
+  const { location } = renderApp("/?workspace=1");
+  await userEvent.click(await tab(m.tabTerminal));
+  expect(await tab(m.tabTerminal)).toHaveAttribute("aria-selected", "true");
+  expect(await tab(m.tabOverview)).toHaveAttribute("aria-selected", "false");
+  expect(tabOf(location().search)).toBe("terminal");
+  expect(selectedOf(location().search)).toBe("1");
+  const shown = screen.getByRole("tabpanel", { name: m.tabTerminal });
+  expect(within(shown).getByRole("status")).toHaveTextContent(m.terminalConnecting);
+  expect(within(await panel("alpha")).queryByRole("region", { name: m.serverTitle })).toBeNull();
+  await waitFor(() => expect(sockets()).toHaveLength(1));
+  // back to Overview and to Terminal again: the same terminal, kept while it was hidden
+  await userEvent.click(await tab(m.tabOverview));
+  expect(tabOf(location().search)).toBeNull();
+  expect(screen.getByRole("tabpanel", { name: m.tabOverview })).toBeInTheDocument();
+  expect(screen.queryByRole("tabpanel", { name: m.tabTerminal })).toBeNull();
+  await userEvent.click(await tab(m.tabTerminal));
+  expect(sockets()).toHaveLength(1);
+  expect(sockets()[0].closedByPage).toBeUndefined();
+});
+
+test("the address's tab opens the panel at it, and one it does not know opens Overview", async () => {
+  dashboard(withServer("ready"));
+  renderApp("/?workspace=1&tab=terminal");
+  expect(await tab(m.tabTerminal)).toHaveAttribute("aria-selected", "true");
+  await waitFor(() => expect(sockets()).toHaveLength(1));
+  cleanup();
+  dashboard(withServer("ready"));
+  renderApp("/?workspace=1&tab=planted");
+  expect(await tab(m.tabOverview)).toHaveAttribute("aria-selected", "true");
+  expect(sockets()).toHaveLength(1); // none more
+});
+
+test("choosing a tab replaces the address's entry, so Back leaves the workspace, not the tab", async () => {
+  dashboard(withServer("ready"));
+  const { location, navigate } = renderApp("/");
+  await userEvent.click(await entry("alpha"));
+  await userEvent.click(await tab(m.tabTerminal));
+  await userEvent.click(await tab(m.tabOverview));
+  await userEvent.click(await tab(m.tabTerminal));
+  expect(tabOf(location().search)).toBe("terminal"); // positive control: the tabs moved
+  await navigate(-1);
+  expect(selectedOf(location().search)).toBeNull();
+  expect(tabOf(location().search)).toBeNull();
+});
+
+test("each tab's panel can take focus, as the tab pattern asks", async () => {
+  dashboard(withServer("ready"));
+  renderApp("/?workspace=1");
+  await tabs();
+  for (const panelOfTab of screen
+    .getByRole("region", { name: "alpha" })
+    .querySelectorAll("[role=tabpanel]"))
+    expect(panelOfTab).toHaveAttribute("tabindex", "0");
+});
+
+test("the arrow keys, Home and End move between the tabs, choosing each", async () => {
+  dashboard(withServer("ready"));
+  const { location } = renderApp("/?workspace=1");
+  (await tab(m.tabOverview)).focus();
+  await userEvent.keyboard("{ArrowRight}");
+  expect(await tab(m.tabTerminal)).toHaveFocus();
+  expect(await tab(m.tabTerminal)).toHaveAttribute("aria-selected", "true");
+  expect(tabOf(location().search)).toBe("terminal");
+  await userEvent.keyboard("{ArrowRight}"); // round to the first
+  expect(await tab(m.tabOverview)).toHaveFocus();
+  expect(await tab(m.tabOverview)).toHaveAttribute("aria-selected", "true");
+  await userEvent.keyboard("{ArrowLeft}"); // round to the last
+  expect(await tab(m.tabTerminal)).toHaveFocus();
+  await userEvent.keyboard("{Home}");
+  expect(await tab(m.tabOverview)).toHaveFocus();
+  await userEvent.keyboard("{End}");
+  expect(await tab(m.tabTerminal)).toHaveFocus();
+  expect(await tab(m.tabTerminal)).toHaveAttribute("aria-selected", "true");
+});
+
+test.each(["creating", "failed", "deleting"])(
+  "a workspace that is %s has no tabs and no Terminal, even when the address asks for it",
+  async (state) => {
+    dashboard([workspace(1, "alpha", { state, source: ADDRESS, source_page: ADDRESS })]);
+    renderApp("/?workspace=1&tab=terminal");
+    const opened = await panel("alpha");
+    await within(opened).findByRole("link", { name: ADDRESS }); // positive control: drawn
+    expect(within(opened).queryByRole("tablist")).toBeNull();
+    expect(within(opened).queryByRole("tab", { name: m.tabTerminal })).toBeNull();
+    expect(sockets()).toEqual([]);
+  },
+);
+
+test("the repository's link stays right under the name, above the tabs, and Delete below them", async () => {
+  dashboard([workspace(1, "alpha", { source: ADDRESS, source_page: ADDRESS })]);
+  renderApp("/?workspace=1&tab=terminal");
+  const opened = await panel("alpha");
+  const name = within(opened).getByRole("heading", { name: "alpha", level: 2 });
+  const link = await within(opened).findByRole("link", { name: ADDRESS });
+  expect(name.nextElementSibling).toContainElement(link);
+  const list = await tabs();
+  const section = within(opened).getByRole("region", { name: m.deleteSectionTitle });
+  expect(link.compareDocumentPosition(list) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  for (const panelOfTab of opened.querySelectorAll("[role=tabpanel]"))
+    expect(
+      panelOfTab.compareDocumentPosition(section) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  expect(section.nextElementSibling).toBeNull();
+});
+
+test("while Terminal is shown, Delete still names the work the hidden Changes section knows of", async () => {
+  dashboard(withServer("ready"), {
+    "GET /api/git/status": {
+      ...STATUS_CLEAN,
+      not_staged: { files: [{ path: "b.txt", change: "untracked" }], more: 0 },
+      push_ahead: 1,
+    },
+    "GET /api/git/branches": BRANCHES,
+  });
+  renderApp("/?workspace=1&tab=terminal");
+  const opened = await panel("alpha");
+  expect(await tab(m.tabTerminal)).toHaveAttribute("aria-selected", "true");
+  expect(within(opened).queryByRole("region", { name: m.changesTitle })).toBeNull(); // hidden
+  await userEvent.click(within(opened).getByRole("button", { name: m.deleteWorkspace }));
+  const dialog = await screen.findByRole("dialog");
+  expect(await within(dialog).findByText(m.deleteWorkspaceUncommitted(1))).toBeInTheDocument();
+  expect(within(dialog).getByText(m.deleteWorkspaceUnpushed(1))).toBeInTheDocument();
 });

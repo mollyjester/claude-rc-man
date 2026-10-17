@@ -116,7 +116,8 @@ more workspace stopped on purpose, and a limit set on one workspace (see
 
 ## Servers surviving an rcman upgrade
 
-Needs a second release to install. With a server in the middle of a conversation:
+Needs a second release to install. With a server in the middle of a conversation,
+and a workspace's **Terminal** tab open with `sleep` running in its shell:
 
 1. Write down the container ids and start times of the workspaces, and the server
    pids, and which Claude Code version is approved.
@@ -124,6 +125,8 @@ Needs a second release to install. With a server in the middle of a conversation
 3. The container ids, the start times and the server pids are the same as
    before, the session stays attached in claude.ai/code and answers the next
    message, and the approved version is the one written down.
+4. The Terminal tab says rcman is restarting and offers **Reconnect**, and neither the
+   shell nor its `sleep` is left in the workspace (`podman top` as `rcman`).
 
 ## A repository with devcontainer.json and a feature
 

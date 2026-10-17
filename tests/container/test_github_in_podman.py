@@ -161,7 +161,7 @@ def repository(podman, name: str) -> Repository:
 
 def claude_git(podman, name: str, *args: str) -> rt.Result:
     """git run by the fake `claude` as one of Claude's children, which is what git is for
-    Claude: its environment is exactly ``child_env``."""
+    Claude: its environment is exactly ``runtime.child_env``."""
     layout = podman.layout(name)
     command = claude_server.claude_command(layout, "fake-exec", "git", "-C", layout.work, *args)
     return podman.exec(name, command)
@@ -316,7 +316,7 @@ def test_claudes_children_have_exactly_the_environment_of_a_server_and_no_token(
     seen = podman.exec(workspace, claude_server.claude_command(layout, "fake-exec", "env"))
     assert seen.code == 0, seen.err
     names = {line.split("=", 1)[0] for line in seen.out.decode().splitlines()}
-    assert names - {"PWD", "SHLVL", "_", "OLDPWD"} == set(claude_server.child_env(layout))
+    assert names - {"PWD", "SHLVL", "_", "OLDPWD"} == set(rt.child_env(layout))
     assert TOKEN.encode() not in seen.out
 
 

@@ -20,7 +20,7 @@ from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel, Field
 
 from helpers import rules
-from rcman.audit import COMMITTED_NOT_PUSHED, Record, Recorder
+from rcman.audit import COMMITTED_NOT_PUSHED, PULLED_NOT_PUSHED, Record, Recorder
 from rcman.identity import Identity, current_user
 from rcman.problems import Problem, ruled
 from rcman.repository import MAX_FILES_PER_CALL, MAX_PATH_LENGTH, Repository
@@ -180,6 +180,25 @@ def push(
     first commit.
     """
     return _act(request, record, body.workspace, lambda git: git.push())
+
+
+@router.post("/sync")
+def sync(
+    body: RepositoryBody, request: Request, record: Record = Depends(Recorder("git.sync"))
+) -> dict:
+    """Bring the current branch up to date with its upstream, then push it, as Sync does
+    elsewhere: git fetch --prune, a fast-forward where the branch is behind, and a push
+    where its push destination lacks a commit of it; a branch with no upstream is published.
+
+    Refused as a push is, before anything is fetched; where the upstream is gone; and where
+    the branch and its upstream have diverged, which is left to a merge or a rebase. When
+    something was pulled and the push fails, the answer says so with the push's problem,
+    and the audit row says pulled_not_pushed.
+    """
+    answer = _act(request, record, body.workspace, lambda git: git.sync())
+    if answer["push_problem"] is not None:
+        record.result = PULLED_NOT_PUSHED
+    return answer
 
 
 @router.post("/commit-push")

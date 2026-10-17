@@ -77,6 +77,7 @@ function api() {
           state: "ready",
           error: null,
           source: null,
+          source_page: null,
           log: null,
           server: null,
           server_error: null,

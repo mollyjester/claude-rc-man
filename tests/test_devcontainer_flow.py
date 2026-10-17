@@ -636,7 +636,7 @@ def test_the_plans_environment_user_and_path_are_what_every_program_of_rcman_get
     assert git_env["PATH"] == layout.path
     from rcman import claude_server
 
-    claude = claude_server.child_env(layout)
+    claude = rt.child_env(layout)
     assert claude["A"] == "remote" and claude["USER"] == "dev"
     assert claude["HOME"] == layout.home and claude["CLAUDE_CONFIG_DIR"] == layout.config
     tmux = claude_server.tmux_env(layout)

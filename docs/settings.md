@@ -20,8 +20,8 @@ personal access token, which it never shows again once saved. Saving one
 replaces any stored before. **Remove token** asks first, then forgets it: rcman empties the credential file
 it keeps for git, and nothing a credential helper you set up yourself in a
 workspace saved elsewhere (see [Git](git.md)). The
-token is what git uses for GitHub, to push and to clone private repositories as
-you, in all your workspaces and for Claude's git as well as rcman's.
+token is what git uses for GitHub, to push, and to clone, fetch and pull private
+repositories as you, in all your workspaces and for Claude's git as well as rcman's.
 
 Saving the commit author or the token, and removing the token, reach all your
 workspaces at once, running or not: the next git command uses them, and no

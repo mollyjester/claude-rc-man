@@ -96,13 +96,14 @@ def record_sign_in(database: Path, person: int) -> None:
 
 
 def keep_off_github(runtime, github: Path) -> None:
-    """Every git clone ``runtime`` is asked to run takes GitHub from the folder ``github``
-    - a repository at ``<owner>/<name>.git`` in it is what ``https://github.com/<owner>/<name>``
-    clones - and may not connect by ssh or git; one that was not told so is an
-    AssertionError, not run. The browser tests are driven through a real browser, which no
-    test guard of the backend covers, so a clone typed into the page never reaches the
-    real github.com. It is set on the instance, so that the runtime's own ``exec`` is
-    what runs after it."""
+    """Every git command ``runtime`` is asked to run that may reach a remote (a clone, a fetch,
+    a push: tests/git_fixtures.py's NETWORK_SUBCOMMANDS) takes GitHub from the folder
+    ``github`` - a repository at ``<owner>/<name>.git`` in it is what
+    ``https://github.com/<owner>/<name>`` clones - and may not connect by ssh or git; one that
+    was not told so is an AssertionError, not run. The browser tests are driven through a
+    real browser, which no test guard of the backend covers, so a clone typed into the page
+    never reaches the real github.com. It is set on the instance, so that the runtime's own
+    ``exec`` is what runs after it."""
     run = runtime.exec
 
     def exec_(name, argv, *args, **kwargs):

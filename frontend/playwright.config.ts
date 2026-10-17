@@ -16,7 +16,7 @@ export default defineConfig({
   expect: { timeout: 15_000 },
   use: { baseURL: ORIGIN, trace: "retain-on-failure" },
   webServer: {
-    command: `uv run uvicorn --factory tests.e2e_server:create_app --host 127.0.0.1 --port ${PORT}`,
+    command: `uv run uvicorn --factory tests.e2e_server:create_app --ws websockets-sansio --host 127.0.0.1 --port ${PORT}`,
     cwd: "..",
     url: `${ORIGIN}/api/health`,
     reuseExistingServer: false,

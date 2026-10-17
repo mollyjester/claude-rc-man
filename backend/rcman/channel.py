@@ -109,7 +109,9 @@ class Channel:
         )
         self._buffer = b""
         self._errors = bytearray()
-        self._error_reader = threading.Thread(target=self._read_errors, daemon=True)
+        self._error_reader = threading.Thread(
+            target=self._read_errors, args=(self.process, self._errors), daemon=True
+        )
         self._error_reader.start()
         name = f"{self.run_dir}/channel-{secrets.token_hex(6)}"
         self._files = (f"{name}.out", f"{name}.err")
@@ -122,15 +124,19 @@ class Channel:
         if line.strip() != nonce.encode():
             raise self._broken(f"the channel answered {line[:80]!r}")
 
-    def _read_errors(self) -> None:
-        process = self.process
-        while True:
-            chunk = process.stderr.read1(4096) if process.stderr else b""
-            if not chunk:
-                return
-            room = MAX_ERROR_BYTES - len(self._errors)
-            if room > 0:
-                self._errors += chunk[:room]
+    @staticmethod
+    def _read_errors(process: subprocess.Popen, errors: bytearray) -> None:
+        """Keep the first MAX_ERROR_BYTES of what ``process`` writes on stderr, into ``errors``,
+        until nothing holds the stream open any more; then close it. This thread alone closes
+        it: closing it under a read would fail the read, and a program the shell started may
+        hold the stream past the shell's own end."""
+        try:
+            while chunk := process.stderr.read1(4096):
+                room = MAX_ERROR_BYTES - len(errors)
+                if room > 0:
+                    errors += chunk[:room]
+        finally:
+            process.stderr.close()
 
     def _broken(self, said: str) -> ChannelBroken:
         """The channel ended, with what its command wrote on stderr, the shell made to end."""
@@ -154,9 +160,8 @@ class Channel:
                 os.killpg(process.pid, 9)
             process.kill()
             process.wait()
-        for stream in (process.stdout, process.stderr):
-            with contextlib.suppress(OSError):
-                stream.close()
+        with contextlib.suppress(OSError):
+            process.stdout.close()  # stderr is its reader's to close (_read_errors)
 
     def close(self) -> None:
         """Remove the channel's files and end its shell. A request in flight is not waited

@@ -234,6 +234,8 @@ function unknownNames(markdown: string): string[] {
 test("every control the guide names on the Workspaces page is one the page shows", () => {
   const guide = readFileSync(GUIDE, "utf-8");
   expect(boldInSection(guide).length).toBeGreaterThan(0);
+  // the positive: the section's own parts are read with it, the terminal's among them
+  expect(boldInSection(guide)).toContain(m.terminalReconnect);
   expect(unknownNames(guide)).toEqual([]);
 });
 

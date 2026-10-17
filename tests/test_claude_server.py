@@ -528,7 +528,7 @@ def test_the_server_is_started_as_the_recorder_records_one(world):
 
 
 def test_claudes_environment_is_the_allowlist(world):
-    env = cs.child_env(world.layout)
+    env = rt.child_env(world.layout)
     argv = cs.server_command(world.layout, "pfx")
     start = len(world.layout.tool("env")) + 1
     assigned = argv[start : argv.index(world.layout.claude)]

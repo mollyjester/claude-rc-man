@@ -69,7 +69,7 @@ MAX_SHOWN_CHARS = 100
 MAX_IMAGE_CHARS = 300
 MAX_DEPTH = 64
 MAX_ID_DIGITS = 12
-# The environment variables rcman sets itself in a workspace (claude_server.child_env,
+# The environment variables rcman sets itself in a workspace (runtime.child_env,
 # claude_server.tmux_env and Repository.env) that a file may not set. PATH is not among them:
 # a file may set it, with rcman's own folder kept in front of it. Nor are LANG, LC_ALL and
 # BROWSER, which files commonly set. Each of those is set by rcman in only some of its programs

@@ -21,6 +21,31 @@
   --shadow: rgba(17, 24, 39, 0.18);
   --screen-bg: #111827;
   --screen-fg: #e5e7eb;
+  /* the Terminal tab's colours, which src/terminalTheme.ts reads into xterm.js */
+  --terminal-bg: #f9fafb;
+  --terminal-fg: #1f2937;
+  --terminal-cursor: #1f2937;
+  --terminal-cursor-accent: #f9fafb;
+  --terminal-selection: rgba(29, 78, 216, 0.25);
+  --terminal-scrollbar: rgba(31, 41, 55, 0.25);
+  --terminal-scrollbar-hover: rgba(31, 41, 55, 0.4);
+  --terminal-scrollbar-active: rgba(31, 41, 55, 0.55);
+  --terminal-black: #1f2937;
+  --terminal-red: #b91c1c;
+  --terminal-green: #15803d;
+  --terminal-yellow: #a16207;
+  --terminal-blue: #1d4ed8;
+  --terminal-magenta: #a21caf;
+  --terminal-cyan: #0e7490;
+  --terminal-white: #6b7280;
+  --terminal-bright-black: #4b5563;
+  --terminal-bright-red: #dc2626;
+  --terminal-bright-green: #166534;
+  --terminal-bright-yellow: #854d0e;
+  --terminal-bright-blue: #2563eb;
+  --terminal-bright-magenta: #c026d3;
+  --terminal-bright-cyan: #155e75;
+  --terminal-bright-white: #374151;
 }
 @media (prefers-color-scheme: dark) {
   :root {
@@ -37,6 +62,30 @@
     --stopped: #9ca3af;
     --focus: #93c5fd;
     --shadow: rgba(0, 0, 0, 0.6);
+    --terminal-bg: #0b1120;
+    --terminal-fg: #e5e7eb;
+    --terminal-cursor: #e5e7eb;
+    --terminal-cursor-accent: #0b1120;
+    --terminal-selection: rgba(147, 197, 253, 0.3);
+    --terminal-scrollbar: rgba(229, 231, 235, 0.2);
+    --terminal-scrollbar-hover: rgba(229, 231, 235, 0.35);
+    --terminal-scrollbar-active: rgba(229, 231, 235, 0.5);
+    --terminal-black: #7d8696;
+    --terminal-red: #f87171;
+    --terminal-green: #4ade80;
+    --terminal-yellow: #facc15;
+    --terminal-blue: #60a5fa;
+    --terminal-magenta: #e879f9;
+    --terminal-cyan: #22d3ee;
+    --terminal-white: #e5e7eb;
+    --terminal-bright-black: #9ca3af;
+    --terminal-bright-red: #fca5a5;
+    --terminal-bright-green: #86efac;
+    --terminal-bright-yellow: #fde047;
+    --terminal-bright-blue: #93c5fd;
+    --terminal-bright-magenta: #f0abfc;
+    --terminal-bright-cyan: #67e8f9;
+    --terminal-bright-white: #f9fafb;
   }
 }
 body {
@@ -306,6 +355,10 @@ textarea[aria-invalid="true"] {
 }
 .workspace-log {
   white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+/* A repository's page under a workspace's name: a long address wraps within the panel. */
+.source-page {
   overflow-wrap: anywhere;
 }
 
@@ -936,4 +989,272 @@ button.split-toggle {
   main {
     padding: 1rem;
   }
+}
+
+/* A ready workspace's panel: its tabs, each a button underlined while it is chosen. */
+.tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  margin: 1rem 0 0;
+  border-bottom: 1px solid var(--border);
+}
+.tabs button[role="tab"] {
+  background: transparent;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  margin-bottom: -1px;
+}
+.tabs button[role="tab"][aria-selected="true"] {
+  border-bottom-color: var(--accent);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+/* The Terminal tab: how its connection stands, with Reconnect, over its screen, which
+   xterm.js fills and fits to; the screen's height follows the window's. */
+.terminal {
+  margin-top: 1rem;
+}
+.terminal-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 1rem;
+}
+.terminal-bar p {
+  margin: 0.5rem 0;
+}
+/* xterm.js takes the outline off its own element, so the screen shows where focus is. */
+.terminal-screen:focus-within {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+.terminal-screen {
+  height: max(12rem, 60vh);
+  padding: 0.25rem;
+  border: 1px solid var(--border);
+  border-radius: 0.375rem;
+  background: var(--terminal-bg);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  overflow: hidden;
+}
+
+/* What xterm.js needs of a stylesheet, from its own xterm.css (MIT licence, copyright the
+   xterm.js authors), with its colours taken from the terminal's custom properties above. */
+.xterm {
+  cursor: text;
+  position: relative;
+  user-select: none;
+  -webkit-user-select: none;
+  height: 100%;
+}
+.xterm.focus,
+.xterm:focus {
+  outline: none;
+}
+.xterm .xterm-helpers {
+  position: absolute;
+  top: 0;
+  z-index: 5;
+}
+.xterm .xterm-helper-textarea {
+  padding: 0;
+  border: 0;
+  margin: 0;
+  position: absolute;
+  opacity: 0;
+  left: -9999em;
+  top: 0;
+  width: 0;
+  height: 0;
+  z-index: -5;
+  white-space: nowrap;
+  overflow: hidden;
+  resize: none;
+}
+.xterm .composition-view {
+  background: var(--terminal-bg);
+  color: var(--terminal-fg);
+  display: none;
+  position: absolute;
+  white-space: nowrap;
+  z-index: 1;
+}
+.xterm .composition-view.active {
+  display: block;
+}
+.xterm .xterm-viewport {
+  background-color: var(--terminal-bg);
+  overflow-y: scroll;
+  cursor: default;
+  position: absolute;
+  right: 0;
+  left: 0;
+  top: 0;
+  bottom: 0;
+}
+.xterm .xterm-screen {
+  position: relative;
+}
+.xterm .xterm-screen canvas {
+  position: absolute;
+  left: 0;
+  top: 0;
+}
+.xterm-char-measure-element {
+  display: inline-block;
+  visibility: hidden;
+  position: absolute;
+  top: 0;
+  left: -9999em;
+  line-height: normal;
+}
+.xterm.enable-mouse-events {
+  cursor: default;
+}
+.xterm.xterm-cursor-pointer,
+.xterm .xterm-cursor-pointer {
+  cursor: pointer;
+}
+.xterm.column-select.focus {
+  cursor: crosshair;
+}
+.xterm .xterm-accessibility:not(.debug),
+.xterm .xterm-message {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  right: 0;
+  z-index: 10;
+  color: transparent;
+  pointer-events: none;
+}
+.xterm .xterm-accessibility-tree:not(.debug) *::selection {
+  color: transparent;
+}
+.xterm .xterm-accessibility-tree {
+  font-family: monospace;
+  user-select: text;
+  white-space: pre;
+}
+.xterm .xterm-accessibility-tree > div {
+  transform-origin: left;
+  width: fit-content;
+}
+.xterm .live-region {
+  position: absolute;
+  left: -9999px;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+}
+.xterm-dim {
+  /* biome-ignore lint/complexity/noImportantStyles: xterm.js dims a cell through the colour it generates, never its opacity, as its own xterm.css says */
+  opacity: 1 !important;
+}
+.xterm-underline-1 {
+  text-decoration: underline;
+}
+.xterm-underline-2 {
+  text-decoration: double underline;
+}
+.xterm-underline-3 {
+  text-decoration: wavy underline;
+}
+.xterm-underline-4 {
+  text-decoration: dotted underline;
+}
+.xterm-underline-5 {
+  text-decoration: dashed underline;
+}
+.xterm-overline {
+  text-decoration: overline;
+}
+.xterm-overline.xterm-underline-1 {
+  text-decoration: overline underline;
+}
+.xterm-overline.xterm-underline-2 {
+  text-decoration: overline double underline;
+}
+.xterm-overline.xterm-underline-3 {
+  text-decoration: overline wavy underline;
+}
+.xterm-overline.xterm-underline-4 {
+  text-decoration: overline dotted underline;
+}
+.xterm-overline.xterm-underline-5 {
+  text-decoration: overline dashed underline;
+}
+.xterm-strikethrough {
+  text-decoration: line-through;
+}
+.xterm-screen .xterm-decoration-container .xterm-decoration {
+  z-index: 6;
+  position: absolute;
+}
+.xterm-screen .xterm-decoration-container .xterm-decoration.xterm-decoration-top-layer {
+  z-index: 7;
+}
+.xterm-decoration-overview-ruler {
+  z-index: 8;
+  position: absolute;
+  top: 0;
+  right: 0;
+  pointer-events: none;
+}
+.xterm-decoration-top {
+  z-index: 2;
+  position: relative;
+}
+.xterm .xterm-scrollable-element > .scrollbar {
+  cursor: default;
+}
+.xterm .xterm-scrollable-element > .scrollbar > .scra {
+  cursor: pointer;
+}
+.xterm .xterm-scrollable-element > .visible {
+  opacity: 1;
+  background: transparent;
+  transition: opacity 100ms linear;
+  z-index: 11;
+}
+.xterm .xterm-scrollable-element > .invisible {
+  opacity: 0;
+  pointer-events: none;
+}
+.xterm .xterm-scrollable-element > .invisible.fade {
+  transition: opacity 800ms linear;
+}
+.xterm .xterm-scrollable-element > .shadow {
+  position: absolute;
+  display: none;
+}
+.xterm .xterm-scrollable-element > .shadow.top {
+  display: block;
+  top: 0;
+  left: 3px;
+  height: 3px;
+  width: 100%;
+  box-shadow: var(--shadow) 0 6px 6px -6px inset;
+}
+.xterm .xterm-scrollable-element > .shadow.left {
+  display: block;
+  top: 3px;
+  left: 0;
+  height: 100%;
+  width: 3px;
+  box-shadow: var(--shadow) 6px 0 6px -6px inset;
+}
+.xterm .xterm-scrollable-element > .shadow.top-left-corner {
+  display: block;
+  top: 0;
+  left: 0;
+  height: 3px;
+  width: 3px;
+}
+.xterm .xterm-scrollable-element > .shadow.top.left {
+  box-shadow: var(--shadow) 6px 0 6px -6px inset;
 }

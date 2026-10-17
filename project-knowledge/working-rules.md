@@ -185,15 +185,20 @@ else; this file is the full list. Rules are referred to by their bold name.
   shell there. The lifecycle commands of a repository's devcontainer.json are
   not such text: the person chose them by choosing the repository, and a
   string command is run by a shell in the workspace, as the container's user,
-  with a time limit.
+  with a time limit. Nor is what a person types into the **Terminal** tab: it
+  goes to an interactive shell that rcman starts in that person's own
+  workspace, with a fixed argv, as the container's own user and with no
+  restriction added or removed, one shell per workspace; rcman reads, records
+  and logs none of it, and ends the shell's session when the terminal closes.
 - **No privilege boundary in product code.** What the service ships has no command
   that raises privilege, no root helper and no switching of accounts; rcman runs as
   its own account and drives everything else through it. The installer is the one
   program that makes accounts, and `rcman-admin`, started by root, runs itself again
   as rcman, which is a named exemption. The guard and its exemptions are in
   [tests.md](tests.md#repository-guards).
-- **Every mutating endpoint is audited**, and a test over the route table
-  checks it. An exemption carries a reason that also appears in `docs/`.
+- **Every mutating endpoint is audited**, and every WebSocket route records
+  when it opens and when it closes, and a test over the route table checks
+  it. An exemption carries a reason that also appears in `docs/`.
 - **The interface offers only what the server will allow.** A control shown to
   someone the server will refuse is a defect.
 

@@ -28,14 +28,15 @@ Claude Code's own self-update is turned off wherever Claude runs
 ## Servers keep the version they started with
 
 A server starts on the approved version and keeps it until it is stopped and
-started again: a person's own stop and start, a resume, or the restore after
-the machine restarts. Approving another version restarts nothing and cuts no
-running session: the server's process and the sessions it starts keep the version
-the server started with. The one exception is a command `claude` typed by hand in a
-session's terminal, which follows the store's `current` and so runs the approved
-version. A person whose server runs a version other than the approved
-one sees a quiet note in the server section of their workspace, which says to
-stop the server and start it again to use the approved one.
+started again: a person's own stop and start, a resume, or the restore after the
+machine restarts. Approving another version restarts nothing and cuts no running
+session: the server's process and the sessions it starts keep the version the
+server started with. The one exception is a command `claude` typed by hand, in a
+session's terminal or in a workspace's **Terminal** tab, which follows the store's
+`current` and so runs the approved version. A person whose server runs a version
+other than the approved one sees a quiet note in the server section of their
+workspace, which says to stop the server and start it again to use the approved
+one.
 
 A version leaves the store only when it is neither the approved nor the
 previous version, nor the tested one, nor the one `current` names, no running server

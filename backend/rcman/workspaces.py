@@ -6,9 +6,11 @@ starts it brings the runtime back to the table (``restore``), in the background,
 while it already answers requests. A workspace is made in the background too:
 the first of a person's waits while Podman copies the image into their range.
 
-Every command in a workspace goes through its channel (channel.py), opened when
-it is first needed and closed once it has been idle for CHANNEL_IDLE_SECONDS; a
-workspace whose table row records no server is never reached at all to list it.
+Every command rcman runs in a workspace goes through its channel (channel.py), but
+for one that needs a stream of its own (Runtime.exec, and the Terminal tab's shell);
+the channel is opened when it is first needed and closed once it has been idle for
+CHANNEL_IDLE_SECONDS. A workspace whose table row records no server is never reached
+at all to list it.
 """
 
 from __future__ import annotations
@@ -27,7 +29,7 @@ from dataclasses import dataclass
 
 from helpers import git_run, rules
 from rcman import builder, db, devcontainer, limits, people
-from rcman.channel import Channel, ChannelBroken, ChannelTimeout
+from rcman.channel import Channel, ChannelBroken, ChannelTimeout, Result
 from rcman.claude_server import Server, TmuxFailed
 from rcman.claude_versions import ClaudeVersions
 from rcman.filelock import FileLock
@@ -228,6 +230,15 @@ def name_from(source: str) -> str:
     return name[: rules.MAX_WORKSPACE_NAME_LENGTH] or DEFAULT_NAME
 
 
+def source_page(source: str | None) -> str | None:
+    """The GitHub page of the repository a workspace was cloned from: ``source`` without a
+    trailing slash or ``.git``; None for an empty workspace, or an address that is not a GitHub
+    repository's as ``rules.GITHUB_URL`` takes one."""
+    if source is None or not rules.GITHUB_URL.fullmatch(source):
+        return None
+    return source.rstrip("/").removesuffix(".git")
+
+
 def _numbered(name: str, number: int) -> str:
     """``name``, or for the second and later ``name-2``, ``name-3``, cut to leave room for
     the number within the length a name may be."""
@@ -308,6 +319,12 @@ class Workspaces:
         # Called with a person's id once they are being deleted: accounts.py ends a sign-in of
         # theirs that waits for its code.
         self.on_person_deleting: Callable[[int], None] = lambda person: None
+        # Called with a workspace just before its container is removed: terminals.py ends its
+        # terminal, through its channel, while the workspace is still there to end it in.
+        self.on_removing: Callable[[Workspace], None] = lambda workspace: None
+        # Called with a workspace whose container kept running while rcman was not: terminals.py
+        # ends what the terminals of an earlier rcman left in it.
+        self.on_kept_running: Callable[[Workspace], None] = lambda workspace: None
         self.versions = ClaudeVersions(settings, runtime, self)
         self.versions.prunes = prunes
 
@@ -1011,6 +1028,10 @@ class Workspaces:
                 )
 
     def _remove(self, workspace: Workspace) -> None:
+        try:
+            self.on_removing(workspace)
+        except Exception:  # noqa: BLE001 - the container's removal ends whatever is left
+            log.exception("the terminal of workspace %s did not end", workspace.id)
         self.close_channel(workspace.container)
         with answered():
             self.runtime.remove(workspace.container)
@@ -1381,6 +1402,15 @@ class Workspaces:
             layout if version is None else layout.pinned(version), channel.run, workspace.id
         )
 
+    def layout_of(self, workspace: Workspace) -> Layout:
+        """Where the workspace's things are, as the programs run in it see them, with its plan
+        applied."""
+        return self._layout(workspace)
+
+    def run_in(self, workspace: Workspace) -> Callable[..., Result]:
+        """The ``run`` of the workspace's channel, opened as it is first used."""
+        return self._channel(workspace.container).run
+
     def _execs(self, name: str):
         """The runtime's exec as a repository's runners: without and with stdin."""
 
@@ -1418,6 +1448,7 @@ class Workspaces:
                 "state": workspace.state,
                 "error": workspace.error,
                 "source": workspace.source,
+                "source_page": source_page(workspace.source),
                 "log": workspace.log if workspace.state != READY else None,
                 "server": None,
                 "server_error": None,
@@ -1828,10 +1859,12 @@ class Workspaces:
                 self._restore_one(now)
                 return
             lost = not self.runtime.exists(now.container)
-            if not lost:
-                if self.runtime.running(now.container):
-                    return
+            kept = not lost and self.runtime.running(now.container)
+            if not lost and not kept:
                 self.runtime.start(now.container)
+        if kept:
+            self.on_kept_running(now)  # outside the lock: it runs through the channel
+            return
         with self._working_on(now.id) as cancel:
             if lost and not self._remake(now, cancel):
                 return

@@ -62,26 +62,31 @@ The workspace you have selected is part of the page's address, so reloading
 the page keeps it, and the browser's back button returns to the workspace
 selected before.
 
-The panel of a workspace that is ready has its **Claude server** section,
+The panel of a workspace cloned from GitHub shows, under its name, the
+repository's page on GitHub as a link that opens it in a new tab, whatever state
+the workspace is in. The panel of a workspace that is ready has two tabs,
+**Overview**, shown first, and **Terminal** (see [The terminal](#the-terminal));
+the arrow keys move between them. The tab you chose is part of the page's
+address, as the workspace is. **Overview** has the **Claude server** section,
 which shows the workspace's server, or **Start** when it has none. If rcman
 could not read the server, the section says why instead. Below it is the
 **Changes** section, for the git repository in the workspace (see
-[Git](git.md)). The last section, **Delete this workspace**, holds
-**Delete workspace**. A workspace that
-failed to be made says what went wrong in a sentence, with the words rcman
-got behind **Details**, and **Steps so far** beneath, and offers only
-**Delete workspace**. When the repository's
-`devcontainer.json` is the cause, the reason names the setting to change, or
-the image rcman could not pull or use, or the command that failed or took too
-long, with what it printed last in the steps. A build that failed says why in
-plain words, with the end of what the builder said: a registry or address that
-did not answer, an image or feature that is not there or needs a sign-in, a
-Dockerfile step that failed, a feature that failed to install (named), no space
-left, a repository or image too big, or a build that took too long. After a refused configuration
-the workspace holds nothing but this entry; after a failed command it is kept
-so that you can look at what happened, and **Delete workspace** removes it. A workspace being made or being deleted says
-so, and offers nothing, except that one being made from a GitHub repository
-offers **Delete workspace** too, to stop it.
+[Git](git.md)). The last section, below the tabs, **Delete this workspace**,
+holds **Delete workspace**. A workspace that failed to be made says what went
+wrong in a sentence, with the words rcman got behind **Details**, and **Steps so
+far** beneath, and offers only **Delete workspace**. When the repository's
+`devcontainer.json` is the cause, the reason names the setting to change, or the
+image rcman could not pull or use, or the command that failed or took too long,
+with what it printed last in the steps. A build that failed says why in plain
+words, with the end of what the builder said: a registry or address that did not
+answer, an image or feature that is not there or needs a sign-in, a Dockerfile
+step that failed, a feature that failed to install (named), no space left, a
+repository or image too big, or a build that took too long. After a refused
+configuration the workspace holds nothing but this entry; after a failed command
+it is kept so that you can look at what happened, and **Delete workspace**
+removes it. A workspace being made or being deleted says so, and offers nothing,
+except that one being made from a GitHub repository offers **Delete workspace**
+too, to stop it.
 
 A server shows its state as a coloured badge, a sentence saying what to do
 next, and only the actions that state allows. Its main button, the action to
@@ -115,6 +120,44 @@ ended it says to reload the page to sign in again. Either stays until a later
 refresh works, and until then the page shows the workspaces as they last were.
 The page reports these failures to rcman once it reaches it again, so that
 administrators can see them in the [system journal](journal.md).
+
+### The terminal
+
+**Terminal** is a shell in the workspace, in the page. It connects when you
+first choose the tab, and stays connected while you look at **Overview**. Above
+it, a line says whether it is connecting, connected or closed.
+
+- The shell runs as the workspace container's own user. rcman adds no
+  restriction to what it may do and takes none away: whatever that user may do
+  in the workspace, the shell may. rcman neither records nor logs what you type
+  or what the shell shows.
+- A workspace has one terminal. Choosing **Terminal** for the same workspace in
+  another browser tab or on another device takes it over: the shell here is
+  ended, and this tab says the terminal was opened somewhere else.
+- A terminal has no time limit: it stays open, idle or not, until something ends
+  it.
+- It ends when you close or reload the page, select another workspace or go to
+  another page; when the shell exits, as `exit` does, and the tab says with what
+  exit code; when the workspace is deleted; when you sign out of rcman, which
+  ends your terminals in every browser; when an administrator removes you from
+  rcman; and when rcman restarts or is upgraded. Ending a terminal ends its
+  shell and every process in the shell's session; a process that has left the
+  session, as one started with `setsid` or a daemon does, keeps running. The
+  workspace's server is not touched.
+- Once a terminal is closed, the tab says why, and **Reconnect** starts a new
+  shell; nothing reconnects by itself. **Reconnect** is not offered where rcman
+  would refuse a new terminal: once the workspace is gone or is not ready, you
+  have signed out, or an administrator has removed you from rcman; the page then
+  asks rcman for your workspaces again. If the terminal could not be opened at
+  all, the page asks for them again too, and says, as a refresh does, when it
+  cannot reach rcman or your sign-in has ended. If the terminal itself could not
+  be loaded, as can happen to a page left open while rcman was upgraded, the tab
+  says so and offers **Reload the page** instead.
+
+Inside the terminal every key goes to the shell, Tab among them, so that the
+shell can complete what you type; no key moves out of it: click outside the
+terminal to move out of it. Its colours follow the light or dark setting of your
+system, as the rest of the page does.
 
 ## Deleting a workspace
 

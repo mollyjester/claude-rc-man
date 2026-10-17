@@ -77,7 +77,8 @@ never a fake: `tests/test_git_run.py` holds the parsers of `helpers/git_run.py`,
 `tests/test_repository.py` every verb of `repository.py` in host-runtime workspaces
 through a real channel and `exec`, `tests/test_devcontainer.py` the pure module (`devcontainer.py`) and the guard that holds the administrators' devcontainer page equal to its policy, `tests/test_devcontainer_flow.py` a workspace made from a repository's devcontainer.json on a host runtime with planted images, builds on a host runtime that records what it is asked (the places for builds and the waiting line, a cancel, the failures in plain words, the restore removing orphans and failing a workspace whose built image is gone), `tests/test_builder.py` the pure module `builder.py` (its argument lists, the reading of the builder's words, the pump, the copy of a repository with the host's own tar), `tests/test_runtime_build.py` `PodmanRuntime.build_image` against a stand-in for podman (the archive that is loaded, rcman's own names held across the load, the staging folders), `tests/test_headers.py` the security headers of every answer and the limit on a page's reports of failures, `tests/test_filelock.py` the lock file the service shares with `rcman-admin`, `tests/test_clone.py` a workspace made by cloning
 (a phase of `creating`: its log, failures and their causes, token redaction, names,
-the route, cancel by deletion, restart recovery) on a host runtime that runs real git
+the repository's page, the route, cancel by deletion, restart recovery)
+on a host runtime that runs real git
 and can answer a clone with what git would say or hold it as a running git, `tests/test_git_account.py` `gitaccount.py`
 against a host runtime that records what it is asked, and `tests/test_git.py` the
 git routes. `tests/git_fixtures.py`, which is not a test module, makes real
@@ -93,11 +94,18 @@ private, only with its token as the password, under any
 non-empty username, as GitHub takes a personal access token. Its `gate` event, when a
 test clears it, makes every request wait, so that a clone is under way and stays so.
 Nothing a host test drives reaches the real github.com: the autouse
-`github_stand_in` fixture in `tests/conftest.py` gives every git clone the host
-runtime runs a folder in place of `https://github.com/` and forbids the ssh and git
-transports (`through_stand_in` in `tests/git_fixtures.py`), and a clone not given it
-is an `AssertionError` (`assert_through_stand_in`); `tests/test_stand_in.py` holds the
-rewrite and plants a clone it missed to see the guard fire. The `github` fixture in
+`github_stand_in` fixture in `tests/conftest.py` gives every git command the host
+runtime runs whose subcommand may reach a remote (`NETWORK_SUBCOMMANDS` in
+`tests/git_fixtures.py`) a folder in place of `https://github.com/` and forbids the
+ssh and git transports (`through_stand_in`), and such a command not given it is an
+`AssertionError` (`assert_through_stand_in`). Any other git command is left as it is:
+`remote get-url --push` rewritten would name the folder, and a push to GitHub would no
+longer be known as one. The git of an argv is the first token named `git` that is no
+`NAME=value`, so a variable rcman passes before it is not taken for it.
+`tests/test_stand_in.py` holds the rewrite of each subcommand, and plants one it missed
+to see the guard fire. The fixture sees only `HostRuntime.exec`, not a channel's `run`:
+it covers rcman's git that reaches a remote because `repository.py` runs every such
+call with `network=True`, through `exec`. The `github` fixture in
 `tests/conftest.py` runs one for the session, with `GITHUB_TOKEN`.
 `tests/test_container_suite.py` runs the suites in `tests/container/`, each
 inside a throwaway container of the podman host's image, through `docker` or
@@ -298,6 +306,32 @@ refused with nothing changed in the files or the table; a deleted workspace's sl
 the container is stopped and the slices have lost them, before it starts the container. Nothing is
 made to run out of memory. `tests/container/test_builder_in_podman.py` also checks that the builder
 runs in the slice of the person who asked for the build, and a workspace's container in its own.
+
+The Terminal tab is tested on the host runtime, whose shells are the host's own processes, found
+in the host's `/proc` by a `sleep` of a length no other test uses: `tests/test_terminals.py`
+drives `terminals.py` without a WebSocket (what is typed and shown, a resize, ^C, what an end
+leaves and what it does not, open files, a replacement, an open only once the shell named itself,
+a deletion or sign-out that crosses an opening, the pidfile's checks, a program named with a
+newline, and the sweeps, the opening's and the restore's among them), and `tests/test_terminal.py`
+the route through the test client's WebSocket (who may open what, the frames, what closes a
+terminal, the audit, nothing typed recorded or logged, the protocol held to backend.md's table and
+to the page's, `frontend/src/terminalSocket.ts`, loaded with Node) and, for a refused upgrade, a
+peer that vanished and a service that stops, through real uvicorn running `tests/e2e_server.py`
+with the options of the unit's `ExecStart`. `tests/container/test_terminal_in_podman.py` runs in
+the podman host as the account, as the modules above do (`_in_the_hosts`, without the stand-in
+GitHub), with the default workspace image built from the installer's build file and workspaces
+made through the app: the shell through `podman --remote exec` on a tty of its own, a resize
+reaching it, ^P^Q passing through, a terminal closed as it opens leaving nothing, the shell as
+root of the person's range and neither root nor rcman on the host, `apt-get` in the default image,
+the podman client's memory, and no process and no exec of the terminal's left in the container
+once it is closed. The runtime contract's terminal case (`tests/runtime_contract.py`) runs on both
+runtimes. In a browser, `frontend/e2e/terminal.spec.ts` types into the tab on the host runtime and
+reads what the shell works out, narrows the window and finds the size `stty size` gives follow it,
+opens the terminal in a second page, which takes it over, and finds a tab left at once and shown
+again fitted to its screen; the last test of `frontend/e2e-stack/stack.spec.ts` opens it through
+Caddy and oauth2-proxy in a workspace of real Podman, as the container's root, reloads it and ends
+its shell. The page's side of the protocol, its states and its fakes are in
+[frontend.md](frontend.md).
 
 What needs a real Claude account is checked by hand:
 [real-claude-checklist.md](real-claude-checklist.md). Tests marked `real_claude` are deselected by default

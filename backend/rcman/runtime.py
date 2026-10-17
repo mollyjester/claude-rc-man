@@ -75,6 +75,39 @@ WORK, CONFIG, HOME = "work", "claude", "home"
 CREDENTIALS = ".credentials.json"
 SIGNED_IN, NOT_SIGNED_IN_EMPTY, NOT_SIGNED_IN_UNREADABLE = "signed_in", "empty", "unreadable"
 
+# The Terminal tab's shells (terminals.py): each writes its pidfile, named by a token of its own,
+# in this folder of the runtime folder, which goes with the container.
+TERMINALS = "terminals"
+TERMINAL_PIDFILE = re.compile(r"[0-9a-f]{16}\.pid\Z")
+# What every shell of the Terminal tab is started by, a fixed program, as the workspace's shell
+# runs it with ``-c`` and its arguments: the work folder, the pidfile and the shell to fall back
+# on. It writes its own id and start time to the pidfile, which ending the terminal checks
+# before it signals anything (terminals.py), and execs the user's own shell, from the image's
+# passwd, or the fallback where that is none it can run, interactive, with SHELL naming it. It
+# reads nothing a person sent.
+TERMINAL_LAUNCHER = r"""
+cd -- "$1" || exit 1
+pidfile=$2 fallback=$3
+read -r stat < /proc/$$/stat
+set -- ${stat##*) }
+printf '%s %s\n' "$$" "${20}" > "$pidfile" || exit 1
+uid=
+while read -r key value rest; do
+  if [ "$key" = Uid: ]; then uid=$value; break; fi
+done < /proc/self/status
+shell=
+if [ -r /etc/passwd ]; then
+  while IFS=: read -r _ _ id _ _ _ login; do
+    if [ "$id" = "$uid" ]; then shell=$login; break; fi
+  done < /etc/passwd
+fi
+case ${shell##*/} in nologin|false) shell= ;; esac
+if [ -z "$shell" ] || [ -d "$shell" ] || [ ! -x "$shell" ]; then shell=$fallback; fi
+SHELL=$shell
+export SHELL
+exec "$shell" -i
+"""
+
 
 def credentials_state(raw: bytes) -> str:
     """What a credentials file holds: ``signed_in`` for a sign-in (an object with the OAuth
@@ -435,6 +468,52 @@ class Layout:
         return [*self.tool("env"), "-i", *(f"{k}={v}" for k, v in env.items()), *argv]
 
 
+def child_env(layout: Layout) -> dict[str, str]:
+    """The only environment Claude Code is started with (claude_server.py), and the Terminal
+    tab's shells. Its configuration is the workspace's own, and it never updates itself: the
+    store it runs from is read-only, and an update would go into the workspace unapproved. The
+    variables the workspace's plan sets come first, so that none of them replaces one of
+    these."""
+    return {
+        **layout.env,
+        "HOME": layout.home,
+        "USER": layout.user,
+        "LOGNAME": layout.user,
+        "PATH": layout.path,
+        "SHELL": layout.shell,
+        "TERM": "xterm-256color",
+        "LANG": "C.UTF-8",
+        "CLAUDE_CONFIG_DIR": layout.config,
+        "DISABLE_AUTOUPDATER": "1",
+        "BROWSER": "/bin/false",
+    }
+
+
+@dataclass(frozen=True)
+class Launch:
+    """A program rcman starts on the host: its argv and its whole environment."""
+
+    argv: list[str]
+    env: dict[str, str]
+
+
+def terminal_command(layout: Layout, pidfile: str) -> list[str]:
+    """The Terminal tab's launcher, as the workspace runs it, writing ``pidfile``: with exactly
+    the environment Claude has there and the terminal descriptions, and nothing of rcman's."""
+    if not (
+        pidfile.startswith("/")
+        and "\n" not in pidfile
+        and ".." not in pidfile.split("/")
+        and TERMINAL_PIDFILE.fullmatch(pidfile.rpartition("/")[2])
+    ):
+        raise ValueError(f"{pidfile!r} is not a terminal's pidfile")
+    env = child_env(layout)
+    if layout.terminfo:
+        env["TERMINFO"] = layout.terminfo
+    launcher = [layout.shell, "-c", TERMINAL_LAUNCHER, "rcman-terminal", layout.work, pidfile]
+    return layout.with_env(env, [*launcher, layout.shell])
+
+
 class Runtime(ABC):
     @abstractmethod
     def layout(self, name: str) -> Layout: ...
@@ -562,6 +641,13 @@ class Runtime(ABC):
     @abstractmethod
     def channel(self, name: str) -> Channel:
         """A new channel to the workspace (channel.py), not yet opened."""
+
+    @abstractmethod
+    def terminal_argv(self, name: str, layout: Layout, pidfile: str) -> Launch:
+        """What starts a Terminal tab's shell in the workspace, given the pseudo-terminal as its
+        standard streams: ``setsid --ctty`` first, so that the pty becomes the controlling
+        terminal of what it runs (^C, job control and a resize reach the shell), then the
+        launcher (``terminal_command``), as the container's own user."""
 
     @abstractmethod
     def ensure_account(self, person: int, slot: int) -> None:
@@ -1781,6 +1867,14 @@ class PodmanRuntime(Runtime):
         argv = self._argv("exec", "--interactive", name, f"{TOOLS_MOUNT}/bin/busybox", "sh", "-s")
         return Channel(argv, _busybox, RUN_MOUNT, env=podman_env())
 
+    def terminal_argv(self, name: str, layout: Layout, pidfile: str) -> Launch:
+        """An exec with a tty of the container's own, which the podman client, the pty's
+        controlling process, passes everything to and resizes; no detach keys, so ^P^Q reach
+        the shell."""
+        exec_ = ["exec", "--interactive", "--tty", "--detach-keys=", f"--workdir={layout.work}"]
+        argv = self._argv(*exec_, name, *terminal_command(layout, pidfile))
+        return Launch([*_host_tool("setsid"), "--ctty", *argv], podman_env())
+
     # --- a person's Claude sign-in ----------------------------------------------------
 
     def _account_run(
@@ -2256,6 +2350,10 @@ class HostRuntime(Runtime):
             raise RuntimeFailed(f"the workspace {name} is not running")
         layout = self.layout(name)
         return Channel([layout.shell, "-s"], _host_tool, layout.run, env={"PATH": "/usr/bin:/bin"})
+
+    def terminal_argv(self, name: str, layout: Layout, pidfile: str) -> Launch:
+        command = terminal_command(layout, pidfile)
+        return Launch([*_host_tool("setsid"), "--ctty", *command], {"PATH": "/usr/bin:/bin"})
 
     def ensure_account(self, person: int, slot: int) -> None:
         found = self._account_file(person)

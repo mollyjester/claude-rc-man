@@ -1,4 +1,5 @@
-"""The rcman application. Run with ``uvicorn --factory rcman.main:create_app``."""
+"""The rcman application. Run with ``uvicorn --factory rcman.main:create_app``, and with
+``--ws`` naming routers/terminal.py's WEBSOCKETS, as its unit runs it."""
 
 from __future__ import annotations
 
@@ -23,11 +24,14 @@ from rcman.routers import (
     github,
     me,
     servers,
+    terminal,
     workspaces,
 )
 from rcman.routers import people as people_router
 from rcman.runtime import PodmanConfig, PodmanRuntime, Runtime
 from rcman.settings import Settings
+from rcman.terminals import Terminals
+from rcman.terminals import log as terminals_log
 from rcman.workspaces import Workspaces
 from rcman.workspaces import log as workspaces_log
 
@@ -87,15 +91,18 @@ def create_app(settings: Settings | None = None, runtime: Runtime | None = None)
         unrecognised.log,
         workspaces_log,
         claude_versions.log,
+        terminals_log,
     ):
         journal.install(log)
     service = Workspaces(settings, runtime or podman_runtime(settings))
     sign_ins = Accounts(service)
+    terminals = Terminals(service)
 
     @contextlib.asynccontextmanager
     async def lifespan(app: FastAPI):
         _start(settings)
         service.versions.reconcile()  # the approved version is current, before any server starts
+        terminals.bind(asyncio.get_running_loop())  # before restore, which sweeps through it
         service.start_background()  # restore: HTTP answers meanwhile
 
         async def daily():
@@ -108,8 +115,15 @@ def create_app(settings: Settings | None = None, runtime: Runtime | None = None)
             yield
         finally:
             task.cancel()
-            await asyncio.to_thread(sign_ins.close)
-            await asyncio.to_thread(service.close)
+            # uvicorn closes every WebSocket before this; whatever is left is closed here, and
+            # nothing that goes wrong with it keeps the rest from closing
+            try:
+                await app.state.terminals.close_all(audit.SERVICE_CLOSING)
+            except Exception:  # noqa: BLE001 - logged; the restore's sweep ends what is left
+                workspaces_log.exception("the terminals did not all close")
+            finally:
+                await asyncio.to_thread(sign_ins.close)
+                await asyncio.to_thread(service.close)
 
     app = FastAPI(
         title="rcman",
@@ -123,6 +137,7 @@ def create_app(settings: Settings | None = None, runtime: Runtime | None = None)
     app.state.workspaces = service
     app.state.versions = service.versions
     app.state.accounts = sign_ins
+    app.state.terminals = terminals
     app.state.git_account = GitAccount(service)
     app.state.watch = unrecognised.Watch()
     app.state.client_error_limit = client_errors.new_limit()
@@ -145,6 +160,7 @@ def create_app(settings: Settings | None = None, runtime: Runtime | None = None)
         attention,
         docs,
         client_errors,
+        terminal,
     ):
         app.include_router(module.router)
     spa.install(app, settings.frontend_dir)  # last: it answers every path not matched above

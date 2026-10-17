@@ -69,8 +69,45 @@ def test_the_exemption_check_fails_on_a_stale_or_undocumented_exemption():
     ]
 
 
+def test_every_websocket_route_records_when_it_opens_and_when_it_closes(app):
+    found = routes.websocket_routes(app)
+    assert found  # non-vacuity
+    for route in found:
+        action = audit.action_of(route)
+        assert audit.actions_of(route) == (f"{action}.open", f"{action}.close"), route.path
+
+
+def test_a_websocket_route_without_a_session_is_detected():
+    """Planted twin: a WebSocket route recording nothing, or recording as a request does, has
+    no session; one with a Session has its two actions."""
+    from fastapi import Depends, FastAPI, WebSocket
+
+    planted = FastAPI()
+
+    @planted.websocket("/api/none")
+    async def none(websocket: WebSocket):
+        await websocket.close()
+
+    @planted.websocket("/api/session")
+    async def session(websocket: WebSocket, record=Depends(audit.Session("planted"))):
+        await websocket.close()
+
+    found = {r.path: audit.actions_of(r) for r in routes.websocket_routes(planted)}
+    assert found == {"/api/none": (), "/api/session": ("planted.open", "planted.close")}
+
+
+def recorded_actions(app) -> set[str]:
+    """Every action a route records: a changing request's, and a WebSocket's two."""
+    return {
+        action
+        for r in [*(c.route for c in changing_routes(app)), *routes.websocket_routes(app)]
+        for action in audit.actions_of(r)
+    }
+
+
 def test_every_action_is_listed_in_the_guide(app):
-    actions = {audit.action_of(r.route) for r in changing_routes(app)} - {None}
+    actions = recorded_actions(app)
+    assert {"terminal.open", "workspace.create"} <= actions  # one of each kind
     guide = (REPO / "docs" / "audit.md").read_text(encoding="utf-8")
     listed = set(
         re.findall(r"^\| `([a-z]+\.[a-z_]+)` \|", guide, re.MULTILINE)
@@ -87,7 +124,17 @@ def documented_results(guide):
 
 def test_every_result_other_than_an_error_code_is_listed_in_the_guide():
     guide = (REPO / "docs" / "audit.md").read_text(encoding="utf-8")
-    assert set(audit.RESULTS) == {"ok", "unrecognised_screen", "committed_not_pushed"}
+    assert set(audit.RESULTS) == {
+        "ok",
+        "unrecognised_screen",
+        "committed_not_pushed",
+        "pulled_not_pushed",
+        "terminal_lost",
+        "terminal_replaced",
+        "workspace_gone",
+        "signed_out",
+        "service_closing",
+    }
     assert documented_results(guide) == set(audit.RESULTS)
 
 

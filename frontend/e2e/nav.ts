@@ -1,5 +1,5 @@
 // Finding the parts of rcman's pages, for the browser tests here and in e2e-stack/.
-import { expect, type Page } from "@playwright/test";
+import { expect, type Locator, type Page } from "@playwright/test";
 
 import { m } from "../src/messages";
 
@@ -31,3 +31,17 @@ export async function makeWorkspace(page: Page, name: string, wait?: number) {
 // The public repository the browser tests' backend has at this address on GitHub
 // (SEEDED_ADDRESS in tests/e2e_server.py), the only one a clone there can reach.
 export const GITHUB_ADDRESS = "https://github.com/octo/widget";
+
+// What a panel's terminal shows, line by line, as xterm.js draws it: a row is an element of
+// its own, so its text has no line breaks but those innerText gives it.
+export async function terminalLines(panel: Locator): Promise<string[]> {
+  const text = await panel.locator(".terminal-screen .xterm-rows").innerText();
+  return text.split("\n").map((line) => line.trim());
+}
+
+// Types a command into a panel's terminal and presses Enter.
+export async function runInTerminal(page: Page, panel: Locator, command: string) {
+  await panel.locator(".terminal-screen").click();
+  await page.keyboard.type(command);
+  await page.keyboard.press("Enter");
+}

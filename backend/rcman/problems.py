@@ -6,11 +6,13 @@ import logging
 from typing import Annotated
 
 from fastapi import FastAPI, Request
-from fastapi.exceptions import RequestValidationError
+from fastapi.exceptions import RequestValidationError, WebSocketRequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import Field, ValidationError, WrapValidator
 from pydantic_core import PydanticCustomError
 from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.requests import HTTPConnection
+from starlette.websockets import WebSocket, WebSocketState
 
 from helpers import rules
 from helpers.rules import Rule
@@ -103,15 +105,21 @@ MESSAGES = {
         "A local branch has the name a branch tracking this one would get, or a name "
         "git cannot keep beside it, so git cannot make it."
     ),
-    "detached_head": (
-        "You are not on a branch, so there is nothing to push. Switch to a branch first."
-    ),
+    "detached_head": "You are not on a branch. Switch to a branch first.",
     "no_push_remote": (
         "This branch tracks no remote branch, and the repository has no remote named "
         "origin to push it to."
     ),
-    "no_commits_yet": "This branch has no commits yet, so there is nothing to push.",
+    "no_commits_yet": "This branch has no commits yet. Commit something first.",
     "github_token_not_set": "Add a GitHub token in Settings before pushing to GitHub.",
+    "diverged": (
+        "This branch and the branch it tracks each have commits the other lacks, so it "
+        "cannot simply be brought up to date. Merge or rebase it first."
+    ),
+    "upstream_gone": (
+        "The branch this branch tracks is no longer on the remote, so there is nothing to "
+        "pull from it."
+    ),
 }
 # What a workspace that failed to be cloned is told, in plain words, beside what git said
 # (workspaces.py): by the cause rcman recognised in it.
@@ -390,6 +398,8 @@ STATUS = {
     "no_push_remote": 409,
     "no_commits_yet": 409,
     "github_token_not_set": 409,
+    "diverged": 409,
+    "upstream_gone": 409,
 }
 
 
@@ -518,25 +528,44 @@ def code_of(exc: Exception) -> str:
     """The code of the problem an exception is answered with."""
     if isinstance(exc, Problem):
         return exc.code
-    if isinstance(exc, RequestValidationError):
+    if isinstance(exc, (RequestValidationError, WebSocketRequestValidationError)):
         return "validation_failed"
     if isinstance(exc, StarletteHTTPException):
         return HTTP_CODES.get(exc.status_code, "internal_error")
     return "internal_error"
 
 
+# A WebSocket closed with a problem once it was accepted gets this plus the problem's status:
+# its page reads the problem from the frame sent before (routers/terminal.py).
+CLOSE_PROBLEM = 4000
+
+
+async def answer(connection: HTTPConnection, answered: JSONResponse) -> JSONResponse | None:
+    """``answered``: for a request, and for a WebSocket's upgrade before it is accepted, which
+    Starlette sends as the upgrade's refusal over HTTP. A WebSocket refused once it was accepted
+    is closed with CLOSE_PROBLEM and the status instead, as no answer can be sent then."""
+    if isinstance(connection, WebSocket) and (
+        connection.application_state != WebSocketState.CONNECTING
+    ):
+        if connection.application_state == WebSocketState.CONNECTED:
+            await connection.close(CLOSE_PROBLEM + answered.status_code)
+        return None
+    return answered
+
+
 def install(app: FastAPI) -> None:
     @app.exception_handler(Problem)
-    async def _problem(request: Request, exc: Problem):
-        answer = response(exc.code, exc.status, exc.title, **exc.extra)
-        answer.headers.update(exc.headers)
-        return answer
+    async def _problem(request: HTTPConnection, exc: Problem):
+        answered = response(exc.code, exc.status, exc.title, **exc.extra)
+        answered.headers.update(exc.headers)
+        return await answer(request, answered)
 
     @app.exception_handler(RequestValidationError)
-    async def _validation(request: Request, exc: RequestValidationError):
+    @app.exception_handler(WebSocketRequestValidationError)
+    async def _validation(request: HTTPConnection, exc: RequestValidationError):
         errors = [{"field": _field(e), "message": _message(e)} for e in exc.errors()]
         code = code_of(exc)
-        return response(code, STATUS[code], MESSAGES[code], errors=errors)
+        return await answer(request, response(code, STATUS[code], MESSAGES[code], errors=errors))
 
     @app.exception_handler(StarletteHTTPException)
     async def _http(request: Request, exc: StarletteHTTPException):

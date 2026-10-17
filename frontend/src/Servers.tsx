@@ -112,6 +112,9 @@ export type Workspace = {
   // The address it is cloned from, null for an empty one; and the steps taken while it is
   // made, one to a line, null once it is ready.
   source: string | null;
+  // The GitHub page of the repository it is cloned from, as the server derives it; null
+  // where it has none.
+  source_page: string | null;
   log: string | null;
   server: Server | null;
   server_error: { code: string; title: string } | null;

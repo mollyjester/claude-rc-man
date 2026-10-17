@@ -1,12 +1,12 @@
 # Audit trail
 
 rcman records every request that changes something: who made it, what they
-did, to what, and whether it worked. Requests that only
-read are not recorded. Administrators read the trail on the **Audit trail**
-page in rcman, under **Admin** in the navigation, newest first. The page says
-each action in plain words, with its code as the cell's tooltip, shows
-dates in UTC, and marks a request that failed with the word *Failed* and its
-error code.
+did, to what, and whether it worked; and when a **Terminal** tab opens and
+closes. Requests that only read are not recorded. Administrators read the trail
+on the **Audit trail** page in rcman, under **Admin** in the navigation, newest
+first. The page says each action in plain words, with its code as the cell's
+tooltip, shows dates in UTC, and marks a request that failed with the word
+*Failed* and its error code.
 
 Each event is also written to the [system journal](journal.md) as one line of
 JSON, so it can be read with `journalctl` on the server.
@@ -40,6 +40,7 @@ changes nothing: a page's report of a failure rcman could not see, written to th
 | `git.switch` | switches to a branch | the workspace's name |
 | `git.branch` | makes a branch and switches to it | the workspace's name |
 | `git.fetch` | refreshes the remote branches | the workspace's name |
+| `git.sync` | brings the current branch up to date with the branch it tracks, then pushes it | the workspace's name |
 | `git.push` | pushes the current branch | the workspace's name |
 | `git.commit_push` | commits what is staged and pushes it | the workspace's name — the message is never recorded |
 | `git.clone` | makes a workspace by cloning a repository from GitHub — recorded when rcman takes the request; whether the clone worked is the workspace's state | the repository's address, as given — an address with a user or a token in it is refused, and so recorded with none |
@@ -48,16 +49,25 @@ changes nothing: a page's report of a failure rcman could not see, written to th
 | `claude.login` | starts connecting their Claude account | the Claude account's email address |
 | `claude.connect` | finishes connecting with Claude's code | none — the code is never recorded |
 | `claude.disconnect` | signs their Claude account out, at once or once their last running server stops | none |
+| `terminal.open` | opens the **Terminal** tab on one of their workspaces — recorded also when the workspace is refused | the workspace's name; none when it was refused as not theirs or not there |
+| `terminal.close` | closes a **Terminal** tab that opened, or has it closed for them; the result says why | the workspace's name — nothing typed or shown is ever recorded |
 | `claude.upgrade` | rolls out a Claude Code version, or approves an installed one again (administrators; see [Claude Code versions](claude-version.md)) | the version |
 
 The result is one of these, or the code of the error the request failed with —
-a refused request is recorded too:
+a refused request is recorded too; a terminal closed because its person may not
+use rcman any more is `not_allowed`:
 
 | Result | Meaning |
 |---|---|
-| `ok` | It worked |
+| `ok` | It worked; for `terminal.close`, the shell ended by itself, as `exit` ends it |
 | `unrecognised_screen` | It worked, but left the server on a screen rcman does not recognise |
 | `committed_not_pushed` | **Commit & Push** made the commit, and the push failed |
+| `pulled_not_pushed` | **Sync** brought the branch up to date, and the push failed |
+| `terminal_lost` | The page of a terminal closed it, was reloaded, went to another workspace or stopped answering |
+| `terminal_replaced` | A terminal opened on the same workspace, in another tab or window, replaced it |
+| `workspace_gone` | The terminal's workspace was deleted, or is not ready |
+| `signed_out` | The person signed out of rcman |
+| `service_closing` | rcman stopped |
 
 Administrators are warned about servers on an unrecognised screen, as described
 in [Workspaces](workspaces.md#for-administrators).

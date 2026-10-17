@@ -1,4 +1,5 @@
-"""tests/git_fixtures.py: fixture git leaves nothing behind, however its run ends."""
+"""tests/git_fixtures.py: fixture git leaves nothing behind, however its run ends, and a
+commit made on an origin is made there alone."""
 
 import os
 import signal
@@ -8,7 +9,13 @@ from pathlib import Path
 import pytest
 
 from tests import killed_runs as kr
-from tests.git_fixtures import FIXTURE_HOME, fixture_env, fixture_git, make_repo
+from tests.git_fixtures import (
+    FIXTURE_HOME,
+    commit_on_origin,
+    fixture_env,
+    fixture_git,
+    make_repo,
+)
 
 # Each worker makes a repository with the fixtures, and a file of its own in TMPDIR, the
 # positive control that shows the run's temporary files go where they are looked for.
@@ -79,3 +86,21 @@ def test_fixture_env_makes_no_home(tmp_path):
     home = tmp_path / "home"
     assert fixture_env(home)["HOME"] == str(home)
     assert not home.exists()
+
+
+def test_a_commit_on_origin_moves_that_branch_of_origin_alone(tmp_path):
+    origin = tmp_path / "origins" / "repo.git"
+    repo = make_repo(tmp_path / "repo", origin=origin)
+    before = fixture_git(origin, "rev-parse", "main").strip()
+    feature = fixture_git(origin, "rev-parse", "feature").strip()
+    beside = sorted(p.name for p in origin.parent.iterdir())
+    made = commit_on_origin(origin, "main", "theirs.txt", "their text\n")
+    assert fixture_git(origin, "rev-parse", "main").strip() == made != before
+    assert fixture_git(origin, "rev-parse", f"{made}^").strip() == before  # on top of main
+    assert fixture_git(origin, "show", f"{made}:theirs.txt") == "their text\n"
+    assert fixture_git(origin, "rev-parse", "feature").strip() == feature
+    assert fixture_git(repo, "rev-parse", "main").strip() == before  # the clone is untouched
+    assert fixture_git(repo, "rev-parse", "origin/main").strip() == before
+    assert sorted(p.name for p in origin.parent.iterdir()) == beside  # no scratch clone left
+    again = commit_on_origin(origin, "main", "more.txt")  # a second one has a folder of its own
+    assert fixture_git(origin, "rev-parse", f"{again}^").strip() == made

@@ -138,7 +138,9 @@ def sign_out(
     body: SignOutBody, request: Request, record: Record = Depends(Recorder("me.sign_out"))
 ) -> dict:
     """Signing out of rcman: running servers never depend on the web session, so they
-    keep running unless asked otherwise. The page then goes to ``sign_out_url``."""
+    keep running unless asked otherwise; the person's terminals end. The page then goes to
+    ``sign_out_url``."""
+    request.app.state.terminals.signed_out(record.identity.person)
     if not body.keep_sessions:
         request.app.state.workspaces.stop_running(record.identity.person)
     return {"sign_out_url": SIGN_OUT_URL}

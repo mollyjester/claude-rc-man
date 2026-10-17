@@ -13,8 +13,15 @@ from __future__ import annotations
 
 import contextlib
 import dataclasses
+import fcntl
+import os
+import re
+import select
 import shutil
+import struct
+import subprocess
 import tempfile
+import termios
 import time
 from pathlib import Path
 
@@ -504,6 +511,64 @@ def ending_a_canary_that_is_not_there_is_nothing(runtime, spec):
     runtime.end_canary(rt.CANARY_NAME)
 
 
+def _read_until(master: int, pattern: bytes, timeout: float = SETTLES_WITHIN) -> re.Match:
+    """Read the terminal ``master`` until ``pattern`` is in what it printed."""
+    seen, deadline = b"", time.monotonic() + timeout
+    while not (found := re.search(pattern, seen)):
+        left = deadline - time.monotonic()
+        assert left > 0, seen[-2000:]
+        if select.select([master], [], [], left)[0]:
+            try:
+                seen += os.read(master, 65536)
+            except OSError:  # every writer has closed it
+                break
+    assert found, seen[-2000:]
+    return found
+
+
+def a_terminal_runs_a_shell_on_its_pty_as_the_user_and_writes_its_pidfile(runtime, spec):
+    """``terminal_argv``, run on a pseudo-terminal as the Terminal tab runs it: an interactive
+    shell in the work folder, with the size of the pty, the workspace's environment, SHELL the
+    shell that runs, and the pidfile naming that shell, the leader of its own session, by its
+    id and start time as the workspace sees them."""
+    with made(runtime, spec(5)) as name:
+        layout = runtime.layout(name)
+        folder = f"{layout.run}/{rt.TERMINALS}"
+        assert runtime.exec(name, [*layout.tool("mkdir"), "-p", folder]).code == 0
+        pidfile = f"{folder}/0123456789abcdef.pid"
+        launch = runtime.terminal_argv(name, layout, pidfile)
+        master, slave = os.openpty()
+        fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 33, 111, 0, 0))
+        proc = subprocess.Popen(
+            launch.argv, stdin=slave, stdout=slave, stderr=slave, env=launch.env
+        )
+        os.close(slave)
+        try:
+            os.write(master, b"echo at-$((40+2))-$$-$(stty size)-$(pwd)\r")
+            found = _read_until(master, rb"at-42-(\d+)-(\d+ \d+)-(\S+)\r\n")
+            shell, size, folder_ = int(found[1]), found[2].decode(), found[3].decode()
+            assert (size, folder_) == ("33 111", layout.work)
+            os.write(
+                master, b'echo "home=$HOME" "term=$TERM" "same=$([ "$0" = "$SHELL" ] && echo y)"\r'
+            )
+            _read_until(
+                master, rf"home={re.escape(layout.home)} term=xterm-256color same=y".encode()
+            )
+            written = runtime.exec(name, [*layout.tool("cat"), pidfile]).out.decode()
+            pid, start = written.split()
+            assert written == f"{pid} {start}\n" and int(pid) == shell
+            stat = runtime.exec(name, [*layout.tool("cat"), f"/proc/{shell}/stat"]).out.decode()
+            fields = stat.rpartition(")")[2].split()
+            assert (int(fields[3]), fields[19]) == (shell, start)  # its session's leader
+            os.write(master, b"exit 5\r")
+            assert proc.wait(timeout=SETTLES_WITHIN) == 5
+        finally:
+            os.close(master)
+            if proc.poll() is None:
+                proc.kill()
+            proc.wait()
+
+
 CASES = [
     a_workspace_that_is_made_exists_runs_and_is_labelled,
     removing_what_is_not_there_is_nothing,
@@ -529,6 +594,7 @@ CASES = [
     a_build_that_is_there_is_listed_and_goes_with_or_without_its_image,
     a_builder_and_an_image_are_removed_in_one_call_when_asked,
     ending_a_canary_that_is_not_there_is_nothing,
+    a_terminal_runs_a_shell_on_its_pty_as_the_user_and_writes_its_pidfile,
 ]
 # The cases that run the canary's program in the runtime's own image, which therefore needs
 # python3, as the default workspace image has it: the podman host's base image has none.

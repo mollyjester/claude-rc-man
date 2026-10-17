@@ -39,6 +39,8 @@ export type GitStatus = {
   push_ahead: number | null;
 };
 type Pushed = { branch: string; upstream: string | null; upstream_set: boolean };
+// What /api/git/sync answers, as m.synced reads it.
+type Synced = Parameters<typeof m.synced>[0];
 type CommitPushed = {
   commit: string;
   push: Pushed | null;
@@ -60,6 +62,7 @@ type Action =
   | "switch"
   | "branch"
   | "fetch"
+  | "sync"
   | "push";
 
 // A repository's status: fetched when the section opens, every pollMs while it
@@ -331,6 +334,10 @@ function pushReason(status: GitStatus): "branch" | "remote" | "token" | null {
 // already. Before the first commit, nothing is; Commit & Push makes one.
 const hasCommit = (status: GitStatus) => status.branch.commit !== null;
 const somethingToPush = (status: GitStatus) => status.push_ahead !== 0;
+// Whether the branch and its upstream each have commits the other lacks, which a
+// sync, a fast-forward and a push, cannot bring together.
+const diverged = (status: GitStatus) =>
+  (status.branch.ahead ?? 0) > 0 && (status.branch.behind ?? 0) > 0;
 
 // The Changes section of a repository: its heading with the branch bar beside
 // it, the staged and not staged files, Commit and its menu's Commit & Push,
@@ -360,6 +367,7 @@ export function Changes({
   const [errors, setErrors] = useState<Partial<Record<Action, ApiError>>>({});
   const [pushed, setPushed] = useState<Pushed | null>(null);
   const [notPushed, setNotPushed] = useState<string | null>(null);
+  const [synced, setSynced] = useState<Synced | null>(null);
   const [switching, setSwitching] = useState("");
   const busy = running !== null;
   const commitFields = useFieldErrors(errors.commit ?? null);
@@ -441,6 +449,7 @@ export function Changes({
   async function push() {
     setPushed(null);
     setNotPushed(null);
+    setSynced(null);
     await act("push", async () =>
       setPushed(await api.post<Pushed>("/api/git/push", { workspace })),
     );
@@ -451,6 +460,7 @@ export function Changes({
   async function commitPush() {
     setPushed(null);
     setNotPushed(null);
+    setSynced(null);
     setErrors((current) => ({ ...current, push: undefined }));
     let answer: CommitPushed | null = null;
     await act("commit", async () => {
@@ -464,6 +474,25 @@ export function Changes({
       setNotPushed(done.commit);
       const problem = problemFrom(done.push_problem, Number(done.push_problem.status) || 0);
       setErrors((current) => ({ ...current, push: problem }));
+    }
+  }
+
+  // Sync: pulled and not pushed is pulled, so both are said, the push's problem as
+  // the sync's.
+  async function sync() {
+    setPushed(null);
+    setNotPushed(null);
+    setSynced(null);
+    let answer: Synced | null = null;
+    await act("sync", async () => {
+      answer = await api.post<Synced>("/api/git/sync", { workspace });
+    });
+    const done = answer as Synced | null;
+    if (done === null) return;
+    setSynced(done);
+    if (done.push_problem !== null) {
+      const problem = problemFrom(done.push_problem, Number(done.push_problem.status) || 0);
+      setErrors((current) => ({ ...current, sync: problem }));
     }
   }
 
@@ -482,6 +511,16 @@ export function Changes({
   }
 
   const reason = status === null ? null : pushReason(status);
+  // A sync is offered only where the server would run it: not where the upstream is gone
+  // (named, with no ahead or behind), nor during a merge, which a fast-forward refuses.
+  const syncable =
+    status !== null &&
+    reason === null &&
+    hasCommit(status) &&
+    !diverged(status) &&
+    !status.merging &&
+    (status.branch.upstream === null ||
+      (status.branch.ahead !== null && status.branch.behind !== null));
 
   if (empty) {
     return (
@@ -506,6 +545,8 @@ export function Changes({
             branchesError={errors.branches ?? null}
             busy={busy}
             fetching={running === "fetch"}
+            syncable={syncable}
+            syncing={running === "sync"}
             pushOffered={
               status !== null && reason === null && hasCommit(status) && somethingToPush(status)
             }
@@ -514,6 +555,7 @@ export function Changes({
             onCreate={createBranch}
             onCreateForget={forgetCreateError}
             onFetch={() => act("fetch", () => api.post("/api/git/fetch", { workspace }))}
+            onSync={sync}
             onPush={push}
           />
         )}
@@ -521,10 +563,13 @@ export function Changes({
       <ProblemView error={statusError} />
       <ProblemView error={errors.switch ?? null} labels={{ branch: m.switchTo(switching) }} />
       <ProblemView error={errors.fetch ?? null} />
+      {synced !== null && <p role="status">{m.synced(synced)}</p>}
+      <ProblemView error={errors.sync ?? null} />
       {status === null && !statusError && <p>{m.loading}</p>}
       {status !== null && (
         <>
           {status.merging && <p>{m.mergeInProgress}</p>}
+          {diverged(status) && <p>{m.diverged}</p>}
           {reason === "branch" ? (
             <p>{m.pushNeedsBranch}</p>
           ) : reason === "remote" ? (

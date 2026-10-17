@@ -4,6 +4,7 @@
 // reported to rcman (clientErrors.ts).
 import { noteFailure, requeue, takeReports } from "./clientErrors";
 import { m } from "./messages";
+import { PROTOCOL } from "./terminalSocket";
 
 // The page's own codes: rcman was not reached, the sign-in has ended, or rcman
 // answered in a way the page does not understand.
@@ -180,10 +181,26 @@ export function forgetSending() {
   sending = null;
 }
 
+// The address of a workspace's terminal, beside the page: wss for a page on https.
+export function terminalUrl(workspace: number, at: Location = window.location): string {
+  const scheme = at.protocol === "https:" ? "wss:" : "ws:";
+  const query = new URLSearchParams({ [PROTOCOL.query]: String(workspace) });
+  return `${scheme}//${at.host}${PROTOCOL.path}?${query}`;
+}
+
+// The Terminal tab's WebSocket to a workspace's shell, its binary frames read as bytes. A
+// refused upgrade only closes it, telling the page no more; src/Terminal.tsx notes that.
+function openTerminal(workspace: number): WebSocket {
+  const socket = new WebSocket(terminalUrl(workspace));
+  socket.binaryType = "arraybuffer";
+  return socket;
+}
+
 export const api = {
   get: <T>(path: string, query?: Query) => request<T>("GET", path, undefined, query),
   post: <T>(path: string, body: unknown = {}) => request<T>("POST", path, body),
   put: <T>(path: string, body: unknown) => request<T>("PUT", path, body),
   patch: <T>(path: string, body: unknown) => request<T>("PATCH", path, body),
   delete: <T>(path: string, query?: Query) => request<T>("DELETE", path, undefined, query),
+  openTerminal,
 };

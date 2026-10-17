@@ -278,3 +278,36 @@ def test_a_channel_running_a_request_is_not_idle(channel):
         assert channel.idle_seconds() < 100
     finally:
         asking.join(10)
+
+
+@pytest.fixture
+def thread_errors():
+    """Every exception a thread raised while the test ran: none may go unseen."""
+    seen = []
+    real = threading.excepthook
+    threading.excepthook = lambda args: seen.append(args.exc_value)
+    yield seen
+    threading.excepthook = real
+
+
+# The channel's shell, with a program it started that writes to the shell's stderr for a while,
+# and holds it past the shell's own end.
+STILL_WRITING = (
+    "(end=$(( $(date +%s) + 2 )); while [ $(date +%s) -lt $end ]; do echo e >&2; sleep 0.01; "
+    "done) & exec sh -s"
+)
+
+
+def test_closing_while_stderr_is_still_written_raises_nothing_in_the_reader(run_dir, thread_errors):
+    """The reader of what the shell writes on stderr is reading while the channel closes: it
+    is the one that closes the stream, once nothing writes to it any more, so it never reads
+    one that was closed under it."""
+    c = ch.Channel([SH, "-c", STILL_WRITING], tools, str(run_dir))
+    c.run([shutil.which("true")])
+    reader, process = c._error_reader, c.process
+    c.close()
+    assert process.poll() is not None  # the shell is gone; its program still writes
+    reader.join(timeout=10)
+    assert not reader.is_alive()
+    assert process.stderr.closed  # closed by the reader, once the program was done
+    assert thread_errors == []

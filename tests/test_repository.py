@@ -20,6 +20,7 @@ from rcman.repository import Repository
 from tests.git_fixtures import (
     FIXTURE_HOME,
     add_submodule,
+    commit_on_origin,
     fixture_env,
     fixture_git,
     make_repo,
@@ -982,6 +983,365 @@ def test_the_host_of_a_github_address_is_matched_whatever_its_case(git, repo):
     assert git.status()["push_to_github"] is False
 
 
+# --- sync ----------------------------------------------------------------------------
+
+
+def subcommands(world: World) -> list[str]:
+    """The git subcommand of each argv run, in order: what follows git's -C and the work
+    folder in rcman's argv."""
+    found = []
+    for argv in world.argvs:
+        if "git" in argv:
+            found.append(argv[argv.index(world.layout.work, argv.index("git")) + 1])
+    return found
+
+
+def head_of(repo: Path) -> str:
+    return fixture_git(repo, "rev-parse", "HEAD").strip()
+
+
+def synced(**changed) -> dict:
+    """Sync's answer for main and origin/main, with nothing done but what ``changed`` says."""
+    return {
+        "branch": "main",
+        "upstream": "origin/main",
+        "pulled": False,
+        "pushed": False,
+        "upstream_set": False,
+        "push_problem": None,
+        **changed,
+    }
+
+
+def pushes_elsewhere(repo: Path, mirror: Path) -> Path:
+    """main pushed to ``mirror``, a bare repository holding main as it is, made its push
+    remote, while it still tracks origin/main: once main is fast-forwarded from origin,
+    where it pushes lacks what was pulled, so one sync both pulls and pushes. push.default
+    is current, as git names no push destination (@{push}) for a simple push to a remote
+    other than the upstream's."""
+    fixture_git(mirror.parent, "clone", "-q", "--bare", str(origin_of(repo)), str(mirror))
+    fixture_git(repo, "remote", "add", "mirror", str(mirror))
+    fixture_git(repo, "fetch", "-q", "mirror")
+    fixture_git(repo, "config", "branch.main.pushRemote", "mirror")
+    fixture_git(repo, "config", "push.default", "current")
+    assert fixture_git(repo, "rev-parse", "--symbolic-full-name", "@{push}").strip() == (
+        "refs/remotes/mirror/main"
+    )  # the plant took effect
+    return mirror
+
+
+def test_sync_fast_forwards_a_branch_only_its_upstream_moved_and_pushes_nothing(git, repo, world):
+    theirs = commit_on_origin(origin_of(repo), "main", "theirs.txt")
+    world.argvs.clear()
+    assert git.sync() == synced(pulled=True)
+    assert head_of(repo) == theirs and (repo / "theirs.txt").is_file()
+    ran = subcommands(world)
+    assert "fetch" in ran and "merge" in ran  # the positive
+    assert "push" not in ran
+
+
+def test_sync_pushes_a_branch_only_it_moved_and_merges_nothing(git, repo, world):
+    ours = commit_in(repo, "ours.txt")
+    world.argvs.clear()
+    assert git.sync() == synced(pushed=True)
+    assert on_remote(origin_of(repo), "main") == ours
+    ran = subcommands(world)
+    assert "fetch" in ran and "push" in ran  # the positive
+    assert "merge" not in ran
+
+
+def test_sync_of_a_branch_that_has_diverged_is_refused_and_changes_nothing(git, repo, world):
+    origin = origin_of(repo)
+    theirs = commit_on_origin(origin, "main", "theirs.txt")
+    ours = commit_in(repo, "ours.txt")
+    world.argvs.clear()
+    refused(git.sync, "diverged")
+    assert head_of(repo) == ours and on_remote(origin, "main") == theirs
+    ran = subcommands(world)
+    assert "fetch" in ran  # the positive: what came from origin was fetched
+    assert "merge" not in ran and "push" not in ran
+    assert git.status()["branch"]["ahead"] == 1 and git.status()["branch"]["behind"] == 1
+
+
+def test_sync_fast_forwards_then_pushes_in_that_order(git, repo, world, tmp_path):
+    mirror = pushes_elsewhere(repo, tmp_path / "mirror.git")
+    theirs = commit_on_origin(origin_of(repo), "main", "theirs.txt")
+    world.argvs.clear()
+    assert git.sync() == synced(pulled=True, pushed=True)
+    assert head_of(repo) == theirs and on_remote(mirror, "main") == theirs
+    ran = subcommands(world)
+    assert ran.index("fetch") < ran.index("merge") < ran.index("push")
+
+
+def test_where_git_names_no_push_destination_sync_counts_what_is_unpushed_against_the_upstream(
+    git, repo, world, tmp_path
+):
+    """A push remote of its own under push.default simple: git names no @{push}, so what is
+    unpushed is what the upstream lacks, as status's push_ahead counts it. A pull leaves
+    nothing to push; a commit the upstream lacks is pushed, where git push sends it."""
+    mirror = tmp_path / "mirror.git"
+    fixture_git(tmp_path, "clone", "-q", "--bare", str(origin_of(repo)), str(mirror))
+    fixture_git(repo, "remote", "add", "mirror", str(mirror))
+    fixture_git(repo, "fetch", "-q", "mirror")
+    fixture_git(repo, "config", "branch.main.pushRemote", "mirror")
+    asked = subprocess.run(
+        ["git", "rev-parse", "--symbolic-full-name", "@{push}"],
+        cwd=repo,
+        env=fixture_env(FIXTURE_HOME),
+        capture_output=True,
+    )
+    assert asked.returncode != 0 and b"simple" in asked.stderr  # the positive: no @{push}
+    before = on_remote(mirror, "main")
+    theirs = commit_on_origin(origin_of(repo), "main", "theirs.txt")
+    world.argvs.clear()
+    assert git.sync() == synced(pulled=True)
+    assert head_of(repo) == theirs and on_remote(mirror, "main") == before
+    assert "merge" in subcommands(world) and "push" not in subcommands(world)
+    ours = commit_in(repo, "ours.txt")
+    assert git.sync() == synced(pushed=True)
+    assert on_remote(mirror, "main") == ours  # git push sends it to the push remote
+    assert on_remote(origin_of(repo), "main") == theirs
+
+
+def test_sync_of_a_branch_level_with_its_upstream_runs_nothing_but_still_prunes(git, repo, world):
+    fixture_git(origin_of(repo), "branch", "-D", "feature")
+    before = head_of(repo)
+    world.argvs.clear()
+    assert git.sync() == synced()
+    assert head_of(repo) == before
+    remote = [b["name"] for b in git.branches()["remote"]["branches"]]
+    assert remote == ["origin/main"]  # origin/feature, there before, is pruned
+    ran = subcommands(world)
+    assert "fetch" in ran and "merge" not in ran and "push" not in ran
+
+
+def test_sync_publishes_a_branch_with_no_upstream_and_sets_it_to_track(git, repo, world):
+    fixture_git(repo, "switch", "-q", "-c", "topic")
+    head = commit_in(repo, "topic.txt")
+    world.argvs.clear()
+    assert git.sync() == synced(
+        branch="topic", upstream="origin/topic", pushed=True, upstream_set=True
+    )
+    assert on_remote(origin_of(repo), "topic") == head
+    tracked = fixture_git(repo, "for-each-ref", "--format=%(upstream)", "refs/heads/topic")
+    assert tracked.strip() == "refs/remotes/origin/topic"
+    published = [a for a in world.argvs if "push" in a]
+    assert len(published) == 1 and published[0][-3:] == ["-u", "origin", "HEAD"]
+    assert "merge" not in subcommands(world)
+
+
+def test_sync_of_a_branch_whose_upstream_is_gone_is_refused_and_recreates_nothing(git, repo, world):
+    fixture_git(repo, "switch", "-q", "-c", "feature", "--track", "origin/feature")
+    commit_in(repo, "feature.txt")
+    origin = origin_of(repo)
+    fixture_git(origin, "branch", "-D", "feature")
+    world.argvs.clear()
+    refused(git.sync, "upstream_gone")
+    assert "fetch" in subcommands(world)  # the positive: the gone branch was pruned by it
+    assert "push" not in subcommands(world)
+    assert "feature" not in fixture_git(origin, "branch", "--format=%(refname:short)").split()
+
+
+def test_sync_is_refused_before_any_fetch_where_a_push_would_be(world, tmp_path):
+    repo = make_repo(world.work, origin=tmp_path / "origins" / "repo.git")
+    git = world.repository()
+
+    def refused_unfetched(code: str) -> None:
+        world.argvs.clear()
+        refused(git.sync, code)
+        assert subcommands(world), code  # the positive: git was asked something
+        assert "fetch" not in subcommands(world), code
+
+    fixture_git(repo, "switch", "-q", "--detach", "HEAD")
+    refused_unfetched("detached_head")
+    fixture_git(repo, "switch", "-q", "--orphan", "trunk")
+    fixture_git(repo, "reset", "-q")
+    refused_unfetched("no_commits_yet")
+    fixture_git(repo, "switch", "-q", "-f", "main")
+    fixture_git(repo, "switch", "-q", "-c", "lonely")
+    fixture_git(repo, "remote", "rename", "origin", "elsewhere")
+    refused_unfetched("no_push_remote")
+
+
+def test_sync_to_github_is_refused_without_a_token_and_with_one_syncs_with_the_stand_in(
+    git, repo, world, github_stand_in
+):
+    on_github = github_stand_in / "owner" / "name.git"
+    fixture_git(world.tmp_path, "clone", "-q", "--bare", str(origin_of(repo)), str(on_github))
+    fixture_git(repo, "remote", "set-url", "origin", "https://github.com/owner/name.git")
+    world.argvs.clear()
+    refused(git.sync, "github_token_not_set")
+    assert subcommands(world) and "fetch" not in subcommands(world)
+    world.credential(TOKEN)
+    theirs = commit_on_origin(on_github, "main", "theirs.txt")
+    ours_before = head_of(repo)
+    assert git.sync() == synced(pulled=True)
+    assert head_of(repo) == theirs != ours_before
+    ours = commit_in(repo, "ours.txt")
+    assert git.sync() == synced(pushed=True)
+    assert on_remote(on_github, "main") == ours
+    assert TOKEN not in " ".join(sum(world.argvs, []))
+
+
+def test_sync_is_refused_where_the_fast_forward_would_overwrite_a_change_not_committed(
+    git, repo, world
+):
+    theirs = commit_on_origin(origin_of(repo), "main", "README.md", "their text\n")
+    before = head_of(repo)
+    write(repo / "README.md", "my change\n")
+    problem = refused(git.sync, "git_failed")
+    assert any("would be overwritten" in line for line in problem.extra["git"])
+    assert head_of(repo) == before != theirs
+    assert (repo / "README.md").read_text() == "my change\n"
+    assert "push" not in subcommands(world)
+
+
+def test_sync_carries_a_change_not_committed_that_the_fast_forward_leaves_alone(git, repo):
+    theirs = commit_on_origin(origin_of(repo), "main", "theirs.txt")
+    write(repo / "README.md", "my change\n")
+    write(repo / "mine.txt", "untracked\n")
+    assert git.sync() == synced(pulled=True)
+    assert head_of(repo) == theirs
+    assert (repo / "README.md").read_text() == "my change\n"
+    assert (repo / "mine.txt").read_text() == "untracked\n"
+
+
+def test_sync_fast_forwards_whatever_the_persons_pull_and_merge_configuration_says(
+    git, repo, world
+):
+    world.config(AUTHOR + "[pull]\n\trebase = true\n\tff = false\n[merge]\n\tff = false\n")
+    fixture_git(repo, "config", "branch.main.mergeOptions", "--no-ff")
+    fixture_git(repo, "config", "branch.main.rebase", "true")
+    theirs = commit_on_origin(origin_of(repo), "main", "theirs.txt")
+    assert git.sync() == synced(pulled=True)
+    assert head_of(repo) == theirs
+    parents = fixture_git(repo, "rev-list", "--parents", "-n", "1", "HEAD").split()
+    assert parents[1:] == [fixture_git(repo, "rev-parse", "HEAD^").strip()]  # one parent
+
+
+def test_sync_from_a_remote_that_needs_a_password_fails_without_asking(
+    git, repo, asks_for_a_password
+):
+    fixture_git(repo, "remote", "set-url", "origin", asks_for_a_password)
+    began = time.monotonic()
+    problem = refused(git.sync, "git_failed")
+    assert any("terminal prompts disabled" in line for line in problem.extra["git"])
+    assert time.monotonic() - began < repo_module.GIT_NETWORK_TIMEOUT / 4
+
+
+def refusing_pushes(bare: Path) -> None:
+    hook = bare / "hooks" / "pre-receive"
+    hook.write_text("#!/bin/sh\necho planted refusal of every push >&2\nexit 1\n")
+    hook.chmod(0o755)
+
+
+def test_a_push_refused_after_a_pull_is_the_push_problem_with_what_was_pulled(
+    git, repo, world, tmp_path
+):
+    mirror = pushes_elsewhere(repo, tmp_path / "mirror.git")
+    refusing_pushes(mirror)
+    before = on_remote(mirror, "main")
+    theirs = commit_on_origin(origin_of(repo), "main", "theirs.txt")
+    out = git.sync()
+    problem = out.pop("push_problem")
+    assert out == {k: v for k, v in synced(pulled=True).items() if k != "push_problem"}
+    assert (problem["code"], problem["status"]) == ("git_failed", 409)
+    assert any("planted refusal of every push" in line for line in problem["git"])
+    assert head_of(repo) == theirs and on_remote(mirror, "main") == before
+    assert "push" in subcommands(world)  # the positive: the push was tried
+
+
+def test_a_push_refused_with_nothing_pulled_is_the_syncs_refusal(git, repo):
+    origin = origin_of(repo)
+    refusing_pushes(origin)
+    before = on_remote(origin, "main")
+    commit_in(repo, "ours.txt")
+    problem = refused(git.sync, "git_failed")
+    assert any("planted refusal of every push" in line for line in problem.extra["git"])
+    assert on_remote(origin, "main") == before
+
+
+def test_a_failure_of_the_runtime_in_the_push_half_is_the_push_problem_once_pulled(
+    git, repo, world, tmp_path
+):
+    from rcman.channel import ChannelBroken, ChannelTimeout
+
+    pushes_elsewhere(repo, tmp_path / "mirror.git")
+    cases = [
+        (rt.RuntimeFailed("boom"), "workspace_failed"),
+        (ChannelBroken("gone"), "workspace_failed"),
+        (ChannelTimeout(), "timeout"),
+        (rt.RuntimeUnavailable("down"), "runtime_unavailable"),
+        (Problem("git_timeout"), "git_timeout"),
+    ]
+    real = world.run_stdin
+    for n, (failure, code) in enumerate(cases):
+        theirs = commit_on_origin(origin_of(repo), "main", f"theirs{n}.txt")
+
+        def failing(argv, stdin, timeout, failure=failure):
+            if "push" in argv:
+                raise failure
+            return real(argv, stdin, timeout)
+
+        world.run_stdin = failing
+        out = world.repository().sync()
+        assert head_of(repo) == theirs, code
+        assert (out["pulled"], out["pushed"]) == (True, False), code
+        assert out["push_problem"]["code"] == code
+    world.run_stdin = real
+    assert world.repository().sync() == synced(pushed=True)  # positive control: without the fault
+
+
+def test_a_failure_of_the_runtime_in_the_push_half_with_nothing_pulled_is_not_hidden(
+    git, repo, world
+):
+    commit_in(repo, "ours.txt")
+    real = world.run_stdin
+
+    def failing(argv, stdin, timeout):
+        if "push" in argv:
+            raise rt.RuntimeFailed("boom")
+        return real(argv, stdin, timeout)
+
+    world.run_stdin = failing
+    with pytest.raises(rt.RuntimeFailed):
+        world.repository().sync()
+
+
+def test_a_programming_error_in_the_push_half_of_a_sync_is_not_hidden(git, repo, world, tmp_path):
+    pushes_elsewhere(repo, tmp_path / "mirror.git")
+    commit_on_origin(origin_of(repo), "main", "theirs.txt")
+    real = world.run_stdin
+
+    def failing(argv, stdin, timeout):
+        if "push" in argv:
+            raise KeyError("a bug")
+        return real(argv, stdin, timeout)
+
+    world.run_stdin = failing
+    with pytest.raises(KeyError):
+        world.repository().sync()
+
+
+def test_sync_of_a_branch_tracking_a_remote_that_is_not_origin(world, tmp_path):
+    lonely = make_repo(world.work)
+    elsewhere = tmp_path / "elsewhere.git"
+    fixture_git(tmp_path, "init", "-q", "--bare", "-b", "main", str(elsewhere))
+    fixture_git(lonely, "remote", "add", "elsewhere", str(elsewhere))
+    fixture_git(lonely, "push", "-q", "-u", "elsewhere", "main")
+    git = world.repository()
+    theirs = commit_on_origin(elsewhere, "main", "theirs.txt")
+    assert git.sync() == synced(upstream="elsewhere/main", pulled=True)
+    assert head_of(lonely) == theirs
+    ours = commit_in(lonely, "ours.txt")
+    assert git.sync() == synced(upstream="elsewhere/main", pushed=True)
+    assert on_remote(elsewhere, "main") == ours
+    fixture_git(lonely, "switch", "-q", "-c", "topic")
+    world.argvs.clear()
+    refused(git.sync, "no_push_remote")  # no upstream, and no origin to publish it to
+    assert "fetch" not in subcommands(world)
+
+
 # --- how git is run ------------------------------------------------------------------
 
 
@@ -1052,8 +1412,10 @@ def test_a_fetch_and_a_push_have_the_network_deadline_read_when_called(repo, wor
     git.fetch()
     commit_in(repo, "more.txt")
     git.push()
+    commit_in(repo, "again.txt")
+    git.sync()
     network = [(how, argv, t) for how, argv, t in seen if "fetch" in argv or "push" in argv]
-    assert len(network) == 2 and all(t > local for _, _, t in network)
+    assert len(network) == 4 and all(t > local for _, _, t in network)
     assert all(t < 70 + 30 for _, _, t in network)
 
 
@@ -1075,6 +1437,8 @@ def test_a_fetch_and_a_push_do_not_hold_the_channel_the_workspace_is_reached_thr
     commit_in(repo, "more.txt")
     git.fetch()
     git.push()
+    commit_in(repo, "again.txt")
+    git.sync()
     assert not [a for a in on_channel if "fetch" in a or "push" in a]
     assert any("rev-parse" in a for a in on_channel)  # its quick reads still do
 
@@ -1094,6 +1458,24 @@ def test_a_deadline_is_shared_by_every_git_call_of_a_verb(git, repo, monkeypatch
     refused(git.status, "git_timeout")  # more calls than the deadline has time for
     assert len(seen) >= 2
     assert seen == sorted(seen, reverse=True)  # each has less time than the one before
+
+
+def test_every_git_call_of_a_sync_shares_the_one_network_deadline(git, repo, monkeypatch, world):
+    seen = []
+    real = world.run
+
+    def slow(argv, timeout):
+        seen.append(timeout)
+        time.sleep(0.6)
+        return real(argv, timeout)
+
+    world.run = slow
+    commit_in(repo, "more.txt")
+    monkeypatch.setattr(repo_module, "GIT_NETWORK_TIMEOUT", 2.0)
+    refused(world.repository().sync, "git_timeout")  # more calls than the deadline has time for
+    assert len(seen) >= 2
+    assert seen == sorted(seen, reverse=True)  # each has less time than the one before
+    assert on_remote(origin_of(repo), "main") != head_of(repo)  # it stopped before the push
 
 
 def test_no_git_in_the_workspace_is_git_not_installed(world, repo, tmp_path):

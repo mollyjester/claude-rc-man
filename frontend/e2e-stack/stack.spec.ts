@@ -6,7 +6,14 @@ import { execFileSync } from "node:child_process";
 
 import { expect, type Locator, type Page, test } from "@playwright/test";
 
-import { makeWorkspace, openAdminPage, panel, workspaces } from "../e2e/nav";
+import {
+  makeWorkspace,
+  openAdminPage,
+  panel,
+  runInTerminal,
+  terminalLines,
+  workspaces,
+} from "../e2e/nav";
 import { m } from "../src/messages";
 import { FIRST_WORKSPACE_WITHIN, TEST_WITH_FIRST_WORKSPACE_WITHIN } from "./timing";
 
@@ -354,4 +361,32 @@ test("the audit trail records what people did", async ({ page }) => {
   for (const cell of [ALICE, m.auditActions["person.delete"], CAROL])
     removal = removal.filter({ has: page.getByRole("cell", { name: cell, exact: true }) });
   await expect(removal).toHaveCount(1);
+});
+
+// Last, so that nothing before it depends on the workspace it makes.
+test("a workspace's terminal runs a shell in its container, through Caddy and oauth2-proxy", async ({
+  page,
+}) => {
+  await signIn(page, ALICE);
+  await expect(page.getByText(m.signedInAs(ALICE))).toBeVisible();
+  const made = await makeWorkspace(page, "terminal");
+  await made.getByRole("tab", { name: m.tabTerminal }).click();
+  await expect(made.getByRole("status")).toHaveText(m.terminalConnected);
+
+  await runInTerminal(page, made, "echo $((6*7))");
+  await expect.poll(() => terminalLines(made)).toContain("42");
+  // the default image's user: the container's root
+  await runInTerminal(page, made, "echo uid=$(id -u)");
+  await expect.poll(() => terminalLines(made)).toContain("uid=0");
+
+  // a reload opens it again, at the tab the address keeps
+  await page.reload();
+  await expect(made.getByRole("tab", { name: m.tabTerminal })).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
+  await expect(made.getByRole("status")).toHaveText(m.terminalConnected);
+  await runInTerminal(page, made, "exit 3");
+  await expect(made.getByRole("status")).toHaveText(m.terminalExited(3));
+  await expect(made.getByRole("button", { name: m.terminalReconnect })).toBeVisible();
 });

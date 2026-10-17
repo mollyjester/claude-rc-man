@@ -30,9 +30,9 @@ the OpenAPI description it serves at `/api/openapi.json`, browsable at
 | `everyone.py` | Everyone's workspaces and servers, for administrators |
 | `headers.py` | The security headers every answer carries (see [Requests](#requests)) |
 | `ratelimit.py`, `filelock.py` | A token bucket for each name (the limit on a page's reports), and a re-entrant lock that is also a lock file, shared with `rcman-admin` (see [Limits](#limits)) |
-| `spa.py` | Serving the built frontend: its files, and `index.html` for every other path not under `/api`; installed after every router |
+| `spa.py` | Serving the built frontend: its files, and `index.html` for every other path not under `/api`; installed after every router. `index.html` names the build's files by the hashes of their contents, which Vite puts in their names under `assets/`, so every file outside `assets/`, `index.html` among them, is served with `Cache-Control: no-cache`, which has the browser ask again before it uses the one it kept, and a page loaded after an upgrade names the new build's files; those under `assets/`, which never change, are kept for a year (`immutable`) |
 | `routes.py` | The app's routes as FastAPI resolves them after including routers, and which of them are for administrators |
-| `routers/` | One module per area: `me`, `workspaces`, `servers`, `git`, `github`, `claude`, `people`, `audit_log`, `attention`, `docs`, `client_errors` |
+| `routers/` | One module per area: `me`, `workspaces`, `servers`, `git`, `github`, `claude`, `people`, `audit_log`, `attention`, `docs`, `client_errors`, `terminal` |
 | `routers/workspaces.py` | The person's workspaces, under `/api/workspaces`: listing them with their servers, making one, deleting one; the listing is an object, `workspaces` and `claude_approved` (the version a server started now would run, `null` where none is), so that the page can set each server's `claude_version` beside it |
 | `routers/servers.py` | A workspace's server, under `/api/servers`: start, resume, stop, forget, confirm and output, each by the workspace's id; and everyone's, for administrators |
 | `accounts.py`, `routers/claude.py` | Each person's Claude sign-in, signing in and out of it, and its state; `routers/me.py` signs out of rcman — see [Claude accounts](#claude-accounts) |
@@ -41,6 +41,7 @@ the OpenAPI description it serves at `/api/openapi.json`, browsable at
 | `routers/git.py`, `routers/github.py` | The git routes, by workspace id, and the person's GitHub token (see [git in workspaces](#git-in-workspaces)) |
 | `claude_versions.py` | `ClaudeVersions`: the approvals, the store, rolling out a version, pruning, and the report of the versions page (see [Claude Code versions](#claude-code-versions)) |
 | `routers/client_errors.py` | A page's reports of failures rcman could not see, `POST /api/client-errors`, written to the journal (see [Errors from the page](#errors-from-the-page)) |
+| `terminals.py`, `routers/terminal.py` | The Terminal tab: a shell in a workspace, carried over a WebSocket (see [The terminal](#the-terminal)) |
 | `routers/me.py` | Each person's own settings, changed with `PATCH /api/me/settings`, which changes only the settings sent; `prefix_of` and `author_of` are how the rest of the backend reads them |
 
 ## Requests
@@ -54,13 +55,15 @@ the OpenAPI description it serves at `/api/openapi.json`, browsable at
   person's in the people table, which is read on every request, so a removal
   takes effect at once (see [people.md](people.md)). The routes that need no identity are `problems.PUBLIC_PATHS`:
   `/api/health` and the frontend's files.
-- **Origin.** A `POST`, `PUT`, `PATCH` or `DELETE` must carry an `Origin`
-  header equal to `RCMAN_PUBLIC_ORIGIN`.
+- **Origin.** A `POST`, `PUT`, `PATCH` or `DELETE`, and every upgrade to a WebSocket, must
+  carry an `Origin` header equal to `RCMAN_PUBLIC_ORIGIN` (`identity.changing`): a page of any
+  site may open a WebSocket, and the browser sends rcman's cookies with it.
 - **Headers.** Every answer carries `headers.SECURITY_HEADERS` (`SecurityHeaders`, an ASGI
   middleware installed by `create_app`): a policy that forbids framing and nothing more, so
   that the interactive description of the API, which loads scripts of its own, works;
   `X-Frame-Options`, `X-Content-Type-Options` and `Referrer-Policy`. Neither Caddy nor
-  oauth2-proxy adds them for what rcman serves. An answer that sets one keeps its own.
+  oauth2-proxy adds them for what rcman serves. An answer that sets one keeps its own. A refused
+  upgrade to a WebSocket is an answer over HTTP and carries them too.
 - **Administrators.** Routes for administrators depend on `admin_user`.
   `routes.admin_only` finds them in the route table, and
   `tests/test_identity.py` drives each one as someone who is not an
@@ -101,7 +104,10 @@ the OpenAPI description it serves at `/api/openapi.json`, browsable at
   `MESSAGES` and `STATUS` in `problems.py`, a workspace's and its server's
   among them, and a test keeps the two tables to each other. A failure of the
   runtime or a channel is `runtime_unavailable`, `workspace_failed` or
-  `timeout` (`workspaces.answered`).
+  `timeout` (`workspaces.answered`). An upgrade to a WebSocket refused before it is accepted -
+  for its identity, its origin or its query - is answered over HTTP with the problem, as a
+  request is; a WebSocket accepted is refused with a frame of its own (see
+  [The terminal](#the-terminal)).
 
 ## Workspaces and servers
 
@@ -122,8 +128,10 @@ threads; a workspace whose server cannot be read is listed with why, as
 `server_error`.
 
 `everyone.py` lists every person's workspaces for administrators
-(`GET /api/servers/everyone`), each server with only `SERVER_FIELDS` — never its
-screen or its claude.ai address. The listing is read-only: no route lets one
+(`GET /api/servers/everyone`), each workspace with only its id, name, state, server,
+`server_error` and `claude_version`, copied one by one from the listing, so nothing
+else the listing answers reaches it, and each server with only `SERVER_FIELDS` —
+never its screen or its claude.ai address. The listing is read-only: no route lets one
 person act on another's workspaces.
 
 ## Limits
@@ -199,8 +207,9 @@ credentials file every workspace of theirs shares (see
   slips past a sign-out and a start seeds the account a sign-in has finished.
   A code is taken only until two of `LOGIN_TIMEOUT` before the sign-in
   container ends itself.
-- **Signing out of rcman** (`POST /api/me/sign-out`, `me.sign_out`) stops the
-  person's running servers unless `keep_sessions`, the default, and answers
+- **Signing out of rcman** (`POST /api/me/sign-out`, `me.sign_out`) ends the
+  person's terminals (see [The terminal](#the-terminal)), stops the person's
+  running servers unless `keep_sessions`, the default, and answers
   oauth2-proxy's sign-out address, which the page goes to.
 
 ## git in workspaces
@@ -215,9 +224,10 @@ files to stage reach git on stdin and are never recorded or logged.
 
 - **Where git runs.** In the workspace, at the root of its work folder, as the
   workspace's user, through the workspace's channel for reads and through
-  `Runtime.exec` for what carries stdin. Every call is wrapped in the layout's
-  `timeout` tool (`GIT_TIMEOUT`, `GIT_NETWORK_TIMEOUT` for fetch and push, shared by
-  the calls of one verb), and `exec` itself has a `timeout` of its own that ends a
+  `Runtime.exec` for what carries stdin or reaches a remote, which may take minutes
+  and would hold the channel meanwhile. Every call is wrapped in the layout's
+  `timeout` tool (`GIT_TIMEOUT`, `GIT_NETWORK_TIMEOUT` for fetch, push and sync, shared
+  by the calls of one verb), and `exec` itself has a `timeout` of its own that ends a
   call whose tool did not. `helpers/git_run.py` keeps the parsers and the rules for
   git's output and refusals; `repository.py` is the process half.
 - **What git is run with.** An environment of its own (`Repository.env`): the variables the
@@ -250,6 +260,9 @@ files to stage reach git on stdin and are never recorded or logged.
   rcman wrote while making it, cut to the last `LOG_MAX_CHARS`, from a line's
   start, and cleared once the workspace is ready. The listing answers both
   (`log` never for a ready one), and the poll the page already makes shows them.
+  It also answers `source_page`, the repository's page on GitHub, which
+  `source_page()` in `workspaces.py` derives from a `source` that
+  `rules.GITHUB_URL` takes whole, and null otherwise.
 - **The image check.** After `runtime.create`, `Workspaces._check_git` runs
   `git --version`: no git, or one that does not answer as rcman needs, or one older
   than `git_run.GIT_MIN_VERSION`, fails the workspace with the reason. The same check
@@ -275,15 +288,121 @@ files to stage reach git on stdin and are never recorded or logged.
   that races a person's deletion removes what it wrote and answers `not_allowed`.
   `GET /api/github` answers whether a token is stored from SQLite alone, never from
   the runtime. A commit is refused with `author_not_set` until a name is set; a
-  push to GitHub with `github_token_not_set` while no token is stored.
+  push or a sync to GitHub with `github_token_not_set` while no token is stored.
 - **Problem codes** are `problems.py`'s: `git_not_installed`, `git_failed` (what git
   said is in the problem's extra), `git_timeout`, `git_unrecognised_output`,
   `not_a_repository`, `file_invalid`, `file_outside_repository`, `nothing_staged`,
   `branch_invalid`, `branch_not_found`, `branch_name_taken`, `detached_head`,
-  `no_push_remote`, `no_commits_yet` and `github_token_not_set`.
+  `no_push_remote`, `no_commits_yet`, `github_token_not_set`, `diverged` and
+  `upstream_gone`.
 - **`commit-push`** commits and pushes; when the commit is made and the push fails,
   the answer carries the push's problem and the audit row's result is
   `committed_not_pushed`.
+- **`sync`** (`POST /api/git/sync`, audit `git.sync`) is the branch bar's Sync, beside
+  `fetch` (`git.fetch`), which is a `git fetch --prune` alone. `Repository.sync`
+  refuses what a push refuses (`_push_refusal`, shared with `push`) before anything is
+  fetched; then fetches with `--prune`, publishes a branch with no upstream as `push`
+  does, answers `upstream_gone` where the upstream is not there once fetched and
+  `diverged` where the branch and its upstream both have commits the other lacks,
+  fast-forwards with `git merge --ff-only`, which the person's `pull.*`, `merge.ff`
+  and `branch.<b>.mergeOptions` cannot turn into a merge or a rebase, and pushes where
+  the branch's push destination (`@{push}`, else its upstream) lacks a commit of it.
+  With a push remote of its own under `push.default=simple`, git names no `@{push}`,
+  so what is unpushed is counted against the upstream, as `status`'s `push_ahead` and
+  the page's Push count it: after a pull nothing is pushed there, and a commit the
+  upstream lacks is pushed where `git push` sends it. The
+  answer says what it did (`pulled`, `pushed`, `upstream_set`). When something was
+  pulled and the push fails, the answer carries the push's problem (`push_problem`, as
+  `commit-push` does, through the same `_push_problem`) and the audit row's result is
+  `pulled_not_pushed`; a push that fails with nothing pulled is the sync's own
+  refusal.
+
+## The terminal
+
+The **Terminal** tab is a shell in one of the signed-in person's ready workspaces, carried by
+the WebSocket route of `routers/terminal.py`, `/api/terminal?workspace=<id>`, which the
+OpenAPI description does not list; its protocol is the table below. `terminals.py` runs the
+shells, one per workspace (`Terminals`, `app.state.terminals`).
+
+- **Who.** The upgrade is refused before it is accepted, over HTTP with the problem and the
+  security headers, for want of an identity (`not_authenticated`, `not_allowed`) or the public
+  origin (`origin_refused`), and for a query naming no workspace (`validation_failed`). Once
+  accepted, the workspace is found among the person's (`Workspaces.owned`): another's, or none,
+  is `workspace_not_found`, an administrator's look at another's included; one of theirs that is
+  not ready is `workspace_not_ready` (`Workspaces.ready`). Each is a `problem` frame, whose
+  `problem` holds the problem details, and a close of `close_problem` plus the problem's status.
+  The page then has `FIRST_RESIZE_SECONDS` to send its first `resize`, which it sends as the
+  socket opens; a page that does not is closed with `close_policy`. The page cannot read a
+  refused upgrade; what it then does is [frontend.md](frontend.md)'s.
+- **The shell.** `Runtime.terminal_argv` starts it on a pty of rcman's own, as the container's
+  own user, with no restriction added or removed (see
+  [runtime.md](runtime.md#the-terminals-shell)). What is typed is written to the pty as it
+  comes, and what the shell prints is sent as it is read; the reader stops watching the pty while
+  a send is awaited, so nothing is queued. Nothing typed or shown is recorded or logged.
+- **Opening.** A terminal is open once its shell has written its pidfile (within
+  `PIDFILE_SECONDS`): on Podman, ending the client does not end its exec, so a terminal ended
+  before its shell named itself would leave the shell running. One whose shell does not name
+  itself is ended at once, and the page is told `workspace_failed`; one whose opening is
+  cancelled, its page gone, is ended at once. Each opening first ends what earlier terminals of
+  the workspace left (`terminals.sweep`, below).
+- **One per workspace.** A terminal opened on a workspace that has one replaces it: the first
+  is told `terminal_replaced` and ended, its session included, before the second's shell starts.
+  Opening, ending and sweeping a workspace's terminals take turns under its lock, so a deletion
+  that comes while one opens ends it once it is open; a sign-out is counted per person, the
+  count taken as the socket is accepted, and a terminal a sign-out came before since is ended
+  as it opens, with `signed_out`.
+- **What ends it.** Its shell ending (`exit`, with the shell's exit code; the row is read again,
+  so a shell that ended because its workspace went is `workspace_gone`); its page closing the
+  socket or vanishing, which uvicorn's keepalive ping finds (`terminal_lost`); its person
+  signing out of rcman (`me.sign_out`: `signed_out`); its workspace being deleted
+  (`Workspaces.on_removing`, before the container goes: `workspace_gone`); and, every
+  `REVOCATION_SECONDS`, a look at the table finding the person no longer active (`not_allowed`)
+  or the workspace no longer theirs and ready (`workspace_gone`), which catches what rcman did
+  not do itself, as `rcman-admin`'s deletions. That is revocation, not a time limit: there is
+  none, nor an idle timeout. A look that fails, as on a database that is busy, is logged and
+  tried again at the next. Of what ends a terminal at the same moment, its own end says most,
+  then a revocation, then the page (`PRIORITY`). When rcman stops, uvicorn closes every socket
+  (`close_closing`), and the app's shutdown closes what is left (`service_closing`); both are
+  best-effort - a terminal that fails to close is logged, and keeps neither the others nor the
+  rest of the shutdown from closing - and the restore's sweep is what makes sure (see
+  [runtime.md](runtime.md#the-terminals-shell)).
+- **Ending.** `Terminal.cleanup` closes the pty, ends the program on it (SIGTERM, then SIGKILL,
+  each after `END_GRACE_SECONDS`), then, through the workspace's channel, ends the shell's
+  session (`end_leader`): SIGHUP to every process in it, then SIGKILL, by the leader its
+  pidfile named when it opened, which closing the pty may have ended already (see
+  [runtime.md](runtime.md#the-terminals-shell)). A process that left the session, as `setsid`
+  or a daemon does, is not the terminal's.
+- **uvicorn.** uvicorn speaks WebSocket only through a package it does not depend on itself;
+  rcman depends on `websockets`. uvicorn's `auto` picks `WEBSOCKETS`, the implementation over it,
+  already; `--ws` names it all the same in the unit's `ExecStart` and in the browser tests'
+  backend (`frontend/playwright.config.ts`), so that which one runs is written down, and
+  `tests/test_terminal.py` holds the two to each other and to `WEBSOCKETS`.
+- **Audit.** The route depends on `audit.Session("terminal")`, which records `terminal.open`
+  (`ok`, or the problem it was refused with) and, after an open that worked, `terminal.close`
+  with how it ended (see [Audit](#audit)).
+
+### The terminal's protocol
+
+`PROTOCOL` in `routers/terminal.py`; `tests/test_terminal.py` holds this table to it.
+
+| Name | Value | Meaning |
+|---|---|---|
+| `path` | `/api/terminal` | The route |
+| `query` | `workspace` | The query parameter naming the workspace by its id |
+| `resize` | `resize` | The page's one kind of text frame, `{"type", "cols", "rows"}`: first, before anything is typed, and on every fit |
+| `exit` | `exit` | The shell ended: `{"type", "code"}`, its exit code |
+| `closed` | `closed` | Something else ended the terminal: `{"type", "reason"}` |
+| `problem` | `problem` | The workspace was refused: `{"type", "problem"}`, the problem details |
+| `size_min` | `1` | The fewest columns or rows a resize may give |
+| `size_max` | `65535` | The most |
+| `close_normal` | `1000` | The close after `exit` or `closed` |
+| `close_unsupported` | `1003` | A text frame that is not a JSON object of type `resize`, first or later |
+| `close_policy` | `1008` | A resize whose size is not a whole number in range; a binary frame before the first resize; no first resize within `FIRST_RESIZE_SECONDS` |
+| `close_closing` | `1012` | rcman is stopping |
+| `close_problem` | `4000` | Plus the problem's status, after a `problem` frame |
+| `reasons` | `terminal_replaced`, `workspace_gone`, `signed_out`, `not_allowed`, `service_closing` | What a `closed` frame says |
+
+Binary frames are what is typed and what the shell prints, as bytes, both ways.
 
 ## Claude Code versions
 
@@ -365,16 +484,20 @@ place of `ok`.
 
 A route that changes something depends on `Recorder("<action>")`, which writes
 one row when the request finishes, with `ok` or the error code, and logs the
-same event as a JSON line on the `rcman.audit` logger. uvicorn configures only
+same event as a JSON line on the `rcman.audit` logger. A WebSocket route depends on
+`Session("<action>")` instead, which writes `<action>.open` when the socket opens or is refused
+once accepted, and `<action>.close` when one that opened closes; whatever the route has not
+recorded by the time it ends is recorded then. uvicorn configures only
 its own loggers, so `create_app` calls `journal.install` on each logger whose
 events go to the journal — `rcman.audit`, `rcman.client`, `rcman.unrecognised`,
-`rcman.workspaces` and `rcman.claude_versions` — which gives it one handler writing the bare line to
+`rcman.workspaces`, `rcman.claude_versions` and `rcman.terminals` — which gives it one handler writing the bare line to
 standard error; systemd sends it to the journal. `tests/test_journal.py` checks
 that the app installs each of them. `tests/test_audit.py` starts the app with the unit's own
 `ExecStart` and reads the line from its output. It also finds every changing
 route in the route table and fails on any that neither records nor is listed
 in `audit.EXEMPT` with a reason that also appears in
-[the audit guide](../docs/audit.md); it then drives every audited route and
+[the audit guide](../docs/audit.md), and on any WebSocket route (`routes.websocket_routes`)
+without a `Session`; it then drives every audited route and
 checks its row, and holds the guide's table of actions to the actions the
 routes record. The results a row can have besides an error code are
 `audit.RESULTS`, and a test holds the guide's results table to them. The table is append-only: a trigger in `db.py`'s migrations

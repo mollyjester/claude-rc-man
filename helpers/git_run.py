@@ -60,6 +60,15 @@ def version_of(text: str) -> tuple[int, int]:
     return int(found.group(1)), int(found.group(2))
 
 
+def left_right(text: str) -> tuple[int, int]:
+    """The two counts ``rev-list --left-right --count A...B`` writes: the commits of A that
+    B lacks, and of B that A lacks."""
+    found = re.fullmatch(r"(\d+)\t(\d+)\n?", text)
+    if not found:
+        raise GitUnrecognised(text)
+    return int(found.group(1)), int(found.group(2))
+
+
 class _Message:
     """What git says, kept up to MAX_GIT_MESSAGE_LINES lines and counted beyond."""
 

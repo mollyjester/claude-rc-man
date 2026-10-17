@@ -101,3 +101,63 @@ def test_reads_do_not_need_an_origin(client):
 
 def test_health_needs_no_identity(client):
     assert client.get("/api/health").json() == {"status": "ok"}
+
+
+# --- the upgrade to a WebSocket ---------------------------------------------------------------
+
+
+def upgrades_without_the_origin(client, paths) -> list[str]:
+    """The WebSocket routes of ``paths`` that accept an upgrade from a signed-in person without
+    the public origin, or with another: a WebSocket counts as a change, since a page of any
+    site may open one and the browser sends its cookies with it."""
+    from starlette.testclient import WebSocketDenialResponse
+
+    found = []
+    for path in paths:
+        for origin in (None, "https://evil.example.com"):
+            headers = as_user(ALICE) | ({"Origin": origin} if origin else {})
+            try:
+                with client.websocket_connect(f"{path}?workspace=1", headers=headers):
+                    pass
+            except WebSocketDenialResponse as denied:
+                if (denied.status_code, denied.json()["code"]) == (403, "origin_refused"):
+                    continue
+            found.append(f"{path} {origin}")
+    return found
+
+
+def test_every_websocket_upgrade_needs_the_public_origin(app, client):
+    paths = [r.path for r in routes.websocket_routes(app)]
+    assert paths  # non-vacuity
+    assert upgrades_without_the_origin(client, paths) == []
+    # the control: with the public origin the upgrade is accepted
+    with client.websocket_connect(f"{paths[0]}?workspace=1", headers=changing(ALICE)):
+        pass
+
+
+def test_the_origin_check_finds_a_websocket_route_that_takes_any_origin(app):
+    """Planted twin: a route reading the identity header itself takes any origin, and is
+    found; one depending on current_user is not."""
+    from fastapi import Depends, WebSocket
+    from fastapi.testclient import TestClient
+    from rcman.identity import current_user
+
+    @app.websocket("/api/planted-own-identity")
+    async def own_identity(websocket: WebSocket):
+        assert websocket.headers.get("x-forwarded-email")
+        await websocket.accept()
+        await websocket.close()
+
+    @app.websocket("/api/planted-current-user")
+    async def checked(websocket: WebSocket, identity=Depends(current_user)):
+        await websocket.accept()
+        await websocket.close()
+
+    with TestClient(app) as client:
+        found = upgrades_without_the_origin(
+            client, ["/api/planted-own-identity", "/api/planted-current-user"]
+        )
+    assert found == [
+        "/api/planted-own-identity None",
+        "/api/planted-own-identity https://evil.example.com",
+    ]

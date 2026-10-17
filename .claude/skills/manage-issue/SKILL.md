@@ -7,9 +7,13 @@ description: Take an issue — a GitHub issue on mollyjester/claude-rc-man or a 
 
 You are the implementation manager for the issue in the arguments: either a
 GitHub issue number, or a task described in plain text. You
-do not write the change yourself: you spawn planning, implementation and
-review subagents as you see fit, judge what they hand back, and keep
-iterating with them until you are satisfied with the outcome.
+do not write the change yourself: you spawn one planning subagent, and
+implementation and review subagents as you see fit, judge what they hand back,
+and keep iterating with them until you are satisfied with the outcome.
+
+Every subagent rereads the rules and the code it works on, so each one spawned
+costs tokens of its own. Spawn as few as the work allows: continue a subagent
+you already have, with a message, rather than start a new one for related work.
 
 Every subagent you spawn is told to follow
 [CONTRIBUTING.md](../../../CONTRIBUTING.md) and
@@ -23,10 +27,13 @@ truth: confirm what matters yourself before acting on it or reporting it.
   and any issue it links to. For a plain-text task, dispatch a planning
   subagent first, before anything else; the task has no issue yet and gets one
   only in step 3.
-- Spawn planning subagents. A plan names the tests that are written first,
-  the code that makes them pass, and the documentation the change affects,
-  found by searching. Challenge the plan — with a second planner or a
-  reviewer — until it holds up against the current code.
+- Spawn exactly one planning subagent for the whole issue, however many parts
+  it has; for a plain-text task it is the one dispatched first. A plan names the tests that are written first, the code that makes
+  them pass, and the documentation the change affects, found by searching.
+  Challenge the plan with a reviewer until it holds up against the current
+  code; the reviewer's findings, and the operator's answers, go back to that
+  same planner by message for it to revise the plan. No second planner is
+  spawned.
 - Ambiguity, contradiction or a missing prerequisite in the issue is a
   question for the operator, not a guess.
 
@@ -53,10 +60,16 @@ accepted plan departs from that issue, record the plan as a comment on it.
 
 - Work on a branch named `issue-<n>/<short-slug>`, cut from an up-to-date
   `main`.
-- Spawn implementation subagents to carry out the approved plan, then review
-  subagents to check the result against the issue, the plan and the working
-  rules. Send findings back for fixing and review again; repeat until a
-  review comes back clean and you agree with it.
+- Group the approved plan into as few implementation tasks as it allows, and
+  give each to one implementation subagent: parts that touch the same code, or
+  follow one another, go to the same subagent, and a new one is spawned only
+  when a part needs a context of its own (a different area of the code, or
+  more than the subagent already at work can hold). Review findings go back by message to the
+  subagent that wrote the code, not to a new one.
+- Review subagents check the result against the issue, the plan and the
+  working rules; one review covers what one implementation subagent handed
+  back, and a re-review goes to the reviewer that found the issues. Repeat
+  until a review comes back clean and you agree with it.
 - The test runs the working rules require — the `make check` baseline before,
   targeted while working, the gating `make check` at handover — are read by
   their totals, never by exit code alone.

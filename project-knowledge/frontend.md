@@ -7,8 +7,8 @@ version is `frontend/.nvmrc`.
 
 The `make` targets that set up, build and test it are in
 [tests.md](tests.md#running). `cd frontend && npm run dev` runs a development
-server that forwards `/api` to a local backend, at the address
-`frontend/vite.config.ts` names.
+server that forwards `/api` to a local backend, the Terminal tab's WebSocket
+included, at the address `frontend/vite.config.ts` names.
 
 ## Formatting and lint
 
@@ -42,7 +42,8 @@ matters, so a suppression at the site is preferred.
 ## Rules it keeps
 
 - **The server validates; the page shows what it said.** `src/api.ts` is the
-  only way to the backend; every failure the server describes becomes an
+  only way to the backend, the Terminal tab's WebSocket included
+  (`api.openTerminal`); every failure the server describes becomes an
   `ApiError` carrying the problem details as sent, built by `problemFrom`, which also turns the
   problem details an answer reports, as Commit & Push's `push_problem`,
   into one; `src/ProblemView.tsx` shows them — the title,
@@ -112,7 +113,8 @@ matters, so a suppression at the site is preferred.
   panel shows the version its server runs, and a quiet note while that is not
   the approved version (`claude_approved` in the Workspaces
   answer). The Changes section is in the panel of
-  every workspace that is ready, and in none other. The Settings page's GitHub
+  every workspace that is ready, and in none other, and so are the panel's tabs,
+  **Terminal** with them. The Settings page's GitHub
   token part asks whether a token is stored, and offers its field and Remove only
   once the server answers; when the server refuses the question, the part shows
   the refusal and no field.
@@ -132,7 +134,15 @@ matters, so a suppression at the site is preferred.
   be tried, the branch has a commit (`branch.commit`), which the section
   otherwise says it lacks, and where the branch pushes lacks a commit of
   it or is unknown (`push_ahead`), and Commit's menu, which holds Commit &
-  Push, where a push can be tried and Commit is offered; Switch is offered for a local branch other than the current one
+  Push, where a push can be tried and Commit is offered; Sync takes Refresh
+  branches' place once the status is known, where a push can be tried, the
+  branch has a commit, no merge is under way (`merging`, which a
+  fast-forward refuses), the upstream, where there is one, is not gone
+  (`ahead` and `behind` not null), and the branch and its upstream have not
+  diverged (both `ahead` and `behind` above 0), which the section otherwise
+  says (`m.diverged`); what a sync did is said (`m.synced`), and a push that
+  failed after a pull is shown as the sync's refusal beside it; Switch is
+  offered for a local branch other than the current one
   and for a remote branch no local branch tracks and whose name no local
   branch takes (`taken_by`), which it says otherwise; Stage selected and
   Unstage selected are shown only while their list has files, and enabled
@@ -181,7 +191,13 @@ matters, so a suppression at the site is preferred.
   properties that take a colour, since the parser also reads words such as
   `background` as system colours. Each pair of colours text is drawn in meets
   WCAG AA contrast in both schemes; that is checked by hand when a colour
-  changes.
+  changes. The Terminal tab's colours are the `--terminal-*` properties, which
+  `src/terminalTheme.ts` reads into xterm.js (`THEME` names each, and
+  `src/styles.test.ts` holds every one it names to both schemes); xterm.js's own
+  `xterm.css`, whose colours are written out, is not imported: what xterm.js needs
+  of a stylesheet is in `src/styles.css`, with its colours taken from those
+  properties; since those rules take the outline off xterm.js's own element, the
+  screen shows where focus is (`.terminal-screen:focus-within`).
 - **Each kind of status dot has its own shape.** `src/workspaces-guide.test.ts`
   reads each `.dot-<kind>` rule in `src/styles.css`, requires the shapes to
   differ, and holds the shape table in `docs/workspaces.md` to them.
@@ -194,9 +210,12 @@ matters, so a suppression at the site is preferred.
 |---|---|
 | `src/App.tsx` | Who is signed in, the navigation, whose **Admin** menu is a `usePopup` that also closes when a page is chosen and when the page changes, and the routes; **Sign out of rcman** beside the person's name, a plain button in one group with **Keep servers running after sign-out**, which leaves through `away` for oauth2-proxy's sign-out; the skip link and `main`'s focus target |
 | `src/AdminPages.tsx` | `ADMIN`, the administrators' pages by name, which the links in the administrators' warning use, and `ADMIN_PAGES`, the same pages in order, which the navigation's **Admin** menu and the routes are built from |
-| `src/Dashboard.tsx` | The Workspaces page, under its own `h1`: the person's workspaces, each with its dot (`dotFor` in `src/Servers.tsx`) and its state while it is not ready, and **New workspace**'s form (a name, and an optional GitHub address: with one it posts to `/api/git/clone`, naming the workspace only when a name is typed, and otherwise to `/api/workspaces`; the server judges both and its refusal of either is shown under the field's label), beside the selected workspace's panel; the selection kept in the address as `?workspace=`; the workspaces refreshed every `POLL_MS`, a refresh's failure shown until a later refresh works, and an answer older than one asked for since dropped. A new workspace is selected once the server takes its name. The panel says what a workspace being made, deleted or failed is, with the steps (`log`) in a figure while it is not ready, and for a ready one has its **Claude server** section and its **Changes** section (`src/Changes.tsx`, polled at the page's own `pollMs`); a workspace that failed says why in a sentence (`src/workspaceError.ts`) with what the server said behind **Details**; **Delete workspace** is a section of its own at the foot of the panel, and asks first, naming the files not committed and the commits not pushed that the Changes section knows of (its `onUnsaved`); after a delete no workspace is selected and the page says what was deleted |
+| `src/Dashboard.tsx` | The Workspaces page, under its own `h1`: the person's workspaces, each with its dot (`dotFor` in `src/Servers.tsx`) and its state while it is not ready, and **New workspace**'s form (a name, and an optional GitHub address: with one it posts to `/api/git/clone`, naming the workspace only when a name is typed, and otherwise to `/api/workspaces`; the server judges both and its refusal of either is shown under the field's label), beside the selected workspace's panel; the selection kept in the address as `?workspace=`; the workspaces refreshed every `POLL_MS`, a refresh's failure shown until a later refresh works, and an answer older than one asked for since dropped. A new workspace is selected once the server takes its name. The panel has, right under its name, a link to the repository's page (`source_page`, which the server derives; the page derives nothing from `source`), opening in a new tab, in every state, and none where `source_page` is null; it says what a workspace being made, deleted or failed is, with the steps (`log`) in a figure while it is not ready, and for a ready one has two ARIA tabs (`TABS`), **Overview**, chosen first, and **Terminal**, moved between with the arrow keys, Home and End, each panel taking focus (`tabIndex` 0) as the WAI-ARIA tab pattern has it, the one chosen kept in the address as `?tab=` (none for Overview), replacing the entry, so that Back leaves the workspace rather than the tab; Overview holds its **Claude server** section and its **Changes** section (`src/Changes.tsx`, polled at the page's own `pollMs`), and Terminal `src/Terminal.tsx`, mounted when the tab is first shown, so that visiting a workspace takes over no terminal; each tab's panel stays mounted, hidden, while the other is shown, so the Changes section still knows what a delete would lose and the terminal stays open; a workspace that failed says why in a sentence (`src/workspaceError.ts`) with what the server said behind **Details**; **Delete workspace** is a section of its own at the foot of the panel, below the tabs, and asks first, naming the files not committed and the commits not pushed that the Changes section knows of (its `onUnsaved`); after a delete no workspace is selected and the page says what was deleted |
 | `src/Changes.tsx` | The Changes section of a ready workspace's panel, for the repository of the workspace it is given by id: its heading with the branch bar (`src/BranchBar.tsx`) beside it, the staged and not staged files, each list folding under a heading that counts its files and more, with its Stage selected or Unstage selected beside it, a checkbox for each file that can be selected and Select all, and each file's change as its letter (`m.changeLetters`) in a colour of its own, with its word (`m.changes`) as its accessible text and title; Commit, a split button whose menu holds Commit & Push; and the status line, "Checked …" (`m.checkedAgo`) worked out again every `CHECKED_TICK_MS` while the section is shown, and Refresh changes. `src/Changes.test.tsx` holds every change to a letter and a word, and the letters to differing. A list is open at first while it has files, opens when files come to it, and otherwise stays as the person left it. The status is fetched when the section opens, every `POLL_MS` while it is open and after every action; an answer older than one asked for since is dropped. Its branches are fetched when it opens, after every action and when the current branch changes. What is checked is kept across refreshes, for files still listed. A refusal is shown beside what was tried until any later action there works |
-| `src/BranchBar.tsx` | The branch bar: the branch lookup, a button naming where the repository is, whose pop-up has a filter, which asks rcman nothing, over the local and remote branches listed, each a switch where one is offered; **+**, New branch's form in a pop-up; Refresh branches, its icon turning while the fetch runs; ahead and behind as arrows, with `m.tracking` as their accessible text; and Push. It is shown once either the status or the branches are known, so a status that cannot be had leaves the branches to switch to; the arrows and Push wait for the status |
+| `src/Terminal.tsx` | The Terminal tab: a shell in the workspace over the WebSocket `api.openTerminal` opens (`ws:` or `wss:` as the page is, `binaryType` `arraybuffer`), opened as the tab is mounted and closed as it is unmounted — by another workspace selected, another page or the panel going. It loads `src/xtermView.ts` with a dynamic `import()`, so xterm.js is a chunk of its own that the page fetches only when a Terminal tab is first shown. A load that fails is noted as a `page_error` and said in words of its own (`m.terminalNotLoaded`), with a button that reloads the page (`browser.reload` in `src/browser.ts`, which the tests replace) in place of Reconnect: it fails for good where the page was loaded before an upgrade and names a chunk the new build does not have, and the reload gets the new `index.html`, which the backend serves for the browser to check again each time (see [backend.md](backend.md)). The screen is made only once the tab is shown with xterm.js loaded, so that it is never made, nor its size sent, in a hidden panel that cannot be measured; the socket waits for the screen. It sends the size first, as soon as the socket opens, and again on every fit that changes it, then what is typed as binary frames (`TextEncoder`), and draws what rcman sends; it says whether it is connecting, connected or closed, and, once closed, what closed it, in the words of `m.terminalClosed` for a `closed` frame's reason (a reason with none shown as it is), `m.terminalExited` for an `exit` frame, a `problem` frame's problem shown by `ProblemView`, rcman stopping for a close of `close_closing` with no frame, and otherwise the connection lost; **Reconnect** opens a new socket on the same screen, cleared, and puts focus in the screen, since the button goes as it is pressed; nothing reconnects by itself, so a terminal taken over elsewhere (`terminal_replaced`) stays closed. Reconnect is not offered where rcman would refuse another terminal: after a `problem` frame, and after a `closed` frame whose reason is in `REFUSED_AGAIN` (the workspace gone, its person signed out or no longer allowed in); `onFailure` is then called, so that the page refreshes what it shows of the workspace. Where that refresh still lists the workspace as ready, as it can just before a deletion or a sign-out reaches the list, the tab stays without Reconnect until another workspace is selected and then this one again, or the page is reloaded, either of which mounts a new Terminal tab. A socket that closes before it opened, as a refused upgrade does (the page is told no more), is noted as `unreachable` for `GET /api/terminal` (see [Reporting failures](#reporting-failures)) and calls `onFailure`, which refreshes the workspaces once, so that the page says whether rcman is not reached or the sign-in has ended. The screen is fitted when the tab is shown again and whenever its box changes size (`ResizeObserver`), and its colours read again when the system's colour scheme changes |
+| `src/terminalSocket.ts` | The terminal's protocol: `PROTOCOL`, which `tests/test_terminal.py` holds to the backend's (and so to [backend.md](backend.md#the-terminals-protocol)'s table) by loading the module with Node, for which it imports nothing; the resize frame and the reading of rcman's text frames |
+| `src/xtermView.ts`, `src/terminalTheme.ts` | xterm.js and its fit add-on behind the few calls the Terminal tab makes, which the component tests replace (jsdom has neither a canvas nor a layout): a `minimumContrastRatio` of WCAG AA's, so that colours a program asks for are readable too, and a cursor that blinks only where the system does not ask for reduced motion; the theme read from the `--terminal-*` properties. Both packages are pinned exactly in `frontend/package.json`, as Biome is: the stylesheet copies xterm.js's own rules, which name its classes, and the fit add-on reads xterm.js's internals, so a new release of either is taken only on purpose |
+| `src/BranchBar.tsx` | The branch bar: the branch lookup, a button naming where the repository is, whose pop-up has a filter, which asks rcman nothing, over the local and remote branches listed, each a switch where one is offered; **+**, New branch's form in a pop-up; Refresh branches, which posts `/api/git/fetch`, or, where the section says a sync can run (`syncable`), Sync in its place, which posts `/api/git/sync`, each label calling only its own route, its icon turning while either runs; ahead and behind as arrows, with `m.tracking` as their accessible text; and Push. It is shown once either the status or the branches are known, so a status that cannot be had leaves the branches to switch to; the arrows and Push wait for the status |
 | `src/usePopup.ts` | A pop-up opened by a button, as a disclosure: it closes on Escape, putting focus back on the button, on a press outside it and when focus moves outside it. Every pop-up a button opens uses it, the **Admin** menu among them. The stylesheet places the branch bar's pop-ups against the Changes heading's row, so they stay inside the section at any width |
 | `public/favicon.svg` | The tab's icon, `*rc` in white on a black circle, which `index.html` links; Vite copies `public/` into the build as it is |
 | `src/TableScroll.tsx`, `src/markdownTables.ts`, `src/useTitle.ts`, `src/workspaceError.ts` | The box a table scrolls in; the pipe tables of a help page; the browser tab's title; a failed workspace's sentence |
@@ -218,7 +237,10 @@ A failure rcman could not see is reported to it, to be written to the journal
 [the journal guide](../docs/journal.md#errors-reported-by-the-page)). Its kinds
 are `UNREACHABLE`, `SIGNED_OUT` and `UNEXPECTED_RESPONSE` from `src/api.ts`,
 and `PAGE_ERROR` from `src/clientErrors.ts`; a problem the server sent is never
-reported. `noteFailure` in `src/clientErrors.ts` writes the original error to
+reported. A Terminal tab's socket that closed before it opened is an
+`UNREACHABLE` for `GET /api/terminal`, with the close code in its message: the
+browser says nothing more of a refused upgrade, so the page cannot tell rcman not
+reached from a refusal. `noteFailure` in `src/clientErrors.ts` writes the original error to
 the browser's console and adds a report to the queue, without the query of the
 request or of the page. Alike failures — the same kind, method, path, status
 and error name — are one report, counted, with the first and the last time;
@@ -248,12 +270,20 @@ the rest. Nothing of this is shown to the person.
   reject, as a browser's does, and one answering `SIGNED_OUT_REPLY` answers an
   opaque redirect, as oauth2-proxy's redirect is seen. `renderApp` and `renderAlone` also return the
   router's current location and a `navigate`, whose `navigate(-1)` is the
-  browser's back button, and takes `pollMs`, 0 unless a test gives one. `src/test/setup.ts` runs the role queries once
+  browser's back button, and takes `pollMs`, 0 unless a test gives one, and
+  `strict`, to render in React's strict mode, as `src/main.tsx` does.
+  `src/test/setup.ts` runs the role queries once
   before each file's first test and sets how long a `findBy*` waits, both
   so that the suite passes on a loaded machine; its comments say why. After
   each test it empties the queue of reports (`forgetReports`) and forgets the
-  sender (`forgetSending`), so that neither sends during the next test. The
-  tests that hold a guide in `docs/` to the page read its tables with
+  sender (`forgetSending`), so that neither sends during the next test. It puts
+  `src/test/fakeXterm.ts` in the place of `src/xtermView.ts` for every test,
+  and installs before each `src/test/fakeSocket.ts`, a WebSocket that records
+  each socket opened and what the page sent on it, closes as a browser's does,
+  its close event a moment after `close()`, and through which a test plays
+  rcman's end, and `src/test/fakeLayout.ts`'s ResizeObserver and `matchMedia`,
+  which jsdom lacks, and whose layout change and colour scheme a test brings
+  about. The tests that hold a guide in `docs/` to the page read its tables with
   `guideTable` in `src/test/guideTable.ts`, and the tests that read
   `src/styles.css` take its comments out with `uncommented` in
   `src/test/css.ts`.
@@ -278,9 +308,10 @@ the rest. Nothing of this is shown to the person.
 
   The world holds one public repository, `https://github.com/octo/widget`
   (`SEEDED_ADDRESS` in `tests/e2e_server.py`), which the specs that make a
-  workspace from an address clone; `keep_off_github` gives every clone the
-  host runtime runs the world's folder in place of github.com and refuses one
-  not told so, so that nothing typed into the page reaches the real GitHub (see
+  workspace from an address clone; `keep_off_github` gives every git command
+  the host runtime runs that may reach a remote, as `tests/git_fixtures.py`
+  judges one, the world's folder in place of github.com and refuses one not
+  told so, so that nothing typed into the page reaches the real GitHub (see
   [tests.md](tests.md)).
 
   The backend makes the world, and refuses a folder that already exists.
