@@ -80,8 +80,10 @@ through a real channel and `exec`, `tests/test_devcontainer.py` the pure module 
 the repository's page, the route, cancel by deletion, restart recovery)
 on a host runtime that runs real git
 and can answer a clone with what git would say or hold it as a running git, `tests/test_git_account.py` `gitaccount.py`
-against a host runtime that records what it is asked, and `tests/test_git.py` the
-git routes. `tests/git_fixtures.py`, which is not a test module, makes real
+against a host runtime that records what it is asked (git's and gh's files, the failures of
+a save and a forget, and the restore's writes of gh's files), and `tests/test_git.py` the
+git routes. `tests/github_tokens.py`, which is not a test module, holds tokens of the shapes
+the token rule lets in that YAML or a shell would read as something else. `tests/git_fixtures.py`, which is not a test module, makes real
 repositories, their origins and their branches with the system's git, under
 a fixture configuration of its own, with a home, `FIXTURE_HOME`, that does
 not exist, so the configuration git reads is only what a test plants;
@@ -158,6 +160,12 @@ cloned into a workspace that then works, a private one failing without a token a
 cloning with one (which is kept out of the repository), a refused token, a
 repository that is not there and a GitHub that cannot be reached, each said in plain
 words, and the deletion of a workspace being cloned stopping git and leaving nothing.
+Its tests of `gh` build the default image itself from the installer's Containerfile, in
+the account's Podman, and run Ubuntu's `gh` there as one of Claude's children, with no
+network: no token before a save and the token after one, none from the very next command
+after a forget, every shape of token in `tests/github_tokens.py` read back as it was saved,
+and gh writing nothing into the folder as rcman writes it, against a control without
+`config.yml` in which it does, and in which a stored token makes every command fail.
 The certificates, the derived image's build file and the service that serves the
 repositories are `tests/container/github_stand_in.py`, which is standard library
 only so that the podman host can run it as it is from `/src`. It skips anywhere

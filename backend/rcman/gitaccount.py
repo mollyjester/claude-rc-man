@@ -3,14 +3,21 @@
 Both are kept in SQLite (``user_settings``, ``github_tokens``) and written into the
 git folder of the person's volume, which every workspace of theirs binds at
 ``~/.config/git`` (runtime.py), so that git there — rcman's and Claude's — uses them
-with nothing in an argv. Two files, both rcman's: ``config``, which rcman owns whole
-(the author, and a credential helper that only reads the other file, after an empty one
-that drops every helper listed before it), and
-``credential`` (the token, owner-only, empty once forgotten). Edits made to them in a
-workspace are replaced by the next save.
+with nothing in an argv, and so does gh, which ``GH_CONFIG_DIR`` points at the same folder
+(runtime.child_env). Four files, all rcman's: ``config``, which rcman owns whole (the author,
+and a credential helper that only reads ``credential``, after an empty one that drops every
+helper listed before it); ``credential`` (the token, owner-only, empty once forgotten);
+``config.yml``, gh's configuration, which rcman owns whole and which says only its version;
+and ``hosts.yml``, gh's hosts (the token, owner-only, empty once forgotten). Edits made to
+them in a workspace are replaced by the next save.
 
 A change writes the volume first and SQLite second, under the person's lock, so one
-that fails changes nothing; reading the state never asks the runtime.
+that fails changes nothing: a save whose write fails puts back the token files it had begun to
+write (``config`` and ``config.yml`` are written as they already are). A
+forget whose write fails puts nothing back, so the token is in fewer places, never more, and
+its row stays for Remove to be tried again. Reading the state never asks the runtime. At every
+restore, gh's files are written for everyone let in (``write_gh_for_everyone``), so that every
+volume has them, whatever wrote it.
 """
 
 from __future__ import annotations
@@ -24,6 +31,7 @@ from dataclasses import dataclass
 from rcman import db, people
 from rcman.identity import Identity
 from rcman.problems import Problem
+from rcman.runtime import GH_CONFIG, GH_CONFIG_FILE, GH_HOSTS_FILE
 from rcman.workspaces import Workspaces, answered
 
 log = logging.getLogger("rcman.workspaces")
@@ -74,6 +82,28 @@ def credential_text(token: str | None) -> str:
     return "" if token is None else f"username={USERNAME}\npassword={token}\n"
 
 
+def gh_config_text() -> str:
+    """The whole of ``config.yml``: only the version of gh's configuration it is."""
+    return GH_CONFIG
+
+
+def gh_hosts_text(token: str | None) -> str:
+    """The whole of ``hosts.yml``: the token for github.com, empty when there is none. The token
+    is one single-quoted YAML string, in which a quote is doubled and nothing else is special;
+    no ``user`` is named, since rcman does not know the account's login and gh reads the token
+    without it."""
+    if token is None:
+        return ""
+    quoted = "'" + token.replace("'", "''") + "'"
+    return f"github.com:\n    oauth_token: {quoted}\n    git_protocol: https\n"
+
+
+def token_files(token: str | None) -> dict[str, str]:
+    """The files that hold the token, each whole, in the order a change writes them: empty
+    ones where there is none."""
+    return {GH_HOSTS_FILE: gh_hosts_text(token), "credential": credential_text(token)}
+
+
 class GitAccount:
     def __init__(self, workspaces: Workspaces):
         self.workspaces = workspaces
@@ -99,6 +129,23 @@ class GitAccount:
             self.workspaces.runtime.put_account(
                 identity.person, identity.slot, name, text.encode("utf-8")
             )
+
+    def _put_all(
+        self, identity: Identity, files: dict[str, str], before: dict[str, str] | None
+    ) -> None:
+        """Write ``files`` in their order. Where one fails, the ones ``before`` names that were
+        written, and the one whose write failed, which may have landed before the failure was
+        said, are put back as it has them, and the failure is raised; with no ``before``,
+        nothing is put back."""
+        done = []
+        try:
+            for name, text in files.items():
+                done.append(name)  # before the write: a failed one may have landed
+                self._put(identity, name, text)
+        except Exception:
+            if before is not None:
+                self._restore(identity, {n: before[n] for n in reversed(done) if n in before})
+            raise
 
     def _check_still_let_in(self, identity: Identity, written: bool = True) -> None:
         """A person being deleted meanwhile has had their volume removed, or is about to:
@@ -138,15 +185,18 @@ class GitAccount:
         return found and found[0]
 
     def save_token(self, identity: Identity, token: str) -> None:
-        """Store the token, in place of any stored before, for git in every workspace."""
+        """Store the token, in place of any stored before, for git and gh in every
+        workspace."""
         with self.workspaces.person_lock(identity.person):
             self._check_still_let_in(identity, written=False)
             con = self._con()
             try:
                 author = author_in(self._row(con, identity), identity.email)
-                before = credential_text(self._stored_token(con, identity))
-                self._put(identity, "config", config_text(author))
-                self._put(identity, "credential", credential_text(token))
+                before = token_files(self._stored_token(con, identity))
+                # config and config.yml are written as they already are, once rcman has
+                # written them: only the token files have a before to put back.
+                files = {"config": config_text(author), GH_CONFIG_FILE: gh_config_text()}
+                self._put_all(identity, files | token_files(token), before)
                 self._check_still_let_in(identity)
                 try:
                     con.execute(
@@ -157,29 +207,69 @@ class GitAccount:
                     con.commit()
                 except Exception:
                     con.rollback()  # release SQLite's lock before anything else is done
-                    self._restore(identity, {"credential": before})
+                    self._restore(identity, before)
                     raise
             finally:
                 con.close()
 
     def forget_token(self, identity: Identity) -> None:
-        """Forget the token: git in every workspace has none from its next call on."""
+        """Forget the token: git and gh in every workspace have none from their next command
+        on. A write that fails puts nothing back and keeps the row, so the token is in fewer
+        places, never more, and forgetting it can be tried again."""
         with self.workspaces.person_lock(identity.person):
             self._check_still_let_in(identity, written=False)
             con = self._con()
             try:
-                before = credential_text(self._stored_token(con, identity))
-                self._put(identity, "credential", credential_text(None))
+                before = token_files(self._stored_token(con, identity))
+                self._put_all(identity, token_files(None), None)
                 self._check_still_let_in(identity)
                 try:
                     con.execute("delete from github_tokens where person = ?", (identity.person,))
                     con.commit()
                 except Exception:
                     con.rollback()  # release SQLite's lock before anything else is done
-                    self._restore(identity, {"credential": before})
+                    self._restore(identity, before)
                     raise
             finally:
                 con.close()
+
+    def write_gh_for_everyone(self) -> None:
+        """Write gh's files for every person let in, each under their lock: ``config.yml``
+        for all, and ``hosts.yml`` for those with a token stored, read under the lock. One
+        no longer let in is skipped, and one whose write fails is logged; the others are
+        written still. A restore hook (workspaces.py), run at every start."""
+        con = self._con()
+        try:
+            everyone = [p for p in people.everyone(con) if p.state == people.ACTIVE]
+        finally:
+            con.close()
+        for person in everyone:
+            identity = Identity(
+                email=person.email, admin=person.admin, person=person.id, slot=person.slot
+            )
+            try:
+                self._write_gh(identity)
+            except Problem as refused:
+                if refused.code != "not_allowed":  # no longer let in: nothing is theirs
+                    log.warning(
+                        "person %s: gh's files were not written: %s", person.id, refused.code
+                    )
+            except Exception:  # noqa: BLE001 - one person never stops the others
+                log.exception("person %s: gh's files were not written", person.id)
+
+    def _write_gh(self, identity: Identity) -> None:
+        with self.workspaces.person_lock(identity.person):
+            self._check_still_let_in(identity, written=False)
+            con = self._con()
+            try:
+                token = self._stored_token(con, identity)
+            finally:
+                con.close()
+            files = {GH_CONFIG_FILE: gh_config_text()}
+            if token is not None:
+                files[GH_HOSTS_FILE] = gh_hosts_text(token)
+            self._put_all(identity, files, None)
+            self._check_still_let_in(identity)
 
     def save_settings(self, identity: Identity, values: dict[str, str | None]) -> None:
         """Set the settings in ``values`` (column names of ``user_settings`` other than the

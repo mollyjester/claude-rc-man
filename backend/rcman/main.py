@@ -139,6 +139,7 @@ def create_app(settings: Settings | None = None, runtime: Runtime | None = None)
     app.state.accounts = sign_ins
     app.state.terminals = terminals
     app.state.git_account = GitAccount(service)
+    service.restore_hooks.append(app.state.git_account.write_gh_for_everyone)
     app.state.watch = unrecognised.Watch()
     app.state.client_error_limit = client_errors.new_limit()
     problems.install(app)

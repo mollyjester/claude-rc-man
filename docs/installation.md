@@ -185,10 +185,11 @@ run and kept.
      program that needs nothing of any image, with busybox and the terminal
      descriptions, in `/opt/rcman/tools`. They are root's, outside rcman's
      home, so that rcman cannot replace what every workspace mounts;
-   - the default workspace image, Ubuntu with git and what Claude Code needs,
-     from `installer/workspace/Containerfile`, named after that file's
+   - the default workspace image, Ubuntu with git, `gh` and what Claude Code
+     needs, from Ubuntu's packages as they are when it is built, from
+     `installer/workspace/Containerfile`, named after that file's
      content, so that a changed file makes a new image and workspaces made
-     before keep theirs. A repository's devcontainer.json can name another
+     before keep theirs (see [Git](git.md#images)). A repository's devcontainer.json can name another
      image, which rcman pulls when a workspace is made (see
      [devcontainer.json support](devcontainer.md));
    - the builder image, from `installer/builder`: the Dev Containers CLI and a
@@ -240,8 +241,9 @@ steps and feature scripts.
 ## Podman's volumes are rcman's
 
 rcman keeps each workspace, and each person's Claude sign-in, in volumes of its
-own account's Podman. A person's sign-in is a volume no container mounts by
-name, so to Podman it looks unused: **never prune volumes as `rcman`** (`podman
+own account's Podman. A person's sign-in, with their git and gh configuration,
+is a volume, which rcman makes for everyone let in at the latest when it starts.
+No container mounts it by name, so to Podman it looks unused: **never prune volumes as `rcman`** (`podman
 volume prune`, or `podman system prune --volumes`), or everyone is signed out of
 Claude. rcman removes a person's volumes itself when they are removed. When it
 starts and finds a container of a workspace it has no record of, it removes the container
@@ -326,6 +328,14 @@ their servers keep running, since they live in rcman's Podman and not in
 does not have yet is the one thing that would stop servers, and the installer
 refuses it while a container runs, with the commands to stop them (see step 4
 under [What the installer does](#what-the-installer-does)).
+
+A server keeps the environment it was started with. Where an upgrade changes
+what rcman starts Claude with, a server that ran across it gets the change once
+it is stopped and resumed from its workspace's panel (**Stop**, then
+**Resume**), with no restart of its container or of rcman; a terminal gets it at
+its next start, or **Reconnect**. Each time rcman starts, once the workspaces
+are back, it writes gh's files into the git folder of every person let in, with
+the token of those who have one stored (see [Git](git.md#gh)).
 
 To go back to the release before the current one, use `--rollback`:
 

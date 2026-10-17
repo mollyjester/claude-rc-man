@@ -22,8 +22,8 @@ Implemented and tested:
 - **One Claude sign-in per person**, which every workspace of theirs shares.
 - **A terminal in each workspace**: a shell in the workspace's panel, as the
   container's own user, one per workspace.
-- **git in workspaces**: each person's commit author and GitHub token shared by
-  all their workspaces, and the Changes section of a workspace's panel.
+- **git and gh in workspaces**: each person's commit author and GitHub token shared by
+  all their workspaces, for git and for `gh`, and the Changes section of a workspace's panel.
 - **A repository's devcontainer.json**, read when a workspace is cloned: an
   image or a Dockerfile and features, built in a sandbox of their own, with the
   user, the environment and the lifecycle commands; what a workspace may not ask

@@ -737,10 +737,12 @@ def test_the_commands_run_as_the_images_user_in_the_work_folder_with_exactly_the
     for noise in ("PWD", "OLDPWD", "SHLVL", "_"):  # what the shell adds to what it runs
         env.pop(noise, None)
     assert set(env) == {
-        "HOME", "USER", "LOGNAME", "PATH", "LANG", "DISABLE_AUTOUPDATER", "GREETING", "WHO",
+        "HOME", "USER", "LOGNAME", "PATH", "LANG", "DISABLE_AUTOUPDATER", "GH_CONFIG_DIR",
+        "GREETING", "WHO",
     }  # fmt: skip
     layout = runtime.layout(name_of(done))
     assert env["HOME"] == layout.home  # the workspace's home, not the image user's
+    assert env["GH_CONFIG_DIR"] == rt.gh_config_dir(layout)  # gh reads the person's token
     assert "RCMAN_SECRET_FOR_THE_TEST" not in env
     assert (work / "pwd.txt").read_text().strip() == str(work)
     assert runtime.hooks_run()  # positive control: the commands went through the runtime

@@ -156,7 +156,12 @@ test("any other refusal of the status is shown as the server said it", async () 
 
 test("the push needs-token line no longer says git forgets a token", () => {
   expect(m.pushNeedsToken.after).not.toMatch(/forget/i);
-  expect(m.githubTokenRemoveBody).toMatch(/next git command/);
+  expect(m.githubTokenRemoveBody).toMatch(/next git or gh command/);
+});
+
+test("the token's help and its removal name gh beside git", () => {
+  expect(m.githubTokenHelp).toMatch(/\bgh\b/);
+  expect(m.githubTokenRemoveBody).toMatch(/\bgh\b/);
 });
 
 test("each file is listed with its change and its name as it is", async () => {

@@ -41,6 +41,7 @@ import os
 import pwd
 import re
 import selectors
+import shlex
 import shutil
 import subprocess
 import sys
@@ -164,16 +165,39 @@ BUILT_NAME = re.compile(rf"localhost/{re.escape(BUILT_REPOSITORY)}/(\d+):{re.esc
 ACCOUNT_MOUNT = "/account"
 # The folder of the account volume that holds the person's git configuration and
 # credential, bound at HOME/GIT_HOME in every workspace of theirs; and the only files
-# rcman puts in it.
+# rcman puts in it: git's, and gh's, which gh reads there because GH_CONFIG_DIR names the
+# folder (child_env).
 GIT_DIR = "git"
 GIT_HOME = ".config/git"
 GIT_FILES = ("config", "credential")
+# gh's configuration, which rcman owns whole: only its version, so that gh takes it as current
+# and never migrates, and so rewrites, the folder; and its hosts, which hold the token.
+GH_CONFIG_FILE = "config.yml"
+GH_HOSTS_FILE = "hosts.yml"
+GH_FILES = (GH_CONFIG_FILE, GH_HOSTS_FILE)
+ACCOUNT_FILES = (*GIT_FILES, *GH_FILES)
+GH_CONFIG = 'version: "1"\n'
+# The variable that points gh at that folder.
+GH_CONFIG_DIR = "GH_CONFIG_DIR"
 # The scripts of an account container get the credentials file's path as $1, the git
 # folder's as $2 and, for a write, the name of the file in it as $3.
 # Makes the credentials file, owner-only, if it is not there, and never truncates it;
 # makes the git folder and its credential file, which git's credential helper reads, so
-# that there is always one to read.
-ENSURE_SCRIPT = 'umask 077 && mkdir -p "$2" && : >> "$1" && : >> "$2/credential"'
+# that there is always one to read; and gh's configuration if it is not there, never replacing
+# one that is. That is written whole into a temporary file of its own and linked into place,
+# which fails where another run linked it first: runs at once (a workspace is made outside the
+# person's lock) all succeed, and none sees it empty or half written. Any name there counts as
+# there, a link the container cannot follow among them (the volume is all it mounts): it is
+# left for a put to replace, and the script goes on.
+ENSURE_SCRIPT = (
+    'umask 077 && mkdir -p "$2" && : >> "$1" && : >> "$2/credential" '
+    f'&& {{ [ -e "$2/{GH_CONFIG_FILE}" ] || [ -L "$2/{GH_CONFIG_FILE}" ] '
+    f'|| {{ t=$(mktemp "$2/{GH_CONFIG_FILE}.XXXXXX") '
+    f'&& {{ printf %s {shlex.quote(GH_CONFIG)} > "$t" '
+    f'&& ln "$t" "$2/{GH_CONFIG_FILE}" 2>/dev/null; rm -f "$t"; '
+    f'[ -e "$2/{GH_CONFIG_FILE}" ] || [ -L "$2/{GH_CONFIG_FILE}" ]; }}; '
+    "}; }"
+)
 READ_SCRIPT = f'{ENSURE_SCRIPT} && cat "$1"'
 # Empties it in place, so every file bound to it, by inode, sees it empty.
 CLEAR_SCRIPT = 'umask 077 && : > "$1"'
@@ -325,7 +349,7 @@ def account_volume(person: int) -> str:
 
 def _checked(name: str) -> str:
     """``name``, a file of the git folder rcman writes; nothing else is."""
-    if name not in GIT_FILES:
+    if name not in ACCOUNT_FILES:
         raise ValueError(f"{name!r} is not a file rcman writes in the git folder")
     return name
 
@@ -457,7 +481,9 @@ class Layout:
         ``env`` besides their own variables, and with ``path``, if there is one, after the
         folder of rcman's own programs."""
         tail = self.path if path is None else ":".join(p for p in (self.path_prefix, path) if p)
-        kept = {k: v for k, v in env.items() if not moves_git_config(k)}
+        # A stored plan may hold GH_CONFIG_DIR, which devcontainer.RESERVED_ENV refuses only when
+        # a plan is made.
+        kept = {k: v for k, v in env.items() if not moves_git_config(k) and k != GH_CONFIG_DIR}
         return dataclasses.replace(self, user=user, env=kept, path=tail)
 
     def kill_group_of(self, pgid: int) -> list[str]:
@@ -468,10 +494,18 @@ class Layout:
         return [*self.tool("env"), "-i", *(f"{k}={v}" for k, v in env.items()), *argv]
 
 
+def gh_config_dir(layout: Layout) -> str:
+    """The folder gh reads its configuration from in the workspace: the person's git folder,
+    where rcman writes GH_FILES."""
+    return f"{layout.home}/{GIT_HOME}"
+
+
 def child_env(layout: Layout) -> dict[str, str]:
     """The only environment Claude Code is started with (claude_server.py), and the Terminal
     tab's shells. Its configuration is the workspace's own, and it never updates itself: the
-    store it runs from is read-only, and an update would go into the workspace unapproved. The
+    store it runs from is read-only, and an update would go into the workspace unapproved. gh
+    reads the person's GitHub token from the files rcman writes in their git folder, which
+    every command reads again, so a token saved or removed reaches a server that runs. The
     variables the workspace's plan sets come first, so that none of them replaces one of
     these."""
     return {
@@ -484,6 +518,7 @@ def child_env(layout: Layout) -> dict[str, str]:
         "TERM": "xterm-256color",
         "LANG": "C.UTF-8",
         "CLAUDE_CONFIG_DIR": layout.config,
+        GH_CONFIG_DIR: gh_config_dir(layout),
         "DISABLE_AUTOUPDATER": "1",
         "BROWSER": "/bin/false",
     }
@@ -651,7 +686,9 @@ class Runtime(ABC):
 
     @abstractmethod
     def ensure_account(self, person: int, slot: int) -> None:
-        """Make the person's credentials file, empty and theirs alone, if it is not there."""
+        """Make the person's credentials file, empty and theirs alone, if it is not there; and
+        their git folder, with an empty credential and gh's configuration (GH_CONFIG) in it
+        where they are not there. Nothing that is there is changed."""
 
     @abstractmethod
     def read_account(self, person: int, slot: int) -> bytes:
@@ -663,7 +700,7 @@ class Runtime(ABC):
 
     @abstractmethod
     def put_account(self, person: int, slot: int, name: str, data: bytes) -> None:
-        """Write ``data`` as the file ``name`` (one of GIT_FILES) of the person's git
+        """Write ``data`` as the file ``name`` (one of ACCOUNT_FILES) of the person's git
         folder, which their workspaces bind at HOME/GIT_HOME: whole, owner-only, and by a
         rename inside the folder. It needs no workspace, and ``data`` is never in an argv."""
 
@@ -2358,9 +2395,19 @@ class HostRuntime(Runtime):
     def ensure_account(self, person: int, slot: int) -> None:
         found = self._account_file(person)
         found.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        self._git_folder(person).mkdir(mode=0o700, exist_ok=True)
-        for file in (found, self._git_folder(person) / "credential"):
+        folder = self._git_folder(person)
+        folder.mkdir(mode=0o700, exist_ok=True)
+        for file in (found, folder / "credential"):
             os.close(os.open(file, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600))
+        made = folder / GH_CONFIG_FILE
+        if not (made.exists() or made.is_symlink()):  # as ENSURE_SCRIPT: never replaced
+            temporary = self._written_aside(folder, GH_CONFIG_FILE, GH_CONFIG.encode())
+            try:
+                os.link(temporary, made)
+            except FileExistsError:
+                pass  # another made it first
+            finally:
+                temporary.unlink(missing_ok=True)
 
     def read_account(self, person: int, slot: int) -> bytes:
         self.ensure_account(person, slot)
@@ -2374,12 +2421,27 @@ class HostRuntime(Runtime):
     def put_account(self, person: int, slot: int, name: str, data: bytes) -> None:
         _checked(name)
         self.ensure_account(person, slot)
-        folder = self._git_folder(person)
-        temporary = folder / f"{name}.new"
+        self._write_git_file(self._git_folder(person), name, data)
+
+    @staticmethod
+    def _written_aside(folder: Path, name: str, data: bytes) -> Path:
+        """``data`` in a new owner-only file of ``folder`` of its own, named after ``name``,
+        none left where it could not be written whole."""
+        fd, made = tempfile.mkstemp(prefix=f"{name}.", dir=folder)  # owner-only
+        temporary = Path(made)
         try:
-            fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
             with os.fdopen(fd, "wb") as handle:
                 handle.write(data)
+        except BaseException:
+            temporary.unlink(missing_ok=True)
+            raise
+        return temporary
+
+    @classmethod
+    def _write_git_file(cls, folder: Path, name: str, data: bytes) -> None:
+        """``data`` as ``folder/name``, whole and owner-only, by a rename, as PUT_SCRIPT."""
+        temporary = cls._written_aside(folder, name, data)
+        try:
             os.replace(temporary, folder / name)
         except BaseException:
             temporary.unlink(missing_ok=True)  # as the container's script does

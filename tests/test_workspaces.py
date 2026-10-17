@@ -1,6 +1,7 @@
 """Workspaces: made, listed and deleted (backend/rcman/workspaces.py and its routes), and
 what rcman brings back when it starts, on the host runtime."""
 
+import dataclasses
 import threading
 import time
 
@@ -765,3 +766,33 @@ def test_a_lifecycle_command_gets_the_autoupdater_turned_off(runtime):
     layout = runtime.layout(rt.container_name(1))
     env = ws.Workspaces._hook_env(layout)
     assert env["DISABLE_AUTOUPDATER"] == "1"
+
+
+def test_a_lifecycle_command_has_gh_pointed_at_the_persons_git_folder_whatever_the_plan_says(
+    runtime,
+):
+    base = runtime.layout(rt.container_name(1))
+    layout = dataclasses.replace(base, env={"GH_CONFIG_DIR": "/elsewhere", "A": "b"})
+    env = ws.Workspaces._hook_env(layout)
+    assert env["A"] == "b"  # the plan's variables are there
+    assert env["GH_CONFIG_DIR"] == f"{base.home}/{rt.GIT_HOME}" == rt.gh_config_dir(base)
+
+
+def test_a_restore_runs_its_hooks_after_the_workspaces_and_past_one_that_fails(
+    client, app, monkeypatch
+):
+    service = app.state.workspaces
+    seen = []
+    restore_all, finish = service._restore_all, service._finish_deleting_people
+    monkeypatch.setattr(service, "_restore_all", lambda: (seen.append("workspaces"), restore_all()))
+    monkeypatch.setattr(
+        service, "_finish_deleting_people", lambda: (seen.append("people"), finish())
+    )
+
+    def broken():
+        seen.append("broken")
+        raise RuntimeError("planted")
+
+    monkeypatch.setattr(service, "restore_hooks", [broken, lambda: seen.append("next")])
+    service.restore()
+    assert seen == ["workspaces", "broken", "next", "people"]

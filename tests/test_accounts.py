@@ -429,7 +429,8 @@ def being_deleted(app, email: str) -> people.Person:
 def test_the_status_of_a_person_being_deleted_does_not_make_their_volume_again(client, app):
     bob = being_deleted(app, BOB)
     runtime = app.state.workspaces.runtime
-    assert not runtime._account_file(bob.id).parent.exists()  # the control: no volume yet
+    runtime.remove_account(bob.id)  # as the deletion does: the restore wrote gh's files there
+    assert not runtime._account_file(bob.id).parent.exists()  # the control: no volume now
     with pytest.raises(Problem) as refused:
         app.state.accounts.status(bob)
     assert refused.value.code == "not_allowed"

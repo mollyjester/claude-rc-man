@@ -1,7 +1,7 @@
-"""The signed-in person's GitHub token, which git uses for GitHub in their workspaces.
+"""The signed-in person's GitHub token, which git and gh use for GitHub in their workspaces.
 
-The token is stored by gitaccount.py: in the person's volume, where git in every
-workspace of theirs reads it, and in SQLite. It is never answered, recorded or logged,
+The token is stored by gitaccount.py: in the person's volume, where git and gh in every
+workspace of theirs read it, and in SQLite. It is never answered, recorded or logged,
 so neither audit row has a target.
 """
 
@@ -25,7 +25,7 @@ class TokenBody(BaseModel):
 
 @router.get("")
 def status(request: Request, identity: Identity = Depends(current_user)) -> dict:
-    """Whether a GitHub token is stored for git; never the token itself."""
+    """Whether a GitHub token is stored for git and gh; never the token itself."""
     return {"token": request.app.state.git_account.token_stored(identity.person)}
 
 
@@ -33,14 +33,15 @@ def status(request: Request, identity: Identity = Depends(current_user)) -> dict
 def save(
     body: TokenBody, request: Request, record: Record = Depends(Recorder("github.token"))
 ) -> dict:
-    """Store the token as git's credential for GitHub in every workspace, in place of any
-    stored before."""
+    """Store the token as git's credential and gh's token for GitHub in every workspace, in
+    place of any stored before."""
     request.app.state.git_account.save_token(record.identity, body.token)
     return {"token": True}
 
 
 @router.delete("/token")
 def forget(request: Request, record: Record = Depends(Recorder("github.forget"))) -> dict:
-    """Forget the token: git in every workspace has none from its next call on."""
+    """Forget the token: git and gh in every workspace have none from their next command
+    on."""
     request.app.state.git_account.forget_token(record.identity)
     return {"token": False}

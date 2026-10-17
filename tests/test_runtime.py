@@ -4,6 +4,7 @@ the Podman runtime asks of podman, from a recording of its calls.
 tests/container/test_runtime_in_podman.py runs the same contract against real Podman.
 """
 
+import dataclasses
 import json
 import os
 import shutil
@@ -618,7 +619,100 @@ def test_the_host_runtime_shares_one_private_git_directory_per_person(host):
     host.put_account(4, 1, "credential", b"password=x\n")
     assert (shared / "credential").read_bytes() == b"password=x\n"
     assert ((shared / "credential").stat().st_mode & 0o777) == 0o600
-    assert sorted(p.name for p in shared.iterdir()) == ["credential"]  # no .new left behind
+    # no .new left behind
+    assert sorted(p.name for p in shared.iterdir()) == ["config.yml", "credential"]
+
+
+# The programs an account container's scripts run, which its image has.
+ACCOUNT_TOOLS = ("mkdir", "cat", "rm", "mv", "mktemp", "ln")
+
+
+def account_tools(tmp_path: Path) -> Path:
+    """A folder holding only ACCOUNT_TOOLS, for a PATH."""
+    tools = tmp_path / "tools"
+    tools.mkdir(exist_ok=True)
+    for tool in ACCOUNT_TOOLS:
+        (tools / tool).unlink(missing_ok=True)
+        (tools / tool).symlink_to(shutil.which(tool))
+    return tools
+
+
+def ensure_argv(tmp_path: Path) -> list[str]:
+    return ["/bin/sh", "-c", rt.ENSURE_SCRIPT, "sh", str(tmp_path / "cred"), str(tmp_path / "git")]
+
+
+def run_ensure_script(tmp_path: Path) -> subprocess.CompletedProcess:
+    """rt.ENSURE_SCRIPT run by a shell with only the tools an account container has; the
+    credentials file is ``tmp_path/cred`` and the git folder ``tmp_path/git``."""
+    tools = account_tools(tmp_path)
+    return subprocess.run(ensure_argv(tmp_path), capture_output=True, env={"PATH": str(tools)})
+
+
+def test_making_sure_of_an_account_makes_gh_s_configuration_if_it_is_not_there(tmp_path):
+    done = run_ensure_script(tmp_path)
+    assert done.returncode == 0, done.stderr
+    folder = tmp_path / "git"
+    assert (folder / "config.yml").read_text() == rt.GH_CONFIG
+    assert ((folder / "config.yml").stat().st_mode & 0o777) == 0o600
+    assert sorted(p.name for p in folder.iterdir()) == ["config.yml", "credential"]
+    (folder / "config.yml").write_text("planted\n")
+    (folder / "credential").write_text("password=kept\n")
+    assert run_ensure_script(tmp_path).returncode == 0
+    assert (folder / "config.yml").read_text() == "planted\n"  # never truncated or replaced
+    assert (folder / "credential").read_text() == "password=kept\n"
+
+
+def test_a_gh_configuration_that_is_a_link_it_cannot_follow_is_left_and_ensuring_succeeds(
+    tmp_path,
+):
+    """A dotfile manager's link into the home folder, which an account container, mounting
+    only the volume, cannot follow: the name is taken, so nothing is made, and every script
+    that makes sure of the account still runs."""
+    folder = tmp_path / "git"
+    folder.mkdir()
+    (folder / "config.yml").symlink_to("/nowhere/config.yml")
+    done = run_ensure_script(tmp_path)
+    assert done.returncode == 0, done.stderr
+    assert os.readlink(folder / "config.yml") == "/nowhere/config.yml"  # left as it was
+    assert sorted(p.name for p in folder.iterdir()) == ["config.yml", "credential"]
+
+
+def test_the_host_runtime_leaves_a_gh_configuration_that_is_a_link_it_cannot_follow(host):
+    folder = host.root / ".accounts" / "4" / rt.GIT_DIR
+    folder.mkdir(parents=True)
+    (folder / "config.yml").symlink_to("/nowhere/config.yml")
+    host.ensure_account(4, 1)
+    assert os.readlink(folder / "config.yml") == "/nowhere/config.yml"
+    assert sorted(p.name for p in folder.iterdir()) == ["config.yml", "credential"]
+    host.put_account(4, 1, "config.yml", rt.GH_CONFIG.encode())  # a put replaces it
+    assert not (folder / "config.yml").is_symlink()
+    assert (folder / "config.yml").read_text() == rt.GH_CONFIG
+
+
+def test_the_host_runtime_makes_gh_s_configuration_if_it_is_not_there_and_never_replaces_it(
+    host,
+):
+    host.ensure_account(4, 1)
+    folder = host.root / ".accounts" / "4" / rt.GIT_DIR
+    assert (folder / "config.yml").read_text() == rt.GH_CONFIG
+    assert ((folder / "config.yml").stat().st_mode & 0o777) == 0o600
+    (folder / "config.yml").write_text("planted\n")
+    host.ensure_account(4, 1)
+    assert (folder / "config.yml").read_text() == "planted\n"
+
+
+def test_the_files_rcman_writes_in_the_git_folder_are_git_s_and_gh_s():
+    assert rt.ACCOUNT_FILES == (*rt.GIT_FILES, *rt.GH_FILES)
+    assert rt.GH_FILES == ("config.yml", "hosts.yml")
+
+
+@pytest.mark.parametrize("name", ["config.yml", "hosts.yml"])
+def test_gh_s_files_are_written_by_the_container_as_git_s_are(tmp_path, name):
+    recorder = account_recorder(tmp_path, volume_exists=0)
+    podman_runtime(tmp_path, recorder).put_account(2, 3, name, b"x: y\n")
+    (written,) = runs(recorder)
+    assert written[-2:] == [f"{rt.ACCOUNT_MOUNT}/{rt.GIT_DIR}", name]
+    assert recorder.stdin() == b"x: y\n"
 
 
 def run_put_script(tmp_path: Path, mv_fails: bool) -> subprocess.CompletedProcess:
@@ -626,7 +720,7 @@ def run_put_script(tmp_path: Path, mv_fails: bool) -> subprocess.CompletedProces
     fails if ``mv_fails``; the git folder is ``tmp_path/git``."""
     tools = tmp_path / "tools"
     tools.mkdir(exist_ok=True)
-    for tool in ("mkdir", "cat", "rm"):
+    for tool in ("mkdir", "cat", "rm", "mktemp", "ln"):
         (tools / tool).unlink(missing_ok=True)
         (tools / tool).symlink_to(shutil.which(tool))
     (tools / "mv").unlink(missing_ok=True)
@@ -654,7 +748,8 @@ def run_put_script(tmp_path: Path, mv_fails: bool) -> subprocess.CompletedProces
 def test_a_git_file_that_cannot_be_put_in_place_leaves_no_temporary_copy(tmp_path):
     done = run_put_script(tmp_path, mv_fails=False)
     assert done.returncode == 0, done.stderr
-    assert sorted(p.name for p in (tmp_path / "git").iterdir()) == ["credential"]  # control
+    made = sorted(p.name for p in (tmp_path / "git").iterdir())
+    assert made == ["config.yml", "credential"]  # control
     (tmp_path / "second").mkdir()
     failed = run_put_script(tmp_path / "second", mv_fails=True)
     assert failed.returncode != 0
@@ -671,7 +766,7 @@ def test_the_host_runtime_leaves_no_temporary_copy_of_a_git_file_that_failed(
 ):
     host.put_account(4, 1, "credential", b"password=old\n")  # positive control: it works
     folder = host.root / ".accounts" / "4" / rt.GIT_DIR
-    assert sorted(p.name for p in folder.iterdir()) == ["credential"]
+    assert sorted(p.name for p in folder.iterdir()) == ["config.yml", "credential"]
     if fault == "replace":
 
         def refused(*args):
@@ -683,7 +778,7 @@ def test_the_host_runtime_leaves_no_temporary_copy_of_a_git_file_that_failed(
         data = "password=LEFT-BEHIND\n"  # text, which the file refuses
     with pytest.raises((OSError, TypeError)):
         host.put_account(4, 1, "credential", data)
-    assert sorted(p.name for p in folder.iterdir()) == ["credential"]
+    assert sorted(p.name for p in folder.iterdir()) == ["config.yml", "credential"]
     assert (folder / "credential").read_bytes() == b"password=old\n"
 
 
@@ -1305,6 +1400,24 @@ def test_a_layout_made_for_a_plan_runs_as_its_user_with_its_environment_and_path
     assert base.user == "root" and base.env == {}  # the layout itself is not changed
     on_host = host.layout("x")
     assert on_host.for_plan("u", {}, "/p").path == "/p"  # the host has no folder of its own
+
+
+def test_a_plan_saved_with_gh_s_configuration_folder_cannot_move_it():
+    """A plan saved before the variable was reserved may hold it: it is not taken."""
+    made = rt.PODMAN_LAYOUT.for_plan("dev", {"GH_CONFIG_DIR": "/elsewhere", "A": "b"}, None)
+    assert made.env == {"A": "b"}
+
+
+def test_gh_is_pointed_at_the_persons_git_folder_wherever_claude_and_its_terminal_run(host):
+    for layout in (rt.PODMAN_LAYOUT, host.layout("rcman-ws-7")):
+        folder = f"{layout.home}/{rt.GIT_HOME}"
+        assert rt.gh_config_dir(layout) == folder
+        assert rt.child_env(layout)["GH_CONFIG_DIR"] == folder
+        planned = dataclasses.replace(layout, env={"GH_CONFIG_DIR": "/elsewhere"})
+        assert rt.child_env(planned)["GH_CONFIG_DIR"] == folder  # rcman's value wins
+    launch = host.terminal_argv("rcman-ws-7", layout, "/x/0123456789abcdef.pid")
+    assert f"GH_CONFIG_DIR={folder}" in launch.argv
+    assert not [a for a in launch.argv if a.startswith(("GH_TOKEN=", "GITHUB_TOKEN="))]
 
 
 def test_the_host_runtime_makes_no_container_from_an_image_it_does_not_have(host):

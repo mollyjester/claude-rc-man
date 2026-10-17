@@ -282,9 +282,21 @@ files to stage reach git on stdin and are never recorded or logged.
 - **Author and token.** `gitaccount.GitAccount` keeps the commit author
   (`user_settings`) and the token (`github_tokens`, removed with the person's row)
   and writes them into the git folder of the person's volume with
-  `Runtime.put_account` (see [runtime.md](runtime.md#the-git-folder)); the volume
-  first, SQLite second, under the person's lock, and a failed SQLite write puts the
-  volume's file back. `PATCH /api/me/settings` goes through it as well. A write
+  `Runtime.put_account` (see [runtime.md](runtime.md#the-git-folder)): git's `config` and
+  `credential`, and gh's `config.yml` and `hosts.yml`, the token in that one as one
+  single-quoted YAML string, a quote doubled, with no `user` key, since rcman does not know
+  the account's login. The volume first, SQLite second, under the person's lock. A save
+  writes `config` and `config.yml` as they are, then the token files (`token_files`:
+  `hosts.yml`, then `credential`); one whose write fails puts back the token files it had
+  begun to write, the one whose write failed among them, since it may have landed before the
+  failure was said. A forget empties the token files and puts nothing back when a write
+  fails, so the token is in fewer places, never more, and its row stays for Remove to be
+  tried again. A failed SQLite write, after either, puts the volume's token files back.
+  `PATCH /api/me/settings` goes through it as well. At every restore,
+  `write_gh_for_everyone`, a restore hook (see
+  [runtime.md](runtime.md#what-rcman-keeps-and-brings-back)), writes `config.yml` for every
+  person let in and `hosts.yml` for each with a token stored, read under their lock; one no
+  longer let in is skipped, and one whose write fails is logged without stopping the others. A write
   that races a person's deletion removes what it wrote and answers `not_allowed`.
   `GET /api/github` answers whether a token is stored from SQLite alone, never from
   the runtime. A commit is refused with `author_not_set` until a name is set; a

@@ -1188,8 +1188,12 @@ def test_the_default_image_is_ubuntu_pinned_by_tag_and_digest_with_what_rcman_ne
     [base] = from_lines(ins.CONTAINERFILE)
     assert base.startswith("docker.io/library/ubuntu:24.04@")
     assert PINNED_IMAGE.fullmatch(base), base
-    for package in ("git", "ca-certificates", "curl", "python3"):
-        assert f" {package}" in containerfile, package
+    installed = re.search(r"--no-install-recommends\s*\\?\s*([^&]*)&&", containerfile)
+    assert installed, containerfile
+    packages = installed.group(1).replace("\\", " ").split()
+    assert "git" in packages  # positive control: the line is the one read
+    for package in ("git", "ca-certificates", "curl", "python3", "gh"):
+        assert package in packages, package
     image = ins.workspace_image()
     assert image.startswith("localhost/rcman-workspace:") and len(image.split(":")[1]) == 12
 

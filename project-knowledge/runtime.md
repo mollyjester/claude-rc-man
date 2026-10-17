@@ -168,24 +168,35 @@ The same volume holds a folder, `GIT_DIR`, which every workspace of the person's
 binds at `HOME/GIT_HOME` (`~/.config/git`), by its path in the volume's
 mountpoint like the credentials file. It is a folder and not a single bound
 file because a bound file cannot be replaced by rename, and `git config
---global` needs to write beside its file. rcman owns two files in it
-(`GIT_FILES`): `config`, which git reads as its global configuration (the commit
-author, and a credential helper for `https://github.com` that only reads the
-other file, after an empty `helper` that drops every helper the image or the person listed
-before it), and `credential`, the GitHub token in git's credential format,
-owner-only, and empty when none is stored (see
-[backend.md](backend.md#git-in-workspaces)).
+--global` needs to write beside its file. rcman owns four files in it
+(`ACCOUNT_FILES`). Two are git's (`GIT_FILES`): `config`, which git reads as its global
+configuration (the commit author, and a credential helper for `https://github.com` that
+only reads `credential`, after an empty `helper` that drops every helper the image or the
+person listed before it), and `credential`, the GitHub token in git's credential format,
+owner-only, and empty when none is stored. Two are gh's (`GH_FILES`), which gh reads there
+because `GH_CONFIG_DIR` names the folder: `config.yml` (`GH_CONFIG_FILE`), which is
+`GH_CONFIG` and nothing else, the version of gh's configuration, so that gh takes it as
+current and never migrates the folder, a migration that rewrites it and, with a token and no
+login named, fails every command for want of the account's name; and `hosts.yml`
+(`GH_HOSTS_FILE`), the token for `github.com`, owner-only, and empty when none is stored
+(see [backend.md](backend.md#git-in-workspaces)).
 
 `ENSURE_SCRIPT` makes the folder and an empty `credential` as well, so the
-helper always has a file to read. `put_account(person, slot, name, data)` writes
-one of `GIT_FILES` from stdin, in a container of the same kind as the others
+helper always has a file to read, and `config.yml` where no name is there, never
+replacing one that is: written whole into a temporary file of its own and linked into place,
+so runs at once, as workspaces made outside the person's lock are, all succeed and none sees
+it empty or half written. `HostRuntime.ensure_account` does the same.
+`put_account(person, slot, name, data)` writes
+one of `ACCOUNT_FILES` from stdin, in a container of the same kind as the others
 (`PUT_SCRIPT`: no network, the person's range, removing itself), whole and
 owner-only by a rename inside the folder, so a reader never sees half a file and
 no copy of a token is left in a temporary one. Nothing about it needs a
 workspace to be running, and the data is never in an argv. Forgetting the token
-writes an empty `credential`; git in every workspace, running or not, has no
-token from its next call. The helper only reads, so git never rewrites the
-token. `remove_account` removes the folder with the credentials file. A
+writes an empty `hosts.yml` and `credential`; git and gh in every workspace, running or not,
+have no token from their next command. The helper only reads, so git never rewrites the
+token; gh, with `config.yml` as rcman writes it, only reads its files too, while what its
+own commands write there (`gh auth login`, `gh config set` and their kin) is replaced at
+the next write of that file (see [backend.md](backend.md#git-in-workspaces)). `remove_account` removes the folder with the credentials file. A
 container made without the bind, as one made before git was bound is, has no
 git configuration of its person's and must be made again; rcman does not bind a
 folder into a container that exists.
@@ -262,9 +273,14 @@ their ids are the workspace's. tmux runs on the workspace's own socket with
 descriptions the mounted ones, since a slim image has none. The server runs in
 the session `SESSION`, in the window size `WIDTH` by `HEIGHT`
 (`helpers/screens.py`), started through `env -i` with exactly `child_env` (`runtime.py`'s):
-the workspace's `CLAUDE_CONFIG_DIR` and `HOME`, and `DISABLE_AUTOUPDATER=1`,
+the workspace's `CLAUDE_CONFIG_DIR` and `HOME`, `GH_CONFIG_DIR` naming the person's git
+folder (`gh_config_dir`), so that gh reads the token rcman writes there on every command and
+a change of it reaches a server that runs, and `DISABLE_AUTOUPDATER=1`,
 since Claude would otherwise install a version of its own into the workspace,
-the read-only store notwithstanding. Its options are `server_command`, which a
+the read-only store notwithstanding. A server keeps the environment it started with: a
+change to `child_env` reaches it when it is next started or resumed, with no restart of its
+container, and a terminal at its next start. rcman sets no `GH_TOKEN` or `GITHUB_TOKEN`; one a plan sets
+comes first, and gh then takes it over `hosts.yml`. Its options are `server_command`, which a
 test holds to the recorder's, so the contract tests check each is in Claude's
 `--help`.
 
@@ -437,7 +453,9 @@ label, then the file's own, merged) and the parsing of an image's passwd and gro
   `devcontainer.RESERVED_ENV` are the names rcman sets itself that a file may not set, and no
   file may set a name that moves git's configuration from the git folder (`moves_git_config`:
   `XDG_CONFIG_HOME` and the `GIT_CONFIG` ones); an image's are not taken, `Layout.for_plan`
-  drops them and so does `Repository.env`.
+  drops them and so does `Repository.env`. `Layout.for_plan` drops `GH_CONFIG_DIR` too, from
+  a stored plan that holds it, and `Workspaces._hook_env` sets it after the plan's variables,
+  so lifecycle commands have gh pointed at the git folder as Claude's does.
   `LANG`, `LC_ALL` and `BROWSER` a file may: rcman sets each in only some of its programs
   (`LANG` for tmux and Claude, `LC_ALL` for git, `BROWSER` for Claude), and there its value
   comes after the file's and wins; everywhere else, lifecycle commands included, the file's is
@@ -576,7 +594,12 @@ the prefix it was started with.
   in one that kept running (see [The terminal's shell](#the-terminals-shell)); removes what an interrupted
   read of an image left (`clean_probes`: probe containers, staging folders and the anonymous
   volumes nothing uses, `_clean_volumes`); applies the stored limits to the slices (see
-  [Limits](#limits)), before any container is started. The workspaces are brought back up to
+  [Limits](#limits)), before any container is started; and once the workspaces are back,
+  runs `Workspaces.restore_hooks`, each a step of its own, before what no row is for is
+  removed: what a module that imports `workspaces.py` brings back at a start.
+  `GitAccount.write_gh_for_everyone` is one (`main.py`): `config.yml` for every person let in,
+  and `hosts.yml` for each with a token stored, under the person's lock, which makes the
+  account volume of anyone who had none. The workspaces are brought back up to
   `RESTORE_WORKERS` at once, each in a thread of its own that goes on to start that
   workspace's server if it should be running (pinned to the approved version, as above), so that a workspace that is slow, a start
   command that hangs among the causes, does not keep another from being brought back; it
