@@ -134,8 +134,8 @@ what its features set in `containerEnv`, which the build bakes into the image. T
 stored with the workspace's plan and apply to git, tmux, Claude and the lifecycle commands.
 
 A file may not set the names rcman sets itself in every workspace: the home folder, the user
-and shell names, the terminal, Claude's configuration folder and settings, and git's
-prompting and lock settings. Such a file is refused, naming the variable and the entry that
+and shell names, the terminal, Claude's configuration folder and settings, gh's
+configuration folder (`GH_CONFIG_DIR`), and git's prompting and lock settings. Such a file is refused, naming the variable and the entry that
 sets it. Nor may it set a variable that would move git's configuration from where rcman writes
 it for the person: `XDG_CONFIG_HOME`, and the `GIT_CONFIG` ones (`GIT_CONFIG_GLOBAL`,
 `GIT_CONFIG_SYSTEM`, `GIT_CONFIG_NOSYSTEM`, `GIT_CONFIG_COUNT`, `GIT_CONFIG_PARAMETERS` and the
@@ -145,7 +145,9 @@ runs with none of the `GIT_` variables a file sets. A file may
 set `LANG`, `LC_ALL` and `BROWSER`, which rcman sets itself in
 only some of its programs; there its value wins over the file's, and everywhere else,
 lifecycle commands included, the file's is used. `PATH` may be set; rcman's own folder of
-programs stays first in it.
+programs stays first in it. `GH_TOKEN` and `GITHUB_TOKEN` may be set too, and gh then uses
+that token in place of the person's, which **Remove token** does not remove (see
+[Git](git.md#gh)).
 
 The deviations from the specification:
 
@@ -334,8 +336,8 @@ rcman restarted is not started, so `postStartCommand` does not run for it.
 
 **A security note.** The commands are the repository's, and the person chose them by choosing
 the repository. They run inside the workspace with everything the workspace has, which
-includes the person's GitHub token: git reads it from the credential file that all of the
-person's workspaces share, and any command in a workspace can read that file. Treat a
+includes the person's GitHub token: git and gh read it from files that all of the
+person's workspaces share, and any command in a workspace can read those files. Treat a
 repository's lifecycle commands as the repository's code run with the person's token and
 their Claude sign-in. rcman keeps them from other people's workspaces and from rcman, not
 from the person's own.

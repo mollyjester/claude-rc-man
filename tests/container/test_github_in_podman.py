@@ -11,10 +11,13 @@ authority. Nothing in a workspace knows it is not the real GitHub, so what runs 
 runs in production: rcman's own push (``Repository``), Claude's git (the fake `claude`'s
 ``fake-exec``, started with Claude's environment), the credential helper that reads the
 person's credential file, and the writes of that file through the runtime's
-``put_account`` (``GitAccount``).
+``put_account`` (``GitAccount``). The tests of ``gh`` run the default workspace image instead,
+built here from the installer's build file, with Ubuntu's ``gh`` in it, and need nothing of
+the stand-in: ``gh`` reads the token from the files ``GitAccount`` writes, with no network.
 """
 
 import os
+import shutil
 import socket
 import ssl
 import subprocess
@@ -34,9 +37,11 @@ from rcman.settings import Settings
 from rcman.workspaces import Workspaces
 
 from helpers import git_run
+from installer import install as ins
 from tests.container import github_stand_in as stand_in
 from tests.container import test_runtime_in_podman as base
 from tests.github_server import GitHubServer
+from tests.github_tokens import AWKWARD_TOKENS
 
 ADDRESS = os.environ.get("RCMAN_GITHUB_ADDRESS", "")
 
@@ -556,3 +561,144 @@ def test_deleting_a_workspace_that_is_being_cloned_stops_git_and_leaves_nothing(
         assert not exists("volume", made.container)
     finally:
         github_com.gate.set()
+
+
+# --- gh in the default workspace image -------------------------------------------------
+#
+# Real gh, from Ubuntu's packages in the default image, in a workspace of the same person as
+# the tests above, so that it reads the same git folder the account writes.
+
+# How long one gh command that has no token to find may take, podman's exec included: it reads
+# two files and answers, and asks no network.
+GH_ANSWERS_WITHIN = 30.0
+# What gh 2.45 says when it has no token for github.com (pkg/cmd/auth/token/token.go).
+NO_TOKEN = b"no oauth token found for github.com"
+# What it says when, with a token and no version in its configuration, the migration it runs
+# before every command cannot ask GitHub whose the token is (internal/config/migration).
+NO_USER_NAME = b"couldn't get user name for"
+
+
+@pytest.fixture(scope="module")
+def default_image(tmp_path_factory) -> str:
+    """The default workspace image, built in the account's Podman from the installer's build
+    file."""
+    name = f"localhost/rcman-test-gh:{os.getpid()}"
+    context = tmp_path_factory.mktemp("default-image")
+    shutil.copy(ins.CONTAINERFILE, context / "Containerfile")
+    built = subprocess.run(
+        ["podman", "--remote", "--url", f"unix://{base.socket()}", "build", "-q", "-t", name,
+         "-f", str(context / "Containerfile"), str(context)],
+        capture_output=True,
+        text=True, errors="replace",
+        timeout=1200,
+    )  # fmt: skip
+    assert built.returncode == 0, built.stdout + built.stderr
+    yield name
+    base.podman_cli("rmi", "--force", name)
+
+
+@pytest.fixture(scope="module")
+def gh_runtime(default_image) -> rt.PodmanRuntime:
+    return runtime_of(default_image)
+
+
+@pytest.fixture(scope="module")
+def gh_workspace(gh_runtime, person):
+    who, _ = person
+    spec = rt.Spec(rt.container_name(610), slot=who.slot, workspace=610, person=who.id)
+    gh_runtime.create(spec)
+    try:
+        yield spec.name
+    finally:
+        gh_runtime.remove(spec.name)
+        gh_runtime.remove_account(who.id)
+
+
+def claude_gh(runtime, name: str, *args: str) -> rt.Result:
+    """gh run by the fake `claude` as one of Claude's children: with exactly
+    ``runtime.child_env``, as Claude's sessions and the Terminal tab have it."""
+    layout = runtime.layout(name)
+    return runtime.exec(name, claude_server.claude_command(layout, "fake-exec", "gh", *args))
+
+
+def gh_folder(runtime, name: str) -> str:
+    """What is in the folder gh is pointed at: each file's name, size, mode and time, and the
+    whole of every file in it."""
+    folder = rt.gh_config_dir(runtime.layout(name))
+    script = (
+        'cd "$1" && find . -maxdepth 1 -type f -printf "%f %s %m %T@\\n" | sort '
+        '&& for f in $(ls -A); do echo "== $f"; cat "$f"; done'
+    )
+    seen = runtime.exec(name, ["/bin/sh", "-c", script, "sh", folder])
+    assert seen.code == 0, seen.err
+    return seen.out.decode()
+
+
+def test_gh_reads_the_token_after_a_save_and_has_none_before(gh_runtime, gh_workspace, account):
+    git_account, identity = account
+    git_account.forget_token(identity)
+    assert claude_gh(gh_runtime, gh_workspace, "--version").code == 0  # gh is in the image
+    before = claude_gh(gh_runtime, gh_workspace, "auth", "token")
+    assert before.code != 0 and TOKEN.encode() not in before.out + before.err
+    assert NO_TOKEN in before.err, before.err
+    git_account.save_token(identity, TOKEN)
+    after = claude_gh(gh_runtime, gh_workspace, "auth", "token")
+    assert (after.code, after.out.decode()) == (0, f"{TOKEN}\n"), after.err
+
+
+def test_gh_has_no_token_from_the_very_next_command_after_a_forget(
+    gh_runtime, gh_workspace, account
+):
+    git_account, identity = account
+    git_account.save_token(identity, TOKEN)
+    assert claude_gh(gh_runtime, gh_workspace, "auth", "token").code == 0  # positive control
+    git_account.forget_token(identity)
+    started = time.monotonic()
+    found = claude_gh(gh_runtime, gh_workspace, "auth", "token")
+    assert time.monotonic() - started < GH_ANSWERS_WITHIN
+    assert found.code != 0 and TOKEN.encode() not in found.out + found.err
+    assert NO_TOKEN in found.err, found.err  # gh read the files, and found no token in them
+    said = found.err.decode().lower()
+    assert "yaml" not in said and "parse" not in said and "invalid" not in said, said
+
+
+@pytest.mark.parametrize("token", AWKWARD_TOKENS)
+def test_every_kind_of_token_reads_back_as_it_was_saved(gh_runtime, gh_workspace, account, token):
+    git_account, identity = account
+    git_account.save_token(identity, token)
+    found = claude_gh(gh_runtime, gh_workspace, "auth", "token")
+    assert (found.code, found.out.decode()) == (0, f"{token}\n"), found.err
+
+
+def without_gh_config(runtime, name: str) -> None:
+    folder = rt.gh_config_dir(runtime.layout(name))
+    assert runtime.exec(name, ["rm", "-f", f"{folder}/config.yml"]).code == 0
+
+
+def test_gh_writes_nothing_into_the_folder_it_is_pointed_at(gh_runtime, gh_workspace, account):
+    git_account, identity = account
+    commands = (["auth", "token"], ["config", "get", "git_protocol"], ["config", "list"])
+    # Positive control: with no config.yml and no token, gh migrates the folder before its
+    # first command, and writes into it.
+    git_account.forget_token(identity)
+    without_gh_config(gh_runtime, gh_workspace)
+    unversioned = gh_folder(gh_runtime, gh_workspace)
+    assert "== config.yml" not in unversioned
+    for command in commands:
+        claude_gh(gh_runtime, gh_workspace, *command)
+    migrated = gh_folder(gh_runtime, gh_workspace)
+    assert migrated != unversioned and "== config.yml" in migrated
+    # And with a token and no config.yml, the migration asks GitHub whose the token is, which
+    # it cannot, and every command fails: why rcman writes config.yml.
+    git_account.save_token(identity, TOKEN)
+    without_gh_config(gh_runtime, gh_workspace)
+    refused = claude_gh(gh_runtime, gh_workspace, "auth", "token")
+    assert refused.code != 0 and NO_USER_NAME in refused.err, refused.err
+    # As rcman writes it, gh only reads it.
+    git_account.save_token(identity, TOKEN)  # puts config.yml and hosts.yml back
+    written = gh_folder(gh_runtime, gh_workspace)
+    assert "== config.yml" in written and "== hosts.yml" in written
+    for command in commands:
+        done = claude_gh(gh_runtime, gh_workspace, *command)
+        assert done.code == 0, (command, done.err)
+    assert gh_folder(gh_runtime, gh_workspace) == written

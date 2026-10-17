@@ -12,7 +12,7 @@ paths to the installer's.
 | `install.sh` | Checks it runs through sudo, updates the clone as `$SUDO_USER` (fast-forward only, refusing a dirty tree or another branch), starts again if that changed `install.sh`, then hands over to the Python installer; with `--rollback` it hands over at once, leaving the clone as it is |
 | `installer/install.py` | Everything else, using the standard library and the clone's `helpers/rules.py`, whose rules' sentences explain a refused setting; run with the system interpreter in isolated mode and UTF-8 mode, it writes no bytecode into the clone and takes the clone off its path once it has imported the rules |
 | `installer/templates/` | The files it writes, with `@NAME@` placeholders: the app's environment, oauth2-proxy's configuration, both systemd units, and the Caddy site block. A test keeps `TEMPLATES` and the directory equal. Besides the settings, `render` fills in what the installer found out, which `found_out` returns: rcman's uid (`APP_UID`), the default image's name (`WORKSPACE_IMAGE`) and the builder image's (`BUILDER_IMAGE`, written as `RCMAN_BUILDER_IMAGE`) |
-| `installer/workspace/Containerfile` | The default workspace image, built with rcman's own Podman |
+| `installer/workspace/Containerfile` | The default workspace image, built with rcman's own Podman: git, `gh` and what Claude Code and rcman need, from Ubuntu's packages, unpinned; a test reads its package list |
 | `installer/builder/` | The devcontainer builder image's build context: its `Containerfile`, the Podman configuration it carries (`containers.conf`, `storage.conf`), and `package.json` with `package-lock.json`, which pin the Dev Containers CLI by integrity |
 
 The pinned versions are `UV_VERSION`, `OAUTH2_PROXY_VERSION` and

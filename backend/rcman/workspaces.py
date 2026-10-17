@@ -38,6 +38,7 @@ from rcman.problems import CLONE_MESSAGES, DEVCONTAINER_MESSAGES, Problem
 from rcman.repository import ANSWER_MARGIN_SECONDS, KILL_GRACE_SECONDS, CloneFailed, Repository
 from rcman.runtime import (
     DIGEST,
+    GH_CONFIG_DIR,
     LABEL_PERSON,
     LABEL_WORKSPACE,
     SYSTEMCTL_TIMEOUT,
@@ -51,6 +52,7 @@ from rcman.runtime import (
     Spec,
     built_name,
     container_name,
+    gh_config_dir,
     repository_of,
     workspace_of_built_name,
 )
@@ -325,6 +327,10 @@ class Workspaces:
         # Called with a workspace whose container kept running while rcman was not: terminals.py
         # ends what the terminals of an earlier rcman left in it.
         self.on_kept_running: Callable[[Workspace], None] = lambda workspace: None
+        # Called, each in a step of its own, at every restore once the workspaces are back and
+        # before what no row is for is removed: what a module that needs this one (and so
+        # cannot be called from it) brings back at a start. gitaccount.py writes gh's files.
+        self.restore_hooks: list[Callable[[], None]] = []
         self.versions = ClaudeVersions(settings, runtime, self)
         self.versions.prunes = prunes
 
@@ -810,7 +816,8 @@ class Workspaces:
     @staticmethod
     def _hook_env(layout: Layout) -> dict[str, str]:
         """The only environment a lifecycle command is run with: the workspace's home and PATH
-        and the plan's variables."""
+        and the plan's variables; and gh pointed at the person's git folder, as Claude's is
+        (runtime.child_env), after them, so that no plan moves it."""
         return {
             "HOME": layout.home,
             "USER": layout.user,
@@ -819,6 +826,7 @@ class Workspaces:
             "LANG": "C.UTF-8",
             "DISABLE_AUTOUPDATER": "1",
             **layout.env,
+            GH_CONFIG_DIR: gh_config_dir(layout),
         }
 
     def _command_shell(self, name: str, layout: Layout) -> str:
@@ -1656,9 +1664,9 @@ class Workspaces:
 
     def restore(self) -> None:
         """Wait for the runtime, then: finish what was being made or deleted, make again
-        or start what should exist, start the servers that should run, remove the
-        workspaces no row is for, and finish deleting the people whose deletion an
-        earlier rcman began. A step that fails is logged, and the rest go on."""
+        or start what should exist, start the servers that should run, run the restore
+        hooks, remove the workspaces no row is for, and finish deleting the people whose
+        deletion an earlier rcman began. A step that fails is logged, and the rest go on."""
         try:
             said = False
             while not self._closing.is_set():
@@ -1677,6 +1685,8 @@ class Workspaces:
             self._restore_all()
             if self._closing.is_set():
                 return
+            for hook in self.restore_hooks:
+                self._step(hook)
             if self._table_is_empty_of_workspaces_there_are():
                 pass  # nothing is removed, or pruned, on the word of a table that is empty
             else:

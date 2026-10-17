@@ -17,14 +17,16 @@ Claude's among them; Commit in rcman's **Changes** section needs a name.
 
 The **GitHub token** part says whether a token is stored, and takes a GitHub
 personal access token, which it never shows again once saved. Saving one
-replaces any stored before. **Remove token** asks first, then forgets it: rcman empties the credential file
-it keeps for git, and nothing a credential helper you set up yourself in a
+replaces any stored before. **Remove token** asks first, then forgets it: rcman empties the files
+it keeps the token in for git and gh, and nothing a credential helper you set up yourself in a
 workspace saved elsewhere (see [Git](git.md)). The
 token is what git uses for GitHub, to push, and to clone, fetch and pull private
-repositories as you, in all your workspaces and for Claude's git as well as rcman's.
+repositories as you, in all your workspaces and for Claude's git as well as rcman's;
+and what `gh` uses there, for GitHub's issues, pull requests and API (see
+[gh](git.md#gh)).
 
 Saving the commit author or the token, and removing the token, reach all your
-workspaces at once, running or not: the next git command uses them, and no
+workspaces at once, running or not: the next git or gh command uses them, and no
 server is restarted. How they look from inside a workspace, and what a
 `git config --global` there does, is in [Git](git.md).
 

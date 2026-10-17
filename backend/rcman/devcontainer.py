@@ -85,6 +85,7 @@ RESERVED_ENV = frozenset(
         "TERM",
         "TERMINFO",
         "CLAUDE_CONFIG_DIR",
+        "GH_CONFIG_DIR",
         "DISABLE_AUTOUPDATER",
         "GIT_TERMINAL_PROMPT",
         "GIT_OPTIONAL_LOCKS",

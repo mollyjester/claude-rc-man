@@ -254,11 +254,18 @@ def a_persons_workspaces_share_one_git_directory_written_by_rename(runtime, spec
             runtime.put_account(first.person, first.slot, "credential", b"")  # emptied
             assert _git_file(runtime, a, "credential") == rt.Result(0, b"", b"")
             layout = runtime.layout(a)
-            mode = runtime.exec(a, _sh(layout, f"stat -c %a {_git_dir(layout)}/config"))
-            assert mode.out.strip() == b"600", mode
+            for file in rt.ACCOUNT_FILES:  # every file rcman writes there
+                runtime.put_account(first.person, first.slot, file, f"{file} of 12\n".encode())
+                assert _git_file(runtime, a, file).out == f"{file} of 12\n".encode(), file
+                mode = runtime.exec(a, _sh(layout, f"stat -c %a {_git_dir(layout)}/{file}"))
+                assert mode.out.strip() == b"600", (file, mode)
             with made(runtime, second) as b, made(runtime, other) as c:
-                assert _git_file(runtime, b, "config").out == b"after, and longer\n"
-                assert _git_file(runtime, c, "config").code != 0  # another person's is their own
+                for file in rt.ACCOUNT_FILES:
+                    assert _git_file(runtime, b, file).out == f"{file} of 12\n".encode(), file
+                    # another person's are their own
+                    assert _git_file(runtime, c, file).out != f"{file} of 12\n".encode(), file
+                # and a person's folder has gh's configuration from its first workspace on
+                assert _git_file(runtime, c, "config.yml").out == rt.GH_CONFIG.encode()
                 # A workspace replaces a file in the directory by a rename, which a bound
                 # file does not allow.
                 swap = f"cd {_git_dir(layout)} && echo mine > t.new && mv -f t.new t"

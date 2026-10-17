@@ -204,14 +204,14 @@ export const m = {
   settingsGithubTitle: "GitHub token",
   githubTokenLabel: "GitHub token",
   githubTokenHelp:
-    "A personal access token git uses in all your workspaces to push to GitHub, and to clone, fetch and pull private repositories, as you, from rcman and from your Claude sessions. rcman never shows it again once saved.",
+    "A personal access token git and gh use in all your workspaces, as you, from rcman, from your Claude sessions and from the Terminal: git to push to GitHub and to clone, fetch and pull private repositories, gh for GitHub's issues, pull requests and API. rcman never shows it again once saved.",
   githubTokenStored: "A GitHub token is stored.",
   githubTokenNotStored: "No GitHub token is stored.",
   githubTokenSaved: "Token saved.",
   githubTokenRemove: "Remove token",
   githubTokenRemoveTitle: "Remove your GitHub token?",
   githubTokenRemoveBody:
-    "git in your workspaces, and in your Claude sessions, can no longer push to GitHub with it, from the next git command on. It still works on GitHub until you revoke it there.",
+    "git and gh in your workspaces, and in your Claude sessions, can no longer use it, from the next git or gh command on. It still works on GitHub until you revoke it there.",
   githubTokenRemoveConfirm: "Remove",
 
   usersTitle: "People",
