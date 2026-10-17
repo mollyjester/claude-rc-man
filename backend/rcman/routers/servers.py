@@ -24,7 +24,7 @@ class WorkspaceBody(BaseModel):
 
 
 class ConfirmBody(WorkspaceBody):
-    answer: Literal["y", "n"] = Field(description="Answer to the folder-trust question.")
+    answer: Literal["y", "n"] = Field(description="Answer to the question the server is asking.")
 
 
 def _ready(request: Request, identity: Identity, workspace: int) -> Workspace:

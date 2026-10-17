@@ -208,6 +208,80 @@ def test_the_reconnected_scenario_shows_the_observed_screen(pane, tmp_path):
     assert pane.wait_exit(timeout=10) == 1  # what follows Ctrl+C was not observed
 
 
+# Unlike the other observed screens, this scenario is interactive. What was seen is the
+# screen; the answers, the screens after `y`, the exit status after `n`, Ctrl+C at the
+# prompt and how fast an answer may come are not.
+PROMPT_SCENARIO = "remote_control_prompt"
+PROMPT = "Enable Remote Control"
+
+
+def at_the_prompt(pane, tmp_path):
+    cfg = logged_in(tmp_path / "cfg")
+    run(pane, ["remote-control"], tmp_path, cfg, FAKE_CLAUDE_SCENARIO=PROMPT_SCENARIO)
+    pane.wait_for(PROMPT, timeout=10)
+    return cfg
+
+
+def test_the_remote_control_prompt_scenario_shows_the_observed_screen(pane, tmp_path):
+    cfg = at_the_prompt(pane, tmp_path)
+    ctx = rec.Context(str(tmp_path), str(cfg), rec.load_manifest()["claude_version"])
+    raw = "\n".join(pane.wait_stable(quiet=0.5))
+    observed = rec.load_observed()[PROMPT_SCENARIO].lines
+    assert rec.sanitise(raw, ctx).split("\n") == observed
+    assert pane.exit_status() is None  # still asking, as it was seen
+    # Planted twin: a screen differing from the one shown is not sanitised into the
+    # observed one, so the comparison would see a fake showing another.
+    changed = raw.replace("Enable Remote Control?", "Enable Remote Control!")
+    assert changed != raw  # the plant took effect
+    assert rec.sanitise(changed, ctx).split("\n") != observed
+
+
+def test_yes_at_the_remote_control_prompt_goes_on_to_the_server_screens(pane, tmp_path):
+    """Not observed: what follows `y`. The fake goes on as after the trust question."""
+    at_the_prompt(pane, tmp_path)
+    pane.type_line("y")
+    pane.wait_for(r"Capacity: 0/", timeout=10)
+    assert PROMPT not in pane.text()
+    pane.wait_for(READY, timeout=fake.READY_SECONDS + 10)
+    assert pane.exit_status() is None
+    pane.interrupt()
+    assert pane.wait_exit(timeout=10) == rec.load_fixtures()["server_stopped_after_trust"].exit_code
+
+
+def test_no_at_the_remote_control_prompt_ends_the_fake_with_status_one(pane, tmp_path):
+    """Not observed: the exit status after `n`. Claude Code is documented to exit."""
+    at_the_prompt(pane, tmp_path)
+    assert pane.exit_status() is None  # positive control: it was running until the answer
+    pane.type_line("n")
+    assert pane.wait_exit(timeout=10) == 1
+    assert "Capacity:" not in pane.text()
+
+
+def test_ctrl_c_at_the_remote_control_prompt_ends_the_fake_with_status_one(pane, tmp_path):
+    """Not observed: what Ctrl+C does at the prompt."""
+    at_the_prompt(pane, tmp_path)
+    assert pane.exit_status() is None
+    pane.interrupt()
+    assert pane.wait_exit(timeout=10) == 1
+
+
+def test_an_answer_other_than_y_or_n_at_the_remote_control_prompt_asks_nothing_more(pane, tmp_path):
+    """Not observed. Anything but `y` is taken as a no, as the trust question takes it."""
+    at_the_prompt(pane, tmp_path)
+    pane.type_line("maybe")
+    assert pane.wait_exit(timeout=10) == 1
+
+
+def test_the_default_scenario_never_shows_the_remote_control_prompt(pane, tmp_path):
+    cfg = at_the_prompt(pane, tmp_path)  # positive control: the scenario shows it
+    pane.interrupt()
+    pane.wait_exit(timeout=10)
+    pane.rerun([str(FAKE), "remote-control"], cwd=tmp_path, env=env_for(cfg))
+    answer_trust(pane)
+    pane.wait_for(READY, timeout=fake.READY_SECONDS + 10)
+    assert PROMPT not in pane.text()
+
+
 def test_every_observed_screen_is_a_scenario_of_the_fake(tmp_path, monkeypatch, capsys):
     """The scenarios are the observed screens themselves: one more is shown by its name."""
     planted = rec.Observed(

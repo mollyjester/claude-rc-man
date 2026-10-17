@@ -285,8 +285,11 @@ test holds to the recorder's, so the contract tests check each is in Claude's
   time — is killed too, so no Claude process is left, a session's command in a
   session of its own included. The pane's process is read once, and only it is
   signalled. A server still running after all that is `timeout`.
-- **Answering.** `confirm` answers the folder-trust question after
-  `ANSWER_PACE_SECONDS`, and once more if Claude asks again.
+- **Answering.** `confirm` answers the question the server is asking, one of
+  `QUESTIONS` in `helpers/screens.py`, after `ANSWER_PACE_SECONDS`, and once more if Claude asks
+  the same question again because the answer was too fast. It is done once the
+  state is no longer the question that was asked, so an answer to the trust
+  question that lands on the Remote Control question is accepted.
 - **Unrecognised screens.** A screen in transition matches no known state, so
   a verb that waits reports `unrecognised` only once it has lasted
   `UNRECOGNISED_GRACE_SECONDS`.
@@ -312,6 +315,7 @@ every observed screen (see [fake-claude.md](fake-claude.md)) by
 |---|---|
 | `starting` | The server has printed nothing yet |
 | `trust_prompt` | Claude asks whether to trust the folder; answer with `confirm` |
+| `remote_control_prompt` | Claude asks whether to enable Remote Control, until it is enabled for the account; answer with `confirm`. `y` starts the server; after `n` Claude exits and asks again next time (as Claude Code's documentation says; not observed), and the server is then shown as its screen and exit status say: `exited` unless Claude prints one of the screens that end a server and are recognised as such (what it prints is not observed) |
 | `connected` | The server is up; no session has attached yet |
 | `ready` | A session is attached; `session_name` and `environment_url` are set |
 | `stopped` | Stopped with its sessions preserved; `start` or `resume` brings them back |

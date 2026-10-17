@@ -1,5 +1,14 @@
 import { m } from "./messages";
-import { ACTIONS, dotFor, KIND, KIND_ORDER, LIVE, PRIMARY, type Workspace } from "./Servers";
+import {
+  ACTIONS,
+  dotFor,
+  KIND,
+  KIND_ORDER,
+  LABELS,
+  LIVE,
+  PRIMARY,
+  type Workspace,
+} from "./Servers";
 
 // Whether a table keyed by state covers exactly the states the server reports.
 function sameStates(table: Record<string, unknown>) {
@@ -44,6 +53,17 @@ test.each(Object.entries(PRIMARY))(
     }
   },
 );
+
+test("a server at the Remote Control question is waiting, leads with Enable, and can be stopped", () => {
+  expect(KIND.remote_control_prompt).toBe("waiting");
+  expect(PRIMARY.remote_control_prompt).toBe("enableRc");
+  expect(ACTIONS.remote_control_prompt).toEqual(["enableRc", "notNow", "stop"]);
+  // its own words, not the trust question's
+  expect(m.states.remote_control_prompt).not.toBe(m.states.trust_prompt);
+  expect(m.nextStep.remote_control_prompt).not.toBe(m.nextStep.trust_prompt);
+  expect(LABELS.enableRc).toBe(m.enableRc);
+  expect(LABELS.notNow).toBe(m.notNow);
+});
 
 describe("the dot a workspace carries", () => {
   const at = (extra: Partial<Workspace>): Workspace => ({

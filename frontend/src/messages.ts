@@ -79,6 +79,7 @@ export const m = {
   states: {
     starting: "Starting",
     trust_prompt: "Waiting for your answer",
+    remote_control_prompt: "Waiting for your answer about Remote Control",
     connected: "Ready to accept sessions",
     ready: "In use",
     stopped: "Stopped",
@@ -97,6 +98,8 @@ export const m = {
   nextStep: {
     starting: "Claude is starting. Wait a moment.",
     trust_prompt: "Answer whether you trust this workspace.",
+    remote_control_prompt:
+      "Answer whether to enable Remote Control. Not now ends the server, and Claude asks again next time.",
     connected: "Open it in claude.ai to start a session.",
     ready: "A session is attached; continue it in claude.ai.",
     stopped: "Resume to pick up its sessions, or forget it.",
@@ -123,6 +126,12 @@ export const m = {
     `Sessions started in ${name} can read, edit and run the files in it, and its own Claude settings apply to them.`,
   trustYes: "Yes, trust it",
   trustNo: "No",
+
+  remoteControlTitle: "Enable Remote Control?",
+  remoteControlBody:
+    "Claude asks this until Remote Control is enabled for your account. Enabled, the server keeps running here and you pick up its sessions from claude.ai/code or the Claude mobile app. Not now ends the server without starting it, and Claude asks again the next time it starts.",
+  enableRc: "Enable",
+  notNow: "Not now",
 
   claudeTitle: "Claude account",
   claudeNotConnected: "Your Claude account is not connected. Connect it to start servers.",
@@ -244,7 +253,7 @@ export const m = {
     "server.resume": "Resumed a server",
     "server.stop": "Stopped a server",
     "server.forget": "Forgot a stopped server",
-    "server.confirm": "Answered a server's trust question",
+    "server.confirm": "Answered a question a server asked",
     "me.sign_out": "Signed out of rcman",
     "settings.update": "Changed settings",
     "person.add": "Added a person",

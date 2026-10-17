@@ -304,6 +304,20 @@ What needs a real Claude account is checked by hand:
 and run by hand with `uv run pytest -m real_claude`; what they need is in
 [fake-claude.md](fake-claude.md).
 
+### Known flaky test
+
+`tests/test_claude_server.py::test_a_server_in_a_git_repository_starts_stops_and_resumes`
+can fail in a parallel `make test`, at its last assertion: the ready read after
+the resume has `session_name` `None`. It does not fail in repeated runs on an
+idle machine. The cause is suspected, not proven: `wait_state` returns on the
+first capture whose state is `ready` without looking at `session_name`, and
+`_session_name` in `helpers/screens.py` gives `None` when the Capacity line is
+the last line or the line after it is blank, so a capture between the pane
+receiving the Capacity line and receiving the name line reads as ready with no
+name. What would settle it is a probe of capture timing on an idle machine,
+reading the pane repeatedly while the fake draws its ready screen. The test,
+`wait_state` and `_session_name` are left as they are.
+
 ## What lives where
 
 | Path | Contents |

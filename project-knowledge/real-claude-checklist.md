@@ -225,17 +225,22 @@ connected on the **Claude** page.
 ## Screens with no recording yet
 
 Some screens rcman has no recording of, and has not kept as observed, and so
-does not recognise; the full list, and how rcman shows them, is under
-*Not recorded* in
+does not recognise, and some it has seen but not what follows them; the full
+list, and how rcman shows them, is under *Not recorded* in
 [fake-claude.md](fake-claude.md). Some of them need particular conditions.
 Whenever those conditions come up, record the screen: add a sequence for it to
 `SEQUENCES` in `devtools/record_claude.py`, record it with
 `uv run python devtools/record_claude.py --with-account --sequence <name>`,
 and teach rcman and the fake to recognise it, tests first.
 
-1. **Enabling Remote Control.** With a Claude account that has never used
-   Remote Control, start a server: Claude asks once whether to enable it.
-   Record that question, both answers, and the screen that follows each.
+1. **Enabling Remote Control.** The question itself is kept as an observed
+   screen. With a Claude account that has not enabled Remote Control, start a
+   server: Claude asks whether to enable it. Record what the observed screen
+   leaves out: the screens that follow `y`; whether Claude exits after `n` and
+   asks again next time, as its documentation says, and the screen it leaves
+   and the exit status then; what Ctrl+C does at the question; and whether an
+   answer that arrives straight after the question is refused, as the trust
+   question's is.
 2. **Network loss.** With a server ready, cut the machine's network for longer
    than a server survives, then restore it. Record the screen the server ends
    on and its exit status.

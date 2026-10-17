@@ -2,6 +2,7 @@
 every screen observed on a live server (tests/fakes/)."""
 
 import json
+import re
 
 import pytest
 
@@ -140,6 +141,9 @@ OBSERVED_STATES = {
     # Claude stopped drawing its status block after a Remote Control error, and then
     # reconnected; it draws the block again on its own tick, if at all.
     "reconnected_without_status": "reconnected",
+    # Claude's one-time confirmation of an account that has never used Remote Control,
+    # asked after the folder-trust question.
+    "remote_control_prompt": "remote_control_prompt",
 }
 
 
@@ -238,6 +242,119 @@ def test_a_reconnected_screen_names_no_environment_even_when_a_log_line_does():
     info = h.classify(planted, exit_code)
     assert info["state"] == "reconnected"
     assert (info["environment_url"], info["session_name"]) == (None, None)
+
+
+def test_the_observed_remote_control_prompt_classifies_as_it():
+    lines, exit_code = observed("remote_control_prompt")
+    info = h.classify(lines, exit_code)
+    assert info["state"] == "remote_control_prompt"
+    assert (info["session_name"], info["environment_url"]) == (None, None)
+    assert "screen" not in info
+    assert info["exit_code"] is None
+    # Planted twin: the same screen with its question taken away is no prompt.
+    planted = lines[:-1]
+    assert planted != lines
+    assert h.classify(planted, exit_code)["state"] == "unrecognised"
+
+
+def remote_control_prompt_variants(lines: list[str]) -> dict[str, list[str]]:
+    """Screens like the observed Remote Control prompt that say something else."""
+    question = lines[-1]
+    return {
+        "a line after the question": [*lines, "something else"],
+        "a capital Y": [*lines[:-1], question.replace("y/n", "Y/n")],
+        "no question mark": [*lines[:-1], question.replace("?", "")],
+        "another word": [*lines[:-1], question.replace("Enable", "Disable")],
+        "more words after it": [*lines[:-1], f"{question} now"],
+        "words before it": [*lines[:-1], f"So: {question}"],
+        "the trust question alone": lines[:-1],
+    }
+
+
+@pytest.mark.parametrize(
+    "variant", sorted(remote_control_prompt_variants(observed("remote_control_prompt")[0]))
+)
+def test_screens_like_the_remote_control_prompt_stay_unrecognised(variant):
+    lines, exit_code = observed("remote_control_prompt")
+    assert h.classify(lines, exit_code)["state"] == "remote_control_prompt"  # positive control
+    planted = remote_control_prompt_variants(lines)[variant]
+    assert planted != lines
+    info = h.classify(planted, exit_code)
+    assert info["state"] == "unrecognised"
+    assert info["screen"] == planted
+
+
+@pytest.mark.parametrize("trailing", [[""], ["", ""], ["   "], ["", "  \t", ""]])
+def test_blank_lines_after_the_remote_control_prompt_do_not_hide_it(trailing):
+    lines, exit_code = observed("remote_control_prompt")
+    planted = [*lines, *trailing]
+    assert planted != lines
+    assert h.classify(planted, exit_code)["state"] == "remote_control_prompt"
+
+
+@pytest.mark.parametrize("code", [0, 1])
+def test_a_remote_control_prompt_on_a_dead_pane_is_exited(code):
+    lines, _ = observed("remote_control_prompt")
+    assert h.classify(lines, None)["state"] == "remote_control_prompt"  # positive control
+    info = h.classify(lines, code)
+    assert (info["state"], info["exit_code"]) == ("exited", code)
+    assert info["screen"] == lines
+
+
+@pytest.mark.parametrize(
+    "block,state",
+    [("server_connected_resumed", "connected"), ("server_ready_resumed", "ready")],
+)
+def test_the_remote_control_prompt_above_a_status_block_is_that_block(block, state):
+    prompt, exit_code = observed("remote_control_prompt")
+    lines, _ = filled(block)
+    assert h.classify(prompt, exit_code)["state"] == "remote_control_prompt"  # positive control
+    assert h.classify([*prompt, *lines], exit_code)["state"] == state
+
+
+def test_the_remote_control_prompt_as_the_last_line_of_a_ready_screen_is_the_prompt():
+    """As for the trust question, the last line decides over a status block above it."""
+    prompt, exit_code = observed("remote_control_prompt")
+    lines, _ = filled("server_ready_resumed")
+    assert h.classify(lines, exit_code)["state"] == "ready"  # positive control
+    info = h.classify([*lines, prompt[-1]], exit_code)
+    assert info["state"] == "remote_control_prompt"
+    trust, _ = filled("trust_prompt")
+    assert h.classify([*lines, trust[-1]], exit_code)["state"] == "trust_prompt"
+
+
+ASKS_YES_OR_NO = re.compile(r"(\[y/N\]|\(y/n\))$")
+
+
+def asking_states(screens: dict[str, tuple[list[str], int | None]]) -> set[str]:
+    """The states of the still running screens whose last line asks for a y or an n."""
+    found = set()
+    for lines, exit_code in screens.values():
+        nonempty = [line for line in lines if line.strip()]
+        if exit_code is None and nonempty and ASKS_YES_OR_NO.search(nonempty[-1].strip()):
+            found.add(h.classify(lines, exit_code)["state"])
+    return found
+
+
+def every_server_screen() -> dict[str, tuple[list[str], int | None]]:
+    return {
+        **{name: filled(name) for name in SERVER_STATES},
+        **{name: observed(name) for name in OBSERVED_STATES},
+    }
+
+
+def test_the_questions_are_the_states_of_the_screens_that_ask_for_a_y_or_an_n():
+    assert asking_states(every_server_screen()) == set(h.QUESTIONS)
+
+
+def test_a_state_asking_for_a_y_or_an_n_that_is_not_a_question_is_found():
+    """Planted twin: a screen ending in a question that no state of QUESTIONS is."""
+    screens = every_server_screen()
+    assert asking_states(screens) == set(h.QUESTIONS)  # positive control
+    screens["planted"] = (["Continue? (y/n)"], None)
+    assert h.classify(*screens["planted"])["state"] == "unrecognised"  # the plant took effect
+    assert asking_states(screens) == {*h.QUESTIONS, "unrecognised"}
+    assert asking_states({}) == set()
 
 
 @pytest.mark.parametrize("ready", ["server_ready_resumed", "git_server_ready_resumed"])

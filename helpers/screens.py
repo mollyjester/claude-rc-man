@@ -20,6 +20,11 @@ RESUMABLE = ("stopped", "exited")
 
 # What Claude Code shows; held to the recorded fixtures by tests/test_screens.py.
 TRUST_PROMPT = re.compile(r"^Trust .+\? \[y/N\]$")
+# The one-time confirmation of an account that has never used Remote Control, asked after
+# the folder-trust question (tests/fakes/observed/).
+REMOTE_CONTROL_PROMPT = re.compile(r"^Enable Remote Control\? \(y/n\)$")
+# The states in which Claude waits for a y or an n.
+QUESTIONS = ("trust_prompt", "remote_control_prompt")
 TOO_FAST = "answer arrived too quickly"
 CAPACITY_CONNECTED = re.compile(r"^\s*Capacity: 0/\d+")
 CAPACITY_READY = re.compile(r"^\s*Capacity: [1-9]\d*/\d+")
@@ -68,6 +73,8 @@ def classify(lines: list[str], exit_code: int | None) -> dict:
         state = "starting"
     elif TRUST_PROMPT.match(nonempty[-1].strip()):
         state = "trust_prompt"
+    elif REMOTE_CONTROL_PROMPT.match(nonempty[-1].strip()):
+        state = "remote_control_prompt"
     elif any(CAPACITY_READY.match(line) for line in lines):
         state = "ready"
     elif any(CAPACITY_CONNECTED.match(line) for line in lines):
