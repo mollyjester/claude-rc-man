@@ -1,5 +1,5 @@
 import { act, render } from "@testing-library/react";
-import type { ReactElement, ReactNode } from "react";
+import { type ReactElement, type ReactNode, StrictMode } from "react";
 import {
   type Location,
   MemoryRouter,
@@ -41,9 +41,14 @@ function renderRouted(path: string, children: ReactNode) {
   };
 }
 
-// The whole app at a path.
-export function renderApp(path = "/", { pollMs = 0 }: { pollMs?: number } = {}) {
-  return renderRouted(path, <App pollMs={pollMs} />);
+// The whole app at a path; `strict`, in React's strict mode, as main.tsx renders it, which
+// in development runs every effect twice.
+export function renderApp(
+  path = "/",
+  { pollMs = 0, strict = false }: { pollMs?: number; strict?: boolean } = {},
+) {
+  const app = <App pollMs={pollMs} />;
+  return renderRouted(path, strict ? <StrictMode>{app}</StrictMode> : app);
 }
 
 // A part of the page that the app does not show, on its own at "/", with a page

@@ -13,8 +13,15 @@ from rcman.runtime import container_name
 
 from helpers import rules
 from tests.conftest import ALICE, BOB, CALLS, as_user, changing, made_workspace
-from tests.git_fixtures import fixture_git, make_repo, push_branch_to_origin, write
+from tests.git_fixtures import (
+    commit_on_origin,
+    fixture_git,
+    make_repo,
+    push_branch_to_origin,
+    write,
+)
 from tests.test_audit import rows
+from tests.test_repository import pushes_elsewhere
 
 
 def area_routes(app, prefix: str) -> list[tuple[str, str]]:
@@ -214,6 +221,72 @@ def test_a_push_the_runtime_fails_after_the_commit_is_still_a_commit_not_pushed(
     assert out["commit"] == fixture_git(work["folder"], "rev-parse", "HEAD").strip()
     assert out["push"] is None and out["push_problem"]["code"] == "workspace_failed"
     assert rows(settings)[-1]["result"] == "committed_not_pushed"
+
+
+def origin_of(folder: Path) -> Path:
+    return Path(fixture_git(folder, "remote", "get-url", "origin").strip())
+
+
+def test_sync_pulls_then_pushes_and_answers_what_it_did(client, work, settings):
+    folder = work["folder"]
+    theirs = commit_on_origin(origin_of(folder), "main", "theirs.txt")
+    r = post(client, "/api/git/sync", {"workspace": work["id"]})
+    assert r.status_code == 200, r.text
+    assert r.json() == {
+        "branch": "main",
+        "upstream": "origin/main",
+        "pulled": True,
+        "pushed": False,
+        "upstream_set": False,
+        "push_problem": None,
+    }
+    assert fixture_git(folder, "rev-parse", "HEAD").strip() == theirs
+    assert rows(settings)[-1]["action"] == "git.sync"
+    assert rows(settings)[-1]["result"] == "ok"
+    write(folder / "ours.txt")
+    fixture_git(folder, "add", "ours.txt")
+    fixture_git(folder, "commit", "-q", "-m", "ours")
+    r = post(client, "/api/git/sync", {"workspace": work["id"]})
+    assert (r.status_code, r.json()["pushed"], r.json()["pulled"]) == (200, True, False)
+    assert fixture_git(origin_of(folder), "rev-parse", "main") == fixture_git(
+        folder, "rev-parse", "HEAD"
+    )
+
+
+def test_a_sync_that_pulled_and_did_not_push_is_audited_as_such(client, work, settings, tmp_path):
+    folder = work["folder"]
+    mirror = pushes_elsewhere(folder, tmp_path / "mirror.git")
+    hook = mirror / "hooks" / "pre-receive"
+    hook.write_text("#!/bin/sh\nexit 1\n")
+    hook.chmod(0o755)
+    theirs = commit_on_origin(origin_of(folder), "main", "theirs.txt")
+    r = post(client, "/api/git/sync", {"workspace": work["id"]})
+    assert r.status_code == 200, r.text
+    out = r.json()
+    assert (out["pulled"], out["pushed"]) == (True, False)
+    assert out["push_problem"]["code"] == "git_failed"
+    assert fixture_git(folder, "rev-parse", "HEAD").strip() == theirs
+    assert rows(settings)[-1]["result"] == "pulled_not_pushed"
+
+
+def test_a_sync_refused_is_audited_with_its_code(client, work, settings):
+    folder = work["folder"]
+    commit_on_origin(origin_of(folder), "main", "theirs.txt")
+    write(folder / "ours.txt")
+    fixture_git(folder, "add", "ours.txt")
+    fixture_git(folder, "commit", "-q", "-m", "ours")
+    r = post(client, "/api/git/sync", {"workspace": work["id"]})
+    assert codes(r) == (409, "diverged")
+    assert (rows(settings)[-1]["action"], rows(settings)[-1]["result"]) == ("git.sync", "diverged")
+
+
+def test_refresh_branches_still_only_fetches(client, work):
+    folder = work["folder"]
+    before = fixture_git(folder, "rev-parse", "HEAD")
+    commit_on_origin(origin_of(folder), "main", "theirs.txt")
+    assert post(client, "/api/git/fetch", {"workspace": work["id"]}).json() == {}
+    assert fixture_git(folder, "rev-parse", "HEAD") == before
+    assert fixture_git(folder, "rev-parse", "origin/main") != before  # the positive: fetched
 
 
 def test_a_problem_git_has_comes_with_what_git_said(client, work):

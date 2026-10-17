@@ -61,6 +61,57 @@ def test_every_route_answers_a_missing_identity_with_a_problem(app, client):
         assert_problem(response, 401, "not_authenticated")
 
 
+def missing_identity_accepted(client, paths) -> list[str]:
+    """The WebSocket routes of ``paths`` that do not refuse an upgrade with no identity, before
+    accepting it, with the problem ``not_authenticated``."""
+    from starlette.testclient import WebSocketDenialResponse
+
+    found = []
+    for path in paths:
+        try:
+            with client.websocket_connect(path.replace("{workspace}", "1") + "?workspace=1"):
+                pass
+        except WebSocketDenialResponse as denied:
+            body = denied.json()
+            if (denied.status_code, body.get("code"), body.get("type")) == (
+                401,
+                "not_authenticated",
+                "urn:rcman:problem:not_authenticated",
+            ) and denied.headers["content-type"].startswith(problems.MEDIA_TYPE):
+                continue
+        except Exception:  # noqa: BLE001 - anything else is no refusal with a problem
+            pass
+        found.append(path)
+    return found
+
+
+def test_every_websocket_route_refuses_a_missing_identity_before_the_upgrade(app, client):
+    paths = [r.path for r in routes.websocket_routes(app)]
+    assert paths  # non-vacuity
+    assert missing_identity_accepted(client, paths) == []
+
+
+def test_the_missing_identity_check_finds_a_websocket_route_that_lets_anyone_in(app):
+    """Planted twin: a WebSocket route with no identity is found; one with it is not."""
+    from fastapi import Depends, WebSocket
+    from fastapi.testclient import TestClient
+    from rcman.identity import current_user
+
+    @app.websocket("/api/planted-open")
+    async def open_(websocket: WebSocket):
+        await websocket.accept()
+        await websocket.close()
+
+    @app.websocket("/api/planted-guarded")
+    async def guarded(websocket: WebSocket, identity=Depends(current_user)):
+        await websocket.accept()
+        await websocket.close()
+
+    with TestClient(app) as client:  # a catch-all for pages takes no WebSocket
+        found = missing_identity_accepted(client, ["/api/planted-open", "/api/planted-guarded"])
+    assert found == ["/api/planted-open"]
+
+
 def test_every_problem_code_has_a_status_and_a_message():
     assert set(problems.STATUS) == set(problems.MESSAGES)
 
@@ -1060,3 +1111,13 @@ def test_the_problems_of_rolling_out_a_claude_version_are_conflicts_in_plain_wor
 def test_nothing_answers_that_rcman_cannot_do_it_yet():
     assert "not_available_yet" not in problems.MESSAGES
     assert "not_available_yet" not in problems.STATUS
+
+
+def test_the_refusals_push_and_sync_share_read_right_for_both():
+    """detached_head and no_commits_yet refuse a push and a sync alike, so their words name
+    neither."""
+    # the positive: the catalogue is read, and the check finds "push" where it is
+    assert "push" in problems.MESSAGES["no_push_remote"].lower()
+    for code in ("detached_head", "no_commits_yet"):
+        words = problems.MESSAGES[code].lower()
+        assert words and "push" not in words and "sync" not in words, code

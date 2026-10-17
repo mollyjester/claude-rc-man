@@ -1,5 +1,6 @@
 """Everyone's workspaces and servers, for administrators (backend/rcman/everyone.py)."""
 
+import time
 from types import SimpleNamespace
 
 from rcman import everyone
@@ -8,6 +9,8 @@ from tests.conftest import (
     ALICE,
     BOB,
     CAROL,
+    MADE_WITHIN,
+    as_user,
     changing,
     fake_claude,
     made_workspace,
@@ -38,6 +41,26 @@ def test_every_person_is_listed_with_their_workspaces_and_servers(app, client):
     )
     assert [(w["name"], w["server"]) for w in found[BOB]["workspaces"]] == [("beta", None)]
     assert found[CAROL] == {"email": CAROL, "workspaces": []}
+
+
+def test_a_workspace_shows_only_its_id_name_state_server_and_version(app, client):
+    url = "https://github.com/octo/widget"
+    r = client.post("/api/git/clone", json={"url": f"{url}.git"}, headers=changing(ALICE))
+    assert r.status_code == 202, r.text
+    deadline = time.monotonic() + MADE_WITHIN
+    while True:
+        [own] = client.get("/api/workspaces", headers=as_user(ALICE)).json()["workspaces"]
+        if own["state"] != "creating":
+            break
+        assert time.monotonic() < deadline, own
+        time.sleep(0.05)
+    # the person's own listing of the same workspace holds what is left out below
+    assert own["state"] == "failed"  # no repository at the address, so it keeps its steps
+    assert own["source_page"] == url and own["source"] == f"{url}.git"
+    assert own["error"] and own["log"]
+    [shown] = by_email(everyone.everyone(request_for(app)))[ALICE]["workspaces"]
+    assert set(shown) == {"id", "name", "state", "server", "server_error", "claude_version"}
+    assert url not in str(shown) and own["log"] not in str(shown)
 
 
 def test_a_server_shows_only_its_state_name_and_exit_code(app, client):

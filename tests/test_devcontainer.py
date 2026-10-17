@@ -530,7 +530,7 @@ def own_environments():
     def of(extra: dict) -> dict[str, dict]:
         layout = rt.PODMAN_LAYOUT.for_plan("dev", extra, None)
         return {
-            "claude": claude_server.child_env(layout),
+            "claude": rt.child_env(layout),
             "tmux": claude_server.tmux_env(layout),
             "git": Repository(layout, None, None).env,
         }
@@ -1758,7 +1758,7 @@ def test_where_rcmans_own_value_wins_over_the_files_is_where_the_text_says():
     layout = dataclasses.replace(
         rt.PODMAN_LAYOUT, env={"LANG": "file", "LC_ALL": "file", "BROWSER": "file"}
     )
-    claude, tmux = claude_server.child_env(layout), claude_server.tmux_env(layout)
+    claude, tmux = rt.child_env(layout), claude_server.tmux_env(layout)
     git = Repository(layout, None, None).env
     assert (claude["LANG"], claude["BROWSER"]) != ("file", "file")  # rcman's, for Claude
     assert tmux["LANG"] != "file" and tmux["BROWSER"] == "file"  # LANG rcman's, BROWSER the file's

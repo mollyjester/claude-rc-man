@@ -476,6 +476,13 @@ assert shown("systemctl", "show", "--property", "MainPID", "--value", manager) =
 """
 
 
+def test_the_terminal_runs_a_shell_in_a_workspace_of_real_podman(docker, podman_host):
+    """tests/container/test_terminal_in_podman.py, run as the service account: the Terminal
+    tab's shell through ``podman --remote exec`` on a tty of its own, in a workspace of the
+    default image made through the app."""
+    _in_the_hosts(podman_host, "tests/container/test_terminal_in_podman.py", 2400, github=False)
+
+
 def test_limits_hold_a_workspace_to_its_slices_in_real_podman_and_systemd(docker, podman_host):
     """tests/container/test_limits_in_podman.py, run as the service account once root has made
     what the installer makes for limits: the cgroup files of the slices, the container's scope and

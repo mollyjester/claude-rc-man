@@ -22,7 +22,7 @@ from collections.abc import Callable
 from helpers import rules, screens
 from rcman.channel import REQUEST_TIMEOUT, Result
 from rcman.problems import Problem
-from rcman.runtime import Layout
+from rcman.runtime import Layout, child_env
 
 SESSION = "rc-server"
 START_TIMEOUT = 30.0
@@ -67,26 +67,6 @@ def tmux_env(layout: Layout) -> dict[str, str]:
     if layout.terminfo:
         env["TERMINFO"] = layout.terminfo
     return env
-
-
-def child_env(layout: Layout) -> dict[str, str]:
-    """The only environment Claude Code is started with. Its configuration is the
-    workspace's own, and it never updates itself: the store it runs from is read-only,
-    and an update would go into the workspace unapproved. The variables the workspace's plan
-    sets come first, so that none of them replaces one of these."""
-    return {
-        **layout.env,
-        "HOME": layout.home,
-        "USER": layout.user,
-        "LOGNAME": layout.user,
-        "PATH": layout.path,
-        "SHELL": layout.shell,
-        "TERM": "xterm-256color",
-        "LANG": "C.UTF-8",
-        "CLAUDE_CONFIG_DIR": layout.config,
-        "DISABLE_AUTOUPDATER": "1",
-        "BROWSER": "/bin/false",
-    }
 
 
 def claude_command(layout: Layout, *args: str) -> list[str]:

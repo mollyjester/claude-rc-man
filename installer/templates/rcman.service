@@ -16,8 +16,9 @@ NoNewPrivileges=yes
 # What rcman makes is its own: its database is no one else's to read.
 UMask=0077
 # Its only listener is the unix socket @SOCKET@, in a directory only Caddy's group
-# may enter, made at boot by /etc/tmpfiles.d/rcman.conf.
-ExecStart=@CURRENT@/.venv/bin/uvicorn --factory rcman.main:create_app --uds @SOCKET@
+# may enter, made at boot by /etc/tmpfiles.d/rcman.conf. --ws is the implementation of
+# WebSockets the Terminal tab is carried by (WEBSOCKETS in rcman/routers/terminal.py).
+ExecStart=@CURRENT@/.venv/bin/uvicorn --factory rcman.main:create_app --ws websockets-sansio --uds @SOCKET@
 Restart=on-failure
 
 [Install]

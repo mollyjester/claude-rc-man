@@ -32,7 +32,7 @@ import time
 from pathlib import Path
 
 import pytest
-from rcman import builder, claude_server, devcontainer, people
+from rcman import builder, devcontainer, people
 from rcman import runtime as rt
 from rcman.problems import DEVCONTAINER_MESSAGES
 from rcman.settings import Settings
@@ -656,7 +656,7 @@ def run_in(podman, service, workspace, *argv: str) -> rt.Result:
     layout = service._layout(workspace)
     return podman.exec(
         workspace.container,
-        layout.with_env(claude_server.child_env(layout), list(argv)),
+        layout.with_env(rt.child_env(layout), list(argv)),
         cwd=layout.work,
     )
 
@@ -703,7 +703,7 @@ def test_a_dockerfile_and_a_local_feature_are_built_for_real_and_the_workspace_r
     # The tool the feature installed is on the PATH Claude's programs have, and its variables
     # are in the environment, from the image's own ENV.
     layout = real_service._layout(one)
-    path = claude_server.child_env(layout)["PATH"].split(":")
+    path = rt.child_env(layout)["PATH"].split(":")
     assert "/opt/mytool/bin" in path and path.index("/opt/mytool/bin") < path.index("/usr/bin")
     tool = run_in(real_podman, real_service, one, "mytool")
     assert tool.out.decode().strip() == "mytool from-the-file", tool

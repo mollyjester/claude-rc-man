@@ -3,7 +3,8 @@
 git runs in the workspace, at the root of its work folder, through the workspace's
 runner: reads go through its channel, and what carries a person's text on stdin — the
 files to stage, a commit's message — through the runtime's ``exec``, so that none of it
-is ever in an argv. Every git call is wrapped in the workspace's ``timeout`` tool, and
+is ever in an argv; so does what reaches a remote, which may take minutes and would hold
+the channel meanwhile. Every git call is wrapped in the workspace's ``timeout`` tool, and
 the calls of one verb share one deadline. git has only the environment ``env`` gives it.
 Its refusals, and everything the verbs refuse before asking it, are
 :class:`~rcman.problems.Problem`\\ s.
@@ -33,13 +34,13 @@ from rcman.runtime import (
     moves_git_config,
 )
 
-# How long a verb's git calls may take, all together; fetch and push, over the network.
 # Whether the file $1 has a line of a password that is not blank; the shell's exit code is the
 # answer, and the file is read by the shell alone.
 HAS_PASSWORD = (
     'while IFS= read -r line || [ -n "$line" ]; do '
     'case $line in password=*[![:space:]]*) exit 0;; esac; done < "$1"; exit 1'
 )
+# How long a verb's git calls may take, all together; fetch, push and sync, over the network.
 GIT_TIMEOUT = 30.0
 GIT_NETWORK_TIMEOUT = 120.0
 # How long a clone may take: a whole repository, over the network.
@@ -86,10 +87,18 @@ _RUNTIME_PROBLEMS = {
     RuntimeUnavailable: "runtime_unavailable",
     ChannelTimeout: "timeout",
 }
+_RUNTIME_FAILURES = (RuntimeUnavailable, RuntimeFailed, ChannelBroken, ChannelTimeout)
 
 # How a runner is called: its argv and the seconds it may take, and with stdin besides.
 Run = Callable[[list[str], float], Result]
 RunStdin = Callable[[list[str], bytes, float], Result]
+
+
+def _as_problem(error: git_run.GitFailed | git_run.GitUnrecognised) -> Problem:
+    """git's refusal, or output rcman does not read, as the problem it is answered as."""
+    if isinstance(error, git_run.GitFailed):
+        return Problem("git_failed", git=error.lines, git_more=error.more)
+    return Problem("git_unrecognised_output", git=error.lines)
 
 
 def _verb(deadline: str = "GIT_TIMEOUT"):
@@ -102,14 +111,32 @@ def _verb(deadline: str = "GIT_TIMEOUT"):
             until = time.monotonic() + globals()[deadline]
             try:
                 return method(self, until, *args, **kwargs)
-            except git_run.GitFailed as failed:
-                raise Problem("git_failed", git=failed.lines, git_more=failed.more) from None
-            except git_run.GitUnrecognised as odd:
-                raise Problem("git_unrecognised_output", git=odd.lines) from None
+            except (git_run.GitFailed, git_run.GitUnrecognised) as failed:
+                raise _as_problem(failed) from None
 
         return verb
 
     return wrap
+
+
+def _push_problem(push: Callable[[], dict]) -> tuple[dict | None, dict | None]:
+    """``push``'s answer and None; or, when it fails, None and why, as a problem's body.
+
+    For the push half of a verb whose first half is done whatever the push makes of it:
+    git's refusal, output rcman does not read, a problem such as git_timeout, and a failure
+    of the runtime or the channel are each the push's problem. Anything else is a fault of
+    rcman's own, and is raised.
+    """
+    try:
+        return push(), None
+    except (git_run.GitFailed, git_run.GitUnrecognised) as failed:
+        problem = _as_problem(failed)
+    except Problem as failed:
+        problem = failed
+    except _RUNTIME_FAILURES as failed:
+        code = _RUNTIME_PROBLEMS.get(type(failed), "workspace_failed")
+        return None, problems.body(code, problems.STATUS[code], problems.MESSAGES[code])
+    return None, problems.body(problem.code, problem.status, problem.title, **problem.extra)
 
 
 class CloneFailed(Exception):
@@ -573,6 +600,25 @@ class Repository:
         to_github = url is not None and url.lower().startswith(GITHUB_ADDRESS)
         return upstream, has_remote, to_github
 
+    def _push_refusal(self, branch: str | None, deadline: float, first_commit: bool = True):
+        """Why ``branch``, the current one, would not be pushed, as a problem raised before
+        anything is asked of a remote: HEAD detached, no remote to push to, a push to GitHub
+        without a token, and, with ``first_commit``, a branch with no commit yet. Otherwise
+        the branch's upstream (_push_target), None for one with none."""
+        if branch is None:
+            raise Problem("detached_head")
+        upstream, has_remote, to_github = self._push_facts(branch, deadline)
+        if not has_remote:
+            raise Problem("no_push_remote")
+        if to_github and not self._token_stored(deadline):
+            raise Problem("github_token_not_set")
+        if (
+            first_commit
+            and self._git(["rev-parse", "--verify", "-q", "HEAD"], deadline, check=False).code
+        ):
+            raise Problem("no_commits_yet")
+        return upstream
+
     @_verb("GIT_NETWORK_TIMEOUT")
     def push(self, deadline: float, check: bool = False) -> dict:
         """Push the current branch: one with no upstream as git push -u origin HEAD, and
@@ -584,17 +630,9 @@ class Repository:
         makes a first commit.
         """
         branch = self._current(deadline)
-        if branch is None:
-            raise Problem("detached_head")
-        upstream, has_remote, to_github = self._push_facts(branch, deadline)
-        if not has_remote:
-            raise Problem("no_push_remote")
-        if to_github and not self._token_stored(deadline):
-            raise Problem("github_token_not_set")
+        upstream = self._push_refusal(branch, deadline, first_commit=not check)
         if check:
             return {"branch": branch}
-        if self._git(["rev-parse", "--verify", "-q", "HEAD"], deadline, check=False).code != 0:
-            raise Problem("no_commits_yet")
         args = ["push"] if upstream else ["push", "-u", PUSH_REMOTE, "HEAD"]
         self._git(args, deadline, network=True)
         return {
@@ -614,17 +652,69 @@ class Repository:
         """
         self.push(check=True)
         made = self.commit(message)
-        answer = {"commit": made["commit"], "push": None, "push_problem": None}
-        try:
-            answer["push"] = self.push()
-        except Problem as failed:
-            answer["push_problem"] = problems.body(
-                failed.code, failed.status, failed.title, **failed.extra
-            )
-        except (RuntimeUnavailable, RuntimeFailed, ChannelBroken, ChannelTimeout) as failed:
-            # The commit is made whatever became of the workspace since: its answer stays.
-            code = _RUNTIME_PROBLEMS.get(type(failed), "workspace_failed")
-            answer["push_problem"] = problems.body(
-                code, problems.STATUS[code], problems.MESSAGES[code]
-            )
-        return answer
+        # The commit is made whatever became of the push or of the workspace since: its
+        # answer stays.
+        pushed, problem = _push_problem(self.push)
+        return {"commit": made["commit"], "push": pushed, "push_problem": problem}
+
+    @_verb("GIT_NETWORK_TIMEOUT")
+    def sync(self, deadline: float) -> dict:
+        """Bring the current branch up to date with its upstream, then push it, as one
+        deadline: git fetch --prune, a fast-forward to the upstream where the branch is
+        behind it, and a push where the branch's push destination lacks a commit of it. A
+        branch with no upstream is published instead, as push publishes one.
+
+        Refused as push is, before anything is fetched; with ``upstream_gone`` where the
+        upstream is no longer there once fetched, and ``diverged`` where the branch and its
+        upstream each have commits the other lacks: nothing is merged or rebased. The
+        fast-forward is git merge --ff-only, which the person's pull and merge configuration
+        cannot make anything else, and which refuses only to overwrite a change that is not
+        committed. When something was pulled and the push then fails, the answer says what
+        was pulled, with the push's problem (``push_problem``, as a problem's body); a push
+        that fails with nothing pulled is the sync's own refusal.
+        """
+        branch = self._current(deadline)
+        upstream = self._push_refusal(branch, deadline)
+        self._git(["fetch", "--prune"], deadline, network=True)
+        answer = {
+            "branch": branch,
+            "upstream": _short(upstream),
+            "pulled": False,
+            "pushed": False,
+            "upstream_set": False,
+            "push_problem": None,
+        }
+        if upstream is None:
+            self._git(["push", "-u", PUSH_REMOTE, "HEAD"], deadline, network=True)
+            published = _short(self._push_target(branch, deadline)[0])
+            return {**answer, "upstream": published, "pushed": True, "upstream_set": True}
+        verified = self._git(["rev-parse", "-q", "--verify", "@{upstream}"], deadline, check=False)
+        if verified.code != 0:
+            raise Problem("upstream_gone")
+        counts = ["rev-list", "--left-right", "--count", "HEAD...@{upstream}"]
+        ahead, behind = git_run.left_right(self._out(counts, deadline))
+        if ahead and behind:
+            raise Problem("diverged")
+        if behind:
+            self._git(["merge", "--ff-only", "-q", "@{upstream}"], deadline)
+            answer["pulled"] = True
+        if not self._unpushed(deadline):
+            return answer
+
+        def push() -> dict:
+            self._git(["push"], deadline, network=True)
+            return {}
+
+        if not answer["pulled"]:
+            push()
+            return {**answer, "pushed": True}
+        pushed, answer["push_problem"] = _push_problem(push)
+        return {**answer, "pushed": pushed is not None}
+
+    def _unpushed(self, deadline: float) -> int:
+        """How many commits of the current branch where it pushes lacks: its push destination
+        (@{push}) when git knows one, otherwise its upstream, which is there."""
+        counted = self._git(["rev-list", "--count", "@{push}..HEAD"], deadline, check=False)
+        if counted.code != 0:
+            counted = self._git(["rev-list", "--count", "@{upstream}..HEAD"], deadline)
+        return int(counted.out)

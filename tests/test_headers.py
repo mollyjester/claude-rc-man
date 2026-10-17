@@ -43,11 +43,26 @@ def answers(client):
     yield "invalid", client.post("/api/client-errors", json={}, headers=changing(ALICE))
     yield "description", client.get("/api/openapi.json")
     yield "interactive description", client.get("/api/openapi")
+    yield "refused upgrade", refused_upgrade(client, {})
+    yield "upgrade from elsewhere", refused_upgrade(client, as_user(ALICE))
+    yield "invalid upgrade", refused_upgrade(client, changing(ALICE), "")
+
+
+def refused_upgrade(client, headers, query="?workspace=1"):
+    """The answer to an upgrade to a WebSocket refused before it is accepted."""
+    from starlette.testclient import WebSocketDenialResponse
+
+    try:
+        with client.websocket_connect("/api/terminal" + query, headers=headers):
+            pass
+    except WebSocketDenialResponse as denied:
+        return denied
+    raise AssertionError("the upgrade was accepted")
 
 
 def test_every_answer_forbids_framing_and_sniffing(served):
     seen = list(answers(served))
-    assert len(seen) >= 10 and {r.status_code for _, r in seen} >= {200, 401, 403, 404, 422}
+    assert len(seen) >= 13 and {r.status_code for _, r in seen} >= {200, 401, 403, 404, 422}
     for what, response in seen:
         for name, value in headers.SECURITY_HEADERS.items():
             assert response.headers.get(name) == value, (what, name)

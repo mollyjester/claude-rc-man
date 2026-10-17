@@ -6,7 +6,8 @@ that the interactive description of the API, which loads its own scripts, works)
 header the same for browsers that ignore the policy, the one that stops a browser from guessing
 a content type, and the one that keeps an address of rcman's from going to other sites. Neither
 Caddy nor oauth2-proxy adds them for what rcman serves. An answer that sets one of them itself
-keeps its own. Python standard library only, and ASGI's own types.
+keeps its own. A WebSocket's upgrade that is refused is answered over HTTP too, and carries
+them as well. Python standard library only, and ASGI's own types.
 """
 
 from __future__ import annotations
@@ -21,6 +22,10 @@ SECURITY_HEADERS = {
 }
 
 
+# The first message of an answer over HTTP: a request's, and a refused WebSocket upgrade's.
+ANSWER_STARTS = {"http": "http.response.start", "websocket": "websocket.http.response.start"}
+
+
 class SecurityHeaders:
     """An ASGI middleware adding SECURITY_HEADERS to each answer that lacks them."""
 
@@ -29,12 +34,13 @@ class SecurityHeaders:
         self._added = [(k.lower().encode(), v.encode()) for k, v in SECURITY_HEADERS.items()]
 
     async def __call__(self, scope, receive, send):
-        if scope["type"] != "http":
+        start = ANSWER_STARTS.get(scope["type"])
+        if start is None:
             await self.app(scope, receive, send)
             return
 
         async def with_headers(message):
-            if message["type"] == "http.response.start":
+            if message["type"] == start:
                 present = {name.lower() for name, _ in message.get("headers", [])}
                 message = {
                     **message,

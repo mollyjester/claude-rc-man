@@ -235,6 +235,27 @@ def test_an_answer_with_no_version_is_unrecognised():
         g.version_of("hello\n")
 
 
+def test_the_two_counts_of_left_and_right_are_read_from_real_git(tmp_path):
+    origin = tmp_path / "origin.git"
+    repo = make_repo(tmp_path / "repo", origin=origin)
+    push_branch_to_origin(repo, origin, "elsewhere")
+    fixture_git(origin, "update-ref", "refs/heads/main", "refs/heads/elsewhere")
+    fixture_git(repo, "fetch", "-q")
+    for name in ("a.txt", "b.txt"):
+        write(repo / name)
+        fixture_git(repo, "add", name)
+        fixture_git(repo, "commit", "-q", "-m", name)
+    said = fixture_git(repo, "rev-list", "--left-right", "--count", "HEAD...@{upstream}")
+    assert g.left_right(said) == (2, 1)
+
+
+@pytest.mark.parametrize("text", ["", "1\n", "1\t2\t3\n", "a\tb\n", "-1\t2\n", "1 2\n"])
+def test_counts_of_another_shape_are_unrecognised(text):
+    assert g.left_right("0\t0\n") == (0, 0)  # the positive
+    with pytest.raises(g.GitUnrecognised):
+        g.left_right(text)
+
+
 # --- a command's refusal ----------------------------------------------------------
 
 

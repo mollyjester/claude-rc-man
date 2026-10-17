@@ -57,3 +57,16 @@ def test_without_a_build_the_app_is_a_problem(settings, runtime, tmp_path):
     with TestClient(app) as c:
         r = c.get("/")
     assert r.status_code == 404 and r.json()["code"] == "not_found"
+
+
+def test_the_page_is_checked_again_each_time_and_built_files_are_kept(spa_client, dist):
+    """index.html names the build's files by their hashes, so a browser must ask again for it,
+    or it keeps naming files an upgrade removed; the files under assets/ never change."""
+    (dist / "favicon.svg").write_text("<svg/>")
+    for path in ("/", "/settings", "/?workspace=1", "/index.html", "/favicon.svg"):
+        r = spa_client.get(path)
+        assert r.status_code == 200, path
+        assert r.headers["cache-control"] == "no-cache", path
+    r = spa_client.get("/assets/app.js")
+    assert r.status_code == 200 and r.text == "console.log(1)"  # the positive: it is served
+    assert r.headers["cache-control"] == "public, max-age=31536000, immutable"

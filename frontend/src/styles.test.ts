@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 import { m } from "./messages";
+import { THEME } from "./terminalTheme";
 import { uncommented } from "./test/css";
 
 const STYLES = readFileSync(resolve(__dirname, "styles.css"), "utf-8");
@@ -100,6 +101,31 @@ test("colours are written only as custom properties, each with a dark counterpar
   expect(light(STYLES).length).toBeGreaterThan(0);
   expect(dark(STYLES).length).toBeGreaterThan(0);
   expect(violations(STYLES)).toEqual([]);
+});
+
+// The terminal's colours that xterm.js reads (src/terminalTheme.ts) missing from a scheme.
+function terminalColoursMissing(css: string): string[] {
+  const lightSet = new Set(light(css));
+  const darkSet = new Set(dark(css));
+  return Object.values(THEME).flatMap((name) => [
+    ...(lightSet.has(name) ? [] : [`not in light: ${name}`]),
+    ...(darkSet.has(name) ? [] : [`not in dark: ${name}`]),
+  ]);
+}
+
+test("every colour the terminal reads is a custom property with a light and a dark value", () => {
+  expect(Object.values(THEME).length).toBeGreaterThan(0);
+  expect(terminalColoursMissing(STYLES)).toEqual([]);
+});
+
+test("the terminal's colour check fails on one missing from a scheme", () => {
+  const withoutDark = STYLES.replace(
+    /(prefers-color-scheme:\s*dark\)\s*\{\s*:root\s*\{[^}]*?)--terminal-bg:[^;]*;/,
+    "$1",
+  );
+  expect(withoutDark).not.toEqual(STYLES); // the plant took effect
+  expect(terminalColoursMissing(withoutDark)).toEqual(["not in dark: --terminal-bg"]);
+  expect(terminalColoursMissing("")).toHaveLength(2 * Object.values(THEME).length);
 });
 
 test("every colour kept the same in dark is still declared", () => {
@@ -288,6 +314,11 @@ test("what git said, why a workspace could not be made, and the steps made, wrap
   expect(ruleOf(".git-said")).toMatch(/white-space:\s*pre-wrap/);
   expect(ruleOf(".workspace-error")).toMatch(/white-space:\s*pre-wrap/);
   expect(ruleOf(".workspace-log")).toMatch(/white-space:\s*pre-wrap/);
+});
+
+test("a repository's page under a workspace's name wraps anywhere, so a long one never widens the panel", () => {
+  expect(ruleOf(".workspace-log")).toMatch(/overflow-wrap:\s*anywhere/); // positive control
+  expect(ruleOf(".source-page")).toMatch(/overflow-wrap:\s*anywhere/);
 });
 
 test("a commit message's box stands apart from its label", () => {
@@ -487,6 +518,11 @@ test("on a phone the selected workspace comes before the form that makes another
   const named = (list: string) => [...list.matchAll(/"([^"]+)"/g)].map((a) => a[1]);
   expect(named(areas(ruleOf(".dashboard")))).toEqual(["list panel", "new panel"]);
   expect(named(areas(ruleOf(".dashboard", mediaOf(PHONE))))).toEqual(["list", "panel", "new"]);
+});
+
+test("the terminal shows where focus is, though xterm.js takes the outline off its own element", () => {
+  expect(ruleOf(".xterm.focus, .xterm:focus")).toMatch(/outline:\s*none/); // positive: why
+  expect(ruleOf(".terminal-screen:focus-within")).toMatch(/outline:\s*2px solid var\(--focus\)/);
 });
 
 test("a skip link is out of sight until it has focus, then shown", () => {

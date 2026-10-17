@@ -11,8 +11,8 @@ below.
 The **commit author** and the **GitHub token** you set in
 [Settings](settings.md) are written into git's configuration in all your
 workspaces, and apply to every git command there: rcman's own and Claude's,
-alike. Commits are recorded as the author, and git pushes to GitHub as you with
-the token, without asking for a password.
+alike. Commits are recorded as the author, and git clones, fetches, pulls and
+pushes on GitHub as you with the token, without asking for a password.
 
 - A change in Settings reaches your workspaces at once, running or not: the
   next git command in any of them uses it. No server is restarted and no
@@ -37,17 +37,39 @@ the token, without asking for a password.
 
 ## Changes
 
-The panel of every workspace that is ready has a **Changes** section for the
-git repository at the top of the workspace's folder: the branch, the files
-changed and not yet staged, and the files staged, with the means to stage and
-unstage files, commit, switch or make a branch, fetch, and push. Everything it
-does is done in that workspace, as the commit author and with the token above.
+The panel of every workspace that is ready has, on its **Overview** tab, a
+**Changes** section for the git repository at the top of the workspace's
+folder: the branch, the files changed and not yet staged, and the files
+staged, with the means to stage and unstage files, commit, switch or make a
+branch, fetch, sync, and push. Everything it does is done in that workspace,
+as the commit author and with the token above.
 
 - **Commit** needs something staged and a commit author name; the section
   says so otherwise and links to Settings.
 - **Push** to GitHub needs a GitHub token. While none is stored, the section
   withdraws Push and says to add one in Settings; **Commit & Push** commits
   nothing in that case, as the push could not follow.
+- The button beside the branch is **Sync** where a sync can run, and
+  **Refresh branches** otherwise. **Refresh branches** only fetches: it brings
+  the list of remote branches up to date and changes no file and no branch.
+  **Sync** fetches, brings the branch up to date with the branch it tracks, and
+  pushes what the remote lacks; a branch that tracks none is published to
+  `origin` and set to track it there.
+- **Sync** is offered on a branch with a commit, where a push could be tried
+  (as for **Push**), where the branch and the branch it tracks have not
+  diverged, where the branch it tracks is still on the remote as far as the
+  section knows (the bar says when it is gone), and while no merge is under
+  way. It only fast-forwards: whatever your own pull or merge settings
+  say, it makes no merge commit and rebases nothing. Where both have commits
+  the other lacks, the section says the branch has diverged and needs merging
+  or rebasing, and offers **Refresh branches** instead; ask Claude, or run git
+  in the workspace, to merge or rebase it.
+- **Sync** keeps changes you have not committed, unless bringing the branch up
+  to date would overwrite one, in which case git refuses and changes nothing.
+  A branch whose tracked branch turns out to be gone from the remote when
+  **Sync** fetches is refused, and nothing is recreated there.
+- When **Sync** brought the branch up to date and its push then failed, the
+  section says both: what was pulled stays.
 - When git refuses, the section shows what it said, beside what you tried.
 
 A workspace made without a GitHub address is empty, and an empty workspace is

@@ -16,6 +16,40 @@ def test_every_route_is_under_api_except_the_frontend(app):
 
     outside = {c.path for c in routes.api_routes(app) if not c.path.startswith("/api/")}
     assert outside == {spa.CATCH_ALL}
+    assert routes.websocket_routes(app)  # the control for the next line
+    assert all(r.path.startswith("/api/") for r in routes.websocket_routes(app))
+
+
+def test_websocket_routes_are_enumerated_with_their_prefixes(app):
+    assert {r.path for r in routes.websocket_routes(app)} >= {"/api/terminal"}
+    assert not {r.path for r in routes.websocket_routes(app)} & {
+        c.path for c in routes.api_routes(app)
+    }
+
+
+def test_websocket_routes_finds_one_through_a_router_and_one_direct_and_no_http_route():
+    """Planted twin: a websocket route included through a router with a prefix, one on the
+    app itself, and an HTTP route, which is not one."""
+    from fastapi import APIRouter, FastAPI, WebSocket
+
+    planted = FastAPI()
+    router = APIRouter(prefix="/api/through")
+
+    @router.websocket("/router")
+    async def through_router(websocket: WebSocket):
+        await websocket.close()
+
+    @planted.websocket("/api/direct")
+    async def direct(websocket: WebSocket):
+        await websocket.close()
+
+    @planted.get("/api/plain")
+    def plain():
+        return {}
+
+    planted.include_router(router)
+    found = {r.path for r in routes.websocket_routes(planted)}
+    assert found == {"/api/through/router", "/api/direct"}
 
 
 def test_admin_only_finds_exactly_the_routes_behind_admin_user():

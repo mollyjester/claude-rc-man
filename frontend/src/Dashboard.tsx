@@ -1,5 +1,6 @@
 import {
   type FormEvent,
+  type KeyboardEvent,
   type ReactNode,
   useCallback,
   useEffect,
@@ -14,6 +15,7 @@ import { Changes, type Unsaved } from "./Changes";
 import { m } from "./messages";
 import { asApiError, ProblemView, useFieldErrors } from "./ProblemView";
 import { ACTIONS, dotFor, ServerCard, StatusDot, type Workspace } from "./Servers";
+import { Terminal } from "./Terminal";
 import { failureSentence } from "./workspaceError";
 
 // Where a workspace's panel is: the Workspaces page, with the workspace in the address.
@@ -380,10 +382,114 @@ function Steps({ log }: { log: string }) {
   );
 }
 
-// The selected workspace: what its state allows, and, once it is ready, its
-// Claude server or the offer to start one, and the Changes of its repository.
-// Delete workspace is a section of its own at the foot, offered for a workspace that is
-// ready or failed, and for one being cloned, where it cancels the clone.
+// The tabs of a ready workspace's panel, in order, each by the name the address gives it
+// (`?tab=`); the first is the one shown when the address names none it knows.
+const TABS = [
+  { name: "overview", label: m.tabOverview },
+  { name: "terminal", label: m.tabTerminal },
+] as const;
+type TabName = (typeof TABS)[number]["name"];
+
+// Which tab the address shows, and the choice of another, kept in the address in place of
+// the one before it.
+function useTab(): [TabName, (tab: TabName) => void] {
+  const [params, setParams] = useSearchParams();
+  const asked = params.get("tab");
+  const tab = TABS.find((t) => t.name === asked)?.name ?? TABS[0].name;
+  const choose = (next: TabName) =>
+    setParams(
+      (current) => {
+        const params = new URLSearchParams(current);
+        if (next === TABS[0].name) params.delete("tab");
+        else params.set("tab", next);
+        return params;
+      },
+      { replace: true },
+    );
+  return [tab, choose];
+}
+
+// The tab list: choosing a tab by pressing it, or moving between them with the arrow keys,
+// Home and End, which choose the tab moved to.
+function TabList({
+  id,
+  tab,
+  onChoose,
+}: {
+  id: string;
+  tab: TabName;
+  onChoose: (tab: TabName) => void;
+}) {
+  const list = useRef<HTMLDivElement>(null);
+  function moved(event: KeyboardEvent) {
+    const at = TABS.findIndex((t) => t.name === tab);
+    const to = {
+      ArrowRight: (at + 1) % TABS.length,
+      ArrowLeft: (at - 1 + TABS.length) % TABS.length,
+      Home: 0,
+      End: TABS.length - 1,
+    }[event.key];
+    if (to === undefined) return;
+    event.preventDefault();
+    onChoose(TABS[to].name);
+    list.current
+      ?.querySelector<HTMLElement>(`#${CSS.escape(`${id}-tab-${TABS[to].name}`)}`)
+      ?.focus();
+  }
+  return (
+    <div role="tablist" aria-label={m.workspaceTabs} className="tabs" ref={list} onKeyDown={moved}>
+      {TABS.map((t) => (
+        <button
+          key={t.name}
+          type="button"
+          role="tab"
+          id={`${id}-tab-${t.name}`}
+          aria-selected={t.name === tab}
+          aria-controls={`${id}-panel-${t.name}`}
+          tabIndex={t.name === tab ? 0 : -1}
+          onClick={() => onChoose(t.name)}
+        >
+          {t.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+// A tab's panel, kept on the page while another tab is shown.
+function TabPanel({
+  id,
+  name,
+  shown,
+  children,
+}: {
+  id: string;
+  name: TabName;
+  shown: boolean;
+  children: ReactNode;
+}) {
+  return (
+    <div
+      role="tabpanel"
+      id={`${id}-panel-${name}`}
+      aria-labelledby={`${id}-tab-${name}`}
+      hidden={!shown}
+      // biome-ignore lint/a11y/noNoninteractiveTabindex: the WAI-ARIA tab pattern has a tab panel take focus, so that Tab reaches it from its tab whatever it holds first
+      tabIndex={0}
+    >
+      {children}
+    </div>
+  );
+}
+
+// The selected workspace: under its name, the GitHub page of the repository it was
+// cloned from, when the server gives one; what its state allows, and, once it is ready,
+// two tabs: Overview, with its Claude server or the offer to start one and the Changes of
+// its repository, and Terminal, a shell in it, opened once the tab is first shown. Each
+// tab's panel stays on the page while the other is shown, so the Changes section still
+// knows what would be lost, and the terminal stays open.
+// Delete workspace is a section of its own at the foot, below the tabs, offered for a
+// workspace that is ready or failed, and for one being cloned, where it cancels the clone.
 function WorkspacePanel({
   workspace,
   approved,
@@ -400,12 +506,28 @@ function WorkspacePanel({
   const [deleting, setDeleting] = useState(false);
   // What the Changes section says would be lost, once it knows.
   const [unsaved, setUnsaved] = useState<Unsaved | null>(null);
+  const [tab, chooseTab] = useTab();
+  const ready = workspace.state === "ready";
+  // The terminal is opened when its tab is first shown, and kept from then on.
+  const [terminalOpened, setTerminalOpened] = useState(false);
+  const terminalShown = ready && tab === "terminal";
+  useEffect(() => {
+    if (terminalShown) setTerminalOpened(true);
+  }, [terminalShown]);
+  const tabsId = useId();
   const cloning = workspace.state === "creating" && workspace.source !== null;
-  const deletable = workspace.state === "ready" || workspace.state === "failed" || cloning;
+  const deletable = ready || workspace.state === "failed" || cloning;
   const { server, server_error: unread } = workspace;
   return (
     <section aria-label={workspace.name} className="panel">
       <h2>{workspace.name}</h2>
+      {workspace.source_page && (
+        <p className="source-page">
+          <a href={workspace.source_page} target="_blank" rel="noopener noreferrer">
+            {workspace.source_page}
+          </a>
+        </p>
+      )}
       {workspace.state === "creating" && <p>{m.workspaceCreating}</p>}
       {cloning && <p>{m.workspaceCloningCancel}</p>}
       {workspace.state === "deleting" && <p>{m.workspaceDeleting}</p>}
@@ -415,41 +537,49 @@ function WorkspacePanel({
           <FailureSaid error={workspace.error} cloned={workspace.source !== null} />
         </>
       )}
-      {workspace.state !== "ready" && workspace.log && <Steps log={workspace.log} />}
-      {workspace.state === "ready" && (
-        <PanelSection title={m.serverTitle}>
-          {unread && (
-            <>
-              <ProblemView error={new ApiError(0, unread.code, unread.title)} />
-              <p>{m.serverUnreadNextStep}</p>
-            </>
-          )}
-          {server && (
-            <ServerCard
-              workspace={workspace}
-              server={server}
-              claudeVersion={workspace.claude_version}
-              onChange={onChange}
-            />
-          )}
-          {server &&
-            // only a server that runs can be stopped and started again to take the new version
-            ACTIONS[server.state]?.includes("stop") &&
-            workspace.claude_version &&
-            approved &&
-            workspace.claude_version !== approved && (
-              <p className="muted">{m.serverVersionDiffers(approved)}</p>
+      {!ready && workspace.log && <Steps log={workspace.log} />}
+      {ready && (
+        <>
+          <TabList id={tabsId} tab={tab} onChoose={chooseTab} />
+          <TabPanel id={tabsId} name="overview" shown={tab === "overview"}>
+            <PanelSection title={m.serverTitle}>
+              {unread && (
+                <>
+                  <ProblemView error={new ApiError(0, unread.code, unread.title)} />
+                  <p>{m.serverUnreadNextStep}</p>
+                </>
+              )}
+              {server && (
+                <ServerCard
+                  workspace={workspace}
+                  server={server}
+                  claudeVersion={workspace.claude_version}
+                  onChange={onChange}
+                />
+              )}
+              {server &&
+                // only a server that runs can be stopped and started again to take the new version
+                ACTIONS[server.state]?.includes("stop") &&
+                workspace.claude_version &&
+                approved &&
+                workspace.claude_version !== approved && (
+                  <p className="muted">{m.serverVersionDiffers(approved)}</p>
+                )}
+              {!server && !unread && (
+                <>
+                  <p>{m.noServer}</p>
+                  <StartServer workspace={workspace.id} onStarted={onChange} />
+                </>
+              )}
+            </PanelSection>
+            <Changes workspace={workspace.id} pollMs={pollMs} onUnsaved={setUnsaved} />
+          </TabPanel>
+          <TabPanel id={tabsId} name="terminal" shown={terminalShown}>
+            {(terminalOpened || terminalShown) && (
+              <Terminal workspace={workspace.id} shown={terminalShown} onFailure={onChange} />
             )}
-          {!server && !unread && (
-            <>
-              <p>{m.noServer}</p>
-              <StartServer workspace={workspace.id} onStarted={onChange} />
-            </>
-          )}
-        </PanelSection>
-      )}
-      {workspace.state === "ready" && (
-        <Changes workspace={workspace.id} pollMs={pollMs} onUnsaved={setUnsaved} />
+          </TabPanel>
+        </>
       )}
       {deletable && (
         <PanelSection title={m.deleteSectionTitle}>

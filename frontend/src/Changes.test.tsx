@@ -1340,6 +1340,169 @@ test("the status line's timer stops when the section goes", async () => {
   }
 });
 
+// --- sync ----------------------------------------------------------------------
+
+// A branch a sync can run on: ahead of its upstream and not behind it, so not diverged.
+const AHEAD = {
+  name: "main",
+  commit: "0123456789abcdef",
+  upstream: "origin/main",
+  ahead: 1,
+  behind: 0,
+};
+const SYNCABLE = status([], [], { branch: AHEAD, ...ELSEWHERE });
+const SYNCED = {
+  branch: "main",
+  upstream: "origin/main",
+  pulled: true,
+  pushed: true,
+  upstream_set: false,
+  push_problem: null,
+};
+
+test("Sync is offered where a sync can run: it posts the sync alone, waits while it runs, then lists again", async () => {
+  let answer: (value: unknown) => void = () => {};
+  const fake = repoApi({
+    "GET /api/git/status": SYNCABLE,
+    "POST /api/git/sync": () => new Promise((resolve) => (answer = resolve)),
+  });
+  renderChanges();
+  const sync = await (await bar()).findByRole("button", { name: m.sync });
+  expect(sync).toHaveAttribute("title", m.sync);
+  expect(sync.querySelector("svg")).toHaveAttribute("aria-hidden", "true");
+  expect(sync).toBeEnabled();
+  expect(sync).not.toHaveClass("spinning");
+  expect((await bar()).queryByRole("button", { name: m.refreshBranches })).not.toBeInTheDocument();
+  const statuses = fake.made("GET", "/api/git/status").length;
+  const listed = fake.made("GET", "/api/git/branches").length;
+  await userEvent.click(sync);
+  await waitFor(() => expect(fake.made("POST", "/api/git/sync")).toHaveLength(1));
+  expect(fake.made("POST", "/api/git/sync")[0].body).toEqual({ workspace: WORKSPACE });
+  expect(sync).toBeDisabled();
+  expect(sync).toHaveClass("spinning");
+  await act(async () => answer(SYNCED));
+  await waitFor(() => expect(sync).toBeEnabled());
+  expect(sync).not.toHaveClass("spinning");
+  await waitFor(() => expect(fake.made("GET", "/api/git/branches").length).toBeGreaterThan(listed));
+  expect(fake.made("GET", "/api/git/status").length).toBeGreaterThan(statuses);
+  expect(fake.made("POST", "/api/git/fetch")).toHaveLength(0);
+});
+
+const DIVERGED = { ...AHEAD, ahead: 1, behind: 2 };
+test.each([
+  ["no commit", { branch: { ...AHEAD, commit: null, ahead: null, behind: null }, ...ELSEWHERE }],
+  ["no branch", { branch: { ...AHEAD, name: null, upstream: null }, ...ELSEWHERE }],
+  ["no remote", { branch: AHEAD, push_has_remote: false, ...ELSEWHERE }],
+  ["no token", { branch: AHEAD, ...NO_TOKEN }],
+  ["diverged", { branch: DIVERGED, ...ELSEWHERE }],
+  ["an upstream that is gone", { branch: { ...AHEAD, ahead: null, behind: null }, ...ELSEWHERE }],
+  ["a merge under way", { branch: AHEAD, merging: true, ...ELSEWHERE }],
+])("with %s, the button is Refresh branches, and it only fetches", async (_, extra) => {
+  const fake = repoApi({ "GET /api/git/status": status([], [], extra), "POST /api/git/fetch": {} });
+  renderChanges();
+  const section = await changes();
+  await waitFor(() => expect(fake.made("GET", "/api/git/status").length).toBeGreaterThan(0));
+  expect(await section.findByText(m.checkedAgo(0))).toBeInTheDocument(); // the status is known
+  const refresh = (await bar()).getByRole("button", { name: m.refreshBranches });
+  expect((await bar()).queryByRole("button", { name: m.sync })).not.toBeInTheDocument();
+  await userEvent.click(refresh);
+  await waitFor(() => expect(fake.made("POST", "/api/git/fetch")).toHaveLength(1));
+  expect(fake.made("POST", "/api/git/sync")).toHaveLength(0);
+});
+
+test("a branch with no upstream, whose ahead and behind are null too, is offered Sync, not Refresh branches", async () => {
+  const branch = { ...AHEAD, upstream: null, ahead: null, behind: null };
+  repoApi({ "GET /api/git/status": status([], [], { branch, ...ELSEWHERE }) });
+  renderChanges();
+  expect(await (await bar()).findByRole("button", { name: m.sync })).toBeInTheDocument();
+  expect((await bar()).queryByRole("button", { name: m.refreshBranches })).not.toBeInTheDocument();
+});
+
+test("until the status is known, the button is Refresh branches, and it only fetches", async () => {
+  let answer: (value: unknown) => void = () => {};
+  const fake = repoApi({
+    "GET /api/git/status": () => new Promise((resolve) => (answer = resolve)),
+    "POST /api/git/fetch": {},
+  });
+  renderChanges();
+  const refresh = (await bar()).getByRole("button", { name: m.refreshBranches });
+  await userEvent.click(refresh);
+  await waitFor(() => expect(fake.made("POST", "/api/git/fetch")).toHaveLength(1));
+  expect(fake.made("POST", "/api/git/sync")).toHaveLength(0);
+  await act(async () => answer(SYNCABLE));
+  // positive control: once the status says a sync can run, it is offered
+  expect(await (await bar()).findByRole("button", { name: m.sync })).toBeInTheDocument();
+});
+
+test("a branch that has diverged from its upstream says so; one that has not, does not", async () => {
+  let branch = DIVERGED;
+  repoApi({ "GET /api/git/status": () => status([], [], { branch, ...ELSEWHERE }) });
+  renderChanges();
+  const section = await changes();
+  expect(await section.findByText(m.diverged)).toBeInTheDocument();
+  branch = AHEAD;
+  fireEvent.click(section.getByRole("button", { name: m.refreshStatus }));
+  expect(await (await bar()).findByRole("button", { name: m.sync })).toBeInTheDocument();
+  expect(section.queryByText(m.diverged)).not.toBeInTheDocument();
+});
+
+test.each([
+  ["pulled and pushed", {}, "Pulled origin/main into main, and pushed main."],
+  ["pulled", { pushed: false }, "Pulled origin/main into main."],
+  ["pushed", { pulled: false }, "Pushed main."],
+  ["neither", { pulled: false, pushed: false }, "main was already up to date with origin/main."],
+  [
+    "published",
+    { pulled: false, upstream_set: true },
+    "Published main to origin/main, which it now tracks.",
+  ],
+])("a sync that %s says what it did", async (_, changed, sentence) => {
+  const answer = { ...SYNCED, ...changed };
+  repoApi({ "GET /api/git/status": SYNCABLE, "POST /api/git/sync": answer });
+  renderChanges();
+  await userEvent.click(await (await bar()).findByRole("button", { name: m.sync }));
+  const said = await (await changes()).findByRole("status");
+  expect(said).toHaveTextContent(sentence);
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+});
+
+test("a sync refused is shown as the server said it, and nothing is said done", async () => {
+  repoApi({
+    "GET /api/git/status": SYNCABLE,
+    "POST /api/git/sync": problem(409, "upstream_gone", "planted title of the sync's refusal"),
+  });
+  renderChanges();
+  await userEvent.click(await (await bar()).findByRole("button", { name: m.sync }));
+  const alert = await (await changes()).findByRole("alert");
+  expect(alert).toHaveTextContent("planted title of the sync's refusal");
+  expect((await changes()).queryByRole("status")).not.toBeInTheDocument();
+});
+
+test("a sync that pulled and whose push failed says both, with what git said", async () => {
+  const answer = {
+    ...SYNCED,
+    pushed: false,
+    push_problem: {
+      type: "urn:rcman:problem:git_failed",
+      title: "planted title of the push's problem",
+      status: 409,
+      code: "git_failed",
+      git: ["planted words of git"],
+      git_more: 0,
+    },
+  };
+  repoApi({ "GET /api/git/status": SYNCABLE, "POST /api/git/sync": answer });
+  renderChanges();
+  await userEvent.click(await (await bar()).findByRole("button", { name: m.sync }));
+  const section = await changes();
+  expect(
+    await section.findByText("Pulled origin/main into main, but the push failed."),
+  ).toBeInTheDocument();
+  const problemShown = section.getByRole("alert");
+  expect(problemShown).toHaveTextContent("planted title of the push's problem");
+  expect(within(problemShown).getByLabelText(m.gitSaid)).toHaveTextContent("planted words of git");
+});
+
 // --- what does not wait for the status ----------------------------------------------
 
 test("when the status cannot be had, the branches can still be switched, made and refreshed", async () => {

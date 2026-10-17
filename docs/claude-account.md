@@ -55,5 +55,7 @@ because two refreshes collided. Connect your Claude account again to start serve
 session in this browser. Your servers do not depend on it: with **Keep servers
 running after sign-out** ticked, as it is at first, they keep running; untick it
 to have them stopped first. Your Claude account stays connected either way.
+Signing out ends your workspaces' terminals, in every browser (see
+[The terminal](workspaces.md#the-terminal)).
 
 You can change how your sessions' names begin in [Settings](settings.md).

@@ -1664,3 +1664,52 @@ def test_the_host_runtime_answers_with_the_canary_a_test_scripted(host, tmp_path
     assert host.run_canary(tmp_path, rt.CANARY_NAME, "1.2.3") == {"x": {}}
     assert seen == [(tmp_path, rt.CANARY_NAME, "1.2.3")]
     host.end_canary(rt.CANARY_NAME)  # nothing to end
+
+
+def test_a_terminal_is_an_interactive_remote_exec_on_a_tty_of_its_own_session(tmp_path):
+    """The Terminal tab's shell, as rcman starts it in Podman: ``setsid --ctty`` makes the pty
+    the podman client's controlling terminal, so that ^C and a resize reach the shell; the exec
+    has a tty, no detach keys (^P^Q pass through), the work folder, and an environment of
+    exactly the workspace's, with the launcher and its arguments fixed."""
+    recorder = account_recorder(tmp_path)
+    runtime = podman_runtime(tmp_path, recorder)
+    layout = runtime.layout("rcman-ws-7")
+    pidfile = f"{layout.run}/{rt.TERMINALS}/0123456789abcdef.pid"
+    launch = runtime.terminal_argv("rcman-ws-7", layout, pidfile)
+    setsid = shutil.which("setsid", path="/usr/bin:/bin")
+    assert launch.argv[:2] == [setsid, "--ctty"]
+    assert launch.argv[2:6] == [
+        str(recorder.program),
+        "--remote",
+        "--url",
+        "unix:///run/user/990/podman/podman.sock",
+    ]
+    rest = launch.argv[6:]
+    assert rest[:6] == [
+        "exec", "--interactive", "--tty", "--detach-keys=", f"--workdir={layout.work}", "rcman-ws-7"
+    ]  # fmt: skip
+    env = {**rt.child_env(layout), "TERMINFO": layout.terminfo}
+    assert rest[6:] == layout.with_env(
+        env,
+        [layout.shell, "-c", rt.TERMINAL_LAUNCHER, "rcman-terminal", layout.work, pidfile,
+         layout.shell],
+    )  # fmt: skip
+    assert launch.env == rt.podman_env()
+
+
+def test_a_terminal_on_the_host_is_the_launcher_under_setsid(host):
+    layout = host.layout("rcman-ws-7")
+    launch = host.terminal_argv("rcman-ws-7", layout, "/x/0123456789abcdef.pid")
+    assert launch.argv[:2] == [shutil.which("setsid", path="/usr/bin:/bin"), "--ctty"]
+    assert launch.argv[2:] == layout.with_env(
+        rt.child_env(layout),
+        [layout.shell, "-c", rt.TERMINAL_LAUNCHER, "rcman-terminal", layout.work,
+         "/x/0123456789abcdef.pid", layout.shell],
+    )  # fmt: skip
+    assert launch.env == {"PATH": "/usr/bin:/bin"}
+
+
+@pytest.mark.parametrize("pidfile", ["relative.pid", "/x/../y.pid", "/x/y\n.pid", "/x/y.txt"])
+def test_a_terminal_is_given_only_a_pidfile_of_its_own_shape(host, pidfile):
+    with pytest.raises(ValueError):
+        host.terminal_argv("rcman-ws-7", host.layout("rcman-ws-7"), pidfile)

@@ -89,9 +89,10 @@ def github(tmp_path_factory):
 def github_stand_in(tmp_path_factory):
     """The folder that stands in for https://github.com/ in this test: a repository at
     ``<folder>/<owner>/<name>.git`` is what the address ``https://github.com/<owner>/<name>``
-    clones. Every git clone the host runtime runs is given it (tests/git_fixtures.py), and a
-    clone that was not fails the test, so that nothing a test drives, a route that clones
-    among them, reaches the real github.com. It patches by a context of its own, not the
+    clones. Every git command the host runtime runs that may reach a remote is given it
+    (tests/git_fixtures.py: NETWORK_SUBCOMMANDS), and one that was not fails the test, so
+    that nothing a test drives, a route that clones, fetches or pushes among them, reaches
+    the real github.com. It patches by a context of its own, not the
     ``monkeypatch`` fixture, which would then outlive the fixtures a test sets up after it,
     and be undone only after their teardown. Where rcman's backend cannot be imported, as in
     the container suites of tests/container that need none, there is no host runtime to
@@ -251,6 +252,7 @@ CALLS = {
     ("POST", "/api/git/branch"): {"json": {"workspace": 1, "name": "new-branch"}},
     ("POST", "/api/git/fetch"): {"json": {"workspace": 1}},
     ("POST", "/api/git/push"): {"json": {"workspace": 1}},
+    ("POST", "/api/git/sync"): {"json": {"workspace": 1}},
     ("POST", "/api/git/commit-push"): {"json": {"workspace": 1, "message": "A message"}},
     ("POST", "/api/git/clone"): {"json": {"url": "https://github.com/alice/a-clone"}},
     ("GET", "/api/git/status"): {"params": {"workspace": 1}},

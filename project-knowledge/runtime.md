@@ -221,7 +221,8 @@ and against real Podman in the podman host in
 `tests/container/test_runtime_in_podman.py`, apart from its canary cases (see [The canary](#the-canary)). A `Layout` says where a runtime's
 things are, as the programs in a workspace see them: the tools as argv
 prefixes (busybox's applets in a container), the tmux socket and
-configuration, Claude, the shell, terminal descriptions, and how to kill a
+configuration, Claude, the shell, terminal descriptions, the runtime folder that holds the
+terminals' pidfiles (see [The terminal's shell](#the-terminals-shell)), and how to kill a
 process group (`kill_group`: busybox's `kill` refuses a `--` that procps' needs).
 `Layout.claude` is the program that runs whatever the store's `current` names, and
 `Layout.claude_root` the store as the workspace sees it; `Layout.pinned(version)` is the layout
@@ -246,9 +247,9 @@ and the request fails as broken. A channel is opened once more when conmon's
 error kept it from opening, and
 when it was found dead before a request was written; a request that was
 written is never sent again, since it may have run (`ChannelBroken`). A channel
-opens when a workspace's server is first reached and closes once it has been
-idle for `CHANNEL_IDLE_SECONDS` (`workspaces.py`); a workspace whose row records
-no server is listed without reaching it. `LATENCY_P95_SECONDS` in
+opens when rcman first runs a command in the workspace through it, and closes
+once it has been idle for `CHANNEL_IDLE_SECONDS` (`workspaces.py`); a workspace
+whose row records no server is listed without reaching it. `LATENCY_P95_SECONDS` in
 `channel.py` is what a request may cost, and the podman host's suite holds the
 podman client of a channel to a memory bound of its own.
 
@@ -260,7 +261,7 @@ their ids are the workspace's. tmux runs on the workspace's own socket with
 `tmux.conf` and the environment `tmux_env` gives it, its shell and terminal
 descriptions the mounted ones, since a slim image has none. The server runs in
 the session `SESSION`, in the window size `WIDTH` by `HEIGHT`
-(`helpers/screens.py`), started through `env -i` with exactly `child_env`:
+(`helpers/screens.py`), started through `env -i` with exactly `child_env` (`runtime.py`'s):
 the workspace's `CLAUDE_CONFIG_DIR` and `HOME`, and `DISABLE_AUTOUPDATER=1`,
 since Claude would otherwise install a version of its own into the workspace,
 the read-only store notwithstanding. Its options are `server_command`, which a
@@ -293,6 +294,49 @@ test holds to the recorder's, so the contract tests check each is in Claude's
 - **Unrecognised screens.** A screen in transition matches no known state, so
   a verb that waits reports `unrecognised` only once it has lasted
   `UNRECOGNISED_GRACE_SECONDS`.
+
+### The terminal's shell
+
+The **Terminal** tab's shell (backend.md's [The terminal](backend.md#the-terminal)) is started by
+`Runtime.terminal_argv(name, layout, pidfile)`, with a pty of rcman's own as its standard
+streams. It crosses no boundary the workspace's server does not: it runs as the container's own
+user - root of the person's range in the default image, the plan's user in a workspace made from
+a devcontainer.json (see [The user](#a-repositorys-devcontainerjson)), rcman's own on the host
+runtime - and rcman adds no restriction and takes none away.
+
+- **The pty's owner.** `setsid --ctty` (util-linux's) comes first, so the pty is the
+  controlling terminal of what it starts: ^C, job control and a resize (`TIOCSWINSZ`, which
+  sends SIGWINCH) reach the shell, with nothing run between fork and exec.
+- **In Podman** it starts `podman --remote exec --interactive --tty --detach-keys=
+  --workdir=<work> <container>`, so the shell has a tty of the container's own, which the
+  client, the pty's controlling process, passes everything to and resizes; with no detach keys,
+  ^P^Q reach the shell. The host runtime starts the launcher itself.
+- **The launcher** (`TERMINAL_LAUNCHER`, a fixed program the workspace's shell runs with `-c`,
+  through `env -i` with exactly `child_env` and the terminal descriptions, `TERMINFO`, where the
+  layout has them) goes to the work folder, writes the shell's id and its start time from
+  `/proc` to the pidfile, and execs the user's shell from the image's passwd, or the layout's
+  shell where that names none it can run or names `nologin` or `false`, as an interactive shell
+  (`-i`, not a login shell), and `SHELL` naming it.
+- **Pidfiles** are `TERMINALS/<token>.pid` in the runtime folder (`RUN_MOUNT`, a tmpfs, in a
+  container; `run` of the folder on the host runtime), one per terminal. The processes of the
+  workspace are read through the channel, each `/proc/<pid>/stat` by itself with its path and a
+  NUL after each, since a program's name may hold a newline (`terminals.process_table`). A
+  pidfile counts only while it is what the launcher writes, two bounded numbers, and names the
+  leader of its session by its start time, as the processes are read just then; anything else
+  signals nothing. Ending a session sends its processes SIGHUP, then SIGKILL (`end_leader`);
+  once the leader has been seen, the session is its own while it lasts, as the kernel gives a
+  session's id to no other process while any process is in it. A terminal's own cleanup ends the
+  session of the leader its pidfile named when it opened even when that leader has ended
+  already, as closing the pty ends it; nothing else ends a session whose leader is gone. A process
+  that left the session is left.
+- **Sweeping.** What earlier terminals left is ended each time a terminal opens on the
+  workspace, and, for a container that ran on while rcman did not, by `_restore_workspace`
+  through `on_kept_running`: every session whose pidfile is not a live terminal's and whose
+  leader still runs (`terminals.sweep`). A container that stopped lost its tmpfs, and its
+  processes with it.
+- **Deleting.** `_remove` calls `on_removing` before the container goes, which ends the
+  workspace's terminal through its channel; on the host runtime, whose removal ends only tmux,
+  that is what ends the shell.
 
 ### The version a server runs
 
@@ -510,7 +554,8 @@ the prefix it was started with.
   words; the workspace and its folder stay until it is deleted. What follows the
   clone, a repository's devcontainer.json, is described under
   [A repository's devcontainer.json](#a-repositorys-devcontainerjson).
-- **Deleting.** `delete` marks it `deleting` and removes its container and
+- **Deleting.** `delete` marks it `deleting`, ends its terminal (see
+  [The terminal's shell](#the-terminals-shell)), and removes its container and
   volume, which ends its server, then its row — never the person's sign-in; one still being made goes once
   it is made. One being cloned, pulled for, built for or running a lifecycle command is
   cancelled by deleting it: `_stop_working` sets its event, which stops a pull, and
@@ -527,7 +572,8 @@ the prefix it was started with.
   again, nor are its create commands run again, whatever it had done: the person
   deletes it and decides); makes again a `ready` workspace whose container is
   gone, from its stored plan if it has one, and starts one that is stopped, and
-  runs the plan's `postStartCommand` after either; removes what an interrupted
+  runs the plan's `postStartCommand` after either; ends what earlier terminals left
+  in one that kept running (see [The terminal's shell](#the-terminals-shell)); removes what an interrupted
   read of an image left (`clean_probes`: probe containers, staging folders and the anonymous
   volumes nothing uses, `_clean_volumes`); applies the stored limits to the slices (see
   [Limits](#limits)), before any container is started. The workspaces are brought back up to

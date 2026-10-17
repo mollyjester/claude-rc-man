@@ -74,6 +74,32 @@ export const m = {
   workspaceDeleted: (name: string) => `${name} was deleted.`,
   start: "Start",
 
+  // The tabs of a ready workspace's panel.
+  workspaceTabs: "Workspace views",
+  tabOverview: "Overview",
+  tabTerminal: "Terminal",
+
+  // The Terminal tab: how its connection stands, and what ended it.
+  terminalConnecting: "Connecting to the workspace's shell…",
+  terminalConnected: "Connected to the workspace's shell.",
+  terminalReconnect: "Reconnect",
+  terminalNotOpened: "The terminal could not be opened.",
+  terminalNotLoaded: "The terminal could not be loaded. Reload the page to load it again.",
+  reloadPage: "Reload the page",
+  terminalLost: "The connection to the terminal was lost.",
+  terminalExited: (code: number | null) =>
+    code === null ? "The shell ended." : `The shell ended, with exit code ${code}.`,
+  // What a terminal's closed frame says, by its reason; one with no words is shown as it is.
+  terminalClosed: {
+    terminal_replaced:
+      "The terminal was opened somewhere else, which took it over. Reconnect to take it back here.",
+    workspace_gone: "The workspace is no longer ready, so its terminal was closed.",
+    signed_out: "You signed out of rcman, which closed the terminal.",
+    not_allowed: "You are no longer allowed into rcman, which closed the terminal.",
+    service_closing: "rcman is restarting, which closed the terminal.",
+  } as Record<string, string>,
+  terminalClosedOther: (reason: string) => `The terminal was closed: ${reason}.`,
+
   serverTitle: "Claude server",
   noServer: "No Claude server runs in this workspace.",
   states: {
@@ -178,7 +204,7 @@ export const m = {
   settingsGithubTitle: "GitHub token",
   githubTokenLabel: "GitHub token",
   githubTokenHelp:
-    "A personal access token git uses in all your workspaces to push to GitHub and clone private repositories as you, from rcman and from your Claude sessions. rcman never shows it again once saved.",
+    "A personal access token git uses in all your workspaces to push to GitHub, and to clone, fetch and pull private repositories, as you, from rcman and from your Claude sessions. rcman never shows it again once saved.",
   githubTokenStored: "A GitHub token is stored.",
   githubTokenNotStored: "No GitHub token is stored.",
   githubTokenSaved: "Token saved.",
@@ -266,6 +292,7 @@ export const m = {
     "git.switch": "Switched branch",
     "git.branch": "Made a branch",
     "git.fetch": "Refreshed remote branches",
+    "git.sync": "Synced a branch",
     "git.push": "Pushed",
     "git.commit_push": "Committed and pushed",
     "git.clone": "Made a workspace from a repository",
@@ -275,6 +302,8 @@ export const m = {
     "claude.connect": "Connected a Claude account",
     "claude.disconnect": "Signed out of Claude",
     "claude.upgrade": "Rolled out a Claude Code version",
+    "terminal.open": "Opened a terminal",
+    "terminal.close": "A terminal closed",
   } as Record<string, string>,
   // The results docs/audit.md lists; any other result is the code of the error the request
   // failed with, shown by its code beside the word for a failure.
@@ -282,6 +311,12 @@ export const m = {
     ok: "Done",
     unrecognised_screen: "Done, but the server is on a screen rcman does not recognise",
     committed_not_pushed: "Committed, but the push failed",
+    pulled_not_pushed: "Pulled, but the push failed",
+    terminal_lost: "Its page closed it or went away",
+    terminal_replaced: "Another terminal on the workspace replaced it",
+    workspace_gone: "Its workspace was deleted or is no longer ready",
+    signed_out: "Signed out of rcman",
+    service_closing: "rcman stopped",
   } as Record<string, string>,
   auditEmpty: "Nothing recorded.",
 
@@ -452,6 +487,27 @@ export const m = {
   switchTo: (name: string) => `Switch to ${name}`,
   newBranchName: "New branch from here",
   refreshBranches: "Refresh branches",
+  sync: "Sync",
+  // What a sync did, from its answer: what it pulled, what it pushed, and a push that failed.
+  synced: (s: {
+    branch: string;
+    upstream: string;
+    pulled: boolean;
+    pushed: boolean;
+    upstream_set: boolean;
+    push_problem: Record<string, unknown> | null;
+  }) => {
+    if (s.push_problem !== null)
+      return `Pulled ${s.upstream} into ${s.branch}, but the push failed.`;
+    if (s.upstream_set) return `Published ${s.branch} to ${s.upstream}, which it now tracks.`;
+    if (s.pulled && s.pushed)
+      return `Pulled ${s.upstream} into ${s.branch}, and pushed ${s.branch}.`;
+    if (s.pulled) return `Pulled ${s.upstream} into ${s.branch}.`;
+    if (s.pushed) return `Pushed ${s.branch}.`;
+    return `${s.branch} was already up to date with ${s.upstream}.`;
+  },
+  diverged:
+    "This branch and the branch it tracks each have commits the other lacks, so it cannot be synced: merge or rebase it first.",
   gitSaid: "What git said",
   andMoreLines: (count: number) => `and ${count} more lines`,
 

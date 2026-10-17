@@ -323,19 +323,24 @@ function SyncState({ branch }: { branch: Branch }) {
 
 // The bar beside the Changes heading: the branch lookup, New branch and Refresh
 // branches, which need only the branches; and, once the status is known, how
-// far the branch is from its upstream and Push where it is offered.
+// far the branch is from its upstream and Push where it is offered. Where a
+// sync can run (syncable), Refresh branches is Sync instead: each label calls
+// its own route, so the button never does more than it says.
 export function BranchBar({
   branch,
   branches,
   branchesError,
   busy,
   fetching,
+  syncable,
+  syncing,
   pushOffered,
   createError,
   onSwitch,
   onCreate,
   onCreateForget,
   onFetch,
+  onSync,
   onPush,
 }: {
   branch: Branch | null;
@@ -343,14 +348,18 @@ export function BranchBar({
   branchesError: ApiError | null;
   busy: boolean;
   fetching: boolean;
+  syncable: boolean;
+  syncing: boolean;
   pushOffered: boolean;
   createError: ApiError | null;
   onSwitch: (name: string, remote: boolean) => void;
   onCreate: (name: string) => Promise<boolean>;
   onCreateForget: () => void;
   onFetch: () => void;
+  onSync: () => void;
   onPush: () => void;
 }) {
+  const refreshLabel = syncable ? m.sync : m.refreshBranches;
   return (
     <div className="branch-bar">
       <Lookup
@@ -363,11 +372,11 @@ export function BranchBar({
       <NewBranch busy={busy} error={createError} onCreate={onCreate} onForget={onCreateForget} />
       <button
         type="button"
-        className={fetching ? "secondary icon-button spinning" : "secondary icon-button"}
-        aria-label={m.refreshBranches}
-        title={m.refreshBranches}
+        className={fetching || syncing ? "secondary icon-button spinning" : "secondary icon-button"}
+        aria-label={refreshLabel}
+        title={refreshLabel}
         disabled={busy}
-        onClick={onFetch}
+        onClick={syncable ? onSync : onFetch}
       >
         <RefreshIcon />
       </button>

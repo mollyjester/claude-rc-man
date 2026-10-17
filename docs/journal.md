@@ -21,6 +21,12 @@ the logger `rcman.claude_versions`: a version adopted as the approved one, a
 version removed from the store, one that could not be had, or a store that could
 not be looked into (see [Claude Code versions](claude-version.md)).
 
+Those about the **Terminal** tab come from the logger `rcman.terminals`:
+something that went wrong with a terminal inside rcman, such as a shell that
+did not start or a session that could not be ended (see
+[The terminal](workspaces.md#the-terminal)). They never hold what was typed or
+shown.
+
 Only the audit events are also in the audit trail. The journal keeps what it
 is given only within its own size limits; see
 [how long events are kept](audit.md#how-long-events-are-kept).
@@ -57,7 +63,12 @@ something. Some failures never reach rcman, so the page reports them itself:
   all — the connection dropped, the browser was offline, or a phone paused the
   page while it was in the background — or Caddy answered, with no answer from
   rcman, that it could not reach it, as it does while rcman restarts or is
-  stopped. The person is told the page could not reach rcman.
+  stopped. The person is told the page could not reach rcman. A workspace's
+  terminal whose connection closed before it opened is reported so too, with
+  `GET /api/terminal`: the browser says nothing of why, so it may also have been
+  refused, as a sign-in that has ended is. The person is told the terminal could
+  not be opened, and the page asks rcman for the workspaces again, which says so
+  when rcman cannot be reached or the sign-in has ended.
 - **`signed_out`**: the person's sign-in has ended, and the request was sent
   to sign in again instead of reaching rcman. The person is told to reload the
   page to sign in again.
