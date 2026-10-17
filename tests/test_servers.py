@@ -177,6 +177,55 @@ def test_an_action_ending_reconnected_is_audited_ok(client, app, settings, tmp_p
     assert last_audit(settings) == ("server.start", "alpha", "ok")
 
 
+def audit_rows(settings):
+    return (
+        sqlite3.connect(settings.database)
+        .execute("select action, target, result from audit order by rowid")
+        .fetchall()
+    )
+
+
+def at_the_remote_control_prompt(client, app, settings, tmp_path):
+    made = made_workspace(client, ALICE, "alpha")
+    signed_in(app, made)
+    in_scenario(app, tmp_path, "remote_control_prompt")
+    r = post(client, "", made)
+    assert r.status_code == 200, r.text
+    assert r.json()["server"]["state"] == "remote_control_prompt"
+    return made
+
+
+def test_a_start_at_the_remote_control_prompt_is_a_known_state_audited_ok(
+    client, app, settings, tmp_path
+):
+    at_the_remote_control_prompt(client, app, settings, tmp_path)
+    assert last_audit(settings) == ("server.start", "alpha", "ok")
+    # The twin above is audited as unrecognised, so "ok" here is the state being known.
+    assert "unrecognised_screen" not in {result for _, _, result in audit_rows(settings)}
+
+
+def test_yes_at_the_remote_control_prompt_starts_the_server(client, app, settings, tmp_path):
+    made = at_the_remote_control_prompt(client, app, settings, tmp_path)
+    r = post(client, "confirm", made, answer="y")
+    assert r.status_code == 200, r.text
+    assert r.json()["server"]["state"] in ("connected", "ready")
+    assert wait_state(client, made, "ready")["session_name"].startswith("alpha-")
+    assert last_audit(settings) == ("server.confirm", "alpha", "ok")
+    assert post(client, "confirm", made, answer="y").status_code == 409  # no longer asked
+
+
+def test_no_at_the_remote_control_prompt_ends_the_server_and_is_audited_ok(
+    client, app, settings, tmp_path
+):
+    made = at_the_remote_control_prompt(client, app, settings, tmp_path)
+    r = post(client, "confirm", made, answer="n")
+    assert r.status_code == 200, r.text
+    assert r.json()["server"]["state"] == "exited"
+    assert last_audit(settings) == ("server.confirm", "alpha", "ok")
+    assert wanted(settings, made)[:2] == (1, 1)  # still wanted: a restore asks again
+    assert post(client, "resume", made).json()["server"]["state"] == "remote_control_prompt"
+
+
 def test_a_workspace_that_cannot_be_reached_is_listed_with_why(client, app):
     made = made_workspace(client, ALICE, "alpha")
     signed_in(app, made)

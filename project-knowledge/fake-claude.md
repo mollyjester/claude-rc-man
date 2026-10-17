@@ -59,9 +59,9 @@ in `tests/fakes/observed/` as `<name>.txt`, sanitised as the fixtures are.
 That folder's `manifest.json` lists every screen in it, and for each records
 its exit code (`null` when the program was still running), the Claude Code
 version it was seen on (`seen_on`), the versions it is kept for (`kept_for`,
-starting with `seen_on`), how it was seen (`seen`), and the
-[journal](../docs/journal.md#output-rcman-does-not-recognise) line that
-reported it (`journal`: its `code`, `verb` and `fingerprint`).
+starting with `seen_on`), how it was seen (`seen`), and, where the
+[journal](../docs/journal.md#output-rcman-does-not-recognise) line reported
+it, that line (`journal`: its `code`, `verb` and `fingerprint`).
 `load_observed` in `devtools/record_claude.py` is the one reader.
 
 Tests hold the manifest to exactly the files beside it
@@ -75,7 +75,11 @@ screen's `kept_for` does not name the version in the fixtures' manifest; see
 Every observed screen is a scenario of the fake under its own name:
 `FAKE_CLAUDE_SCENARIO=<name>` makes `remote-control` show that screen and
 wait. What follows Ctrl+C there was not seen, so the fake then ends as in the
-`unrecognised` scenario.
+`unrecognised` scenario. The exception is `remote_control_prompt`, Claude's
+one-time question of an account that has never used Remote Control: it takes an
+answer, as the question does, so that what rcman does with the answers can be
+tested. Only the screen was seen; what the fake does after it is listed under
+[Not recorded](#not-recorded).
 
 ## What the fake does
 
@@ -129,8 +133,9 @@ as the real one leaves a bound file, answering exit status 0 either way.
 show a synthetic screen that matches no recording, for testing how
 unrecognised output is handled; Ctrl+C then ends it with exit status 1. The
 name of an observed screen makes `remote-control` show that screen (see
-[Observed screens](#observed-screens)). `FAKE_CLAUDE_READY_SECONDS` sets how long the
-connected stage lasts, and `FAKE_CLAUDE_VERSION` the version it reports.
+[Observed screens](#observed-screens), which says which of them takes an
+answer). `FAKE_CLAUDE_READY_SECONDS` sets how long the connected stage lasts,
+and `FAKE_CLAUDE_VERSION` the version it reports.
 
 `fake-exec COMMAND [ARGUMENT...]` is the one verb the real `claude` has no
 counterpart of, and nothing in it is recorded: it runs the command in the
@@ -144,12 +149,19 @@ using the person's token (`tests/container/test_github_in_podman.py`).
 
 ## Not recorded
 
-The fake has no recording of these, so it cannot show them. rcman
-reports a live one as `unrecognised`, and a server whose
+The fake has no recording of these, so it cannot show them, except as noted.
+rcman reports a live one it does not know as `unrecognised`, and a server whose
 process has ended on one as `exited` (see [runtime.md](runtime.md#server-states)):
 
-- the one-time "Enable Remote Control?" confirmation of an account that has
-  never used Remote Control;
+- what follows the observed "Enable Remote Control?" question of an account
+  that has never used Remote Control. In the `remote_control_prompt` scenario
+  the fake guesses: `y` goes on to the connected and ready screens as after the
+  trust question, `n` and anything else but `y` end it with exit status 1,
+  Ctrl+C at the question ends it with exit status 1, and it takes an answer at
+  once. Not seen: the screens after `y`, whether Claude exits after `n` and the
+  screen and exit status then, what Ctrl+C does at the question, and whether
+  Claude refuses an answer that comes too quickly, as it does the trust
+  question's;
 - a server exiting after an extended network outage;
 - an expired login;
 - logging out an account that is logged in — the fake shows the screen

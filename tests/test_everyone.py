@@ -4,7 +4,15 @@ from types import SimpleNamespace
 
 from rcman import everyone
 
-from tests.conftest import ALICE, BOB, CAROL, changing, made_workspace, signed_in
+from tests.conftest import (
+    ALICE,
+    BOB,
+    CAROL,
+    changing,
+    fake_claude,
+    made_workspace,
+    signed_in,
+)
 
 
 def request_for(app):
@@ -54,3 +62,16 @@ def test_one_workspace_that_cannot_be_read_does_not_hide_the_others(app, client)
     assert broken["server"] is None and broken["server_error"]["code"] == "workspace_failed"
     [fine] = found[BOB]["workspaces"]
     assert fine["server"]["state"] == "trust_prompt"
+
+
+def test_a_server_at_the_remote_control_prompt_is_listed_by_its_state_name(app, client):
+    alpha = made_workspace(client, ALICE, "alpha")
+    signed_in(app, alpha)
+    fake_claude(
+        app.state.workspaces.runtime.claude, env="FAKE_CLAUDE_SCENARIO=remote_control_prompt"
+    )
+    client.post("/api/servers", json={"workspace": alpha["id"]}, headers=changing(ALICE))
+    [shown] = by_email(everyone.everyone(request_for(app)))[ALICE]["workspaces"]
+    assert shown["server"]["state"] == "remote_control_prompt"
+    assert set(shown["server"]) == set(everyone.SERVER_FIELDS)
+    assert "screen" not in str(shown) and "environment_url" not in str(shown)

@@ -27,6 +27,14 @@ the ``unrecognised`` scenario does. In both,
 Ctrl+C ends it with exit status 1. ``FAKE_CLAUDE_VERSION`` replaces the version it
 reports.
 
+``FAKE_CLAUDE_SCENARIO=remote_control_prompt`` is the one observed screen that takes
+an answer, so the fake reads one (:meth:`Fake.remote_control_prompt`): ``y`` goes on to
+the connected and ready screens, as after the folder-trust question. Only the
+screen was seen. Not seen, so unobserved: the screens after ``y``, the screen and exit status
+after ``n`` (the fake exits 1, and so does anything but ``y``), Ctrl+C at the prompt (it
+exits 1), and how soon after the question an answer may come (the fake takes any).
+Nothing shows it unless asked: the default scenario never does.
+
 An answer to the folder-trust prompt that arrives sooner than
 :data:`MIN_ANSWER_SECONDS` after the prompt is refused with the recorded
 "too quickly" screen and asked again, as the real `claude` does. The real
@@ -82,6 +90,8 @@ FAKE_ACCOUNT = {
     "org_name": "Fake Org",
     "subscription_type": "max",
 }
+# The one observed screen that takes an answer.
+REMOTE_CONTROL_PROMPT = "remote_control_prompt"
 UNRECOGNISED_SCREEN = "fake claude: a synthetic screen that matches no recording"
 CLEAR = "\x1b[H\x1b[2J"
 MIN_ANSWER_SECONDS = 0.25
@@ -372,7 +382,9 @@ class Fake:
             sys.stdout.flush()
             self.wait_for_interrupt()
             return 1
-        # Every observed screen is a scenario of its own name.
+        if self.env.get("FAKE_CLAUDE_SCENARIO") == REMOTE_CONTROL_PROMPT:
+            return self.remote_control_prompt()
+        # Every other observed screen is a scenario of its own name.
         if screen := rec.load_observed().get(self.env.get("FAKE_CLAUDE_SCENARIO", "")):
             self.show_lines(screen.lines, screen.exit_code)
             self.wait_for_interrupt()
@@ -400,6 +412,34 @@ class Fake:
             stage = "after_trust" if after_trust else "resumed"
             server = "git_server" if branch is not None else "server"
             screens = tuple(f"{server}_{s}_{stage}" for s in ("connected", "ready", "stopped"))
+        return self.serve(screens)
+
+    def remote_control_prompt(self) -> int:
+        """The observed one-time question of an account that has never used Remote Control,
+        the one observed screen that takes an answer. Not observed: that `y` goes on as
+        after the folder-trust question, that `n` and Ctrl+C end it with exit status 1,
+        and how soon after the question an answer may come."""
+        spawn = _option(self.args, "--spawn")
+        if spawn not in (None, "same-dir"):
+            return self.unsupported()
+        screen = rec.load_observed()[REMOTE_CONTROL_PROMPT]
+        self.show_lines(screen.lines, screen.exit_code, prompt=True)
+        try:
+            answer = self.read_line().strip().lower()
+        except KeyboardInterrupt:
+            return 1
+        if answer != "y":
+            return 1
+        branch = _branch(self.cwd)
+        if branch is not None:
+            self.values["branch"] = branch
+        server = "git_server" if branch is not None else "server"
+        return self.serve(
+            tuple(f"{server}_{s}_after_trust" for s in ("connected", "ready", "stopped"))
+        )
+
+    def serve(self, screens: tuple[str, str, str]) -> int:
+        """A server that connects, becomes ready, and shows its last screen on Ctrl+C."""
         self.values["session_name"] = self.session_name()
         self.state["servers"][self.cwd] = self.values["session_name"]
         _save_state(self.state_dir, self.state)

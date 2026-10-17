@@ -27,7 +27,7 @@ changes nothing: a page's report of a failure rcman could not see, written to th
 | `server.resume` | resumes a server that stopped | the workspace's name |
 | `server.stop` | stops a server | the workspace's name |
 | `server.forget` | removes a stopped server from their list | the workspace's name |
-| `server.confirm` | answers a server's folder-trust question | the workspace's name |
+| `server.confirm` | answers a question a server asks | the workspace's name |
 | `me.sign_out` | signs out of rcman, keeping their running servers or stopping them first | none |
 | `settings.update` | changes their settings (see [Settings](settings.md)) | the settings they sent, as JSON; none when they were refused |
 | `person.add` | adds a person (administrators; see [Adding and removing people](users.md)) | the person's address |

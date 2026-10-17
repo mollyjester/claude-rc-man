@@ -12,6 +12,14 @@
         "verb": "list",
         "fingerprint": "fe808715a01c8921"
       }
+    },
+    "remote_control_prompt": {
+      "exit_code": null,
+      "seen_on": "2.1.289",
+      "kept_for": [
+        "2.1.289"
+      ],
+      "seen": "The whole screen of a live rcman server's pane, read with tmux capture-pane as rcman reads it, on an account that had never used Remote Control, after the folder-trust question was answered"
     }
   }
 }

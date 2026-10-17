@@ -44,3 +44,9 @@ def test_a_reconnected_server_is_not_a_warning(client, app):
     started = started_in(client, app, "reconnected_without_status")
     assert started.json()["server"]["state"] == "reconnected"  # positive control
     assert attention(client).json()["unrecognised"] == []
+
+
+def test_a_server_at_the_remote_control_prompt_is_not_a_warning(client, app):
+    started = started_in(client, app, "remote_control_prompt")
+    assert started.json()["server"]["state"] == "remote_control_prompt"  # positive control
+    assert attention(client).json() == {"unrecognised": []}

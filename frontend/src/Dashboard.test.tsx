@@ -981,6 +981,45 @@ test("answering the trust question sends the answer for the workspace", async ()
   expect(fake.made("POST", "/api/servers/confirm")[0].body).toEqual({ workspace: 1, answer: "y" });
 });
 
+test("a server at the Remote Control question shows it with Enable, Not now and Stop", async () => {
+  dashboard(withServer("remote_control_prompt"));
+  const found = await card();
+  expect(found.getByText(m.states.remote_control_prompt)).toHaveClass("badge");
+  expect(found.getByText(m.remoteControlTitle)).toBeInTheDocument();
+  expect(found.getByText(m.remoteControlBody)).toBeInTheDocument();
+  const enable = found.getByRole("button", { name: m.enableRc });
+  expect(enable).toHaveClass("primary");
+  expect(found.getByRole("button", { name: m.notNow })).toHaveClass("secondary");
+  expect(found.getByRole("button", { name: m.stop })).toHaveClass("secondary");
+  // not the trust question's
+  expect(found.queryByText(m.trustTitle)).not.toBeInTheDocument();
+  expect(found.queryByRole("button", { name: m.trustYes })).not.toBeInTheDocument();
+  expect(found.queryByRole("button", { name: m.trustNo })).not.toBeInTheDocument();
+});
+
+test("a server at the trust question does not show the Remote Control question", async () => {
+  dashboard(withServer("trust_prompt"));
+  const found = await card();
+  expect(found.getByText(m.trustTitle)).toBeInTheDocument(); // positive control
+  expect(found.queryByText(m.remoteControlTitle)).not.toBeInTheDocument();
+  expect(found.queryByRole("button", { name: m.enableRc })).not.toBeInTheDocument();
+  expect(found.queryByRole("button", { name: m.notNow })).not.toBeInTheDocument();
+});
+
+test.each([
+  ["Enable", m.enableRc, "/api/servers/confirm", { workspace: 1, answer: "y" }],
+  ["Not now", m.notNow, "/api/servers/confirm", { workspace: 1, answer: "n" }],
+  ["Stop", m.stop, "/api/servers/stop", { workspace: 1 }],
+])("%s at the Remote Control question sends its request", async (_name, label, path, body) => {
+  const fake = dashboard(withServer("remote_control_prompt"), {
+    [`POST ${path}`]: { server: server(1, "connected") },
+  });
+  const found = await card();
+  await userEvent.click(found.getByRole("button", { name: label }));
+  await waitFor(() => expect(fake.made("POST", path)).toHaveLength(1));
+  expect(fake.made("POST", path)[0].body).toEqual(body);
+});
+
 test.each([
   ["stop", m.stop, "/api/servers/stop", "ready"],
   ["resume", m.resume, "/api/servers/resume", "stopped"],

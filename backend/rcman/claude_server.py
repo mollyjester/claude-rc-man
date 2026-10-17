@@ -30,7 +30,7 @@ START_TIMEOUT = 30.0
 STOP_TIMEOUT = 30.0
 # Once a stop ends a server's process: how long it waits after SIGTERM, and after SIGKILL.
 END_GRACE_SECONDS = 5.0
-# The trust prompt refuses an answer that arrives too quickly after the question.
+# Claude may refuse an answer that arrives too quickly after its question (the trust question does).
 ANSWER_PACE_SECONDS = 0.5
 POLL_SECONDS = 0.1
 # A screen in transition matches no known state for a moment.
@@ -394,20 +394,22 @@ class Server:
 
     def confirm(self, answer: str) -> dict:
         self._existing()
-        if self._server()["state"] != "trust_prompt":
+        asked = self._server()["state"]
+        if asked not in screens.QUESTIONS:
             raise ServerError("nothing_to_confirm")
         server = None
         for _attempt in range(2):
             time.sleep(ANSWER_PACE_SECONDS)
             self.tmux.type(answer)
-            server = self._wait(self._answered, START_TIMEOUT)
-            if server["state"] != "trust_prompt":
+            server = self._wait(lambda s: self._answered(s, asked), START_TIMEOUT)
+            if server["state"] != asked:
                 return {"server": server}
         raise ServerError("confirm_not_accepted", server=server)
 
-    def _answered(self, server: dict) -> bool:
-        """The prompt went away, or Claude asked again because the answer was too fast."""
-        if server["state"] != "trust_prompt":
+    def _answered(self, server: dict, asked: str) -> bool:
+        """The question ``asked`` went away, or Claude asked it again because the answer
+        was too fast."""
+        if server["state"] != asked:
             return server["state"] != "starting"
         lines = [line for line in self.tmux.screen() if line.strip()]
         return len(lines) > 1 and screens.TOO_FAST in lines[-2]

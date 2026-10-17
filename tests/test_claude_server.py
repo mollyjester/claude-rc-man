@@ -153,6 +153,7 @@ def test_start_trust_confirm_ready_stop_resume_forget(world):
     assert world.server.status() is None
 
 
+# Known to fail rarely, under load: see "Known flaky test" in project-knowledge/tests.md.
 def test_a_server_in_a_git_repository_starts_stops_and_resumes(world):
     from tests.git_fixtures import fixture_git, make_repo
 
@@ -241,6 +242,112 @@ def test_a_server_on_a_screen_without_a_status_is_reported_with_it_and_stops(
         assert fake.UNRECOGNISED_SCREEN in shown["screen"]
     stopped = world.server.stop()["server"]
     assert (stopped["state"], stopped["exit_code"]) == ("exited", 1)
+
+
+# --- the one-time Remote Control question ----------------------------------------------
+
+
+def at_the_remote_control_prompt(world):
+    """A server of an account that has never used Remote Control, at its question."""
+    log_in(world)
+    write_claude(world.claude, env="FAKE_CLAUDE_SCENARIO=remote_control_prompt")
+    started = world.server.start("pfx")["server"]
+    assert started["state"] == "remote_control_prompt"  # positive control for what follows
+    return started
+
+
+def test_start_lands_on_the_remote_control_prompt_with_no_screen_to_report(world):
+    started = at_the_remote_control_prompt(world)
+    assert (started["session_name"], started["environment_url"]) == (None, None)
+    assert "screen" not in started
+
+
+def test_output_at_the_remote_control_prompt_carries_the_screen_and_the_state(world):
+    at_the_remote_control_prompt(world)
+    out = world.server.output()
+    assert out["server"]["state"] == "remote_control_prompt" and out["workspace"] == 1
+    assert out["screen"][-1] == "Enable Remote Control? (y/n)"
+    assert any("Take this session with you" in line for line in out["screen"])
+
+
+def test_yes_at_the_remote_control_prompt_starts_the_server(world):
+    at_the_remote_control_prompt(world)
+    confirmed = world.server.confirm("y")
+    assert confirmed["server"]["state"] in ("connected", "ready")
+    ready = wait_state(world, "ready")
+    assert ready["session_name"].startswith("pfx-")
+    assert refused(world.server.confirm, "y").code == "nothing_to_confirm"  # no longer asked
+
+
+def test_no_at_the_remote_control_prompt_ends_the_server_and_it_can_be_resumed(world):
+    at_the_remote_control_prompt(world)
+    ended = world.server.confirm("n")["server"]
+    assert ended["state"] == "exited"
+    assert ended["exit_code"] is not None
+    assert refused(world.server.confirm, "n").code == "nothing_to_confirm"
+    assert world.server.resume("pfx")["server"]["state"] == "remote_control_prompt"
+
+
+def test_stop_at_the_remote_control_prompt_ends_the_server(world):
+    at_the_remote_control_prompt(world)
+    stopped = world.server.stop()["server"]
+    assert (stopped["state"], stopped["exit_code"]) == ("exited", 1)
+
+
+def two_questions(world):
+    """A `claude` that asks the trust question and then the Remote Control question, as
+    Claude Code does for an account that has never used Remote Control, and then ends."""
+    log_in(world)
+    world.binary.write_text(
+        "#!/bin/sh\n"
+        f'[ "$1" = remote-control ] || exec {rec.FAKE_CLAUDE} "$@"\n'
+        "printf 'Trust /x? [y/N] '\n"
+        "read answer\n"
+        "printf 'Enable Remote Control? (y/n)\\n'\n"
+        "read answer\n"
+        "exit 1\n",
+        encoding="utf-8",
+    )
+
+
+def test_a_trust_answer_that_lands_on_the_remote_control_prompt_is_accepted(world):
+    two_questions(world)
+    assert world.server.start("pfx")["server"]["state"] == "trust_prompt"
+    asked = world.server.confirm("y")["server"]
+    assert asked["state"] == "remote_control_prompt"
+    ended = world.server.confirm("n")["server"]
+    assert (ended["state"], ended["exit_code"]) == ("exited", 1)
+
+
+def test_an_answer_that_leaves_the_question_unchanged_is_not_accepted(world, monkeypatch):
+    """Twin of the above: a question that stays asked after both tries is refused."""
+    monkeypatch.setattr(cs, "START_TIMEOUT", 1.0)
+    log_in(world)
+    world.binary.write_text(
+        "#!/bin/sh\n"
+        f'[ "$1" = remote-control ] || exec {rec.FAKE_CLAUDE} "$@"\n'
+        "while :; do\n"
+        "  printf 'Trust /x? [y/N] '\n"
+        "  read answer\n"
+        f"  printf '{screens.TOO_FAST}\\n'\n"
+        "done\n",
+        encoding="utf-8",
+    )
+    assert world.server.start("pfx")["server"]["state"] == "trust_prompt"
+    error = refused(world.server.confirm, "y")
+    assert error.code == "confirm_not_accepted"
+    assert error.detail["server"]["state"] == "trust_prompt"
+
+
+def test_answered_compares_with_the_question_asked(world):
+    log_in(world)
+    world.server.start("pfx")  # at the trust question: the screen has no "too quickly"
+    moved = {"state": "remote_control_prompt"}
+    assert world.server._answered(moved, "trust_prompt")
+    assert not world.server._answered({"state": "trust_prompt"}, "trust_prompt")  # positive
+    assert not world.server._answered({"state": "starting"}, "trust_prompt")
+    assert not world.server._answered({"state": "starting"}, "remote_control_prompt")
+    assert world.server._answered({"state": "ready"}, "remote_control_prompt")
 
 
 @pytest.mark.parametrize("prefix", ["", "-x", "a b", "a;b", "x" * 33])

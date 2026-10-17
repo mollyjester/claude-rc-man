@@ -14,12 +14,22 @@ export type Server = {
   screen?: string[];
 };
 
-type Action = "stop" | "resume" | "startAgain" | "forget" | "showScreen" | "trustYes" | "trustNo";
+type Action =
+  | "stop"
+  | "resume"
+  | "startAgain"
+  | "forget"
+  | "showScreen"
+  | "trustYes"
+  | "trustNo"
+  | "enableRc"
+  | "notNow";
 
 // What each state of a server allows; the server refuses anything else.
 export const ACTIONS: Record<string, Action[]> = {
   starting: ["stop"],
   trust_prompt: ["trustYes", "trustNo", "stop"],
+  remote_control_prompt: ["enableRc", "notNow", "stop"],
   connected: ["stop"],
   ready: ["stop"],
   stopped: ["resume", "forget"],
@@ -40,6 +50,7 @@ export type Kind = (typeof KIND_ORDER)[number];
 export const KIND: Record<string, Kind> = {
   starting: "running",
   trust_prompt: "waiting",
+  remote_control_prompt: "waiting",
   connected: "running",
   ready: "running",
   stopped: "stopped",
@@ -58,6 +69,7 @@ export const kindOf = (state: string): Kind => KIND[state] ?? "problem";
 export const PRIMARY: Record<string, Action | "openSession" | null> = {
   starting: null,
   trust_prompt: "trustYes",
+  remote_control_prompt: "enableRc",
   connected: "openSession",
   ready: "openSession",
   stopped: "resume",
@@ -75,6 +87,8 @@ const CALLS: Record<Exclude<Action, "showScreen">, [string, Record<string, strin
   forget: ["/api/servers/forget", {}],
   trustYes: ["/api/servers/confirm", { answer: "y" }],
   trustNo: ["/api/servers/confirm", { answer: "n" }],
+  enableRc: ["/api/servers/confirm", { answer: "y" }],
+  notNow: ["/api/servers/confirm", { answer: "n" }],
 };
 
 export const LABELS: Record<Action, string> = {
@@ -85,6 +99,8 @@ export const LABELS: Record<Action, string> = {
   showScreen: m.showScreen,
   trustYes: m.trustYes,
   trustNo: m.trustNo,
+  enableRc: m.enableRc,
+  notNow: m.notNow,
 };
 
 // What a workspace is, as the page lists it: its server, or why that could not be read.
@@ -178,6 +194,14 @@ export function ServerCard({
             <strong>{m.trustTitle}</strong>
           </p>
           <p>{m.trustBody(workspace.name)}</p>
+        </div>
+      )}
+      {server.state === "remote_control_prompt" && (
+        <div className="question">
+          <p>
+            <strong>{m.remoteControlTitle}</strong>
+          </p>
+          <p>{m.remoteControlBody}</p>
         </div>
       )}
       {server.session_name && (

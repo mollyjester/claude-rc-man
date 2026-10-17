@@ -17,8 +17,8 @@ Implemented and tested:
   made empty or cloned from GitHub. They keep running while rcman restarts, and
   rcman brings them back, with their servers, when it starts. Administrators see
   everyone's.
-- **A server in each workspace**, its screens read and its trust question
-  answered.
+- **A server in each workspace**, its screens read and the questions Claude
+  asks answered.
 - **One Claude sign-in per person**, which every workspace of theirs shares.
 - **git in workspaces**: each person's commit author and GitHub token shared by
   all their workspaces, and the Changes section of a workspace's panel.

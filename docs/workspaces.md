@@ -92,6 +92,7 @@ ready or in use also has **Open in claude.ai**, which is its main button:
 |---|---|---|---|---|
 | Starting | Running | Claude is starting. Wait a moment. | — | **Stop** |
 | Waiting for your answer | Needs your answer | Answer whether you trust this workspace. | **Yes, trust it** | **Yes, trust it**, **No**, **Stop** |
+| Waiting for your answer about Remote Control | Needs your answer | Answer whether to enable Remote Control. Not now ends the server, and Claude asks again next time. | **Enable** | **Enable**, **Not now**, **Stop** |
 | Ready to accept sessions | Running | Open it in claude.ai to start a session. | **Open in claude.ai** | **Open in claude.ai**, **Stop** |
 | In use | Running | A session is attached; continue it in claude.ai. | **Open in claude.ai** | **Open in claude.ai**, **Stop** |
 | Stopped | Not running | Resume to pick up its sessions, or forget it. | **Resume** | **Resume**, **Forget** |
@@ -162,6 +163,12 @@ it. Sessions started there can read, edit and run the files in it, and its own
 Claude settings apply to them. Answer yes to start the server, or no to
 cancel. Claude remembers the answer yes for that workspace.
 
+Until Remote Control is enabled for your Claude account, Claude then asks one
+more question before the server starts: whether to enable Remote Control.
+Choose **Enable** to start the server, or **Not now** to end it without
+starting it; Claude asks again the next time a server starts. Choose **Stop**
+to end the server there without answering.
+
 Once it has started, a server is **ready to accept sessions**, and **Open in
 claude.ai** takes you to it on claude.ai/code, where you start a session; the
 Claude app lists it too. While a session is attached the server is **in use**,
@@ -180,7 +187,9 @@ A server can also stop by itself — for example when the machine loses its
 network connection for a long time, or when its process is ended outside
 rcman. It is then shown as **Stopped by itself**, with its exit status, and
 **Show screen** displays what Claude showed last. **Resume** starts it again
-in the same workspace.
+in the same workspace. A server ended with **Not now** is shown as the screen
+Claude leaves and its exit status say, most likely **Stopped by itself**, and
+Claude asks the question again when it is resumed.
 
 A server runs the Claude Code version that was approved when it started, and
 keeps it while it runs. Starting it again after you stopped it, resuming it, or
