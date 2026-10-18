@@ -332,7 +332,7 @@ rcman restarted is not started, so `postStartCommand` does not run for it.
   (`HOOK_KEEP_BYTES`).
 - A create command that fails or times out fails the workspace, with its exit code and the
   end of its output. The container and the volume are **kept** so the person can see what
-  happened; **Delete workspace** removes them.
+  happened; deleting the workspace removes them.
 - A failing `postStartCommand` is logged and does not stop the workspace or its server.
 
 **A security note.** The commands are the repository's, and the person chose them by choosing

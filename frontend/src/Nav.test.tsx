@@ -28,6 +28,14 @@ function api(me: Reply) {
 }
 
 const nav = () => screen.getByRole("banner");
+// Opens the account menu, and returns what it holds.
+async function account() {
+  const button = within(await screen.findByRole("banner")).getByRole("button", {
+    name: m.account,
+  });
+  await userEvent.click(button);
+  return within(document.getElementById(button.getAttribute("aria-controls")!)!);
+}
 // The Admin button, once the page knows who is signed in.
 const adminButton = async () =>
   within(await screen.findByRole("banner")).getByRole("button", { name: m.navAdmin });
@@ -163,7 +171,7 @@ test("the Claude Code versions page is offered to administrators, and opens", as
 test("people who are not administrators are sent on from the Claude Code versions page", async () => {
   const fake = api(ME);
   const { location } = renderApp("/admin/claude");
-  await screen.findByRole("region", { name: m.workspacesTitle }); // the Workspaces page
+  await screen.findByRole("region", { name: m.navDashboard }); // the Workspaces page
   expect(location().pathname).toBe("/");
   expect(fake.made("GET", "/api/claude/versions")).toHaveLength(0);
   expect(screen.queryByRole("heading", { name: m.versionsTitle })).not.toBeInTheDocument();
@@ -175,7 +183,7 @@ test("the navigation leads to the Workspaces page", async () => {
   await userEvent.click(
     within(await screen.findByRole("banner")).getByRole("link", { name: m.navDashboard }),
   );
-  expect(await screen.findByRole("region", { name: m.workspacesTitle })).toBeInTheDocument();
+  expect(await screen.findByRole("region", { name: m.navDashboard })).toBeInTheDocument();
 });
 
 test("an account rcman refuses sees the server's reason", async () => {
@@ -199,11 +207,11 @@ test("signing out of rcman keeps sessions running unless asked, then leaves for 
     const fake = api(ME);
     const left = vi.spyOn(away, "to").mockImplementation(() => {});
     const { unmount } = renderApp();
-    const banner = await screen.findByRole("banner");
-    const box = within(banner).getByRole("checkbox", { name: m.keepServersOnSignOut });
+    const menu = await account();
+    const box = menu.getByRole("checkbox", { name: m.keepServersOnSignOut });
     expect(box).toBeChecked();
     if (!keep) await userEvent.click(box);
-    const button = within(banner).getByRole("button", { name: m.signOut });
+    const button = menu.getByRole("button", { name: m.signOut });
     await userEvent.click(button);
     await vi.waitFor(() => expect(left).toHaveBeenCalledWith("/oauth2/sign_out"));
     expect(fake.made("POST", "/api/me/sign-out")[0].body).toEqual({ keep_sessions: keep });
@@ -215,13 +223,33 @@ test("signing out of rcman keeps sessions running unless asked, then leaves for 
 test("Sign out is a plain button, in one form with the box that says what happens to the servers", async () => {
   api(ME);
   renderApp();
-  const banner = await screen.findByRole("banner");
-  const button = within(banner).getByRole("button", { name: m.signOut });
+  const menu = await account();
+  const button = menu.getByRole("button", { name: m.signOut });
   expect(button).not.toHaveClass("primary");
   expect(button).not.toHaveClass("danger");
-  const box = within(banner).getByRole("checkbox", { name: m.keepServersOnSignOut });
+  const box = menu.getByRole("checkbox", { name: m.keepServersOnSignOut });
   expect(box.closest("form")).toBe(button.closest("form"));
   expect(m.signOut).not.toBe(m.claudeSignOut); // the two sign-outs are told apart by name
+});
+
+test("the account menu holds who is signed in, and signing out, shown only once it is opened", async () => {
+  api(ME);
+  renderApp();
+  const button = within(await screen.findByRole("banner")).getByRole("button", {
+    name: m.account,
+  });
+  expect(button).toHaveAttribute("aria-expanded", "false");
+  // closed: none of it can be reached
+  expect(within(nav()).queryByRole("button", { name: m.signOut })).not.toBeInTheDocument();
+  expect(within(nav()).queryByRole("checkbox")).not.toBeInTheDocument();
+  const menu = await account();
+  expect(button).toHaveAttribute("aria-expanded", "true");
+  expect(menu.getByText(m.signedInAs(ME.email))).toBeInTheDocument();
+  expect(menu.getByRole("checkbox", { name: m.keepServersOnSignOut })).toBeInTheDocument();
+  expect(menu.getByRole("button", { name: m.signOut })).toBeInTheDocument();
+  await userEvent.keyboard("{Escape}");
+  expect(button).toHaveAttribute("aria-expanded", "false");
+  expect(button).toHaveFocus();
 });
 
 test("a link that skips to the content is the first thing Tab reaches, and moves focus to the page", async () => {

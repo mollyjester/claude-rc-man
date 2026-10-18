@@ -310,7 +310,7 @@ test("leaving the workspace closes its socket and ends its screen", async () => 
   page();
   const { socket, view } = await connected();
   await userEvent.click(
-    within(await screen.findByRole("region", { name: m.workspacesTitle })).getByRole("button", {
+    within(await screen.findByRole("region", { name: m.navDashboard })).getByRole("button", {
       name: "beta",
     }),
   );
@@ -326,7 +326,7 @@ test("leaving the workspace while it connects notes no failure and asks for noth
   const { socket } = await opened(); // never accepted
   const asked = fake.made("GET", "/api/workspaces").length;
   await userEvent.click(
-    within(await screen.findByRole("region", { name: m.workspacesTitle })).getByRole("button", {
+    within(await screen.findByRole("region", { name: m.navDashboard })).getByRole("button", {
       name: "beta",
     }),
   );

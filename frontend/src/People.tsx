@@ -1,15 +1,7 @@
-import {
-  type FormEvent,
-  type KeyboardEvent,
-  useCallback,
-  useEffect,
-  useId,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import { type FormEvent, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 
 import { ApiError, api } from "./api";
+import { Dialog } from "./Dialog";
 import { m } from "./messages";
 import { asApiError, ProblemView, useFieldErrors } from "./ProblemView";
 import { TableScroll } from "./TableScroll";
@@ -94,8 +86,12 @@ function RemoveDialog({
   }
 
   return (
-    <div role="dialog" aria-label={m.usersRemoveTitle(person.email)} className="dialog">
-      <h2>{m.usersRemoveTitle(person.email)}</h2>
+    <Dialog
+      owner="RemoveDialog"
+      title={m.usersRemoveTitle(person.email)}
+      onClose={onCancel}
+      closable={!busy}
+    >
       <form noValidate onSubmit={remove}>
         <p>{m.usersRemoveBody}</p>
         <div className="actions">
@@ -108,7 +104,7 @@ function RemoveDialog({
         </div>
       </form>
       <ProblemView error={error} />
-    </div>
+    </Dialog>
   );
 }
 
@@ -228,7 +224,6 @@ function LimitsDialog({
   const [report, setReport] = useState<Report | null>(null);
   const [loadError, setLoadError] = useState<ApiError | null>(null);
   const [failure, setFailure] = useState<{ path: string; error: ApiError } | null>(null);
-  const dialog = useRef<HTMLDivElement>(null);
   const base = `/api/people/${person.id}`;
 
   const [saving, setSaving] = useState(0); // saves in flight
@@ -250,13 +245,7 @@ function LimitsDialog({
     );
   }, [base]);
 
-  useEffect(() => dialog.current?.focus(), []);
   useEffect(load, [load]);
-
-  // A save is not left running unseen: the dialog stays until it is answered.
-  function leave(event: KeyboardEvent) {
-    if (event.key === "Escape" && saving === 0) onClose();
-  }
 
   function scope(title: string, path: string, held: ScopeReport) {
     return (
@@ -277,16 +266,16 @@ function LimitsDialog({
     );
   }
 
+  // Focus starts on the dialog, above the forms, and a save is not left running unseen: the
+  // dialog stays until it is answered.
   return (
-    <div
-      role="dialog"
-      aria-label={m.limitsTitle(person.email)}
-      className="dialog"
-      tabIndex={-1}
-      ref={dialog}
-      onKeyDown={leave}
+    <Dialog
+      owner="LimitsDialog"
+      title={m.limitsTitle(person.email)}
+      onClose={onClose}
+      closable={saving === 0}
+      focusDialog
     >
-      <h2>{m.limitsTitle(person.email)}</h2>
       {report === null && loadError === null && <p>{m.loading}</p>}
       <ProblemView error={loadError} />
       {report && (
@@ -322,7 +311,7 @@ function LimitsDialog({
         </button>
       </div>
       {saving > 0 && <p id={waits}>{m.limitsCloseWaits}</p>}
-    </div>
+    </Dialog>
   );
 }
 

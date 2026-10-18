@@ -90,10 +90,20 @@ function dashboard(workspaces: Workspace[], extra: Routes = {}) {
   });
 }
 
-const list = async () => screen.findByRole("region", { name: m.workspacesTitle });
+// The list, which the page's own heading names.
+const list = async () => screen.findByRole("region", { name: m.navDashboard });
 const panel = async (name: string) => screen.findByRole("region", { name });
 const entry = async (name: string) => within(await list()).findByRole("button", { name });
 const selectedOf = (search: string) => new URLSearchParams(search).get("workspace");
+// A row's trash button, named after its workspace.
+const trash = async (name: string) =>
+  within(await list()).findByRole("button", { name: m.deleteWorkspaceNamed(name) });
+
+// Opens New workspace's dialog with the + beside the page's heading, and returns the dialog.
+async function newWorkspace() {
+  await userEvent.click(await screen.findByRole("button", { name: m.newWorkspace }));
+  return within(await screen.findByRole("dialog", { name: m.newWorkspace }));
+}
 
 // The card of alpha's server, with alpha selected from the address.
 async function card() {
@@ -127,6 +137,34 @@ test("with no workspaces, the list says so", async () => {
   renderApp();
   expect(await within(await list()).findByText(m.workspacesEmpty)).toBeInTheDocument();
   expect(within(await list()).queryAllByRole("button")).toEqual([]);
+});
+
+test("with a workspace selected, a link leads back to the list, and a menu switches to another", async () => {
+  dashboard([workspace(1, "alpha"), workspace(2, "beta", { state: "failed" })]);
+  const { location } = renderApp("/?workspace=1");
+  await panel("alpha");
+  // on a phone they take the list's place (src/styles.css); here, they are beside the panel
+  const switcher = screen.getByRole("button", { name: m.switchWorkspace });
+  expect(switcher).toHaveAttribute("aria-expanded", "false");
+  await userEvent.click(switcher);
+  const menu = document.getElementById(switcher.getAttribute("aria-controls")!)!;
+  const choices = within(menu).getAllByRole("button");
+  expect(choices.map((c) => c.textContent)).toEqual(["alpha", `beta ${m.workspaceStates.failed}`]);
+  expect(within(menu).getByRole("button", { name: "alpha" })).toHaveAttribute(
+    "aria-current",
+    "true",
+  );
+  await userEvent.click(within(menu).getByRole("button", { name: /^beta/ }));
+  expect(selectedOf(location().search)).toBe("2");
+  expect(await panel("beta")).toBeInTheDocument();
+  expect(switcher).toHaveAttribute("aria-expanded", "false");
+  const back = screen.getByRole("link", { name: m.backToWorkspaces });
+  await userEvent.click(back);
+  expect(selectedOf(location().search)).toBeNull();
+  expect(await screen.findByText(m.workspacePanelEmpty)).toBeInTheDocument();
+  // with none selected, there is nothing to go back from
+  expect(screen.queryByRole("link", { name: m.backToWorkspaces })).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: m.switchWorkspace })).not.toBeInTheDocument();
 });
 
 test("the selected workspace is kept in the address, which opens it again", async () => {
@@ -238,7 +276,7 @@ test("New workspace sends the name as typed, then selects the new workspace", as
     },
   });
   const { location } = renderApp();
-  const form = within(await screen.findByRole("region", { name: m.newWorkspace }));
+  const form = await newWorkspace();
   await userEvent.type(form.getByLabelText(m.newWorkspaceName), "Fresh-1");
   const create = form.getByRole("button", { name: m.create });
   expect(create).toHaveClass("primary");
@@ -249,7 +287,33 @@ test("New workspace sends the name as typed, then selects the new workspace", as
   expect(within(made).getByText(m.workspaceCreating)).toBeInTheDocument();
   expect(selectedOf(location().search)).toBe("7");
   expect(await entry("Fresh-1")).toHaveAttribute("aria-current", "true");
-  expect(form.getByLabelText(m.newWorkspaceName)).toHaveValue("");
+  // the dialog closed once the workspace was made, and a new one starts empty
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  expect((await newWorkspace()).getByLabelText(m.newWorkspaceName)).toHaveValue("");
+});
+
+test("+ opens New workspace as a dialog, focus in its name, and Escape or Cancel closes it, focus back on +", async () => {
+  dashboard([workspace(1, "alpha")]);
+  renderApp();
+  const plus = await screen.findByRole("button", { name: m.newWorkspace });
+  expect(plus.textContent).toBe(""); // an icon only, named for what it opens
+  // beside the page's own heading, the list's name
+  const heading = screen.getByRole("heading", { level: 1, name: m.navDashboard });
+  expect(heading.parentElement).toContainElement(plus);
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument(); // not there until asked for
+  expect(screen.queryByLabelText(m.newWorkspaceName)).not.toBeInTheDocument();
+  for (const close of [
+    () => userEvent.keyboard("{Escape}"),
+    (dialog: ReturnType<typeof within>) =>
+      userEvent.click(dialog.getByRole("button", { name: m.cancel })),
+  ]) {
+    const dialog = await newWorkspace();
+    expect(dialog.getByLabelText(m.newWorkspaceName)).toHaveFocus();
+    await userEvent.type(dialog.getByLabelText(m.newWorkspaceName), "half-typed");
+    await close(dialog);
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(plus).toHaveFocus();
+  }
 });
 
 const ADDRESS = "https://github.com/octo/widget";
@@ -271,7 +335,7 @@ test("an address makes the workspace by cloning it, named after the repository w
     },
   });
   const { location } = renderApp();
-  const form = within(await screen.findByRole("region", { name: m.newWorkspace }));
+  const form = await newWorkspace();
   await userEvent.type(form.getByLabelText(m.newWorkspaceSource), ADDRESS);
   await userEvent.click(form.getByRole("button", { name: m.create }));
   await waitFor(() => expect(fake.made("POST", "/api/git/clone")).toHaveLength(1));
@@ -280,8 +344,7 @@ test("an address makes the workspace by cloning it, named after the repository w
   const made = await panel("widget");
   expect(within(made).getByText(m.workspaceCreating)).toBeInTheDocument();
   expect(selectedOf(location().search)).toBe("8");
-  expect(form.getByLabelText(m.newWorkspaceSource)).toHaveValue("");
-  expect(form.getByLabelText(m.newWorkspaceName)).toHaveValue("");
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
 });
 
 test("an address and a name make the cloned workspace with that name", async () => {
@@ -299,7 +362,7 @@ test("an address and a name make the cloned workspace with that name", async () 
     },
   });
   renderApp();
-  const form = within(await screen.findByRole("region", { name: m.newWorkspace }));
+  const form = await newWorkspace();
   await userEvent.type(form.getByLabelText(m.newWorkspaceSource), ADDRESS);
   await userEvent.type(form.getByLabelText(m.newWorkspaceName), "mine");
   await userEvent.click(form.getByRole("button", { name: m.create }));
@@ -315,7 +378,7 @@ test("a pasted space around the address and the name is not sent", async () => {
     }),
   });
   renderApp();
-  const form = within(await screen.findByRole("region", { name: m.newWorkspace }));
+  const form = await newWorkspace();
   await userEvent.type(form.getByLabelText(m.newWorkspaceSource), `  ${ADDRESS} `);
   await userEvent.type(form.getByLabelText(m.newWorkspaceName), " mine  ");
   await userEvent.click(form.getByRole("button", { name: m.create }));
@@ -326,7 +389,7 @@ test("a pasted space around the address and the name is not sent", async () => {
 test("an address typed as spaces only is no address", async () => {
   const fake = dashboard([], { "POST /api/workspaces": problem(422, "validation_failed", "x") });
   renderApp();
-  const form = within(await screen.findByRole("region", { name: m.newWorkspace }));
+  const form = await newWorkspace();
   await userEvent.type(form.getByLabelText(m.newWorkspaceSource), "   ");
   await userEvent.click(form.getByRole("button", { name: m.create }));
   await waitFor(() => expect(fake.made("POST", "/api/workspaces")).toHaveLength(1));
@@ -336,7 +399,7 @@ test("an address typed as spaces only is no address", async () => {
 test("each help line of the new workspace form describes its field", async () => {
   dashboard([]);
   renderApp();
-  const form = within(await screen.findByRole("region", { name: m.newWorkspace }));
+  const form = await newWorkspace();
   expect(form.getByLabelText(m.newWorkspaceName)).toHaveAccessibleDescription(
     m.newWorkspaceNameHelp,
   );
@@ -352,7 +415,7 @@ test("with no address a name makes an empty workspace, and an address typed and 
     }),
   });
   renderApp();
-  const form = within(await screen.findByRole("region", { name: m.newWorkspace }));
+  const form = await newWorkspace();
   await userEvent.type(form.getByLabelText(m.newWorkspaceSource), "https://x");
   await userEvent.clear(form.getByLabelText(m.newWorkspaceSource));
   await userEvent.type(form.getByLabelText(m.newWorkspaceName), "empty");
@@ -372,11 +435,12 @@ test("a refused address is shown under its label in the form, which keeps what w
     ),
   });
   renderApp();
-  const form = within(await screen.findByRole("region", { name: m.newWorkspace }));
+  const form = await newWorkspace();
   await userEvent.type(form.getByLabelText(m.newWorkspaceSource), "ftp://nope");
   await userEvent.type(form.getByLabelText(m.newWorkspaceName), "kept");
   await userEvent.click(form.getByRole("button", { name: m.create }));
   await form.findByRole("alert");
+  expect(screen.getByRole("dialog", { name: m.newWorkspace })).toBeInTheDocument(); // still open
   expectRefused(form.getByLabelText(m.newWorkspaceSource), "planted reason for the address");
   expect(form.getByLabelText(m.newWorkspaceName)).not.toHaveAttribute("aria-invalid");
   expect(form.getByLabelText(m.newWorkspaceSource)).toHaveFocus();
@@ -394,7 +458,7 @@ test("a name taken for a cloned workspace is shown under the name's label", asyn
     ),
   });
   renderApp();
-  const form = within(await screen.findByRole("region", { name: m.newWorkspace }));
+  const form = await newWorkspace();
   await userEvent.type(form.getByLabelText(m.newWorkspaceSource), ADDRESS);
   await userEvent.type(form.getByLabelText(m.newWorkspaceName), "alpha");
   await userEvent.click(form.getByRole("button", { name: m.create }));
@@ -415,10 +479,11 @@ test("a refused name is shown under its label in the form, which keeps it", asyn
     ),
   });
   renderApp();
-  const form = within(await screen.findByRole("region", { name: m.newWorkspace }));
+  const form = await newWorkspace();
   await userEvent.type(form.getByLabelText(m.newWorkspaceName), "bad name!");
   await userEvent.click(form.getByRole("button", { name: m.create }));
   await form.findByRole("alert");
+  expect(screen.getByRole("dialog", { name: m.newWorkspace })).toBeInTheDocument(); // still open
   expectRefused(form.getByLabelText(m.newWorkspaceName), "planted reason for the name");
   expect(form.getByLabelText(m.newWorkspaceName)).toHaveFocus();
   expect(form.getByLabelText(m.newWorkspaceName)).toHaveValue("bad name!");
@@ -434,7 +499,7 @@ test("while it is being made, its button waits, and only one workspace is asked 
       }),
   });
   renderApp();
-  const form = within(await screen.findByRole("region", { name: m.newWorkspace }));
+  const form = await newWorkspace();
   await userEvent.type(form.getByLabelText(m.newWorkspaceName), "slow");
   await userEvent.click(form.getByRole("button", { name: m.create }));
   const busy = await form.findByRole("button", { name: m.creating });
@@ -442,7 +507,7 @@ test("while it is being made, its button waits, and only one workspace is asked 
   await userEvent.click(busy);
   expect(fake.made("POST", "/api/workspaces")).toHaveLength(1);
   answer();
-  expect(await form.findByRole("button", { name: m.create })).toBeEnabled();
+  await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
 });
 
 // --- the panel in each state of the workspace -----------------------------------
@@ -468,14 +533,15 @@ test("a workspace being made becomes ready by itself as the page refreshes", asy
   expect(within(opened).queryByText(m.workspaceCreating)).not.toBeInTheDocument();
 });
 
-test("a workspace that failed shows why, and offers Delete but not Start", async () => {
+test("a workspace that failed shows why, offers no Start, and can be deleted from its row", async () => {
   dashboard([workspace(1, "alpha", { state: "failed", error: "planted: the image is missing" })]);
   renderApp("/?workspace=1");
   const opened = await panel("alpha");
   expect(within(opened).getByText(m.workspaceFailed)).toBeInTheDocument();
   expect(within(opened).getByText("planted: the image is missing")).toBeInTheDocument();
-  expect(within(opened).getByRole("button", { name: m.deleteWorkspace })).toBeInTheDocument();
   expect(within(opened).queryByRole("button", { name: m.start })).not.toBeInTheDocument();
+  await userEvent.click(await trash("alpha"));
+  expect(screen.getByRole("dialog", { name: m.deleteWorkspaceTitle("alpha") })).toBeInTheDocument();
 });
 
 const STEPS = "Making the workspace\nChecking git\nCloning https://github.com/octo/widget";
@@ -502,7 +568,7 @@ test("a workspace being made with no steps yet shows no log", async () => {
   expect(within(opened).queryByRole("figure")).not.toBeInTheDocument();
 });
 
-test("a workspace being cloned offers Delete, as the way to cancel, and deleting it asks first", async () => {
+test("a workspace being cloned can be deleted, as the way to cancel, and deleting it asks first", async () => {
   const workspaces = [workspace(1, "alpha", { state: "creating", source: ADDRESS, log: STEPS })];
   const fake = dashboard([], {
     "GET /api/workspaces": () => listing(workspaces),
@@ -515,7 +581,7 @@ test("a workspace being cloned offers Delete, as the way to cancel, and deleting
   const opened = await panel("alpha");
   expect(within(opened).getByText(m.workspaceCloningCancel)).toBeInTheDocument();
   expect(within(opened).queryByRole("button", { name: m.start })).not.toBeInTheDocument();
-  const open = within(opened).getByRole("button", { name: m.deleteWorkspace });
+  const open = await trash("alpha");
   expect(open).toHaveClass("secondary-danger");
   await userEvent.click(open);
   expect(fake.made("DELETE", "/api/workspaces/1")).toHaveLength(0);
@@ -543,7 +609,7 @@ const CLONE_ERROR = [
   "fatal: could not read Username for 'https://github.com': terminal prompts disabled",
 ].join("\n");
 
-test("a clone that failed shows what was done and why, with git's lines kept apart and Delete offered", async () => {
+test("a clone that failed shows what was done and why, with git's lines kept apart", async () => {
   dashboard([
     workspace(1, "alpha", {
       state: "failed",
@@ -560,7 +626,6 @@ test("a clone that failed shows what was done and why, with git's lines kept apa
   const said = opened.querySelector("pre.workspace-error");
   expect(said?.textContent).toBe(CLONE_ERROR); // every line break kept
   expect(said).toHaveClass("screen"); // a block of its own, as a screen is
-  expect(within(opened).getByRole("button", { name: m.deleteWorkspace })).toBeInTheDocument();
   expect(within(opened).queryByText(m.workspaceCloningCancel)).not.toBeInTheDocument();
   expect(within(opened).queryByRole("button", { name: m.start })).not.toBeInTheDocument();
 });
@@ -805,18 +870,6 @@ test.each(Object.keys(ACTIONS))(
     else expect(note).not.toBeInTheDocument();
   },
 );
-
-test("the selected workspace's panel comes before the form that makes another", async () => {
-  dashboard([workspace(1, "alpha")]);
-  renderApp("/?workspace=1");
-  const opened = await panel("alpha");
-  const listed = await list();
-  const form = screen.getByRole("region", { name: m.newWorkspace });
-  const follows = (a: Element, b: Element) =>
-    Boolean(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
-  expect(follows(listed, opened)).toBe(true);
-  expect(follows(opened, form)).toBe(true);
-});
 
 test("the note goes once the server runs the approved version", async () => {
   let version = "2.1.0";
@@ -1167,13 +1220,26 @@ test("a refused action shows the server's problem", async () => {
 
 // --- deleting a workspace ------------------------------------------------------------
 
-test("Delete workspace asks first, saying everything in it and its server go, and calls nothing until confirmed", async () => {
-  const fake = dashboard(withServer("ready"));
-  renderApp("/?workspace=1");
-  const opened = await panel("alpha");
-  const remove = within(opened).getByRole("button", { name: m.deleteWorkspace });
-  expect(remove).toHaveClass("secondary-danger");
-  await userEvent.click(remove);
+test("every row has a trash button named after its workspace, a danger outline with an icon only", async () => {
+  dashboard([
+    workspace(1, "alpha"),
+    workspace(2, "beta", { state: "creating" }),
+    workspace(3, "gamma", { state: "deleting" }),
+  ]);
+  renderApp();
+  for (const name of ["alpha", "beta", "gamma"]) {
+    const button = await trash(name);
+    expect(button.closest("li")).toContainElement(await entry(name));
+    expect(button).toHaveClass("secondary-danger");
+    expect(button.textContent).toBe("");
+  }
+});
+
+test("the trash button asks first, saying everything in it and its server go, and Cancel deletes nothing", async () => {
+  const fake = dashboard(withServer("ready"), { "GET /api/git/status": STATUS_CLEAN });
+  renderApp();
+  const opener = await trash("alpha");
+  await userEvent.click(opener);
   const dialog = await screen.findByRole("dialog", { name: m.deleteWorkspaceTitle("alpha") });
   expect(within(dialog).getByText(m.deleteWorkspaceBody)).toBeInTheDocument();
   expect(within(dialog).getByRole("button", { name: m.deleteWorkspaceConfirm })).toHaveClass(
@@ -1182,47 +1248,111 @@ test("Delete workspace asks first, saying everything in it and its server go, an
   expect(fake.calls.filter((c) => c.method === "DELETE")).toEqual([]);
   await userEvent.click(within(dialog).getByRole("button", { name: m.cancel }));
   expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  expect(opener).toHaveFocus();
   expect(fake.calls.filter((c) => c.method === "DELETE")).toEqual([]);
 });
 
-test("Delete workspace is a section of its own at the foot of the panel, after the server and the changes, never its first control", async () => {
-  dashboard(withServer("ready"), {
+test("a row's trash button deletes that row's workspace, whichever is selected, and keeps the selection", async () => {
+  let workspaces = withServer("ready");
+  const fake = dashboard([], {
+    "GET /api/workspaces": () => listing(workspaces),
     "GET /api/git/status": STATUS_CLEAN,
     "GET /api/git/branches": BRANCHES,
+    "DELETE /api/workspaces/2": () => {
+      workspaces = workspaces.filter((w) => w.id !== 2);
+      return { deleted: 2 };
+    },
   });
-  renderApp("/?workspace=1");
-  const opened = await panel("alpha");
-  const section = await within(opened).findByRole("region", { name: m.deleteSectionTitle });
-  const remove = within(section).getByRole("button", { name: m.deleteWorkspace });
-  expect(remove).toHaveClass("secondary-danger");
-  const changes = await within(opened).findByRole("region", { name: m.changesTitle });
-  const serverSection = within(opened).getByRole("region", { name: m.serverTitle });
-  for (const before of [serverSection, changes]) {
-    expect(before.compareDocumentPosition(section) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-  }
-  // the first control of the panel is not the delete button
-  expect(opened.querySelector("button, a[href]")).not.toBe(remove);
-  expect(section.nextElementSibling).toBeNull(); // the last thing in the panel
+  const { location } = renderApp("/?workspace=1");
+  await panel("alpha");
+  await userEvent.click(await trash("beta"));
+  const dialog = await screen.findByRole("dialog", { name: m.deleteWorkspaceTitle("beta") });
+  // the check of unsaved work is beta's, not the selected alpha's
+  await waitFor(() =>
+    expect(fake.made("GET", "/api/git/status").map((c) => c.query.get("workspace"))).toContain("2"),
+  );
+  const confirm = within(dialog).getByRole("button", { name: m.deleteWorkspaceConfirm });
+  await waitFor(() => expect(confirm).toBeEnabled());
+  await userEvent.click(confirm);
+  expect(await screen.findByRole("status")).toHaveTextContent(m.workspaceDeleted("beta"));
+  expect(fake.made("DELETE", "/api/workspaces/2")).toHaveLength(1);
+  expect(fake.made("DELETE", "/api/workspaces/1")).toHaveLength(0);
+  expect(selectedOf(location().search)).toBe("1");
+  expect(await panel("alpha")).toBeInTheDocument();
+  // the trash button went with its row: focus is on the list's heading, not lost to the page
+  expect(screen.getByRole("heading", { level: 1, name: m.navDashboard })).toHaveFocus();
+  await waitFor(() =>
+    expect(
+      within(screen.getByRole("region", { name: m.navDashboard })).queryByRole("button", {
+        name: "beta",
+      }),
+    ).not.toBeInTheDocument(),
+  );
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
 });
 
-test("a failed workspace has the delete section after what went wrong", async () => {
-  dashboard([workspace(1, "alpha", { state: "failed", error: "planted failure" })]);
-  renderApp("/?workspace=1");
-  const opened = await panel("alpha");
-  const section = within(opened).getByRole("region", { name: m.deleteSectionTitle });
-  const failure = within(opened).getByText("planted failure");
-  expect(failure.compareDocumentPosition(section) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+test("deleting the selected workspace selects none and says it was deleted, until another is selected", async () => {
+  let workspaces = withServer("ready");
+  const fake = dashboard([], {
+    "GET /api/workspaces": () => listing(workspaces),
+    "DELETE /api/workspaces/1": () => {
+      workspaces = workspaces.filter((w) => w.id !== 1);
+      return { deleted: 1 };
+    },
+  });
+  const { location } = renderApp("/?workspace=1");
+  await panel("alpha");
+  await userEvent.click(await trash("alpha"));
+  const dialog = await screen.findByRole("dialog");
+  const confirm = within(dialog).getByRole("button", { name: m.deleteWorkspaceConfirm });
+  await waitFor(() => expect(confirm).toBeEnabled());
+  await userEvent.click(confirm);
+  expect(await screen.findByRole("status")).toHaveTextContent(m.workspaceDeleted("alpha"));
+  expect(fake.made("DELETE", "/api/workspaces/1")).toHaveLength(1);
+  expect(selectedOf(location().search)).toBeNull();
+  expect(screen.getByRole("heading", { level: 1, name: m.navDashboard })).toHaveFocus();
+  await waitFor(() =>
+    expect(
+      within(screen.getByRole("region", { name: m.navDashboard })).queryByRole("button", {
+        name: "alpha",
+      }),
+    ).not.toBeInTheDocument(),
+  );
+  expect(await entry("beta")).toBeInTheDocument(); // positive control: the list is there
+  // the notice goes once another workspace is selected
+  await userEvent.click(await entry("beta"));
+  await panel("beta");
+  expect(screen.queryByRole("status")).not.toBeInTheDocument();
 });
 
-test("a workspace being deleted has no delete section", async () => {
-  dashboard([workspace(1, "alpha", { state: "deleting" })]);
-  renderApp("/?workspace=1");
-  const opened = await panel("alpha");
-  expect(within(opened).queryByRole("region", { name: m.deleteSectionTitle })).toBeNull();
-});
+test.each([
+  ["creating", null, m.cannotDeleteCreating],
+  ["deleting", null, m.cannotDeleteDeleting],
+  ["deleting", ADDRESS, m.cannotDeleteDeleting],
+  ["planted-state", null, m.cannotDeleteState("planted-state")],
+])(
+  "on a workspace that is %s (source %s) the trash button warns why it cannot be deleted, and sends nothing",
+  async (state, source, reason) => {
+    const fake = dashboard([workspace(1, "alpha", { state, source }), workspace(2, "beta")]);
+    renderApp("/?workspace=2");
+    await panel("beta");
+    const opener = await trash("alpha");
+    await userEvent.click(opener);
+    const dialog = await screen.findByRole("dialog", { name: m.cannotDeleteTitle("alpha") });
+    expect(within(dialog).getByText(reason)).toBeInTheDocument();
+    expect(within(dialog).queryByRole("button", { name: m.deleteWorkspaceConfirm })).toBeNull();
+    await userEvent.click(within(dialog).getByRole("button", { name: m.close }));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(opener).toHaveFocus();
+    expect(fake.calls.filter((c) => c.method !== "GET")).toEqual([]);
+    expect(fake.made("GET", "/api/git/status").map((c) => c.query.get("workspace"))).not.toContain(
+      "1",
+    );
+  },
+);
 
-test("the question names the work that is not committed or not pushed, once the Changes section knows of any", async () => {
-  dashboard(withServer("ready"), {
+test("the question names the work that is not committed or not pushed, which it asks git for itself", async () => {
+  const fake = dashboard(withServer("ready"), {
     "GET /api/git/status": {
       ...STATUS_CLEAN,
       staged: { files: [{ path: "a.txt", change: "modified" }], more: 0 },
@@ -1237,15 +1367,45 @@ test("the question names the work that is not committed or not pushed, once the 
     },
     "GET /api/git/branches": BRANCHES,
   });
-  renderApp("/?workspace=1");
-  const opened = await panel("alpha");
-  await within(opened).findByRole("region", { name: m.changesTitle });
-  await userEvent.click(within(opened).getByRole("button", { name: m.deleteWorkspace }));
+  renderApp(); // no workspace selected, so no Changes section has asked
+  await userEvent.click(await trash("alpha"));
   const dialog = await screen.findByRole("dialog");
   // a.txt and b.txt, and one more that the list did not show
-  expect(within(dialog).getByText(m.deleteWorkspaceUncommitted(3))).toBeInTheDocument();
+  expect(await within(dialog).findByText(m.deleteWorkspaceUncommitted(3))).toBeInTheDocument();
   expect(within(dialog).getByText(m.deleteWorkspaceUnpushed(2))).toBeInTheDocument();
   expect(within(dialog).getByText(m.deleteWorkspaceBody)).toBeInTheDocument();
+  expect(fake.made("GET", "/api/git/status").map((c) => c.query.get("workspace"))).toEqual(["1"]);
+});
+
+test("Delete waits for the check of unsaved work, which the question says it is making", async () => {
+  let answer = () => {};
+  dashboard(withServer("ready"), {
+    "GET /api/git/status": () =>
+      new Promise((resolve) => {
+        answer = () => resolve(STATUS_CLEAN);
+      }),
+  });
+  renderApp();
+  await userEvent.click(await trash("alpha"));
+  const dialog = await screen.findByRole("dialog");
+  const confirm = within(dialog).getByRole("button", { name: m.deleteWorkspaceConfirm });
+  expect(confirm).toBeDisabled();
+  expect(within(dialog).getByText(m.deleteWorkspaceChecking)).toBeInTheDocument();
+  await act(async () => answer());
+  await waitFor(() => expect(confirm).toBeEnabled());
+  expect(within(dialog).queryByText(m.deleteWorkspaceChecking)).not.toBeInTheDocument();
+});
+
+test("a check of unsaved work that fails is said, not taken for none, and Delete can still be chosen", async () => {
+  dashboard(withServer("ready"), {
+    "GET /api/git/status": problem(502, "workspace_failed", "planted: git did not answer"),
+  });
+  renderApp();
+  await userEvent.click(await trash("alpha"));
+  const dialog = await screen.findByRole("dialog");
+  expect(await within(dialog).findByText(m.deleteWorkspaceUnchecked)).toBeInTheDocument();
+  expect(within(dialog).getByRole("alert")).toHaveTextContent("planted: git did not answer");
+  expect(within(dialog).getByRole("button", { name: m.deleteWorkspaceConfirm })).toBeEnabled();
 });
 
 test("the question says nothing of unsaved work where the repository is clean, absent or unknown", async () => {
@@ -1254,67 +1414,51 @@ test("the question says nothing of unsaved work where the repository is clean, a
     NOT_A_REPOSITORY,
     { ...STATUS_CLEAN, push_ahead: null },
   ] as const) {
-    dashboard(withServer("ready"), {
-      "GET /api/git/status": status,
-      "GET /api/git/branches": status === NOT_A_REPOSITORY ? NOT_A_REPOSITORY : BRANCHES,
-    });
-    const { unmount } = renderApp("/?workspace=1");
-    const opened = await panel("alpha");
-    await within(opened).findByRole("region", { name: m.changesTitle });
-    await userEvent.click(within(opened).getByRole("button", { name: m.deleteWorkspace }));
+    dashboard(withServer("ready"), { "GET /api/git/status": status });
+    const { unmount } = renderApp();
+    await userEvent.click(await trash("alpha"));
     const dialog = await screen.findByRole("dialog");
-    expect(within(dialog).getByText(m.deleteWorkspaceBody)).toBeInTheDocument(); // positive control
+    const confirm = within(dialog).getByRole("button", { name: m.deleteWorkspaceConfirm });
+    await waitFor(() => expect(confirm).toBeEnabled()); // positive control: the check answered
+    expect(within(dialog).getByText(m.deleteWorkspaceBody)).toBeInTheDocument();
     expect(dialog).not.toHaveTextContent(m.deleteWorkspaceUncommitted(1).slice(0, 12));
     expect(dialog).not.toHaveTextContent(m.deleteWorkspaceUnpushed(1).slice(0, 12));
+    expect(within(dialog).queryByText(m.deleteWorkspaceUnchecked)).not.toBeInTheDocument();
+    expect(within(dialog).queryByRole("alert")).not.toBeInTheDocument();
     unmount();
   }
 });
 
-test("confirming deletes the workspace, refreshes the list, selects none and says it was deleted", async () => {
-  let workspaces = withServer("ready");
-  const fake = dashboard([], {
-    "GET /api/workspaces": () => listing(workspaces),
-    "DELETE /api/workspaces/1": () => {
-      workspaces = workspaces.filter((w) => w.id !== 1);
-      return { deleted: 1 };
-    },
-  });
-  const { location } = renderApp("/?workspace=1");
-  const opened = await panel("alpha");
-  await userEvent.click(within(opened).getByRole("button", { name: m.deleteWorkspace }));
-  const dialog = await screen.findByRole("dialog");
-  await userEvent.click(within(dialog).getByRole("button", { name: m.deleteWorkspaceConfirm }));
-  expect(await screen.findByRole("status")).toHaveTextContent(m.workspaceDeleted("alpha"));
-  expect(fake.made("DELETE", "/api/workspaces/1")).toHaveLength(1);
-  expect(selectedOf(location().search)).toBeNull();
-  await waitFor(() =>
-    expect(
-      within(screen.getByRole("region", { name: m.workspacesTitle })).queryByRole("button", {
-        name: "alpha",
-      }),
-    ).not.toBeInTheDocument(),
-  );
-  expect(await entry("beta")).toBeInTheDocument(); // positive control: the list is there
-  // the notice goes once another workspace is selected
-  await userEvent.click(await entry("beta"));
-  await panel("beta");
-  expect(screen.queryByRole("status")).not.toBeInTheDocument();
-});
+test.each([
+  ["failed", null],
+  ["creating", ADDRESS],
+])(
+  "a workspace that is %s (source %s) is not asked about unsaved work, and Delete is offered at once",
+  async (state, source) => {
+    const fake = dashboard([workspace(1, "alpha", { state, source })]);
+    renderApp();
+    await userEvent.click(await trash("alpha"));
+    const dialog = await screen.findByRole("dialog", { name: m.deleteWorkspaceTitle("alpha") });
+    expect(within(dialog).getByRole("button", { name: m.deleteWorkspaceConfirm })).toBeEnabled();
+    expect(fake.made("GET", "/api/git/status")).toEqual([]);
+  },
+);
 
 test("while it deletes, the dialog's buttons wait", async () => {
   let answer = () => {};
   dashboard(withServer("ready"), {
+    "GET /api/git/status": STATUS_CLEAN,
     "DELETE /api/workspaces/1": () =>
       new Promise((resolve) => {
         answer = () => resolve({ deleted: 1 });
       }),
   });
   renderApp("/?workspace=1");
-  await userEvent.click(
-    within(await panel("alpha")).getByRole("button", { name: m.deleteWorkspace }),
-  );
+  await userEvent.click(await trash("alpha"));
   const dialog = await screen.findByRole("dialog");
-  await userEvent.click(within(dialog).getByRole("button", { name: m.deleteWorkspaceConfirm }));
+  const confirm = within(dialog).getByRole("button", { name: m.deleteWorkspaceConfirm });
+  await waitFor(() => expect(confirm).toBeEnabled());
+  await userEvent.click(confirm);
   expect(await within(dialog).findByRole("button", { name: m.deleting })).toBeDisabled();
   expect(within(dialog).getByRole("button", { name: m.cancel })).toBeDisabled();
   answer();
@@ -1323,19 +1467,40 @@ test("while it deletes, the dialog's buttons wait", async () => {
 
 test("a delete that fails shows the server's reason in the dialog, and the list is fetched again", async () => {
   const fake = dashboard(withServer("ready"), {
+    "GET /api/git/status": STATUS_CLEAN,
     "DELETE /api/workspaces/1": problem(502, "workspace_failed", "planted: could not delete"),
   });
   renderApp("/?workspace=1");
-  await userEvent.click(
-    within(await panel("alpha")).getByRole("button", { name: m.deleteWorkspace }),
-  );
+  await userEvent.click(await trash("alpha"));
   const dialog = await screen.findByRole("dialog");
+  const confirm = within(dialog).getByRole("button", { name: m.deleteWorkspaceConfirm });
+  await waitFor(() => expect(confirm).toBeEnabled());
   const asked = fake.made("GET", "/api/workspaces").length;
-  await userEvent.click(within(dialog).getByRole("button", { name: m.deleteWorkspaceConfirm }));
+  await userEvent.click(confirm);
   expect(await within(dialog).findByRole("alert")).toHaveTextContent("planted: could not delete");
   await waitFor(() => expect(fake.made("GET", "/api/workspaces").length).toBeGreaterThan(asked));
   expect(within(dialog).getByRole("button", { name: m.deleteWorkspaceConfirm })).toBeEnabled();
+  expect(fake.made("DELETE", "/api/workspaces/1")).toHaveLength(1);
 });
+
+test.each([
+  ["ready", null],
+  ["failed", null],
+  ["creating", ADDRESS],
+])(
+  "a %s workspace's panel (source %s) has no part of its own for deleting it",
+  async (state, source) => {
+    dashboard([
+      workspace(1, "alpha", { state, source, error: state === "failed" ? "planted" : null }),
+    ]);
+    renderApp("/?workspace=1");
+    const opened = await panel("alpha");
+    // positive control: the panel is drawn
+    expect(within(opened).getByRole("heading", { name: "alpha", level: 2 })).toBeInTheDocument();
+    expect(within(opened).queryByRole("region", { name: /delete/i })).toBeNull();
+    expect(within(opened).queryByRole("button", { name: /delete/i })).toBeNull();
+  },
+);
 
 // --- polls that fail ------------------------------------------------------------
 
@@ -1421,7 +1586,7 @@ test("a failing poll that ends after a later one worked is not shown", () =>
 test("the new workspace's fields show an example of what goes in them", async () => {
   dashboard([]);
   renderApp();
-  const form = within(await screen.findByRole("region", { name: m.newWorkspace }));
+  const form = await newWorkspace();
   expect(form.getByLabelText(m.newWorkspaceName)).toHaveAttribute(
     "placeholder",
     m.examples.workspaceName,
@@ -1550,7 +1715,7 @@ test.each(["creating", "failed", "deleting"])(
   },
 );
 
-test("the repository's link stays right under the name, above the tabs, and Delete below them", async () => {
+test("the repository's link stays right under the name, above the tabs", async () => {
   dashboard([workspace(1, "alpha", { source: ADDRESS, source_page: ADDRESS })]);
   renderApp("/?workspace=1&tab=terminal");
   const opened = await panel("alpha");
@@ -1558,16 +1723,10 @@ test("the repository's link stays right under the name, above the tabs, and Dele
   const link = await within(opened).findByRole("link", { name: ADDRESS });
   expect(name.nextElementSibling).toContainElement(link);
   const list = await tabs();
-  const section = within(opened).getByRole("region", { name: m.deleteSectionTitle });
   expect(link.compareDocumentPosition(list) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-  for (const panelOfTab of opened.querySelectorAll("[role=tabpanel]"))
-    expect(
-      panelOfTab.compareDocumentPosition(section) & Node.DOCUMENT_POSITION_FOLLOWING,
-    ).toBeTruthy();
-  expect(section.nextElementSibling).toBeNull();
 });
 
-test("while Terminal is shown, Delete still names the work the hidden Changes section knows of", async () => {
+test("while Terminal is shown, the trash button's question still names the work git knows of", async () => {
   dashboard(withServer("ready"), {
     "GET /api/git/status": {
       ...STATUS_CLEAN,
@@ -1580,7 +1739,7 @@ test("while Terminal is shown, Delete still names the work the hidden Changes se
   const opened = await panel("alpha");
   expect(await tab(m.tabTerminal)).toHaveAttribute("aria-selected", "true");
   expect(within(opened).queryByRole("region", { name: m.changesTitle })).toBeNull(); // hidden
-  await userEvent.click(within(opened).getByRole("button", { name: m.deleteWorkspace }));
+  await userEvent.click(await trash("alpha"));
   const dialog = await screen.findByRole("dialog");
   expect(await within(dialog).findByText(m.deleteWorkspaceUncommitted(1))).toBeInTheDocument();
   expect(within(dialog).getByText(m.deleteWorkspaceUnpushed(1))).toBeInTheDocument();

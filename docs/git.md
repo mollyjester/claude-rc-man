@@ -112,8 +112,8 @@ run `git init` there, and the section shows the repository once it exists.
 
 ## Making a workspace from GitHub
 
-Give a GitHub address under **New workspace** (see
-[Workspaces](workspaces.md)) and rcman clones that repository into the new
+Give a GitHub address in the **New workspace** dialog (see
+[Workspaces](workspaces.md#the-workspaces-page)) and rcman clones that repository into the new
 workspace, with git, as you: all its branches, and the default one checked out.
 The workspace is ready once the clone is done, and its **Changes** section
 shows the repository.
@@ -127,9 +127,9 @@ shows the repository.
   long and was stopped; GitHub asked for a sign-in (the repository is private,
   or the address is wrong); GitHub did not accept your token; GitHub could not
   find the repository; rcman could not reach GitHub from the workspace.
-  **Delete workspace** removes it; make it again once the cause is mended.
-- The panel does not show git's progress. **Delete workspace** stops a clone
-  that is running, and deletes the workspace.
+  Its trash button in the list removes it; make it again once the cause is mended.
+- The panel does not show git's progress. The workspace's trash button stops a
+  clone that is running, and deletes the workspace.
 - If rcman restarts while a workspace is being made, the workspace fails and
   says so. Delete it and make it again.
 - Your token is never in the repository, in the steps shown, or in the error.

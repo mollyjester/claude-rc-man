@@ -186,7 +186,7 @@ function Lookup({
   busy: boolean;
   onSwitch: (name: string, remote: boolean) => void;
 }) {
-  const popup = usePopup();
+  const popup = usePopup("Lookup");
   return (
     <div className="popup-anchor" ref={popup.rootRef}>
       <button
@@ -232,7 +232,7 @@ function NewBranch({
   onCreate: (name: string) => Promise<boolean>;
   onForget: () => void;
 }) {
-  const popup = usePopup();
+  const popup = usePopup("NewBranch");
   const [name, setName] = useState("");
   const field = useRef<HTMLInputElement>(null);
   const fields = useFieldErrors(error);

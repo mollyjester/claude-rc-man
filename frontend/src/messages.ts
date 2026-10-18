@@ -23,10 +23,15 @@ export const m = {
   navEveryone: "Everyone's workspaces",
   navVersions: "Claude Code versions",
   signedInAs: (email: string) => `Signed in as ${email}`,
+  // The header's menu of the person signed in: who they are, and signing out of rcman.
+  account: "Account",
 
-  workspacesTitle: "Your workspaces",
-  workspacesEmpty: "No workspaces yet. Make one below.",
+  workspacesEmpty: "No workspaces yet. Make one with New workspace, the + beside the heading.",
+  // The + beside the page's heading, and the dialog it opens.
   newWorkspace: "New workspace",
+  // With a workspace shown in place of the list, as on a phone: the way back, and to another.
+  backToWorkspaces: "All workspaces",
+  switchWorkspace: "Switch workspace",
   newWorkspaceName: "Name of the new workspace",
   newWorkspaceNameHelp:
     "Leave it empty when you give an address: the workspace is then named after the repository.",
@@ -44,7 +49,7 @@ export const m = {
     deleting: "Being deleted",
   } as Record<string, string>,
   workspaceCreating: "This workspace is being made. It is ready in a moment.",
-  workspaceCloningCancel: "Delete this workspace to stop the clone.",
+  workspaceCloningCancel: "To stop the clone, delete this workspace with its button in the list.",
   workspaceLog: "Steps so far",
   workspaceFailed: "Making this workspace failed:",
   workspaceFailedClone:
@@ -54,9 +59,8 @@ export const m = {
   serverUnreadNextStep:
     "This page asks again by itself. If it stays like this, tell an administrator.",
   workspaceDeleting: "This workspace is being deleted.",
-  deleteSectionTitle: "Delete this workspace",
-  deleteSectionBody: "Deleting it removes the workspace, everything in it and its server.",
-  deleteWorkspace: "Delete workspace",
+  // The trash button of a workspace's row in the list.
+  deleteWorkspaceNamed: (name: string) => `Delete workspace ${name}`,
   deleteWorkspaceTitle: (name: string) => `Delete ${name}?`,
   deleteWorkspaceBody:
     "The workspace and everything in it are deleted, and its server is stopped and deleted with it. This cannot be undone.",
@@ -69,7 +73,16 @@ export const m = {
     commits === 1
       ? "One commit in it has not been pushed."
       : `${commits} commits in it have not been pushed.`,
+  deleteWorkspaceChecking: "Checking for work that is not committed or not pushed…",
+  deleteWorkspaceUnchecked:
+    "rcman could not check for work that is not committed or not pushed, so some may be lost.",
   deleteWorkspaceConfirm: "Delete",
+  // Why a workspace cannot be deleted now, said when its trash button is pressed.
+  cannotDeleteTitle: (name: string) => `${name} cannot be deleted now`,
+  cannotDeleteCreating:
+    "It is still being made. It can be deleted once it is ready, or if making it fails.",
+  cannotDeleteDeleting: "It is already being deleted.",
+  cannotDeleteState: (state: string) => `It cannot be deleted while it is ${state}.`,
   deleting: "Deleting…",
   workspaceDeleted: (name: string) => `${name} was deleted.`,
   start: "Start",

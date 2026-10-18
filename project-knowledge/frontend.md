@@ -98,9 +98,12 @@ matters, so a suppression at the site is preferred.
   to all of them, and checks that every control its *The Workspaces page*
   section names in bold is text from `src/messages.ts`. A workspace's panel
   offers **Start** only while the workspace is ready, has no server, and its
-  server could be read; **Delete workspace** only while it is ready or
-  failed, or being made from a clone (`source` set), where it cancels the clone;
-  nothing while an empty workspace is being made, or while one is being deleted. Whether a server may start
+  server could be read. Every row of the list has a trash button, which acts on
+  that row's workspace whatever is selected; it asks to delete a workspace only
+  while it is ready or failed, or being made from a clone (`source` set), where
+  it cancels the clone (`whyNotDeletable` in `src/Dashboard.tsx`), and for any
+  other state, an empty workspace being made or one being deleted among them,
+  says why it cannot, and sends nothing. Whether a server may start
   — the Claude account connected and not signing out — the server decides, so
   **Start** is offered regardless and its refusal shown. **Sign out of Claude**
   is offered only while an account is connected and not already signing out;
@@ -156,13 +159,14 @@ matters, so a suppression at the site is preferred.
   `primary` button, or its one `danger` button where what it does cannot be
   undone, such as deleting a workspace; its other buttons are plain or
   `secondary`, such as Commit & Push in Commit's menu, and a dialog's choice is
-  a form too. `src/forms.test.tsx` checks every form, and
+  a form too, the one that says why a workspace cannot be deleted included, whose
+  button is `primary`. `src/forms.test.tsx` checks every form, and
   that only the forms it lists as destructive, or as leading with `danger`
   in place, use `danger`: signing out of Claude and finishing a sign-out at
-  once have no dialog, the button is the choice. The header's sign-out form is
+  once have no dialog, the button is the choice. The header's sign-out form, in the account menu, is
   the one exemption, named in that test and held to its subject: its button is
   plain, in one group with the box that says what happens to the servers. A button outside
-  a form that opens such a form, such as a panel's **Delete workspace** or
+  a form that opens such a form, such as a workspace's trash button in the list or
   the People page's **Remove**, is a
   danger outline, `secondary-danger`; `src/forms.test.tsx` checks the button
   that opens each form it lists as destructive. `src/styles.test.ts` checks
@@ -175,14 +179,49 @@ matters, so a suppression at the site is preferred.
   **Skip to content** link, which moves focus to `main`; each page sets the
   browser tab's title with `useTitle` (`src/useTitle.ts`) to its name, then
   rcman's; the Workspaces page has its own `h1`.
-- **A table never widens the page.** Every table is inside `TableScroll`
-  (`src/TableScroll.tsx`), a named box that scrolls sideways and takes focus;
+- **No page is wider than the window.** Every table is inside `TableScroll`
+  (`src/TableScroll.tsx`), a named box that scrolls sideways and takes focus, as
+  WCAG 1.4.10 allows a table to;
   help pages' pipe tables, which the Markdown renderer has no syntax for, are
   split out of the Markdown by `src/markdownTables.ts` and drawn by
   `src/Docs.tsx`, and `src/markdownTables.test.ts` finds every table in
-  `docs/`. On a phone the stylesheet stacks the columns, the selected
-  workspace's panel before the form that makes another, and the navigation
-  wraps.
+  `docs/`. On a phone (the `max-width` query in `src/styles.css`) the navigation
+  wraps, a help page is one column, a dialog fills the screen, and the
+  Workspaces page shows the list or the selected workspace's panel, not both
+  (the `showing` class of `.dashboard`), with **All workspaces** and **Switch
+  workspace** over the panel. `e2e/touch.spec.ts` holds every page of the route
+  table to it at two phones' widths.
+- **Big enough for a finger, and not zoomed in on.** On a touch screen
+  (`pointer: coarse`), at any width, everything pressed is at least as high as
+  WCAG 2.2's 2.5.5 asks, and a button or a navigation link as wide, as the touch
+  screen's rules in `src/styles.css` set it; a rule that
+  sizes a target of its own is named again in the touch screen's rules, which
+  `src/styles.test.ts` checks against every rule that sets a `min-height`,
+  with what is exempt named in `NOT_PRESSED`. A field's text is never smaller
+  than a phone zooms in on (the field rules in `src/styles.css`), and the field rules set the font's
+  family, never the `font` shorthand, which would reset its size; the
+  viewport's meta tag in `index.html` never stops the page being zoomed, and asks for the on-screen keyboard to resize the page (`interactive-widget=resizes-content`), which `src/styles.test.ts` checks.
+  `e2e/touch.spec.ts` measures every control on every page, with each dialog
+  and pop-up open and a workspace on each of its tabs, and fails on one too
+  small but for what `SMALL_ALLOWED` describes, a link inside a sentence (in a
+  table's cell, one with three words or more besides it), on a box that scrolls
+  sideways but for what `SCROLL_ALLOWED` describes, and on an icon-only button
+  with no name; its views name the dialog or pop-up each opens, which is held to
+  the `data-component` read off what opened, and are held to the components
+  that draw a `<Dialog>` or call `usePopup()` in the sources (`callSites` in
+  `src/test/callSites.ts`, which reads every `.ts` and `.tsx` file of the page,
+  knows the two by their import under any name, and fails on a site outside a
+  component, in a component used more than once, or not marked with its
+  component's name; it counts only the direct uses of the component that holds
+  a site, so a component used once inside a wrapper that is itself used more
+  than once is not caught). On a
+  phone rcman's name and the **Account** menu share the header's first row, the
+  links the rows below.
+- **Every dialog is the shared one.** `src/Dialog.tsx` is the browser's own modal
+  `<dialog>`; `src/forms.test.tsx` opens every page and dialog it knows, and
+  checks that every component that draws a `<Dialog>` (`callSites` in
+  `src/test/callSites.ts`) is opened by one of them, each as a modal, and that no
+  other file draws a dialog of its own.
 - **Every colour is a custom property in `src/styles.css`**, with a value for
   a light scheme and one for a dark scheme, which the browser picks between by
   the system's setting; `src/styles.test.ts` holds the stylesheet to that and
@@ -208,15 +247,17 @@ matters, so a suppression at the site is preferred.
 
 | File | What it is |
 |---|---|
-| `src/App.tsx` | Who is signed in, the navigation, whose **Admin** menu is a `usePopup` that also closes when a page is chosen and when the page changes, and the routes; **Sign out of rcman** beside the person's name, a plain button in one group with **Keep servers running after sign-out**, which leaves through `away` for oauth2-proxy's sign-out; the skip link and `main`'s focus target |
+| `src/App.tsx` | Who is signed in, the navigation, whose **Admin** menu is a `usePopup` that also closes when a page is chosen and when the page changes, and the routes, from `PAGES` and `ADMIN_PAGES`; the **Account** menu at the end of the header, a `usePopup` on every width, holding the address the person is signed in as (`m.signedInAs`) and **Sign out of rcman**, a plain button in one group with **Keep servers running after sign-out**, which leaves through `away` for oauth2-proxy's sign-out; the skip link and `main`'s focus target |
+| `src/Pages.tsx` | `PAGES`, the pages everyone signed in is offered, with each one's title, which the routes and `e2e/touch.spec.ts`'s walk over every page are built from |
+| `src/Dialog.tsx` | Every dialog: the native `<dialog>`, opened with `showModal()` as it is drawn and closed as it goes, so that focus moves in and stays, the page behind cannot be reached, and focus returns to what had it; named by its heading; Escape asks its parent to close it unless `closable` is false, as while the Limits dialog saves; focus on its first control, or on itself (`focusDialog`); marked with the name of the component that draws it (`owner`, as `data-component`), for `e2e/touch.spec.ts` to read off what opened. The stylesheet centres it, and fills a phone's screen with it |
 | `src/AdminPages.tsx` | `ADMIN`, the administrators' pages by name, which the links in the administrators' warning use, and `ADMIN_PAGES`, the same pages in order, which the navigation's **Admin** menu and the routes are built from |
-| `src/Dashboard.tsx` | The Workspaces page, under its own `h1`: the person's workspaces, each with its dot (`dotFor` in `src/Servers.tsx`) and its state while it is not ready, and **New workspace**'s form (a name, and an optional GitHub address: with one it posts to `/api/git/clone`, naming the workspace only when a name is typed, and otherwise to `/api/workspaces`; the server judges both and its refusal of either is shown under the field's label), beside the selected workspace's panel; the selection kept in the address as `?workspace=`; the workspaces refreshed every `POLL_MS`, a refresh's failure shown until a later refresh works, and an answer older than one asked for since dropped. A new workspace is selected once the server takes its name. The panel has, right under its name, a link to the repository's page (`source_page`, which the server derives; the page derives nothing from `source`), opening in a new tab, in every state, and none where `source_page` is null; it says what a workspace being made, deleted or failed is, with the steps (`log`) in a figure while it is not ready, and for a ready one has two ARIA tabs (`TABS`), **Overview**, chosen first, and **Terminal**, moved between with the arrow keys, Home and End, each panel taking focus (`tabIndex` 0) as the WAI-ARIA tab pattern has it, the one chosen kept in the address as `?tab=` (none for Overview), replacing the entry, so that Back leaves the workspace rather than the tab; Overview holds its **Claude server** section and its **Changes** section (`src/Changes.tsx`, polled at the page's own `pollMs`), and Terminal `src/Terminal.tsx`, mounted when the tab is first shown, so that visiting a workspace takes over no terminal; each tab's panel stays mounted, hidden, while the other is shown, so the Changes section still knows what a delete would lose and the terminal stays open; a workspace that failed says why in a sentence (`src/workspaceError.ts`) with what the server said behind **Details**; **Delete workspace** is a section of its own at the foot of the panel, below the tabs, and asks first, naming the files not committed and the commits not pushed that the Changes section knows of (its `onUnsaved`); after a delete no workspace is selected and the page says what was deleted |
+| `src/Dashboard.tsx` | The Workspaces page, under its own `h1`, beside which **New workspace**, an icon-only **+**, opens its dialog (a name, and an optional GitHub address: with one it posts to `/api/git/clone`, naming the workspace only when a name is typed, and otherwise to `/api/workspaces`; the server judges both and its refusal of either is shown under the field's label, the dialog staying open with what was typed; once made, the dialog closes and the new workspace is selected); the person's workspaces, a list named by that heading, each with its dot (`dotFor` in `src/Servers.tsx`), its state while it is not ready, and its trash button, named after it, which opens the question for that workspace whatever is selected, or says why it cannot be deleted now; beside the list the selected workspace's panel, and over it, shown only on a phone, **All workspaces** back to the list and **Switch workspace**, a `usePopup` of the workspaces; the selection kept in the address as `?workspace=`; the workspaces refreshed every `POLL_MS`, a refresh's failure shown until a later refresh works, and an answer older than one asked for since dropped. The panel has, right under its name, a link to the repository's page (`source_page`, which the server derives; the page derives nothing from `source`), opening in a new tab, in every state, and none where `source_page` is null; it says what a workspace being made, deleted or failed is, with the steps (`log`) in a figure while it is not ready, and for a ready one has two ARIA tabs (`TABS`), **Overview**, chosen first, and **Terminal**, moved between with the arrow keys, Home and End, each panel taking focus (`tabIndex` 0) as the WAI-ARIA tab pattern has it, the one chosen kept in the address as `?tab=` (none for Overview), replacing the entry, so that Back leaves the workspace rather than the tab; Overview holds its **Claude server** section and its **Changes** section (`src/Changes.tsx`, polled at the page's own `pollMs`), and Terminal `src/Terminal.tsx`, mounted when the tab is first shown, so that visiting a workspace takes over no terminal; each tab's panel stays mounted, hidden, while the other is shown, so that the terminal stays open; a workspace that failed says why in a sentence (`src/workspaceError.ts`) with what the server said behind **Details**. The question before a delete asks `/api/git/status` itself for a ready workspace, names the files not committed and the commits not pushed (`unsavedIn` in `src/Changes.tsx`), says so where it could not ask (a workspace with no repository has nothing to lose), and offers **Delete** only once the check has answered; after a delete the page says what was deleted, focus goes to the list's heading, since the trash button went with its row, and no workspace is selected where the deleted one was |
 | `src/Changes.tsx` | The Changes section of a ready workspace's panel, for the repository of the workspace it is given by id: its heading with the branch bar (`src/BranchBar.tsx`) beside it, the staged and not staged files, each list folding under a heading that counts its files and more, with its Stage selected or Unstage selected beside it, a checkbox for each file that can be selected and Select all, and each file's change as its letter (`m.changeLetters`) in a colour of its own, with its word (`m.changes`) as its accessible text and title; Commit, a split button whose menu holds Commit & Push; and the status line, "Checked …" (`m.checkedAgo`) worked out again every `CHECKED_TICK_MS` while the section is shown, and Refresh changes. `src/Changes.test.tsx` holds every change to a letter and a word, and the letters to differing. A list is open at first while it has files, opens when files come to it, and otherwise stays as the person left it. The status is fetched when the section opens, every `POLL_MS` while it is open and after every action; an answer older than one asked for since is dropped. Its branches are fetched when it opens, after every action and when the current branch changes. What is checked is kept across refreshes, for files still listed. A refusal is shown beside what was tried until any later action there works |
-| `src/Terminal.tsx` | The Terminal tab: a shell in the workspace over the WebSocket `api.openTerminal` opens (`ws:` or `wss:` as the page is, `binaryType` `arraybuffer`), opened as the tab is mounted and closed as it is unmounted — by another workspace selected, another page or the panel going. It loads `src/xtermView.ts` with a dynamic `import()`, so xterm.js is a chunk of its own that the page fetches only when a Terminal tab is first shown. A load that fails is noted as a `page_error` and said in words of its own (`m.terminalNotLoaded`), with a button that reloads the page (`browser.reload` in `src/browser.ts`, which the tests replace) in place of Reconnect: it fails for good where the page was loaded before an upgrade and names a chunk the new build does not have, and the reload gets the new `index.html`, which the backend serves for the browser to check again each time (see [backend.md](backend.md)). The screen is made only once the tab is shown with xterm.js loaded, so that it is never made, nor its size sent, in a hidden panel that cannot be measured; the socket waits for the screen. It sends the size first, as soon as the socket opens, and again on every fit that changes it, then what is typed as binary frames (`TextEncoder`), and draws what rcman sends; it says whether it is connecting, connected or closed, and, once closed, what closed it, in the words of `m.terminalClosed` for a `closed` frame's reason (a reason with none shown as it is), `m.terminalExited` for an `exit` frame, a `problem` frame's problem shown by `ProblemView`, rcman stopping for a close of `close_closing` with no frame, and otherwise the connection lost; **Reconnect** opens a new socket on the same screen, cleared, and puts focus in the screen, since the button goes as it is pressed; nothing reconnects by itself, so a terminal taken over elsewhere (`terminal_replaced`) stays closed. Reconnect is not offered where rcman would refuse another terminal: after a `problem` frame, and after a `closed` frame whose reason is in `REFUSED_AGAIN` (the workspace gone, its person signed out or no longer allowed in); `onFailure` is then called, so that the page refreshes what it shows of the workspace. Where that refresh still lists the workspace as ready, as it can just before a deletion or a sign-out reaches the list, the tab stays without Reconnect until another workspace is selected and then this one again, or the page is reloaded, either of which mounts a new Terminal tab. A socket that closes before it opened, as a refused upgrade does (the page is told no more), is noted as `unreachable` for `GET /api/terminal` (see [Reporting failures](#reporting-failures)) and calls `onFailure`, which refreshes the workspaces once, so that the page says whether rcman is not reached or the sign-in has ended. The screen is fitted when the tab is shown again and whenever its box changes size (`ResizeObserver`), and its colours read again when the system's colour scheme changes |
+| `src/Terminal.tsx` | The Terminal tab: a shell in the workspace over the WebSocket `api.openTerminal` opens (`ws:` or `wss:` as the page is, `binaryType` `arraybuffer`), opened as the tab is mounted and closed as it is unmounted — by another workspace selected, another page or the panel going. It loads `src/xtermView.ts` with a dynamic `import()`, so xterm.js is a chunk of its own that the page fetches only when a Terminal tab is first shown. A load that fails is noted as a `page_error` and said in words of its own (`m.terminalNotLoaded`), with a button that reloads the page (`browser.reload` in `src/browser.ts`, which the tests replace) in place of Reconnect: it fails for good where the page was loaded before an upgrade and names a chunk the new build does not have, and the reload gets the new `index.html`, which the backend serves for the browser to check again each time (see [backend.md](backend.md)). The screen is made only once the tab is shown with xterm.js loaded, so that it is never made, nor its size sent, in a hidden panel that cannot be measured; the socket waits for the screen. It sends the size first, as soon as the socket opens, and again on every fit that changes it, then what is typed as binary frames (`TextEncoder`), and draws what rcman sends; it says whether it is connecting, connected or closed, and, once closed, what closed it, in the words of `m.terminalClosed` for a `closed` frame's reason (a reason with none shown as it is), `m.terminalExited` for an `exit` frame, a `problem` frame's problem shown by `ProblemView`, rcman stopping for a close of `close_closing` with no frame, and otherwise the connection lost; **Reconnect** opens a new socket on the same screen, cleared, and puts focus in the screen, since the button goes as it is pressed; nothing reconnects by itself, so a terminal taken over elsewhere (`terminal_replaced`) stays closed. Reconnect is not offered where rcman would refuse another terminal: after a `problem` frame, and after a `closed` frame whose reason is in `REFUSED_AGAIN` (the workspace gone, its person signed out or no longer allowed in); `onFailure` is then called, so that the page refreshes what it shows of the workspace. Where that refresh still lists the workspace as ready, as it can just before a deletion or a sign-out reaches the list, the tab stays without Reconnect until another workspace is selected and then this one again, or the page is reloaded, either of which mounts a new Terminal tab. A socket that closes before it opened, as a refused upgrade does (the page is told no more), is noted as `unreachable` for `GET /api/terminal` (see [Reporting failures](#reporting-failures)) and calls `onFailure`, which refreshes the workspaces once, so that the page says whether rcman is not reached or the sign-in has ended. The screen's height is a share of the window's in `dvh`, which follows the browser's own bars as they come and go, with a floor; `interactive-widget=resizes-content` in `index.html`'s viewport tag has browsers that honour it, Chrome on Android, shrink it for the on-screen keyboard too, so the screen fits above the keyboard, while iOS Safari ignores the key and keeps its own behaviour. The screen is fitted when the tab is shown again and whenever its box changes size (`ResizeObserver`), and its colours read again when the system's colour scheme changes |
 | `src/terminalSocket.ts` | The terminal's protocol: `PROTOCOL`, which `tests/test_terminal.py` holds to the backend's (and so to [backend.md](backend.md#the-terminals-protocol)'s table) by loading the module with Node, for which it imports nothing; the resize frame and the reading of rcman's text frames |
 | `src/xtermView.ts`, `src/terminalTheme.ts` | xterm.js and its fit add-on behind the few calls the Terminal tab makes, which the component tests replace (jsdom has neither a canvas nor a layout): a `minimumContrastRatio` of WCAG AA's, so that colours a program asks for are readable too, and a cursor that blinks only where the system does not ask for reduced motion; the theme read from the `--terminal-*` properties. Both packages are pinned exactly in `frontend/package.json`, as Biome is: the stylesheet copies xterm.js's own rules, which name its classes, and the fit add-on reads xterm.js's internals, so a new release of either is taken only on purpose |
 | `src/BranchBar.tsx` | The branch bar: the branch lookup, a button naming where the repository is, whose pop-up has a filter, which asks rcman nothing, over the local and remote branches listed, each a switch where one is offered; **+**, New branch's form in a pop-up; Refresh branches, which posts `/api/git/fetch`, or, where the section says a sync can run (`syncable`), Sync in its place, which posts `/api/git/sync`, each label calling only its own route, its icon turning while either runs; ahead and behind as arrows, with `m.tracking` as their accessible text; and Push. It is shown once either the status or the branches are known, so a status that cannot be had leaves the branches to switch to; the arrows and Push wait for the status |
-| `src/usePopup.ts` | A pop-up opened by a button, as a disclosure: it closes on Escape, putting focus back on the button, on a press outside it and when focus moves outside it. Every pop-up a button opens uses it, the **Admin** menu among them. The stylesheet places the branch bar's pop-ups against the Changes heading's row, so they stay inside the section at any width |
+| `src/usePopup.ts` | A pop-up opened by a button, as a disclosure: it closes on Escape, putting focus back on the button, on a press outside it and when focus moves outside it. Every pop-up a button opens uses it, the **Admin** and **Account** menus and **Switch workspace** among them. It is called with the name of the component that calls it, which its panel carries as `data-component`, for `e2e/touch.spec.ts` to read off what opened. The stylesheet places the branch bar's pop-ups against the Changes heading's row, so they stay inside the section at any width |
 | `public/favicon.svg` | The tab's icon, `*rc` in white on a black circle, which `index.html` links; Vite copies `public/` into the build as it is |
 | `src/TableScroll.tsx`, `src/markdownTables.ts`, `src/useTitle.ts`, `src/workspaceError.ts` | The box a table scrolls in; the pipe tables of a help page; the browser tab's title; a failed workspace's sentence |
 | `src/Icons.tsx` | rcman's own icons, inline SVG drawn in the text's colour and hidden from assistive technology; the button or text they are in carries the name, from `src/messages.ts` |
@@ -283,7 +324,11 @@ the rest. Nothing of this is shown to the person.
   its close event a moment after `close()`, and through which a test plays
   rcman's end, and `src/test/fakeLayout.ts`'s ResizeObserver and `matchMedia`,
   which jsdom lacks, and whose layout change and colour scheme a test brings
-  about. The tests that hold a guide in `docs/` to the page read its tables with
+  about. jsdom has the `<dialog>` element but not its behaviour, so
+  `src/test/fakeDialog.ts` stands in for `showModal()`, `close()` and Escape,
+  as `e2e/touch.spec.ts` proves the browser's own dialog behaves:
+  focus moves into it, Escape cancels it and closes it, and focus returns; what
+  it cannot do, keep the page behind out of reach, is proved in the browser. The tests that hold a guide in `docs/` to the page read its tables with
   `guideTable` in `src/test/guideTable.ts`, and the tests that read
   `src/styles.css` take its comments out with `uncommented` in
   `src/test/css.ts`.
@@ -295,6 +340,18 @@ the rest. Nothing of this is shown to the person.
   set per test. The parts that are on no page are not in the browser tests.
   No fake `claude` there shows a screen rcman does not recognise, so the
   test of the administrators' warning plants `/api/attention`'s answer.
+  `e2e/touch.spec.ts` first proves what the stylesheet and the dialogs build on:
+  that Playwright's `isMobile` and `hasTouch` make the pointer coarse, and a
+  mouse does not, and that the native modal dialog takes focus, keeps it,
+  closes on Escape and gives it back. It then walks every page of the route
+  table at two phones' widths and a tablet's, on a touch screen, with each
+  dialog and pop-up open and a workspace on each of its tabs, and fails on a
+  page wider than the window, a box that scrolls sideways, inside a dialog or a
+  pop-up too, but for those `SCROLL_ALLOWED` names (a data table's, a help
+  page's command), a control too small for a finger, a field's text
+  small enough for a phone to zoom in on and an icon-only button with no name; each exemption must be met; a planted twin of each shows
+  the walk sees it. It also goes from the list to a workspace, to another and
+  back on a phone.
 
   Each run has a world and a port of its own, which `e2e/world.ts` names:
   the world a folder under `/tmp`, with a name no other run has, the prefix

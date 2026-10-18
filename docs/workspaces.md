@@ -9,9 +9,11 @@ workspace.
 
 ## The Workspaces page
 
-The Workspaces page has two sides. On the left are **Your workspaces**, and
-under them **New workspace**; on the right is the panel of the workspace you
-have selected.
+The Workspaces page lists your workspaces under its heading, and shows the panel
+of the workspace you have selected beside the list. **New workspace**, the +
+beside the heading, makes another. Each workspace in the list has a trash button
+of its own, which deletes that workspace whichever one is selected (see
+[Deleting a workspace](#deleting-a-workspace)).
 
 Select a workspace by its name. A workspace whose server is running, waiting
 for your answer, has a problem or is not running carries a dot whose shape and
@@ -29,11 +31,12 @@ could not read, carries the problem dot:
 A workspace that is not ready says so beside its name: **Being made**,
 **Failed** or **Being deleted**.
 
-To make a workspace, type its name under **New workspace** and choose
-**Create**. The new workspace is selected, and is shown as being made until it
-is ready; that takes a moment, and longest for your first workspace. Without
-an address a workspace is empty. When rcman refuses a name, the form says why
-and keeps what you typed; each of your workspaces has a name of its own.
+To make a workspace, choose **New workspace**, type its name in the dialog that
+opens and choose **Create**; **Cancel** or Escape closes the dialog. The new
+workspace is selected, and is shown as being made until it is ready; that takes
+a moment, and longest for your first workspace. Without an address a workspace
+is empty. When rcman refuses a name, the dialog stays open, says why under the
+field and keeps what you typed; each of your workspaces has a name of its own.
 
 To start from a repository on GitHub, give its address in **GitHub address
 (optional)**, such as `https://github.com/owner/repository`, and choose
@@ -71,10 +74,9 @@ address, as the workspace is. **Overview** has the **Claude server** section,
 which shows the workspace's server, or **Start** when it has none. If rcman
 could not read the server, the section says why instead. Below it is the
 **Changes** section, for the git repository in the workspace (see
-[Git](git.md)). The last section, below the tabs, **Delete this workspace**,
-holds **Delete workspace**. A workspace that failed to be made says what went
+[Git](git.md)). A workspace that failed to be made says what went
 wrong in a sentence, with the words rcman got behind **Details**, and **Steps so
-far** beneath, and offers only **Delete workspace**. When the repository's
+far** beneath; it offers nothing but its trash button in the list. When the repository's
 `devcontainer.json` is the cause, the reason names the setting to change, or the
 image rcman could not pull or use, or the command that failed or took too long,
 with what it printed last in the steps. A build that failed says why in plain
@@ -83,10 +85,10 @@ answer, an image or feature that is not there or needs a sign-in, a Dockerfile
 step that failed, a feature that failed to install (named), no space left, a
 repository or image too big, or a build that took too long. After a refused
 configuration the workspace holds nothing but this entry; after a failed command
-it is kept so that you can look at what happened, and **Delete workspace**
-removes it. A workspace being made or being deleted says so, and offers nothing,
-except that one being made from a GitHub repository offers **Delete workspace**
-too, to stop it.
+it is kept so that you can look at what happened, and its trash button
+removes it. A workspace being made or being deleted says so, and offers nothing;
+one being made from a GitHub repository can be deleted with its trash button, to
+stop it.
 
 A server shows its state as a coloured badge, a sentence saying what to do
 next, and only the actions that state allows. Its main button, the action to
@@ -120,6 +122,15 @@ ended it says to reload the page to sign in again. Either stays until a later
 refresh works, and until then the page shows the workspaces as they last were.
 The page reports these failures to rcman once it reaches it again, so that
 administrators can see them in the [system journal](journal.md).
+
+### On a phone
+
+On a phone the page shows the list or a workspace's panel, not both. Selecting
+a workspace shows its panel in the list's place, with **All workspaces** above
+it to go back to the list, and **Switch workspace**, a menu of your workspaces,
+to go straight to another. Dialogs fill the screen, and on any touch screen
+every button and link is at least a fingertip wide, but for a link inside a
+sentence.
 
 ### The terminal
 
@@ -184,12 +195,21 @@ while rcman builds the image holds in the workspace.
 
 ## Deleting a workspace
 
-**Delete workspace** deletes the workspace, everything in it, and its server.
-It asks first; if the **Changes** section knows of files with changes that are
-not committed, or of commits that are not pushed, the question says so.
-Confirming with **Delete** stops the server if it is running
-and deletes it with the workspace. It cannot be undone. Afterwards no
-workspace is selected, and the page says the workspace was deleted.
+The trash button beside a workspace's name in the list deletes that workspace,
+everything in it, and its server, whichever workspace is selected. It asks
+first. For a workspace that is ready, the question asks git what would be lost
+and says so: files with changes that are not committed, and commits that are not
+pushed; **Delete** waits until git has answered, and if rcman could not ask, the
+question says so rather than that nothing would be lost. Confirming with
+**Delete** stops the server if it is running and deletes it with the workspace;
+**Cancel** deletes nothing. It cannot be undone. Afterwards the page says the
+workspace was deleted; when it was the one selected, no workspace is selected,
+and otherwise the selection stays as it was.
+
+A workspace that is ready or failed can be deleted, and so can one being made
+from a GitHub repository. For any other, such as one being made empty or one
+already being deleted, the trash button says why it cannot be deleted now, and
+deletes nothing.
 
 The sessions of its server stay in claude.ai/code, where they are archived or
 deleted.

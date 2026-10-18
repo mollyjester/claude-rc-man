@@ -102,9 +102,10 @@ function useGitStatus(workspace: number, pollMs: number) {
   return { status, checkedAt, error, refresh };
 }
 
-// What deleting the workspace would lose that is not safe in git: the files with changes that
-// are not committed, and the commits that are not pushed. A file in both lists counts once; the
-// files a list did not show are counted as the server counts them.
+// What deleting the workspace would lose that is not safe in git, which the dialog asking first
+// says (src/Dashboard.tsx): the files with changes that are not committed, and the commits that
+// are not pushed. A file in both lists counts once; the files a list did not show are counted
+// as the server counts them.
 export type Unsaved = { files: number; commits: number };
 
 export function unsavedIn(status: GitStatus): Unsaved {
@@ -255,7 +256,7 @@ export function Files({
 
 // The rest of Commit's split button: its menu, which holds Commit & Push.
 function CommitMenu({ busy, onCommitPush }: { busy: boolean; onCommitPush: () => void }) {
-  const menu = usePopup();
+  const menu = usePopup("CommitMenu");
   return (
     <div className="popup-anchor" ref={menu.rootRef}>
       <button
@@ -345,20 +346,8 @@ const diverged = (status: GitStatus) =>
 // rcman's own rules — Commit only with something staged and an author name
 // set, Push and Commit & Push only as pushReason allows; git's own refusals
 // are shown as it gave them, beside what was tried.
-export function Changes({
-  workspace,
-  pollMs,
-  onUnsaved,
-}: {
-  workspace: number;
-  pollMs: number;
-  // Told what the status says is not safe in git, each time the status is answered.
-  onUnsaved?: (unsaved: Unsaved) => void;
-}) {
+export function Changes({ workspace, pollMs }: { workspace: number; pollMs: number }) {
   const { status, checkedAt, error: statusError, refresh } = useGitStatus(workspace, pollMs);
-  useEffect(() => {
-    if (status !== null) onUnsaved?.(unsavedIn(status));
-  }, [status, onUnsaved]);
   const [branches, setBranches] = useState<Branches | null>(null);
   const [staged, setStaged] = useState<ReadonlySet<string>>(new Set());
   const [notStaged, setNotStaged] = useState<ReadonlySet<string>>(new Set());

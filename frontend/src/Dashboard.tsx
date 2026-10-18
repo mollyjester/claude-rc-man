@@ -8,14 +8,18 @@ import {
   useRef,
   useState,
 } from "react";
-import { useNavigate, useSearchParams } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 
 import { ApiError, api } from "./api";
-import { Changes, type Unsaved } from "./Changes";
+import { Caret } from "./Caret";
+import { Changes, type GitStatus, type Unsaved, unsavedIn } from "./Changes";
+import { Dialog } from "./Dialog";
+import { BackIcon, PlusIcon, TrashIcon } from "./Icons";
 import { m } from "./messages";
 import { asApiError, ProblemView, useFieldErrors } from "./ProblemView";
 import { ACTIONS, dotFor, ServerCard, StatusDot, type Workspace } from "./Servers";
 import { Terminal } from "./Terminal";
+import { usePopup } from "./usePopup";
 import { failureSentence } from "./workspaceError";
 
 // Where a workspace's panel is: the Workspaces page, with the workspace in the address.
@@ -24,18 +28,42 @@ const workspaceLink = (id: number | null) => ({
   search: id === null ? "" : `?workspace=${id}`,
 });
 
-// The Workspaces page: the person's workspaces and the form that makes one on
-// one side, and the selected workspace's panel on the other. The selected
-// workspace is in the address.
+// Whether a workspace can be deleted now, as the server allows it: one that is ready or failed,
+// and one being made from a clone, whose delete cancels the clone; or else why not.
+function whyNotDeletable(workspace: Workspace): string | null {
+  const { state } = workspace;
+  if (state === "ready" || state === "failed") return null;
+  if (state === "creating") return workspace.source === null ? m.cannotDeleteCreating : null;
+  if (state === "deleting") return m.cannotDeleteDeleting;
+  return m.cannotDeleteState(m.workspaceStates[state] ?? state);
+}
+
+// The Workspaces page: under its heading, with New workspace's + beside it, the person's
+// workspaces, each with its trash button, and the selected workspace's panel beside them. The
+// selected workspace is in the address. On a phone the list and the panel take turns: with a
+// workspace selected, the panel, with a way back to the list and a menu to switch to another.
 export function Dashboard({ pollMs }: { pollMs: number }) {
   const [workspaces, setWorkspaces] = useState<Workspace[] | null>(null);
   // The Claude Code version a server started now would run, null where none is approved.
   const [approved, setApproved] = useState<string | null>(null);
   const [error, setError] = useState<ApiError | null>(null);
-  // What was done, shown while nothing is selected after it.
+  // What was done, shown until another workspace is selected.
   const [notice, setNotice] = useState<string | null>(null);
+  // The dialog open: New workspace's, or the one a row's trash button opened, for its workspace.
+  const [making, setMaking] = useState(false);
+  const [removing, setRemoving] = useState<Workspace | null>(null);
   const [params] = useSearchParams();
   const navigate = useNavigate();
+  const heading = useId();
+  const headingRef = useRef<HTMLHeadingElement>(null);
+  // Set by a delete, whose trash button goes with its row: focus goes to the list's heading
+  // once the page is drawn without it, after the dialog has given focus back.
+  const refocus = useRef(false);
+  useEffect(() => {
+    if (!refocus.current) return;
+    refocus.current = false;
+    headingRef.current?.focus();
+  });
   const asked = params.get("workspace");
   const selectedId = asked && /^\d+$/.test(asked) ? Number(asked) : null;
 
@@ -76,6 +104,7 @@ export function Dashboard({ pollMs }: { pollMs: number }) {
   }
 
   function made(workspace: Workspace) {
+    setMaking(false);
     setWorkspaces((current) =>
       current && !current.some((w) => w.id === workspace.id) ? [...current, workspace] : current,
     );
@@ -83,10 +112,13 @@ export function Dashboard({ pollMs }: { pollMs: number }) {
     refresh();
   }
 
+  // A workspace that is not the selected one leaves the selection as it is.
   function deleted(workspace: Workspace) {
+    setRemoving(null);
     setWorkspaces((current) => current?.filter((w) => w.id !== workspace.id) ?? null);
-    navigate(workspaceLink(null), { replace: true });
+    if (workspace.id === selectedId) navigate(workspaceLink(null), { replace: true });
     setNotice(m.workspaceDeleted(workspace.name));
+    refocus.current = true;
     refresh();
   }
 
@@ -98,42 +130,86 @@ export function Dashboard({ pollMs }: { pollMs: number }) {
 
   return (
     <>
-      <h1>{m.navDashboard}</h1>
+      <div className="page-head">
+        <h1 id={heading} tabIndex={-1} ref={headingRef}>
+          {m.navDashboard}
+        </h1>
+        <button
+          type="button"
+          className="icon-button"
+          aria-label={m.newWorkspace}
+          title={m.newWorkspace}
+          onClick={() => setMaking(true)}
+        >
+          <PlusIcon />
+        </button>
+      </div>
       <ProblemView error={error} />
-      {notice && asked === null && <p role="status">{notice}</p>}
-      <div className="dashboard">
-        <WorkspaceList workspaces={workspaces} selected={selectedId} onSelect={select} />
-        {selected ? (
-          <WorkspacePanel
-            key={selected.id}
-            workspace={selected}
-            approved={approved}
-            pollMs={pollMs}
-            onChange={refresh}
-            onDeleted={() => deleted(selected)}
+      {notice && <p role="status">{notice}</p>}
+      <div className={asked === null ? "dashboard" : "dashboard showing"}>
+        <WorkspaceList
+          labelledBy={heading}
+          workspaces={workspaces}
+          selected={selectedId}
+          onSelect={select}
+          onRemove={setRemoving}
+        />
+        <div className="panel-side">
+          {asked !== null && (
+            <PanelBar workspaces={workspaces ?? []} selected={selectedId} onSelect={select} />
+          )}
+          {selected ? (
+            <WorkspacePanel
+              key={selected.id}
+              workspace={selected}
+              approved={approved}
+              pollMs={pollMs}
+              onChange={refresh}
+            />
+          ) : (
+            <section className="panel">{shown}</section>
+          )}
+        </div>
+      </div>
+      {making && <NewWorkspace onMade={made} onCancel={() => setMaking(false)} />}
+      {removing &&
+        (whyNotDeletable(removing) === null ? (
+          <DeleteWorkspaceDialog
+            key={removing.id}
+            workspace={removing}
+            onDeleted={() => deleted(removing)}
+            onFailed={refresh}
+            onCancel={() => setRemoving(null)}
           />
         ) : (
-          <section className="panel">{shown}</section>
-        )}
-        <NewWorkspace onMade={made} />
-      </div>
+          <CannotDeleteDialog
+            key={removing.id}
+            workspace={removing}
+            reason={whyNotDeletable(removing) ?? ""}
+            onClose={() => setRemoving(null)}
+          />
+        ))}
     </>
   );
 }
 
-// Each workspace, selecting it, with its dot and, while it is not ready, its state.
+// Each workspace, selecting it, with its dot and, while it is not ready, its state, and its
+// trash button, named after it; the list is named by the page's heading.
 function WorkspaceList({
+  labelledBy,
   workspaces,
   selected,
   onSelect,
+  onRemove,
 }: {
+  labelledBy: string;
   workspaces: Workspace[] | null;
   selected: number | null;
   onSelect: (id: number) => void;
+  onRemove: (workspace: Workspace) => void;
 }) {
   return (
-    <section aria-label={m.workspacesTitle} className="list">
-      <h2>{m.workspacesTitle}</h2>
+    <section aria-labelledby={labelledBy} className="list">
       {workspaces?.length === 0 && <p>{m.workspacesEmpty}</p>}
       {workspaces && workspaces.length > 0 && (
         <ul className="workspaces">
@@ -143,6 +219,7 @@ function WorkspaceList({
               workspace={workspace}
               current={workspace.id === selected}
               onSelect={onSelect}
+              onRemove={onRemove}
             />
           ))}
         </ul>
@@ -155,10 +232,12 @@ function WorkspaceEntry({
   workspace,
   current,
   onSelect,
+  onRemove,
 }: {
   workspace: Workspace;
   current: boolean;
   onSelect: (id: number) => void;
+  onRemove: (workspace: Workspace) => void;
 }) {
   const id = useId();
   const dot = dotFor(workspace);
@@ -177,13 +256,79 @@ function WorkspaceEntry({
       {workspace.state !== "ready" && (
         <span className="muted"> {m.workspaceStates[workspace.state] ?? workspace.state}</span>
       )}
+      <button
+        type="button"
+        className="icon-button secondary-danger trash"
+        aria-label={m.deleteWorkspaceNamed(workspace.name)}
+        title={m.deleteWorkspaceNamed(workspace.name)}
+        onClick={() => onRemove(workspace)}
+      >
+        <TrashIcon />
+      </button>
     </li>
   );
 }
 
-// Makes a workspace with the name typed, empty or, with a GitHub address, cloned from it; the
-// server judges both, and names a cloned workspace after its repository when none is typed.
-function NewWorkspace({ onMade }: { onMade: (workspace: Workspace) => void }) {
+// Over the panel, where the list is not beside it, as on a phone: back to the list, and a menu
+// of the workspaces to switch to another. The stylesheet shows it only there.
+function PanelBar({
+  workspaces,
+  selected,
+  onSelect,
+}: {
+  workspaces: Workspace[];
+  selected: number | null;
+  onSelect: (id: number) => void;
+}) {
+  const menu = usePopup("PanelBar");
+  return (
+    <div className="panel-bar">
+      <Link to={workspaceLink(null)} className="button back">
+        <BackIcon />
+        {m.backToWorkspaces}
+      </Link>
+      <div className="menu switcher" ref={menu.rootRef}>
+        <button type="button" {...menu.buttonProps}>
+          {m.switchWorkspace}
+          <Caret />
+        </button>
+        <ul {...menu.panelProps} hidden={!menu.open}>
+          {workspaces.map((workspace) => (
+            <li key={workspace.id}>
+              <button
+                type="button"
+                aria-current={workspace.id === selected ? "true" : undefined}
+                onClick={() => {
+                  menu.close();
+                  onSelect(workspace.id);
+                }}
+              >
+                {workspace.name}
+                {workspace.state !== "ready" && (
+                  <span className="muted">
+                    {" "}
+                    {m.workspaceStates[workspace.state] ?? workspace.state}
+                  </span>
+                )}
+              </button>
+            </li>
+          ))}
+        </ul>
+      </div>
+    </div>
+  );
+}
+
+// New workspace's dialog: makes a workspace with the name typed, empty or, with a GitHub
+// address, cloned from it; the server judges both, and names a cloned workspace after its
+// repository when none is typed. A refusal keeps the dialog open with what was typed.
+function NewWorkspace({
+  onMade,
+  onCancel,
+}: {
+  onMade: (workspace: Workspace) => void;
+  onCancel: () => void;
+}) {
   const [name, setName] = useState("");
   const [url, setUrl] = useState("");
   const nameHelp = useId();
@@ -207,19 +352,15 @@ function NewWorkspace({ onMade }: { onMade: (workspace: Workspace) => void }) {
             ...(typedName ? { name: typedName } : {}),
           })
         : await api.post<{ workspace: Workspace }>("/api/workspaces", { name: typedName });
-      setName("");
-      setUrl("");
       onMade(answer.workspace);
     } catch (e) {
       setError(asApiError(e));
-    } finally {
       setBusy(false);
     }
   }
 
   return (
-    <section aria-label={m.newWorkspace} className="new">
-      <h2>{m.newWorkspace}</h2>
+    <Dialog owner="NewWorkspace" title={m.newWorkspace} onClose={onCancel} closable={!busy}>
       <form noValidate onSubmit={create} ref={fields.form}>
         <label>
           {m.newWorkspaceName}
@@ -255,6 +396,9 @@ function NewWorkspace({ onMade }: { onMade: (workspace: Workspace) => void }) {
           <button type="submit" className="primary" disabled={busy}>
             {busy ? m.creating : m.create}
           </button>
+          <button type="button" disabled={busy} onClick={onCancel}>
+            {m.cancel}
+          </button>
         </div>
         <ProblemView
           error={error}
@@ -262,7 +406,7 @@ function NewWorkspace({ onMade }: { onMade: (workspace: Workspace) => void }) {
           inline
         />
       </form>
-    </section>
+    </Dialog>
   );
 }
 
@@ -302,25 +446,60 @@ function StartServer({ workspace, onStarted }: { workspace: number; onStarted: (
   );
 }
 
-// Asks before deleting a workspace, which takes everything in it and its server.
+// What git says a ready workspace holds that deleting it would lose: asked for as the dialog
+// opens, null while it is asked; none where the workspace holds no repository.
+type UnsavedCheck = { unsaved: Unsaved | null; error: ApiError | null; answered: boolean };
+
+function useUnsaved(workspace: Workspace): UnsavedCheck {
+  const ready = workspace.state === "ready";
+  const [check, setCheck] = useState<UnsavedCheck>({
+    unsaved: null,
+    error: null,
+    answered: !ready,
+  });
+  useEffect(() => {
+    if (!ready) return;
+    let current = true;
+    api.get<GitStatus>("/api/git/status", { workspace: workspace.id }).then(
+      (status) => {
+        if (current) setCheck({ unsaved: unsavedIn(status), error: null, answered: true });
+      },
+      (e) => {
+        if (!current) return;
+        const error = asApiError(e);
+        // no repository: nothing in git to lose
+        if (error.code === "not_a_repository")
+          setCheck({ unsaved: null, error: null, answered: true });
+        else setCheck({ unsaved: null, error, answered: true });
+      },
+    );
+    return () => {
+      current = false;
+    };
+  }, [ready, workspace.id]);
+  return check;
+}
+
+// Asks before deleting a workspace, which takes everything in it and its server, naming what
+// git says would be lost; Delete waits for git's answer, and a check that failed is said.
 function DeleteWorkspaceDialog({
   workspace,
-  unsaved,
   onDeleted,
   onFailed,
   onCancel,
 }: {
   workspace: Workspace;
-  unsaved: Unsaved | null;
   onDeleted: () => void;
   onFailed: () => void;
   onCancel: () => void;
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<ApiError | null>(null);
+  const { unsaved, error: unchecked, answered } = useUnsaved(workspace);
 
   async function remove(event: FormEvent) {
     event.preventDefault();
+    if (busy || !answered) return;
     setBusy(true);
     setError(null);
     try {
@@ -334,14 +513,25 @@ function DeleteWorkspaceDialog({
   }
 
   return (
-    <div role="dialog" aria-label={m.deleteWorkspaceTitle(workspace.name)} className="dialog">
-      <h3>{m.deleteWorkspaceTitle(workspace.name)}</h3>
+    <Dialog
+      owner="DeleteWorkspaceDialog"
+      title={m.deleteWorkspaceTitle(workspace.name)}
+      onClose={onCancel}
+      closable={!busy}
+    >
       <form noValidate onSubmit={remove}>
         <p>{m.deleteWorkspaceBody}</p>
+        {!answered && <p className="muted">{m.deleteWorkspaceChecking}</p>}
         {unsaved && unsaved.files > 0 && <p>{m.deleteWorkspaceUncommitted(unsaved.files)}</p>}
         {unsaved && unsaved.commits > 0 && <p>{m.deleteWorkspaceUnpushed(unsaved.commits)}</p>}
+        {unchecked && (
+          <>
+            <p className="warning">{m.deleteWorkspaceUnchecked}</p>
+            <ProblemView error={unchecked} />
+          </>
+        )}
         <div className="actions">
-          <button type="submit" className="danger" disabled={busy}>
+          <button type="submit" className="danger" disabled={busy || !answered}>
             {busy ? m.deleting : m.deleteWorkspaceConfirm}
           </button>
           <button type="button" disabled={busy} onClick={onCancel}>
@@ -350,7 +540,39 @@ function DeleteWorkspaceDialog({
         </div>
       </form>
       <ProblemView error={error} />
-    </div>
+    </Dialog>
+  );
+}
+
+// Says why a workspace cannot be deleted now, and asks nothing of the server.
+function CannotDeleteDialog({
+  workspace,
+  reason,
+  onClose,
+}: {
+  workspace: Workspace;
+  reason: string;
+  onClose: () => void;
+}) {
+  function dismiss(event: FormEvent) {
+    event.preventDefault();
+    onClose();
+  }
+  return (
+    <Dialog
+      owner="CannotDeleteDialog"
+      title={m.cannotDeleteTitle(workspace.name)}
+      onClose={onClose}
+    >
+      <form noValidate onSubmit={dismiss}>
+        <p>{reason}</p>
+        <div className="actions">
+          <button type="submit" className="primary">
+            {m.close}
+          </button>
+        </div>
+      </form>
+    </Dialog>
   );
 }
 
@@ -486,26 +708,18 @@ function TabPanel({
 // cloned from, when the server gives one; what its state allows, and, once it is ready,
 // two tabs: Overview, with its Claude server or the offer to start one and the Changes of
 // its repository, and Terminal, a shell in it, opened once the tab is first shown. Each
-// tab's panel stays on the page while the other is shown, so the Changes section still
-// knows what would be lost, and the terminal stays open.
-// Delete workspace is a section of its own at the foot, below the tabs, offered for a
-// workspace that is ready or failed, and for one being cloned, where it cancels the clone.
+// tab's panel stays on the page while the other is shown, so the terminal stays open.
 function WorkspacePanel({
   workspace,
   approved,
   pollMs,
   onChange,
-  onDeleted,
 }: {
   workspace: Workspace;
   approved: string | null;
   pollMs: number;
   onChange: () => void;
-  onDeleted: () => void;
 }) {
-  const [deleting, setDeleting] = useState(false);
-  // What the Changes section says would be lost, once it knows.
-  const [unsaved, setUnsaved] = useState<Unsaved | null>(null);
   const [tab, chooseTab] = useTab();
   const ready = workspace.state === "ready";
   // The terminal is opened when its tab is first shown, and kept from then on.
@@ -516,7 +730,6 @@ function WorkspacePanel({
   }, [terminalShown]);
   const tabsId = useId();
   const cloning = workspace.state === "creating" && workspace.source !== null;
-  const deletable = ready || workspace.state === "failed" || cloning;
   const { server, server_error: unread } = workspace;
   return (
     <section aria-label={workspace.name} className="panel">
@@ -572,7 +785,7 @@ function WorkspacePanel({
                 </>
               )}
             </PanelSection>
-            <Changes workspace={workspace.id} pollMs={pollMs} onUnsaved={setUnsaved} />
+            <Changes workspace={workspace.id} pollMs={pollMs} />
           </TabPanel>
           <TabPanel id={tabsId} name="terminal" shown={terminalShown}>
             {(terminalOpened || terminalShown) && (
@@ -580,25 +793,6 @@ function WorkspacePanel({
             )}
           </TabPanel>
         </>
-      )}
-      {deletable && (
-        <PanelSection title={m.deleteSectionTitle}>
-          <p>{m.deleteSectionBody}</p>
-          <div className="actions">
-            <button type="button" className="secondary-danger" onClick={() => setDeleting(true)}>
-              {m.deleteWorkspace}
-            </button>
-          </div>
-          {deleting && (
-            <DeleteWorkspaceDialog
-              workspace={workspace}
-              unsaved={unsaved}
-              onDeleted={onDeleted}
-              onFailed={onChange}
-              onCancel={() => setDeleting(false)}
-            />
-          )}
-        </PanelSection>
       )}
     </section>
   );

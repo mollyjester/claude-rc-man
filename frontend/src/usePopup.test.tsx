@@ -5,7 +5,7 @@ import { usePopup } from "./usePopup";
 
 // A pop-up as the page uses one: its button, and a panel shown while it is open.
 function Harness() {
-  const popup = usePopup();
+  const popup = usePopup("Harness");
   return (
     <>
       <button type="button">Before</button>
@@ -36,6 +36,8 @@ async function opened() {
   expect(opener()).toHaveAttribute("aria-expanded", "true");
   const panel = document.getElementById(opener().getAttribute("aria-controls")!)!;
   expect(panel).toBeInTheDocument();
+  // marked with the component that opened it, which the browser's walk reads off what opened
+  expect(panel).toHaveAttribute("data-component", "Harness");
   return panel;
 }
 
@@ -108,7 +110,7 @@ test("Escape pressed somewhere else on the page leaves it open", async () => {
 test("isOpen says whether it is open now, for an answer that arrives later", async () => {
   let seen: (() => boolean) | null = null;
   function Probe() {
-    const popup = usePopup();
+    const popup = usePopup("Probe");
     seen = popup.isOpen;
     return (
       <div ref={popup.rootRef}>
