@@ -9,8 +9,11 @@ import { useCallback, useEffect, useId, useRef, useState } from "react";
 //
 // rootRef goes on the element that holds both the button and the panel,
 // buttonProps on the button, panelProps on the panel. isOpen says whether it
-// is open now, for what an answer that arrives later should do.
-export function usePopup() {
+// is open now, for what an answer that arrives later should do. owner is the
+// name of the component that calls it, put on the panel as data-component for
+// e2e/touch.spec.ts to read off what opened; src/test/callSites.ts holds each
+// call to it.
+export function usePopup(owner: string) {
   const [open, setOpen] = useState(false);
   const button = useRef<HTMLButtonElement>(null);
   const root = useRef<HTMLElement | null>(null);
@@ -74,6 +77,6 @@ export function usePopup() {
       "aria-controls": id,
       onClick: () => setOpen((now) => !now),
     },
-    panelProps: { id },
+    panelProps: { id, "data-component": owner },
   };
 }

@@ -16,6 +16,7 @@ import { forgetReports } from "./clientErrors";
 import { m } from "./messages";
 import { asApiError, ProblemView, useFieldErrors } from "./ProblemView";
 import { FIELDS } from "./Settings";
+import { callSites } from "./test/callSites";
 import {
   ADMIN_USER,
   CONNECTED,
@@ -25,6 +26,7 @@ import {
   SETTINGS,
   SIGNING_OUT,
 } from "./test/fakeApi";
+import { modalDialogs } from "./test/fakeDialog";
 import { renderAlone, renderApp } from "./test/render";
 
 const RULE_ATTRIBUTES = ["required", "pattern", "min", "max", "minlength", "maxlength", "step"];
@@ -75,6 +77,18 @@ function api() {
           id: 1,
           name: "alpha",
           state: "ready",
+          error: null,
+          source: null,
+          source_page: null,
+          log: null,
+          server: null,
+          server_error: null,
+          claude_version: null,
+        },
+        {
+          id: 2,
+          name: "beta",
+          state: "creating",
           error: null,
           source: null,
           source_page: null,
@@ -134,6 +148,21 @@ const signingOut = () => (
 // on any other form, so the others on a page would shut them before they are checked.
 const changes = () => <Changes workspace={1} pollMs={0} />;
 
+// New workspace's dialog, opened by the + beside the Workspaces page's heading.
+async function openNewWorkspace() {
+  await userEvent.click(await screen.findByRole("button", { name: m.newWorkspace }));
+  return screen.findByLabelText(m.newWorkspaceName);
+}
+
+// The dialog a workspace's trash button opens, in the list of the Workspaces page.
+async function openTrash(name: string) {
+  const list = await screen.findByRole("region", { name: m.navDashboard });
+  await userEvent.click(
+    await within(list).findByRole("button", { name: m.deleteWorkspaceNamed(name) }),
+  );
+  await screen.findByRole("dialog");
+}
+
 // Every page with a form, and what opens the forms that are not there at first.
 const PAGES: [string, Where, () => Promise<void>][] = [
   ["settings", "/settings", async () => {}],
@@ -156,8 +185,17 @@ const PAGES: [string, Where, () => Promise<void>][] = [
       await screen.findAllByLabelText(m.usersMemory); // the person's and each workspace's
     },
   ],
-  ["a new workspace", "/", async () => void (await screen.findByLabelText(m.newWorkspaceName))],
+  ["a new workspace", "/", async () => void (await openNewWorkspace())],
   ["Claude Code versions", "/admin/claude", async () => {}],
+  [
+    "signing out of rcman",
+    "/settings",
+    async () => {
+      const banner = await screen.findByRole("banner");
+      await userEvent.click(within(banner).getByRole("button", { name: m.account }));
+      await within(banner).findByRole("checkbox", { name: m.keepServersOnSignOut });
+    },
+  ],
   ["signing out of Claude", connected, async () => {}],
   [
     "connecting Claude, its address",
@@ -229,15 +267,9 @@ const CHOICES: [string, Where, () => Promise<void>][] = [
       await screen.findByRole("dialog");
     },
   ],
-  [
-    "deleting a workspace",
-    "/?workspace=1",
-    async () => {
-      const panel = await screen.findByRole("region", { name: "alpha" });
-      await userEvent.click(within(panel).getByRole("button", { name: m.deleteWorkspace }));
-      await screen.findByRole("dialog");
-    },
-  ],
+  ["deleting a workspace", "/?workspace=1", () => openTrash("alpha")],
+  // beta is being made, so its trash button says why it cannot be deleted yet
+  ["a workspace that cannot be deleted", "/", () => openTrash("beta")],
 ];
 
 test.each([...PAGES, ...OUTSIDE_FORMS])(
@@ -276,11 +308,14 @@ test.each([...PAGES, ...OUTSIDE_FORMS])(
 // page is for, so its button is plain, beside the box that says what happens to
 // the servers. The exemption names that form and is held below to its subject.
 function hierarchyFaults(root: ParentNode): string[] {
-  const formless = [...root.querySelectorAll('[role="dialog"]')]
+  const named = (dialog: Element) =>
+    dialog.getAttribute("aria-label") ??
+    document.getElementById(dialog.getAttribute("aria-labelledby") ?? "")?.textContent;
+  const formless = [...root.querySelectorAll('dialog, [role="dialog"]')]
     .filter((dialog) => !dialog.querySelector("form"))
-    .map((dialog) => `${dialog.getAttribute("aria-label")}: a dialog with no form`);
+    .map((dialog) => `${named(dialog)}: a dialog with no form`);
   const forms = [...root.querySelectorAll("form")].flatMap((form) => {
-    if (form.matches("header > form.sign-out")) return [];
+    if (form.matches("header form.sign-out")) return [];
     const leading = [...form.querySelectorAll("button.primary, button.danger")];
     const name = form.textContent?.trim().slice(0, 40);
     if (leading.length !== 1) return [`${name}: ${leading.length} leading buttons`];
@@ -352,6 +387,18 @@ test.each([...PAGES, ...CHOICES].filter(([page]) => DESTRUCTIVE.includes(page)))
     expect(dialog.querySelectorAll("button.primary")).toHaveLength(0);
   },
 );
+
+test("no page draws a dialog of its own", () => {
+  // positive control: the shared one is among the files read
+  expect(
+    SOURCES.some(([file, source]) => file === "Dialog.tsx" && source.includes("<dialog")),
+  ).toBe(true);
+  const own = SOURCES.filter(
+    ([file, source]) =>
+      file !== "Dialog.tsx" && (/role=["{]+dialog/.test(source) || source.includes("<dialog")),
+  ).map(([file]) => file);
+  expect(own).toEqual([]);
+});
 
 // What is wrong with the button that opened a destructive form: it does not
 // itself do what cannot be undone, so it is a danger outline, not plain, not
@@ -462,6 +509,16 @@ test("the check fails on a form with no leading button, two, or one that does no
   dialog.innerHTML =
     '<div role="dialog" aria-label="Remove"><button class="primary">Remove</button></div>';
   expect(hierarchyFaults(dialog)).toEqual(["Remove: a dialog with no form"]);
+  // the page's own dialogs are the native element, named by their heading
+  const native = document.createElement("div");
+  native.innerHTML =
+    '<dialog open aria-labelledby="planted-heading"><h2 id="planted-heading">Planted</h2><button class="primary">Close</button></dialog>';
+  document.body.append(native);
+  try {
+    expect(hierarchyFaults(native)).toEqual(["Planted: a dialog with no form"]);
+  } finally {
+    native.remove();
+  }
   expect(hierarchyFaults(document.createElement("div"))).toEqual([]);
 });
 
@@ -559,7 +616,7 @@ async function labelFaults(form: HTMLFormElement): Promise<string[]> {
 test("the new workspace form asks for the name, then the repository's address, each under its field's name", async () => {
   api();
   renderApp("/");
-  const form = (await screen.findByLabelText(m.newWorkspaceName)).closest("form")!;
+  const form = (await openNewWorkspace()).closest("form")!;
   expect(fieldInputs(form).map((input) => input.name)).toEqual(["name", "url"]);
   expect(fieldInputs(form).map((input) => input.labels?.[0]?.textContent)).toEqual([
     m.newWorkspaceName,
@@ -572,9 +629,12 @@ test.each(PAGES)("a refused field on %s is named by its label", async (_, where,
   show(where);
   await open();
   await inputs();
+  // A form in a pop-up that is closed, as the header's sign-out is until its menu is opened,
+  // cannot be filled in; the entry that opens it checks it.
   const forms = [...document.querySelectorAll("form")].filter(
-    (form) => fieldInputs(form).length > 0,
+    (form) => fieldInputs(form).length > 0 && form.closest("[hidden]") === null,
   );
+  expect(forms.length).toBeGreaterThan(0); // non-vacuity
   for (const form of forms) expect(await labelFaults(form)).toEqual([]);
 });
 
@@ -726,10 +786,21 @@ function formId(form: HTMLFormElement): string {
 // A form seen on screen: the entry that opened it, whether that entry is one of
 // PAGES, which the label check visits, and whether the form has a field.
 type Seen = { entry: string; fromPages: boolean; id: string; fields: boolean };
+// A dialog seen on screen: the entry that opened it, the component that drew it with the
+// shared Dialog (src/Dialog.tsx), and whether it was the native element, opened as a modal.
+type SeenDialog = { entry: string; owner: string; modal: boolean };
+
+// The component that drew a dialog: the owner of the Dialog that rendered the element.
+function dialogOwner(dialog: Element): string {
+  const key = Object.keys(dialog).find((k) => k.startsWith("__reactFiber$"));
+  const shared = property(key === undefined ? undefined : property(dialog, key), "_debugOwner");
+  if (property(property(shared, "type"), "name") !== "Dialog") return "not the shared Dialog";
+  return String(property(property(property(shared, "_debugOwner"), "type"), "name") ?? "");
+}
 
 // Opens every entry of PAGES and CHOICES in turn, and notes each form shown;
 // once stopped, it opens no further entry, so renders nothing more.
-async function observe(stopped: () => boolean): Promise<Seen[]> {
+async function observe(stopped: () => boolean, dialogs: SeenDialog[]): Promise<Seen[]> {
   const seen: Seen[] = [];
   for (const [entries, fromPages] of [
     [PAGES, true],
@@ -744,6 +815,13 @@ async function observe(stopped: () => boolean): Promise<Seen[]> {
         if (fromPages) await inputs();
         for (const form of document.querySelectorAll("form"))
           seen.push({ entry, fromPages, id: formId(form), fields: fieldInputs(form).length > 0 });
+        for (const dialog of document.querySelectorAll('dialog, [role="dialog"]'))
+          dialogs.push({
+            entry,
+            owner: dialogOwner(dialog),
+            modal:
+              dialog.tagName === "DIALOG" && modalDialogs().includes(dialog as HTMLDialogElement),
+          });
       } finally {
         cleanup();
         forgetReports();
@@ -752,6 +830,17 @@ async function observe(stopped: () => boolean): Promise<Seen[]> {
     }
   }
   return seen;
+}
+
+// What the tests' pages miss of the dialogs in the source: components that draw one that no
+// entry opens, dialogs opened that no such component drew, and any not opened as a modal.
+function dialogFaults(source: string[], seen: SeenDialog[]) {
+  const owners = new Set(seen.map((d) => d.owner));
+  return {
+    missing: source.filter((name) => !owners.has(name)).sort(),
+    unknown: [...owners].filter((name) => !source.includes(name)).sort(),
+    notModal: seen.filter((d) => !d.modal).map((d) => `${d.entry}: ${d.owner}`),
+  };
 }
 
 // What the tests' pages miss of the forms in the source: forms none of them
@@ -832,11 +921,12 @@ const EVERY_PAGE_MS = 60_000;
 // stopped and waited for, so that it renders nothing into a later test.
 describe("the forms on screen", () => {
   let seen: Seen[] = [];
+  const dialogs: SeenDialog[] = [];
   let stop = false;
   let visit: Promise<unknown> = Promise.resolve();
 
   beforeAll(async () => {
-    const visiting = observe(() => stop);
+    const visiting = observe(() => stop, dialogs);
     visit = visiting.catch(() => {});
     seen = await visiting;
   }, EVERY_PAGE_MS);
@@ -854,6 +944,23 @@ describe("the forms on screen", () => {
       missing: [],
       unknown: [],
       unlabelled: [],
+    });
+  });
+
+  test("every component that draws a dialog is opened by a page these tests visit, each the native modal", () => {
+    const source = callSites(SOURCES).dialogs;
+    expect(source).toContain("LimitsDialog"); // positive control: the source was read
+    expect(dialogFaults(source, dialogs)).toEqual({ missing: [], unknown: [], notModal: [] });
+  });
+
+  test("the dialog check reports a dialog in the source no page opens, and one not opened as a modal", () => {
+    const source = callSites(SOURCES).dialogs;
+    expect(dialogFaults([...source, "Planted"], dialogs).missing).toEqual(["Planted"]);
+    const plain = { entry: "planted", owner: "Planted", modal: false };
+    expect(dialogFaults(source, [...dialogs, plain])).toEqual({
+      missing: [],
+      unknown: ["Planted"],
+      notModal: ["planted: Planted"],
     });
   });
 

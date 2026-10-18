@@ -4,6 +4,7 @@ import { afterEach, beforeAll, beforeEach, vi } from "vitest";
 
 import { forgetSending } from "../api";
 import { forgetReports } from "../clientErrors";
+import { forgetDialogs, installDialog } from "./fakeDialog";
 import { FakeResizeObserver, fakeMatchMedia, forgetLayout } from "./fakeLayout";
 import { FakeSocket } from "./fakeSocket";
 import { FakeView } from "./fakeXterm";
@@ -11,6 +12,10 @@ import { FakeView } from "./fakeXterm";
 // xterm.js draws on a canvas and measures the page's layout, neither of which jsdom has: every
 // test has the stand-in in its place.
 vi.mock("../xtermView", () => import("./fakeXterm"));
+
+// jsdom has the <dialog> element but not its behaviour: every test has the stand-in, which
+// e2e/touch.spec.ts holds the browser's own to.
+installDialog();
 
 // How long a findBy* or waitFor waits. The wait covers the page's own fetches
 // and renders and every query over the whole page, and on a slow or busy
@@ -51,4 +56,5 @@ afterEach(() => {
   FakeSocket.opened = [];
   FakeView.made = [];
   forgetLayout();
+  forgetDialogs();
 });

@@ -40,7 +40,7 @@ With a person added for the test (`sudo rcman-admin add`):
 7. **Sign out of Claude** with **Keep servers running until the last one stops** ticked: both servers
    keep running and **Start** is refused; stop both, and the page shows the
    account not connected.
-8. **Delete workspace**, and remove the person (`sudo rcman-admin delete`):
+8. Delete the workspace with its trash button, **Delete workspace <name>** in the list, and remove the person (`sudo rcman-admin delete`):
    `podman volume ls` as `rcman` lists nothing of theirs.
 9. **Run `sudo ./install.sh` again** from the dedicated clone while a workspace's
    server is running: it changes nothing and ends nothing, and the server is still

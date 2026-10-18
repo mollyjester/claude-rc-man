@@ -426,7 +426,7 @@ test("a form's text field takes the form's font, and its width, up to a limit", 
     expect(field.display).toBe("block"); // positive control: the stylesheet applies
     // jsdom gives a field the font around it, as a browser does not: the rule says so itself
     expect(ruleOf('form input[type="text"], form input[type="password"]')).toMatch(
-      /(?:^|;)\s*font:\s*inherit/,
+      /(?:^|;)\s*font-family:\s*inherit/,
     );
     expect([field.width, field.boxSizing]).toEqual(["100%", "border-box"]);
     expect(field.maxWidth).toMatch(/^\d+(?:\.\d+)?(?:px|rem)$/); // a length, not the whole width
@@ -513,11 +513,13 @@ test("the check on a media query reads one, and finds none that is not there", (
   expect(mediaOf("(max-width: 1px)")).toBe("");
 });
 
-test("on a phone the selected workspace comes before the form that makes another", () => {
-  const areas = (rule: string) => rule.match(/grid-template-areas:\s*([^;]+)/)?.[1] ?? "";
-  const named = (list: string) => [...list.matchAll(/"([^"]+)"/g)].map((a) => a[1]);
-  expect(named(areas(ruleOf(".dashboard")))).toEqual(["list panel", "new panel"]);
-  expect(named(areas(ruleOf(".dashboard", mediaOf(PHONE))))).toEqual(["list", "panel", "new"]);
+test("on a phone the list and the selected workspace's panel take turns, with the way back over the panel", () => {
+  const phone = mediaOf(PHONE);
+  expect(ruleOf(".dashboard.showing > .list", phone)).toMatch(/display:\s*none/);
+  expect(ruleOf(".dashboard:not(.showing) > .panel-side", phone)).toMatch(/display:\s*none/);
+  expect(ruleOf(".panel-bar", phone)).toMatch(/display:\s*flex/);
+  // beside each other, the list is there, so the way back is not
+  expect(ruleOf(".panel-bar")).toMatch(/display:\s*none/);
 });
 
 test("the terminal shows where focus is, though xterm.js takes the outline off its own element", () => {
@@ -568,4 +570,172 @@ test("a workspace's long name is cut short with an ellipsis, its dot staying bes
   expect(ruleOf(".workspaces button.name")).toMatch(/text-overflow:\s*ellipsis/);
   expect(ruleOf(".workspaces button.name")).toMatch(/min-width:\s*0/);
   expect(ruleOf(".workspaces .dot")).toMatch(/flex:\s*none/);
+});
+
+// --- touch screens and phones -----------------------------------------------------------
+
+// The least a target is high and wide on a touch screen, in px: WCAG 2.2's 2.5.5.
+const TOUCH = 44;
+const COARSE = "(pointer: coarse)";
+
+// A length in px: rem at the browser's 16px, px as it is, and max() as its largest.
+function px(value: string | undefined): number {
+  if (!value) return 0;
+  const lengths = [...value.matchAll(/([\d.]+)(rem|px)/g)].map(([, n, unit]) =>
+    unit === "rem" ? parseFloat(n) * 16 : parseFloat(n),
+  );
+  return lengths.length ? Math.max(...lengths) : 0;
+}
+
+// The rules of a stylesheet outside any media query, each selector with its declarations.
+function plainRules(css: string): [string, Map<string, string>][] {
+  let text = uncommented(css);
+  for (;;) {
+    const at = text.indexOf("@media");
+    if (at < 0) break;
+    const open = text.indexOf("{", at);
+    let depth = 0;
+    let end = open;
+    for (let i = open; i < text.length; i++) {
+      if (text[i] === "{") depth++;
+      if (text[i] === "}" && --depth === 0) {
+        end = i;
+        break;
+      }
+    }
+    text = text.slice(0, at) + text.slice(end + 1);
+  }
+  return [...text.matchAll(/([^{}]+)\{([^{}]*)\}/g)].flatMap(([, selectors, body]) =>
+    selectors.split(",").map((selector) => {
+      const found = new Map<string, string>();
+      for (const [, property, value] of body.matchAll(/([\w-]+)\s*:\s*([^;]+);?/g))
+        found.set(property, value.trim());
+      return [selector.trim().replace(/\s+/g, " "), found] as [string, Map<string, string>];
+    }),
+  );
+}
+
+// What sets a minimum height outside the touch screen's rules that is not a target, and why.
+const NOT_PRESSED: Record<string, string> = {
+  ".sync": "the ahead and behind counts beside Push, which say and do nothing",
+};
+
+// The targets a touch screen's rules must make at least TOUCH high, and those also as wide.
+const TALL = [
+  "button",
+  "a.button",
+  "summary",
+  "select",
+  'input:not([type="checkbox"])',
+  'label:has(> input[type="checkbox"])',
+  "nav a",
+  ".menu li a",
+  ".skip-link",
+  "p.source-page a",
+];
+const WIDE = ["button", "a.button", "nav a"];
+
+// What is wrong with the targets on a touch screen: a target named above, or one whose own rule
+// sets a smaller minimum height, which the touch screen's rules do not raise to TOUCH.
+function touchFaults(css: string): string[] {
+  const coarse = new Map<string, Map<string, string>>();
+  for (const [selector, declared] of plainRules(mediaOf(COARSE, css)))
+    coarse.set(selector, new Map([...(coarse.get(selector) ?? []), ...declared]));
+  const found: string[] = [];
+  const sized = plainRules(css)
+    .filter(([, declared]) => declared.has("min-height"))
+    .map(([selector]) => selector)
+    .filter((selector) => !(selector in NOT_PRESSED));
+  for (const selector of new Set([...TALL, ...sized])) {
+    if (px(coarse.get(selector)?.get("min-height")) < TOUCH)
+      found.push(`${selector}: under ${TOUCH}px high on a touch screen`);
+  }
+  for (const selector of WIDE) {
+    if (px(coarse.get(selector)?.get("min-width")) < TOUCH)
+      found.push(`${selector}: under ${TOUCH}px wide on a touch screen`);
+  }
+  return found;
+}
+
+test("on a touch screen every target is at least 44px, at every width", () => {
+  expect(mediaOf(COARSE)).not.toBe(""); // positive control: the rules are read
+  expect(touchFaults(STYLES)).toEqual([]);
+});
+
+test("the touch check fails on a target left small, one sized elsewhere, and finds each exemption", () => {
+  const withoutButton = STYLES.replace(
+    "  button,\n  a.button,\n  summary,",
+    "  a.button,\n  summary,",
+  );
+  expect(withoutButton).not.toEqual(STYLES); // the plant took effect
+  expect(touchFaults(withoutButton)).toContain(`button: under ${TOUCH}px high on a touch screen`);
+  const sizedElsewhere = `${STYLES}\n.planted-target { min-height: 1.5rem; }`;
+  expect(touchFaults(sizedElsewhere)).toEqual([
+    `.planted-target: under ${TOUCH}px high on a touch screen`,
+  ]);
+  // an exemption names a rule that is still there
+  for (const selector of Object.keys(NOT_PRESSED))
+    expect(
+      plainRules(STYLES).some(([s, declared]) => s === selector && declared.has("min-height")),
+    ).toBe(true);
+  expect(px("max(1rem, 18px)")).toBe(18);
+});
+
+// What is wrong with the size of the text in fields: one under 16px, which iOS zooms in on, or a
+// rule that resets it with the font shorthand.
+const FIELD = /(?:^|[\s>+~(,])(?:input|textarea|select)\b(?!\[type="checkbox"\])/;
+function fieldFontFaults(css: string): string[] {
+  const found: string[] = [];
+  const rules = plainRules(css).filter(([selector]) => FIELD.test(selector));
+  const base = rules.find(([selector]) => selector === 'input:not([type="checkbox"])');
+  if (px(base?.[1].get("font-size")) < 16) found.push("fields: under 16px");
+  for (const [selector, declared] of rules) {
+    if (declared.has("font")) found.push(`${selector}: the font shorthand resets the size`);
+    if (declared.has("font-size") && px(declared.get("font-size")) < 16)
+      found.push(`${selector}: under 16px`);
+  }
+  return found;
+}
+
+test("the text in a field is at least 16px, so that a phone does not zoom in on it", () => {
+  expect(plainRules(STYLES).filter(([selector]) => FIELD.test(selector)).length).toBeGreaterThan(1); // non-vacuity
+  expect(fieldFontFaults(STYLES)).toEqual([]);
+});
+
+test("the field check fails on a smaller size, or the font shorthand, and passes a checkbox", () => {
+  expect(fieldFontFaults(`${STYLES}\n.planted input { font-size: 0.8rem; }`)).toEqual([
+    ".planted input: under 16px",
+  ]);
+  expect(fieldFontFaults(`${STYLES}\n.planted textarea { font: inherit; }`)).toEqual([
+    ".planted textarea: the font shorthand resets the size",
+  ]);
+  expect(
+    fieldFontFaults(`${STYLES}\n.planted input[type="checkbox"] { font-size: 0.8rem; }`),
+  ).toEqual([]);
+});
+
+test("the meta tag lets the page be zoomed, and has the keyboard shrink the page's viewport", () => {
+  const html = readFileSync(resolve(__dirname, "..", "index.html"), "utf-8");
+  const viewport = html.match(/<meta\s+name="viewport"\s+content="([^"]*)"/)?.[1];
+  expect(viewport).toMatch(/width=device-width/); // positive control: the tag is read
+  expect(viewport).not.toMatch(/user-scalable\s*=\s*(?:no|0)|maximum-scale/);
+  // where the browser honours it, an on-screen keyboard resizes the page, dvh with it, so that
+  // the terminal's screen (.terminal-screen in src/styles.css) fits above the keyboard
+  expect(viewport).toMatch(/(?:^|,)\s*interactive-widget\s*=\s*resizes-content\s*(?:,|$)/);
+});
+
+test("on a phone a dialog fills the screen, and on a wider one it sits in the middle", () => {
+  const phone = ruleOf("dialog.dialog", mediaOf(PHONE));
+  expect(phone).toMatch(/width:\s*100%/);
+  expect(phone).toMatch(/height:\s*100dvh/);
+  expect(phone).toMatch(/max-width:\s*none/);
+  expect(phone).toMatch(/max-height:\s*none/);
+  expect(phone).toMatch(/margin:\s*0/);
+  // wider: the browser's own placement of a modal, in the middle, kept by margin: auto
+  expect(ruleOf("dialog.dialog")).toMatch(/margin:\s*auto/);
+  expect(ruleOf("dialog.dialog::backdrop")).toMatch(/background:\s*var\(--backdrop\)/);
+});
+
+test("the terminal's height follows the room the phone's keyboard leaves", () => {
+  expect(ruleOf(".terminal-screen")).toMatch(/height:[^;]*\d+dvh/);
 });

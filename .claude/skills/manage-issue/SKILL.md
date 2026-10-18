@@ -30,10 +30,20 @@ and keep iterating with them until you are satisfied with the outcome.
   what is lost or deferred, what is left behind, and blockers.
 - Subagent output is a hint, not verified truth: confirm what matters
   yourself, totals above all, before acting on it or reporting it.
-- A long run whose output only needs reading — the `make check` baseline and
-  gate, the on-demand runs — can go to a runner on a small model that reports
-  each part's totals and each failing test with its first error line. Check
-  its headline numbers against the log with one grep.
+- A long run whose output only needs reading goes to a runner on a small model
+  (`model: haiku`), never to you or to an implementation, review or
+  documentation subagent: the `make check` baseline, every gating
+  `make check` (an implementer's at handover and after each round of review
+  findings included), and the on-demand runs. Implementers and reviewers run
+  only the targeted tests of what they change; every brief that would
+  otherwise end in a gating or on-demand run says so and names the runner
+  instead, and you dispatch the runner when the subagent hands back.
+- A runner's brief names the commands, the log files and the lines to report:
+  each part's totals, collected count, each failing test with its first error
+  line, and each exit code. It runs them in the foreground with a timeout
+  long enough for the run and reports only once they have finished: a
+  background command it starts is stopped when it hands back. Check its
+  headline numbers against the log with one grep.
 
 ## 1. Plan
 
@@ -98,7 +108,8 @@ as a comment on it.
   change or left with the reason, without another round; anything blocking
   or should-fix is still reviewed until it is clean.
 - The test runs the working rules require — the `make check` baseline before,
-  targeted while working, the gating `make check` at handover — are read by
+  targeted while working, the gating `make check` at handover, the baseline
+  and the gate on the small-model runner of "Subagents" above — are read by
   their totals, collected count and failing names, never by exit code alone.
   Output goes to a file and is read by grep; the summary lines are read
   whether the run is green or red. Stopping at the first failure (`-x`,
@@ -118,7 +129,8 @@ even where implementation passes already edited it: it searches for every
 page the change affects and for terms the change made stale, makes the
 documentation match the code, and checks it against the documentation rules
 in the working rules. A mismatch where the code looks wrong is reported to
-you, not fixed by it. Its edits are followed by the gating `make check` again;
+you, not fixed by it. Its edits are followed by the gating `make check` again,
+on the runner;
 an on-demand run already green is not repeated for documentation edits.
 
 ## 6. Clean up and hand over

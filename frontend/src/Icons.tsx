@@ -62,3 +62,25 @@ export const CheckIcon = () => (
     <path d="M3 8.5 6.5 12 13 4.5" />
   </Icon>
 );
+
+// A bin with its lid: deleting what it stands beside.
+export const TrashIcon = () => (
+  <Icon>
+    <path d="M2.5 4h11M6 4V2.5h4V4M4 4l.7 9.5h6.6L12 4M6.8 6.5v4.5M9.2 6.5v4.5" />
+  </Icon>
+);
+
+// A chevron pointing back.
+export const BackIcon = () => (
+  <Icon>
+    <path d="M10 3 5 8l5 5" />
+  </Icon>
+);
+
+// A head and shoulders: the person signed in.
+export const PersonIcon = () => (
+  <Icon>
+    <circle cx="8" cy="5.5" r="2.5" />
+    <path d="M3 13.5c.6-2.6 2.6-4 5-4s4.4 1.4 5 4" />
+  </Icon>
+);

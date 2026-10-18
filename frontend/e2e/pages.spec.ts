@@ -2,7 +2,7 @@ import { expect, test } from "@playwright/test";
 
 import { m } from "../src/messages";
 import { FIELDS } from "../src/Settings";
-import { makeWorkspace, openAdminPage } from "./nav";
+import { expectSignedInAs, makeWorkspace, openAdminPage } from "./nav";
 import { ALICE, BOB, signInAs } from "./people";
 
 test("settings: the server's verdict is shown as given", async ({ page }) => {
@@ -86,7 +86,7 @@ test("help: pages from docs/, with links between them", async ({ page }) => {
 test("administration is offered to administrators only", async ({ page }) => {
   await signInAs(page, BOB);
   await page.goto("/");
-  await expect(page.getByText(m.signedInAs(BOB))).toBeVisible();
+  await expectSignedInAs(page, BOB);
   await expect(page.getByRole("link", { name: m.navSettings })).toBeVisible();
   await expect(page.getByRole("button", { name: m.navAdmin })).toHaveCount(0);
   await expect(page.getByRole("link", { name: m.navUsers })).toHaveCount(0);

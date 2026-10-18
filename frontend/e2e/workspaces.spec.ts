@@ -1,7 +1,16 @@
 import { expect, test } from "@playwright/test";
 
 import { m } from "../src/messages";
-import { GITHUB_ADDRESS, makeWorkspace, openAdminPage, panel, workspaces } from "./nav";
+import {
+  deleteWorkspace,
+  expectSignedInAs,
+  GITHUB_ADDRESS,
+  makeWorkspace,
+  newWorkspace,
+  openAdminPage,
+  panel,
+  workspaces,
+} from "./nav";
 import { ALICE, BOB, signInAs } from "./people";
 
 test("a workspace is made, and is ready", async ({ page }) => {
@@ -29,20 +38,35 @@ test("a workspace is made from a repository's address, named after it, and shows
 }) => {
   await signInAs(page, ALICE);
   await page.goto("/");
-  const form = page.getByRole("region", { name: m.newWorkspace });
+  const form = await newWorkspace(page);
   await form.getByLabel(m.newWorkspaceSource).fill(GITHUB_ADDRESS);
   await form.getByRole("button", { name: m.create }).click();
+  await expect(form).toHaveCount(0); // the dialog closed once the server took it
   const made = panel(page, "widget");
   await expect(made.getByRole("button", { name: m.start })).toBeVisible();
   await expect(made.getByRole("button", { name: m.onBranch("main") })).toBeVisible();
   await expect(made.getByRole("figure", { name: m.workspaceLog })).toHaveCount(0);
-  await expect(form.getByLabel(m.newWorkspaceSource)).toHaveValue("");
+});
+
+test("New workspace is a modal dialog: focus in its name, Escape closes it, focus back on +", async ({
+  page,
+}) => {
+  await signInAs(page, ALICE);
+  await page.goto("/");
+  const plus = page.getByRole("button", { name: m.newWorkspace, exact: true });
+  const dialog = await newWorkspace(page);
+  await expect(dialog.getByLabel(m.newWorkspaceName)).toBeFocused();
+  // the page behind it cannot be reached
+  expect(await dialog.evaluate((el) => el.matches(":modal"))).toBe(true);
+  await page.keyboard.press("Escape");
+  await expect(dialog).toHaveCount(0);
+  await expect(plus).toBeFocused();
 });
 
 test("an address rcman refuses is shown under its label, and kept", async ({ page }) => {
   await signInAs(page, ALICE);
   await page.goto("/");
-  const form = page.getByRole("region", { name: m.newWorkspace });
+  const form = await newWorkspace(page);
   await form.getByLabel(m.newWorkspaceSource).fill("https://user:secret@github.com/octo/widget");
   await form.getByRole("button", { name: m.create }).click();
   await expect(form.getByLabel(m.newWorkspaceSource)).toHaveAttribute("aria-invalid", "true");
@@ -56,7 +80,7 @@ test("a repository that is not there fails with what git said, and is deleted", 
 }) => {
   await signInAs(page, ALICE);
   await page.goto("/");
-  const form = page.getByRole("region", { name: m.newWorkspace });
+  const form = await newWorkspace(page);
   await form.getByLabel(m.newWorkspaceName).fill("missing");
   await form.getByLabel(m.newWorkspaceSource).fill("https://github.com/octo/not-there");
   await form.getByRole("button", { name: m.create }).click();
@@ -66,18 +90,13 @@ test("a repository that is not there fails with what git said, and is deleted", 
   await expect(failed.getByRole("figure", { name: m.workspaceLog })).toContainText(
     "The clone failed",
   );
-  await failed.getByRole("button", { name: m.deleteWorkspace }).click();
-  await page
-    .getByRole("dialog", { name: m.deleteWorkspaceTitle("missing") })
-    .getByRole("button", { name: m.deleteWorkspaceConfirm })
-    .click();
-  await expect(page.getByRole("status")).toHaveText(m.workspaceDeleted("missing"));
+  await deleteWorkspace(page, "missing");
 });
 
 test("a name rcman refuses is shown under its label, and kept", async ({ page }) => {
   await signInAs(page, ALICE);
   await page.goto("/");
-  const form = page.getByRole("region", { name: m.newWorkspace });
+  const form = await newWorkspace(page);
   await form.getByLabel(m.newWorkspaceName).fill("not a name!");
   await form.getByRole("button", { name: m.create }).click();
   await expect(form.getByLabel(m.newWorkspaceName)).toHaveAttribute("aria-invalid", "true");
@@ -145,12 +164,7 @@ test("a workspace is deleted with its server, after asking", async ({ page }) =>
   await card.getByRole("button", { name: m.trustYes }).click();
   await expect(card.getByRole("link", { name: m.openSession })).toBeVisible();
 
-  await doomed.getByRole("button", { name: m.deleteWorkspace }).click();
-  const dialog = page.getByRole("dialog", { name: m.deleteWorkspaceTitle("alice-doomed") });
-  await expect(dialog.getByText(m.deleteWorkspaceBody)).toBeVisible();
-  await dialog.getByRole("button", { name: m.deleteWorkspaceConfirm }).click();
-
-  await expect(page.getByRole("status")).toHaveText(m.workspaceDeleted("alice-doomed"));
+  await deleteWorkspace(page, "alice-doomed");
   expect(new URL(page.url()).searchParams.get("workspace")).toBeNull();
   await expect(
     workspaces(page).getByRole("button", { name: "alice-doomed", exact: true }),
@@ -226,7 +240,7 @@ test("administrators see everyone's workspaces, and act on none of them", async 
   const bob = await browser.newPage();
   await signInAs(bob, BOB);
   await bob.goto("/");
-  await expect(bob.getByText(m.signedInAs(BOB))).toBeVisible();
+  await expectSignedInAs(bob, BOB);
   await expect(bob.getByRole("button", { name: m.navAdmin })).toHaveCount(0);
   const refused = await bob.evaluate(async () => (await fetch("/api/servers/everyone")).status);
   expect(refused).toBe(403);

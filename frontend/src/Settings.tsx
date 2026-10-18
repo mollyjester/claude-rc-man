@@ -1,6 +1,7 @@
 import { type FormEvent, type ReactNode, useEffect, useId, useState } from "react";
 
 import { type ApiError, api } from "./api";
+import { Dialog } from "./Dialog";
 import { m } from "./messages";
 import { asApiError, ProblemView, useFieldErrors } from "./ProblemView";
 
@@ -166,8 +167,12 @@ function RemoveTokenDialog({
   }
 
   return (
-    <div role="dialog" aria-label={m.githubTokenRemoveTitle} className="dialog">
-      <h3>{m.githubTokenRemoveTitle}</h3>
+    <Dialog
+      owner="RemoveTokenDialog"
+      title={m.githubTokenRemoveTitle}
+      onClose={onCancel}
+      closable={!busy}
+    >
       <form noValidate onSubmit={remove}>
         <p>{m.githubTokenRemoveBody}</p>
         <div className="actions">
@@ -180,7 +185,7 @@ function RemoveTokenDialog({
         </div>
       </form>
       <ProblemView error={error} />
-    </div>
+    </Dialog>
   );
 }
 

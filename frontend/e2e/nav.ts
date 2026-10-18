@@ -3,8 +3,38 @@ import { expect, type Locator, type Page } from "@playwright/test";
 
 import { m } from "../src/messages";
 
-export const workspaces = (page: Page) => page.getByRole("region", { name: m.workspacesTitle });
+// The list of workspaces, which the page's own heading names.
+export const workspaces = (page: Page) =>
+  page.getByRole("region", { name: m.navDashboard, exact: true });
 export const panel = (page: Page, name: string) => page.getByRole("region", { name, exact: true });
+
+// Opens New workspace's dialog with the + beside the Workspaces page's heading, and returns it.
+export async function newWorkspace(page: Page) {
+  await page.getByRole("button", { name: m.newWorkspace, exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: m.newWorkspace });
+  await expect(dialog).toBeVisible();
+  return dialog;
+}
+
+// Deletes a workspace with its trash button in the list, after the question.
+export async function deleteWorkspace(page: Page, name: string) {
+  await workspaces(page)
+    .getByRole("button", { name: m.deleteWorkspaceNamed(name), exact: true })
+    .click();
+  const dialog = page.getByRole("dialog", { name: m.deleteWorkspaceTitle(name) });
+  await expect(dialog.getByText(m.deleteWorkspaceBody)).toBeVisible();
+  await dialog.getByRole("button", { name: m.deleteWorkspaceConfirm }).click();
+  await expect(page.getByRole("status")).toHaveText(m.workspaceDeleted(name));
+}
+
+// Who the header says is signed in, read from its account menu, which is closed again after.
+export async function expectSignedInAs(page: Page, email: string) {
+  const button = page.getByRole("banner").getByRole("button", { name: m.account });
+  await button.click();
+  await expect(page.getByRole("banner").getByText(m.signedInAs(email))).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(button).toHaveAttribute("aria-expanded", "false");
+}
 
 // Opens one of the administrators' pages through the navigation's Admin menu.
 export async function openAdminPage(page: Page, label: string) {
@@ -17,9 +47,10 @@ export async function openAdminPage(page: Page, label: string) {
 // wait for that, in milliseconds, and the expectation timeout when it is not given;
 // a caller whose workspace takes longer than that says so (e2e-stack/timing.ts).
 export async function makeWorkspace(page: Page, name: string, wait?: number) {
-  const form = page.getByRole("region", { name: m.newWorkspace });
-  await form.getByLabel(m.newWorkspaceName).fill(name);
-  await form.getByRole("button", { name: m.create }).click();
+  const dialog = await newWorkspace(page);
+  await dialog.getByLabel(m.newWorkspaceName).fill(name);
+  await dialog.getByRole("button", { name: m.create }).click();
+  await expect(dialog).toHaveCount(0);
   const opened = panel(page, name);
   await expect(
     opened.getByRole("heading", { name: m.serverTitle }),

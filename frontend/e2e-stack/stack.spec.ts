@@ -7,7 +7,10 @@ import { execFileSync } from "node:child_process";
 import { expect, type Locator, type Page, test } from "@playwright/test";
 
 import {
+  deleteWorkspace,
+  expectSignedInAs,
   makeWorkspace,
+  newWorkspace,
   openAdminPage,
   panel,
   runInTerminal,
@@ -69,7 +72,7 @@ test("a workspace made before Claude is connected starts no server, and says why
   test.setTimeout(TEST_WITH_FIRST_WORKSPACE_WITHIN); // "plain" is alice's first workspace
   expect(CODE).not.toBe("");
   await signIn(page, ALICE);
-  await expect(page.getByText(m.signedInAs(ALICE))).toBeVisible();
+  await expectSignedInAs(page, ALICE);
   await expect(workspaces(page).getByText(m.workspacesEmpty)).toBeVisible();
   await makeWorkspace(page, "plain", FIRST_WORKSPACE_WITHIN);
   const before = await makeWorkspace(page, "before");
@@ -166,9 +169,9 @@ test("a workspace is made by cloning from GitHub, a private repository once a to
 }) => {
   expect(GITHUB.token).not.toBe("");
   await signIn(page, ALICE);
-  const form = page.getByRole("region", { name: m.newWorkspace });
 
   // A public repository, with no name: named after the repository, being made, then ready.
+  let form = await newWorkspace(page);
   await form.getByLabel(m.newWorkspaceSource).fill(GITHUB.public);
   await form.getByRole("button", { name: m.create }).click();
   const publicOne = panel(page, "stack-public");
@@ -179,6 +182,7 @@ test("a workspace is made by cloning from GitHub, a private repository once a to
   await expect(publicOne.getByRole("figure", { name: m.workspaceLog })).toHaveCount(0);
 
   // A private one, without a token: it fails, in plain words and with what git said.
+  form = await newWorkspace(page);
   await form.getByLabel(m.newWorkspaceSource).fill(GITHUB.private);
   await form.getByRole("button", { name: m.create }).click();
   const privateOne = panel(page, "stack-private");
@@ -195,12 +199,7 @@ test("a workspace is made by cloning from GitHub, a private repository once a to
   await expect(privateOne.getByRole("figure", { name: m.workspaceLog })).toContainText(
     "The clone failed",
   );
-  await privateOne.getByRole("button", { name: m.deleteWorkspace }).click();
-  await page
-    .getByRole("dialog", { name: m.deleteWorkspaceTitle("stack-private") })
-    .getByRole("button", { name: m.deleteWorkspaceConfirm })
-    .click();
-  await expect(page.getByRole("status")).toHaveText(m.workspaceDeleted("stack-private"));
+  await deleteWorkspace(page, "stack-private");
 
   // With a token stored in Settings, the same address is cloned.
   await page.getByRole("banner").getByRole("link", { name: m.navSettings }).click();
@@ -209,6 +208,7 @@ test("a workspace is made by cloning from GitHub, a private repository once a to
   await github.getByRole("button", { name: m.save }).click();
   await expect(github.getByText(m.githubTokenSaved)).toBeVisible();
   await page.getByRole("banner").getByRole("link", { name: m.navDashboard }).click();
+  form = await newWorkspace(page);
   await form.getByLabel(m.newWorkspaceSource).fill(GITHUB.private);
   await form.getByRole("button", { name: m.create }).click();
   const again = panel(page, "stack-private");
@@ -227,12 +227,12 @@ test("another person sees none of it, and reaching it by its id finds nothing", 
 }) => {
   const alice = await browser.newPage();
   await signIn(alice, ALICE);
-  await expect(alice.getByText(m.signedInAs(ALICE))).toBeVisible();
+  await expectSignedInAs(alice, ALICE);
   const theirs = await idOf(alice, "before");
   await alice.close();
 
   await signIn(page, BOB);
-  await expect(page.getByText(m.signedInAs(BOB))).toBeVisible();
+  await expectSignedInAs(page, BOB);
   await expect(workspaces(page).getByText(m.workspacesEmpty)).toBeVisible();
   await expect(page.getByRole("button", { name: m.navAdmin })).toHaveCount(0);
   await page.goto(`/?workspace=${theirs}`);
@@ -311,7 +311,7 @@ test("the People page adds a person and removes another, with her workspaces", a
   // dave is let in at once
   const dave = await browser.newPage();
   await signIn(dave, DAVE);
-  await expect(dave.getByText(m.signedInAs(DAVE))).toBeVisible();
+  await expectSignedInAs(dave, DAVE);
   await dave.close();
 
   const carol = page.getByRole("row", { name: new RegExp(CAROL) });
@@ -368,7 +368,7 @@ test("a workspace's terminal runs a shell in its container, through Caddy and oa
   page,
 }) => {
   await signIn(page, ALICE);
-  await expect(page.getByText(m.signedInAs(ALICE))).toBeVisible();
+  await expectSignedInAs(page, ALICE);
   const made = await makeWorkspace(page, "terminal");
   await made.getByRole("tab", { name: m.tabTerminal }).click();
   await expect(made.getByRole("status")).toHaveText(m.terminalConnected);

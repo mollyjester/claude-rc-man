@@ -51,9 +51,10 @@ because two refreshes collided. Connect your Claude account again to start serve
 
 ## Signing out of rcman
 
-**Sign out of rcman**, beside your name at the top of every page, ends your rcman
-session in this browser. Your servers do not depend on it: with **Keep servers
-running after sign-out** ticked, as it is at first, they keep running; untick it
+**Sign out of rcman**, in the **Account** menu at the top of every page, which
+also says who you are signed in as, ends your rcman session in this browser.
+Your servers do not depend on it: with **Keep servers running after sign-out**,
+beside it in the menu, ticked, as it is at first, they keep running; untick it
 to have them stopped first. Your Claude account stays connected either way.
 Signing out ends your workspaces' terminals, in every browser (see
 [The terminal](workspaces.md#the-terminal)).

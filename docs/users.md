@@ -25,7 +25,7 @@ someone is refused.
 
 ## Removing someone
 
-On the **People** page, **Remove** asks first, then removes them. Or:
+On the **People** page, **Remove** asks first, in a dialog, then removes them. Or:
 
 ```
 sudo rcman-admin delete <google-email>
@@ -59,7 +59,8 @@ now beside it. Fill in **Memory**, **CPU** and **Processes** and press
 **Save**: each form is saved on its own, a field left empty is **No limit**, and
 a line under each field says what it takes. A refusal is shown under the field
 it is about. The dialog's **How limits work** holds the rest of what this
-section says, folded away. Or, as root over SSH:
+section says, folded away. **Close** or Escape closes the dialog, except while a form is
+being saved. Or, as root over SSH:
 
 ```
 sudo rcman-admin limits <google-email>

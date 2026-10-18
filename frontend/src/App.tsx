@@ -5,12 +5,10 @@ import { ADMIN_PAGES } from "./AdminPages";
 import { Attention } from "./Attention";
 import { type ApiError, api } from "./api";
 import { Caret } from "./Caret";
-import { ClaudePage } from "./Claude";
-import { Dashboard } from "./Dashboard";
-import { Docs } from "./Docs";
+import { PersonIcon } from "./Icons";
 import { m } from "./messages";
+import { PAGES } from "./Pages";
 import { asApiError, ProblemView } from "./ProblemView";
-import { Settings } from "./Settings";
 import { usePopup } from "./usePopup";
 import { useTitle } from "./useTitle";
 
@@ -60,7 +58,7 @@ function SignOut() {
 // The administrators' pages behind one button: a pop-up (src/usePopup.ts) that
 // also closes when a page is chosen and when the page changes.
 function AdminMenu() {
-  const menu = usePopup();
+  const menu = usePopup("AdminMenu");
   const { close } = menu;
   const { pathname } = useLocation();
   const here = ADMIN_PAGES.some((page) => matchPath(page.path, pathname));
@@ -87,6 +85,25 @@ function AdminMenu() {
   );
 }
 
+// Who is signed in, and signing out of rcman, behind one button at the end of the header: a
+// pop-up (src/usePopup.ts), on every width.
+function AccountMenu({ me }: { me: Me }) {
+  const menu = usePopup("AccountMenu");
+  return (
+    <div className="menu account" ref={menu.rootRef}>
+      <button type="button" {...menu.buttonProps}>
+        <PersonIcon />
+        {m.account}
+        <Caret />
+      </button>
+      <div {...menu.panelProps} className="account-panel" hidden={!menu.open}>
+        <p className="muted">{m.signedInAs(me.email)}</p>
+        <SignOut />
+      </div>
+    </div>
+  );
+}
+
 function Nav({ me }: { me: Me }) {
   return (
     <header>
@@ -100,8 +117,7 @@ function Nav({ me }: { me: Me }) {
         <NavLink to="/help">{m.navDocs}</NavLink>
         {me.admin && <AdminMenu />}
       </nav>
-      <span className="muted">{m.signedInAs(me.email)}</span>
-      <SignOut />
+      <AccountMenu me={me} />
     </header>
   );
 }
@@ -147,32 +163,19 @@ export function App({ pollMs = POLL_MS }: { pollMs?: number }) {
       <main id="main" tabIndex={-1} ref={main}>
         {me.admin && <Attention />}
         <Routes>
-          <Route
-            path="/"
-            element={
-              <Titled title={m.navDashboard}>
-                <Dashboard pollMs={pollMs} />
-              </Titled>
-            }
-          />
-          <Route
-            path="/claude"
-            element={
-              <Titled title={m.navClaude}>
-                <ClaudePage />
-              </Titled>
-            }
-          />
-          <Route
-            path="/settings"
-            element={
-              <Titled title={m.navSettings}>
-                <Settings />
-              </Titled>
-            }
-          />
-          <Route path="/help" element={<Docs />} />
-          <Route path="/help/:slug" element={<Docs />} />
+          {PAGES.map((page) => (
+            <Route
+              key={page.path}
+              path={page.path}
+              element={
+                page.title === null ? (
+                  page.element({ pollMs })
+                ) : (
+                  <Titled title={page.title}>{page.element({ pollMs })}</Titled>
+                )
+              }
+            />
+          ))}
           {me.admin &&
             ADMIN_PAGES.map((page) => (
               <Route
