@@ -11,6 +11,7 @@ from pathlib import Path
 
 from fastapi import FastAPI
 
+from helpers import seccomp
 from rcman import audit, claude_versions, db, headers, journal, people, problems, spa, unrecognised
 from rcman.accounts import Accounts
 from rcman.gitaccount import GitAccount
@@ -83,7 +84,25 @@ def _start(settings: Settings) -> None:
     _retention(settings)
 
 
-def create_app(settings: Settings | None = None, runtime: Runtime | None = None) -> FastAPI:
+def check_seccomp(tools: Path, default: Path = seccomp.PODMAN_DEFAULT) -> None:
+    """Say in the journal, loudly, when the workspaces' seccomp profile in the tools is missing or
+    is not the one derived from Podman's current default, as after an upgrade of Podman's
+    profile. Missing, no workspace can be made, since Podman refuses a profile that is not there;
+    stale, workspaces are made with the profile that is there. Either way until the installer
+    runs again."""
+    why = seccomp.stale(tools, default)
+    if why is not None:
+        workspaces_log.error(
+            "%s: run the installer again, which derives it from Podman's profile", why
+        )
+
+
+def create_app(
+    settings: Settings | None = None,
+    runtime: Runtime | None = None,
+    *,
+    builder_slot: int = people.BUILDER_SLOT,
+) -> FastAPI:
     settings = settings or Settings()
     for log in (
         audit.log,
@@ -94,7 +113,9 @@ def create_app(settings: Settings | None = None, runtime: Runtime | None = None)
         terminals_log,
     ):
         journal.install(log)
-    service = Workspaces(settings, runtime or podman_runtime(settings))
+    if runtime is None:  # rcman's own Podman, whose workspaces take the profile
+        check_seccomp(settings.tools_dir)
+    service = Workspaces(settings, runtime or podman_runtime(settings), builder_slot=builder_slot)
     sign_ins = Accounts(service)
     terminals = Terminals(service)
 

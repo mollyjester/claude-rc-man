@@ -86,8 +86,63 @@ runuser -u rcman -- env -i PATH=/usr/bin:/bin HOME=/var/lib/rcman \
    changed, and the groups are the same but for `rcman`, `rcman-proxy` and `rcman-web`
    (with Caddy's account in the last).
 7. **Run the installer again** (step 9 of
-   [On an installed server](#on-an-installed-server)): it changes nothing.
-8. **Removal, on a spare machine.** Follow
+   [On an installed server](#on-an-installed-server)): it changes nothing, and a workspace's
+   container with limits on its slices keeps its process, its start time and its limits in the
+   kernel's files (step 10), and rcman's user manager its process.
+8. **rcman's own rootless Podman, under systemd.** `/var/lib/systemd/linger/rcman` is there;
+   `systemctl --user --machine rcman@ is-active podman.socket` says `active`;
+   `podman info --format '{{.Host.Security.Rootless}}'` as `rcman` prints `true`; and `rcman`'s
+   lines in `/etc/subuid` and `/etc/subgid` hold `SUBORDINATE_COUNT` ids
+   (`installer/install.py`).
+9. **The service and its images.** `systemctl show rcman.service -p NoNewPrivileges,Environment`
+   shows `NoNewPrivileges=yes` and `XDG_RUNTIME_DIR` naming rcman's runtime folder. The default
+   image and the builder image (`RCMAN_WORKSPACE_IMAGE` and `RCMAN_BUILDER_IMAGE` in
+   `/etc/rcman/rcman.env`) are in rcman's Podman, and `devcontainer --version` runs in the
+   builder image (`podman run --rm --pull=never <builder image> devcontainer --version`). A
+   running server's container and its conmon are in cgroups under `user@<rcman's uid>.service`,
+   not under `rcman.service` (`/proc/<pid>/cgroup` of each, the pids from
+   `podman container inspect`).
+10. **Limits in the kernel.** The drop-ins `ensure_limits` writes are there with the installer's
+    text, `pids.max` of `user-<rcman's uid>.slice` under `/sys/fs/cgroup/user.slice` says
+    `max`, `systemctl --user --machine rcman@ show -p DefaultTasksMax` says `infinity`, and
+    `cgroup.controllers` of `user@<rcman's uid>.service` lists `cpu`, `memory` and `pids`. Before
+    any limit is set, nothing in the chain from rcman's slices down to a workspace container's
+    `libpod-` scope and the cgroup inside it has a limit on memory, CPU or processes. Set a
+    person's limits on the **People** page and a workspace's with `rcman-admin limits`:
+    `memory.max`, `memory.swap.max`, `cpu.max` and `pids.max` of the person's and the
+    workspace's slices, under `user@<rcman's uid>.service` in `/sys/fs/cgroup`, hold them, and
+    the workspace's container is in a `libpod-` scope beneath the workspace's slice. Take them
+    off: the files say `max` again, and the server ran throughout.
+11. **The audit reaches the journal.** Change a setting on the **Settings** page:
+    `journalctl -u rcman -o cat` has a JSON line for it (`settings.update`, `ok`).
+12. **A short image name in a workspace.** In a workspace's **Terminal** tab,
+    `podman pull alpine` pulls `docker.io/library/alpine`, and `podman run --rm alpine true`
+    runs it.
+13. **Limits as installed.** `sudo rcman-admin limits <address> --workspace <name> --memory
+    <size> --cpu <cpus> --pids <count>` says the limits it set; `sudo rcman-admin limits <address>
+    --workspace <name>` shows them with what is in use; the **People** page's report of the
+    person shows tasks in use above none; and the workspace's container is in a `libpod-` scope
+    beneath the workspace's slice. Delete that workspace: its slice's files under
+    `/sys/fs/cgroup` say `max` again, so a later workspace given the same id inherits nothing.
+14. **A limit below what is in use.** In a workspace's **Terminal** tab, fill memory and keep it
+    (for example `head -c <size> /dev/zero | tail` in the background), and read its slice's
+    `memory.current` under `/sys/fs/cgroup`. Set a memory limit below that, on the **People**
+    page and with `rcman-admin limits`: both are refused as below what is in use
+    (`limit_below_use`), naming the use, and the slice's files and the **People** page's report
+    are as they were. A limit above the use is then accepted.
+15. **A build's builder in the person's slice.** While a repository's devcontainer.json with a
+    Dockerfile is being built, the builder's container (`rcman-build-<id>`) is in a `libpod-`
+    scope beneath the slice of the person who asked for it, beside their workspaces' slices and
+    not in one of them.
+16. **No way to the machine's loopback from a workspace of a repository's own image.** As
+    step 5, from a workspace made from a devcontainer.json naming an image with a `remoteUser`:
+    the same connections fail.
+17. **Rollback.** `sudo ./install.sh --rollback` switches `/opt/rcman/current` to the previous
+    release and rcman answers; running `sudo ./install.sh` again brings the newest back.
+18. **The repository's own checks in a workspace.** After the reinstall, make a workspace of
+    rcman's own repository (its `.devcontainer` is built for it) and run `make check-all` there:
+    every part passes, as on a development machine.
+19. **Removal, on a spare machine.** Follow
    [Removing rcman](../docs/installation.md#removing-rcman): the commands that check that
    nothing is left print nothing, Caddy restarts and still serves its other sites, and
    the packages and the operator's accounts are as they were.
@@ -109,7 +164,9 @@ more workspace stopped on purpose, and a limit set on one workspace (see
    servers that were running are running again, and the one stopped on purpose is
    still stopped. `podman ps` as `rcman` lists the same containers as before.
 5. **The limit holds.** The workspace's limit is shown, and the unit manager has
-   it again (see [Limits](runtime.md#limits)).
+   it again (see [Limits](runtime.md#limits)): the slice's files under `/sys/fs/cgroup` hold
+   it, and they were written before the container started (their times, against the
+   container's start in `podman container inspect`).
 6. **The sessions reconnect.** The sessions of the servers that were running
    show again in claude.ai/code, and answer.
 7. **The journal is clean.** `sudo journalctl -u rcman -b` shows no error.
@@ -173,7 +230,7 @@ runs are in [runtime.md](runtime.md#the-canary); the fake cannot show these.
    its own.
 4. **A command typed in a session.** After a roll-out, in the shell of an already
    running session, type `claude --version`. The shell's `PATH` starts with the
-   store's `bin`, which follows `current`, so expect the new version while the server
+   store's `bin`, which follows `current` (then the tools' `podman` and `docker`), so expect the new version while the server
    keeps the old one. Then find which program the server's own children run:
    `/proc/<pid>/exe` of a process the server spawned for a session. Write down what
    the real product does; `docs/claude-version.md` claims only that the server

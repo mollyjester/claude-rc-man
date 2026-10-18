@@ -12,6 +12,8 @@
 /CLAUDE.md export-ignore
 /CONTRIBUTING.md export-ignore
 /Makefile export-ignore
+/.devcontainer export-ignore
+/.devcontainer/** export-ignore
 /.gitattributes export-ignore
 /.gitignore export-ignore
 # The frontend's sources: a deployment receives the built frontend/dist instead.

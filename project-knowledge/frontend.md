@@ -331,18 +331,22 @@ the rest. Nothing of this is shown to the person.
   the other's still writes there; runs at the same time are each in a
   checkout or worktree of their own.
 - **Whole-stack browser tests**: `e2e-stack/*.spec.ts` with
-  `playwright.stack.config.ts`, against an installed rcman behind real Caddy
-  and oauth2-proxy in a container — see [tests.md](tests.md). They are run
-  on demand by `make check-ui` (not by `make e2e`, `make check` or
-  `make test-container`), which needs `make frontend-setup` once, like
-  `make e2e`. The config
-  takes the container's published port from `RCMAN_STACK_PORT`, which
-  `tests/test_container_suite.py` sets, and refuses to load without it. A spec that
-  needs something done inside the container, such as a repository in a workspace
-  (`stack.py repository`), runs the command in `RCMAN_STACK_EXEC`, a JSON argv
-  prefix that runs a command in the podman host. The specs that make a workspace
-  from a GitHub address clone from the stack's stand-in GitHub (see
-  [tests.md](tests.md)).
+  `playwright.stack.config.ts`, against the whole stack, rcman behind real Caddy and
+  oauth2-proxy in a container of the tests' engine — see [tests.md](tests.md#the-whole-stack).
+  They run in Playwright's own image, in a container that joins the stack's network. They are
+  run on demand by `make check-ui` (not by `make e2e`, `make check` or `make test-container`),
+  which needs `make frontend-setup` once, like `make e2e`: the browser's container uses the
+  frontend's packages. The config takes the port Caddy listens on in the stack's network from
+  `RCMAN_STACK_PORT`, which `tests/container/test_stack_in_a_browser.py` sets, and refuses to load
+  without it. A spec that needs something done inside the stack, such as a repository in a
+  workspace (`stack.py repository`), runs the command in `RCMAN_STACK_EXEC`, a JSON argv
+  prefix that hands it to the suite (`tests/container/stack_exec.mjs`), which runs it in the
+  stack's container. The specs that make a workspace from a GitHub address clone from the
+  stack's stand-in GitHub.
+
+Every config gives Chromium `--disable-dev-shm-usage`: `/dev/shm` is small in a container, a
+workspace's and the browser's container of the whole stack among them;
+`tests/test_e2e_server.py` holds both configs to it.
 
 Each Playwright config writes to an output folder of its own under
 `test-results/`, its `outputDir`, because Playwright empties a run's output

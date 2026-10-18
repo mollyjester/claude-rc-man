@@ -33,7 +33,7 @@ testpaths = ["tests"]
 pythonpath = ["."]
 addopts = "-ra --strict-markers -m 'not real_claude'"
 markers = [
-    "container: derived in tests/container_marker.py from the docker fixture: the test needs a container",
+    "container: derived in tests/container_marker.py from the podman_service fixture, the tests' own Podman engine: the test needs a container",
     "stack: the whole stack in a browser, in a container; run on demand by make check-ui, not by make test-container",
     "real_claude: needs a logged-in Claude account; run by hand with -m real_claude",
 ]

@@ -57,11 +57,14 @@ def run_argv(
     labels: Mapping[str, str],
     ids: Sequence[str],
     image: str,
+    *,
+    network: str,
     cgroup_parent: str | None = None,
 ) -> list[str]:
     """The arguments of ``podman run`` for the builder: detached, in the uid range ``ids`` maps
-    (never a person's), with the network of every workspace and the one capability and the one
-    device a Podman inside needs; not privileged. The image is never pulled. With
+    (never a person's), on ``network``, the network of every workspace, with the one capability
+    a Podman inside needs to mount overlay itself and no device; not privileged. The image is
+    never pulled. With
     ``cgroup_parent`` it runs in that systemd slice, which is how the limits of the person who
     asked for the build hold it (limits.py)."""
     name = builder_name(workspace)
@@ -71,13 +74,12 @@ def run_argv(
         f"--name={name}",
         *(f"--label={key}={value}" for key, value in labels.items()),
         "--init",
-        "--network=slirp4netns:allow_host_loopback=false",
+        f"--network={network}",
         *ids,
         *([f"--cgroup-parent={cgroup_parent}"] if cgroup_parent else []),
         # Podman gives a container a limit on processes of its own unless it is told there is
         # none; the limit that holds is the slice's TasksMax (limits.py), as for a workspace.
         "--pids-limit=-1",
-        "--device=/dev/fuse",
         "--cap-add=SYS_ADMIN",
         "--security-opt=label=disable",
         f"--volume={name}:{STORAGE_MOUNT}",

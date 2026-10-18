@@ -71,7 +71,6 @@ ALLOWED_FORMS = {
     "systemctl": ("systemctl", "administrators manage the services through it"),
     "journalctl": ("journalctl", "administrators read the journal through it"),
     f"-u{GAP}caddy{GAP}caddy": ("-u caddy caddy", "Caddy's own check runs as Caddy's account"),
-    f"-n{GAP}docker": ("-n docker", "the container suite's way to docker when the account may not"),
     "reboot": ("reboot", "the real-machine checklist restarts the host"),
 }
 # Sentences that name the command without running anything, as a word before it.
@@ -297,8 +296,14 @@ def test_an_allowed_form_of_the_privilege_command_passes_outside_product_code(tm
 
 
 def test_the_command_in_a_written_out_list_of_arguments_passes(tmp_path):
-    text = f'prefix = ["{PRIV}", "-n", "docker"]\n'
+    text = f'argv = ["{PRIV}", "systemctl", "restart", "rcman"]\n'
     assert planted(tmp_path, {"tests/test_x.py": text}) == []
+
+
+def test_docker_after_the_command_is_a_form_nobody_listed(tmp_path):
+    """The tests reach no container through the command: their engine is the user's own."""
+    found = planted(tmp_path, {"tests/test_x.py": f'prefix = ["{PRIV}", "-n", "docker"]\n'})
+    assert len(found) == 1 and "form not allowed" in found[0], found
 
 
 @pytest.mark.parametrize("word", sorted(ALLOWED_PROSE))
@@ -338,7 +343,7 @@ def test_the_variable_of_the_account_that_ran_it_is_not_the_command(tmp_path):
         "installer/builder/Containerfile",
     ],
 )
-@pytest.mark.parametrize("form", ["rcman-admin", "./install.sh", "systemctl", "-n docker"])
+@pytest.mark.parametrize("form", ["rcman-admin", "./install.sh", "systemctl", "reboot"])
 def test_product_code_holds_the_command_in_no_form_at_all(tmp_path, rel, form):
     found = planted(tmp_path, {rel: f"# {PRIV} {form}\n"})
     assert len(found) == 1 and "privilege command in product" in found[0], found

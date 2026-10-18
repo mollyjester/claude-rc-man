@@ -1,15 +1,11 @@
-"""The Podman runtime (backend/rcman/runtime.py) against real rootless Podman, in the
-podman host, as the service account rcman runs as.
-
-``tests/test_container_suite.py`` runs this module there as the account, once the
-podman host is set up (tests/container/podman_host.py), with the static tools built
-by the installer's own code in TOOLS, an empty Claude store in CLAUDE, and a base image
-loaded and named in ``RCMAN_PODMAN_IMAGE``. Anywhere else it skips. The same contract
-the host runtime keeps (tests/runtime_contract.py) runs here first.
+"""The Podman runtime (backend/rcman/runtime.py) against real rootless Podman: the tests'
+engine (tests/podman_service.py), with the suites' sizes (tests/container/sizes.py), the tools
+as the installer writes them, an empty Claude store and the default workspace image
+(tests/container/conftest.py). The same contract the host runtime keeps
+(tests/runtime_contract.py) runs here first.
 """
 
 import json
-import os
 import subprocess
 import time
 from pathlib import Path
@@ -19,40 +15,38 @@ from rcman import channel as ch
 from rcman import runtime as rt
 
 from tests import runtime_contract
+from tests.container import sizes
 
-pytestmark = pytest.mark.skipif(
-    os.environ.get("RCMAN_IN_CONTAINER") != "1" or "RCMAN_PODMAN_IMAGE" not in os.environ,
-    reason="runs only as the service account inside the podman host",
-)
-
-STATE = Path("/var/lib/rcman")
-TOOLS = STATE / "tools"
-CLAUDE = STATE / "claude"
 # The most memory one channel's podman client may hold: one is open per workspace with a
 # server, so it bounds what rcman's channels cost.
 CLIENT_MAX_RSS_BYTES = 64 * 1024 * 1024
-
-
-def socket() -> Path:
-    return Path(f"/run/user/{os.getuid()}/podman/podman.sock")
-
-
-@pytest.fixture(scope="module")
-def podman():
-    return rt.PodmanRuntime(
-        rt.PodmanConfig(
-            socket=socket(),
-            image=os.environ["RCMAN_PODMAN_IMAGE"],
-            tools_dir=TOOLS,
-            claude_store=CLAUDE,
-        )
-    )
+# The workspace ids this module's own workspaces have, clear of the other modules'.
+FIRST_WORKSPACE = 500
 
 
 def spec(n: int) -> rt.Spec:
-    """The n-th workspace a test makes, in slot n: the podman host's subordinate range
-    (tests/container/podman_host.py) holds a few slots, not every one rcman has."""
-    return rt.Spec(name=rt.container_name(500 + n), slot=n, workspace=500 + n, person=n)
+    """The n-th workspace a test makes, of a person of its own numbered as the workspace is, in
+    one of the people's slots in turn: the engine holds a few slots, not every one rcman has."""
+    slots = sizes.PEOPLE_SLOTS
+    slot = slots[n % len(slots)]
+    workspace = FIRST_WORKSPACE + n
+    return rt.Spec(
+        name=rt.container_name(workspace), slot=slot, workspace=workspace, person=workspace
+    )
+
+
+@pytest.fixture(scope="module", autouse=True)
+def nothing_left(podman):
+    """What the module made goes when it ends: the engine is the session's, and another module
+    may give the same slot to a person of the same number. The contract's cases remove their
+    workspaces but leave a person's account, as a person's deletion is what removes it."""
+    yield
+    for name, labels in podman.labelled().items():
+        if int(labels[rt.LABEL_WORKSPACE]) >= FIRST_WORKSPACE:
+            podman.remove(name)
+    for n in range(1, len(runtime_contract.CASES) + 100):
+        podman.remove_account(spec(n).person)
+        podman.remove_account(spec(n).person + 100)  # the contract's other person of a slot
 
 
 @pytest.mark.parametrize("case", runtime_contract.CASES, ids=lambda case: case.__name__)
@@ -71,20 +65,24 @@ def workspace(podman):
         podman.remove_account(made.person)
 
 
-def podman_cli(*args: str) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        ["podman", "--remote", "--url", f"unix://{socket()}", *args],
-        capture_output=True,
-        text=True,
-        errors="replace",
-        timeout=120,
-    )
-
-
-def inspect(name: str) -> dict:
-    found = podman_cli("container", "inspect", name)
+def inspect(engine, name: str) -> dict:
+    found = engine.cli("container", "inspect", name, timeout=120)
     assert found.returncode == 0, found.stderr
     return json.loads(found.stdout)[0]
+
+
+def unshare_stat(engine, path: str) -> list[str]:
+    """``%u %g %a`` of ``path``, as the engine's user namespace sees ids: a range's root is the
+    range's base."""
+    found = engine.local("unshare", "stat", "-c", "%u %g %a", path, timeout=120)
+    assert found.returncode == 0, found.stderr
+    return found.stdout.decode().split()
+
+
+def volume_mount(engine, volume: str) -> str:
+    mount = engine.cli("volume", "inspect", "--format", "{{.Mountpoint}}", volume, timeout=120)
+    assert mount.returncode == 0, mount.stderr
+    return mount.stdout.decode().strip()
 
 
 def in_it(podman, name: str, script: str) -> rt.Result:
@@ -96,27 +94,33 @@ def test_a_workspace_runs_in_its_persons_uid_range(podman, workspace):
     found = (
         in_it(podman, workspace, "cat /proc/self/uid_map /proc/self/gid_map").out.decode().split()
     )
-    base = str(spec(2).slot * rt.RANGE)
-    assert found == ["0", base, str(rt.RANGE), "0", base, str(rt.RANGE)]
+    base = str(spec(2).slot * sizes.TEST_RANGE)
+    assert found == ["0", base, str(sizes.TEST_RANGE), "0", base, str(sizes.TEST_RANGE)]
 
 
-def test_its_volume_belongs_to_its_ranges_root_and_no_one_else(podman, workspace):
-    mount = podman_cli("volume", "inspect", "--format", "{{.Mountpoint}}", workspace)
-    owner = subprocess.run(
-        ["podman", "unshare", "stat", "-c", "%u %g %a", mount.stdout.strip()],
-        capture_output=True,
-        text=True,
-        errors="replace",
-    )
-    base = spec(2).slot * rt.RANGE
-    assert owner.stdout.split() == [str(base), str(base), "700"], owner.stderr
+def test_an_exec_runs_the_images_own_program_and_answers_without_its_mark(podman, workspace):
+    """The program a bare name finds on the container's PATH is the image's, as Podman runs it,
+    not the mounted busybox's applet of that name; what it wrote and its code are its own, and
+    the mark the exec writes first (rt.EXEC_MARK) is not in the answer."""
+    found = podman.exec(workspace, ["stat", "--version"], again=True)
+    assert found.code == 0 and found.out.startswith(b"stat (GNU coreutils)"), found
+    said = podman.exec(workspace, [podman.layout(workspace).shell, "-c", "echo e >&2; exit 4"])
+    assert said == rt.Result(4, b"", b"e\n")
+    missing = podman.exec(workspace, ["no-such-program"])
+    assert missing.code == 127 and b"no-such-program" in missing.err, missing
 
 
-def test_a_workspace_has_an_init_and_publishes_nothing(podman, workspace):
-    found = inspect(workspace)
+def test_its_volume_belongs_to_its_ranges_root_and_no_one_else(podman_service, workspace):
+    base = spec(2).slot * sizes.TEST_RANGE
+    owner = unshare_stat(podman_service, volume_mount(podman_service, workspace))
+    assert owner == [str(base), str(base), "700"]
+
+
+def test_a_workspace_has_an_init_and_publishes_nothing(podman_service, podman, workspace):
+    found = inspect(podman_service, workspace)
     assert found["HostConfig"]["Init"] is True
     assert not found["HostConfig"]["PortBindings"]
-    assert podman_cli("port", workspace).stdout.strip() == ""
+    assert podman_service.cli("port", workspace).stdout.strip() == b""
     first = in_it(podman, workspace, "cat /proc/1/cmdline").out
     assert b"init" in first.split(b"\0")[0]
 
@@ -131,35 +135,13 @@ def test_the_tools_and_the_claude_store_are_read_only_and_the_runtime_folder_a_t
     assert any(line.split()[1:3] == [rt.RUN_MOUNT, "tmpfs"] for line in mounts), mounts
 
 
-def test_the_hosts_loopback_is_not_reachable(podman, workspace):
-    """slirp4netns's address for the host leads nowhere: nothing on the host's loopback
-    answers a workspace."""
-    import http.server
-    import threading
-
-    server = http.server.HTTPServer(("127.0.0.1", 0), http.server.SimpleHTTPRequestHandler)
-    port = server.server_address[1]
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    try:
-        import urllib.request
-
-        with urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=5) as answer:
-            assert answer.status == 200  # positive control: it answers on the host
-        wget = " ".join(podman.layout(workspace).tool("wget"))
-        tried = in_it(podman, workspace, f"{wget} -q -T 5 -O /dev/null http://10.0.2.2:{port}/")
-        assert tried.code != 0
-    finally:
-        server.shutdown()
-
-
-def test_an_unreachable_socket_is_unavailable_not_missing():
+def test_an_unreachable_socket_is_unavailable_not_missing(podman_service, podman):
     nowhere = rt.PodmanRuntime(
         rt.PodmanConfig(
             socket=Path("/run/user/0/nowhere.sock"),
             image="x",
-            tools_dir=TOOLS,
-            claude_store=CLAUDE,
+            tools_dir=podman.config.tools_dir,
+            claude_store=podman.config.claude_store,
         )
     )
     with pytest.raises(rt.RuntimeUnavailable):
@@ -201,19 +183,18 @@ def credentials_in(layout: rt.Layout) -> str:
     return f"{layout.config}/{rt.CREDENTIALS}"
 
 
-def test_a_persons_credentials_file_is_their_ranges_roots_alone(podman, workspace):
+def test_a_persons_credentials_file_is_their_ranges_roots_alone(podman_service, podman, workspace):
     who = spec(2)
-    mount = podman_cli("volume", "inspect", "--format", "{{.Mountpoint}}", rt.account_volume(2))
-    assert mount.returncode == 0, mount.stderr
-    owner = subprocess.run(
-        ["podman", "unshare", "stat", "-c", "%u %g %a", f"{mount.stdout.strip()}/{rt.CREDENTIALS}"],
-        capture_output=True,
-        text=True,
-        errors="replace",
+    mount = volume_mount(podman_service, rt.account_volume(who.person))
+    base = who.slot * sizes.TEST_RANGE
+    assert unshare_stat(podman_service, f"{mount}/{rt.CREDENTIALS}") == [
+        str(base),
+        str(base),
+        "600",
+    ]
+    labels = podman_service.cli(
+        "volume", "inspect", "--format", "{{json .Labels}}", rt.account_volume(who.person)
     )
-    base = who.slot * rt.RANGE
-    assert owner.stdout.split() == [str(base), str(base), "600"], owner.stderr
-    labels = podman_cli("volume", "inspect", "--format", "{{json .Labels}}", rt.account_volume(2))
     assert json.loads(labels.stdout) == {rt.LABEL_PERSON: str(who.person)}
     seen = in_it(podman, workspace, f"stat -c '%u %a' {credentials_in(podman.layout(workspace))}")
     assert seen.out.split() == [b"0", b"600"]  # root's, as the workspace sees it
@@ -228,7 +209,7 @@ def test_a_rename_over_the_bound_file_is_refused_busy_and_a_write_in_place_is_sh
     renamed = in_it(podman, workspace, f"echo new > {target}.new && mv {target}.new {target}")
     assert renamed.code != 0 and b"busy" in renamed.err.lower(), renamed
     assert in_it(podman, workspace, f"printf kept > {target}").code == 0  # positive control
-    assert podman.read_account(2, spec(2).slot) == b"kept"
+    assert podman.read_account(spec(2).person, spec(2).slot) == b"kept"
 
 
 def test_a_sign_in_container_removes_itself_when_its_time_is_up(podman):
@@ -248,33 +229,15 @@ def test_a_sign_in_container_removes_itself_when_its_time_is_up(podman):
 # --- a person's git account -----------------------------------------------------------
 
 
-def unshare_stat(path: str) -> list[str]:
-    """``%u %g %a`` of ``path``, as the person's range sees ids: root's are the range's base."""
-    found = subprocess.run(
-        ["podman", "unshare", "stat", "-c", "%u %g %a", path],
-        capture_output=True,
-        text=True,
-        errors="replace",
-    )
-    assert found.returncode == 0, found.stderr
-    return found.stdout.split()
-
-
-def account_mount(person: int) -> str:
-    mount = podman_cli(
-        "volume", "inspect", "--format", "{{.Mountpoint}}", rt.account_volume(person)
-    )
-    assert mount.returncode == 0, mount.stderr
-    return mount.stdout.strip()
-
-
-def test_a_persons_git_folder_and_its_files_are_their_ranges_roots_alone(podman, workspace):
+def test_a_persons_git_folder_and_its_files_are_their_ranges_roots_alone(
+    podman_service, podman, workspace
+):
     who = spec(2)
     podman.put_account(who.person, who.slot, "credential", b"password=x\n")
-    base = str(who.slot * rt.RANGE)
-    folder = f"{account_mount(who.person)}/{rt.GIT_DIR}"
-    assert unshare_stat(folder) == [base, base, "700"]
-    assert unshare_stat(f"{folder}/credential") == [base, base, "600"]
+    base = str(who.slot * sizes.TEST_RANGE)
+    folder = f"{volume_mount(podman_service, rt.account_volume(who.person))}/{rt.GIT_DIR}"
+    assert unshare_stat(podman_service, folder) == [base, base, "700"]
+    assert unshare_stat(podman_service, f"{folder}/credential") == [base, base, "600"]
     layout = podman.layout(workspace)
     seen = in_it(podman, workspace, f"stat -c '%u %a' {layout.home}/{rt.GIT_HOME}")
     assert seen.out.split() == [b"0", b"700"]  # root's, as the workspace sees it
@@ -282,14 +245,17 @@ def test_a_persons_git_folder_and_its_files_are_their_ranges_roots_alone(podman,
     assert seen.out.split() == [b"0", b"600"]
 
 
-def test_the_git_folder_is_bound_and_a_rename_inside_it_works(podman, workspace):
+def test_the_git_folder_is_bound_and_a_rename_inside_it_works(podman_service, podman, workspace):
     """Unlike the credentials file, which is one bound file and so cannot be replaced by a
     rename, the folder is a mount point of its own and what is in it can be."""
     who = spec(2)
     layout = podman.layout(workspace)
     target = f"{layout.home}/{rt.GIT_HOME}"
-    mounted = [m for m in inspect(workspace)["Mounts"] if m["Destination"] == target]
-    assert [m["Source"] for m in mounted] == [f"{account_mount(who.person)}/{rt.GIT_DIR}"]
+    mounted = [
+        m for m in inspect(podman_service, workspace)["Mounts"] if m["Destination"] == target
+    ]
+    own = volume_mount(podman_service, rt.account_volume(who.person))
+    assert [m["Source"] for m in mounted] == [f"{own}/{rt.GIT_DIR}"]
     renamed = in_it(podman, workspace, f"cd {target} && echo new > t.new && mv t.new t")
     assert renamed.code == 0, renamed
     podman.put_account(who.person, who.slot, "config", b"[user]\n")  # a rename, from outside
@@ -298,26 +264,18 @@ def test_the_git_folder_is_bound_and_a_rename_inside_it_works(podman, workspace)
 
 
 def test_a_git_file_is_written_with_no_container_left_and_the_data_not_on_a_command_line(
-    podman,
+    podman_service, podman
 ):
     who = spec(3)
     secret = b"password=SECRET-FOR-THE-PODMAN-TEST\n"
-    before = podman_cli("ps", "--all", "--format", "{{.Names}}").stdout.split()
+    before = podman_service.cli("ps", "--all", "--format", "{{.Names}}").stdout.split()
     try:
         podman.put_account(who.person, who.slot, "credential", secret)
-        left = podman_cli("ps", "--all", "--format", "{{.Names}}")
+        left = podman_service.cli("ps", "--all", "--format", "{{.Names}}")
         assert left.stdout.split() == before  # the container that wrote it removed itself
-        assert (
-            subprocess.run(
-                [
-                    "podman",
-                    "unshare",
-                    "cat",
-                    f"{account_mount(who.person)}/{rt.GIT_DIR}/credential",
-                ],
-                capture_output=True,
-            ).stdout
-            == secret
+        own = volume_mount(podman_service, rt.account_volume(who.person))
+        assert podman_service.local("unshare", "cat", f"{own}/{rt.GIT_DIR}/credential").stdout == (
+            secret
         )
         commands = subprocess.run(
             ["ps", "-eo", "args"], capture_output=True, text=True, errors="replace"

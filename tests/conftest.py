@@ -1,10 +1,7 @@
 """Collection rules shared by the whole suite."""
 
 import os
-
-# tests/container/ runs as root inside the test container, started by
-# tests/test_container_suite.py; elsewhere it is not collected at all.
-collect_ignore = [] if os.environ.get("RCMAN_IN_CONTAINER") == "1" else ["container"]
+from pathlib import Path
 
 # The guards over how the suite is split run small pytest projects of their own.
 pytest_plugins = ["pytester"]
@@ -58,7 +55,6 @@ def databases_that_do_not_wait_for_the_disk():
 
 import contextlib  # noqa: E402
 import time  # noqa: E402
-from pathlib import Path  # noqa: E402
 
 REPO = Path(__file__).resolve().parent.parent
 ORIGIN = "https://rcman.example.com"
@@ -68,6 +64,69 @@ PEOPLE = ((ALICE, True), (BOB, False), (CAROL, False))
 TMUX_CONF = REPO / "backend" / "rcman" / "tmux.conf"
 # How long the tests wait for a workspace to be made.
 MADE_WITHIN = 30.0
+
+
+@pytest.fixture(scope="session")
+def podman_service():
+    """The tests' container engine (tests/podman_service.py): the user's rootless Podman on a
+    socket and a storage of its own, for the session. Where it cannot run the test skips, unless
+    RCMAN_REQUIRE_CONTAINER=1, as the on-demand runs set, in which case it fails."""
+    from tests import podman_service as engine
+
+    why = engine.usable()
+    if why is not None:
+        if os.environ.get("RCMAN_REQUIRE_CONTAINER") == "1":
+            pytest.fail(f"the user's rootless Podman cannot run: {why}")
+        pytest.skip(f"the user's rootless Podman cannot run: {why}")
+    with engine.started() as started:
+        yield started
+
+
+@pytest.fixture(scope="session")
+def labelled(podman_service) -> list[str]:
+    """podman run's arguments that label a container the suite starts itself on the engine as
+    this run's, held while the run lasts; containers a killed run left are removed first, and
+    this run's afterwards (tests/containers.py)."""
+    from tests import containers
+
+    with containers.holder(podman_service.argv()) as folder:
+        yield containers.labels(folder)
+
+
+@pytest.fixture(scope="session")
+def source(tmp_path_factory) -> Path:
+    """The checkout's files as they are on disk (tests/snapshot.py), which a container the
+    suite starts sees read-only at /src: made once for the session and removed when it ends."""
+    from devtools import held_folders
+    from tests.snapshot import snapshot
+
+    folder = tmp_path_factory.mktemp("src")
+    try:
+        yield snapshot(REPO, folder)
+    finally:
+        held_folders.remove_tree(folder, roots=[tmp_path_factory.getbasetemp()])
+
+
+@pytest.fixture(scope="session")
+def toolchain() -> Path:
+    """The installer's toolchain (installer/install.py ensure_toolchain: Node.js, uv,
+    oauth2-proxy and tmux's source, each checked against its pinned sha256), filled with the
+    installer's own download code in the user's cache, where it stays between runs."""
+    from installer import install as ins
+
+    folder = Path.home() / ".cache" / "rcman-test" / "toolchain"
+    ins.ensure_toolchain(folder)
+    return folder
+
+
+@pytest.fixture(scope="session")
+def system_image(podman_service) -> str:
+    """The system image on the engine (tests/container/system.py), held for the session: a
+    service deleting a workspace collects the images nothing refers to."""
+    from tests import podman_service as engine
+    from tests.container import system
+
+    return engine.hold(podman_service, system.build(podman_service))
 
 
 # The token the tests' GitHub takes for a push.
@@ -123,7 +182,7 @@ from tests.fake_store import FAKE_VERSION, fake_claude  # noqa: E402,F401 - the 
 
 
 @contextlib.contextmanager
-def host_runtime(tmp_path: Path, kind=None):
+def host_runtime(tmp_path: Path, kind=None, **more):
     """The host runtime (backend/rcman/runtime.py) for a test, or ``kind``, a subclass of
     it: workspaces under ``tmp_path`` with the fake `claude`, their tmux sockets in a
     tmux_sockets folder (devtools/held_folders.py), every workspace removed afterwards."""
@@ -136,7 +195,7 @@ def host_runtime(tmp_path: Path, kind=None):
     claude = tmp_path / "claude"  # the store, where the settings fixture's claude_store is
     fake_claude(claude)
     with tmux_sockets("rcb-") as sockets:
-        runtime = (kind or HostRuntime)(root, sockets, claude, TMUX_CONF)
+        runtime = (kind or HostRuntime)(root, sockets, claude, TMUX_CONF, **more)
         try:
             yield runtime
         finally:

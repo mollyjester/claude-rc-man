@@ -2,7 +2,7 @@
 
 Here the shell is the host's own ``sh``, with the host's tools, as the host runtime
 runs it; tests/container/test_runtime_in_podman.py runs the same protocol through
-``podman --remote exec`` and busybox in the podman host.
+``podman --remote exec`` and busybox on the tests' rootless engine (tests/podman_service.py).
 """
 
 import hashlib
@@ -224,7 +224,8 @@ def batches_over_the_bound(measure) -> list[float]:
 
 def test_the_channels_latency_on_the_host(channel):
     """A command through the channel costs a few milliseconds, not the hundreds a new exec
-    costs; the podman host pins the same through podman (test_runtime_in_podman.py).
+    costs; tests/container/test_runtime_in_podman.py pins the same through podman, on the tests'
+    rootless engine.
     On a busy host, as under ``make test``'s parallel workers, a few scheduler stalls can
     push one batch's 95th percentile past the bound, so a batch may be taken again; a
     channel that is slow is over the bound in every batch."""

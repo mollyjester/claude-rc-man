@@ -7,8 +7,8 @@ a slice for each person, ``person_slice``, and one for each of their workspaces 
 to its own limits and its person's. The slices are named by ids, never by slots: an id is never
 given again, and a slot is.
 
-Python standard library and the helpers only, so that the podman host's suite can import it with
-the system interpreter. The values are read and refused with the rules of helpers/rules.py.
+Python standard library and the helpers only. The values are read and refused with the rules
+of helpers/rules.py.
 """
 
 from __future__ import annotations

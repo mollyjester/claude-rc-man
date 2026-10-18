@@ -239,3 +239,27 @@ def test_requests_wait_while_the_gate_is_closed_and_go_on_once_it_is_opened(
 
 def test_the_gate_is_open_by_default(server):
     assert server.gate.is_set()
+
+
+def test_a_server_serves_on_a_listening_socket_it_is_given_and_closes_it_when_it_stops(
+    remote, local, tmp_path
+):
+    """As tests/container/network.py gives one made in another network namespace."""
+    import socket
+
+    given = socket.socket()
+    given.bind(("127.0.0.1", 0))
+    given.listen(16)
+    port = given.getsockname()[1]
+    github = GitHubServer()
+    url = github.start(tmp_path / "given", TOKEN, listening=given)
+    try:
+        assert url == f"http://127.0.0.1:{port}/"
+        bare = github.bare("owner", "given")
+        fixture_git(local, "push", "-q", str(bare), "main")
+        proc = git_as(tmp_path, tmp_path / "home", "ls-remote", f"{url}owner/given", "main")
+        assert proc.returncode == 0, proc.stderr
+        assert github.requests  # it was this server that answered
+    finally:
+        github.stop()
+    assert given.fileno() == -1  # closed with the server

@@ -101,7 +101,7 @@ class Recorder:
         return [json.loads(line) for line in self.log.read_text().splitlines()]
 
 
-def podman_runtime(tmp_path, recorder) -> rt.PodmanRuntime:
+def podman_runtime(tmp_path, recorder, **more) -> rt.PodmanRuntime:
     return rt.PodmanRuntime(
         rt.PodmanConfig(
             socket=Path("/run/user/990/podman/podman.sock"),
@@ -109,8 +109,13 @@ def podman_runtime(tmp_path, recorder) -> rt.PodmanRuntime:
             tools_dir=Path("/opt/rcman/tools"),
             claude_store=Path("/var/lib/rcman/claude"),
             podman=str(recorder.program),
+            **more,
         )
     )
+
+
+# The uid maps of the product's own range, from a runtime with the product's defaults.
+IDS = rt.PodmanRuntime(rt.PodmanConfig(Path("/s"), "i", Path("/t"), Path("/c")))._ids
 
 
 def test_every_podman_call_is_remote_through_rcmans_own_socket(tmp_path):
@@ -809,17 +814,17 @@ OWN_IDS = [1, 2, 1000, rt.RANGE - 2, rt.RANGE - 1]
 
 def test_an_ordinary_map_is_the_one_line_it_always_was():
     base = 3 * rt.RANGE
-    assert rt.PodmanRuntime._ids(3) == [
+    assert IDS(3) == [
         f"--uidmap=0:{base}:{rt.RANGE}",
         f"--gidmap=0:{base}:{rt.RANGE}",
     ]
-    assert rt.PodmanRuntime._ids(3, 0, 0) == rt.PodmanRuntime._ids(3)
+    assert IDS(3, 0, 0) == IDS(3)
 
 
 @pytest.mark.parametrize("own", OWN_IDS)
 def test_a_swapped_map_swaps_the_users_id_with_roots_and_moves_nothing_else(own):
     base = 3 * rt.RANGE
-    options = rt.PodmanRuntime._ids(3, own, own)
+    options = IDS(3, own, own)
     uid = mapped(ids_of(options, "uid"))
     assert sorted(uid) == list(range(rt.RANGE))  # every id of the container is mapped, once
     assert sorted(uid.values()) == list(range(base, base + rt.RANGE))  # onto every host id, once
@@ -831,7 +836,7 @@ def test_a_swapped_map_swaps_the_users_id_with_roots_and_moves_nothing_else(own)
 
 @pytest.mark.parametrize(("uid", "gid"), [(1000, 0), (0, 1000), (5, 1000)])
 def test_the_user_and_the_group_are_swapped_each_on_its_own(uid, gid):
-    options = rt.PodmanRuntime._ids(2, uid, gid)
+    options = IDS(2, uid, gid)
     base = 2 * rt.RANGE
     assert mapped(ids_of(options, "uid"))[uid] == base
     assert mapped(ids_of(options, "gid"))[gid] == base
@@ -843,9 +848,9 @@ def test_the_user_and_the_group_are_swapped_each_on_its_own(uid, gid):
 
 def test_the_edges_leave_out_the_stretch_that_would_be_empty():
     base = rt.RANGE
-    first = ids_of(rt.PodmanRuntime._ids(1, 1, 1), "uid")
+    first = ids_of(IDS(1, 1, 1), "uid")
     assert first == [(0, base + 1, 1), (1, base, 1), (2, base + 2, rt.RANGE - 2)]
-    last = ids_of(rt.PodmanRuntime._ids(1, rt.RANGE - 1, 1), "uid")
+    last = ids_of(IDS(1, rt.RANGE - 1, 1), "uid")
     assert last == [
         (0, base + rt.RANGE - 1, 1),
         (1, base + 1, rt.RANGE - 2),
@@ -857,9 +862,9 @@ def test_the_edges_leave_out_the_stretch_that_would_be_empty():
 @pytest.mark.parametrize("own", [rt.RANGE, rt.RANGE + 1, -1])
 def test_an_id_beyond_the_range_is_refused_before_anything_is_made(tmp_path, own):
     with pytest.raises(rt.RuntimeFailed):
-        rt.PodmanRuntime._ids(3, own, 0)
+        IDS(3, own, 0)
     with pytest.raises(rt.RuntimeFailed):
-        rt.PodmanRuntime._ids(3, 0, own)
+        IDS(3, 0, own)
     recorder = account_recorder(tmp_path)
     with pytest.raises(rt.RuntimeFailed):
         podman_runtime(tmp_path, recorder).create(
@@ -870,7 +875,7 @@ def test_an_id_beyond_the_range_is_refused_before_anything_is_made(tmp_path, own
 
 def test_slot_zero_is_refused_for_a_swapped_map_too():
     with pytest.raises(rt.RuntimeFailed):
-        rt.PodmanRuntime._ids(0, 1000, 1000)
+        IDS(0, 1000, 1000)
 
 
 def owned_spec(**more) -> rt.Spec:
@@ -916,7 +921,9 @@ def test_a_container_of_the_users_own_is_made_from_the_image_as_the_user(tmp_pat
     after = run.index("docker.io/library/node:20")
     assert run[after + 1 :] == ["sleep", "2147483647"]
     assert "localhost/rcman-workspace:test" not in run
-    assert not [a for a in run if a.startswith(("--privileged", "--cap", "--security-opt", "-p"))]
+    assert not [a for a in run if a.startswith(("--privileged", "--cap", "-p"))]
+    # the two every workspace container has, and no other
+    assert [a for a in run if a.startswith("--security-opt")] == WORKSPACE_SECURITY
 
 
 def test_the_default_container_is_made_as_before_with_no_user_and_the_workspace_image(tmp_path):
@@ -991,8 +998,10 @@ def test_an_exec_in_a_folder_asks_podman_for_it(tmp_path):
     runtime.exec("rcman-ws-7", ["pwd"], cwd="/rcman/work")
     runtime.exec("rcman-ws-7", ["pwd"])
     first, second = [c[3:] for c in recorder.calls() if c[3] == "exec"]
-    assert first == ["exec", "--workdir=/rcman/work", "rcman-ws-7", "pwd"]
-    assert second == ["exec", "rcman-ws-7", "pwd"]  # no folder asked for
+    marked = rt.marked_exec(["pwd"])
+    assert marked[:3] == [f"{rt.TOOLS_MOUNT}/bin/busybox", "sh", "-c"] and marked[-1] == "pwd"
+    assert first == ["exec", "--workdir=/rcman/work", "rcman-ws-7", *marked]
+    assert second == ["exec", "rcman-ws-7", *marked]  # no folder asked for
 
 
 def fake_podman(tmp_path: Path, body: str) -> rt.PodmanRuntime:
@@ -1396,7 +1405,7 @@ def test_a_layout_made_for_a_plan_runs_as_its_user_with_its_environment_and_path
     same = base.for_plan("dev", {"A": "b"}, None)
     assert (same.user, same.env, same.path) == ("dev", {"A": "b"}, base.path)
     changed = base.for_plan("dev", {}, "/x/bin:/usr/bin")
-    assert changed.path == f"{rt.CLAUDE_MOUNT}/bin:/x/bin:/usr/bin"  # rcman's folder stays first
+    assert changed.path == f"{rt.PODMAN_LAYOUT.path_prefix}:/x/bin:/usr/bin"  # rcman's first
     assert base.user == "root" and base.env == {}  # the layout itself is not changed
     on_host = host.layout("x")
     assert on_host.for_plan("u", {}, "/p").path == "/p"  # the host has no folder of its own
@@ -1441,6 +1450,153 @@ def test_a_container_starts_in_the_volumes_folder_which_always_exists(tmp_path):
     plain = account_recorder(other)
     podman_runtime(other, plain).create(rt.Spec("rcman-ws-7", slot=3, workspace=7, person=2))
     assert f"--workdir={rt.VOLUME_MOUNT}" in workspace_run(plain)
+
+
+# A podman that runs what rcman's exec asks of it with the system's busybox, with the
+# container's environment ``env`` (by default PATH the folder ``bin`` beside it); ``lose`` is how
+# many execs, the first ones, end with the program's exit code and nothing it wrote, as Podman's
+# remote exec sometimes does under load: the program ran, and its output never reached the
+# client. ``warn`` is a line Podman's client writes on stderr itself, before the program's.
+WRAPPED_EXEC = """
+if args[0] == 'exec':
+    import subprocess
+    calls = os.path.join(os.path.dirname(sys.argv[0]), 'execs')
+    n = len(open(calls).read()) if os.path.exists(calls) else 0
+    open(calls, 'a').write('x')
+    i = 1
+    while args[i].startswith('--'):
+        i += 1
+    argv = args[i + 1:]
+    assert argv[0] == '/opt/rcman/bin/busybox', argv
+    sys.stderr.write({warn!r})
+    sys.stderr.flush()
+    if n < {lose}:
+        code = subprocess.run(['/bin/busybox', *argv[1:]], capture_output=True,
+                              env={env!r}).returncode
+        sys.exit(code)
+    os.execve('/bin/busybox', ['/bin/busybox', *argv[1:]], {env!r})
+"""
+
+
+def wrapped_podman(
+    tmp_path: Path, lose: int = 0, env: dict | None = None, warn: str = ""
+) -> rt.PodmanRuntime:
+    path = tmp_path / "bin"
+    path.mkdir(exist_ok=True)
+    stat = path / "stat"  # a program of the image's, named as one of busybox's applets
+    stat.write_text('#!/bin/busybox sh\necho "the image\'s stat $*"\n')
+    stat.chmod(0o755)
+    env = {"PATH": str(path)} if env is None else env
+    return fake_podman(tmp_path, WRAPPED_EXEC.format(lose=lose, env=env, warn=warn))
+
+
+def execs(tmp_path: Path) -> int:
+    found = tmp_path / "execs"
+    return len(found.read_text()) if found.exists() else 0
+
+
+def test_a_podman_exec_runs_the_program_as_podman_would_behind_a_mark_it_takes_away(tmp_path):
+    """What the program wrote, its exit code and its input are its own; the mark the exec
+    writes first on stderr is not in the answer; a bare name is found on the container's PATH,
+    as Podman finds it, and not taken for one of busybox's applets; a name found nowhere is
+    127, as Podman's."""
+    runtime = wrapped_podman(tmp_path)
+    script = "cat; echo said >&2; exit 3"
+    answer = runtime.exec("rcman-ws-7", ["/bin/busybox", "sh", "-c", script], stdin=b"in\n")
+    assert answer == rt.Result(3, b"in\n", b"said\n")
+    assert (
+        runtime.exec("rcman-ws-7", ["stat", "-c", "%U", "x"]).out == b"the image's stat -c %U x\n"
+    )
+    absolute = runtime.exec("rcman-ws-7", [str(tmp_path / "bin" / "stat"), "y"])
+    assert absolute.out == b"the image's stat y\n"
+    missing = runtime.exec("rcman-ws-7", ["no-such-program"])
+    assert missing.code == 127 and b"no-such-program" in missing.err
+    assert rt.EXEC_MARK.encode() not in missing.err
+
+
+ENV = shutil.which("env")
+
+
+@pytest.mark.parametrize(
+    "env",
+    [
+        {},  # env -i: nothing at all, not even PATH
+        {"PATH": "/nowhere:/usr/bin", "FOO": "1"},
+        # what the busybox shell itself sets, changes or exports, each with a value of its own
+        {
+            "SHLVL": "5",
+            "PWD": "/elsewhere\n",
+            "IFS": "ab\n",
+            "PATH": "/a\n",
+            "OPTIND": "4",
+            "PPID": "7",
+        },  # fmt: skip
+    ],
+    ids=["nothing", "plain", "the-shells-own"],
+)
+def test_a_podman_exec_gives_the_program_exactly_the_environment_podman_gives_it(tmp_path, env):
+    """The program's environment is the one it is started with without the mark's shell: the
+    shell's own variables (SHLVL, PWD, PATH, IFS) are put back as they were, or taken away."""
+    direct = subprocess.run([ENV, "-0"], env=env, capture_output=True, check=True).stdout
+    found = wrapped_podman(tmp_path, env=env).exec("rcman-ws-7", [ENV, "-0"])
+    assert found.code == 0, found
+    assert sorted(found.out.split(b"\0")) == sorted(direct.split(b"\0"))
+
+
+def test_a_programs_own_copy_of_the_mark_is_kept_and_podmans_own_words_stay_first(tmp_path):
+    """Only the mark the exec writes is taken out: one the program writes itself, on either
+    stream, is its own; what Podman's client writes on stderr before the program is kept."""
+    mark = rt.EXEC_MARK
+    script = f"printf '%s' '{mark}'; printf '%s' '{mark}' >&2"
+    plain = wrapped_podman(tmp_path).exec("rcman-ws-7", ["/bin/busybox", "sh", "-c", script])
+    assert plain == rt.Result(0, mark.encode(), mark.encode())
+    (tmp_path / "warns").mkdir()
+    warns = wrapped_podman(tmp_path / "warns", warn="WARN[0000] podman says\n")
+    said = warns.exec("rcman-ws-7", ["/bin/busybox", "sh", "-c", script])
+    assert said == rt.Result(0, mark.encode(), b"WARN[0000] podman says\n" + mark.encode())
+
+
+def test_a_podman_exec_whose_output_podman_lost_runs_again_only_for_a_program_that_changes_nothing(
+    tmp_path,
+):
+    (tmp_path / "again").mkdir()
+    again = wrapped_podman(tmp_path / "again", 1)
+    found = again.exec("rcman-ws-7", ["stat", "x"], again=True)
+    assert found == rt.Result(0, b"the image's stat x\n", b"") and execs(tmp_path / "again") == 2
+    (tmp_path / "once").mkdir()
+    once = wrapped_podman(tmp_path / "once", 1)
+    # the control: a program that may change something is not run twice; only its code is known
+    assert once.exec("rcman-ws-7", ["stat", "x"]) == rt.Result(0, b"", b"")
+    assert execs(tmp_path / "once") == 1
+    (tmp_path / "twice").mkdir()
+    twice = wrapped_podman(tmp_path / "twice", 2)
+    with pytest.raises(rt.RuntimeFailed) as failed:
+        twice.exec("rcman-ws-7", ["stat", "x"], again=True)
+    assert "lost" in str(failed.value) and execs(tmp_path / "twice") == 2
+    (tmp_path / "refused").mkdir()
+    refused = fake_podman(
+        tmp_path / "refused",
+        "print('Error: no container with name rcman-ws-7', file=sys.stderr)\nsys.exit(125)\n",
+    )
+    # Podman's own refusal says why, and no program ran: it is the answer, as it is
+    said = refused.exec("rcman-ws-7", ["stat", "x"], again=True)
+    assert said.code == 125 and b"no container" in said.err
+    assert [c[0] for c in fake_calls(tmp_path / "refused")] == ["exec"]
+
+
+def test_an_answer_lost_behind_a_warning_of_podmans_own_is_still_lost(tmp_path):
+    """Podman's client may write a warning of its own on stderr whatever became of the
+    program's streams: the answer is lost when the mark is missing, whatever else is there."""
+    warning = "WARN[0000] podman says\n"
+    (tmp_path / "again").mkdir()
+    again = wrapped_podman(tmp_path / "again", 1, warn=warning)
+    found = again.exec("rcman-ws-7", ["stat", "x"], again=True)
+    assert found == rt.Result(0, b"the image's stat x\n", warning.encode())
+    assert execs(tmp_path / "again") == 2
+    (tmp_path / "twice").mkdir()
+    twice = wrapped_podman(tmp_path / "twice", 2, warn=warning)
+    with pytest.raises(rt.RuntimeFailed):
+        twice.exec("rcman-ws-7", ["stat", "x"], again=True)
 
 
 def test_a_podman_exec_keeps_only_the_tail_of_what_it_printed_when_asked(tmp_path):
@@ -1826,3 +1982,208 @@ def test_a_terminal_on_the_host_is_the_launcher_under_setsid(host):
 def test_a_terminal_is_given_only_a_pidfile_of_its_own_shape(host, pidfile):
     with pytest.raises(ValueError):
         host.terminal_argv("rcman-ws-7", host.layout("rcman-ws-7"), pidfile)
+
+
+# --- what is injected: the range, the network and the slices ----------------------------------
+
+# What every workspace container is given, and nothing else is (see below).
+WORKSPACE_SECURITY = [rt.UNMASK_PROC, "--security-opt=seccomp=/opt/rcman/tools/seccomp.json"]
+
+
+def test_the_injected_fields_are_keyword_only_with_the_products_values_as_defaults():
+    config = rt.PodmanConfig(Path("/s"), "i", Path("/t"), Path("/c"))
+    assert (config.range, config.network, config.slices) == (rt.RANGE, rt.NETWORK, True)
+    assert rt.RANGE == 65536 and rt.NETWORK == "slirp4netns:allow_host_loopback=false"
+    fields = {f.name: f for f in dataclasses.fields(rt.PodmanConfig)}
+    assert all(fields[name].kw_only for name in rt.INJECTED)
+    assert set(rt.INJECTED) == {"range", "network", "slices"}
+    positional = [f.name for f in dataclasses.fields(rt.PodmanConfig) if not f.kw_only]
+    with pytest.raises(TypeError):  # one more positional argument than there are
+        rt.PodmanConfig(*([None] * (len(positional) + 1)))
+
+
+def test_a_smaller_range_maps_each_slot_and_refuses_an_id_beyond_it():
+    ids = rt.PodmanRuntime(
+        rt.PodmanConfig(Path("/s"), "i", Path("/t"), Path("/c"), range=8192)
+    )._ids
+    assert ids(3) == ["--uidmap=0:24576:8192", "--gidmap=0:24576:8192"]
+    swapped = mapped(ids_of(ids(3, 1000, 1000), "uid"))
+    assert sorted(swapped) == list(range(8192))
+    assert sorted(swapped.values()) == list(range(24576, 24576 + 8192))
+    assert swapped[1000] == 24576
+    with pytest.raises(rt.RuntimeFailed):
+        ids(3, 8192, 0)
+    assert IDS(3, 8192, 0)  # control: the product's range holds it
+
+
+def test_a_workspace_takes_the_injected_range_and_network_and_no_slice_without_slices(tmp_path):
+    recorder = account_recorder(tmp_path)
+    runtime = podman_runtime(tmp_path, recorder, range=8192, network="host", slices=False)
+    runtime.create(rt.Spec(name="rcman-ws-7", slot=3, workspace=7, person=2))
+    run = workspace_run(recorder)
+    assert "--network=host" in run and "--uidmap=0:24576:8192" in run
+    assert not [a for a in run if a.startswith(("--network=slirp4netns", "--cgroup-parent"))]
+    assert "--pids-limit=-1" in run  # the limit of Podman's own is still lifted
+    (tmp_path / "s").mkdir()
+    sign_in = account_recorder(tmp_path / "s")
+    podman_runtime(tmp_path / "s", sign_in, range=8192, network="host").start_sign_in(2, 3, 60)
+    started = next(r for r in runs(sign_in) if "--name=" + rt.sign_in_name(2) in r)
+    assert "--network=host" in started and "--uidmap=0:24576:8192" in started
+    accounts = [r for r in runs(sign_in) if "--name=" + rt.sign_in_name(2) not in r]
+    assert accounts and all("--network=none" in r for r in accounts)  # these keep no network
+
+
+def test_a_workspace_goes_under_its_slice_with_the_products_defaults(tmp_path):
+    recorder = account_recorder(tmp_path)
+    podman_runtime(tmp_path, recorder).create(rt.Spec("rcman-ws-7", slot=3, workspace=7, person=2))
+    run = workspace_run(recorder)
+    assert [a for a in run if a.startswith("--cgroup-parent")] == [
+        "--cgroup-parent=rcman-p2-w7.slice"
+    ]
+    assert f"--network={rt.NETWORK}" in run
+
+
+def test_every_workspace_container_unmasks_proc_and_takes_the_workspace_seccomp_profile(tmp_path):
+    """So that a container nested in it has a fresh /proc of its own and may name its own UTS
+    namespace; nothing else rcman starts has either."""
+    recorder = account_recorder(tmp_path)
+    runtime = podman_runtime(tmp_path, recorder)
+    runtime.create(rt.Spec("rcman-ws-7", slot=3, workspace=7, person=2))
+    assert [a for a in workspace_run(recorder) if a.startswith("--security-opt")] == (
+        WORKSPACE_SECURITY
+    )
+    assert rt.UNMASK_PROC == "--security-opt=unmask=/proc/*"
+    runtime.start_sign_in(2, 3, 60)
+    others = [r for r in runs(recorder) if "--name=rcman-ws-7" not in r]
+    assert any("--name=" + rt.sign_in_name(2) in r for r in others)  # positive control
+    for other in others:
+        assert not set(WORKSPACE_SECURITY) & set(other), other
+    (tmp_path / "c").mkdir()
+    canary, made = canary_recorder(tmp_path / "c")
+    made.run_canary(CANDIDATE_FOLDER, rt.CANARY_NAME, "1.2.3")
+    (ran,) = runs(canary)
+    assert f"--name={rt.CANARY_NAME}" in ran and not set(WORKSPACE_SECURITY) & set(ran)
+
+
+def test_every_workspace_has_a_tmpfs_of_its_roots_for_roots_podman(tmp_path):
+    """Empty at every start of the container, and its root's even where the ids are swapped, so
+    that the wrapper's record of root's nest is root's alone and never outlives the nest."""
+    recorder = account_recorder(tmp_path)
+    runtime = podman_runtime(tmp_path, recorder)
+    runtime.create(rt.Spec("rcman-ws-7", slot=3, workspace=7, person=2))
+    state = f"--tmpfs={rt.ROOT_PODMAN_STATE}:mode=0700"
+    assert rt.ROOT_PODMAN_STATE == "/run/rcman-podman"
+    assert state in workspace_run(recorder)
+    (tmp_path / "o").mkdir()
+    owned = account_recorder(tmp_path / "o")
+    podman_runtime(tmp_path / "o", owned).create(owned_spec())
+    run = workspace_run(owned)
+    assert "--tmpfs=/run/rcman:mode=0700,U" in run  # the control: this one is the user's
+    assert [a for a in run if a.startswith(f"--tmpfs={rt.ROOT_PODMAN_STATE}")] == [state]
+    (tmp_path / "s").mkdir()
+    sign_in = account_recorder(tmp_path / "s")
+    podman_runtime(tmp_path / "s", sign_in).start_sign_in(2, 3, 60)
+    assert not [a for r in runs(sign_in) for a in r if rt.ROOT_PODMAN_STATE in a]
+
+
+def test_a_workspace_whose_seccomp_profile_is_missing_is_not_made(tmp_path):
+    """Podman refuses a profile that is not there (its words, recorded), so no workspace is made
+    until the installer writes it again."""
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    runtime = fake_podman(
+        tmp_path,
+        "import os\n"
+        "opt = [a for a in args if a.startswith('--security-opt=seccomp=')]\n"
+        "path = opt[0].split('=', 2)[2] if opt else None\n"
+        "if args[0] == 'volume' and args[1] == 'inspect':\n"
+        "    print('/vol' if '{{.Mountpoint}}' in args else '{\"rcman.person\": \"2\"}')\n"
+        "elif args[0] == 'volume' and args[1] == 'exists':\n"
+        "    sys.exit(1)\n"
+        "elif path and not os.path.exists(path):\n"
+        "    sys.stderr.write(f'Error: opening seccomp profile failed: open {path}: '\n"
+        "                     'no such file or directory\\n')\n"
+        "    sys.exit(125)\n",
+    )
+    runtime = rt.PodmanRuntime(dataclasses.replace(runtime.config, tools_dir=tools))
+    with pytest.raises(rt.RuntimeFailed, match="seccomp profile"):
+        runtime.create(rt.Spec("rcman-ws-7", slot=3, workspace=7, person=2))
+    (tools / rt.SECCOMP).write_text("{}")  # the control: with a profile there, it is made
+    runtime.create(rt.Spec("rcman-ws-7", slot=3, workspace=7, person=2))
+
+
+WRAPPER_SOURCE = REPO / "backend" / "rcman" / "podman" / "podman"
+
+
+def wrapper_state(text: str) -> list[str]:
+    """Every value the wrapper's text gives STATE, a line of its own at the top level."""
+    import re
+
+    return re.findall(r"^STATE=(\S+)$", text, re.MULTILINE)
+
+
+def test_the_wrappers_record_folder_is_the_tmpfs_every_workspace_gets():
+    assert wrapper_state(WRAPPER_SOURCE.read_text()) == [rt.ROOT_PODMAN_STATE]
+
+
+def test_the_record_folder_check_finds_a_wrapper_that_keeps_its_record_elsewhere():
+    text = WRAPPER_SOURCE.read_text()
+    planted = text.replace(f"STATE={rt.ROOT_PODMAN_STATE}\n", "STATE=/run/elsewhere\n")
+    assert planted != text  # the plant took effect
+    assert wrapper_state(planted) == ["/run/elsewhere"] != [rt.ROOT_PODMAN_STATE]
+    assert wrapper_state(text + "STATE=/run/second\n") != [rt.ROOT_PODMAN_STATE]  # and twice
+
+
+# --- the podman and docker wrappers are on every workspace's PATH ------------------------------
+
+PODMAN_BIN = f"{rt.TOOLS_MOUNT}/podman/bin"
+
+
+def test_the_wrappers_come_right_after_claude_on_a_workspaces_path():
+    layout = rt.PODMAN_LAYOUT
+    assert layout.path.split(":")[:2] == [f"{rt.CLAUDE_MOUNT}/bin", PODMAN_BIN]
+    assert layout.path_prefix == f"{rt.CLAUDE_MOUNT}/bin:{PODMAN_BIN}"
+    assert rt.PODMAN_BIN == PODMAN_BIN
+    # a plan without a PATH keeps the layout's, one with a PATH has rcman's folders first
+    assert layout.for_plan("dev", {}, None).path == layout.path
+    planned = layout.for_plan("dev", {}, "/usr/bin:/bin").path
+    assert planned == f"{rt.CLAUDE_MOUNT}/bin:{PODMAN_BIN}:/usr/bin:/bin"
+
+
+def test_the_host_runtime_puts_no_wrapper_on_its_path(host):
+    """The control: the host runtime runs the host's own programs, and has no tools mounted."""
+    layout = host.layout(rt.container_name(1))
+    assert PODMAN_BIN not in layout.path.split(":")
+    assert "podman/bin" not in layout.path
+
+
+# --- the runtime's range, and the slot the canary runs in, as given --------------------------
+
+
+def test_each_runtime_says_its_range_the_products_by_default(tmp_path, host):
+    assert host.id_range == rt.RANGE
+    small = rt.HostRuntime(host.root, host.sockets, host.claude, host.tmux_conf, range=8192)
+    assert small.id_range == 8192
+    config = rt.PodmanConfig(Path("/s"), "i", Path("/t"), Path("/c"))
+    assert rt.PodmanRuntime(config).id_range == rt.RANGE
+    assert rt.PodmanRuntime(dataclasses.replace(config, range=8192)).id_range == 8192
+
+
+def test_a_host_runtime_of_a_smaller_range_refuses_an_id_beyond_it(host):
+    small = rt.HostRuntime(host.root, host.sockets, host.claude, host.tmux_conf, range=8192)
+    with pytest.raises(rt.RuntimeFailed, match="beyond the range"):
+        small.create(rt.Spec(rt.container_name(41), slot=1, workspace=41, person=1, uid=8192))
+    assert not small.exists(rt.container_name(41))
+    small.create(rt.Spec(rt.container_name(42), slot=1, workspace=42, person=1, uid=8191))
+    host.create(rt.Spec(rt.container_name(43), slot=1, workspace=43, person=1, uid=8192))  # control
+
+
+def test_the_canary_runs_in_the_slot_it_is_given_and_the_builders_by_default(tmp_path):
+    from rcman import people
+
+    recorder, runtime = canary_recorder(tmp_path)
+    runtime.run_canary(CANDIDATE_FOLDER, rt.CANARY_NAME, "1.2.3")
+    runtime.run_canary(CANDIDATE_FOLDER, rt.CANARY_NAME, "1.2.3", slot=6)
+    default, given = [c[3:] for c in recorder.calls() if c[3] == "run"]
+    assert f"--uidmap=0:{people.BUILDER_SLOT * rt.RANGE}:{rt.RANGE}" in default
+    assert f"--uidmap=0:{6 * rt.RANGE}:{rt.RANGE}" in given

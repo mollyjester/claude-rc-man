@@ -56,3 +56,44 @@ def test_the_socket_folder_is_removed_after_the_test(tmp_path):
         assert folder.is_dir() and sock.exists()  # positive control
     assert not folder.exists()
     assert tmux(sock, "has-session", "-t", "a").returncode != 0
+
+
+def off_the_engine(modules: set[str], tests: dict[str, dict]) -> set[str]:
+    """The modules of tests/container/ that do not run on the tests' engine: one with no test,
+    or with a test that does not use it."""
+    on_the_engine = {
+        name
+        for name in modules
+        if (mine := [t for n, t in tests.items() if n.split("::")[0] == f"tests/{name}"])
+        and all("podman_service" in t["fixtures"] for t in mine)
+    }
+    return modules - on_the_engine
+
+
+def test_every_container_module_runs_on_the_engine_and_is_collected():
+    from pathlib import Path
+
+    from tests import conftest
+    from tests.collected import collect
+
+    assert not getattr(conftest, "collect_ignore", [])  # nothing is left out on the host
+    folder = Path(__file__).parent / "container"
+    modules = {f"container/{p.name}" for p in folder.glob("test_*.py")}
+    assert "container/test_nest_in_podman.py" in modules  # non-vacuity
+    assert off_the_engine(modules, collect(["tests/container"])) == set()
+
+
+def test_a_module_off_the_engine_is_found():
+    tests = {
+        "tests/container/test_a.py::test_x": {"fixtures": ["podman_service", "tmp_path"]},
+        "tests/container/test_b.py::test_y": {"fixtures": ["tmp_path"]},
+        "tests/container/test_c.py::test_z": {"fixtures": ["podman_service"]},
+        "tests/container/test_c.py::test_w": {"fixtures": []},
+    }
+    modules = {"container/test_a.py", "container/test_b.py", "container/test_c.py",
+               "container/test_d.py"}  # fmt: skip
+    assert off_the_engine(modules, tests) == {
+        "container/test_b.py",  # no test of it uses the engine
+        "container/test_c.py",  # one of its tests does not
+        "container/test_d.py",  # it has no test that is collected
+    }

@@ -1,7 +1,7 @@
-// rcman as installed, signed in to through Caddy and oauth2-proxy, with the
-// people tests/container/stack.py adds and no workspace made beforehand. Claude
-// is the fake one, which takes the code tests/test_container_suite.py passes in
-// RCMAN_FAKE_CLAUDE_CODE. Runs in order against one installation.
+// The whole stack, signed in to through Caddy and oauth2-proxy, with the
+// people tests/container/stack.py lets in and no workspace made beforehand. Claude
+// is the fake one, which takes the code tests/container/test_stack_in_a_browser.py passes in
+// RCMAN_FAKE_CLAUDE_CODE. Runs in order against one stack.
 import { execFileSync } from "node:child_process";
 
 import { expect, type Locator, type Page, test } from "@playwright/test";
@@ -37,8 +37,8 @@ async function idOf(page: Page, name: string): Promise<number> {
   }, name);
 }
 
-// What the container suite gives to run a command in the podman host, as JSON: the
-// command up to the one to run (tests/test_container_suite.py).
+// What the suite gives to run a command in the stack's container, as JSON: the
+// command up to the one to run (tests/container/test_stack_in_a_browser.py).
 const IN_HOST: string[] = JSON.parse(process.env.RCMAN_STACK_EXEC ?? "[]");
 
 // Makes a repository in a workspace with a bare origin of its own, and changes to stage
@@ -55,7 +55,7 @@ function makeRepository(workspace: number) {
 
 // The stand-in GitHub the stack holds at github.com (tests/container/stack.py): the token it
 // takes and the addresses of its public and its private repository, which the container
-// suite passes as JSON (tests/test_container_suite.py).
+// suite passes as JSON (tests/container/test_stack_in_a_browser.py).
 const GITHUB: { token: string; public: string; private: string } = JSON.parse(
   process.env.RCMAN_STACK_GITHUB ?? '{"token":"","public":"","private":""}',
 );

@@ -1,8 +1,16 @@
 FROM docker.io/library/ubuntu:24.04@sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884ff530eb55
-# The default workspace image: what Claude Code and rcman need in a workspace, and gh,
-# which reads the person's GitHub token from the files rcman writes for it; nothing else.
+# The default workspace image: what Claude Code and rcman need in a workspace, gh, which reads
+# the person's GitHub token from the files rcman writes for it, and Podman, which the tools'
+# podman and docker run (backend/rcman/podman); nothing else.
 # tmux, busybox and Claude Code are mounted into every workspace instead.
+# newuidmap and newgidmap get the one capability each needs in place of setuid: a workspace has
+# no CAP_SYS_ADMIN, which a setuid newuidmap would need to write the map of a user's namespace,
+# while one of the user's own with CAP_SETUID may. setcap is removed once used.
 RUN apt-get update -qq \
  && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
-      git ca-certificates curl python3 gh \
+      git ca-certificates curl python3 gh podman crun catatonit uidmap libcap2-bin \
+ && chmod u-s /usr/bin/newuidmap /usr/bin/newgidmap \
+ && setcap cap_setuid+ep /usr/bin/newuidmap \
+ && setcap cap_setgid+ep /usr/bin/newgidmap \
+ && DEBIAN_FRONTEND=noninteractive apt-get purge -y -qq libcap2-bin \
  && rm -rf /var/lib/apt/lists/*

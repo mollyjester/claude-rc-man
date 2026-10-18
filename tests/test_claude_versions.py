@@ -1108,3 +1108,18 @@ def test_prune_keeps_the_version_the_link_names_even_when_it_is_not_the_approved
     world.versions.reconcile()  # the link follows the database, and the old one is then prunable
     world.versions.prune()
     assert present(world) == ["1.4.0", "1.5.0"]
+
+
+def test_the_canary_runs_in_the_builder_slot_the_service_is_given(world, monkeypatch):
+    claude_download.release(world.releases, NEW)
+    slots = []
+    real = world.runtime.run_canary
+
+    def watched(*args, slot=None):
+        slots.append(slot)
+        return real(*args, slot=slot)
+
+    monkeypatch.setattr(world.runtime, "run_canary", watched)
+    monkeypatch.setattr(world.service, "builder_slot", 6)
+    world.versions.upgrade(NEW, ALICE)
+    assert slots == [6]

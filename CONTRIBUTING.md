@@ -13,6 +13,8 @@ Three rules override everything else in this repository:
 
 The full list of standing rules, and where each kind of documentation belongs,
 is in [project-knowledge/working-rules.md](project-knowledge/working-rules.md).
+Working in a workspace of rcman's: the repository's `.devcontainer` and what the tests need
+there are in [project-knowledge/tests.md](project-knowledge/tests.md#the-container-suites).
 
 ## Plans and design
 

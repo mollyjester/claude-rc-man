@@ -21,7 +21,10 @@ upgrades an installation.
 - **Administrator rights**: your account runs `sudo ./install.sh`.
 - **A clean Ubuntu 24.04 machine** with systemd, on x86-64 or arm64; the
   installer refuses another processor. Podman and `crun` are in the `universe`
-  component of Ubuntu's package archive, which must be enabled.
+  component of Ubuntu's package archive, which must be enabled. Its kernel must
+  mount overlay inside a user namespace, which the builder of devcontainer images
+  stores its images with; the installer refuses a kernel older than
+  `USERNS_OVERLAY_KERNEL` in `installer/install.py`, before it changes anything.
 - **Access to the internet** while it runs, for the packages and the downloads
   below. Behind a firewall that limits outbound traffic, allow Ubuntu's package
   archive, `nodejs.org` and `github.com` (Node.js, uv, oauth2-proxy and tmux's
@@ -32,7 +35,9 @@ upgrades an installation.
 The installer installs the system packages Podman and the workspaces need
 (`PACKAGES` in `installer/install.py`) when they are missing; among them are
 `podman`, `uidmap`, which rootless Podman needs to map user ids, and `crun`, the
-OCI runtime workspaces and builds are tested with. Everything else — the Node.js
+OCI runtime workspaces and builds are tested with. Workspace containers run with a
+seccomp profile derived from Podman's own, `/usr/share/containers/seccomp.json`, which
+Ubuntu's Podman brings; the installer refuses a machine where it is not there. Everything else — the Node.js
 that builds the web interface, uv for the Python environment, oauth2-proxy,
 tmux's source, and Claude Code — it downloads itself and checks against a
 checksum. Claude Code is checked against the manifest of its release.
@@ -183,10 +188,14 @@ run and kept.
 8. **Makes what workspaces are built from**:
    - the tools every workspace has, whatever its image: tmux, built here into a
      program that needs nothing of any image, with busybox and the terminal
-     descriptions, in `/opt/rcman/tools`. They are root's, outside rcman's
-     home, so that rcman cannot replace what every workspace mounts;
-   - the default workspace image, Ubuntu with git, `gh` and what Claude Code
-     needs, from Ubuntu's packages as they are when it is built, from
+     descriptions; the `podman` and `docker` that run containers in a workspace,
+     with their configuration (see [Containers](workspaces.md#containers)); and the
+     seccomp profile of every workspace container, derived from Podman's own; in
+     `/opt/rcman/tools`. They are root's, outside rcman's home, so that rcman cannot
+     replace what every workspace mounts;
+   - the default workspace image, Ubuntu with git, `gh`, Podman (with `crun`,
+     `catatonit` and `uidmap`) and what Claude Code needs, from Ubuntu's packages as
+     they are when it is built, from
      `installer/workspace/Containerfile`, named after that file's
      content, so that a changed file makes a new image and workspaces made
      before keep theirs (see [Git](git.md#images)). A repository's devcontainer.json can name another
@@ -236,7 +245,17 @@ account could. If that matters, keep such services on loopback, or limit what
 rcman's account (`rcman`) may connect to with the machine's firewall. The
 builder of a repository's devcontainer.json has the same network as a
 workspace, and so the same reach, and it runs the repository's own Dockerfile
-steps and feature scripts.
+steps and feature scripts. A container started in a workspace shares the
+workspace's network, and so its reach.
+
+So that a container started in a workspace can have a `/proc` of its own, the
+workspace's `/proc` is not covered where Podman would otherwise cover it. The kernel
+still keeps its own files from a workspace: it cannot read the machine's memory
+(`/proc/kcore`) or its timers (`/proc/timer_list`), trigger a system request
+(`/proc/sysrq-trigger`) or change the machine's settings (`/proc/sys/kernel`), only
+those of its own namespaces. It can read what the kernel shows any user there: the
+header of `/proc/latency_stats`, its own keys in `/proc/keys`, and the descriptions
+of the machine's hardware in `/proc/acpi`, `/proc/bus`, `/proc/irq` and `/proc/scsi`.
 
 ## Podman's volumes are rcman's
 
@@ -328,6 +347,20 @@ their servers keep running, since they live in rcman's Podman and not in
 does not have yet is the one thing that would stop servers, and the installer
 refuses it while a container runs, with the commands to stop them (see step 4
 under [What the installer does](#what-the-installer-does)).
+
+Run the installer again after upgrading Podman, or Ubuntu's `containers-common`
+that holds Podman's seccomp profile: the workspaces' profile is derived from it when
+the installer runs, and an upgrade of it leaves the one in the tools as it was.
+rcman says so in the [system journal](journal.md) each time it starts while the two
+differ; workspaces are made with the profile there until the installer runs again. If
+the profile is missing from the tools, no workspace can be made until the installer
+runs again.
+
+A workspace keeps the container and the image it was made with: where an upgrade changes how
+rcman makes a workspace's container, or the default image, only the workspaces made after it
+have the change. One made before keeps what it had; to give it the change, a colleague makes a
+new workspace in its place. A workspace whose container or image lacks what containers need
+there says so when `podman` or `docker` runs in it (see [Containers](workspaces.md#containers)).
 
 A server keeps the environment it was started with. Where an upgrade changes
 what rcman starts Claude with, a server that ran across it gets the change once

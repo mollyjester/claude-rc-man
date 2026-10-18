@@ -615,8 +615,8 @@ def listed(config: str, env: dict[str, str]) -> dict:
 
 
 def test_the_stack_browser_config_refuses_to_run_without_the_stack_port():
-    """No port is assumed: only tests/test_container_suite.py's run knows the port its
-    container published."""
+    """No port is assumed: the whole stack's run (tests/container/test_stack_in_a_browser.py)
+    says where Caddy listens in the stack's network."""
     env = {k: v for k, v in os.environ.items() if k != "RCMAN_STACK_PORT"}
     proc = subprocess.run(
         [playwright_binary(), "test", "--config", "playwright.stack.config.ts", "--list"],
@@ -624,13 +624,39 @@ def test_the_stack_browser_config_refuses_to_run_without_the_stack_port():
     )  # fmt: skip
     assert proc.returncode != 0, proc.stdout
     assert "RCMAN_STACK_PORT" in proc.stdout + proc.stderr
-    assert "tests/test_container_suite.py" in proc.stdout + proc.stderr
+    assert "tests/container/test_stack_in_a_browser.py" in proc.stdout + proc.stderr
     env["RCMAN_STACK_PORT"] = str(_free_port())
     listing = subprocess.run(
         [playwright_binary(), "test", "--config", "playwright.stack.config.ts", "--list"],
         cwd=FRONTEND, env=env, capture_output=True, text=True, timeout=120,
     )  # fmt: skip
     assert listing.returncode == 0, listing.stderr  # positive control: given one, it loads
+
+
+# What every browser config gives Chromium: /dev/shm is small in a container (a workspace's own,
+# and the browser's container of the whole stack), and Chromium keeps its shared memory there
+# unless told not to.
+NO_DEV_SHM = "--disable-dev-shm-usage"
+
+
+def without_dev_shm(text: str) -> bool:
+    """Whether a config's text gives Chromium NO_DEV_SHM among its launch options' args."""
+    found = re.search(r"launchOptions:\s*\{[^}]*?args:\s*\[(?P<args>[^\]]*)\]", text, re.S)
+    return found is not None and f'"{NO_DEV_SHM}"' in found["args"]
+
+
+def test_every_browser_config_keeps_chromium_off_dev_shm():
+    for config in CONFIGS:
+        assert without_dev_shm((FRONTEND / config).read_text(encoding="utf-8")), config
+
+
+def test_a_config_whose_browser_uses_dev_shm_is_found():
+    """Planted twin: the stack's config with the option taken out, and one with no args."""
+    text = (FRONTEND / "playwright.stack.config.ts").read_text(encoding="utf-8")
+    planted = re.sub(rf'\s*"{NO_DEV_SHM}",?', "", text)
+    assert planted != text  # the plant took effect
+    assert not without_dev_shm(planted)
+    assert not without_dev_shm("use: { baseURL: ORIGIN }")
 
 
 def test_the_two_browser_configs_write_to_different_output_folders():

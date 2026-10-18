@@ -264,7 +264,7 @@ class StandIn:
         return (self.state / name).read_text()
 
 
-def runtime_with(stand_in: StandIn) -> rt.PodmanRuntime:
+def runtime_with(stand_in: StandIn, **more) -> rt.PodmanRuntime:
     return rt.PodmanRuntime(
         rt.PodmanConfig(
             socket=Path("/run/user/990/podman/podman.sock"),
@@ -274,6 +274,7 @@ def runtime_with(stand_in: StandIn) -> rt.PodmanRuntime:
             podman=str(stand_in.program),
             builder_image="localhost/rcman-builder:test",
             scratch_dir=stand_in.scratch,
+            **more,
         )
     )
 
@@ -405,6 +406,18 @@ def test_the_builder_runs_in_the_slice_of_the_person_who_asked_for_the_build(tmp
     assert [a for a in run if a.startswith("--cgroup-parent")] == [
         "--cgroup-parent=rcman-p5.slice"
     ]  # the person's, not a workspace's: the builder belongs to no workspace of theirs
+    assert f"--network={rt.NETWORK}" in run
+
+
+def test_a_builder_without_slices_has_no_cgroup_parent_and_the_injected_range_and_network(
+    tmp_path,
+):
+    stand_in = StandIn(tmp_path, **SUCCESS)
+    runtime = runtime_with(stand_in, range=8192, network="host", slices=False)
+    building(runtime, person=5, slot=6)[0]()
+    run = next(c for c in stand_in.calls() if c[0] == "run")
+    assert not [a for a in run if a.startswith("--cgroup-parent")]
+    assert "--network=host" in run and "--uidmap=0:49152:8192" in run
 
 
 def test_the_repository_goes_from_the_workspace_to_the_builder_and_the_config_after_it(tmp_path):

@@ -1,14 +1,17 @@
-"""The tests' GitHub where a podman host has one: its certificates, the workspace image that
-trusts them, and a service that serves it.
+"""The tests' GitHub: its certificates, the workspace image that trusts them and finds it, and a
+service that serves it.
 
-Not a test module, and the standard library only, so that the podman host can run it as it
-is from the checkout's files at /src. Shared by tests/container/test_github_in_podman.py,
-which serves tests/github_server.py as https://github.com itself, and by
-tests/container/stack.py, which serves it behind Caddy (``serve`` below).
+Not a test module, and the standard library only, so that the whole stack's container can run it
+as it is from the checkout's files at /src. Shared by tests/container/test_github_in_podman.py,
+which serves tests/github_server.py as https://github.com itself, in a network of its own
+(tests/container/network.py), and by tests/container/stack.py, which serves it behind Caddy
+(``serve`` below).
 
 - ``mint`` makes a certificate authority and a certificate it signed for github.com;
-- ``dockerfile`` derives a workspace image from a base image that trusts that authority,
-  and, for a base that is not rcman's own, has git and python3;
+- ``dockerfile`` derives a workspace image from a base image that trusts that authority and
+  whose git finds github.com at the network's own loopback (RESOLVE: a workspace that joins
+  another container's network gets no hosts file of that container's), and, for a base that is
+  not rcman's own, has git and python3;
 - run as a program, ``serve`` serves the bare repositories under a folder with the token,
   after making the public and the private repository the whole-stack browser tests clone.
 """
@@ -40,13 +43,21 @@ TRUST = """\
 COPY ca.crt /usr/local/share/ca-certificates/{ca}.crt
 RUN update-ca-certificates
 """
+# Where the stand-in listens in the network the workspaces join, and how their git finds it there.
+ADDRESS = "127.0.0.1"
+PORT = 443
+RESOLVE = f"RUN git config --system http.curloptResolve github.com:{PORT}:{ADDRESS}\n"
 
 
-def dockerfile(base: str, packages: bool = False) -> str:
+def dockerfile(base: str, packages: bool = False, proxy: str | None = None) -> str:
     """The build file of the image derived from ``base``: with ``packages``, git, python3 and
     the certificates installed first; the authority ``mint`` makes (``ca.crt`` in the
-    build context) trusted."""
-    return f"FROM {base}\n" + (PACKAGES if packages else "") + TRUST.format(ca=CA_NAME)
+    build context) trusted, and github.com found at ADDRESS by git, or, with ``proxy``, reached
+    by git through that proxy (tests/container/network.py ``Relay``)."""
+    text = f"FROM {base}\n" + (PACKAGES if packages else "") + TRUST.format(ca=CA_NAME) + RESOLVE
+    if proxy is not None:
+        text += f"RUN git config --system http.https://github.com.proxy {proxy}\n"
+    return text
 
 
 def openssl(*args: str, cwd: Path) -> None:

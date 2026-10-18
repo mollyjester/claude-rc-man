@@ -207,9 +207,10 @@ def split_of(tmp_path: Path, **makefiles: Path) -> list[str]:
 
 def known_positives(tests: Collected) -> None:
     """Non-vacuity: every set holds tests known to belong there."""
-    assert "tests/test_container_suite.py::test_docker_is_usable" in tests.container
-    assert "tests/test_container_suite.py::test_docker_is_usable" not in tests.stack
-    assert "tests/test_container_suite.py::test_the_whole_stack_in_a_browser" in tests.stack
+    assert "tests/test_container_suite.py::test_podman_is_usable" in tests.container
+    assert "tests/test_container_suite.py::test_podman_is_usable" not in tests.stack
+    browser = "tests/container/test_stack_in_a_browser.py::test_the_whole_stack_in_a_browser"
+    assert browser in tests.stack
     assert tests.stack <= tests.container  # a stack test needs the container too
     assert "tests/test_make.py::test_every_test_is_in_exactly_one_of_the_three_runs" in tests.host
     assert any(n.startswith("tests/test_rules.py::test_the_backend_and_") for n in tests.host)
@@ -259,7 +260,7 @@ def runs_in_parallel(makefile: Path) -> bool:
 
 
 def test_no_target_runs_beside_another_under_make_j():
-    """The on-demand runs share docker, so make -j check-all must not start them together."""
+    """make -j check-all must run its parts one after the other, as it does without -j."""
     assert not runs_in_parallel(MAKEFILE)
 
 

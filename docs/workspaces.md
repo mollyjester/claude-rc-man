@@ -159,6 +159,29 @@ shell can complete what you type; no key moves out of it: click outside the
 terminal to move out of it. Its colours follow the light or dark setting of your
 system, as the rest of the page does.
 
+## Containers
+
+A workspace made from the default image has Podman: `podman` and `docker`, both the same Podman,
+are on the PATH of the workspace's terminal, of Claude and of what Claude runs, right after
+Claude's own folder and before the image's own programs; `docker compose` is not offered. In a
+workspace whose image has no Podman, `podman` and `docker` run the image's own program of that
+name, the next one on the PATH, where it has one. As root, the workspace's own user in the default image, Podman runs in a user
+and mount namespace the workspace makes for itself, so its mounts never reach what rcman runs
+there; a user who is not root runs it rootless. What it stores is in the workspace's volume.
+In an image of a repository's own, a user who is not root runs Podman when the image gives them
+subordinate ids among the workspace's own ids (`/etc/subuid` and `/etc/subgid`) and gives
+`newuidmap` and `newgidmap` the one capability each needs in place of setuid
+(`setcap cap_setuid+ep` and `cap_setgid+ep`), as the default image does; a capability set
+while rcman builds the image holds in the workspace.
+
+- A container started in a workspace is no boundary inside it: it shares the workspace's
+  network, and the workspace's user can reach whatever it holds.
+- What containers store counts against no limit: the disk a workspace uses cannot be limited.
+- `podman` and `docker` say so where they cannot run: in a workspace whose image has no Podman
+  and no `podman` or `docker` of its own, and in one whose container was made without what
+  Podman needs there. A workspace keeps the image and the container it was made with: make a
+  new workspace in its place, from the default image or another image with Podman.
+
 ## Deleting a workspace
 
 **Delete workspace** deletes the workspace, everything in it, and its server.

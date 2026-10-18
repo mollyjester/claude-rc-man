@@ -117,11 +117,11 @@ def git_answering(runtime, code: int, out: bytes, err: bytes = b""):
     asked = []
     real = runtime.exec
 
-    def exec_(name, argv, stdin=None, timeout=rt.PODMAN_TIMEOUT):
+    def exec_(name, argv, stdin=None, timeout=rt.PODMAN_TIMEOUT, cwd=None, keep=None, again=False):
         if argv and argv[-1] == "--version" and "git" in argv:
             asked.append(argv)
             return rt.Result(code, out, err)
-        return real(name, argv, stdin, timeout)
+        return real(name, argv, stdin, timeout, cwd, keep, again)
 
     runtime.exec = exec_
     return asked

@@ -12,6 +12,7 @@ When `claude` is not installed these tests skip, unless
 import os
 import shutil
 import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -65,7 +66,7 @@ def test_every_option_rcman_passes_is_in_help(tmp_path):
     assert used  # non-vacuity
     missing, gated = {}, set()
     for command, options in used.items():
-        text = rec.help_text(REAL, command, rec.claude_env(tmp_path))
+        text = rec.help_text(REAL, command, rec.claude_env(tmp_path, tmp_path / "home"))
         if rec.help_refused_logged_out(text):
             gated.add(command)
             continue
@@ -82,7 +83,7 @@ def test_every_option_rcman_passes_is_in_help(tmp_path):
 def _claude(args: list[str], config_dir) -> subprocess.CompletedProcess:
     return subprocess.run(
         [REAL, *args],
-        env=rec.claude_env(config_dir),
+        env=rec.claude_env(config_dir, Path(config_dir).parent / f"{Path(config_dir).name}-home"),
         cwd=config_dir,
         stdin=subprocess.DEVNULL,
         capture_output=True,

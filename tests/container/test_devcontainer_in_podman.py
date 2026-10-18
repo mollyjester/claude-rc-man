@@ -1,16 +1,15 @@
 """A workspace made from a repository's devcontainer.json, against real rootless Podman.
 
-``tests/test_container_suite.py`` runs this module in the podman host as the service account,
-as it runs ``tests/container/test_github_in_podman.py``, whose stand-in GitHub, workspace image
-(the base image with git, python3 and the stand-in's authority), person and ``Workspaces`` it
-shares. Anywhere else it skips. What the host-runtime tests could only assume is checked here
-against the real thing: how Podman is asked for an image, its user and its files, the uid map
-that makes a ``remoteUser`` the host user root is in the person's other workspaces, the
+On the tests' engine (tests/podman_service.py), as ``tests/container/test_github_in_podman.py``
+runs, whose stand-in GitHub, workspace image (the default image with the stand-in's authority),
+network, person and ``Workspaces`` it shares. What the host-runtime tests could only assume is
+checked here against the real thing: how Podman is asked for an image, its user and its files, the
+uid map that makes a ``remoteUser`` the host user root is in the person's other workspaces, the
 tmpfs's owner, the shared sign-in written in place from both kinds of workspace, and the
 lifecycle commands across a restart of rcman.
 
-The images are derived from the workspace image in the account's Podman, by name (no registry
-holds them); the repositories are published on the stand-in as ``octo/<name>``.
+The images are derived from the workspace image on the engine, by name (no registry holds them);
+the repositories are published on the stand-in as ``octo/<name>``.
 """
 
 import concurrent.futures
@@ -30,26 +29,26 @@ from rcman.repository import Repository
 from rcman.workspaces import Workspaces
 
 from devtools import fake_claude as fake
+from tests.container import sizes
 from tests.container import test_github_in_podman as shared
-from tests.container import test_runtime_in_podman as base
+from tests.container.conftest import cli, on_host
 
 ADDRESS, EMAIL, TOKEN = shared.ADDRESS, shared.EMAIL, shared.TOKEN
 exists, gone, settled = shared.exists, shared.gone, shared.settled
 # The fixtures of that module, which pytest finds here by these names.
-account, clones, github_com, image, person = (
+account, clones, github_com, holder, image = (
     shared.account,
     shared.clones,
     shared.github_com,
+    shared.holder,
     shared.image,
-    shared.person,
 )
-pki, podman, service = shared.pki, shared.podman, shared.service
-
-pytestmark = pytest.mark.skipif(
-    os.environ.get("RCMAN_IN_CONTAINER") != "1"
-    or "RCMAN_PODMAN_IMAGE" not in os.environ
-    or not ADDRESS,
-    reason="runs only as the service account inside the podman host, with github.com in its hosts",
+parts, person, pki, podman, service = (
+    shared.parts,
+    shared.person,
+    shared.pki,
+    shared.podman,
+    shared.service,
 )
 
 # The user the derived image runs: an id that is not the ordinary first user's, a group of its
@@ -79,71 +78,66 @@ LABEL devcontainer.metadata='[{"remoteUser": "dev", "containerEnv": {"FROM_LABEL
 """
 
 
-def build(context: Path, dockerfile: str, name: str) -> str:
+def build(podman, context: Path, dockerfile: str, name: str) -> str:
     context.mkdir(parents=True, exist_ok=True)
     (context / "Dockerfile").write_text(dockerfile)
-    built = subprocess.run(
-        ["podman", "--remote", "--url", f"unix://{base.socket()}", "build", "-q", "-t", name,
-         str(context)],
-        capture_output=True,
-        text=True, errors="replace",
-        timeout=1200,
-    )  # fmt: skip
+    built = cli(podman, "build", "-q", "--pull=never", "-t", name, str(context))
     assert built.returncode == 0, built.stdout + built.stderr
     return name
 
 
-def hold(image: str) -> str:
+def hold(podman, image: str) -> str:
     """A container made from ``image`` that is never started and is no workspace's (it has no
     label), and its name. Deleting a workspace collects the images nothing refers to, and an
     image made or pulled by hand for a test is one of them; the collection never removes an
     image a container is made from, so this keeps it for the tests that use it."""
     name = "rcman-test-hold-" + "".join(c if c.isalnum() else "-" for c in image)
-    made = base.podman_cli(
-        "create", f"--name={name}", "--pull=never", "--network=none", "--entrypoint=/bin/true",
-        image,
+    made = cli(
+        podman, "create", f"--name={name}", "--pull=never", "--network=none",
+        "--entrypoint=/bin/true", image,
     )  # fmt: skip
     assert made.returncode == 0, made.stderr
     return name
 
 
-def release(*names: str) -> None:
+def release(podman, *names: str) -> None:
     for name in names:
-        base.podman_cli("rm", "--force", "--ignore", name)
+        cli(podman, "rm", "--force", "--ignore", name)
 
 
 @pytest.fixture(scope="module")
-def dev_image(image, tmp_path_factory) -> str:
+def dev_image(podman, image, tmp_path_factory) -> str:
     """The workspace image with a user whose ids are not the first ordinary user's."""
     name = f"localhost/rcman-test-dev:{os.getpid()}"
-    build(tmp_path_factory.mktemp("dev-image"), DOCKERFILE.format(base=image), name)
-    holding = hold(name)
+    build(podman, tmp_path_factory.mktemp("dev-image"), DOCKERFILE.format(base=image), name)
+    holding = hold(podman, name)
     yield name
-    release(holding)
-    base.podman_cli("rmi", "--force", name)
+    release(podman, holding)
+    cli(podman, "rmi", "--force", name)
 
 
 @pytest.fixture(scope="module")
-def labelled_image(dev_image, tmp_path_factory) -> str:
+def labelled_image(podman, dev_image, tmp_path_factory) -> str:
     """The same, carrying a devcontainer.metadata label."""
     name = f"localhost/rcman-test-labelled:{os.getpid()}"
-    build(tmp_path_factory.mktemp("labelled-image"), LABELLED.replace("{base}", dev_image), name)
-    holding = hold(name)
+    dockerfile = LABELLED.replace("{base}", dev_image)
+    build(podman, tmp_path_factory.mktemp("labelled-image"), dockerfile, name)
+    holding = hold(podman, name)
     yield name
-    release(holding)
-    base.podman_cli("rmi", "--force", name)
+    release(podman, holding)
+    cli(podman, "rmi", "--force", name)
 
 
 @pytest.fixture(scope="module")
-def locked_image(dev_image, tmp_path_factory) -> str:
+def locked_image(podman, dev_image, tmp_path_factory) -> str:
     """The same, whose working folder is one only root can enter."""
     name = f"localhost/rcman-test-locked:{os.getpid()}"
     dockerfile = f"FROM {dev_image}\nRUN mkdir /locked && chmod 700 /locked\nWORKDIR /locked\n"
-    build(tmp_path_factory.mktemp("locked-image"), dockerfile, name)
-    holding = hold(name)
+    build(podman, tmp_path_factory.mktemp("locked-image"), dockerfile, name)
+    holding = hold(podman, name)
     yield name
-    release(holding)
-    base.podman_cli("rmi", "--force", name)
+    release(podman, holding)
+    cli(podman, "rmi", "--force", name)
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -153,21 +147,19 @@ def persons_volume_is_removed(podman, person):
     podman.remove_account(person[0].id)
 
 
-def images() -> set[str]:
-    found = base.podman_cli("images", "--all", "--format", "{{.ID}}")
+def images(podman) -> set[str]:
+    found = cli(podman, "images", "--all", "--format", "{{.ID}}")
     assert found.returncode == 0, found.stderr
     return set(found.stdout.split())
 
 
-def left_of(name: str) -> list[str]:
+def left_of(podman, name: str) -> list[str]:
     """What is left of the workspace by this container name: container and volume."""
-    return [kind for kind in ("container", "volume") if exists(kind, name)]
+    return [kind for kind in ("container", "volume") if exists(podman, kind, name)]
 
 
-def probes() -> list[str]:
-    found = base.podman_cli(
-        "ps", "--all", f"--filter=label={rt.LABEL_PROBE}", "--format", "{{.Names}}"
-    )
+def probes(podman) -> list[str]:
+    found = cli(podman, "ps", "--all", f"--filter=label={rt.LABEL_PROBE}", "--format", "{{.Names}}")
     assert found.returncode == 0, found.stderr
     return found.stdout.split()
 
@@ -187,7 +179,7 @@ def direct(podman, person):
     for name in made:
         podman.remove(name)
     for name in made:
-        assert left_of(name) == []
+        assert left_of(podman, name) == []
 
 
 def spec_for(workspace: int, person, **more) -> rt.Spec:
@@ -212,21 +204,14 @@ def out(result: rt.Result) -> str:
     return result.out.decode().strip()
 
 
-def on_host(path: str, format: str = "%u %g %a") -> list[str]:
-    """``stat`` of a path in the volume as the person's range sees ids: root's is the range's
-    base."""
-    found = subprocess.run(
-        ["podman", "unshare", "stat", "-c", format, path],
-        capture_output=True,
-        text=True,
-        errors="replace",
-    )
+def volume_path(podman, name: str) -> str:
+    return cli(podman, "volume", "inspect", "--format", "{{.Mountpoint}}", name).stdout.strip()
+
+
+def inspect(podman, name: str) -> dict:
+    found = cli(podman, "container", "inspect", name)
     assert found.returncode == 0, found.stderr
-    return found.stdout.split()
-
-
-def volume_path(name: str) -> str:
-    return base.podman_cli("volume", "inspect", "--format", "{{.Mountpoint}}", name).stdout.strip()
+    return json.loads(found.stdout)[0]
 
 
 # --- what Podman says about an image, and how an image is pulled ---------------------------
@@ -235,7 +220,7 @@ def volume_path(name: str) -> str:
 def test_the_facts_of_an_image_are_read_from_podmans_own_words_without_running_it(
     podman, dev_image, labelled_image
 ):
-    before = images()
+    before = images(podman)
     facts = podman.image_facts(dev_image)
     assert f"{DEV_USER}:x:{DEV_ID}:{DEV_ID}:" in facts.passwd and "root:x:0:0:" in facts.passwd
     assert f"{EXTRA_GROUP}:x:{EXTRA_ID}:{DEV_USER}" in facts.group
@@ -244,20 +229,20 @@ def test_the_facts_of_an_image_are_read_from_podmans_own_words_without_running_i
     labelled = podman.image_facts(labelled_image)
     entries = json.loads(labelled.labels["devcontainer.metadata"])
     assert entries[0]["remoteUser"] == DEV_USER  # the label, as the image carries it
-    assert probes() == [] and images() == before  # nothing was left, nothing was copied
+    assert probes(podman) == [] and images(podman) == before  # nothing was left, nothing was copied
     with pytest.raises(rt.RuntimeFailed):
         podman.image_facts("localhost/rcman-test-not-there:1")
-    assert probes() == []
+    assert probes(podman) == []
 
 
 def test_the_user_an_image_is_set_to_run_as_is_read(podman, tmp_path, image):
     name = build(
-        tmp_path, f"FROM {image}\nUSER nobody\n", f"localhost/rcman-test-user:{os.getpid()}"
+        podman, tmp_path, f"FROM {image}\nUSER nobody\n", f"localhost/rcman-test-user:{os.getpid()}"
     )
     try:
         assert podman.image_facts(name).user == "nobody"
     finally:
-        base.podman_cli("rmi", "--force", name)
+        cli(podman, "rmi", "--force", name)
 
 
 def test_a_file_the_image_does_not_have_is_read_as_empty_by_the_words_podman_really_uses(
@@ -266,6 +251,7 @@ def test_a_file_the_image_does_not_have_is_read_as_empty_by_the_words_podman_rea
     """Only podman saying the file is not there means the image has none; this is that, said by
     the real one, for an image with a passwd file and no group file."""
     name = build(
+        podman,
         tmp_path,
         f"FROM {image}\nRUN rm -f /etc/group /etc/group-\n",
         f"localhost/rcman-test-nogroup:{os.getpid()}",
@@ -274,21 +260,21 @@ def test_a_file_the_image_does_not_have_is_read_as_empty_by_the_words_podman_rea
         facts = podman.image_facts(name)
         assert facts.passwd and facts.group == ""
     finally:
-        base.podman_cli("rmi", "--force", name)
+        cli(podman, "rmi", "--force", name)
 
 
 def test_a_leftover_probe_container_is_found_and_removed(podman, dev_image):
-    made = base.podman_cli(
+    made = cli(podman,
         "create", f"--label={rt.LABEL_PROBE}=1", "--name=rcman-probe-left", "--pull=never",
         "--entrypoint=/bin/true", dev_image,
     )  # fmt: skip
     assert made.returncode == 0, made.stderr
     try:
-        assert probes() == ["rcman-probe-left"]  # positive control: the filter finds it
+        assert probes(podman) == ["rcman-probe-left"]  # positive control: the filter finds it
         podman.clean_probes()
-        assert probes() == []
+        assert probes(podman) == []
     finally:
-        base.podman_cli("rm", "--force", "--ignore", "rcman-probe-left")
+        cli(podman, "rm", "--force", "--ignore", "rcman-probe-left")
 
 
 def test_an_image_from_a_registry_is_pulled_and_each_line_podman_prints_is_passed_on(podman):
@@ -308,7 +294,7 @@ def test_an_image_nowhere_is_a_failure_that_says_what_podman_said(podman):
     with pytest.raises(rt.RuntimeFailed) as failed:
         podman.pull("localhost/rcman-test-not-there:1")
     assert str(failed.value).strip()
-    assert base.podman_cli("image", "exists", "localhost/rcman-test-not-there:1").returncode != 0
+    assert cli(podman, "image", "exists", "localhost/rcman-test-not-there:1").returncode != 0
 
 
 def alive(pid: int) -> bool:
@@ -350,7 +336,7 @@ def test_a_container_of_the_users_own_swaps_the_users_id_with_roots_and_nothing_
     podman, person, direct, dev_image
 ):
     name = direct(swapped(SWAPPED_WORKSPACE, person, dev_image, groups=()))
-    base_id = person[0].slot * rt.RANGE
+    base_id = person[0].slot * sizes.TEST_RANGE
     found = out(say(podman, name, "cat /proc/self/uid_map")).splitlines()
     # The map's lines, as Podman shows them: the user's id is the host id root has elsewhere.
     mapped = {int(a): int(b) for a, b, _ in (line.split() for line in found)}
@@ -367,7 +353,7 @@ def test_an_image_whose_working_folder_the_user_cannot_enter_does_not_break_rcma
     is root's alone: the folders are made, a command with no folder runs, and the user is who
     the plan says."""
     name = direct(swapped(SWAPPED_WORKSPACE, person, locked_image))
-    found = base.inspect(name)
+    found = inspect(podman, name)
     assert found["Config"]["WorkingDir"] == rt.VOLUME_MOUNT
     assert out(podman.exec(name, ["id"])) == WHO_AM_I
     assert out(say(podman, name, "pwd")) == rt.VOLUME_MOUNT
@@ -400,8 +386,8 @@ def test_files_an_ordinary_root_made_are_the_users_in_the_swapped_container_and_
     credentials = f"{layout.config}/{rt.CREDENTIALS}"
     seen = out(say(podman, name, f"stat -c '%u %g' {work}/d/f {credentials}"))
     assert seen.split() == ["0", "0", "0", "0"]
-    on_volume = on_host(f"{volume_path(name)}/{rt.WORK}/d/f")
-    base_id = str(person[0].slot * rt.RANGE)
+    on_volume = on_host(podman, f"{volume_path(podman, name)}/{rt.WORK}/d/f")
+    base_id = str(person[0].slot * sizes.TEST_RANGE)
     assert on_volume == [base_id, base_id, "600"]
 
     podman.discard(name)  # the same volume, now with the user's own container
@@ -418,8 +404,8 @@ def test_files_an_ordinary_root_made_are_the_users_in_the_swapped_container_and_
     assert changed.code == 0, changed
     assert out(say(podman, name, f"cd {work} && ls d e")).split() == ["d:", "f2", "h", "e:"]
     # Seen from the host nothing changed hands: it is still the range's base.
-    assert on_host(f"{volume_path(name)}/{rt.WORK}/d/h")[:2] == [base_id, base_id]
-    assert on_host(f"{volume_path(name)}/{rt.WORK}/d/f2")[:2] == [base_id, base_id]
+    assert on_host(podman, f"{volume_path(podman, name)}/{rt.WORK}/d/h")[:2] == [base_id, base_id]
+    assert on_host(podman, f"{volume_path(podman, name)}/{rt.WORK}/d/f2")[:2] == [base_id, base_id]
 
 
 def test_the_runtime_folder_and_the_credentials_and_git_folder_are_the_users_in_its_container(
@@ -452,7 +438,7 @@ def test_a_workspace_of_the_users_own_keeps_the_limits_of_every_workspace(
     podman, person, direct, dev_image
 ):
     name = direct(swapped(SWAPPED_WORKSPACE, person, dev_image))
-    found = base.inspect(name)
+    found = inspect(podman, name)
     assert found["HostConfig"]["Init"] is True and not found["HostConfig"]["PortBindings"]
     assert not found["HostConfig"]["Privileged"] and not found["HostConfig"]["CapAdd"]
     entrypoint = found["Config"]["Entrypoint"]
@@ -463,22 +449,9 @@ def test_a_workspace_of_the_users_own_keeps_the_limits_of_every_workspace(
     )
     # The image's own userland runs under rcman's busybox as the process: no init script ran,
     # and the init is the container's.
-    first = base.in_it(podman, name, "cat /proc/1/cmdline").out
+    first = say(podman, name, "cat /proc/1/cmdline").out
     assert b"init" in first.split(b"\0")[0]
-    assert "sleep" in base.podman_cli("top", name, "args").stdout
-
-
-def test_the_hosts_loopback_is_not_reachable_from_a_workspace_of_the_users_own(
-    podman, person, direct, dev_image
-):
-    name = direct(swapped(SWAPPED_WORKSPACE, person, dev_image))
-    found = base.inspect(name)
-    assert "allow_host_loopback=false" in json.dumps(found["HostConfig"]["NetworkMode"]) or (
-        found["HostConfig"]["NetworkMode"].startswith("slirp4netns")
-    )
-    wget = " ".join(podman.layout(name).tool("wget"))
-    tried = say(podman, name, f"{wget} -q -T 3 -O /dev/null http://10.0.2.2:1/")
-    assert tried.code != 0
+    assert "sleep" in cli(podman, "top", name, "args").stdout
 
 
 # --- the shared sign-in, from a root workspace and from the user's ----------------------------
@@ -551,17 +524,19 @@ def test_a_root_workspace_and_the_users_read_and_write_the_credentials_file_in_p
 ):
     root, own, path = two
     who = person[0]
-    mount = volume_path(rt.account_volume(who.id))
-    base_id = str(who.slot * rt.RANGE)
-    inode = on_host(f"{mount}/{rt.CREDENTIALS}", "%i")
+    mount = volume_path(podman, rt.account_volume(who.id))
+    base_id = str(who.slot * sizes.TEST_RANGE)
+    inode = on_host(podman, f"{mount}/{rt.CREDENTIALS}", "%i")
     for writer, reader in ((root, own), (own, root), (root, own), (own, root)):
         text = f"written by {writer}"
         assert say(podman, writer, f"printf '{text}' > {path}").code == 0
         assert out(say(podman, reader, f"cat {path}")) == text  # at once, not after a sync
         assert podman.read_account(who.id, who.slot) == text.encode()
-        assert on_host(f"{mount}/{rt.CREDENTIALS}", "%i") == inode  # the one file, never replaced
+        assert (
+            on_host(podman, f"{mount}/{rt.CREDENTIALS}", "%i") == inode
+        )  # the one file, never replaced
         # Its mode and owner do not flip: as the host sees it, always the range's base.
-        assert on_host(f"{mount}/{rt.CREDENTIALS}") == [base_id, base_id, "600"]
+        assert on_host(podman, f"{mount}/{rt.CREDENTIALS}") == [base_id, base_id, "600"]
         assert out(say(podman, root, f"stat -c '%u %g %a' {path}")) == "0 0 600"
         assert out(say(podman, own, f"stat -c '%u %g %a' {path}")) == f"{DEV_ID} {DEV_ID} 600"
     renamed = say(podman, own, f"echo new > {path}.new && mv {path}.new {path}")
@@ -591,10 +566,10 @@ def test_workspaces_taking_turns_to_refresh_the_shared_credentials_leave_them_wh
     nothing of a longer text left after it, and the file stays the person's alone."""
     root, own, path = two
     who = person[0]
-    mount = volume_path(rt.account_volume(who.id))
+    mount = volume_path(podman, rt.account_volume(who.id))
     initial = json.dumps({"writer": "start", **fake.credentials()})
     assert say(podman, root, f"printf '%s' '{initial}' > {path}").code == 0
-    before = on_host(f"{mount}/{rt.CREDENTIALS}", "%i %u %g %a")
+    before = on_host(podman, f"{mount}/{rt.CREDENTIALS}", "%i %u %g %a")
     for turn in range(TURNS):
         writer, reader = (root, own) if turn % 2 == 0 else (own, root)
         name, length = ("root" if writer == root else "dev"), TURN_LENGTHS[turn % len(TURN_LENGTHS)]
@@ -606,7 +581,7 @@ def test_workspaces_taking_turns_to_refresh_the_shared_credentials_leave_them_wh
             assert json.loads(read.out)["writer"] == name
         assert len(podman.read_account(who.id, who.slot)) == length
         assert rt.credentials_state(podman.read_account(who.id, who.slot)) == rt.SIGNED_IN
-    assert on_host(f"{mount}/{rt.CREDENTIALS}", "%i %u %g %a") == before
+    assert on_host(podman, f"{mount}/{rt.CREDENTIALS}", "%i %u %g %a") == before
 
 
 def test_two_workspaces_refreshing_the_shared_credentials_at_the_same_moment_are_measured(
@@ -623,10 +598,10 @@ def test_two_workspaces_refreshing_the_shared_credentials_at_the_same_moment_are
     printed, for whoever reads the run."""
     root, own, path = two
     who = person[0]
-    mount = volume_path(rt.account_volume(who.id))
+    mount = volume_path(podman, rt.account_volume(who.id))
     initial = json.dumps({"writer": "start", **fake.credentials()})
     assert say(podman, root, f"printf '%s' '{initial}' > {path}").code == 0
-    before = on_host(f"{mount}/{rt.CREDENTIALS}", "%i %u %g %a")
+    before = on_host(podman, f"{mount}/{rt.CREDENTIALS}", "%i %u %g %a")
     start_at = time.time() + WRITERS_START_AFTER
     with concurrent.futures.ThreadPoolExecutor(2) as pool:
         writers = [
@@ -651,7 +626,7 @@ def test_two_workspaces_refreshing_the_shared_credentials_at_the_same_moment_are
     except ValueError:
         whole = False
     assert (rt.credentials_state(final) == rt.SIGNED_IN) is whole, final[:80]
-    assert on_host(f"{mount}/{rt.CREDENTIALS}", "%i %u %g %a") == before
+    assert on_host(podman, f"{mount}/{rt.CREDENTIALS}", "%i %u %g %a") == before
 
 
 def test_the_users_workspace_reads_what_rcmans_own_git_folder_writes_in_it(podman, person, two):
@@ -669,8 +644,8 @@ def test_the_users_workspace_reads_what_rcmans_own_git_folder_writes_in_it(podma
     podman.put_account(who.id, who.slot, "config", b"from rcman\n")
     assert out(say(podman, own, f"cat {folder}/config")) == "from rcman"
     assert (
-        on_host(f"{volume_path(rt.account_volume(who.id))}/{rt.GIT_DIR}/config")[:2]
-        == [str(who.slot * rt.RANGE)] * 2
+        on_host(podman, f"{volume_path(podman, rt.account_volume(who.id))}/{rt.GIT_DIR}/config")[:2]
+        == [str(who.slot * sizes.TEST_RANGE)] * 2
     )
 
 
@@ -722,7 +697,7 @@ def run_in(podman, service, workspace, *argv: str, **more) -> rt.Result:
 def read_work(podman, service, workspace, path: str) -> str:
     layout = plan_layout(service, workspace)
     return podman.exec(
-        workspace.container, [*layout.tool("cat"), f"{layout.work}/{path}"]
+        workspace.container, [*layout.tool("cat"), f"{layout.work}/{path}"], again=True
     ).out.decode()
 
 
@@ -755,7 +730,7 @@ def test_a_remote_user_runs_rcmans_commands_claude_and_the_files_as_that_user(
     assert env["FROM_FILE"] == "container" and env["SHARED"] == "remote"
     assert env["FROM_IMAGE"] == "yes" and env["USER"] == DEV_USER
     assert env["HOME"] == podman.layout(done.container).home  # the workspace's, not /home/dev
-    assert env["PATH"].startswith(f"{rt.CLAUDE_MOUNT}/bin:/home/dev/bin:/opt/dev/bin:")
+    assert env["PATH"].startswith(f"{rt.PODMAN_LAYOUT.path_prefix}:/home/dev/bin:/opt/dev/bin:")
 
     # Claude's own child: the plan's variables, rcman's own after them, the file's PATH after
     # rcman's folder, and the user.
@@ -798,7 +773,7 @@ def test_the_claude_server_runs_as_the_remote_user(
     answer = service.start_server(done, "dev")
     assert answer["server"]["state"] in ("ready", "connected"), answer
     try:
-        top = base.podman_cli("top", done.container, "user", "args").stdout.splitlines()
+        top = cli(podman, "top", done.container, "user", "args").stdout.splitlines()
         running = [line for line in top if "remote-control" in line]
         assert running, top  # positive control: the server's process is listed
         assert {line.split()[0] for line in running} == {DEV_USER}
@@ -810,8 +785,10 @@ def test_the_claude_server_runs_as_the_remote_user(
         )
     finally:
         service.stop_server(service.get(done.id))
-    config_owner = on_host(f"{volume_path(done.container)}/{rt.CONFIG}/.claude.json", "%u %g")
-    base_id = str(person[0].slot * rt.RANGE)
+    config_owner = on_host(
+        podman, f"{volume_path(podman, done.container)}/{rt.CONFIG}/.claude.json", "%u %g"
+    )
+    base_id = str(person[0].slot * sizes.TEST_RANGE)
     assert config_owner == [base_id, base_id]  # on the host, still the range's base
 
 
@@ -845,10 +822,10 @@ def test_git_works_as_the_remote_user_with_the_persons_author_and_token_in_a_clo
     ).stdout.strip()  # fmt: skip
     assert sent == "Dev Author <dev.author@example.com>|Edited as the remote user"
     assert set(github_com.attempts[before:]) == {("x-access-token", True)}
-    # The files git made in the work folder and in .git are the user's.
-    assert out(run_in(podman, service, done, "stat", "-c", "%U", ".git/HEAD", "b.txt")).split() == [
-        DEV_USER, DEV_USER,
-    ]  # fmt: skip
+    # The files git made in the work folder and in .git are the user's. The read changes
+    # nothing, so it runs again should Podman lose what it wrote (rt.EXEC_MARK).
+    owners = run_in(podman, service, done, "stat", "-c", "%U", ".git/HEAD", "b.txt", again=True)
+    assert (owners.code, owners.out.split()) == (0, [DEV_USER.encode()] * 2), owners
     # Claude's git is the same git.
     claude = podman.exec(
         done.container,
@@ -914,7 +891,7 @@ def test_the_create_commands_run_once_in_the_specs_order_and_the_start_command_e
     assert podman.running(done.container) and counts() == (1, 2)
 
     podman.discard(done.container)  # the container is gone, the volume and the row are not
-    assert not podman.exists(done.container) and exists("volume", done.container)
+    assert not podman.exists(done.container) and exists(podman, "volume", done.container)
     restarted()  # made again from the stored plan, on the same volume
     assert podman.running(done.container)
     assert counts() == (1, 3)
@@ -956,12 +933,12 @@ def test_a_refused_key_leaves_no_container_volume_or_image_and_the_row_names_it(
     service, person, clones, podman, github_com, tmp_path, dev_image, key, value
 ):
     publish_repository(github_com, tmp_path, f"refuses-{key}", {"image": dev_image, key: value})
-    before = images()
+    before = images(podman)
     done = make(service, person, clones, f"refuses-{key}")
     assert done.state == "failed", done
     assert f'"{key}"' in done.error or key in done.error, done.error
-    assert left_of(done.container) == []  # nothing: only the row is left
-    assert images() == before and probes() == []
+    assert left_of(podman, done.container) == []  # nothing: only the row is left
+    assert images(podman) == before and probes(podman) == []
     assert service.get(done.id) is not None  # positive control: the row is there to be read
 
 
@@ -971,15 +948,19 @@ def test_an_alpine_image_is_refused_in_plain_words_and_leaves_nothing_behind(
     alpine = "docker.io/library/alpine:3.20"
     publish_repository(github_com, tmp_path, "on-alpine", {"image": alpine})
     podman.pull(alpine)  # here before, and held, as the collection of images would take it
-    holding = hold(alpine)
+    holding = hold(podman, alpine)
     try:
-        before = images()
+        before = images(podman)
         done = make(service, person, clones, "on-alpine")
         assert done.state == "failed", done
         assert done.error == DEVCONTAINER_MESSAGES["musl"].format(image=alpine)
-        assert left_of(done.container) == [] and images() == before and probes() == []
+        assert (
+            left_of(podman, done.container) == []
+            and images(podman) == before
+            and probes(podman) == []
+        )
     finally:
-        release(holding)
+        release(podman, holding)
 
 
 def test_a_failing_create_command_keeps_the_workspace_says_why_and_hides_the_token(
@@ -1006,7 +987,7 @@ def test_a_failing_create_command_keeps_the_workspace_says_why_and_hides_the_tok
         ).fetchone()  # fmt: skip
         assert TOKEN not in " ".join(str(v) for v in row)
         # Kept: the container and the volume, with what ran before the failure; nothing after.
-        assert left_of(done.container) == ["container", "volume"]
+        assert left_of(podman, done.container) == ["container", "volume"]
         assert podman.running(done.container)
         ran = podman.exec(done.container, [*podman.layout(done.container).tool("cat"),
                                            f"{rt.VOLUME_MOUNT}/ran"])  # fmt: skip
@@ -1015,7 +996,7 @@ def test_a_failing_create_command_keeps_the_workspace_says_why_and_hides_the_tok
         account[0].forget_token(account[1])
     service.delete(service.get(done.id))
     gone(service, done.id)
-    assert left_of(done.container) == []
+    assert left_of(podman, done.container) == []
 
 
 def test_deleting_a_workspace_whose_command_is_running_kills_it_and_leaves_nothing(
@@ -1041,14 +1022,14 @@ def test_deleting_a_workspace_whose_command_is_running_kills_it_and_leaves_nothi
         time.sleep(0.3)
     now = service.get(made.id)
     assert now.state == "creating" and now.log.splitlines()[-1] == "Running postCreateCommand"
-    top = base.podman_cli("top", made.container, "user", "args")
+    top = cli(podman, "top", made.container, "user", "args")
     assert "sleep 3000" in top.stdout, top.stdout + top.stderr  # positive: it is running there
     started = time.monotonic()
     service.delete(now)
     gone(service, made.id, 60)
     assert time.monotonic() - started < 60  # not after the sleep
-    assert left_of(made.container) == []
-    assert probes() == []
+    assert left_of(podman, made.container) == []
+    assert probes(podman) == []
 
 
 def test_a_clone_without_a_devcontainer_file_is_the_ordinary_workspace(

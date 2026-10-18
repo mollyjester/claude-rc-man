@@ -348,3 +348,42 @@ def test_every_option_of_limits_is_in_its_help(capsys):
     for option in options:
         assert option in helped
     assert "none" in helped  # the word for no limit
+
+
+def test_rcman_admin_runs_podman_with_the_products_range_network_and_slices(
+    env_file, two, runtime, capsys, monkeypatch
+):
+    """rcman-admin makes its runtime as the service does (main.podman_runtime), with none of
+    the sizes the tests inject; the host runtime stands in for it once it is made."""
+    from rcman import main
+
+    made = []
+
+    def recorded(settings):
+        made.append(main_podman_runtime(settings))
+        return runtime
+
+    main_podman_runtime = main.podman_runtime
+    monkeypatch.setattr(main, "podman_runtime", recorded)
+    code, _, _ = run(env_file, "limits", BOB, capsys=capsys)
+    assert code == 0 and len(made) == 1  # it was asked for, once
+    config = made[0].config
+    assert (config.range, config.network, config.slices) == (rt.RANGE, rt.NETWORK, True)
+
+
+def test_rcman_admin_makes_its_service_with_the_products_builder_slot(
+    env_file, two, runtime, capsys, monkeypatch
+):
+    from rcman import workspaces
+
+    made = []
+
+    class Recorded(workspaces.Workspaces):
+        def __init__(self, *args, **more):
+            super().__init__(*args, **more)
+            made.append(self)
+
+    monkeypatch.setattr(workspaces, "Workspaces", Recorded)
+    code, _, _ = run(env_file, "limits", BOB, runtime=runtime, capsys=capsys)
+    assert code == 0 and len(made) == 1  # it was made, once
+    assert made[0].builder_slot == people.BUILDER_SLOT

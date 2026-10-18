@@ -22,12 +22,17 @@ from rcman import runtime as rt
 LABELS = {rt.LABEL_BUILDER: "7", rt.LABEL_PERSON: "2"}
 
 
+# The uid maps of the product's own range, from a runtime with the product's defaults.
+IDS = rt.PodmanRuntime(rt.PodmanConfig(Path("/s"), "i", Path("/t"), Path("/c")))._ids
+
+
 def run_argv(**more) -> list[str]:
     arguments = {
         "workspace": 7,
         "labels": LABELS,
-        "ids": rt.PodmanRuntime._ids(people.BUILDER_SLOT),
+        "ids": IDS(people.BUILDER_SLOT),
         "image": "localhost/rcman-builder:test",
+        "network": rt.NETWORK,
     }
     return builder.run_argv(**{**arguments, **more})
 
@@ -46,16 +51,17 @@ def test_the_builder_has_no_limit_on_processes_of_its_own_as_a_workspace_has_non
     none, and the limit that holds is the slice's, the person's (limits.py)."""
     argv = run_argv()
     assert "--pids-limit=-1" in argv
-    assert argv.index("--pids-limit=-1") < argv.index("--device=/dev/fuse")
+    assert argv.index("--pids-limit=-1") < argv.index("--cap-add=SYS_ADMIN")
 
 
-def test_the_builder_runs_as_the_spike_found_it_to_work():
+def test_the_builder_runs_with_one_capability_and_no_device_for_native_overlay():
+    """The Podman inside mounts overlay itself, which the kernel allows in the builder's own
+    user namespace with SYS_ADMIN there: no FUSE device and no mount program."""
     argv = run_argv()
     for option in (
         "--detach",
         "--init",
         "--network=slirp4netns:allow_host_loopback=false",
-        "--device=/dev/fuse",
         "--cap-add=SYS_ADMIN",
         "--security-opt=label=disable",
         "--pull=never",
@@ -67,6 +73,7 @@ def test_the_builder_runs_as_the_spike_found_it_to_work():
     assert argv[-3:] == ["localhost/rcman-builder:test", "sleep", "infinity"]
     # one capability, the one the nested engine needs, and nothing that turns the limits off
     assert [a for a in argv if a.startswith(("--cap", "--privileged"))] == ["--cap-add=SYS_ADMIN"]
+    assert not [a for a in argv if a.startswith("--device")]  # not even /dev/fuse
     assert not [a for a in argv if a.startswith(("--publish", "-p", "--userns", "--pid=", "--ipc"))]
     assert not [
         a for a in argv if a.startswith("--security-opt") and a != "--security-opt=label=disable"
@@ -88,8 +95,16 @@ def test_the_builder_has_a_range_of_ids_no_person_and_not_rcman_has():
 
 def test_the_builders_slot_is_not_rcmans_own_slot_zero_which_stays_refused():
     with pytest.raises(rt.RuntimeFailed):
-        rt.PodmanRuntime._ids(0)
-    assert rt.PodmanRuntime._ids(people.BUILDER_SLOT)  # and the builder's is not
+        IDS(0)
+    assert IDS(people.BUILDER_SLOT)  # and the builder's is not
+
+
+def test_the_builder_runs_on_the_network_it_is_given():
+    """A workspace's network by default (the runtime passes PodmanConfig.network); a test
+    engine passes its own."""
+    assert "--network=host" in run_argv(network="host")
+    assert not [a for a in run_argv(network="host") if a.startswith("--network=slirp4netns")]
+    assert [a for a in run_argv() if a.startswith("--network")] == [f"--network={rt.NETWORK}"]
 
 
 def test_the_command_that_builds_is_run_with_a_clean_environment_and_no_lockfile():

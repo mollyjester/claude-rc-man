@@ -1,7 +1,7 @@
 """What the runtimes do for limits (backend/rcman/runtime.py): the Podman runtime asks
 systemctl, as rcman's own user, for properties of slices and puts workspace containers in
-them; the host runtime records what it is asked. The real thing is the on-demand suite's
-(tests/container/test_limits_in_podman.py)."""
+them; the host runtime records what it is asked. What the kernel then does with a slice is
+checked by hand (project-knowledge/real-claude-checklist.md)."""
 
 import json
 import subprocess
