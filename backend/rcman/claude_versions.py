@@ -245,7 +245,9 @@ class ClaudeVersions:
         try:
             candidate = folder / CANDIDATE
             self._stage(version, candidate)
-            failed = self.runtime.run_canary(folder, CANARY_NAME, version)
+            failed = self.runtime.run_canary(
+                folder, CANARY_NAME, version, slot=self.workspaces.builder_slot
+            )
             if failed:
                 raise Problem("claude_checks_failed", failed=sorted(failed), report=failed)
             self._install(candidate, version, partial)

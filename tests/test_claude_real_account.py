@@ -30,11 +30,12 @@ def test_account_screens_match_the_fixtures(tmp_path):
     assert rec.compare(recorded, expected) == []
 
 
-def test_every_option_rcman_passes_is_in_help_when_logged_in():
+def test_every_option_rcman_passes_is_in_help_when_logged_in(tmp_path):
     assert REAL is not None, "claude is not on PATH"
     missing = {}
+    home = rec.account_home(tmp_path / "home")  # the default configuration, through links
     for command, options in rec.options_used().items():
-        text = rec.help_text(REAL, command, rec.claude_env(None))
+        text = rec.help_text(REAL, command, rec.claude_env(None, home))
         assert not rec.help_refused_logged_out(text), "the default configuration is not logged in"
         absent = sorted(o for o in options if o not in text)
         if absent:

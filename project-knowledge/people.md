@@ -31,7 +31,9 @@ database restored from a backup, whose ids come round again, are not adopted.
 **The slot** is the uid range every workspace of the person runs in: slot `k`
 maps a workspace's ids from 0 onto rcman's subordinate ids from `k × RANGE`
 (see [runtime.md](runtime.md#the-runtime)). A person gets the lowest free slot
-from 1 to `MAX_PEOPLE`; slot 0 is rcman's own ids, and the table refuses it.
+from 1 to `MAX_PEOPLE` (`people.add`'s `last_slot`, which the route gives as one below the
+service's builder slot, `Workspaces.builder_slot`); slot 0 is rcman's own ids, and the table
+refuses it.
 No two people share a slot, so no two people's workspaces share a range. The
 installer gives rcman enough subordinate ids for every slot
 (`SUBORDINATE_COUNT` in `installer/install.py`), which a test holds to
@@ -107,4 +109,5 @@ start.
 | `tests/test_people.py` | Slots, addresses, the bound on people, the allowed list written whole by rename, and the People page's routes, deleting a person's workspaces and settings among them, and their limits |
 | `tests/test_identity.py` | Who is let in: an active person, by address in any case, and no one else from the moment they are removed or being deleted |
 | `tests/test_admin.py` | `rcman-admin`'s verbs, `limits` among them, its words, running itself again as rcman, and the installed script |
-| `tests/container/test_install_in_container.py` | The installed thing: the first administrator, `rcman-admin` by name as root, the allowed list's owner and mode, and deleting a person leaving nothing labelled theirs |
+| `tests/container/test_install_in_container.py` | The installed thing: the first administrator, `rcman-admin` by name as root, and the allowed list's owner and mode |
+| `tests/container/test_stack_in_podman.py` | The whole stack: its administrator, a person added and let in, one person unable to reach another's workspace, deleting a person leaving nothing labelled theirs, and limits set through the API |

@@ -22,10 +22,10 @@ and the on-demand runs among them, and what each does:
 | The rules that override everything else | [CONTRIBUTING.md](CONTRIBUTING.md) |
 | The full standing rules, and where documentation goes | [project-knowledge/working-rules.md](project-knowledge/working-rules.md) |
 | Taking an issue, or a task given as plain text, from plan to finished change with subagents | [.claude/skills/manage-issue/SKILL.md](.claude/skills/manage-issue/SKILL.md) |
-| How tests are organised and run, the repository guards, the edit-time and pre-test hooks | [project-knowledge/tests.md](project-knowledge/tests.md) |
+| How tests are organised and run, the tests' own Podman engine, the stubbed installation and the whole stack, what a machine or a workspace needs to run them (the repository's `.devcontainer`), the repository guards, the edit-time and pre-test hooks | [project-knowledge/tests.md](project-knowledge/tests.md) |
 | The fake `claude`, its fixtures, and approving a new Claude Code version | [project-knowledge/fake-claude.md](project-knowledge/fake-claude.md) |
-| Workspaces: the Podman and host runtimes, each person's shared Claude sign-in, the exec channel, a workspace's server, its pinned Claude Code version and states, the Terminal tab's shell, the canary, limits on memory, CPU and processes, restoring at start | [project-knowledge/runtime.md](project-knowledge/runtime.md) |
-| What a workspace, its server and its terminal are, for colleagues | [docs/workspaces.md](docs/workspaces.md) |
+| Workspaces: the Podman and host runtimes, each person's shared Claude sign-in, the exec channel, a workspace's server, its pinned Claude Code version and states, the Terminal tab's shell, containers in a workspace, the canary, limits on memory, CPU and processes, restoring at start | [project-knowledge/runtime.md](project-knowledge/runtime.md) |
+| What a workspace, its server, its terminal and the containers in it are, for colleagues | [docs/workspaces.md](docs/workspaces.md) |
 | People, their uid-range slots, the allowed list, `rcman-admin`, their limits | [project-knowledge/people.md](project-knowledge/people.md) |
 | Adding and removing people, and limiting what they use, for administrators | [docs/users.md](docs/users.md) |
 | What a repository's devcontainer.json may ask of a workspace, how an image of it is built, and what is refused, for administrators | [docs/devcontainer.md](docs/devcontainer.md) |

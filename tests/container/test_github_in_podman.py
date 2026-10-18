@@ -1,24 +1,20 @@
 """Git in a workspace of the Podman runtime, against a stand-in for github.com.
 
-``tests/test_container_suite.py`` runs this module in the podman host as the service
-account, once the tools and a store holding the fake `claude` are made as root, and
-with ``github.com`` in the host's /etc/hosts at the host's own address, which
-``RCMAN_GITHUB_ADDRESS`` names. Anywhere else it skips. Here the stand-in
-(``tests/github_server.py``) is served as https://github.com at that address, under a
-certificate from a certificate authority minted here, which the workspaces' image
-trusts: the image is the base image with git, python3 for the fake `claude`, and that
-authority. Nothing in a workspace knows it is not the real GitHub, so what runs is what
-runs in production: rcman's own push (``Repository``), Claude's git (the fake `claude`'s
-``fake-exec``, started with Claude's environment), the credential helper that reads the
-person's credential file, and the writes of that file through the runtime's
-``put_account`` (``GitAccount``). The tests of ``gh`` run the default workspace image instead,
-built here from the installer's build file, with Ubuntu's ``gh`` in it, and need nothing of
-the stand-in: ``gh`` reads the token from the files ``GitAccount`` writes, with no network.
+On the tests' engine (tests/podman_service.py), the module's workspaces join a network of their
+own, a holder container's with no way out (tests/container/network.py). The stand-in
+(``tests/github_server.py``) is served there as https://github.com, on the loopback of that
+network and port 443, by this process, under a certificate from a certificate authority minted
+here, which the workspaces' image trusts: the image is the default workspace image with that
+authority, and with git finding github.com on that loopback (tests/container/github_stand_in.py).
+Nothing in a workspace knows it is not the real GitHub, so what runs is what runs in production:
+rcman's own push (``Repository``), Claude's git (the fake `claude`'s ``fake-exec``, started with
+Claude's environment), the credential helper that reads the person's credential file, and the
+writes of that file through the runtime's ``put_account`` (``GitAccount``). The tests of ``gh``
+run the default workspace image itself, with Ubuntu's ``gh`` in it, and need nothing of the
+stand-in: ``gh`` reads the token from the files ``GitAccount`` writes, with no network.
 """
 
 import os
-import shutil
-import socket
 import ssl
 import subprocess
 import threading
@@ -33,25 +29,16 @@ from rcman.gitaccount import GitAccount
 from rcman.identity import Identity
 from rcman.problems import CLONE_MESSAGES, Problem
 from rcman.repository import Repository
-from rcman.settings import Settings
 from rcman.workspaces import Workspaces
 
 from helpers import git_run
-from installer import install as ins
 from tests.container import github_stand_in as stand_in
-from tests.container import test_runtime_in_podman as base
+from tests.container import network
+from tests.container.conftest import engine_runtime, engine_settings
 from tests.github_server import GitHubServer
 from tests.github_tokens import AWKWARD_TOKENS
 
-ADDRESS = os.environ.get("RCMAN_GITHUB_ADDRESS", "")
-
-pytestmark = pytest.mark.skipif(
-    os.environ.get("RCMAN_IN_CONTAINER") != "1"
-    or "RCMAN_PODMAN_IMAGE" not in os.environ
-    or not ADDRESS,
-    reason="runs only as the service account inside the podman host, with github.com in its hosts",
-)
-
+ADDRESS, PORT = stand_in.ADDRESS, stand_in.PORT
 TOKEN = "github_pat_podman-test-token"
 EMAIL = "bob@example.com"
 
@@ -63,57 +50,77 @@ def pki(tmp_path_factory) -> Path:
 
 
 @pytest.fixture(scope="module")
-def github_com(pki, tmp_path_factory):
-    """The tests' GitHub at https://github.com, which the host's /etc/hosts sends to the
-    host's own address, on that address and the port 443."""
-    assert socket.gethostbyname("github.com") == ADDRESS  # the runner's line in /etc/hosts
+def holder(podman_service, default_image, labelled):
+    """The network the module's workspaces join, held by a container with no way out."""
+    with network.holder(
+        podman_service, default_image, labelled, f"rcman-test-github-{os.getpid()}"
+    ) as name:
+        yield name
+
+
+def tls(pki: Path) -> ssl.SSLContext:
     context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
     context.load_cert_chain(pki / "leaf.crt", pki / "leaf.key")
+    return context
+
+
+def serve(server: GitHubServer, engine, holder: str, pki: Path, root: Path) -> None:
+    """``server`` at https://github.com in the holder's network: on its loopback and port 443."""
+    listening = network.listening(engine, holder, PORT, ADDRESS)
+    url = server.start(root, TOKEN, ssl_context=tls(pki), listening=listening)
+    assert url == f"https://{ADDRESS}:{PORT}/"
+
+
+@pytest.fixture(scope="module")
+def github_com(podman_service, holder, pki, tmp_path_factory):
+    """The tests' GitHub at https://github.com in the workspaces' network."""
     server = GitHubServer()
-    url = server.start(
-        tmp_path_factory.mktemp("github"), TOKEN, ssl_context=context, host=ADDRESS, port=443
-    )
-    assert url == f"https://{ADDRESS}:443/"
+    serve(server, podman_service, holder, pki, tmp_path_factory.mktemp("github"))
+    server.engine, server.holder, server.pki = podman_service, holder, pki
     yield server
     server.stop()
 
 
+def build(engine, context: Path, name: str) -> str:
+    built = engine.cli("build", "-q", "--pull=never", "-t", name, str(context), timeout=1800)
+    assert built.returncode == 0, (built.stdout + built.stderr).decode(errors="replace")
+    return name
+
+
 @pytest.fixture(scope="module")
-def image(pki, github_com) -> str:
-    """The base image with git, python3 and the authority; built in the account's Podman."""
-    name = f"localhost/rcman-test-git:{os.getpid()}"
-    (pki / "Dockerfile").write_text(
-        stand_in.dockerfile(os.environ["RCMAN_PODMAN_IMAGE"], packages=True)
-    )
-    built = subprocess.run(
-        ["podman", "--remote", "--url", f"unix://{base.socket()}", "build", "-q", "-t", name,
-         str(pki)],
-        capture_output=True,
-        text=True, errors="replace",
-        timeout=1200,
-    )  # fmt: skip
-    assert built.returncode == 0, built.stdout + built.stderr
+def image(podman_service, default_image, pki, github_com) -> str:
+    """The default image with the authority trusted and github.com found in the network."""
+    (pki / "Dockerfile").write_text(stand_in.dockerfile(default_image))
+    name = build(podman_service, pki, f"localhost/rcman-test-git:{os.getpid()}")
     yield name
-    base.podman_cli("rmi", "--force", name)
+    podman_service.cli("rmi", "--force", name)
 
 
-def runtime_of(image: str) -> rt.PodmanRuntime:
-    return rt.PodmanRuntime(
-        rt.PodmanConfig(
-            socket=base.socket(), image=image, tools_dir=base.TOOLS, claude_store=base.CLAUDE
-        )
+@pytest.fixture(scope="module")
+def parts(podman_service, engine_tools, fake_store, engine_scratch, holder):
+    """What every runtime of the module is made with but its image: the engine, the tools, the
+    store with the fake `claude`, the scratch folder and the network of ``holder``."""
+    return types.SimpleNamespace(
+        engine=podman_service, tools=engine_tools, store=fake_store, scratch=engine_scratch,
+        network=f"container:{holder}",
+    )  # fmt: skip
+
+
+def runtime_of(parts, image: str) -> rt.PodmanRuntime:
+    return engine_runtime(
+        parts.engine, image, parts.tools, parts.store, parts.scratch, network=parts.network
     )
 
 
 @pytest.fixture(scope="module")
-def podman(image) -> rt.PodmanRuntime:
-    return runtime_of(image)
+def podman(parts, image) -> rt.PodmanRuntime:
+    return runtime_of(parts, image)
 
 
 @pytest.fixture(scope="module")
 def person(tmp_path_factory):
-    """A person of rcman's database, in a slot the podman host's id range holds, and the
-    git account that writes their credential."""
+    """A person of rcman's database, in a slot the engine's ids hold (tests/container/sizes.py),
+    and the git account that writes their credential."""
     path = tmp_path_factory.mktemp("rcman") / "rcman.db"
     db.migrate(path)
     con = db.connect(path)
@@ -217,8 +224,14 @@ def commit_again(podman, workspace) -> str:
 # --- git in the image, and the stand-in as github.com ------------------------------------
 
 
+@pytest.fixture(scope="module")
+def without_git(base_image) -> str:
+    """The image the default image starts from, which has no git."""
+    return base_image
+
+
 def test_the_image_check_accepts_the_image_with_git_and_refuses_one_without(
-    podman, workspace, person
+    podman, workspace, person, parts, without_git
 ):
     """Workspaces._check_git, run against real containers: the first time git runs in one."""
     service = types.SimpleNamespace(runtime=podman)
@@ -229,7 +242,7 @@ def test_the_image_check_accepts_the_image_with_git_and_refuses_one_without(
     assert git_run.version_of(version.out.decode()) >= git_run.GIT_MIN_VERSION
 
     # The base image has no git: the same check fails the workspace, with the reason.
-    bare = runtime_of(os.environ["RCMAN_PODMAN_IMAGE"])
+    bare = runtime_of(parts, without_git)
     owner = person[0]
     who = rt.Spec(rt.container_name(601), slot=owner.slot, workspace=601, person=owner.id)
     bare.create(who)
@@ -242,14 +255,22 @@ def test_the_image_check_accepts_the_image_with_git_and_refuses_one_without(
         bare.remove(who.name)
 
 
-def test_a_workspace_has_the_hosts_hosts_file_and_reaches_the_stand_in_at_its_address(
+def test_a_workspace_is_in_its_networks_namespace_and_reaches_the_stand_in_there(
     podman, workspace, github_com, tmp_path
 ):
-    """Podman containers (here 4.9, with slirp4netns) get the podman host's /etc/hosts, so
-    github.com is the host's own address there; and the stand-in listening on that address
-    answers them, under the certificate of the authority the image trusts."""
-    seen = in_it(podman, workspace, ["getent", "hosts", "github.com"])
-    assert seen.out.split()[:2] == [ADDRESS.encode(), b"github.com"], seen
+    """The workspace joined the holder's network, which is not this process's; and the stand-in
+    listening on that network's loopback answers it as github.com, under the certificate of
+    the authority the image trusts."""
+    holders = network.namespace_of(github_com.engine, github_com.holder)
+    seen = in_it(podman, workspace, ["readlink", "/proc/self/ns/net"])
+    assert seen.out.decode().strip() == holders, seen
+    assert os.readlink("/proc/self/ns/net") != holders  # the control: this process's is another
+    # Its own hostname and hosts file, not the holder's: git finds github.com through the image.
+    named = in_it(podman, workspace, ["cat", "/proc/sys/kernel/hostname"]).out.decode().strip()
+    holder = github_com.engine.cli("exec", github_com.holder, "cat", "/proc/sys/kernel/hostname")
+    assert named == workspace and holder.stdout.decode().strip() != named  # the control
+    hosts = in_it(podman, workspace, ["cat", "/etc/hosts"]).out.decode()
+    assert "localhost" in hosts and "github.com" not in hosts  # read, and no github.com in it
     name = f"public-{tmp_path.name}"
     bare = github_com.bare("bob", name)
     source = tmp_path / "source"
@@ -357,7 +378,7 @@ def test_forgetting_the_token_makes_the_very_next_push_fail_for_both(
 @pytest.fixture(scope="module")
 def service(podman, person):
     who, path = person
-    made = Workspaces(Settings(public_origin="https://rcman.test", database=path), podman)
+    made = Workspaces(engine_settings(path, podman.config.claude_store), podman)
     yield made
     made.close()
 
@@ -402,8 +423,9 @@ def gone(service, workspace_id: int, within: float = 120) -> None:
         time.sleep(0.2)
 
 
-def exists(kind: str, name: str) -> bool:
-    return base.podman_cli(kind, "exists", name).returncode == 0
+def exists(runtime: rt.PodmanRuntime, kind: str, name: str) -> bool:
+    """Whether ``runtime``'s Podman has the ``kind`` (container, volume, image) ``name``."""
+    return runtime._podman(kind, "exists", name, check=False).returncode == 0
 
 
 @pytest.fixture
@@ -419,8 +441,8 @@ def clones(service, person, account):
             service.delete(now)
     for workspace in made:
         gone(service, workspace.id)
-        assert not exists("container", workspace.container)
-        assert not exists("volume", workspace.container)
+        assert not exists(service.runtime, "container", workspace.container)
+        assert not exists(service.runtime, "volume", workspace.container)
 
 
 def clone(service, person, clones, source: str, name: str | None = None):
@@ -471,7 +493,7 @@ def test_a_private_repository_without_a_token_fails_the_workspace_and_says_why(
     assert len([a for a in github_com.attempts if a[1]]) == accepted  # nothing was accepted
     assert github_com.attempts[attempted:] == []  # no credential was even offered
     # The failed workspace stays, with its container, until it is deleted.
-    assert exists("container", done.container)
+    assert exists(service.runtime, "container", done.container)
 
 
 def test_the_same_repository_clones_once_the_token_is_saved_and_the_token_is_not_kept_in_it(
@@ -519,16 +541,12 @@ def test_a_repository_that_is_not_there_is_said_not_to_be(service, person, clone
     assert any("not found" in line for line in said), said
 
 
-def test_a_github_that_cannot_be_reached_is_said_not_to_be(
-    service, person, clones, github_com, pki
-):
-    context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
-    context.load_cert_chain(pki / "leaf.crt", pki / "leaf.key")
+def test_a_github_that_cannot_be_reached_is_said_not_to_be(service, person, clones, github_com):
     github_com.stop()  # nothing listens on its address now: a refused connection
     try:
         done = clone(service, person, clones, "https://github.com/octo/anything", "unreached")
     finally:
-        github_com.start(github_com.root, TOKEN, ssl_context=context, host=ADDRESS, port=443)
+        serve(github_com, github_com.engine, github_com.holder, github_com.pki, github_com.root)
     assert done.state == "failed"
     assert done.error.splitlines()[0] == CLONE_MESSAGES["network"], done.error
     assert "Failed to connect" in done.error or "unable to access" in done.error
@@ -551,14 +569,14 @@ def test_deleting_a_workspace_that_is_being_cloned_stops_git_and_leaves_nothing(
             time.sleep(0.1)
         now = service.get(made.id)
         assert now.state == "creating" and now.log.splitlines()[-1] == f"Cloning {now.source}"
-        top = base.podman_cli("top", made.container, "args")
-        assert "clone" in top.stdout, top.stdout + top.stderr  # positive: git is running there
+        top = podman._podman("top", made.container, "args", check=False)
+        assert b"clone" in top.stdout, top.stdout + top.stderr  # positive: git is running there
         started = time.monotonic()
         service.delete(now)
         gone(service, made.id, 60)
         assert time.monotonic() - started < 60  # not after the gate's wait
-        assert not exists("container", made.container)
-        assert not exists("volume", made.container)
+        assert not exists(podman, "container", made.container)
+        assert not exists(podman, "volume", made.container)
     finally:
         github_com.gate.set()
 
@@ -579,27 +597,10 @@ NO_USER_NAME = b"couldn't get user name for"
 
 
 @pytest.fixture(scope="module")
-def default_image(tmp_path_factory) -> str:
-    """The default workspace image, built in the account's Podman from the installer's build
-    file."""
-    name = f"localhost/rcman-test-gh:{os.getpid()}"
-    context = tmp_path_factory.mktemp("default-image")
-    shutil.copy(ins.CONTAINERFILE, context / "Containerfile")
-    built = subprocess.run(
-        ["podman", "--remote", "--url", f"unix://{base.socket()}", "build", "-q", "-t", name,
-         "-f", str(context / "Containerfile"), str(context)],
-        capture_output=True,
-        text=True, errors="replace",
-        timeout=1200,
-    )  # fmt: skip
-    assert built.returncode == 0, built.stdout + built.stderr
-    yield name
-    base.podman_cli("rmi", "--force", name)
-
-
-@pytest.fixture(scope="module")
-def gh_runtime(default_image) -> rt.PodmanRuntime:
-    return runtime_of(default_image)
+def gh_runtime(parts, default_image):
+    """The default image in the module's network, which has no way out: gh needs none, and
+    one command below, with a token and no config.yml, would ask GitHub whose the token is."""
+    return runtime_of(parts, default_image)
 
 
 @pytest.fixture(scope="module")
@@ -678,16 +679,15 @@ def without_gh_config(runtime, name: str) -> None:
 def test_gh_writes_nothing_into_the_folder_it_is_pointed_at(gh_runtime, gh_workspace, account):
     git_account, identity = account
     commands = (["auth", "token"], ["config", "get", "git_protocol"], ["config", "list"])
-    # Positive control: with no config.yml and no token, gh migrates the folder before its
-    # first command, and writes into it.
+    # Positive control: a gh command that writes its configuration writes into the folder, and
+    # the listing sees it.
     git_account.forget_token(identity)
     without_gh_config(gh_runtime, gh_workspace)
-    unversioned = gh_folder(gh_runtime, gh_workspace)
-    assert "== config.yml" not in unversioned
-    for command in commands:
-        claude_gh(gh_runtime, gh_workspace, *command)
-    migrated = gh_folder(gh_runtime, gh_workspace)
-    assert migrated != unversioned and "== config.yml" in migrated
+    unwritten = gh_folder(gh_runtime, gh_workspace)
+    assert "== config.yml" not in unwritten
+    assert claude_gh(gh_runtime, gh_workspace, "config", "set", "git_protocol", "ssh").code == 0
+    written_by_gh = gh_folder(gh_runtime, gh_workspace)
+    assert written_by_gh != unwritten and "== config.yml" in written_by_gh
     # And with a token and no config.yml, the migration asks GitHub whose the token is, which
     # it cannot, and every command fails: why rcman writes config.yml.
     git_account.save_token(identity, TOKEN)

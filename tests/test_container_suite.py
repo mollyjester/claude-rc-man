@@ -1,578 +1,31 @@
-"""Runs the suites in tests/container/, each inside a throwaway container: the podman
-host, which runs systemd and rootless Podman.
+"""What the container suites share that is not a suite of its own, on the tests' engine
+(tests/podman_service.py): the engine itself, a checkout's snapshot cloned in a container, the
+containers a killed run left, and the whole stack in a browser.
 
-Every test here takes the ``docker`` fixture, so it carries the ``container`` marker
-(tests/container_marker.py). The fixture uses ``docker`` when the current user may,
-otherwise ``sudo -n docker``. When neither works the tests skip, unless
+Every test here takes the ``podman_service`` fixture, so it carries the ``container`` marker
+(tests/container_marker.py). Where the user's rootless Podman cannot run the tests skip, unless
 ``RCMAN_REQUIRE_CONTAINER=1`` (set by ``make test-container`` and ``make check-ui``, the
-on-demand runs that ``make check-all`` runs after ``make check``), in which case they
-fail. Every container started here is labelled as its run's, so a later run removes one
-a killed run left, with its anonymous volumes
-(tests/containers.py). The checkout reaches a container as a snapshot of its files
-(tests/snapshot.py), mounted read-only at /src.
+on-demand runs that ``make check-all`` runs after ``make check``), in which case they fail.
+Every container started here is labelled as its run's, so a later run removes one a killed run
+left, with its anonymous volumes (tests/containers.py). The checkout reaches a container as a
+snapshot of its files (tests/snapshot.py), mounted read-only at /src.
 """
 
-import contextlib
-import hashlib
 import json
-import os
-import signal
 import subprocess
-import time
 from pathlib import Path
 
-import pytest
-
-from devtools import held_folders
 from tests import containers
-from tests import killed_runs as kr
-from tests.container import podman_host as ph
 from tests.git_fixtures import fixture_git, make_repo, write
 from tests.snapshot import snapshot
 
 REPO = Path(__file__).resolve().parent.parent
-CONTEXT = REPO / "tests" / "container"
-PODMAN = CONTEXT / "podman"
-PYTEST = ["python3", "-m", "pytest", "-q", "-p", "no:cacheprovider", "-rs"]
-# Seconds the podman host's systemd may take to boot.
-BOOTS_WITHIN = 300
 
 
-@pytest.fixture(scope="session")
-def docker() -> list[str]:
-    """How to run docker here."""
-    for prefix in (["docker"], ["sudo", "-n", "docker"]):
-        try:
-            if subprocess.run([*prefix, "info"], capture_output=True, timeout=30).returncode == 0:
-                return prefix
-        except (FileNotFoundError, subprocess.TimeoutExpired):
-            continue
-    if os.environ.get("RCMAN_REQUIRE_CONTAINER") == "1":
-        pytest.fail("neither docker nor sudo -n docker works")
-    pytest.skip(
-        "docker is not usable (make test-container and make check-ui set "
-        "RCMAN_REQUIRE_CONTAINER=1 to fail instead)"
-    )
-
-
-def _built(docker: list[str], context: Path, name: str) -> str:
-    """The image built from ``context``'s Dockerfile, its tag named after the
-    Dockerfile's content, unless already built."""
-    tag = name + ":" + hashlib.sha256((context / "Dockerfile").read_bytes()).hexdigest()[:12]
-    if subprocess.run([*docker, "image", "inspect", tag], capture_output=True).returncode != 0:
-        subprocess.run(
-            [*docker, "build", "-q", "-t", tag, str(context)], check=True, capture_output=True
-        )
-    return tag
-
-
-@pytest.fixture(scope="session")
-def podman_image(docker) -> str:
-    """The podman host's image, built from tests/container/podman/Dockerfile."""
-    return _built(docker, PODMAN, "rcman-test-podman")
-
-
-@pytest.fixture(scope="session")
-def labelled(docker) -> list[str]:
-    """docker run's arguments that label a container as this run's, held while the run
-    lasts; containers a killed run left are removed first, and this run's afterwards
-    (tests/containers.py)."""
-    with containers.holder(docker) as folder:
-        yield containers.labels(folder)
-
-
-@pytest.fixture(scope="session")
-def source(tmp_path_factory) -> Path:
-    """The checkout's files as they are on disk (tests/snapshot.py), made once for the
-    session and removed when it ends."""
-    folder = tmp_path_factory.mktemp("src")
-    try:
-        yield snapshot(REPO, folder)
-    finally:
-        held_folders.remove_tree(folder, roots=[tmp_path_factory.getbasetemp()])
-
-
-def test_docker_is_usable(docker):
-    assert docker
-
-
-def run_args(
-    docker: list[str],
-    labelled: list[str],
-    source: Path,
-    mounts: list[tuple[Path, str]] = (),
-    env: dict[str, str] | None = None,
-    docker_args: list[str] = (),
-) -> list[str]:
-    """docker run's arguments up to the image: a container removed when it ends, with
-    ``source`` read-only at /src as its working folder."""
-    args = [
-        *docker,
-        "run",
-        "--rm",
-        "--init",
-        *labelled,
-        *docker_args,
-        "-v",
-        f"{source}:/src:ro",
-    ]  # an init reaps orphans, as on a real host
-    for host, container in mounts:
-        args += ["-v", f"{host}:{container}"]
-    for key, value in {
-        "RCMAN_IN_CONTAINER": "1",
-        "PYTHONDONTWRITEBYTECODE": "1",
-        **(env or {}),
-    }.items():
-        args += ["-e", f"{key}={value}"]
-    return [*args, "-w", "/src"]
-
-
-def _passed(proc: subprocess.CompletedProcess) -> None:
-    """A suite's run passed, and ran rather than skipping."""
-    output = proc.stdout + proc.stderr
-    assert proc.returncode == 0, output
-    assert " skipped" not in output.splitlines()[-1], output
-
-
-# --- the podman host ----------------------------------------------------------------------
-
-
-def _base(dockerfile: Path) -> str:
-    """The image a Dockerfile starts from."""
-    for line in dockerfile.read_text().splitlines():
-        if line.startswith("FROM "):
-            return line.split()[1]
-    raise AssertionError(f"no FROM in {dockerfile}")
-
-
-# What a podman host is given to load into its account's Podman: the image the podman
-# host starts from, which the workspaces and the default image start from too, and the
-# one tmux is built in (installer/install.py TMUX_BUILD_IMAGE).
-def _loaded_images() -> list[str]:
-    from installer import install as ins
-
-    return [_base(PODMAN / "Dockerfile"), ins.TMUX_BUILD_IMAGE.removeprefix("docker.io/library/")]
-
-
-def _run(argv: list[str], timeout: float = 600, **kwargs) -> subprocess.CompletedProcess:
-    proc = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, **kwargs)
-    assert proc.returncode == 0, proc.stdout + proc.stderr
-    return proc
-
-
-def _booted(inside: list[str]) -> None:
-    """Wait until the systemd ``inside`` runs has finished booting, and check that no
-    unit failed. A boot that does not come says what the last ask printed, its exit code
-    and the end of the container's log, since the state alone is empty where ``docker exec``
-    itself failed (the container ended)."""
-    deadline = time.monotonic() + BOOTS_WITHIN
-    while True:
-        asked = subprocess.run(
-            [*inside, "systemctl", "is-system-running", "--wait"],
-            capture_output=True,
-            text=True,
-            timeout=BOOTS_WITHIN,
-        )
-        state = asked.stdout.strip()
-        if state in ("running", "degraded"):
-            break
-        if time.monotonic() > deadline:  # "offline" until the manager is up
-            docker, container = inside[:3], inside[-1]
-            logged = subprocess.run(
-                [*docker, "logs", "--tail", "40", container], capture_output=True, text=True
-            )
-            raise AssertionError(
-                f"systemd did not finish booting: state {state!r}, exit code {asked.returncode}, "
-                f"stderr {asked.stderr.strip()!r}\n{logged.stdout[-3000:]}{logged.stderr[-3000:]}"
-            )
-        time.sleep(0.5)
-    failed = subprocess.run([*inside, "systemctl", "--failed"], capture_output=True, text=True)
-    assert state == "running", failed.stdout
-
-
-def _toolchain_cache() -> Path:
-    """The host's cache of the installer's toolchain, filled with the installer's own
-    download code: tmux's source among it."""
-    from installer import install as ins
-
-    cache = Path.home() / ".cache" / "rcman-test"
-    ins.ensure_toolchain(cache / "toolchain")
-    for name in ("npm", "uv"):
-        (cache / name).mkdir(parents=True, exist_ok=True)
-    return cache
-
-
-@contextlib.contextmanager
-def podman_container(docker, podman_image, labelled, source, docker_args=()):
-    """A fresh podman host, booted, with the toolchain cache at the installer's
-    toolchain: docker exec's arguments up to the command, which runs as root at /src,
-    and the container's id. The account's home, and Podman's storage in it, is an
-    anonymous volume of the container, which goes wherever the container goes, and
-    survives a restart of the container; the container is removed afterwards."""
-    from installer import install as ins
-
-    cache = _toolchain_cache()
-    for image in _loaded_images():
-        if subprocess.run([*docker, "image", "inspect", image], capture_output=True).returncode:
-            _run([*docker, "pull", "-q", image])
-    container = ""
-    try:
-        container = _run(
-            [*docker, "run", "-d", "--privileged", "--cgroupns=private",
-             "--tmpfs", "/run", "--tmpfs", "/run/lock", *labelled, *docker_args,
-             "-v", ph.HOME, "-v", f"{source}:/src:ro",
-             "-v", f"{cache / 'toolchain'}:{ins.TOOLCHAIN}",
-             "-v", f"{cache / 'npm'}:/home/dev/.npm", "-v", f"{cache / 'uv'}:/root/.cache/uv",
-             podman_image]
-        ).stdout.strip()  # fmt: skip
-        inside = [*docker, "exec", "-w", "/src", "-e", "RCMAN_IN_CONTAINER=1"]
-        inside += ["-e", "PYTHONDONTWRITEBYTECODE=1", "-e", "PYTHONPATH=/src/backend:/src"]
-        _booted([*inside, container])
-        yield inside, container
-    finally:
-        if container:
-            containers._remove(docker, [container])
-
-
-def _load(docker, inside: list[str], container: str) -> str:
-    """Load the images into the account's Podman by ``docker save | podman load``, so that
-    nothing inside needs a registry; the name the first is loaded as."""
-    names = []
-    for image in _loaded_images():
-        save = subprocess.Popen([*docker, "save", image], stdout=subprocess.PIPE)
-        try:
-            loaded = _run(
-                [*inside, "-i", container, "python3", "tests/container/podman_host.py", "load"],
-                stdin=save.stdout,
-            )
-        finally:
-            save.stdout.close()
-            assert save.wait(timeout=600) == 0
-        said = loaded.stdout.strip().splitlines()[-1]
-        assert said.startswith("Loaded image: "), loaded.stdout
-        names.append(said.removeprefix("Loaded image: "))
-    _have_pinned_images(inside, container)
-    return names[0]
-
-
-def _pinned_references() -> list[str]:
-    """The images the installer builds from, by tag and digest: what Podman looks up when it
-    builds one of them, and an image loaded from Docker's archive is not found by."""
-    from installer import install as ins
-
-    root = Path(ins.__file__).resolve().parent
-    found = [ins.TMUX_BUILD_REFERENCE]
-    for name in ("workspace", "builder"):
-        found += containers.digest_references(root / name / "Containerfile")
-    return list(dict.fromkeys(found))
-
-
-def _have_pinned_images(inside: list[str], container: str) -> None:
-    """Make every pinned reference known to the account's Podman: an image it has under the
-    reference is used, and one it has not is pulled by exactly that reference."""
-    as_account = [*inside, container, "python3", "tests/container/podman_host.py", "run"]
-    as_account += ["podman", "--remote"]
-    for reference in _pinned_references():
-        if subprocess.run([*as_account, "image", "exists", reference]).returncode != 0:
-            _run([*as_account, "pull", "-q", reference], timeout=1200)
-
-
-@pytest.fixture
-def podman_host(docker, podman_image, labelled, source) -> list[str]:
-    """A fresh podman host set up by tests/container/podman_host.py, with the images
-    loaded into the account's Podman: docker exec's arguments up to the command, which
-    runs as root at /src with ``RCMAN_PODMAN_IMAGE`` naming the loaded base image."""
-    with podman_container(docker, podman_image, labelled, source) as (inside, container):
-        _run([*inside, container, "python3", "tests/container/podman_host.py", "setup"])
-        image = _load(docker, inside, container)
-        yield [*inside, "-e", f"RCMAN_PODMAN_IMAGE={image}", container]
-
-
-def test_podman_suite_passes(docker, podman_host):
-    """Rootless Podman for a service account, under systemd as PID 1."""
-    module = "tests/container/test_podman_in_container.py"
-    _passed(
-        subprocess.run(
-            [*podman_host, *PYTEST, module], capture_output=True, text=True, timeout=1200
-        )
-    )
-
-
-# The static tools and an empty Claude store, made as root with the installer's own code.
-TOOLS_AND_STORE = """
-from pathlib import Path
-from installer import install as ins
-ins.ensure_tools(Path("/var/lib/rcman/tools"), conf=Path("/src/backend/rcman/tmux.conf"))
-Path("/var/lib/rcman/claude").mkdir(mode=0o755, exist_ok=True)
-"""
-
-
-def test_the_podman_runtime_keeps_the_contract_against_real_podman(docker, podman_host):
-    """tests/container/test_runtime_in_podman.py, run as the service account."""
-    _run([*podman_host, "python3", "-c", TOOLS_AND_STORE])
-    module = "tests/container/test_runtime_in_podman.py"
-    as_account = [
-        "python3", "tests/container/podman_host.py", "run", "env", "RCMAN_IN_CONTAINER=1",
-        "PYTHONDONTWRITEBYTECODE=1", "PYTHONPATH=/src/backend:/src", "HOME=/var/lib/rcman",
-    ]  # fmt: skip
-    environment = [a for a in podman_host if a.startswith("RCMAN_PODMAN_IMAGE=")]
-    _passed(
-        subprocess.run(
-            [*podman_host, *as_account, *environment, *PYTEST, module],
-            capture_output=True,
-            text=True,
-            timeout=1200,
-        )
-    )
-
-
-# The store as the installer leaves it, but for what it holds: the fake claude, as the one
-# version, the one `current` names and `bin/claude` leads to; all of it the service
-# account's, which writes the store from then on.
-FAKE_IN_STORE = f"""
-import os, pwd
-from pathlib import Path
-from tests import claude_download
-from tests.fake_store import FAKE_VERSION
-store = Path("/var/lib/rcman/claude")
-for folder in (store / "bin", store / "versions"):
-    folder.mkdir(mode=0o755, parents=True, exist_ok=True)
-binary = store / "versions" / FAKE_VERSION
-binary.write_bytes(claude_download.bundle(FAKE_VERSION))
-binary.chmod(0o755)
-for folder, name, target in ((store, "current", "versions/" + FAKE_VERSION),
-                             (store / "bin", "claude", "../current")):
-    (folder / name).unlink(missing_ok=True)
-    os.symlink(target, folder / name)
-owner = pwd.getpwnam("{ph.ACCOUNT}")
-for path in (store, *store.rglob("*")):
-    os.lchown(path, owner.pw_uid, owner.pw_gid)
-"""
-
-
-# The dependencies of rcman's backend, which the module imports, in a virtual environment
-# that also sees the host's pytest, made as the installer makes rcman's (its uv, the lock
-# file) but for rcman itself, which the module reads from /src.
-BACKEND_VENV = "/opt/rcman-test-venv"
-BACKEND_DEPENDENCIES = f"""
-import os, subprocess
-from installer import install as ins
-uv, python = str(ins.uv_binary()), "/usr/bin/python3"
-subprocess.run([uv, "venv", "--system-site-packages", "--python", python, "{BACKEND_VENV}"],
-               check=True)
-subprocess.run([uv, "sync", "--frozen", "--no-dev", "--no-install-project", "--python", python],
-               check=True, cwd="/src",
-               env={{**os.environ, "UV_PROJECT_ENVIRONMENT": "{BACKEND_VENV}",
-                    "UV_LINK_MODE": "copy"}})
-"""
-
-
-def _in_the_hosts(podman_host: list[str], module: str, timeout: int, github: bool = True) -> None:
-    """``module`` run as the service account, with the tools, the store holding the fake
-    `claude` (the account's, as the installer leaves it) and the backend's dependencies; with
-    ``github``, also github.com the podman host's own address in its /etc/hosts, where the tests'
-    GitHub listens."""
-    _run([*podman_host, "python3", "-c", TOOLS_AND_STORE + FAKE_IN_STORE])
-    _run([*podman_host, "python3", "-c", BACKEND_DEPENDENCIES])
-    as_account = [
-        "python3", "tests/container/podman_host.py", "run", "env", "RCMAN_IN_CONTAINER=1",
-        "PYTHONDONTWRITEBYTECODE=1", "PYTHONPATH=/src/backend:/src", "HOME=/var/lib/rcman",
-    ]  # fmt: skip
-    if github:
-        address = _run([*podman_host, "hostname", "-I"]).stdout.split()[0]
-        _run([*podman_host, "sh", "-c", f"echo '{address} github.com' >> /etc/hosts"])
-        as_account.append(f"RCMAN_GITHUB_ADDRESS={address}")
-    environment = [a for a in podman_host if a.startswith("RCMAN_PODMAN_IMAGE=")]
-    _passed(
-        subprocess.run(
-            [
-                *podman_host,
-                *as_account,
-                *environment,
-                f"{BACKEND_VENV}/bin/python",
-                *PYTEST[1:],
-                module,
-            ],
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
-    )
-
-
-def test_git_in_a_workspace_pushes_to_the_tests_github_with_the_persons_token(docker, podman_host):
-    """tests/container/test_github_in_podman.py, run as the service account."""
-    _in_the_hosts(podman_host, "tests/container/test_github_in_podman.py", 2400)
-
-
-def test_a_workspace_made_from_a_devcontainer_file_runs_as_its_user_in_real_podman(
-    docker, podman_host
-):
-    """tests/container/test_devcontainer_in_podman.py, run as the service account: images
-    built in the account's Podman, the uid swap map, the shared sign-in and the lifecycle
-    commands, with the tests' GitHub as the repositories' origin."""
-    _in_the_hosts(podman_host, "tests/container/test_devcontainer_in_podman.py", 3600)
-
-
-def test_a_workspace_made_from_a_dockerfile_and_features_is_built_in_a_builder_in_real_podman(
-    docker, podman_host
-):
-    """tests/container/test_builder_in_podman.py, run as the service account: the builder in
-    its own uid range with a stand-in for the CLI, then the builder image of
-    installer/builder with the real Dev Containers CLI and a Podman in it, building a Dockerfile
-    and a feature of a repository that the tests' GitHub serves."""
-    _in_the_hosts(podman_host, "tests/container/test_builder_in_podman.py", 5400)
-
-
-def test_claude_versions_are_rolled_out_through_a_real_canary_and_servers_keep_theirs(
-    docker, podman_host
-):
-    """tests/container/test_claude_versions_in_podman.py, run as the service account: the
-    canary container against real Podman, a server keeping its version through an approval and
-    a restart of rcman, the store pruned once the last server using a version has stopped, and a
-    candidate that is no good leaving the store as it was."""
-    _in_the_hosts(
-        podman_host, "tests/container/test_claude_versions_in_podman.py", 3600, github=False
-    )
-
-
-# What the installer makes for limits (installer/install.py ensure_limits), made as root with
-# the installer's own code: before it the user slice and the user manager both carry a limit on
-# processes of systemd's own, after it neither does, and the manager has not been restarted.
-LIMITS_DROP_INS = f"""
-import subprocess
-from pathlib import Path
-from installer import install as ins
-
-uid = ins.app_uid()
-manager = f"user@{{uid}}.service"
-user_pids = Path(f"/sys/fs/cgroup/user.slice/user-{{uid}}.slice/pids.max")
-
-
-def shown(*args):
-    return subprocess.run(args, capture_output=True, text=True, check=True).stdout.strip()
-
-
-def default_tasks_max():
-    return shown("runuser", "-u", "{ph.ACCOUNT}", "--", "env", f"XDG_RUNTIME_DIR=/run/user/{{uid}}",
-                 "systemctl", "--user", "show", "--property", "DefaultTasksMax", "--value")
-
-
-main = shown("systemctl", "show", "--property", "MainPID", "--value", manager)
-assert main != "0", main
-assert user_pids.read_text().strip() != "max", "positive control: the user slice has a limit"
-assert default_tasks_max() != "infinity", "positive control: the user manager has a default"
-changed = ins.ensure_limits()
-written = {{
-    str(ins.SYSTEMD / f"user-{{uid}}.slice.d" / "rcman.conf"),
-    str(Path(ins.STATE) / ".config" / "systemd" / "user.conf.d" / "rcman.conf"),
-}}
-assert set(changed) == written and all(Path(path).is_file() for path in written), changed
-assert ins.ensure_limits() == [], "the second run changed something"
-subprocess.run(["systemctl", "daemon-reload"], check=True)
-assert user_pids.read_text().strip() == "max"
-assert default_tasks_max() == "infinity"
-assert shown("systemctl", "show", "--property", "MainPID", "--value", manager) == main
-"""
-
-
-def test_the_terminal_runs_a_shell_in_a_workspace_of_real_podman(docker, podman_host):
-    """tests/container/test_terminal_in_podman.py, run as the service account: the Terminal
-    tab's shell through ``podman --remote exec`` on a tty of its own, in a workspace of the
-    default image made through the app."""
-    _in_the_hosts(podman_host, "tests/container/test_terminal_in_podman.py", 2400, github=False)
-
-
-def test_limits_hold_a_workspace_to_its_slices_in_real_podman_and_systemd(docker, podman_host):
-    """tests/container/test_limits_in_podman.py, run as the service account once root has made
-    what the installer makes for limits: the cgroup files of the slices, the container's scope and
-    the cgroup inside it, with the limits set, changed, taken away and restored."""
-    _run([*podman_host, "python3", "-c", LIMITS_DROP_INS])
-    _in_the_hosts(podman_host, "tests/container/test_limits_in_podman.py", 1800, github=False)
-
-
-# --- rcman installed for real, in the podman host -------------------------------------
-
-
-def _inside(inside: list[str], container: str, *argv: str, timeout: int = 2400):
-    return subprocess.run(
-        [*inside, container, *argv], capture_output=True, text=True, timeout=timeout
-    )
-
-
-def test_an_installation_works_and_comes_back_after_the_host_restarts(
-    docker, podman_image, labelled, source
-):
-    """tests/container/test_install_in_container.py in a fresh podman host, through the
-    real installer and systemd; then the whole host restarts, as a machine reboots, and
-    tests/container/test_restored_in_container.py checks that rcman brought its
-    workspaces and their servers back."""
-    with podman_container(docker, podman_image, labelled, source) as (inside, container):
-        env = ["-e", f"HOST_UID={os.getuid()}"]
-        _passed(
-            _inside(
-                [*inside, *env], container, *PYTEST, "tests/container/test_install_in_container.py"
-            )
-        )
-        _run([*docker, "restart", "--time", "60", container], timeout=600)
-        _booted([*inside, container])
-        _passed(
-            _inside(inside, container, *PYTEST, "tests/container/test_restored_in_container.py")
-        )
-
-
-# What all the stack's specs may take together: every test at its limit, and the two that
-# make a person's first workspace at theirs (frontend/e2e-stack/timing.ts), with room over.
-STACK_SPECS_WITHIN = 2400
-
-
-@pytest.mark.stack
-def test_the_whole_stack_in_a_browser(docker, podman_image, labelled, source):
-    """tests/container/stack.py in a fresh podman host; the browser specs in
-    frontend/e2e-stack, from the host, through the port it publishes, signing in to the
-    fake claude with the code it accepts. Run on demand by ``make check-ui``, the
-    ``stack`` marker keeping it out of ``make test-container``."""
-    import socket
-
-    from devtools.fake_claude import ACCEPTED_CODE as CODE
-    from tests.container import github_stand_in as stand_in
-
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        port = s.getsockname()[1]
-    publish = ["-p", f"127.0.0.1:{port}:443"]
-    with podman_container(docker, podman_image, labelled, source, publish) as (inside, container):
-        started = _inside(
-            [*inside, "-e", f"HOST_UID={os.getuid()}"], container, "python3",
-            "tests/container/stack.py",
-        )  # fmt: skip
-        assert started.returncode == 0, started.stdout[-8000:] + started.stderr[-4000:]
-        browser = subprocess.run(
-            ["npx", "playwright", "test", "--config", "playwright.stack.config.ts",
-             "--reporter=line"],
-            cwd=REPO / "frontend",
-            env={
-                **os.environ,
-                "RCMAN_STACK_PORT": str(port),
-                "RCMAN_FAKE_CLAUDE_CODE": CODE,
-                # the stand-in GitHub the stack holds (tests/container/stack.py)
-                "RCMAN_STACK_GITHUB": json.dumps(
-                    {
-                        "token": stand_in.STACK_TOKEN,
-                        "public": f"https://github.com/{stand_in.STACK_OWNER}/{stand_in.STACK_PUBLIC}",
-                        "private": f"https://github.com/{stand_in.STACK_OWNER}/{stand_in.STACK_PRIVATE}",
-                    }
-                ),
-                "RCMAN_STACK_EXEC": json.dumps([*inside, container]),
-            },
-            capture_output=True,
-            text=True,
-            timeout=STACK_SPECS_WITHIN,
-        )  # fmt: skip
-        assert browser.returncode == 0, browser.stdout[-8000:] + browser.stderr[-2000:]
-        assert " passed" in browser.stdout and " skipped" not in browser.stdout
-        checked = _inside(inside, container, "python3", "tests/container/stack.py", "check")
-        assert checked.returncode == 0, checked.stdout[-4000:] + checked.stderr[-4000:]
+def test_podman_is_usable(podman_service):
+    answered = podman_service.cli("info", "--format", "{{.Host.Security.Rootless}}")
+    assert answered.returncode == 0, answered.stderr
+    assert answered.stdout.decode().strip() == "true"
 
 
 # --- a checkout that is a git worktree ---------------------------------------------------
@@ -611,25 +64,25 @@ def _worktree(tmp_path: Path) -> Path:
     return worktree
 
 
-def _clone_at_src(docker, image, labelled, source, checkout):
+def _clone_at_src(engine, image, labelled, source, checkout):
+    """CLONES in a container of ``image`` with no network, ``checkout`` read-only at /src."""
     tools = source / "tests" / "container"
-    args = run_args(
-        docker, labelled, checkout, mounts=[(tools, "/tools:ro")], docker_args=["--entrypoint", ""]
-    )
-    return subprocess.run(
-        [*args, image, "python3", "-c", CLONES], capture_output=True, text=True, timeout=600
-    )
+    return engine.cli(
+        "run", "--rm", "--pull=never", "--network=none", *labelled, "-v", f"{checkout}:/src:ro",
+        "-v", f"{tools}:/tools:ro", "-w", "/src", image, "python3", "-c", CLONES,
+        timeout=600, text=True,
+    )  # fmt: skip
 
 
 def test_a_worktrees_snapshot_is_cloned_in_a_container(
-    docker, podman_image, labelled, source, tmp_path
+    podman_service, system_image, labelled, source, tmp_path
 ):
     worktree = _worktree(tmp_path)
     copy = tmp_path / "copy"
     copy.mkdir()
     snapshot(worktree, copy)
 
-    proc = _clone_at_src(docker, podman_image, labelled, source, copy)
+    proc = _clone_at_src(podman_service, system_image, labelled, source, copy)
 
     assert proc.returncode == 0, proc.stdout + proc.stderr
     found = json.loads(proc.stdout.splitlines()[-1])
@@ -639,35 +92,41 @@ def test_a_worktrees_snapshot_is_cloned_in_a_container(
 
 
 def test_a_worktree_mounted_as_it_is_is_not_a_repository_in_a_container(
-    docker, podman_image, labelled, source, tmp_path
+    podman_service, system_image, labelled, source, tmp_path
 ):
     """The twin: the worktree itself at /src, its .git naming a folder the container
     does not have."""
     worktree = _worktree(tmp_path)
 
-    proc = _clone_at_src(docker, podman_image, labelled, source, worktree)
+    proc = _clone_at_src(podman_service, system_image, labelled, source, worktree)
 
     assert proc.returncode != 0
     assert "not a git repository" in proc.stdout + proc.stderr
 
 
-# --- containers a killed run left -------------------------------------------------------
+# --- the containers a run starts itself ----------------------------------------------------
 
 # What a probe container runs: long enough to outlive a check, never so long that one a
 # failed test leaves runs on.
 PROBE = ["sleep", "300"]
 
 
-def _pairs(labels: list[str]) -> list[tuple[str, str]]:
-    """docker run's --label arguments as (name, value)."""
-    return [tuple(arg.split("=", 1)) for arg in labels[1::2]]
-
-
-def _probe(docker: list[str], image: str, labels: list[str]) -> str:
-    """A container labelled with ``labels``, with an anonymous volume, as the podman host
-    has."""
+def _probe(engine: list[str], image: str, labels: list[str]) -> str:
+    """A container labelled with ``labels``, with an anonymous volume."""
     started = subprocess.run(
-        [*docker, "run", "-d", "--rm", "--entrypoint", "", *labels, "-v", "/v", image, *PROBE],
+        [
+            *engine,
+            "run",
+            "-d",
+            "--rm",
+            "--pull=never",
+            "--network=none",
+            *labels,
+            "-v",
+            "/v",
+            image,
+            *PROBE,
+        ],
         capture_output=True,
         text=True,
     )
@@ -675,9 +134,9 @@ def _probe(docker: list[str], image: str, labels: list[str]) -> str:
     return started.stdout.strip()
 
 
-def _volume_of(docker: list[str], container: str) -> str:
+def _volume_of(engine: list[str], container: str) -> str:
     found = subprocess.run(
-        [*docker, "inspect", "--format", "{{range .Mounts}}{{.Name}}{{end}}", container],
+        [*engine, "inspect", "--format", "{{range .Mounts}}{{.Name}}{{end}}", container],
         capture_output=True,
         text=True,
     )
@@ -685,15 +144,15 @@ def _volume_of(docker: list[str], container: str) -> str:
     return found.stdout.strip()
 
 
-def _volume_exists(docker: list[str], volume: str) -> bool:
-    found = subprocess.run([*docker, "volume", "ls", "-q"], capture_output=True, text=True)
+def _volume_exists(engine: list[str], volume: str) -> bool:
+    found = subprocess.run([*engine, "volume", "ls", "-q"], capture_output=True, text=True)
     assert found.returncode == 0, found.stderr
     return volume in found.stdout.split()
 
 
-def _exists(docker: list[str], container: str) -> bool:
+def _exists(engine: list[str], container: str) -> bool:
     found = subprocess.run(
-        [*docker, "ps", "-a", "-q", "--no-trunc", "--filter", f"id={container}"],
+        [*engine, "ps", "-a", "-q", "--no-trunc", "--filter", f"id={container}"],
         capture_output=True,
         text=True,
     )
@@ -701,119 +160,24 @@ def _exists(docker: list[str], container: str) -> bool:
     return container in found.stdout.split()
 
 
-USES_A_CONTAINER = """
-import json, os
-from tests import containers as ct
-from tests import killed_runs as kr
-from tests.test_container_suite import PROBE
-
-ct.HOLDERS = {prefix!r}
-
-def test_runs_one():
-    docker, image = json.loads(os.environ["DOCKER"]), os.environ["IMAGE"]
-    with ct.holder(docker) as folder:
-        started = ct.subprocess.run(
-            [*docker, "run", "-d", "--rm", "--entrypoint", "", *ct.labels(folder), "-v", "/v",
-             image, *PROBE],
-            capture_output=True, text=True, check=True,
-        )
-        container = started.stdout.strip()
-        mounts = ct.subprocess.run(
-            [*docker, "inspect", "--format", "{{{{range .Mounts}}}}{{{{.Name}}}}{{{{end}}}}",
-             container],
-            capture_output=True, text=True, check=True,
-        )
-        kr.report("one", {{"paths": {{"holder": str(folder)}}, "container": container,
-                           "volume": mounts.stdout.strip()}})
-        kr.hold()
-"""
-
-
-@pytest.mark.parametrize("sig", [signal.SIGTERM, signal.SIGKILL], ids=["SIGTERM", "SIGKILL"])
-def test_the_next_run_removes_a_container_a_killed_run_left_and_its_volume(
-    docker, podman_image, tmp_path, sig, monkeypatch
+def test_a_runs_containers_are_removed_with_their_volumes_when_it_ends(
+    podman_service, system_image
 ):
-    """The killed run's holder, and the next run's, are named after this test's stem, so
-    that no other test's run takes the container meanwhile. Its anonymous volume, as the
-    podman host's home is, goes with it."""
-    with kr.stem() as stem:
-        monkeypatch.setattr(containers, "HOLDERS", stem + containers.HOLDERS)
-        source = {"test_container.py": USES_A_CONTAINER.format(prefix=containers.HOLDERS)}
-        env = {"DOCKER": json.dumps(docker), "IMAGE": podman_image}
-        with kr.KilledRun(tmp_path, source, (stem,), env=env) as run:
-            reported = run.reports.wait("one")
-            run.kill(sig)
-        container, volume = reported["container"], reported["volume"]
-        try:
-            # positive control: the kill left them
-            assert _exists(docker, container) and _volume_exists(docker, volume)
-            with containers.holder(docker):
-                assert not _exists(docker, container)
-                assert not _volume_exists(docker, volume)
-        finally:
-            _remove_reported(docker, reported)
+    engine = podman_service.argv()
+    with containers.holder(engine) as folder:
+        mine = _probe(engine, system_image, containers.labels(folder))
+        volume = _volume_of(engine, mine)
+        assert _exists(engine, mine) and _volume_exists(engine, volume)  # positive control
+    assert not _exists(engine, mine)
+    assert not _volume_exists(engine, volume)
 
 
-def _remove_reported(docker: list[str], reported: dict) -> None:
-    """Remove what a killed run reported starting: the containers labelled with its
-    holder, a path the report's check has already confined to the test's stem, never a
-    container the report merely names."""
-    holder = reported["paths"]["holder"]
-    containers._remove(docker, list(containers._labelled(docker, f"{containers.HOLDER}={holder}")))
-
-
-def test_a_reported_container_is_removed_only_if_labelled_with_the_reported_holder(
-    docker, podman_image, monkeypatch
-):
-    """Planted twin: a report naming a container that is not the run's own."""
-    with kr.stem() as stem:
-        monkeypatch.setattr(containers, "HOLDERS", stem + containers.HOLDERS)
-        with containers.holder(docker) as folder:
-            unlabelled = _probe(docker, podman_image, [])
-            try:
-                labelled = _probe(docker, podman_image, containers.labels(folder))
-                reported = {"paths": {"holder": str(folder)}, "container": unlabelled}
-                _remove_reported(docker, reported)
-                assert _exists(docker, unlabelled)
-                assert not _exists(docker, labelled)  # positive control: its own goes
-            finally:
-                subprocess.run([*docker, "rm", "-f", "-v", unlabelled], capture_output=True)
-
-
-def test_a_running_runs_containers_are_left_and_removed_when_it_ends(
-    docker, podman_image, monkeypatch
-):
-    with kr.stem() as stem:
-        monkeypatch.setattr(containers, "HOLDERS", stem + containers.HOLDERS)
-        _left_while_running(docker, podman_image)
-
-
-def _left_while_running(docker, podman_image):
-    with containers.holder(docker) as folder:
-        mine = _probe(docker, podman_image, containers.labels(folder))
-        volume = _volume_of(docker, mine)
-        with containers.holder(docker):
-            assert _exists(docker, mine)
-        assert _exists(docker, mine) and _volume_exists(docker, volume)
-    assert not _exists(docker, mine)
-    assert not _volume_exists(docker, volume)
-
-
-def test_a_container_of_another_place_is_left(docker, podman_image, monkeypatch):
-    """One whose holder is gone, but that another boot or another /tmp started."""
-    with kr.stem() as stem:
-        monkeypatch.setattr(containers, "HOLDERS", stem + containers.HOLDERS)
-        _another_place_is_left(docker, podman_image)
-
-
-def _another_place_is_left(docker, podman_image):
-    gone = held_folders.TMP / (containers.HOLDERS + "gone_abc")
-    assert containers.abandoned({"x": dict(_pairs(containers.labels(gone)))}) == ["x"]
-    labels = containers.labels(gone)
-    elsewhere = [*labels[:-1], f"{containers.WHERE}=another-boot 1:2"]
-    other = _probe(docker, podman_image, elsewhere)
-    try:
-        with containers.holder(docker):
-            assert _exists(docker, other)
-    finally:
-        subprocess.run([*docker, "rm", "-f", "-v", other], capture_output=True)
+def test_a_container_another_holder_labels_is_left(podman_service, system_image):
+    """Planted twin: a run removes the containers labelled with its own holder, and no other."""
+    engine = podman_service.argv()
+    with containers.holder(engine) as other:
+        theirs = _probe(engine, system_image, containers.labels(other))
+        with containers.holder(engine) as folder:
+            assert folder != other
+        assert _exists(engine, theirs)
+    assert not _exists(engine, theirs)

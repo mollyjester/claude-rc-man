@@ -1,0 +1,272 @@
+#!/opt/rcman/bin/busybox sh
+# podman, and docker, in an rcman workspace. The installer puts this in the tools as
+# podman/bin/podman, with docker a link to it (installer/install.py ensure_podman_tools).
+#
+# A user other than root runs Podman rootless, with the configuration beside this file and
+# Podman's default storage in their home. Root runs it in a nest: a user and mount namespace
+# that root makes for itself, mapping the workspace's own ids onto themselves, with tmpfs over
+# root's run folders (/run/libpod, /run/containers), so that Podman's mounts are made there and
+# never in the workspace's own mount namespace. The nest stays for as long as the workspace
+# runs; its pid and start time and the inodes of its two namespaces are kept in STATE/nest. STATE
+# is a tmpfs of root's alone that rcman mounts in every workspace (rcman/runtime.py
+# ROOT_PODMAN_STATE), empty at every start: RUN_MOUNT is the user's in a workspace whose user is
+# not root. Where the image has no Podman, the next program of the name on the PATH runs.
+B=/opt/rcman/bin/busybox
+HERE=/opt/rcman/podman
+PODMAN=/usr/bin/podman
+STATE=/run/rcman-podman
+NAME=${0##*/}
+# The global options of podman's, and docker's, that take a value as the next argument.
+VALUED=" --cgroup-manager --config --conmon --connection -c --context --db-backend \
+--events-backend --hooks-dir --host -H --identity --imagestore --log-level -l --module \
+--network-cmd-path --network-config-dir --out --root --runroot --runtime --runtime-flag --ssh \
+--storage-driver --storage-opt --tlscacert --tlscert --tlskey --tmpdir --url --volumepath "
+
+say() { echo "$NAME: $*" >&2; }
+
+# The subcommand: the first argument that is neither a global option nor an option's value.
+subcommand() {
+	while [ $# -gt 0 ]; do
+		case "$1" in
+		--)
+			shift
+			break
+			;;
+		--*=*) shift ;;
+		-*)
+			case "$VALUED" in
+			*" $1 "*) [ $# -ge 2 ] && shift 2 || shift $# ;;
+			*) shift ;;
+			esac
+			;;
+		*) break ;;
+		esac
+	done
+	[ $# -gt 0 ] && echo "$1"
+}
+
+# The program of the name this was run by that comes after it on the PATH, never itself: an
+# image's own, where the image has no Podman.
+next_on_path() {
+	self=$($B readlink -f "$0")
+	old=$IFS
+	IFS=:
+	set -- $PATH
+	IFS=$old
+	for dir in "$@"; do
+		[ -n "$dir" ] && [ "$dir" != "$HERE/bin" ] || continue
+		[ -f "$dir/$NAME" ] && [ -x "$dir/$NAME" ] || continue
+		[ "$($B readlink -f "$dir/$NAME")" != "$self" ] || continue
+		echo "$dir/$NAME"
+		return 0
+	done
+	return 1
+}
+
+if [ ! -x "$PODMAN" ]; then
+	if own=$(next_on_path); then
+		exec "$own" "$@"
+	fi
+	say "this workspace's image has no Podman and no $NAME of its own; the default image has Podman: for Podman, make a new workspace from it"
+	exit 127
+fi
+if [ "$(subcommand "$@")" = compose ]; then
+	say "compose is not run here; run each container with $NAME run"
+	exit 125
+fi
+export CONTAINERS_CONF="$HERE/containers.conf" CONTAINERS_REGISTRIES_CONF="$HERE/registries.conf"
+if [ "$($B id -u)" != 0 ]; then
+	exec "$PODMAN" "$@"
+fi
+
+digits() { case "$1" in '' | *[!0-9]*) return 1 ;; esac }
+ns_of() { $B stat -L -c %i "/proc/$1/ns/$2" 2>/dev/null; }
+# A process's fields after its name, which may hold anything: $1 is its state.
+stat_of() {
+	s=$($B cat "/proc/$1/stat" 2>/dev/null) || return 1
+	echo "${s##*) }"
+}
+start_of() {
+	set -- $(stat_of "$1") || return 1
+	echo "${20}"
+}
+# Whether "pid.start" is a process that runs: the pid with that start time, not a zombie.
+alive() {
+	p=${1%%.*}
+	t=${1#*.}
+	digits "$p" && digits "$t" || return 1
+	set -- $(stat_of "$p") || return 1
+	[ "$1" != Z ] && [ "${20}" = "$t" ]
+}
+# A real folder of root's that no one else may write into.
+roots_alone() {
+	[ -d "$1" ] && [ ! -L "$1" ] || return 1
+	set -- $($B stat -c '%u %a' "$1")
+	[ "$1" = 0 ] || return 1
+	case "$2" in *[2367]? | *?[2367]) return 1 ;; esac
+}
+
+# The pid of the nest STATE/nest names, as <pid>.<start> and the inodes of its user and mount
+# namespaces, if that process still runs, still has those namespaces, and they are not the
+# caller's own: an inode number is given again once its namespace is gone.
+nest() {
+	[ -f "$STATE/nest" ] || return 1
+	read -r who users mounts rest <"$STATE/nest" || return 1
+	pid=${who%%.*}
+	digits "$pid" && digits "$users" && digits "$mounts" && [ -z "$rest" ] || return 1
+	alive "$who" || return 1 # (refuses a stale or own record)
+	[ "$users" != "$(ns_of $$ user)" ] && [ "$mounts" != "$(ns_of $$ mnt)" ] || return 1 # (refuses a stale or own record)
+	[ "$(ns_of "$pid" user)" = "$users" ] && [ "$(ns_of "$pid" mnt)" = "$mounts" ] || return 1
+	echo "$pid"
+}
+
+# The lock: STATE/lock is a link to a folder of the instance, lock.<pid>.<start> of the process
+# that made it, made in one step. A holder that is gone is followed by one claim in the folder,
+# claim.<n> a link naming its claimer as <pid>.<start>, also made in one step, so one claimer
+# alone follows each holder; a claim counts only while STATE/lock still names that folder.
+# Only the holder removes the link, so no one makes another meanwhile. Each link is made with -n:
+# ln would otherwise follow STATE/lock to its folder and make the new link inside it. Every try
+# that does not take the lock waits a little, and there are so many tries.
+me=
+inst=
+tries=0
+again() {
+	tries=$((tries + 1))
+	if [ "$tries" -ge 1200 ]; then
+		say "the nest is being made by process ${1%%.*}, which has not finished"
+		exit 125
+	fi
+	$B usleep 50000
+}
+# The last holder of the instance folder $1, in $holder: its maker, or its last claimer, whose
+# claim is claim.$n (none: n is 0). A claim is made only as the one after the holder found gone.
+holder_of() {
+	holder=${1##*/lock.}
+	n=0
+	while [ -L "$1/claim.$((n + 1))" ]; do
+		n=$((n + 1))
+		holder=$($B readlink "$1/claim.$n")
+	done
+}
+lock() {
+	me="$$.$(start_of $$)"
+	while :; do
+		$B mkdir -p "$STATE/lock.$me"
+		if $B ln -sn "lock.$me" "$STATE/lock" 2>/dev/null; then
+			inst="lock.$me"
+			return 0
+		fi
+		if ! inst=$($B readlink "$STATE/lock" 2>/dev/null); then
+			again "" # let go meanwhile
+			continue
+		fi
+		case "$inst" in
+		lock.*) ;;
+		*)
+			say "$STATE/lock is not a lock of this program's"
+			exit 125
+			;;
+		esac
+		holder_of "$STATE/$inst"
+		if ! alive "$holder"; then
+			# a folder its maker linked and did not make before it went is made for the claim
+			$B mkdir -p "$STATE/$inst" # (claim's folder)
+			if $B ln -sn "$me" "$STATE/$inst/claim.$((n + 1))" 2>/dev/null &&
+				[ "$($B readlink "$STATE/lock" 2>/dev/null)" = "$inst" ]; then
+				[ "$inst" = "lock.$me" ] || $B rmdir "$STATE/lock.$me" 2>/dev/null
+				return 0
+			fi
+		fi
+		again "$holder"
+	done
+}
+# Let go: first, while the lock is still held, so that no other folder can be the one STATE/lock
+# names, the folders of instances never linked whose last holder is gone; then the link, then
+# the instance's own folder.
+unlock() {
+	for left in "$STATE"/lock.*; do
+		[ -d "$left" ] && [ "${left##*/}" != "$inst" ] || continue
+		holder_of "$left"
+		alive "$holder" || $B rm -rf "$left"
+	done
+	$B rm -f "$STATE/lock"
+	$B rm -rf "$STATE/$inst"
+}
+
+# Make the nest and record it; its pid in $pid.
+make_nest() {
+	$B mkdir -p /run/libpod /run/containers || return 1
+	# It waits until it is mapped, then runs again as the nest's root, which mounts the tmpfs,
+	# and sleeps; the signals a terminal or a stop of the caller sends do not end it.
+	$B setsid $B unshare -U -m --propagation private $B sh -c '
+		trap "" HUP INT TERM
+		until [ -n "$($0 cat /proc/self/uid_map)" ]; do $0 usleep 10000; done
+		exec $0 sh -c "trap \"\" HUP INT TERM
+			$0 mount -t tmpfs -o mode=0700 tmpfs /run/libpod &&
+			$0 mount -t tmpfs -o mode=0700 tmpfs /run/containers &&
+			exec $0 sleep 2147483647"' "$B" </dev/null >/dev/null 2>&1 &
+	pid=$!
+	own=$(ns_of $$ user)
+	tries=0
+	# (waits for the unshare) Its maps are its own only once it is in its own user namespace.
+	until users=$(ns_of "$pid" user) && [ -n "$users" ] && [ "$users" != "$own" ]; do
+		set -- $(stat_of "$pid")
+		tries=$((tries + 1))
+		if [ -z "${1-}" ] || [ "$1" = Z ] || [ "$tries" -ge 1000 ]; then
+			say "the nest did not start"
+			kill -9 "$pid" 2>/dev/null
+			return 1
+		fi
+		$B usleep 10000
+	done
+	# (has waited for the unshare)
+	# Each line of the workspace's own maps, mapped onto itself, written in one write.
+	$B printf '%s\n' "$($B awk '{print $1, $1, $3}' /proc/self/uid_map)" >"$STATE/uid_map" &&
+		$B printf '%s\n' "$($B awk '{print $1, $1, $3}' /proc/self/gid_map)" >"$STATE/gid_map" &&
+		echo allow >"/proc/$pid/setgroups" &&
+		$B cat "$STATE/uid_map" >"/proc/$pid/uid_map" &&
+		$B cat "$STATE/gid_map" >"/proc/$pid/gid_map" || {
+		say "the nest's ids could not be mapped"
+		kill -9 "$pid" 2>/dev/null
+		return 1
+	}
+	tries=0
+	until $B grep -q ' /run/containers ' "/proc/$pid/mountinfo" 2>/dev/null; do
+		tries=$((tries + 1))
+		if [ ! -d "/proc/$pid" ] || [ "$tries" -ge 1000 ]; then
+			say "the nest could not mount its run folders"
+			kill -9 "$pid" 2>/dev/null
+			return 1
+		fi
+		$B usleep 10000
+	done
+	mounts=$(ns_of "$pid" mnt)
+	if [ "$mounts" = "$(ns_of $$ mnt)" ]; then
+		say "the nest has no mount namespace of its own"
+		kill -9 "$pid" 2>/dev/null
+		return 1
+	fi
+	echo "$pid.$(start_of "$pid") $users $mounts" >"$STATE/nest.new" &&
+		$B mv -f "$STATE/nest.new" "$STATE/nest"
+}
+
+# STATE is a tmpfs rcman mounts in every workspace it makes, which no one can rename away.
+if ! $B awk -v p="$STATE" '$5 == p { found = 1 } END { exit !found }' /proc/self/mountinfo; then
+	say "this workspace was made before containers were supported; make a new workspace"
+	exit 125
+fi
+if ! roots_alone "$STATE"; then
+	say "$STATE is not a folder of root's alone; root's Podman does not run with it"
+	exit 125
+fi
+if ! pid=$(nest); then
+	lock
+	pid=$(nest) || make_nest || pid=
+	unlock
+	[ -n "$pid" ] || exit 125
+fi
+# nsenter -U enters the nest's user namespace as its root, uid and gid 0 there. Its own -w would
+# leave the folder of the namespace left behind as the working one, so the folder is entered
+# after it.
+exec $B nsenter -t "$pid" -U -m -- $B sh -c 'cd -- "$1" || exit 125; shift; exec "$@"' sh \
+	"$($B pwd)" $B env CONTAINERS_STORAGE_CONF="$HERE/storage.conf" "$PODMAN" "$@"

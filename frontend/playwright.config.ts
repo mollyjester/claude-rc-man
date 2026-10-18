@@ -14,7 +14,12 @@ export default defineConfig({
   workers: 1,
   timeout: 60_000,
   expect: { timeout: 15_000 },
-  use: { baseURL: ORIGIN, trace: "retain-on-failure" },
+  use: {
+    baseURL: ORIGIN,
+    trace: "retain-on-failure",
+    // /dev/shm is small in a container, a workspace's among them.
+    launchOptions: { args: ["--disable-dev-shm-usage"] },
+  },
   webServer: {
     command: `uv run uvicorn --factory tests.e2e_server:create_app --ws websockets-sansio --host 127.0.0.1 --port ${PORT}`,
     cwd: "..",

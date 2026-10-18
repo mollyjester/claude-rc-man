@@ -26,6 +26,7 @@ DEV_ONLY = [
     "CLAUDE.md",
     "CONTRIBUTING.md",
     "Makefile",
+    ".devcontainer/",
 ]
 
 # Files the deployment needs; they must not be export-ignored.

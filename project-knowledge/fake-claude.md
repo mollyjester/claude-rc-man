@@ -42,6 +42,16 @@ file linked into a configuration folder of its own that has no `.claude.json`,
 as a workspace's is before rcman seeds `oauthAccount`: Remote Control refuses
 there (`rc_no_oauth_account`), on stderr.
 
+Every `claude` the recorder and the tests run has a home of its own, a temporary folder
+(`claude_env` in `devtools/record_claude.py`, which refuses the home the run was started
+from), so Claude writes nothing into a developer's own home, a workspace's among them. A
+sequence that needs the account and is given no configuration folder runs with no
+`CLAUDE_CONFIG_DIR`, in a home whose `.claude` and `.claude.json` lead to the account's own in
+the home the run was started from (`account_home`): Claude keeps the account's `.claude.json`
+beside the folder, not in it, so naming the folder would find no account.
+`tests/test_record_claude.py` holds the environment of each kind of sequence, and the home the
+run was started from untouched otherwise.
+
 A sequence marked `git_repository` runs in a throwaway repository the
 recorder makes in its own scratch folder, on `RECORD_BRANCH`, and the branch
 in a server's status line becomes `{branch}`.
@@ -199,6 +209,19 @@ machine whose `claude` updates itself fails them as soon as the installed
 version moves past the fixtures; that failure is the signal to approve the new
 version.
 
+`test_fake_reproduces_the_recorded_screens_of[trust_too_fast]` replays the
+recorder's own `trust_too_fast` sequence, which waits for `[y/N]` and only then
+types its answer. On a heavily loaded machine the answer can reach the fake
+later than `MIN_ANSWER_SECONDS` after the question, so the fake accepts it and
+the test fails with `'too quickly' did not appear` (seen in 4 of 16 runs at a
+load average of about 36). It is kept as it is because the recorder drives the
+real `claude` the same way, and how the real one treats an answer typed before
+its question has not been recorded. When it goes red it is fixed then, not
+re-run: either the recorder types the answer before the question, confirmed
+by a real-account recording, or the replay alone does so.
+`test_an_instant_trust_answer_is_refused_and_asked_again` has no such race:
+it starts the fake only once the answer is waiting on the terminal.
+
 ## Approving a new Claude Code version
 
 1. Install the candidate version.
@@ -237,7 +260,7 @@ throwaway configuration, so the account's other sign-ins are untouched.
 
 ## In a workspace
 
-In the container suite, the fake is the Claude Code release the installer
+In the container suites, the fake is the Claude Code release the installer
 downloads: `tests/claude_download.py` lays it out as a release —
 `<version>/manifest.json` with its checksum, and `<version>/<platform>/claude`
 — and the suite serves it and gives the installer its address. The binary is

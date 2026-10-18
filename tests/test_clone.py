@@ -55,7 +55,9 @@ class Recording(rt.HostRuntime):
         self.gate: threading.Event | None = None
         self.cloning = threading.Event()
 
-    def exec(self, name, argv, stdin=None, timeout=rt.PODMAN_TIMEOUT, cwd=None):
+    def exec(
+        self, name, argv, stdin=None, timeout=rt.PODMAN_TIMEOUT, cwd=None, keep=None, again=False
+    ):
         self.execs.append((argv, stdin))
         if "git" in argv and "clone" in argv:
             self.cloning.set()
@@ -65,7 +67,7 @@ class Recording(rt.HostRuntime):
                     return rt.Result(137, b"", b"Killed\n")
             if self.answer is not None:
                 return self.answer
-        return super().exec(name, argv, stdin, timeout, cwd)
+        return super().exec(name, argv, stdin, timeout, cwd, keep, again)
 
     def remove(self, name):
         self.removed.append(name)

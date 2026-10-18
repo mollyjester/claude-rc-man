@@ -1,0 +1,7 @@
+// rcman's own development environment: built from the Dockerfile beside this file, with the
+// repository as its context; dev runs everything, and make setup makes the environment.
+{
+  "build": { "dockerfile": "Dockerfile", "context": ".." },
+  "remoteUser": "dev",
+  "postCreateCommand": "make setup"
+}

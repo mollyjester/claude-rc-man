@@ -4,6 +4,8 @@ import json
 import os
 import re
 import socket
+import sys
+from pathlib import Path
 
 import pytest
 
@@ -30,7 +32,8 @@ def test_the_panes_tmux_server_is_in_a_held_folder_of_its_own(pane, tmp_path):
 
 
 def env_for(config_dir, **extra):
-    return {**rec.claude_env(config_dir), **extra}
+    """The fake's environment with ``config_dir``, and a home beside it of its own."""
+    return {**rec.claude_env(config_dir, Path(config_dir).parent / "home"), **extra}
 
 
 def logged_in(config_dir):
@@ -375,17 +378,27 @@ def test_fake_exec_with_no_command_or_a_missing_one_fails_loudly(tmp_path):
 
 
 def test_fake_never_touches_the_real_claude_directory(tmp_path):
-    env = rec.claude_env(None)
+    env = rec.claude_env(None, tmp_path / "home")
     assert "CLAUDE_CONFIG_DIR" not in env  # real account runs use the default
     # ...but the fake's own default state lives elsewhere.
     assert fake.state_dir({"HOME": "/h"}) == os.path.join("/h", ".claude-fake")
 
 
+# Starts the program it is given only once a whole line waits on the terminal: on a
+# terminal in canonical mode, select reports input only when a line is complete.
+AFTER_A_TYPED_LINE = (
+    "import os, select, sys; select.select([0], [], []); os.execv(sys.argv[1], sys.argv[1:])"
+)
+
+
 def test_an_instant_trust_answer_is_refused_and_asked_again(pane, tmp_path):
+    """The answer is typed before the fake starts, so it is waiting when the question is
+    asked: however slowly this test runs, it arrives sooner than any threshold."""
     cfg = logged_in(tmp_path / "cfg")
-    run(pane, ["remote-control"], tmp_path, cfg)
-    pane.wait_for(r"\[y/N\]", timeout=10)
+    held = [sys.executable, "-c", AFTER_A_TYPED_LINE, str(FAKE), "remote-control"]
+    pane.run(held, cwd=tmp_path, env=env_for(cfg))
     pane.type_line("y")
+    pane.wait_for(r"\[y/N\]", timeout=10)
     pane.wait_for(r"too quickly", timeout=10)
     assert pane.exit_status() is None  # still asking
     pane.wait_stable(quiet=fake.MIN_ANSWER_SECONDS * 2)

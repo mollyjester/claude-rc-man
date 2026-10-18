@@ -1764,3 +1764,18 @@ def test_where_rcmans_own_value_wins_over_the_files_is_where_the_text_says():
     assert tmux["LANG"] != "file" and tmux["BROWSER"] == "file"  # LANG rcman's, BROWSER the file's
     assert git["LC_ALL"] != "file" and git["LANG"] == "file" and git["BROWSER"] == "file"
     assert "LC_ALL" in claude and claude["LC_ALL"] == "file"  # the file's, for Claude
+
+
+def test_a_smaller_range_refuses_an_id_beyond_it_that_the_products_takes():
+    user = with_image({"remoteUser": "8192"})
+    assert planned(user).uid == 8192  # the control: within the product's range
+    with pytest.raises(Refused) as refused:
+        dc.plan(user, facts(), 7, WORK, size=8192)
+    assert refused.value.kind == "id_out_of_range"
+    assert dc.plan(with_image({"remoteUser": "8191"}), facts(), 7, WORK, size=8192).uid == 8191
+    with pytest.raises(Refused):
+        dc.resolve_user("1" * 30, PASSWD, GROUP, size=8192)  # more digits than any id: beyond it
+    big = GROUP + "big:x:8200:dev\n"
+    with pytest.raises(Refused):
+        dc.resolve_user("dev:dev", PASSWD, big, size=8192)
+    assert 8200 in dc.resolve_user("dev:dev", PASSWD, big).groups  # the control

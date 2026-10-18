@@ -137,10 +137,10 @@ def test_the_code_reaches_claude_through_stdin_and_never_an_argv(client, app, mo
     runtime = app.state.workspaces.runtime
     real_exec, real_run = runtime.exec, channel.Channel.run
 
-    def exec_(name, argv, stdin=None):
+    def exec_(name, argv, stdin=None, timeout=rt.PODMAN_TIMEOUT, cwd=None, keep=None, again=False):
         argvs.append(argv)
         stdins.append(stdin)
-        return real_exec(name, argv, stdin)
+        return real_exec(name, argv, stdin, timeout, cwd, keep, again)
 
     def run(self, argv, *args, **kwargs):
         argvs.append(argv)
@@ -200,6 +200,31 @@ def test_oauth_account_is_seeded_before_the_server_starts_keeping_every_other_ke
     assert seeded["numStartups"] == 7
     assert seeded["oauthAccount"]["emailAddress"] == "work@example.org"
     assert (config.stat().st_mode & 0o777) == 0o600
+
+
+def test_a_lost_read_of_the_claude_config_does_not_lose_its_keys(client, app, monkeypatch):
+    """The read of ``.claude.json`` changes nothing, so it is one the runtime runs once more
+    should it lose what the read wrote (Runtime.exec): an answer of nothing would be taken for
+    an empty file, and every other key overwritten."""
+    work = made_workspace(client, ALICE)
+    connect(client, email="work@example.org")
+    runtime = app.state.workspaces.runtime
+    layout = runtime.layout(rt.container_name(work["id"]))
+    config = Path(layout.config) / fake.CONFIG_FILE
+    config.write_text(json.dumps({"numStartups": 7}))
+    real = runtime.exec
+
+    def exec_(name, argv, stdin=None, *args, again=False, **kwargs):
+        if stdin is None and argv[-1] == str(config) and not again:
+            return rt.Result(0, b"", b"")  # what was read lost, as only a rerun recovers
+        return real(name, argv, stdin, *args, again=again, **kwargs)
+
+    monkeypatch.setattr(runtime, "exec", exec_)
+    trusted(app, work)
+    assert start(client, work).status_code == 200
+    seeded = json.loads(config.read_text())
+    assert seeded["numStartups"] == 7
+    assert seeded["oauthAccount"]["emailAddress"] == "work@example.org"
 
 
 def test_connecting_a_different_account_stops_nothing(client, app):

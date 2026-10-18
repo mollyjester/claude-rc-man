@@ -6,6 +6,7 @@ Real installations are tested in the container suite.
 import ast
 import contextlib
 import hashlib
+import json
 import os
 import re
 import shutil
@@ -19,6 +20,7 @@ import pytest
 from installer import install as ins
 
 REPO = Path(__file__).resolve().parent.parent
+PODMAN_SOURCES = REPO / "backend" / "rcman" / "podman"
 
 
 # --- settings --------------------------------------------------------------------------
@@ -548,6 +550,7 @@ NOT_MADE = {
     "BUILDER_DIR": "in the clone",
     "TERMINFO_DIRS": "the system's terminal descriptions, copied from",
     "BUSYBOX": "the system's, copied from",
+    "PODMAN_SECCOMP": "Podman's own seccomp profile, read to derive the workspaces'",
     "CGROUP_ROOT": "the kernel's, read",
     "LINGER": "systemd's folder; rcman's entry in it is LINGER / APP_USER, listed below",
     "SYSTEMD": "systemd's folder; the files made in it are the units and the drop-in",
@@ -995,6 +998,7 @@ class ToolsHost:
             (terminfo / entry).write_bytes(entry.encode())
         self.conf = tmp_path / "tmux.conf"
         self.conf.write_text("set -g mouse on\n")
+        self.podman = PODMAN_SOURCES
         tarball = tmp_path / "toolchain" / "tmux.tar.gz"
         tarball.parent.mkdir()
         tarball.write_bytes(b"source")
@@ -1016,7 +1020,7 @@ def test_the_tools_are_built_into_a_folder_of_roots_and_nothing_is_made_in_rcman
     tmp_path, monkeypatch
 ):
     host = ToolsHost(tmp_path, monkeypatch)
-    changes = ins.ensure_tools(host.tools, conf=host.conf)
+    changes = ins.ensure_tools(host.tools, conf=host.conf, podman=host.podman)
     assert f"tmux {ins.TMUX_VERSION}" in changes and "busybox" in changes and "tmux.conf" in changes
     assert (host.tools / "bin" / "tmux").read_bytes() == host.built
     assert os.readlink(host.tools / "bin" / "sh") == "busybox"
@@ -1046,13 +1050,13 @@ def test_a_tmux_that_arrived_short_is_refused_by_the_checksum_the_container_repo
         host = ToolsHost(folder, monkeypatch, built=short, reported=reported)
         assert ins.is_static(_written(folder, short))  # positive control: it looks fine
         with pytest.raises(ins.InstallError, match="sha256"):
-            ins.ensure_tools(host.tools, conf=host.conf)
+            ins.ensure_tools(host.tools, conf=host.conf, podman=host.podman)
         assert not (host.tools / "bin" / "tmux").exists()
         assert not [p for p in host.tools.rglob(".*")]
     folder = tmp_path / "ok"
     folder.mkdir()
     ok = ToolsHost(folder, monkeypatch)
-    assert f"tmux {ins.TMUX_VERSION}" in ins.ensure_tools(ok.tools, conf=ok.conf)
+    assert f"tmux {ins.TMUX_VERSION}" in ins.ensure_tools(ok.tools, conf=ok.conf, podman=ok.podman)
 
 
 def _written(folder: Path, data: bytes) -> Path:
@@ -1063,24 +1067,26 @@ def _written(folder: Path, data: bytes) -> Path:
 
 def test_the_tools_are_not_built_again_and_a_second_run_changes_nothing(tmp_path, monkeypatch):
     host = ToolsHost(tmp_path, monkeypatch)
-    ins.ensure_tools(host.tools, conf=host.conf)
+    ins.ensure_tools(host.tools, conf=host.conf, podman=host.podman)
     host.calls.clear()
-    assert ins.ensure_tools(host.tools, conf=host.conf) == []
+    assert ins.ensure_tools(host.tools, conf=host.conf, podman=host.podman) == []
     assert host.calls == []
 
 
 def test_a_new_pin_builds_tmux_again(tmp_path, monkeypatch):
     host = ToolsHost(tmp_path, monkeypatch)
-    ins.ensure_tools(host.tools, conf=host.conf)
+    ins.ensure_tools(host.tools, conf=host.conf, podman=host.podman)
     monkeypatch.setattr(ins, "TMUX_SHA256", "1" * 64)
-    assert f"tmux {ins.TMUX_VERSION}" in ins.ensure_tools(host.tools, conf=host.conf)
+    assert f"tmux {ins.TMUX_VERSION}" in ins.ensure_tools(
+        host.tools, conf=host.conf, podman=host.podman
+    )
 
 
 @pytest.mark.parametrize("built", [elf(interpreter=True), b"#!/bin/sh\n", b""])
 def test_a_tmux_that_is_not_static_is_refused_and_not_installed(tmp_path, monkeypatch, built):
     host = ToolsHost(tmp_path, monkeypatch, built=built)
     with pytest.raises(ins.InstallError, match="static"):
-        ins.ensure_tools(host.tools, conf=host.conf)
+        ins.ensure_tools(host.tools, conf=host.conf, podman=host.podman)
     assert not (host.tools / "bin" / "tmux").exists()
     assert not [p for p in host.tools.rglob(".*")]  # and no partial file
 
@@ -1309,7 +1315,6 @@ def test_the_builder_image_is_tagged_after_names_as_well_as_content(tmp_path, mo
 
 
 def test_the_builder_image_pins_its_node_and_the_cli_by_integrity():
-    import json
 
     node, base = from_lines(BUILDER_DIR / "Containerfile")
     assert re.fullmatch(r"docker\.io/library/node:[\w.-]+@sha256:[0-9a-f]{64}", node), node
@@ -1328,13 +1333,16 @@ def test_the_builder_image_pins_its_node_and_the_cli_by_integrity():
 
 def test_the_builder_image_has_what_building_in_podman_needs():
     text = (BUILDER_DIR / "Containerfile").read_text()
-    for package in ("podman", "crun", "fuse-overlayfs", "slirp4netns", "tar"):
+    for package in ("podman", "crun", "slirp4netns", "tar"):
         assert f" {package}" in text, package
+    assert "fuse" not in text  # its Podman mounts overlay itself (native overlay)
     assert "VOLUME" not in text  # a stray anonymous volume per builder
     assert "COPY --from=" in text  # Node and the CLI come from the first stage
     conf = (BUILDER_DIR / "containers.conf").read_text()
     assert 'userns="host"' in conf and 'runtime="crun"' in conf
-    assert 'mount_program="/usr/bin/fuse-overlayfs"' in (BUILDER_DIR / "storage.conf").read_text()
+    storage = (BUILDER_DIR / "storage.conf").read_text()
+    assert 'driver="overlay"' in storage  # positive control: the file is the overlay's
+    assert "mount_program" not in storage  # native overlay, without /dev/fuse
 
 
 class FakePodman:
@@ -3203,3 +3211,162 @@ def test_the_guide_gives_the_commands_that_stop_rcman_and_its_containers():
     guide = flat(guide_text())
     assert "systemctl stop rcman" in guide and "podman stop --all" in guide
     assert "in rcman's interface" not in guide
+
+
+# --- Podman in a workspace: the wrappers, their configuration and the seccomp profile ---------
+# Podman's default seccomp profile as recorded (tests/test_seccomp.py holds it to the real one).
+RECORDED_SECCOMP = REPO / "tests" / "fakes" / "podman-seccomp.json"
+
+
+@pytest.fixture(autouse=True)
+def recorded_seccomp(monkeypatch):
+    """The installer reads Podman's profile as recorded, not the machine's."""
+    monkeypatch.setattr(ins, "PODMAN_SECCOMP", RECORDED_SECCOMP)
+
+
+def test_a_machine_without_podmans_seccomp_profile_is_refused(tmp_path, monkeypatch):
+    monkeypatch.setattr(ins, "PODMAN_SECCOMP", tmp_path / "missing.json")  # the plant
+    with pytest.raises(ins.InstallError, match="seccomp"):
+        ins.ensure_podman_tools(tmp_path / "tools", PODMAN_SOURCES)
+
+
+def test_the_podman_tools_are_written_root_readable_and_a_second_run_changes_nothing(tmp_path):
+    tools = tmp_path / "tools"
+    (tools / "bin").mkdir(parents=True)
+    changes = ins.ensure_podman_tools(tools, PODMAN_SOURCES)
+    folder = tools / ins.PODMAN_TOOLS
+    wrapper = folder / "bin" / "podman"
+    assert wrapper.read_bytes() == (PODMAN_SOURCES / "podman").read_bytes()
+    assert stat.S_IMODE(wrapper.stat().st_mode) == 0o755
+    assert os.readlink(folder / "bin" / "docker") == "podman"
+    for name in ins.PODMAN_CONFIGURATION:
+        assert (folder / name).read_text() == (PODMAN_SOURCES / name).read_text()
+        assert stat.S_IMODE((folder / name).stat().st_mode) == 0o644
+    assert set(ins.PODMAN_CONFIGURATION) == {"containers.conf", "storage.conf", "registries.conf"}
+    seccomp = tools / ins.WORKSPACE_SECCOMP
+    from helpers import seccomp as profiles
+
+    assert seccomp.read_text() == profiles.workspace_profile(RECORDED_SECCOMP.read_text())
+    assert stat.S_IMODE(seccomp.stat().st_mode) == 0o644
+    for path in (folder, folder / "bin"):
+        assert stat.S_IMODE(path.stat().st_mode) == 0o755
+    assert changes  # positive control for the second run
+    assert ins.ensure_podman_tools(tools, PODMAN_SOURCES) == []
+    from rcman import runtime as rt
+
+    assert ins.WORKSPACE_SECCOMP == rt.SECCOMP  # where the runtime looks for it
+
+
+def test_ensure_tools_writes_the_podman_tools(tmp_path, monkeypatch):
+    host = ToolsHost(tmp_path, monkeypatch)
+    ins.ensure_tools(host.tools, conf=host.conf, podman=host.podman)
+    assert (host.tools / ins.PODMAN_TOOLS / "bin" / "podman").is_file()
+    assert (host.tools / ins.WORKSPACE_SECCOMP).is_file()
+
+
+def test_the_shared_podman_configuration_is_as_the_design_says():
+    """The workspace's Podman: private pid, UTS and IPC namespaces, the workspace's own network,
+    user and cgroup namespaces, no cgroups of its own, catatonit as the init, and nothing that
+    names a folder of root's or of one user's, which the wrapper and Podman's defaults give."""
+    conf = (PODMAN_SOURCES / "containers.conf").read_text()
+    for line in ('pidns="private"', 'utsns="private"', 'ipcns="private"', 'netns="host"',
+                 'userns="host"', 'cgroupns="host"', 'cgroups="disabled"',
+                 'cgroup_manager="cgroupfs"', 'runtime="crun"', 'events_logger="file"',
+                 'init_path="/usr/bin/catatonit"'):  # fmt: skip
+        assert line in conf.splitlines(), line
+    assert "tmp_dir" not in conf and "events_logfile_path" not in conf
+    storage = (PODMAN_SOURCES / "storage.conf").read_text()
+    assert 'driver="overlay"' in storage and "mount_program" not in storage
+    from rcman import runtime as rt
+
+    assert f'graphroot="{rt.VOLUME_MOUNT}/' in storage  # root's storage is in the volume
+    registries = (PODMAN_SOURCES / "registries.conf").read_text()
+    assert 'unqualified-search-registries=["docker.io"]' in registries
+    assert 'short-name-mode="permissive"' in registries
+
+
+def test_the_default_image_has_podman_and_newuidmap_with_file_capabilities():
+    text = ins.CONTAINERFILE.read_text()
+    for package in ("podman", "crun", "catatonit", "uidmap"):
+        assert f" {package}" in text, package
+    assert "setcap cap_setuid+ep /usr/bin/newuidmap" in text
+    assert "setcap cap_setgid+ep /usr/bin/newgidmap" in text
+    assert "chmod u-s /usr/bin/newuidmap /usr/bin/newgidmap" in text
+
+
+def test_a_docker_link_that_names_something_else_is_put_right(tmp_path):
+    tools = tmp_path / "tools"
+    (tools / "bin").mkdir(parents=True)
+    ins.ensure_podman_tools(tools, PODMAN_SOURCES)
+    link = tools / ins.PODMAN_TOOLS / "bin" / "docker"
+    link.unlink()
+    os.symlink("/usr/bin/podman", link)  # the plant
+    assert os.readlink(link) == "/usr/bin/podman"
+    assert "docker" in ins.ensure_podman_tools(tools, PODMAN_SOURCES)
+    assert os.readlink(link) == "podman"
+
+
+def test_ensure_tools_takes_the_podman_sources_it_is_given(tmp_path, monkeypatch):
+    host = ToolsHost(tmp_path, monkeypatch)
+    other = tmp_path / "elsewhere"
+    shutil.copytree(PODMAN_SOURCES, other)
+    (other / "registries.conf").write_text("# planted\n")
+    ins.ensure_tools(host.tools, conf=host.conf, podman=other)
+    assert (host.tools / ins.PODMAN_TOOLS / "registries.conf").read_text() == "# planted\n"
+
+
+def extra_commands(tools: Path) -> set[str]:
+    """What the Podman tools' bin folder holds that is not one of PODMAN_COMMANDS: everything
+    there comes before the image's own programs on every workspace's PATH, git and Claude's
+    among them."""
+    return {p.name for p in (tools / ins.PODMAN_TOOLS / "bin").iterdir()} - set(ins.PODMAN_COMMANDS)
+
+
+def test_the_wrappers_folder_holds_only_the_podman_commands(tmp_path):
+    tools = tmp_path / "tools"
+    (tools / "bin").mkdir(parents=True)
+    ins.ensure_podman_tools(tools, PODMAN_SOURCES)
+    # derived from the sources: their programs, and docker for podman
+    programs = {p.name for p in PODMAN_SOURCES.iterdir() if os.access(p, os.X_OK)}
+    assert set(ins.PODMAN_COMMANDS) == programs | {"docker"} == {"podman", "docker"}
+    assert {p.name for p in (tools / ins.PODMAN_TOOLS / "bin").iterdir()} == set(
+        ins.PODMAN_COMMANDS
+    )
+    assert extra_commands(tools) == set()
+
+
+def test_the_wrappers_folder_guard_finds_a_planted_command(tmp_path):
+    tools = tmp_path / "tools"
+    (tools / "bin").mkdir(parents=True)
+    ins.ensure_podman_tools(tools, PODMAN_SOURCES)
+    (tools / ins.PODMAN_TOOLS / "bin" / "git").write_text("#!/bin/sh\n")  # the plant
+    assert extra_commands(tools) == {"git"}
+
+
+# --- the kernel ------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("release", ["6.8.0-147-generic", "5.11.0", "5.15.0-1-azure", "10.0"])
+def test_a_kernel_that_mounts_overlay_in_a_user_namespace_is_taken(release):
+    ins.check_kernel(release)
+
+
+@pytest.mark.parametrize("release", ["5.10.220-1", "4.19.0", "5.4", "not-a-version"])
+def test_an_older_kernel_or_one_that_cannot_be_read_is_refused(release):
+    with pytest.raises(ins.InstallError, match="overlay") as refused:
+        ins.check_kernel(release)
+    assert release in str(refused.value)
+    minimum = ".".join(map(str, ins.USERNS_OVERLAY_KERNEL))
+    assert minimum in str(refused.value)  # it names the kernel it needs
+
+
+def test_the_kernel_is_checked_before_anything_is_changed(monkeypatch, capsys):
+    done = []
+    monkeypatch.setattr(ins.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(ins.platform, "release", lambda: "5.4.0-200-generic")
+    monkeypatch.setenv("SUDO_USER", "someone")
+    monkeypatch.setattr(ins, "save_settings", lambda *a: done.append("settings"))
+    monkeypatch.setattr(ins, "ensure_packages", lambda: done.append("packages") or [])
+    assert ins.main([]) == 1
+    assert done == []
+    assert "5.4.0-200-generic" in capsys.readouterr().err

@@ -25,9 +25,11 @@ conmon and the network helper with them, live in rcman's user manager, not in
 `PodmanRuntime.create` makes a container with:
 
 - `--init`, so orphans are reaped;
-- the network `slirp4netns:allow_host_loopback=false`, and no port published;
-- `--uidmap` and `--gidmap` `0:<slot × RANGE>:RANGE`, the person's range
-  (`runtime.RANGE`; slot 0 is rcman's own ids, so no person has it). A workspace
+- the network `PodmanConfig.network`, `NETWORK` (slirp4netns with no way to the host's
+  loopback) unless it is given another, and no port published;
+- `--uidmap` and `--gidmap` `0:<slot × range>:range`, the person's range, where `range` is
+  `PodmanConfig.range`, `RANGE` unless it is given another (slot 0 is rcman's own ids, so no
+  person has it). A workspace
   made from a devcontainer.json image whose user is not root has its user's ids
   swapped with root's by `PodmanRuntime._ids`, so that the user is the host id
   root has in the person's other workspaces and owns what root owns there (see
@@ -47,8 +49,13 @@ conmon and the network helper with them, live in rcman's user manager, not in
   replaced by the mounted busybox, so an image needs nothing of its own to stay
   up, and the volume's mount (`VOLUME_MOUNT`) as its working folder, which exists
   and is the user's, whatever folder the image sets and the user cannot enter;
-- `--cgroup-parent` the workspace's slice and `--pids-limit=-1`, so that the slice's
-  limits are the only limits (see [Limits](#limits));
+- `--cgroup-parent` the workspace's slice, unless `PodmanConfig.slices` is off, and
+  `--pids-limit=-1`, so that the slice's limits are the only limits (see [Limits](#limits));
+- a tmpfs at `ROOT_PODMAN_STATE`, the container root's, for the record of root's Podman;
+- `UNMASK_PROC` and the seccomp profile `SECCOMP` of the tools, so that a container nested in
+  the workspace can mount a `/proc` of its own and name its own UTS namespace (see
+  [Containers in a workspace](#containers-in-a-workspace)); no other container rcman starts has
+  either;
 - the labels `rcman.workspace` and `rcman.person`, by which `labelled` finds
   every workspace there is.
 
@@ -66,6 +73,86 @@ Every container removed goes with its anonymous volumes (`_remove_container`, `-
 
 Podman copies an image for each range the first time a range uses it, so a
 person's first workspace takes longest to make.
+
+`PodmanConfig`'s fields `INJECTED` (`range`, `network` and `slices`) are keyword-only and hold
+the product's values by default; so do the other sizes, `Workspaces(builder_slot=…)` (also
+`create_app`'s), `HostRuntime(range=…)`, `people.add(last_slot=…)`, which the people route
+gives as one below the service's builder slot, and the plan's `size`, which `Workspaces` takes
+from the runtime's `id_range` and `devcontainer.resolve_user` holds a user's ids to. The tests'
+engine gives them its own (see
+[tests.md](tests.md#the-tests-own-engine)), and `tests/test_main.py` holds the service and `rcman-admin` to
+the defaults and every product source to giving none of them. The sign-in container takes the
+network too; the account containers, the folders' preparation and the canary have none.
+
+### Containers in a workspace
+
+What a colleague is told of it is [the workspaces guide](../docs/workspaces.md#containers).
+The tools hold `podman` and `docker` (`backend/rcman/podman/podman`, `docker` a link to it) in
+their folder `podman/bin`, with the configuration beside them (`containers.conf`,
+`storage.conf`, `registries.conf`, from `backend/rcman/podman/`); the installer writes them
+(`ensure_podman_tools`, see [installer.md](installer.md)); the folder holds `PODMAN_COMMANDS`
+and nothing else, which a test holds it to, since it is `PODMAN_BIN` on every workspace's PATH,
+right after Claude's folder (`PODMAN_LAYOUT.path` and `path_prefix`, so a plan's PATH keeps it
+first too), before the image's own programs, git among them. The default image holds Podman, crun
+and catatonit. `compose` is refused, and an image with no `/usr/bin/podman` is said to have none.
+
+- **The configuration.** A nested container has pid, UTS and IPC namespaces of its own and
+  shares the workspace's network, user and cgroup namespaces; cgroups are disabled (the
+  workspace has none to give), catatonit is the init, events and logs go to files. A short name
+  is looked for on Docker Hub.
+- **Root.** Podman runs in a *nest*: a user and mount namespace the workspace's root makes with
+  busybox's `unshare`, whose maps mirror the workspace's own `uid_map` and `gid_map` line by
+  line, and in whose mount namespace tmpfs is mounted over root's run folders (`/run/libpod`,
+  `/run/containers`). Every mount Podman makes is in the nest, never in the workspace's own
+  mount namespace, where rcman's exec, channel and tools are. Root's storage is
+  `/rcman/containers/storage` in the volume, so overlay is native. The maps are written only
+  once the child is in a user namespace of its own, which it may not be yet when it has
+  started. The nest ignores the signals a terminal or a stop sends, and lasts as long as the
+  container; it is recorded in `STATE/nest` as its pid and start time and the inodes of its user
+  and mount namespaces, digits only. `STATE` is `ROOT_PODMAN_STATE`, a tmpfs every workspace
+  container gets, the container root's even where the ids are swapped (`RUN_MOUNT` is the user's
+  there), empty at every start, and a mount point, which no one can rename away; the wrapper
+  refuses a `STATE` that is not a mount point (a container made without the tmpfs) or that is another's or
+  one others may write. A record is taken only while its process runs with
+  that start time and those namespaces, and they are not the caller's own, since a namespace's
+  inode number is given again once it is gone; otherwise the nest is made again under a lock.
+  The lock is a link, `STATE/lock`, to a folder named after its maker's pid and start time; a
+  holder that is gone is followed by one claimer, whose claim is the next link in that folder,
+  made in one step (the folder made first if its maker went before making it), and only the
+  holder removes the link, so no two make a nest at once. Every try that does not take it waits,
+  within a bound. The holder removes what holders that are gone left before it lets go, while no
+  other folder can be the one the link names. The wrapper enters with
+  `nsenter` and then changes into the caller's folder, as `nsenter -w` would leave the folder of
+  the namespace it left.
+- **Another user** runs Podman rootless with the same configuration and Podman's default
+  storage in their home. The default image's `newuidmap` and `newgidmap` hold the file
+  capabilities `cap_setuid` and `cap_setgid` instead of setuid: a workspace has no
+  CAP_SYS_ADMIN, which a setuid one would need to write the map of a user's namespace.
+- **The seccomp profile** (`SECCOMP`, derived by `helpers/seccomp.py` from Podman's default
+  when the installer runs) allows `sethostname` and `setdomainname` whatever the capabilities, which
+  Podman's default allows only with CAP_SYS_ADMIN. The kernel still refuses them in the
+  workspace's own UTS namespace.
+- **`UNMASK_PROC`** removes the paths Podman covers in `/proc`: the kernel refuses a new
+  `/proc` where any part of the one there is covered. The kernel's own checks still keep
+  `/proc/kcore`, `/proc/timer_list`, `/proc/sysrq-trigger` and the machine's sysctls from the
+  workspace's root, which may change only those of its own namespaces (an IPC setting, say);
+  what it can read besides is the administrators' guide's
+  ([What a workspace can reach](../docs/installation.md#what-a-workspace-can-reach)).
+- **Staleness.** The service, at its start with its own Podman (`main.check_seccomp`), says in
+  the journal when the profile in the tools is missing or is not the one `helpers/seccomp.py`
+  derives from Podman's current default; it changes nothing. A missing one makes `create` fail,
+  as Podman refuses a profile that is not there.
+- **What is accepted.** A nested container is no boundary inside the workspace, and shares its
+  network; what nested containers store counts against no limit. A workspace keeps the image and
+  the container it was made with, and rcman holds no way to give one made without Podman, the
+  `ROOT_PODMAN_STATE` tmpfs, `UNMASK_PROC` or the seccomp profile what it lacks: the wrapper
+  refuses one without the tmpfs (its image may have Podman), says there is no Podman in one whose
+  image has none, and a new workspace is made in its place.
+- **The order on the PATH.** Where the image has no `/usr/bin/podman`, the wrapper runs the next
+  program of the name it was called by on the PATH after `PODMAN_BIN`, never itself (an image's
+  own `docker`, say), and says there is no Podman where there is none.
+- **A server that ran across an upgrade of rcman** keeps the PATH it was started with, without
+  the wrappers, until it is stopped and started again.
 
 ### Limits
 
@@ -150,8 +237,8 @@ shared file at the same moment; Claude writes it in place, truncating first, and
 be read empty, or be left with the tail of a longer text. rcman does not serialise refreshes.
 It notices instead: `credentials_state` reads the file as `signed_in`, `empty` or
 `unreadable`, and `Accounts` reports `signed_out_unexpectedly` when SQLite has the account
-connected, no sign-out waits, and the file is not a sign-in. The podman host's suite measures
-concurrent refreshes and holds turn-taking ones to whole files.
+connected, no sign-out waits, and the file is not a sign-in. The container suites measure
+concurrent refreshes and hold turn-taking ones to whole files.
 
 `start_sign_in` starts the person's sign-in container, `sign_in_name`:
 `podman run --rm --detach`, in the person's range, its process the mounted
@@ -208,7 +295,22 @@ folder into a container that exists.
 and anything else that is not 0, exit 125 among it, is `RuntimeUnavailable`.
 `exec` runs one command with stdin, for what a channel cannot carry, and runs
 it once more when conmon says it could not start it (`CONMON_FAILED`), as
-nothing ran then. It takes a `timeout` in seconds (default `PODMAN_TIMEOUT`);
+nothing ran then. Podman's remote exec sometimes, under load, ends with the program's
+exit code and nothing of what it wrote on either stream, so in Podman the command is run
+by `marked_exec`: the mounted busybox's shell writes `EXEC_MARK` on stderr, puts back the
+variables it sets of its own (`SHLVL`, `PWD`, `IFS`, `OPTIND`, `PPID`, and `PATH` when there is
+none) as the environment it was started with has them, so the program's environment is
+Podman's, then becomes the program, a bare name looked up on the container's PATH and run by
+its path (busybox's shell would run its own applet of that name), and the first mark is taken
+out of the answer; one the program writes itself is its own. The lookup is Podman's for an
+executable file on a PATH that is set; with no PATH a bare name is not found, and a file that
+is neither a binary nor starts with `#!` is run by the shell as a script, where Podman refuses
+it. An answer with no mark, whatever else Podman's client wrote on stderr, lost the program's
+output, unless Podman refused it (`UNAVAILABLE`) or conmon could not start it: with `again`, which a caller gives a program that changes nothing (the
+probes of an image's libc and shell, the read of `.claude.json` before a server starts), it
+is run once more, and a second loss is `RuntimeFailed`; without it the answer is the exit
+code alone, and nothing is run twice. A kept tail (`keep`) is not checked: its mark may be
+cut off. It takes a `timeout` in seconds (default `PODMAN_TIMEOUT`);
 a command that has not ended by then is `RuntimeFailed`; and a `cwd`, the folder it
 runs in (without one, the host runtime's work folder and the image's own working folder in
 Podman, which has no work folder before `create` has made it; a caller that needs one names it). `discard` removes a container and keeps its
@@ -228,7 +330,7 @@ host's own programs — a person's credentials file in `ACCOUNTS` under its
 folder, linked to from each workspace's, and a sign-in container a folder that
 only `end_sign_in` removes — for the tests and `make e2e`; `tests/runtime_contract.py`
 holds both runtimes to the same cases, on the host in `tests/test_runtime.py`
-and against real Podman in the podman host in
+and against real Podman on the tests' engine in
 `tests/container/test_runtime_in_podman.py`, apart from its canary cases (see [The canary](#the-canary)). A `Layout` says where a runtime's
 things are, as the programs in a workspace see them: the tools as argv
 prefixes (busybox's applets in a container), the tmux socket and
@@ -261,7 +363,7 @@ written is never sent again, since it may have run (`ChannelBroken`). A channel
 opens when rcman first runs a command in the workspace through it, and closes
 once it has been idle for `CHANNEL_IDLE_SECONDS` (`workspaces.py`); a workspace
 whose row records no server is listed without reaching it. `LATENCY_P95_SECONDS` in
-`channel.py` is what a request may cost, and the podman host's suite holds the
+`channel.py` is what a request may cost, and the container suites hold the
 podman client of a channel to a memory bound of its own.
 
 ## A workspace's server
@@ -395,7 +497,8 @@ finish in `CANARY_SECONDS`, or printed something else) is a `RuntimeFailed`, whi
 about the candidate. `end_canary` removes the container.
 
 `PodmanRuntime` runs it as a throwaway container from the default workspace image, in the
-builder's uid range (`people.BUILDER_SLOT`), labelled `LABEL_CANARY` only so that no restore
+builder's uid range (`Workspaces.builder_slot`, which `ClaudeVersions` passes as `slot`;
+`people.BUILDER_SLOT` unless a test engine gives another), labelled `LABEL_CANARY` only so that no restore
 takes it for a workspace's: no network, a read-only root with a tmpfs home, all capabilities
 dropped, no new privileges, and mounted read-only only the candidate's folder and rcman's
 helpers; one left from before is removed first. The checks need `python3` in the image. Whether
@@ -459,7 +562,8 @@ label, then the file's own, merged) and the parsing of an image's passwd and gro
   `LANG`, `LC_ALL` and `BROWSER` a file may: rcman sets each in only some of its programs
   (`LANG` for tmux and Claude, `LC_ALL` for git, `BROWSER` for Claude), and there its value
   comes after the file's and wins; everywhere else, lifecycle commands included, the file's is
-  used. `PATH` may be set, with the folder of rcman's own programs kept first. Without a `PATH`
+  used. `PATH` may be set, with the folders of rcman's own programs (`path_prefix`: Claude's
+  and `PODMAN_BIN`) kept first. Without a `PATH`
   of the file's, the image's is used.
 - **The image's name.** `image` must be a plain registry reference, `[host[:port]/]path[:tag]
   [@digest]`, as written: no variable in it (it is the name that is pulled), and nothing
@@ -491,9 +595,12 @@ page](../docs/devcontainer.md#building-an-image).
   (`builder.builder_name`), from `PodmanConfig.builder_image` (`RCMAN_BUILDER_IMAGE`), with a
   volume of the same name for its Podman's storage, both labelled `LABEL_BUILDER`.
   `builder.run_argv` is the argument list, with the slice of the person who asked for the build
-  as its cgroup parent (see [Limits](#limits)): the uid range of `people.BUILDER_SLOT`, which no
-  person has and `_ids` maps like any other slot, never rcman's own; the network of a
-  workspace; `/dev/fuse` and `SYS_ADMIN` and nothing else added; no `--privileged`. The
+  as its cgroup parent unless `PodmanConfig.slices` is off (see [Limits](#limits)): the uid
+  range of `Workspaces.builder_slot` (`people.BUILDER_SLOT` unless a test engine gives another),
+  which no person has and `_ids` maps like any other slot, never
+  rcman's own; the network of a workspace (`PodmanConfig.network`); `SYS_ADMIN` and nothing
+  else added, no device, so that the Podman inside mounts overlay itself (native overlay, its
+  `storage.conf` naming no mount program); no `--privileged`. The
   installer reserves the range (see [installer.md](installer.md)) and builds the image from
   `installer/builder`.
 - **In.** `_copy_in` streams the workspace's files from the workspace's container to the

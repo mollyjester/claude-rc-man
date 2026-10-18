@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import socket
 import ssl
 import subprocess
 import threading
@@ -72,14 +73,27 @@ class GitHubServer:
         ssl_context: ssl.SSLContext | None = None,
         host: str = "127.0.0.1",
         port: int = 0,
+        listening: socket.socket | None = None,
     ) -> str:
-        """Serve the bare repositories under ``root``; the base URL, ending in a slash."""
+        """Serve the bare repositories under ``root``; the base URL, ending in a slash. With
+        ``listening``, a socket bound and listening already (as one made in another network
+        namespace is), it serves on that socket, and closes it when it stops."""
         self.root, self.token = Path(root), token
         self.root.mkdir(parents=True, exist_ok=True)
         self._home = self.root / ".home"  # an empty HOME for git http-backend
         self._home.mkdir(exist_ok=True)
         self._backend = _backend()
-        self._server = _Server((host, port), _Quiet)
+        if listening is None:
+            self._server = _Server((host, port), _Quiet)
+        else:
+            host, port = listening.getsockname()[:2]
+            self._server = _Server((host, port), _Quiet, bind_and_activate=False)
+            self._server.socket.close()
+            self._server.socket = listening
+            # What server_bind would have set: the address, and the environment of a request.
+            self._server.server_address = (host, port)
+            self._server.server_name, self._server.server_port = host, port
+            self._server.setup_environ()
         self._server.set_app(self._app)
         scheme = "http"
         if ssl_context is not None:

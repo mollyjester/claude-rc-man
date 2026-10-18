@@ -157,11 +157,17 @@ ANY_VALUES = {name: f"<{name}>" for name in PLACEHOLDERS}
 # --- environment ----------------------------------------------------------------
 
 
-def claude_env(config_dir: Path | None) -> dict[str, str]:
-    """The allowlisted environment every `claude` run gets."""
+def claude_env(config_dir: Path | None, home: Path) -> dict[str, str]:
+    """The allowlisted environment every `claude` run gets: ``home`` is its HOME, a temporary
+    folder of the caller's, made if it is not there, and never the home the run was started
+    from, which Claude would write its own files into; ``config_dir`` its configuration folder
+    where one is given."""
+    if Path(home).resolve() == Path.home().resolve():
+        raise ValueError(f"{home} is the home this run was started from, not a folder of its own")
+    Path(home).mkdir(parents=True, exist_ok=True)
     env = {
         "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
-        "HOME": os.environ.get("HOME", "/"),
+        "HOME": str(home),
         "TERM": "xterm-256color",
         "LANG": "C.UTF-8",
         "DISABLE_AUTOUPDATER": "1",
@@ -170,6 +176,16 @@ def claude_env(config_dir: Path | None) -> dict[str, str]:
     if config_dir is not None:
         env["CLAUDE_CONFIG_DIR"] = str(config_dir)
     return env
+
+
+def account_home(home: Path) -> Path:
+    """``home`` made a home for the account of the home this run was started from: its
+    ``.claude`` and ``.claude.json`` (which Claude keeps beside the folder, not in it, when no
+    CLAUDE_CONFIG_DIR is set) are links to those; anything else Claude writes stays here."""
+    home.mkdir(parents=True, exist_ok=True)
+    for name in (".claude", ".claude.json"):
+        (home / name).symlink_to(Path.home() / name)
+    return home
 
 
 # Claude Code's credentials file, in its configuration folder.
@@ -249,6 +265,8 @@ def _trust_declined(r: Run) -> None:
 
 def _trust_too_fast(r: Run) -> None:
     """Answer the moment the prompt appears; `claude` refuses and asks again."""
+    # Races over the fake under load: see project-knowledge/fake-claude.md, "How the fake is
+    # checked against the real binary".
     r.pane.wait_for(r"\[y/N\]", TIMEOUT)
     r.pane.type_line("n")
     r.capture_when(r"too quickly", "trust_answer_too_fast")
@@ -566,7 +584,7 @@ def help_refused_logged_out(text: str) -> bool:
 def installed_version(claude_bin: Path | str) -> str:
     with held(VERSIONS) as tmp:
         with tmuxctl.Pane(socket_dir=tmp) as pane:
-            pane.run([str(claude_bin), "--version"], cwd=tmp, env=claude_env(tmp))
+            pane.run([str(claude_bin), "--version"], cwd=tmp, env=claude_env(tmp, tmp / "home"))
             pane.wait_exit(TIMEOUT)
             match = VERSION_PATTERN.search(pane.text())
     if not match:
@@ -583,7 +601,9 @@ def record(
     """Run each sequence in a fresh folder and pane; return sanitised captures.
 
     ``account_config_dir`` is the configuration for ``needs_account`` sequences;
-    ``None`` means the real default configuration.
+    ``None`` means the real default configuration: no CLAUDE_CONFIG_DIR, and a home whose
+    ``.claude`` and ``.claude.json`` lead to those of the home this run was started from
+    (``account_home``). Every sequence has a home of its own.
     """
     version = installed_version(claude_bin)
     workdir.mkdir(parents=True, exist_ok=True)
@@ -594,18 +614,23 @@ def record(
         if seq.git_repository:
             make_repository(folder)
             branch = RECORD_BRANCH
+        home = Path(tempfile.mkdtemp(prefix="home-", dir=workdir))
         if seq.without_oauth_account:
             config = Path(tempfile.mkdtemp(prefix="cfg-", dir=workdir))
             account = account_config_dir or Path.home() / ".claude"
             (config / CREDENTIALS).symlink_to(account / CREDENTIALS)
             config_text = str(config)
+        elif seq.needs_account and account_config_dir is None:
+            config = None  # the account where Claude keeps it, through the home's links
+            account_home(home)
+            config_text = str(home / ".claude")
         elif seq.needs_account:
             config = account_config_dir
-            config_text = str(config) if config else str(Path.home() / ".claude")
+            config_text = str(config)
         else:
             config = Path(tempfile.mkdtemp(prefix="cfg-", dir=workdir))
             config_text = str(config)
-        env = claude_env(config)
+        env = claude_env(config, home)
         argv = [str(claude_bin), *seq.args]
         with tmux_sockets(PANES) as sock, tmuxctl.Pane(socket_dir=sock) as pane:
             pane.run(argv, cwd=folder, env=env)

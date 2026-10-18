@@ -209,10 +209,10 @@ def test_a_push_the_runtime_fails_after_the_commit_is_still_a_commit_not_pushed(
     runtime = app.state.workspaces.runtime
     real = runtime.exec
 
-    def exec_(name, argv, stdin=None, timeout=rt.PODMAN_TIMEOUT):
+    def exec_(name, argv, stdin=None, timeout=rt.PODMAN_TIMEOUT, cwd=None, keep=None, again=False):
         if "push" in argv:
             raise rt.RuntimeFailed("the container went away")
-        return real(name, argv, stdin, timeout)
+        return real(name, argv, stdin, timeout, cwd, keep, again)
 
     runtime.exec = exec_
     r = post(client, "/api/git/commit-push", {"workspace": work["id"], "message": "m"})

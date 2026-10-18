@@ -1,4 +1,6 @@
-# No target runs beside another under make -j: the on-demand runs share docker.
+# No target runs beside another under make -j: check-all runs its parts one after the other,
+# stopping at the first red one, and each on-demand run starts an engine of its own and builds
+# the same images, which side by side would only compete for the machine.
 .NOTPARALLEL:
 
 .PHONY: setup test test-container check-ui lint format frontend-setup frontend-test frontend-build e2e check check-all
@@ -21,7 +23,7 @@ test-container:  ## on demand: the Python tests that need a container but not th
 	uv run pytest -m "container and not stack and not real_claude"
 
 check-ui: export RCMAN_REQUIRE_CONTAINER = 1
-# In one process, like test-container, whose images it shares.
+# In one process, like test-container, whose reason holds here too.
 check-ui:  ## on demand: the whole stack in a browser; needs make frontend-setup once, like e2e
 	uv run pytest -m "stack and not real_claude"
 
@@ -50,7 +52,7 @@ e2e: frontend-build  ## the built frontend in a browser, against the real backen
 check: export RCMAN_REQUIRE_REAL_CLAUDE = 1
 check: lint test frontend-test e2e  ## lint and every test that runs on the host; tests that would skip fail instead
 
-# One after the other: test-container and check-ui share docker. It stops at the first part
-# that is red; make -k check-all runs every part and reports each red one, so that
-# everything red is fixed together.
+# One after the other (.NOTPARALLEL above). It stops at the first part that is red;
+# make -k check-all runs every part and reports each red one, so that everything red is fixed
+# together.
 check-all: check test-container check-ui  ## check and both on-demand runs, stopping at the first red part (make -k: all parts): for the end of a change and before the live reinstall

@@ -5,6 +5,7 @@ import os
 import re
 import shutil
 import signal
+import subprocess
 import sys
 import threading
 import time
@@ -491,7 +492,8 @@ def test_help_runs_in_a_held_folder_that_is_removed_afterwards(tmp_path):
     fake = tmp_path / "claude"
     fake.write_text('#!/bin/sh\necho "$PWD"\nls -a\n')
     fake.chmod(0o755)
-    text = rec.help_text(fake, ("remote-control",), rec.claude_env(None)).splitlines()
+    env = rec.claude_env(None, tmp_path / "home")
+    text = rec.help_text(fake, ("remote-control",), env).splitlines()
     folder = Path(text[0])
     assert held_folders.made_with(rec.HELP)(folder.name) and held_folders.LOCK in text
     assert not folder.exists()
@@ -595,3 +597,135 @@ def test_a_sign_in_hands_its_code_over_in_the_recordings_working_folder(
     assert typed[0] == "THE-CODE"
     assert str(handoff) in capsys.readouterr().err
     assert "url" not in written  # written elsewhere and renamed, so never read in part
+
+
+# --- the home a recorded claude runs with --------------------------------------------------
+
+# A claude that leaves a mark in its home.
+MARKING = '#!/bin/sh\ntouch "$HOME/marked"\n'
+
+
+def test_claude_env_gives_home_a_folder_of_its_own_never_the_real_one(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path / "real-home"))
+    env = rec.claude_env(None, tmp_path / "home")
+    assert env["HOME"] == str(tmp_path / "home") and "CLAUDE_CONFIG_DIR" not in env
+    assert rec.claude_env(tmp_path / "cfg", tmp_path / "home")["CLAUDE_CONFIG_DIR"] == str(
+        tmp_path / "cfg"
+    )
+    with pytest.raises(ValueError):
+        rec.claude_env(None, tmp_path / "real-home")  # the home the run was started from
+
+
+def recorded_with(fake: Path, workdir: Path, needs_account: bool) -> None:
+    sequence = rec.Sequence(
+        "probe", [], ("probe",), lambda run: run.capture_exit("probe"), needs_account=needs_account
+    )
+    rec.record(fake, [sequence], None, workdir)
+
+
+def told(tmp_path: Path) -> Path:
+    """A claude that writes down the environment it was given: HOME, CLAUDE_CONFIG_DIR, and
+    where HOME's .claude and .claude.json lead; and leaves a mark in HOME."""
+    seen = tmp_path / "seen"
+    fake = tmp_path / "claude"
+    fake.write_text(
+        "#!/bin/sh\n"
+        f'{{ echo "home=$HOME"; echo "config=${{CLAUDE_CONFIG_DIR-unset}}"; '
+        'echo "claude=$(readlink "$HOME/.claude")"; '
+        f'echo "json=$(readlink "$HOME/.claude.json")"; }} > {seen}\n'
+        'touch "$HOME/marked"\n'
+    )
+    fake.chmod(0o755)
+    return fake
+
+
+def seen_by(tmp_path: Path) -> dict[str, str]:
+    lines = (tmp_path / "seen").read_text().splitlines()
+    return dict(line.split("=", 1) for line in lines)
+
+
+@pytest.fixture
+def real_home(tmp_path, monkeypatch) -> Path:
+    """The home the run was started from, with an account in it as Claude keeps one: its
+    folder, and its .claude.json beside the folder, not in it."""
+    home = tmp_path / "real-home"
+    (home / ".claude").mkdir(parents=True)
+    (home / ".claude.json").write_text("{}")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr(rec, "installed_version", lambda claude: "1.2.3")
+    return home
+
+
+def test_a_recording_without_the_account_runs_in_a_home_and_a_folder_of_its_own(
+    tmp_path, real_home
+):
+    """``account_config_dir=None``, as tests/test_claude_contract.py records the screens of no
+    account: a configuration folder of its own, and a home of its own that leads nowhere."""
+    recorded_with(told(tmp_path), tmp_path / "work", needs_account=False)
+    seen = seen_by(tmp_path)
+    assert seen["home"] != str(real_home) and Path(seen["home"]).is_relative_to(tmp_path / "work")
+    assert seen["config"] != "unset" and Path(seen["config"]).is_relative_to(tmp_path / "work")
+    assert (seen["claude"], seen["json"]) == ("", "")
+    assert not (real_home / "marked").exists() and (Path(seen["home"]) / "marked").exists()
+
+
+def account_problems(seen: dict[str, str], real_home: Path, work: Path) -> list[str]:
+    """What is wrong with the environment an account's sequence was given: Claude reads the
+    account's .claude.json from $HOME when no CLAUDE_CONFIG_DIR is set, and from that folder
+    when one is, where the account has none."""
+    problems = []
+    if seen["config"] != "unset":
+        problems.append(f"CLAUDE_CONFIG_DIR is {seen['config']}")
+    if seen["home"] == str(real_home) or not Path(seen["home"]).is_relative_to(work):
+        problems.append(f"HOME is {seen['home']}")
+    if seen["claude"] != str(real_home / ".claude"):
+        problems.append(f".claude leads to {seen['claude']!r}")
+    if seen["json"] != str(real_home / ".claude.json"):
+        problems.append(f".claude.json leads to {seen['json']!r}")
+    return problems
+
+
+def test_the_accounts_sequence_reads_the_account_where_claude_keeps_it(tmp_path, real_home):
+    """With no configuration folder given, the account's: no CLAUDE_CONFIG_DIR, so Claude reads
+    $HOME/.claude.json and $HOME/.claude, which lead to the account's own, in a home of its own
+    that gets anything else Claude writes."""
+    recorded_with(told(tmp_path), tmp_path / "work", needs_account=True)
+    seen = seen_by(tmp_path)
+    assert account_problems(seen, real_home, tmp_path / "work") == []
+    assert not (real_home / "marked").exists() and (Path(seen["home"]) / "marked").exists()
+
+
+def test_a_recorder_that_names_the_accounts_folder_is_found(tmp_path, real_home, monkeypatch):
+    """Planted twin: the recorder giving the account's folder as CLAUDE_CONFIG_DIR, in a home
+    with no links, where Claude finds no .claude.json; the check above finds it."""
+    named = real_home / ".claude"
+    real = rec.claude_env
+    monkeypatch.setattr(rec, "account_home", lambda home: home)  # no links
+    monkeypatch.setattr(rec, "claude_env", lambda config, home: real(config or named, home))
+    recorded_with(told(tmp_path), tmp_path / "work", needs_account=True)
+    seen = seen_by(tmp_path)
+    assert seen["config"] == str(named)  # the plant took effect
+    assert not (named / ".claude.json").exists()  # where Claude would then look
+    problems = account_problems(seen, real_home, tmp_path / "work")
+    assert problems[0] == f"CLAUDE_CONFIG_DIR is {named}" and len(problems) == 3
+
+
+def test_an_account_home_leads_to_the_accounts_files(tmp_path, real_home):
+    home = rec.account_home(tmp_path / "home")
+    assert os.readlink(home / ".claude") == str(real_home / ".claude")
+    assert os.readlink(home / ".claude.json") == str(real_home / ".claude.json")
+    assert rec.claude_env(None, home)["HOME"] == str(home)
+
+
+def test_a_claude_run_with_the_real_home_marks_it(tmp_path, monkeypatch):
+    """Planted twin: the same claude given the home the run was started from marks it, so the
+    check above would see a recording that did."""
+    home = tmp_path / "real-home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    fake = tmp_path / "claude"
+    fake.write_text(MARKING)
+    fake.chmod(0o755)
+    env = {**rec.claude_env(None, tmp_path / "home"), "HOME": str(home)}
+    subprocess.run([str(fake)], env=env, check=True, capture_output=True)
+    assert (home / "marked").exists()

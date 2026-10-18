@@ -46,10 +46,12 @@ class Flow(rt.HostRuntime):
     pull or a lifecycle command until the test lets it go, and to answer as an image that has
     musl, or no git, would."""
 
-    def __init__(self, *args):
-        super().__init__(*args)
+    def __init__(self, *args, **more):
+        super().__init__(*args, **more)
         self.events: list[tuple] = []
         self.execs: list[tuple[str, list[str], str | None]] = []
+        # Each exec's argv, with whether it may run once more should its output be lost.
+        self.agains: list[tuple[list[str], bool]] = []
         self.libc = b"ok\n"
         self.git: rt.Result | None = None
         self.gate: threading.Event | None = None  # a command with GATE in it waits for this
@@ -153,8 +155,11 @@ class Flow(rt.HostRuntime):
         super().pull(image, progress, cancel)
         self.after_pull()
 
-    def exec(self, name, argv, stdin=None, timeout=rt.PODMAN_TIMEOUT, cwd=None, keep=None):
+    def exec(
+        self, name, argv, stdin=None, timeout=rt.PODMAN_TIMEOUT, cwd=None, keep=None, again=False
+    ):
         self.execs.append((name, argv, cwd))
+        self.agains.append((argv, again))
         self.kept = keep
         joined = " ".join(argv)
         if "ld-musl" in joined:
@@ -175,7 +180,7 @@ class Flow(rt.HostRuntime):
                 return rt.Result(0, b"", b"")
             if not self.exists(name):
                 return rt.Result(137, b"", b"Killed\n")
-        answer = super().exec(name, argv, stdin, timeout, cwd, keep)
+        answer = super().exec(name, argv, stdin, timeout, cwd, keep, again)
         if cwd is not None and "-k" in argv:
             self.answers.append(answer)
         return answer
@@ -513,6 +518,21 @@ def test_the_pull_is_shown_in_the_log_with_its_progress(client, runtime, publish
     assert finished(client, made["id"])["state"] == "ready"
 
 
+def test_only_the_probes_that_change_nothing_may_run_again_when_their_output_is_lost(
+    client, runtime, publish
+):
+    """The probes of the image's libc and shell only read, so they are run once more should the
+    runtime lose what they wrote (Runtime.exec); a lifecycle command is never run twice."""
+    publish(config(postCreateCommand="echo post-create >> ran.txt"))
+    made = clone(client).json()["workspace"]
+    assert finished(client, made["id"])["state"] == "ready"
+    libc = [again for a, again in runtime.agains if ws.LIBC_PROBE in a]
+    shell = [again for a, again in runtime.agains if ws.SHELL_PROBE in a]
+    hooks = [again for a, again in runtime.agains if "post-create" in " ".join(a)]
+    assert libc == [True] and shell and all(shell)
+    assert hooks == [False]  # the control
+
+
 def test_an_image_on_musl_is_refused_as_alpine_is_and_nothing_is_left(client, runtime, publish):
     runtime.libc = b"musl\n"
     publish(config())
@@ -652,7 +672,7 @@ def test_a_path_the_file_sets_is_used_with_rcmans_own_folder_first(client, app, 
     assert "PATH" not in layout.env
     # The same on a runtime that has a folder of its own to keep first.
     prefixed = rt.PODMAN_LAYOUT.for_plan("dev", {}, "/mine/bin:/usr/bin")
-    assert prefixed.path == f"{rt.CLAUDE_MOUNT}/bin:/mine/bin:/usr/bin"
+    assert prefixed.path == f"{rt.PODMAN_LAYOUT.path_prefix}:/mine/bin:/usr/bin"
 
 
 def test_a_workspace_with_no_plan_has_the_runtimes_layout(client, app, runtime, publish):
@@ -2219,3 +2239,46 @@ def test_a_lost_container_whose_built_image_is_gone_fails_the_workspace_and_pull
     assert now["error"] == problems.DEVCONTAINER_MESSAGES["built_image_gone"]
     assert "delete the workspace" in now["error"].lower()
     assert runtime.pulled == [] and not runtime.exists(rt.container_name(workspace))
+
+
+def test_a_build_runs_in_the_builder_slot_the_app_is_given(settings, runtime, publish):
+    from fastapi.testclient import TestClient
+    from rcman.main import create_app
+
+    publish(building())
+    app = create_app(settings, runtime=runtime, builder_slot=6)
+    with TestClient(app) as c:
+        assert app.state.workspaces.restored.wait(30)
+        done = cloned(c)
+    assert done["state"] == "ready", done
+    (request,) = runtime.builds
+    assert request.slot == 6 != people.BUILDER_SLOT  # the control is the test above
+
+
+@pytest.fixture
+def small_runtime(tmp_path):
+    with host_runtime(tmp_path, Flow, range=8192) as made:
+        yield made
+
+
+def test_a_users_id_beyond_the_runtimes_range_is_refused_that_the_products_takes(
+    settings, small_runtime, publish
+):
+    from fastapi.testclient import TestClient
+    from rcman.main import create_app
+
+    publish(config(remoteUser="8192"))
+    app = create_app(settings, runtime=small_runtime)
+    with TestClient(app) as c:
+        assert app.state.workspaces.restored.wait(30)
+        failed = cloned(c)
+    assert failed["state"] == "failed", failed
+    assert small_runtime.pulled == [IMAGE]  # refused once the image was read
+
+
+def test_the_same_id_is_taken_within_the_products_range(client, runtime, publish):
+    """The control of the test above."""
+    publish(config(remoteUser="8192"))
+    done = cloned(client)
+    assert done["state"] == "ready", done
+    assert runtime.specs[name_of(done)].uid == 8192

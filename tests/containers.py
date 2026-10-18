@@ -1,21 +1,12 @@
-"""The containers a run of the tests starts, labelled so that a later run removes those a
-run killed by a signal left running.
+"""The containers a run of the tests starts itself on the tests' engine (tests/podman_service.py),
+labelled as the run's, so that the run removes them when it ends.
 
-Not a test module. Each run holds a folder of its own, its holder, made with
-devtools/held_folders.py, and labels each container it starts (labels()) with:
-
-- HOLDER, the holder's absolute path;
-- OWNER, the user's uid;
-- WHERE, the boot and the folder the holder is made in (where()), so a container
-  another boot, another machine or another /tmp started is never taken for one of
-  this run's.
-
-holder() takes the folder, removes first every container whose labels are all the
-run's own kind, whose holder its own prefix, HOLDERS, names, and whose holder nothing
-holds any longer (abandoned()), and removes
-the run's own containers when it ends. A container is removed with its anonymous
-volumes, never a named one, so a volume a run gives a container goes wherever the
-container goes, Docker's own removal of a --rm container included. The rules are in
+Not a test module. ``engine`` below is the argv that runs podman on the engine (its ``argv()``).
+Each run holds a folder of its own, its holder, made with devtools/held_folders.py, labels each
+container it starts with the holder's path (labels()), and removes the containers labelled with it
+when it ends (holder()), with their anonymous volumes, never a named one. A run killed by a signal
+leaves its engine, and the next run that starts one removes it whole, its containers and volumes
+with it (tests/podman_service.py), so nothing here sweeps for another run's. The rules are in
 project-knowledge/tests.md, "What a killed run leaves".
 """
 
@@ -23,7 +14,6 @@ from __future__ import annotations
 
 import contextlib
 import json
-import os
 import re
 import subprocess
 import time
@@ -35,9 +25,6 @@ from devtools import held_folders as hf
 # What a holder's name begins with.
 HOLDERS = "rcct-"
 HOLDER = "rcman.test.holder"
-OWNER = "rcman.test.owner"
-WHERE = "rcman.test.where"
-BOOT_ID = Path("/proc/sys/kernel/random/boot_id")
 # Seconds a removed container may take to be gone.
 GONE_WITHIN = 60
 
@@ -47,9 +34,7 @@ _FROM_BY_DIGEST = re.compile(r"FROM\s+(?:--\S+\s+)*(\S+@sha256:[0-9a-f]{64})(?:\
 
 
 def digest_references(containerfile: Path) -> list[str]:
-    """The images the Containerfile starts from that a digest pins, each once, in order: what
-    a podman host is given ready, since Podman looks such an image up by its digest in the
-    registry's index, which an image saved by tag and loaded is not known by."""
+    """The images the Containerfile starts from that a digest pins, each once, in order."""
     found: list[str] = []
     for line in containerfile.read_text().splitlines():
         named = _FROM_BY_DIGEST.match(line)
@@ -58,64 +43,32 @@ def digest_references(containerfile: Path) -> list[str]:
     return found
 
 
-def where(holder: Path) -> str:
-    """The boot, and the device and inode of the folder ``holder`` is made in."""
-    status = holder.parent.stat()
-    return f"{BOOT_ID.read_text().strip()} {status.st_dev}:{status.st_ino}"
-
-
 def labels(holder: Path) -> list[str]:
-    """docker run's arguments that label a container as the run holding ``holder``'s."""
-    return [
-        "--label", f"{HOLDER}={holder}",
-        "--label", f"{OWNER}={os.getuid()}",
-        "--label", f"{WHERE}={where(holder)}",
-    ]  # fmt: skip
+    """podman run's arguments that label a container as the run holding ``holder``'s."""
+    return ["--label", f"{HOLDER}={holder}"]
 
 
-def abandoned(found: dict[str, dict[str, str]]) -> list[str]:
-    """Of ``found``, {container: its labels}, those a killed run of the current user's
-    left here: owner, an absolute holder made with HOLDERS, as it is when this is
-    called, and where all match, and nothing holds the holder any longer. As a held
-    folder's sweep takes only its own prefix's folders, a holder of another prefix is
-    another sweep's."""
-    out = []
-    for container, labelled in found.items():
-        holder = labelled.get(HOLDER, "")
-        if labelled.get(OWNER) != str(os.getuid()) or not os.path.isabs(holder):
-            continue
-        if not hf.made_with(HOLDERS)(Path(holder).name):
-            continue
-        try:
-            here = where(Path(holder))
-        except OSError:
-            continue
-        if labelled.get(WHERE) == here and hf.unheld(Path(holder)):
-            out.append(container)
-    return out
-
-
-def _listed(docker: list[str], *label: str) -> list[str]:
-    """Every container, running or not, with ``label``; a docker ps that fails raises."""
+def _listed(engine: list[str], *label: str) -> list[str]:
+    """Every container, running or not, with ``label``; a podman ps that fails raises."""
     filters = [arg for name in label for arg in ("--filter", f"label={name}")]
     listed = subprocess.run(
-        [*docker, "ps", "-a", "-q", "--no-trunc", *filters],
+        [*engine, "ps", "-a", "-q", "--no-trunc", *filters],
         capture_output=True,
         text=True,
         timeout=60,
     )
     if listed.returncode != 0:
-        raise RuntimeError(f"docker ps failed: {listed.stderr}")
+        raise RuntimeError(f"podman ps failed: {listed.stderr}")
     return listed.stdout.split()
 
 
-def _labelled(docker: list[str], *label: str) -> dict[str, dict[str, str]]:
+def _labelled(engine: list[str], *label: str) -> dict[str, dict[str, str]]:
     """{container: its labels} for every container, running or not, with ``label``."""
-    ids = _listed(docker, *label)
+    ids = _listed(engine, *label)
     if not ids:
         return {}
     inspected = subprocess.run(
-        [*docker, "inspect", "--format", "{{.Id}} {{json .Config.Labels}}", *ids],
+        [*engine, "inspect", "--format", "{{.Id}} {{json .Config.Labels}}", *ids],
         capture_output=True,
         text=True,
         timeout=60,
@@ -129,32 +82,26 @@ def _labelled(docker: list[str], *label: str) -> dict[str, dict[str, str]]:
     return found
 
 
-def _remove(docker: list[str], containers: list[str]) -> None:
+def _remove(engine: list[str], containers: list[str]) -> None:
     """Remove ``containers``, with their anonymous volumes, and wait until they are gone:
     another run removing one of them at the same time leaves it listed, its removal in
     progress, for a while."""
     if not containers:
         return
-    subprocess.run([*docker, "rm", "-f", "-v", *containers], capture_output=True, timeout=120)
+    subprocess.run([*engine, "rm", "-f", "-v", *containers], capture_output=True, timeout=120)
     deadline = time.monotonic() + GONE_WITHIN
-    while left := set(containers) & set(_listed(docker)):
+    while left := set(containers) & set(_listed(engine)):
         if time.monotonic() > deadline:
             raise RuntimeError(f"containers not removed: {sorted(left)}")
         time.sleep(0.2)
 
 
-def clear_abandoned(docker: list[str]) -> None:
-    """Remove every container a killed run of the current user's left here."""
-    _remove(docker, abandoned(_labelled(docker, HOLDER)))
-
-
 @contextlib.contextmanager
-def holder(docker: list[str]) -> Iterator[Path]:
-    """This run's holder, once the containers killed runs left are removed; afterwards
-    the containers labelled with it are removed, and then the holder."""
+def holder(engine: list[str]) -> Iterator[Path]:
+    """This run's holder; afterwards the containers labelled with it are removed, and then the
+    holder."""
     with hf.held(HOLDERS) as folder:
-        clear_abandoned(docker)
         try:
             yield folder
         finally:
-            _remove(docker, list(_labelled(docker, f"{HOLDER}={folder}")))
+            _remove(engine, list(_labelled(engine, f"{HOLDER}={folder}")))

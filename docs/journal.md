@@ -4,7 +4,8 @@ rcman runs as the systemd service `rcman`, and what it writes goes to the
 system journal on the server. Besides the service's own messages — starting,
 stopping, and anything that went wrong inside rcman, such as a workspace it
 could not make or bring back when it started, that it is waiting for Podman
-to answer, or that it removed nothing when it started because its table of
+to answer, that the workspaces' seccomp profile is missing or not the one derived from Podman's
+current one (see [Upgrading](installation.md#upgrading-and-rolling-back)), or that it removed nothing when it started because its table of
 workspaces is empty while Podman holds some (see
 [Podman's volumes](installation.md#podmans-volumes-are-rcmans)) — it writes three kinds of event there, each as one line of JSON:
 

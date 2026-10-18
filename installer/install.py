@@ -52,7 +52,7 @@ if not _on_path:
     sys.path.insert(0, str(REPO))
 _write_bytecode, sys.dont_write_bytecode = sys.dont_write_bytecode, True
 try:
-    from helpers import claude_release
+    from helpers import claude_release, seccomp
     from helpers.rules import EMAIL, Rule
 finally:
     sys.dont_write_bytecode = _write_bytecode
@@ -76,6 +76,16 @@ SYSTEMD = Path("/etc/systemd/system")
 # The static tools mounted into every workspace: root's, so out of rcman's reach. The Claude
 # Code store is rcman's, which writes it at run time; the database is rcman's too.
 TOOLS = ROOT / "tools"
+# Podman in a workspace: the wrappers and their configuration (sources in backend/rcman/podman),
+# in this folder of the tools; and the seccomp profile of every workspace container, beside it,
+# derived from Podman's own default (helpers/seccomp.py).
+PODMAN_TOOLS = "podman"
+PODMAN_CONFIGURATION = ("containers.conf", "storage.conf", "registries.conf")
+# What its bin folder holds, which comes before the image's own programs on every workspace's
+# PATH: the wrapper, and docker, a link to it.
+PODMAN_COMMANDS = ("podman", "docker")
+WORKSPACE_SECCOMP = seccomp.NAME  # rcman/runtime.py SECCOMP
+PODMAN_SECCOMP = seccomp.PODMAN_DEFAULT
 CLAUDE_STORE = STATE / "claude"
 DATABASE = STATE / "rcman.db"
 CADDY_SNIPPET = ETC / "Caddyfile.snippet"
@@ -165,6 +175,9 @@ PACKAGES = (
 BUSYBOX = Path("/bin/busybox")
 # The OCI runtime workspaces and the builder are tested with, which rcman's Podman must report.
 OCI_RUNTIME = "crun"
+# The first kernel that mounts overlay inside a user namespace, which the devcontainer builder's
+# Podman stores its images with (native overlay, no FUSE device).
+USERNS_OVERLAY_KERNEL = (5, 11)
 # rcman's subordinate ids: room for rcman's own range (slot 0), every person's and the
 # devcontainer builder's, which sits above them all (rcman/people.py MAX_PEOPLE and
 # BUILDER_SLOT, rcman/runtime.py RANGE), from the first id useradd leaves to such ranges.
@@ -513,6 +526,18 @@ def own_directory(path: Path, uid: int, gid: int, mode: int, accept: tuple[int, 
         return created or not right
     finally:
         os.close(fd)
+
+
+def check_kernel(release: str) -> None:
+    """Refuse a kernel older than USERNS_OVERLAY_KERNEL, or one whose release cannot be read."""
+    needed = ".".join(map(str, USERNS_OVERLAY_KERNEL))
+    found = re.match(r"(\d+)\.(\d+)", release)
+    if found is None or (int(found[1]), int(found[2])) < USERNS_OVERLAY_KERNEL:
+        raise InstallError(
+            f"the kernel is {release}, and the builder of devcontainer images mounts overlay "
+            f"inside a user namespace, which needs Linux {needed} or later; upgrade the kernel "
+            "and run install.sh again"
+        )
 
 
 def check_caddy_user(name: str) -> None:
@@ -1161,10 +1186,13 @@ def _install_file(source: Path, dest: Path, mode: int) -> None:
     os.replace(tmp, dest)
 
 
-def ensure_tools(tools: Path = TOOLS, conf: Path | None = None) -> list[str]:
+def ensure_tools(
+    tools: Path = TOOLS, conf: Path | None = None, podman: Path | None = None
+) -> list[str]:
     """The static tools every workspace mounts read-only: tmux, built here from its pinned
     source, busybox and a shell that is busybox, the terminal descriptions, and tmux's
-    configuration ``conf``, by default the release's. Root's, and readable by everyone: they
+    configuration ``conf``, by default the release's, and the Podman tools of ``podman``, by
+    default the release's (ensure_podman_tools). Root's, and readable by everyone: they
     are in a folder only root can write, and the program is built by rcman's Podman and
     comes out on standard output, so nothing here is made in a folder rcman can write."""
     changes = []
@@ -1216,6 +1244,34 @@ def ensure_tools(tools: Path = TOOLS, conf: Path | None = None) -> list[str]:
     conf = conf or CURRENT / "backend" / "rcman" / "tmux.conf"
     if write_if_changed(tools / "tmux.conf", conf.read_text(encoding="utf-8"), 0o644):
         changes.append("tmux.conf")
+    changes += ensure_podman_tools(tools, podman or CURRENT / "backend" / "rcman" / PODMAN_TOOLS)
+    return changes
+
+
+def ensure_podman_tools(tools: Path, source: Path) -> list[str]:
+    """The podman and docker wrappers, their configuration from ``source`` and the workspaces'
+    seccomp profile, in the tools, root's and readable by everyone."""
+    if not PODMAN_SECCOMP.is_file():
+        raise InstallError(f"{PODMAN_SECCOMP}, Podman's seccomp profile, is not there")
+    changes = []
+    folder = tools / PODMAN_TOOLS
+    (folder / "bin").mkdir(parents=True, exist_ok=True)
+    for path in (tools, folder, folder / "bin"):
+        os.chmod(path, 0o755)
+    wrapper = (source / "podman").read_text(encoding="utf-8")
+    if write_if_changed(folder / "bin" / "podman", wrapper, 0o755):
+        changes.append("podman")
+    docker = folder / "bin" / "docker"
+    if not docker.is_symlink() or os.readlink(docker) != "podman":
+        docker.unlink(missing_ok=True)
+        os.symlink("podman", docker)
+        changes.append("docker")
+    for name in PODMAN_CONFIGURATION:
+        if write_if_changed(folder / name, (source / name).read_text(encoding="utf-8"), 0o644):
+            changes.append(f"podman {name}")
+    profile = seccomp.workspace_profile(PODMAN_SECCOMP.read_text(encoding="utf-8"))
+    if write_if_changed(tools / WORKSPACE_SECCOMP, profile, 0o644):
+        changes.append(WORKSPACE_SECCOMP)
     return changes
 
 
@@ -1527,6 +1583,7 @@ def main(argv: list[str]) -> int:
     try:
         if os.geteuid() != 0:
             raise InstallError("run install.sh with sudo")
+        check_kernel(platform.release())
         if args.rollback:
             check_rollback(ROOT)
             rollback(ROOT)

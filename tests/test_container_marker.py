@@ -1,4 +1,4 @@
-"""tests/container_marker.py: the container marker is derived from the docker fixture.
+"""tests/container_marker.py: the container marker is derived from the tests' Podman engine.
 
 A test carries it exactly when it uses the fixture, directly or through another, and
 nowhere is it placed by hand.
@@ -16,7 +16,7 @@ REPO = Path(__file__).resolve().parent.parent
 TESTS = REPO / "tests"
 NAME = container_marker.MARKER
 MARK = "mark." + NAME  # built, so that this module does not hold it
-FIXTURE = container_marker.FIXTURE
+FIXTURES = container_marker.FIXTURES
 
 PROJECT_CONFTEST = """
 import pytest
@@ -27,18 +27,18 @@ def pytest_collection_modifyitems(items):
     container_marker.mark(items)
 
 @pytest.fixture(scope="session")
-def docker():
-    return ["docker"]
+def podman_service():
+    return "an-engine"
 
 @pytest.fixture
-def image(docker):
-    return "an-image"
+def workspace(podman_service):
+    return "a-workspace"
 """
 PROJECT_TESTS = """
-def test_uses_it(docker):
+def test_uses_the_engine(podman_service):
     pass
 
-def test_uses_it_through_another(image):
+def test_uses_the_engine_through_another(workspace):
     pass
 
 def test_does_not(tmp_path):
@@ -71,8 +71,8 @@ def outcomes(pytester, expression):
 def test_a_user_of_the_fixture_is_marked_directly_or_through_another(pytester):
     project(pytester)
     assert outcomes(pytester, container_marker.MARKER) == {
-        "test_uses_it",
-        "test_uses_it_through_another",
+        "test_uses_the_engine",
+        "test_uses_the_engine_through_another",
     }
     assert outcomes(pytester, f"not {container_marker.MARKER}") == {"test_does_not"}
 
@@ -87,11 +87,15 @@ def test_without_the_hook_nothing_is_marked(pytester):
 def test_in_the_suite_the_marker_is_exactly_the_fixtures_users():
     found = collect()
     marked = {n for n, t in found.items() if container_marker.MARKER in t["markers"]}
-    users = {n for n, t in found.items() if container_marker.FIXTURE in t["fixtures"]}
+    users = {n for n, t in found.items() if set(FIXTURES) & set(t["fixtures"])}
     suite = {n for n in found if n.startswith("tests/test_container_suite.py::")}
-    # Non-vacuity: the fixture is used, and the container suite is among its users.
-    assert "tests/test_container_suite.py::test_docker_is_usable" in suite
-    assert "tests/test_container_suite.py::test_the_whole_stack_in_a_browser" in suite
+    engine = {n for n, t in found.items() if "podman_service" in t["fixtures"]}
+    # Non-vacuity: the fixture is used, and the container suite is among the users.
+    assert FIXTURES == ("podman_service",)
+    assert "tests/test_container_suite.py::test_podman_is_usable" in suite
+    assert any(n.startswith("tests/container/test_nest_in_podman.py::") for n in engine)
+    assert engine == users
+    assert "tests/container/test_stack_in_a_browser.py::test_the_whole_stack_in_a_browser" in users
     assert suite and suite <= users
     assert marked == users
     assert "tests/test_collected.py::test_uses_tmp_path" not in marked
@@ -136,7 +140,8 @@ def by_name(source: str) -> list[int]:
     return [
         node.lineno
         for node in ast.walk(ast.parse(source))
-        if _call(node) == "getfixturevalue" and any(_named(a, FIXTURE) for a in node.args)
+        if _call(node) == "getfixturevalue"
+        and any(_named(a, fixture) for a in node.args for fixture in FIXTURES)
     ]
 
 
@@ -171,7 +176,7 @@ def test_the_hand_placed_marker_guard_finds_a_planted_marker(planted):
 
 
 def test_the_hand_placed_marker_guard_leaves_a_user_of_the_fixture_alone():
-    assert hand_placed("def test_x(docker):\n    pass\n") == []
+    assert hand_placed("def test_x(podman_service):\n    pass\n") == []
     assert hand_placed("@pytest.mark.skip\ndef test_x():\n    pass\n") == []
     assert hand_placed('def test_x(request):\n    request.applymarker("skip")\n') == []
     assert hand_placed("item.add_marker(getattr(pytest.mark, MARKER))\n") == []
@@ -191,8 +196,9 @@ def test_the_fixture_is_never_requested_by_name():
     assert found == []
 
 
-def test_the_by_name_guard_finds_a_planted_request():
-    planted = f'def test_x(request):\n    request.getfixturevalue("{FIXTURE}")\n'
+@pytest.mark.parametrize("fixture", FIXTURES)
+def test_the_by_name_guard_finds_a_planted_request(fixture):
+    planted = f'def test_x(request):\n    request.getfixturevalue("{fixture}")\n'
     assert by_name(planted) == [2]
-    other = planted.replace(f'"{FIXTURE}"', '"tmp_path"')
+    other = planted.replace(f'"{fixture}"', '"tmp_path"')
     assert other != planted and by_name(other) == []  # the plant was the fixture's name

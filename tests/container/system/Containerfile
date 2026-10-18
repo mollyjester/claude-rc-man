@@ -1,0 +1,13 @@
+# The system the container suites run rcman's installer and the whole stack in, on the tests'
+# own engine (tests/podman_service.py), and the worktree checks of tests/test_container_suite.py:
+# Ubuntu as the installer is tested on, with what the installer installs or needs already, so
+# that it installs no package (installer/install.py PACKAGES), and what the stack runs (Caddy,
+# git for the stand-in GitHub, openssl for its certificates). The recorded stand-ins of
+# tests/container/stand_ins.py are mounted over systemctl, loginctl and rcman's podman at run
+# time, by tests/container/test_install_in_container.py and tests/container/stack.py.
+FROM docker.io/library/ubuntu:24.04@sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884ff530eb55
+RUN apt-get update -qq \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
+      podman crun uidmap catatonit slirp4netns dbus-user-session busybox-static ncurses-base \
+      python3 git caddy curl ca-certificates xz-utils procps openssl \
+ && rm -rf /var/lib/apt/lists/*

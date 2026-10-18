@@ -69,15 +69,19 @@ def by_id(con: sqlite3.Connection, person_id: int) -> Person | None:
     return _person(con.execute("select * from people where id = ?", (person_id,)).fetchone())
 
 
-def add(con: sqlite3.Connection, email: str, admin: bool) -> Person:
-    """Add a person, in the lowest free slot."""
+def add(
+    con: sqlite3.Connection, email: str, admin: bool, *, last_slot: int | None = None
+) -> Person:
+    """Add a person, in the lowest free slot from 1 to ``last_slot``, MAX_PEOPLE unless given:
+    below the slot the service's builder has (Workspaces.builder_slot)."""
     if not rules.EMAIL.fullmatch(email):
         raise Problem("email_invalid")
     email = email.lower()
     if by_email(con, email) is not None:
         raise Problem("email_taken")
     taken = {row[0] for row in con.execute("select slot from people")}
-    slot = next((s for s in range(1, MAX_PEOPLE + 1) if s not in taken), None)
+    last = MAX_PEOPLE if last_slot is None else last_slot
+    slot = next((s for s in range(1, last + 1) if s not in taken), None)
     if slot is None:
         raise Problem("people_full")
     try:

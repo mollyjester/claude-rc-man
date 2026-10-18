@@ -2,15 +2,14 @@ import { defineConfig } from "@playwright/test";
 
 import { TEST_WITHIN } from "./e2e-stack/timing";
 
-// The whole stack in the podman host (tests/container/stack.py): Caddy with its
-// own certificate authority, oauth2-proxy, rcman as installed, and its workspaces
-// in real Podman.
-// tests/test_container_suite.py starts it and passes its published HTTPS port,
-// which only that run knows.
+// The whole stack in a container of the tests' engine (tests/container/stack.py): Caddy with
+// its own certificate authority, oauth2-proxy, rcman, and its workspaces in real Podman. The
+// browser runs in a container that joins the stack's network;
+// tests/container/test_stack_in_a_browser.py starts both and says the port Caddy listens on there.
 const port = process.env.RCMAN_STACK_PORT;
 if (!port) {
   throw new Error(
-    "RCMAN_STACK_PORT is not set: tests/test_container_suite.py starts the stack and sets it",
+    "RCMAN_STACK_PORT is not set: tests/container/test_stack_in_a_browser.py starts the stack and sets it",
   );
 }
 
@@ -28,6 +27,7 @@ export default defineConfig({
     trace: "retain-on-failure",
     launchOptions: {
       args: [
+        "--disable-dev-shm-usage",
         `--host-resolver-rules=MAP rcman.test:443 127.0.0.1:${port}, MAP auth.test:443 127.0.0.1:${port}`,
       ],
     },

@@ -277,13 +277,22 @@ def limits_answered():
 
 
 class Workspaces:
-    def __init__(self, settings: Settings, runtime: Runtime, prunes: bool = True):
+    def __init__(
+        self,
+        settings: Settings,
+        runtime: Runtime,
+        prunes: bool = True,
+        *,
+        builder_slot: int = people.BUILDER_SLOT,
+    ):
         """``prunes`` is False in a process that is not the service (``rcman-admin``): the
         locks that keep a prune from removing a version a start pins are the service's own
         process's, so the service prunes, when a server stops, a version is rolled out and rcman
-        starts."""
+        starts. ``builder_slot`` is the slot of the uid range builds and the canary run in, the
+        product's unless a test engine gives its own; people are given the slots below it."""
         self.settings = settings
         self.runtime = runtime
+        self.builder_slot = builder_slot
         self.prunes = prunes
         # Held while images are collected and while a workspace is recorded, so that a workspace
         # is either seen by the collection or recorded after it: its image, pulled or in the
@@ -719,7 +728,9 @@ class Workspaces:
                 raise devcontainer.Refused(
                     "image_labels", image=image, label=devcontainer.shown(label)
                 )
-        made = devcontainer.plan(config, facts, workspace.id, layout.work, image=image)
+        made = devcontainer.plan(
+            config, facts, workspace.id, layout.work, image=image, size=self.runtime.id_range
+        )
         return None if self._cancelled(workspace.id, cancel) else made
 
     def _pulled(self, workspace: Workspace, image: str, cancel: threading.Event) -> str | None:
@@ -748,7 +759,7 @@ class Workspaces:
         request = BuildRequest(
             workspace.id,
             workspace.person,
-            people.BUILDER_SLOT,
+            self.builder_slot,
             workspace.container,
             made.path,
             made.text,
@@ -809,7 +820,7 @@ class Workspaces:
         """Claude Code needs glibc: an image that has the musl loader and no glibc one, as
         Alpine's, is refused."""
         layout = self.runtime.layout(workspace.container)
-        found = self.runtime.exec(workspace.container, [layout.shell, "-c", LIBC_PROBE])
+        found = self.runtime.exec(workspace.container, [layout.shell, "-c", LIBC_PROBE], again=True)
         if found.out.decode("utf-8", "replace").strip() == "musl":
             raise devcontainer.Refused("musl", image=plan.image)
 
@@ -832,7 +843,7 @@ class Workspaces:
     def _command_shell(self, name: str, layout: Layout) -> str:
         """The shell that runs a command written as a string: the image's /bin/sh, else the
         mounted busybox's, since a slim image may have none."""
-        found = self.runtime.exec(name, [layout.shell, "-c", SHELL_PROBE])
+        found = self.runtime.exec(name, [layout.shell, "-c", SHELL_PROBE], again=True)
         return IMAGE_SHELL if found.out.strip() == b"image" else layout.shell
 
     def _run_commands(
@@ -1544,7 +1555,7 @@ class Workspaces:
         name = workspace.container
         layout = self.runtime.layout(name)
         path = f"{layout.config}/.claude.json"
-        found = self.runtime.exec(name, [*layout.tool("cat"), path])
+        found = self.runtime.exec(name, [*layout.tool("cat"), path], again=True)
         config: dict = {}
         if found.code == 0 and found.out.strip():
             try:

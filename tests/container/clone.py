@@ -2,11 +2,10 @@
 
 /src holds a snapshot of the checkout's files as they are on disk, uncommitted
 changes included, with no ``.git`` (tests/snapshot.py), so what is tested is
-what is on disk. Every file there is committed. Used inside the test container
+what is on disk. Every file there is committed. Used inside the suites' containers
 only.
 """
 
-import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -14,6 +13,8 @@ from pathlib import Path
 SRC = Path("/src")
 ORIGIN = Path("/srv/origin.git")
 CLONE = Path("/home/dev/rcman")
+# The clone's owner's uid: an ordinary user's, within the container's ids.
+DEV_ID = 1500
 
 
 def sh(*argv, user=None, check=True, **kw):
@@ -30,9 +31,7 @@ def git(*args, cwd, user="dev"):
 
 
 def make_clone() -> Path:
-    host_uid = int(os.environ.get("HOST_UID", "1500"))
-    sh("useradd", "--create-home", "--uid", str(host_uid), "--shell", "/bin/bash", "dev")
-    sh("chown", "dev:dev", "/home/dev")  # docker may have created it for the npm cache mount
+    sh("useradd", "--create-home", "--uid", str(DEV_ID), "--shell", "/bin/bash", "dev")
     for key, value in (
         ("user.name", "dev"),
         ("user.email", "dev@example.com"),
@@ -51,33 +50,3 @@ def make_clone() -> Path:
     sh("git", "clone", "-q", "--bare", str(work), str(ORIGIN), user="dev")
     sh("git", "clone", "-q", str(ORIGIN), str(CLONE), user="dev")
     return CLONE
-
-
-REPLACEMENT = "�"
-
-
-def around_replacements(text: str, context: int = 1, most: int = 5) -> list[str]:
-    """Up to ``most`` lines of ``text`` that hold the replacement character (what a byte
-    that is not UTF-8 became when it was decoded), each with ``context`` lines either side,
-    cut to 300 characters, with ``--`` between the groups. Empty when there is none."""
-    lines = text.splitlines()
-    found = [i for i, line in enumerate(lines) if REPLACEMENT in line][:most]
-    shown: list[str] = []
-    for n, i in enumerate(found):
-        if n:
-            shown.append("--")
-        shown += [line[:300] for line in lines[max(0, i - context) : i + context + 1]]
-    return shown
-
-
-def report_undecodable(journal: str) -> None:
-    """Print, never fail: the journal lines (with unit and identifier) around bytes that
-    are not UTF-8, so the log of a run shows what wrote them."""
-    if REPLACEMENT not in journal:
-        return
-    full = sh("journalctl", "--no-pager", "-o", "short-iso", check=False).stdout
-    print(
-        f"JOURNAL HOLDS {journal.count(REPLACEMENT)} BYTES THAT ARE NOT UTF-8; lines around "
-        "the first ones:\n" + "\n".join(around_replacements(full) or ["(none in short-iso)"]),
-        flush=True,
-    )

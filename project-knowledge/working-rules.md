@@ -113,6 +113,14 @@ else; this file is the full list. Rules are referred to by their bold name.
   fixture the test lists before `client`.
 - **Throwaway probes go in a scratch directory** outside the repository and are
   deleted when done.
+- **The tests run alike on a developer's machine and in a workspace of
+  rcman's.** No test, fixture or `make` target asks where it runs, and no
+  product option exists only for tests; a test that does not fit a
+  workspace's limits is reshaped to fit, never skipped.
+- **Never load a machine's CPU on purpose to reproduce a race.** Busy loops
+  and stress tools disrupt everything else the machine runs, the session
+  doing the work among them; a race is reasoned out from the code and its
+  timing, and reproduced only by ordinary runs one at a time.
 
 ## Design rules that prevent drift
 

@@ -53,9 +53,11 @@ class Recording(rt.HostRuntime):
             self.landed_but_failed.discard(name)
             raise rt.RuntimeFailed("the write landed, then podman failed")
 
-    def exec(self, name, argv, stdin=None, timeout=rt.PODMAN_TIMEOUT):
+    def exec(
+        self, name, argv, stdin=None, timeout=rt.PODMAN_TIMEOUT, cwd=None, keep=None, again=False
+    ):
         self.execs.append((argv, stdin))
-        return super().exec(name, argv, stdin, timeout)
+        return super().exec(name, argv, stdin, timeout, cwd, keep, again)
 
 
 @pytest.fixture

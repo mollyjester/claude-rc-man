@@ -1069,10 +1069,10 @@ class Account:
     groups: tuple[int, ...]
 
 
-def resolve_user(spec: str, passwd: str, group: str) -> Account:
+def resolve_user(spec: str, passwd: str, group: str, *, size: int = RANGE) -> Account:
     """The user ``spec`` names - a name, a number, either with ``:`` and a group - in an image's
     passwd and group files. A user the image does not have is :class:`Refused`, as an id
-    beyond the range of ids a workspace has."""
+    beyond the range of ids a workspace has, ``size`` ids (the runtime's)."""
     who, _, which = spec.partition(":")
     users, groups = parse_passwd(passwd), parse_group(group)
     if _is_number(who):
@@ -1095,7 +1095,7 @@ def resolve_user(spec: str, passwd: str, group: str) -> Account:
                 raise Refused("user_unknown", user=shown(spec))
             gid = named.gid if named else 0
     extra = tuple(g.gid for g in groups if name in g.members and g.gid != gid)
-    if uid >= RANGE or gid >= RANGE or any(g >= RANGE for g in extra):
+    if uid >= size or gid >= size or any(g >= size for g in extra):
         raise Refused("id_out_of_range", user=shown(spec))
     if which:
         return Account(name, uid, gid, f"{uid}:{gid}", extra)
@@ -1257,7 +1257,9 @@ def check_metadata(labels: Mapping[str, str]) -> None:
         _entry(entry, _origin(entry, number), in_image=True)
 
 
-def plan(config: dict, facts, workspace: int, work: str, image: str | None = None) -> Plan:
+def plan(
+    config: dict, facts, workspace: int, work: str, image: str | None = None, *, size: int = RANGE
+) -> Plan:
     """The plan for the workspace ``workspace``, whose work folder is ``work``, from the file
     ``config`` and the image's ``facts`` (runtime.ImageFacts): the entries of the image's
     metadata first, in order, then the file's own, once. Booleans are ORed, environments merged
@@ -1280,10 +1282,10 @@ def plan(config: dict, facts, workspace: int, work: str, image: str | None = Non
     if own.image is None and image is None:
         raise Refused("no_image")
     parts.append(own)
-    return _merged(image or own.image, parts, facts)
+    return _merged(image or own.image, parts, facts, size)
 
 
-def _merged(image: str, parts: list[_Part], facts) -> Plan:
+def _merged(image: str, parts: list[_Part], facts, size: int) -> Plan:
     # The image's own variables come first, under everything else; its PATH is the plan's
     # image_path, and the names rcman sets itself are not taken.
     container_env: dict = {
@@ -1306,7 +1308,7 @@ def _merged(image: str, parts: list[_Part], facts) -> Plan:
         commands.extend(part.commands)
     ordered = sorted(commands, key=lambda c: EVENTS.index(c.event))  # stable
     who = remote_user or container_user or facts.user or "root"
-    account = resolve_user(who, facts.passwd, facts.group)
+    account = resolve_user(who, facts.passwd, facts.group, size=size)
     return Plan(
         image=image,
         user_name=account.name or str(account.uid),

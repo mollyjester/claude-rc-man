@@ -144,8 +144,9 @@ numbered `GIT_CONFIG_KEY_n` and `GIT_CONFIG_VALUE_n`) or make git print what it 
 runs with none of the `GIT_` variables a file sets. A file may
 set `LANG`, `LC_ALL` and `BROWSER`, which rcman sets itself in
 only some of its programs; there its value wins over the file's, and everywhere else,
-lifecycle commands included, the file's is used. `PATH` may be set; rcman's own folder of
-programs stays first in it. `GH_TOKEN` and `GITHUB_TOKEN` may be set too, and gh then uses
+lifecycle commands included, the file's is used. `PATH` may be set; rcman's own folders of
+programs, Claude's and the `podman` and `docker` that run containers in a workspace (see
+[Containers](workspaces.md#containers)), stay first in it. `GH_TOKEN` and `GITHUB_TOKEN` may be set too, and gh then uses
 that token in place of the person's, which **Remove token** does not remove (see
 [Git](git.md#gh)).
 
@@ -222,8 +223,8 @@ with no more than a workspace has. Which CLI and Node the builder image holds is
 - **The sandbox.** The builder runs in a range of user ids of its own, which no person's
   workspace uses and which rcman's own identity never maps; the builds of different people
   may run at the same time in that one range, so it does not keep them apart from each
-  other. It is not privileged: it has the one capability and the one device a Podman inside
-  it needs (`run_argv` in `backend/rcman/builder.py`), and a volume of its own for what it
+  other. It is not privileged: it has the one capability a Podman inside it needs to
+  mount its own storage, and no device (`run_argv` in `backend/rcman/builder.py`), and a volume of its own for what it
   builds. Its network reaches everything outbound, as a workspace's does, the local network
   and the addresses cloud machines serve their metadata on included; only the machine's own
   loopback is blocked. It counts against the limits on memory, CPU and processes of the person who asked for the

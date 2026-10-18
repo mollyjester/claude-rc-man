@@ -522,3 +522,27 @@ def test_deleting_a_person_drops_their_limits(client, app):
     assert client.delete(f"/api/people/{bob}", headers=changing(ALICE)).status_code == 200
     assert limited(runtime) == {}
     assert runtime.dropped[-1] == limits.person_slice(bob)
+
+
+def test_the_last_slot_given_is_the_last_a_person_gets(con):
+    assert people.add(con, "a@x.io", False, last_slot=2).slot == 1
+    assert people.add(con, "b@x.io", False, last_slot=2).slot == 2
+    assert refused(lambda *a: people.add(*a, last_slot=2), con, "c@x.io", False) == "people_full"
+    assert people.add(con, "c@x.io", False).slot == 3  # the control: the product's last slot
+
+
+def test_the_route_gives_no_slot_at_or_above_the_apps_builder_slot(settings, runtime):
+    from fastapi.testclient import TestClient
+    from rcman.main import create_app
+
+    from tests.conftest import PEOPLE
+
+    full = create_app(settings, runtime=runtime, builder_slot=len(PEOPLE) + 1)
+    assert full.state.workspaces.builder_slot == len(PEOPLE) + 1
+    with TestClient(full) as c:
+        r = c.post("/api/people", json={"email": "e@x.io"}, headers=changing(ALICE))
+        assert (r.status_code, r.json()["code"]) == (409, "people_full"), r.json()
+    room = create_app(settings, runtime=runtime)  # the control: the product's builder slot
+    with TestClient(room) as c:
+        r = c.post("/api/people", json={"email": "e@x.io"}, headers=changing(ALICE))
+        assert r.status_code == 200 and r.json()["person"]["email"] == "e@x.io", r.json()

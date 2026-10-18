@@ -77,11 +77,11 @@ def shown(person: people.Person, workspaces: int) -> dict:
     }
 
 
-def add(settings, email: str, admin: bool) -> people.Person:
+def add(settings, email: str, admin: bool, last_slot: int) -> people.Person:
     """Add a person, and let them in at once."""
     con = db.connect(settings.database)
     try:
-        person = people.add(con, email, admin)
+        person = people.add(con, email, admin, last_slot=last_slot)
         people.write_allowed(con, settings.allowed_emails)
     finally:
         con.close()
@@ -106,7 +106,17 @@ def create(
     body: NewPerson, request: Request, record: Record = Depends(Recorder("person.add"))
 ) -> dict:
     record.target = body.email.lower()
-    return {"person": shown(add(request.app.state.settings, body.email, body.admin), 0)}
+    return {
+        "person": shown(
+            add(
+                request.app.state.settings,
+                body.email,
+                body.admin,
+                request.app.state.workspaces.builder_slot - 1,
+            ),
+            0,
+        )
+    }
 
 
 @router.delete("/{person}")

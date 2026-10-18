@@ -4,8 +4,9 @@ time, in pytest-xdist's workers or in two runs, would share.
 A test's files go under tmp_path; a folder that must be under /tmp, for a short socket
 path, is made with a unique name (tempfile.mkdtemp(dir="/tmp")); a port is one the system
 picks (port 0) or one held for the test. The guard reads the tests' own source and the
-frontend's TypeScript and JavaScript, where the browser tests and their configs are.
-tests/container/ is outside it: that suite runs as root in a container of its own.
+frontend's TypeScript and JavaScript, where the browser tests and their configs are. The
+container suites are read too, but for the files that run only inside a container of their own
+(IN_CONTAINERS), whose /tmp and ports are that container's.
 
 It catches the same forms in both languages: FORMS, in this module's last section, spells
 each in both, and project-knowledge/tests.md describes them.
@@ -24,7 +25,15 @@ import pytest
 TESTS = Path(__file__).resolve().parent
 ROOT = TESTS.parent
 DEVTOOLS = ROOT / "devtools"
-OUTSIDE = "container"  # runs in a throwaway container of its own, never beside another run
+# The files of tests/container/ that run only inside a container of the suites' own, never on
+# the machine beside another run: a fixed path there is in that container's /tmp, and a fixed port
+# on its own loopback. Each with the reason.
+IN_CONTAINERS = {
+    "container/install_checks.py": "the stubbed installation's checks, run as root there",
+    "container/installed.py": "the stubbed installation's helpers, run in its container",
+    "container/clone.py": "the origin and clone made inside the suites' containers",
+    "container/stand_ins.py": "systemctl, loginctl and podman, mounted over them in a container",
+}
 TMP = "/" + "tmp"  # built, so that this module does not name it itself
 # Ports below this need root to bind, so no other test can take one; a test may name one
 # that nothing answers on.
@@ -162,6 +171,9 @@ UNIQUE_IN = {"mkdtemp", "mkstemp", "TemporaryDirectory", "NamedTemporaryFile"}
 # Sites flagged on purpose: (file relative to the repository, the function it is in or ""
 # at module level, the site's source text) -> reason. Each covers exactly one site: another
 # site of the same text in the same function, or at module level, is flagged.
+# Why a port of the whole stack is fixed: it is on the loopback of the stack's own network, a
+# container with no other network that nothing else shares (tests/container/stack.py).
+STACK_NETWORK = "a port of the whole stack's own network, which no other run shares"
 EXEMPT = {
     (
         "tests/test_record_claude.py",
@@ -172,6 +184,40 @@ EXEMPT = {
         "the folder held folders are made in, named as the bound no removal may leave;"
         " nothing is made at the path itself"
     ),
+    ("tests/container/stack.py", "settings", 'f"http://127.0.0.1:{RELEASES_PORT}"'): STACK_NETWORK,
+    (
+        "tests/container/stack.py",
+        "install_settings",
+        (
+            "{\n"
+            '        "DOMAIN": DOMAIN,\n'
+            '        "GOOGLE_CLIENT_ID": "test-client-id",\n'
+            '        "GOOGLE_CLIENT_SECRET": "test-client-secret",\n'
+            '        "COOKIE_SECRET": secrets.token_urlsafe(24),\n'
+            '        "PROXY_PORT": str(PROXY_PORT),\n'
+            "    }"
+        ),
+    ): STACK_NETWORK,
+    (
+        "tests/container/stack.py",
+        "up",
+        "f'redeem_url = \"http://127.0.0.1:{STUB_PORT}/token\"\\n'",
+    ): STACK_NETWORK,
+    (
+        "tests/container/stack.py",
+        "up",
+        "f'validate_url = \"http://127.0.0.1:{STUB_PORT}/tokeninfo\"\\n'",
+    ): STACK_NETWORK,
+    (
+        "tests/container/stack.py",
+        "up",
+        'f"\\n{AUTH} {{\\n\\treverse_proxy 127.0.0.1:{STUB_PORT}\\n}}\\n"',
+    ): STACK_NETWORK,
+    (
+        "tests/container/stack.py",
+        "up",
+        'f"\\treverse_proxy 127.0.0.1:{GITHUB_PORT}\\n}}\\n"',
+    ): STACK_NETWORK,
 }
 
 
@@ -285,6 +331,20 @@ def _port_names(tree) -> frozenset[str]:
             targets = [node.target]
         if targets and _port(node.value):
             names |= {t.id for t in targets if isinstance(t, ast.Name)}
+        # Several names given values together, as ``A_PORT, B_PORT = 9100, 9200``: each name
+        # given a fixed port is followed as one alone is.
+        for target in targets:
+            values = node.value
+            if (
+                isinstance(target, (ast.Tuple, ast.List))
+                and isinstance(values, (ast.Tuple, ast.List))
+                and len(target.elts) == len(values.elts)
+            ):
+                names |= {
+                    name.id
+                    for name, value in zip(target.elts, values.elts, strict=True)
+                    if isinstance(name, ast.Name) and _port(value)
+                }
     return frozenset(names)
 
 
@@ -407,7 +467,11 @@ def flagged(rel: str, source: str) -> list[str]:
 def scanned() -> list[Path]:
     """The tests but the container suite, and every devtools module, which the tests and
     the recorder run."""
-    tests = [p for p in sorted(TESTS.rglob("*.py")) if p.relative_to(TESTS).parts[0] != OUTSIDE]
+    tests = [
+        p
+        for p in sorted(TESTS.rglob("*.py"))
+        if p.relative_to(TESTS).as_posix() not in IN_CONTAINERS
+    ]
     return tests + sorted(DEVTOOLS.glob("*.py"))
 
 
@@ -428,12 +492,21 @@ def test_the_scan_reads_every_devtools_module():
     assert {f"devtools/{p.name}" for p in DEVTOOLS.glob("*.py")} <= rels
 
 
-def test_the_scan_reads_the_tests_but_not_the_container_suite():
+def test_the_scan_reads_the_container_suites_but_the_files_that_run_inside_containers():
     rels = {p.relative_to(ROOT).as_posix() for p in scanned()}
     assert "tests/conftest.py" in rels and f"tests/{Path(__file__).name}" in rels
-    assert (TESTS / OUTSIDE).is_dir()  # the exemption's subject still exists
-    assert any((TESTS / OUTSIDE).rglob("*.py"))
-    assert not any(r.startswith(f"tests/{OUTSIDE}/") for r in rels)
+    assert {"tests/container/stack.py", "tests/container/test_builder_in_podman.py",
+            "tests/container/network.py"} <= rels  # fmt: skip
+    for name in IN_CONTAINERS:
+        assert (TESTS / name).is_file(), name  # the exemption's subject still exists
+        assert f"tests/{name}" not in rels
+
+
+def test_a_fixed_site_in_a_container_module_that_runs_on_the_machine_is_flagged():
+    """Planted twin: only the files IN_CONTAINERS names are left out of tests/container/."""
+    planted = 's.bind(("127.0.0.1", 8765))\n'
+    assert len(flagged("tests/container/test_planted.py", planted)) == 1
+    assert "container/test_planted.py" not in IN_CONTAINERS
 
 
 def test_the_exemptions_still_have_their_sites():
@@ -1462,3 +1535,14 @@ def test_the_guard_leaves_unique_names_and_chosen_ports_in_typescript_alone(
 ):
     source = _spelled(source)
     assert ts_sites(source, ts_trees[source]) == []
+
+
+def test_ports_given_in_a_tuple_assignment_are_followed():
+    """Planted twin: module-level names given fixed ports together, as one assignment of a
+    tuple, are followed to their uses as one name is; a tuple of other values is not."""
+    planted = 'A_PORT, B_PORT = 9100, 9200\nurl = f"http://127.0.0.1:{A_PORT}/"\n'
+    assert len(flagged("tests/planted.py", planted)) == 1
+    alone = 'A_PORT = 9100\nurl = f"http://127.0.0.1:{A_PORT}/"\n'
+    assert len(flagged("tests/planted.py", alone)) == 1  # the control: one name alone
+    other = 'A, B = "x", "y"\nurl = f"http://127.0.0.1:{A}/"\n'
+    assert flagged("tests/planted.py", other) == []

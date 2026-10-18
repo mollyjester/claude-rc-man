@@ -25,8 +25,7 @@ A candidate Claude Code version is tried by the *canary* (``run_canary``): a thr
 in the builder's uid range with no network, which runs the checks of helpers/claude_canary.py
 against the candidate and reports the ones it fails.
 
-Python standard library, the helpers and the backend's own channel and builder only, so that the
-podman host's suite can import it with the system interpreter.
+Python standard library, the helpers and the backend's own channel and builder only.
 """
 
 from __future__ import annotations
@@ -53,7 +52,7 @@ import uuid
 from abc import ABC, abstractmethod
 from collections import deque
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import KW_ONLY, dataclass, field
 from pathlib import Path
 
 import helpers
@@ -67,7 +66,13 @@ log = logging.getLogger("rcman.runtime")
 # Where things are inside a workspace container.
 TOOLS_MOUNT = "/opt/rcman"  # the static tools, read-only: bin/tmux, bin/busybox, terminfo
 CLAUDE_MOUNT = "/opt/claude"  # the Claude Code store, read-only
+# The tools' podman and docker (backend/rcman/podman), on every workspace's PATH right after
+# Claude's folder; the folder holds nothing else (installer/install.py PODMAN_COMMANDS).
+PODMAN_BIN = f"{TOOLS_MOUNT}/podman/bin"
 RUN_MOUNT = "/run/rcman"  # a tmpfs: the tmux socket and the channel's files
+# A tmpfs of the container's root alone, empty at every start: the record of root's Podman nest
+# (backend/rcman/podman/podman STATE), never the user's even where the ids are swapped.
+ROOT_PODMAN_STATE = "/run/rcman-podman"
 VOLUME_MOUNT = "/rcman"  # the workspace's volume
 # The folders of a workspace's volume: the one its server works in, Claude's
 # configuration (CLAUDE_CONFIG_DIR) and the home of the programs rcman runs there.
@@ -213,6 +218,19 @@ VOLUME_OF_ANOTHER = "the volume {name} is there and is for another person, so it
 # Each person's uid range: slot k maps the container's ids 0 to RANGE - 1 onto rcman's
 # subordinate ids from k * RANGE. Slot 0 would be rcman's own ids, so no person has it.
 RANGE = 65536
+# The network of every container a person's programs run in: their own, with no way to the
+# host's loopback.
+NETWORK = "slirp4netns:allow_host_loopback=false"
+# What every workspace container is given so that a container nested in it can mount a /proc of
+# its own: the kernel refuses a new /proc where parts of the one there are covered.
+UNMASK_PROC = "--security-opt=unmask=/proc/*"
+# The seccomp profile of every workspace container, in the tools (the installer writes it,
+# installer/install.py workspace_seccomp): Podman's default, with a container nested in the
+# workspace allowed to name its own UTS namespace.
+SECCOMP = "seccomp.json"
+# The fields of PodmanConfig a test engine gives values of its own (keyword-only, the product's
+# values by default; tests/test_main.py holds the product to the defaults).
+INJECTED = ("range", "network", "slices")
 # podman's exit codes: 1 from `exists` for something missing; 125 when it could not
 # reach Podman at all, or failed before running anything.
 MISSING = 1
@@ -264,6 +282,37 @@ TIMED_OUT = (124, 137, 143, -9, -15)
 # What conmon says when it could not start an exec at all: nothing ran, so it is tried
 # once more (channel.CONMON_FAILED).
 CONMON_FAILED = "no logs from conmon"
+# What a Podman exec writes on stderr before the program starts (``marked_exec``). Podman's
+# remote exec sometimes, under load, ends with the program's exit code and nothing of what it
+# wrote on either stream: an answer without the mark is one whose output was lost, not one of
+# a program that wrote nothing.
+EXEC_MARK = "<rcman-exec>"
+# The shell that writes the mark, then becomes the program ``$0`` with its arguments. The
+# variables busybox's shell sets, changes or exports of its own (SHLVL, PWD, IFS, OPTIND, PPID,
+# and PATH when there is none) are put back as the environment it was started with has them,
+# read from /proc, or taken away, so the program's environment is Podman's; a ``.`` after each
+# value keeps a newline at its end. A bare name is looked up on PATH, in a subshell so that IFS
+# stays as it was, and run by its path: the shell would otherwise run its own applet of that
+# name instead of the image's program. The lookup is Podman's for an executable file on a PATH
+# that is set; with no PATH a bare name is not found, and a file that is neither a binary nor
+# starts with ``#!`` is run by the shell as a script, where Podman refuses it.
+EXEC_SCRIPT = (
+    f"printf '%s' '{EXEC_MARK}' >&2\n"
+    "for v in SHLVL PWD IFS OPTIND PPID PATH; do\n"
+    '  if o=$(grep -z "^$v=" /proc/$$/environ && echo .); then\n'
+    '    o=${o%.}; export "$v=${o#*=}"\n'
+    "  else\n"
+    '    unset "$v"\n'
+    "  fi\n"
+    "done\n"
+    'case $0 in */*) exec "$0" "$@" ;; esac\n'
+    "p=$(set -f; IFS=:; for d in $PATH; do\n"
+    '  if [ -n "$d" ] && [ -f "$d/$0" ] && [ -x "$d/$0" ]; then printf \'%s.\' "$d/$0"; exit; fi\n'
+    "done)\n"
+    'if [ -n "$p" ]; then exec "${p%.}" "$@"; fi\n'
+    "printf '%s: executable file not found in $PATH\\n' \"$0\" >&2\n"
+    "exit 127\n"
+)
 # How long one wait for Podman's socket polls, between tries.
 READY_POLL_SECONDS = 1.0
 
@@ -550,6 +599,9 @@ def terminal_command(layout: Layout, pidfile: str) -> list[str]:
 
 
 class Runtime(ABC):
+    # How many ids a slot's range holds: the product's RANGE unless a test engine gives another.
+    id_range: int = RANGE
+
     @abstractmethod
     def layout(self, name: str) -> Layout: ...
 
@@ -666,12 +718,19 @@ class Runtime(ABC):
         timeout: float = PODMAN_TIMEOUT,
         cwd: str | None = None,
         keep: int | None = None,
+        again: bool = False,
     ) -> Result:
         """``argv`` run once in the workspace, in its folder ``cwd`` (the runtime's own default
         if there is none: callers that need a folder name it) as the user its container runs as,
         with ``stdin`` on its standard input; RuntimeFailed if it has not ended within
         ``timeout`` seconds. With ``keep``, only the last ``keep`` bytes of each of its output
-        streams are held, however much it prints."""
+        streams are held, however much it prints.
+
+        A runtime that can lose what the program wrote while its exit code still arrives (the
+        Podman runtime's remote exec, EXEC_MARK) runs it once more when that happens and
+        ``again`` says the program changes nothing, and fails with RuntimeFailed if it is lost
+        again. Without ``again`` the program is not run twice: the answer is its exit code with
+        nothing of what it wrote."""
 
     @abstractmethod
     def channel(self, name: str) -> Channel:
@@ -744,11 +803,15 @@ class Runtime(ABC):
         a slice is never stopped, as that would stop the containers in it."""
 
     @abstractmethod
-    def run_canary(self, directory: Path, name: str, version: str) -> dict[str, dict]:
+    def run_canary(
+        self, directory: Path, name: str, version: str, *, slot: int | None = None
+    ) -> dict[str, dict]:
         """Run the checks of helpers/claude_canary.py against the candidate Claude Code
         ``version``, which is the file CANDIDATE in ``directory`` (readable and runnable by
-        anyone), in a throwaway container called ``name`` that has no network and nothing of
-        rcman's but the helpers; one left from before is removed first. The checks the
+        anyone), in a throwaway container called ``name``, in the uid range of ``slot`` (the
+        builder's, people.BUILDER_SLOT, unless the service is given another), that has no
+        network and nothing of rcman's but the helpers; one left from before is removed first.
+        The checks the
         candidate fails, each with its report: empty when it passes them all. A canary that
         could not report - it did not start, did not finish, or said something else - is a
         RuntimeFailed: that says nothing about the candidate."""
@@ -774,6 +837,14 @@ class PodmanConfig:
     # of rcman's own state, with room for the biggest image (builder.MAX_IMAGE_BYTES); the
     # system's temporary folder where none is given.
     scratch_dir: Path | None = None
+    _: KW_ONLY
+    # The size of a slot's range of ids (slot k maps from k * range).
+    range: int = RANGE
+    # The network of workspaces, sign-in containers and the builder.
+    network: str = NETWORK
+    # Whether workspaces and builds run in their systemd slices (limits.py), which Podman takes
+    # only with cgroups enabled and the systemd manager.
+    slices: bool = True
 
 
 def podman_env() -> dict[str, str]:
@@ -848,6 +919,13 @@ def _busybox(name: str) -> list[str]:
     return [f"{TOOLS_MOUNT}/bin/busybox", name]
 
 
+def marked_exec(argv: list[str]) -> list[str]:
+    """``argv`` as a Podman exec runs it: the same arguments, input, folder and environment,
+    after the mounted busybox's shell has written EXEC_MARK on stderr; the same program for a
+    path, and for a bare name of an executable file on a PATH that is set (EXEC_SCRIPT)."""
+    return [*_busybox("sh"), "-c", EXEC_SCRIPT, *argv]
+
+
 PODMAN_LAYOUT = Layout(
     work=f"{VOLUME_MOUNT}/{WORK}",
     config=f"{VOLUME_MOUNT}/{CONFIG}",
@@ -859,7 +937,7 @@ PODMAN_LAYOUT = Layout(
     claude=f"{CLAUDE_MOUNT}/bin/claude",
     shell=f"{TOOLS_MOUNT}/bin/sh",
     terminfo=f"{TOOLS_MOUNT}/terminfo",
-    path=f"{CLAUDE_MOUNT}/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+    path=f"{CLAUDE_MOUNT}/bin:{PODMAN_BIN}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
     user="root",
     tools={
         name: _busybox(name)
@@ -878,7 +956,7 @@ PODMAN_LAYOUT = Layout(
         )
     },
     kill_group=(*_busybox("kill"), "-KILL"),
-    path_prefix=f"{CLAUDE_MOUNT}/bin",
+    path_prefix=f"{CLAUDE_MOUNT}/bin:{PODMAN_BIN}",
     claude_root=CLAUDE_MOUNT,
 )
 
@@ -886,6 +964,7 @@ PODMAN_LAYOUT = Layout(
 class PodmanRuntime(Runtime):
     def __init__(self, config: PodmanConfig):
         self.config = config
+        self.id_range = config.range
         # Held from the names of rcman's own images being read before a ``podman load`` to the
         # new image being named, so that no other build's naming of its image is taken for the
         # load's doing.
@@ -1033,18 +1112,26 @@ class PodmanRuntime(Runtime):
             f"--hostname={spec.name}",
             *labels,
             "--init",
-            "--network=slirp4netns:allow_host_loopback=false",
+            f"--network={self.config.network}",
             # In the workspace's slice, which holds the limits (limits.py). Podman gives a
             # container a limit on processes of its own unless it is told there is none; the
             # slice's TasksMax is the limit, and infinity where nobody set one.
-            f"--cgroup-parent={limits.workspace_slice(spec.person, spec.workspace)}",
+            *(
+                [f"--cgroup-parent={limits.workspace_slice(spec.person, spec.workspace)}"]
+                if self.config.slices
+                else []
+            ),
             "--pids-limit=-1",
+            # A container nested in the workspace gets a /proc and a hostname of its own.
+            UNMASK_PROC,
+            f"--security-opt=seccomp={self.config.tools_dir}/{SECCOMP}",
             *ids,
             *([f"--user={spec.user}"] if spec.user else []),
             *(f"--group-add={g}" for g in spec.groups),
             *(f"--env={k}={v}" for k, v in spec.env.items()),
             f"--volume={spec.name}:{VOLUME_MOUNT}",
             *self._mounts(spec.person, owned=mapped),
+            *self._root_podman_state(),
             # Where the process starts is the volume's mount, which exists and is the user's;
             # the image's own working folder may be one the user cannot enter.
             f"--workdir={VOLUME_MOUNT}",
@@ -1076,8 +1163,7 @@ class PodmanRuntime(Runtime):
         if not isinstance(labels, dict) or any(labels.get(k) != v for k, v in wanted.items()):
             raise RuntimeFailed(VOLUME_OF_ANOTHER.format(name=spec.name))
 
-    @staticmethod
-    def _swap(base: int, own: int) -> list[str]:
+    def _swap(self, base: int, own: int) -> list[str]:
         """The lines of a uid map (or gid map) of the person's range in which the container's
         id ``own`` is the host id root has in the person's ordinary map, and the container's
         root is the host id ``own`` has there: the two swap, every other id stays. ``own`` is
@@ -1086,36 +1172,30 @@ class PodmanRuntime(Runtime):
             (0, base + own, 1),
             (1, base + 1, own - 1),
             (own, base, 1),
-            (own + 1, base + own + 1, RANGE - own - 1),
+            (own + 1, base + own + 1, self.config.range - own - 1),
         ]
         return [f"{inside}:{outside}:{length}" for inside, outside, length in stretches if length]
 
-    @staticmethod
-    def _ids(slot: int, uid: int = 0, gid: int = 0) -> list[str]:
+    def _ids(self, slot: int, uid: int = 0, gid: int = 0) -> list[str]:
         """The uid and gid maps of the person's range. Ordinarily the container's root is
         the range's first host id; with ``uid`` or ``gid`` not 0 the ids swap with root's
         (``_swap``), so that the user of that id owns what root owns in the person's other
         workspaces: the volume, the shared credentials file and the git folder."""
         if slot < 1:
             raise RuntimeFailed("slot 0 is rcman's own uid range")
-        if not (0 <= uid < RANGE and 0 <= gid < RANGE):
+        size = self.config.range
+        if not (0 <= uid < size and 0 <= gid < size):
             raise RuntimeFailed("the user's ids are beyond the range of ids a workspace has")
-        base = slot * RANGE
+        base = slot * size
         return [
-            *(
-                f"--uidmap={m}"
-                for m in (PodmanRuntime._swap(base, uid) if uid else [f"0:{base}:{RANGE}"])
-            ),
-            *(
-                f"--gidmap={m}"
-                for m in (PodmanRuntime._swap(base, gid) if gid else [f"0:{base}:{RANGE}"])
-            ),
+            *(f"--uidmap={m}" for m in (self._swap(base, uid) if uid else [f"0:{base}:{size}"])),
+            *(f"--gidmap={m}" for m in (self._swap(base, gid) if gid else [f"0:{base}:{size}"])),
         ]
 
     def _isolated(self, slot: int) -> list[str]:
         """What every container a person's programs run in has: an init, the network
         with no way to the host's loopback, and the person's uid range."""
-        return ["--init", "--network=slirp4netns:allow_host_loopback=false", *self._ids(slot)]
+        return ["--init", f"--network={self.config.network}", *self._ids(slot)]
 
     def _prepare_folders(self, spec: Spec) -> None:
         """Make, as root of the person's ordinary map, the folders of the volume that Podman
@@ -1162,6 +1242,9 @@ class PodmanRuntime(Runtime):
             # ``U`` makes the tmpfs the user's: uid= and gid= are refused where this runs
             f"--tmpfs={RUN_MOUNT}:mode=0700{',U' if owned else ''}",
         ]
+
+    def _root_podman_state(self) -> list[str]:
+        return [f"--tmpfs={ROOT_PODMAN_STATE}:mode=0700"]
 
     def _folders(self, name: str) -> None:
         layout = self.layout(name)
@@ -1486,7 +1569,10 @@ class PodmanRuntime(Runtime):
                     labels,
                     ids,
                     self.config.builder_image,
-                    cgroup_parent=limits.person_slice(request.person),
+                    network=self.config.network,
+                    cgroup_parent=(
+                        limits.person_slice(request.person) if self.config.slices else None
+                    ),
                 ),
                 timeout=IMAGE_CREATE_TIMEOUT,
             )
@@ -1866,15 +1952,18 @@ class PodmanRuntime(Runtime):
         timeout: float = PODMAN_TIMEOUT,
         cwd: str | None = None,
         keep: int | None = None,
+        again: bool = False,
     ) -> Result:
         args = [
             "exec",
             *(["--interactive"] if stdin is not None else []),
             *([f"--workdir={cwd}"] if cwd else []),
             name,
-            *argv,
+            *marked_exec(argv),
         ]
-        for attempt in (1, 2):
+        mark = EXEC_MARK.encode()
+        conmon_tries, lost_tries = 1, int(again)
+        while True:
             try:
                 if keep is None:
                     proc = subprocess.run(
@@ -1893,12 +1982,25 @@ class PodmanRuntime(Runtime):
             except subprocess.TimeoutExpired:
                 raise RuntimeFailed("podman exec did not finish in time") from None
             said = err.decode("utf-8", "replace")
-            if code != 0 and CONMON_FAILED in said and attempt == 1:
+            if code != 0 and CONMON_FAILED in said and conmon_tries:
+                conmon_tries -= 1
                 continue
             if code == UNAVAILABLE and SERVICE_UNREACHABLE in said.lower():
                 raise RuntimeUnavailable(said.strip())
+            if mark in err:
+                # Only the exec's own, the first: what Podman's client wrote before it stays.
+                at = err.index(mark)
+                return Result(code, out, err[:at] + err[at + len(mark) :])
+            # No mark: the program ran, and Podman lost what it wrote, unless Podman refused to
+            # run it (UNAVAILABLE, its own words) or conmon could not start it; a kept tail may
+            # have dropped the mark.
+            lost = keep is None and code != UNAVAILABLE and CONMON_FAILED not in said
+            if lost and again:
+                if lost_tries:
+                    lost_tries -= 1
+                    continue
+                raise RuntimeFailed("podman exec lost what the program wrote, twice")
             return Result(code, out, err)
-        raise AssertionError("unreachable")
 
     def channel(self, name: str) -> Channel:
         argv = self._argv("exec", "--interactive", name, f"{TOOLS_MOUNT}/bin/busybox", "sh", "-s")
@@ -1991,12 +2093,14 @@ class PodmanRuntime(Runtime):
     def end_canary(self, name: str) -> None:
         self._remove_container(name)
 
-    def run_canary(self, directory: Path, name: str, version: str) -> dict[str, dict]:
+    def run_canary(
+        self, directory: Path, name: str, version: str, *, slot: int | None = None
+    ) -> dict[str, dict]:
         from rcman import people  # not at the top: the people module needs the web framework
 
         if not directory.is_absolute() or any(c in str(directory) for c in ":,"):
             raise RuntimeFailed(f"{directory} is not a folder the canary can be given")
-        ids = self._ids(people.BUILDER_SLOT)
+        ids = self._ids(people.BUILDER_SLOT if slot is None else slot)
         self.end_canary(name)
         proc = self._podman(
             "run",
@@ -2080,8 +2184,11 @@ class HostRuntime(Runtime):
     MARK_DISCARDED = ".discarded"
     ACCOUNTS = ".accounts"
 
-    def __init__(self, root: Path, sockets: Path, claude: Path, tmux_conf: Path):
+    def __init__(
+        self, root: Path, sockets: Path, claude: Path, tmux_conf: Path, *, range: int = RANGE
+    ):
         self.root, self.sockets, self.claude, self.tmux_conf = root, sockets, claude, tmux_conf
+        self.id_range = range
         # There are no images here and no uids to map: the images a test plants, by name, what
         # was pulled, and the last spec each workspace was made from, so that a test can see
         # what reached ``create``.
@@ -2171,7 +2278,7 @@ class HostRuntime(Runtime):
     def create(self, spec: Spec) -> None:
         if spec.slot < 1:
             raise RuntimeFailed("slot 0 is rcman's own uid range")
-        if not (0 <= spec.uid < RANGE and 0 <= spec.gid < RANGE):
+        if not (0 <= spec.uid < self.id_range and 0 <= spec.gid < self.id_range):
             raise RuntimeFailed("the user's ids are beyond the range of ids a workspace has")
         if spec.image and not spec.image_id and spec.image not in self.images:
             raise RuntimeFailed(f"{spec.image}: image not known")
@@ -2357,6 +2464,7 @@ class HostRuntime(Runtime):
         timeout: float = PODMAN_TIMEOUT,
         cwd: str | None = None,
         keep: int | None = None,
+        again: bool = False,
     ) -> Result:
         if not self.running(name):
             raise RuntimeFailed(f"the workspace {name} is not running")
@@ -2495,7 +2603,9 @@ class HostRuntime(Runtime):
     def end_canary(self, name: str) -> None:
         """The canary is a program run to its end here, never one left behind."""
 
-    def run_canary(self, directory: Path, name: str, version: str) -> dict[str, dict]:
+    def run_canary(
+        self, directory: Path, name: str, version: str, *, slot: int | None = None
+    ) -> dict[str, dict]:
         if self.canary_script is not None:
             return self.canary_script(directory, name, version)
         with tempfile.TemporaryDirectory(prefix="rcman-canary-") as scratch:

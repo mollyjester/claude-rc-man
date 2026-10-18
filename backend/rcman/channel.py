@@ -39,8 +39,8 @@ MAX_OUTPUT_BYTES = 8 * 1024 * 1024
 MAX_ERROR_BYTES = 64 * 1024
 # What conmon says when an exec could not be started at all, so nothing ran.
 CONMON_FAILED = "no logs from conmon"
-# The slowest the 95th percentile of a request may be (tests/test_channel.py and the
-# podman host's contract tests).
+# The slowest the 95th percentile of a request may be (tests/test_channel.py, and
+# tests/container/test_runtime_in_podman.py on the tests' rootless engine).
 LATENCY_P95_SECONDS = 0.1
 
 # tools(name): the argv that runs the tool ``name`` (wc, cat, rm) where the shell runs.

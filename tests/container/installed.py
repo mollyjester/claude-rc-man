@@ -1,11 +1,16 @@
-"""rcman installed for real in the podman host, and the ways the suites there reach it.
+"""rcman installed by its real installer in the stubbed installation, and the ways the checks
+there reach it.
 
-Not a test module. Used as root inside the podman host (tests/container/podman/),
-where systemd runs: by test_install_in_container.py, test_restored_in_container.py
-and stack.py. The checkout's files at /src become a git origin, a user ``dev``
-clones it and runs ``install.sh`` as an administrator would (tests/container/clone.py),
-with the fake claude as the Claude Code release it downloads (tests/claude_download.py),
-served by a service of its own.
+Not a test module. Used as root inside a container of the system image
+(tests/container/system/) on the tests' engine, with no network: by
+tests/container/install_checks.py, which tests/container/test_install_in_container.py runs
+there. systemd is not running there; ``systemctl``, ``loginctl`` and rcman's ``podman`` are the
+recorded stand-ins of tests/container/stand_ins.py, mounted over the programs, so the installer's
+units really run, as their accounts (see that module). The checkout's files at /src become a git
+origin, a user ``dev`` clones it and runs ``install.sh`` as an administrator would
+(tests/container/clone.py), with the fake claude as the Claude Code release it downloads
+(tests/claude_download.py), served by a process of its own. The frontend's packages and the
+backend's come from caches the suite filled beforehand (``/cache``): npm and uv run offline.
 """
 
 from __future__ import annotations
@@ -20,11 +25,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from clone import CLONE, SRC, sh  # noqa: E402
+from clone import CLONE, SRC, make_clone, sh  # noqa: E402
 
 sys.path.insert(0, str(SRC / "backend"))
 sys.path.insert(0, str(SRC))
-from rcman import limits  # noqa: E402
 
 ROOT = Path("/opt/rcman")
 ETC = Path("/etc/rcman")
@@ -39,17 +43,21 @@ SETTINGS = {
     "RCMAN_INSTALL_GOOGLE_CLIENT_SECRET": "test-client-secret",
     "RCMAN_INSTALL_ADMIN_EMAIL": ADMIN,
 }
-# Where the fake Claude Code releases are served from, and by what.
+# Where the fake Claude Code releases are served from, and the stand-ins' folder, where they
+# record and keep what they are asked (tests/container/stand_ins.py STATE_DIR).
 RELEASES = Path("/var/tmp/rcman-claude-releases")
-DOWNLOAD_UNIT = "rcman-test-claude-download.service"
-# Seconds rcman may take to answer after it starts, and a workspace or server to come.
+STAND_INS = Path("/var/lib/rcman-test-stand-ins")
+# The caches npm and uv run offline from, which the suite filled beforehand.
+CACHE = Path("/cache")
+# What the first installation printed, for the checks that read it.
+FIRST = Path("/var/tmp/rcman-first-install.json")
+# Seconds rcman may take to answer after it starts.
 ANSWERS_WITHIN = 120
-COMES_WITHIN = 300
 
 
 def serve_releases() -> str:
-    """The fake claude, as the tested version's release, served on a free port by a
-    service of its own; its address."""
+    """The fake claude, as the tested version's release, served on a free loopback port by a
+    process of its own; its address."""
     sys.path.insert(0, str(SRC))
     from tests import claude_download
 
@@ -58,8 +66,12 @@ def serve_releases() -> str:
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
         port = s.getsockname()[1]
-    sh("systemd-run", f"--unit={DOWNLOAD_UNIT}", "python3", "-m", "http.server", str(port),
-       "--bind", "127.0.0.1", "--directory", str(RELEASES))  # fmt: skip
+    subprocess.Popen(
+        [sys.executable, "-m", "http.server", str(port), "--bind", "127.0.0.1",
+         "--directory", str(RELEASES)],
+        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )  # fmt: skip
     address = f"http://127.0.0.1:{port}"
     deadline = time.monotonic() + 30
     while True:
@@ -71,10 +83,20 @@ def serve_releases() -> str:
             time.sleep(0.2)
 
 
+def offline() -> None:
+    """npm, as the clone's owner runs it, from the cache alone."""
+    npmrc = Path("/home/dev/.npmrc")
+    npmrc.write_text(f"cache={CACHE / 'npm'}\noffline=true\n")
+    sh("chown", "dev:dev", str(npmrc))
+
+
 def install(*args, env=None) -> subprocess.CompletedProcess:
     full = {
         "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
         "SUDO_USER": "dev",
+        # uv, as the installer runs it as root, from the cache alone
+        "UV_CACHE_DIR": str(CACHE / "uv"),
+        "UV_OFFLINE": "1",
         **SETTINGS,
         **(env or {}),
     }
@@ -87,6 +109,28 @@ def install(*args, env=None) -> subprocess.CompletedProcess:
         errors="replace",
         timeout=2400,
     )
+
+
+def first() -> subprocess.CompletedProcess:
+    """The first installation, from a fresh clone, with the releases served; what it printed is
+    kept in FIRST."""
+    SETTINGS["RCMAN_INSTALL_CLAUDE_DOWNLOAD"] = serve_releases()
+    make_clone()
+    offline()
+    proc = install()
+    FIRST.write_text(
+        json.dumps({"code": proc.returncode, "stdout": proc.stdout, "stderr": proc.stderr,
+                    "download": SETTINGS["RCMAN_INSTALL_CLAUDE_DOWNLOAD"]})
+    )  # fmt: skip
+    return proc
+
+
+def first_install() -> subprocess.CompletedProcess:
+    """What the first installation printed; the settings it was given, the release address with
+    them, for the installations a check runs again."""
+    kept = json.loads(FIRST.read_text())
+    SETTINGS["RCMAN_INSTALL_CLAUDE_DOWNLOAD"] = kept["download"]
+    return subprocess.CompletedProcess([], kept["code"], kept["stdout"], kept["stderr"])
 
 
 def changes(proc) -> dict:
@@ -147,34 +191,22 @@ def rcman_uid() -> int:
     return pwd.getpwnam("rcman").pw_uid
 
 
-def podman(*args: str, check: bool = True) -> subprocess.CompletedProcess:
-    """podman --remote as rcman, through its own socket."""
-    uid = rcman_uid()
-    proc = subprocess.run(
-        ["runuser", "-u", "rcman", "--", "env", f"XDG_RUNTIME_DIR=/run/user/{uid}",
-         f"HOME={STATE}", "podman", "--remote", *args],
-        capture_output=True, text=True, errors="replace", cwd="/", timeout=300,
-    )  # fmt: skip
-    assert proc.returncode == 0 or not check, proc.stdout + proc.stderr
-    return proc
+def stood_in(program: str, args: list[str]) -> bool:
+    """Whether a stand-in (tests/container/stand_ins.py) was asked ``program`` with ``args``."""
+    calls = (STAND_INS / "calls").read_text().splitlines()
+    return any(json.loads(c)["program"] == program and json.loads(c)["args"] == args for c in calls)
 
 
-def in_workspace(workspace_id: int, script: str, check: bool = True) -> str:
-    """A script run by the workspace's busybox shell; what it printed."""
-    found = podman(
-        "exec", f"rcman-ws-{workspace_id}", "/opt/rcman/bin/busybox", "sh", "-c", script,
-        check=check,
-    )  # fmt: skip
-    return found.stdout
+def journal(unit: str = "rcman.service") -> str:
+    """The end of what a unit the stand-in ran wrote, for failure messages."""
+    try:
+        text = (STAND_INS / f"{unit}.log").read_text(errors="replace")
+    except OSError as error:
+        text = str(error)
+    return f"\n--- {unit}\n{text[-8000:]}"
 
 
-def workspace_of(name: str, who: str = ADMIN) -> dict | None:
-    status, listed = api("GET", "/api/workspaces", who)
-    assert status == 200, listed
-    return next((w for w in listed["workspaces"] if w["name"] == name), None)
-
-
-def until(what, within: float = COMES_WITHIN, every: float = 1.0):
+def until(what, within: float = 300, every: float = 1.0):
     """``what()`` once it is true: waited for until ``within`` seconds have passed."""
     deadline = time.monotonic() + within
     while True:
@@ -183,83 +215,3 @@ def until(what, within: float = COMES_WITHIN, every: float = 1.0):
             return found
         assert time.monotonic() < deadline, f"never: {what.__doc__ or what}"
         time.sleep(every)
-
-
-def claude_processes(workspace_id: int) -> list[int]:
-    """The ids, in the workspace, of every process of the fake claude there. The pattern
-    is written so that it does not find the shell that looks for it."""
-    out = in_workspace(
-        workspace_id,
-        "for f in /proc/[0-9]*/cmdline; do "
-        'if /opt/rcman/bin/busybox tr "\\0" " " < "$f" 2>/dev/null | '
-        "/opt/rcman/bin/busybox grep -q 'fakes/clau[d]e'; then "
-        'p="${f#/proc/}"; echo "${p%/cmdline}"; fi; done',
-    )
-    return sorted(int(pid) for pid in out.split())
-
-
-# --- limits, as the kernel holds them ----------------------------------------------------
-
-CGROUPS = Path("/sys/fs/cgroup")
-# The files a limit is read from.
-LIMIT_FILES = ("memory.max", "memory.swap.max", "cpu.max", "pids.max")
-MEBIBYTE = 1024 * 1024
-
-
-def cgroup_of(pid: int) -> Path:
-    """The cgroup a process is in, as a path of the cgroup filesystem."""
-    text = Path(f"/proc/{pid}/cgroup").read_text().strip().removeprefix("0::")
-    return CGROUPS / text.lstrip("/")
-
-
-def user_slice() -> Path:
-    return CGROUPS / "user.slice" / f"user-{rcman_uid()}.slice"
-
-
-def slice_dir(person: int, workspace: int | None = None) -> Path:
-    """The cgroup of a person's slice, or of their workspace's, in rcman's user manager."""
-    root = user_slice() / f"user@{rcman_uid()}.service" / limits.ROOT_SLICE
-    root /= limits.person_slice(person)
-    return root if workspace is None else root / limits.workspace_slice(person, workspace)
-
-
-def limit_files(directory: Path) -> dict[str, str | None]:
-    """What the kernel's limit files of a cgroup hold; None for one it does not have (cpu.max
-    may be gone once the CPU limit is taken off)."""
-    found: dict[str, str | None] = {}
-    for name in LIMIT_FILES:
-        try:
-            found[name] = (directory / name).read_text().strip()
-        except FileNotFoundError:
-            found[name] = None
-    return found
-
-
-def not_limited(directory: Path) -> bool:
-    found = limit_files(directory)
-    cpu = found.pop("cpu.max")
-    return all(v == "max" for v in found.values()) and (cpu is None or cpu.startswith("max "))
-
-
-def person_id(email: str = ADMIN) -> int:
-    status, everyone = api("GET", "/api/people")
-    assert status == 200, everyone
-    return next(p["id"] for p in everyone["people"] if p["email"] == email)
-
-
-def manager_pid() -> str:
-    return sh(
-        "systemctl", "show", "--property", "MainPID", "--value", f"user@{rcman_uid()}.service"
-    ).stdout.strip()
-
-
-def drop_in_times(person: int, workspace: int) -> dict[str, int]:
-    """When the unit manager's runtime drop-ins of a workspace's slice were written, by file, in
-    nanoseconds: they are in a tmpfs the restart empties."""
-    folder = Path(f"/run/user/{rcman_uid()}/systemd/user.control")
-    found = {
-        str(path.relative_to(folder)): path.stat().st_mtime_ns
-        for path in folder.glob(f"{limits.workspace_slice(person, workspace)}.d/*.conf")
-    }
-    assert found, "no property is set on the slice"
-    return found
