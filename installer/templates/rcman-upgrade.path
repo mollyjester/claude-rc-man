@@ -1,0 +1,12 @@
+# Written by install.sh, when upgrading from the web interface is turned on.
+# rcman writes the request file in its home; systemd watches it and starts the upgrade, and
+# root never opens it. A request while an upgrade runs is taken by that run.
+[Unit]
+Description=Upgrade rcman when rcman asks
+
+[Path]
+PathModified=@UPGRADE_REQUEST@
+Unit=rcman-upgrade.service
+
+[Install]
+WantedBy=multi-user.target

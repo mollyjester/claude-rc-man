@@ -96,3 +96,22 @@ export async function personAction(page: Page, email: string, action: string) {
   if (await more.isVisible()) await more.click();
   await row.getByRole("button", { name: action, exact: true }).click();
 }
+
+// The Upgrade rcman page's report as the server gives it with the upgrade from the web interface
+// on and one that may be asked for: the browser tests' rcman has it off, which offers no button.
+export const plantUpgradeOffered = (page: Page) =>
+  page.route("**/api/rcman/upgrade", async (route) => {
+    if (route.request().method() !== "GET") return route.fallback();
+    const answer = await (await route.fetch()).json();
+    await route.fulfill({ json: { ...answer, enabled: true, available: true, reason: null } });
+  });
+
+// Opens the Upgrade rcman page's question, the upgrade offered, and returns it.
+export async function openUpgradeDialog(page: Page) {
+  await plantUpgradeOffered(page);
+  await page.goto("/admin/rcman");
+  await page.getByRole("button", { name: m.upgradeRcman, exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: m.upgradeRcman });
+  await expect(dialog).toBeVisible();
+  return dialog;
+}

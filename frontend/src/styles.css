@@ -2151,6 +2151,37 @@ form.limits + form.limits {
 .ws-problem .message {
   margin: 0 0 var(--space-1);
 }
+/* The Upgrade rcman page: its facts, then under a stroke how the last upgrade went and what
+   to do; a commit whole in the monospace face, breaking where it must, and an error line too. */
+.upgrade-act {
+  margin-top: var(--space-3);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border);
+}
+.upgrade-act > * {
+  margin: 0;
+}
+.upgrade-act > * + * {
+  margin-top: var(--space-3);
+}
+code.commit,
+.upgrade-error {
+  overflow-wrap: anywhere;
+}
+.upgrade-error {
+  font-family: var(--font-mono);
+}
+.upgrade-notices,
+.upgrade-consequences {
+  margin: 0;
+  padding-left: var(--space-5);
+}
+.upgrade-consequences {
+  margin-bottom: var(--space-3);
+}
+.upgrade-consequences li + li {
+  margin-top: var(--space-1);
+}
 /* The Claude Code versions page: the facts beside the newest release and the roll-out. */
 .versions-top {
   display: grid;

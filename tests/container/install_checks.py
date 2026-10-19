@@ -13,6 +13,7 @@ import grp
 import json
 import os
 import pwd
+import shlex
 import shutil
 import stat
 import subprocess
@@ -416,6 +417,107 @@ def test_the_caddy_snippet_is_printed_and_valid():
     path.write_text(snippet)
     check = sh("caddy", "validate", "--adapter", "caddyfile", "--config", str(path), check=False)
     assert check.returncode == 0, check.stdout + check.stderr
+
+
+UPGRADE_UNITS = [ins.SYSTEMD / unit for unit in ins.UPGRADE_UNITS]
+UPGRADE_STATUS = ins.UPGRADE_DIR / "status.json"
+
+
+def upgrade_unit() -> dict[str, list[str]]:
+    """The upgrade service's keys and their values, as the installer wrote it."""
+    found: dict[str, list[str]] = {}
+    for line in (ins.SYSTEMD / "rcman-upgrade.service").read_text().splitlines():
+        if "=" in line and not line.lstrip().startswith(("#", "[")):
+            key, _, value = line.partition("=")
+            found.setdefault(key.strip(), []).append(value.strip())
+    return found
+
+
+def run_upgrade_unit(key: str, **environ: str) -> subprocess.CompletedProcess:
+    """The upgrade service's ``ExecStart`` or ``ExecStopPost``, as root, as systemd runs it:
+    with the unit's environment alone, no terminal and no SUDO_USER, and for ``ExecStopPost``
+    the result systemd gives it."""
+    unit = upgrade_unit()
+    env = dict(item.split("=", 1) for value in unit["Environment"] for item in shlex.split(value))
+    return subprocess.run(
+        shlex.split(unit[key][0]), env={**env, **environ}, stdin=subprocess.DEVNULL, cwd="/",
+        capture_output=True, text=True, errors="replace", timeout=2400, start_new_session=True,
+    )  # fmt: skip
+
+
+def upgrade_status() -> dict:
+    found = UPGRADE_STATUS.stat()
+    assert (found.st_uid, grp.getgrgid(found.st_gid).gr_name) == (0, "rcman")
+    assert stat.S_IMODE(found.st_mode) == 0o640
+    return json.loads(UPGRADE_STATUS.read_text())
+
+
+def test_with_web_upgrade_off_no_upgrade_unit_exists():
+    assert (ins.SYSTEMD / "rcman.service").is_file()  # known positive: the units are written
+    assert "WEB_UPGRADE=no\n" in (ETC / "install.env").read_text()
+    for path in UPGRADE_UNITS:
+        assert not path.exists(), path
+    assert not ins.UPGRADE_WRAPPER.exists()
+    assert "RCMAN_WEB_UPGRADE=false\n" in (ETC / "rcman.env").read_text()
+    calls = (installed.STAND_INS / "calls").read_text()
+    assert "rcman-upgrade" not in calls and "rcman.service" in calls
+
+
+def test_web_upgrade_turned_on_enables_its_path_unit_and_installs_the_wrapper():
+    proc = install(env={"RCMAN_INSTALL_WEB_UPGRADE": "yes"})
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    for path in UPGRADE_UNITS:
+        found = path.stat()
+        assert found.st_uid == 0 and stat.S_IMODE(found.st_mode) == 0o644, path
+    assert installed.stood_in("systemctl", ["enable", "--now", "rcman-upgrade.path"])
+    for line in (installed.STAND_INS / "calls").read_text().splitlines():
+        call = json.loads(line)
+        if call["program"] == "systemctl" and "rcman-upgrade.service" in call["args"]:
+            assert not {"start", "restart"} & set(call["args"]), call  # never started by it
+    wrapper = ins.UPGRADE_WRAPPER.stat()
+    assert wrapper.st_uid == 0 and stat.S_IMODE(wrapper.st_mode) == 0o755
+    assert ins.UPGRADE_WRAPPER.read_bytes() == (CLONE / "installer" / "upgrade.py").read_bytes()
+    folder = ins.UPGRADE_DIR.stat()
+    assert (folder.st_uid, grp.getgrgid(folder.st_gid).gr_name) == (0, "rcman")
+    assert stat.S_IMODE(folder.st_mode) == 0o750
+    assert "WEB_UPGRADE=yes\n" in (ETC / "install.env").read_text()
+    assert "RCMAN_WEB_UPGRADE=true\n" in (ETC / "rcman.env").read_text()
+    assert stat.S_IMODE((ROOT / "current" / ".complete").stat().st_mode) == 0o644
+    healthy()
+
+
+def test_a_wrapper_run_with_no_sudo_user_writes_the_status():
+    commit = git("rev-parse", "HEAD", cwd=CLONE)
+    proc = run_upgrade_unit("ExecStart")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    found = upgrade_status()
+    assert found["state"] == "succeeded", found
+    assert found["from"] == commit and found["to"] == commit
+    assert found["boot_id"] == Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+    assert found["started"] <= found["finished"] and found["error"] is None
+    assert isinstance(found["notices"], list)
+    done = run_upgrade_unit("ExecStopPost", SERVICE_RESULT="success", EXIT_STATUS="0")
+    assert done.returncode == 0, done.stderr
+    assert upgrade_status() == found  # a run that ended by itself is left as it wrote it
+    healthy()
+
+
+def test_a_dirty_clone_gives_a_failed_status():
+    readme = CLONE / "README.md"
+    original = readme.read_text()
+    readme.write_text(original + "local change\n")
+    try:
+        proc = run_upgrade_unit("ExecStart")
+        assert proc.returncode == 1, proc.stdout + proc.stderr
+        found = upgrade_status()
+        assert found["state"] == "failed" and "uncommitted" in found["error"], found
+        assert "\n" not in found["error"]  # the last error line only
+        done = run_upgrade_unit("ExecStopPost", SERVICE_RESULT="exit-code", EXIT_STATUS="1")
+        assert done.returncode == 0, done.stderr
+        assert upgrade_status() == found
+    finally:
+        readme.write_text(original)
+    healthy()
 
 
 def test_running_again_changes_nothing():

@@ -202,8 +202,15 @@ else; this file is the full list. Rules are referred to by their bold name.
   that raises privilege, no root helper and no switching of accounts; rcman runs as
   its own account and drives everything else through it. The installer is the one
   program that makes accounts, and `rcman-admin`, started by root, runs itself again
-  as rcman, which is a named exemption. The guard and its exemptions are in
-  [tests.md](tests.md#repository-guards).
+  as rcman, which is a named exemption. Every service the installer writes names the
+  account it runs as, but one, a named exemption: `rcman-upgrade.service`, the
+  upgrade from the web interface, which runs the clone's `install.sh` as root when
+  rcman asks for it, off unless an administrator turns it on. It is accepted with its
+  risk, stated plainly: whoever can push to `main` can run code as root, through
+  `install.sh`, `installer/` and `uv sync` building the project as root; a GitHub
+  token stored in rcman that can push is therefore a root credential; and while the
+  option is on, the clone owner's account is effectively root without a password. The
+  guard and its exemptions are in [tests.md](tests.md#repository-guards).
 - **Every mutating endpoint is audited**, and every WebSocket route records
   when it opens and when it closes, and a test over the route table checks
   it. An exemption carries a reason that also appears in `docs/`.

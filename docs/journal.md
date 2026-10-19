@@ -54,6 +54,15 @@ line as bare JSON, without the journal's time and process in front of it, for
 a tool such as `jq`; `--since` and `--until` narrow it to a time, and `-f`
 follows new lines as they are written. Every time in a line is in UTC.
 
+An upgrade from the web interface (see
+[Upgrading from the web interface](installation.md#upgrading-from-the-web-interface))
+runs as the systemd service `rcman-upgrade`, and what the installer prints as it
+upgrades is in the journal under that service:
+
+```
+sudo journalctl -u rcman-upgrade
+```
+
 ## Errors reported by the page
 
 A failure rcman sent itself — a refusal, with its reason — is shown to the

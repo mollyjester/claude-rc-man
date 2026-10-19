@@ -6,7 +6,7 @@ import { ADMIN_PAGES } from "../src/AdminPages";
 import { m } from "../src/messages";
 import { PAGES } from "../src/Pages";
 import { callSites, pageSources } from "../src/test/callSites";
-import { panel, personAction, workspaces } from "./nav";
+import { openUpgradeDialog, panel, personAction, workspaces } from "./nav";
 import { ALICE, BOB, signInAs } from "./people";
 
 // A workspace whose server stopped on a screen wider than any window.
@@ -384,6 +384,7 @@ const OPENERS: Record<string, (page: Page) => Promise<void>> = {
     await page.goto("/admin/people");
     await personAction(page, BOB, m.usersRemove);
   },
+  UpgradeDialog: async (page) => void (await openUpgradeDialog(page)),
 };
 
 // --- the Workspaces page: the list beside the panel, and on a phone the bar over the panel ---

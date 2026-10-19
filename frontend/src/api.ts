@@ -198,6 +198,10 @@ function openTerminal(workspace: number): WebSocket {
 
 export const api = {
   get: <T>(path: string, query?: Query) => request<T>("GET", path, undefined, query),
+  // A read that is expected to fail for a while, as across a restart of rcman: its failures
+  // are the caller's to judge, so it notes none and sends no reports.
+  poll: <T>(path: string, query?: Query) =>
+    request<T>("GET", path, undefined, query, { quiet: true }),
   post: <T>(path: string, body: unknown = {}) => request<T>("POST", path, body),
   put: <T>(path: string, body: unknown) => request<T>("PUT", path, body),
   patch: <T>(path: string, body: unknown) => request<T>("PATCH", path, body),

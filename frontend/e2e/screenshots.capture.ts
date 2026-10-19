@@ -5,7 +5,7 @@ import { expect, type Page, test } from "@playwright/test";
 import { ADMIN_PAGES } from "../src/AdminPages";
 import { m } from "../src/messages";
 import { PAGES } from "../src/Pages";
-import { GITHUB_ADDRESS, personAction } from "./nav";
+import { GITHUB_ADDRESS, openUpgradeDialog, personAction } from "./nav";
 import { ALICE, BOB, signInAs } from "./people";
 
 // make screenshots (playwright.screenshots.config.ts): every page of the route table, a help
@@ -187,6 +187,12 @@ for (const scheme of ["light", "dark"] as const) {
         await page.getByRole("button", { name: m.usersAdd }).click();
         await shot("add-person", false);
         await page.keyboard.press("Escape");
+
+        // the question before an upgrade of rcman, the upgrade offered
+        await openUpgradeDialog(page);
+        await shot("upgrade-rcman", false);
+        await page.keyboard.press("Escape");
+        await page.unroute("**/api/rcman/upgrade");
 
         // a sign-out that waits for the last server, as the Claude page shows it
         await page.route("**/api/claude", async (route) => {

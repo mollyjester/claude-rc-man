@@ -15,10 +15,12 @@ rcman and its installer ask of it:
   each slice's properties in ``slices.json``, as the user manager keeps runtime properties until
   the machine restarts (``reboot`` below forgets them); ``show`` answers with them, nothing in
   use, the slice active;
-- the installer's ``systemctl`` (``daemon-reload``, ``enable``, ``is-active``, ``restart``,
-  ``start``, ``show``, ``--user --machine``): a unit of /etc/systemd/system that is started is run
-  as its ``User=`` with its environment, its folder and its ``ExecStart``, in a session of its own,
-  its process noted, and stopped first when it is started again; ``user@<uid>.service`` makes the
+- the installer's ``systemctl`` (``daemon-reload``, ``enable`` with or without ``--now``,
+  ``is-active``, ``restart``, ``start``, ``show``, ``--user --machine``): a service of
+  /etc/systemd/system (or ``RCMAN_STAND_IN_UNITS``) that is started is run as its ``User=`` with
+  its environment, its folder and its ``ExecStart``, in a session of its own, its process noted,
+  and stopped first when it is started again; a path unit started is only noted active, as
+  nothing makes its path change; ``user@<uid>.service`` makes the
   user's runtime folder; ``podman.socket`` in a user's manager makes the socket Podman's would be;
 - ``loginctl enable-linger <user>`` makes the user's linger file;
 - ``podman`` answers what the installer asks of rcman's Podman: ``info`` with the OCI runtime it
@@ -47,7 +49,8 @@ from pathlib import Path
 
 STATE_DIR = Path("/var/lib/rcman-test-stand-ins")
 NAMES = ("systemctl", "loginctl", "podman", "reboot")
-UNITS = Path("/etc/systemd/system")
+# The system manager's units: /etc/systemd/system, or ``RCMAN_STAND_IN_UNITS`` where that is set.
+UNITS = Path(os.environ.get("RCMAN_STAND_IN_UNITS") or "/etc/systemd/system")
 LINGER = Path("/var/lib/systemd/linger")
 OCI_RUNTIME = "crun"  # what rcman's installer checks rcman's Podman reports (OCI_RUNTIME)
 # The properties ``show`` answers for a slice nothing set: no cap, nothing in use.
@@ -261,6 +264,17 @@ def _user_service(name: str) -> None:
     os.chmod(folder, 0o700)
 
 
+def _start(unit: str) -> None:
+    """A unit started as systemd starts it: ``user@<uid>.service`` makes the runtime folder, a
+    service of the system's is run, and anything else (a path unit, which starts watching, and
+    runs its service only when the path changes) is only noted active."""
+    if unit.startswith("user@"):
+        _user_service(unit)
+    elif unit.endswith(".service") and (UNITS / unit).exists():
+        _start_unit(unit)
+    (state() / f"is-active-{unit}").touch()
+
+
 def system_manager(args: list[str]) -> int:
     if "--user" in args:
         if "--machine" in args:  # as root, for a user: run as that user, as systemctl does
@@ -281,11 +295,7 @@ def system_manager(args: list[str]) -> int:
     units = words[1:]
     if verb in ("restart", "start"):
         for unit in units:
-            if unit.startswith("user@"):
-                _user_service(unit)
-            elif (UNITS / unit).exists():
-                _start_unit(unit)
-            (state() / f"is-active-{unit}").touch()
+            _start(unit)
         return 0
     if verb == "stop":
         for unit in units:
@@ -294,6 +304,8 @@ def system_manager(args: list[str]) -> int:
     if verb == "enable":
         for unit in units:
             (state() / f"is-enabled-{unit}").touch()
+            if "--now" in args:
+                _start(unit)
         return 0
     if verb in ("is-active", "is-enabled"):
         return 0 if all((state() / f"{verb}-{u}").exists() for u in units) else 3

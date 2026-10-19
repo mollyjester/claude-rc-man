@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import shutil
 import socket
 import stat
@@ -249,10 +250,12 @@ SETTINGS = {
     "PROXY_PORT": "444",
     "CADDY_USER": "caddy",
     "CLAUDE_DOWNLOAD": "https://downloads.example.com/releases",
+    "WEB_UPGRADE": "no",
     # what the installer finds out and renders along with the settings
     "APP_UID": "990",
     "WORKSPACE_IMAGE": "localhost/rcman-workspace:0123456789ab",
     "BUILDER_IMAGE": "localhost/rcman-builder:0123456789ab",
+    "WEB_UPGRADE_ENABLED": "false",
 }
 
 
@@ -556,6 +559,7 @@ NOT_MADE = {
     "SYSTEMD": "systemd's folder; the files made in it are the units and the drop-in",
     "COMMAND_DIR": "the system's folder; the files made in it are COMMANDS",
     "DATABASE": "rcman's, in its home; the installer asks rcman for its schema version",
+    "UPGRADE_SOURCE": "in the clone; the wrapper is installed from it",
 }
 
 
@@ -579,8 +583,10 @@ def removal_needs(namespace: dict) -> dict[str, str]:
             needs[f"{name} {path}"] = str(path).replace("{uid}", "<uid>")
         if name.endswith(("_USER", "_GROUP")) and isinstance(value, str):
             needs[name] = value
-    for unit in namespace["UNITS"]:
-        needs[f"unit {unit}"] = str(namespace["SYSTEMD"] / unit)
+    for name, units in namespace.items():  # UNITS, and the units kept out of it
+        if name.isupper() and name.endswith("UNITS"):
+            for unit in units:
+                needs[f"unit {unit}"] = str(namespace["SYSTEMD"] / unit)
     for command in namespace["COMMANDS"]:
         needs[f"command {command}"] = str(namespace["COMMAND_DIR"] / command)
     needs["linger"] = str(namespace["LINGER"] / namespace["APP_USER"])
@@ -658,6 +664,7 @@ def test_a_new_unit_command_or_package_must_be_in_the_section():
     guide = (REPO / "docs" / "installation.md").read_text(encoding="utf-8")
     for name, value in (
         ("UNITS", (*ins.UNITS, "planted.service")),
+        ("PLANTED_UNITS", ("planted-other.service",)),
         ("COMMANDS", (*ins.COMMANDS, "planted-command")),
         ("PACKAGES", (*ins.PACKAGES, "planted-package")),
     ):
@@ -1451,16 +1458,23 @@ def test_old_builder_images_are_removed_only_after_rcman_runs_with_the_new_name(
     )
 
 
-def test_the_installer_finds_out_both_images_and_rcmans_uid(monkeypatch):
+def test_the_installer_finds_out_both_images_rcmans_uid_and_whether_web_upgrade_is_on(
+    monkeypatch,
+):
     monkeypatch.setattr(ins, "app_uid", lambda: 990)
-    found = ins.found_out()
+    found = ins.found_out({**SETTINGS, "WEB_UPGRADE": "no"})
     assert found == {
         "APP_UID": "990",
         "WORKSPACE_IMAGE": ins.workspace_image(),
         "BUILDER_IMAGE": ins.devcontainer_builder_image(),
+        "WEB_UPGRADE_ENABLED": "false",
     }
     env = ins.render("rcman.env", {**SETTINGS, **found})
     assert f"RCMAN_BUILDER_IMAGE={ins.devcontainer_builder_image()}\n" in env
+    assert "RCMAN_WEB_UPGRADE=false\n" in env
+    on = ins.found_out({**SETTINGS, "WEB_UPGRADE": "yes"})
+    assert on["WEB_UPGRADE_ENABLED"] == "true"
+    assert "RCMAN_WEB_UPGRADE=true\n" in ins.render("rcman.env", {**SETTINGS, **on})
 
 
 @pytest.fixture
@@ -2526,6 +2540,7 @@ def test_the_rollback_checks_the_database_before_it_switches_anything(
 ):
     switched = []
     monkeypatch.setattr(ins.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(ins, "check_lock", lambda: None)
     monkeypatch.setattr(ins, "ROOT", tmp_path)
     monkeypatch.setattr(
         ins, "check_rollback", lambda root: (_ for _ in ()).throw(ins.InstallError("newer"))
@@ -3370,3 +3385,752 @@ def test_the_kernel_is_checked_before_anything_is_changed(monkeypatch, capsys):
     assert ins.main([]) == 1
     assert done == []
     assert "5.4.0-200-generic" in capsys.readouterr().err
+
+
+# --- upgrading from the web interface ------------------------------------------------------
+
+from installer import upgrade  # noqa: E402 - the wrapper the upgrade unit runs
+
+UPGRADE_SETTINGS = {**SETTINGS, "WEB_UPGRADE": "yes", "WEB_UPGRADE_ENABLED": "true"}
+ME = __import__("pwd").getpwuid(os.getuid()).pw_name  # the test's own account
+
+
+def unit_keys(text: str) -> dict[str, list[str]]:
+    """A unit file's keys and their values, in order, as systemd reads them."""
+    found: dict[str, list[str]] = {}
+    for line in text.splitlines():
+        if "=" in line and not line.lstrip().startswith(("#", "[")):
+            key, _, value = line.partition("=")
+            found.setdefault(key.strip(), []).append(value.strip())
+    return found
+
+
+def unit_environment(values: list[str]) -> dict[str, str]:
+    """The variables of a unit's Environment= lines, unquoted as systemd unquotes them."""
+    return dict(item.split("=", 1) for value in values for item in shlex.split(value))
+
+
+def answer(key, question, secret):
+    """What someone at the terminal answers, a valid value for every setting asked."""
+    assert key != "WEB_UPGRADE"  # never asked: it has a default
+    return {"DOMAIN": "rcman.example.com", "ADMIN_EMAIL": "x@example.com"}.get(key, "value")
+
+
+def test_web_upgrade_is_off_unless_asked_for_and_is_saved(tmp_path):
+    saved = tmp_path / "install.env"
+    values = ins.gather(saved, {}, {}, ask=answer)
+    assert values["WEB_UPGRADE"] == "no"  # off by default, and never asked
+    turned_on = ins.gather(saved, {}, {"web_upgrade": "yes"}, ask=answer)
+    assert turned_on["WEB_UPGRADE"] == "yes"
+    ins.save_settings(saved, turned_on)
+    assert "WEB_UPGRADE=yes\n" in saved.read_text()
+    again = ins.gather(saved, {}, {}, ask=None)
+    assert again["WEB_UPGRADE"] == "yes"  # the saved answer is kept
+
+
+@pytest.mark.parametrize("value", ["true", "on", "YES", "1", "maybe"])
+def test_web_upgrade_is_yes_or_no(tmp_path, value):
+    with pytest.raises(ins.InstallError, match="WEB_UPGRADE"):
+        ins.gather(tmp_path / "install.env", {}, {"web_upgrade": value}, ask=answer)
+
+
+def test_the_upgrade_units_stay_out_of_the_units_the_installer_restarts():
+    import inspect
+
+    assert ins.UPGRADE_UNITS == ("rcman-upgrade.path", "rcman-upgrade.service")
+    assert not set(ins.UPGRADE_UNITS) & set(ins.UNITS)
+    assert set(ins.UPGRADE_UNITS) <= set(ins.TEMPLATES)
+    restarts = inspect.getsource(ins.start_services)
+    assert "UNITS" in restarts and "UPGRADE" not in restarts
+    assert "UPGRADE_UNITS" not in inspect.getsource(ins.configure)
+
+
+def test_the_upgrade_service_runs_the_wrapper_as_root_with_a_fixed_argv_and_environment():
+    text = ins.render("rcman-upgrade.service", UPGRADE_SETTINGS)
+    keys = unit_keys(text)
+    assert keys["Type"] == ["oneshot"]
+    assert "User" not in keys and "Group" not in keys  # root: see test_no_privilege_boundary
+    run = f"/usr/bin/python3 -I {ins.UPGRADE_WRAPPER}"
+    assert keys["ExecStart"] == [f"{run} --clone {ins.REPO} --caddy-user caddy"]
+    assert keys["ExecStopPost"] == [f"{run} --finish"]
+    assert str(ins.UPGRADE_WRAPPER) == "/opt/rcman/bin/rcman-upgrade"
+    assert unit_environment(keys["Environment"]) == upgrade.ENVIRONMENT
+    [timeout] = keys["TimeoutStartSec"]
+    assert re.fullmatch(r"[1-9][0-9]*(min|h|s)?", timeout), timeout  # finite: not infinity
+    assert "[Install]" not in text  # started by its path unit alone
+    assert "@" not in text.replace("@APP_UID@", "")  # every placeholder filled
+
+
+def test_the_upgrade_path_unit_watches_the_request_file_in_rcmans_home():
+    keys = unit_keys(ins.render("rcman-upgrade.path", UPGRADE_SETTINGS))
+    assert keys["PathModified"] == [str(ins.UPGRADE_REQUEST)]
+    assert ins.UPGRADE_REQUEST.parent == ins.STATE  # rcman writes it; root never opens it
+    assert keys["Unit"] == ["rcman-upgrade.service"]
+    assert keys["WantedBy"] == ["multi-user.target"]
+
+
+def test_the_unit_environment_quotes_every_assignment_and_refuses_what_systemd_would_change():
+    line = ins.unit_environment({"A": "1", "B": "two words"})
+    assert line == '"A=1" "B=two words"'
+    assert unit_environment([line]) == {"A": "1", "B": "two words"}
+    for value in ("100%", "$HOME", 'a"b', "a\\b", "a\nb", "a'b", "a\tb", "a\rb", "a\x0bb"):
+        with pytest.raises(ins.InstallError):
+            ins.unit_environment({"A": value})
+
+
+def test_the_wrapper_shares_the_installation_s_root():
+    assert upgrade.ROOT == ins.ROOT
+    assert ins.UPGRADE_DIR == upgrade.STATUS_DIR
+    assert ins.UPGRADE_SOURCE == REPO / "installer" / "upgrade.py"
+    assert upgrade.RCMAN_ACCOUNTS == (ins.APP_USER, ins.PROXY_USER)
+
+
+class Systemd:
+    """Stands in for systemctl, for the upgrade units: records what is asked, in folders of the
+    test's for systemd's units, the wrapper and its status folder."""
+
+    def __init__(self, tmp_path, monkeypatch):
+        self.calls: list[list[str]] = []
+        self.systemd = tmp_path / "systemd"
+        self.wrapper = tmp_path / "opt" / "bin" / "rcman-upgrade"
+        self.made: list[Path] = []
+        monkeypatch.setattr(ins, "SYSTEMD", self.systemd)
+        monkeypatch.setattr(ins, "UPGRADE_WRAPPER", self.wrapper)
+        monkeypatch.setattr(ins, "_gid", lambda group: os.getgid())
+        monkeypatch.setattr(ins, "run", self.run)
+        monkeypatch.setattr(
+            ins, "ensure_upgrade_dir", lambda *a: self.made.append(a) or not self.made[:-1]
+        )
+
+    def run(self, argv, user=None, **kw):
+        self.calls.append(argv)
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    def units(self) -> list[str]:
+        return sorted(p.name for p in self.systemd.iterdir()) if self.systemd.exists() else []
+
+
+def test_turned_on_the_path_unit_is_enabled_and_the_service_is_never_started(tmp_path, monkeypatch):
+    systemd = Systemd(tmp_path, monkeypatch)
+    changes = ins.ensure_web_upgrade(UPGRADE_SETTINGS)
+    assert systemd.units() == sorted(ins.UPGRADE_UNITS)
+    for unit in ins.UPGRADE_UNITS:
+        path = systemd.systemd / unit
+        assert path.read_text() == ins.render(unit, UPGRADE_SETTINGS)
+        assert stat.S_IMODE(path.stat().st_mode) == 0o644
+        assert str(path) in changes
+    assert systemd.wrapper.read_bytes() == ins.UPGRADE_SOURCE.read_bytes()
+    assert stat.S_IMODE(systemd.wrapper.stat().st_mode) == 0o755
+    assert systemd.made == [(ins.UPGRADE_DIR, 0, os.getgid())]
+    assert systemd.calls == [
+        ["systemctl", "daemon-reload"],
+        ["systemctl", "enable", "--now", "rcman-upgrade.path"],
+        ["systemctl", "restart", "rcman-upgrade.path"],
+    ]
+
+
+def test_a_changed_path_unit_is_restarted_and_a_changed_service_is_not(tmp_path, monkeypatch):
+    systemd = Systemd(tmp_path, monkeypatch)
+    ins.ensure_web_upgrade(UPGRADE_SETTINGS)
+    (systemd.systemd / "rcman-upgrade.service").write_text("old\n")
+    systemd.calls.clear()
+    ins.ensure_web_upgrade(UPGRADE_SETTINGS)
+    assert systemd.calls == [
+        ["systemctl", "daemon-reload"],
+        ["systemctl", "enable", "--now", "rcman-upgrade.path"],
+    ]  # the service is never restarted: it may be the one running this
+    (systemd.systemd / "rcman-upgrade.path").write_text("old\n")
+    systemd.calls.clear()
+    ins.ensure_web_upgrade(UPGRADE_SETTINGS)
+    assert ["systemctl", "restart", "rcman-upgrade.path"] in systemd.calls
+
+
+def test_turning_it_off_from_inside_the_upgrade_service_is_refused(tmp_path, monkeypatch):
+    systemd = Systemd(tmp_path, monkeypatch)
+    ins.ensure_web_upgrade(UPGRADE_SETTINGS)
+    systemd.calls.clear()
+    monkeypatch.setenv(upgrade.SERVICE_MARK, upgrade.ENVIRONMENT[upgrade.SERVICE_MARK])
+    with pytest.raises(ins.InstallError, match="shell"):
+        ins.ensure_web_upgrade(SETTINGS)
+    assert systemd.units() == sorted(ins.UPGRADE_UNITS) and systemd.wrapper.exists()
+    assert systemd.calls == []
+
+
+def test_turned_on_again_nothing_changes_and_the_path_unit_is_still_asked_to_run(
+    tmp_path, monkeypatch
+):
+    systemd = Systemd(tmp_path, monkeypatch)
+    ins.ensure_web_upgrade(UPGRADE_SETTINGS)
+    systemd.calls.clear()
+    assert ins.ensure_web_upgrade(UPGRADE_SETTINGS) == []
+    assert systemd.calls == [["systemctl", "enable", "--now", "rcman-upgrade.path"]]
+
+
+def test_turned_off_the_units_are_disabled_and_removed_with_the_wrapper(tmp_path, monkeypatch):
+    systemd = Systemd(tmp_path, monkeypatch)
+    ins.ensure_web_upgrade(UPGRADE_SETTINGS)
+    assert systemd.units() and systemd.wrapper.exists()  # positive: there to be removed
+    systemd.calls.clear()
+    changes = ins.ensure_web_upgrade(SETTINGS)
+    assert systemd.units() == [] and not systemd.wrapper.exists()
+    assert systemd.calls == [
+        ["systemctl", "disable", "--now", *ins.UPGRADE_UNITS],
+        ["systemctl", "daemon-reload"],
+    ]
+    assert str(systemd.wrapper) in changes
+
+
+def test_off_from_the_start_no_upgrade_unit_or_wrapper_is_made_and_nothing_is_asked(
+    tmp_path, monkeypatch
+):
+    systemd = Systemd(tmp_path, monkeypatch)
+    assert ins.ensure_web_upgrade(SETTINGS) == []
+    assert systemd.units() == [] and not systemd.wrapper.exists()
+    assert systemd.calls == [] and systemd.made == []
+
+
+def test_the_status_folder_is_root_s_and_rcmans_group_s_and_repaired(tmp_path):
+    folder = tmp_path / "upgrade"
+    assert ins.ensure_upgrade_dir(folder, os.getuid(), os.getgid()) is True
+    assert stat.S_IMODE(folder.stat().st_mode) == 0o750 == ins.UPGRADE_DIR_MODE
+    assert ins.ensure_upgrade_dir(folder, os.getuid(), os.getgid()) is False
+    folder.chmod(0o777)
+    assert ins.ensure_upgrade_dir(folder, os.getuid(), os.getgid()) is True
+    assert stat.S_IMODE(folder.stat().st_mode) == 0o750
+
+
+def test_a_link_where_the_status_folder_goes_is_refused(tmp_path):
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (tmp_path / "upgrade").symlink_to(elsewhere)
+    with pytest.raises(ins.InstallError, match="link"):
+        ins.ensure_upgrade_dir(tmp_path / "upgrade", os.getuid(), os.getgid())
+
+
+def test_the_wrapper_is_installed_by_a_rename_and_never_written_through_a_link(tmp_path):
+    source, dest = tmp_path / "upgrade.py", tmp_path / "bin" / "rcman-upgrade"
+    source.write_text("new\n")
+    dest.parent.mkdir()
+    old = tmp_path / "old"
+    old.write_text("old\n")
+    dest.symlink_to(old)  # planted: a link where the wrapper goes
+    assert ins.install_program(source, dest, 0o755) is True
+    assert old.read_text() == "old\n"  # not written through
+    assert not dest.is_symlink() and dest.read_text() == "new\n"
+    assert stat.S_IMODE(dest.stat().st_mode) == 0o755
+    with open(dest) as running:  # a run of the old wrapper keeps reading the old one
+        source.write_text("newer\n")
+        assert ins.install_program(source, dest, 0o755) is True
+        assert running.read() == "new\n"
+    assert dest.read_text() == "newer\n"
+    assert sorted(p.name for p in dest.parent.iterdir()) == ["rcman-upgrade"]  # nothing left
+    assert ins.install_program(source, dest, 0o755) is False
+    dest.chmod(0o777)
+    assert ins.install_program(source, dest, 0o755) is True
+    assert stat.S_IMODE(dest.stat().st_mode) == 0o755
+
+
+def test_the_release_s_mark_is_readable_by_rcman_whatever_root_s_umask(tmp_path):
+    previous = os.umask(0o077)
+    try:
+        ins.mark_complete(tmp_path, "abc123")
+    finally:
+        os.umask(previous)
+    mark = tmp_path / ins.COMPLETE
+    assert mark.read_text() == "abc123\n"
+    assert stat.S_IMODE(mark.stat().st_mode) == 0o644
+
+
+def test_the_release_is_marked_by_mark_complete():
+    import inspect
+
+    source = inspect.getsource(ins.build_release)
+    assert "mark_complete(work, commit)" in source and ".write_text(commit" not in source
+
+
+# turning it on: the owner, the paths, and the clone's origin
+
+
+class TurnedOn:
+    """Stands in for the checks of the clone and for git, for check_web_upgrade."""
+
+    def __init__(self, monkeypatch, refuse: str | None = None, remote="abc\trefs/heads/main\n"):
+        self.checked: list[tuple] = []
+        self.calls: list[tuple[list[str], dict]] = []
+        self.refuse, self.remote = refuse, remote
+        monkeypatch.setattr(upgrade, "check_clone", self.check_clone)
+        monkeypatch.setattr(ins, "run", self.run)
+
+    def check_clone(self, clone, sudo_user, refused):
+        self.checked.append((clone, sudo_user, tuple(refused)))
+        if self.refuse:
+            raise upgrade.Refused(self.refuse)
+        return ME
+
+    def run(self, argv, user=None, check=True, **kw):
+        self.calls.append((argv, user, kw))
+        code = 0 if self.remote is not None else 128
+        return subprocess.CompletedProcess(argv, code, self.remote or "", "fatal: no access\n")
+
+
+def test_turning_it_on_checks_the_clone_and_asks_origin_for_main_as_the_owner(monkeypatch):
+    on = TurnedOn(monkeypatch)
+    monkeypatch.setenv("SUDO_USER", ME)
+    ins.check_web_upgrade(UPGRADE_SETTINGS, ME)
+    assert on.checked == [(ins.REPO, ME, (ins.APP_USER, ins.PROXY_USER, "caddy"))]
+    [(argv, user, kw)] = on.calls
+    assert user == ME  # run as the owner (ins.as_account)
+    assert argv[:2] == ["/usr/bin/env", "-i"]
+    assert argv[-5:] == ["-C", str(ins.REPO), "ls-remote", "origin", "main"]
+    for key, value in upgrade.GIT_ENVIRONMENT.items():
+        assert f"{key}={value}" in argv, key
+    assert kw["stdin"] == subprocess.DEVNULL and kw["start_new_session"] is True  # no terminal
+    assert kw["timeout"] > 0
+
+
+def test_off_nothing_is_checked_and_origin_is_not_asked(monkeypatch):
+    on = TurnedOn(monkeypatch)
+    ins.check_web_upgrade(SETTINGS, ME)
+    assert on.checked == [] and on.calls == []
+
+
+def test_a_clone_the_checks_refuse_is_not_turned_on(monkeypatch):
+    on = TurnedOn(monkeypatch, refuse="the clone's installer can be written by anyone")
+    with pytest.raises(ins.InstallError, match="written by anyone"):
+        ins.check_web_upgrade(UPGRADE_SETTINGS, ME)
+    assert on.calls == []  # refused before git is asked
+
+
+@pytest.mark.parametrize("remote", [None, "", "abc\trefs/heads/other\n"])
+def test_an_origin_that_does_not_answer_with_main_is_not_turned_on(monkeypatch, remote):
+    TurnedOn(monkeypatch, remote=remote)
+    with pytest.raises(ins.InstallError, match="ls-remote"):
+        ins.check_web_upgrade(UPGRADE_SETTINGS, ME)
+
+
+def test_an_origin_that_takes_too_long_is_not_turned_on(monkeypatch):
+    TurnedOn(monkeypatch)
+
+    def slow(argv, user=None, check=True, **kw):
+        raise subprocess.TimeoutExpired(argv, kw["timeout"])
+
+    monkeypatch.setattr(ins, "run", slow)
+    with pytest.raises(ins.InstallError, match="ls-remote"):
+        ins.check_web_upgrade(UPGRADE_SETTINGS, ME)
+
+
+@pytest.mark.parametrize("clone", ["/home/a b/rcman", "/home/x/100%", "/home/$x/rcman"])
+def test_a_clone_whose_path_a_unit_cannot_hold_as_it_is_is_not_turned_on(monkeypatch, clone):
+    TurnedOn(monkeypatch)
+    monkeypatch.setattr(ins, "REPO", Path(clone))
+    with pytest.raises(ins.InstallError, match="path"):
+        ins.check_web_upgrade(UPGRADE_SETTINGS, ME)
+
+
+def test_origin_is_asked_with_no_terminal_and_an_empty_environment_for_real(tmp_path, monkeypatch):
+    """git ls-remote really answers, under env -i, with no terminal: as the test's own user,
+    runuser left out."""
+    from tests import git_fixtures
+
+    clone = git_fixtures.make_repo(tmp_path / "clone", origin=tmp_path / "origin.git")
+    real = ins.run
+    seen = []
+
+    def as_me(argv, user=None, check=True, **kw):
+        seen.append(argv)
+        assert user == ME
+        return real(argv, check=check, **kw)
+
+    monkeypatch.setattr(ins, "run", as_me)
+    monkeypatch.setattr(ins, "REPO", clone)
+    ins.ls_remote(ME)
+    assert seen  # it ran
+    (tmp_path / "origin.git").rename(tmp_path / "gone.git")
+    with pytest.raises(ins.InstallError, match="ls-remote"):
+        ins.ls_remote(ME)
+
+
+def test_the_installer_takes_the_owner_from_the_clone_and_refuses_what_it_refuses(
+    monkeypatch, capsys
+):
+    monkeypatch.setattr(ins.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(ins, "check_lock", lambda: None)
+    asked = []
+
+    def refuse(clone, sudo_user):
+        asked.append((clone, sudo_user))
+        raise upgrade.Refused("the clone is dev's, not someone-else's")
+
+    monkeypatch.setattr(upgrade, "clone_owner", refuse)
+    monkeypatch.setenv("SUDO_USER", "someone-else")
+    monkeypatch.setattr(ins, "gather", lambda *a: pytest.fail("went on"))
+    assert ins.main([]) == 1
+    assert asked == [(ins.REPO, "someone-else")]
+    assert "not someone-else's" in capsys.readouterr().err
+
+
+def test_the_steps_of_web_upgrade_come_where_they_must():
+    import inspect
+
+    source = inspect.getsource(ins.main)
+
+    def at(name):
+        assert source.count(f"{name}(") == 1, name
+        return source.index(f"{name}(")
+
+    # the lock covers the rollback, after the kernel is checked
+    assert at("check_kernel") < at("check_lock") < source.index("if args.rollback")
+    # the option is refused before it is saved
+    assert at("clone_owner") < at("check_web_upgrade") < at("save_settings")
+    # the units after the configuration, before the services start
+    start = source.index("start_services(restart=bool(changes))")
+    assert at("configure") < at("ensure_web_upgrade") < start
+
+
+def test_the_summary_line_holds_the_notices():
+    line = ins.summary("abc", ["x"], ["Restart Caddy."])
+    assert json.loads(line) == {"release": "abc", "changed": ["x"], "notices": ["Restart Caddy."]}
+
+
+# the installer's lock
+
+
+@pytest.fixture
+def lock(tmp_path):
+    """The lock file, in a folder of its own only its owner can write, held as install.sh
+    holds it: opened and locked, its descriptor passed on."""
+    folder = tmp_path / "opt"
+    folder.mkdir(mode=0o755)
+    path = folder / ".install.lock"
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    import fcntl
+
+    fcntl.flock(fd, fcntl.LOCK_EX)
+    os.set_inheritable(fd, True)
+    yield path, fd
+    os.close(fd)
+
+
+def test_the_lock_install_sh_holds_is_taken(lock):
+    path, fd = lock
+    assert os.get_inheritable(fd)
+    ins.check_lock(fd, path, os.getuid())
+    assert not os.get_inheritable(fd)  # the installer's children never hold it
+
+
+def test_the_lock_is_the_one_on_fd_9_under_the_installation():
+    assert ins.LOCK_FD == 9 and ins.INSTALL_LOCK == ins.ROOT / ".install.lock"
+
+
+def test_no_lock_on_the_descriptor_is_refused(lock, tmp_path):
+    path, _ = lock
+    closed = os.open(tmp_path / "x", os.O_WRONLY | os.O_CREAT)
+    os.close(closed)
+    with pytest.raises(ins.InstallError, match="install.sh"):
+        ins.check_lock(closed, path, os.getuid())
+
+
+def test_a_descriptor_of_another_file_is_refused(lock, tmp_path):
+    path, _ = lock
+    other = os.open(tmp_path / "other", os.O_WRONLY | os.O_CREAT)
+    try:
+        with pytest.raises(ins.InstallError, match="lock"):
+            ins.check_lock(other, path, os.getuid())
+    finally:
+        os.close(other)
+
+
+def test_the_lock_held_by_another_run_is_refused(lock):
+    path, _ = lock
+    second = os.open(path, os.O_WRONLY | os.O_APPEND)  # the same file, not the holder's
+    try:
+        with pytest.raises(ins.InstallError, match="another install.sh"):
+            ins.check_lock(second, path, os.getuid())
+    finally:
+        os.close(second)
+
+
+def test_a_lock_that_is_a_link_is_refused(lock):
+    path, fd = lock
+    link = path.with_name("link.lock")
+    link.symlink_to(path)
+    with pytest.raises(ins.InstallError, match="link"):
+        ins.check_lock(fd, link, os.getuid())
+
+
+@pytest.mark.parametrize("mode", [0o775, 0o757, 0o1777])
+def test_a_lock_in_a_folder_others_can_write_is_refused(lock, mode):
+    path, fd = lock
+    path.parent.chmod(mode)
+    with pytest.raises(ins.InstallError, match="root"):
+        ins.check_lock(fd, path, os.getuid())
+
+
+def test_a_lock_in_a_folder_of_another_account_is_refused(lock):
+    path, fd = lock
+    with pytest.raises(ins.InstallError, match="root"):
+        ins.check_lock(fd, path, os.getuid() + 1)
+
+
+# install.sh, run with stand-ins for id and runuser, from a clone of the test's own
+
+
+RUNUSER_STAND_IN = """#!/bin/bash
+# runuser, as the test's own user: says whether fd 9 was handed to it, and runs the command
+if [ -e /proc/$$/fd/9 ]; then held=held; else held=closed; fi
+printf '%s\\t%s\\n' "$held" "$*" >> "{log}"
+while [ "$1" != -- ]; do shift; done
+shift
+exec "$@"
+"""
+ID_STAND_IN = """#!/bin/bash
+if [ "$*" = -u ]; then echo 0; else exec /usr/bin/id "$@"; fi
+"""
+INSTALL_PY_STAND_IN = """import json, os, sys
+report = {{"argv": sys.argv[1:], "updated": os.environ.get("RCMAN_INSTALL_UPDATED"),
+          "fd": os.environ.get("RCMAN_INSTALL_LOCK_FD")}}
+try:
+    held = os.fstat(9)
+    report["fd9"] = [held.st_dev, held.st_ino]
+except OSError:
+    report["fd9"] = None
+lock = os.stat({lock!r})
+report["lock"] = [lock.st_dev, lock.st_ino]
+with open({report!r}, "w") as out:
+    json.dump(report, out)
+"""
+
+
+class Scratch:
+    """A clone of the test's own with install.sh as it is, but for its root, and a stand-in
+    for installer/install.py that reports what it was handed."""
+
+    def __init__(self, tmp_path):
+        from tests import git_fixtures
+
+        self.git = git_fixtures
+        self.root = tmp_path / "opt"
+        self.lock = self.root / ".install.lock"
+        self.report = tmp_path / "report.json"
+        self.log = tmp_path / "runuser.log"
+        self.bin = tmp_path / "bin"
+        self.bin.mkdir()
+        for name, text in (("runuser", RUNUSER_STAND_IN.format(log=self.log)),
+                           ("id", ID_STAND_IN)):  # fmt: skip
+            (self.bin / name).write_text(text)
+            (self.bin / name).chmod(0o755)
+        self.origin = tmp_path / "origin.git"
+        self.clone = git_fixtures.make_repo(tmp_path / "clone", origin=self.origin)
+        self.script = self.install_sh()
+        (self.clone / "install.sh").write_text(self.script)
+        (self.clone / "install.sh").chmod(0o755)
+        stand_in = INSTALL_PY_STAND_IN.format(lock=str(self.lock), report=str(self.report))
+        git_fixtures.write(self.clone / "installer" / "install.py", stand_in)
+        git_fixtures.fixture_git(self.clone, "add", "-A")
+        git_fixtures.fixture_git(self.clone, "commit", "-q", "-m", "install.sh")
+        git_fixtures.fixture_git(self.clone, "push", "-q", "origin", "main")
+
+    def install_sh(self) -> str:
+        text = (REPO / "install.sh").read_text()
+        line = f"root={ins.ROOT}\n"
+        assert text.count(line) == 1  # the one place install.sh names the installation
+        return text.replace(line, f"root={self.root}\n")
+
+    def run(
+        self, *args, env=None, command=None, stdin=subprocess.DEVNULL, **kw
+    ) -> subprocess.CompletedProcess:
+        full = {**self.git.fixture_env(self.git.FIXTURE_HOME),
+                "PATH": f"{self.bin}:/usr/bin:/bin", **(env or {})}  # fmt: skip
+        return subprocess.run(
+            command or [str(self.clone / "install.sh"), *args],
+            env=full, stdin=stdin, capture_output=True, text=True, timeout=60, **kw,
+        )  # fmt: skip
+
+    def reported(self) -> dict:
+        return json.loads(self.report.read_text())
+
+    def runuser_calls(self) -> list[tuple[str, str]]:
+        lines = self.log.read_text().splitlines() if self.log.exists() else []
+        return [tuple(line.split("\t", 1)) for line in lines]
+
+
+@pytest.fixture
+def scratch(tmp_path):
+    return Scratch(tmp_path)
+
+
+def test_install_sh_takes_the_lock_and_hands_it_to_the_installer_on_fd_9(scratch):
+    proc = scratch.run()
+    assert proc.returncode == 0, proc.stderr
+    report = scratch.reported()
+    assert report["fd9"] == report["lock"] and report["fd"] == "9"
+    assert stat.S_IMODE(scratch.root.stat().st_mode) == 0o755
+
+
+@pytest.mark.parametrize("args", [[], ["--rollback"]])
+def test_a_second_install_sh_is_refused_while_the_lock_is_held(scratch, args):
+    import fcntl
+
+    scratch.root.mkdir(mode=0o755)
+    with open(scratch.lock, "a") as held:
+        fcntl.flock(held, fcntl.LOCK_EX)
+        proc = scratch.run(*args)
+    assert proc.returncode == 1
+    assert "another install.sh is running" in proc.stderr
+    assert not scratch.report.exists()  # the installer did not run
+    proc = scratch.run(*args)  # the lock let go: it runs
+    assert proc.returncode == 0, proc.stderr
+    assert scratch.reported()["argv"] == args
+
+
+def test_install_sh_started_again_after_an_update_keeps_its_lock(scratch):
+    scratch.git.commit_on_origin(scratch.origin, "main", "install.sh", scratch.script + "# new\n")
+    proc = scratch.run()
+    assert proc.returncode == 0, proc.stderr
+    assert "install.sh changed; starting it again." in proc.stdout
+    report = scratch.reported()
+    assert report["updated"] == "1" and report["fd9"] == report["lock"]
+
+
+def test_a_lock_named_in_the_environment_is_used_and_not_taken_again(scratch):
+    """The run started again inherits fd 9 locked: were it to open the lock again, the lock
+    the first one holds would refuse it. Planted twin: without the variable it is refused."""
+    import fcntl
+
+    scratch.root.mkdir(mode=0o755)
+    with open(scratch.lock, "a") as held:
+        fcntl.flock(held, fcntl.LOCK_EX)
+        fd = held.fileno()
+        script = str(scratch.clone / "install.sh")
+        hand_over = ["/bin/bash", "-c", f'exec "$0" 9>&{fd} {fd}>&-', script]
+        proc = scratch.run(env={"RCMAN_INSTALL_LOCK_FD": "9"}, command=hand_over, pass_fds=(fd,))
+        assert proc.returncode == 0, proc.stderr
+        assert scratch.reported()["fd9"] == scratch.reported()["lock"]
+        scratch.report.unlink()
+        refused = scratch.run(command=hand_over, pass_fds=(fd,))
+        assert refused.returncode == 1 and "another install.sh" in refused.stderr
+
+
+def test_what_install_sh_runs_as_the_owner_holds_no_lock_and_never_prompts(scratch):
+    scratch.git.commit_on_origin(scratch.origin, "main", "install.sh", scratch.script + "# new\n")
+    proc = scratch.run()
+    assert proc.returncode == 0, proc.stderr
+    calls = scratch.runuser_calls()
+    assert len(calls) >= 3  # status, the branch and the pull, before and after starting again
+    for held, argv in calls:
+        assert held == "closed", argv
+        assert argv.startswith(f"-u {ME} -- env "), argv
+        for key, value in upgrade.GIT_ENVIRONMENT.items():
+            assert f"{key}={value}" in argv, (key, argv)
+
+
+@pytest.mark.parametrize("sudo_user,asks", [(ME, True), (None, False)])
+def test_git_may_ask_only_an_administrator_at_a_terminal(scratch, sudo_user, asks):
+    """Run through sudo from a terminal, git may ask for a passphrase; run otherwise, as the
+    upgrade service runs it, it asks nothing."""
+    import pty
+
+    leader, terminal = pty.openpty()
+    try:
+        proc = scratch.run(env={"SUDO_USER": sudo_user} if sudo_user else {}, stdin=terminal)
+    finally:
+        os.close(leader)
+        os.close(terminal)
+    assert proc.returncode == 0, proc.stderr
+    calls = scratch.runuser_calls()
+    assert calls  # non-vacuity
+    for _, argv in calls:
+        assert ("GIT_TERMINAL_PROMPT=0" not in argv) is asks, argv
+
+
+@pytest.mark.parametrize("planted", ["none", "other", "unlocked"])
+def test_a_lock_named_in_the_environment_must_be_the_lock_and_held(scratch, tmp_path, planted):
+    """Planted twins: fd 9 not there, another file, or the lock while another run holds it."""
+    import fcntl
+
+    scratch.root.mkdir(mode=0o755)
+    scratch.lock.touch()
+    other = tmp_path / "other"
+    other.touch()
+    script = str(scratch.clone / "install.sh")
+    with open(scratch.lock, "a") as held:
+        if planted == "unlocked":
+            fcntl.flock(held, fcntl.LOCK_EX)  # held by this "other run"
+        target = {"none": None, "other": other, "unlocked": scratch.lock}[planted]
+        if target is None:
+            command, fds = ["/bin/bash", "-c", 'exec "$0" 9>&-', script], ()
+        else:
+            handle = os.open(target, os.O_WRONLY | os.O_APPEND)
+            command, fds = (
+                ["/bin/bash", "-c", f'exec "$0" 9>&{handle} {handle}>&-', script],
+                (handle,),
+            )
+        try:
+            proc = scratch.run(env={"RCMAN_INSTALL_LOCK_FD": "9"}, command=command, pass_fds=fds)
+        finally:
+            if fds:
+                os.close(fds[0])
+    assert proc.returncode == 1 and "lock" in proc.stderr, proc.stderr
+    assert not scratch.report.exists() and scratch.runuser_calls() == []
+
+
+def test_the_lock_s_folder_must_be_writable_by_root_alone(scratch):
+    scratch.root.mkdir(mode=0o755)
+    scratch.root.chmod(0o775)
+    proc = scratch.run()
+    assert proc.returncode == 1 and "root" in proc.stderr
+    assert not scratch.lock.exists() and not scratch.report.exists()
+
+
+def test_a_link_where_the_lock_goes_is_refused(scratch, tmp_path):
+    scratch.root.mkdir(mode=0o755)
+    target = tmp_path / "elsewhere"
+    scratch.lock.symlink_to(target)
+    proc = scratch.run()
+    assert proc.returncode == 1 and "link" in proc.stderr
+    assert not target.exists() and not scratch.report.exists()
+
+
+@pytest.mark.parametrize("sudo_user", [None, ME])
+def test_install_sh_takes_the_owner_from_the_clone(scratch, sudo_user):
+    proc = scratch.run(env={"SUDO_USER": sudo_user} if sudo_user else {})
+    assert proc.returncode == 0, proc.stderr
+    assert all(argv.startswith(f"-u {ME} ") for _, argv in scratch.runuser_calls())
+
+
+def test_install_sh_run_by_another_account_than_the_clone_s_is_refused(scratch):
+    proc = scratch.run(env={"SUDO_USER": "someone-else"})
+    assert proc.returncode == 1
+    assert ME in proc.stderr and "someone-else" in proc.stderr
+    assert scratch.runuser_calls() == [] and not scratch.report.exists()
+
+
+# the guide
+
+
+def test_the_guide_names_what_web_upgrade_makes_and_how_to_remove_it():
+    needs = removal_needs(vars(ins))
+    for unit in ins.UPGRADE_UNITS:
+        assert f"unit {unit}" in needs  # known positives of the derivation
+    assert f"UPGRADE_WRAPPER {ins.UPGRADE_WRAPPER}" in needs
+    assert f"INSTALL_LOCK {ins.INSTALL_LOCK}" in needs
+    assert missing_from_removal(guide_text(), vars(ins)) == []
+
+
+def test_the_guide_says_the_whole_clone_is_checked_and_acls_too():
+    guide = flat(guide_text())
+    start = guide.index("**What is checked.**")
+    checked = guide[start : guide.index("**How it works.**")]
+    for words in ("every file and folder in the clone", "`frontend/node_modules`",
+                  "`frontend/dist`", "ACL", "link"):  # fmt: skip
+        assert words in checked, words
+    assert "git asks for nothing" not in guide  # it asks an administrator at a terminal
+
+
+def test_the_guide_states_plainly_what_web_upgrade_risks():
+    guide = flat(guide_text())
+    start = guide.index("## Upgrading from the web interface")
+    section = guide[start : guide.index("## ", start + 3)]
+    for words in ("push to `main`", "as root", "`uv sync`", "token", "root credential",
+                  "without a password", "off by default", "`--web-upgrade`"):  # fmt: skip
+        assert words in section, words

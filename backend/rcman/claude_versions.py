@@ -25,6 +25,7 @@ never starts on a version that is being removed.
 
 from __future__ import annotations
 
+import contextlib
 import datetime as dt
 import logging
 import os
@@ -207,7 +208,8 @@ class ClaudeVersions:
         rollback). The report of what is approved afterwards. ``claude_upgrade_busy`` while
         another rollout runs, ``claude_install_failed`` where the version is not a version or
         cannot be had, ``claude_checks_failed`` where it fails the canary's checks, and a
-        RuntimeFailed where the canary could not run; in each the store is as it was. A
+        RuntimeFailed where the canary could not run, and ``rcman_upgrading`` while an upgrade
+        of rcman is under way; in each the store is as it was. A
         version that was approved before and is still in the store is approved again at once:
         it passed the checks then, so a rollback needs neither a download nor a canary."""
         if not rules.VERSION.fullmatch(version):
@@ -215,12 +217,31 @@ class ClaudeVersions:
         if not self._upgrading.acquire(blocking=False):
             raise Problem("claude_upgrade_busy")
         try:
+            # after the lock, which the admission of an upgrade of rcman holds as it records one
+            if self.workspaces.upgrading():
+                raise Problem("rcman_upgrading")
             if version != self.approved():
                 self._roll_out(version, by)
         finally:
             self._upgrading.release()
         self.prune_quietly()
         return self.report()
+
+    def rolling_out(self) -> bool:
+        """Whether a rollout, or the sweep of what one left, runs."""
+        return self._upgrading.locked()
+
+    @contextlib.contextmanager
+    def rollouts_held(self):
+        """The rollouts' lock, held for what is in the block if it is free now, without waiting:
+        whether it was had. The admission of an upgrade of rcman holds it, so that a rollout
+        either runs before it or is refused after it."""
+        held = self._upgrading.acquire(blocking=False)
+        try:
+            yield held
+        finally:
+            if held:
+                self._upgrading.release()
 
     @staticmethod
     def _install_failed(kind: str) -> Problem:
@@ -405,8 +426,8 @@ class ClaudeVersions:
     def report(self) -> dict:
         """What the Versions page shows: the approved, previous and tested versions, each
         version in the store with whether it is approved, previous and how many servers use
-        it, the servers that run another version than the approved one, and whether a rollout
-        runs."""
+        it, the servers that run another version than the approved one, whether a rollout
+        runs, and whether an upgrade of rcman is under way, which no rollout may start in."""
         with self.lock:
             approved, previous = self.approved(), self.previous()
             installed = self.installed()
@@ -439,5 +460,6 @@ class ClaudeVersions:
                 for w, version in pinned
                 if version != approved
             ],
-            "upgrading": self._upgrading.locked(),
+            "upgrading": self.rolling_out(),
+            "rcman_upgrading": self.workspaces.upgrading(),
         }

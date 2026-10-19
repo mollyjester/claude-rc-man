@@ -1011,6 +1011,7 @@ type Report = {
   installed: Installed[];
   drift: Drift[];
   upgrading: boolean;
+  rcman_upgrading?: boolean;
 };
 
 const installed = (version: string, extra: Partial<Installed> = {}): Installed => ({
@@ -1399,6 +1400,23 @@ test("while another rollout runs, nothing is offered to roll out", async () => {
   renderApp("/admin/claude");
   const region = await versionsPage();
   expect(await screen.findByText(m.versionsBusyElsewhere)).toHaveAttribute("role", "status");
+  expect(screen.getByRole("button", { name: m.versionsUpgradeGo })).toBeDisabled();
+  expect(
+    within(region).getByRole("button", { name: m.versionsUseVersion("2.0.0") }),
+  ).toBeDisabled();
+  expect(
+    await screen.findByRole("button", { name: m.versionsRolloutVersion("2.5.0") }),
+  ).toBeDisabled();
+});
+
+test("while rcman is being upgraded, nothing is offered to roll out, and the page says why", async () => {
+  versionsApi(
+    { "GET /api/claude/latest": { latest: "2.5.0" } },
+    { ...REPORT, rcman_upgrading: true },
+  );
+  renderApp("/admin/claude");
+  const region = await versionsPage();
+  expect(await screen.findByText(m.versionsRcmanUpgrading)).toHaveAttribute("role", "status");
   expect(screen.getByRole("button", { name: m.versionsUpgradeGo })).toBeDisabled();
   expect(
     within(region).getByRole("button", { name: m.versionsUseVersion("2.0.0") }),

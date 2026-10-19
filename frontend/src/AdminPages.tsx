@@ -2,9 +2,10 @@ import type { ReactElement } from "react";
 
 import { Audit } from "./Audit";
 import { Everyone } from "./Everyone";
-import { AuditIcon, PeopleIcon, ServersIcon, TagIcon } from "./Icons";
+import { AuditIcon, PeopleIcon, ServersIcon, TagIcon, UpgradeIcon } from "./Icons";
 import { m } from "./messages";
 import { People } from "./People";
+import { Upgrade } from "./Upgrade";
 import { Versions } from "./Versions";
 
 export type AdminPage = {
@@ -38,6 +39,12 @@ export const ADMIN = {
     icon: TagIcon,
   },
   audit: { path: "/admin/audit", label: m.navAudit, element: () => <Audit />, icon: AuditIcon },
+  rcman: {
+    path: "/admin/rcman",
+    label: m.navRcman,
+    element: () => <Upgrade />,
+    icon: UpgradeIcon,
+  },
 } satisfies Record<string, AdminPage>;
 
 // The same pages, in the order the navigation shows them.

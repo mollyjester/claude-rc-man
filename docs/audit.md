@@ -53,6 +53,7 @@ changes nothing: a page's report of a failure rcman could not see, written to th
 | `terminal.open` | opens the **Terminal** tab on one of their workspaces — recorded also when the workspace is refused | the workspace's name; none when it was refused as not theirs or not there |
 | `terminal.close` | closes a **Terminal** tab that opened, or has it closed for them; the result says why | the workspace's name — nothing typed or shown is ever recorded |
 | `claude.upgrade` | rolls out a Claude Code version, or approves an installed one again (administrators; see [Claude Code versions](claude-version.md)) | the version |
+| `rcman.upgrade` | asks for rcman to be upgraded from the web interface (administrators; see [Upgrading from the web interface](installation.md#upgrading-from-the-web-interface)) — recorded when rcman takes the request; how the upgrade went is in the [system journal](journal.md#reading-it) and on the **rcman release** page | none |
 
 The result is one of these, or the code of the error the request failed with —
 a refused request is recorded too; a terminal closed because its person may not

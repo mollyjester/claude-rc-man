@@ -49,11 +49,20 @@ function repositoryOf(page: string): string {
   }
 }
 
-// New workspace: the page's one primary action, beside its heading or in the empty list.
-function NewWorkspaceButton({ onClick }: { onClick: () => void }) {
+// New workspace: the page's one primary action, beside its heading or in the empty list; while
+// rcman is being upgraded, which makes none meanwhile, not offered, and described by why
+// (``why``, the id of what says so).
+function NewWorkspaceButton({ onClick, why }: { onClick: () => void; why: string | null }) {
   return (
     // named in full wherever a phone shows its short words alone
-    <button type="button" className="primary" aria-label={m.newWorkspace} onClick={onClick}>
+    <button
+      type="button"
+      className="primary"
+      aria-label={m.newWorkspace}
+      onClick={onClick}
+      disabled={why !== null}
+      aria-describedby={why ?? undefined}
+    >
       <PlusIcon />
       <span className="label-long">{m.newWorkspace}</span>
       <span className="label-short" aria-hidden="true">
@@ -73,6 +82,9 @@ export function Dashboard({ pollMs }: { pollMs: number }) {
   const [workspaces, setWorkspaces] = useState<Workspace[] | null>(null);
   // The Claude Code version a server started now would run, null where none is approved.
   const [approved, setApproved] = useState<string | null>(null);
+  // Whether rcman is being upgraded, while which no workspace is made.
+  const [upgrading, setUpgrading] = useState(false);
+  const upgradingNote = useId();
   const [error, setError] = useState<ApiError | null>(null);
   // What was done, shown until another workspace is selected.
   const [notice, setNotice] = useState<string | null>(null);
@@ -100,12 +112,15 @@ export function Dashboard({ pollMs }: { pollMs: number }) {
   const refresh = useCallback(async () => {
     const mine = ++latest.current;
     try {
-      const answer = await api.get<{ workspaces: Workspace[]; claude_approved: string | null }>(
-        "/api/workspaces",
-      );
+      const answer = await api.get<{
+        workspaces: Workspace[];
+        claude_approved: string | null;
+        rcman_upgrading?: boolean;
+      }>("/api/workspaces");
       if (mine === latest.current) {
         setWorkspaces(answer.workspaces);
         setApproved(answer.claude_approved);
+        setUpgrading(answer.rcman_upgrading === true);
         setError(null);
       }
     } catch (e) {
@@ -171,10 +186,18 @@ export function Dashboard({ pollMs }: { pollMs: number }) {
         )}
         {/* in the empty list's place when there are none; not before the list is known */}
         {(workspaces ? !empty : error !== null) && (
-          <NewWorkspaceButton onClick={() => setMaking(true)} />
+          <NewWorkspaceButton
+            onClick={() => setMaking(true)}
+            why={upgrading ? upgradingNote : null}
+          />
         )}
       </div>
       <ProblemView error={error} />
+      {upgrading && (
+        <MessageBar kind="info">
+          <p id={upgradingNote}>{m.workspacesUpgrading}</p>
+        </MessageBar>
+      )}
       {notice && (
         <MessageBar kind="success" role="status">
           <p>{notice}</p>
@@ -188,6 +211,7 @@ export function Dashboard({ pollMs }: { pollMs: number }) {
           onSelect={select}
           onRemove={setRemoving}
           onMake={() => setMaking(true)}
+          why={upgrading ? upgradingNote : null}
         />
         {!(empty && asked === null) && (
           <div className="panel-side">
@@ -242,6 +266,7 @@ function WorkspaceList({
   onSelect,
   onRemove,
   onMake,
+  why,
 }: {
   labelledBy: string;
   workspaces: Workspace[] | null;
@@ -249,6 +274,7 @@ function WorkspaceList({
   onSelect: (id: number) => void;
   onRemove: (workspace: Workspace) => void;
   onMake: () => void;
+  why: string | null;
 }) {
   return (
     <section aria-labelledby={labelledBy} className="list card">
@@ -259,7 +285,7 @@ function WorkspaceList({
           </span>
           <strong>{m.workspacesEmpty}</strong>
           <p>{m.workspacesEmptyBody}</p>
-          <NewWorkspaceButton onClick={onMake} />
+          <NewWorkspaceButton onClick={onMake} why={why} />
         </div>
       )}
       {workspaces && workspaces.length > 0 && (

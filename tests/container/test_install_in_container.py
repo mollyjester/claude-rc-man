@@ -213,6 +213,22 @@ def test_the_caddy_snippet_is_printed_and_valid(installation):
     installation.check("test_the_caddy_snippet_is_printed_and_valid")
 
 
+def test_with_web_upgrade_off_no_upgrade_unit_exists(installation):
+    installation.check("test_with_web_upgrade_off_no_upgrade_unit_exists")
+
+
+def test_web_upgrade_turned_on_enables_its_path_unit_and_installs_the_wrapper(installation):
+    installation.check("test_web_upgrade_turned_on_enables_its_path_unit_and_installs_the_wrapper")
+
+
+def test_a_wrapper_run_with_no_sudo_user_writes_the_status(installation):
+    installation.check("test_a_wrapper_run_with_no_sudo_user_writes_the_status")
+
+
+def test_a_dirty_clone_gives_a_failed_status(installation):
+    installation.check("test_a_dirty_clone_gives_a_failed_status")
+
+
 def test_running_again_changes_nothing(installation):
     installation.check("test_running_again_changes_nothing")
 

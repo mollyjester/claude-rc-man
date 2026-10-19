@@ -381,7 +381,10 @@ and answer as the real programs answer what the installer asks: a unit the insta
 run as its `User=`, with its environment, folder and umask, so rcman and oauth2-proxy really run
 and the installer's own health check is the real one; rcman's Podman reports the runtime the
 installer checks, notes the images it builds, and hands the installer the tmux built on the
-engine. The checkout's files are at `/src` (see the snapshot, below); `tests/container/clone.py`
+engine. A path unit started, as `rcman-upgrade.path` is, is only noted active and runs no
+service, since nothing changes its path; `tests/test_stand_ins.py` holds that, with a folder of
+planted units the stand-in reads in place of `/etc/systemd/system`, named by
+`RCMAN_STAND_IN_UNITS`. The checkout's files are at `/src` (see the snapshot, below); `tests/container/clone.py`
 makes them a git origin and a clone of the user `dev`'s, and `tests/container/installed.py` runs
 the installation with the fake `claude` as the release it downloads. The frontend's and the
 backend's packages come from caches filled beforehand in a container of the same image with the
@@ -553,8 +556,8 @@ it can fail, and a positive control that keeps an empty input from passing.
   table at once.
 - **No privilege boundary** (`tests/test_no_privilege_boundary.py`). rcman
   has no command that raises privilege, no root helper and no switching of
-  accounts in product code.
-  Two layers read the corpus of `devtools/docs_guard.py`, this module included,
+  accounts in product code, and its services run as their own accounts.
+  Three layers read the corpus of `devtools/docs_guard.py`, this module included,
   which builds the command from pieces so that it does not hold it itself:
   - *The command that raises privilege.* Product code — `backend/`,
     `helpers/`, the web interface's sources but not its tests, and the
@@ -574,10 +577,26 @@ it can fail, and a positive control that keeps an empty input from passing.
     lists the right sites by file, function and text (`rcman-admin` running itself again as
     rcman is the one account switch), each with the reason;
     each covers exactly one site, and a test fails when its site is gone.
+  - *The services' accounts.* Every `.service` template under
+    `installer/templates/` has a `User=` naming an account that is not root,
+    but those of `ROOT_SERVICES`, each named with its reason: there is one,
+    `rcman-upgrade.service`, the upgrade from the web interface, off by default,
+    which runs the clone's `install.sh` as root. Its reason states the risk
+    accepted with it: whoever can push to `main` runs code as root, through
+    `install.sh`, `installer/` and `uv sync` building the project as root, so a
+    GitHub token stored in rcman that can push is a root credential, and while
+    the option is on the clone owner's account is root without a password. A
+    root service is held to what that reason covers: its `ExecStart=` and
+    `ExecStopPost=` are exactly `ROOT_SERVICE_COMMANDS`, the wrapper under
+    `/opt/rcman/bin` with `python3 -I` and its arguments, with nothing after them
+    (a `;` would add a command), it has no other `Exec` key and no
+    `EnvironmentFile=`, names no path under `/var/lib/rcman`, and has the
+    installer fill in only `ROOT_SERVICE_PLACEHOLDERS`. A stale check fails
+    when its template is gone or names an account.
 
   Each layer has planted twins in a scratch repository, the plant confirmed
   before the guard is shown firing, and an empty corpus, or one without a
-  Python file under each root, fails the guard.
+  Python file under each root or without a service template, fails the guard.
 - **The guide lists everything the installer makes** (`tests/test_install.py`).
   The "Removing rcman" section of `docs/installation.md` names every path,
   account, group, unit, command and package the installer's constants hold, as
@@ -675,6 +694,11 @@ it can fail, and a positive control that keeps an empty input from passing.
   database (`make -pRrq`), so a comment, a variable, a target-specific
   variable, a special target such as `.PHONY`, a `define` block's body or a
   branch make does not take is not mistaken for one.
+- **No tracked link** (`tests/test_export.py`). No file git tracks is a
+  symbolic link (mode 120000 in `git ls-files -s`): a release is built from what
+  git tracks, and the upgrade from the web interface refuses a clone with a link
+  where git tracks a path. A link committed in a scratch repository is its
+  planted twin, and the real index is shown to be read.
 - **Deployment contents** (`tests/test_export.py`). Deployment uses
   `git archive`, so `.gitattributes` decides what is deployed. The test
   checks that every development-only file is marked `export-ignore`, that the

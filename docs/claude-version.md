@@ -69,7 +69,11 @@ page shows:
 ## Rolling out a version
 
 A roll-out takes as long as it takes, often minutes, and the page waits for
-it; only one runs at a time. rcman:
+it; only one runs at a time, and none while rcman itself is being upgraded from
+its web interface (see
+[Upgrading from the web interface](installation.md#upgrading-from-the-web-interface)),
+whose restart would cut it short: the page then offers no roll-out and says why. An
+upgrade of rcman is not asked for while a roll-out runs. rcman:
 
 1. downloads the version from the release site into a staging folder outside
    the store, as `RCMAN_CLAUDE_DOWNLOAD` names it (see

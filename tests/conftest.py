@@ -331,6 +331,8 @@ CALLS = {
     ("POST", "/api/claude/code"): {"json": {"code": "x"}},
     ("POST", "/api/claude/logout"): {"json": {"keep_sessions": True}},
     ("POST", "/api/claude/upgrade"): {"json": {"version": "2.2.0"}},
+    ("GET", "/api/rcman/upgrade"): {},
+    ("POST", "/api/rcman/upgrade"): {},
     ("GET", "/api/docs/{slug}"): {},
     ("GET", "/api/audit"): {},
     ("GET", "/api/people"): {},

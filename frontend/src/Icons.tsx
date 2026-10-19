@@ -139,6 +139,14 @@ export const TagIcon = () => (
   </Icon>
 );
 
+// An arrow rising from a tray: upgrading rcman.
+export const UpgradeIcon = () => (
+  <Icon>
+    <path d="M8 10.5V2.5M4.75 5.75 8 2.5l3.25 3.25" />
+    <path d="M2.5 10v3.5h11V10" />
+  </Icon>
+);
+
 // A list with a tick: the audit trail.
 export const AuditIcon = () => (
   <Icon>

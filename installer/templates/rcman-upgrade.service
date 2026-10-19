@@ -1,0 +1,18 @@
+# Written by install.sh, when upgrading from the web interface is turned on.
+# The one service of rcman's that runs as root, named as such in tests/test_no_privilege_boundary.py
+# (ROOT_SERVICES), which says what that risks. rcman-upgrade.path starts it when rcman writes
+# its request; nothing else does, and the installer never restarts it.
+[Unit]
+Description=Upgrade rcman from its clone, as rcman's administrators ask
+
+[Service]
+Type=oneshot
+# The wrapper, root's copy of installer/upgrade.py (install.py UPGRADE_WRAPPER): it checks the
+# clone and its owner, runs the clone's install.sh with this environment and no terminal, and
+# writes its status.
+ExecStart=/usr/bin/python3 -I /opt/rcman/bin/rcman-upgrade --clone @CLONE@ --caddy-user @CADDY_USER@
+# The end of a run the service ended itself, from $SERVICE_RESULT and $EXIT_STATUS.
+ExecStopPost=/usr/bin/python3 -I /opt/rcman/bin/rcman-upgrade --finish
+Environment=@UPGRADE_ENVIRONMENT@
+# A build of a release, its images and a restart of rcman: long, but never without an end.
+TimeoutStartSec=90min

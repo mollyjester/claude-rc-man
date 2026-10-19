@@ -28,6 +28,9 @@ export const m = {
   navAudit: "Audit trail",
   navEveryone: "Everyone's workspaces",
   navVersions: "Claude Code versions",
+  // The Upgrade rcman page's name in the sidebar, a noun as its neighbours' are; not "rcman"
+  // alone, which is the top bar's link home.
+  navRcman: "rcman release",
   signedInAs: (email: string) => `Signed in as ${email}`,
   // The top bar's menu of the person signed in, behind their avatar: who they are, and
   // signing out of rcman.
@@ -61,6 +64,9 @@ export const m = {
     failed: "Failed",
     deleting: "Being deleted",
   } as Record<string, string>,
+  // Beside New workspace while rcman is being upgraded, which makes none meanwhile.
+  workspacesUpgrading:
+    "rcman is being upgraded, so no workspace can be made until the upgrade is done.",
   workspaceCreating: "This workspace is being made. It is ready in a moment.",
   workspaceCloningCancel: "To stop the clone, delete this workspace with its button in the list.",
   workspaceLog: "Steps so far",
@@ -346,6 +352,7 @@ export const m = {
     "claude.connect": "Connected a Claude account",
     "claude.disconnect": "Signed out of Claude",
     "claude.upgrade": "Rolled out a Claude Code version",
+    "rcman.upgrade": "Asked for rcman to be upgraded",
     "terminal.open": "Opened a terminal",
     "terminal.close": "A terminal closed",
   } as Record<string, string>,
@@ -374,6 +381,52 @@ export const m = {
   everyoneNone: "No workspaces.",
   everyoneWorkspace: "Workspace",
   everyoneNoServer: "No server",
+
+  // The Upgrade rcman page, for administrators: its heading, its button and its dialog are all
+  // the same words; its name in the sidebar is navRcman.
+  upgradeRcman: "Upgrade rcman",
+  upgradeIntro:
+    "Installs the newest main of rcman's clone on this server, then restarts rcman. Workspaces and their servers keep running.",
+  upgradeFactsTitle: "Release",
+  upgradeRelease: "Running release",
+  upgradeReleaseUnknown: "Not known: rcman runs from a checkout, not from a release",
+  upgradeLast: "Last upgrade",
+  upgradeStates: {
+    unknown: "None recorded",
+    requested: "Asked for",
+    running: "Running",
+    succeeded: "Succeeded",
+    failed: "Failed",
+    not_started: "Did not start",
+  } as Record<string, string>,
+  upgradeStarted: "Started (UTC)",
+  upgradeFinished: "Finished (UTC)",
+  upgradeFrom: "Upgraded from",
+  upgradeTo: "Upgraded to",
+  upgradeNotices: "What the installer asks of you",
+  // A sentence that ends in a link to the guide, its words then the link's.
+  upgradeOff:
+    "Upgrading rcman from here is off. An administrator turns it on with the installer, from a shell, as the installation guide says in",
+  upgradeOffLink: "Upgrading from the web interface",
+  upgradeConfirm: "rcman installs the newest main of its clone, then restarts. While it does:",
+  upgradeConsequences: [
+    "Workspaces and their Claude servers keep running.",
+    "Every open terminal closes. Reconnect once rcman is back.",
+    "A git action or a Claude sign-in in progress is cut off. Do it again afterwards.",
+    "No workspace can be made and no Claude Code version rolled out.",
+  ],
+  upgradeRequested: "The upgrade is asked for. Waiting for the server to start it…",
+  upgradeRunning: "rcman is being upgraded. It restarts on the way, and this page waits for it…",
+  upgradeRestarting: "rcman is restarting. This page waits for it…",
+  upgradeSucceeded: "rcman is upgraded. Reload the page to use the new version.",
+  upgradeReload: "Reload page",
+  upgradeFailed: "The upgrade failed:",
+  upgradeFailedUnsaid: "The upgrade failed, and said nothing of why.",
+  upgradeNotStarted:
+    "The upgrade did not start: nothing on the server acted on the request. Try again, or run the installer from a shell.",
+  upgradeRollBack:
+    "rcman was not rolled back. To go back to the release before, roll back from a shell, as the installation guide says in",
+  upgradeRollBackLink: "Upgrading and rolling back",
 
   versionsTitle: "Claude Code versions",
   versionsIntro:
@@ -409,6 +462,8 @@ export const m = {
   versionsUpgraded: (version: string) =>
     `Claude Code ${version} is approved. Servers that start from now on run it.`,
   versionsBusyElsewhere: "Another version is being rolled out. Try again when it is done.",
+  versionsRcmanUpgrading:
+    "rcman is being upgraded, so no version can be rolled out until the upgrade is done.",
   versionsLatestTitle: "Newest release",
   versionsLatest: (version: string) => `The newest release is ${version}.`,
   versionsLatestApproved: "The approved version is the newest release.",
