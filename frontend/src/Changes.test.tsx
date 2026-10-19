@@ -319,9 +319,8 @@ test("without a commit author, Commit is not offered and the section says where 
   });
   const app = renderChanges();
   const section = await changes();
-  expect(
-    await section.findByText(m.commitNeedsAuthor.before.trim(), { exact: false }),
-  ).toBeInTheDocument();
+  const said = await section.findByText(m.commitNeedsAuthor.before.trim(), { exact: false });
+  expect(said.closest(".message")).toHaveClass("message-warning"); // a message bar
   expect(section.queryByRole("button", { name: m.commit })).not.toBeInTheDocument();
   expect(section.queryByLabelText(m.commitMessage)).not.toBeInTheDocument();
   await userEvent.click(section.getByRole("link", { name: m.commitNeedsAuthor.link }));
@@ -900,14 +899,14 @@ test("a remote branch whose name a local branch has is not offered for switching
   expect(tracked).not.toHaveTextContent(m.nameTakenBy("main"));
 });
 
-test("New branch is opened by a secondary button, and Commit is the section's one primary", async () => {
+test("New branch is opened by a subtle icon button, and Commit is the section's one primary", async () => {
   repoApi({ "GET /api/git/status": status([{ path: "a.txt", change: "added" }]) });
   renderChanges();
   const section = await changes();
   await section.findByRole("button", { name: m.commit });
   expect(section.queryByLabelText(m.newBranchName)).not.toBeInTheDocument();
   const opener = section.getByRole("button", { name: m.newBranch });
-  expect(opener).toHaveClass("secondary");
+  expect(opener).toHaveClass("subtle", "icon-button");
   const primaries = () => [
     ...document.querySelectorAll(`[aria-label="${m.changesTitle}"] button.primary`),
   ];
@@ -979,7 +978,9 @@ test("Push is offered on a branch whose pushes go elsewhere than GitHub, with no
   renderChanges();
   const section = await changes();
   const push = await section.findByRole("button", { name: m.push });
-  expect(push).toHaveClass("secondary");
+  // the plain kind: no primary beside Commit, and not as quiet as an icon
+  expect(push).not.toHaveClass("primary");
+  expect(push).not.toHaveClass("subtle");
   expect((await bar()).getByRole("button", { name: m.push })).toBe(push); // in the branch bar
   expect(section.getByRole("button", { name: m.commitMenu })).toBeInTheDocument();
   await userEvent.click(push);
@@ -992,9 +993,8 @@ test("a push to GitHub is offered only with a token; otherwise the section says 
   repoApi({ "GET /api/git/status": status(STAGED, [], NO_TOKEN) });
   const app = renderChanges();
   const section = await changes();
-  expect(
-    await section.findByText(m.pushNeedsToken.before.trim(), { exact: false }),
-  ).toBeInTheDocument();
+  const said = await section.findByText(m.pushNeedsToken.before.trim(), { exact: false });
+  expect(said.closest(".message")).toHaveClass("message-warning"); // a message bar
   expect(section.queryByRole("button", { name: m.push })).not.toBeInTheDocument();
   expect(section.queryByRole("button", { name: m.commitMenu })).not.toBeInTheDocument();
   expect(section.getByRole("button", { name: m.commit })).toBeInTheDocument(); // positive control
@@ -1035,9 +1035,8 @@ test("a status that does not say a token is stored offers no push to GitHub", as
   });
   renderChanges();
   const section = await changes();
-  expect(
-    await section.findByText(m.pushNeedsToken.before.trim(), { exact: false }),
-  ).toBeInTheDocument();
+  const said = await section.findByText(m.pushNeedsToken.before.trim(), { exact: false });
+  expect(said.closest(".message")).toHaveClass("message-warning"); // a message bar
   expect(section.queryByRole("button", { name: m.push })).not.toBeInTheDocument();
   expect(section.queryByRole("button", { name: m.commitMenu })).not.toBeInTheDocument();
 });
@@ -1737,6 +1736,66 @@ test("files coming to an empty list open it in the very render they are drawn in
   const drawn = seen.filter((s) => s.files > 0);
   expect(drawn.length).toBeGreaterThan(0); // positive control: the files were drawn
   expect(drawn.map((s) => s.open)).toEqual(drawn.map(() => "true"));
+});
+
+// --- how the section is laid out --------------------------------------------------
+
+test("the branch is a subtle button with its icon and its name in the monospace face, and Refresh is a subtle icon", async () => {
+  repoApi();
+  renderChanges();
+  const branch = await lookup();
+  expect(branch).toHaveClass("subtle");
+  expect(branch.querySelector("svg")).toHaveAttribute("aria-hidden", "true");
+  expect(branch.querySelector(".branch-label")).toHaveTextContent(/^main$/);
+  const refresh = (await bar()).getByRole("button", { name: m.refreshBranches });
+  expect(refresh).toHaveClass("subtle", "icon-button");
+});
+
+test("Stage selected and Unstage selected are subtle buttons beside their lists' headings", async () => {
+  repoApi({
+    "GET /api/git/status": status(
+      [{ path: "a.txt", change: "added" }],
+      [{ path: "b.txt", change: "modified" }],
+    ),
+  });
+  renderChanges();
+  for (const [title, action] of [
+    [m.stagedTitle, m.unstageSelected],
+    [m.notStagedTitle, m.stageSelected],
+  ]) {
+    const button = (await list(title)).getByRole("button", { name: action });
+    expect(button).toHaveClass("subtle");
+  }
+});
+
+test.each([
+  ["a merge under way", { merging: true }, m.mergeInProgress, "message-warning"],
+  [
+    "no branch",
+    { branch: { name: null, commit: "0123456789", upstream: null, ahead: null, behind: null } },
+    m.pushNeedsBranch,
+    "message-info",
+  ],
+  ["no remote", { push_has_remote: false }, m.pushNeedsRemote, "message-info"],
+])("with %s, the section says so in a message bar", async (_, extra, words, kind) => {
+  repoApi({ "GET /api/git/status": status([], [], extra) });
+  renderChanges();
+  const said = await (await changes()).findByText(words);
+  expect(said.closest(".message")).toHaveClass(kind);
+});
+
+test("Commit and when the status was checked are the card's foot, below the files", async () => {
+  repoApi({ "GET /api/git/status": status([{ path: "a.txt", change: "added" }]) });
+  renderChanges();
+  const section = await changes();
+  const commit = await section.findByRole("button", { name: m.commit });
+  const foot = commit.closest(".changes-foot") as HTMLElement;
+  expect(foot).not.toBeNull();
+  expect(within(foot).getByRole("button", { name: m.refreshStatus })).toBeInTheDocument();
+  const files = (await list(m.stagedTitle)).getByRole("button", {
+    name: m.listHeading(m.stagedTitle, 1),
+  });
+  expect(files.compareDocumentPosition(foot) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 });
 
 // --- the changes' letters and words -----------------------------------------------

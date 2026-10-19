@@ -1,4 +1,5 @@
 import { screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { vi } from "vitest";
 
 import { m } from "./messages";
@@ -121,4 +122,42 @@ test("the help index opens with a line on what the pages are for", async () => {
   renderApp("/help");
   expect(await screen.findByRole("heading", { name: m.docsTitle, level: 1 })).toBeInTheDocument();
   expect(screen.getByText(m.docsIntro)).toBeInTheDocument();
+});
+
+// --- the layout: the contents beside the article, folded on a phone ---------------------
+
+const SERVERS = { slug: "servers", title: "Servers", markdown: "# Servers\n\nText." };
+const contents = () => screen.getByRole("button", { name: m.docsContents });
+
+test("the article is a card of its own beside the contents, which mark the page you are on", async () => {
+  fakeApi({ "GET /api/me": ME, "GET /api/docs": PAGES, "GET /api/docs/servers": SERVERS });
+  renderApp("/help/servers");
+  const heading = await screen.findByRole("heading", { name: "Servers", level: 1 });
+  expect(heading.closest("article")).toHaveClass("card", "docs-article");
+  const nav = screen.getByRole("navigation", { name: m.docsTitle });
+  expect(heading.closest("article")!.contains(nav)).toBe(false);
+  expect(await within(nav).findByRole("link", { name: "Servers" })).toHaveAttribute(
+    "aria-current",
+    "page",
+  );
+  expect(within(nav).getByRole("link", { name: "Adding people" })).not.toHaveAttribute(
+    "aria-current",
+  );
+});
+
+test("the contents are disclosed by a button, folded on a page and open on the index, and fold again once a page is chosen", async () => {
+  fakeApi({ "GET /api/me": ME, "GET /api/docs": PAGES, "GET /api/docs/servers": SERVERS });
+  renderApp("/help");
+  const nav = await screen.findByRole("navigation", { name: m.docsTitle });
+  const button = contents();
+  expect(button).toHaveAttribute("aria-controls", nav.id);
+  expect(nav.id).not.toBe("");
+  expect(button).toHaveAttribute("aria-expanded", "true"); // the index is the contents
+  await userEvent.click(await within(nav).findByRole("link", { name: "Servers" }));
+  expect(await screen.findByRole("heading", { name: "Servers", level: 1 })).toBeInTheDocument();
+  expect(button).toHaveAttribute("aria-expanded", "false");
+  expect(nav).toHaveClass("folded");
+  await userEvent.click(button);
+  expect(button).toHaveAttribute("aria-expanded", "true");
+  expect(nav).not.toHaveClass("folded");
 });

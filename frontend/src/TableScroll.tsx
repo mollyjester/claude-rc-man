@@ -11,3 +11,14 @@ export function TableScroll({ label, children }: { label: string; children: Reac
     </section>
   );
 }
+
+// The roles of a table's parts, said outright, for a table a phone draws as a list of rows
+// (table.stacked in src/styles.css): a table whose parts are drawn other than as a table's
+// loses the roles the browser would otherwise give them.
+export const ROLE = {
+  table: { role: "table" },
+  rowgroup: { role: "rowgroup" },
+  row: { role: "row" },
+  columnheader: { role: "columnheader" },
+  cell: { role: "cell" },
+} as const;

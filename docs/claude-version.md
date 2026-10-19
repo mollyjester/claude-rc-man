@@ -47,7 +47,8 @@ cannot read counts as running. `rcman-admin` removes none.
 
 ## The versions page
 
-Under **Admin**, the **Claude Code versions** page shows:
+In the **Administration** group of the sidebar, the **Claude Code versions**
+page shows:
 
 - the **Approved version**, the **Previous version** and the **Tested
   version**, with a warning when the approved one is not the tested one,

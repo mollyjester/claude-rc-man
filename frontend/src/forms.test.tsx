@@ -148,7 +148,7 @@ const signingOut = () => (
 // on any other form, so the others on a page would shut them before they are checked.
 const changes = () => <Changes workspace={1} pollMs={0} />;
 
-// New workspace's dialog, opened by the + beside the Workspaces page's heading.
+// New workspace's dialog, opened by its button beside the Workspaces page's heading.
 async function openNewWorkspace() {
   await userEvent.click(await screen.findByRole("button", { name: m.newWorkspace }));
   return screen.findByLabelText(m.newWorkspaceName);
@@ -166,14 +166,12 @@ async function openTrash(name: string) {
 // Every page with a form, and what opens the forms that are not there at first.
 const PAGES: [string, Where, () => Promise<void>][] = [
   ["settings", "/settings", async () => {}],
-  ["people", "/admin/people", async () => {}],
   [
-    "removing someone",
+    "adding someone",
     "/admin/people",
     async () => {
-      const bob = await screen.findByRole("row", { name: /bob/ });
-      await userEvent.click(within(bob).getByRole("button", { name: m.usersRemove }));
-      await screen.findByRole("dialog");
+      await userEvent.click(await screen.findByRole("button", { name: m.usersAdd }));
+      await screen.findByRole("dialog", { name: m.usersAdd });
     },
   ],
   [
@@ -251,6 +249,15 @@ const OUTSIDE_FORMS: [string, Where, () => Promise<void>][] = [
 
 // Pages with a form that has nothing to type in, and what opens it.
 const CHOICES: [string, Where, () => Promise<void>][] = [
+  [
+    "removing someone",
+    "/admin/people",
+    async () => {
+      const bob = await screen.findByRole("row", { name: /bob/ });
+      await userEvent.click(within(bob).getByRole("button", { name: m.usersRemove }));
+      await screen.findByRole("dialog");
+    },
+  ],
   [
     "finishing a sign-out at once",
     signingOut,

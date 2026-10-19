@@ -1,4 +1,4 @@
-import { screen, waitFor } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { ClaudePage } from "./Claude";
@@ -16,6 +16,13 @@ import { renderAlone } from "./test/render";
 
 // The Claude page: the account's state, read once as the page opens.
 const Account = ClaudePage;
+
+// The sheet's title: the account's address, or that none is connected.
+const accountTitle = (name: string) => screen.findByRole("heading", { level: 2, name });
+// The account's state, as a pill in the sheet's head.
+const pill = () => document.querySelector(".claude-sheet .sheet-head .badge");
+// What the sheet says of a fact, by its name.
+const fact = (term: string) => screen.getByText(term, { selector: "dt" }).nextElementSibling;
 
 function api(claude: Reply, extra: Routes = {}) {
   return fakeApi({
@@ -46,7 +53,8 @@ test("connecting: link, then code, then connected", async () => {
   await waitFor(() =>
     expect(fake.made("POST", "/api/claude/code")[0].body).toEqual({ code: "CODE#STATE" }),
   );
-  expect(await screen.findByText(m.claudeConnectedAs("alice@claude.test"))).toBeInTheDocument();
+  expect(await accountTitle("alice@claude.test")).toBeInTheDocument();
+  expect(pill()).toHaveTextContent(m.claudeStates.connected);
 });
 
 test("another Claude address can be given", async () => {
@@ -105,7 +113,7 @@ test("an expired sign-in says so", async () => {
 test("the account's state is read once, as the page opens, never polled", async () => {
   const fake = api(CONNECTED);
   renderAlone(<Account />);
-  expect(await screen.findByText(m.claudeConnectedAs("alice@claude.test"))).toBeInTheDocument();
+  expect(await accountTitle("alice@claude.test")).toBeInTheDocument();
   await new Promise((done) => setTimeout(done, 50));
   expect(fake.made("GET", "/api/claude")).toHaveLength(1);
 });
@@ -165,7 +173,7 @@ test("connecting answers with the account's state, and the words go once it is c
   await userEvent.click(screen.getByRole("button", { name: m.connectGo }));
   await userEvent.type(await screen.findByLabelText(m.connectCode), "abc");
   await userEvent.click(screen.getByRole("button", { name: m.connectSubmit }));
-  expect(await screen.findByText(m.claudeConnectedAs("alice@claude.test"))).toBeInTheDocument();
+  expect(await accountTitle("alice@claude.test")).toBeInTheDocument();
   expect(screen.queryByText(m.claudeSignedOutUnexpectedly)).not.toBeInTheDocument();
 });
 
@@ -195,4 +203,122 @@ test("signing out of Claude, and finishing a sign-out at once, are drawn as what
   api(SIGNING_OUT);
   renderAlone(<Account />);
   expect(await screen.findByRole("button", { name: m.claudeSignOutNow })).toHaveClass("danger");
+});
+
+// --- the sheet -------------------------------------------------------------------------
+
+test("the account is a sheet in a card: its address as the title, its state as a pill, its facts as rows", async () => {
+  api(CONNECTED);
+  renderAlone(<Account />);
+  const title = await accountTitle("alice@claude.test");
+  const sheet = title.closest("section")!;
+  expect(sheet).toHaveClass("card", "claude-sheet");
+  expect(sheet).toHaveAccessibleName("alice@claude.test");
+  expect(pill()).toHaveTextContent(m.claudeStates.connected);
+  expect(pill()).toHaveClass("badge", "badge-running");
+  expect(fact(m.claudeOrg)).toHaveTextContent("Org");
+  expect(fact(m.claudePlan)).toHaveTextContent("max");
+  expect(fact(m.claudeExpiresAt)).toHaveTextContent(
+    new Date(CONNECTED.login_expires_at).toLocaleString(),
+  );
+  // connected and nothing to say: no message bar, no offer to connect
+  expect(sheet.querySelector(".message")).toBeNull();
+  expect(screen.queryByRole("button", { name: m.reconnect })).not.toBeInTheDocument();
+  // the page's title is the page-head's, as on every page
+  expect(screen.getByRole("heading", { level: 1, name: m.claudeTitle }).parentElement).toHaveClass(
+    "page-head",
+  );
+});
+
+test("an account not connected has no facts, says so in an info bar, and offers to connect as the sheet's one primary action", async () => {
+  api(NOT_CONNECTED);
+  renderAlone(<Account />);
+  const title = await accountTitle(m.claudeNoAccount);
+  const sheet = title.closest("section")!;
+  expect(sheet.querySelector("dl")).toBeNull();
+  expect(within(sheet).getByText(m.claudeNotConnected).closest(".message")).toHaveClass(
+    "message-info",
+  );
+  expect(within(sheet).getByRole("button", { name: m.connect })).toHaveClass("primary");
+});
+
+test.each([
+  ["expiring", { ...CONNECTED, connection: "expiring" }, "badge-waiting", "message-warning"],
+  ["expired", { ...CONNECTED, connection: "expired" }, "badge-problem", "message-problem"],
+  ["signing out", SIGNING_OUT, "badge-waiting", "message-warning"],
+] as const)(
+  "an account %s says so as its pill and in a message bar of its kind",
+  async (_, reply, badge, bar) => {
+    api(reply);
+    renderAlone(<Account />);
+    await waitFor(() => expect(pill()).not.toBeNull());
+    expect(pill()).toHaveClass("badge", badge);
+    const bars = document.querySelectorAll(".claude-sheet .message");
+    expect(bars).toHaveLength(1);
+    expect(bars[0]).toHaveClass(bar);
+  },
+);
+
+test("an account signed out on its own says so in a warning's message bar, with no pill", async () => {
+  api({ ...NOT_CONNECTED, signed_out_unexpectedly: true });
+  renderAlone(<Account />);
+  const title = await accountTitle(m.claudeNoAccount);
+  const sheet = title.closest("section")!;
+  const bars = sheet.querySelectorAll(".message");
+  expect(bars).toHaveLength(1);
+  expect(bars[0]).toHaveClass("message-warning");
+  expect(bars[0]).toHaveTextContent(m.claudeSignedOutUnexpectedly);
+  expect(pill()).toBeNull();
+});
+
+test("the sign-out is a section of its own at the sheet's foot, after the facts, with its one line", async () => {
+  api(CONNECTED);
+  renderAlone(<Account />);
+  const zone = await screen.findByRole("region", { name: m.claudeSignOutTitle });
+  expect(zone).toHaveClass("danger-zone");
+  expect(within(zone).getByText(m.claudeSignOutLine)).toBeInTheDocument();
+  expect(within(zone).getByRole("checkbox", { name: m.keepSessions })).toBeChecked();
+  expect(within(zone).getByRole("button", { name: m.claudeSignOut })).toHaveClass("danger");
+  const sheet = zone.closest(".claude-sheet")!;
+  expect(sheet.lastElementChild).toBe(zone);
+  const facts = sheet.querySelector("dl")!;
+  expect(facts.compareDocumentPosition(zone) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+});
+
+test("while signing out, the section at the sheet's foot offers to finish at once", async () => {
+  api(SIGNING_OUT);
+  renderAlone(<Account />);
+  const zone = await screen.findByRole("region", { name: m.claudeSignOutTitle });
+  expect(within(zone).getByRole("button", { name: m.claudeSignOutNow })).toHaveClass("danger");
+  expect(within(zone).queryByRole("button", { name: m.claudeSignOut })).not.toBeInTheDocument();
+});
+
+test("a sign-out that waits keeps its section when the sign-in has meanwhile gone", async () => {
+  api({ ...NOT_CONNECTED, signing_out: true });
+  renderAlone(<Account />);
+  const zone = await screen.findByRole("region", { name: m.claudeSignOutTitle });
+  expect(within(zone).getByRole("button", { name: m.claudeSignOutNow })).toHaveClass("danger");
+});
+
+test("an account not connected has no pill: its title says so", async () => {
+  api(NOT_CONNECTED);
+  renderAlone(<Account />);
+  await accountTitle(m.claudeNoAccount);
+  expect(pill()).toBeNull();
+});
+
+test("a fact Claude did not give is said to be unknown in words of the Claude page's own", async () => {
+  api({ ...CONNECTED, account: { ...CONNECTED.account, org_name: null } });
+  renderAlone(<Account />);
+  await accountTitle("alice@claude.test");
+  expect(fact(m.claudeOrg)).toHaveTextContent(m.claudeUnknown);
+});
+
+test("the Claude address to connect is asked for by a short label with one line of help under it", async () => {
+  api(NOT_CONNECTED, { "POST /api/claude/login": { url: "https://claude.com/x" } });
+  renderAlone(<Account />);
+  await userEvent.click(await screen.findByRole("button", { name: m.connect }));
+  const email = screen.getByLabelText(m.connectEmail);
+  expect(email).toHaveAccessibleDescription(m.connectEmailHelp);
+  expect(m.connectEmail).not.toMatch(/\(/); // the help is not in the label
 });

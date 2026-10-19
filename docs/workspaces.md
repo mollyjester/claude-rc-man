@@ -10,16 +10,20 @@ workspace.
 ## The Workspaces page
 
 The Workspaces page lists your workspaces under its heading, and shows the panel
-of the workspace you have selected beside the list. **New workspace**, the +
-beside the heading, makes another. Each workspace in the list has a trash button
-of its own, which deletes that workspace whichever one is selected (see
-[Deleting a workspace](#deleting-a-workspace)).
+of the workspace you have selected beside the list. **New workspace**, beside
+the heading, makes another; while you have none, the list says so and offers
+**New workspace** in its place. Each workspace in the list has a trash button of
+its own, which deletes that workspace whichever one is selected (see
+[Deleting a workspace](#deleting-a-workspace)); with a mouse it shows on the row
+you point at, the row you have selected and the row you move to with the
+keyboard.
 
-Select a workspace by its name. A workspace whose server is running, waiting
-for your answer, has a problem or is not running carries a dot whose shape and
-colour say which, and pointing at a dot names it. A workspace with no server
-carries none, except that one that failed to be made, or whose server rcman
-could not read, carries the problem dot:
+Select a workspace by its name; the selected row is marked with a bar at its
+left. A workspace whose server is running, waiting for your answer, has a
+problem or is not running carries a dot before its name, whose shape and colour
+say which, and pointing at a dot names it. A workspace with no server carries
+none, except that one that failed to be made, or whose server rcman could not
+read, carries the problem dot:
 
 | Dot | Shape |
 |---|---|
@@ -32,11 +36,12 @@ A workspace that is not ready says so beside its name: **Being made**,
 **Failed** or **Being deleted**.
 
 To make a workspace, choose **New workspace**, type its name in the dialog that
-opens and choose **Create**; **Cancel** or Escape closes the dialog. The new
-workspace is selected, and is shown as being made until it is ready; that takes
-a moment, and longest for your first workspace. Without an address a workspace
-is empty. When rcman refuses a name, the dialog stays open, says why under the
-field and keeps what you typed; each of your workspaces has a name of its own.
+opens and choose **Create**; **Cancel**, the cross at its top, or Escape closes
+the dialog. The new workspace is selected, and is shown as being made until it
+is ready; that takes a moment, and longest for your first workspace. Without an
+address a workspace is empty. When rcman refuses a name, the dialog stays open,
+says why under the field and keeps what you typed; each of your workspaces has a
+name of its own.
 
 To start from a repository on GitHub, give its address in **GitHub address
 (optional)**, such as `https://github.com/owner/repository`, and choose
@@ -65,32 +70,32 @@ The workspace you have selected is part of the page's address, so reloading
 the page keeps it, and the browser's back button returns to the workspace
 selected before.
 
-The panel of a workspace cloned from GitHub shows, under its name, the
-repository's page on GitHub as a link that opens it in a new tab, whatever state
-the workspace is in. The panel of a workspace that is ready has two tabs,
-**Overview**, shown first, and **Terminal** (see [The terminal](#the-terminal));
-the arrow keys move between them. The tab you chose is part of the page's
-address, as the workspace is. **Overview** has the **Claude server** section,
-which shows the workspace's server, or **Start** when it has none. If rcman
-could not read the server, the section says why instead. Below it is the
-**Changes** section, for the git repository in the workspace (see
-[Git](git.md)). A workspace that failed to be made says what went
+The panel's head shows the workspace's name and its state, and, for a workspace
+cloned from GitHub, the repository, owner first, as a link that opens its page
+on GitHub in a new tab, whatever state the workspace is in. The panel of a
+workspace that is ready has two tabs, **Overview**, shown first, and
+**Terminal** (see [The terminal](#the-terminal)); the arrow keys move between
+them. The tab you chose is part of the page's address, as the workspace is.
+**Overview** has two cards: **Claude server**, which shows the workspace's
+server, or **Start** when it has none, and says why instead if rcman could not
+read the server; and below it **Changes**, for the git repository in the
+workspace (see [Git](git.md)). A workspace that failed to be made says what went
 wrong in a sentence, with the words rcman got behind **Details**, and **Steps so
-far** beneath; it offers nothing but its trash button in the list. When the repository's
-`devcontainer.json` is the cause, the reason names the setting to change, or the
-image rcman could not pull or use, or the command that failed or took too long,
-with what it printed last in the steps. A build that failed says why in plain
-words, with the end of what the builder said: a registry or address that did not
-answer, an image or feature that is not there or needs a sign-in, a Dockerfile
-step that failed, a feature that failed to install (named), no space left, a
-repository or image too big, or a build that took too long. After a refused
-configuration the workspace holds nothing but this entry; after a failed command
-it is kept so that you can look at what happened, and its trash button
+far** beneath; it offers nothing but its trash button in the list. When the
+repository's `devcontainer.json` is the cause, the reason names the setting to
+change, or the image rcman could not pull or use, or the command that failed or
+took too long, with what it printed last in the steps. A build that failed says
+why in plain words, with the end of what the builder said: a registry or address
+that did not answer, an image or feature that is not there or needs a sign-in, a
+Dockerfile step that failed, a feature that failed to install (named), no space
+left, a repository or image too big, or a build that took too long. After a
+refused configuration the workspace holds nothing but this entry; after a failed
+command it is kept so that you can look at what happened, and its trash button
 removes it. A workspace being made or being deleted says so, and offers nothing;
 one being made from a GitHub repository can be deleted with its trash button, to
 stop it.
 
-A server shows its state as a coloured badge, a sentence saying what to do
+A server shows its state as a coloured pill, a sentence saying what to do
 next, and only the actions that state allows. Its main button, the action to
 take next, stands out; **Stop** and **Forget** never do. A server that is
 ready or in use also has **Open in claude.ai**, which is its main button:
@@ -125,18 +130,25 @@ administrators can see them in the [system journal](journal.md).
 
 ### On a phone
 
-On a phone the page shows the list or a workspace's panel, not both. Selecting
-a workspace shows its panel in the list's place, with **All workspaces** above
-it to go back to the list, and **Switch workspace**, a menu of your workspaces,
-to go straight to another. Dialogs fill the screen, and on any touch screen
-every button and link is at least a fingertip wide, but for a link inside a
-sentence.
+On a phone rcman's pages, which a wider screen lists in the sidebar at the left,
+are behind the menu button at the left of the top bar; choosing one, or pressing
+beside the menu, closes it again. Over the list, a line says how many workspaces
+you have, and **New**, beside it, is **New workspace**. The page shows the list
+or a workspace's panel, not both. Selecting a workspace shows its panel in the
+list's place, under a bar that stays at the top as the panel scrolls: the back
+arrow (**Back to workspaces**) returns to the list, and the workspace's name
+beside it opens your workspaces as a sheet from the foot of the screen, to go
+straight to another; Escape, or pressing above the sheet, closes it. Dialogs
+rise from the foot of the screen as a sheet, their buttons kept at its foot
+above the on-screen keyboard, and on any touch screen every button and link is
+at least a fingertip wide, but for a link inside a sentence.
 
 ### The terminal
 
 **Terminal** is a shell in the workspace, in the page. It connects when you
 first choose the tab, and stays connected while you look at **Overview**. Above
-it, a line says whether it is connecting, connected or closed.
+it, a slim bar says whether it is connecting, connected or closed, with a dot
+of the shapes above.
 
 - The shell runs as the workspace container's own user. rcman adds no
   restriction to what it may do and takes none away: whatever that user may do
@@ -289,9 +301,9 @@ Claude asks the question again when it is resumed.
 A server runs the Claude Code version that was approved when it started, and
 keeps it while it runs. Starting it again after you stopped it, resuming it, or
 the restore after a restart of the machine takes the version approved then. When
-the approved version differs from the one your server runs, its section says so
-quietly; nothing restarts by itself and no session is cut (see
-[Claude Code versions](claude-version.md)).
+the approved version differs from the one your server runs, its **Claude
+server** card says so quietly; nothing restarts by itself and no session is cut
+(see [Claude Code versions](claude-version.md)).
 
 A server that has stopped can be **forgotten**, which removes it from its
 workspace. Archiving or deleting individual sessions is done in
@@ -326,14 +338,14 @@ it as it stops any server.
 
 ## For administrators
 
-The **Everyone's workspaces** page, under **Admin** in the navigation, lists
-each person in rcman, by address, with their workspaces: the name, the state
-— the workspace's while it is not ready, and otherwise its server's, or that
-it has none — and the session's name, as each person's own Workspaces page
-shows them. It is for looking only; it has no buttons, because rcman lets
-only the person a workspace belongs to act on it. A workspace whose server
-rcman could not read is shown with the reason, and everything else is listed
-as usual.
+The **Everyone's workspaces** page, in the **Administration** group of the
+sidebar, lists each person in rcman, by address, in a card of their own, with
+their workspaces: the name, the state — the workspace's while it is not ready,
+and otherwise its server's, or that it has none — the session's name, as each
+person's own Workspaces page shows them, and the Claude Code version a running
+server runs. It is for looking only; it has no buttons, because rcman lets only
+the person a workspace belongs to act on it. A workspace whose server rcman
+could not read is shown with the reason, and everything else is listed as usual.
 
 While anyone's server is on a screen rcman does not recognise, administrators
 are warned at the top of every page, with the person's address and the

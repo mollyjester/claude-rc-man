@@ -355,3 +355,53 @@ test("the token's saved word is spoken in a place that is there before it, and g
   await userEvent.type(field, "x");
   expect(status).toBeEmptyDOMElement();
 });
+
+// --- the page's layout: a card for each part --------------------------------------------
+
+// Each part, by its title, with the one line that says what it is for.
+const PARTS = [
+  [m.settingsPrefixTitle, m.settingsPrefixLine],
+  [m.settingsAuthorTitle, m.settingsAuthorLine],
+  [m.settingsGithubTitle, m.settingsGithubLine],
+] as const;
+
+test.each(PARTS)(
+  "the %s part is a card: its title and one line on one side, its form on the other",
+  async (title, line) => {
+    api();
+    renderApp("/settings");
+    const part = await screen.findByRole("region", { name: title });
+    expect(part).toHaveClass("card", "setting");
+    const intro = part.querySelector(":scope > .setting-intro")!;
+    expect(intro).not.toBeNull();
+    expect(
+      within(intro as HTMLElement).getByRole("heading", { level: 2, name: title }),
+    ).toBeInTheDocument();
+    expect(within(intro as HTMLElement).getByText(line)).toHaveClass("muted");
+    const body = part.querySelector(":scope > .setting-body")!;
+    expect(
+      await within(body as HTMLElement).findByRole("button", { name: m.save }),
+    ).toBeInTheDocument();
+    expect(intro.querySelector("form")).toBeNull();
+  },
+);
+
+test("the page's title is its page-head's, as on every page", async () => {
+  api();
+  renderApp("/settings");
+  const title = await screen.findByRole("heading", { level: 1, name: m.settingsTitle });
+  expect(title.parentElement).toHaveClass("page-head");
+});
+
+// One short line: a single sentence that fits a field's width.
+const oneLine = (text: string) => text.length <= 72 && !/[.!?] \S/.test(text);
+
+test("each help under a field is one short line, the whole story being in the settings guide", () => {
+  const helps = [...Object.values(FIELDS).map((f) => f.help), m.githubTokenHelp];
+  expect(helps.length).toBe(Object.keys(FIELDS).length + 1);
+  for (const help of helps) expect(oneLine(help), help).toBe(true);
+  for (const [, line] of PARTS) expect(oneLine(line), line).toBe(true);
+  // the check fails on two sentences, and on one too long for a line
+  expect(oneLine("One sentence. And another.")).toBe(false);
+  expect(oneLine("x".repeat(73))).toBe(false);
+});

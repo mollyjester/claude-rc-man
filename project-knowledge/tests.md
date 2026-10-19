@@ -17,6 +17,7 @@ How the test suite is organised and run. The rules the suite follows are in
 | `make frontend-test` | Type-checks the frontend and runs its component tests |
 | `make frontend-build` | Builds the frontend into `frontend/dist` |
 | `make e2e` | Builds the frontend and runs the browser tests |
+| `make screenshots` | Not a test: builds the frontend and captures every page, at a phone's and a desktop's width, light and dark, into `frontend/test-results/screenshots/`, for a look at the design; see [Screenshots](#screenshots) |
 | `make check` | Lint, `make test`, the frontend tests and the browser tests; no on-demand run. It sets `RCMAN_REQUIRE_REAL_CLAUDE=1`, so tests that would skip for want of the real `claude` fail instead |
 | `make check-all` | `make check`, `make test-container` and `make check-ui`, one after the other: for the end of a change and before the live reinstall |
 
@@ -679,6 +680,23 @@ it can fail, and a positive control that keeps an empty input from passing.
   checks that every development-only file is marked `export-ignore`, that the
   files a deployment needs are not, and — in a scratch repository — that
   `git archive` really omits what the patterns mark.
+
+## Screenshots
+
+`make screenshots` captures the pages for someone to look at; it asserts nothing, and is
+neither a test nor part of any test run. `frontend/e2e/screenshots.capture.ts` visits every
+page of the route table (`PAGES` and `ADMIN_PAGES`, a help page standing for every help page),
+and the views a page shows only when asked, such as an open dialog or pop-up, which the file
+lists. It takes each at a phone's width (`isMobile`) and a desktop's, in the light and the
+dark scheme, as the file names; the widths are in the file.
+
+It runs with `frontend/playwright.screenshots.config.ts`, which takes the browser tests' config,
+their backend and world (see [frontend.md](frontend.md#tests)) and so a world and a port of its
+own, and writes to an output folder of its own, which Playwright empties as a run starts:
+`frontend/test-results/screenshots/`, ignored by git. The browser tests' config does not match
+the file, and no test target runs its config; `tests/test_e2e_server.py` and
+`tests/test_make.py` hold both. The pre-test hook counts it as a test run, since it runs
+`playwright test`.
 
 ## Edit-time hook
 

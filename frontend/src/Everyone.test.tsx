@@ -54,45 +54,62 @@ function api() {
 
 const person = (email: string) => screen.findByRole("region", { name: email });
 
-test("each person's workspaces are listed with their server's state and session", async () => {
+// A workspace's row in a person's card, by its name.
+function row(card: HTMLElement, name: string): HTMLElement {
+  const found = within(card)
+    .getAllByRole("listitem")
+    .filter((item) => item.querySelector(".ws-name")?.textContent === name);
+  expect(found).toHaveLength(1);
+  return found[0];
+}
+
+test("each person is a card, their address as its heading, with how many workspaces they have", async () => {
+  api();
+  renderApp("/admin/workspaces");
+  const title = await screen.findByRole("heading", { level: 1, name: m.everyoneTitle });
+  expect(title.parentElement).toHaveClass("page-head");
+  const alice = await person("alice@example.com");
+  expect(alice).toHaveClass("card");
+  expect(
+    within(alice).getByRole("heading", { level: 2, name: "alice@example.com" }),
+  ).toBeInTheDocument();
+  expect(alice).toHaveTextContent(m.workspaceCount(5));
+  expect(within(alice).getAllByRole("listitem")).toHaveLength(5);
+});
+
+test("each workspace is a row of its list with its state as a pill and its session", async () => {
   api();
   renderApp("/admin/workspaces");
   const alice = await person("alice@example.com");
-  const headers = within(alice)
-    .getAllByRole("columnheader")
-    .map((h) => h.textContent);
-  expect(headers).toEqual([m.everyoneWorkspace, m.everyoneState, m.sessionName, m.everyoneClaude]);
-  const alpha = within(alice).getByRole("row", { name: /alpha/ });
+  const alpha = row(alice, "alpha");
+  expect(alpha).toHaveClass("list-row");
   expect(within(alpha).getByText(m.states.ready)).toHaveClass("badge", `badge-${KIND.ready}`);
-  expect(within(alpha).getByText("alpha-quiet-otter")).toBeInTheDocument();
-  expect(within(alpha).getByRole("cell", { name: "2.1.0" })).toBeInTheDocument();
-  const beta = within(alice).getByRole("row", { name: /beta/ });
-  expect(within(beta).getByText(m.states.stopped)).toBeInTheDocument();
-  const gamma = within(alice).getByRole("row", { name: /gamma/ });
-  expect(within(gamma).getByText(m.everyoneNoServer)).toBeInTheDocument();
-  const delta = within(alice).getByRole("row", { name: /delta/ });
-  expect(within(delta).getByText(m.workspaceStates.creating)).toBeInTheDocument();
+  const session = within(alpha).getByText("alpha-quiet-otter");
+  expect(session.tagName).toBe("CODE");
+  expect(session).toHaveAttribute("title", m.sessionName); // what it is, as the panel names it
+  expect(within(row(alice, "beta")).getByText(m.states.stopped)).toHaveClass("badge");
+  expect(within(row(alice, "gamma")).getByText(m.everyoneNoServer)).toHaveClass("badge");
+  const delta = within(row(alice, "delta")).getByText(m.workspaceStates.creating);
+  expect(delta).toHaveClass("badge");
   const bob = await person("bob@example.com");
   expect(within(bob).getByText(m.everyoneNone)).toBeInTheDocument();
+  expect(within(bob).queryAllByRole("listitem")).toEqual([]);
 });
 
 test("a workspace shows the Claude Code version its server runs, and nothing where none does", async () => {
   api();
   renderApp("/admin/workspaces");
   const alice = await person("alice@example.com");
-  const cells = (name: RegExp) =>
-    within(within(alice).getByRole("row", { name })).getAllByRole("cell");
-  const at = (name: RegExp) => cells(name)[3].textContent;
-  expect(at(/alpha/)).toBe("2.1.0");
-  expect(at(/beta/)).toBe(""); // its server is stopped: it has no version
-  expect(at(/gamma/)).toBe(""); // no server
+  expect(row(alice, "alpha")).toHaveTextContent(m.serverClaudeVersion("2.1.0"));
+  for (const name of ["beta", "gamma"]) // stopped, or no server: no version
+    expect(row(alice, name).textContent).not.toMatch(/Claude Code/);
 });
 
 test("a workspace whose server could not be read shows the server's reason", async () => {
   api();
   renderApp("/admin/workspaces");
   const alice = await person("alice@example.com");
-  const epsilon = within(alice).getByRole("row", { name: /epsilon/ });
+  const epsilon = row(alice, "epsilon");
   expect(within(epsilon).getByRole("alert")).toHaveTextContent(
     "planted: the server could not be read",
   );
@@ -105,14 +122,7 @@ test("nothing on the page acts on anyone's workspaces", async () => {
   renderApp("/admin/workspaces");
   const main = (await screen.findByRole("heading", { name: m.everyoneTitle })).closest("main")!;
   await person("alice@example.com");
-  expect(within(main).getAllByRole("row").length).toBeGreaterThan(1); // positive control
+  expect(within(main).getAllByRole("listitem").length).toBeGreaterThan(1); // positive control
   expect(within(main).queryAllByRole("button")).toEqual([]);
   expect(within(main).queryAllByRole("link")).toEqual([]);
-});
-
-test("a person's table is in a box that scrolls sideways", async () => {
-  api();
-  renderApp("/admin/workspaces");
-  const alice = await person("alice@example.com");
-  expect(within(alice).getByRole("table").closest(".table-scroll")).not.toBeNull();
 });

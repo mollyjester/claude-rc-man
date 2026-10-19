@@ -231,9 +231,19 @@ export function Terminal({
     setAttempt((n) => n + 1);
   }
 
+  // How the terminal stands, as a dot of the status dots' shapes beside the words.
+  const kind =
+    phase.kind === "connected"
+      ? "running"
+      : phase.kind === "connecting"
+        ? "waiting"
+        : phase.kind === "unloaded" || (phase.kind === "closed" && phase.problem)
+          ? "problem"
+          : "stopped";
   return (
-    <div className="terminal">
+    <div className="terminal card">
       <div className="terminal-bar">
+        <span className={`dot dot-${kind}`} aria-hidden="true" />
         <p role="status">
           {phase.kind === "connecting" && m.terminalConnecting}
           {phase.kind === "unloaded" && m.terminalNotLoaded}
@@ -252,7 +262,11 @@ export function Terminal({
           </button>
         )}
       </div>
-      {phase.kind === "closed" && <ProblemView error={phase.problem} />}
+      {phase.kind === "closed" && phase.problem && (
+        <div className="terminal-problem">
+          <ProblemView error={phase.problem} />
+        </div>
+      )}
       <div className="terminal-screen" ref={screen} />
     </div>
   );

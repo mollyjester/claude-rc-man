@@ -25,19 +25,23 @@ export function Settings() {
 
   const author = reply?.effective_author;
   return (
-    <section>
-      <h1>{m.settingsTitle}</h1>
+    <section className="cards settings">
+      <div className="page-head">
+        <h1>{m.settingsTitle}</h1>
+      </div>
       <ProblemView error={error} />
       {reply && (
         <>
           <Part
             title={m.settingsPrefixTitle}
+            line={m.settingsPrefixLine}
             fields={["prefix"]}
             reply={reply}
             onSaved={setReply}
           />
           <Part
             title={m.settingsAuthorTitle}
+            line={m.settingsAuthorLine}
             fields={["author_name", "author_email"]}
             reply={reply}
             onSaved={setReply}
@@ -84,13 +88,12 @@ function GitHubToken() {
   }
 
   return (
-    <section aria-labelledby={heading}>
-      <h2 id={heading}>{m.settingsGithubTitle}</h2>
+    <Card heading={heading} title={m.settingsGithubTitle} line={m.settingsGithubLine}>
       {stored !== null && <p>{stored ? m.githubTokenStored : m.githubTokenNotStored}</p>}
       {/* Offered only once the server says whether a token is stored. */}
       {stored !== null && (
         <form noValidate onSubmit={save} ref={fields.form}>
-          <div>
+          <div className="field">
             <label>
               {m.githubTokenLabel}
               <input
@@ -106,26 +109,26 @@ function GitHubToken() {
               />
             </label>
             {fields.message("token")}
-            <p className="muted">{m.githubTokenHelp}</p>
+            <p className="help muted">{m.githubTokenHelp}</p>
           </div>
-          <button type="submit" className="primary">
-            {m.save}
-          </button>
+          <div className="actions">
+            <button type="submit" className="primary">
+              {m.save}
+            </button>
+            {stored && (
+              <button
+                type="button"
+                className="secondary-danger"
+                onClick={() => {
+                  setSaved(false);
+                  setRemoving(true);
+                }}
+              >
+                {m.githubTokenRemove}
+              </button>
+            )}
+          </div>
         </form>
-      )}
-      {stored && (
-        <div className="actions">
-          <button
-            type="button"
-            className="secondary-danger"
-            onClick={() => {
-              setSaved(false);
-              setRemoving(true);
-            }}
-          >
-            {m.githubTokenRemove}
-          </button>
-        </div>
       )}
       {removing && (
         <RemoveTokenDialog
@@ -139,6 +142,30 @@ function GitHubToken() {
       )}
       <p role="status">{saved ? m.githubTokenSaved : ""}</p>
       <ProblemView error={error} labels={{ token: m.githubTokenLabel }} inline />
+    </Card>
+  );
+}
+
+// A part of the page, as a card: its title and one line on what it is for, beside its form on
+// a wide screen and over it on a narrow one (src/styles.css).
+function Card({
+  heading,
+  title,
+  line,
+  children,
+}: {
+  heading: string;
+  title: string;
+  line: string;
+  children: ReactNode;
+}) {
+  return (
+    <section aria-labelledby={heading} className="card setting">
+      <div className="setting-intro">
+        <h2 id={heading}>{title}</h2>
+        <p className="muted">{line}</p>
+      </div>
+      <div className="setting-body">{children}</div>
     </section>
   );
 }
@@ -175,7 +202,7 @@ function RemoveTokenDialog({
     >
       <form noValidate onSubmit={remove}>
         <p>{m.githubTokenRemoveBody}</p>
-        <div className="actions">
+        <div className="actions footer">
           <button type="submit" className="danger" disabled={busy}>
             {m.githubTokenRemoveConfirm}
           </button>
@@ -192,12 +219,13 @@ function RemoveTokenDialog({
 // One part of the page: its own fields, saved on their own.
 function Part(props: {
   title: string;
+  line: string;
   fields: Field[];
   reply: Reply;
   onSaved: (reply: Reply) => void;
   children?: ReactNode;
 }) {
-  const { title, fields, reply, onSaved, children } = props;
+  const { title, line, fields, reply, onSaved, children } = props;
   const [values, setValues] = useState(() => Object.fromEntries(fields.map((f) => [f, reply[f]])));
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<ApiError | null>(null);
@@ -219,11 +247,11 @@ function Part(props: {
   }
 
   return (
-    <section aria-labelledby={heading}>
-      <h2 id={heading}>{title}</h2>
+    <Card heading={heading} title={title} line={line}>
+      {children}
       <form noValidate onSubmit={save} ref={fieldErrors.form}>
         {fields.map((field) => (
-          <div key={field}>
+          <div key={field} className="field">
             <label>
               {FIELDS[field].label}
               <input
@@ -238,20 +266,21 @@ function Part(props: {
               />
             </label>
             {fieldErrors.message(field)}
-            <p className="muted">{FIELDS[field].help}</p>
+            <p className="help muted">{FIELDS[field].help}</p>
           </div>
         ))}
-        <button type="submit" className="primary">
-          {m.save}
-        </button>
+        <div className="actions">
+          <button type="submit" className="primary">
+            {m.save}
+          </button>
+        </div>
       </form>
-      {children}
       <p role="status">{saved ? m.saved : ""}</p>
       <ProblemView
         error={error}
         labels={Object.fromEntries(fields.map((f) => [f, FIELDS[f].label]))}
         inline
       />
-    </section>
+    </Card>
   );
 }

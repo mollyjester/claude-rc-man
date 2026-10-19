@@ -2,6 +2,7 @@ import { type ReactNode, type RefObject, useEffect, useId, useRef } from "react"
 
 import { ApiError, UNEXPECTED_RESPONSE } from "./api";
 import { noteFailure, PAGE_ERROR } from "./clientErrors";
+import { MessageBar } from "./MessageBar";
 import { m } from "./messages";
 
 // Shows an error exactly as the server described it. A form passes its labels,
@@ -38,7 +39,7 @@ export function ProblemView({
       ? server.path
       : null;
   return (
-    <div role="alert" className="problem">
+    <MessageBar kind="problem" role="alert">
       <p>{placed ? m.problemCheckFields : error.title}</p>
       {listed.length > 0 && (
         <ul aria-label={m.problemFieldErrors}>
@@ -86,7 +87,7 @@ export function ProblemView({
           </ul>
         </>
       )}
-    </div>
+    </MessageBar>
   );
 }
 

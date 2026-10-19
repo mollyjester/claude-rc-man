@@ -491,7 +491,7 @@ the address given as `RCMAN_INSTALL_ADMIN_EMAIL`, and rcman opens on the
 Workspaces page. What rcman writes to the system journal, and how to read it, is
 in [The system journal](journal.md).
 
-Add people with `sudo rcman-admin add` or on the **People** page, under
-**Admin** in rcman's navigation — see [Adding and removing people](users.md).
-rcman's own settings, which administrators set, are described in
-[Configuration](configuration.md).
+Add people with `sudo rcman-admin add` or on the **People** page, in the
+**Administration** group of rcman's sidebar — see
+[Adding and removing people](users.md). rcman's own settings, which
+administrators set, are described in [Configuration](configuration.md).

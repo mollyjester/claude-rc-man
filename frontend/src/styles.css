@@ -1,37 +1,112 @@
-/* Every colour is a custom property here, light first and dark below;
-   src/styles.test.ts holds the stylesheet to that. */
+/* rcman's design system, then what is built of it, in this order: the tokens, light first and
+   dark below; the base elements; the shell, its top bar and sidebar; the shared components;
+   the Workspaces page's own parts; the Terminal tab and xterm.js; the other pages' parts; and
+   last the phone's and the touch
+   screen's rules, which win over what is above them. Every colour is a custom property here,
+   which src/styles.test.ts holds the stylesheet to, with the text's contrast in both schemes.
+   project-knowledge/frontend.md says what the tokens are for. */
+
+/* --- tokens -------------------------------------------------------------------------------- */
+
 :root {
-  font-family: system-ui, sans-serif;
   color-scheme: light dark;
-  --bg: #ffffff;
-  --fg: #1f2937;
-  --surface: #f3f4f6;
-  --muted: #4b5563;
-  --border: #d1d5db;
-  --accent: #1d4ed8;
+
+  /* type: the system's own face, a 14px body; a field's text is 16px (the field rules below) */
+  --font:
+    "Segoe UI Variable Text", "Segoe UI", -apple-system, BlinkMacSystemFont, Roboto, "Noto Sans",
+    "Liberation Sans", "Helvetica Neue", Arial, system-ui, sans-serif;
+  --font-mono: ui-monospace, "Cascadia Mono", "SF Mono", Menlo, Consolas, monospace;
+  --text-body: 0.875rem;
+  --text-small: 0.75rem;
+  --text-title-1: 1.5rem;
+  --text-title-2: 1.25rem;
+  --text-title-3: 1rem;
+  --line-body: 1.25rem;
+
+  /* spacing, on a 4px grid */
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.25rem;
+  --space-6: 1.5rem;
+  --space-8: 2rem;
+
+  /* corners: a control's, a card's or a sheet's, and a pill's */
+  --radius-control: 0.25rem;
+  --radius-card: 0.5rem;
+  --radius-pill: 999px;
+
+  /* sizes: a control with a mouse, and on a touch screen (WCAG 2.2's 2.5.5); the shell's */
+  --control: 2rem;
+  --touch: 2.75rem;
+  --topbar: 3rem;
+  --topbar-phone: 3.5rem;
+  --sidebar: 15rem;
+  /* the bar over a workspace's panel on a phone, which what is scrolled to stops below too */
+  --panel-bar: 3rem;
+
+  /* elevation: only what floats over the page has a shadow */
+  --elevation-popover: 0 0 2px var(--shadow-ambient), 0 8px 16px var(--shadow);
+  --elevation-dialog: 0 0 8px var(--shadow-ambient), 0 32px 64px var(--shadow);
+
+  /* neutrals: the page, the cards and fields on it, and the sidebar */
+  --bg: #f5f5f5;
+  --surface: #ffffff;
+  --surface-hover: #f0f0f0;
+  --surface-pressed: #ebebeb;
+  --subtle-hover: rgba(0, 0, 0, 0.05);
+  --subtle-pressed: rgba(0, 0, 0, 0.07);
+  --nav-bg: #ebebeb;
+  --nav-selected: #ffffff;
+  --fg: #242424;
+  --muted: #5c5c5c;
+  --border: #e0e0e0;
+  --border-control: #d1d1d1;
+  --field-border: #8a8a8a;
+  /* the one accent, a saturated blue with white on it, and its text on the page */
+  --accent: #0f6cbd;
+  --accent-hover: #115ea3;
   --accent-fg: #ffffff;
-  --running: #15803d;
-  --waiting: #b45309;
-  --problem: #b91c1c;
-  /* what cannot be undone is drawn in the colour of a problem, on the page's own */
+  --accent-text: #0f6cbd;
+  --accent-soft: #ebf3fc;
+  /* states: each a colour for its text and marks, and a tint for its pill and message bar */
+  --running: #0e700e;
+  --running-soft: #f1faf1;
+  --waiting: #9a4500;
+  --waiting-soft: #fff6ed;
+  --problem: #b10e1c;
+  --problem-soft: #fdf3f4;
+  --stopped: #5c5c5c;
+  --stopped-soft: #f0f0f0;
+  /* each state's stroke, round its pill and along its message bar */
+  --running-stroke: #9fd89f;
+  --waiting-stroke: #fdcfb4;
+  --problem-stroke: #eeacb2;
+  --stopped-stroke: #d1d1d1;
+  --accent-stroke: #b4d6fa;
+  /* what cannot be undone is drawn in the colour of a problem */
   --danger: var(--problem);
-  --danger-fg: var(--bg);
-  --stopped: #4b5563;
-  --focus: #2563eb;
-  --shadow: rgba(17, 24, 39, 0.18);
-  /* what is behind a dialog, dimmed */
-  --backdrop: rgba(17, 24, 39, 0.45);
+  --danger-fg: #ffffff;
+  --danger-hover: #960b18;
+  /* danger's text and outline on a card, as a secondary-danger button has them */
+  --danger-text: var(--danger);
+  --focus: #242424;
+  --shadow: rgba(0, 0, 0, 0.14);
+  --shadow-ambient: rgba(0, 0, 0, 0.12);
+  /* what is behind a dialog or the drawer, dimmed */
+  --backdrop: rgba(0, 0, 0, 0.4);
   --screen-bg: #111827;
   --screen-fg: #e5e7eb;
   /* the Terminal tab's colours, which src/terminalTheme.ts reads into xterm.js */
-  --terminal-bg: #f9fafb;
-  --terminal-fg: #1f2937;
-  --terminal-cursor: #1f2937;
-  --terminal-cursor-accent: #f9fafb;
-  --terminal-selection: rgba(29, 78, 216, 0.25);
-  --terminal-scrollbar: rgba(31, 41, 55, 0.25);
-  --terminal-scrollbar-hover: rgba(31, 41, 55, 0.4);
-  --terminal-scrollbar-active: rgba(31, 41, 55, 0.55);
+  --terminal-bg: #fafafa;
+  --terminal-fg: #242424;
+  --terminal-cursor: #242424;
+  --terminal-cursor-accent: #fafafa;
+  --terminal-selection: rgba(15, 108, 189, 0.25);
+  --terminal-scrollbar: rgba(36, 36, 36, 0.25);
+  --terminal-scrollbar-hover: rgba(36, 36, 36, 0.4);
+  --terminal-scrollbar-active: rgba(36, 36, 36, 0.55);
   --terminal-black: #1f2937;
   --terminal-red: #b91c1c;
   --terminal-green: #15803d;
@@ -51,25 +126,50 @@
 }
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #111827;
-    --fg: #e5e7eb;
-    --surface: #1f2937;
-    --muted: #9ca3af;
-    --border: #374151;
-    --accent: #93c5fd;
-    --accent-fg: #111827;
-    --running: #4ade80;
-    --waiting: #fbbf24;
-    --problem: #f87171;
-    --stopped: #9ca3af;
-    --focus: #93c5fd;
-    --shadow: rgba(0, 0, 0, 0.6);
-    --backdrop: rgba(0, 0, 0, 0.65);
-    --terminal-bg: #0b1120;
+    --bg: #161616;
+    --surface: #222222;
+    --surface-hover: #2b2b2b;
+    --surface-pressed: #333333;
+    --subtle-hover: rgba(255, 255, 255, 0.07);
+    --subtle-pressed: rgba(255, 255, 255, 0.11);
+    --nav-bg: #1c1c1c;
+    --nav-selected: #2e2e2e;
+    --fg: #f0f0f0;
+    --muted: #ababab;
+    --border: #333333;
+    --border-control: #4a4a4a;
+    --field-border: #858585;
+    --accent: #0f6cbd;
+    --accent-hover: #1971c2;
+    --accent-fg: #ffffff;
+    --accent-text: #62abf5;
+    --accent-soft: #0e2a47;
+    --running: #54b054;
+    --running-soft: #0d260d;
+    --waiting: #f2a65a;
+    --waiting-soft: #2e1d0a;
+    --problem: #f1707b;
+    --problem-soft: #3b0f12;
+    --stopped: #ababab;
+    --stopped-soft: #2e2e2e;
+    --running-stroke: #2f6b2f;
+    --waiting-stroke: #7a4512;
+    --problem-stroke: #7a2a31;
+    --stopped-stroke: #4a4a4a;
+    --accent-stroke: #1f4f80;
+    --danger: #c50f1f;
+    --danger-fg: #ffffff;
+    --danger-hover: #a4262c;
+    --danger-text: var(--problem);
+    --focus: #f0f0f0;
+    --shadow: rgba(0, 0, 0, 0.5);
+    --shadow-ambient: rgba(0, 0, 0, 0.4);
+    --backdrop: rgba(0, 0, 0, 0.6);
+    --terminal-bg: #0f0f0f;
     --terminal-fg: #e5e7eb;
     --terminal-cursor: #e5e7eb;
-    --terminal-cursor-accent: #0b1120;
-    --terminal-selection: rgba(147, 197, 253, 0.3);
+    --terminal-cursor-accent: #0f0f0f;
+    --terminal-selection: rgba(98, 171, 245, 0.3);
     --terminal-scrollbar: rgba(229, 231, 235, 0.2);
     --terminal-scrollbar-hover: rgba(229, 231, 235, 0.35);
     --terminal-scrollbar-active: rgba(229, 231, 235, 0.5);
@@ -91,13 +191,56 @@
     --terminal-bright-white: #f9fafb;
   }
 }
+
+/* --- base ---------------------------------------------------------------------------------- */
+
+/* What is scrolled to, as by a link to a part of a page, stops below the top bar. */
+html {
+  scroll-padding-top: var(--topbar);
+}
+
 body {
   margin: 0;
   background: var(--bg);
   color: var(--fg);
+  font-family: var(--font);
+  font-size: var(--text-body);
+  line-height: var(--line-body);
+  -webkit-font-smoothing: antialiased;
+}
+h1,
+h2,
+h3,
+h4 {
+  font-weight: 600;
+  text-wrap: balance;
+}
+h1 {
+  font-size: var(--text-title-1);
+  line-height: 2rem;
+  margin: 0 0 var(--space-4);
+}
+h2 {
+  font-size: var(--text-title-2);
+  line-height: 1.75rem;
+  margin: var(--space-6) 0 var(--space-3);
+}
+h3 {
+  font-size: var(--text-title-3);
+  line-height: 1.375rem;
+  margin: var(--space-4) 0 var(--space-2);
+}
+p {
+  margin: var(--space-2) 0;
 }
 a {
-  color: var(--accent);
+  color: var(--accent-text);
+  text-underline-offset: 2px;
+}
+code,
+pre,
+kbd {
+  font-family: var(--font-mono);
 }
 /* A figure only names what it holds, such as a screen, and adds no space of its own. */
 figure {
@@ -105,216 +248,950 @@ figure {
 }
 :focus-visible {
   outline: 2px solid var(--focus);
-  outline-offset: 2px;
+  outline-offset: 1px;
 }
-
-button,
-a.button {
-  display: inline-block;
-  font: inherit;
-  min-height: 1.5rem;
-  padding: 0.35rem 0.85rem;
-  border-radius: 0.375rem;
-  border: 1px solid var(--border);
-  background: var(--surface);
-  color: var(--fg);
-  cursor: pointer;
-  text-decoration: none;
+.muted {
+  color: var(--muted);
 }
-button.primary,
-a.button.primary {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: var(--accent-fg);
-  font-weight: 600;
-}
-/* A form's leading button where what it does cannot be undone. */
-button.danger {
-  background: var(--danger);
-  border-color: var(--danger);
-  color: var(--danger-fg);
-  font-weight: 600;
-}
-button.secondary {
-  background: transparent;
-}
-/* A button that opens what cannot be undone, without being that itself. */
-button.secondary-danger {
-  background: transparent;
-  border-color: var(--danger);
-  color: var(--danger);
-}
-button:disabled {
-  opacity: 0.6;
-  cursor: default;
-}
-
-header {
-  display: flex;
-  gap: 0.5rem 1rem;
-  align-items: center;
-  padding: 0.75rem 1.5rem;
-  border-bottom: 1px solid var(--border);
-  flex-wrap: wrap;
-}
-/* The links wrap onto another line rather than run past the window's edge. */
-header nav {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.25rem 1rem;
-  flex: 1 1 auto;
-  align-items: center;
-}
-/* Sign out and what it does to the servers are one group. */
-form.sign-out {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0.25rem 0.75rem;
-  padding: 0.15rem 0.6rem;
-  font-size: 0.9rem;
-  border: 1px solid var(--border);
-  border-radius: 0.375rem;
+/* What is there for assistive technology only, such as the word of a change
+   the page shows as a letter. */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
 }
 /* The first thing Tab reaches: out of sight until it has focus. */
 .skip-link {
   position: absolute;
   left: -9999px;
   top: 0;
-  z-index: 3;
-  padding: 0.5rem 1rem;
-  background: var(--bg);
+  z-index: 30;
+  padding: var(--space-2) var(--space-4);
+  background: var(--surface);
   color: var(--fg);
   border: 1px solid var(--border);
-  border-radius: 0.375rem;
+  border-radius: var(--radius-control);
 }
 .skip-link:focus {
   left: 0.5rem;
   top: 0.5rem;
 }
-header nav a.active,
-header nav button.active {
-  font-weight: 600;
+/* A place that announces a result is there before it has one to say, and takes no room. */
+[role="status"]:empty {
+  margin: 0;
 }
-.menu {
-  position: relative;
+summary {
+  cursor: pointer;
 }
-.menu > button {
-  padding: 0.2rem 0.6rem;
+
+/* rcman's own icons (src/Icons.tsx), a line high, in the text's colour. */
+.icon {
+  width: 1rem;
+  height: 1rem;
+  flex: none;
 }
-/* A disclosure button: its name, then a caret that turns with aria-expanded. */
-button[aria-expanded] {
+/* A request under way: its button's icon turns, unless motion is to be kept down. */
+.spinning .icon {
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+/* --- the shell: the top bar across, the sidebar beside the page --------------------------- */
+
+.shell {
+  display: grid;
+  grid-template-columns: var(--sidebar) minmax(0, 1fr);
+  grid-template-rows: var(--topbar) 1fr;
+  grid-template-areas:
+    "top top"
+    "side main";
+  min-height: 100dvh;
+}
+/* The top bar and the sidebar are one pop-up's root for the drawer, laid out by the shell. */
+.chrome {
+  display: contents;
+}
+.topbar {
+  grid-area: top;
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: var(--space-2);
+  box-sizing: border-box;
+  height: var(--topbar);
+  padding: 0 var(--space-3) 0 var(--space-4);
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+.topbar a,
+.sidebar a {
+  text-decoration: none;
+}
+.brand {
   display: inline-flex;
   align-items: center;
-  gap: 0.4rem;
-}
-.caret {
-  width: 0.4rem;
-  height: 0.4rem;
-  border-right: 2px solid currentColor;
-  border-bottom: 2px solid currentColor;
-  transform: translateY(-0.1rem) rotate(45deg);
-}
-[aria-expanded="true"] > .caret {
-  transform: translateY(0.1rem) rotate(225deg);
-}
-.menu ul {
-  position: absolute;
-  top: 100%;
-  left: 0;
-  z-index: 1;
-  list-style: none;
-  margin: 0.25rem 0 0;
-  padding: 0.25rem 0;
-  min-width: 12rem;
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 0.5rem;
-  box-shadow: 0 0.25rem 0.75rem var(--shadow);
-}
-.menu li a {
-  display: block;
-  padding: 0.35rem 0.75rem;
-}
-main {
-  padding: 1rem 1.5rem;
-  max-width: 72rem;
-}
-
-/* minmax(0, …): a wide screen scrolls inside its card rather than widening the column. */
-.dashboard {
-  display: grid;
-  grid-template-columns: minmax(16rem, 2fr) minmax(0, 3fr);
-  column-gap: 2rem;
-  align-items: start;
-}
-.dashboard > .list,
-.dashboard > .panel-side {
-  min-width: 0;
-}
-/* The page's heading, with New workspace's + beside it. */
-.page-head {
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-}
-.page-head h1 {
-  margin: 0.5rem 0;
-}
-/* Over the panel where the list is not beside it: back to the list, and the switch to another.
-   Beside the list it is not needed. */
-.panel-bar {
-  display: none;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.5rem;
-  margin-bottom: 0.75rem;
-}
-
-.workspaces {
-  list-style: none;
-  padding-left: 0;
-}
-/* A name that is too long is cut short, and its dot and state stay beside it. */
-.workspaces li {
-  display: flex;
-  align-items: center;
-  min-width: 0;
-  margin: 0.2rem 0;
-}
-button.name {
-  background: none;
-  border: none;
-  min-height: 1.5rem;
-  padding: 0.1rem 0.35rem;
-  border-radius: 0.25rem;
+  gap: var(--space-2);
   color: var(--fg);
-  text-align: left;
+  font-weight: 600;
+  font-size: var(--text-title-3);
 }
-.workspaces button.name {
+/* rcman's mark: its initials on the accent, the one solid block of colour in the chrome. */
+.mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.5rem;
+  height: 1.5rem;
+  border-radius: var(--radius-control);
+  background: var(--accent);
+  color: var(--accent-fg);
+  font-family: var(--font-mono);
+  font-size: var(--text-small);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+.crumb-sep {
+  color: var(--muted);
+}
+.crumb {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-button.name[aria-current="true"] {
+.topbar-end {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  margin-left: auto;
+}
+/* The drawer's button, and what dims the page beside the drawer, which only a phone shows. */
+.scrim {
+  display: none;
+}
+.menu-button {
+  display: none;
+}
+.avatar-button {
+  width: var(--control);
+  height: var(--control);
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-pill);
+  background: transparent;
+}
+.avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  border-radius: var(--radius-pill);
   background: var(--accent);
   color: var(--accent-fg);
+  font-size: var(--text-small);
   font-weight: 600;
 }
-/* A workspace's name lines up with the heading, its button's padding outside it. */
+/* The sidebar's column, painted the whole height of the page, under the sidebar, which keeps
+   to the window as the page scrolls. */
+.shell::before {
+  content: "";
+  grid-area: side;
+  background: var(--nav-bg);
+  border-right: 1px solid var(--border);
+}
+.sidebar {
+  grid-area: side;
+  position: sticky;
+  top: var(--topbar);
+  box-sizing: border-box;
+  height: calc(100dvh - var(--topbar));
+  overflow-y: auto;
+  padding: var(--space-2);
+}
+.sidebar ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+/* A page's link: its icon and name; where you are, a lighter row with the accent's bar. */
+nav.sidebar a {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: var(--space-3);
+  min-height: 2.25rem;
+  padding: 0 var(--space-3);
+  border-radius: var(--radius-control);
+  color: var(--fg);
+}
+.sidebar a.active {
+  background: var(--nav-selected);
+  font-weight: 600;
+}
+.sidebar a.active::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: var(--space-2);
+  bottom: var(--space-2);
+  width: 3px;
+  border-radius: var(--radius-pill);
+  background: var(--accent);
+}
+.sidebar a .icon {
+  color: var(--muted);
+}
+.sidebar a.active .icon {
+  color: var(--accent-text);
+}
+.nav-group {
+  margin: var(--space-5) var(--space-3) var(--space-1);
+  font-size: var(--text-small);
+  font-weight: 600;
+  color: var(--muted);
+}
+main {
+  grid-area: main;
+  min-width: 0;
+  box-sizing: border-box;
+  padding: var(--space-6) var(--space-8) var(--space-8);
+}
+main:focus {
+  outline: none;
+}
+
+/* --- components ---------------------------------------------------------------------------- */
+
+/* Buttons, and links drawn as one: a row, their label in the middle, a control's height.
+   Kinds: plain (default), primary, subtle, danger, secondary-danger, and secondary. */
+button,
+a.button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  box-sizing: border-box;
+  min-height: var(--control);
+  padding: 0 var(--space-3);
+  font-family: inherit;
+  font-size: var(--text-body);
+  font-weight: 600;
+  line-height: var(--line-body);
+  text-align: center;
+  text-decoration: none;
+  border-radius: var(--radius-control);
+  border: 1px solid var(--border-control);
+  background: var(--surface);
+  color: var(--fg);
+  cursor: pointer;
+}
+button:active,
+a.button:active {
+  background: var(--surface-pressed);
+}
+button.primary,
+a.button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-fg);
+}
+/* What only an icon or a quiet word says: no border until it is pointed at. */
+button.subtle,
+a.button.subtle {
+  background: transparent;
+  border-color: transparent;
+  color: var(--fg);
+}
+button.subtle:active,
+a.button.subtle:active {
+  background: var(--subtle-pressed);
+}
+/* A form's leading button where what it does cannot be undone. */
+button.danger,
+a.button.danger {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: var(--danger-fg);
+}
+button.secondary {
+  background: transparent;
+}
+/* A button that opens what cannot be undone, without being that itself. */
+button.secondary-danger,
+a.button.secondary-danger {
+  background: transparent;
+  border-color: var(--danger-text);
+  color: var(--danger-text);
+}
+button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+/* An icon alone: square, a control's size. */
+.icon-button {
+  width: var(--control);
+  height: var(--control);
+  padding: 0;
+}
+/* A disclosure button: its name, then a caret that turns with aria-expanded. */
+.caret {
+  width: 0.4rem;
+  height: 0.4rem;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: translateY(-0.1rem) rotate(45deg);
+}
+[aria-expanded="true"] > .caret {
+  transform: translateY(0.1rem) rotate(225deg);
+}
+/* A row of buttons. */
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+
+/* Fields: one look for every one, the border showing where focus is. Their text is 16px at
+   least, below which a phone zooms in on the field it is typed in. */
+input:not([type="checkbox"]),
+textarea,
+select {
+  box-sizing: border-box;
+  min-height: var(--control);
+  padding: 0.3125rem var(--space-2);
+  font-family: inherit;
+  font-size: max(1rem, 16px);
+  line-height: var(--line-body);
+  background: var(--surface);
+  color: var(--fg);
+  border: 1px solid var(--field-border);
+  border-radius: var(--radius-control);
+}
+input:not([type="checkbox"]):focus-visible,
+textarea:focus-visible,
+select:focus-visible {
+  outline: 2px solid transparent;
+  outline-offset: -2px;
+  border-color: var(--accent-text);
+  box-shadow: inset 0 0 0 1px var(--accent-text);
+}
+input[aria-invalid="true"],
+textarea[aria-invalid="true"] {
+  border-color: var(--problem);
+}
+input[type="checkbox"] {
+  width: 1rem;
+  height: 1rem;
+  margin: 0;
+  accent-color: var(--accent);
+}
+form label {
+  display: block;
+  margin: var(--space-3) 0 var(--space-1);
+  font-weight: 600;
+}
+form label > input:not([type="checkbox"]),
+form label > select,
+form label > textarea {
+  margin-top: var(--space-1);
+  font-weight: normal;
+}
+form input[type="text"],
+form input[type="password"] {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 40rem;
+  font-family: inherit;
+}
+/* A checkbox's label is the whole target, a pointer's minimum high. */
+label:has(> input[type="checkbox"]) {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: 1.5rem;
+  font-weight: normal;
+}
+.field-error {
+  margin: var(--space-1) 0;
+  font-size: var(--text-small);
+  color: var(--problem);
+}
+
+/* Pivots: a row of tabs, the chosen one underlined in the accent. */
+.tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  margin: var(--space-4) 0 0;
+  border-bottom: 1px solid var(--border);
+}
+.tabs button[role="tab"] {
+  background: transparent;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  margin-bottom: -1px;
+  font-weight: normal;
+  color: var(--muted);
+}
+.tabs button[role="tab"][aria-selected="true"] {
+  border-bottom-color: var(--accent);
+  color: var(--fg);
+  font-weight: 600;
+}
+
+/* Pills: a state in a word, on its own tint. */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  box-sizing: border-box;
+  min-height: 1.25rem;
+  padding: 0 var(--space-2);
+  border: 1px solid transparent;
+  border-radius: var(--radius-pill);
+  font-size: var(--text-small);
+  font-weight: 600;
+  white-space: nowrap;
+}
+.badge-running {
+  color: var(--running);
+  background: var(--running-soft);
+  border-color: var(--running-stroke);
+}
+.badge-waiting {
+  color: var(--waiting);
+  background: var(--waiting-soft);
+  border-color: var(--waiting-stroke);
+}
+.badge-problem {
+  color: var(--problem);
+  background: var(--problem-soft);
+  border-color: var(--problem-stroke);
+}
+.badge-stopped {
+  color: var(--stopped);
+  background: var(--stopped-soft);
+  border-color: var(--stopped-stroke);
+}
+
+/* Cards: one bordered level, on the page's background, with no shadow; what is inside one is
+   divided by strokes, never boxed again. */
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  padding: var(--space-4);
+}
+.card > :first-child {
+  margin-top: 0;
+}
+.card > :last-child {
+  margin-bottom: 0;
+}
+/* A card whose rows run edge to edge, a table's or a list's, its parts divided by strokes: a
+   head of its title, and a foot of what is done with all of it. */
+.card.flush {
+  padding: 0;
+  overflow: hidden;
+}
+.card-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-1) var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--border);
+}
+.card-head h2 {
+  margin: 0;
+  font-size: var(--text-title-3);
+  line-height: 1.375rem;
+  overflow-wrap: anywhere;
+}
+.card-foot {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-4);
+  border-top: 1px solid var(--border);
+}
+p.card-empty {
+  margin: 0;
+  padding: var(--space-5) var(--space-4);
+}
+/* A part of a card, under a stroke after the one before it. */
+.card-part + .card-part {
+  margin-top: var(--space-4);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--border);
+}
+.card-title,
+.card-part > h2 {
+  margin: 0 0 var(--space-2);
+  font-size: var(--text-title-3);
+}
+
+/* List rows: a line each, divided by strokes; the selected one on the accent's quiet tint, with
+   the accent's bar at its left, as the page where you are has in the sidebar. */
+.list-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  padding: 0 var(--space-2) 0 var(--space-3);
+}
+.list-row + .list-row {
+  border-top: 1px solid var(--border);
+}
+.list-row[aria-current="true"],
+.list-row.selected {
+  background: var(--accent-soft);
+}
+.list-row[aria-current="true"]::before,
+.list-row.selected::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: var(--space-1);
+  bottom: var(--space-1);
+  width: 3px;
+  border-radius: var(--radius-pill);
+  background: var(--accent);
+}
+
+/* Message bars (src/MessageBar.tsx): a problem, a warning, something to know and something
+   done, each on its state's tint with its icon in its colour, edged above and below in its
+   stroke; never a box, so they sit in a card without nesting one. */
+.message {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  margin: var(--space-3) 0;
+  padding: var(--space-2) var(--space-3);
+  border-block: 1px solid var(--problem-stroke);
+  /* square: strokes above and below with a radius would taper at their ends */
+  border-radius: 0;
+  background: var(--problem-soft);
+}
+.message-icon {
+  display: inline-flex;
+  flex: none;
+  margin-top: 0.125rem;
+  color: var(--problem);
+}
+.message-body {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.message-body > :first-child {
+  margin-top: 0;
+}
+.message-body > :last-child {
+  margin-bottom: 0;
+}
+.message-warning {
+  border-block-color: var(--waiting-stroke);
+  background: var(--waiting-soft);
+}
+.message-warning > .message-icon {
+  color: var(--waiting);
+}
+.message-info {
+  border-block-color: var(--accent-stroke);
+  background: var(--accent-soft);
+}
+.message-info > .message-icon {
+  color: var(--accent-text);
+}
+.message-success {
+  border-block-color: var(--running-stroke);
+  background: var(--running-soft);
+}
+.message-success > .message-icon {
+  color: var(--running);
+}
+
+/* An empty state: what is not there yet, and what to do about it, in the middle: an icon, a
+   title, one line and the action. */
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-8) var(--space-4);
+  text-align: center;
+  color: var(--muted);
+}
+.empty-icon {
+  display: inline-flex;
+  color: var(--accent-text);
+}
+.empty-icon > svg {
+  width: 2rem;
+  height: 2rem;
+}
+.empty-state > strong {
+  font-size: var(--text-title-3);
+  color: var(--fg);
+}
+.empty-state > p {
+  max-width: 28rem;
+  margin: 0 0 var(--space-2);
+}
+
+/* Pop-ups: a layer over the page, with a shadow. */
+.popover,
+.menu ul,
+.menu.account > div {
+  box-sizing: border-box;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  box-shadow: var(--elevation-popover);
+}
+.menu {
+  position: relative;
+}
+.menu ul {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  z-index: 15;
+  list-style: none;
+  margin: var(--space-1) 0 0;
+  padding: var(--space-1);
+  min-width: 12rem;
+}
+/* The account menu, under the avatar, kept inside the window's right edge. */
+.menu.account > div {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  z-index: 25;
+  width: max-content;
+  max-width: calc(100vw - 2rem);
+  margin-top: var(--space-1);
+  padding: var(--space-3);
+}
+.account-panel p {
+  margin: 0 0 var(--space-2);
+  overflow-wrap: anywhere;
+}
+/* Sign out and what it does to the servers are one group, under who is signed in. */
+form.sign-out {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-2);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border);
+}
+form.sign-out > label {
+  margin: 0;
+}
+
+/* Dialogs (src/Dialog.tsx): in the middle of the window, over the page dimmed behind it; on a
+   phone a sheet from the screen's foot (below). The dialog scrolls, its head and body inside
+   it, and a row of buttons marked footer keeps to its foot. */
+dialog.dialog {
+  box-sizing: border-box;
+  width: 36rem;
+  max-width: calc(100% - 2rem);
+  max-height: calc(100dvh - 2rem);
+  margin: auto;
+  padding: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  background: var(--surface);
+  color: var(--fg);
+  box-shadow: var(--elevation-dialog);
+}
+dialog.dialog::backdrop {
+  background: var(--backdrop);
+}
+.dialog-head {
+  padding: var(--space-5) 3.5rem var(--space-2) var(--space-6);
+}
+.dialog-head > h2 {
+  margin: 0;
+  font-size: var(--text-title-2);
+  overflow-wrap: anywhere;
+}
+.dialog-body {
+  padding: 0 var(--space-6) var(--space-6);
+}
+/* A footer that ends the dialog is its foot: no room is left under it. */
+.dialog-body:has(> :last-child > .footer:last-child) {
+  padding-bottom: 0;
+}
+.dialog-close {
+  position: absolute;
+  top: var(--space-4);
+  right: var(--space-4);
+}
+dialog.dialog .footer {
+  position: sticky;
+  bottom: 0;
+  justify-content: flex-end;
+  margin: var(--space-6) calc(-1 * var(--space-6)) 0;
+  padding: var(--space-3) var(--space-6);
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+}
+dialog.dialog .muted {
+  margin-top: var(--space-1);
+}
+/* A field's one line of help, under it. */
+.help {
+  margin: var(--space-1) 0 0;
+  font-size: var(--text-small);
+}
+
+/* Tables: a small, quiet heading row, then rows of a control's height and more, divided by
+   strokes. In a card they run edge to edge; there a cell keeps to one line, so that a table
+   wider than the card scrolls sideways inside it rather than widening the page. */
+table {
+  border-collapse: collapse;
+  margin: var(--space-2) 0 var(--space-4);
+}
+th,
+td {
+  text-align: left;
+  padding: var(--space-1) var(--space-3);
+  border-bottom: 1px solid var(--border);
+}
+th {
+  height: 2rem;
+  font-size: var(--text-small);
+  font-weight: 600;
+  color: var(--muted);
+  white-space: nowrap;
+}
+td {
+  height: 2.5rem;
+}
+th.number,
+td.number {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+td.strong {
+  font-weight: 600;
+}
+/* A row's buttons, at its right end, on one line. */
+.row-actions > .actions {
+  flex-wrap: nowrap;
+  justify-content: flex-end;
+  gap: var(--space-1);
+  margin: 0;
+}
+/* A row's actions behind one button, More actions, whose menu opens under it at its right:
+   on a phone, where the rows are a list (below); wider, the row's own buttons are shown. */
+.person-menu {
+  display: none;
+  position: relative;
+}
+.popover.menu-popover.row-menu {
+  top: calc(100% + var(--space-1));
+  bottom: auto;
+  left: auto;
+  right: 0;
+  min-width: 10rem;
+}
+.menu-popover button.danger-item {
+  color: var(--danger-text);
+}
+/* A table wider than the room it has scrolls inside its box, not the page. */
+.table-scroll {
+  max-width: 100%;
+  overflow-x: auto;
+  margin: var(--space-2) 0 var(--space-4);
+}
+.table-scroll:focus-visible {
+  outline-offset: -2px;
+}
+.table-scroll > table {
+  width: 100%;
+  margin: 0;
+}
+.card.flush > .table-scroll {
+  margin: 0;
+}
+/* A help page's table: its cells as high as their words, which may run to lines. */
+.docs-article td {
+  height: auto;
+  padding: var(--space-2) var(--space-3);
+  vertical-align: top;
+}
+.card.flush th:first-child,
+.card.flush td:first-child {
+  padding-left: var(--space-4);
+}
+.card.flush th:last-child,
+.card.flush td:last-child {
+  padding-right: var(--space-4);
+}
+.card.flush tbody tr:last-child > td {
+  border-bottom: 0;
+}
+/* Facts, as a form sheet has them: each name quiet, its value beside it. */
+dl.facts {
+  display: grid;
+  grid-template-columns: minmax(8rem, max-content) minmax(0, 1fr);
+  gap: 0 var(--space-6);
+  margin: 0;
+}
+dl.facts dt,
+dl.facts dd {
+  padding: var(--space-1) 0;
+}
+dl.facts dt {
+  color: var(--muted);
+}
+dl.facts dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-variant-numeric: tabular-nums;
+}
+details.how {
+  margin: var(--space-3) 0;
+}
+details.how > summary {
+  min-height: 1.5rem;
+}
+
+/* --- pages ----------------------------------------------------------------------------------- */
+
+/* Every page's heading row: its title, and its leading action at the other end. */
+.page-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin-bottom: var(--space-4);
+}
+.page-head h1 {
+  margin: 0;
+}
+/* One line under the heading row on what the page is for. */
+.page-intro {
+  max-width: 72ch;
+  margin: 0;
+}
+/* A page of cards one under another, with what is said about them between. */
+.cards {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+.cards > .page-head {
+  margin-bottom: 0;
+}
+.cards > .page-intro {
+  margin-top: calc(-1 * var(--space-2));
+}
+.cards > .message {
+  margin: 0;
+}
+/* The Workspaces page: the list, a column of its own, beside the selected workspace's panel.
+   minmax(0, …): a wide screen scrolls inside its card rather than widening the column. */
+.dashboard {
+  display: grid;
+  grid-template-columns: 17.5rem minmax(0, 1fr);
+  column-gap: var(--space-6);
+  align-items: start;
+}
+.dashboard.empty {
+  grid-template-columns: minmax(0, 1fr);
+}
+.dashboard > .list,
+.dashboard > .panel-side {
+  min-width: 0;
+}
+/* The list: its rows edge to edge in its card. */
+.list.card {
+  padding: var(--space-1) 0;
+}
+.workspaces {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+/* A row: the name's button, which takes the room there is, its state, and its trash button. */
+.workspaces li {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+/* A workspace's name: its dot, whose room is kept where it has none, then the name, cut short
+   with an ellipsis when it is too long. */
+button.name {
+  flex: 1 1 auto;
+  justify-content: flex-start;
+  gap: var(--space-2);
+  min-height: 2.5rem;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--fg);
+  font-weight: normal;
+  text-align: left;
+}
 .workspaces button.name {
-  margin-left: -0.35rem;
+  min-width: 0;
+}
+button.name[aria-current="true"] {
+  font-weight: 600;
+}
+.name-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dot-slot {
+  display: inline-flex;
+  flex: none;
+  justify-content: center;
+  width: 0.625rem;
+}
+/* where no row has a dot, no room is kept for one */
+.workspaces:not(:has(.dot)) .dot-slot {
+  display: none;
+}
+/* New workspace's short words, and the count beside it, are a phone's (below). */
+.label-short,
+.count-line {
+  display: none;
 }
 /* Each kind of dot has its own shape as well as its own colour; the guide's
    table of shapes is held to these rules by src/workspaces-guide.test.ts. */
 .dot {
   display: inline-block;
   box-sizing: border-box;
-  width: 0.7rem;
-  height: 0.7rem;
-  margin-left: 0.3rem;
+  width: 0.625rem;
+  height: 0.625rem;
   vertical-align: middle;
 }
 .dot-running {
@@ -336,31 +1213,72 @@ button.name[aria-current="true"] {
 .workspaces .dot {
   flex: none;
 }
-/* A row's trash button keeps to the right of the row, quiet until it is pointed at. */
+.list-row > .badge {
+  flex: none;
+}
+/* A row's trash button keeps to the right of the row, a quiet icon until it is pointed at or
+   has focus, when it is drawn as the danger outline it is. */
 .workspaces button.trash {
   flex: none;
-  margin-left: auto;
   border-color: transparent;
+  color: var(--muted);
 }
-.workspaces button.trash:hover,
 .workspaces button.trash:focus-visible {
-  border-color: var(--danger);
+  border-color: var(--danger-text);
+  color: var(--danger-text);
 }
-/* A field is drawn in the page's own colours in both schemes, and marked where refused. */
-/* Its text is 16px at least, below which a phone zooms in on the field it is typed in. */
-input:not([type="checkbox"]),
-textarea,
-select {
+/* With none selected, or one the address names that is not listed: the panel's place. */
+p.placeholder {
+  margin: 0;
+  padding: var(--space-8) var(--space-4);
+  text-align: center;
+  color: var(--muted);
+}
+/* Over the panel where the list is not beside it, as on a phone: the way back and the switcher,
+   with its sheet. Beside the list it is not needed. */
+.panel-bar-root {
+  display: none;
+}
+.panel-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+button.switcher {
+  flex: 0 1 auto;
+  justify-content: flex-start;
+  min-width: 0;
+  font-size: var(--text-title-3);
+}
+.sheet {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 41;
+  box-sizing: border-box;
+  max-height: 70dvh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: var(--space-2) 0 calc(var(--space-2) + env(safe-area-inset-bottom));
   background: var(--surface);
-  color: var(--fg);
-  border: 1px solid var(--border);
-  border-radius: 0.25rem;
-  padding: 0.25rem 0.4rem;
-  font-size: max(1rem, 16px);
+  border-top: 1px solid var(--border);
+  border-radius: var(--radius-card) var(--radius-card) 0 0;
+  box-shadow: var(--elevation-dialog);
 }
-input[aria-invalid="true"],
-textarea[aria-invalid="true"] {
-  border-color: var(--problem);
+.sheet-title {
+  margin: 0;
+  padding: var(--space-2) var(--space-4);
+  font-size: var(--text-title-3);
+  font-weight: 600;
+}
+.sheet ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.sheet .list-row {
+  padding: 0 var(--space-4);
 }
 .panel-section label > textarea {
   display: block;
@@ -381,326 +1299,120 @@ textarea[aria-invalid="true"] {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
-/* A repository's page under a workspace's name: a long address wraps within the panel. */
-.source-page {
+/* A workspace's panel: its head, of its name, its state and its repository; then its tabs and
+   what each holds, with no box of its own around them. */
+.panel-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-4);
+}
+.panel-title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.panel-title h2 {
+  margin: 0;
+  font-size: var(--text-title-2);
   overflow-wrap: anywhere;
 }
-
-.panel {
-  border: 1px solid var(--border);
-  border-radius: 0.5rem;
-  padding: 0.75rem 1.25rem;
+/* The repository, muted, after its icon; a long one is cut short, its whole address its name. */
+a.repo-link {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 0;
+  max-width: 100%;
+  color: var(--muted);
+  text-decoration: none;
 }
-.panel h2 {
-  margin: 0.25rem 0 0.75rem;
+.repo-link span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
-.panel-section h3 {
-  font-size: 1rem;
-  margin: 0.75rem 0 0.5rem;
+.panel .tabs {
+  margin-top: var(--space-3);
 }
-.server {
-  border: 1px solid var(--border);
-  border-radius: 0.5rem;
-  padding: 0.75rem 1rem;
-  background: var(--surface);
+/* Overview: the Claude server's card and the Changes' card, one under the other. */
+.overview {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-4);
+  margin-top: var(--space-4);
+}
+.panel-section > h3 {
+  margin: 0 0 var(--space-3);
+  font-size: var(--text-title-3);
+}
+.panel-section .changes-head h3 {
+  margin: 0 auto 0 0;
+  font-size: var(--text-title-3);
+}
+/* The Claude server, inside its card with no box of its own: its state's pill and version, what
+   to do next, and its actions. */
+.server-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-3);
 }
 .server > :first-child {
   margin-top: 0;
 }
-.badge {
-  display: inline-block;
-  font-weight: 600;
-  font-size: 0.85rem;
-  padding: 0.1rem 0.5rem;
-  border-radius: 1rem;
-  border: 1px solid currentColor;
+.server > :last-child {
+  margin-bottom: 0;
 }
-.badge-running {
-  color: var(--running);
-}
-.badge-waiting {
-  color: var(--waiting);
-}
-.badge-problem {
-  color: var(--problem);
-}
-.badge-stopped {
-  color: var(--stopped);
-}
-.actions {
-  display: flex;
-  gap: 0.5rem;
-  flex-wrap: wrap;
-  margin-top: 0.5rem;
-}
+/* A server's screen, as a terminal shows it: dark, with no box of its own. */
 .screen {
   background: var(--screen-bg);
   color: var(--screen-fg);
-  border: 1px solid var(--border);
-  padding: 0.75rem;
+  border-radius: var(--radius-control);
+  padding: var(--space-3);
   overflow-x: auto;
-  font-size: 0.8rem;
+  font-size: var(--text-small);
 }
-
-.problem {
-  border-left: 4px solid var(--problem);
-  padding: 0.25rem 0.75rem;
-  margin: 0.5rem 0;
-}
-.claude {
-  border: 1px solid var(--border);
-  border-radius: 0.5rem;
-  padding: 0.5rem 1rem;
-  margin-bottom: 1rem;
-}
-.claude-expiring,
-.claude-expired,
-.claude-not_connected {
-  border-color: var(--waiting);
-}
-.muted {
-  color: var(--muted);
-}
-.workspaces li > .muted {
-  flex: none;
-  margin-left: 0.3rem;
-  white-space: nowrap;
-}
-.warning {
-  color: var(--waiting);
-}
-.attention {
-  border-left: 4px solid var(--waiting);
-  padding: 0.25rem 0.75rem;
-  margin: 0.5rem 0 1rem;
-}
-/* Every dialog (src/Dialog.tsx): in the middle of the window, over the page dimmed behind it;
-   on a phone it fills the screen (below). */
-dialog.dialog {
-  box-sizing: border-box;
-  width: 40rem;
-  max-width: calc(100% - 2rem);
-  max-height: calc(100dvh - 2rem);
-  margin: auto;
-  padding: 1rem 1.25rem;
-  overflow-y: auto;
-  border: 1px solid var(--border);
-  border-radius: 0.5rem;
-  background: var(--bg);
-  color: var(--fg);
-  box-shadow: 0 0.5rem 1.5rem var(--shadow);
-}
-dialog.dialog::backdrop {
-  background: var(--backdrop);
-}
-dialog.dialog > h2 {
-  margin: 0 0 0.75rem;
-  font-size: 1.25rem;
-  overflow-wrap: anywhere;
-}
-.limits-fields {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0 1rem;
-}
-form label {
-  display: block;
-  margin: 0.5rem 0;
-}
-form.sign-out > label {
-  margin: 0;
-}
-/* A checkbox's label is the whole target, a pointer's minimum high. */
-label:has(> input[type="checkbox"]) {
-  display: flex;
-  align-items: center;
-  gap: 0.4rem;
-  min-height: 1.5rem;
-}
-.field-error {
-  margin: 0.25rem 0;
-  font-size: 0.9rem;
-  color: var(--problem);
-}
-summary {
-  cursor: pointer;
-}
-/* A place that announces a result is there before it has one to say, and takes no room. */
-[role="status"]:empty {
-  margin: 0;
-}
-details.how {
-  margin: 0.75rem 0;
-}
-details.how > summary {
-  min-height: 1.5rem;
-}
-.limits-field {
-  flex: 1 1 12rem;
-  min-width: 0;
-}
-dl.facts {
-  display: grid;
-  grid-template-columns: max-content 1fr;
-  gap: 0.25rem 1rem;
-}
-dl.facts dt {
-  font-weight: 600;
-}
-dl.facts dd {
-  margin: 0;
-}
-form input[type="text"],
-form input[type="password"] {
-  display: block;
-  box-sizing: border-box;
-  width: 100%;
-  max-width: 40rem;
-  font-family: inherit;
-}
-table {
-  border-collapse: collapse;
-  margin: 0.5rem 0 1rem;
-}
-th,
-td {
-  text-align: left;
-  padding: 0.25rem 0.75rem;
-  border-bottom: 1px solid var(--border);
-}
-/* A table wider than the room it has scrolls inside its box, not the page. */
-.table-scroll {
-  max-width: 100%;
-  overflow-x: auto;
-  margin: 0.5rem 0 1rem;
-}
-.table-scroll > table {
-  margin: 0;
-}
-/* The audit trail: a date stays on one line; an address or target that is long breaks. */
-td.when {
-  white-space: nowrap;
-}
-td.wrap {
-  overflow-wrap: anywhere;
-}
-td.result-failed {
-  color: var(--problem);
-}
-.docs {
-  display: grid;
-  grid-template-columns: 14rem 1fr;
-  gap: 2rem;
-}
-.docs article {
-  min-width: 0;
-  overflow-wrap: break-word;
-}
-.docs pre {
-  overflow-x: auto;
-}
-.docs img {
-  max-width: 100%;
-}
-/* A guide's table has its cells ruled, and its headings set apart. */
-.docs th,
-.docs td {
-  vertical-align: top;
-  border: 1px solid var(--border);
-}
-.docs th {
-  background: var(--surface);
-}
-
-/* What is there for assistive technology only, such as the word of a change
-   the page shows as a letter. */
-.visually-hidden {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  margin: -1px;
-  padding: 0;
-  overflow: hidden;
-  clip-path: inset(50%);
-  white-space: nowrap;
-  border: 0;
-}
-/* rcman's own icons (src/Icons.tsx), a line high, in the text's colour. */
-.icon {
-  width: 1rem;
-  height: 1rem;
-  flex: none;
-}
-button.icon-button {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 2rem;
-  height: 2rem;
-  padding: 0;
-}
-/* A request under way: its button's icon turns, unless motion is to be kept down. */
-.spinning .icon {
-  animation: spin 0.8s linear infinite;
-}
-@media (prefers-reduced-motion: reduce) {
-  .spinning .icon {
-    animation: none;
-  }
-}
-@keyframes spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
-
-/* The Changes heading with the branch bar on its right, which wraps under the
-   heading when the two do not fit on one line. The heading's row is what the
-   bar's pop-ups are placed against, so they keep inside the section however
-   the bar wraps. */
+/* The Changes card's head: its title, with the branch bar on its right as its toolbar, which
+   wraps under the title when the two do not fit on one line. The head's row is what the bar's
+   pop-ups are placed against, so they keep inside the card however the bar wraps. */
 .changes-head {
   position: relative;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 0.5rem 1rem;
-  margin: 0.75rem 0 0.5rem;
-}
-.panel-section .changes-head h3 {
-  margin: 0 auto 0 0;
+  gap: var(--space-2) var(--space-4);
+  margin: 0 0 var(--space-2);
 }
 .branch-bar {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 0.25rem;
+  gap: var(--space-1);
   min-width: 0;
 }
+/* The branch: a subtle button, its icon, then its name in the monospace face. */
 button.branch-button {
-  height: 2rem;
-  padding: 0 0.6rem;
   max-width: 100%;
+  padding: 0 var(--space-2);
 }
 .branch-label {
   max-width: 12rem;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-family: monospace;
+  font-family: var(--font-mono);
+  font-weight: normal;
 }
 .popover {
   position: absolute;
-  top: calc(100% + 0.25rem);
+  top: calc(100% + var(--space-1));
   right: 0;
-  z-index: 2;
-  box-sizing: border-box;
+  z-index: 15;
   width: 20rem;
   max-width: 100%;
-  padding: 0.5rem;
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 0.5rem;
-  box-shadow: 0 0.25rem 0.75rem var(--shadow);
+  padding: var(--space-2);
 }
 .popover input[type="text"] {
   display: block;
@@ -712,8 +1424,8 @@ button.branch-button {
   margin-top: 0;
 }
 .popover .group {
-  margin: 0.5rem 0.4rem 0.2rem;
-  font-size: 0.8rem;
+  margin: var(--space-2) 0.4rem 0.2rem;
+  font-size: var(--text-small);
   color: var(--muted);
 }
 .popover ul {
@@ -728,18 +1440,17 @@ button.branch-button {
    little room beside it. */
 .popover .row {
   display: flex;
-  align-items: flex-start;
-  gap: 0.5rem;
+  align-items: center;
+  justify-content: flex-start;
+  gap: var(--space-2);
   box-sizing: border-box;
   width: 100%;
   padding: 0.3rem 0.4rem;
   border: none;
-  border-radius: 0.25rem;
+  border-radius: var(--radius-control);
   background: transparent;
+  font-weight: normal;
   text-align: left;
-}
-.popover button.row:not(:disabled):hover {
-  background: var(--surface);
 }
 .popover .no-icon {
   width: 1rem;
@@ -749,14 +1460,14 @@ button.branch-button {
   display: flex;
   flex: 1;
   flex-wrap: wrap;
-  column-gap: 0.5rem;
+  column-gap: var(--space-2);
   min-width: 0;
 }
 .popover .branch-name {
   flex: 0 1 auto;
   min-width: 0;
   overflow-wrap: anywhere;
-  font-family: monospace;
+  font-family: var(--font-mono);
 }
 .popover .note {
   flex: 0 0 auto;
@@ -765,7 +1476,7 @@ button.branch-button {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 0.8rem;
+  font-size: var(--text-small);
   color: var(--muted);
 }
 .popover .note + .note {
@@ -775,22 +1486,21 @@ button.branch-button {
 .popover .more {
   margin: 0;
   padding: 0.3rem 0.4rem;
-  font-size: 0.9rem;
   color: var(--muted);
 }
-/* Ahead and behind: the arrows and counts for the eye, darker where not 0. */
+/* Ahead and behind: muted counters, the arrows and counts for the eye, darker where not 0. */
 .sync {
   display: inline-flex;
   align-items: center;
-  min-height: 2rem;
-  padding: 0 0.4rem;
-  font-size: 0.9rem;
+  min-height: var(--control);
+  padding: 0 var(--space-1);
+  font-size: var(--text-small);
   font-variant-numeric: tabular-nums;
   color: var(--muted);
 }
 .sync-arrows {
   display: inline-flex;
-  gap: 0.5rem;
+  gap: var(--space-2);
 }
 .sync-arrows > span {
   display: inline-flex;
@@ -802,36 +1512,38 @@ button.branch-button {
   font-weight: 600;
 }
 
-/* Staged and Not staged, each folding under its heading. */
+/* Staged and Not staged: flat groups, each folding under its heading, divided by strokes. */
 .files {
-  margin: 0.5rem 0;
-  border: 1px solid var(--border);
-  border-radius: 0.5rem;
+  border-top: 1px solid var(--border);
+}
+.files + .files,
+.files + .message {
+  margin-top: 0;
 }
 /* The heading and its action share one line: the heading gives way first. */
 .files-head {
   display: flex;
   align-items: center;
-  gap: 0.25rem;
-  padding: 0.25rem;
+  gap: var(--space-1);
+  padding: var(--space-1) 0;
 }
 .panel-section .files-head h4 {
   flex: 1 1 auto;
   min-width: 0;
   margin: 0;
-  font-size: 0.95rem;
+  font-size: var(--text-body);
 }
 /* Its words wrap, rather than run under the action, when the line is too narrow. */
 button.disclosure {
-  gap: 0.3rem;
+  justify-content: flex-start;
+  gap: var(--space-2);
   max-width: 100%;
-  min-height: 1.5rem;
+  min-height: var(--control);
   text-align: left;
-  padding: 0.2rem 0.25rem;
+  padding: 0 var(--space-1);
   border: none;
   background: none;
   color: var(--fg);
-  font-weight: 600;
 }
 /* A list's caret points at it while it is closed, and down into it while open. */
 button.disclosure > .caret {
@@ -841,48 +1553,47 @@ button.disclosure[aria-expanded="true"] > .caret {
   transform: translateY(-0.1rem) rotate(45deg);
 }
 .files .count {
-  padding: 0 0.35rem;
-  border-radius: 1rem;
-  background: var(--surface);
-  color: var(--muted);
-  font-size: 0.8rem;
+  padding: 0 0.4rem;
+  border-radius: var(--radius-pill);
+  background: var(--stopped-soft);
+  color: var(--stopped);
+  font-size: var(--text-small);
+  font-weight: 600;
+}
+/* its words end where the files' letters do */
+.files-head > button.subtle {
+  flex: none;
+  margin-right: calc(-1 * var(--space-3));
+  white-space: nowrap;
   font-weight: normal;
 }
-.files-head > button.secondary {
-  flex: none;
-  white-space: nowrap;
-  min-height: 1.5rem;
-  padding: 0.15rem 0.4rem;
-  font-size: 0.85rem;
-}
 .files-body {
-  padding: 0.35rem 0.75rem 0.5rem;
-  border-top: 1px solid var(--border);
+  padding: 0 0 var(--space-2) var(--space-6);
 }
 .files-body > p {
-  margin: 0.25rem 0;
+  margin: var(--space-1) 0;
 }
 .select-all {
   display: inline-flex;
   align-items: center;
-  gap: 0.4rem;
-  font-size: 0.9rem;
+  gap: var(--space-2);
   color: var(--muted);
 }
 .files ul {
   list-style: none;
   padding: 0;
-  margin: 0.25rem 0 0;
+  margin: var(--space-1) 0 0;
 }
-/* A file's row: its name takes the room there is, and what is said of it, such
-   as the name it had, goes to the next line when there is too little; its
-   letter keeps to the right. */
+/* A file's row, divided from the one before by a stroke: its name takes the room there is, and
+   what is said of it, such as the name it had, goes to the next line when there is too little;
+   its letter keeps to the right. */
 .files li {
   display: flex;
   flex-wrap: wrap;
   align-items: flex-start;
-  column-gap: 0.5rem;
-  margin: 0.15rem 0;
+  column-gap: var(--space-2);
+  padding: var(--space-1) 0;
+  border-top: 1px solid var(--border);
 }
 .files .file {
   display: flex;
@@ -894,7 +1605,7 @@ button.disclosure[aria-expanded="true"] > .caret {
   min-width: 0;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  font-family: monospace;
+  font-family: var(--font-mono);
 }
 /* A file that cannot be selected keeps the room of the checkbox it has not got. */
 .files li input[type="checkbox"],
@@ -902,19 +1613,19 @@ button.disclosure[aria-expanded="true"] > .caret {
   display: inline-block;
   box-sizing: border-box;
   width: 1rem;
-  margin: 0.15rem 0.4rem 0 0;
+  margin: 0.15rem var(--space-2) 0 0;
   vertical-align: middle;
 }
 .files .file-note {
   min-width: 0;
   overflow-wrap: anywhere;
-  font-size: 0.85rem;
+  font-size: var(--text-small);
   color: var(--muted);
 }
 .files .change {
   flex: none;
   margin-left: auto;
-  font-family: monospace;
+  font-family: var(--font-mono);
   color: var(--muted);
 }
 .letter {
@@ -943,10 +1654,28 @@ button.disclosure[aria-expanded="true"] > .caret {
   color: var(--problem);
 }
 .change-renamed {
-  color: var(--accent);
+  color: var(--accent-text);
 }
 .change-copied {
-  color: var(--accent);
+  color: var(--accent-text);
+}
+
+/* The card's foot, across it under a stroke: Commit, or why it is not offered, and the line
+   saying when the status was checked. */
+.changes-foot {
+  margin: var(--space-3) calc(-1 * var(--space-4)) calc(-1 * var(--space-4));
+  padding: var(--space-3) var(--space-4);
+  border-top: 1px solid var(--border);
+}
+.changes-foot > :first-child,
+.changes-foot form > label:first-child {
+  margin-top: 0;
+}
+.changes-foot .help {
+  margin: var(--space-1) 0 0;
+}
+.changes-foot .actions {
+  margin-top: var(--space-2);
 }
 
 /* Commit, a split button: Commit itself, and the toggle of its menu joined to it. */
@@ -962,255 +1691,88 @@ button.disclosure[aria-expanded="true"] > .caret {
   display: flex;
 }
 button.split-toggle {
-  padding: 0 0.6rem;
+  padding: 0 var(--space-2);
   border-color: var(--accent);
-  border-left-color: var(--bg);
+  border-left-color: var(--accent-hover);
   border-top-left-radius: 0;
   border-bottom-left-radius: 0;
   background: var(--accent);
   color: var(--accent-fg);
 }
-/* Commit's menu opens upward, as Commit is at the foot of the section. */
+/* Commit's menu opens upward, as Commit is at the foot of the card. */
 .popover.menu-popover {
   top: auto;
-  bottom: calc(100% + 0.25rem);
+  bottom: calc(100% + var(--space-1));
   right: auto;
   left: 0;
   width: max-content;
   max-width: none;
-  padding: 0.25rem;
+  padding: var(--space-1);
 }
 .menu-popover button {
-  display: block;
+  display: flex;
+  justify-content: flex-start;
   width: 100%;
   border: none;
   background: transparent;
   text-align: left;
 }
-.menu-popover button:hover {
-  background: var(--surface);
-}
-/* When the status was last checked, and Refresh changes, at the foot of the section. */
+/* When the status was last checked, and Refresh changes, the last line of the card. */
 .status-line {
   display: flex;
   align-items: center;
-  gap: 0.25rem;
-  margin: 0.75rem 0 0;
-  font-size: 0.85rem;
+  gap: var(--space-1);
+  margin: var(--space-2) 0 0;
+  font-size: var(--text-small);
   color: var(--muted);
 }
 .status-line button.icon-button {
-  width: 1.75rem;
-  height: 1.75rem;
-  border: none;
-  background: transparent;
   color: var(--muted);
 }
 
-/* On a phone the list and the selected workspace's panel take turns, the way back to the list
-   over the panel; a dialog fills the screen; a help page is one column; and the page has less
-   margin. */
-@media (max-width: 48rem) {
-  .dashboard {
-    grid-template-columns: minmax(0, 1fr);
-  }
-  .dashboard.showing > .list {
-    display: none;
-  }
-  .dashboard:not(.showing) > .panel-side {
-    display: none;
-  }
-  .panel-bar {
-    display: flex;
-  }
-  dialog.dialog {
-    width: 100%;
-    height: 100dvh;
-    max-width: none;
-    max-height: none;
-    margin: 0;
-    border: none;
-    border-radius: 0;
-  }
-  .docs {
-    grid-template-columns: minmax(0, 1fr);
-    gap: 1rem;
-  }
-  /* rcman's name and the account menu share the first row, the links the rows below */
-  header {
-    padding: 0.5rem 1rem;
-    gap: 0.25rem 0.5rem;
-  }
-  header > .menu.account {
-    order: 1;
-  }
-  header nav {
-    order: 2;
-    flex-basis: 100%;
-    gap: 0 0.25rem;
-  }
-  /* the Admin menu opens under its button across the header, wherever its row puts it */
-  header {
-    position: relative;
-  }
-  header nav .menu {
-    position: static;
-  }
-  header nav .menu ul {
-    left: 1rem;
-    right: 1rem;
-    top: auto;
-  }
-  main {
-    padding: 1rem;
-  }
-}
-
-/* The account menu ends the header, its pop-up kept inside the window's right edge. */
-header > .menu.account {
-  margin-left: auto;
-}
-.menu.account > div {
-  position: absolute;
-  top: 100%;
-  right: 0;
-  z-index: 1;
-  box-sizing: border-box;
-  width: max-content;
-  max-width: calc(100vw - 2rem);
-  margin-top: 0.25rem;
-  padding: 0.5rem 0.75rem;
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 0.5rem;
-  box-shadow: 0 0.25rem 0.75rem var(--shadow);
-}
-.account-panel p {
-  margin: 0 0 0.5rem;
-  overflow-wrap: anywhere;
-}
-
-a.button.back {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.35rem;
-}
-.menu.switcher ul {
-  right: 0;
-  left: auto;
-  max-width: calc(100vw - 2rem);
-  max-height: 60dvh;
-  overflow-y: auto;
-}
-.menu.switcher li button {
-  display: flex;
-  width: 100%;
-  gap: 0.5rem;
-  border: none;
-  border-radius: 0;
-  background: transparent;
-  text-align: left;
-  overflow-wrap: anywhere;
-}
-.menu.switcher li button[aria-current="true"] {
-  font-weight: 600;
-}
-
-/* On a touch screen, at any width, everything pressed is at least 44px high, and a button as
-   wide (WCAG 2.2's 2.5.5); a rule that sizes a target of its own is named here again, as it
-   would otherwise win over the plain one. src/styles.test.ts holds the two to each other. */
-@media (pointer: coarse) {
-  button,
-  a.button,
-  nav a {
-    min-width: 2.75rem;
-  }
-  nav a,
-  .skip-link {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-  }
-  button,
-  a.button,
-  summary,
-  select,
-  input:not([type="checkbox"]),
-  label:has(> input[type="checkbox"]),
-  nav a,
-  .menu li a,
-  .skip-link,
-  button.name,
-  button.disclosure,
-  details.how > summary,
-  .files-head > button.secondary {
-    min-height: 2.75rem;
-  }
-  .menu li a {
-    display: flex;
-    align-items: center;
-  }
-  .docs nav a {
-    justify-content: flex-start;
-  }
-  /* a repository's page, alone on its line under a workspace's name */
-  p.source-page a {
-    display: inline-flex;
-    align-items: center;
-    min-height: 2.75rem;
-  }
-}
-
-/* A ready workspace's panel: its tabs, each a button underlined while it is chosen. */
-.tabs {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.25rem;
-  margin: 1rem 0 0;
-  border-bottom: 1px solid var(--border);
-}
-.tabs button[role="tab"] {
-  background: transparent;
-  border: 0;
-  border-bottom: 2px solid transparent;
-  border-radius: 0;
-  margin-bottom: -1px;
-}
-.tabs button[role="tab"][aria-selected="true"] {
-  border-bottom-color: var(--accent);
-  color: var(--accent);
-  font-weight: 600;
-}
-
-/* The Terminal tab: how its connection stands, with Reconnect, over its screen, which
-   xterm.js fills and fits to; the screen's height follows the window's. */
+/* The Terminal tab, a card: a slim bar of how its connection stands, with Reconnect, over its
+   screen, edge to edge, which xterm.js fills and fits to; the screen's height follows the
+   window's. */
 .terminal {
-  margin-top: 1rem;
+  margin-top: var(--space-4);
+}
+.terminal.card {
+  padding: 0;
+  overflow: hidden;
 }
 .terminal-bar {
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
-  gap: 0.5rem 1rem;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-2) var(--space-1) var(--space-3);
+  border-bottom: 1px solid var(--border);
+}
+.terminal-bar > .dot {
+  flex: none;
 }
 .terminal-bar p {
-  margin: 0.5rem 0;
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: var(--space-1) 0;
+  font-size: var(--text-small);
+  color: var(--muted);
+}
+.terminal-problem {
+  padding: 0 var(--space-3);
 }
 /* xterm.js takes the outline off its own element, so the screen shows where focus is. */
 .terminal-screen:focus-within {
   outline: 2px solid var(--focus);
-  outline-offset: 2px;
+  outline-offset: -2px;
 }
 /* dvh follows the browser's own bars; with interactive-widget=resizes-content in index.html's
    viewport tag, browsers that honour it (Chrome on Android) shrink it for the on-screen
    keyboard too, so the screen fits above it. iOS Safari ignores the key and keeps its own. */
 .terminal-screen {
   height: max(12rem, 60dvh);
-  padding: 0.25rem;
-  border: 1px solid var(--border);
-  border-radius: 0.375rem;
+  padding: var(--space-1) var(--space-2);
   background: var(--terminal-bg);
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-family: var(--font-mono);
   overflow: hidden;
 }
 
@@ -1430,4 +1992,773 @@ a.button.back {
 }
 .xterm .xterm-scrollable-element > .shadow.top.left {
   box-shadow: var(--shadow) 6px 0 6px -6px inset;
+}
+
+/* --- the other pages ----------------------------------------------------------------------- */
+
+/* The Claude page: the account as a form sheet, its address and state's pill at its head, what
+   to know, its facts, the offer to connect, and at its foot the sign-out set apart under a
+   stroke, its words on one side and its form on the other. */
+.form-sheet {
+  max-width: 48rem;
+  padding: var(--space-6);
+}
+.sheet-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+  margin-bottom: var(--space-4);
+}
+.sheet-head h2 {
+  margin: 0;
+  font-size: var(--text-title-2);
+  overflow-wrap: anywhere;
+}
+.form-sheet > .message {
+  margin: 0 0 var(--space-4);
+}
+.sheet-actions {
+  margin-top: var(--space-4);
+}
+.connect {
+  margin-top: var(--space-4);
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--border);
+}
+.danger-zone {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-3) var(--space-6);
+  margin: var(--space-6) calc(-1 * var(--space-6)) calc(-1 * var(--space-6));
+  padding: var(--space-4) var(--space-6);
+  border-top: 1px solid var(--border);
+}
+.danger-zone .danger-intro h3 {
+  margin: 0;
+  font-size: var(--text-title-3);
+}
+.danger-intro p {
+  margin: var(--space-1) 0 0;
+}
+.danger-zone form.sign-out {
+  align-items: flex-end;
+  padding: 0;
+  border: 0;
+}
+/* The Settings page: a card for each part, its title and line beside its form. */
+.setting {
+  display: grid;
+  grid-template-columns: minmax(0, 16rem) minmax(0, 1fr);
+  gap: var(--space-3) var(--space-8);
+  max-width: 64rem;
+  box-sizing: border-box;
+  padding: var(--space-5) var(--space-6);
+}
+.setting-intro h2 {
+  margin: 0;
+  font-size: var(--text-title-3);
+  line-height: 1.375rem;
+}
+.setting-intro p {
+  margin: var(--space-1) 0 0;
+}
+.setting-body > :first-child,
+.setting-body > form:first-child > .field:first-child > label {
+  margin-top: 0;
+}
+.setting-body > p:not([role="status"]) {
+  margin: 0 0 var(--space-2);
+}
+.setting-body > [role="status"]:not(:empty) {
+  margin: var(--space-2) 0 0;
+  color: var(--running);
+}
+.setting-body .actions {
+  margin-top: var(--space-4);
+}
+.setting-body > .message {
+  margin-bottom: 0;
+}
+/* The People page's Limits dialog: a part for each scope under a stroke, its title and what
+   it uses in one row, its three fields side by side. */
+dialog.dialog.large {
+  width: 52rem;
+}
+form.limits:first-of-type {
+  padding-top: var(--space-2);
+}
+form.limits + form.limits {
+  margin-top: var(--space-5);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--border);
+}
+.limits-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0 var(--space-4);
+}
+.limits .limits-head h3 {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.limits-head p {
+  margin: 0;
+  font-size: var(--text-small);
+  color: var(--muted);
+}
+.limits-fields {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0 var(--space-4);
+}
+.limits-field {
+  min-width: 0;
+}
+.limits .actions [role="status"] {
+  margin: 0;
+}
+/* Everyone's workspaces: a card for each person, a row for each workspace, its name, its
+   state's pill, its session and its version, which the row's words wrap under on a phone. */
+.person-workspaces {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.person-workspaces > .list-row {
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-3);
+  padding: var(--space-2) var(--space-4);
+}
+.ws-name {
+  min-width: 0;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.person-workspaces code,
+.ws-version {
+  font-size: var(--text-small);
+}
+.ws-version {
+  margin-left: auto;
+}
+.ws-problem {
+  flex: 1 1 100%;
+}
+.ws-problem .message {
+  margin: 0 0 var(--space-1);
+}
+/* The Claude Code versions page: the facts beside the newest release and the roll-out. */
+.versions-top {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 22rem), 1fr));
+  align-items: start;
+  gap: var(--space-4);
+}
+.latest {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2) var(--space-3);
+}
+.latest p {
+  margin: 0;
+}
+/* The audit trail: a date stays on one line; an address or target that is long breaks. */
+td.when {
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+td.wrap {
+  min-width: 12rem;
+  overflow-wrap: anywhere;
+}
+td.result-failed {
+  color: var(--problem);
+}
+.result-failed code {
+  font-size: var(--text-small);
+}
+/* The help pages: their contents, a column that stays in view, beside the article, a card set
+   for reading: a line of about 72 characters, code on a quiet fill, tables ruled by strokes. */
+.docs {
+  display: grid;
+  grid-template-columns: 14rem minmax(0, 1fr);
+  align-items: start;
+  gap: var(--space-6);
+}
+.docs-toc {
+  position: sticky;
+  top: calc(var(--topbar) + var(--space-6));
+  max-height: calc(100dvh - var(--topbar) - 2 * var(--space-6));
+  overflow-y: auto;
+}
+.toc-toggle {
+  display: none;
+}
+.docs-toc ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.docs-toc nav a {
+  position: relative;
+  display: flex;
+  align-items: center;
+  min-height: 2rem;
+  padding: var(--space-1) var(--space-3);
+  box-sizing: border-box;
+  border-radius: var(--radius-control);
+  color: var(--fg);
+  text-decoration: none;
+}
+.docs-toc nav a[aria-current="page"] {
+  background: var(--accent-soft);
+  font-weight: 600;
+}
+.docs-toc nav a[aria-current="page"]::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: var(--space-2);
+  bottom: var(--space-2);
+  width: 3px;
+  border-radius: var(--radius-pill);
+  background: var(--accent);
+}
+.docs-article {
+  max-width: 56rem;
+  min-width: 0;
+  box-sizing: border-box;
+  padding: var(--space-6) var(--space-8) var(--space-8);
+  line-height: 1.375rem;
+  overflow-wrap: break-word;
+}
+.docs-article :is(p, ul, ol, h1, h2, h3, h4, blockquote) {
+  max-width: 72ch;
+}
+.docs-article h2 {
+  margin-top: var(--space-8);
+  padding-bottom: var(--space-1);
+  border-bottom: 1px solid var(--border);
+}
+.docs-article li + li {
+  margin-top: var(--space-1);
+}
+.docs-article code {
+  padding: 0.0625rem 0.25rem;
+  border-radius: var(--radius-control);
+  background: var(--surface-hover);
+  color: var(--fg);
+  font-size: 0.8125rem;
+}
+.docs-article pre {
+  overflow-x: auto;
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-control);
+  background: var(--surface-hover);
+  color: var(--fg);
+  font-size: var(--text-small);
+  line-height: 1.125rem;
+}
+.docs-article pre code {
+  padding: 0;
+  background: none;
+  font-size: inherit;
+}
+.docs-article img {
+  max-width: 100%;
+}
+.docs-article blockquote {
+  margin: var(--space-3) 0;
+  padding-left: var(--space-4);
+  border-left: 3px solid var(--border);
+  color: var(--muted);
+}
+
+/* --- hover, forced colours, motion, phones and touch screens ------------------------------- */
+
+/* Hovering, only where the pointer can hover: a touch screen would keep it on after a tap. */
+@media (hover: hover) {
+  nav.sidebar a:hover {
+    background: var(--subtle-hover);
+  }
+  /* the plain hover weighs nothing, so that any kind drawn by a class of its own keeps its
+     colours; a kind that changes on hover says so itself, below */
+  :where(button:not(:disabled), a.button):hover {
+    background: var(--surface-hover);
+  }
+  button.primary:not(:disabled):hover,
+  a.button.primary:hover {
+    background: var(--accent-hover);
+    border-color: var(--accent-hover);
+    color: var(--accent-fg);
+  }
+  button.subtle:not(:disabled):hover,
+  a.button.subtle:hover,
+  button.secondary:not(:disabled):hover {
+    background: var(--subtle-hover);
+  }
+  button.secondary-danger:not(:disabled):hover,
+  a.button.secondary-danger:hover {
+    background: var(--problem-soft);
+  }
+  button.danger:not(:disabled):hover,
+  a.button.danger:hover {
+    background: var(--danger-hover);
+    border-color: var(--danger-hover);
+    color: var(--danger-fg);
+  }
+  button.split-toggle:not(:disabled):hover {
+    background: var(--accent-hover);
+    color: var(--accent-fg);
+  }
+  input:not([type="checkbox"]):hover,
+  textarea:hover,
+  select:hover {
+    border-color: var(--fg);
+  }
+  .tabs button[role="tab"]:not(:disabled):hover {
+    color: var(--fg);
+    background: transparent;
+  }
+  .list-row:not(.selected):not([aria-current="true"]):hover,
+  button.disclosure:not(:disabled):hover {
+    background: var(--subtle-hover);
+  }
+  .workspaces button.trash:not(:disabled):hover {
+    border-color: var(--danger-text);
+    color: var(--danger-text);
+  }
+  a.repo-link:hover {
+    color: var(--accent-text);
+    text-decoration: underline;
+  }
+  .card.flush tbody tr:hover > td {
+    background: var(--subtle-hover);
+  }
+  .person-workspaces > .list-row:not(.selected):not([aria-current="true"]):hover {
+    background: transparent;
+  }
+  .docs-toc nav a:not([aria-current="page"]):hover {
+    background: var(--subtle-hover);
+  }
+  .popover button.row:not(:disabled):hover,
+  .menu-popover button:not(:disabled):hover {
+    background: var(--subtle-hover);
+  }
+}
+
+/* With a mouse a row's trash button is shown on the row pointed at, the selected row and the row
+   focus is in; on a touch screen it is always shown. */
+@media (hover: hover) and (pointer: fine) {
+  .workspaces .list-row:not(.selected):not(:hover):not(:focus-within) button.trash {
+    opacity: 0;
+  }
+}
+
+/* With forced colours the accent's bar, a background, is not drawn: an outline marks the page
+   where you are instead. */
+@media (forced-colors: active) {
+  nav.sidebar a[aria-current="page"] {
+    outline: 2px solid;
+    outline-offset: -2px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spinning .icon {
+    animation: none;
+  }
+}
+
+/* On a phone the top bar is one row of the menu button, where you are and the avatar; the
+   sidebar is a drawer from the left, over the page dimmed beside it; a dialog is a sheet from
+   the screen's foot; the list and the selected workspace's panel take turns, the way back to
+   the list over the panel; a help page is one column; and the page has less margin. */
+@media (max-width: 48rem) {
+  .shell {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: var(--topbar-phone) 1fr;
+    grid-template-areas:
+      "top"
+      "main";
+  }
+  .topbar {
+    height: var(--topbar-phone);
+    padding: 0 var(--space-2);
+  }
+  .menu-button {
+    display: inline-flex;
+  }
+  .brand,
+  .crumb-sep,
+  .topbar a.help-link {
+    display: none;
+  }
+  .crumb {
+    font-size: var(--text-title-3);
+    font-weight: 600;
+  }
+  .sidebar {
+    background: var(--nav-bg);
+    position: fixed;
+    top: var(--topbar-phone);
+    left: 0;
+    bottom: 0;
+    z-index: 19;
+    width: min(18rem, 85vw);
+    height: auto;
+    overscroll-behavior: contain;
+    box-shadow: var(--elevation-dialog);
+  }
+  /* the page beside the open drawer, dimmed, which takes a press and closes it */
+  .scrim:not([hidden]) {
+    display: block;
+    position: fixed;
+    inset: var(--topbar-phone) 0 0;
+    z-index: 18;
+    background: var(--backdrop);
+  }
+  html {
+    scroll-padding-top: var(--topbar-phone);
+  }
+  .sidebar:not(.open) {
+    display: none;
+  }
+  .shell::before {
+    display: none;
+  }
+  main {
+    padding: var(--space-4);
+  }
+  dialog.dialog {
+    width: 100%;
+    max-width: none;
+    max-height: calc(100dvh - var(--space-8));
+    margin: auto 0 0;
+    border-width: 1px 0 0;
+    border-radius: var(--radius-card) var(--radius-card) 0 0;
+  }
+  /* a large dialog is a sheet as wide as any other */
+  dialog.dialog.large {
+    width: 100%;
+  }
+  .dialog-head {
+    padding: var(--space-4) 3.5rem var(--space-2) var(--space-4);
+  }
+  .dialog-body {
+    padding: 0 var(--space-4) var(--space-4);
+  }
+  .dialog-close {
+    top: var(--space-2);
+    right: var(--space-2);
+  }
+  dialog.dialog .footer {
+    margin: var(--space-4) calc(-1 * var(--space-4)) 0;
+    padding: var(--space-3) var(--space-4);
+  }
+  dialog.dialog .footer > button {
+    flex: 1 1 0;
+  }
+  /* the page's heading row: the top bar names the page, so the row holds New workspace alone,
+     the h1 kept for assistive technology; out of sight while a workspace's panel is shown,
+     whose bar takes its place */
+  .page-head {
+    margin-bottom: var(--space-3);
+  }
+  .count-line {
+    display: block;
+    margin: 0;
+  }
+  .page-head .label-short {
+    display: inline;
+  }
+  .page-head .label-long {
+    display: none;
+  }
+  html:has(.dashboard.showing) {
+    scroll-padding-top: calc(var(--topbar-phone) + var(--panel-bar));
+  }
+  .page-head h1 {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+  .page-head.showing {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+  .page-head.showing > :not(h1) {
+    display: none;
+  }
+  .dashboard {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .dashboard.showing > .list {
+    display: none;
+  }
+  .dashboard:not(.showing) > .panel-side {
+    display: none;
+  }
+  /* the bar over the panel, across the window under the top bar, where it stays while the panel
+     scrolls; its root takes no box, so that the panel is what the bar sticks within */
+  .panel-bar-root {
+    display: contents;
+  }
+  .panel-bar {
+    position: sticky;
+    top: var(--topbar-phone);
+    z-index: 10;
+    box-sizing: border-box;
+    min-height: var(--panel-bar);
+    margin: calc(-1 * var(--space-4)) calc(-1 * var(--space-4)) var(--space-3);
+    padding: var(--space-1) var(--space-2);
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+  }
+  /* the page dimmed above the switcher's sheet, the top bar too */
+  .panel-bar-root > .scrim:not([hidden]) {
+    inset: 0;
+    z-index: 40;
+  }
+  /* the switcher shows the workspace's name, so the panel's head does not again */
+  .panel-title h2 {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+  /* Settings: each part's title and line over its form */
+  .setting {
+    grid-template-columns: minmax(0, 1fr);
+    padding: var(--space-4);
+  }
+  /* Claude: the sheet's padding a phone's, the sign-out's words over its form */
+  .form-sheet {
+    padding: var(--space-4);
+  }
+  .danger-zone {
+    grid-template-columns: minmax(0, 1fr);
+    margin: var(--space-4) calc(-1 * var(--space-4)) calc(-1 * var(--space-4));
+    padding: var(--space-4);
+  }
+  .danger-zone form.sign-out {
+    align-items: flex-start;
+  }
+  /* a table in a card keeps each cell to one line, and scrolls sideways inside the card */
+  .card.flush td:not(.wrap) {
+    white-space: nowrap;
+  }
+  /* People and the audit trail (table.stacked): each row a list's row, drawn from the table
+     itself, whose roles the markup says outright; the column headings kept for assistive
+     technology only; the row's lead on its first line, with what is done or what came of it at
+     the right; under it, muted, the rest one after another, its column's name (data-label)
+     shown before a value that alone does not say what it is, and not read, as the heading names
+     the cell; and the time on a line of its own. Nothing scrolls sideways, so a row's menu may hang below the card. */
+  .card.flush:has(table.stacked),
+  .card.flush > .table-scroll:has(> table.stacked) {
+    overflow: visible;
+  }
+  table.stacked,
+  table.stacked > tbody {
+    display: block;
+  }
+  table.stacked > thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+  table.stacked > tbody > tr {
+    position: relative;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    /* the break before the second line is a line of its own, so each gap is half a step */
+    gap: calc(var(--space-1) / 2) 0;
+    padding: var(--space-3) var(--space-4);
+    border-bottom: 1px solid var(--border);
+  }
+  table.stacked > tbody > tr:last-child {
+    border-bottom: 0;
+  }
+  /* the break before the second line */
+  table.stacked > tbody > tr::before {
+    content: "";
+    order: 1;
+    flex-basis: 100%;
+  }
+  .card.flush table.stacked td {
+    display: block;
+    height: auto;
+    min-width: 0;
+    padding: 0;
+    border: 0;
+    text-align: left;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+  /* the lead takes what its line leaves; its least width keeps the break after it */
+  .card.flush table.stacked td.lead {
+    flex: 1 1 0;
+    min-width: var(--space-8);
+    font-weight: 600;
+  }
+  table.stacked td.meta,
+  table.stacked td.when,
+  table.stacked td.result:not(.result-failed) {
+    font-size: var(--text-small);
+    color: var(--muted);
+  }
+  table.stacked td.meta {
+    order: 2;
+  }
+  table.stacked td.when {
+    order: 3;
+    flex-basis: 100%;
+  }
+  /* what came of it, at the lead's right, in at most half the line */
+  .card.flush table.stacked td.result {
+    flex: none;
+    max-width: 50%;
+    margin-left: var(--space-2);
+    text-align: right;
+  }
+  /* the values of the second line apart, a dot between each and the one before */
+  table.stacked td.meta ~ td.meta {
+    padding-left: var(--space-4);
+    background-image: radial-gradient(circle, var(--muted) 0 1.5px, transparent 2px);
+    background-repeat: no-repeat;
+    background-position: 6px center;
+    background-size: 4px 4px;
+  }
+  /* a value's column shown before it where the value alone does not say what it is; not read,
+     as the column's heading names the cell */
+  table.stacked td.named::before {
+    content: attr(data-label) " ";
+    /* biome-ignore lint/suspicious/noDuplicateProperties: the one above is the fallback for a browser that cannot read alternative text, and drops this one */
+    content: attr(data-label) " " / "";
+  }
+  /* People: a limit not set is left out; the row's actions, More actions, at its right across
+     both lines, the room for it kept */
+  .card.flush table.stacked td.unset {
+    display: none;
+  }
+  table.stacked.people > tbody > tr {
+    padding-right: calc(var(--space-2) + var(--touch) + var(--space-2));
+  }
+  .card.flush table.stacked td.row-actions {
+    position: absolute;
+    top: 0;
+    right: var(--space-2);
+    bottom: 0;
+    display: flex;
+    align-items: center;
+  }
+  table.stacked .row-actions > .actions {
+    display: none;
+  }
+  table.stacked .person-menu {
+    display: block;
+  }
+  /* the Limits dialog's fields one under another */
+  .limits-fields {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  /* Help: one column, the contents folded under a button over the article */
+  .docs {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--space-3);
+  }
+  .docs-toc {
+    position: static;
+    max-height: none;
+    overflow: visible;
+  }
+  .toc-toggle {
+    display: inline-flex;
+    width: 100%;
+    justify-content: flex-start;
+  }
+  .toc-toggle > .caret {
+    margin-left: auto;
+  }
+  .docs-toc nav {
+    margin-top: var(--space-2);
+    padding: var(--space-1);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-card);
+  }
+  .docs-toc nav.folded {
+    display: none;
+  }
+  .docs-article {
+    padding: var(--space-4);
+  }
+}
+
+/* On a touch screen, at any width, everything pressed is at least 44px high, and a button as
+   wide (WCAG 2.2's 2.5.5); a rule that sizes a target of its own is named here again, as it
+   would otherwise win over the plain one. src/styles.test.ts holds the two to each other. */
+@media (pointer: coarse) {
+  :root {
+    --panel-bar: 3.5rem;
+  }
+  button,
+  a.button,
+  nav a {
+    min-width: var(--touch);
+  }
+  nav a,
+  .skip-link {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+  button,
+  a.button,
+  summary,
+  select,
+  textarea,
+  input:not([type="checkbox"]),
+  label:has(> input[type="checkbox"]),
+  nav a,
+  nav.sidebar a,
+  .skip-link,
+  .brand,
+  button.name,
+  button.disclosure,
+  details.how > summary,
+  .files-head > button.subtle,
+  a.repo-link,
+  .docs-toc nav a {
+    min-height: var(--touch);
+  }
+  nav.sidebar a,
+  .docs nav a,
+  .docs-toc nav a {
+    display: flex;
+    justify-content: flex-start;
+  }
 }

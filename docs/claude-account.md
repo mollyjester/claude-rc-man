@@ -9,18 +9,19 @@ page.*
 ## Connecting
 
 1. On the **Claude** page, choose **Connect Claude account**.
-2. Leave the email empty to use the address you sign in to rcman with, or give
-   the Claude account's own, and choose **Get sign-in link**.
+2. Leave **Claude account email** empty to use the address you sign in to rcman
+   with, or give the Claude account's own, and choose **Get sign-in link**.
 3. Open **Sign in to Claude**, sign in to Claude there, and paste the code
    Claude shows you into **Code from Claude**. Choose **Connect**.
 
 A code works once. If Claude refuses it, or you wait too long, get a new link
 and start again.
 
-The page then shows which account is connected, and when its sign-in expires,
-if Claude says. Before it expires, the page warns you, as many days ahead as
-your administrator chose (`RCMAN_LOGIN_WARNING_DAYS`, see
-[Configuration](configuration.md)); connect again to renew it.
+The page then shows the account in a card: its address, its state, its
+organisation, its plan and when its sign-in expires, as far as Claude says.
+Before it expires, the page warns you, as many days ahead as your administrator
+chose (`RCMAN_LOGIN_WARNING_DAYS`, see [Configuration](configuration.md));
+connect again to renew it.
 
 Connecting another account stops nothing: a server that is running keeps
 going, and each server takes the new account's details the next time it
@@ -28,7 +29,8 @@ starts.
 
 ## Signing out of Claude
 
-**Sign out of Claude** is on the **Claude** page while an account is connected.
+**Sign out of Claude** is in the **Sign out** section at the foot of the
+**Claude** page while an account is connected.
 **Keep servers running until the last one stops** is ticked at first:
 
 - **ticked**: servers that are running keep the account until the last of them
@@ -51,8 +53,9 @@ because two refreshes collided. Connect your Claude account again to start serve
 
 ## Signing out of rcman
 
-**Sign out of rcman**, in the **Account** menu at the top of every page, which
-also says who you are signed in as, ends your rcman session in this browser.
+Your avatar, the first letter of your address at the right of the top bar on
+every page, opens the **Account** menu, which says who you are signed in as.
+**Sign out of rcman**, in that menu, ends your rcman session in this browser.
 Your servers do not depend on it: with **Keep servers running after sign-out**,
 beside it in the menu, ticked, as it is at first, they keep running; untick it
 to have them stopped first. Your Claude account stays connected either way.

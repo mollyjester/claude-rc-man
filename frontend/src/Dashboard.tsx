@@ -14,10 +14,11 @@ import { ApiError, api } from "./api";
 import { Caret } from "./Caret";
 import { Changes, type GitStatus, type Unsaved, unsavedIn } from "./Changes";
 import { Dialog } from "./Dialog";
-import { BackIcon, PlusIcon, TrashIcon } from "./Icons";
+import { BackIcon, PlusIcon, RepoIcon, TrashIcon, WorkspacesIcon } from "./Icons";
+import { MessageBar } from "./MessageBar";
 import { m } from "./messages";
 import { asApiError, ProblemView, useFieldErrors } from "./ProblemView";
-import { ACTIONS, dotFor, ServerCard, StatusDot, type Workspace } from "./Servers";
+import { ACTIONS, dotFor, ServerCard, StatusDot, type Workspace, WorkspaceBadge } from "./Servers";
 import { Terminal } from "./Terminal";
 import { usePopup } from "./usePopup";
 import { failureSentence } from "./workspaceError";
@@ -38,10 +39,36 @@ function whyNotDeletable(workspace: Workspace): string | null {
   return m.cannotDeleteState(m.workspaceStates[state] ?? state);
 }
 
-// The Workspaces page: under its heading, with New workspace's + beside it, the person's
-// workspaces, each with its trash button, and the selected workspace's panel beside them. The
-// selected workspace is in the address. On a phone the list and the panel take turns: with a
-// workspace selected, the panel, with a way back to the list and a menu to switch to another.
+// The repository a workspace's page names, owner first, as the panel's head shows it: the page's
+// path, or the page whole where it is no address.
+function repositoryOf(page: string): string {
+  try {
+    return new URL(page).pathname.replace(/^\/+|\/+$/g, "") || page;
+  } catch {
+    return page;
+  }
+}
+
+// New workspace: the page's one primary action, beside its heading or in the empty list.
+function NewWorkspaceButton({ onClick }: { onClick: () => void }) {
+  return (
+    // named in full wherever a phone shows its short words alone
+    <button type="button" className="primary" aria-label={m.newWorkspace} onClick={onClick}>
+      <PlusIcon />
+      <span className="label-long">{m.newWorkspace}</span>
+      <span className="label-short" aria-hidden="true">
+        {m.newWorkspaceShort}
+      </span>
+    </button>
+  );
+}
+
+// The Workspaces page: under its heading, with New workspace beside it, the person's
+// workspaces, each a row with its trash button, and the selected workspace's panel beside them.
+// The selected workspace is in the address. With no workspaces, the list is an empty state that
+// offers New workspace in the heading's place. On a phone the list and the panel take turns:
+// with a workspace selected, the panel, under a bar with the way back to the list and the
+// switcher to another.
 export function Dashboard({ pollMs }: { pollMs: number }) {
   const [workspaces, setWorkspaces] = useState<Workspace[] | null>(null);
   // The Claude Code version a server started now would run, null where none is approved.
@@ -123,53 +150,65 @@ export function Dashboard({ pollMs }: { pollMs: number }) {
   }
 
   const selected = workspaces?.find((w) => w.id === selectedId);
+  const empty = workspaces?.length === 0;
   let shown: ReactNode;
-  if (asked === null) shown = <p>{m.workspacePanelEmpty}</p>;
-  else if (workspaces === null) shown = <p>{m.loading}</p>;
-  else if (!selected) shown = <p>{m.workspaceUnknown}</p>;
+  if (asked === null) shown = m.workspacePanelEmpty;
+  else if (workspaces === null) shown = m.loading;
+  else if (!selected) shown = m.workspaceUnknown;
+  const classes = ["dashboard"];
+  if (asked !== null) classes.push("showing");
+  if (empty && asked === null) classes.push("empty");
 
   return (
     <>
-      <div className="page-head">
+      <div className={asked === null ? "page-head" : "page-head showing"}>
         <h1 id={heading} tabIndex={-1} ref={headingRef}>
           {m.navDashboard}
         </h1>
-        <button
-          type="button"
-          className="icon-button"
-          aria-label={m.newWorkspace}
-          title={m.newWorkspace}
-          onClick={() => setMaking(true)}
-        >
-          <PlusIcon />
-        </button>
+        {/* how many there are, which a phone shows in the heading's place */}
+        {workspaces && !empty && (
+          <p className="count-line muted">{m.workspaceCount(workspaces.length)}</p>
+        )}
+        {/* in the empty list's place when there are none; not before the list is known */}
+        {(workspaces ? !empty : error !== null) && (
+          <NewWorkspaceButton onClick={() => setMaking(true)} />
+        )}
       </div>
       <ProblemView error={error} />
-      {notice && <p role="status">{notice}</p>}
-      <div className={asked === null ? "dashboard" : "dashboard showing"}>
+      {notice && (
+        <MessageBar kind="success" role="status">
+          <p>{notice}</p>
+        </MessageBar>
+      )}
+      <div className={classes.join(" ")}>
         <WorkspaceList
           labelledBy={heading}
           workspaces={workspaces}
           selected={selectedId}
           onSelect={select}
           onRemove={setRemoving}
+          onMake={() => setMaking(true)}
         />
-        <div className="panel-side">
-          {asked !== null && (
-            <PanelBar workspaces={workspaces ?? []} selected={selectedId} onSelect={select} />
-          )}
-          {selected ? (
-            <WorkspacePanel
-              key={selected.id}
-              workspace={selected}
-              approved={approved}
-              pollMs={pollMs}
-              onChange={refresh}
-            />
-          ) : (
-            <section className="panel">{shown}</section>
-          )}
-        </div>
+        {!(empty && asked === null) && (
+          <div className="panel-side">
+            {asked !== null && (
+              <PanelBar workspaces={workspaces ?? []} selected={selectedId} onSelect={select} />
+            )}
+            {selected ? (
+              <WorkspacePanel
+                key={selected.id}
+                workspace={selected}
+                approved={approved}
+                pollMs={pollMs}
+                onChange={refresh}
+              />
+            ) : (
+              <section className="panel">
+                <p className="card placeholder">{shown}</p>
+              </section>
+            )}
+          </div>
+        )}
       </div>
       {making && <NewWorkspace onMade={made} onCancel={() => setMaking(false)} />}
       {removing &&
@@ -193,24 +232,36 @@ export function Dashboard({ pollMs }: { pollMs: number }) {
   );
 }
 
-// Each workspace, selecting it, with its dot and, while it is not ready, its state, and its
-// trash button, named after it; the list is named by the page's heading.
+// Each workspace, a row selecting it, with its dot before its name and, while it is not ready,
+// its state, and its trash button, named after it; the list is named by the page's heading.
+// With none, the list is an empty state offering New workspace.
 function WorkspaceList({
   labelledBy,
   workspaces,
   selected,
   onSelect,
   onRemove,
+  onMake,
 }: {
   labelledBy: string;
   workspaces: Workspace[] | null;
   selected: number | null;
   onSelect: (id: number) => void;
   onRemove: (workspace: Workspace) => void;
+  onMake: () => void;
 }) {
   return (
-    <section aria-labelledby={labelledBy} className="list">
-      {workspaces?.length === 0 && <p>{m.workspacesEmpty}</p>}
+    <section aria-labelledby={labelledBy} className="list card">
+      {workspaces?.length === 0 && (
+        <div className="empty-state">
+          <span className="empty-icon">
+            <WorkspacesIcon />
+          </span>
+          <strong>{m.workspacesEmpty}</strong>
+          <p>{m.workspacesEmptyBody}</p>
+          <NewWorkspaceButton onClick={onMake} />
+        </div>
+      )}
       {workspaces && workspaces.length > 0 && (
         <ul className="workspaces">
           {workspaces.map((workspace) => (
@@ -242,7 +293,7 @@ function WorkspaceEntry({
   const id = useId();
   const dot = dotFor(workspace);
   return (
-    <li>
+    <li className={current ? "list-row selected" : "list-row"}>
       <button
         type="button"
         className="name"
@@ -250,12 +301,11 @@ function WorkspaceEntry({
         aria-describedby={dot ? id : undefined}
         onClick={() => onSelect(workspace.id)}
       >
-        {workspace.name}
+        {/* the dot's room is kept where there is none, so that the names line up */}
+        <span className="dot-slot">{dot && <StatusDot kind={dot} id={id} />}</span>
+        <span className="name-text">{workspace.name}</span>
       </button>
-      {dot && <StatusDot kind={dot} id={id} />}
-      {workspace.state !== "ready" && (
-        <span className="muted"> {m.workspaceStates[workspace.state] ?? workspace.state}</span>
-      )}
+      {workspace.state !== "ready" && <WorkspaceBadge state={workspace.state} />}
       <button
         type="button"
         className="icon-button secondary-danger trash"
@@ -269,8 +319,9 @@ function WorkspaceEntry({
   );
 }
 
-// Over the panel, where the list is not beside it, as on a phone: back to the list, and a menu
-// of the workspaces to switch to another. The stylesheet shows it only there.
+// Over the panel, where the list is not beside it, as on a phone: one bar of the way back to the
+// list and the switcher, which shows the workspace's name and opens the workspaces as a sheet
+// from the screen's foot, focus on the one shown. The stylesheet shows it only there.
 function PanelBar({
   workspaces,
   selected,
@@ -280,35 +331,67 @@ function PanelBar({
   selected: number | null;
   onSelect: (id: number) => void;
 }) {
-  const menu = usePopup("PanelBar");
+  const sheet = usePopup("PanelBar");
+  const list = useRef<HTMLUListElement>(null);
+  const name = workspaces.find((w) => w.id === selected)?.name ?? "";
+  useEffect(() => {
+    if (sheet.open) list.current?.querySelector<HTMLElement>('[aria-current="true"]')?.focus();
+  }, [sheet.open]);
   return (
-    <div className="panel-bar">
-      <Link to={workspaceLink(null)} className="button back">
-        <BackIcon />
-        {m.backToWorkspaces}
-      </Link>
-      <div className="menu switcher" ref={menu.rootRef}>
-        <button type="button" {...menu.buttonProps}>
-          {m.switchWorkspace}
+    <div className="panel-bar-root" ref={sheet.rootRef}>
+      <div className="panel-bar">
+        <Link
+          to={workspaceLink(null)}
+          className="button subtle icon-button"
+          aria-label={m.backToWorkspaces}
+          title={m.backToWorkspaces}
+        >
+          <BackIcon />
+        </Link>
+        <button
+          type="button"
+          className="subtle switcher"
+          aria-label={m.switchWorkspaceFrom(name)}
+          {...sheet.buttonProps}
+        >
+          <span className="name-text">{name}</span>
           <Caret />
         </button>
-        <ul {...menu.panelProps} hidden={!menu.open}>
+      </div>
+      {/* the page dimmed above the sheet, which takes a press and closes it */}
+      <div
+        className="scrim"
+        aria-hidden="true"
+        hidden={!sheet.open}
+        // a press keeps focus where it is, so that it goes back to the switcher as the sheet closes
+        onMouseDown={(event) => event.preventDefault()}
+        onClick={() => sheet.close(true)}
+      />
+      <div className="sheet" {...sheet.panelProps} hidden={!sheet.open}>
+        <p className="sheet-title" id={`${sheet.panelProps.id}-title`}>
+          {m.switchWorkspace}
+        </p>
+        <ul ref={list} aria-labelledby={`${sheet.panelProps.id}-title`}>
           {workspaces.map((workspace) => (
-            <li key={workspace.id}>
+            <li
+              key={workspace.id}
+              className={workspace.id === selected ? "list-row selected" : "list-row"}
+            >
               <button
                 type="button"
+                className="name"
                 aria-current={workspace.id === selected ? "true" : undefined}
                 onClick={() => {
-                  menu.close();
+                  sheet.close(true);
                   onSelect(workspace.id);
                 }}
               >
-                {workspace.name}
+                <span className="name-text">{workspace.name}</span>
                 {workspace.state !== "ready" && (
-                  <span className="muted">
+                  <>
                     {" "}
-                    {m.workspaceStates[workspace.state] ?? workspace.state}
-                  </span>
+                    <WorkspaceBadge state={workspace.state} />
+                  </>
                 )}
               </button>
             </li>
@@ -374,7 +457,7 @@ function NewWorkspace({
           />
         </label>
         {fields.message("name")}
-        <p id={nameHelp} className="muted">
+        <p id={nameHelp} className="muted help">
           {m.newWorkspaceNameHelp}
         </p>
         <label>
@@ -389,10 +472,15 @@ function NewWorkspace({
           />
         </label>
         {fields.message("url")}
-        <p id={urlHelp} className="muted">
+        <p id={urlHelp} className="muted help">
           {m.newWorkspaceSourceHelp}
         </p>
-        <div className="actions">
+        <ProblemView
+          error={error}
+          labels={{ name: m.newWorkspaceName, url: m.newWorkspaceSource }}
+          inline
+        />
+        <div className="actions footer">
           <button type="submit" className="primary" disabled={busy}>
             {busy ? m.creating : m.create}
           </button>
@@ -400,19 +488,15 @@ function NewWorkspace({
             {m.cancel}
           </button>
         </div>
-        <ProblemView
-          error={error}
-          labels={{ name: m.newWorkspaceName, url: m.newWorkspaceSource }}
-          inline
-        />
       </form>
     </Dialog>
   );
 }
 
+// One of Overview's cards, named by its heading.
 function PanelSection({ title, children }: { title: string; children: ReactNode }) {
   return (
-    <section className="panel-section" aria-label={title}>
+    <section className="card panel-section" aria-label={title}>
       <h3>{title}</h3>
       {children}
     </section>
@@ -438,9 +522,11 @@ function StartServer({ workspace, onStarted }: { workspace: number; onStarted: (
 
   return (
     <>
-      <button type="button" className="primary" disabled={busy} onClick={start}>
-        {m.start}
-      </button>
+      <div className="actions">
+        <button type="button" className="primary" disabled={busy} onClick={start}>
+          {m.start}
+        </button>
+      </div>
       <ProblemView error={error} />
     </>
   );
@@ -526,11 +612,14 @@ function DeleteWorkspaceDialog({
         {unsaved && unsaved.commits > 0 && <p>{m.deleteWorkspaceUnpushed(unsaved.commits)}</p>}
         {unchecked && (
           <>
-            <p className="warning">{m.deleteWorkspaceUnchecked}</p>
+            <MessageBar kind="warning">
+              <p>{m.deleteWorkspaceUnchecked}</p>
+            </MessageBar>
             <ProblemView error={unchecked} />
           </>
         )}
-        <div className="actions">
+        <ProblemView error={error} />
+        <div className="actions footer">
           <button type="submit" className="danger" disabled={busy || !answered}>
             {busy ? m.deleting : m.deleteWorkspaceConfirm}
           </button>
@@ -539,7 +628,6 @@ function DeleteWorkspaceDialog({
           </button>
         </div>
       </form>
-      <ProblemView error={error} />
     </Dialog>
   );
 }
@@ -566,7 +654,7 @@ function CannotDeleteDialog({
     >
       <form noValidate onSubmit={dismiss}>
         <p>{reason}</p>
-        <div className="actions">
+        <div className="actions footer">
           <button type="submit" className="primary">
             {m.close}
           </button>
@@ -581,6 +669,7 @@ function FailureSaid({ error, cloned }: { error: string | null; cloned: boolean 
   const { sentence, raw } = failureSentence(error, cloned);
   return (
     <>
+      <p>{m.workspaceFailed}</p>
       <p>{sentence}</p>
       {raw && (
         <details>
@@ -733,59 +822,79 @@ function WorkspacePanel({
   const { server, server_error: unread } = workspace;
   return (
     <section aria-label={workspace.name} className="panel">
-      <h2>{workspace.name}</h2>
-      {workspace.source_page && (
-        <p className="source-page">
-          <a href={workspace.source_page} target="_blank" rel="noopener noreferrer">
-            {workspace.source_page}
+      <div className="panel-head">
+        <div className="panel-title">
+          <h2>{workspace.name}</h2>
+          <WorkspaceBadge state={workspace.state} />
+        </div>
+        {workspace.source_page && (
+          <a
+            className="repo-link"
+            href={workspace.source_page}
+            target="_blank"
+            rel="noopener noreferrer"
+            aria-label={workspace.source_page}
+            title={workspace.source_page}
+          >
+            <RepoIcon />
+            <span>{repositoryOf(workspace.source_page)}</span>
           </a>
-        </p>
+        )}
+      </div>
+      {workspace.state === "creating" && (
+        <MessageBar kind="info">
+          <p>{m.workspaceCreating}</p>
+          {cloning && <p>{m.workspaceCloningCancel}</p>}
+        </MessageBar>
       )}
-      {workspace.state === "creating" && <p>{m.workspaceCreating}</p>}
-      {cloning && <p>{m.workspaceCloningCancel}</p>}
-      {workspace.state === "deleting" && <p>{m.workspaceDeleting}</p>}
+      {workspace.state === "deleting" && (
+        <MessageBar kind="info">
+          <p>{m.workspaceDeleting}</p>
+        </MessageBar>
+      )}
       {workspace.state === "failed" && (
-        <>
-          <p>{m.workspaceFailed}</p>
+        <MessageBar kind="problem">
           <FailureSaid error={workspace.error} cloned={workspace.source !== null} />
-        </>
+        </MessageBar>
       )}
       {!ready && workspace.log && <Steps log={workspace.log} />}
       {ready && (
         <>
           <TabList id={tabsId} tab={tab} onChoose={chooseTab} />
           <TabPanel id={tabsId} name="overview" shown={tab === "overview"}>
-            <PanelSection title={m.serverTitle}>
-              {unread && (
-                <>
-                  <ProblemView error={new ApiError(0, unread.code, unread.title)} />
-                  <p>{m.serverUnreadNextStep}</p>
-                </>
-              )}
-              {server && (
-                <ServerCard
-                  workspace={workspace}
-                  server={server}
-                  claudeVersion={workspace.claude_version}
-                  onChange={onChange}
-                />
-              )}
-              {server &&
-                // only a server that runs can be stopped and started again to take the new version
-                ACTIONS[server.state]?.includes("stop") &&
-                workspace.claude_version &&
-                approved &&
-                workspace.claude_version !== approved && (
-                  <p className="muted">{m.serverVersionDiffers(approved)}</p>
+            <div className="overview">
+              <PanelSection title={m.serverTitle}>
+                {unread && (
+                  <>
+                    <ProblemView error={new ApiError(0, unread.code, unread.title)} />
+                    <p>{m.serverUnreadNextStep}</p>
+                  </>
                 )}
-              {!server && !unread && (
-                <>
-                  <p>{m.noServer}</p>
-                  <StartServer workspace={workspace.id} onStarted={onChange} />
-                </>
-              )}
-            </PanelSection>
-            <Changes workspace={workspace.id} pollMs={pollMs} />
+                {server && (
+                  <ServerCard
+                    workspace={workspace}
+                    server={server}
+                    claudeVersion={workspace.claude_version}
+                    onChange={onChange}
+                  />
+                )}
+                {server &&
+                  // only a server that runs can be stopped and started again to take the new version
+                  ACTIONS[server.state]?.includes("stop") &&
+                  workspace.claude_version &&
+                  approved &&
+                  workspace.claude_version !== approved && (
+                    <p className="muted">{m.serverVersionDiffers(approved)}</p>
+                  )}
+                {!server && !unread && (
+                  <>
+                    <p>{m.noServer}</p>
+                    <StartServer workspace={workspace.id} onStarted={onChange} />
+                  </>
+                )}
+              </PanelSection>
+              <Changes workspace={workspace.id} pollMs={pollMs} />
+            </div>
           </TabPanel>
           <TabPanel id={tabsId} name="terminal" shown={terminalShown}>
             {(terminalOpened || terminalShown) && (

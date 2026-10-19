@@ -222,7 +222,7 @@ With the real binary, in an installed rcman, as an administrator. The canary and
 runs are in [runtime.md](runtime.md#the-canary); the fake cannot show these.
 
 1. **The checks need no network.** Roll a real release out on the **Claude Code
-   versions** page, under **Admin**, with **Check and roll out**: it passes in the
+   versions** page, under **Administration**, with **Check and roll out**: it passes in the
    canary, which has no network. Where it fails only for want of the network, the
    real binary reaches for it during the checks: the canary has to use the
    workspace network instead (`run_canary` in `backend/rcman/runtime.py`), and the

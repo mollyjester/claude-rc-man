@@ -12,6 +12,7 @@ import {
   makeWorkspace,
   newWorkspace,
   openAdminPage,
+  openPage,
   panel,
   runInTerminal,
   terminalLines,
@@ -99,14 +100,14 @@ test("a person connects Claude once, and workspaces made before and after both r
   page,
 }) => {
   await signIn(page, ALICE);
-  await page.getByRole("banner").getByRole("link", { name: m.navClaude }).click();
+  await openPage(page, m.navClaude);
   await expect(page.getByText(m.claudeNotConnected)).toBeVisible();
   await page.getByRole("button", { name: m.connect }).click();
   await page.getByRole("button", { name: m.connectGo }).click();
   await expect(page.getByRole("link", { name: m.connectLink })).toBeVisible();
   await page.getByLabel(m.connectCode).fill(CODE);
   await page.getByRole("button", { name: m.connectSubmit }).click();
-  await expect(page.getByText(m.claudeConnectedAs(ALICE))).toBeVisible();
+  await expect(page.getByRole("heading", { level: 2, name: ALICE })).toBeVisible();
 
   await page.goto(`/?workspace=${await idOf(page, "before")}`);
   const made = await runs(panel(page, "before"), "before");
@@ -202,12 +203,12 @@ test("a workspace is made by cloning from GitHub, a private repository once a to
   await deleteWorkspace(page, "stack-private");
 
   // With a token stored in Settings, the same address is cloned.
-  await page.getByRole("banner").getByRole("link", { name: m.navSettings }).click();
+  await openPage(page, m.navSettings);
   const github = page.getByRole("region", { name: m.settingsGithubTitle });
   await github.getByLabel(m.githubTokenLabel).fill(GITHUB.token);
   await github.getByRole("button", { name: m.save }).click();
   await expect(github.getByText(m.githubTokenSaved)).toBeVisible();
-  await page.getByRole("banner").getByRole("link", { name: m.navDashboard }).click();
+  await openPage(page, m.navDashboard);
   form = await newWorkspace(page);
   await form.getByLabel(m.newWorkspaceSource).fill(GITHUB.private);
   await form.getByRole("button", { name: m.create }).click();
@@ -234,7 +235,7 @@ test("another person sees none of it, and reaching it by its id finds nothing", 
   await signIn(page, BOB);
   await expectSignedInAs(page, BOB);
   await expect(workspaces(page).getByText(m.workspacesEmpty)).toBeVisible();
-  await expect(page.getByRole("button", { name: m.navAdmin })).toHaveCount(0);
+  await expect(page.getByRole("list", { name: m.navAdmin })).toHaveCount(0);
   await page.goto(`/?workspace=${theirs}`);
   await expect(page.getByText(m.workspaceUnknown)).toBeVisible();
   await expect(page.getByText("before")).toHaveCount(0);
@@ -288,10 +289,17 @@ test("administrators see everyone's workspaces, and act on none of them", async 
   await openAdminPage(page, m.navEveryone);
   await expect(page.getByRole("heading", { name: m.everyoneTitle })).toBeVisible();
   const alice = page.getByRole("region", { name: ALICE });
-  await expect(alice.getByRole("row", { name: /before/ })).toContainText(m.states.stopped);
-  await expect(alice.getByRole("row", { name: /plain/ })).toContainText(m.everyoneNoServer);
+  await expect(alice.getByRole("listitem").filter({ hasText: "before" })).toContainText(
+    m.states.stopped,
+  );
+  await expect(alice.getByRole("listitem").filter({ hasText: "plain" })).toContainText(
+    m.everyoneNoServer,
+  );
   await expect(
-    page.getByRole("region", { name: CAROL }).getByRole("row", { name: /carol-box/ }),
+    page
+      .getByRole("region", { name: CAROL })
+      .getByRole("listitem")
+      .filter({ hasText: "carol-box" }),
   ).toBeVisible();
   await expect(page.getByRole("region", { name: BOB }).getByText(m.everyoneNone)).toBeVisible();
   await expect(page.getByRole("main").getByRole("button")).toHaveCount(0);
@@ -303,8 +311,10 @@ test("the People page adds a person and removes another, with her workspaces", a
 }) => {
   await signIn(page, ALICE);
   await openAdminPage(page, m.navUsers);
-  await page.getByLabel(m.usersEmail).fill(DAVE);
   await page.getByRole("button", { name: m.usersAdd }).click();
+  const adding = page.getByRole("dialog", { name: m.usersAdd });
+  await adding.getByLabel(m.usersEmail).fill(DAVE);
+  await adding.getByRole("button", { name: m.usersAddGo }).click();
   await expect(page.getByText(m.usersAdded(DAVE))).toBeVisible();
   await expect(page.getByRole("row", { name: new RegExp(DAVE) })).toBeVisible();
 

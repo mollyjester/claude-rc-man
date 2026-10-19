@@ -3,6 +3,7 @@ Playwright configs that run them."""
 
 import fcntl
 import hashlib
+import itertools
 import json
 import os
 import re
@@ -24,7 +25,9 @@ from tests import killed_runs as kr
 
 REPO = Path(__file__).resolve().parent.parent
 FRONTEND = REPO / "frontend"
-CONFIGS = ("playwright.config.ts", "playwright.stack.config.ts")
+CONFIGS = ("playwright.config.ts", "playwright.stack.config.ts", "playwright.screenshots.config.ts")
+# The screenshots make screenshots takes, which no test run reads (project-knowledge/tests.md).
+SCREENSHOTS = "e2e/screenshots.capture.ts"
 # Playwright as `npx playwright` runs it, without npx's own start-up.
 PLAYWRIGHT = str(FRONTEND / "node_modules" / ".bin" / "playwright")
 
@@ -659,7 +662,7 @@ def test_a_config_whose_browser_uses_dev_shm_is_found():
     assert not without_dev_shm("use: { baseURL: ORIGIN }")
 
 
-def test_the_two_browser_configs_write_to_different_output_folders():
+def test_the_browser_configs_write_to_different_output_folders():
     # Why each has its own: project-knowledge/frontend.md.
     env = {**os.environ, "RCMAN_STACK_PORT": str(_free_port())}
     folders = {}
@@ -668,11 +671,28 @@ def test_the_two_browser_configs_write_to_different_output_folders():
         assert listing["suites"], config  # positive control: the config's specs are read
         (project,) = listing["config"]["projects"]
         folders[config] = Path(project["outputDir"])
-    (one, other) = folders.values()
-    assert not one.is_relative_to(other) and not other.is_relative_to(one), folders
+    assert len(folders) == len(CONFIGS) > 2
+    for one, other in itertools.combinations(folders.values(), 2):
+        assert not one.is_relative_to(other) and not other.is_relative_to(one), folders
     for folder in folders.values():
         ignored = subprocess.run(["git", "check-ignore", "-q", str(folder)], cwd=REPO)
         assert ignored.returncode == 0, folder
+
+
+def _files(listing: dict) -> set[str]:
+    return {suite["file"] for suite in listing["suites"]}
+
+
+def test_the_screenshots_are_taken_by_their_own_config_and_by_no_test_run():
+    """make screenshots asserts nothing and is not a test: npx playwright test, as make e2e
+    runs it, does not take them, and their config takes nothing else."""
+    env = {k: v for k, v in os.environ.items() if not k.startswith("RCMAN_E2E_")}
+    tests = _files(listed("playwright.config.ts", env))
+    shots = _files(listed("playwright.screenshots.config.ts", env))
+    assert "workspaces.spec.ts" in tests  # positive control: the test run's specs are listed
+    assert shots == {Path(SCREENSHOTS).name}
+    assert Path(SCREENSHOTS).name not in tests
+    assert (FRONTEND / SCREENSHOTS).is_file()
 
 
 def _identity(env: dict[str, str]) -> tuple[str, str]:

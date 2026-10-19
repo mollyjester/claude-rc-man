@@ -2,9 +2,12 @@ import { type FormEvent, useCallback, useEffect, useId, useMemo, useRef, useStat
 
 import { ApiError, api } from "./api";
 import { Dialog } from "./Dialog";
+import { MoreIcon, PlusIcon } from "./Icons";
+import { MessageBar } from "./MessageBar";
 import { m } from "./messages";
 import { asApiError, ProblemView, useFieldErrors } from "./ProblemView";
-import { TableScroll } from "./TableScroll";
+import { ROLE, TableScroll } from "./TableScroll";
+import { usePopup } from "./usePopup";
 
 // The three limits as the server takes them back: text, null for no limit.
 type Held = { memory: string | null; cpu: string | null; pids: string | null };
@@ -94,7 +97,7 @@ function RemoveDialog({
     >
       <form noValidate onSubmit={remove}>
         <p>{m.usersRemoveBody}</p>
-        <div className="actions">
+        <div className="actions footer">
           <button type="submit" className="danger" disabled={busy}>
             {m.usersRemoveConfirm}
           </button>
@@ -162,12 +165,14 @@ function ScopeForm({
       aria-busy={status === "busy"}
       className="limits"
     >
-      <h3 id={heading}>{title}</h3>
-      <p>
-        {report.usage && report.usage.memory !== null && report.usage.tasks !== null
-          ? m.limitsUsage(report.usage.memory, report.usage.tasks)
-          : m.limitsUsageUnknown}
-      </p>
+      <div className="limits-head">
+        <h3 id={heading}>{title}</h3>
+        <p>
+          {report.usage && report.usage.memory !== null && report.usage.tasks !== null
+            ? m.limitsUsage(report.usage.memory, report.usage.tasks)
+            : m.limitsUsageUnknown}
+        </p>
+      </div>
       <div className="limits-fields">
         {LIMIT_FIELDS.map(([name, label]) => (
           <div key={name} className="limits-field">
@@ -185,7 +190,7 @@ function ScopeForm({
               />
             </label>
             {fields.message(name)}
-            <p id={`${hints}-${name}`} className="muted">
+            <p id={`${hints}-${name}`} className="help muted">
               {m.limitsHints[name]}
             </p>
           </div>
@@ -200,10 +205,10 @@ function ScopeForm({
         >
           {m.save}
         </button>
+        <p role="status" className="muted">
+          {status === "busy" ? m.limitsSaving : status === "saved" ? m.limitsSaved(title) : ""}
+        </p>
       </div>
-      <p role="status">
-        {status === "busy" ? m.limitsSaving : status === "saved" ? m.limitsSaved(title) : ""}
-      </p>
       <ProblemView error={refused} labels={LIMIT_LABELS} inline />
     </form>
   );
@@ -275,6 +280,7 @@ function LimitsDialog({
       onClose={onClose}
       closable={saving === 0}
       focusDialog
+      large
     >
       {report === null && loadError === null && <p>{m.loading}</p>}
       <ProblemView error={loadError} />
@@ -300,7 +306,7 @@ function LimitsDialog({
         <p>{m.limitsBelowUse}</p>
         <p>{m.limitsNotLimited}</p>
       </details>
-      <div className="actions">
+      <div className="actions footer">
         <button
           type="button"
           disabled={saving > 0}
@@ -315,123 +321,35 @@ function LimitsDialog({
   );
 }
 
-export function People() {
-  const [people, setPeople] = useState<Person[]>([]);
+// Adds a person by address, as a user or an administrator; the server judges what was typed.
+function AddPersonDialog({
+  onAdded,
+  onCancel,
+}: {
+  onAdded: (email: string) => void;
+  onCancel: () => void;
+}) {
   const [email, setEmail] = useState("");
   const [admin, setAdmin] = useState(false);
-  const [removing, setRemoving] = useState<Person | null>(null);
-  const [limiting, setLimiting] = useState<Person | null>(null);
-  const openers = useRef(new Map<number, HTMLButtonElement>());
-  const [notice, setNotice] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
   const [error, setError] = useState<ApiError | null>(null);
   const fields = useFieldErrors(error);
 
-  const load = useCallback(() => {
-    api.get<{ people: Person[] }>("/api/people").then(
-      (r) => setPeople(r.people),
-      (e) => setError(asApiError(e)),
-    );
-  }, []);
-  useEffect(load, [load]);
-
   async function add(event: FormEvent) {
     event.preventDefault();
+    setBusy(true);
     setError(null);
-    setNotice(null);
     try {
       await api.post("/api/people", { email, admin });
-      setNotice(m.usersAdded(email));
-      setEmail("");
-      setAdmin(false);
-      load();
+      onAdded(email);
     } catch (e) {
       setError(asApiError(e));
+      setBusy(false);
     }
   }
 
   return (
-    <section>
-      <h1>{m.usersTitle}</h1>
-      <TableScroll label={m.tableTitle}>
-        <table>
-          <thead>
-            <tr>
-              <th>{m.usersEmail}</th>
-              <th>{m.usersRole}</th>
-              <th>{m.usersWorkspaces}</th>
-              <th>{m.usersMemory}</th>
-              <th>{m.usersCpu}</th>
-              <th>{m.usersProcesses}</th>
-              <th />
-            </tr>
-          </thead>
-          <tbody>
-            {people.map((p) => (
-              <tr key={p.id}>
-                <td>{p.email}</td>
-                <td>{p.admin ? m.usersAdmin : m.usersUser}</td>
-                <td>{p.workspaces}</td>
-                <td>{p.limits.memory ?? m.usersNoLimit}</td>
-                <td>{p.limits.cpu ?? m.usersNoLimit}</td>
-                <td>{p.limits.pids ?? m.usersNoLimit}</td>
-                <td>
-                  <div className="actions">
-                    <button
-                      type="button"
-                      ref={(button) => {
-                        if (button) openers.current.set(p.id, button);
-                        else openers.current.delete(p.id);
-                      }}
-                      onClick={() => {
-                        setNotice(null);
-                        setRemoving(null);
-                        setLimiting(p);
-                      }}
-                    >
-                      {m.usersLimits}
-                    </button>
-                    <button
-                      type="button"
-                      className="secondary-danger"
-                      onClick={() => {
-                        setNotice(null);
-                        setLimiting(null);
-                        setRemoving(p);
-                      }}
-                    >
-                      {m.usersRemove}
-                    </button>
-                  </div>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </TableScroll>
-      {limiting && (
-        <LimitsDialog
-          key={limiting.id}
-          person={limiting}
-          onSaved={load}
-          onClose={() => {
-            openers.current.get(limiting.id)?.focus();
-            setLimiting(null);
-          }}
-        />
-      )}
-      {removing && (
-        <RemoveDialog
-          key={removing.id}
-          person={removing}
-          onCancel={() => setRemoving(null)}
-          onDone={() => {
-            setNotice(m.usersRemoved(removing.email));
-            setRemoving(null);
-            load();
-          }}
-        />
-      )}
-      <h2>{m.usersAdd}</h2>
+    <Dialog owner="AddPersonDialog" title={m.usersAdd} onClose={onCancel} closable={!busy}>
       <form noValidate onSubmit={add} ref={fields.form}>
         <label>
           {m.usersEmail}
@@ -456,12 +374,236 @@ export function People() {
           {m.usersAddAdmin}
         </label>
         {fields.message("admin")}
-        <button type="submit" className="primary">
+        <div className="actions footer">
+          <button type="submit" className="primary" disabled={busy}>
+            {m.usersAddGo}
+          </button>
+          <button type="button" disabled={busy} onClick={onCancel}>
+            {m.cancel}
+          </button>
+        </div>
+      </form>
+      <ProblemView error={error} labels={{ email: m.usersEmail, admin: m.usersAddAdmin }} inline />
+    </Dialog>
+  );
+}
+
+// A row's actions on a phone, where the rows are a list: one subtle button, named for its
+// person, whose menu holds Limits and Remove, as the row's own buttons do on a wider screen
+// (src/styles.css shows one or the other). Choosing one closes the menu, focus back on its
+// button, which the dialog then opened gives it back to as it goes.
+function PersonMenu({
+  person,
+  onLimits,
+  onRemove,
+}: {
+  person: Person;
+  onLimits: (from: HTMLElement | null) => void;
+  onRemove: () => void;
+}) {
+  const menu = usePopup("PersonMenu");
+  const button = menu.buttonProps.ref;
+  return (
+    <div className="popup-anchor person-menu" ref={menu.rootRef}>
+      <button
+        type="button"
+        className="icon-button subtle"
+        aria-label={m.usersMoreActionsFor(person.email)}
+        title={m.usersMoreActions}
+        {...menu.buttonProps}
+      >
+        <MoreIcon />
+      </button>
+      {menu.open && (
+        <div className="popover menu-popover row-menu" {...menu.panelProps}>
+          <button
+            type="button"
+            onClick={() => {
+              menu.close(true);
+              onLimits(button.current);
+            }}
+          >
+            {m.usersLimits}
+          </button>
+          <button
+            type="button"
+            className="danger-item"
+            onClick={() => {
+              menu.close(true);
+              onRemove();
+            }}
+          >
+            {m.usersRemove}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+export function People() {
+  const [people, setPeople] = useState<Person[]>([]);
+  const [adding, setAdding] = useState(false);
+  const [removing, setRemoving] = useState<Person | null>(null);
+  const [limiting, setLimiting] = useState<Person | null>(null);
+  // What opened the Limits dialog, for focus to go back to as it closes: the row's Limits, or
+  // on a phone its More actions.
+  const opener = useRef<HTMLElement | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [error, setError] = useState<ApiError | null>(null);
+
+  const load = useCallback(() => {
+    api.get<{ people: Person[] }>("/api/people").then(
+      (r) => setPeople(r.people),
+      (e) => setError(asApiError(e)),
+    );
+  }, []);
+  useEffect(load, [load]);
+
+  function limit(p: Person, from: HTMLElement | null) {
+    opener.current = from;
+    setNotice(null);
+    setRemoving(null);
+    setLimiting(p);
+  }
+
+  function remove(p: Person) {
+    setNotice(null);
+    setLimiting(null);
+    setRemoving(p);
+  }
+
+  return (
+    <section>
+      <div className="page-head">
+        <h1>{m.usersTitle}</h1>
+        <button
+          type="button"
+          className="primary"
+          onClick={() => {
+            setNotice(null);
+            setAdding(true);
+          }}
+        >
+          <PlusIcon />
           {m.usersAdd}
         </button>
-      </form>
-      {notice && <p role="status">{notice}</p>}
-      <ProblemView error={error} labels={{ email: m.usersEmail, admin: m.usersAddAdmin }} inline />
+      </div>
+      {/* there before it says anything, so that what it says is announced */}
+      <div role="status">
+        {notice && (
+          <MessageBar kind="success">
+            <p>{notice}</p>
+          </MessageBar>
+        )}
+      </div>
+      <ProblemView error={error} />
+      <div className="card flush">
+        <TableScroll label={m.tableTitle}>
+          {/* on a phone a list of rows: the address and the actions, then the rest in a line */}
+          <table className="stacked people" {...ROLE.table}>
+            <thead {...ROLE.rowgroup}>
+              <tr {...ROLE.row}>
+                <th {...ROLE.columnheader}>{m.usersEmail}</th>
+                <th {...ROLE.columnheader}>{m.usersRole}</th>
+                <th className="number" {...ROLE.columnheader}>
+                  {m.usersWorkspaces}
+                </th>
+                <th {...ROLE.columnheader}>{m.usersMemory}</th>
+                <th {...ROLE.columnheader}>{m.usersCpu}</th>
+                <th {...ROLE.columnheader}>{m.usersProcesses}</th>
+                <th {...ROLE.columnheader}>
+                  <span className="visually-hidden">{m.usersActions}</span>
+                </th>
+              </tr>
+            </thead>
+            <tbody {...ROLE.rowgroup}>
+              {people.map((p) => (
+                <tr key={p.id} {...ROLE.row}>
+                  <td className="strong lead" {...ROLE.cell}>
+                    {p.email}
+                  </td>
+                  <td className="meta" {...ROLE.cell}>
+                    {p.admin ? m.usersAdmin : m.usersUser}
+                  </td>
+                  <td className="number meta named" data-label={m.usersWorkspaces} {...ROLE.cell}>
+                    {p.workspaces}
+                  </td>
+                  <Limit label={m.usersMemory} value={p.limits.memory} />
+                  <Limit label={m.usersCpu} value={p.limits.cpu} />
+                  <Limit label={m.usersProcesses} value={p.limits.pids} />
+                  <td className="row-actions" {...ROLE.cell}>
+                    <div className="actions">
+                      <button
+                        type="button"
+                        className="subtle"
+                        onClick={(event) => limit(p, event.currentTarget)}
+                      >
+                        {m.usersLimits}
+                      </button>
+                      <button type="button" className="secondary-danger" onClick={() => remove(p)}>
+                        {m.usersRemove}
+                      </button>
+                    </div>
+                    <PersonMenu
+                      person={p}
+                      onLimits={(from) => limit(p, from)}
+                      onRemove={() => remove(p)}
+                    />
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </TableScroll>
+      </div>
+      {adding && (
+        <AddPersonDialog
+          onCancel={() => setAdding(false)}
+          onAdded={(email) => {
+            setAdding(false);
+            setNotice(m.usersAdded(email));
+            load();
+          }}
+        />
+      )}
+      {limiting && (
+        <LimitsDialog
+          key={limiting.id}
+          person={limiting}
+          onSaved={load}
+          onClose={() => {
+            opener.current?.focus();
+            setLimiting(null);
+          }}
+        />
+      )}
+      {removing && (
+        <RemoveDialog
+          key={removing.id}
+          person={removing}
+          onCancel={() => setRemoving(null)}
+          onDone={() => {
+            setNotice(m.usersRemoved(removing.email));
+            setRemoving(null);
+            load();
+          }}
+        />
+      )}
     </section>
+  );
+}
+
+// A stored limit, named by its column for the line a phone draws it in, or that there is none,
+// which is quieter, and which that line leaves out.
+function Limit({ label, value }: { label: string; value: string | null }) {
+  return value === null ? (
+    <td className="muted meta unset" {...ROLE.cell}>
+      {m.usersNoLimit}
+    </td>
+  ) : (
+    <td className="meta named" data-label={label} {...ROLE.cell}>
+      {value}
+    </td>
   );
 }
