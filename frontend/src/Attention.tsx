@@ -3,6 +3,7 @@ import { Link, useLocation } from "react-router-dom";
 
 import { ADMIN } from "./AdminPages";
 import { type ApiError, api } from "./api";
+import { MessageBar } from "./MessageBar";
 import { m } from "./messages";
 import { asApiError, ProblemView } from "./ProblemView";
 
@@ -40,11 +41,11 @@ export function Attention() {
   if (error) return <ProblemView error={error} />;
   if (!report || report.unrecognised.length === 0) return null;
   return (
-    <section aria-label={m.attentionTitle} className="attention">
+    <MessageBar kind="warning" as="section" label={m.attentionTitle}>
       <p>
         {m.attentionUnrecognised(report.unrecognised.map((s) => `${s.email}: ${s.workspace}`))}{" "}
         <Link to={ADMIN.everyone.path}>{ADMIN.everyone.label}</Link>
       </p>
-    </section>
+    </MessageBar>
   );
 }

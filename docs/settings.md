@@ -9,11 +9,13 @@ give rcman itself are in [Configuration](configuration.md).
 | **Commit author name** (`author_name`) | The name recorded as the author of commits made from rcman and by git in your workspaces; once set, it can be changed but not removed. |
 | **Commit author email** (`author_email`) | The address recorded with that name. Leave it empty to use the address you sign in with. |
 
-The page groups related settings into parts, and each part is saved on its
-own with its own **Save**. Under the commit author, the page shows the name
-and address commits are recorded as, or that none is set. The commit author
-applies to commits made from rcman and to those git makes in your workspaces,
-Claude's among them; Commit in rcman's **Changes** section needs a name.
+The page groups related settings into parts, each a card with a line on what it
+is for, and each part is saved on its own with its own **Save**. Under each
+field is one line of help; this page holds the whole of what each setting does.
+Under the commit author, the page shows the name and address commits are
+recorded as, or that none is set. The commit author applies to commits made from
+rcman and to those git makes in your workspaces, Claude's among them; Commit in
+rcman's **Changes** card needs a name.
 
 The **GitHub token** part says whether a token is stored, and takes a GitHub
 personal access token, which it never shows again once saved. Saving one

@@ -8,7 +8,7 @@ export const workspaces = (page: Page) =>
   page.getByRole("region", { name: m.navDashboard, exact: true });
 export const panel = (page: Page, name: string) => page.getByRole("region", { name, exact: true });
 
-// Opens New workspace's dialog with the + beside the Workspaces page's heading, and returns it.
+// Opens New workspace's dialog with its button on the Workspaces page, and returns it.
 export async function newWorkspace(page: Page) {
   await page.getByRole("button", { name: m.newWorkspace, exact: true }).click();
   const dialog = page.getByRole("dialog", { name: m.newWorkspace });
@@ -27,7 +27,7 @@ export async function deleteWorkspace(page: Page, name: string) {
   await expect(page.getByRole("status")).toHaveText(m.workspaceDeleted(name));
 }
 
-// Who the header says is signed in, read from its account menu, which is closed again after.
+// Who the top bar says is signed in, read from its account menu, which is closed again after.
 export async function expectSignedInAs(page: Page, email: string) {
   const button = page.getByRole("banner").getByRole("button", { name: m.account });
   await button.click();
@@ -36,10 +36,19 @@ export async function expectSignedInAs(page: Page, email: string) {
   await expect(button).toHaveAttribute("aria-expanded", "false");
 }
 
-// Opens one of the administrators' pages through the navigation's Admin menu.
+// The one navigation of the pages: the sidebar, and on a phone a drawer its menu button opens.
+export const sidebar = (page: Page) => page.getByRole("navigation", { name: m.navMain });
+
+// Opens a page through the sidebar, opening it as a drawer first where it is one.
+export async function openPage(page: Page, label: string) {
+  const menu = page.getByRole("banner").getByRole("button", { name: m.navMenu });
+  if (await menu.isVisible()) await menu.click();
+  await sidebar(page).getByRole("link", { name: label, exact: true }).click();
+}
+
+// Opens one of the administrators' pages through the sidebar's group of them.
 export async function openAdminPage(page: Page, label: string) {
-  await page.getByRole("banner").getByRole("button", { name: m.navAdmin }).click();
-  await page.getByRole("banner").getByRole("link", { name: label }).click();
+  await openPage(page, label);
 }
 
 // Makes a workspace from the Workspaces page, which it is on, and waits until it
@@ -75,4 +84,15 @@ export async function runInTerminal(page: Page, panel: Locator, command: string)
   await panel.locator(".terminal-screen").click();
   await page.keyboard.type(command);
   await page.keyboard.press("Enter");
+}
+
+// Presses one of a person's actions on the People page, which it is on: the row's own button
+// where it is shown, and on a phone, where a row's actions are behind its More actions button,
+// that item of its menu.
+export async function personAction(page: Page, email: string, action: string) {
+  const row = page.getByRole("row", { name: new RegExp(email) });
+  const more = row.getByRole("button", { name: m.usersMoreActionsFor(email) });
+  await expect(row).toBeVisible();
+  if (await more.isVisible()) await more.click();
+  await row.getByRole("button", { name: action, exact: true }).click();
 }

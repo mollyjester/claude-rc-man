@@ -16,6 +16,7 @@ const NAMED = [
   m.usersCpu,
   m.usersProcesses,
   m.usersLimits,
+  m.usersMoreActions,
   m.save,
   m.usersNoLimit,
 ];

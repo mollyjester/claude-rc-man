@@ -3,7 +3,7 @@
 # the same images, which side by side would only compete for the machine.
 .NOTPARALLEL:
 
-.PHONY: setup test test-container check-ui lint format frontend-setup frontend-test frontend-build e2e check check-all
+.PHONY: setup test test-container check-ui lint format frontend-setup frontend-test frontend-build e2e screenshots check check-all
 
 setup: frontend-setup  ## install the development environment
 	uv sync
@@ -48,6 +48,10 @@ frontend-build:  ## build the frontend into frontend/dist
 
 e2e: frontend-build  ## the built frontend in a browser, against the real backend
 	cd frontend && npx playwright test
+
+# Not a test: it asserts nothing, and no test run takes it (tests/test_make.py).
+screenshots: frontend-build  ## not a test: every page at a phone's and a desktop's width, light and dark, into frontend/test-results/screenshots/
+	cd frontend && npx playwright test --config playwright.screenshots.config.ts
 
 check: export RCMAN_REQUIRE_REAL_CLAUDE = 1
 check: lint test frontend-test e2e  ## lint and every test that runs on the host; tests that would skip fail instead

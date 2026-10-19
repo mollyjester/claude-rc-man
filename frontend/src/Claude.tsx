@@ -1,8 +1,10 @@
-import { type FormEvent, useEffect, useState } from "react";
+import { type FormEvent, type ReactNode, useEffect, useId, useState } from "react";
 
 import { type ApiError, api } from "./api";
+import { MessageBar, type MessageKind } from "./MessageBar";
 import { m } from "./messages";
 import { asApiError, ProblemView, useFieldErrors } from "./ProblemView";
+import type { Kind } from "./Servers";
 
 export const CONNECTION_STATES = ["not_connected", "connected", "expiring", "expired"] as const;
 export type ConnectionState = (typeof CONNECTION_STATES)[number];
@@ -32,6 +34,7 @@ function Connect({ onConnected }: { onConnected: (c: Connection) => void }) {
   const [code, setCode] = useState("");
   const [error, setError] = useState<ApiError | null>(null);
   const fields = useFieldErrors(error);
+  const help = useId();
 
   async function start(event: FormEvent) {
     event.preventDefault();
@@ -67,13 +70,18 @@ function Connect({ onConnected }: { onConnected: (c: Connection) => void }) {
               name="email"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
-              {...fields.input("email")}
+              {...fields.input("email", help)}
             />
           </label>
           {fields.message("email")}
-          <button type="submit" className="primary">
-            {m.connectGo}
-          </button>
+          <p id={help} className="help muted">
+            {m.connectEmailHelp}
+          </p>
+          <div className="actions">
+            <button type="submit" className="primary">
+              {m.connectGo}
+            </button>
+          </div>
         </form>
       ) : (
         <form noValidate onSubmit={finish} ref={fields.form}>
@@ -95,9 +103,11 @@ function Connect({ onConnected }: { onConnected: (c: Connection) => void }) {
             />
           </label>
           {fields.message("code")}
-          <button type="submit" className="primary">
-            {m.connectSubmit}
-          </button>
+          <div className="actions">
+            <button type="submit" className="primary">
+              {m.connectSubmit}
+            </button>
+          </div>
         </form>
       )}
       <ProblemView
@@ -109,6 +119,41 @@ function Connect({ onConnected }: { onConnected: (c: Connection) => void }) {
   );
 }
 
+// What the sheet says of the account's state: its pill, and the message bar it needs, if any.
+function standing(connection: Connection): {
+  state: string;
+  kind: Kind;
+  bar: { kind: MessageKind; text: string } | null;
+} {
+  const { connection: state, login_expires_at: expires } = connection;
+  if (connection.signing_out)
+    return {
+      state: "signing_out",
+      kind: "waiting",
+      bar: { kind: "warning", text: m.claudeSigningOut },
+    };
+  if (state === "not_connected")
+    return {
+      state,
+      kind: "stopped",
+      bar: connection.signed_out_unexpectedly
+        ? { kind: "warning", text: m.claudeSignedOutUnexpectedly }
+        : { kind: "info", text: m.claudeNotConnected },
+    };
+  if (state === "expiring")
+    return {
+      state,
+      kind: "waiting",
+      bar: { kind: "warning", text: m.claudeExpiring(expires ? when(expires) : "") },
+    };
+  if (state === "expired")
+    return { state, kind: "problem", bar: { kind: "problem", text: m.claudeExpired } };
+  return { state, kind: "running", bar: null };
+}
+
+// The account as a sheet in a card: its address as the title with its state as a pill, what
+// to know as a message bar, its facts as rows, the offer to connect, and the sign-out in a
+// section of its own at the foot.
 export function ClaudeConnection({
   connection,
   onChange,
@@ -117,36 +162,47 @@ export function ClaudeConnection({
   onChange: (c: Connection) => void;
 }) {
   const [connecting, setConnecting] = useState(false);
+  const title = useId();
   if (!connection) return null;
-  const state = connection.connection;
+  const { state, kind, bar } = standing(connection);
+  const account = connection.account;
   const expires = connection.login_expires_at;
   const signingOut = connection.signing_out;
-  let message: string;
-  if (signingOut) message = m.claudeSigningOut;
-  else if (state === "not_connected")
-    message = connection.signed_out_unexpectedly
-      ? m.claudeSignedOutUnexpectedly
-      : m.claudeNotConnected;
-  else if (state === "expired") message = m.claudeExpired;
-  else if (state === "expiring") message = m.claudeExpiring(expires ? when(expires) : "");
-  else message = m.claudeConnectedAs(connection.account?.email ?? "");
   const offer =
-    state === "not_connected"
+    connection.connection === "not_connected"
       ? m.connect
-      : state === "connected" && !signingOut
+      : connection.connection === "connected" && !signingOut
         ? null
         : m.reconnect;
+  const named = connection.connection !== "not_connected" && account?.email;
 
   return (
-    <section aria-label={m.claudeTitle} className={`claude claude-${state}`}>
-      <p>{message}</p>
-      {state === "connected" && !signingOut && expires && (
-        <p className="muted">{m.claudeExpires(when(expires))}</p>
+    <section aria-labelledby={title} className="card form-sheet claude-sheet">
+      <div className="sheet-head">
+        <h2 id={title}>{named ? account.email : m.claudeNoAccount}</h2>
+        {named && <span className={`badge badge-${kind}`}>{m.claudeStates[state]}</span>}
+      </div>
+      {bar && (
+        <MessageBar kind={bar.kind}>
+          <p>{bar.text}</p>
+        </MessageBar>
+      )}
+      {named && (
+        <dl className="facts">
+          <dt>{m.claudeOrg}</dt>
+          <dd>{account.org_name ?? m.claudeUnknown}</dd>
+          <dt>{m.claudePlan}</dt>
+          <dd>{account.subscription_type ?? m.claudeUnknown}</dd>
+          <dt>{m.claudeExpiresAt}</dt>
+          <dd>{expires ? when(expires) : m.claudeUnknown}</dd>
+        </dl>
       )}
       {offer && !connecting && (
-        <button type="button" onClick={() => setConnecting(true)}>
-          {offer}
-        </button>
+        <div className="actions sheet-actions">
+          <button type="button" className="primary" onClick={() => setConnecting(true)}>
+            {offer}
+          </button>
+        </div>
       )}
       {connecting && (
         <Connect
@@ -156,10 +212,29 @@ export function ClaudeConnection({
           }}
         />
       )}
-      {state !== "not_connected" && !signingOut && !connecting && (
-        <ClaudeSignOut onSignedOut={onChange} />
+      {(connection.connection !== "not_connected" || signingOut) && !connecting && (
+        <SignOutZone>
+          {signingOut ? (
+            <SignOutNow onSignedOut={onChange} />
+          ) : (
+            <ClaudeSignOut onSignedOut={onChange} />
+          )}
+        </SignOutZone>
       )}
-      {signingOut && !connecting && <SignOutNow onSignedOut={onChange} />}
+    </section>
+  );
+}
+
+// The sign-out, at the sheet's foot under a stroke: what cannot be undone, set apart.
+function SignOutZone({ children }: { children: ReactNode }) {
+  const heading = useId();
+  return (
+    <section aria-labelledby={heading} className="danger-zone">
+      <div className="danger-intro">
+        <h3 id={heading}>{m.claudeSignOutTitle}</h3>
+        <p className="muted">{m.claudeSignOutLine}</p>
+      </div>
+      {children}
     </section>
   );
 }
@@ -236,7 +311,9 @@ export function ClaudePage() {
   }, []);
   return (
     <section>
-      <h1>{m.claudeTitle}</h1>
+      <div className="page-head">
+        <h1>{m.claudeTitle}</h1>
+      </div>
       <ProblemView error={error} />
       <ClaudeConnection connection={connection} onChange={setConnection} />
     </section>

@@ -1,8 +1,10 @@
-import { type AnchorHTMLAttributes, Fragment, useEffect, useState } from "react";
+import { type AnchorHTMLAttributes, Fragment, useEffect, useId, useState } from "react";
 import ReactMarkdown from "react-markdown";
-import { Link, useParams } from "react-router-dom";
+import { Link, NavLink, useParams } from "react-router-dom";
 
 import { type ApiError, api } from "./api";
+import { Caret } from "./Caret";
+import { HelpIcon } from "./Icons";
 import { splitTables } from "./markdownTables";
 import { m } from "./messages";
 import { asApiError, ProblemView } from "./ProblemView";
@@ -72,6 +74,10 @@ export function Docs() {
   const [pages, setPages] = useState<PageInfo[]>([]);
   const [markdown, setMarkdown] = useState<string | null>(null);
   const [error, setError] = useState<ApiError | null>(null);
+  // Where the contents are folded under a button, as on a phone: open on the index, which is
+  // nothing but them, and folded on a page, and again whenever a page is chosen.
+  const [open, setOpen] = useState(!slug);
+  const contents = useId();
 
   useEffect(() => {
     api.get<{ pages: PageInfo[] }>("/api/docs").then(
@@ -82,6 +88,7 @@ export function Docs() {
   useEffect(() => {
     setMarkdown(null);
     setError(null);
+    setOpen(!slug);
     if (slug) {
       api.get<{ markdown: string }>(`/api/docs/${encodeURIComponent(slug)}`).then(
         (r) => setMarkdown(r.markdown),
@@ -95,16 +102,39 @@ export function Docs() {
 
   return (
     <div className="docs">
-      <nav aria-label={m.docsTitle}>
-        <ul>
-          {pages.map((p) => (
-            <li key={p.slug}>
-              <Link to={`/help/${p.slug}`}>{p.title}</Link>
-            </li>
-          ))}
-        </ul>
-      </nav>
-      <article>
+      <div className="docs-toc">
+        <button
+          type="button"
+          className="toc-toggle"
+          aria-expanded={open}
+          aria-controls={contents}
+          onClick={() => setOpen(!open)}
+        >
+          <HelpIcon />
+          {m.docsContents}
+          <Caret />
+        </button>
+        <nav id={contents} aria-label={m.docsTitle} className={open ? undefined : "folded"}>
+          <ul>
+            {pages.map((p) => (
+              <li key={p.slug}>
+                <NavLink
+                  to={`/help/${p.slug}`}
+                  onClick={() => {
+                    setOpen(false);
+                    // as a page chosen in the sidebar does: focus to the page, not lost with
+                    // the contents as they fold (src/App.tsx's main)
+                    document.getElementById("main")?.focus();
+                  }}
+                >
+                  {p.title}
+                </NavLink>
+              </li>
+            ))}
+          </ul>
+        </nav>
+      </div>
+      <article className="card docs-article">
         {!slug && (
           <>
             <h1>{m.docsTitle}</h1>

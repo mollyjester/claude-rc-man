@@ -2,7 +2,7 @@ import { expect, test } from "@playwright/test";
 
 import { m } from "../src/messages";
 import { FIELDS } from "../src/Settings";
-import { expectSignedInAs, makeWorkspace, openAdminPage } from "./nav";
+import { expectSignedInAs, makeWorkspace, openAdminPage, sidebar } from "./nav";
 import { ALICE, BOB, signInAs } from "./people";
 
 test("settings: the server's verdict is shown as given", async ({ page }) => {
@@ -88,7 +88,7 @@ test("administration is offered to administrators only", async ({ page }) => {
   await page.goto("/");
   await expectSignedInAs(page, BOB);
   await expect(page.getByRole("link", { name: m.navSettings })).toBeVisible();
-  await expect(page.getByRole("button", { name: m.navAdmin })).toHaveCount(0);
+  await expect(page.getByRole("list", { name: m.navAdmin })).toHaveCount(0);
   await expect(page.getByRole("link", { name: m.navUsers })).toHaveCount(0);
   await page.goto("/admin/people");
   await expect(page).toHaveURL("/");
@@ -101,10 +101,9 @@ test("administration is offered to administrators only", async ({ page }) => {
   await expect(page.getByRole("heading", { name: m.everyoneTitle })).toBeVisible();
   await openAdminPage(page, m.navAudit);
   await expect(page.getByRole("heading", { name: m.auditTitle })).toBeVisible();
-  await page.getByRole("banner").getByRole("button", { name: m.navAdmin }).click();
-  const menu = page.getByRole("banner").getByRole("listitem");
-  await expect(menu).toHaveCount(4);
-  await expect(menu.getByRole("link", { name: m.navVersions })).toBeVisible();
+  const group = sidebar(page).getByRole("list", { name: m.navAdmin });
+  await expect(group.getByRole("listitem")).toHaveCount(4);
+  await expect(group.getByRole("link", { name: m.navVersions })).toBeVisible();
 });
 
 test("the Claude Code versions page shows the approved version and the installed ones, to administrators only", async ({
@@ -137,8 +136,11 @@ test("people are added and removed, and the audit trail shows it", async ({ page
   await signInAs(page, ALICE);
   await page.goto("/");
   await openAdminPage(page, m.navUsers);
-  await page.getByLabel(m.usersEmail).fill("dave@example.com");
   await page.getByRole("button", { name: m.usersAdd }).click();
+  const adding = page.getByRole("dialog", { name: m.usersAdd });
+  await adding.getByLabel(m.usersEmail).fill("dave@example.com");
+  await adding.getByRole("button", { name: m.usersAddGo }).click();
+  await expect(adding).toHaveCount(0);
   await expect(page.getByText(m.usersAdded("dave@example.com"))).toBeVisible();
   const dave = page.getByRole("row", { name: /dave@example.com/ });
   await expect(dave.getByText(m.usersUser)).toBeVisible();
@@ -204,7 +206,7 @@ test("an administrator limits a person, the server refuses a limit that is too s
   await expect(bob.getByRole("cell", { name: "1.5", exact: true })).toBeVisible();
   await expect(bob.getByRole("cell", { name: m.usersNoLimit })).toHaveCount(1);
 
-  await dialog.getByRole("button", { name: m.close }).click();
+  await dialog.getByRole("button", { name: m.close, exact: true }).click();
   await expect(dialog).toHaveCount(0);
   await expect(bob.getByRole("button", { name: m.usersLimits })).toBeFocused();
 

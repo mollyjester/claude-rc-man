@@ -6,6 +6,7 @@ import { vi } from "vitest";
 import { ADMIN, ADMIN_PAGES } from "./AdminPages";
 import { away } from "./App";
 import { m } from "./messages";
+import { PAGES } from "./Pages";
 import { ADMIN_USER, fakeApi, ME, NOTHING_TO_ATTEND, type Reply } from "./test/fakeApi";
 import { renderApp } from "./test/render";
 
@@ -27,7 +28,12 @@ function api(me: Reply) {
   });
 }
 
-const nav = () => screen.getByRole("banner");
+const banner = () => screen.getByRole("banner");
+// The one navigation of the pages: the sidebar beside the page, and a drawer on a phone.
+const sidebar = async () => screen.findByRole("navigation", { name: m.navMain });
+// The pages the sidebar offers everyone, from the route table.
+const SIDEBAR = PAGES.filter((page) => page.icon !== undefined);
+
 // Opens the account menu, and returns what it holds.
 async function account() {
   const button = within(await screen.findByRole("banner")).getByRole("button", {
@@ -36,115 +42,208 @@ async function account() {
   await userEvent.click(button);
   return within(document.getElementById(button.getAttribute("aria-controls")!)!);
 }
-// The Admin button, once the page knows who is signed in.
-const adminButton = async () =>
-  within(await screen.findByRole("banner")).getByRole("button", { name: m.navAdmin });
+// The button that opens the sidebar as a drawer, which the stylesheet shows on a phone only.
+const menuButton = async () =>
+  within(await screen.findByRole("banner")).getByRole("button", { name: m.navMenu });
 
 test("people who are not administrators are not offered administration", async () => {
   api(ME);
   renderApp();
-  expect(await screen.findByText(m.signedInAs(ME.email))).toBeInTheDocument();
-  expect(within(nav()).getByRole("link", { name: m.navSettings })).toBeInTheDocument();
-  expect(within(nav()).queryByRole("button", { name: m.navAdmin })).not.toBeInTheDocument();
+  const nav = await sidebar();
+  expect(within(nav).getByRole("link", { name: m.navSettings })).toBeInTheDocument(); // positive
+  expect(within(nav).queryByRole("list", { name: m.navAdmin })).not.toBeInTheDocument();
+  expect(screen.queryByText(m.navAdmin)).not.toBeInTheDocument();
   for (const { label } of ADMIN_PAGES) {
     expect(screen.queryByRole("link", { name: label })).not.toBeInTheDocument();
   }
 });
 
-test("administrators get one Admin entry, which leads to every administrators' page", async () => {
+test("the sidebar offers every page of the route table, each with its icon, in order", async () => {
+  api(ME);
+  renderApp();
+  const nav = await sidebar();
+  expect(SIDEBAR.length).toBeGreaterThan(1); // non-vacuity
+  expect(SIDEBAR.map((page) => page.name)).toEqual([
+    m.navDashboard,
+    m.navClaude,
+    m.navSettings,
+    m.navDocs,
+  ]);
+  const links = within(nav).getAllByRole("link");
+  expect(links.map((link) => [link.textContent, link.getAttribute("href")])).toEqual(
+    SIDEBAR.map((page) => [page.name, page.path]),
+  );
+  for (const link of links) expect(link.querySelector("svg.icon")).not.toBeNull();
+  // one navigation of the pages, not one for the sidebar and another for the drawer
+  expect(screen.getAllByRole("navigation", { name: m.navMain })).toHaveLength(1);
+  expect(document.querySelectorAll("nav.sidebar")).toHaveLength(1);
+});
+
+test("administrators get a group of the administrators' pages in the sidebar, in order", async () => {
   api(ADMIN_USER);
   renderApp();
-  const admin = await adminButton();
-  expect(within(nav()).getAllByRole("button", { name: m.navAdmin })).toHaveLength(1);
-  expect(admin).toHaveAttribute("aria-expanded", "false");
-  for (const { label } of ADMIN_PAGES) {
-    expect(screen.queryByRole("link", { name: label })).not.toBeInTheDocument();
-  }
-
-  // a disclosure: a caret, which the stylesheet turns by aria-expanded, outside its name
-  expect(admin.querySelector(".caret")).toHaveAttribute("aria-hidden", "true");
-  expect(admin).toHaveAccessibleName(m.navAdmin);
-
-  await userEvent.click(admin);
-  expect(admin).toHaveAttribute("aria-expanded", "true");
-  const menu = document.getElementById(admin.getAttribute("aria-controls")!)!;
-  const links = within(menu).getAllByRole("link");
+  const nav = await sidebar();
+  const group = within(nav).getByRole("list", { name: m.navAdmin });
+  const links = within(group).getAllByRole("link");
   expect(links).toHaveLength(ADMIN_PAGES.length);
-  for (const { path, label } of ADMIN_PAGES) {
-    expect(within(menu).getByRole("link", { name: label })).toHaveAttribute("href", path);
-  }
+  expect(links.map((link) => [link.textContent, link.getAttribute("href")])).toEqual(
+    ADMIN_PAGES.map((page) => [page.label, page.path]),
+  );
+  for (const link of links) expect(link.querySelector("svg.icon")).not.toBeNull();
+  // everyone's pages come first, outside the group
+  expect(within(nav).getAllByRole("link")).toHaveLength(SIDEBAR.length + ADMIN_PAGES.length);
+  expect(within(group).queryByRole("link", { name: m.navSettings })).not.toBeInTheDocument();
 });
 
-test("choosing a page opens it and closes the menu, which then marks itself as where you are", async () => {
+test("the sidebar marks the page where you are, a help page and an administrators' page among them", async () => {
+  api(ADMIN_USER);
+  const { navigate } = renderApp("/settings");
+  const nav = await sidebar();
+  const current = () =>
+    within(nav)
+      .getAllByRole("link")
+      .filter((link) => link.getAttribute("aria-current") === "page")
+      .map((link) => link.textContent);
+  expect(current()).toEqual([m.navSettings]);
+  await navigate("/help/workspaces");
+  expect(current()).toEqual([m.navDocs]);
+  await navigate(ADMIN.versions.path);
+  expect(current()).toEqual([m.navVersions]);
+  await navigate("/");
+  expect(current()).toEqual([m.navDashboard]);
+});
+
+test("the top bar names rcman, leading home, and the page where you are, and links to Help", async () => {
+  api(ADMIN_USER);
+  const { navigate } = renderApp("/settings");
+  const bar = await screen.findByRole("banner");
+  expect(within(bar).getByRole("link", { name: m.appName })).toHaveAttribute("href", "/");
+  const crumb = () => bar.querySelector(".crumb")?.textContent;
+  expect(crumb()).toBe(m.navSettings);
+  await navigate("/help/workspaces");
+  expect(crumb()).toBe(m.navDocs);
+  await navigate(ADMIN.people.path);
+  expect(crumb()).toBe(m.navUsers);
+  await navigate("/");
+  expect(crumb()).toBe(m.navDashboard);
+  const help = within(bar).getByRole("link", { name: m.navDocs });
+  expect(help).toHaveAttribute("href", "/help");
+  expect(help.querySelector("svg.icon")).not.toBeNull();
+});
+
+test("the account menu's button is the person's avatar: the first letter of their address", async () => {
+  api(ME);
+  renderApp();
+  const button = within(await screen.findByRole("banner")).getByRole("button", {
+    name: m.account,
+  });
+  const avatar = button.querySelector(".avatar")!;
+  expect(avatar).toHaveTextContent(ME.email[0].toUpperCase());
+  expect(avatar).toHaveAttribute("aria-hidden", "true");
+});
+
+test("the menu button opens the sidebar as a drawer, a disclosure of the one navigation", async () => {
+  api(ME);
+  renderApp();
+  const button = await menuButton();
+  const nav = await sidebar();
+  expect(button).toHaveAttribute("aria-controls", nav.id);
+  expect(button).toHaveAttribute("aria-expanded", "false");
+  expect(nav).not.toHaveClass("open");
+  expect(nav).toHaveAttribute("data-component", "Navigation");
+  await userEvent.click(button);
+  expect(button).toHaveAttribute("aria-expanded", "true");
+  expect(nav).toHaveClass("open");
+  expect(document.querySelectorAll("nav.sidebar")).toHaveLength(1); // the same element
+  await userEvent.click(button);
+  expect(nav).not.toHaveClass("open");
+});
+
+test("choosing a page in the drawer opens it and closes the drawer, the page already open too", async () => {
   api(ADMIN_USER);
   const { location } = renderApp();
-  const admin = await adminButton();
-  expect(admin).not.toHaveClass("active");
-  await userEvent.click(admin);
+  const button = await menuButton();
+  const nav = await sidebar();
+  await userEvent.click(button);
   const [page] = ADMIN_PAGES;
-  await userEvent.click(screen.getByRole("link", { name: page.label }));
+  await userEvent.click(within(nav).getByRole("link", { name: page.label }));
   expect(location().pathname).toBe(page.path);
-  expect(admin).toHaveAttribute("aria-expanded", "false");
-  expect(screen.queryByRole("link", { name: page.label })).not.toBeInTheDocument();
-  expect(admin).toHaveClass("active");
+  expect(button).toHaveAttribute("aria-expanded", "false");
+  await userEvent.click(button);
+  await userEvent.click(within(nav).getByRole("link", { name: page.label }));
+  expect(button).toHaveAttribute("aria-expanded", "false");
 });
 
-test("the menu closes when the page changes, and when the page already open is chosen", async () => {
-  api(ADMIN_USER);
-  const { navigate } = renderApp(ADMIN_PAGES[0].path);
-  const admin = await adminButton();
-  await userEvent.click(admin);
-  expect(admin).toHaveAttribute("aria-expanded", "true");
-  await userEvent.click(screen.getByRole("link", { name: ADMIN_PAGES[0].label }));
-  expect(admin).toHaveAttribute("aria-expanded", "false");
-
-  await userEvent.click(admin);
-  expect(admin).toHaveAttribute("aria-expanded", "true");
+test("the drawer closes when the page changes, on Escape back to its button, and on a press outside it", async () => {
+  api(ME);
+  const { navigate } = renderApp();
+  const button = await menuButton();
+  const nav = await sidebar();
+  await userEvent.click(button);
   await navigate("/settings");
-  expect(admin).toHaveAttribute("aria-expanded", "false");
-});
+  expect(button).toHaveAttribute("aria-expanded", "false");
 
-test("the menu stays open while focus moves inside it, and closes when Tab takes focus out of it", async () => {
-  api(ADMIN_USER);
-  renderApp();
-  const admin = await adminButton();
-  await userEvent.click(admin);
-  const menu = document.getElementById(admin.getAttribute("aria-controls")!)!;
-  for (const { label } of ADMIN_PAGES) {
-    await userEvent.tab();
-    expect(screen.getByRole("link", { name: label })).toHaveFocus();
-    expect(admin).toHaveAttribute("aria-expanded", "true");
-  }
-  await userEvent.tab(); // past the last page: out of the menu
-  expect(menu.contains(document.activeElement)).toBe(false);
-  expect(document.activeElement).not.toBe(document.body); // something outside took it
-  expect(admin).toHaveAttribute("aria-expanded", "false");
-});
-
-test("a press outside the menu closes it, though focus stays where it was, and a press inside does not", async () => {
-  api(ADMIN_USER);
-  renderApp();
-  const admin = await adminButton();
-  await userEvent.click(admin);
-  const menu = document.getElementById(admin.getAttribute("aria-controls")!)!;
-  fireEvent.pointerDown(menu);
-  expect(admin).toHaveAttribute("aria-expanded", "true"); // positive control: a press inside
-  fireEvent.pointerDown(screen.getByText(m.signedInAs(ADMIN_USER.email)));
-  expect(admin).toHaveFocus(); // the press moved no focus
-  expect(admin).toHaveAttribute("aria-expanded", "false");
-});
-
-test("Escape closes the menu and returns to its button", async () => {
-  api(ADMIN_USER);
-  renderApp();
-  const admin = await adminButton();
-  await userEvent.click(admin);
-  const first = screen.getByRole("link", { name: ADMIN_PAGES[0].label });
-  first.focus();
+  await userEvent.click(button);
+  within(nav).getByRole("link", { name: m.navClaude }).focus();
   await userEvent.keyboard("{Escape}");
-  expect(admin).toHaveAttribute("aria-expanded", "false");
-  expect(first).not.toBeVisible();
-  expect(admin).toHaveFocus();
+  expect(button).toHaveAttribute("aria-expanded", "false");
+  expect(button).toHaveFocus();
+
+  await userEvent.click(button);
+  fireEvent.pointerDown(nav);
+  expect(button).toHaveAttribute("aria-expanded", "true"); // positive control: a press inside
+  fireEvent.pointerDown(screen.getByRole("main"));
+  expect(button).toHaveAttribute("aria-expanded", "false");
+});
+
+test("opening the drawer puts focus on the page where you are, or on the first page", async () => {
+  api(ADMIN_USER);
+  const { navigate } = renderApp("/settings");
+  const button = await menuButton();
+  const nav = await sidebar();
+  await userEvent.click(button);
+  expect(within(nav).getByRole("link", { name: m.navSettings })).toHaveFocus();
+  await userEvent.keyboard("{Escape}");
+  expect(button).toHaveFocus();
+  // an administrators' page, in its group
+  await navigate(ADMIN.versions.path);
+  await userEvent.click(button);
+  expect(within(nav).getByRole("link", { name: m.navVersions })).toHaveFocus();
+});
+
+test("choosing a page in the drawer puts focus on the page, not nowhere; in the sidebar it stays", async () => {
+  api(ME);
+  const { location } = renderApp();
+  const button = await menuButton();
+  const nav = await sidebar();
+  await userEvent.click(button);
+  await userEvent.click(within(nav).getByRole("link", { name: m.navClaude }));
+  expect(location().pathname).toBe("/claude");
+  expect(screen.getByRole("main")).toHaveFocus();
+  // the same page chosen again from the drawer: still the page
+  await userEvent.click(button);
+  await userEvent.click(within(nav).getByRole("link", { name: m.navClaude }));
+  expect(screen.getByRole("main")).toHaveFocus();
+  // beside the page, as on a desktop, the link keeps it, as any link does
+  const settings = within(nav).getByRole("link", { name: m.navSettings });
+  await userEvent.click(settings);
+  expect(location().pathname).toBe("/settings");
+  expect(settings).toHaveFocus();
+});
+
+test("the drawer stays open while focus moves through it, and closes when Tab takes focus out of it", async () => {
+  api(ME);
+  renderApp();
+  const button = await menuButton();
+  const nav = await sidebar();
+  await userEvent.click(button);
+  const links = within(nav).getAllByRole("link");
+  links[links.length - 1].focus();
+  expect(button).toHaveAttribute("aria-expanded", "true");
+  await userEvent.tab(); // past the last page: out of the navigation, into the page
+  expect(nav.contains(document.activeElement)).toBe(false);
+  expect(document.activeElement).not.toBe(document.body); // something outside took it
+  expect(button).toHaveAttribute("aria-expanded", "false");
 });
 
 test("the administration pages are People, everyone's workspaces, the Claude Code versions and the audit trail, in that order", () => {
@@ -162,8 +261,7 @@ test("the administration pages are People, everyone's workspaces, the Claude Cod
 test("the Claude Code versions page is offered to administrators, and opens", async () => {
   api(ADMIN_USER);
   const { location } = renderApp();
-  await userEvent.click(await adminButton());
-  await userEvent.click(screen.getByRole("link", { name: m.navVersions }));
+  await userEvent.click(within(await sidebar()).getByRole("link", { name: m.navVersions }));
   expect(location().pathname).toBe("/admin/claude");
   expect(await screen.findByRole("heading", { name: m.versionsTitle })).toBeInTheDocument();
 });
@@ -180,9 +278,7 @@ test("people who are not administrators are sent on from the Claude Code version
 test("the navigation leads to the Workspaces page", async () => {
   api(ME);
   renderApp("/settings");
-  await userEvent.click(
-    within(await screen.findByRole("banner")).getByRole("link", { name: m.navDashboard }),
-  );
+  await userEvent.click(within(await sidebar()).getByRole("link", { name: m.navDashboard }));
   expect(await screen.findByRole("region", { name: m.navDashboard })).toBeInTheDocument();
 });
 
@@ -196,9 +292,7 @@ test("an account rcman refuses sees the server's reason", async () => {
 test("everyone reaches the Claude page from the navigation", async () => {
   api(ME);
   renderApp();
-  const link = await within(await screen.findByRole("banner")).findByRole("link", {
-    name: m.navClaude,
-  });
+  const link = within(await sidebar()).getByRole("link", { name: m.navClaude });
   expect(link).toHaveAttribute("href", "/claude");
 });
 
@@ -240,8 +334,8 @@ test("the account menu holds who is signed in, and signing out, shown only once 
   });
   expect(button).toHaveAttribute("aria-expanded", "false");
   // closed: none of it can be reached
-  expect(within(nav()).queryByRole("button", { name: m.signOut })).not.toBeInTheDocument();
-  expect(within(nav()).queryByRole("checkbox")).not.toBeInTheDocument();
+  expect(within(banner()).queryByRole("button", { name: m.signOut })).not.toBeInTheDocument();
+  expect(within(banner()).queryByRole("checkbox")).not.toBeInTheDocument();
   const menu = await account();
   expect(button).toHaveAttribute("aria-expanded", "true");
   expect(menu.getByText(m.signedInAs(ME.email))).toBeInTheDocument();

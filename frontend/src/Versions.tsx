@@ -1,6 +1,15 @@
-import { type FormEvent, useCallback, useEffect, useId, useRef, useState } from "react";
+import {
+  type FormEvent,
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useId,
+  useRef,
+  useState,
+} from "react";
 
 import { type ApiError, api } from "./api";
+import { MessageBar } from "./MessageBar";
 import { m } from "./messages";
 import { asApiError, ProblemView, useFieldErrors } from "./ProblemView";
 import { TableScroll } from "./TableScroll";
@@ -36,6 +45,9 @@ export function Versions() {
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<ApiError | null>(null);
   const help = useId();
+  const latestHeading = useId();
+  const factsHeading = useId();
+  const rolloutHeading = useId();
   const fields = useFieldErrors(error);
 
   const load = useCallback(() => {
@@ -105,77 +117,103 @@ export function Versions() {
       : (notice ?? (report?.upgrading ? m.versionsBusyElsewhere : null));
 
   return (
-    <section>
-      <h1>{m.versionsTitle}</h1>
-      <p>{m.versionsIntro}</p>
+    <section className="cards">
+      <div className="page-head">
+        <h1>{m.versionsTitle}</h1>
+      </div>
+      <p className="page-intro muted">{m.versionsIntro}</p>
       <ProblemView error={loadError} />
       {report === null && !loadError && <p>{m.loading}</p>}
-      {report && (
-        <>
-          <dl className="facts">
-            <dt>{m.versionsApproved}</dt>
-            <dd>{report.approved ?? m.versionsNone}</dd>
-            <dt>{m.versionsPrevious}</dt>
-            <dd>{report.previous ?? m.versionsNone}</dd>
-            <dt>{m.versionsTested}</dt>
-            <dd>{report.tested}</dd>
-          </dl>
-          {report.approved !== null && report.approved !== report.tested && (
-            <p className="warning">{m.versionsUntested}</p>
-          )}
-        </>
+      {report !== null && report.approved !== null && report.approved !== report.tested && (
+        <MessageBar kind="warning">
+          <p>{m.versionsUntested}</p>
+        </MessageBar>
       )}
-      <section aria-label={m.versionsLatestTitle}>
-        <h2>{m.versionsLatestTitle}</h2>
-        {latest === null && <p>{m.versionsLatestUnknown}</p>}
-        {latest && report && latest === report.approved && <p>{m.versionsLatestApproved}</p>}
-        {latest && report && latest !== report.approved && (
-          <p>
-            {m.versionsLatest(latest)}{" "}
-            <button
-              type="button"
-              className="secondary"
-              aria-label={m.versionsRolloutVersion(latest)}
-              disabled={shut}
-              onClick={() => rollOut(latest)}
-            >
-              {m.versionsRollout}
-            </button>
-          </p>
+      <div className="versions-top">
+        {report && (
+          <section aria-labelledby={factsHeading} className="card">
+            <h2 id={factsHeading} className="card-title">
+              {m.versionsFactsTitle}
+            </h2>
+            <dl className="facts">
+              <dt>{m.versionsApproved}</dt>
+              <dd>{report.approved ?? m.versionsNone}</dd>
+              <dt>{m.versionsPrevious}</dt>
+              <dd>{report.previous ?? m.versionsNone}</dd>
+              <dt>{m.versionsTested}</dt>
+              <dd>{report.tested}</dd>
+            </dl>
+          </section>
         )}
-      </section>
-      <section aria-label={m.versionsRolloutTitle}>
-        <h2>{m.versionsRolloutTitle}</h2>
-        <form noValidate onSubmit={upgrade} ref={fields.form}>
-          <label>
-            {m.versionsUpgrade}
-            <input
-              type="text"
-              name="version"
-              value={version}
-              onChange={(e) => setVersion(e.target.value)}
-              {...fields.input("version", help)}
-            />
-          </label>
-          {fields.message("version")}
-          <p id={help} className="muted">
-            {m.versionsUpgradeHelp}
-          </p>
-          <div className="actions">
-            <button type="submit" className="primary" disabled={shut}>
-              {rolling === null ? m.versionsUpgradeGo : m.versionsUpgradeBusy}
-            </button>
-          </div>
-        </form>
-        <p role="status">{status}</p>
-        <ProblemView error={error} labels={{ version: m.versionsUpgrade }} inline />
-      </section>
+        <div className="card">
+          <section aria-labelledby={latestHeading} className="card-part">
+            <h2 id={latestHeading}>{m.versionsLatestTitle}</h2>
+            {latest === null && <p className="muted">{m.versionsLatestUnknown}</p>}
+            {latest && report && latest === report.approved && (
+              <p className="muted">{m.versionsLatestApproved}</p>
+            )}
+            {latest && report && latest !== report.approved && (
+              <div className="latest">
+                <p>{m.versionsLatest(latest)}</p>
+                <button
+                  type="button"
+                  className="secondary"
+                  aria-label={m.versionsRolloutVersion(latest)}
+                  disabled={shut}
+                  onClick={() => rollOut(latest)}
+                >
+                  {m.versionsRollout}
+                </button>
+              </div>
+            )}
+          </section>
+          <section aria-labelledby={rolloutHeading} className="card-part">
+            <h2 id={rolloutHeading}>{m.versionsRolloutTitle}</h2>
+            <form noValidate onSubmit={upgrade} ref={fields.form}>
+              <label>
+                {m.versionsUpgrade}
+                <input
+                  type="text"
+                  name="version"
+                  value={version}
+                  onChange={(e) => setVersion(e.target.value)}
+                  {...fields.input("version", help)}
+                />
+              </label>
+              {fields.message("version")}
+              <p id={help} className="help muted">
+                {m.versionsUpgradeHelp}
+              </p>
+              <div className="actions">
+                <button type="submit" className="primary" disabled={shut}>
+                  {rolling === null ? m.versionsUpgradeGo : m.versionsUpgradeBusy}
+                </button>
+              </div>
+            </form>
+            <p role="status">{status}</p>
+            <ProblemView error={error} labels={{ version: m.versionsUpgrade }} inline />
+          </section>
+        </div>
+      </div>
       {report && (
         <>
           <InstalledVersions installed={report.installed} shut={shut} onUse={rollOut} />
           <DriftingServers drift={report.drift} />
         </>
       )}
+    </section>
+  );
+}
+
+// A table in a card of its own, named by its heading.
+function TableCard({ title, children }: { title: string; children: ReactNode }) {
+  const heading = useId();
+  return (
+    <section aria-labelledby={heading} className="card flush">
+      <div className="card-head">
+        <h2 id={heading}>{title}</h2>
+      </div>
+      {children}
     </section>
   );
 }
@@ -190,8 +228,7 @@ function InstalledVersions({
   onUse: (version: string) => void;
 }) {
   return (
-    <section aria-label={m.versionsInstalledTitle}>
-      <h2>{m.versionsInstalledTitle}</h2>
+    <TableCard title={m.versionsInstalledTitle}>
       <TableScroll label={m.tableTitle}>
         <table>
           <thead>
@@ -232,15 +269,14 @@ function InstalledVersions({
           </tbody>
         </table>
       </TableScroll>
-    </section>
+    </TableCard>
   );
 }
 
 function DriftingServers({ drift }: { drift: Drift[] }) {
   return (
-    <section aria-label={m.versionsDriftTitle}>
-      <h2>{m.versionsDriftTitle}</h2>
-      {drift.length === 0 && <p>{m.versionsDriftNone}</p>}
+    <TableCard title={m.versionsDriftTitle}>
+      {drift.length === 0 && <p className="card-empty muted">{m.versionsDriftNone}</p>}
       {drift.length > 0 && (
         <TableScroll label={m.tableTitle}>
           <table>
@@ -265,6 +301,6 @@ function DriftingServers({ drift }: { drift: Drift[] }) {
           </table>
         </TableScroll>
       )}
-    </section>
+    </TableCard>
   );
 }

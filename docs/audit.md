@@ -1,12 +1,13 @@
 # Audit trail
 
-rcman records every request that changes something: who made it, what they
-did, to what, and whether it worked; and when a **Terminal** tab opens and
-closes. Requests that only read are not recorded. Administrators read the trail
-on the **Audit trail** page in rcman, under **Admin** in the navigation, newest
-first. The page says each action in plain words, with its code as the cell's
-tooltip, shows dates in UTC, and marks a request that failed with the word
-*Failed* and its error code.
+rcman records every request that changes something: who made it, what they did,
+to what, and whether it worked; and when a **Terminal** tab opens and closes.
+Requests that only read are not recorded. Administrators read the trail on the
+**Audit trail** page in rcman, in the **Administration** group of the sidebar,
+newest first. The page says each action in plain words, with its code as the
+cell's tooltip, shows dates in UTC, and marks a request that failed with the
+word *Failed* and its error code. On a phone each event is a row of a list: the
+action and how it ended, under it who did it and to what, and then when.
 
 Each event is also written to the [system journal](journal.md) as one line of
 JSON, so it can be read with `journalctl` on the server.

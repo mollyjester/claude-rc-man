@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { vi } from "vitest";
 
 import { m } from "./messages";
-import { ACTIONS, KIND, LABELS, PRIMARY } from "./Servers";
+import { ACTIONS, KIND, LABELS, PRIMARY, WORKSPACE_KIND } from "./Servers";
 import { fakeApi, ME, problem, type Routes, UNREACHABLE_REPLY } from "./test/fakeApi";
 import { sockets } from "./test/fakeSocket";
 import { expectRefused } from "./test/fields";
@@ -99,7 +99,7 @@ const selectedOf = (search: string) => new URLSearchParams(search).get("workspac
 const trash = async (name: string) =>
   within(await list()).findByRole("button", { name: m.deleteWorkspaceNamed(name) });
 
-// Opens New workspace's dialog with the + beside the page's heading, and returns the dialog.
+// Opens New workspace's dialog with its button beside the page's heading, and returns the dialog.
 async function newWorkspace() {
   await userEvent.click(await screen.findByRole("button", { name: m.newWorkspace }));
   return within(await screen.findByRole("dialog", { name: m.newWorkspace }));
@@ -132,39 +132,96 @@ test("the workspaces are listed, and selecting one opens its panel and puts it i
   expect(screen.queryByText(m.workspacePanelEmpty)).not.toBeInTheDocument();
 });
 
-test("with no workspaces, the list says so", async () => {
+test("with no workspaces, the list is an empty state offering New workspace, the page's one", async () => {
   dashboard([]);
   renderApp();
-  expect(await within(await list()).findByText(m.workspacesEmpty)).toBeInTheDocument();
-  expect(within(await list()).queryAllByRole("button")).toEqual([]);
+  const shown = within(await list());
+  expect(await shown.findByText(m.workspacesEmpty)).toBeInTheDocument();
+  expect(shown.getByText(m.workspacesEmptyBody)).toBeInTheDocument();
+  const make = shown.getByRole("button", { name: m.newWorkspace });
+  expect(make).toHaveClass("primary");
+  expect(make.closest(".empty-state")).toContainElement(shown.getByText(m.workspacesEmpty));
+  // the heading offers it no second time, and there is no panel to select a workspace for
+  expect(screen.getAllByRole("button", { name: m.newWorkspace })).toEqual([make]);
+  expect(screen.queryByText(m.workspacePanelEmpty)).not.toBeInTheDocument();
+  await userEvent.click(make);
+  expect(await screen.findByRole("dialog", { name: m.newWorkspace })).toBeInTheDocument();
 });
 
-test("with a workspace selected, a link leads back to the list, and a menu switches to another", async () => {
+test("the heading row counts the workspaces, for a phone to show beside New", async () => {
+  dashboard(withServer("ready"));
+  renderApp();
+  await entry("alpha");
+  const heading = screen.getByRole("heading", { level: 1, name: m.navDashboard });
+  expect(within(heading.parentElement!).getByText(m.workspaceCount(2))).toHaveClass("count-line");
+  expect(m.workspaceCount(1)).toBe("1 workspace");
+});
+
+test("the empty state's words name no control the page has not got", () => {
+  expect(`${m.workspacesEmpty} ${m.workspacesEmptyBody}`).not.toMatch(/\+/);
+});
+
+test("each workspace is a row of the list, the selected one marked as a row, its dot leading its name", async () => {
+  dashboard(withServer("ready"));
+  renderApp("/?workspace=2");
+  const alpha = await entry("alpha");
+  const beta = await entry("beta");
+  expect(alpha.closest("li")).toHaveClass("list-row");
+  expect(beta.closest("li")).toHaveClass("list-row", "selected");
+  expect(alpha.closest("li")).not.toHaveClass("selected");
+  // the dot is first in the name's button, and a row with none keeps its room, so names line up
+  expect(alpha.firstElementChild).toHaveClass("dot-slot");
+  expect(alpha.firstElementChild?.querySelector(".dot")).toHaveClass("dot-running");
+  expect(beta.firstElementChild).toHaveClass("dot-slot");
+  expect(beta.firstElementChild?.querySelector(".dot")).toBeNull();
+});
+
+test("with a workspace selected, the bar over its panel leads back to the list, and its switcher, named by the workspace, opens the others as a sheet", async () => {
   dashboard([workspace(1, "alpha"), workspace(2, "beta", { state: "failed" })]);
   const { location } = renderApp("/?workspace=1");
   await panel("alpha");
-  // on a phone they take the list's place (src/styles.css); here, they are beside the panel
-  const switcher = screen.getByRole("button", { name: m.switchWorkspace });
+  // on a phone the bar takes the list's place (src/styles.css); here, it is beside the list
+  const back = screen.getByRole("link", { name: m.backToWorkspaces });
+  expect(back.textContent).toBe(""); // an icon only, named for where it goes
+  expect(back.querySelector("svg")).toHaveAttribute("aria-hidden", "true");
+  const switcher = screen.getByRole("button", { name: m.switchWorkspaceFrom("alpha") });
+  expect(switcher).toHaveTextContent(/^alpha$/); // it shows the name its own name holds
+  expect(switcher.parentElement).toContainElement(back); // one bar, the two side by side
   expect(switcher).toHaveAttribute("aria-expanded", "false");
   await userEvent.click(switcher);
-  const menu = document.getElementById(switcher.getAttribute("aria-controls")!)!;
-  const choices = within(menu).getAllByRole("button");
+  const sheet = document.getElementById(switcher.getAttribute("aria-controls")!)!;
+  expect(sheet).not.toHaveAttribute("hidden");
+  expect(sheet).toHaveClass("sheet");
+  expect(within(sheet).getByText(m.switchWorkspace)).toBeInTheDocument(); // the sheet's title
+  const choices = within(sheet).getAllByRole("button");
   expect(choices.map((c) => c.textContent)).toEqual(["alpha", `beta ${m.workspaceStates.failed}`]);
-  expect(within(menu).getByRole("button", { name: "alpha" })).toHaveAttribute(
-    "aria-current",
-    "true",
-  );
-  await userEvent.click(within(menu).getByRole("button", { name: /^beta/ }));
+  const current = within(sheet).getByRole("button", { name: "alpha" });
+  expect(current).toHaveAttribute("aria-current", "true");
+  expect(current).toHaveFocus(); // the sheet opens where you are
+  await userEvent.click(within(sheet).getByRole("button", { name: /^beta/ }));
   expect(selectedOf(location().search)).toBe("2");
   expect(await panel("beta")).toBeInTheDocument();
-  expect(switcher).toHaveAttribute("aria-expanded", "false");
-  const back = screen.getByRole("link", { name: m.backToWorkspaces });
-  await userEvent.click(back);
+  const now = screen.getByRole("button", { name: m.switchWorkspaceFrom("beta") });
+  expect(now).toHaveAttribute("aria-expanded", "false");
+  expect(now).toHaveFocus(); // back on the switcher once one was chosen
+  await userEvent.click(screen.getByRole("link", { name: m.backToWorkspaces }));
   expect(selectedOf(location().search)).toBeNull();
   expect(await screen.findByText(m.workspacePanelEmpty)).toBeInTheDocument();
   // with none selected, there is nothing to go back from
   expect(screen.queryByRole("link", { name: m.backToWorkspaces })).not.toBeInTheDocument();
-  expect(screen.queryByRole("button", { name: m.switchWorkspace })).not.toBeInTheDocument();
+  expect(screen.queryByText(m.switchWorkspace)).not.toBeInTheDocument();
+});
+
+test("the switcher's sheet closes on Escape, focus back on the switcher", async () => {
+  dashboard([workspace(1, "alpha"), workspace(2, "beta")]);
+  renderApp("/?workspace=1");
+  await panel("alpha");
+  const switcher = screen.getByRole("button", { name: m.switchWorkspaceFrom("alpha") });
+  await userEvent.click(switcher);
+  expect(switcher).toHaveAttribute("aria-expanded", "true");
+  await userEvent.keyboard("{Escape}");
+  expect(switcher).toHaveAttribute("aria-expanded", "false");
+  expect(switcher).toHaveFocus();
 });
 
 test("the selected workspace is kept in the address, which opens it again", async () => {
@@ -292,14 +349,19 @@ test("New workspace sends the name as typed, then selects the new workspace", as
   expect((await newWorkspace()).getByLabelText(m.newWorkspaceName)).toHaveValue("");
 });
 
-test("+ opens New workspace as a dialog, focus in its name, and Escape or Cancel closes it, focus back on +", async () => {
+test("New workspace, a primary button with its icon beside the heading, opens its dialog, focus in its name, and Escape or Cancel closes it, focus back on it", async () => {
   dashboard([workspace(1, "alpha")]);
   renderApp();
-  const plus = await screen.findByRole("button", { name: m.newWorkspace });
-  expect(plus.textContent).toBe(""); // an icon only, named for what it opens
+  const opener = await screen.findByRole("button", { name: m.newWorkspace });
+  expect(opener).toHaveClass("primary");
+  expect(opener).toHaveAccessibleName(m.newWorkspace);
+  // its words in full, and the short form a phone shows, hidden from assistive technology
+  expect(within(opener).getByText(m.newWorkspace)).toHaveClass("label-long");
+  expect(within(opener).getByText(m.newWorkspaceShort)).toHaveAttribute("aria-hidden", "true");
+  expect(opener.querySelector("svg")).toHaveAttribute("aria-hidden", "true");
   // beside the page's own heading, the list's name
   const heading = screen.getByRole("heading", { level: 1, name: m.navDashboard });
-  expect(heading.parentElement).toContainElement(plus);
+  expect(heading.parentElement).toContainElement(opener);
   expect(screen.queryByRole("dialog")).not.toBeInTheDocument(); // not there until asked for
   expect(screen.queryByLabelText(m.newWorkspaceName)).not.toBeInTheDocument();
   for (const close of [
@@ -312,7 +374,15 @@ test("+ opens New workspace as a dialog, focus in its name, and Escape or Cancel
     await userEvent.type(dialog.getByLabelText(m.newWorkspaceName), "half-typed");
     await close(dialog);
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
-    expect(plus).toHaveFocus();
+    expect(opener).toHaveFocus();
+  }
+});
+
+test("each help line of New workspace is one short sentence, the whole story left to the help pages", () => {
+  for (const help of [m.newWorkspaceNameHelp, m.newWorkspaceSourceHelp]) {
+    expect(help.length).toBeGreaterThan(0);
+    expect(help.length).toBeLessThanOrEqual(70);
+    expect(help.match(/[.:;] [A-Z]/g) ?? []).toEqual([]);
   }
 });
 
@@ -721,21 +791,55 @@ async function sourceLink(page: string) {
   return within(await panel("alpha")).findByRole("link", { name: page });
 }
 
-test("a cloned workspace's panel links to its repository's page, right under its name, in a new tab", async () => {
+test("a cloned workspace's panel names its repository in its head, a link to its page in a new tab, named by the whole address", async () => {
   dashboard([workspace(1, "alpha", { source: `${ADDRESS}.git/`, source_page: ADDRESS })]);
   renderApp("/?workspace=1");
   const link = await sourceLink(ADDRESS);
   expect(link).toHaveAttribute("href", ADDRESS);
   expect(link).toHaveAttribute("target", "_blank");
   expect(link).toHaveAttribute("rel", "noopener noreferrer");
+  expect(link).toHaveClass("repo-link");
+  // what it shows is the repository, owner first, after its icon
+  expect(link).toHaveTextContent(/^octo\/widget$/);
+  expect(link.querySelector("svg")).toHaveAttribute("aria-hidden", "true");
   const name = within(await panel("alpha")).getByRole("heading", { name: "alpha", level: 2 });
-  expect(name.nextElementSibling).toContainElement(link);
-  expect(name.nextElementSibling).toHaveClass("source-page"); // which wraps a long address
-  expect(name.nextElementSibling).toHaveTextContent(new RegExp(`^${ADDRESS}$`)); // no label
+  expect(name.closest(".panel-head")).toContainElement(link);
   // the page the server gave, not the address as it was typed
   const opened = within(await panel("alpha"));
   expect(opened.queryByRole("link", { name: `${ADDRESS}.git/` })).not.toBeInTheDocument();
   expect(opened.queryByText(`${ADDRESS}.git/`)).not.toBeInTheDocument();
+});
+
+test("a page that is no address is shown whole", async () => {
+  dashboard([workspace(1, "alpha", { source: "x", source_page: "not an address" })]);
+  renderApp("/?workspace=1");
+  expect(await sourceLink("not an address")).toHaveTextContent(/^not an address$/);
+});
+
+test.each(["creating", "ready", "failed", "deleting"])(
+  "the panel's head shows a workspace that is %s as a pill beside its name",
+  async (state) => {
+    dashboard([workspace(1, "alpha", { state })]);
+    renderApp("/?workspace=1");
+    const name = within(await panel("alpha")).getByRole("heading", { name: "alpha", level: 2 });
+    const pill = within(name.closest(".panel-head") as HTMLElement).getByText(
+      m.workspaceStates[state],
+    );
+    expect(pill).toHaveClass("badge", `badge-${WORKSPACE_KIND[state]}`);
+  },
+);
+
+test("Overview holds the Claude server and the Changes as two sibling cards, neither inside the other", async () => {
+  dashboard([workspace(1, "alpha")]);
+  renderApp("/?workspace=1");
+  const opened = within(await panel("alpha"));
+  const server = await opened.findByRole("region", { name: m.serverTitle });
+  const changes = await opened.findByRole("region", { name: m.changesTitle });
+  for (const card of [server, changes]) {
+    expect(card).toHaveClass("card");
+    expect(card.querySelector(".card")).toBeNull();
+  }
+  expect(server.parentElement).toBe(changes.parentElement);
 });
 
 test.each([
@@ -1715,13 +1819,13 @@ test.each(["creating", "failed", "deleting"])(
   },
 );
 
-test("the repository's link stays right under the name, above the tabs", async () => {
+test("the repository's link stays in the panel's head, above the tabs", async () => {
   dashboard([workspace(1, "alpha", { source: ADDRESS, source_page: ADDRESS })]);
   renderApp("/?workspace=1&tab=terminal");
   const opened = await panel("alpha");
   const name = within(opened).getByRole("heading", { name: "alpha", level: 2 });
   const link = await within(opened).findByRole("link", { name: ADDRESS });
-  expect(name.nextElementSibling).toContainElement(link);
+  expect(name.closest(".panel-head")).toContainElement(link);
   const list = await tabs();
   expect(link.compareDocumentPosition(list) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 });

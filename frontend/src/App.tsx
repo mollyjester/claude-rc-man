@@ -1,11 +1,17 @@
-import { type FormEvent, type ReactNode, useEffect, useRef, useState } from "react";
-import { matchPath, Navigate, NavLink, Route, Routes, useLocation } from "react-router-dom";
+import {
+  type FormEvent,
+  type ReactElement,
+  type ReactNode,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
+import { Link, matchPath, Navigate, NavLink, Route, Routes, useLocation } from "react-router-dom";
 
 import { ADMIN_PAGES } from "./AdminPages";
 import { Attention } from "./Attention";
 import { type ApiError, api } from "./api";
-import { Caret } from "./Caret";
-import { PersonIcon } from "./Icons";
+import { HelpIcon, MenuIcon } from "./Icons";
 import { m } from "./messages";
 import { PAGES } from "./Pages";
 import { asApiError, ProblemView } from "./ProblemView";
@@ -55,46 +61,17 @@ function SignOut() {
   );
 }
 
-// The administrators' pages behind one button: a pop-up (src/usePopup.ts) that
-// also closes when a page is chosen and when the page changes.
-function AdminMenu() {
-  const menu = usePopup("AdminMenu");
-  const { close } = menu;
-  const { pathname } = useLocation();
-  const here = ADMIN_PAGES.some((page) => matchPath(page.path, pathname));
-
-  // biome-ignore lint/correctness/useExhaustiveDependencies: pathname is what sets this off, not what it reads: the menu closes whenever the page changes; close, which it does read, is stable (useCallback with no dependencies in usePopup)
-  useEffect(() => close(), [pathname]);
-
-  return (
-    <div className="menu" ref={menu.rootRef}>
-      <button type="button" className={here ? "active" : undefined} {...menu.buttonProps}>
-        {m.navAdmin}
-        <Caret />
-      </button>
-      <ul {...menu.panelProps} hidden={!menu.open}>
-        {ADMIN_PAGES.map((page) => (
-          <li key={page.path}>
-            <NavLink to={page.path} onClick={() => close()}>
-              {page.label}
-            </NavLink>
-          </li>
-        ))}
-      </ul>
-    </div>
-  );
-}
-
-// Who is signed in, and signing out of rcman, behind one button at the end of the header: a
+// Who is signed in, and signing out of rcman, behind their avatar at the end of the top bar: a
 // pop-up (src/usePopup.ts), on every width.
 function AccountMenu({ me }: { me: Me }) {
   const menu = usePopup("AccountMenu");
   return (
     <div className="menu account" ref={menu.rootRef}>
-      <button type="button" {...menu.buttonProps}>
-        <PersonIcon />
-        {m.account}
-        <Caret />
+      <button type="button" className="avatar-button" title={me.email} {...menu.buttonProps}>
+        <span className="avatar" aria-hidden="true">
+          {me.email.charAt(0).toUpperCase()}
+        </span>
+        <span className="visually-hidden">{m.account}</span>
       </button>
       <div {...menu.panelProps} className="account-panel" hidden={!menu.open}>
         <p className="muted">{m.signedInAs(me.email)}</p>
@@ -104,21 +81,108 @@ function AccountMenu({ me }: { me: Me }) {
   );
 }
 
-function Nav({ me }: { me: Me }) {
+// The name of the page at a path, for the top bar to say where you are.
+function pageName(pathname: string): string {
+  const page = PAGES.find((p) => matchPath(p.path, pathname));
+  if (page) return page.name;
+  return ADMIN_PAGES.find((p) => matchPath(p.path, pathname))?.label ?? m.navDashboard;
+}
+
+// The chrome around every page: the top bar, with rcman's mark, where you are, Help and the
+// account menu, and the one navigation of the pages, a sidebar beside the page, which on a phone
+// (the stylesheet) is a drawer the top bar's menu button opens: a pop-up (src/usePopup.ts) that
+// also closes when a page is chosen and when the page changes. Opened, it puts focus on the
+// page where you are, or the first; a page chosen in it puts focus on the page (toPage), as the
+// drawer goes; and a press on the page dimmed beside it (the scrim) closes it and goes no
+// further. The administrators' group is built from ADMIN_PAGES, and shown to administrators only.
+function Navigation({ me, toPage }: { me: Me; toPage: () => void }) {
+  const drawer = usePopup("Navigation");
+  const { close, open } = drawer;
+  const { pathname } = useLocation();
+  const nav = useRef<HTMLElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const links = nav.current?.querySelectorAll<HTMLAnchorElement>("a[href]");
+    const here = nav.current?.querySelector<HTMLAnchorElement>('a[aria-current="page"]');
+    (here ?? links?.[0])?.focus();
+  }, [open]);
+
+  function chosen() {
+    if (drawer.isOpen()) toPage();
+    close();
+  }
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: pathname is what sets this off, not what it reads: the drawer closes whenever the page changes; close, which it does read, is stable (useCallback with no dependencies in usePopup)
+  useEffect(() => close(), [pathname]);
+
+  const link = (path: string, label: string, Icon: () => ReactElement, end = false) => (
+    <li key={path}>
+      <NavLink to={path} end={end} onClick={chosen}>
+        <Icon />
+        {label}
+      </NavLink>
+    </li>
+  );
+
   return (
-    <header>
-      <strong>{m.appName}</strong>
-      <nav>
-        <NavLink to="/" end>
-          {m.navDashboard}
-        </NavLink>
-        <NavLink to="/claude">{m.navClaude}</NavLink>
-        <NavLink to="/settings">{m.navSettings}</NavLink>
-        <NavLink to="/help">{m.navDocs}</NavLink>
-        {me.admin && <AdminMenu />}
+    <div className="chrome" ref={drawer.rootRef}>
+      <header className="topbar">
+        <button
+          type="button"
+          className="icon-button subtle menu-button"
+          aria-label={m.navMenu}
+          title={m.navMenu}
+          {...drawer.buttonProps}
+        >
+          <MenuIcon />
+        </button>
+        <Link to="/" className="brand">
+          <span className="mark" aria-hidden="true">
+            rc
+          </span>
+          {m.appName}
+        </Link>
+        <span className="crumb-sep" aria-hidden="true">
+          /
+        </span>
+        <span className="crumb">{pageName(pathname)}</span>
+        <div className="topbar-end">
+          <Link
+            to="/help"
+            className="button icon-button subtle help-link"
+            aria-label={m.navDocs}
+            title={m.navDocs}
+          >
+            <HelpIcon />
+          </Link>
+          <AccountMenu me={me} />
+        </div>
+      </header>
+      <nav
+        ref={nav}
+        {...drawer.panelProps}
+        aria-label={m.navMain}
+        className={drawer.open ? "sidebar open" : "sidebar"}
+      >
+        <ul>
+          {PAGES.flatMap((page) =>
+            page.icon ? [link(page.path, page.name, page.icon, page.path === "/")] : [],
+          )}
+        </ul>
+        {me.admin && (
+          <>
+            <p className="nav-group" id={`${drawer.panelProps.id}-admin`}>
+              {m.navAdmin}
+            </p>
+            <ul aria-labelledby={`${drawer.panelProps.id}-admin`}>
+              {ADMIN_PAGES.map((page) => link(page.path, page.label, page.icon))}
+            </ul>
+          </>
+        )}
       </nav>
-      <AccountMenu me={me} />
-    </header>
+      <div className="scrim" aria-hidden="true" hidden={!open} onClick={() => close()} />
+    </div>
   );
 }
 
@@ -159,34 +223,36 @@ export function App({ pollMs = POLL_MS }: { pollMs?: number }) {
       >
         {m.skipToContent}
       </a>
-      <Nav me={me} />
-      <main id="main" tabIndex={-1} ref={main}>
-        {me.admin && <Attention />}
-        <Routes>
-          {PAGES.map((page) => (
-            <Route
-              key={page.path}
-              path={page.path}
-              element={
-                page.title === null ? (
-                  page.element({ pollMs })
-                ) : (
-                  <Titled title={page.title}>{page.element({ pollMs })}</Titled>
-                )
-              }
-            />
-          ))}
-          {me.admin &&
-            ADMIN_PAGES.map((page) => (
+      <div className="shell">
+        <Navigation me={me} toPage={() => main.current?.focus()} />
+        <main id="main" tabIndex={-1} ref={main}>
+          {me.admin && <Attention />}
+          <Routes>
+            {PAGES.map((page) => (
               <Route
                 key={page.path}
                 path={page.path}
-                element={<Titled title={page.label}>{page.element()}</Titled>}
+                element={
+                  page.title === null ? (
+                    page.element({ pollMs })
+                  ) : (
+                    <Titled title={page.title}>{page.element({ pollMs })}</Titled>
+                  )
+                }
               />
             ))}
-          <Route path="*" element={<Navigate to="/" replace />} />
-        </Routes>
-      </main>
+            {me.admin &&
+              ADMIN_PAGES.map((page) => (
+                <Route
+                  key={page.path}
+                  path={page.path}
+                  element={<Titled title={page.label}>{page.element()}</Titled>}
+                />
+              ))}
+            <Route path="*" element={<Navigate to="/" replace />} />
+          </Routes>
+        </main>
+      </div>
     </>
   );
 }

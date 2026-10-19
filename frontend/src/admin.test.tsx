@@ -1,4 +1,4 @@
-import { act, cleanup, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { vi } from "vitest";
 
@@ -39,6 +39,12 @@ function api(extra: Routes) {
   });
 }
 
+// Opens the dialog that adds a person, with the button beside the page's heading.
+async function openAdd() {
+  await userEvent.click(await screen.findByRole("button", { name: m.usersAdd }));
+  return screen.findByRole("dialog", { name: m.usersAdd });
+}
+
 test("people are listed with their role and how many workspaces they have", async () => {
   api({ "GET /api/people": PEOPLE });
   renderApp("/admin/people");
@@ -56,8 +62,10 @@ test("people are listed with their role and how many workspaces they have", asyn
     m.usersMemory,
     m.usersCpu,
     m.usersProcesses,
-    "",
+    m.usersActions,
   ]);
+  // the actions' column is named too, though only heard
+  expect(screen.getByRole("columnheader", { name: m.usersActions })).toBeInTheDocument();
 });
 
 test("each person's stored limits are listed, and no limit is said so", async () => {
@@ -87,25 +95,180 @@ test("adding someone sends exactly what was entered, and lists them", async () =
     },
   });
   renderApp("/admin/people");
-  await userEvent.type(await screen.findByLabelText(m.usersEmail), "Carol@example.com");
-  await userEvent.click(screen.getByLabelText(m.usersAddAdmin));
-  await userEvent.click(screen.getByRole("button", { name: m.usersAdd }));
+  const dialog = await openAdd();
+  await userEvent.type(within(dialog).getByLabelText(m.usersEmail), "Carol@example.com");
+  await userEvent.click(within(dialog).getByLabelText(m.usersAddAdmin));
+  await userEvent.click(within(dialog).getByRole("button", { name: m.usersAddGo }));
   await waitFor(() =>
     expect(fake.made("POST", "/api/people")[0].body).toEqual({
       email: "Carol@example.com",
       admin: true,
     }),
   );
-  expect(await screen.findByText(m.usersAdded("Carol@example.com"))).toBeInTheDocument();
+  const added = await screen.findByText(m.usersAdded("Carol@example.com"));
+  expect(added.closest(".message")).toHaveClass("message-success");
   expect(await screen.findByRole("row", { name: /Carol@example.com/ })).toBeInTheDocument();
-  expect(screen.getByLabelText(m.usersEmail)).toHaveValue("");
-  expect(screen.getByLabelText(m.usersAddAdmin)).not.toBeChecked();
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument(); // done with, it closes
+  // asked again, it starts empty
+  const again = await openAdd();
+  expect(within(again).getByLabelText(m.usersEmail)).toHaveValue("");
+  expect(within(again).getByLabelText(m.usersAddAdmin)).not.toBeChecked();
 });
+
+test("the page's heading row holds its title and Add person, its one primary button, which opens the form in a dialog", async () => {
+  api({ "GET /api/people": PEOPLE });
+  renderApp("/admin/people");
+  const title = await screen.findByRole("heading", { level: 1, name: m.usersTitle });
+  const head = title.parentElement!;
+  expect(head).toHaveClass("page-head");
+  const add = within(head).getByRole("button", { name: m.usersAdd });
+  expect(add).toHaveClass("primary");
+  expect(screen.queryByLabelText(m.usersEmail)).not.toBeInTheDocument(); // not before it is asked for
+  await userEvent.click(add);
+  expect(await screen.findByRole("dialog", { name: m.usersAdd })).toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: m.cancel }));
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  expect(add).toHaveFocus();
+});
+
+test("the people are a table in a card, each row's Limits a subtle button and Remove a danger outline", async () => {
+  api({ "GET /api/people": PEOPLE });
+  renderApp("/admin/people");
+  const bob = await screen.findByRole("row", { name: /bob@example.com/ });
+  const card = bob.closest("table")!.closest(".card")!;
+  expect(card).not.toBeNull();
+  expect(card).toHaveClass("flush");
+  expect(within(bob).getByRole("button", { name: m.usersLimits })).toHaveClass("subtle");
+  expect(within(bob).getByRole("button", { name: m.usersRemove })).toHaveClass("secondary-danger");
+});
+
+// --- the More actions menu, which holds a row's actions on a phone ----------------------
+
+// A row's More actions button, by the person it is for.
+const moreFor = (row: HTMLElement, email: string) =>
+  within(row).getByRole("button", { name: m.usersMoreActionsFor(email) });
+
+// Opens a row's More actions menu, and returns its panel.
+async function openMore(email: string) {
+  const row = await screen.findByRole("row", { name: new RegExp(email) });
+  const more = moreFor(row, email);
+  await userEvent.click(more);
+  expect(more).toHaveAttribute("aria-expanded", "true");
+  const panel = document.getElementById(more.getAttribute("aria-controls")!)!;
+  expect(panel).toBeInTheDocument();
+  return { row, more, panel };
+}
+
+test("each row has a More actions button named for its person, a subtle icon button, closed", async () => {
+  api({ "GET /api/people": PEOPLE });
+  renderApp("/admin/people");
+  for (const email of ["alice@example.com", BOB]) {
+    const row = await screen.findByRole("row", { name: new RegExp(email) });
+    const more = moreFor(row, email);
+    expect(more).toHaveClass("subtle", "icon-button");
+    expect(more).toHaveAttribute("aria-expanded", "false");
+    expect(more.closest("td")).toHaveClass("row-actions");
+  }
+});
+
+test("More actions opens a menu of Limits and Remove, Remove in danger's text, marked as the menu's", async () => {
+  api({ "GET /api/people": PEOPLE });
+  renderApp("/admin/people");
+  const { panel } = await openMore(BOB);
+  expect(panel).toHaveAttribute("data-component", "PersonMenu");
+  expect(panel).toHaveClass("popover");
+  const items = within(panel).getAllByRole("button");
+  expect(items.map((b) => b.textContent)).toEqual([m.usersLimits, m.usersRemove]);
+  expect(items[1]).toHaveClass("danger-item");
+  expect(items[0]).not.toHaveClass("danger-item");
+});
+
+test("Escape closes the menu and puts focus back on More actions, and a press outside closes it", async () => {
+  api({ "GET /api/people": PEOPLE });
+  renderApp("/admin/people");
+  const { more, panel } = await openMore(BOB);
+  within(panel).getByRole("button", { name: m.usersLimits }).focus();
+  await userEvent.keyboard("{Escape}");
+  expect(more).toHaveAttribute("aria-expanded", "false");
+  expect(panel).not.toBeInTheDocument();
+  expect(more).toHaveFocus();
+
+  await userEvent.click(more);
+  expect(more).toHaveAttribute("aria-expanded", "true");
+  fireEvent.pointerDown(screen.getByRole("heading", { level: 1, name: m.usersTitle }));
+  expect(more).toHaveAttribute("aria-expanded", "false");
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+});
+
+test("Limits in the menu closes it and opens that person's limits, and closing them puts focus back on More actions", async () => {
+  limitsApi();
+  renderApp("/admin/people");
+  const { more, panel } = await openMore(BOB);
+  await userEvent.click(within(panel).getByRole("button", { name: m.usersLimits }));
+  expect(more).toHaveAttribute("aria-expanded", "false");
+  const dialog = screen.getByRole("dialog", { name: m.limitsTitle(BOB) });
+  await within(dialog).findByRole("form", { name: PERSON_SCOPE });
+  await userEvent.click(within(dialog).getByRole("button", { name: m.close }));
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  expect(more).toHaveFocus();
+});
+
+test("Remove in the menu closes it and asks about that person, and Cancel puts focus back on More actions", async () => {
+  const fake = api({ "GET /api/people": PEOPLE });
+  renderApp("/admin/people");
+  const { more, panel } = await openMore(BOB);
+  await userEvent.click(within(panel).getByRole("button", { name: m.usersRemove }));
+  expect(more).toHaveAttribute("aria-expanded", "false");
+  const dialog = screen.getByRole("dialog", { name: m.usersRemoveTitle(BOB) });
+  await userEvent.click(within(dialog).getByRole("button", { name: m.cancel }));
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  expect(more).toHaveFocus();
+  expect(fake.calls.filter((c) => c.method === "DELETE")).toEqual([]);
+});
+
+test.each([
+  [
+    "the people",
+    "/admin/people",
+    () => api({ "GET /api/people": PEOPLE }),
+    /alice@example.com/,
+    [m.usersWorkspaces, m.usersMemory, m.usersCpu, m.usersProcesses],
+  ],
+  [
+    "the audit trail",
+    "/admin/audit",
+    () => api({ "GET /api/audit": { events: [{ ...EVENT_ONE }] } }),
+    /a@x/,
+    [],
+  ],
+])(
+  "%s keep a table's roles said outright, for a phone draws its rows as a list, and show a column's name beside a value only where the value alone does not say what it is",
+  async (_, path, serve, row, labelled) => {
+    serve();
+    renderApp(path);
+    const found = await screen.findByRole("row", { name: row });
+    const table = found.closest("table")!;
+    expect(table).toHaveClass("stacked");
+    expect(table).toHaveAttribute("role", "table");
+    for (const group of table.querySelectorAll("thead, tbody"))
+      expect(group).toHaveAttribute("role", "rowgroup");
+    for (const tr of table.querySelectorAll("tr")) expect(tr).toHaveAttribute("role", "row");
+    for (const th of table.querySelectorAll("th"))
+      expect(th).toHaveAttribute("role", "columnheader");
+    for (const td of table.querySelectorAll("td")) expect(td).toHaveAttribute("role", "cell");
+    const labels = [...found.querySelectorAll("td[data-label]")].map((td) =>
+      td.getAttribute("data-label"),
+    );
+    expect(labels).toEqual(labelled);
+    for (const td of found.querySelectorAll("td[data-label]")) expect(td).toHaveClass("named");
+  },
+);
 
 test("the form asks for an address and the role only", async () => {
   api({ "GET /api/people": PEOPLE });
   renderApp("/admin/people");
-  const form = (await screen.findByLabelText(m.usersEmail)).closest("form")!;
+  const dialog = await openAdd();
+  const form = within(dialog).getByLabelText(m.usersEmail).closest("form")!;
   const fields = [...form.querySelectorAll("input")].map((i) => [i.name, i.type]);
   expect(fields).toEqual([
     ["email", "text"],
@@ -125,12 +288,14 @@ test("a refused addition names each field by its label", async () => {
     }),
   });
   renderApp("/admin/people");
-  await userEvent.type(await screen.findByLabelText(m.usersEmail), "not an address");
-  await userEvent.click(screen.getByRole("button", { name: m.usersAdd }));
-  await screen.findByRole("alert");
-  expectRefused(screen.getByLabelText(m.usersEmail), "planted reason for the address");
-  expectRefused(screen.getByLabelText(m.usersAddAdmin), "planted reason for the role");
-  expect(screen.getByLabelText(m.usersEmail)).toHaveFocus();
+  const dialog = await openAdd();
+  await userEvent.type(within(dialog).getByLabelText(m.usersEmail), "not an address");
+  await userEvent.click(within(dialog).getByRole("button", { name: m.usersAddGo }));
+  await within(dialog).findByRole("alert");
+  expectRefused(within(dialog).getByLabelText(m.usersEmail), "planted reason for the address");
+  expectRefused(within(dialog).getByLabelText(m.usersAddAdmin), "planted reason for the role");
+  expect(within(dialog).getByLabelText(m.usersEmail)).toHaveFocus();
+  expect(within(dialog).getByLabelText(m.usersEmail)).toHaveValue("not an address"); // kept
 });
 
 test("removing someone asks first, saying their workspaces go too, then removes them", async () => {
@@ -209,6 +374,66 @@ test("the audit trail pages towards older events", async () => {
   await waitFor(() => expect(fake.made("GET", "/api/audit")[1].query.get("before")).toBe("8"));
 });
 
+test("the audit trail is a table in a card, with Older at the card's foot", async () => {
+  api({ "GET /api/audit": { events: [{ ...EVENT_ONE }] } });
+  renderApp("/admin/audit");
+  const title = await screen.findByRole("heading", { level: 1, name: m.auditTitle });
+  expect(title.parentElement).toHaveClass("page-head");
+  const row = await screen.findByRole("row", { name: /a@x/ });
+  const card = row.closest(".card")!;
+  expect(card).toHaveClass("flush");
+  const older = within(card as HTMLElement).getByRole("button", { name: m.auditOlder });
+  expect(older.closest(".card-foot")).not.toBeNull();
+});
+
+test("until the first page of the trail is had the page says it is loading, and a refusal shows no card", async () => {
+  let answer: (reply: unknown) => void = () => {};
+  api({ "GET /api/audit": () => new Promise((resolve) => (answer = resolve)) });
+  const { unmount } = renderApp("/admin/audit");
+  await screen.findByRole("heading", { level: 1, name: m.auditTitle }); // the page, not the app, loading
+  expect(screen.getByText(m.loading)).toBeInTheDocument();
+  expect(screen.queryByText(m.auditEmpty)).not.toBeInTheDocument();
+  await act(async () => answer({ events: [] }));
+  expect(await screen.findByText(m.auditEmpty)).toBeInTheDocument();
+  expect(screen.queryByText(m.loading)).not.toBeInTheDocument();
+  unmount();
+  api({ "GET /api/audit": problem(500, "internal_error", "planted: no trail") });
+  renderApp("/admin/audit");
+  expect(await screen.findByRole("alert")).toHaveTextContent("planted: no trail");
+  expect(document.querySelector("main .card")).toBeNull();
+});
+
+test("what was done on the People page is said in a place that is there before it", async () => {
+  api({ "GET /api/people": PEOPLE, "POST /api/people": { person: {} } });
+  renderApp("/admin/people");
+  await screen.findByRole("row", { name: /bob@example.com/ });
+  const status = screen.getByRole("status");
+  expect(status).toBeEmptyDOMElement();
+  const dialog = await openAdd();
+  await userEvent.type(within(dialog).getByLabelText(m.usersEmail), "carol@example.com");
+  await userEvent.click(within(dialog).getByRole("button", { name: m.usersAddGo }));
+  await waitFor(() => expect(status).toHaveTextContent(m.usersAdded("carol@example.com")));
+  expect(screen.getByRole("status")).toBe(status);
+});
+
+test("with nothing recorded the card says so, with no table", async () => {
+  api({ "GET /api/audit": { events: [] } });
+  renderApp("/admin/audit");
+  const empty = await screen.findByText(m.auditEmpty);
+  expect(empty.closest(".card")).not.toBeNull();
+  expect(screen.queryByRole("table")).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: m.auditOlder })).not.toBeInTheDocument();
+});
+
+const EVENT_ONE = {
+  id: 5,
+  at: "2026-10-01T10:05:09+00:00",
+  email: "a@x",
+  action: "server.start",
+  target: "projects/x",
+  result: "ok",
+};
+
 const EVENT = {
   id: 5,
   at: "2026-10-01T10:05:09+00:00",
@@ -241,6 +466,7 @@ test("a result that worked is said so, one that did not is marked as failed besi
   row = await auditRow({ result: "not_a_repository" });
   const failed = row.getByText(m.auditFailed);
   expect(failed.closest("td")).toHaveClass("result-failed");
+  expect(failed).toHaveClass("badge", "badge-problem"); // a danger pill
   expect(row.getByText("not_a_repository")).toBeInTheDocument(); // the code, not worded
   cleanup();
   row = await auditRow({ result: "committed_not_pushed" });
@@ -356,6 +582,17 @@ test("a Limits button on each row opens a dialog like Remove's, which asks the s
       .map((h) => h.textContent),
   ).toEqual([PERSON_SCOPE, ALPHA_SCOPE, BETA_SCOPE]);
   expect(within(dialog).getAllByRole("form")).toHaveLength(3); // each named by its heading
+});
+
+test("the Limits dialog is a large one, each scope a part of it divided by a stroke, each hint one short line", async () => {
+  limitsApi();
+  renderApp("/admin/people");
+  const dialog = await openLimits();
+  expect(dialog).toHaveClass("dialog", "large");
+  for (const scope of within(dialog).getAllByRole("form")) expect(scope).toHaveClass("limits");
+  const hints = Object.values(m.limitsHints);
+  expect(hints).toHaveLength(3);
+  for (const hint of hints) expect(hint.length, hint).toBeLessThanOrEqual(44);
 });
 
 test("the dialog leads with the fields, one hint under each, and keeps the long explanation folded", async () => {
@@ -849,10 +1086,35 @@ test("the page shows the approved, previous and tested versions", async () => {
   expect(definition(m.versionsTested)).toHaveTextContent("2.1.0");
 });
 
+test("the versions are facts in a card, under the page's heading row", async () => {
+  versionsApi();
+  renderApp("/admin/claude");
+  await versionsPage();
+  const title = screen.getByRole("heading", { level: 1, name: m.versionsTitle });
+  expect(title.parentElement).toHaveClass("page-head");
+  const facts = screen.getByText(m.versionsApproved, { selector: "dt" }).closest(".card")!;
+  expect(facts).not.toBeNull();
+  expect(
+    within(facts as HTMLElement).getByRole("heading", { level: 2, name: m.versionsFactsTitle }),
+  ).toBeInTheDocument();
+});
+
+test("each table is in a card of its own, named by its heading", async () => {
+  versionsApi();
+  renderApp("/admin/claude");
+  for (const name of [m.versionsInstalledTitle, m.versionsDriftTitle]) {
+    const region = await screen.findByRole("region", { name });
+    expect(region).toHaveClass("card", "flush");
+    expect(within(region).getByRole("heading", { level: 2, name })).toBeInTheDocument();
+    expect(within(region).getByRole("table").closest(".card")).toBe(region);
+  }
+});
+
 test("it warns when the approved version is not the tested one, and only then", async () => {
   versionsApi();
   const { unmount } = renderApp("/admin/claude");
   expect(await screen.findByText(m.versionsUntested)).toBeInTheDocument();
+  expect(screen.getByText(m.versionsUntested).closest(".message")).toHaveClass("message-warning");
   unmount();
 
   versionsApi({}, { ...REPORT, tested: "2.2.0" });
@@ -1271,7 +1533,8 @@ test("the servers on another version are in a box that scrolls sideways", async 
 test("the field for the address of a person to add shows an example", async () => {
   api({ "GET /api/people": PEOPLE });
   renderApp("/admin/people");
-  expect(await screen.findByLabelText(m.usersEmail)).toHaveAttribute(
+  const dialog = await openAdd();
+  expect(within(dialog).getByLabelText(m.usersEmail)).toHaveAttribute(
     "placeholder",
     m.examples.email,
   );

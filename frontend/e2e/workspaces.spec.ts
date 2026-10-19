@@ -48,19 +48,19 @@ test("a workspace is made from a repository's address, named after it, and shows
   await expect(made.getByRole("figure", { name: m.workspaceLog })).toHaveCount(0);
 });
 
-test("New workspace is a modal dialog: focus in its name, Escape closes it, focus back on +", async ({
+test("New workspace is a modal dialog: focus in its name, Escape closes it, focus back on its button", async ({
   page,
 }) => {
   await signInAs(page, ALICE);
   await page.goto("/");
-  const plus = page.getByRole("button", { name: m.newWorkspace, exact: true });
+  const opener = page.getByRole("button", { name: m.newWorkspace, exact: true });
   const dialog = await newWorkspace(page);
   await expect(dialog.getByLabel(m.newWorkspaceName)).toBeFocused();
   // the page behind it cannot be reached
   expect(await dialog.evaluate((el) => el.matches(":modal"))).toBe(true);
   await page.keyboard.press("Escape");
   await expect(dialog).toHaveCount(0);
-  await expect(plus).toBeFocused();
+  await expect(opener).toBeFocused();
 });
 
 test("an address rcman refuses is shown under its label, and kept", async ({ page }) => {
@@ -230,10 +230,13 @@ test("administrators see everyone's workspaces, and act on none of them", async 
   await openAdminPage(page, m.navEveryone);
   await expect(page.getByRole("heading", { name: m.everyoneTitle })).toBeVisible();
   const alice = page.getByRole("region", { name: ALICE });
-  const row = alice.getByRole("row", { name: /alice-seen/ });
+  const row = alice.getByRole("listitem").filter({ hasText: "alice-seen" });
+  await expect(row).toHaveCount(1);
   await expect(row.getByText(m.states.ready).or(row.getByText(m.states.connected))).toBeVisible();
   await expect(row.getByText(/^alice-seen-/)).toBeVisible();
-  await expect(row.getByRole("cell", { name: /^\d+(\.\d+)+$/ })).toBeVisible(); // its Claude Code version
+  // its Claude Code version, in the page's words for one
+  const version = new RegExp(`^${m.serverClaudeVersion("")}\\d+(\\.\\d+)+$`);
+  await expect(row.getByText(version)).toBeVisible();
   await expect(page.getByRole("region", { name: BOB })).toBeVisible();
   await expect(page.getByRole("main").getByRole("button")).toHaveCount(0);
 
@@ -241,7 +244,7 @@ test("administrators see everyone's workspaces, and act on none of them", async 
   await signInAs(bob, BOB);
   await bob.goto("/");
   await expectSignedInAs(bob, BOB);
-  await expect(bob.getByRole("button", { name: m.navAdmin })).toHaveCount(0);
+  await expect(bob.getByRole("list", { name: m.navAdmin })).toHaveCount(0);
   const refused = await bob.evaluate(async () => (await fetch("/api/servers/everyone")).status);
   expect(refused).toBe(403);
   await bob.close();

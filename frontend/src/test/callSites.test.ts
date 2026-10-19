@@ -134,6 +134,6 @@ test("the page's own sources are read, .ts as well as .tsx, but the tests and th
 test("the page's own sources have no fault, and the shared dialog's users are among them", () => {
   const found = callSites(pageSources(resolve(__dirname, "..")));
   expect(found.dialogs).toContain("NewWorkspace"); // positive controls
-  expect(found.popups).toContain("AdminMenu");
+  expect(found.popups).toContain("Navigation");
   expect(found.faults).toEqual([]);
 });

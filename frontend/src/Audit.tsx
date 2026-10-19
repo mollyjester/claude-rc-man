@@ -3,7 +3,7 @@ import { useCallback, useEffect, useState } from "react";
 import { type ApiError, api } from "./api";
 import { m } from "./messages";
 import { asApiError, ProblemView } from "./ProblemView";
-import { TableScroll } from "./TableScroll";
+import { ROLE, TableScroll } from "./TableScroll";
 
 type Event = {
   id: number;
@@ -42,7 +42,7 @@ function Result({ result }: { result: string }) {
   if (said !== undefined) return <>{said}</>;
   return (
     <>
-      <strong>{m.auditFailed}</strong> <code>{result}</code>
+      <span className="badge badge-problem">{m.auditFailed}</span> <code>{result}</code>
     </>
   );
 }
@@ -50,6 +50,7 @@ function Result({ result }: { result: string }) {
 export function Audit() {
   const [events, setEvents] = useState<Event[]>([]);
   const [more, setMore] = useState(true);
+  const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<ApiError | null>(null);
 
   // A page of events, the newest or those older than `before`; it reads nothing from a render,
@@ -59,6 +60,7 @@ export function Audit() {
       const page = (await api.get<{ events: Event[] }>("/api/audit", { before })).events;
       setEvents((current) => (before ? [...current, ...page] : page));
       setMore(page.length > 0);
+      setLoaded(true);
     } catch (e) {
       setError(asApiError(e));
     }
@@ -70,46 +72,69 @@ export function Audit() {
 
   return (
     <section>
-      <h1>{m.auditTitle}</h1>
-      {events.length === 0 && <p>{m.auditEmpty}</p>}
-      <TableScroll label={m.tableTitle}>
-        <table>
-          <thead>
-            <tr>
-              <th>{m.auditWhen}</th>
-              <th>{m.auditWho}</th>
-              <th>{m.auditAction}</th>
-              <th>{m.auditTarget}</th>
-              <th>{m.auditResult}</th>
-            </tr>
-          </thead>
-          <tbody>
-            {events.map((e) => (
-              <tr key={e.id}>
-                <td className="when">
-                  <time dateTime={e.at}>{when(e.at)}</time>
-                </td>
-                <td className="wrap">{e.email}</td>
-                <td title={e.action}>{m.auditActions[e.action] ?? e.action}</td>
-                <td className="wrap">
-                  {e.target === null ? m.auditNoTarget : targetText(e.target)}
-                </td>
-                <td
-                  className={m.auditResults[e.result] === undefined ? "result-failed" : undefined}
-                >
-                  <Result result={e.result} />
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </TableScroll>
-      {more && events.length > 0 && (
-        <button type="button" onClick={() => load(events[events.length - 1].id)}>
-          {m.auditOlder}
-        </button>
-      )}
+      <div className="page-head">
+        <h1>{m.auditTitle}</h1>
+      </div>
       <ProblemView error={error} />
+      {!loaded && !error && <p>{m.loading}</p>}
+      {loaded && (
+        <div className="card flush">
+          {events.length === 0 && <p className="card-empty muted">{m.auditEmpty}</p>}
+          {events.length > 0 && (
+            <TableScroll label={m.tableTitle}>
+              {/* on a phone a list of rows: the action and its result, who and on what, when */}
+              <table className="stacked audit" {...ROLE.table}>
+                <thead {...ROLE.rowgroup}>
+                  <tr {...ROLE.row}>
+                    <th {...ROLE.columnheader}>{m.auditWhen}</th>
+                    <th {...ROLE.columnheader}>{m.auditWho}</th>
+                    <th {...ROLE.columnheader}>{m.auditAction}</th>
+                    <th {...ROLE.columnheader}>{m.auditTarget}</th>
+                    <th {...ROLE.columnheader}>{m.auditResult}</th>
+                  </tr>
+                </thead>
+                <tbody {...ROLE.rowgroup}>
+                  {events.map((e) => (
+                    <tr key={e.id} {...ROLE.row}>
+                      <td className="when" {...ROLE.cell}>
+                        <time dateTime={e.at}>{when(e.at)}</time>
+                      </td>
+                      <td className="wrap meta" {...ROLE.cell}>
+                        {e.email}
+                      </td>
+                      <td className="lead" title={e.action} {...ROLE.cell}>
+                        {m.auditActions[e.action] ?? e.action}
+                      </td>
+                      <td className="wrap meta" {...ROLE.cell}>
+                        {e.target === null ? (
+                          <span className="muted">{m.auditNoTarget}</span>
+                        ) : (
+                          targetText(e.target)
+                        )}
+                      </td>
+                      <td
+                        className={
+                          m.auditResults[e.result] === undefined ? "result result-failed" : "result"
+                        }
+                        {...ROLE.cell}
+                      >
+                        <Result result={e.result} />
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </TableScroll>
+          )}
+          {more && events.length > 0 && (
+            <div className="card-foot">
+              <button type="button" onClick={() => load(events[events.length - 1].id)}>
+                {m.auditOlder}
+              </button>
+            </div>
+          )}
+        </div>
+      )}
     </section>
   );
 }

@@ -191,7 +191,7 @@ function Lookup({
     <div className="popup-anchor" ref={popup.rootRef}>
       <button
         type="button"
-        className="secondary branch-button"
+        className="subtle branch-button"
         aria-label={where.name}
         title={where.name}
         {...popup.buttonProps}
@@ -255,7 +255,7 @@ function NewBranch({
     <div className="popup-anchor" ref={popup.rootRef}>
       <button
         type="button"
-        className="secondary icon-button"
+        className="subtle icon-button"
         aria-label={m.newBranch}
         title={m.newBranch}
         disabled={busy}
@@ -372,7 +372,7 @@ export function BranchBar({
       <NewBranch busy={busy} error={createError} onCreate={onCreate} onForget={onCreateForget} />
       <button
         type="button"
-        className={fetching || syncing ? "secondary icon-button spinning" : "secondary icon-button"}
+        className={fetching || syncing ? "subtle icon-button spinning" : "subtle icon-button"}
         aria-label={refreshLabel}
         title={refreshLabel}
         disabled={busy}
@@ -382,7 +382,7 @@ export function BranchBar({
       </button>
       {branch !== null && <SyncState branch={branch} />}
       {pushOffered && (
-        <button type="button" className="secondary" disabled={busy} onClick={onPush}>
+        <button type="button" disabled={busy} onClick={onPush}>
           {m.push}
         </button>
       )}

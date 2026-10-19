@@ -5,6 +5,7 @@ import { type ApiError, api, problemFrom } from "./api";
 import { BranchBar } from "./BranchBar";
 import { Caret } from "./Caret";
 import { RefreshIcon } from "./Icons";
+import { MessageBar } from "./MessageBar";
 import { m } from "./messages";
 import { asApiError, ProblemView, useFieldErrors } from "./ProblemView";
 import { usePopup } from "./usePopup";
@@ -196,7 +197,7 @@ export function Files({
         {hasFiles && (
           <button
             type="button"
-            className="secondary"
+            className="subtle"
             disabled={busy || selected.size === 0}
             onClick={onAct}
           >
@@ -303,7 +304,7 @@ function StatusLine({ checkedAt, onRefresh }: { checkedAt: number | null; onRefr
       )}
       <button
         type="button"
-        className="icon-button"
+        className="icon-button subtle"
         aria-label={m.refreshStatus}
         title={m.refreshStatus}
         onClick={onRefresh}
@@ -340,9 +341,9 @@ const somethingToPush = (status: GitStatus) => status.push_ahead !== 0;
 const diverged = (status: GitStatus) =>
   (status.branch.ahead ?? 0) > 0 && (status.branch.behind ?? 0) > 0;
 
-// The Changes section of a repository: its heading with the branch bar beside
-// it, the staged and not staged files, Commit and its menu's Commit & Push,
-// and the line saying when the status was checked. What is offered follows
+// The Changes section of a repository, a card: its heading with the branch bar
+// beside it, the staged and not staged files, and at its foot Commit and its
+// menu's Commit & Push, and the line saying when the status was checked. What is offered follows
 // rcman's own rules — Commit only with something staged and an author name
 // set, Push and Commit & Push only as pushReason allows; git's own refusals
 // are shown as it gave them, beside what was tried.
@@ -513,18 +514,20 @@ export function Changes({ workspace, pollMs }: { workspace: number; pollMs: numb
 
   if (empty) {
     return (
-      <section className="panel-section changes" aria-label={m.changesTitle}>
+      <section className="card panel-section changes" aria-label={m.changesTitle}>
         <div className="changes-head">
           <h3>{m.changesTitle}</h3>
         </div>
-        <p>{m.notARepository}</p>
-        <StatusLine checkedAt={checkedAt} onRefresh={() => refresh()} />
+        <p className="muted">{m.notARepository}</p>
+        <div className="changes-foot">
+          <StatusLine checkedAt={checkedAt} onRefresh={() => refresh()} />
+        </div>
       </section>
     );
   }
 
   return (
-    <section className="panel-section changes" aria-label={m.changesTitle}>
+    <section className="card panel-section changes" aria-label={m.changesTitle}>
       <div className="changes-head">
         <h3>{m.changesTitle}</h3>
         {(status !== null || branches !== null) && (
@@ -552,30 +555,58 @@ export function Changes({ workspace, pollMs }: { workspace: number; pollMs: numb
       <ProblemView error={statusError} />
       <ProblemView error={errors.switch ?? null} labels={{ branch: m.switchTo(switching) }} />
       <ProblemView error={errors.fetch ?? null} />
-      {synced !== null && <p role="status">{m.synced(synced)}</p>}
+      {synced !== null && (
+        <MessageBar kind="success" role="status">
+          <p>{m.synced(synced)}</p>
+        </MessageBar>
+      )}
       <ProblemView error={errors.sync ?? null} />
       {status === null && !statusError && <p>{m.loading}</p>}
       {status !== null && (
         <>
-          {status.merging && <p>{m.mergeInProgress}</p>}
-          {diverged(status) && <p>{m.diverged}</p>}
+          {status.merging && (
+            <MessageBar kind="warning">
+              <p>{m.mergeInProgress}</p>
+            </MessageBar>
+          )}
+          {diverged(status) && (
+            <MessageBar kind="warning">
+              <p>{m.diverged}</p>
+            </MessageBar>
+          )}
           {reason === "branch" ? (
-            <p>{m.pushNeedsBranch}</p>
+            <MessageBar kind="info">
+              <p>{m.pushNeedsBranch}</p>
+            </MessageBar>
           ) : reason === "remote" ? (
-            <p>{m.pushNeedsRemote}</p>
+            <MessageBar kind="info">
+              <p>{m.pushNeedsRemote}</p>
+            </MessageBar>
           ) : reason === "token" ? (
-            <p>
-              {m.pushNeedsToken.before}
-              <Link to="/settings">{m.pushNeedsToken.link}</Link>
-              {m.pushNeedsToken.after}
-            </p>
+            <MessageBar kind="warning">
+              <p>
+                {m.pushNeedsToken.before}
+                <Link to="/settings">{m.pushNeedsToken.link}</Link>
+                {m.pushNeedsToken.after}
+              </p>
+            </MessageBar>
           ) : (
-            !hasCommit(status) && <p>{m.pushNeedsCommit}</p>
+            !hasCommit(status) && (
+              <MessageBar kind="info">
+                <p>{m.pushNeedsCommit}</p>
+              </MessageBar>
+            )
           )}
           {pushed !== null && pushed.upstream !== null && (
-            <p role="status">{m.pushed(pushed.branch, pushed.upstream)}</p>
+            <MessageBar kind="success" role="status">
+              <p>{m.pushed(pushed.branch, pushed.upstream)}</p>
+            </MessageBar>
           )}
-          {notPushed !== null && <p>{m.committedNotPushed(notPushed.slice(0, 7))}</p>}
+          {notPushed !== null && (
+            <MessageBar kind="warning">
+              <p>{m.committedNotPushed(notPushed.slice(0, 7))}</p>
+            </MessageBar>
+          )}
           <ProblemView error={errors.push ?? null} />
           <Files
             title={m.stagedTitle}
@@ -597,14 +628,20 @@ export function Changes({ workspace, pollMs }: { workspace: number; pollMs: numb
             onAct={stage}
           />
           <ProblemView error={errors.stage ?? null} labels={{ files: m.notStagedTitle }} />
-          {status.author === null ? (
-            <p>
-              {m.commitNeedsAuthor.before}
-              <Link to="/settings">{m.commitNeedsAuthor.link}</Link>
-              {m.commitNeedsAuthor.after}
-            </p>
+        </>
+      )}
+      <div className="changes-foot">
+        {status !== null &&
+          (status.author === null ? (
+            <MessageBar kind="warning">
+              <p>
+                {m.commitNeedsAuthor.before}
+                <Link to="/settings">{m.commitNeedsAuthor.link}</Link>
+                {m.commitNeedsAuthor.after}
+              </p>
+            </MessageBar>
           ) : status.staged.files.length === 0 ? (
-            <p>{m.commitNothingStaged}</p>
+            <p className="muted">{m.commitNothingStaged}</p>
           ) : (
             <form noValidate onSubmit={commit} ref={commitFields.form}>
               <label>
@@ -613,12 +650,12 @@ export function Changes({ workspace, pollMs }: { workspace: number; pollMs: numb
                   name="message"
                   value={message}
                   onChange={(e) => setMessage(e.target.value)}
-                  rows={4}
+                  rows={3}
                   {...commitFields.input("message", commitHelp)}
                 />
               </label>
               {commitFields.message("message")}
-              <p id={commitHelp} className="muted">
+              <p id={commitHelp} className="muted help">
                 {m.commitMessageHelp}
               </p>
               <div className="actions">
@@ -630,11 +667,12 @@ export function Changes({ workspace, pollMs }: { workspace: number; pollMs: numb
                 </div>
               </div>
             </form>
-          )}
+          ))}
+        {status !== null && (
           <ProblemView error={errors.commit ?? null} labels={{ message: m.commitMessage }} inline />
-        </>
-      )}
-      <StatusLine checkedAt={checkedAt} onRefresh={() => refresh()} />
+        )}
+        <StatusLine checkedAt={checkedAt} onRefresh={() => refresh()} />
+      </div>
     </section>
   );
 }

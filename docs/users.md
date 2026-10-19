@@ -5,14 +5,16 @@ workspaces of their own (see [Workspaces](workspaces.md)). rcman keeps the list
 of people itself; only the addresses on it may sign in, and the list of
 addresses oauth2-proxy lets through is written from it on every change.
 
-Administrators add and remove people on the **People** page in rcman, under
-**Admin** in the navigation, or with `rcman-admin` as root over SSH. Both do the
-same thing; `rcman-admin` runs as rcman's own account whoever starts it.
+Administrators add and remove people on the **People** page in rcman, in the
+**Administration** group of the sidebar, or with `rcman-admin` as root over
+SSH. Both do the same thing; `rcman-admin` runs as rcman's own account whoever
+starts it.
 
 ## Adding someone
 
-On the **People** page, give their Google address, and tick **Administrator**
-to make them one. Or:
+On the **People** page, **Add person**, beside the page's title, opens a dialog:
+give their Google address, tick **Administrator** to make them one, and press
+**Add**. Or:
 
 ```
 sudo rcman-admin add <google-email> [--admin]
@@ -47,6 +49,11 @@ where there is none). So does:
 sudo rcman-admin list
 ```
 
+On a phone each person is a row of a list: their address, and under it their
+role, how many workspaces they have and the limits that are set; their
+**Limits** and **Remove** are in the menu of the **More actions** button at the
+row's right.
+
 ## Limits
 
 Administrators can cap how much memory, CPU and how many processes a person's
@@ -55,12 +62,12 @@ by default, and nobody sees their own limits.
 
 On the **People** page, **Limits** on a person's row opens a dialog with a
 form for the person and one for each of their workspaces, with what each uses
-now beside it. Fill in **Memory**, **CPU** and **Processes** and press
+now beside its title. Fill in **Memory**, **CPU** and **Processes** and press
 **Save**: each form is saved on its own, a field left empty is **No limit**, and
 a line under each field says what it takes. A refusal is shown under the field
 it is about. The dialog's **How limits work** holds the rest of what this
-section says, folded away. **Close** or Escape closes the dialog, except while a form is
-being saved. Or, as root over SSH:
+section says, folded away. **Close**, the cross at its top, or Escape closes
+the dialog, except while a form is being saved. Or, as root over SSH:
 
 ```
 sudo rcman-admin limits <google-email>

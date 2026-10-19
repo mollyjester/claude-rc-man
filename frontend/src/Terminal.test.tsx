@@ -263,6 +263,37 @@ test("a terminal taken over elsewhere is not opened again by itself; Reconnect o
   expect(sockets()[1].frames()).toEqual([{ type: PROTOCOL.resize, cols: 80, rows: 24 }]);
 });
 
+test("the tab is a card: a slim bar with how the terminal stands, its dot, and Reconnect, over the screen", async () => {
+  page();
+  const { socket } = await connected();
+  const bar = (await status()).closest(".terminal-bar") as HTMLElement;
+  const card = bar.closest(".terminal") as HTMLElement;
+  expect(card).toHaveClass("card");
+  expect(bar.querySelector(".dot")).toHaveClass("dot-running");
+  const screenBox = card.querySelector(".terminal-screen")!;
+  expect(bar.compareDocumentPosition(screenBox) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  act(() => {
+    socket.sendText({ type: PROTOCOL.closed, reason: "terminal_replaced" });
+    socket.serverClose(PROTOCOL.close_normal);
+  });
+  expect(within(bar).getByRole("button", { name: m.terminalReconnect })).toBeInTheDocument();
+  expect(bar.querySelector(".dot")).toHaveClass("dot-stopped");
+});
+
+test("a terminal that closed with a problem has the problem dot", async () => {
+  page();
+  const { socket } = await connected();
+  act(() => {
+    socket.sendText({
+      type: PROTOCOL.problem,
+      problem: { type: "urn:x", status: 409, code: "planted_code", title: "planted: refused" },
+    });
+    socket.serverClose(PROTOCOL.close_problem + 409);
+  });
+  const bar = (await status()).closest(".terminal-bar") as HTMLElement;
+  await waitFor(() => expect(bar.querySelector(".dot")).toHaveClass("dot-problem"));
+});
+
 test("a socket that never opened is noted and the workspaces are asked for again, which says why", async () => {
   const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
   try {

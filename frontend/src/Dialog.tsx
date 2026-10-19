@@ -1,12 +1,19 @@
 import { type ReactNode, useId, useLayoutEffect, useRef } from "react";
 
+import { CloseIcon } from "./Icons";
+import { m } from "./messages";
+
 // Every dialog of the page: the browser's own modal <dialog>, opened with showModal() as it is
 // drawn and closed as it goes, so that focus moves into it and stays there, the page behind it
 // cannot be reached, and focus goes back to what had it, the button that opened it, once it
 // closes. It is named by its heading. Escape asks its parent to close it (onClose), unless it
 // cannot be left now (closable false). Focus starts on its first control, or, with
 // focusDialog, on the dialog itself, for one whose first control is not where to begin.
-// It fills the screen of a phone, and sits in the middle of a wider one (src/styles.css).
+// Its heading is in its head, what it holds in its body, and a cross, which closes it as Escape
+// does and waits as Escape does, comes last, so that focus starts on what the dialog asks and
+// Tab reaches the cross after it. On a phone it is a sheet from the foot of the screen, and on
+// a wider one it sits in the middle; a row of its buttons marked footer keeps to its foot
+// (src/styles.css).
 // owner is the name of the component that draws it, put on the element as data-component for
 // e2e/touch.spec.ts to read off what opened; src/test/callSites.ts holds each site to it.
 export function Dialog({
@@ -15,6 +22,7 @@ export function Dialog({
   onClose,
   closable = true,
   focusDialog = false,
+  large = false,
   children,
 }: {
   owner: string;
@@ -22,6 +30,8 @@ export function Dialog({
   onClose: () => void;
   closable?: boolean;
   focusDialog?: boolean;
+  // A dialog that holds several forms side by side, wider on a desktop; on a phone a sheet.
+  large?: boolean;
   children: ReactNode;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
@@ -53,7 +63,7 @@ export function Dialog({
   return (
     <dialog
       ref={dialog}
-      className="dialog"
+      className={large ? "dialog large" : "dialog"}
       data-component={owner}
       aria-labelledby={heading}
       tabIndex={focusDialog ? -1 : undefined}
@@ -68,8 +78,20 @@ export function Dialog({
         if (!leaving.current) latest.current.onClose();
       }}
     >
-      <h2 id={heading}>{title}</h2>
-      {children}
+      <div className="dialog-head">
+        <h2 id={heading}>{title}</h2>
+      </div>
+      <div className="dialog-body">{children}</div>
+      <button
+        type="button"
+        className="icon-button subtle dialog-close"
+        aria-label={m.closeDialog}
+        title={m.closeDialog}
+        disabled={!closable}
+        onClick={() => onClose()}
+      >
+        <CloseIcon />
+      </button>
     </dialog>
   );
 }

@@ -413,6 +413,28 @@ def test_a_program_the_recorder_does_not_stand_in_for_fails_the_target(tmp_path,
         recorded(tmp_path, target, makefile)
 
 
+# --- make screenshots: no test, and in no test run ---
+
+SHOTS = ("npx", "playwright", "test", "--config", "playwright.screenshots.config.ts")
+
+
+def test_make_screenshots_builds_the_frontend_then_takes_the_screenshots_with_their_own_config(
+    tmp_path,
+):
+    calls = recorded(tmp_path, "screenshots")
+    assert [(c.argv, c.cwd) for c in calls] == [
+        (("npm", "run", "build"), str(FRONTEND)),
+        (SHOTS, str(FRONTEND)),
+    ]
+
+
+@pytest.mark.parametrize("target", ["e2e", "check", "check-all"])
+def test_no_test_run_takes_the_screenshots(tmp_path, target):
+    calls = recorded(tmp_path, target)
+    assert any(c.argv[:3] == ("npx", "playwright", "test") for c in calls)  # positive control
+    assert not any("playwright.screenshots.config.ts" in c.argv for c in calls)
+
+
 # --- make lint and make format: ruff for the Python code, Biome for the frontend ---
 
 FRONTEND = REPO / "frontend"

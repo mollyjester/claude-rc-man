@@ -2,6 +2,7 @@ import { useId, useState } from "react";
 
 import { type ApiError, api } from "./api";
 import { Caret } from "./Caret";
+import { MessageBar } from "./MessageBar";
 import { m } from "./messages";
 import { asApiError, ProblemView } from "./ProblemView";
 
@@ -129,6 +130,23 @@ export function dotFor(workspace: Workspace): Kind | null {
   return workspace.server ? kindOf(workspace.server.state) : null;
 }
 
+// The kind of pill a workspace's own state is drawn as.
+export const WORKSPACE_KIND: Record<string, Kind> = {
+  creating: "waiting",
+  ready: "running",
+  failed: "problem",
+  deleting: "stopped",
+};
+
+// A workspace's own state as a pill, in the words of m.workspaceStates.
+export function WorkspaceBadge({ state }: { state: string }) {
+  return (
+    <span className={`badge badge-${WORKSPACE_KIND[state] ?? "problem"}`}>
+      {m.workspaceStates[state] ?? state}
+    </span>
+  );
+}
+
 export function StateBadge({ state }: { state: string }) {
   return <span className={`badge badge-${kindOf(state)}`}>{m.states[state] ?? state}</span>;
 }
@@ -186,26 +204,26 @@ export function ServerCard({
 
   return (
     <article aria-label={workspace.name} className="server">
-      <p>
+      <div className="server-head">
         <StateBadge state={server.state} />
-      </p>
+        {claudeVersion && <span className="muted">{m.serverClaudeVersion(claudeVersion)}</span>}
+      </div>
       <p>{m.nextStep[server.state] ?? m.nextStepUnknown}</p>
-      {claudeVersion && <p>{m.serverClaudeVersion(claudeVersion)}</p>}
       {server.state === "trust_prompt" && (
-        <div className="question">
+        <MessageBar kind="info">
           <p>
             <strong>{m.trustTitle}</strong>
           </p>
           <p>{m.trustBody(workspace.name)}</p>
-        </div>
+        </MessageBar>
       )}
       {server.state === "remote_control_prompt" && (
-        <div className="question">
+        <MessageBar kind="info">
           <p>
             <strong>{m.remoteControlTitle}</strong>
           </p>
           <p>{m.remoteControlBody}</p>
-        </div>
+        </MessageBar>
       )}
       {server.session_name && (
         <p>

@@ -25,6 +25,12 @@ and keep iterating with them until you are satisfied with the outcome.
   touch: the installed rcman, its account, its workspaces and its paths, and
   anything else live on the machine, and repeats the working rules' ban on
   loading the CPU on purpose.
+- A brief for planning, implementation or review that touches the frontend's
+  look also tells the subagent to load
+  [frontend-design](../frontend-design/SKILL.md) and apply it within the
+  frontend's design system, and to hold the result to Vercel's web interface
+  guidelines
+  (<https://raw.githubusercontent.com/vercel-labs/web-interface-guidelines/main/command.md>).
 - Subagents report briefly, in bullets: what was done, files changed, every
   test run with its totals, departures from the plan, tests not written first,
   what is lost or deferred, what is left behind, and blockers.

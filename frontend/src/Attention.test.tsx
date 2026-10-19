@@ -54,7 +54,8 @@ test("it is fetched again on every change of page", async () => {
   await waitFor(() => expect(fake.made("GET", "/api/attention")).toHaveLength(1));
   await userEvent.click(screen.getByRole("link", { name: m.navSettings }));
   await waitFor(() => expect(fake.made("GET", "/api/attention")).toHaveLength(2));
-  await userEvent.click(screen.getByRole("link", { name: m.navDocs }));
+  const nav = screen.getByRole("navigation", { name: m.navMain });
+  await userEvent.click(within(nav).getByRole("link", { name: m.navDocs }));
   await waitFor(() => expect(fake.made("GET", "/api/attention")).toHaveLength(3));
 });
 
@@ -62,7 +63,7 @@ test("nothing is shown when nothing needs attention", async () => {
   const fake = api(ADMIN_USER);
   renderApp();
   await waitFor(() => expect(fake.made("GET", "/api/attention")).toHaveLength(1));
-  await screen.findByRole("button", { name: m.navAdmin });
+  await screen.findByRole("list", { name: m.navAdmin });
   expect(screen.queryByRole("region", { name: m.attentionTitle })).not.toBeInTheDocument();
 });
 

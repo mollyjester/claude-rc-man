@@ -10,6 +10,8 @@ export const m = {
   loading: "Loading…",
   cancel: "Cancel",
   close: "Close",
+  // The cross at the top of every dialog, which closes it as Escape does.
+  closeDialog: "Close dialog",
   save: "Save",
   saved: "Saved.",
 
@@ -17,27 +19,38 @@ export const m = {
   navClaude: "Claude",
   navSettings: "Settings",
   navDocs: "Help",
-  navAdmin: "Admin",
+  // The sidebar's group of the administrators' pages.
+  navAdmin: "Administration",
+  // The sidebar's name, and the button that opens it as a drawer on a phone.
+  navMain: "Pages",
+  navMenu: "Menu",
   navUsers: "People",
   navAudit: "Audit trail",
   navEveryone: "Everyone's workspaces",
   navVersions: "Claude Code versions",
   signedInAs: (email: string) => `Signed in as ${email}`,
-  // The header's menu of the person signed in: who they are, and signing out of rcman.
+  // The top bar's menu of the person signed in, behind their avatar: who they are, and
+  // signing out of rcman.
   account: "Account",
 
-  workspacesEmpty: "No workspaces yet. Make one with New workspace, the + beside the heading.",
-  // The + beside the page's heading, and the dialog it opens.
+  // The list's empty state: its title and its one line, over New workspace.
+  workspacesEmpty: "No workspaces yet",
+  workspacesEmptyBody: "Make one to run a Claude server in it, empty or cloned from GitHub.",
+  // The button beside the page's heading, and the dialog it opens.
   newWorkspace: "New workspace",
-  // With a workspace shown in place of the list, as on a phone: the way back, and to another.
-  backToWorkspaces: "All workspaces",
+  // New workspace's words where there is little room, as on a phone; its name stays the above.
+  newWorkspaceShort: "New",
+  // How many workspaces the list holds, beside New workspace on a phone.
+  workspaceCount: (count: number) => (count === 1 ? "1 workspace" : `${count} workspaces`),
+  // Over a workspace's panel where the list is not beside it, as on a phone: the way back to the
+  // list, and the switcher, which shows the workspace's name and opens the others as a sheet.
+  backToWorkspaces: "Back to workspaces",
   switchWorkspace: "Switch workspace",
+  switchWorkspaceFrom: (name: string) => `${name}, switch workspace`,
   newWorkspaceName: "Name of the new workspace",
-  newWorkspaceNameHelp:
-    "Leave it empty when you give an address: the workspace is then named after the repository.",
+  newWorkspaceNameHelp: "Leave it empty with an address to use the repository's name.",
   newWorkspaceSource: "GitHub address (optional)",
-  newWorkspaceSourceHelp:
-    "To start from a repository on GitHub, give its address, such as https://github.com/owner/repository. It is cloned into the workspace; without an address the workspace is empty.",
+  newWorkspaceSourceHelp: "Cloned into the workspace; without one, it starts empty.",
   create: "Create",
   creating: "Creating…",
   workspacePanelEmpty: "Select a workspace to see its Claude server, or make one.",
@@ -176,23 +189,38 @@ export const m = {
   claudeNotConnected: "Your Claude account is not connected. Connect it to start servers.",
   claudeSignedOutUnexpectedly:
     "Your Claude sign-in disappeared on its own, for example because two refreshes collided. Connect your Claude account again to start servers.",
-  claudeConnectedAs: (email: string) => `Connected as ${email}`,
+  // The sheet's title where no account is connected; otherwise the account's address.
+  claudeNoAccount: "No Claude account connected",
+  // The account's state, as the sheet's pill.
+  claudeStates: {
+    connected: "Connected",
+    expiring: "Expiring soon",
+    expired: "Expired",
+    signing_out: "Signing out",
+  } as Record<string, string>,
+  // A fact of the account Claude did not give.
+  claudeUnknown: "Not known",
+  claudeOrg: "Organisation",
+  claudePlan: "Plan",
+  claudeExpiresAt: "Sign-in expires",
   claudeExpiring: (when: string) =>
     `Your Claude sign-in expires ${when}. Connect again to renew it.`,
   claudeExpired: "Your Claude sign-in has expired. Connect again to keep your servers working.",
-  claudeExpires: (when: string) => `Sign-in expires ${when}`,
   claudeSigningOut:
     "Signing out: your running servers keep this account until the last one stops, and no new server starts meanwhile.",
   claudeSignOut: "Sign out of Claude",
+  claudeSignOutTitle: "Sign out",
+  claudeSignOutLine: "Running servers can keep the account until the last one stops.",
   claudeSignOutNow: "Stop my servers and sign out now",
   // On the Claude page: running servers keep the account until the last one stops.
   keepSessions: "Keep servers running until the last one stops",
-  // In the header: signing out of rcman, which never ends a server by itself.
+  // In the top bar's Account menu: signing out of rcman, which never ends a server by itself.
   keepServersOnSignOut: "Keep servers running after sign-out",
   signOut: "Sign out of rcman",
   connect: "Connect Claude account",
   reconnect: "Connect again",
-  connectEmail: "Claude account email (leave empty to use your sign-in address)",
+  connectEmail: "Claude account email",
+  connectEmailHelp: "Leave it empty to use the address you sign in with.",
   connectGo: "Get sign-in link",
   connectStep: "Open this link, sign in to Claude, and paste the code Claude shows you:",
   connectLink: "Sign in to Claude",
@@ -201,23 +229,22 @@ export const m = {
 
   settingsTitle: "Settings",
   prefixLabel: "Session name prefix",
-  prefixHelp:
-    "New Remote Control sessions are named with this prefix. Leave it empty to name them after each workspace.",
+  prefixHelp: "Leave it empty to name sessions after each workspace.",
   settingsPrefixTitle: "Session names",
+  settingsPrefixLine: "How your new Remote Control sessions are named in claude.ai.",
   settingsAuthorTitle: "Commit author",
+  settingsAuthorLine: "Who commits from rcman and in your workspaces are recorded as.",
   authorNameLabel: "Commit author name",
-  authorNameHelp:
-    "The name commits are recorded under, whether made from rcman or by git in your workspaces.",
+  authorNameHelp: "Used for commits from rcman and by git in your workspaces.",
   authorEmailLabel: "Commit author email",
-  authorEmailHelp:
-    "The address commits are recorded under. Leave it empty to use the address you sign in with.",
+  authorEmailHelp: "Leave it empty to use the address you sign in with.",
   authorEffective: (name: string, email: string) => `Commits are recorded as ${name} <${email}>.`,
   authorNotSet: "No commit author is set.",
 
   settingsGithubTitle: "GitHub token",
   githubTokenLabel: "GitHub token",
-  githubTokenHelp:
-    "A personal access token git and gh use in all your workspaces, as you, from rcman, from your Claude sessions and from the Terminal: git to push to GitHub and to clone, fetch and pull private repositories, gh for GitHub's issues, pull requests and API. rcman never shows it again once saved.",
+  settingsGithubLine: "Lets git and gh in your workspaces reach GitHub as you.",
+  githubTokenHelp: "Used by git and gh in all your workspaces; never shown again.",
   githubTokenStored: "A GitHub token is stored.",
   githubTokenNotStored: "No GitHub token is stored.",
   githubTokenSaved: "Token saved.",
@@ -234,6 +261,7 @@ export const m = {
   usersAdmin: "Administrator",
   usersUser: "User",
   usersAdd: "Add person",
+  usersAddGo: "Add",
   usersAddAdmin: "Administrator",
   usersAdded: (email: string) => `${email} was added.`,
   usersRemove: "Remove",
@@ -247,12 +275,15 @@ export const m = {
   usersProcesses: "Processes",
   usersNoLimit: "No limit",
   usersLimits: "Limits",
+  usersActions: "Actions",
+  usersMoreActions: "More actions",
+  usersMoreActionsFor: (email: string) => `More actions for ${email}`,
   limitsTitle: (email: string) => `Limits for ${email}`,
   // One line under each field: what it takes, and that empty is no limit.
   limitsHints: {
-    memory: "A whole number followed by M for mebibytes or G for gibibytes. Empty means no limit.",
-    cpu: "A number of cores, decimals allowed. Empty means no limit.",
-    pids: "A whole number; threads count as processes. Empty means no limit.",
+    memory: "A whole number then M or G; empty for none.",
+    cpu: "Cores, decimals allowed; empty for none.",
+    pids: "Threads count too; empty for none.",
   },
   limitsHowTitle: "How limits work",
   limitsHeldToPerson:
@@ -342,12 +373,12 @@ export const m = {
     "Each person's workspaces and their servers, to look at only. Only the person a workspace belongs to can act on it.",
   everyoneNone: "No workspaces.",
   everyoneWorkspace: "Workspace",
-  everyoneState: "State",
   everyoneNoServer: "No server",
 
   versionsTitle: "Claude Code versions",
   versionsIntro:
     "Every workspace runs Claude Code from the versions installed here. A server keeps the version it started with until its owner stops it and starts it again.",
+  versionsFactsTitle: "Versions",
   versionsApproved: "Approved version",
   versionsPrevious: "Previous version",
   versionsTested: "Tested version",
@@ -370,8 +401,7 @@ export const m = {
   versionsRunning: "Running",
   versionsRolloutTitle: "Roll out a version",
   versionsUpgrade: "Version to roll out",
-  versionsUpgradeHelp:
-    "rcman downloads the version if it is not installed, runs its checks, and approves it only if they pass. Servers that start afterwards run it. This can take a few minutes.",
+  versionsUpgradeHelp: "Installed if needed and checked; approved only if the checks pass.",
   versionsUpgradeGo: "Check and roll out",
   versionsUpgradeBusy: "Checking…",
   versionsRolling: (version: string) =>
@@ -391,7 +421,6 @@ export const m = {
   serverClaudeVersion: (version: string) => `Claude Code ${version}`,
   serverVersionDiffers: (approved: string) =>
     `Claude Code ${approved} is approved now. Stop this server and start it again to use it.`,
-  everyoneClaude: "Claude Code",
 
   // What an empty field shows of what goes in it; the field's label still names it.
   examples: {
@@ -400,6 +429,8 @@ export const m = {
     email: "name@example.com",
   },
   docsTitle: "Help",
+  // The button that discloses the help pages' contents where they are folded, as on a phone.
+  docsContents: "Help pages",
   docsIntro:
     "How to use rcman: your workspaces and their servers, your Claude account, git and your settings, and, for administrators, installing and running it.",
   // The name of the box a table scrolls in. It is kept apart from the names of the parts of a

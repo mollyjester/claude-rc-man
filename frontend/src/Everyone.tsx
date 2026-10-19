@@ -1,10 +1,9 @@
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
 
 import { ApiError, api } from "./api";
 import { m } from "./messages";
 import { asApiError, ProblemView } from "./ProblemView";
-import { StateBadge } from "./Servers";
-import { TableScroll } from "./TableScroll";
+import { StateBadge, WorkspaceBadge } from "./Servers";
 
 type Workspace = {
   id: number;
@@ -17,50 +16,55 @@ type Workspace = {
 
 export type Person = { email: string; workspaces: Workspace[] };
 
-// A workspace's state as this page shows it: while it is not ready, that; once it
-// is, its server's state, why it could not be read, or that it has none.
+// A workspace's state as this page shows it, as a pill: while it is not ready, that; once it
+// is, its server's state, or that it has none; why its server could not be read is said in
+// the row instead.
 function StateOf({ workspace }: { workspace: Workspace }) {
-  const { state, server, server_error: unread } = workspace;
-  if (state !== "ready") return <>{m.workspaceStates[state] ?? state}</>;
-  if (unread) return <ProblemView error={new ApiError(0, unread.code, unread.title)} />;
+  const { state, server } = workspace;
+  if (state !== "ready") return <WorkspaceBadge state={state} />;
+  if (workspace.server_error) return null;
   if (server) return <StateBadge state={server.state} />;
-  return <>{m.everyoneNoServer}</>;
+  return <span className="badge badge-stopped">{m.everyoneNoServer}</span>;
 }
 
 // Everyone's workspaces, for administrators, to look at only: the server lets
 // no one act on another person's workspace, so nothing here offers to.
 function PersonWorkspaces({ person }: { person: Person }) {
+  const heading = useId();
   return (
-    <section aria-label={person.email}>
-      <h2>{person.email}</h2>
-      {person.workspaces.length === 0 && <p>{m.everyoneNone}</p>}
+    <section aria-labelledby={heading} className="card flush person">
+      <div className="card-head">
+        <h2 id={heading}>{person.email}</h2>
+        <span className="muted">{m.workspaceCount(person.workspaces.length)}</span>
+      </div>
+      {person.workspaces.length === 0 && <p className="card-empty muted">{m.everyoneNone}</p>}
       {person.workspaces.length > 0 && (
-        <TableScroll label={m.tableTitle}>
-          <table>
-            <thead>
-              <tr>
-                <th>{m.everyoneWorkspace}</th>
-                <th>{m.everyoneState}</th>
-                <th>{m.sessionName}</th>
-                <th>{m.everyoneClaude}</th>
-              </tr>
-            </thead>
-            <tbody>
-              {person.workspaces.map((workspace) => (
-                <tr key={workspace.id}>
-                  <td>{workspace.name}</td>
-                  <td>
-                    <StateOf workspace={workspace} />
-                  </td>
-                  <td>
-                    {workspace.server?.session_name && <code>{workspace.server.session_name}</code>}
-                  </td>
-                  <td>{workspace.claude_version}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </TableScroll>
+        <ul className="person-workspaces">
+          {person.workspaces.map((workspace) => {
+            const unread = workspace.state === "ready" ? workspace.server_error : null;
+            return (
+              <li key={workspace.id} className="list-row">
+                <span className="ws-name">{workspace.name}</span>
+                <StateOf workspace={workspace} />
+                {workspace.server?.session_name && (
+                  <code className="muted" title={m.sessionName}>
+                    {workspace.server.session_name}
+                  </code>
+                )}
+                {workspace.claude_version && (
+                  <span className="ws-version muted">
+                    {m.serverClaudeVersion(workspace.claude_version)}
+                  </span>
+                )}
+                {unread && (
+                  <div className="ws-problem">
+                    <ProblemView error={new ApiError(0, unread.code, unread.title)} />
+                  </div>
+                )}
+              </li>
+            );
+          })}
+        </ul>
       )}
     </section>
   );
@@ -78,9 +82,11 @@ export function Everyone() {
   }, []);
 
   return (
-    <section>
-      <h1>{m.everyoneTitle}</h1>
-      <p>{m.everyoneIntro}</p>
+    <section className="cards">
+      <div className="page-head">
+        <h1>{m.everyoneTitle}</h1>
+      </div>
+      <p className="page-intro muted">{m.everyoneIntro}</p>
       <ProblemView error={error} />
       {people === null && !error && <p>{m.loading}</p>}
       {people?.map((person) => (

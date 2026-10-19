@@ -90,6 +90,8 @@ function violations(css: string): string[] {
     if (colour && !darkSet.has(name) && !(name in SAME_IN_DARK))
       found.push(`no dark colour: ${name}`);
   }
+  const lightSet = new Set(light(css));
+  for (const name of darkSet) if (!lightSet.has(name)) found.push(`only in dark: ${name}`);
   const declared = new Set([...light(css), ...darkSet]);
   for (const [, name] of css.matchAll(/var\(\s*(--[\w-]+)/g)) {
     if (!declared.has(name)) found.push(`not declared: ${name}`);
@@ -173,6 +175,13 @@ test("named colours count as colours, wherever they are written", () => {
 
   const lightOnly = STYLES.replace(/(:root\s*\{)/, "$1\n  --planted: gray;");
   expect(violations(lightOnly)).toEqual(["no dark colour: --planted"]);
+
+  const darkOnly = STYLES.replace(
+    /(prefers-color-scheme:\s*dark\)\s*\{\s*:root\s*\{)/,
+    "$1\n    --planted-dark: #123456;",
+  );
+  expect(darkOnly).not.toEqual(STYLES); // the plant took effect
+  expect(violations(darkOnly)).toEqual(["only in dark: --planted-dark"]);
 });
 
 // --- how buttons look ----------------------------------------------------------------
@@ -226,7 +235,8 @@ function looks(css: string, selector: string, scheme: Scheme) {
 }
 
 // What is wrong with how the destructive buttons look: a danger button not
-// unlike a primary or a plain one, or a danger outline not unlike a secondary one.
+// unlike a primary or a plain one, or a danger outline not unlike a secondary one or not in
+// danger's text colour.
 function buttonFaults(css: string): string[] {
   const found: string[] = [];
   for (const scheme of ["light", "dark"] as const) {
@@ -248,7 +258,8 @@ function buttonFaults(css: string): string[] {
       outline.border !== outline.color
     )
       found.push(`${scheme}: a danger outline looks like a secondary button`);
-    if (outline.color !== danger.background)
+    // danger's text on a card: the fill's red in light, a lighter red of it in dark
+    if (outline.color !== resolved("var(--danger-text)", variables(css, scheme)))
       found.push(`${scheme}: a danger outline is not in the danger colour`);
   }
   return found;
@@ -260,15 +271,19 @@ test("danger buttons look like no other button, in both schemes", () => {
 });
 
 test("the check fails on a danger button or a danger outline that is not styled", () => {
-  const noDanger = STYLES.replace(/button\.danger\s*\{[^}]*\}/, "");
+  const noDanger = STYLES.replace(/button\.danger,\s*a\.button\.danger\s*\{[^}]*\}/, "");
   expect(noDanger).not.toEqual(STYLES);
   expect(buttonFaults(noDanger)).toContain("light: a danger button looks like another");
-  const noOutline = STYLES.replace(/button\.secondary-danger\s*\{[^}]*\}/, "");
+  const noOutline = STYLES.replace(
+    /button\.secondary-danger,\s*a\.button\.secondary-danger\s*\{[^}]*\}/,
+    "",
+  );
   expect(noOutline).not.toEqual(STYLES);
   expect(buttonFaults(noOutline)).toContain("dark: a danger outline looks like a secondary button");
+  // the dark scheme's own danger fill made the accent's
   const likePrimary = STYLES.replace(
-    /(prefers-color-scheme:\s*dark\)\s*\{\s*:root\s*\{)/,
-    "$1\n    --danger: var(--accent);",
+    /(prefers-color-scheme:\s*dark\)\s*\{\s*:root\s*\{[^}]*?--danger:\s*)[^;]+/,
+    "$1var(--accent)",
   );
   expect(likePrimary).not.toEqual(STYLES);
   expect(buttonFaults(likePrimary)).toEqual(["dark: a danger button looks like another"]);
@@ -316,9 +331,11 @@ test("what git said, why a workspace could not be made, and the steps made, wrap
   expect(ruleOf(".workspace-log")).toMatch(/white-space:\s*pre-wrap/);
 });
 
-test("a repository's page under a workspace's name wraps anywhere, so a long one never widens the panel", () => {
+test("a repository in a workspace's panel is cut short with an ellipsis, so a long one never widens the panel", () => {
   expect(ruleOf(".workspace-log")).toMatch(/overflow-wrap:\s*anywhere/); // positive control
-  expect(ruleOf(".source-page")).toMatch(/overflow-wrap:\s*anywhere/);
+  expect(ruleOf(".repo-link span")).toMatch(/text-overflow:\s*ellipsis/);
+  expect(ruleOf(".repo-link span")).toMatch(/white-space:\s*nowrap/);
+  expect(ruleOf("a.repo-link")).toMatch(/min-width:\s*0/);
 });
 
 test("a commit message's box stands apart from its label", () => {
@@ -498,18 +515,39 @@ function mediaOf(query: string, css = STYLES): string {
 // The width below which the page lays itself out for a phone.
 const PHONE = "(max-width: 48rem)";
 
-test("the navigation wraps, and a table, a help page and a wide word never widen the page", () => {
-  expect(ruleOf("header nav")).toMatch(/flex-wrap:\s*wrap/);
+test("a table, a help page and a wide word never widen the page", () => {
   expect(ruleOf(".table-scroll")).toMatch(/overflow-x:\s*auto/);
   expect(ruleOf(".table-scroll")).toMatch(/max-width:\s*100%/);
   // help: one column on a phone, the text in a box that may shrink
-  expect(ruleOf(".docs article")).toMatch(/min-width:\s*0/);
+  expect(ruleOf(".docs-article")).toMatch(/min-width:\s*0/);
   expect(ruleOf(".docs", mediaOf(PHONE))).toMatch(/grid-template-columns:\s*minmax\(0,\s*1fr\)/);
-  expect(ruleOf(".docs pre")).toMatch(/overflow-x:\s*auto/);
+  expect(ruleOf(".docs-article pre")).toMatch(/overflow-x:\s*auto/);
+});
+
+test("the sidebar is a column beside the page, and on a phone a drawer the menu button opens", () => {
+  // beside the page: the shell's columns, the sidebar's and the page's, which may shrink
+  expect(ruleOf(".shell")).toMatch(
+    /grid-template-columns:\s*var\(--sidebar\)\s+minmax\(0,\s*1fr\)/,
+  );
+  expect(ruleOf(".menu-button")).toMatch(/display:\s*none/);
+  const phone = mediaOf(PHONE);
+  expect(ruleOf(".shell", phone)).toMatch(/grid-template-columns:\s*minmax\(0,\s*1fr\)/);
+  expect(ruleOf(".menu-button", phone)).toMatch(/display:\s*inline-flex/);
+  // the one navigation: out of the way until opened, then over the page
+  expect(ruleOf(".sidebar:not(.open)", phone)).toMatch(/display:\s*none/);
+  expect(ruleOf(".sidebar", phone)).toMatch(/position:\s*fixed/);
+  // the top bar is one row, of a height of its own on each
+  expect(ruleOf(".topbar")).toMatch(/flex-wrap:\s*nowrap/);
+  expect(ruleOf(".topbar")).toMatch(/height:\s*var\(--topbar\)/);
+  expect(ruleOf(".topbar", phone)).toMatch(/height:\s*var\(--topbar-phone\)/);
+});
+
+test("the chrome's links are not underlined", () => {
+  expect(ruleOf(".topbar a, .sidebar a")).toMatch(/text-decoration:\s*none/);
 });
 
 test("the check on a media query reads one, and finds none that is not there", () => {
-  expect(mediaOf(PHONE)).toContain(".dashboard"); // positive control: the phone layout is read
+  expect(mediaOf(PHONE)).toContain(".sidebar"); // positive control: the phone layout is read
   expect(mediaOf("(max-width: 1px)")).toBe("");
 });
 
@@ -517,9 +555,27 @@ test("on a phone the list and the selected workspace's panel take turns, with th
   const phone = mediaOf(PHONE);
   expect(ruleOf(".dashboard.showing > .list", phone)).toMatch(/display:\s*none/);
   expect(ruleOf(".dashboard:not(.showing) > .panel-side", phone)).toMatch(/display:\s*none/);
-  expect(ruleOf(".panel-bar", phone)).toMatch(/display:\s*flex/);
+  expect(ruleOf(".panel-bar-root", phone)).toMatch(/display:\s*contents/);
+  expect(ruleOf(".panel-bar", phone)).toMatch(/position:\s*sticky/);
   // beside each other, the list is there, so the way back is not
-  expect(ruleOf(".panel-bar")).toMatch(/display:\s*none/);
+  expect(ruleOf(".panel-bar-root")).toMatch(/display:\s*none/);
+});
+
+test("on a phone what is scrolled to stops below the workspace's bar too, while a panel is shown", () => {
+  const phone = mediaOf(PHONE);
+  expect(ruleOf("html:has(.dashboard.showing)", phone)).toMatch(
+    /scroll-padding-top:\s*calc\(var\(--topbar-phone\) \+ var\(--panel-bar\)\)/,
+  );
+  expect(ruleOf(".panel-bar", phone)).toMatch(/min-height:\s*var\(--panel-bar\)/);
+});
+
+test("a pill and a message bar are edged in their state's stroke, a message bar never a box", () => {
+  for (const kind of ["running", "waiting", "problem", "stopped"])
+    expect(ruleOf(`.badge-${kind}`)).toMatch(
+      new RegExp(`border-color:\\s*var\\(--${kind}-stroke\\)`),
+    );
+  expect(ruleOf(".message")).toMatch(/border-block:\s*1px solid/);
+  expect(ruleOf(".message")).not.toMatch(/border-left:/);
 });
 
 test("the terminal shows where focus is, though xterm.js takes the outline off its own element", () => {
@@ -544,17 +600,16 @@ test("a field takes the page's colours in both schemes, and keeps a border", () 
   const rule = ruleOf('input:not([type="checkbox"]), textarea, select');
   expect(rule).toMatch(/background:\s*var\(--surface\)/);
   expect(rule).toMatch(/color:\s*var\(--fg\)/);
-  expect(rule).toMatch(/border:\s*1px solid var\(--border\)/);
+  expect(rule).toMatch(/border:\s*1px solid var\(--field-border\)/);
   expect(ruleOf('input[aria-invalid="true"], textarea[aria-invalid="true"]')).toMatch(
     /border-color:\s*var\(--problem\)/,
   );
 });
 
 test("what is pressed is at least a pointer's minimum size, a checkbox's label included", () => {
-  const minimum = (rule: string) => {
-    const found = rule.match(/min-height:\s*([\d.]+)rem/)?.[1];
-    return found ? parseFloat(found) * 16 : 0;
-  };
+  const minimum = (rule: string) =>
+    px(resolved(rule.match(/min-height:\s*([^;]+)/)?.[1] ?? "", variables(STYLES, "light")));
+  expect(minimum("min-height: var(--control);")).toBeGreaterThan(0); // positive: a token is read
   for (const selector of [
     'label:has(> input[type="checkbox"])',
     "button.name",
@@ -567,8 +622,10 @@ test("what is pressed is at least a pointer's minimum size, a checkbox's label i
 
 test("a workspace's long name is cut short with an ellipsis, its dot staying beside it", () => {
   expect(ruleOf(".workspaces li")).toMatch(/display:\s*flex/);
-  expect(ruleOf(".workspaces button.name")).toMatch(/text-overflow:\s*ellipsis/);
+  expect(ruleOf(".name-text")).toMatch(/text-overflow:\s*ellipsis/);
+  expect(ruleOf(".name-text")).toMatch(/min-width:\s*0/);
   expect(ruleOf(".workspaces button.name")).toMatch(/min-width:\s*0/);
+  expect(ruleOf(".dot-slot")).toMatch(/flex:\s*none/);
   expect(ruleOf(".workspaces .dot")).toMatch(/flex:\s*none/);
 });
 
@@ -618,6 +675,8 @@ function plainRules(css: string): [string, Map<string, string>][] {
 // What sets a minimum height outside the touch screen's rules that is not a target, and why.
 const NOT_PRESSED: Record<string, string> = {
   ".sync": "the ahead and behind counts beside Push, which say and do nothing",
+  ".badge": "a state's pill, which says and does nothing",
+  ".shell": "the frame of every page, as high as the window",
 };
 
 // The targets a touch screen's rules must make at least TOUCH high, and those also as wide.
@@ -629,9 +688,8 @@ const TALL = [
   'input:not([type="checkbox"])',
   'label:has(> input[type="checkbox"])',
   "nav a",
-  ".menu li a",
   ".skip-link",
-  "p.source-page a",
+  "a.repo-link",
 ];
 const WIDE = ["button", "a.button", "nav a"];
 
@@ -646,12 +704,14 @@ function touchFaults(css: string): string[] {
     .filter(([, declared]) => declared.has("min-height"))
     .map(([selector]) => selector)
     .filter((selector) => !(selector in NOT_PRESSED));
+  const vars = variables(css, "light");
+  const length = (value: string | undefined) => px(value && resolved(value, vars));
   for (const selector of new Set([...TALL, ...sized])) {
-    if (px(coarse.get(selector)?.get("min-height")) < TOUCH)
+    if (length(coarse.get(selector)?.get("min-height")) < TOUCH)
       found.push(`${selector}: under ${TOUCH}px high on a touch screen`);
   }
   for (const selector of WIDE) {
-    if (px(coarse.get(selector)?.get("min-width")) < TOUCH)
+    if (length(coarse.get(selector)?.get("min-width")) < TOUCH)
       found.push(`${selector}: under ${TOUCH}px wide on a touch screen`);
   }
   return found;
@@ -724,18 +784,352 @@ test("the meta tag lets the page be zoomed, and has the keyboard shrink the page
   expect(viewport).toMatch(/(?:^|,)\s*interactive-widget\s*=\s*resizes-content\s*(?:,|$)/);
 });
 
-test("on a phone a dialog fills the screen, and on a wider one it sits in the middle", () => {
+test("on a phone a dialog is a sheet from the screen's foot, and on a wider one it sits in the middle", () => {
   const phone = ruleOf("dialog.dialog", mediaOf(PHONE));
+  expect(phone).not.toBe(""); // positive control: the phone's rule is read
   expect(phone).toMatch(/width:\s*100%/);
-  expect(phone).toMatch(/height:\s*100dvh/);
   expect(phone).toMatch(/max-width:\s*none/);
-  expect(phone).toMatch(/max-height:\s*none/);
-  expect(phone).toMatch(/margin:\s*0/);
+  // from the foot: no room under it, the rest above
+  expect(phone).toMatch(/margin:\s*auto 0 0(?:;|$)/);
+  expect(phone).toMatch(/max-height:[^;]*\d+dvh/);
+  // its top corners rounded, its foot square against the screen's edge
+  expect(phone).toMatch(/border-radius:\s*var\(--radius-card\) var\(--radius-card\) 0 0/);
   // wider: the browser's own placement of a modal, in the middle, kept by margin: auto
   expect(ruleOf("dialog.dialog")).toMatch(/margin:\s*auto/);
+  expect(ruleOf("dialog.dialog")).toMatch(/max-height:[^;]*\d+dvh/);
   expect(ruleOf("dialog.dialog::backdrop")).toMatch(/background:\s*var\(--backdrop\)/);
+  // a large dialog, wider on a desktop, is a sheet as wide as any other on a phone
+  expect(ruleOf("dialog.dialog.large")).toMatch(/width:\s*\d/);
+  expect(ruleOf("dialog.dialog.large", mediaOf(PHONE))).toMatch(/width:\s*100%/);
+});
+
+test("a dialog's footer keeps to the foot of the dialog while what is above it scrolls", () => {
+  const footer = ruleOf("dialog.dialog .footer");
+  expect(footer).toMatch(/position:\s*sticky/);
+  expect(footer).toMatch(/bottom:\s*0/);
+  // drawn over what scrolls under it
+  expect(footer).toMatch(/background:\s*var\(--surface\)/);
+  // the dialog itself scrolls, with no padding of its own for the footer to stop short of
+  expect(ruleOf("dialog.dialog")).toMatch(/overflow-y:\s*auto/);
+  expect(ruleOf("dialog.dialog")).toMatch(/padding:\s*0(?:;|$)/);
 });
 
 test("the terminal's height follows the room the phone's keyboard leaves", () => {
   expect(ruleOf(".terminal-screen")).toMatch(/height:[^;]*\d+dvh/);
+});
+
+// --- the design system ------------------------------------------------------------------
+
+// The families of the design system's tokens, each declared once, in the light scheme's :root,
+// whose values the dark scheme does not change.
+const TOKEN_FAMILIES = [
+  /^--space-\d+$/,
+  /^--radius-(?:control|card|pill)$/,
+  /^--text-[\w-]+$/,
+  /^--font(?:-mono)?$/,
+  /^--control$/,
+  /^--touch$/,
+  /^--topbar(?:-phone)?$/,
+  /^--sidebar$/,
+  /^--elevation-[\w-]+$/,
+];
+
+test("the design system's spacing, radii, type, sizes and elevations are tokens of :root", () => {
+  const names = light(STYLES);
+  for (const family of TOKEN_FAMILIES)
+    expect(
+      names.some((name) => family.test(name)),
+      String(family),
+    ).toBe(true);
+  // the spacing scale is on a 4px grid
+  const vars = variables(STYLES, "light");
+  const spaces = names.filter((name) => /^--space-\d+$/.test(name));
+  expect(spaces.length).toBeGreaterThan(3);
+  for (const name of spaces) expect(px(vars.get(name)) % 4, name).toBe(0);
+  // sizes are not colours, and so not the dark scheme's to change
+  expect(
+    dark(STYLES).filter(
+      (name) => TOKEN_FAMILIES.some((f) => f.test(name)) && !/elevation/.test(name),
+    ),
+  ).toEqual([]);
+});
+
+// What is wrong with how buttons and links drawn as one are laid out: not in a row with their
+// label in the middle and a control's height, or a kind drawn for one and not the other.
+function buttonLayoutFaults(css: string): string[] {
+  const both = ruleOf("button, a.button", css);
+  const found: string[] = [];
+  for (const [what, pattern] of [
+    ["not in a row", /display:\s*inline-flex/],
+    ["not in the middle, top to bottom", /align-items:\s*center/],
+    ["not in the middle, side to side", /justify-content:\s*center/],
+    ["not a control's height", /min-height:\s*var\(--control\)/],
+    ["its border outside its size", /box-sizing:\s*border-box/],
+  ] as const)
+    if (!pattern.test(both)) found.push(what);
+  for (const kind of ["primary", "subtle", "danger", "secondary-danger"])
+    if (!/background:/.test(ruleOf(`button.${kind}, a.button.${kind}`, css)))
+      found.push(`${kind}: not drawn alike for both`);
+  return found;
+}
+
+test("a button and a link drawn as one are laid out alike: in a row, their label in the middle", () => {
+  expect(ruleOf("button, a.button")).not.toBe(""); // positive control: the rule is read
+  expect(buttonLayoutFaults(STYLES)).toEqual([]);
+});
+
+test("the button check fails on a link left as a block of its own, and on a kind for buttons only", () => {
+  const block = STYLES.replace(
+    /(button,\s*a\.button\s*\{[^}]*?)display:\s*inline-flex;/,
+    "$1display: inline-block;",
+  );
+  expect(block).not.toEqual(STYLES); // the plant took effect
+  expect(buttonLayoutFaults(block)).toEqual(["not in a row"]);
+  const buttonsOnly = STYLES.replace(/button\.subtle,\s*a\.button\.subtle\s*\{/, "button.subtle {");
+  expect(buttonsOnly).not.toEqual(STYLES);
+  expect(buttonLayoutFaults(buttonsOnly)).toEqual(["subtle: not drawn alike for both"]);
+});
+
+// WCAG's relative luminance of a colour written as #rgb, #rrggbb or rgba(), a translucent one
+// over what it is drawn on.
+function rgb(value: string, under?: number[]): number[] | null {
+  const hex = value.match(/^#([0-9a-f]{3}|[0-9a-f]{6})$/i)?.[1];
+  if (hex) {
+    const full = hex.length === 3 ? [...hex].map((c) => c + c).join("") : hex;
+    return [0, 2, 4].map((i) => parseInt(full.slice(i, i + 2), 16));
+  }
+  const parts = value.match(
+    /^rgba?\(\s*([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)(?:[,\s/]+([\d.]+))?\s*\)$/,
+  );
+  if (!parts) return null;
+  const [r, g, b] = [1, 2, 3].map((i) => parseFloat(parts[i]));
+  const alpha = parts[4] === undefined ? 1 : parseFloat(parts[4]);
+  const base = under ?? [255, 255, 255];
+  return [r, g, b].map((c, i) => c * alpha + base[i] * (1 - alpha));
+}
+function luminance([r, g, b]: number[]): number {
+  const linear = (c: number) => {
+    const s = c / 255;
+    return s <= 0.03928 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4;
+  };
+  return 0.2126 * linear(r) + 0.7152 * linear(g) + 0.0722 * linear(b);
+}
+function contrast(a: number[], b: number[]): number {
+  const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x);
+  return (hi + 0.05) / (lo + 0.05);
+}
+
+// What text may be drawn on where a rule gives it no background of its own: the page, a card,
+// and the sidebar.
+const CANVASES = ["--bg", "--surface", "--nav-bg"];
+
+// Every rule of the stylesheet, in a media query or not, with its declarations.
+function allRules(css: string): [string[], Map<string, string>][] {
+  return [...uncommented(css).matchAll(/([^{}]+)\{([^{}]*)\}/g)].map(([, selectors, body]) => {
+    const found = new Map<string, string>();
+    for (const [, property, value] of body.matchAll(/([\w-]+)\s*:\s*([^;]+);?/g))
+      found.set(property, value.trim());
+    return [selectors.split(",").map((s) => s.trim().replace(/\s+/g, " ")), found];
+  });
+}
+
+// The colours text takes from around it where a rule gives a background and no colour.
+const INHERITED = ["--fg", "--muted", "--accent-text"];
+
+// Backgrounds that hold no text, and why: a rule all of whose selectors are here pairs its
+// background with no colour. Each must still be a rule with a background.
+const NO_TEXT: Record<string, string> = {
+  ".dot-running": "a status dot, a shape of its colour",
+  ".dot-problem": "a status dot, a shape of its colour",
+  "dialog.dialog::backdrop": "the page dimmed behind a dialog",
+  ".scrim:not([hidden])": "the page dimmed beside the drawer, which takes a press",
+  ".sidebar a.active::before": "the accent's bar beside the page where you are",
+  '.list-row[aria-current="true"]::before': "the accent's bar beside the selected row",
+  ".list-row.selected::before": "the accent's bar beside the selected row",
+  '.docs-toc nav a[aria-current="page"]::before':
+    "the accent's bar beside the help page you are on",
+};
+
+// The pairs of colour tokens text is drawn in, read from the stylesheet: a rule's colour on its
+// own background, a colour on no background of its rule's own on each canvas, and a background
+// with no colour of its rule's own under each colour text takes from around it.
+function textPairs(css: string): [string, string][] {
+  const token = (value: string | undefined) => value?.match(/^var\(\s*(--[\w-]+)\s*\)$/)?.[1];
+  const pairs = new Map<string, [string, string]>();
+  for (const [selectors, declared] of allRules(css)) {
+    const fg = token(declared.get("color"));
+    const bg = token(declared.get("background") ?? declared.get("background-color"));
+    if (!fg && (!bg || selectors.every((s) => s in NO_TEXT))) continue;
+    for (const colour of fg ? [fg] : INHERITED)
+      for (const on of bg ? [bg] : CANVASES) pairs.set(`${colour} on ${on}`, [colour, on]);
+  }
+  return [...pairs.values()];
+}
+
+// The pairs whose contrast is under WCAG AA's for text, in each scheme.
+function contrastFaults(css: string): string[] {
+  const found: string[] = [];
+  for (const scheme of ["light", "dark"] as const) {
+    const vars = variables(css, scheme);
+    const surface = rgb(resolved("var(--surface)", vars)) ?? undefined;
+    for (const [fg, bg] of textPairs(css)) {
+      const back = rgb(resolved(`var(${bg})`, vars), surface ?? undefined);
+      const fore = back && rgb(resolved(`var(${fg})`, vars), back);
+      if (!back || !fore) {
+        found.push(`${scheme}: ${fg} on ${bg} is not a colour`);
+        continue;
+      }
+      const ratio = contrast(fore, back);
+      if (ratio < 4.5) found.push(`${scheme}: ${fg} on ${bg} is ${ratio.toFixed(2)}:1`);
+    }
+  }
+  return found;
+}
+
+test("contrast is worked out as WCAG has it", () => {
+  expect(contrast([0, 0, 0], [255, 255, 255])).toBeCloseTo(21, 5);
+  expect(contrast(rgb("#767676")!, rgb("#ffffff")!)).toBeCloseTo(4.54, 2);
+  expect(rgb("rgba(0, 0, 0, 0.5)", [255, 255, 255])).toEqual([127.5, 127.5, 127.5]);
+  expect(rgb("#fff")).toEqual([255, 255, 255]);
+});
+
+test("every colour text is drawn in meets WCAG AA's contrast on what it is drawn on, in both schemes", () => {
+  const pairs = textPairs(STYLES);
+  expect(pairs.length).toBeGreaterThan(10); // non-vacuity: the pairs are read
+  expect(pairs).toContainEqual(["--accent-fg", "--accent"]); // a rule's own background
+  expect(pairs).toContainEqual(["--muted", "--surface"]); // and a canvas
+  // a danger fill with its text, and danger's text on a card, as an outline's is
+  expect(pairs).toContainEqual(["--danger-fg", "--danger"]);
+  expect(pairs).toContainEqual(["--danger-text", "--surface"]);
+  expect(contrastFaults(STYLES)).toEqual([]);
+});
+
+test("in both schemes a danger fill is a saturated red with white on it, as the primary is blue with white", () => {
+  for (const scheme of ["light", "dark"] as const) {
+    const vars = variables(STYLES, scheme);
+    expect(rgb(resolved("var(--danger-fg)", vars)), scheme).toEqual([255, 255, 255]);
+    const [r, g, b] = rgb(resolved("var(--danger)", vars))!;
+    expect(r, scheme).toBeGreaterThan(150);
+    expect(Math.max(g, b), scheme).toBeLessThan(80); // saturated, not a pastel
+  }
+});
+
+test("every background said to hold no text is still drawn by a rule", () => {
+  for (const selector of Object.keys(NO_TEXT))
+    expect(
+      allRules(STYLES).some(
+        ([selectors, declared]) =>
+          selectors.includes(selector) &&
+          (declared.has("background") || declared.has("background-color")),
+      ),
+      selector,
+    ).toBe(true);
+});
+
+test("the contrast check fails on a background with no colour of its own that text around it cannot be read on", () => {
+  const planted = `${STYLES}\n.planted { background: var(--border); }`;
+  expect(textPairs(planted)).toContainEqual(["--accent-text", "--border"]); // the plant is read
+  expect(contrastFaults(planted).some((f) => f.includes("on --border"))).toBe(true);
+  expect(contrastFaults(STYLES).some((f) => f.includes("on --border"))).toBe(false);
+});
+
+test("the contrast check fails on a planted pair that is too faint, and on one in one scheme only", () => {
+  const planted = `${STYLES}\n.planted { color: var(--border); background: var(--surface); }`;
+  const faults = contrastFaults(planted);
+  expect(faults.some((f) => f.startsWith("light: --border on --surface"))).toBe(true);
+  expect(faults.some((f) => f.startsWith("dark: --border on --surface"))).toBe(true);
+  const darkOnly = STYLES.replace(
+    /(prefers-color-scheme:\s*dark\)\s*\{\s*:root\s*\{[^}]*?)--muted:[^;]*;/,
+    "$1--muted: #3a3a3a;",
+  );
+  expect(darkOnly).not.toEqual(STYLES); // the plant took effect
+  const dark = contrastFaults(darkOnly);
+  expect(dark.some((f) => f.startsWith("dark: --muted on --surface"))).toBe(true);
+  expect(dark.some((f) => f.startsWith("light:"))).toBe(false);
+});
+
+// The field rules: at rest, and with focus.
+const FIELDS = 'input:not([type="checkbox"]), textarea, select';
+const FIELDS_FOCUSED =
+  'input:not([type="checkbox"]):focus-visible, textarea:focus-visible, select:focus-visible';
+
+// What is wrong with a field's focus: none drawn, or one that is not told from the field at
+// rest at WCAG's 3:1 for what is not text, in a scheme.
+function focusFaults(css: string): string[] {
+  const focused = ruleOf(FIELDS_FOCUSED, css);
+  if (!/border-color:\s*var\(--[\w-]+\)/.test(focused)) return ["no border on focus"];
+  const found: string[] = [];
+  for (const scheme of ["light", "dark"] as const) {
+    const vars = variables(css, scheme);
+    const colourOf = (rule: string, property: RegExp) =>
+      rgb(resolved(rule.match(property)?.[1] ?? "", vars));
+    const field = colourOf(ruleOf(FIELDS, css), /background:\s*(var\([^)]*\))/)!;
+    const rest = colourOf(ruleOf(FIELDS, css), /border:\s*1px solid (var\([^)]*\))/)!;
+    const ring = colourOf(focused, /border-color:\s*(var\([^)]*\))/)!;
+    if (contrast(ring, field) < 3) found.push(`${scheme}: the focus is faint on the field`);
+    if (contrast(rest, field) < 3)
+      found.push(`${scheme}: the border at rest is faint on the field`);
+    if (ring.join() === rest.join()) found.push(`${scheme}: focus looks as rest does`);
+  }
+  if (!/box-shadow:[^;]*var\(--[\w-]+\)/.test(focused)) found.push("no ring inside the border");
+  return found;
+}
+
+test("a field shows where focus is with its border, seen at 3:1 in both schemes", () => {
+  expect(ruleOf(FIELDS_FOCUSED)).not.toBe(""); // positive control: the rule is read
+  // the border is the ring; the outline is kept, transparent, for forced colours to draw
+  expect(ruleOf(FIELDS_FOCUSED)).toMatch(/outline:\s*2px solid transparent/);
+  expect(ruleOf(FIELDS_FOCUSED)).toMatch(/outline-offset:\s*-2px/);
+  expect(focusFaults(STYLES)).toEqual([]);
+});
+
+test("the focus check fails on a focus drawn as the field at rest is", () => {
+  const same = STYLES.replace(
+    /(:focus-visible,\s*select:focus-visible\s*\{[^}]*?border-color:\s*)var\(--[\w-]+\)/,
+    "$1var(--field-border)",
+  );
+  expect(same).not.toEqual(STYLES); // the plant took effect
+  expect(focusFaults(same)).toContain("light: focus looks as rest does");
+});
+
+test("what is scrolled to, as by a link to a part, is not hidden under the top bar", () => {
+  expect(ruleOf("html")).toMatch(/scroll-padding-top:\s*var\(--topbar\)/);
+  expect(ruleOf("html", mediaOf(PHONE))).toMatch(/scroll-padding-top:\s*var\(--topbar-phone\)/);
+});
+
+test("with forced colours the sidebar still marks the page where you are", () => {
+  const forced = mediaOf("(forced-colors: active)");
+  expect(ruleOf('nav.sidebar a[aria-current="page"]', forced)).toMatch(/outline:\s*2px solid/);
+});
+
+// The rules that draw a hover outside the query for a pointer that can hover, where a touch
+// screen would keep them on after a tap.
+function ungatedHovers(css: string): string[] {
+  return plainRules(css)
+    .map(([selector]) => selector)
+    .filter((selector) => selector.includes(":hover"));
+}
+
+test("hovering is drawn only where the pointer can hover", () => {
+  expect(mediaOf("(hover: hover)")).toContain(":hover"); // positive control: the hovers are read
+  expect(ungatedHovers(STYLES)).toEqual([]);
+});
+
+test("the hover check fails on a hover outside the query", () => {
+  expect(ungatedHovers(`${STYLES}\n.planted:hover { color: var(--fg); }`)).toEqual([
+    ".planted:hover",
+  ]);
+});
+
+test("the browser's bar takes the top bar's colour in each scheme", () => {
+  const html = readFileSync(resolve(__dirname, "..", "index.html"), "utf-8");
+  for (const scheme of ["light", "dark"] as const) {
+    const meta = html.match(
+      new RegExp(
+        `<meta name="theme-color" media="\\(prefers-color-scheme: ${scheme}\\)" content="([^"]+)"`,
+      ),
+    )?.[1];
+    expect(meta, scheme).toBe(schemeValues(STYLES, scheme)["--surface"]);
+  }
+  expect(ruleOf(".topbar")).toMatch(/background:\s*var\(--surface\)/);
 });

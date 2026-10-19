@@ -72,15 +72,18 @@ the token there, beside git's.
 ## Changes
 
 The panel of every workspace that is ready has, on its **Overview** tab, a
-**Changes** section for the git repository at the top of the workspace's
-folder: the branch, the files changed and not yet staged, and the files
-staged, with the means to stage and unstage files, commit, switch or make a
-branch, fetch, sync, and push. Everything it does is done in that workspace,
-as the commit author and with the token above.
+**Changes** card for the git repository at the top of the workspace's folder.
+Its head names the branch, with the buttons to switch or make a branch, fetch or
+sync, how far the branch is ahead of and behind the one it tracks, and **Push**;
+below are the files staged and the files changed and not yet staged, each list
+folding under its heading with **Unstage selected** or **Stage selected** beside
+it; and at its foot, **Commit** and when the status was last checked. Everything
+it does is done in that workspace, as the commit author and with the token
+above.
 
-- **Commit** needs something staged and a commit author name; the section
+- **Commit** needs something staged and a commit author name; the card
   says so otherwise and links to Settings.
-- **Push** to GitHub needs a GitHub token. While none is stored, the section
+- **Push** to GitHub needs a GitHub token. While none is stored, the card
   withdraws Push and says to add one in Settings; **Commit & Push** commits
   nothing in that case, as the push could not follow.
 - The button beside the branch is **Sync** where a sync can run, and
@@ -92,10 +95,10 @@ as the commit author and with the token above.
 - **Sync** is offered on a branch with a commit, where a push could be tried
   (as for **Push**), where the branch and the branch it tracks have not
   diverged, where the branch it tracks is still on the remote as far as the
-  section knows (the bar says when it is gone), and while no merge is under
+  card knows (the bar says when it is gone), and while no merge is under
   way. It only fast-forwards: whatever your own pull or merge settings
   say, it makes no merge commit and rebases nothing. Where both have commits
-  the other lacks, the section says the branch has diverged and needs merging
+  the other lacks, the card says the branch has diverged and needs merging
   or rebasing, and offers **Refresh branches** instead; ask Claude, or run git
   in the workspace, to merge or rebase it.
 - **Sync** keeps changes you have not committed, unless bringing the branch up
@@ -103,19 +106,19 @@ as the commit author and with the token above.
   A branch whose tracked branch turns out to be gone from the remote when
   **Sync** fetches is refused, and nothing is recreated there.
 - When **Sync** brought the branch up to date and its push then failed, the
-  section says both: what was pulled stays.
-- When git refuses, the section shows what it said, beside what you tried.
+  card says both: what was pulled stays.
+- When git refuses, the card shows what it said, beside what you tried.
 
 A workspace made without a GitHub address is empty, and an empty workspace is
-not a git repository: the section says so quietly, without an error. Claude can
-run `git init` there, and the section shows the repository once it exists.
+not a git repository: the card says so quietly, without an error. Claude can
+run `git init` there, and the card shows the repository once it exists.
 
 ## Making a workspace from GitHub
 
 Give a GitHub address in the **New workspace** dialog (see
 [Workspaces](workspaces.md#the-workspaces-page)) and rcman clones that repository into the new
 workspace, with git, as you: all its branches, and the default one checked out.
-The workspace is ready once the clone is done, and its **Changes** section
+The workspace is ready once the clone is done, and its **Changes** card
 shows the repository.
 
 - A private repository needs your GitHub token, set in [Settings](settings.md):
