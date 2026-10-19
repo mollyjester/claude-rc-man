@@ -11,6 +11,7 @@ from rcman import unrecognised
 from devtools import fake_claude as fake
 from tests.conftest import ALICE, BOB, as_user, changing, fake_claude, made_workspace, signed_in
 from tests.test_journal import guide_check_fails_on_a_drifted_table, guide_fields
+from tests.test_screens import RECONNECTED_SCENARIOS
 
 REPO = Path(__file__).resolve().parent.parent
 LOGGER = "rcman.unrecognised"
@@ -225,6 +226,18 @@ def test_a_start_at_the_remote_control_prompt_writes_nothing(client, app, journa
     )
     r = client.post("/api/servers", json={"workspace": made["id"]}, headers=changing(ALICE))
     assert r.json()["server"]["state"] == "remote_control_prompt"  # positive control
+    for _ in range(2):
+        assert client.get("/api/workspaces", headers=as_user(ALICE)).status_code == 200
+    assert lines_logged(journal) == []
+
+
+@pytest.mark.parametrize("scenario", RECONNECTED_SCENARIOS)
+def test_a_start_ending_reconnected_writes_nothing(client, app, journal, scenario):
+    made = made_workspace(client, ALICE, "alpha")
+    signed_in(app, made)
+    fake_claude(app.state.workspaces.runtime.claude, env=f"FAKE_CLAUDE_SCENARIO={scenario}")
+    r = client.post("/api/servers", json={"workspace": made["id"]}, headers=changing(ALICE))
+    assert r.json()["server"]["state"] == "reconnected"  # positive control
     for _ in range(2):
         assert client.get("/api/workspaces", headers=as_user(ALICE)).status_code == 200
     assert lines_logged(journal) == []

@@ -14,7 +14,7 @@ claude.ai/code list; archive them afterwards.
 
 1. Sign your own account on the development machine in to the test Claude
    account (`claude`, then `/login`).
-2. Run `uv run pytest -m real_claude`; what it checks is in
+2. Run `uv run pytest -m real_claude`; what it checks, and the account it uses, are in
    [fake-claude.md](fake-claude.md#how-the-fake-is-checked-against-the-real-binary).
    It creates a session for each sequence that brings a server to ready
    (see the docstring of `devtools/record_claude.py`).

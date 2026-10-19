@@ -335,11 +335,12 @@ A server cannot be used in that workspace while Claude keeps showing that
 screen; rcman handles it once it has been taught to recognise it.
 
 A server shown as **Reconnected, status not shown** is not on an
-unrecognised screen. Claude shows only the lines of its log, the last saying
-that Remote Control has reconnected, and not the status from which rcman
-reads the session's name and the link to it, so the server has no **Open in
-claude.ai**; **Show screen** displays what Claude says. If Claude shows its
-status again, the server is shown as ready or in use once more. Nothing has
+unrecognised screen. Claude shows its log, the last line saying that Remote
+Control has reconnected, with at most the text it showed at its start above
+it and the answers that were given to its questions, and not the status from
+which rcman reads the session's name and the link to it, so the server has no
+**Open in claude.ai**; **Show screen** displays what Claude says. If Claude
+shows its status again, the server is shown as ready or in use once more. Nothing has
 to be reported, and administrators are not warned about it. **Stop** stops
 it as it stops any server.
 

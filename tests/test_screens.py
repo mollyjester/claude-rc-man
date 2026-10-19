@@ -141,6 +141,9 @@ OBSERVED_STATES = {
     # Claude stopped drawing its status block after a Remote Control error, and then
     # reconnected; it draws the block again on its own tick, if at all.
     "reconnected_without_status": "reconnected",
+    # The same after both startup questions were answered, which rcman's `y` does: the
+    # screen still holds the startup text, with the answers, above the log lines.
+    "remote_control_answered_reconnected": "reconnected",
     # Claude's one-time confirmation of an account that has never used Remote Control,
     # asked after the folder-trust question.
     "remote_control_prompt": "remote_control_prompt",
@@ -366,6 +369,335 @@ def test_a_capacity_line_still_wins_over_log_lines(ready):
         assert (info["state"], info["session_name"]) == ("ready", VALUES["session_name"])
         assert h.classify(screen, 0)["state"] == "exited"
     assert h.classify(log, 1)["state"] == "exited"
+
+
+# --- the startup text kept above the log, with both questions answered -----------------
+
+ANSWERED = "remote_control_answered_reconnected"
+RECONNECTED_SCENARIOS = sorted(n for n, s in OBSERVED_STATES.items() if s == "reconnected")
+ANSWER = re.compile(r"(\[y/N\]|\(y/n\)) y$")
+TIME = VALUES["time"]
+
+
+def anchors(lines: list[str]) -> dict[str, int]:
+    """Where the parts of the answered screen are, found by what the lines say."""
+    return {
+        "marker": next(i for i, x in enumerate(lines) if x.startswith("Remote Control starts")),
+        "warning": next(i for i, x in enumerate(lines) if "configures hooks" in x),
+        "trust": next(i for i, x in enumerate(lines) if x.startswith("Trust ")),
+        "block": next(i for i, x in enumerate(lines) if x.startswith("Take this session")),
+        "block_end": next(i for i, x in enumerate(lines) if x.startswith("control. Press")),
+        "enable": next(i for i, x in enumerate(lines) if x.startswith("Enable Remote Control")),
+        "log": next(i for i, x in enumerate(lines) if re.match(r"\[\d\d:\d\d:\d\d\] ", x)),
+    }
+
+
+def test_the_observed_answered_screen_classifies_as_reconnected():
+    lines, exit_code = observed(ANSWERED)
+    info = h.classify(lines, exit_code)
+    assert info["state"] == "reconnected"
+    assert (info["session_name"], info["environment_url"]) == (None, None)
+    assert info["screen"] == lines
+    at = anchors(lines)
+    assert ANSWER.search(lines[at["trust"]]) and ANSWER.search(lines[at["enable"]])
+    assert at["marker"] < at["trust"] < at["block"] < at["enable"] < at["log"]
+    assert lines[-1].startswith("[") and "Reconnected after" in lines[-1]
+
+
+def answered_variants(lines: list[str]) -> dict[str, list[str]]:
+    """Screens like the observed answered one that say something else."""
+    at = anchors(lines)
+    trust, enable, last = lines[at["trust"]], lines[at["enable"]], lines[-1]
+    log = lines[at["log"] :]
+    stamp = f"[{TIME}]"
+    prompt = observed("remote_control_prompt")[0]
+    variants = {
+        "a banner before the marker": ["A new version is available", *lines],
+        "a line of other words after the first answer": [
+            *lines[: at["trust"] + 1],
+            "something else",
+            *lines[at["trust"] + 1 :],
+        ],
+        "a line of other words among the logs": [*lines[:-1], "something else", last],
+        "a line of other words after the second answer": [
+            *lines[: at["enable"] + 1],
+            "something else",
+            *lines[at["enable"] + 1 :],
+        ],
+        "a session completed last": [*lines, f"{stamp} Session completed (1s) cse_x"],
+        "a session completed in place of the reconnect": [
+            *lines[:-1],
+            f"{stamp} Session completed",
+        ],
+        "no reconnect last": lines[:-1],
+        "a spawn question after the answers": [
+            *lines[: at["enable"] + 1],
+            "Choose [1/2] (default: 1):",
+            *lines[at["enable"] + 1 :],
+        ],
+        "a spawn question last": [*lines, "Choose [1/2] (default: 1):"],
+        "another question last": [*lines, "Continue? (y/n)"],
+        "a doubled answer to the trust question": [
+            *lines[: at["trust"]],
+            "Trust a? [y/N] n? [y/N] y",
+            *lines[at["trust"] + 1 :],
+        ],
+        "an unanswered question in the middle": [
+            *lines[: at["enable"]],
+            "Enable Remote Control? (y/n)",
+            *lines[at["enable"] + 1 :],
+        ],
+        "an unanswered trust question in the middle": [
+            *lines[: at["trust"]],
+            trust.removesuffix(" y"),
+            *lines[at["trust"] + 1 :],
+        ],
+        "a second start with an unanswered question": [*lines[:-1], *prompt, last],
+        "the marker and no answered question": [*lines[: at["trust"]], *log],
+        "a partial head at the top": lines[at["warning"] - 1 :],
+    }
+    for question, line in (("trust", trust), ("enable", enable)):
+        row = at[question]
+        stem = line.removesuffix(" y")
+        for name, answered in {
+            "n": f"{stem} n",
+            "N": f"{stem} N",
+            "Y": f"{stem} Y",
+            "yes": f"{stem} yes",
+            "y y": f"{stem} y y",
+            "a double space": f"{stem}  y",
+            "a tab": f"{stem}\ty",
+            "a no-break space": f"{stem}\u00a0y",
+            "no answer": stem,
+        }.items():
+            variants[f"{question} answered {name}"] = [
+                *lines[:row],
+                answered,
+                *lines[row + 1 :],
+            ]
+        variants[f"{question} answered on the next line"] = [
+            *lines[:row],
+            stem,
+            "y",
+            *lines[row + 1 :],
+        ]
+    return variants
+
+
+@pytest.mark.parametrize("variant", sorted(answered_variants(observed(ANSWERED)[0])))
+def test_screens_like_the_answered_one_stay_unrecognised(variant):
+    lines, exit_code = observed(ANSWERED)
+    assert h.classify(lines, exit_code)["state"] == "reconnected"  # positive control
+    planted = answered_variants(lines)[variant]
+    assert planted != lines
+    info = h.classify(planted, exit_code)
+    assert info["state"] == "unrecognised"
+    assert info["screen"] == planted
+
+
+def test_the_answered_variants_include_every_kind_of_answer():
+    """Non-vacuity: the table holds the same refused answers for each question, and some."""
+    names = answered_variants(observed(ANSWERED)[0])
+    kinds = {
+        question: {n.removeprefix(f"{question} answered ") for n in names if n.startswith(question)}
+        for question in ("trust", "enable")
+    }
+    assert kinds["trust"] == kinds["enable"]
+    assert len(kinds["trust"]) > 1
+
+
+@pytest.mark.parametrize("wording", ["retry [3/5]", "ask (y/n)", "Trust x? [y/N]"])
+def test_a_log_line_holding_a_choice_is_a_log_line(wording):
+    """A log line is Claude's own output: the check for unanswered questions is for the
+    other lines. This holds on a log alone and under the startup text."""
+    lines, exit_code = observed(ANSWERED)
+    log = f"[{TIME}] {wording}"
+    alone = [log, lines[-1]]
+    assert h.classify([lines[-1]], None)["state"] == "reconnected"  # positive control
+    assert h.classify(alone, exit_code)["state"] == "reconnected"
+    under = [*lines[:-1], log, lines[-1]]
+    assert h.classify(lines, exit_code)["state"] == "reconnected"  # positive control
+    assert h.classify(under, exit_code)["state"] == "reconnected"
+    # Planted twin: the same words on a line that is no log line are a question.
+    assert h.classify([wording, lines[-1]], exit_code)["state"] == "unrecognised"
+    assert h.classify([*lines[:-1], wording, lines[-1]], exit_code)["state"] == "unrecognised"
+
+
+def test_a_prompt_without_a_choice_is_free_wording_only_before_the_first_answer():
+    """Wording before the first answered question is free, as the hooks warning varies
+    with the folder. After it Claude has moved on, so a line that is none of the known
+    ones is not the screen of a server that went on."""
+    lines, exit_code = observed(ANSWERED)
+    at = anchors(lines)
+    prompt = "Press Enter to continue"
+    assert h.classify(lines, exit_code)["state"] == "reconnected"  # positive control
+    before = [*lines[: at["trust"]], prompt, *lines[at["trust"] :]]
+    after = [*lines[: at["trust"] + 1], prompt, *lines[at["trust"] + 1 :]]
+    assert prompt in before and prompt in after  # the plants took effect
+    assert h.classify(before, exit_code)["state"] == "reconnected"
+    assert h.classify(after, exit_code)["state"] == "unrecognised"
+
+
+def accepted_variants(lines: list[str]) -> dict[str, list[str]]:
+    """Screens like the observed answered one that say less, or other wording, and are
+    still the same state."""
+    at = anchors(lines)
+    saved = next(x for x in observed("remote_control_prompt")[0] if x.startswith("Couldn't save"))
+    log = lines[at["log"] :]
+    return {
+        "no Take-this-session block": [*lines[: at["block"]], *lines[at["block_end"] + 1 :]],
+        "no Enable question": [*lines[: at["trust"] + 1], "", *log],
+        "blank lines": [x for line in lines for x in (line, "", "  ")],
+        "blank lines first": ["", "  ", *lines],
+        "another warning": [
+            *lines[: at["warning"]],
+            "  ⚠ Something else about this folder",
+            *lines[at["warning"] + 1 :],
+        ],
+        "no warning": [*lines[: at["warning"]], *lines[at["warning"] + 2 :]],
+        "the config note": [*lines[: at["trust"] + 1], saved, *lines[at["trust"] + 1 :]],
+        "cut at the first answer": lines[at["trust"] :],
+        "cut at the second answer": lines[at["enable"] :],
+        "cut inside the block": lines[at["block_end"] - 1 :],
+        "cut after the answers": log,
+        "more logs": [*lines[:-1], f"[{TIME}] Connecting", lines[-1]],
+        "trailing spaces": [f"{x}   " for x in lines],
+    }
+
+
+@pytest.mark.parametrize("variant", sorted(accepted_variants(observed(ANSWERED)[0])))
+def test_screens_like_the_answered_one_that_say_less_are_still_reconnected(variant):
+    lines, exit_code = observed(ANSWERED)
+    planted = accepted_variants(lines)[variant]
+    assert planted != lines
+    info = h.classify(planted, exit_code)
+    assert info["state"] == "reconnected"
+    assert (info["session_name"], info["environment_url"]) == (None, None)
+    assert info["screen"] == planted
+
+
+def test_a_screen_with_an_unanswered_question_in_place_of_an_answer_is_not_this_state():
+    """The planted twin of the variants above, from the accepted side: the cut form with
+    its answer taken away is no longer accepted."""
+    lines, exit_code = observed(ANSWERED)
+    cut = lines[anchors(lines)["trust"] :]
+    assert h.classify(cut, exit_code)["state"] == "reconnected"
+    unanswered = [cut[0].removesuffix(" y"), *cut[1:]]
+    assert unanswered != cut
+    assert h.classify(unanswered, exit_code)["state"] == "unrecognised"
+
+
+def test_an_unanswered_question_last_is_still_that_question():
+    lines, exit_code = observed(ANSWERED)
+    assert h.classify(lines, exit_code)["state"] == "reconnected"  # positive control
+    enable = lines[anchors(lines)["enable"]].removesuffix(" y")
+    trust = lines[anchors(lines)["trust"]].removesuffix(" y")
+    assert h.classify([*lines, enable], exit_code)["state"] == "remote_control_prompt"
+    assert h.classify([*lines, trust], exit_code)["state"] == "trust_prompt"
+
+
+def test_the_answered_screen_names_no_environment_even_when_the_head_does():
+    lines, exit_code = observed(ANSWERED)
+    url = VALUES["environment_url"]
+    planted = [*lines[:1], f"  {url}", *lines[1:]]
+    assert url in "\n".join(planted)  # the plant took effect
+    info = h.classify(planted, exit_code)
+    assert info["state"] == "reconnected"
+    assert (info["environment_url"], info["session_name"]) == (None, None)
+
+
+@pytest.mark.parametrize("code", [0, 1])
+def test_the_answered_screen_on_a_dead_pane_is_exited(code):
+    lines, _ = observed(ANSWERED)
+    assert h.classify(lines, None)["state"] == "reconnected"  # positive control
+    info = h.classify(lines, code)
+    assert (info["state"], info["exit_code"]) == ("exited", code)
+    assert info["screen"] == lines
+
+
+@pytest.mark.parametrize(
+    "block,state",
+    [("server_connected_resumed", "connected"), ("server_ready_resumed", "ready")],
+)
+def test_a_status_block_under_the_answered_screen_is_that_block(block, state):
+    lines, exit_code = observed(ANSWERED)
+    status, _ = filled(block)
+    assert h.classify(lines, exit_code)["state"] == "reconnected"  # positive control
+    info = h.classify([*lines, *status], exit_code)
+    assert info["state"] == state
+    if state == "ready":
+        assert info["session_name"] == VALUES["session_name"]
+    else:
+        assert info["session_name"] is None
+
+
+@pytest.mark.parametrize(
+    "duration,accepted",
+    [
+        ("3s", True),
+        ("13s", True),
+        ("1m 3s", True),
+        ("1h 2m 3s", True),
+        ("1m", False),
+        ("s", False),
+        ("1h", False),
+        ("1h 3s", True),
+        ("1m  3s", False),
+        ("３s", False),
+    ],
+)
+def test_the_reconnect_names_how_long_it_took(duration, accepted):
+    lines = [f"[{TIME}] Reconnected after {duration}"]
+    assert h.classify([f"[{TIME}] Reconnected after 3s"], None)["state"] == "reconnected"
+    assert (h.classify(lines, None)["state"] == "reconnected") is accepted
+
+
+def reconnect_appended(screens: dict[str, tuple[list[str], int | None]]) -> dict[str, str]:
+    """The state of each still running screen with a reconnect appended."""
+    return {
+        name: h.classify([*lines, f"[{TIME}] Reconnected after 1s"], exit_code)["state"]
+        for name, (lines, exit_code) in screens.items()
+        if exit_code is None
+    }
+
+
+def live_screens() -> dict[str, tuple[list[str], int | None]]:
+    return {
+        **{f"fixture {name}": filled(name) for name in rec.load_fixtures()},
+        **{f"observed {name}": observed(name) for name in rec.load_observed()},
+    }
+
+
+def wrongly_reconnected(states: dict[str, str]) -> list[str]:
+    """The screens a reconnect appended turns into the reconnected state that are not one
+    of the observed reconnected screens."""
+    allowed = {f"observed {name}" for name in RECONNECTED_SCENARIOS}
+    return sorted(
+        name for name, state in states.items() if state == "reconnected" and name not in allowed
+    )
+
+
+def test_a_reconnect_appended_to_any_other_live_screen_is_not_reconnected():
+    states = reconnect_appended(live_screens())
+    assert len(states) == sum(1 for _, code in live_screens().values() if code is None) > 20
+    for name in RECONNECTED_SCENARIOS:  # positive control: the allowed ones are found
+        assert states[f"observed {name}"] == "reconnected"
+    assert wrongly_reconnected(states) == []
+    for name, state in states.items():  # a status block still decides
+        if name.startswith("fixture") and any("Capacity:" in x for x in live_screens()[name][0]):
+            assert state in ("connected", "ready"), name
+
+
+def test_a_screen_wrongly_reconnected_is_found():
+    """Planted twin: an answered screen whose answered question is of another kind."""
+    screens = live_screens()
+    assert wrongly_reconnected(reconnect_appended(screens)) == []  # positive control
+    lines, exit_code = observed(ANSWERED)
+    screens["planted"] = (lines, exit_code)
+    states = reconnect_appended(screens)
+    assert states["planted"] == "reconnected"  # the plant took effect
+    assert wrongly_reconnected(states) == ["planted"]
+    assert wrongly_reconnected({}) == []
 
 
 # --- paths ----------------------------------------------------------------------------

@@ -56,11 +56,6 @@ def test_no_account_screens_match_the_fixtures(tmp_path):
     assert rec.compare(recorded, expected) == []
 
 
-# Commands whose `--help` is refused without a login; their options are checked
-# by the real-account tests instead.
-HELP_NEEDS_LOGIN = {("remote-control",)}
-
-
 def test_every_option_rcman_passes_is_in_help(tmp_path):
     used = rec.options_used()
     assert used  # non-vacuity
@@ -74,7 +69,8 @@ def test_every_option_rcman_passes_is_in_help(tmp_path):
         if absent:
             missing[" ".join(command) or "(top level)"] = absent
     assert missing == {}
-    assert gated == HELP_NEEDS_LOGIN
+    # No command's help is refused without a login, so every option is checked here.
+    assert gated == set()
 
 
 # --- the credentials file rcman shares and empties (backend/rcman/accounts.py) ---------

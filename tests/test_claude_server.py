@@ -21,6 +21,7 @@ from devtools import tmuxctl
 from devtools.held_folders import tmux_sockets
 from helpers import screens
 from tests.conftest import fake_claude
+from tests.test_screens import RECONNECTED_SCENARIOS
 
 REPO = Path(__file__).resolve().parent.parent
 TMUX_CONF = REPO / "backend" / "rcman" / "tmux.conf"
@@ -225,7 +226,7 @@ def test_output_is_the_screen_and_the_server(world):
 
 @pytest.mark.parametrize(
     "scenario,state",
-    [("reconnected_without_status", "reconnected"), ("unrecognised", "unrecognised")],
+    [*((name, "reconnected") for name in RECONNECTED_SCENARIOS), ("unrecognised", "unrecognised")],
 )
 def test_a_server_on_a_screen_without_a_status_is_reported_with_it_and_stops(
     world, scenario, state
@@ -478,7 +479,7 @@ def test_a_signal_goes_only_to_the_process_the_pane_still_runs(world, monkeypatc
 
 def test_a_server_at_the_spawn_mode_question_is_ended_by_stop(world, monkeypatch):
     """Claude asks the spawn mode in a repository when started without --spawn, and
-    ignores Ctrl+C and SIGTERM there; only the SIGKILL ends it."""
+    ignores Ctrl+C there; the SIGTERM of the stop ends it."""
     from tests.git_fixtures import make_repo
 
     quick_stop(monkeypatch)
@@ -499,7 +500,7 @@ def test_a_server_at_the_spawn_mode_question_is_ended_by_stop(world, monkeypatch
     assert asked["state"] == "unrecognised"
     assert any("Spawn mode" in line for line in asked["screen"])
     out = world.server.stop()["server"]
-    assert (out["state"], out["exit_code"]) == ("exited", 128 + signal.SIGKILL)
+    assert (out["state"], out["exit_code"]) == ("exited", 128 + signal.SIGTERM)
 
 
 # --- what a server is started with ---------------------------------------------------

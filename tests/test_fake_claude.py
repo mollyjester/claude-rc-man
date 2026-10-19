@@ -190,21 +190,29 @@ def test_unrecognised_scenario_matches_no_fixture(pane, tmp_path):
         assert shown != rec.fill("\n".join(fixture.lines), rec.ANY_VALUES).splitlines(), name
 
 
-RECONNECTED_SCENARIO = "reconnected_without_status"
+# The observed screens that only show: every one but the prompt, which takes an answer.
+SHOWN_SCENARIOS = sorted(set(rec.load_observed()) - {"remote_control_prompt"})
 
 
-def test_the_reconnected_scenario_shows_the_observed_screen(pane, tmp_path):
+def test_the_screens_that_only_show_are_all_the_observed_ones_but_the_prompt():
+    """Non-vacuity: the parametrisation below has screens, more than the first one seen."""
+    assert len(SHOWN_SCENARIOS) == len(rec.load_observed()) - 1 > 1
+    assert "remote_control_prompt" not in SHOWN_SCENARIOS
+
+
+@pytest.mark.parametrize("scenario", SHOWN_SCENARIOS)
+def test_a_shown_scenario_shows_the_observed_screen(pane, tmp_path, scenario):
     cfg = logged_in(tmp_path / "cfg")
-    run(pane, ["remote-control"], tmp_path, cfg, FAKE_CLAUDE_SCENARIO=RECONNECTED_SCENARIO)
+    run(pane, ["remote-control"], tmp_path, cfg, FAKE_CLAUDE_SCENARIO=scenario)
     pane.wait_for(r"Reconnected", timeout=10)
     ctx = rec.Context(str(tmp_path), str(cfg), rec.load_manifest()["claude_version"])
     raw = "\n".join(pane.wait_stable(quiet=0.5))
-    observed = rec.load_observed()[RECONNECTED_SCENARIO].lines
+    observed = rec.load_observed()[scenario].lines
     assert rec.sanitise(raw, ctx).split("\n") == observed
     assert pane.exit_status() is None  # still running, as it was seen
     # Planted twin: a screen differing from the one shown is not sanitised into the
     # observed one, so the comparison would see a fake showing another.
-    changed = raw.replace("Reconnected after 3s", "Reconnected after 4s")
+    changed = raw.replace("Reconnected after", "Reconnected afterwards")
     assert changed != raw  # the plant took effect
     assert rec.sanitise(changed, ctx).split("\n") != observed
     pane.interrupt()
@@ -305,6 +313,18 @@ def test_unsupported_invocation_fails_loudly(pane, tmp_path):
     run(pane, ["mcp", "list"], tmp_path, tmp_path / "cfg")
     assert pane.wait_exit(timeout=10) == 2
     assert "unsupported" in pane.text()
+
+
+@pytest.mark.parametrize("signed_in", [False, True])
+def test_the_help_of_remote_control_is_unsupported_signed_in_or_not(pane, tmp_path, signed_in):
+    """rcman never asks for it, and the real one prints help in either state, which no
+    recording holds: neither the refusal nor a server is what it shows."""
+    cfg = tmp_path / "cfg"
+    fake.write_state(cfg, logged_in=signed_in)
+    run(pane, ["remote-control", "--help"], tmp_path, cfg)
+    assert pane.wait_exit(timeout=10) == 2
+    assert "unsupported" in pane.text()
+    assert "logged in" not in pane.text() and "Capacity:" not in pane.text()
 
 
 def fake_exec(tmp_path, *command, stdin=None, **env):
@@ -609,9 +629,7 @@ def test_in_a_repository_without_spawn_it_asks_the_spawn_mode_question(pane, tmp
     assert pane.wait_exit(timeout=10) == rec.load_fixtures()["spawn_stopped_same_dir"].exit_code
 
 
-def test_after_ctrl_c_the_spawn_mode_question_takes_no_answer_or_sigterm_and_ends_on_sigkill(
-    pane, tmp_path
-):
+def test_after_ctrl_c_the_spawn_mode_question_takes_no_answer_and_ends_on_sigterm(pane, tmp_path):
     import signal
     import time
 
@@ -627,12 +645,11 @@ def test_after_ctrl_c_the_spawn_mode_question_takes_no_answer_or_sigterm_and_end
     time.sleep(1)
     assert pane.exit_status() is None
     assert "Capacity:" not in pane.text()
-    pane.signal(signal.SIGTERM)  # changes nothing, as recorded
-    time.sleep(1)
-    assert pane.exit_status() is None
+    pane.signal(signal.SIGTERM)  # ends it, as recorded
+    code = pane.wait_exit(timeout=10)
+    assert code == 128 + signal.SIGTERM
+    assert code == rec.load_fixtures()["spawn_prompt_killed"].exit_code
     assert "Capacity:" not in pane.text()
-    pane.signal(signal.SIGKILL)
-    assert pane.wait_exit(timeout=10) == rec.load_fixtures()["spawn_prompt_killed"].exit_code
 
 
 def test_in_a_repository_with_spawn_same_dir_it_connects_and_shows_the_branch(pane, tmp_path):

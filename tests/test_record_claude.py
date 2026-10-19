@@ -401,11 +401,12 @@ def test_every_observed_screen_is_kept_for_the_approved_version():
 def test_an_observed_screen_not_kept_for_the_approved_version_is_found(tmp_path):
     """Planted twin: a manifest that does not name the approved version fails."""
     copy = observed_copy(tmp_path)
+    approved = rec.load_manifest()["claude_version"]
+    assert not_kept_for(rec.load_observed(copy), approved) == []  # positive control: none yet
     manifest = json.loads((copy / rec.MANIFEST).read_text(encoding="utf-8"))
     name = sorted(manifest["screens"])[0]
     manifest["screens"][name]["kept_for"] = ["0.0.1"]
     (copy / rec.MANIFEST).write_text(json.dumps(manifest), encoding="utf-8")
-    approved = rec.load_manifest()["claude_version"]
     assert approved != "0.0.1"
     assert not_kept_for(rec.load_observed(copy), approved) == [name]
 
@@ -729,3 +730,75 @@ def test_a_claude_run_with_the_real_home_marks_it(tmp_path, monkeypatch):
     env = {**rec.claude_env(None, tmp_path / "home"), "HOME": str(home)}
     subprocess.run([str(fake)], env=env, check=True, capture_output=True)
     assert (home / "marked").exists()
+
+
+# --- the account a recording runs with, where the run names one -----------------------------
+
+
+def test_the_accounts_folder_is_the_one_claude_is_configured_with(tmp_path, monkeypatch):
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    assert rec.account_config_dir() is None  # known negative: no folder is named
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", "")
+    assert rec.account_config_dir() is None
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "account"))
+    assert rec.account_config_dir() == tmp_path / "account"
+
+
+@pytest.mark.parametrize("named", [True, False])
+def test_a_full_recording_runs_in_the_accounts_folder_where_one_is_named(
+    tmp_path, monkeypatch, named
+):
+    """The account of a run started with CLAUDE_CONFIG_DIR is in that folder, not in
+    $HOME/.claude, so the recording is given it."""
+    given = []
+
+    def record(claude, sequences, account_config_dir, workdir):
+        given.append(account_config_dir)
+        return {}
+
+    monkeypatch.setattr(rec, "installed_version", lambda claude: "1.2.3")
+    monkeypatch.setattr(rec, "record", record)
+    monkeypatch.setattr(rec, "write_fixtures", lambda *args, **kwargs: None)
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    if named:
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "account"))
+    assert rec.main(["--claude", "claude", "--out", str(tmp_path)]) == 0
+    assert given == [tmp_path / "account" if named else None]
+
+
+def test_the_accounts_sequence_reads_the_account_in_a_named_folder(tmp_path, real_home):
+    """With the account's folder named, Claude is given that folder, which holds its
+    .claude.json, in a home of its own that leads nowhere and gets anything else it writes."""
+    account = tmp_path / "account"
+    account.mkdir()
+    sequence = rec.Sequence(
+        "probe", [], ("probe",), lambda run: run.capture_exit("probe"), needs_account=True
+    )
+    rec.record(told(tmp_path), [sequence], account, tmp_path / "work")
+    seen = seen_by(tmp_path)
+    assert seen["config"] == str(account)
+    assert seen["home"] != str(real_home) and Path(seen["home"]).is_relative_to(tmp_path / "work")
+    assert (seen["claude"], seen["json"]) == ("", "")
+    assert not (real_home / "marked").exists() and (Path(seen["home"]) / "marked").exists()
+
+
+@pytest.mark.parametrize("named", [True, False])
+def test_the_environment_of_the_account_is_where_the_run_names_it(
+    tmp_path, real_home, monkeypatch, named
+):
+    """What the real-account tests give ``claude``: the account's folder where the run
+    names one, in a home of its own that leads nowhere; otherwise the links to the account
+    in the home of the run, and no folder."""
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    if named:
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "account"))
+    home = tmp_path / "home"
+    env = rec.account_env(home)
+    assert env["HOME"] == str(home)
+    if named:
+        assert env["CLAUDE_CONFIG_DIR"] == str(tmp_path / "account")
+        assert not (home / ".claude").exists() and not (home / ".claude.json").exists()
+    else:
+        assert "CLAUDE_CONFIG_DIR" not in env
+        assert os.readlink(home / ".claude") == str(real_home / ".claude")
+        assert os.readlink(home / ".claude.json") == str(real_home / ".claude.json")
