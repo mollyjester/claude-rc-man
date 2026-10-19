@@ -340,6 +340,11 @@ class Workspaces:
         # before what no row is for is removed: what a module that needs this one (and so
         # cannot be called from it) brings back at a start. gitaccount.py writes gh's files.
         self.restore_hooks: list[Callable[[], None]] = []
+        # Whether an upgrade of rcman is requested or runs (rcman_upgrade.py), which the service
+        # sets: no workspace is recorded meanwhile, nor a Claude Code version rolled out, as the
+        # restart the upgrade makes would cut either short. Asked under the images' lock, which
+        # the admission of an upgrade holds.
+        self.upgrading: Callable[[], bool] = lambda: False
         self.versions = ClaudeVersions(settings, runtime, self)
         self.versions.prunes = prunes
 
@@ -375,6 +380,22 @@ class Workspaces:
         finally:
             con.close()
         return [_workspace(row) for row in rows]
+
+    @contextlib.contextmanager
+    def recording_held(self, wait: float):
+        """The images' lock, which every workspace is recorded under, held for what is in the
+        block, waiting at most ``wait`` seconds for it: whether it was had. The admission of an
+        upgrade of rcman holds it, so that a workspace is recorded before it or refused after."""
+        held = self._images_lock.acquire(timeout=wait)
+        try:
+            yield held
+        finally:
+            if held:
+                self._images_lock.release()
+
+    def any_creating(self) -> bool:
+        """Whether a workspace is being made, which an upgrade of rcman would cut short."""
+        return any(w.state == CREATING for w in self.everything())
 
     def of_person(self, person: int) -> list[Workspace]:
         return [w for w in self.everything() if w.person == person]
@@ -425,12 +446,15 @@ class Workspaces:
     ) -> Workspace:
         """Record the workspace and make it in the background; with ``source``, an address,
         by cloning it. Without a ``name`` it is named after the repository, numbered when
-        the person has one of that name already; a name given that is taken is refused."""
+        the person has one of that name already; a name given that is taken is refused, and so
+        is every one while an upgrade of rcman is under way (``rcman_upgrading``)."""
         base = name if name is not None else name_from(source)
         con = self._con()
         recording = self._images_lock  # released once the row is recorded
         recording.acquire()
         try:
+            if self.upgrading():
+                raise Problem("rcman_upgrading")
             for number in range(1, NAME_TRIES + 1):
                 chosen = base if name is not None else _numbered(base, number)
                 try:

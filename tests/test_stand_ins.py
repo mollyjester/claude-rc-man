@@ -76,3 +76,53 @@ def test_a_cpu_quota_is_shown_as_systemd_shows_it(systemctl, tmp_path):
     runtime_with(systemctl).apply_limits(7, None, Limits(cpu_percent=150))
     held = json.loads((tmp_path / "state" / "slices.json").read_text())
     assert held[limits.person_slice(7)]["CPUQuotaPerSecUSec"] == "1.5s"
+
+
+# --- a path unit ------------------------------------------------------------------------------
+
+UPGRADE_PATH_UNIT = "[Path]\nPathModified=/nowhere/request\nUnit=planted.service\n"
+
+
+@pytest.fixture
+def units(tmp_path) -> Path:
+    """A folder of units the stand-in reads in place of /etc/systemd/system: a path unit, and
+    the service it starts, which marks it ran by writing a file."""
+    folder = tmp_path / "units"
+    folder.mkdir()
+    (folder / "planted.path").write_text(UPGRADE_PATH_UNIT)
+    ran = tmp_path / "service-ran"
+    (folder / "planted.service").write_text(
+        f"[Service]\nType=oneshot\nUser={__import__('pwd').getpwuid(os.getuid()).pw_name}\n"
+        f"ExecStart=/usr/bin/touch {ran}\n"
+    )
+    return folder
+
+
+def stand_in(tmp_path, units, *args) -> subprocess.CompletedProcess:
+    env = {**os.environ, "RCMAN_STAND_IN_DIR": str(tmp_path / "state"),
+           "RCMAN_STAND_IN_UNITS": str(units)}  # fmt: skip
+    return subprocess.run(
+        [sys.executable, str(STAND_INS), "systemctl", *args], env=env, capture_output=True,
+        text=True, timeout=60,
+    )  # fmt: skip
+
+
+@pytest.mark.parametrize("verb", [["restart"], ["start"], ["enable", "--now"]])
+def test_a_path_unit_is_started_as_systemd_starts_one_and_runs_no_service(tmp_path, units, verb):
+    """systemd starts watching; the service runs only when the path changes, which nothing
+    here does."""
+    assert stand_in(tmp_path, units, "is-active", "planted.path").returncode == 3  # not yet
+    done = stand_in(tmp_path, units, *verb, "planted.path")
+    assert done.returncode == 0, done.stderr
+    assert stand_in(tmp_path, units, "is-active", "planted.path").returncode == 0
+    assert stand_in(tmp_path, units, "is-active", "planted.service").returncode == 3
+    assert not (tmp_path / "service-ran").exists()
+    assert [c["args"] for c in calls(tmp_path) if "is-active" not in c["args"]] == [
+        [*verb, "planted.path"]
+    ]
+
+
+def test_enable_without_now_starts_nothing(tmp_path, units):
+    assert stand_in(tmp_path, units, "enable", "planted.path").returncode == 0
+    assert stand_in(tmp_path, units, "is-enabled", "planted.path").returncode == 0
+    assert stand_in(tmp_path, units, "is-active", "planted.path").returncode == 3

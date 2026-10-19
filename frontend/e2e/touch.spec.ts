@@ -6,7 +6,7 @@ import { ADMIN_PAGES } from "../src/AdminPages";
 import { m } from "../src/messages";
 import { PAGES } from "../src/Pages";
 import { callSites, pageSources } from "../src/test/callSites";
-import { GITHUB_ADDRESS, panel, personAction, workspaces } from "./nav";
+import { GITHUB_ADDRESS, panel, personAction, plantUpgradeOffered, workspaces } from "./nav";
 import { ALICE, BOB, signInAs } from "./people";
 
 // What the stylesheet and the page's dialogs build on, proved in the browser itself: the
@@ -772,6 +772,20 @@ function views(paths: string[], id: number, name: string, width: number): View[]
       path: "/admin/people",
       dialog: "AddPersonDialog",
       open: opens((p) => p.getByRole("button", { name: m.usersAdd })),
+    },
+    {
+      name: "upgrading rcman",
+      path: "/admin/rcman",
+      dialog: "UpgradeDialog",
+      open: async (page) => {
+        await plantUpgradeOffered(page);
+        await page.reload();
+        const opened = await opens((p) =>
+          p.getByRole("button", { name: m.upgradeRcman, exact: true }),
+        )(page);
+        await page.unroute("**/api/rcman/upgrade");
+        return opened;
+      },
     },
     {
       name: "the help pages' contents",

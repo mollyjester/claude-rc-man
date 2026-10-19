@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 
+import { ADMIN_PAGES } from "../src/AdminPages";
 import { m } from "../src/messages";
 import { FIELDS } from "../src/Settings";
 import { expectSignedInAs, makeWorkspace, openAdminPage, sidebar } from "./nav";
@@ -101,8 +102,10 @@ test("administration is offered to administrators only", async ({ page }) => {
   await expect(page.getByRole("heading", { name: m.everyoneTitle })).toBeVisible();
   await openAdminPage(page, m.navAudit);
   await expect(page.getByRole("heading", { name: m.auditTitle })).toBeVisible();
+  await openAdminPage(page, m.navRcman);
+  await expect(page.getByRole("heading", { name: m.upgradeRcman, level: 1 })).toBeVisible();
   const group = sidebar(page).getByRole("list", { name: m.navAdmin });
-  await expect(group.getByRole("listitem")).toHaveCount(4);
+  await expect(group.getByRole("listitem")).toHaveCount(ADMIN_PAGES.length);
   await expect(group.getByRole("link", { name: m.navVersions })).toBeVisible();
 });
 

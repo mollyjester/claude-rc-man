@@ -148,6 +148,34 @@ test("with no workspaces, the list is an empty state offering New workspace, the
   expect(await screen.findByRole("dialog", { name: m.newWorkspace })).toBeInTheDocument();
 });
 
+test.each([
+  ["beside the heading", () => withServer("ready")],
+  ["in the empty list", () => []],
+])(
+  "while rcman is being upgraded, New workspace %s is not offered, and the page says why",
+  async (_, workspaces) => {
+    dashboard([], {
+      "GET /api/workspaces": { ...listing(workspaces()), rcman_upgrading: true },
+    });
+    renderApp();
+    const why = await screen.findByText(m.workspacesUpgrading);
+    const buttons = await screen.findAllByRole("button", { name: m.newWorkspace });
+    expect(buttons.length).toBeGreaterThan(0); // positive control: the button is there
+    for (const button of buttons) {
+      expect(button).toBeDisabled();
+      expect(button).toHaveAccessibleDescription(m.workspacesUpgrading);
+    }
+    expect(why).toBeInTheDocument();
+  },
+);
+
+test("with no upgrade of rcman under way, New workspace is offered and nothing is said of one", async () => {
+  dashboard([], { "GET /api/workspaces": { ...listing([]), rcman_upgrading: false } });
+  renderApp();
+  expect(await screen.findByRole("button", { name: m.newWorkspace })).toBeEnabled();
+  expect(screen.queryByText(m.workspacesUpgrading)).not.toBeInTheDocument();
+});
+
 test("the heading row counts the workspaces, for a phone to show beside New", async () => {
   dashboard(withServer("ready"));
   renderApp();

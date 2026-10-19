@@ -40,6 +40,7 @@ MESSAGES = {
     "author_not_set": "Set your commit author name in Settings before committing.",
     "internal_error": "Something went wrong in rcman.",
     "too_many_reports": "Too many reports of failures just now. They are dropped.",
+    "too_many_requests": "Too many requests just now. Try again in a moment.",
     # people
     "email_invalid": rules.EMAIL.sentence,
     "email_taken": "Someone with that address is there already.",
@@ -77,6 +78,9 @@ MESSAGES = {
     "was not approved and nothing was changed. Try again in a moment.",
     "claude_upgrade_busy": "Another Claude Code version is being rolled out. Try again when it "
     "is done.",
+    # upgrading rcman
+    "rcman_upgrade_refused": "rcman cannot be upgraded just now.",
+    "rcman_upgrading": "rcman is being upgraded. Try again once the upgrade is done.",
     "login_failed": "Signing in to Claude failed. Get a new link and try again.",
     "no_login_in_progress": "No sign-in to Claude is waiting for a code. Get a new link.",
     "claude_unrecognised_output": "Claude Code answered with output rcman does not recognise.",
@@ -156,6 +160,30 @@ CLAUDE_INSTALL_MESSAGES = {
         "rcman could not download it: the release site did not answer, or the download "
         "stopped part way. Try again."
     ),
+}
+# Why an upgrade of rcman cannot be asked for now, in plain words, by the reason
+# rcman_upgrade.py gives: the title of ``rcman_upgrade_refused``, which the report of
+# GET /api/rcman/upgrade gives too.
+UPGRADE_REFUSED_MESSAGES = {
+    "disabled": (
+        "Upgrading rcman from the web interface is off. An administrator turns it on with the "
+        "installer, from a shell."
+    ),
+    "units_unreadable": (
+        "rcman cannot tell whether an upgrade could run: systemd did not answer as expected. "
+        "Try again in a moment."
+    ),
+    "path_inactive": (
+        "Nothing on the server is watching for a request to upgrade, so none would be acted on. "
+        "Run the installer again from a shell."
+    ),
+    "under_way": "rcman is being upgraded already.",
+    "rolling_out": (
+        "A Claude Code version is being rolled out, or what one left is being cleared away. "
+        "Try again when it is done."
+    ),
+    "creating": "A workspace is being made. Try again once it is made.",
+    "images": "rcman is clearing away images no workspace uses. Try again in a moment.",
 }
 # The status of ``claude_install_failed`` by kind: a release site that does not answer is a
 # bad gateway, and the rest is for the administrator who named the version.
@@ -349,6 +377,9 @@ STATUS = {
     "author_not_set": 409,
     "internal_error": 500,
     "too_many_reports": 429,
+    "too_many_requests": 429,
+    "rcman_upgrade_refused": 409,
+    "rcman_upgrading": 409,
     "email_invalid": 400,
     "email_taken": 409,
     "people_full": 409,

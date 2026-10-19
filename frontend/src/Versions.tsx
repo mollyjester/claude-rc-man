@@ -24,6 +24,8 @@ type Report = {
   installed: Installed[];
   drift: Drift[];
   upgrading: boolean;
+  // Whether rcman is being upgraded, while which no version is rolled out.
+  rcman_upgrading?: boolean;
 };
 
 // How often the report is read again while a roll-out runs, to see it end.
@@ -109,12 +111,18 @@ export function Versions() {
     if (await rollOut(version.trim())) setVersion("");
   }
 
-  // Nothing more is offered while a roll-out runs, here or by another administrator.
-  const shut = rolling !== null || report?.upgrading === true;
+  // Nothing more is offered while a roll-out runs, here or by another administrator, nor while
+  // rcman is being upgraded.
+  const shut = rolling !== null || report?.upgrading === true || report?.rcman_upgrading === true;
   const status =
     rolling !== null
       ? m.versionsRolling(rolling)
-      : (notice ?? (report?.upgrading ? m.versionsBusyElsewhere : null));
+      : (notice ??
+        (report?.upgrading
+          ? m.versionsBusyElsewhere
+          : report?.rcman_upgrading
+            ? m.versionsRcmanUpgrading
+            : null));
 
   return (
     <section className="cards">

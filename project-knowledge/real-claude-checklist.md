@@ -190,6 +190,45 @@ and a workspace's **Terminal** tab open with `sleep` running in its shell:
 4. The Terminal tab says rcman is restarting and offers **Reconnect**, and neither the
    shell nor its `sleep` is left in the workspace (`podman top` as `rcman`).
 
+## Upgrading from the web interface
+
+On a throwaway Ubuntu 24.04 machine, before a change to the upgrade from the web interface is
+merged, with it turned on (`sudo ./install.sh --web-upgrade yes`) from a clone of a private
+repository whose owner has credentials that ask nothing, and a second release on `main` to
+upgrade to. What the tests stand in for here is checked against the real thing:
+
+1. **What systemd shows rcman.** As root, run
+   `runuser -u rcman -- systemctl show --no-pager --property=Id,LoadState,ActiveState,InvocationID -- rcman-upgrade.service rcman-upgrade.path`
+   with the service inactive, while it runs, and with the units removed
+   (`sudo ./install.sh --web-upgrade no`, then again `yes`), and also from inside
+   `rcman.service` (the **rcman release** page reads it: the report answers, and its reason is
+   not `units_unreadable`). Write the three outputs down and compare them with `shown()` in
+   `tests/test_rcman_upgrade.py`, which `rcman_upgrade.read_units` is tested against: each
+   property, its value and the blocks' order. A difference is fixed in the test's recording and,
+   where needed, in `read_units`.
+2. **The request starts the run.** With no `/var/lib/rcman/upgrade.request`, **Upgrade rcman**
+   writes it and `rcman-upgrade.service` starts (`sudo journalctl -u rcman-upgrade -f`); after
+   that run, a second **Upgrade rcman**, the file now there, starts it again. Both are
+   `PathModified=` firing on rcman's own write.
+3. **A press during a run is taken by it.** While a run goes on, a request written by hand as
+   rcman starts no second run, and the page offers no **Upgrade rcman** meanwhile.
+4. **The run outlives rcman's restart.** The installer restarts `rcman.service` part way; the
+   service's run goes on to its end, and `ExecStopPost=` writes the end: stop a run with
+   `sudo systemctl stop rcman-upgrade.service` once, and `/opt/rcman/upgrade/status.json` says
+   `failed` with the result systemd gave.
+5. **The release is the one that runs.** Before and after an upgrade, the page's **Running
+   release** is the commit in `/opt/rcman/current/.complete` of the release `rcman.service`
+   started from (the virtualenv `sys.prefix` names, resolved): after the switch, and before
+   rcman restarts, it still names the release before.
+6. **The pull works with nobody there.** The upgrade pulls the private repository under
+   `env -i` with no terminal, and `npm ci` and `uv` build the release in the unit's environment.
+7. **The installer's lock is kept across its re-exec.** While an upgrade runs, a
+   `sudo ./install.sh` from a shell is refused, saying another run holds the lock.
+8. **The page follows the restart.** In a browser, through Caddy and oauth2-proxy, the page says
+   the upgrade runs, says rcman is restarting while it is not reached, and offers
+   **Reload page** at the end; the browser's console shows the failed reads, and
+   `sudo journalctl -u rcman --grep client_error` shows none from them.
+
 ## A repository with devcontainer.json and a feature
 
 What [devcontainer.json support](../docs/devcontainer.md) says, with the real

@@ -27,4 +27,5 @@ its database (see [Limits](users.md#limits)).
 | `RCMAN_FRONTEND_DIR` | Where the built web interface is |
 | `RCMAN_AUDIT_RETENTION_DAYS` | How long audit events are kept (see [Audit trail](audit.md)) |
 | `RCMAN_AUDIT_MAX_ROWS` | The most audit events kept at once (see [Audit trail](audit.md)) |
+| `RCMAN_WEB_UPGRADE` | Whether administrators may upgrade rcman from its web interface; the installer sets it from its `--web-upgrade` option, together with what carries an upgrade out, so change it there and not here (see [Upgrading from the web interface](installation.md#upgrading-from-the-web-interface)) |
 | `RCMAN_LOGIN_WARNING_DAYS` | How many days before a Claude sign-in expires people are warned (see [Connecting your Claude account](claude-account.md)) |

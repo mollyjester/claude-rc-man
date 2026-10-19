@@ -12,7 +12,18 @@ from pathlib import Path
 from fastapi import FastAPI
 
 from helpers import seccomp
-from rcman import audit, claude_versions, db, headers, journal, people, problems, spa, unrecognised
+from rcman import (
+    audit,
+    claude_versions,
+    db,
+    headers,
+    journal,
+    people,
+    problems,
+    rcman_upgrade,
+    spa,
+    unrecognised,
+)
 from rcman.accounts import Accounts
 from rcman.gitaccount import GitAccount
 from rcman.routers import (
@@ -29,6 +40,7 @@ from rcman.routers import (
     workspaces,
 )
 from rcman.routers import people as people_router
+from rcman.routers import rcman_upgrade as rcman_upgrade_router
 from rcman.runtime import PodmanConfig, PodmanRuntime, Runtime
 from rcman.settings import Settings
 from rcman.terminals import Terminals
@@ -163,6 +175,10 @@ def create_app(
     service.restore_hooks.append(app.state.git_account.write_gh_for_everyone)
     app.state.watch = unrecognised.Watch()
     app.state.client_error_limit = client_errors.new_limit()
+    # The release rcman runs is read now, once: an upgrade switches the release meanwhile.
+    app.state.upgrade = rcman_upgrade.Upgrades(settings, service)
+    service.upgrading = app.state.upgrade.under_way
+    app.state.upgrade_limit = rcman_upgrade_router.new_limit()
     problems.install(app)
     headers.install(app)
 
@@ -177,6 +193,7 @@ def create_app(
         git,
         github,
         claude,
+        rcman_upgrade_router,
         people_router,
         audit_log,
         attention,

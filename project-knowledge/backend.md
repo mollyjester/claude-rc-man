@@ -29,11 +29,11 @@ the OpenAPI description it serves at `/api/openapi.json`, browsable at
 | `unrecognised.py` | The watch on every server rcman reads, which writes output rcman does not recognise to the journal (see [Output rcman does not recognise](#output-rcman-does-not-recognise)) |
 | `everyone.py` | Everyone's workspaces and servers, for administrators |
 | `headers.py` | The security headers every answer carries (see [Requests](#requests)) |
-| `ratelimit.py`, `filelock.py` | A token bucket for each name (the limit on a page's reports), and a re-entrant lock that is also a lock file, shared with `rcman-admin` (see [Limits](#limits)) |
+| `ratelimit.py`, `filelock.py` | A token bucket for each name (the limits on a page's reports and on requests for an upgrade of rcman), and a re-entrant lock that is also a lock file, shared with `rcman-admin` (see [Limits](#limits)) |
 | `spa.py` | Serving the built frontend: its files, and `index.html` for every other path not under `/api`; installed after every router. `index.html` names the build's files by the hashes of their contents, which Vite puts in their names under `assets/`, so every file outside `assets/`, `index.html` among them, is served with `Cache-Control: no-cache`, which has the browser ask again before it uses the one it kept, and a page loaded after an upgrade names the new build's files; those under `assets/`, which never change, are kept for a year (`immutable`) |
 | `routes.py` | The app's routes as FastAPI resolves them after including routers, and which of them are for administrators |
-| `routers/` | One module per area: `me`, `workspaces`, `servers`, `git`, `github`, `claude`, `people`, `audit_log`, `attention`, `docs`, `client_errors`, `terminal` |
-| `routers/workspaces.py` | The person's workspaces, under `/api/workspaces`: listing them with their servers, making one, deleting one; the listing is an object, `workspaces` and `claude_approved` (the version a server started now would run, `null` where none is), so that the page can set each server's `claude_version` beside it |
+| `routers/` | One module per area: `me`, `workspaces`, `servers`, `git`, `github`, `claude`, `people`, `audit_log`, `attention`, `docs`, `client_errors`, `terminal`, `rcman_upgrade` |
+| `routers/workspaces.py` | The person's workspaces, under `/api/workspaces`: listing them with their servers, making one, deleting one; the listing is an object, `workspaces`, `claude_approved` (the version a server started now would run, `null` where none is), so that the page can set each server's `claude_version` beside it, and `rcman_upgrading`, whether an upgrade of rcman is under way (see [Upgrading rcman](#upgrading-rcman)) |
 | `routers/servers.py` | A workspace's server, under `/api/servers`: start, resume, stop, forget, confirm and output, each by the workspace's id; and everyone's, for administrators |
 | `accounts.py`, `routers/claude.py` | Each person's Claude sign-in, signing in and out of it, and its state; `routers/me.py` signs out of rcman — see [Claude accounts](#claude-accounts) |
 | `repository.py` | A workspace's git repository: the verbs of the Changes section, run in the workspace through its channel and `exec`, each wrapped in the workspace's `timeout` tool (see [git in workspaces](#git-in-workspaces)) |
@@ -42,6 +42,7 @@ the OpenAPI description it serves at `/api/openapi.json`, browsable at
 | `claude_versions.py` | `ClaudeVersions`: the approvals, the store, rolling out a version, pruning, and the report of the versions page (see [Claude Code versions](#claude-code-versions)) |
 | `routers/client_errors.py` | A page's reports of failures rcman could not see, `POST /api/client-errors`, written to the journal (see [Errors from the page](#errors-from-the-page)) |
 | `terminals.py`, `routers/terminal.py` | The Terminal tab: a shell in a workspace, carried over a WebSocket (see [The terminal](#the-terminal)) |
+| `rcman_upgrade.py`, `routers/rcman_upgrade.py` | Upgrading rcman from its web interface, rcman's side: the release it runs, the report, the request and its admission, and the freeze while one is under way (see [Upgrading rcman](#upgrading-rcman)) |
 | `routers/me.py` | Each person's own settings, changed with `PATCH /api/me/settings`, which changes only the settings sent; `prefix_of` and `author_of` are how the rest of the backend reads them |
 
 ## Requests
@@ -437,7 +438,8 @@ row records the version its server started with (`claude_version`).
   Nothing restarts a running server.
 - **Rolling out.** `POST /api/claude/upgrade {version}` (administrators, audited as
   `claude.upgrade` with the version as target) is `upgrade`: synchronous, one at a time
-  (`claude_upgrade_busy`). The candidate is staged outside the store, in a folder of its own
+  (`claude_upgrade_busy`), and none while an upgrade of rcman is under way (`rcman_upgrading`,
+  see [Upgrading rcman](#upgrading-rcman)). The candidate is staged outside the store, in a folder of its own
   in `STAGING_FOLDER` beside the database, fetched by `helpers/claude_release.py` (streamed,
   hashed, size-capped, renamed into place only whole; the installer fetches the tested version
   with the same code) or copied from the store; run through the canary
@@ -473,7 +475,8 @@ row records the version its server started with (`claude_version`).
 - **Reading.** `GET /api/claude/versions` is `report`: approved, previous and tested
   (`helpers/claude-version`) versions, the installed ones with whether each is approved or
   previous and how many servers use it, the drift (running servers on another version) and
-  whether a roll-out runs. `GET /api/claude/latest` is the release site's newest version, only
+  whether a roll-out runs (`upgrading`) or an upgrade of rcman is under way (`rcman_upgrading`).
+  `GET /api/claude/latest` is the release site's newest version, only
   a suggestion (`null` where the site does not say). Both are for administrators.
   `GET /api/workspaces` and `everyone` carry each workspace's `claude_version`.
 - **No self-update.** `DISABLE_AUTOUPDATER=1` is in the server's environment (`child_env`), in
@@ -483,6 +486,68 @@ row records the version its server started with (`claude_version`).
   `helpers/claude_release.DOWNLOAD_ADDRESS`) is where releases are downloaded from.
 - **The journal.** `ClaudeVersions` logs to `rcman.claude_versions`, which `create_app`
   installs like the others (below).
+
+## Upgrading rcman
+
+An administrator upgrades rcman from the **rcman release** page when the installer turned it
+on (`web_upgrade`, `RCMAN_WEB_UPGRADE`); what carries it out, as root, and the files it reads
+and writes are the installer's, in
+[Upgrading from the web interface](installer.md#upgrading-from-the-web-interface).
+`rcman_upgrade.py` mirrors their paths (`STATUS`, `REQUEST`) and the status's fields rather than
+import the installer; `rcman_upgrade.Upgrades` is `app.state.upgrade`.
+
+- **The release.** `running_release`, called once as `create_app` builds the app and kept as
+  `Upgrades.release`, is the commit in the `.complete` mark of the release whose virtualenv
+  rcman runs in (`PREFIX`, `sys.prefix`, resolved, and its folder), or `null` where there is
+  none or it names no commit, as in a development run. It is never read again: an upgrade
+  switches `current` while the release before still runs.
+- **Running.** Whether an upgrade runs comes from systemd, read-only: `show_units` runs
+  `SYSTEMCTL` with `SHOW_ARGS` (`show` of the service and the path unit, for `PROPERTIES`) and
+  `SHOW_ENVIRONMENT` alone, within `SHOW_TIMEOUT`, and `read_units` takes exactly a block of
+  those properties for each of the two units, an `ActiveState` among `ACTIVE_STATES`; anything
+  else is an error, never idle. The service in one of `RUNNING` is a run under way, and the
+  status's fields are given only where the status names the same invocation. Otherwise the
+  status (`read_status`: exactly its fields, of their types, the error within `ERROR_LENGTH`)
+  says how the last one ended; none, or one it does not take, is `unknown`, never an error. A
+  status that says `running` is `failed` where it is of another boot (`BOOT_ID`) or systemd
+  shows the service not running, and `running` only where systemd cannot be read.
+- **Requested.** An admitted request is held in memory with the invocations the service and
+  the status named then. It is `requested`, and `not_started` once `UPGRADE_START_GRACE` has
+  passed, until the service runs, and `running` while it does; it is let go only when the
+  status names another invocation, which its run wrote, or systemd shows another invocation
+  of the service that no longer runs, a run that ended before it wrote anything. So the
+  moment between the service's start and the wrapper's first write freezes as the run does. It is not kept across a
+  restart, which only an upgrade that started makes.
+- **The report.** `GET /api/rcman/upgrade` is `release`, `enabled`, `available`, `reason`,
+  `state` (`requested`, `running`, `succeeded`, `failed`, `not_started` or `unknown`) and the
+  status's `started`, `finished`, `from`, `to`, `notices` and `error`, the same keys whatever
+  the state. `reason` is `null`, or the problem a request would be refused with now:
+  `rcman_upgrade_refused` with its `reason`, one of `problems.UPGRADE_REFUSED_MESSAGES`, whose
+  words are its title. With the option off it is `disabled`, and systemd is not asked.
+- **Admission.** `POST /api/rcman/upgrade` (audited as `rcman.upgrade`; each administrator
+  limited by a token bucket of `REQUESTS_BURST`, refilled at `REQUESTS_PER_MINUTE`,
+  `too_many_requests` with `Retry-After` past it) answers 202 with the report. `request`
+  holds `Workspaces.recording_held`, the images' lock, which every workspace is recorded
+  under, waiting at most `ADMISSION_WAIT` (`images` otherwise), then
+  `ClaudeVersions.rollouts_held`, the roll-outs' lock, without waiting (`rolling_out`: a
+  roll-out, or the `sweep` of what one left, holds it); holding both,
+  it refuses while systemd cannot be read (`units_unreadable`), the path unit is not loaded and
+  active (`path_inactive`), an upgrade is under way (`under_way`) or a workspace is being made
+  (`creating`); otherwise it records the request and writes the request file (`write_request`:
+  a write and a close, never through a link).
+- **The freeze.** `Upgrades.under_way` is `Workspaces.upgrading`: a request held whose run has
+  not written its status, within the grace or while systemd shows the service running, or a
+  status of this boot that says `running` and that systemd does not contradict; it asks
+  systemd only past the grace or for such a status, so a listing costs a file read.
+  `Workspaces.create`, and so a clone, asks it under the images' lock, and
+  `ClaudeVersions.upgrade` after taking `_upgrading`, each refusing with `rcman_upgrading`;
+  since the admission holds both locks from its checks to its record, a creation or a roll-out
+  is either seen by its checks or refused. `GET /api/workspaces` and the versions report carry
+  it as `rcman_upgrading`, for the page to say why it offers neither.
+- **Tests.** `tests/test_rcman_upgrade.py` holds the report's shape and every reason, the states
+  from recorded `systemctl show` output (`shown()`, which the real-machine checklist compares
+  with the real thing), malformed output and status, the release read once, the admission's
+  race and locks, and `rcman_upgrading` from a creation, a clone and a roll-out.
 
 ## Attention
 

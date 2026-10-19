@@ -246,15 +246,17 @@ test("the drawer stays open while focus moves through it, and closes when Tab ta
   expect(button).toHaveAttribute("aria-expanded", "false");
 });
 
-test("the administration pages are People, everyone's workspaces, the Claude Code versions and the audit trail, in that order", () => {
+test("the administration pages are People, everyone's workspaces, the Claude Code versions, the audit trail and rcman itself, in that order", () => {
   expect(ADMIN_PAGES.map((p) => p.label)).toEqual([
     m.navUsers,
     m.navEveryone,
     m.navVersions,
     m.navAudit,
+    m.navRcman,
   ]);
   expect(ADMIN.everyone.path).toBe("/admin/workspaces");
   expect(ADMIN.versions.path).toBe("/admin/claude");
+  expect(ADMIN.rcman.path).toBe("/admin/rcman");
   expect(ADMIN_PAGES).toEqual(Object.values(ADMIN));
 });
 

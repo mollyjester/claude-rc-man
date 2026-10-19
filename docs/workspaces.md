@@ -43,6 +43,12 @@ address a workspace is empty. When rcman refuses a name, the dialog stays open,
 says why under the field and keeps what you typed; each of your workspaces has a
 name of its own.
 
+While an administrator has rcman upgraded from its web interface (see
+[Upgrading from the web interface](installation.md#upgrading-from-the-web-interface)),
+**New workspace** is not offered and the page says why: no workspace is made or
+cloned until the upgrade is done, since the restart it makes would cut one short.
+Your workspaces and their servers keep running through it.
+
 To start from a repository on GitHub, give its address in **GitHub address
 (optional)**, such as `https://github.com/owner/repository`, and choose
 **Create**. rcman clones the repository into the new workspace: all its
@@ -163,7 +169,8 @@ of the shapes above.
   another page; when the shell exits, as `exit` does, and the tab says with what
   exit code; when the workspace is deleted; when you sign out of rcman, which
   ends your terminals in every browser; when an administrator removes you from
-  rcman; and when rcman restarts or is upgraded. Ending a terminal ends its
+  rcman; and when rcman restarts or is upgraded, from a shell or from its web
+  interface. Ending a terminal ends its
   shell and every process in the shell's session; a process that has left the
   session, as one started with `setsid` or a daemon does, keeps running. The
   workspace's server is not touched.

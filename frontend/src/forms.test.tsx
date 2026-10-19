@@ -69,6 +69,19 @@ function api() {
       upgrading: false,
     },
     "GET /api/claude/latest": { latest: null },
+    "GET /api/rcman/upgrade": {
+      release: null,
+      enabled: true,
+      available: true,
+      reason: null,
+      state: "unknown",
+      started: null,
+      finished: null,
+      from: null,
+      to: null,
+      notices: [],
+      error: null,
+    },
     "POST /api/claude/login": { url: "https://claude.com/x" },
     "GET /api/workspaces": {
       claude_approved: "1.0.0",
@@ -275,6 +288,14 @@ const CHOICES: [string, Where, () => Promise<void>][] = [
     },
   ],
   ["deleting a workspace", "/?workspace=1", () => openTrash("alpha")],
+  [
+    "upgrading rcman",
+    "/admin/rcman",
+    async () => {
+      await userEvent.click(await screen.findByRole("button", { name: m.upgradeRcman }));
+      await screen.findByRole("dialog", { name: m.upgradeRcman });
+    },
+  ],
   // beta is being made, so its trash button says why it cannot be deleted yet
   ["a workspace that cannot be deleted", "/", () => openTrash("beta")],
 ];

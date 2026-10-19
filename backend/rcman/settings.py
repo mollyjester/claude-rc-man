@@ -66,6 +66,11 @@ class Settings(BaseSettings):
     login_warning_days: int = Field(
         3, ge=1, description="Warn this many days before someone's Claude sign-in expires."
     )
+    web_upgrade: bool = Field(
+        False,
+        description="Whether administrators may upgrade rcman from its web interface: the "
+        "installer sets it, with the units that carry an upgrade out, when told to.",
+    )
     audit_max_rows: int = Field(
         100_000, ge=1, description="At most this many audit events are kept; the oldest go first."
     )

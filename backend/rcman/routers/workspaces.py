@@ -32,12 +32,14 @@ def listing(request: Request, identity: Identity) -> list[dict]:
 
 @router.get("")
 def workspaces(request: Request, identity: Identity = Depends(current_user)) -> dict:
-    """The person's workspaces, and the Claude Code version a server started now would run
+    """The person's workspaces, the Claude Code version a server started now would run
     (``claude_approved``, None where none is installed), to set beside the version each
-    server runs."""
+    server runs, and whether an upgrade of rcman is under way (``rcman_upgrading``), while
+    which no workspace is made."""
     return {
         "workspaces": listing(request, identity),
         "claude_approved": request.app.state.versions.approved(),
+        "rcman_upgrading": request.app.state.workspaces.upgrading(),
     }
 
 

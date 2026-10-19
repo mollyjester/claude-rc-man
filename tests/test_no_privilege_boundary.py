@@ -14,6 +14,9 @@ untracked files that are not ignored):
   programs that make or switch accounts. A site that is right is in EXEMPT: named by
   file, function and text, reasoned, and checked to still be there. installer/ is
   outside this layer: it is the one program that makes rcman's accounts.
+- **The services' accounts.** Every systemd service among the installer's templates
+  names the account it runs as (``User=``), and not root. The one that is root is in
+  ROOT_SERVICES, named, reasoned, and checked to still be there and still be root's.
 
 Each layer has planted twins below: a scratch repository with the violation, the plant
 confirmed, and the guard shown firing.
@@ -216,11 +219,96 @@ def account_hits(rel: str, source: str, exempt: dict = EXEMPT) -> list[Hit]:
     return hits
 
 
+# --- the services' accounts -------------------------------------------------------------
+
+SERVICE_TEMPLATES = "installer/templates/"
+SERVICE_ACCOUNT = re.compile(r"^User=(\S*)\s*$", re.MULTILINE)
+# Services that run as root: the template -> what makes it different. Each is checked to still
+# be there and to still name no account (test_the_root_services_are_still_there_and_root_s).
+ROOT_SERVICES = {
+    "installer/templates/rcman-upgrade.service": (
+        "the web upgrade: rcman asks for it by writing a file, and this oneshot runs the clone's "
+        "install.sh as root, off by default and installed only when an administrator turns it "
+        "on. Accepted risk: whoever can push to main runs code as root, through install.sh, "
+        "installer/ and uv sync building the project as root; so a GitHub token stored in rcman "
+        "that can push to the repository is a root credential, and while the option is on the "
+        "clone owner's account is root without a password"
+    ),
+}
+
+
+# What a root service may run and read, so that its exemption covers what was reasoned about
+# and no more: its commands are exactly root's wrapper under the installation's bin folder, run
+# in isolated mode with these arguments (nothing after them: `;` would add a command), it reads
+# no file of settings, and it names nothing in rcman's home (the request file there is its path
+# unit's, which is not a service).
+WRAPPER = "/usr/bin/python3 -I /opt/rcman/bin/rcman-upgrade"
+ROOT_SERVICE_COMMANDS = {
+    "ExecStart": f"{WRAPPER} --clone @CLONE@ --caddy-user @CADDY_USER@",
+    "ExecStopPost": f"{WRAPPER} --finish",
+}
+# The placeholders a root service may have the installer fill in.
+ROOT_SERVICE_PLACEHOLDERS = {"CLONE", "CADDY_USER", "UPGRADE_ENVIRONMENT"}
+
+
+def root_service_problems(text: str) -> list[str]:
+    """What a root service holds beyond what its exemption allows."""
+    found = []
+    keys: dict[str, list[str]] = {}
+    for line in text.splitlines():
+        if "=" in line and not line.lstrip().startswith(("#", "[")):
+            key, _, value = line.partition("=")
+            keys.setdefault(key.strip(), []).append(value.strip())
+    for key, command in ROOT_SERVICE_COMMANDS.items():
+        if not keys.get(key):
+            found.append(f"no {key}=")
+        found += [f"{key}={v}" for v in keys.get(key, []) if v != command]
+    exec_keys = {k for k in keys if k.startswith("Exec")} - set(ROOT_SERVICE_COMMANDS)
+    found += [f"{key}=" for key in sorted(exec_keys)]
+    if "EnvironmentFile" in keys:
+        found.append("EnvironmentFile=")
+    if "/var/lib/rcman" in text:
+        found.append("a path under /var/lib/rcman")
+    found += [f"@{name}@" for name in sorted(set(re.findall(r"@([A-Z0-9_]+)@", text)))
+              if name not in ROOT_SERVICE_PLACEHOLDERS]  # fmt: skip
+    return found
+
+
+def is_service_template(rel: str) -> bool:
+    return rel.startswith(SERVICE_TEMPLATES) and rel.endswith(".service")
+
+
+def service_hits(rel: str, text: str, root_services: dict = ROOT_SERVICES) -> list[Hit]:
+    """A service template that names no account, or root, unless it is a root service, which
+    holds only what its exemption allows."""
+    if not is_service_template(rel):
+        return []
+    if rel in root_services:
+        beyond = root_service_problems(text)
+        return [Hit(rel, 1, "root service beyond its exemption", p) for p in beyond]
+    accounts = SERVICE_ACCOUNT.findall(text)
+    if not accounts:
+        return [Hit(rel, 1, "service without User=", "runs as root")]
+    return [Hit(rel, 1, "service as root", f"User={a}") for a in accounts if a in ("", "root", "0")]
+
+
+def stale_root_services(root: Path, root_services: dict = ROOT_SERVICES) -> list[str]:
+    """The root services whose template is gone, or names an account now."""
+    corpus = set(docs_guard.corpus_files(root))
+    stale = []
+    for rel, reason in root_services.items():
+        if not reason or rel not in corpus:
+            stale.append(f"{rel}: not in the repository")
+        elif SERVICE_ACCOUNT.search((root / rel).read_text(encoding="utf-8")):
+            stale.append(f"{rel}: names an account now")
+    return stale
+
+
 # --- the guard -----------------------------------------------------------------------
 
 
-def problems(root: Path, exempt: dict = EXEMPT) -> list[str]:
-    """Everything the two layers find in the repository at ``root``, and a problem for
+def problems(root: Path, exempt: dict = EXEMPT, root_services: dict = ROOT_SERVICES) -> list[str]:
+    """Everything the three layers find in the repository at ``root``, and a problem for
     each layer that read nothing, which would let it pass over an empty corpus."""
     corpus = docs_guard.corpus_files(root)
     texts = {rel: t for rel in corpus if (t := docs_guard._read_text(root, rel)) is not None}
@@ -230,12 +318,17 @@ def problems(root: Path, exempt: dict = EXEMPT) -> list[str]:
     ast_files = [rel for rel in texts if rel.endswith(".py") and rel.startswith(AST_ROOTS)]
     for rel in ast_files:
         found += account_hits(rel, texts[rel], exempt)
+    services = [rel for rel in texts if is_service_template(rel)]
+    for rel in services:
+        found += service_hits(rel, texts[rel], root_services)
     out = [str(hit) for hit in found]
     if not texts:
         out.append("the corpus holds no text file: nothing was read")
     for prefix in AST_ROOTS:
         if not any(rel.startswith(prefix) for rel in ast_files):
             out.append(f"no Python file under {prefix} was read by the account layer")
+    if not services:
+        out.append(f"no service template under {SERVICE_TEMPLATES} was read")
     return out
 
 
@@ -270,10 +363,13 @@ CLEAN = {
     "README.md": "A service.\n",
     "backend/rcman/ok.py": "x = 1\n",
     "helpers/ok.py": "y = 2\n",
+    "installer/templates/ok.service": "[Service]\nUser=ok\nExecStart=/bin/true\n",
 }
 
 
-def planted(tmp_path: Path, extra: dict[str, str], exempt: dict | None = None) -> list[str]:
+def planted(
+    tmp_path: Path, extra: dict[str, str], exempt: dict | None = None, root_services=None
+) -> list[str]:
     """The problems of the clean repository with ``extra`` files added, the plant
     confirmed to be in the corpus."""
     root = make_repo(tmp_path, {**CLEAN, **extra})
@@ -281,7 +377,11 @@ def planted(tmp_path: Path, extra: dict[str, str], exempt: dict | None = None) -
     for name, text in extra.items():
         assert name in corpus  # the plant took effect
         assert (root / name).read_text(encoding="utf-8") == text
-    return problems(root, EXEMPT if exempt is None else exempt)
+    return problems(
+        root,
+        EXEMPT if exempt is None else exempt,
+        ROOT_SERVICES if root_services is None else root_services,
+    )
 
 
 def test_the_clean_repository_passes(tmp_path):
@@ -345,7 +445,8 @@ def test_the_variable_of_the_account_that_ran_it_is_not_the_command(tmp_path):
 )
 @pytest.mark.parametrize("form", ["rcman-admin", "./install.sh", "systemctl", "reboot"])
 def test_product_code_holds_the_command_in_no_form_at_all(tmp_path, rel, form):
-    found = planted(tmp_path, {rel: f"# {PRIV} {form}\n"})
+    account = "User=x\n" if is_service_template(rel) else ""  # the plant breaks no other rule
+    found = planted(tmp_path, {rel: f"# {PRIV} {form}\n{account}"})
     assert len(found) == 1 and "privilege command in product" in found[0], found
 
 
@@ -477,13 +578,118 @@ def test_an_empty_repository_fails_the_guard(tmp_path):
 
 
 def test_a_repository_without_python_under_the_roots_fails_the_guard(tmp_path):
-    root = make_repo(tmp_path, {"README.md": "A service.\n", "tests/ok.py": "x = 1\n"})
+    services = {k: v for k, v in CLEAN.items() if k.startswith(SERVICE_TEMPLATES)}
+    root = make_repo(tmp_path, {"README.md": "A service.\n", "tests/ok.py": "x = 1\n", **services})
     found = problems(root)
     assert [line for line in found if "no Python file under" in line]
     assert len(found) == len(AST_ROOTS)
 
 
 def test_a_repository_with_only_one_root_fails_the_guard(tmp_path):
-    root = make_repo(tmp_path, {"README.md": "A.\n", "backend/rcman/ok.py": "x = 1\n"})
+    services = {k: v for k, v in CLEAN.items() if k.startswith(SERVICE_TEMPLATES)}
+    root = make_repo(tmp_path, {"README.md": "A.\n", "backend/rcman/ok.py": "x = 1\n", **services})
     found = problems(root)
     assert len(found) == 1 and "helpers/" in found[0]
+
+
+def test_a_repository_without_a_service_template_fails_the_guard(tmp_path):
+    files = {k: v for k, v in CLEAN.items() if not k.startswith(SERVICE_TEMPLATES)}
+    root = make_repo(tmp_path, files)
+    found = problems(root)
+    assert len(found) == 1 and "no service template" in found[0], found
+
+
+# the services' accounts
+
+ROOT_SERVICE = "installer/templates/planted-root.service"
+NO_ACCOUNT = "[Service]\nType=oneshot\nExecStart=/bin/true\n"
+
+
+def test_every_service_template_names_its_account_but_the_root_services():
+    """The real templates: the rule reads them, and those that name an account are many."""
+    corpus = docs_guard.corpus_files(REPO)
+    services = [rel for rel in corpus if is_service_template(rel)]
+    named = [rel for rel in services if SERVICE_ACCOUNT.search((REPO / rel).read_text())]
+    assert len(named) >= 2 and set(ROOT_SERVICES) <= set(services)  # known positives
+    assert set(services) - set(named) == set(ROOT_SERVICES)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [NO_ACCOUNT, "[Service]\nUser=root\n", "[Service]\nUser=0\n", "[Service]\nUser=\n",
+     "[Service]\n# User=rcman\n"],
+)  # fmt: skip
+def test_a_service_template_that_runs_as_root_is_found(tmp_path, text):
+    found = planted(tmp_path, {ROOT_SERVICE: text})
+    assert len(found) == 1 and found[0].startswith(f"{ROOT_SERVICE}:"), found
+
+
+def test_a_root_service_covers_its_own_template_only(tmp_path):
+    exempt = {ROOT_SERVICE: "planted"}
+    assert planted(tmp_path / "a", {ROOT_SERVICE: PINNED}, root_services=exempt) == []
+    other = "installer/templates/other.service"
+    found = planted(tmp_path / "b", {other: PINNED}, root_services=exempt)
+    assert len(found) == 1 and found[0].startswith(other), found
+
+
+PINNED = (
+    "[Service]\nType=oneshot\n"
+    "ExecStart=/usr/bin/python3 -I /opt/rcman/bin/rcman-upgrade --clone @CLONE@"
+    " --caddy-user @CADDY_USER@\n"
+    "ExecStopPost=/usr/bin/python3 -I /opt/rcman/bin/rcman-upgrade --finish\n"
+    "Environment=@UPGRADE_ENVIRONMENT@\n"
+)
+
+
+def test_the_real_root_service_holds_only_what_its_exemption_allows():
+    for rel in ROOT_SERVICES:
+        text = (REPO / rel).read_text(encoding="utf-8")
+        assert "ExecStart=" in text  # non-vacuity
+        assert root_service_problems(text) == [], rel
+
+
+@pytest.mark.parametrize(
+    "old,new",
+    [
+        ("/usr/bin/python3 -I /opt/rcman/bin/rcman-upgrade --clone", "/usr/bin/python3 /x --clone"),
+        ("python3 -I /opt/rcman/bin/rcman-upgrade --finish", "python3 /opt/rcman/bin/x --finish"),
+        ("ExecStopPost=", "ExecStopPostX="),
+        ("Type=oneshot\n", "Type=oneshot\nEnvironmentFile=/etc/rcman/rcman.env\n"),
+        ("Type=oneshot\n", "Type=oneshot\nExecStartPre=/bin/sh -c x\n"),
+        ("--caddy-user @CADDY_USER@", "--caddy-user @CADDY_USER@ ; /bin/sh -c x"),
+        ("rcman-upgrade --finish", "rcman-upgrade --finish ; /bin/sh -c x"),
+        ("--clone @CLONE@", "--clone @CLONE@ --other"),
+        ("--clone @CLONE@", "--clone /var/lib/rcman/clone"),
+        ("--clone @CLONE@", "--clone @STATE@/clone"),
+    ],
+)
+def test_a_root_service_beyond_its_exemption_is_found(tmp_path, old, new):
+    exempt = {ROOT_SERVICE: "planted"}
+    assert planted(tmp_path / "a", {ROOT_SERVICE: PINNED}, root_services=exempt) == []
+    twin = PINNED.replace(old, new)
+    assert twin != PINNED  # the plant took effect
+    found = planted(tmp_path / "b", {ROOT_SERVICE: twin}, root_services=exempt)
+    assert found and all("beyond its exemption" in f for f in found), found
+
+
+def test_a_service_outside_the_templates_is_not_read(tmp_path):
+    assert planted(tmp_path, {"tests/fakes/x.service": NO_ACCOUNT}) == []
+
+
+def test_the_root_services_are_still_there_and_root_s():
+    """Stale check: a root service whose template is gone, or that names an account now,
+    is removed from the list."""
+    assert ROOT_SERVICES  # non-vacuity
+    assert stale_root_services(REPO) == []
+
+
+def test_a_root_service_that_is_gone_or_names_an_account_is_stale(tmp_path):
+    root = make_repo(tmp_path, {**CLEAN, ROOT_SERVICE: "[Service]\nUser=ok\n"})
+    exempt = {ROOT_SERVICE: "planted", "installer/templates/gone.service": "planted"}
+    stale = stale_root_services(root, exempt)
+    assert sorted(stale) == [
+        "installer/templates/gone.service: not in the repository",
+        f"{ROOT_SERVICE}: names an account now",
+    ]
+    (root / ROOT_SERVICE).write_text(PINNED)
+    assert stale_root_services(root, {ROOT_SERVICE: "planted"}) == []  # positive control

@@ -5,8 +5,10 @@ settings, the packages rootless Podman needs, system users and groups, rcman's
 subordinate ids, linger and Podman socket, the toolchain, a release built from
 the clone's commit, the static tools and the default workspace image, the
 Claude Code store, configuration, systemd services, the first administrator,
-and a health check. Every step leaves things as they are when they are already
-right, so running it again changes nothing.
+and a health check; and, when an administrator turns it on, the units and the wrapper that
+let rcman's administrators upgrade it from its web interface (installer/upgrade.py). Every
+step leaves things as they are when they are already right, so running it again changes
+nothing.
 
 Root never follows a link inside a path rcman can write: the static tools are in a folder
 of root's, and whatever the installer makes inside rcman's home or the socket's folder is
@@ -15,8 +17,9 @@ without following a link (``own_directory``). tests/test_install.py reads this f
 function at a time, for the mistakes of acting on such a path by its name; that is a net for
 what can be seen in the function, not a proof about the program.
 
-Python standard library and the clone's helpers only: it runs under the system
-interpreter.
+install.sh holds the installer's lock (INSTALL_LOCK) on fd 9 for the whole run; ``check_lock``
+holds it to that. Python standard library and the clone's helpers only: it runs under the
+system interpreter.
 """
 
 from __future__ import annotations
@@ -54,6 +57,7 @@ _write_bytecode, sys.dont_write_bytecode = sys.dont_write_bytecode, True
 try:
     from helpers import claude_release, seccomp
     from helpers.rules import EMAIL, Rule
+    from installer import upgrade
 finally:
     sys.dont_write_bytecode = _write_bytecode
     if not _on_path:
@@ -96,6 +100,27 @@ TMPFILES = Path("/etc/tmpfiles.d/rcman.conf")
 # script of the project (pyproject.toml), in the release's virtualenv.
 COMMAND_DIR = Path("/usr/local/sbin")
 COMMANDS = ("rcman-admin",)
+# The installer's lock: install.sh takes it on fd LOCK_FD, before anything else, a rollback too,
+# and every run holds it to its end.
+INSTALL_LOCK = ROOT / ".install.lock"
+LOCK_FD = 9
+
+# Upgrading from the web interface, off unless WEB_UPGRADE is yes. rcman writes the request file
+# in its home; the path unit watches it (root never opens it) and starts the service, a oneshot
+# that runs the wrapper as root: a copy of UPGRADE_SOURCE in a folder of root's. The wrapper
+# writes the status in UPGRADE_DIR, root's and rcman's group's. The units are not among UNITS:
+# the installer never starts or restarts the service, which may be the one running it.
+UPGRADE_UNITS = ("rcman-upgrade.path", "rcman-upgrade.service")
+UPGRADE_REQUEST = STATE / "upgrade.request"
+UPGRADE_SOURCE = Path(__file__).resolve().parent / "upgrade.py"
+UPGRADE_WRAPPER = ROOT / "bin" / "rcman-upgrade"
+UPGRADE_DIR = upgrade.STATUS_DIR
+UPGRADE_DIR_MODE = 0o750
+# How long the clone's origin may take to answer git ls-remote when the option is turned on.
+LS_REMOTE_TIMEOUT = 120
+# A clone's path as a unit's ExecStart= holds it as it is: nothing systemd would split, quote,
+# expand (% and $) or escape.
+UNIT_PATH = re.compile(r"/[A-Za-z0-9._/+-]*")
 
 # rcman's home: its own and closed to others. Podman adds the right to enter to every folder above
 # a container that runs in a user namespace of its own, rcman's home among them; that lets no
@@ -115,6 +140,8 @@ TEMPLATES = (
     "rcman.service",
     "rcman-oauth2-proxy.service",
     "Caddyfile",
+    "rcman-upgrade.service",
+    "rcman-upgrade.path",
 )
 
 UV_VERSION = "0.12.21"
@@ -207,6 +234,7 @@ LABEL = r"(?!-)[A-Za-z0-9-]+(?<!-)"  # a host name label: no leading or trailing
 HOSTNAME = re.compile(LABEL + r"(?:\." + LABEL + r")+")
 PORT = re.compile(r"[1-9][0-9]{1,4}")
 ACCOUNT = re.compile(r"[a-z_][a-z0-9_-]{0,31}")  # an account's name
+YES_NO = re.compile(r"yes|no")
 # An address releases are downloaded from: http or https, with no slash at its end.
 DOWNLOAD_ADDRESS = claude_release.DOWNLOAD_ADDRESS
 
@@ -231,6 +259,12 @@ FIELDS = {
         False,
         CLAUDE_DOWNLOAD,
         DOWNLOAD_ADDRESS,
+    ),
+    "WEB_UPGRADE": (
+        "Whether administrators may upgrade rcman from its web interface (yes or no)",
+        False,
+        "no",
+        YES_NO,
     ),
 }
 
@@ -309,15 +343,32 @@ def _paths() -> dict[str, str]:
         "CLAUDE_STORE": str(CLAUDE_STORE),
         "SOCKET": str(SOCKET),
         "OAUTH2_PROXY": str(oauth2_proxy_binary()),
+        "CLONE": str(REPO),
+        "UPGRADE_REQUEST": str(UPGRADE_REQUEST),
     }
+
+
+def unit_environment(environment: dict[str, str]) -> str:
+    """``environment`` as the value of a unit's Environment=: each assignment in double quotes.
+    What systemd would expand, unescape or split otherwise is refused, not escaped."""
+    items = []
+    for key, value in environment.items():
+        if re.search(r"""[%$"'\\]|[^\S ]""", key + value):
+            raise InstallError(f"{key}={value!r} cannot be written into a unit as it is")
+        items.append(f'"{key}={value}"')
+    return " ".join(items)
 
 
 def render(name: str, settings: dict[str, str]) -> str:
     """A template with the settings, and what the installer found out — rcman's uid as
     APP_UID, the default image as WORKSPACE_IMAGE and the devcontainer builder image as
-    BUILDER_IMAGE — filled in."""
+    BUILDER_IMAGE — filled in; and the upgrade wrapper's environment, UPGRADE_ENVIRONMENT."""
     text = (TEMPLATES_DIR / name).read_text(encoding="utf-8")
-    values = {**settings, **_paths()}
+    values = {
+        **settings,
+        **_paths(),
+        "UPGRADE_ENVIRONMENT": unit_environment(upgrade.ENVIRONMENT),
+    }
 
     def replace(match: re.Match) -> str:
         return values[match.group(1)]
@@ -526,6 +577,36 @@ def own_directory(path: Path, uid: int, gid: int, mode: int, accept: tuple[int, 
         return created or not right
     finally:
         os.close(fd)
+
+
+def check_lock(fd: int = LOCK_FD, path: Path = INSTALL_LOCK, owner_uid: int = 0) -> None:
+    """Refuse to run unless ``fd`` is install.sh's hold on the installer's lock: the file at
+    ``path`` (the same device and inode, and not a link), in a folder only ``owner_uid``, root,
+    can write, and locked by this run. Its children are not given it."""
+    try:
+        held = os.fstat(fd)
+    except OSError:
+        raise InstallError(
+            "run install.sh, which takes the installer's lock; install.py is not run alone"
+        ) from None
+    try:
+        there = os.lstat(path)
+        folder = os.lstat(path.parent)
+    except OSError as error:
+        raise InstallError(f"the installer's lock {path} is not there: {error}") from None
+    if stat.S_ISLNK(there.st_mode) or not stat.S_ISREG(there.st_mode):
+        raise InstallError(f"{path} is a link or not a file; remove it and run install.sh again")
+    if folder.st_uid != owner_uid or folder.st_mode & 0o022 or stat.S_ISLNK(folder.st_mode):
+        raise InstallError(f"{path.parent} must be a folder of root's that only root can write")
+    if (held.st_dev, held.st_ino) != (there.st_dev, there.st_ino):
+        raise InstallError(f"descriptor {fd} is not the installer's lock {path}; run install.sh")
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        raise InstallError(
+            "another install.sh is running; wait for it to end, then run it again"
+        ) from None
+    os.set_inheritable(fd, False)
 
 
 def check_kernel(release: str) -> None:
@@ -1085,6 +1166,14 @@ def copy_built_tree(source: Path, dest: Path) -> None:
     shutil.copytree(source, dest, symlinks=True)
 
 
+def mark_complete(release: Path, commit: str) -> None:
+    """Mark ``release`` fully built, with its commit: readable by everyone whatever root's
+    umask, as rcman reads which release it runs from it."""
+    mark = release / COMPLETE
+    mark.write_text(commit + "\n", encoding="utf-8")
+    os.chmod(mark, 0o644)
+
+
 def build_release(repo: Path, owner: str) -> tuple[str, bool]:
     """The release for the clone's commit, built when it does not exist yet."""
     commit = run(["git", "-C", str(repo), "rev-parse", "HEAD"], user=owner).stdout.strip()
@@ -1138,7 +1227,7 @@ def build_release(repo: Path, owner: str) -> tuple[str, bool]:
                 os.chmod(
                     path_, (path_.stat().st_mode & 0o755) | (0o755 if path_.is_dir() else 0o644)
                 )
-        (work / COMPLETE).write_text(commit + "\n")
+        mark_complete(work, commit)
     except BaseException:
         shutil.rmtree(work, ignore_errors=True)
         raise
@@ -1349,13 +1438,15 @@ def ensure_devcontainer_builder() -> list[str]:
     return changes
 
 
-def found_out() -> dict[str, str]:
-    """What the installer finds out and renders along with the settings: rcman's uid and
-    the names of the default image and of the devcontainer builder image."""
+def found_out(settings: dict[str, str]) -> dict[str, str]:
+    """What the installer finds out and renders along with the settings: rcman's uid, the
+    names of the default image and of the devcontainer builder image, and whether upgrading
+    from the web interface is on, as rcman's setting RCMAN_WEB_UPGRADE has it."""
     return {
         "APP_UID": str(app_uid()),
         "WORKSPACE_IMAGE": workspace_image(),
         "BUILDER_IMAGE": devcontainer_builder_image(),
+        "WEB_UPGRADE_ENABLED": "true" if web_upgrade_on(settings) else "false",
     }
 
 
@@ -1459,6 +1550,150 @@ def start_services(restart: bool) -> None:
             run(["systemctl", "restart", unit])
 
 
+# --- upgrading from the web interface ---------------------------------------------------
+
+
+def web_upgrade_on(settings: dict[str, str]) -> bool:
+    return settings.get("WEB_UPGRADE") == "yes"
+
+
+def ls_remote(owner: str) -> None:
+    """Refuse unless the clone's origin answers ``git ls-remote origin main`` as ``owner``, as
+    the upgrade service will pull it: with nothing of the environment but git's settings that
+    ask nothing (upgrade.GIT_ENVIRONMENT), no terminal and no input."""
+    home = pwd.getpwnam(owner).pw_dir
+    asked = ["git", "-C", str(REPO), "ls-remote", "origin", "main"]
+    argv = [
+        "/usr/bin/env", "-i", "PATH=/usr/bin:/bin", f"HOME={home}",
+        *(f"{key}={value}" for key, value in upgrade.GIT_ENVIRONMENT.items()), *asked,
+    ]  # fmt: skip
+    why = None
+    try:
+        done = run(argv, user=owner, check=False, cwd="/", stdin=subprocess.DEVNULL,
+                   start_new_session=True, timeout=LS_REMOTE_TIMEOUT)  # fmt: skip
+    except subprocess.TimeoutExpired:
+        why = f"no answer within {LS_REMOTE_TIMEOUT} seconds"
+    else:
+        if done.returncode != 0:
+            why = (done.stderr.strip().splitlines() or [f"exit {done.returncode}"])[-1]
+        elif not re.search(r"\trefs/heads/main$", done.stdout, re.MULTILINE):
+            why = "origin has no main"
+    if why:
+        raise InstallError(
+            f"upgrading from the web interface is not turned on: `{' '.join(asked)}` as {owner}, "
+            f"with no terminal and git asking nothing, failed: {why}. Give {owner} credentials "
+            "for the clone's origin that need no answer (a credential helper or an SSH key "
+            "without a passphrase), or run install.sh with --web-upgrade no"
+        )
+
+
+def check_web_upgrade(settings: dict[str, str], owner: str) -> None:
+    """When upgrading from the web interface is on, refuse what it must not run with: a clone
+    or an owner the wrapper's checks refuse (upgrade.check_clone), a clone whose path a unit
+    cannot hold as it is, or an origin the owner cannot reach without being asked."""
+    if not web_upgrade_on(settings):
+        return
+    try:
+        upgrade.check_clone(
+            REPO, os.environ.get("SUDO_USER"), (APP_USER, PROXY_USER, settings["CADDY_USER"])
+        )
+    except upgrade.Refused as refused:
+        raise InstallError(
+            f"upgrading from the web interface is not turned on: {refused}"
+        ) from None
+    if not UNIT_PATH.fullmatch(str(REPO)):
+        raise InstallError(
+            f"upgrading from the web interface is not turned on: the clone's path {REPO} holds "
+            "characters a systemd unit would change; clone it to a path of letters, digits, "
+            "and . _ / + - only"
+        )
+    ls_remote(owner)
+
+
+def install_program(source: Path, dest: Path, mode: int) -> bool:
+    """``source`` installed at ``dest`` with ``mode``, in one rename of a whole file beside it,
+    so a run of the old one keeps it and a link where it goes is replaced, not followed; True
+    when anything changed. ``dest`` is in a folder of root's."""
+    data = source.read_bytes()
+    if (
+        not dest.is_symlink() and dest.is_file() and dest.read_bytes() == data
+        and stat.S_IMODE(dest.stat().st_mode) == mode
+    ):  # fmt: skip
+        return False
+    dest.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
+    fd, new = tempfile.mkstemp(dir=dest.parent, prefix=f".{dest.name}.")
+    try:
+        os.fchmod(fd, mode)
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(data)
+        os.replace(new, dest)
+    except BaseException:
+        Path(new).unlink(missing_ok=True)
+        raise
+    return True
+
+
+def ensure_upgrade_dir(path: Path, uid: int, gid: int) -> bool:
+    """The status folder: ``uid``'s (root's) and ``gid``'s (rcman's group, which reads it),
+    UPGRADE_DIR_MODE; True when it was made or changed. It is in a folder of root's; a link in
+    its place is refused."""
+    made = False
+    try:
+        path.mkdir(mode=UPGRADE_DIR_MODE)
+        made = True
+    except FileExistsError:
+        pass
+    found = os.lstat(path)
+    if not stat.S_ISDIR(found.st_mode):
+        raise InstallError(f"{path} is a link or not a folder; remove it and run install.sh again")
+    if (found.st_uid, found.st_gid) != (uid, gid):
+        os.chown(path, uid, gid)
+        made = True
+    if stat.S_IMODE(found.st_mode) != UPGRADE_DIR_MODE:
+        os.chmod(path, UPGRADE_DIR_MODE)
+        made = True
+    return made
+
+
+def ensure_web_upgrade(settings: dict[str, str]) -> list[str]:
+    """On: the wrapper, the status folder and both units, the path unit enabled and started;
+    the service is only ever started by it. Off: the units disabled and removed with the
+    wrapper, where they are there. ``settings`` with what ``found_out`` returns."""
+    changes = []
+    units = [SYSTEMD / unit for unit in UPGRADE_UNITS]
+    if not web_upgrade_on(settings):
+        there = [path for path in units if path.exists()]
+        if (there or UPGRADE_WRAPPER.exists()) and os.environ.get(upgrade.SERVICE_MARK):
+            raise InstallError(
+                "upgrading from the web interface cannot be turned off by an upgrade from the "
+                "web interface, which runs in the service it would remove; run install.sh with "
+                "--web-upgrade no from a shell"
+            )
+        if there:
+            run(["systemctl", "disable", "--now", *(path.name for path in there)])
+        for path in there:
+            path.unlink()
+            changes.append(str(path))
+        if UPGRADE_WRAPPER.exists() or UPGRADE_WRAPPER.is_symlink():
+            UPGRADE_WRAPPER.unlink()
+            changes.append(str(UPGRADE_WRAPPER))
+        if there:
+            run(["systemctl", "daemon-reload"])
+        return changes
+    if install_program(UPGRADE_SOURCE, UPGRADE_WRAPPER, 0o755):
+        changes.append(str(UPGRADE_WRAPPER))
+    if ensure_upgrade_dir(UPGRADE_DIR, 0, _gid(APP_USER)):
+        changes.append(str(UPGRADE_DIR))
+    written = [path for path in units if write_if_changed(path, render(path.name, settings), 0o644)]
+    changes += [str(path) for path in written]
+    if written:
+        run(["systemctl", "daemon-reload"])
+    run(["systemctl", "enable", "--now", UPGRADE_UNITS[0]])
+    if units[0] in written:  # the path unit watches as its file now says; the service is left
+        run(["systemctl", "restart", UPGRADE_UNITS[0]])
+    return changes
+
+
 def rcman_admin(*args: str) -> list[str]:
     """rcman-admin with ``args``, run as rcman with its settings, in rcman's clean environment
     (run it from a folder that is no one's: ``cwd="/"``)."""
@@ -1548,6 +1783,11 @@ def caddy_admin_exposed(port: int = CADDY_ADMIN_PORT) -> bool:
     return True
 
 
+def summary(release: str, changes: list[str], notices: list[str]) -> str:
+    """The line the installer prints for programs to read, the upgrade wrapper among them."""
+    return json.dumps({"release": release, "changed": changes, "notices": notices})
+
+
 def caddy_notices(changes: list[str], caddy_user: str) -> list[str]:
     """What to tell the administrator to do to Caddy after this run."""
     notices = []
@@ -1584,17 +1824,20 @@ def main(argv: list[str]) -> int:
         if os.geteuid() != 0:
             raise InstallError("run install.sh with sudo")
         check_kernel(platform.release())
+        check_lock()
         if args.rollback:
             check_rollback(ROOT)
             rollback(ROOT)
             start_services(restart=True)
             print(f"Rolled back to {os.readlink(CURRENT)}.")
             return 0
-        owner = os.environ.get("SUDO_USER") or ""
-        if not owner or owner == "root":
-            raise InstallError("run install.sh with sudo from the account that owns the clone")
+        try:  # the clone's, which must be the account that ran install.sh where one did
+            owner = upgrade.clone_owner(REPO, os.environ.get("SUDO_USER"))
+        except upgrade.Refused as refused:
+            raise InstallError(str(refused)) from None
         ask = _ask_terminal if sys.stdin.isatty() else None
         settings = gather(SETTINGS_FILE, dict(os.environ), vars(args), ask)
+        check_web_upgrade(settings, owner)  # before it is saved: a refused yes is not kept
         changes = []
         if save_settings(SETTINGS_FILE, settings):
             changes.append(str(SETTINGS_FILE))
@@ -1617,7 +1860,9 @@ def main(argv: list[str]) -> int:
         changes += ensure_image()
         changes += ensure_devcontainer_builder()
         changes += ensure_claude_store(CLAUDE_STORE, settings["CLAUDE_DOWNLOAD"])
-        changes += configure({**settings, **found_out()})
+        settings = {**settings, **found_out(settings)}
+        changes += configure(settings)
+        changes += ensure_web_upgrade(settings)
         changes += link_commands()
         added = ensure_admin(settings)
         start_services(restart=bool(changes))
@@ -1626,12 +1871,14 @@ def main(argv: list[str]) -> int:
         # only now: the service runs with the new builder image's name, and an older one
         # is no one's but a build still running from it
         prune_devcontainer_builder_images(app_uid(), devcontainer_builder_image())
-        print(json.dumps({"release": release, "changed": changes}))
+        notices = caddy_notices(changes, settings["CADDY_USER"])
+        exposed = caddy_admin_exposed()
+        print(summary(release, changes, notices + ([CADDY_ADMIN_WARNING] if exposed else [])))
         print(f"\nAdd this to your Caddyfile ({CADDY_SNIPPET}):\n")
         print(CADDY_SNIPPET.read_text(encoding="utf-8"))
-        for notice in caddy_notices(changes, settings["CADDY_USER"]):
+        for notice in notices:
             print(notice)
-        if caddy_admin_exposed():
+        if exposed:
             print(f"Warning: {CADDY_ADMIN_WARNING}", file=sys.stderr)
         return 0
     except InstallError as error:

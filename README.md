@@ -32,6 +32,8 @@ Implemented and tested:
   for is refused.
 - **Claude Code versions** rolled out by an administrator after checks in a
   throwaway container; servers keep the version they started with.
+- **Upgrading rcman from its web interface**, off unless the installer turns it on:
+  an administrator's request, carried out by a root service of the installer's.
 - **Limits** on memory, CPU and processes, per person and per workspace, set by
   administrators.
 - The backend API with its audit trail, the web interface, the installer and the

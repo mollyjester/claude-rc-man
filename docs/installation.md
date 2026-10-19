@@ -5,7 +5,9 @@ on a public host name with HTTPS; Google sign-in goes through oauth2-proxy,
 which the installer sets up. People's workspaces are containers of rootless
 Podman, run by rcman's own account; the installer sets that up too. The
 installer is `install.sh` in a clone of this repository, and the same command
-upgrades an installation.
+upgrades an installation; where you turn it on, administrators can also upgrade
+rcman from its web interface (see
+[Upgrading from the web interface](#upgrading-from-the-web-interface)).
 
 ## Before you start
 
@@ -102,10 +104,13 @@ The installer asks for what it needs the first time, and saves the answers in
 | The local port oauth2-proxy listens on | `--proxy-port` | `RCMAN_INSTALL_PROXY_PORT` |
 | The account Caddy runs as | `--caddy-user` | `RCMAN_INSTALL_CADDY_USER` |
 | Where Claude Code's releases are downloaded from | `--claude-download` | `RCMAN_INSTALL_CLAUDE_DOWNLOAD` |
+| Whether administrators may upgrade rcman from its web interface, `yes` or `no` | `--web-upgrade` | `RCMAN_INSTALL_WEB_UPGRADE` |
 
 An option wins over a variable, a variable over the saved answer, and the
-saved answer over asking. The port, Caddy's account and the download address
-have defaults (`FIELDS` in `installer/install.py`) and are not asked for;
+saved answer over asking. The port, Caddy's account, the download address and
+upgrading from the web interface have defaults (`FIELDS` in `installer/install.py`)
+and are not asked for; upgrading from the web interface is off by default (see
+[Upgrading from the web interface](#upgrading-from-the-web-interface));
 the download address is also rcman's own setting `RCMAN_CLAUDE_DOWNLOAD`, which
 rcman rolls out versions from (see [Configuration](configuration.md));
 Caddy's account must exist. Anything else saved in
@@ -116,10 +121,14 @@ run and kept.
 
 ## What the installer does
 
-1. **Brings the clone up to date** with `main`, as you, so your git
-   credentials are used. It refuses when the clone has uncommitted changes, is
-   on another branch, or cannot be fast-forwarded. If the update changed
-   `install.sh`, it starts again with the new version.
+1. **Takes the installer's lock**, `/opt/rcman/.install.lock`, which it holds
+   to the end, so that one run goes at a time: a second run, a rollback among
+   them, says another is running and stops. Then it **brings the clone up to date** with `main`, as
+   the account that owns the clone, which must be you, so your git credentials
+   are used. It refuses when the clone is root's or has
+   uncommitted changes, is on another branch, or cannot be fast-forwarded. If
+   the update changed `install.sh`, it starts again with the new version,
+   holding the same lock.
 2. **Installs the packages** rootless Podman and the workspaces need, those
    that are missing.
 3. **Creates the accounts it needs**: a system user `rcman` for rcman itself
@@ -218,7 +227,10 @@ run and kept.
      version `current` names only when there is none, so running it again never
      changes the approved version.
 9. **Writes the configuration** in `/etc/rcman` and the two systemd services,
-   `rcman` and `rcman-oauth2-proxy`.
+   `rcman` and `rcman-oauth2-proxy`; and, when upgrading from the web interface
+   is on, what it needs (see
+   [Upgrading from the web interface](#upgrading-from-the-web-interface)), or,
+   when it is off, removes them.
 10. **Puts `rcman-admin` on root's path**: `/usr/local/sbin/rcman-admin` is a
    link to the current release's, so `sudo rcman-admin` finds it. If something
    else is already there, the installer stops rather than replace it.
@@ -345,7 +357,9 @@ at `127.0.0.1:2019`.
 ## Upgrading and rolling back
 
 To upgrade, run `sudo ./install.sh` again from the dedicated clone: it pulls
-`main` and installs it. rcman restarts, which takes a moment; the workspaces and
+`main` and installs it; where you have turned it on, an administrator can do the
+same from rcman's web interface (see
+[Upgrading from the web interface](#upgrading-from-the-web-interface)). rcman restarts, which takes a moment; the workspaces and
 their servers keep running, since they live in rcman's Podman and not in
 `rcman.service`. Then do what the installer says about Caddy, as described under
 [Caddy](#caddy). An upgrade that needs a range of subordinate ids rcman's account
@@ -392,6 +406,94 @@ Upgrading rcman, rolling back, and running the installer again never change
 which Claude Code version is approved, and restart no running server; see
 [Claude Code versions](claude-version.md).
 
+## Upgrading from the web interface
+
+Administrators can upgrade rcman from its web interface, when you let them. It
+is off by default; to turn it on, run the installer with `--web-upgrade`:
+
+```
+sudo ./install.sh --web-upgrade yes
+```
+
+and `--web-upgrade no` turns it off again, which removes what it added. The
+answer is saved like the others.
+
+**What it risks.** An upgrade from the web interface runs the clone's
+`install.sh` as root, with no one there to look at what it pulled. So, while it
+is on:
+
+- whoever can push to `main` of the clone's origin can run code as root on this
+  machine, through `install.sh`, through `installer/` and through `uv sync`,
+  which builds the project as root;
+- a GitHub token stored in rcman that can push to that repository is a root
+  credential, whoever it belongs to;
+- the clone owner's account is effectively root without a password: whatever
+  it changes in the clone runs as root at the next upgrade.
+
+Turn it on only where you accept that.
+
+**What is checked.** When it is turned on, and on every upgrade before anything
+of the clone runs, the installer refuses:
+
+- a clone owned by root, by an account below `UID_MIN` of `/etc/login.defs`, or
+  by `rcman`, `rcman-proxy` or Caddy's account; the owner is the account that
+  owns the clone's folder, and must be you;
+- a clone without `.git` as a folder, `install.sh`, `installer/` or
+  `helpers/rules.py`;
+- anything that anyone other than root and the owner can write, through its
+  owner, its mode or an ACL: every file and folder in the clone, `.git` and the
+  project `uv sync` builds among them, and every folder above the clone. Only
+  `frontend/node_modules` and `frontend/dist`, which the owner's npm makes and
+  uses, are left out;
+- a link in `.git`, `installer/` or `helpers/`, which root reads from the clone,
+  a link where git tracks a file or a folder, which a release is built from, and
+  a folder above the clone that is a link. Other links, such as those `make setup`
+  leaves in `.venv`, are left alone: root never follows them;
+- a clone whose path holds characters other than letters, digits and
+  `. _ / + -`.
+
+When it is turned on it also asks the clone's origin for `main`
+(`git ls-remote origin main`) as the owner, with an empty environment, no
+terminal and git asking nothing, as an upgrade will pull it, and refuses if that
+fails: give the owner credentials that need no answer, such as a credential
+helper or an SSH key without a passphrase. No token stored in rcman is used. Run
+by you from a terminal, `install.sh` lets git ask you for a password or a
+passphrase; an upgrade from the web interface has no one to ask. Turning it off
+is done from a shell: an upgrade from the web interface refuses to remove the
+service it runs in.
+
+**Upgrading.** In rcman, in the **Administration** group of the sidebar, the
+**rcman release** page, headed Upgrade rcman, shows the release rcman runs and how
+the last upgrade went. With the option on, its button **Upgrade rcman**, beside the
+heading, asks first, then upgrades rcman to
+`main` of its clone, as `sudo ./install.sh` from the clone would. While it runs:
+
+- workspaces and their Claude servers keep running;
+- every open **Terminal** tab closes as rcman restarts; reconnect once it is back;
+- a git action or a Claude sign-in in progress is cut off; do it again afterwards;
+- no workspace is made or cloned and no Claude Code version is rolled out, and
+  the pages that offer them say why.
+
+rcman does not take the request while a workspace is being made, a Claude Code
+version is being rolled out or what one left is being cleared away, rcman is
+clearing away images no workspace uses, or nothing watches the request file;
+the page says which. The page follows the upgrade
+through rcman's restart, and once it is done offers **Reload page**, which loads
+the new release's page. If it fails, the page shows the last line of what went
+wrong; nothing is rolled back for you: roll back from a shell, as
+[Upgrading and rolling back](#upgrading-and-rolling-back) says. The audit trail
+records who asked (`rcman.upgrade`, see [Audit trail](audit.md)).
+
+**How it works.** rcman writes a request file in its home,
+`/var/lib/rcman/upgrade.request`. `rcman-upgrade.path` watches it and starts
+`rcman-upgrade.service`, which runs root's copy of `installer/upgrade.py`,
+`/opt/rcman/bin/rcman-upgrade`. It checks the clone, runs `install.sh` with a
+fixed environment and no terminal, and writes what happened to
+`/opt/rcman/upgrade/status.json`, which rcman reads. What `install.sh` prints goes to
+the system journal (`journalctl -u rcman-upgrade`). An upgrade that fails is
+not rolled back: roll back from a shell, as
+[Upgrading and rolling back](#upgrading-and-rolling-back) says.
+
 ## Removing rcman
 
 The installer has no uninstall. To take rcman off a machine, do the following as
@@ -402,7 +504,9 @@ nothing here touches your own account, Docker, Caddy's other sites or Caddy's
 account itself. The Google OAuth client is Google's: delete it in the Google
 Cloud console when you have no use for it.
 
-1. **Stop the services**: `systemctl disable --now rcman rcman-oauth2-proxy`.
+1. **Stop the services**: `systemctl disable --now rcman rcman-oauth2-proxy`,
+   and, where upgrading from the web interface is on,
+   `systemctl disable --now rcman-upgrade.path rcman-upgrade.service`.
    Workspaces run in rcman's own Podman, outside these services, so they keep
    running; step 3 ends them.
 2. **Take rcman out of Caddy**, or keep Caddy's `import` from dangling. Remove
@@ -433,8 +537,10 @@ Cloud console when you have no use for it.
    `/var/lib/systemd/linger/rcman`, and `loginctl terminate-user rcman` ends
    what runs for it.
 5. **Remove the files systemd and the system read**:
-   - the units `/etc/systemd/system/rcman.service` and
-     `/etc/systemd/system/rcman-oauth2-proxy.service`, then
+   - the units `/etc/systemd/system/rcman.service`,
+     `/etc/systemd/system/rcman-oauth2-proxy.service` and, where upgrading from
+     the web interface is on, `/etc/systemd/system/rcman-upgrade.path` and
+     `/etc/systemd/system/rcman-upgrade.service`, then
      `systemctl daemon-reload`;
    - the drop-in that lifts the ceiling on processes of rcman's user slice,
      `/etc/systemd/system/user-<uid>.slice.d/rcman.conf` (`<uid>` is rcman's
@@ -453,13 +559,17 @@ Cloud console when you have no use for it.
    still holds the group's old id.
 7. **Remove rcman's folders**: `/opt/rcman` (the releases, the links
    `/opt/rcman/current` and `previous`, the toolchain of Node.js, uv and
-   oauth2-proxy in `/opt/rcman/toolchain`, and the tools every workspace mounts
-   in `/opt/rcman/tools`), `/etc/rcman` and `/var/lib/rcman`.
+   oauth2-proxy in `/opt/rcman/toolchain`, the tools every workspace mounts
+   in `/opt/rcman/tools`, the installer's lock `/opt/rcman/.install.lock`, and,
+   from upgrading from the web interface, the wrapper `/opt/rcman/bin/rcman-upgrade`
+   and the folder `/opt/rcman/upgrade` with its `/opt/rcman/upgrade/status.json`),
+   `/etc/rcman` and `/var/lib/rcman`.
    `/etc/rcman/install.env` holds the Google OAuth client and the other answers
    the installer saved: keep it aside to install again with the same answers.
    `/var/lib/rcman` holds the database, the list of allowed addresses, the
-   Claude Code store `/var/lib/rcman/claude`, and rcman's home with the storage
-   of its Podman.
+   Claude Code store `/var/lib/rcman/claude`, the request file of upgrading
+   from the web interface `/var/lib/rcman/upgrade.request`, and rcman's home
+   with the storage of its Podman.
 8. **Leave the packages.** The installer installed the packages Podman and the
    workspaces need, those that were missing: `podman`, `crun`, `uidmap`,
    `catatonit`, `slirp4netns`, `dbus-user-session`, `busybox-static` and
