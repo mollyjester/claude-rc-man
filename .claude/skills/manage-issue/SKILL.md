@@ -30,14 +30,16 @@ and keep iterating with them until you are satisfied with the outcome.
   what is lost or deferred, what is left behind, and blockers.
 - Subagent output is a hint, not verified truth: confirm what matters
   yourself, totals above all, before acting on it or reporting it.
-- A long run whose output only needs reading goes to a runner on a small model
-  (`model: haiku`), never to you or to an implementation, review or
-  documentation subagent: the `make check` baseline, every gating
-  `make check` (an implementer's at handover and after each round of review
-  findings included), and the on-demand runs. Implementers and reviewers run
-  only the targeted tests of what they change; every brief that would
-  otherwise end in a gating or on-demand run says so and names the runner
-  instead, and you dispatch the runner when the subagent hands back.
+- Every test run goes to a runner on a small model (`model: haiku`), never to
+  you or to an implementation, review or documentation subagent. You dispatch
+  the `make check` baseline, every gating `make check` (an implementer's at
+  handover and after each round of review findings included), and the
+  on-demand runs. Implementation, review and documentation subagents have
+  only the targeted tests of what they change run, each on a runner of their
+  own, briefed as below, and read its report. Every brief says so, and every
+  brief that would otherwise end in a gating or on-demand run says so too and
+  names the runner instead, and you dispatch the runner when the subagent
+  hands back.
 - A runner's brief names the commands, the log files and the lines to report:
   each part's totals, collected count, each failing test with its first error
   line, and each exit code. It runs them in the foreground with a timeout
@@ -108,8 +110,8 @@ as a comment on it.
   change or left with the reason, without another round; anything blocking
   or should-fix is still reviewed until it is clean.
 - The test runs the working rules require — the `make check` baseline before,
-  targeted while working, the gating `make check` at handover, the baseline
-  and the gate on the small-model runner of "Subagents" above — are read by
+  targeted while working, the gating `make check` at handover, every one of
+  them on a small-model runner of "Subagents" above — are read by
   their totals, collected count and failing names, never by exit code alone.
   Output goes to a file and is read by grep; the summary lines are read
   whether the run is green or red. Stopping at the first failure (`-x`,
@@ -118,7 +120,8 @@ as a comment on it.
 - The on-demand runs (`make test-container`, `make check-ui`, together
   `make check-all`) happen once, at the end of the implementation, only when
   the working rules require them for this change, and have no baseline. A
-  subagent runs the modules it changes directly, not the whole on-demand run.
+  subagent has the modules it changes run directly, on its small-model
+  runner, not the whole on-demand run.
   If one is red, fix everything red together and repeat the run only after
   the operator confirms.
 

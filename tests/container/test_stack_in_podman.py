@@ -20,6 +20,7 @@ from pathlib import Path
 
 import pytest
 from rcman import limits
+from rcman import runtime as rt
 
 from devtools.fake_claude import ACCEPTED_CODE
 from tests.container import github_stand_in as stand_in
@@ -279,18 +280,23 @@ def test_one_person_cannot_reach_anothers_workspace(stack):
     ):
         status, answer = stack.request(method, url, body=body)
         assert (status, answer["code"]) == (404, "workspace_not_found"), (url, answer)
-    mappings = {}
+    mappings, tmps = {}, set()
     for workspace in (alpha, bobs):
         name = f"rcman-ws-{workspace['id']}"
         found = json.loads(podman(stack, "container", "inspect", name))[0]
-        mounts = {m.get("Name") for m in found["Mounts"] if m.get("Type") == "volume"}
-        assert mounts == {name}, mounts  # its own volume, and no one else's
+        volumes = [m for m in found["Mounts"] if m.get("Type") == "volume"]
+        named = {m.get("Name") for m in volumes if m.get("Destination") != rt.TMP_MOUNT}
+        assert named == {name}, volumes  # its own volume, and no one else's
+        (tmp,) = [m for m in volumes if m.get("Destination") == rt.TMP_MOUNT]
+        assert rt.ANONYMOUS_VOLUME.match(tmp["Name"]), tmp  # and its /tmp, of its own
+        tmps.add(tmp["Name"])
         person = found["Config"]["Labels"]["rcman.person"]
         own = podman(stack, "volume", "inspect", "--format", "{{.Mountpoint}}",
                      f"rcman-person-{person}").strip()  # fmt: skip
         binds = [m["Source"] for m in found["Mounts"] if m.get("Type") == "bind"]
         assert f"{own}/.credentials.json" in binds, binds  # their own sign-in
         mappings[name] = in_workspace(stack, workspace["id"], "cat /proc/self/uid_map").split()
+    assert len(tmps) == 2  # no two the same
     first, second = mappings.values()
     assert first[0] == second[0] == "0" and first[1] != second[1]  # ranges of their own
     for path in (str(st.SOCKET), str(stack.engine.socket), str(stack.folder)):

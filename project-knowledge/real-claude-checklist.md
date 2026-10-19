@@ -139,10 +139,15 @@ runuser -u rcman -- env -i PATH=/usr/bin:/bin HOME=/var/lib/rcman \
     the same connections fail.
 17. **Rollback.** `sudo ./install.sh --rollback` switches `/opt/rcman/current` to the previous
     release and rcman answers; running `sudo ./install.sh` again brings the newest back.
-18. **The repository's own checks in a workspace.** After the reinstall, make a workspace of
-    rcman's own repository (its `.devcontainer` is built for it) and run `make check-all` there:
+18. **A workspace's own `/tmp`.** After the reinstall, make a new workspace from rcman's own
+    repository (one made before keeps the container it was made with, `/tmp` and all). In its
+    **Terminal** tab, `stat -f -c %T /tmp` does not print `overlayfs` and `stat -f -c %T /var/tmp`
+    does; `stat -c '%a %u %g' /tmp` prints `1777 0 0`. Run `RCMAN_REQUIRE_CONTAINER=1 make
+    test-container` there: it collects the container suites and runs them, and the totals it
+    prints show them passed, none skipped.
+19. **The repository's own checks in a workspace.** In that workspace run `make check-all`:
     every part passes, as on a development machine.
-19. **Removal, on a spare machine.** Follow
+20. **Removal, on a spare machine.** Follow
    [Removing rcman](../docs/installation.md#removing-rcman): the commands that check that
    nothing is left print nothing, Caddy restarts and still serves its other sites, and
    the packages and the operator's accounts are as they were.

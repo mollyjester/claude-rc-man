@@ -207,8 +207,9 @@ def clear_abandoned(
 ) -> None:
     """Stop and remove every folder in ``parent`` whose name is ``chosen`` that a killed
     run of ``uid``, by default the current user, left, with ``remover`` (by default
-    remove); leave everything else, and go on past what cannot be read or removed, or
-    what a removal refuses, saying so after ``label``. A folder another clearing run
+    remove); leave everything else, and go on past what cannot be read or removed, what a
+    removal refuses, and what ``remover`` fails at in a way of its own (its error and the error's
+    type), saying so after ``label``. A folder another clearing run
     removed first is passed over in silence."""
     uid = os.getuid() if uid is None else uid
     for name in sorted(os.listdir(parent)):
@@ -223,6 +224,8 @@ def clear_abandoned(
             print(f"{label}: left {folder}: refused: {error}", file=sys.stderr)
         except OSError as error:
             print(f"{label}: left {folder}: {error}", file=sys.stderr)
+        except Exception as error:  # a caller's remover failing in its own way: left, and said
+            print(f"{label}: left {folder}: {type(error).__name__}: {error}", file=sys.stderr)
 
 
 def _clear(folder: Path, uid: int, remover: Callable[[Path], None]) -> None:

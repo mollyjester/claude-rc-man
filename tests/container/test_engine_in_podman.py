@@ -311,6 +311,207 @@ def test_nothing_of_a_workspace_runs_once_it_is_stopped_or_removed(podman, podma
         podman.remove_account(spec.person)
 
 
+# --- the workspace's /tmp ------------------------------------------------------------------------
+
+
+def mounts(runtime, name: str) -> list[tuple[str, str, str]]:
+    """The mount point, the filesystem's type and the mount's own options of each mount in the
+    workspace's mount namespace, in the order /proc/self/mountinfo has them."""
+    found = []
+    for line in ok(runtime.exec(name, [BUSYBOX, "cat", "/proc/self/mountinfo"])).splitlines():
+        before, after = line.split(" - ", 1)
+        fields = before.split()
+        found.append((fields[4], after.split()[0], fields[5]))
+    return found
+
+
+def mount_of(found: list[tuple[str, str, str]], path: str) -> tuple[str, str, str]:
+    """The mount ``path`` is on: the one whose point is the path or the nearest folder above it,
+    the last of them where several are mounted there."""
+    under = [
+        (len(point), i, entry)
+        for i, entry in enumerate(found)
+        if path == (point := entry[0]) or path.startswith(point.rstrip("/") + "/")
+    ]
+    return max(under)[2]
+
+
+def tmp_volumes(runtime, name: str) -> list[dict]:
+    from tests.container.conftest import cli
+
+    shown = cli(runtime, "container", "inspect", name)
+    assert shown.returncode == 0, shown.stderr
+    found = json.loads(shown.stdout)[0]["Mounts"]
+    assert any(m["Destination"] == rt.VOLUME_MOUNT for m in found)  # the control: its own volume
+    return [m for m in found if m["Destination"] == rt.TMP_MOUNT]
+
+
+def test_its_tmp_is_a_volume_of_its_own_and_not_on_the_overlay_root(podman, workspace):
+    """So that overlay storage a Podman in it keeps under /tmp is native, which overlayfs over
+    overlayfs is not; /var/tmp, on the root, is the twin."""
+    found = mounts(podman, workspace.name)
+    assert mount_of(found, "/")[1] == "overlay"  # the positive: the root is overlay
+    assert mount_of(found, "/var/tmp")[1] == "overlay"
+    point, kind, options = mount_of(found, rt.TMP_MOUNT)
+    assert point == rt.TMP_MOUNT and kind != "overlay", found
+    assert {"nosuid", "nodev"} <= set(options.split(","))
+    (volume,) = tmp_volumes(podman, workspace.name)
+    assert volume["Type"] == "volume" and rt.ANONYMOUS_VOLUME.match(volume["Name"]), volume
+
+
+# The images of busybox the /tmp checks are made with, by what each has at /tmp: nothing, a
+# folder of a user's that only they may enter, the same declared a volume, a link to var/tmp, and
+# a link to the workspace's volume. The links are refused.
+OWNED_ID = 1000
+MADE = ("none", "owned", "declared")
+REFUSED = ("link", "volume-link")
+
+
+def busybox_image(runtime, name: str, tmp: str) -> str:
+    """An image of the host's static busybox imported as ``name``, with ``tmp`` at /tmp."""
+    from installer import install as ins
+    from tests.container.conftest import engine_of
+
+    folder = rt.TMP_MOUNT.lstrip("/")
+    data = io.BytesIO()
+    with tarfile.open(fileobj=data, mode="w") as tar:
+        tar.add(ins.BUSYBOX, arcname="bin/busybox")
+        entries = [("bin/sh", tarfile.SYMTYPE, "busybox", 0o755, 0)]
+        if tmp in ("owned", "declared"):
+            entries.append((folder, tarfile.DIRTYPE, "", 0o700, OWNED_ID))
+        elif tmp == "link":
+            entries += [("var", tarfile.DIRTYPE, "", 0o755, 0),
+                        ("var/tmp", tarfile.DIRTYPE, "", 0o755, 0),
+                        (folder, tarfile.SYMTYPE, "var/tmp", 0o777, 0)]  # fmt: skip
+        elif tmp == "volume-link":
+            entries.append((folder, tarfile.SYMTYPE, rt.VOLUME_MOUNT.lstrip("/"), 0o777, 0))
+        for path, kind, target, mode, owner in entries:
+            entry = tarfile.TarInfo(path)
+            entry.type, entry.linkname, entry.mode = kind, target, mode
+            entry.uid = entry.gid = owner
+            tar.addfile(entry)
+    change = [f"--change=VOLUME {rt.TMP_MOUNT}"] if tmp == "declared" else []
+    made = engine_of(runtime).cli("import", *change, "-", name, input=data.getvalue())
+    assert made.returncode == 0, made.stderr
+    return name
+
+
+def as_podman_makes_it(runtime, image: str) -> list[str]:
+    """The mode, owner and group of /tmp in a container of ``image`` that Podman alone makes with
+    an anonymous volume there, as rcman's run does, without what rcman then changes."""
+    from tests.container.conftest import cli
+
+    shown = cli(runtime, "run", "--rm", "--pull=never", "--network=none",
+                f"--volume={rt.TMP_MOUNT}", f"--entrypoint={rt.TOOLS_MOUNT}/bin/busybox",
+                f"--volume={runtime.config.tools_dir}:{rt.TOOLS_MOUNT}:ro", image,
+                "stat", "-L", "-c", "%a %u %g", rt.TMP_MOUNT)  # fmt: skip
+    assert shown.returncode == 0, shown.stderr
+    return shown.stdout.split()
+
+
+def swapped_user(swapped: bool) -> dict:
+    return {"user": f"{OWNED_ID}:{OWNED_ID}", "uid": OWNED_ID, "gid": OWNED_ID} if swapped else {}
+
+
+@pytest.mark.parametrize("swapped", [False, True], ids=["ordinary", "swapped"])
+@pytest.mark.parametrize("image", MADE)
+def test_its_tmp_is_made_roots_and_everyones_whatever_the_image_has_there(podman, image, swapped):
+    """1777 and 0:0, under the ordinary map and where the ids are swapped with a user's, from an
+    image whose /tmp Podman alone leaves otherwise."""
+    from tests.container.conftest import cli
+
+    name = busybox_image(podman, f"localhost/rcman-test-{image}", image)
+    spec = rt.Spec(rt.container_name(730), slot=2, workspace=730, person=2, image=name,
+                   **swapped_user(swapped))  # fmt: skip
+    try:
+        assert as_podman_makes_it(podman, name) != ["1777", "0", "0"]  # the check can fail
+        podman.create(spec)
+        if swapped:
+            shown = ok(podman.exec(spec.name, [BUSYBOX, "id", "-u"])).strip()
+            assert shown == str(OWNED_ID)  # the control: the workspace's user is not root
+        shown = ok(podman.exec(spec.name, [BUSYBOX, "stat", "-c", "%a %u %g", rt.TMP_MOUNT]))
+        assert shown.split() == ["1777", "0", "0"], (image, swapped, shown)
+        found = mounts(podman, spec.name)
+        assert [point for point, _, _ in found].count(rt.TMP_MOUNT) == 1  # the one volume
+        assert mount_of(found, rt.TMP_MOUNT)[1] != "overlay"
+        assert len(tmp_volumes(podman, spec.name)) == 1  # the image's own goes unmade
+    finally:
+        podman.remove(spec.name)
+        podman.remove_account(spec.person)
+        cli(podman, "rmi", "--force", name)
+
+
+@pytest.mark.parametrize("swapped", [False, True], ids=["ordinary", "swapped"])
+@pytest.mark.parametrize("image", REFUSED)
+def test_an_image_whose_tmp_is_a_link_is_refused_and_nothing_is_changed_through_it(
+    podman, image, swapped, monkeypatch
+):
+    """Whether Podman's run takes it or not, ``create`` fails; a link to var/tmp Podman runs, and
+    rcman refuses it. Seen before ``create`` removes the container: nothing was made everyone's
+    through the link, the workspace's volume and runtime folder among it. Then the container is
+    gone and the workspace's volume kept."""
+    from tests.container.conftest import cli
+
+    name = busybox_image(podman, f"localhost/rcman-test-{image}", image)
+    spec = rt.Spec(rt.container_name(731), slot=2, workspace=731, person=2, image=name,
+                   **swapped_user(swapped))  # fmt: skip
+    removed: list[str] = []
+    try:
+        monkeypatch.setattr(podman, "_discard_unmade", removed.append)
+        with pytest.raises(rt.RuntimeFailed) as refused:
+            podman.create(spec)
+        monkeypatch.undo()
+        if image == "link":  # one Podman runs: rcman's own refusal is what is checked
+            assert podman.exists(spec.name) and podman.running(spec.name), refused.value
+        if podman.exists(spec.name) and podman.running(spec.name):
+            assert "is a link or not a folder" in str(refused.value), refused.value
+            assert removed == [spec.name]  # what create asks once it has refused
+            for path in (rt.TMP_MOUNT, rt.VOLUME_MOUNT, rt.RUN_MOUNT):
+                shown = ok(podman.exec(spec.name, [BUSYBOX, "stat", "-L", "-c", "%a", path]))
+                assert shown.strip() != "1777", (path, shown)
+            shown = ok(podman.exec(spec.name, [BUSYBOX, "stat", "-c", "%a", rt.RUN_MOUNT]))
+            assert shown.strip() == "700"  # its tmpfs's own mode
+        podman.discard(spec.name)
+        with pytest.raises(rt.RuntimeFailed):
+            podman.create(spec)  # as it is, removing
+        assert not podman.exists(spec.name)
+        assert cli(podman, "volume", "exists", spec.name).returncode == 0  # its volume kept
+    finally:
+        monkeypatch.undo()
+        podman.remove(spec.name)
+        podman.remove_account(spec.person)
+        cli(podman, "rmi", "--force", name)
+
+
+def test_its_tmp_lasts_across_a_stop_and_start_while_the_container_does_and_goes_with_it(podman):
+    """Kept by the sweep of volumes nothing uses (``_clean_volumes``) while its container is
+    stopped: the run that makes the volume attaches it, so it never dangles; and removed with
+    the container."""
+    from tests.container.conftest import cli
+
+    spec = rt.Spec(rt.container_name(732), slot=2, workspace=732, person=2)
+    podman.create(spec)
+    try:
+        (volume,) = tmp_volumes(podman, spec.name)
+        held = volume["Name"]
+        assert cli(podman, "volume", "exists", held).returncode == 0  # the positive
+        ok(podman.exec(spec.name, [BUSYBOX, "sh", "-c", f"echo kept > {rt.TMP_MOUNT}/kept"]))
+        podman.stop(spec.name)
+        assert not podman.running(spec.name)
+        podman._clean_volumes()
+        assert cli(podman, "volume", "exists", held).returncode == 0
+        podman.start(spec.name)
+        assert ok(podman.exec(spec.name, [BUSYBOX, "cat", f"{rt.TMP_MOUNT}/kept"])) == "kept\n"
+        assert [v["Name"] for v in tmp_volumes(podman, spec.name)] == [held]
+        podman.remove(spec.name)
+        listed = cli(podman, "volume", "ls", "--format", "{{.Name}}")
+        assert listed.returncode == 0 and listed.stdout.split()  # the control: there are some
+        assert held not in listed.stdout.split()
+    finally:
+        podman.remove(spec.name)
+        podman.remove_account(spec.person)
+
+
 # --- the sizes fit -------------------------------------------------------------------------------
 
 

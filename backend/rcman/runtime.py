@@ -74,6 +74,16 @@ RUN_MOUNT = "/run/rcman"  # a tmpfs: the tmux socket and the channel's files
 # (backend/rcman/podman/podman STATE), never the user's even where the ids are swapped.
 ROOT_PODMAN_STATE = "/run/rcman-podman"
 VOLUME_MOUNT = "/rcman"  # the workspace's volume
+# The workspace's temporary folder: an anonymous volume of its container, on rcman's disk and not
+# on the container's overlay root, so that overlay storage a Podman in the workspace puts there is
+# native; the container's root's, and everyone's to write in, whoever Podman made it. An image
+# whose /tmp is a link or not a folder is refused (TMP_REFUSED): what is changed there would
+# reach where a link leads.
+TMP_MOUNT = "/tmp"
+TMP_REFUSED = "the image's {path} is a link or not a folder."
+# What the check of TMP_MOUNT answers when it is a link or not a folder; Podman's own exec fails
+# with codes of its own (125 to 127).
+TMP_CHECK_REFUSED = 1
 # The folders of a workspace's volume: the one its server works in, Claude's
 # configuration (CLAUDE_CONFIG_DIR) and the home of the programs rcman runs there.
 WORK, CONFIG, HOME = "work", "claude", "home"
@@ -215,6 +225,9 @@ PUT_SCRIPT = (
 )
 # What is said when a volume that is there is not labelled for the person a workspace is for.
 VOLUME_OF_ANOTHER = "the volume {name} is there and is for another person, so it is not used"
+# A workspace's container is made only where none of its name is: what ``create`` removes when it
+# fails is then only ever what it made itself.
+NAME_TAKEN = "a container named {name} is there already"
 # Each person's uid range: slot k maps the container's ids 0 to RANGE - 1 onto rcman's
 # subordinate ids from k * RANGE. Slot 0 would be rcman's own ids, so no person has it.
 RANGE = 65536
@@ -1007,10 +1020,10 @@ class PodmanRuntime(Runtime):
             raise RuntimeFailed(said or f"podman {args[0]} failed")
         return proc
 
-    def _remove_container(self, name: str, check: bool = True) -> None:
-        """Remove the container at once, with the anonymous volumes of its image: a volume the
-        image declares is made with the container, and is nobody's once it is gone."""
-        self._podman("rm", "--force", "--ignore", "--time=0", "--volumes", name, check=check)
+    def _remove_container(self, name: str, check: bool = True):
+        """Remove the container at once, with its anonymous volumes: a workspace's TMP_MOUNT, and
+        a volume the image declares, each made with the container and nobody's once it is gone."""
+        return self._podman("rm", "--force", "--ignore", "--time=0", "--volumes", name, check=check)
 
     def _systemctl(self, *args: str) -> str:
         """``systemctl --user`` with ``args``, as rcman's own user, with an argv and the
@@ -1097,6 +1110,8 @@ class PodmanRuntime(Runtime):
         # is made
         if spec.image_id and not builder.is_image_id(spec.image_id):
             raise RuntimeFailed("the id of the image is not an id")
+        if self.exists(spec.name):
+            raise RuntimeFailed(NAME_TAKEN.format(name=spec.name))
         if self._podman("volume", "exists", spec.name, check=False).returncode != 0:
             self._podman("volume", "create", *labels, spec.name)
         else:
@@ -1105,46 +1120,95 @@ class PodmanRuntime(Runtime):
         mapped = spec.uid != 0 or spec.gid != 0
         if mapped:
             self._prepare_folders(spec)
-        self._podman(
-            "run",
-            "--detach",
-            f"--name={spec.name}",
-            f"--hostname={spec.name}",
-            *labels,
-            "--init",
-            f"--network={self.config.network}",
-            # In the workspace's slice, which holds the limits (limits.py). Podman gives a
-            # container a limit on processes of its own unless it is told there is none; the
-            # slice's TasksMax is the limit, and infinity where nobody set one.
-            *(
-                [f"--cgroup-parent={limits.workspace_slice(spec.person, spec.workspace)}"]
-                if self.config.slices
-                else []
-            ),
-            "--pids-limit=-1",
-            # A container nested in the workspace gets a /proc and a hostname of its own.
-            UNMASK_PROC,
-            f"--security-opt=seccomp={self.config.tools_dir}/{SECCOMP}",
-            *ids,
-            *([f"--user={spec.user}"] if spec.user else []),
-            *(f"--group-add={g}" for g in spec.groups),
-            *(f"--env={k}={v}" for k, v in spec.env.items()),
-            f"--volume={spec.name}:{VOLUME_MOUNT}",
-            *self._mounts(spec.person, owned=mapped),
-            *self._root_podman_state(),
-            # Where the process starts is the volume's mount, which exists and is the user's;
-            # the image's own working folder may be one the user cannot enter.
-            f"--workdir={VOLUME_MOUNT}",
-            # The image was pulled, or is here already; nothing is pulled implicitly.
-            *(["--pull=never"] if spec.image or spec.image_id else []),
-            # The image's own entrypoint is not run: the process is rcman's.
-            f"--entrypoint={TOOLS_MOUNT}/bin/busybox",
-            spec.image_id or spec.image or self.config.image,
-            "sleep",
-            "2147483647",
-            timeout=IMAGE_CREATE_TIMEOUT if spec.image or spec.image_id else PODMAN_TIMEOUT,
-        )
-        self._folders(spec.name)
+        try:
+            self._podman(
+                "run",
+                "--detach",
+                f"--name={spec.name}",
+                f"--hostname={spec.name}",
+                *labels,
+                "--init",
+                f"--network={self.config.network}",
+                # In the workspace's slice, which holds the limits (limits.py). Podman gives a
+                # container a limit on processes of its own unless it is told there is none; the
+                # slice's TasksMax is the limit, and infinity where nobody set one.
+                *(
+                    [f"--cgroup-parent={limits.workspace_slice(spec.person, spec.workspace)}"]
+                    if self.config.slices
+                    else []
+                ),
+                "--pids-limit=-1",
+                # A container nested in the workspace gets a /proc and a hostname of its own.
+                UNMASK_PROC,
+                f"--security-opt=seccomp={self.config.tools_dir}/{SECCOMP}",
+                *ids,
+                *([f"--user={spec.user}"] if spec.user else []),
+                *(f"--group-add={g}" for g in spec.groups),
+                *(f"--env={k}={v}" for k, v in spec.env.items()),
+                f"--volume={spec.name}:{VOLUME_MOUNT}",
+                # An anonymous volume, made and attached in this run and removed with the container.
+                f"--volume={TMP_MOUNT}",
+                *self._mounts(spec.person, owned=mapped),
+                *self._root_podman_state(),
+                # Where the process starts is the volume's mount, which exists and is the user's;
+                # the image's own working folder may be one the user cannot enter.
+                f"--workdir={VOLUME_MOUNT}",
+                # The image was pulled, or is here already; nothing is pulled implicitly.
+                *(["--pull=never"] if spec.image or spec.image_id else []),
+                # The image's own entrypoint is not run: the process is rcman's.
+                f"--entrypoint={TOOLS_MOUNT}/bin/busybox",
+                spec.image_id or spec.image or self.config.image,
+                "sleep",
+                "2147483647",
+                timeout=IMAGE_CREATE_TIMEOUT if spec.image or spec.image_id else PODMAN_TIMEOUT,
+            )
+            self._own_tmp(spec.name)
+            self._folders(spec.name)
+        except RuntimeFailed:
+            # No container is left that was not made whole: Podman makes one before it starts it,
+            # and one whose start failed, or whose /tmp or folders were not made so, would be
+            # started, or taken for the workspace's, by a restore. The volume stays, with what is
+            # in it. RuntimeUnavailable is not caught: no removal can reach Podman then either.
+            self._discard_unmade(spec.name)
+            raise
+
+    def _discard_unmade(self, name: str) -> None:
+        """Remove the container ``create`` made and could not finish; what Podman says when it
+        cannot is logged, and the error that ``create`` raises is its own."""
+        try:
+            removed = self._remove_container(name, check=False)
+        except (RuntimeFailed, RuntimeUnavailable) as failed:
+            log.warning(
+                "the container %s that was not made whole was not removed: %s", name, failed
+            )
+            return
+        if removed.returncode != 0:
+            said = removed.stderr.decode("utf-8", "replace").strip()
+            log.warning("the container %s that was not made whole was not removed: %s", name, said)
+
+    def _own_tmp(self, name: str) -> None:
+        """Make the container's TMP_MOUNT its root's and everyone's to write in (``1777``),
+        whoever Podman made the volume's, as the container's root, even where the ids are swapped
+        and the workspace runs as its user, with the mounted busybox. First, after the run, as
+        that root: TMP_MOUNT is a folder and not a link, or RuntimeFailed (TMP_REFUSED, on the
+        check's own answer alone; Podman's exec failing is what it said) before
+        anything is changed, which would reach where a link leads. RuntimeFailed
+        with what was said when it cannot be made so."""
+        found = self._podman(
+            "exec", "--user=0", name,
+            *_busybox("sh"), "-c", '[ -d "$1" ] && [ ! -L "$1" ]', "sh", TMP_MOUNT,
+            check=False,
+        )  # fmt: skip
+        if found.returncode == TMP_CHECK_REFUSED:
+            raise RuntimeFailed(TMP_REFUSED.format(path=TMP_MOUNT))
+        if found.returncode != 0:
+            said = found.stderr.decode("utf-8", "replace").strip()
+            raise RuntimeFailed(said or "podman exec failed")
+        for argv in (
+            [*_busybox("chown"), "0:0", TMP_MOUNT],
+            [*_busybox("chmod"), "1777", TMP_MOUNT],
+        ):
+            self._podman("exec", "--user=0", name, *argv)
 
     def _own_volume(self, spec: Spec) -> None:
         """A volume of the name that is there already is the workspace's own only if its labels
@@ -1925,10 +1989,12 @@ class PodmanRuntime(Runtime):
         self._clean_volumes()
 
     def _clean_volumes(self) -> None:
-        """Remove the anonymous volumes nothing uses: the ones an image declares, made with a
-        container that was removed without them. Every volume rcman makes is named and
-        labelled, so a volume with no label and the random name Podman gives its anonymous
-        ones, that no container has, is one of those."""
+        """Remove the anonymous volumes nothing uses: the ones an image declares, or a
+        workspace's TMP_MOUNT, made with a container that was removed without them. Every other
+        volume rcman makes is named and labelled, so a volume with no label and the random name
+        Podman gives its anonymous ones, that no container has, is one of those. A workspace's
+        TMP_MOUNT is attached in the same ``run`` that makes it, so it is never one that no
+        container has while its container exists, running or stopped."""
         found = self._podman("volume", "ls", "--filter=dangling=true", "--format=json")
         for entry in json.loads(found.stdout or b"[]") or []:
             name = str(entry.get("Name") or "")
