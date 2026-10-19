@@ -96,7 +96,7 @@ entry of a label may not carry the keys that describe a build (`build`, `image`,
 |---|---|---|
 | `build.options` | refused | Options for the build command could undo the limits on the builder, so rcman gives it none. |
 | `build.cacheFrom` | refused | Layers taken from other images would be pulled from registries of the repository's choosing, and rcman cannot sign in to a registry. |
-| `mounts` | refused | A workspace's volume is its only storage; rcman mounts nothing else a repository asks for. |
+| `mounts` | refused | rcman mounts nothing a repository asks for: a workspace's storage is its volume and its /tmp. |
 | `workspaceMount` | refused | rcman decides where a workspace's files are. |
 | `workspaceFolder` | refused | rcman decides where a workspace's files are. |
 | `runArgs` | refused | Arguments for the container engine could undo the limits rcman puts on a workspace. |
@@ -200,7 +200,9 @@ port names an image in rcman's storage and is never pulled.
   labels, and those are the ones rcman finds its own containers by.
 - The image needs a **git** new enough for rcman (see [Git](git.md#images)), checked once the
   container runs, and **glibc**: an image built on musl, as Alpine ones are, is refused
-  because Claude Code needs glibc. Anything else rcman needs comes from rcman, not the image:
+  because Claude Code needs glibc. An image whose `/tmp` is a link or not a folder is refused,
+  checked once the container runs: every workspace has a `/tmp` of its own (see
+  [Containers](workspaces.md#containers)). Anything else rcman needs comes from rcman, not the image:
   tmux, busybox and Claude Code are mounted into every workspace.
 - rcman starts its own process in the container, so the image's entrypoint and command are
   not run (`entrypoint` and `overrideCommand=false` are refused).
@@ -347,7 +349,8 @@ from the person's own.
 
 A refused or invalid configuration, which is a refused or unknown key, a file that cannot
 be read or parsed, an image that cannot be pulled, built, read or run, a feature that asks
-for what is refused, or an image without a usable git or glibc, fails the workspace and
+for what is refused, or an image without a usable git or glibc or with a `/tmp` that is a
+link or not a folder, fails the workspace and
 removes its container and its volume, and the builder and the image built for it. A base
 image built on musl, such as Alpine, is built and then refused, since the check for glibc
 is made on the result. Only the failed

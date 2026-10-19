@@ -45,6 +45,26 @@ conmon and the network helper with them, live in rcman's user manager, not in
   [backend.md](backend.md#claude-code-versions));
 - a tmpfs at `RUN_MOUNT` for the tmux socket and the channel's files, the user's
   (`U`) when the ids are swapped;
+- an anonymous volume at `TMP_MOUNT` (`/tmp`), on rcman's disk and not on the container's
+  overlay root, so that overlay storage a Podman in the workspace keeps under `/tmp` is native
+  (see [Containers in a workspace](#containers-in-a-workspace)). Podman mounts it `nosuid` and
+  `nodev`, and rcman adds no `noexec` of its own; it keeps what it holds across a stop and a
+  start, and goes with the container (`_remove_container`), so a container made again, by
+  `discard` and `create`, has an empty one. Right after the `run`, `_own_tmp`, as the container's
+  root even where the ids are swapped, first checks that `/tmp` is a folder and not a link, and
+  fails `create` with `TMP_REFUSED` before it changes anything if the check answers so (Podman's
+  exec failing itself fails it with what Podman said), since what it changes
+  would reach where a link leads; then it makes it `0:0` and `1777`, whoever Podman made the
+  volume's. `create` fails with what was said if it cannot. A devcontainer image refused so is
+  `image_unrunnable`, and its container and volume are cleared (see
+  [A repository's devcontainer.json](#a-repositorys-devcontainerjson)); a workspace of the
+  default image is left failed, as with any other failure of `create`. `create` makes a
+  container only where none of the workspace's name is (`NAME_TAKEN`), and when the `run` fails
+  (Podman makes the container before it starts it), or this check or the making of the folders
+  after it does, it removes the container it made, keeping the volume, and logs what Podman said
+  if that removal fails; so no container that was not made whole is left for a restore to start
+  or take for the workspace's. A lost container a restore cannot make again so leaves the
+  workspace ready without one, made again the next time rcman starts, as a failed pull does;
 - the mounted busybox's `sleep` as its process, with the image's own entrypoint
   replaced by the mounted busybox, so an image needs nothing of its own to stay
   up, and the volume's mount (`VOLUME_MOUNT`) as its working folder, which exists
@@ -69,7 +89,10 @@ come back for someone else within a database; the install id guards against a da
 from a backup, which hands the ids out again. A container made again is made from an image **id**
 (`Spec.image_id`, never a name that may have moved on): the plan's, or, for a workspace of the
 default image, the one recorded in the row when it was first made, `workspaces.image_id`.
-Every container removed goes with its anonymous volumes (`_remove_container`, `--volumes`).
+Every container removed goes with its anonymous volumes (`_remove_container`, `--volumes`): its
+`/tmp` and any its image declares. They are the only volumes of a workspace with no name of
+rcman's and no label; the sweep of volumes nothing uses (`_clean_volumes`) never takes a
+workspace's `/tmp`, which Podman attaches in the same `run` that makes it.
 
 Podman copies an image for each range the first time a range uses it, so a
 person's first workspace takes longest to make.
@@ -105,7 +128,10 @@ and catatonit. `compose` is refused, and an image with no `/usr/bin/podman` is s
   line, and in whose mount namespace tmpfs is mounted over root's run folders (`/run/libpod`,
   `/run/containers`). Every mount Podman makes is in the nest, never in the workspace's own
   mount namespace, where rcman's exec, channel and tools are. Root's storage is
-  `/rcman/containers/storage` in the volume, so overlay is native. The maps are written only
+  `/rcman/containers/storage` in the volume, so overlay is native; so is storage that a Podman of
+  a program's own, root's or another user's, keeps under `/tmp`, which is a volume of its own
+  (`TMP_MOUNT`), where on the container's root (`/var/tmp`, say) overlay over overlayfs is
+  refused. The maps are written only
   once the child is in a user namespace of its own, which it may not be yet when it has
   started. The nest ignores the signals a terminal or a stop sends, and lasts as long as the
   container; it is recorded in `STATE/nest` as its pid and start time and the inodes of its user
@@ -143,9 +169,10 @@ and catatonit. `compose` is refused, and an image with no `/usr/bin/podman` is s
   derives from Podman's current default; it changes nothing. A missing one makes `create` fail,
   as Podman refuses a profile that is not there.
 - **What is accepted.** A nested container is no boundary inside the workspace, and shares its
-  network; what nested containers store counts against no limit. A workspace keeps the image and
-  the container it was made with, and rcman holds no way to give one made without Podman, the
-  `ROOT_PODMAN_STATE` tmpfs, `UNMASK_PROC` or the seccomp profile what it lacks: the wrapper
+  network; what nested containers store counts against no limit, nor does what `/tmp` holds. A
+  workspace keeps the image and the container it was made with, and rcman holds no way to give
+  one made without Podman, the `ROOT_PODMAN_STATE` tmpfs, `UNMASK_PROC`, the seccomp profile or
+  its own `/tmp` (one whose `/tmp` is on its root) what it lacks: the wrapper
   refuses one without the tmpfs (its image may have Podman), says there is no Podman in one whose
   image has none, and a new workspace is made in its place.
 - **The order on the PATH.** Where the image has no `/usr/bin/podman`, the wrapper runs the next

@@ -25,7 +25,7 @@ may use together, `memory_mib`, `cpu_percent` and `pids`, each null for no limit
 too. A person's id, and a workspace's, is never given again (`autoincrement`): it names a
 volume, a slice and a container, so one given to a new row would adopt what the last left. The slot is
 the one thing that is given again. The database has an id of its own (`meta`,
-`db.install_id`), put in the labels of the volumes and containers rcman makes, so that those of a
+`db.install_id`), put in the labels of the named volumes and the containers rcman makes, so that those of a
 database restored from a backup, whose ids come round again, are not adopted.
 
 **The slot** is the uid range every workspace of the person runs in: slot `k`

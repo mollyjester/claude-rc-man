@@ -264,7 +264,8 @@ POLICY: dict[str, Policy] = {
     ),
     "overrideFeatureInstallOrder": _honour("The order features are installed in."),
     "mounts": _refuse(
-        "A workspace's volume is its only storage; rcman mounts nothing else a repository asks for."
+        "rcman mounts nothing a repository asks for: a workspace's storage is its volume and its "
+        "/tmp."
     ),
     "workspaceMount": _refuse("rcman decides where a workspace's files are."),
     "workspaceFolder": _refuse("rcman decides where a workspace's files are."),

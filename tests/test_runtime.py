@@ -74,7 +74,9 @@ class Recorder:
     def __init__(self, tmp_path: Path, answers: dict[str, tuple[int, str, str]]):
         self.log = tmp_path / "calls"
         self.program = tmp_path / "podman"
-        script = {verb: list(answer) for verb, answer in answers.items()}
+        # No container is there unless a test says so.
+        script = {"container exists": [rt.MISSING, "", ""]}
+        script |= {verb: list(answer) for verb, answer in answers.items()}
         self.program.write_text(
             "#!/usr/bin/env python3\n"
             "import json, sys\n"
@@ -1004,15 +1006,18 @@ def test_an_exec_in_a_folder_asks_podman_for_it(tmp_path):
     assert second == ["exec", "rcman-ws-7", *marked]  # no folder asked for
 
 
-def fake_podman(tmp_path: Path, body: str) -> rt.PodmanRuntime:
+def fake_podman(tmp_path: Path, body: str, container_exists: bool = False) -> rt.PodmanRuntime:
     """A podman that is the Python ``body``, which has ``sys`` and ``args``, rcman's own
-    arguments after ``--remote --url <socket>``."""
+    arguments after ``--remote --url <socket>``; ``container exists`` answers
+    ``container_exists``, as no workspace's container is there unless a test says so."""
     program = tmp_path / "podman"
     program.write_text(
         "#!/usr/bin/env python3\nimport json, os, sys, time\n"
         "args = sys.argv[4:]\n"
         f"with open({str(tmp_path / 'calls')!r}, 'a') as log:\n"
-        "    log.write(json.dumps(args) + '\\n')\n" + body
+        "    log.write(json.dumps(args) + '\\n')\n"
+        "if args[:2] == ['container', 'exists']:\n"
+        f"    sys.exit({0 if container_exists else rt.MISSING})\n" + body
     )
     program.chmod(0o755)
     return rt.PodmanRuntime(
@@ -2084,6 +2089,243 @@ def test_every_workspace_has_a_tmpfs_of_its_roots_for_roots_podman(tmp_path):
     sign_in = account_recorder(tmp_path / "s")
     podman_runtime(tmp_path / "s", sign_in).start_sign_in(2, 3, 60)
     assert not [a for r in runs(sign_in) for a in r if rt.ROOT_PODMAN_STATE in a]
+
+
+def test_every_workspace_has_a_tmp_of_its_own_off_the_root(tmp_path):
+    """An anonymous volume, so that /tmp is on rcman's disk and not on the container's overlay
+    root, where a Podman nested in the workspace could not put overlay storage; the sign-in and
+    the canary have none, and the canary keeps its tmpfs."""
+    tmp = f"--volume={rt.TMP_MOUNT}"
+    for folder, spec in (("d", rt.Spec("rcman-ws-7", slot=3, workspace=7, person=2)),
+                         ("o", owned_spec())):  # fmt: skip
+        (tmp_path / folder).mkdir()
+        recorder = account_recorder(tmp_path / folder)
+        podman_runtime(tmp_path / folder, recorder).create(spec)
+        run = workspace_run(recorder)
+        assert "--name=rcman-ws-7" in run  # the control: this is the workspace's run
+        assert run.count(tmp) == 1, run
+    (tmp_path / "s").mkdir()
+    sign_in = account_recorder(tmp_path / "s")
+    podman_runtime(tmp_path / "s", sign_in).start_sign_in(2, 3, 60)
+    started = next(r for r in runs(sign_in) if "--name=" + rt.sign_in_name(2) in r)
+    assert tmp not in started
+    assert not [a for r in runs(sign_in) for a in r if a == tmp]
+    (tmp_path / "c").mkdir()
+    canary, made = canary_recorder(tmp_path / "c")
+    made.run_canary(CANDIDATE_FOLDER, rt.CANARY_NAME, "1.2.3")
+    (ran,) = runs(canary)
+    assert f"--name={rt.CANARY_NAME}" in ran and tmp not in ran
+    assert f"--tmpfs={rt.CANARY_TMP}:rw,mode=1777" in ran
+
+
+BUSYBOX = f"{rt.TOOLS_MOUNT}/bin/busybox"
+OWN_TMP = [
+    [BUSYBOX, "sh", "-c", '[ -d "$1" ] && [ ! -L "$1" ]', "sh", rt.TMP_MOUNT],
+    [BUSYBOX, "chown", "0:0", rt.TMP_MOUNT],
+    [BUSYBOX, "chmod", "1777", rt.TMP_MOUNT],
+]
+
+
+@pytest.mark.parametrize("swapped", [False, True])
+def test_after_the_run_the_containers_root_makes_tmp_roots_and_everyones(tmp_path, swapped):
+    """Whatever the image has at /tmp, and whoever Podman made the volume's, it is 0:0 and 1777,
+    set by the container's root even where the ids are swapped and the workspace runs as its
+    user, once it is found a folder and not a link; before the folders are made."""
+    recorder = account_recorder(tmp_path)
+    spec = owned_spec() if swapped else rt.Spec("rcman-ws-7", slot=3, workspace=7, person=2)
+    podman_runtime(tmp_path, recorder).create(spec)
+    calls = [c[3:] for c in recorder.calls()]
+    owning = [c for c in calls if c[:3] == ["exec", "--user=0", "rcman-ws-7"]]
+    assert [c[3:] for c in owning] == OWN_TMP
+    run = calls.index(workspace_run(recorder))
+    folders = next(i for i, c in enumerate(calls) if c[0] == "exec" and "mkdir" in c)
+    assert all(run < calls.index(c) < folders for c in owning)
+    if swapped:
+        assert "--user=dev" in workspace_run(recorder)  # the control: the workspace's is not root
+    assert not [c for c in calls if c[0] == "exec" and c not in owning and "--user=0" in c]
+
+
+def failing_podman(tmp_path, step: str, said: str = "", code: int = 1):
+    """A podman whose root exec of ``step`` (sh, chown or chmod) fails with ``code``, saying
+    ``said``."""
+    return fake_podman(
+        tmp_path,
+        "if args[0] == 'volume' and args[1] == 'inspect':\n"
+        "    print('/vol' if '{{.Mountpoint}}' in args else '{\"rcman.person\": \"2\"}')\n"
+        "elif args[0] == 'volume' and args[1] == 'exists':\n"
+        "    sys.exit(1)\n"
+        f"elif args[:2] == ['exec', '--user=0'] and args[4:5] == [{step!r}]:\n"
+        f"    sys.stderr.write({said!r})\n"
+        f"    sys.exit({code})\n",
+    )
+
+
+def own_tmp_steps(tmp_path) -> list[str]:
+    calls = fake_calls(tmp_path)
+    assert any(c[0] == "run" and "--name=rcman-ws-7" in c for c in calls)  # it ran
+    return [c[4] for c in calls if c[:2] == ["exec", "--user=0"]]
+
+
+def failing_after_the_run(tmp_path, step: str):
+    """A podman whose exec of ``step`` after the run fails, saying so: the root exec of ``sh``
+    (the check of /tmp), ``chown`` or ``chmod``, or the folders' ``mkdir``."""
+    if step != "mkdir":
+        return failing_podman(tmp_path, step, f"{step}: it failed\n", code=1)
+    return fake_podman(
+        tmp_path,
+        "if args[0] == 'volume' and args[1] == 'inspect':\n"
+        "    print('/vol' if '{{.Mountpoint}}' in args else '{\"rcman.person\": \"2\"}')\n"
+        "elif args[0] == 'volume' and args[1] == 'exists':\n"
+        "    sys.exit(1)\n"
+        "elif args[0] == 'exec' and 'mkdir' in args:\n"
+        "    sys.stderr.write('mkdir: it failed\\n')\n"
+        "    sys.exit(1)\n",
+    )
+
+
+@pytest.mark.parametrize("step", ["sh", "chown", "chmod", "mkdir"])
+def test_a_container_whose_making_fails_after_the_run_is_removed_and_its_volume_kept(
+    tmp_path, step
+):
+    """So that no container is left running with a /tmp or folders that were not made so: a
+    restore that finds it would take it for the workspace's. The error is the step's own."""
+    runtime = failing_after_the_run(tmp_path, step)
+    with pytest.raises(rt.RuntimeFailed) as failed:
+        runtime.create(rt.Spec("rcman-ws-7", slot=3, workspace=7, person=2))
+    assert (
+        "link or not a folder" in str(failed.value)
+        if step == "sh"
+        else (f"{step}: it failed" in str(failed.value))
+    ), failed.value
+    calls = fake_calls(tmp_path)
+    run = next(i for i, c in enumerate(calls) if c[0] == "run" and "--name=rcman-ws-7" in c)
+    removed = [i for i, c in enumerate(calls) if c[0] == "rm" and c[-1] == "rcman-ws-7"]
+    assert removed and removed[0] > run, calls
+    assert {"--force", "--volumes"} <= set(calls[removed[0]])  # with its anonymous /tmp
+    assert not [c for c in calls if c[:2] == ["volume", "rm"]]  # and not the workspace's volume
+
+
+VOLUMES_ANSWERED = (
+    "if args[0] == 'volume' and args[1] == 'inspect':\n"
+    "    print('/vol' if '{{.Mountpoint}}' in args else '{\"rcman.person\": \"2\"}')\n"
+    "elif args[0] == 'volume' and args[1] == 'exists':\n"
+    "    sys.exit(1)\n"
+)
+
+
+def test_a_container_whose_run_fails_after_podman_made_it_is_removed_and_its_volume_kept(
+    tmp_path,
+):
+    """Podman makes the container before it starts it, and a start that fails leaves it made: a
+    restore would start it, its /tmp and folders never made so."""
+    runtime = fake_podman(
+        tmp_path,
+        VOLUMES_ANSWERED + "elif args[0] == 'run' and '--name=rcman-ws-7' in args:\n"
+        "    sys.stderr.write('Error: crun: it did not start\\n')\n"
+        "    sys.exit(126)\n",
+    )
+    with pytest.raises(rt.RuntimeFailed, match="it did not start"):
+        runtime.create(rt.Spec("rcman-ws-7", slot=3, workspace=7, person=2))
+    calls = fake_calls(tmp_path)
+    run = next(i for i, c in enumerate(calls) if c[0] == "run" and "--name=rcman-ws-7" in c)
+    removed = [i for i, c in enumerate(calls) if c[0] == "rm" and c[-1] == "rcman-ws-7"]
+    assert removed and removed[0] > run and {"--force", "--volumes"} <= set(calls[removed[0]])
+    assert not [c for c in calls if c[:2] == ["volume", "rm"]]
+    assert not [c for c in calls if c[0] == "exec"]  # nothing went on in it
+
+
+def test_a_name_a_container_has_already_is_refused_and_that_container_left_alone(tmp_path):
+    """So that what ``create`` removes when it fails is only ever what it made itself."""
+    runtime = fake_podman(tmp_path, VOLUMES_ANSWERED, container_exists=True)
+    with pytest.raises(rt.RuntimeFailed, match="rcman-ws-7"):
+        runtime.create(rt.Spec("rcman-ws-7", slot=3, workspace=7, person=2))
+    calls = fake_calls(tmp_path)
+    assert ["container", "exists", "rcman-ws-7"] in calls  # it was asked
+    assert not [c for c in calls if c[0] in ("run", "rm")]
+    (tmp_path / "t").mkdir()  # the twin: with no container of the name, it is made
+    fake_podman(tmp_path / "t", VOLUMES_ANSWERED).create(
+        rt.Spec("rcman-ws-7", slot=3, workspace=7, person=2)
+    )
+    assert any(c[0] == "run" for c in fake_calls(tmp_path / "t"))
+
+
+def test_a_removal_after_a_failure_that_itself_fails_is_logged_with_what_podman_said(
+    tmp_path, caplog
+):
+    runtime = fake_podman(
+        tmp_path,
+        VOLUMES_ANSWERED + "elif args[0] == 'run' and '--name=rcman-ws-7' in args:\n"
+        "    sys.stderr.write('Error: it did not start\\n')\n"
+        "    sys.exit(126)\n"
+        "elif args[0] == 'rm':\n"
+        "    sys.stderr.write('Error: the container is busy\\n')\n"
+        "    sys.exit(125)\n",
+    )
+    with caplog.at_level("WARNING", logger="rcman.runtime"):
+        with pytest.raises(rt.RuntimeFailed, match="it did not start"):  # the first error
+            runtime.create(rt.Spec("rcman-ws-7", slot=3, workspace=7, person=2))
+    assert any(c[0] == "rm" for c in fake_calls(tmp_path))  # the removal was tried
+    assert any(
+        "rcman-ws-7" in r.getMessage() and "the container is busy" in r.getMessage()
+        for r in caplog.records
+    ), caplog.records
+
+
+def test_a_container_made_whole_is_not_removed(tmp_path):
+    """The twin: a create whose steps all pass removes nothing."""
+    runtime = failing_after_the_run(tmp_path, "none")
+    runtime.create(rt.Spec("rcman-ws-7", slot=3, workspace=7, person=2))
+    assert not [c for c in fake_calls(tmp_path) if c[0] == "rm"]
+
+
+def test_an_image_whose_tmp_is_a_link_or_not_a_folder_is_refused_before_anything_is_changed(
+    tmp_path,
+):
+    """Checked after the run, as the container's root: nothing is chowned or chmodded through a
+    link, and the folders are not made."""
+    runtime = failing_podman(tmp_path, "sh")
+    with pytest.raises(rt.RuntimeFailed, match="is a link or not a folder"):
+        runtime.create(rt.Spec("rcman-ws-7", slot=3, workspace=7, person=2))
+    assert own_tmp_steps(tmp_path) == ["sh"]
+    assert not [c for c in fake_calls(tmp_path) if c[0] == "exec" and "mkdir" in c]
+    (tmp_path / "t").mkdir()  # the twin: where the check passes, chown and chmod follow
+    failing_podman(tmp_path / "t", "none").create(rt.Spec("rcman-ws-7", slot=3, workspace=7,
+                                                          person=2))  # fmt: skip
+    assert own_tmp_steps(tmp_path / "t") == ["sh", "chown", "chmod"]
+
+
+def test_the_check_of_tmp_failing_in_podman_itself_is_not_taken_for_a_link(tmp_path):
+    """Only the check's own answer (1) refuses the image; Podman's exec failing (125: the container
+    is gone, say) fails ``create`` with what it said."""
+    said = "Error: no container with name or ID rcman-ws-7 found\n"
+    runtime = failing_podman(tmp_path, "sh", said, code=125)
+    with pytest.raises(rt.RuntimeFailed) as failed:
+        runtime.create(rt.Spec("rcman-ws-7", slot=3, workspace=7, person=2))
+    assert str(failed.value) == said.strip()
+    assert "link or not a folder" not in str(failed.value)
+    assert own_tmp_steps(tmp_path) == ["sh"]
+    (tmp_path / "q").mkdir()  # and one that says nothing still says it was podman's exec
+    with pytest.raises(rt.RuntimeFailed, match="podman exec failed"):
+        failing_podman(tmp_path / "q", "sh", code=126).create(
+            rt.Spec("rcman-ws-7", slot=3, workspace=7, person=2)
+        )
+
+
+def test_the_refusal_of_a_tmp_that_is_a_link_reads_as_a_sentence():
+    assert rt.TMP_REFUSED.format(path=rt.TMP_MOUNT) == (
+        f"the image's {rt.TMP_MOUNT} is a link or not a folder."
+    )
+
+
+@pytest.mark.parametrize(("step", "before"), [("chown", ["sh"]), ("chmod", ["sh", "chown"])])
+def test_a_tmp_that_cannot_be_made_roots_fails_the_workspace_with_what_was_said(
+    tmp_path, step, before
+):
+    runtime = failing_podman(tmp_path, step, f"{step}: /tmp: Read-only file system\n")
+    with pytest.raises(rt.RuntimeFailed, match=f"{step}: .*Read-only file system"):
+        runtime.create(rt.Spec("rcman-ws-7", slot=3, workspace=7, person=2))
+    assert own_tmp_steps(tmp_path) == [*before, step]
+    assert not [c for c in fake_calls(tmp_path) if c[0] == "exec" and "mkdir" in c]
 
 
 def test_a_workspace_whose_seccomp_profile_is_missing_is_not_made(tmp_path):

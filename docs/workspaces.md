@@ -188,6 +188,15 @@ while rcman builds the image holds in the workspace.
 - A container started in a workspace is no boundary inside it: it shares the workspace's
   network, and the workspace's user can reach whatever it holds.
 - What containers store counts against no limit: the disk a workspace uses cannot be limited.
+- `/tmp` is the workspace container's own, on disk and not on the container's own files, so a
+  Podman a program starts with its storage under `/tmp`, as rcman's own tests do, works there;
+  anyone in the workspace may write in it, and only what they wrote is theirs to remove. An
+  image whose `/tmp` is a link or not a folder is refused. What it
+  holds is kept when the workspace is stopped and started, goes with the workspace's container,
+  when the workspace is deleted or rcman makes its container again, and counts against no limit
+  either. A workspace keeps the container it was made with: where `stat -f -c %T /tmp` in its
+  terminal prints `overlayfs`, its `/tmp` is on the container's own files, and a new workspace
+  has one of its own.
 - `podman` and `docker` say so where they cannot run: in a workspace whose image has no Podman
   and no `podman` or `docker` of its own, and in one whose container was made without what
   Podman needs there. A workspace keeps the image and the container it was made with: make a

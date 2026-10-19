@@ -271,6 +271,11 @@ when the table of workspaces is empty while Podman holds some, it removes
 nothing at all and writes an error to the [journal](journal.md), so that a
 database that was lost or replaced does not cost anyone their files.
 
+Each workspace container also has a volume of its own at `/tmp`, which Podman makes with the
+container and names with a long hex string in `podman volume ls`, with no label. It goes when its
+container is removed, and while the container exists, running or stopped, Podman counts it as
+used, so a prune does not take it; it holds only what the workspace's programs left in `/tmp`.
+
 To look at rcman's Podman, run it as `rcman` from a root shell, with the
 environment the installer runs its Podman commands with:
 

@@ -275,6 +275,31 @@ def test_what_cannot_be_removed_is_left_and_said(stem, capsys):
     stuck.chmod(0o700)
 
 
+def test_a_removal_that_fails_in_its_own_way_is_left_and_said_and_the_others_cleared(stem, capsys):
+    """A remover of a caller's own, as the tests' engine's is, may fail with an error of its own
+    (RuntimeError, say): that folder is left and said, and the clearing goes on past it."""
+    prefix = stem + "rch-"
+    first, _ = abandoned(hf.TMP, prefix, tmux_in=None)
+    second, _ = abandoned(hf.TMP, prefix, tmux_in=None)
+    refused = min(first, second)  # cleared in the order of their names
+
+    def remover(folder):
+        if folder == refused:
+            raise RuntimeError("rm: skipping a mount, since it's on a different device")
+        hf.remove(folder)
+
+    try:
+        hf.clear_abandoned(hf.TMP, hf.made_with(prefix), remover=remover, label="the label")
+        said = capsys.readouterr().err
+        assert f"the label: left {refused}: RuntimeError: rm: skipping a mount" in said, said
+        assert refused.is_dir()  # left
+        assert not max(first, second).exists()  # and the other cleared
+    finally:
+        for folder in (first, second):
+            if folder.exists():
+                hf.remove(folder)
+
+
 def test_unheld_says_whether_anything_holds_a_folder(tmp_path):
     folder = tmp_path / "f"
     assert hf.unheld(folder)  # gone

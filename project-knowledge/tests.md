@@ -173,9 +173,16 @@ storage.conf), in a held folder under `/tmp` short enough for the run folder Pod
 (`RUNROOT_MAX`). The `podman_service` fixture in `tests/conftest.py` starts one for the
 session; it skips where the user's rootless Podman cannot run, unless
 `RCMAN_REQUIRE_CONTAINER=1`. Removing an engine removes its containers and volumes, stops its
-service and every process of the user's that names its folder (conmon among them), and empties
-its storage as root of the user's namespace; one a killed run left is removed by the next run
-that starts one. `tests/test_podman_service.py` holds this, the killed run among it. Every module
+service and every process of the user's that names its folder (conmon among them) with every process
+below them (a build's RUN among them; one whose service died before it is below nothing that
+names the folder, and is not found; one the user may not signal is left and said on stderr, and
+one whose start time is no longer the one read, its pid given again, is passed over), then, as root of the user's rootless namespace, which every
+`podman unshare` enters and where the engine's mounts are, unmounts what is still mounted below the
+folder, reading the mounts again after each pass, since mounts stack, until none is left there, a
+pass unmounts nothing, or `UNMOUNT_PASSES` passes have run, and says what is left with why its last
+unmount failed (a killed engine leaves its storage's mounts there, the layer of a build's working
+container among them, which `podman rm --all` does not remove) and empties its storage; one a killed
+run left is removed by the next run that starts one. `tests/test_podman_service.py` holds this, the killed run among it. Every module
 of `tests/container/` is collected wherever the suite runs, and every test in it uses the engine,
 so carries the container marker; `tests/test_conftest.py` holds every module to that, with a
 twin.
@@ -183,8 +190,11 @@ twin.
 What a machine needs to run them: rootless Podman for the user, with subordinate ids for every
 slot the suites use (`tests/container/sizes.py`; `test_the_sizes_fit` below holds the engine's map
 to it), a `newuidmap` and `newgidmap` that work for the user, and `catatonit`, the init the
-workspaces' shared configuration names; the images come from their registries, so the network.
-The repository's `.devcontainer` has all of it for a workspace of rcman's
+workspaces' shared configuration names; the images come from their registries, so the network;
+and a `/tmp` that is not overlay, since the engine's storage is native overlay (`driver="overlay"`,
+no mount program) in a folder under `/tmp`, and overlay over overlayfs is refused. A workspace of
+rcman's has its own `/tmp`, a volume off its overlay root ([runtime.md](runtime.md#the-runtime));
+the repository's `.devcontainer` has the rest of it
 (`tests/test_repository_devcontainer.py` holds its pins). In such a workspace, `make check` runs
 `TEST_WORKERS` workers (the `Makefile`), each starting tmux servers, git and the fake `claude`,
 and the browser tests run Chromium: a workspace whose limits on processes or memory are below
@@ -312,7 +322,12 @@ helper made inside the holder's network and handed back.
   `/proc`, a build from a subfolder whose whiteout holds, `--init`, root's storage native overlay
   in the volume with its mounts in the nest and not in the workspace's own mount namespace, the
   record of the nest replaced when stale or unreadable, a lock whose owner is gone taken over,
-  `compose` refused wherever it is the subcommand and not as another's argument; one nest from
+  `compose` refused wherever it is the subcommand and not as another's argument; a Podman of a
+  program's own, its storage in a folder mktemp makes under the workspace's `/tmp` with a
+  storage.conf pinning native overlay and no mount program, as `tests/podman_service.py`'s
+  `started` makes the engine, running an imported busybox as root through the tools' `podman`
+  and as a user who is not root, with its twin under `/var/tmp`, on the workspace's overlay root,
+  refused as overlay over overlayfs; one nest from
   calls made at once, in rounds, with a lock whose holder is gone; a nest slow to make its user
   namespace still made, against a copy of the wrapper without the wait for it; a lock whose
   folder is gone taken over and let go, against a copy that does not make the folder and is
@@ -329,7 +344,15 @@ helper made inside the holder's network and handed back.
   the wrapper never taking a link to itself for it; and `podman` and `docker` found by name as the wrappers, and
   `git` as the image's, in the environment of Claude's programs and of the lifecycle commands.
 - `tests/container/test_engine_in_podman.py`: `create`'s own argv on the engine (the hostname,
-  the range, the network), rcman's exec, channel and the Terminal tab's shell; a UTS namespace
+  the range, the network), rcman's exec, channel and the Terminal tab's shell; the workspace's
+  `/tmp`, an anonymous volume whose type in `/proc/self/mountinfo` is not overlay, against `/`
+  and `/var/tmp`, which are, mounted `nosuid` and `nodev`; `1777` and `0:0` under the ordinary
+  map and a swapped one, in images of busybox with no `/tmp`, with a `/tmp` of a user's that only
+  they may enter, and with that declared `VOLUME /tmp` (one volume there), each against what
+  Podman alone makes of it, which is not; the twins, an image whose `/tmp` is a link to `var/tmp`
+  and one whose `/tmp` is a link to the workspace's volume, refused, with nothing made `1777`
+  through the link where the container runs, and the container then removed and its volume kept; a file in it kept across a stop and a start, the volume kept
+  by `_clean_volumes` while its container is stopped and gone once it is removed; a UTS namespace
   the workspace makes taking a hostname and its own not, and a pid namespace it makes mounting a
   fresh `/proc`, each against a sign-in container, which has neither the profile nor the
   unmasked `/proc`; no process of a workspace left once it is stopped or removed, against the
@@ -470,8 +493,9 @@ a test makes depends on its own run to remove it:
   folders. It leaves a folder whose lock is held, and anything that is not a
   folder of the current user's with, if any, a lock file of theirs; it stops
   only tmux servers whose sockets are the current user's, never one a link
-  points at; what it cannot read or remove, or what a removal refuses, it
-  leaves, says so on stderr, and goes on past; one another run removed first it passes over in silence. The
+  points at; what it cannot read or remove, or what a removal refuses or fails at in a way of
+  its own (the engine's removal failing, say), it leaves, says so on stderr, and goes on past, to
+  the others and to the run's own folder; one another run removed first it passes over in silence. The
   browser tests' worlds are held and cleared the same way, chosen by the
   exact shape of their name (see [frontend.md](frontend.md#tests)).
 - A held folder a test may fill with anything, as the `world` fixture in
@@ -483,7 +507,8 @@ a test makes depends on its own run to remove it:
   anything holding them or inside the first two, and for anything outside
   `/tmp`, or outside the root its caller names.
 - An engine a killed run left is removed by the next run that starts one, with
-  every container and volume in it (see [The container suites](#the-container-suites)).
+  every container and volume in it and whatever is still mounted in its storage (see
+  [The container suites](#the-container-suites)).
 - The containers the suite starts itself on the engine are labelled by
   `tests/containers.py` with the path of a folder the run holds, its holder
   (`rcman.test.holder`), and the run removes them when it ends, with their

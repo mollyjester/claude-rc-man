@@ -77,12 +77,18 @@ def nest_workspace(podman):
 
 
 def run(podman, name: str, *args: str, cwd: str | None = None, stdin: bytes | None = None,
-        program: str = WRAPPER, as_user: tuple[int, str] | None = None) -> rt.Result:  # fmt: skip
+        program: str = WRAPPER, as_user: tuple[int, str] | None = None,
+        environment: tuple[str, ...] = ()) -> rt.Result:  # fmt: skip
+    """``program`` with ``args`` in the workspace, as root or ``as_user`` (an id and a home) with
+    nothing else in the environment but ``environment``, NAME=value each."""
     argv = [program, *args]
     if as_user is not None:
         uid, home = as_user
         argv = ["setpriv", f"--reuid={uid}", f"--regid={uid}", "--init-groups", "env", "-i",
-                f"HOME={home}", "PATH=/usr/local/bin:/usr/bin:/bin", *argv]  # fmt: skip
+                f"HOME={home}", "PATH=/usr/local/bin:/usr/bin:/bin", *environment,
+                *argv]  # fmt: skip
+    elif environment:
+        argv = ["env", *environment, *argv]
     return podman.exec(name, argv, cwd=cwd or podman.layout(name).work, stdin=stdin, timeout=900)
 
 
@@ -369,6 +375,72 @@ def test_with_a_setuid_newuidmap_a_user_who_is_not_root_cannot_map_the_ids(podma
         podman.exec(
             nest_workspace, ["sh", "-c", "rm -f /usr/local/bin/newuidmap /usr/local/bin/newgidmap"]
         )
+
+
+# --- a Podman of a program's own, with its storage under /tmp -----------------------------------
+
+# What a program in a workspace may start, as the tests' own engine (tests/podman_service.py
+# ``started``) is: a Podman whose storage, run folder and temporary folder are in a folder of its
+# own that mktemp makes, with a storage.conf pinning native overlay and no mount program. Root's
+# Podman runs in the nest with the wrapper's own storage.conf, which pins the same.
+PRIVATE_STORAGE = '[storage]\ndriver="overlay"\n'
+OVER_OVERLAY = b"'overlay' is not supported over overlayfs"
+WHO = {"root": None, "user": (USER_ID, USER_HOME)}
+
+
+def private_folder(podman, name: str, parent: str, who: tuple[int, str] | None) -> str:
+    """A folder mktemp makes in ``parent`` as ``who``, holding the parts of a private engine."""
+    script = ('d=$(mktemp -d -p "$1") && mkdir "$d/g" "$d/r" "$d/t" && '
+              'printf %s "$2" > "$d/storage.conf" && echo "$d"')  # fmt: skip
+    made = ok(run(podman, name, "-c", script, "sh", parent, PRIVATE_STORAGE, program="sh",
+                  as_user=who))  # fmt: skip
+    folder = made.strip()
+    assert folder.startswith(f"{parent}/"), made
+    return folder
+
+
+def private(podman, name: str, folder: str, who, *args: str, stdin: bytes | None = None):
+    """The tools' podman on the private engine of ``folder``, as ``who``."""
+    return run(podman, name, "--root", f"{folder}/g", "--runroot", f"{folder}/r",
+               "--tmpdir", f"{folder}/t", *args, stdin=stdin, as_user=who,
+               environment=(f"CONTAINERS_STORAGE_CONF={folder}/storage.conf",))  # fmt: skip
+
+
+@pytest.mark.parametrize("who", sorted(WHO))
+def test_a_private_engine_with_its_storage_under_tmp_runs_an_image_on_native_overlay(
+    podman, nest_workspace, who
+):
+    as_who = WHO[who]
+    folder = private_folder(podman, nest_workspace, rt.TMP_MOUNT, as_who)
+    try:
+        info = ok(private(podman, nest_workspace, folder, as_who, "info", "--format",
+                          "{{.Store.GraphRoot}}|{{.Store.GraphDriverName}}|"
+                          "{{.Store.GraphOptions}}|{{.Host.Security.Rootless}}"))  # fmt: skip
+        root, driver, options, rootless = info.strip().split("|")
+        assert root == f"{folder}/g" and driver == "overlay", info
+        assert "mount_program" not in options, info
+        assert rootless == ("false" if as_who is None else "true")
+        ok(private(podman, nest_workspace, folder, as_who, "import", "-", NESTED, stdin=tarball()))
+        said = ok(private(podman, nest_workspace, folder, as_who, "run", "--rm", "--pull=never",
+                          NESTED, "busybox", "cat", "/gone"))  # fmt: skip
+        assert said == "bye\n"
+    finally:
+        podman.exec(nest_workspace, ["rm", "-rf", folder])
+
+
+@pytest.mark.parametrize("who", sorted(WHO))
+def test_the_same_engine_under_var_tmp_on_the_workspaces_overlay_root_is_refused(
+    podman, nest_workspace, who
+):
+    """The twin: /var/tmp is on the container's root, which is overlay, and overlay is not
+    mounted over overlayfs without a mount program."""
+    as_who = WHO[who]
+    folder = private_folder(podman, nest_workspace, "/var/tmp", as_who)
+    try:
+        refused = private(podman, nest_workspace, folder, as_who, "info")
+        assert refused.code != 0 and OVER_OVERLAY in refused.err, refused
+    finally:
+        podman.exec(nest_workspace, ["rm", "-rf", folder])
 
 
 @pytest.fixture
