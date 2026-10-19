@@ -3,8 +3,11 @@
 import json
 import sqlite3
 
+import pytest
+
 from devtools import fake_claude as fake
 from tests.conftest import ALICE, BOB, as_user, changing, fake_claude, made_workspace, signed_in
+from tests.test_screens import RECONNECTED_SCENARIOS
 
 
 def attention(client, who=ALICE):
@@ -40,8 +43,9 @@ def test_unrecognised_screens_are_named_without_their_text(client, app, settings
     assert "server.start" in stored and fake.UNRECOGNISED_SCREEN not in stored
 
 
-def test_a_reconnected_server_is_not_a_warning(client, app):
-    started = started_in(client, app, "reconnected_without_status")
+@pytest.mark.parametrize("scenario", RECONNECTED_SCENARIOS)
+def test_a_reconnected_server_is_not_a_warning(client, app, scenario):
+    started = started_in(client, app, scenario)
     assert started.json()["server"]["state"] == "reconnected"  # positive control
     assert attention(client).json()["unrecognised"] == []
 

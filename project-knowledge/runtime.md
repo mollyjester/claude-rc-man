@@ -511,7 +511,7 @@ every observed screen (see [fake-claude.md](fake-claude.md)) by
 | `trust_declined` | The trust question was answered no; the server ended, and `start` starts it again |
 | `logged_out` | Claude refused because no account is signed in; `start` starts it again |
 | `exited` | The server ended in a way not listed above; `exit_code` and `screen` are set |
-| `reconnected` | A live screen of Claude's log lines only, the last saying Remote Control has reconnected; `screen` is set |
+| `reconnected` | A live screen of Claude's log, the last line saying Remote Control has reconnected. Above the log may be the text Claude showed at its start, its questions answered: when the screen begins with Claude's first line, the wording before the first answer is free; from there on, and on a screen that begins elsewhere because the pane scrolled, every line is a log line, an answered question or one of `STARTUP_LINES` (`helpers/screens.py`). An unanswered question or any other line makes it `unrecognised`. `screen` is set |
 | `unrecognised` | A live screen that matches no known state; `screen` is set |
 
 ## The canary

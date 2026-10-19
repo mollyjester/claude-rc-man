@@ -120,14 +120,13 @@ It reproduces these behaviours of the real binary, each recorded:
 - Ctrl+C stops a server, exit status zero, with the environment preserved;
   running `remote-control` again in the same folder resumes the same session
   without asking about trust.
-- `remote-control --help` is refused without a login.
 - In a git repository — the folder or one above it has a `.git` — the
   server's status line names the branch, which the fake reads from the
   repository's `HEAD`.
 - In a git repository, started without `--spawn`, Claude asks for a spawn
   mode after the trust question. Answered `1`, the server goes on as
   anywhere else. Ctrl+C there changes nothing, and no answer is taken after
-  it; SIGTERM changes nothing either; SIGKILL ends it. With
+  it; SIGTERM ends it, as any process is ended. With
   `--spawn same-dir` it is not asked.
 
 Signing in succeeds, with the recorded screens, for `ACCEPTED_CODE`, and fails
@@ -201,8 +200,8 @@ is in [real-claude-checklist.md](real-claude-checklist.md#the-shared-sign-in).
 | Tests | Needs | Runs |
 |---|---|---|
 | `tests/test_fake_claude.py` | Nothing | Always. The recorder drives the fake exactly as it drives the real binary, each sequence in a test case of its own with an account of its own, and must reproduce every fixture but those of the sequences that need a person, whose screens the fake's sign-in tests check; each observed screen's scenario must show that screen |
-| `tests/test_claude_contract.py` | The real `claude`, no account | Always; skipped when `claude` is not installed unless `RCMAN_REQUIRE_REAL_CLAUDE=1`, which `make check` sets. The installed version must be the manifest's; the no-account screens must match the fixtures; every option rcman passes must be in `--help`, except where help is refused without a login; an empty and a `{}` credentials file read as signed out and are left as they are; `auth logout` removes the file |
-| `tests/test_claude_real_account.py` | The real `claude`, logged in | By hand: `uv run pytest -m real_claude`. Runs the account sequences and the one that submits an invalid sign-in code, and checks every option rcman passes against `--help` while logged in |
+| `tests/test_claude_contract.py` | The real `claude`, no account | Always; skipped when `claude` is not installed unless `RCMAN_REQUIRE_REAL_CLAUDE=1`, which `make check` sets. The installed version must be the manifest's; the no-account screens must match the fixtures; every option rcman passes must be in `--help`, which is printed without a login; an empty and a `{}` credentials file read as signed out and are left as they are; `auth logout` removes the file |
+| `tests/test_claude_real_account.py` | The real `claude`, logged in | By hand: `uv run pytest -m real_claude`. Runs the account sequences and the one that submits an invalid sign-in code, and checks every option rcman passes against `--help` while logged in, under the account of the run: the folder `CLAUDE_CONFIG_DIR` names where it is set, otherwise the default configuration |
 
 The contract tests compare the installed `claude` with `manifest.json`. A
 machine whose `claude` updates itself fails them as soon as the installed
@@ -228,7 +227,9 @@ it starts the fake only once the answer is waiting on the terminal.
 2. Re-record every sequence: `uv run python devtools/record_claude.py --with-account`,
    then each sequence that needs a person, by name (see
    [Sequences that need a person](#sequences-that-need-a-person)). This needs
-   a logged-in account and creates a Remote Control session in its
+   a logged-in account, the one the run was started with: the folder
+   `CLAUDE_CONFIG_DIR` names where it is set, otherwise the `.claude` and
+   `.claude.json` of the home of the run. It creates a Remote Control session in its
    claude.ai/code list for each sequence that brings a server to ready, as
    the recorder's docstring names them (`--sequence <name>` re-records one
    sequence; a version change requires recording them all).

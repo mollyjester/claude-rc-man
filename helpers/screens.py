@@ -29,10 +29,31 @@ TOO_FAST = "answer arrived too quickly"
 CAPACITY_CONNECTED = re.compile(r"^\s*Capacity: 0/\d+")
 CAPACITY_READY = re.compile(r"^\s*Capacity: [1-9]\d*/\d+")
 ENVIRONMENT_URL = re.compile(r"https://claude\.ai/code\?environment=\S+")
-# A line Claude Code logs above its status block, and the one it logs once Remote
-# Control has reconnected (tests/fakes/observed/).
-LOG_LINE = re.compile(r"^\[\d\d:\d\d:\d\d\] \S.*$")
-RECONNECTED = re.compile(r"^\[\d\d:\d\d:\d\d\] Reconnected after \d+s$")
+# A line Claude Code logs, among the lines it shows above its status block, and the one it
+# logs once Remote Control has reconnected (tests/fakes/observed/).
+LOG_LINE = re.compile(r"^\[\d\d:\d\d:\d\d\] \S.*$", re.ASCII)
+RECONNECTED = re.compile(r"^\[\d\d:\d\d:\d\d\] Reconnected after (\d+h )?(\d+m )?\d+s$", re.ASCII)
+# What Claude Code keeps on the screen of a server it started after the questions it
+# asks at its start were answered, above its log (tests/fakes/observed/): its first
+# line, each question with the answer typed, and the other lines it shows between them.
+START_MARKER = "Remote Control starts Claude Code sessions"
+ANSWERED_TRUST = re.compile(r"Trust (?:(?!\[y/N\]).)+\? \[y/N\] y", re.ASCII)
+ANSWERED_RC = re.compile(r"Enable Remote Control\? \(y/n\) y", re.ASCII)
+# Whatever asks for a choice, answered or not: each such line has to be an answered
+# question of the two above, whatever else it is.
+CHOICE_MARKER = re.compile(
+    r"(?i)[\[(]\s*y(?:es)?\s*/\s*n(?:o)?\s*[\])]|\[\s*\d+\s*/\s*\d+\s*\]", re.ASCII
+)
+# The lines shown after the questions that are no log lines: the text under the trust
+# question, as Claude Code words it, and the note when it cannot save the answer.
+STARTUP_LINES = (
+    "Take this session with you and pick up right where you left off on any device.",
+    "Open the Code tab in the Claude mobile app, visit claude.ai/code in a browser,",
+    "or ask Claude to work in this folder from one of your projects on claude.ai.",
+    "The session keeps running on this machine. Use your other devices as a remote",
+    "control. Press Ctrl+C to stop.",
+    "Couldn't save that choice to your Claude Code config, so you'll be asked again next time.",
+)
 LOGGED_OUT = "You must be logged in to use Remote Control"
 TRUST_DECLINED = "Remote Control did not start:"
 STOPPED = "Environment preserved."
@@ -48,6 +69,39 @@ def _session_name(lines: list[str]) -> str | None:
             name = lines[i + 1].strip()
             return name or None
     return None
+
+
+def _answered(line: str) -> bool:
+    return bool(ANSWERED_TRUST.fullmatch(line) or ANSWERED_RC.fullmatch(line))
+
+
+def _reconnected(lines: list[str]) -> bool:
+    """Whether the screen is Claude's log ending in a reconnect, after nothing but the
+    startup text its questions leave above it, or less of that text where it has scrolled
+    off. Any line it does not know, and any question not answered, make it unrecognised."""
+    shown = [line.rstrip() for line in lines]
+    nonempty = [line for line in shown if line]
+    if not nonempty or not RECONNECTED.fullmatch(nonempty[-1]):
+        return False
+    # A log line is Claude's own output, whatever it holds; any other line asking for a
+    # choice has to be an answered question.
+    if not all(
+        _answered(line)
+        for line in shown
+        if not LOG_LINE.fullmatch(line) and CHOICE_MARKER.search(line)
+    ):
+        return False
+    start = 0
+    if nonempty[0].startswith(START_MARKER):
+        # Before the first answer is wording of Claude's that varies with the folder.
+        start = next((i for i, line in enumerate(shown) if _answered(line)), None)
+        if start is None:
+            return False
+    return all(
+        LOG_LINE.fullmatch(line) or _answered(line) or line in STARTUP_LINES
+        for line in shown[start:]
+        if line
+    )
 
 
 def classify(lines: list[str], exit_code: int | None) -> dict:
@@ -79,9 +133,10 @@ def classify(lines: list[str], exit_code: int | None) -> dict:
         state = "ready"
     elif any(CAPACITY_CONNECTED.match(line) for line in lines):
         state = "connected"
-    elif RECONNECTED.match(nonempty[-1]) and all(LOG_LINE.match(line) for line in nonempty):
+    elif _reconnected(lines):
         # Claude has stopped drawing its status block, so nothing names the session or
-        # the environment, and redraws it, if at all, on its own tick.
+        # the environment, and redraws it, if at all, on its own tick. A name or a link in
+        # the startup text or the log is not the session's.
         state = "reconnected"
         info["session_name"] = info["environment_url"] = None
     else:

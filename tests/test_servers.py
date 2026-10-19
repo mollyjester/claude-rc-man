@@ -3,10 +3,12 @@
 import sqlite3
 import time
 
+import pytest
 from rcman import db
 from rcman.problems import FIELD_MESSAGES
 
 from tests.conftest import ALICE, BOB, as_user, changing, fake_claude, made_workspace, signed_in
+from tests.test_screens import RECONNECTED_SCENARIOS
 
 
 def workspaces(client, who=ALICE) -> list[dict]:
@@ -168,10 +170,11 @@ def test_an_action_ending_on_an_unrecognised_screen_is_audited_as_such(
     assert last_audit(settings) == ("server.start", "alpha", "unrecognised_screen")
 
 
-def test_an_action_ending_reconnected_is_audited_ok(client, app, settings, tmp_path):
+@pytest.mark.parametrize("scenario", RECONNECTED_SCENARIOS)
+def test_an_action_ending_reconnected_is_audited_ok(client, app, settings, tmp_path, scenario):
     made = made_workspace(client, ALICE, "alpha")
     signed_in(app, made)
-    in_scenario(app, tmp_path, "reconnected_without_status")
+    in_scenario(app, tmp_path, scenario)
     r = post(client, "", made)
     assert r.json()["server"]["state"] == "reconnected"
     assert last_audit(settings) == ("server.start", "alpha", "ok")

@@ -137,7 +137,7 @@
     },
     "spawn_prompt_killed": {
       "sequence": "spawn_prompt",
-      "exit_code": 137,
+      "exit_code": 143,
       "needs_account": true
     },
     "spawn_ready_same_dir": {
@@ -171,5 +171,5 @@
       "needs_account": false
     }
   },
-  "claude_version": "2.1.289"
+  "claude_version": "2.1.302"
 }

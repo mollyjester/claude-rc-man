@@ -1,0 +1,20 @@
+Remote Control starts Claude Code sessions in this folder, driven from your other devices:
+  {cwd}
+
+Quick safety check: is this a project you created or one you trust? Sessions started here can read, edit, and execute files, and this folder's project settings (hooks, MCP servers, permission rules, helper commands) apply to them.
+  ⚠ This folder configures hooks that run commands, declared in .claude/settings.json
+These will apply without asking. Only proceed if you trust this configuration.
+Security guide: https://code.claude.com/docs/en/security
+Trust {cwd}? [y/N] y
+
+Take this session with you and pick up right where you left off on any device.
+Open the Code tab in the Claude mobile app, visit claude.ai/code in a browser,
+or ask Claude to work in this folder from one of your projects on claude.ai.
+
+The session keeps running on this machine. Use your other devices as a remote
+control. Press Ctrl+C to stop.
+
+Enable Remote Control? (y/n) y
+
+[{time}] Session completed (5h 35m 51s) {session_id}
+[{time}] Reconnected after 13s

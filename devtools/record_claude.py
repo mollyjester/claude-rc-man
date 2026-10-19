@@ -9,8 +9,8 @@ plus ``manifest.json``. The fake fills the placeholders back in at run time.
 Screens seen on a live server that no sequence can bring about are kept, sanitised
 the same way, in ``tests/fakes/observed/`` (:func:`load_observed`).
 
-Sequences marked ``needs_account`` run under the real default Claude
-configuration and need a logged-in subscription account; each sequence that
+Sequences marked ``needs_account`` run under the account of the run (the end of this
+docstring) and need a logged-in subscription account; each sequence that
 brings a server to ready (``server``, ``git_server`` and ``spawn_answered``)
 creates one Remote Control session in that account's claude.ai/code list each
 time it runs. Sequences marked ``git_repository`` run in a throwaway
@@ -24,6 +24,10 @@ Usage::
     uv run python devtools/record_claude.py                # no-account sequences
     uv run python devtools/record_claude.py --with-account # everything
     uv run python devtools/record_claude.py --with-account --sequence server
+
+The account is the one the run was started with: the folder named by ``CLAUDE_CONFIG_DIR``
+where it is set (:func:`account_config_dir`), otherwise the ``.claude`` and ``.claude.json``
+of the home of the run.
 """
 
 from __future__ import annotations
@@ -188,6 +192,25 @@ def account_home(home: Path) -> Path:
     return home
 
 
+def account_config_dir() -> Path | None:
+    """The folder of the account this run was started with, where it names one: the
+    CLAUDE_CONFIG_DIR of its environment. Claude keeps its ``.claude.json`` in that folder,
+    so a recording given it reads the account there; with none named it is the account in
+    the home of the run (``account_home``)."""
+    named = os.environ.get("CLAUDE_CONFIG_DIR")
+    return Path(named) if named else None
+
+
+def account_env(home: Path) -> dict[str, str]:
+    """The environment that gives ``claude`` the account of this run, in ``home`` as a home of
+    its own: its folder where the run names one (:func:`account_config_dir`), otherwise
+    ``home`` made to lead to the account in the home of the run (:func:`account_home`)."""
+    config = account_config_dir()
+    if config is None:
+        account_home(home)
+    return claude_env(config, home)
+
+
 # Claude Code's credentials file, in its configuration folder.
 CREDENTIALS = ".credentials.json"
 
@@ -328,8 +351,8 @@ def _still_asking(r: Run, after: str) -> None:
 
 
 def _spawn_prompt(r: Run) -> None:
-    """The spawn-mode question a repository gets without --spawn: Ctrl+C, then an
-    answer, then SIGTERM, are all ignored; SIGKILL ends it."""
+    """The spawn-mode question a repository gets without --spawn: Ctrl+C and an answer
+    after it are ignored; SIGTERM ends it, with the status of a process ended by it."""
     _answer_trust(r)
     r.capture_when(SPAWN_QUESTION, "spawn_prompt")
     r.pane.interrupt()
@@ -339,9 +362,11 @@ def _spawn_prompt(r: Run) -> None:
     _still_asking(r, "An answer after Ctrl+C")
     r.capture("spawn_prompt_answered_after_interrupt", None)
     r.pane.signal(signal.SIGTERM)
-    _still_asking(r, "SIGTERM")
-    r.pane.signal(signal.SIGKILL)
     r.capture_exit("spawn_prompt_killed")
+    if (code := r.out["spawn_prompt_killed"].exit_code) != 128 + signal.SIGTERM:
+        raise RuntimeError(
+            f"SIGTERM did not end the spawn-mode question as it ends a process: {code}"
+        )
 
 
 def _spawn_answered(r: Run) -> None:
@@ -600,7 +625,8 @@ def record(
 ) -> dict[str, Recorded]:
     """Run each sequence in a fresh folder and pane; return sanitised captures.
 
-    ``account_config_dir`` is the configuration for ``needs_account`` sequences;
+    ``account_config_dir`` is the configuration for ``needs_account`` sequences (the
+    command line gives it from :func:`account_config_dir`);
     ``None`` means the real default configuration: no CLAUDE_CONFIG_DIR, and a home whose
     ``.claude`` and ``.claude.json`` lead to those of the home this run was started from
     (``account_home``). Every sequence has a home of its own.
@@ -764,7 +790,7 @@ def main(argv: list[str] | None = None) -> int:
             "re-record everything with --with-account and no --sequence"
         )
     with held(WORK, remover=remove_tree) as work:
-        recorded = record(args.claude, sequences, None, work)
+        recorded = record(args.claude, sequences, account_config_dir(), work)
     write_fixtures(recorded, version, args.out)
     for name in sorted(recorded):
         print(f"recorded {name}")
