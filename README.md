@@ -49,3 +49,9 @@ decisions and the implementation steps are
 ## Contributing
 
 Read [CONTRIBUTING.md](CONTRIBUTING.md) first.
+
+## Licence
+
+claude-rc-man is under the MIT licence: [LICENSE.md](LICENSE.md). The vendored
+skill in `.claude/skills/frontend-design` keeps its own Apache-2.0 licence, in
+its [LICENSE.txt](.claude/skills/frontend-design/LICENSE.txt).
