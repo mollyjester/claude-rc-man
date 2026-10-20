@@ -304,9 +304,67 @@ def test_one_person_cannot_reach_anothers_workspace(stack):
     assert in_stack(stack, "test", "-S", str(st.SOCKET)) == ""  # the control: the stack has it
 
 
+# The stack has no way out to a registry, so no Dockerfile can be built in it: a rebuild is held
+# instead by a create command that runs long, in the new container, from an image the stack's
+# Podman has - the one the workspace was made from.
+SLOW_COMMAND = "sleep 600"
+
+
+def rebuild_shown(stack, who: str, workspace_id: int) -> str:
+    """What a failing wait says: the workspace as the listing shows it, its rebuild's steps and
+    error among it, and every container the stack's Podman has."""
+    status, listed = stack.request("GET", "/api/workspaces", who)
+    found = [w for w in listed.get("workspaces", []) if w["id"] == workspace_id]
+    return f"{status} {json.dumps(found, indent=1)}\n{podman(stack, 'ps', '--all')}"
+
+
+def rebuilding_with_a_slow_command(stack, who: str) -> dict:
+    """A workspace of ``who``'s cloned from the stand-in GitHub, its devcontainer.json changed
+    in it to one with a create command that runs long, and rebuilt: once that command runs in
+    its new container, the rebuild in its switch."""
+    url = f"https://github.com/{stand_in.STACK_OWNER}/{stand_in.STACK_PUBLIC}"
+    status, answer = stack.request("POST", "/api/git/clone", who, {"url": url})
+    assert status == 202, answer
+    workspace_id = answer["workspace"]["id"]
+
+    def listed():
+        status, answer = stack.request("GET", "/api/workspaces", who)
+        return next(w for w in answer["workspaces"] if w["id"] == workspace_id)
+
+    assert until(lambda: listed()["state"] != "creating") and listed()["state"] == "ready"
+    name = f"rcman-ws-{workspace_id}"
+    image = podman(stack, "container", "inspect", "--format", "{{.ImageName}}", name).strip()
+    config = json.dumps({"image": image, "postCreateCommand": SLOW_COMMAND})
+    folder = f"{st.WORK}/.devcontainer"
+    in_workspace(
+        stack,
+        workspace_id,
+        f"mkdir -p '{folder}' && printf '%s' '{config}' > '{folder}/devcontainer.json'",
+    )
+    status, answer = stack.request(
+        "POST", f"/api/workspaces/{workspace_id}/rebuild", who, {"confirm": True}
+    )
+    assert status == 202, answer
+    deadline = time.monotonic() + COMES_WITHIN
+    while True:
+        rebuild = listed()["rebuild"]
+        running = podman(stack, "ps", "--quiet", "--filter", f"name=^{name}$").split()
+        if (
+            rebuild["state"] == "switching"
+            and running
+            and SLOW_COMMAND in podman(stack, "top", name, "args")
+        ):
+            return answer["workspace"]
+        assert time.monotonic() < deadline, rebuild_shown(stack, who, workspace_id)
+        time.sleep(1)
+
+
 def test_deleting_a_person_leaves_nothing_labelled_theirs(stack):
+    """Through the People page, and through ``rcman-admin`` in a process of its own while a
+    rebuild of theirs replaces a container: nothing labelled theirs is left either way."""
     bob = person_id(stack, BOB)
     label = f"label=rcman.person={bob}"
+    made(stack, "bobs-own", BOB)  # whatever the tests before made of his, or did not
     assert podman(stack, "ps", "--all", "--quiet", "--filter", label).split()  # positive control
     volumes = podman(stack, "volume", "ls", "--quiet", "--filter", label).split()
     assert f"rcman-person-{bob}" in volumes  # positive control: his sign-in's
@@ -314,6 +372,18 @@ def test_deleting_a_person_leaves_nothing_labelled_theirs(stack):
     assert status == 200, answer
     assert podman(stack, "ps", "--all", "--quiet", "--filter", label).split() == []
     assert podman(stack, "volume", "ls", "--quiet", "--filter", label).split() == []
+
+    status, answer = stack.request("POST", "/api/people", body={"email": BOB})
+    assert status == 200, answer
+    bob = person_id(stack, BOB)
+    label = f"label=rcman.person={bob}"
+    rebuilding = rebuilding_with_a_slow_command(stack, BOB)
+    assert podman(stack, "ps", "--all", "--quiet", "--filter", label).split()  # it is there
+    stack.verb("admin-delete", BOB, timeout=900)
+    left = podman(stack, "ps", "--all", "--quiet", "--filter", label).split()
+    assert left == [], rebuild_shown(stack, st.ADMIN, rebuilding["id"])
+    assert podman(stack, "volume", "ls", "--quiet", "--filter", label).split() == []
+    assert stack.request("GET", "/api/me", BOB)[0] == 403
     assert BOB not in in_stack(stack, "cat", str(st.ALLOWED))
     assert stack.request("GET", "/api/me", BOB)[0] == 403
 

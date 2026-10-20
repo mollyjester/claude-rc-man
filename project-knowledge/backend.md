@@ -33,7 +33,7 @@ the OpenAPI description it serves at `/api/openapi.json`, browsable at
 | `spa.py` | Serving the built frontend: its files, and `index.html` for every other path not under `/api`; installed after every router. `index.html` names the build's files by the hashes of their contents, which Vite puts in their names under `assets/`, so every file outside `assets/`, `index.html` among them, is served with `Cache-Control: no-cache`, which has the browser ask again before it uses the one it kept, and a page loaded after an upgrade names the new build's files; those under `assets/`, which never change, are kept for a year (`immutable`) |
 | `routes.py` | The app's routes as FastAPI resolves them after including routers, and which of them are for administrators |
 | `routers/` | One module per area: `me`, `workspaces`, `servers`, `git`, `github`, `claude`, `people`, `audit_log`, `attention`, `docs`, `client_errors`, `terminal`, `rcman_upgrade` |
-| `routers/workspaces.py` | The person's workspaces, under `/api/workspaces`: listing them with their servers, making one, deleting one; the listing is an object, `workspaces`, `claude_approved` (the version a server started now would run, `null` where none is), so that the page can set each server's `claude_version` beside it, and `rcman_upgrading`, whether an upgrade of rcman is under way (see [Upgrading rcman](#upgrading-rcman)) |
+| `routers/workspaces.py` | The person's workspaces, under `/api/workspaces`: listing them with their servers, making one, deleting one, telling whether one's devcontainer.json changed and rebuilding one (see [Workspaces and servers](#workspaces-and-servers)); the listing is an object, `workspaces`, `claude_approved` (the version a server started now would run, `null` where none is), so that the page can set each server's `claude_version` beside it, and `rcman_upgrading`, whether an upgrade of rcman is under way (see [Upgrading rcman](#upgrading-rcman)) |
 | `routers/servers.py` | A workspace's server, under `/api/servers`: start, resume, stop, forget, confirm and output, each by the workspace's id; and everyone's, for administrators |
 | `accounts.py`, `routers/claude.py` | Each person's Claude sign-in, signing in and out of it, and its state; `routers/me.py` signs out of rcman — see [Claude accounts](#claude-accounts) |
 | `repository.py` | A workspace's git repository: the verbs of the Changes section, run in the workspace through its channel and `exec`, each wrapped in the workspace's `timeout` tool (see [git in workspaces](#git-in-workspaces)) |
@@ -121,13 +121,35 @@ channels and servers, and what rcman brings back when it starts, is in
 
 A workspace belongs to one person, and a route reaches only the signed-in
 person's: another's is `workspace_not_found`, as if it were not there. A
-server's verbs need the workspace `ready`, or answer `workspace_not_ready`. The
+server's verbs need the workspace `ready`, or answer `workspace_not_ready`, and not
+having its container replaced by a rebuild, or answer `workspace_rebuilding`, which a start,
+a resume, a stop, a forget and a confirm ask again under the workspace's lock. The
 prefix of a server's sessions is the person's, or the workspace's name while
 they have set none (`prefix_of`). A start, a resume, a stop and a forget record
 what should run in the workspace's row, which restoring reads. The listing
 reads every workspace's server side by side, in at most `LISTING_WORKERS`
 threads; a workspace whose server cannot be read is listed with why, as
-`server_error`.
+`server_error`, and one whose container a rebuild is replacing is not read and is listed with
+`workspace_rebuilding` there.
+
+Rebuilding (`routers/workspaces.py`; how it works is [runtime.md](runtime.md#rebuilding)):
+
+- `GET /api/workspaces/{workspace}/devcontainer` answers `changed`: whether the
+  devcontainer.json in the workspace, or its Dockerfile, differs from the digest recorded when
+  it was made or last rebuilt; null where that is not known (`Workspaces.devcontainer_changed`),
+  which reads the file through the workspace's channel only when it is ready, not being
+  rebuilt, has its container and a digest.
+- `POST /api/workspaces/{workspace}/rebuild`, with `{"confirm": true}` (else
+  `rebuild_confirm_required`, 422), answers 202 and the workspace's entry, and rebuilds it in the
+  background; audited as `workspace.rebuild`, the target the workspace's name. Its refusals are
+  those of `Workspaces.rebuild_refusal`: `rcman_upgrading`, `rcman_starting`,
+  `workspace_rebuilding`, `workspace_not_ready`, `rebuild_empty` and `rebuild_no_container`
+  (409), and `workspace_not_found` for another's.
+- Each entry of the listing has `rebuild` - its `state` (`preparing`, `switching`,
+  `promoting` or null), its `log` and its `error`, which keeps why the last one did not finish
+  (`problems.REBUILD_MESSAGES`, or a refusal of `DEVCONTAINER_MESSAGES` in a rebuild's words,
+  `problems.rebuild_advice`) - and `rebuildable`, `rebuild_refusal` being none, the test the
+  route makes. A failed workspace's rebuild that failed says why in its `error`.
 
 `everyone.py` lists every person's workspaces for administrators
 (`GET /api/servers/everyone`), each workspace with only its id, name, state, server,
@@ -188,7 +210,9 @@ credentials file every workspace of theirs shares (see
   and `begin`, `finish` refuse a person being deleted or gone (`not_allowed`), the read under
   the person's lock so that it cannot make the volume again after a deletion, as
   `GitAccount` does, since reading or starting a sign-in makes their volume.
-- **A server's start** (`Workspaces.start_server`) refuses `claude_not_logged_in`
+- **A server's start** (`Workspaces.start_server`) refuses a workspace that is no longer
+  ready once it holds the workspace's lock, as one deleted meanwhile (`workspace_not_ready`),
+  `claude_not_logged_in`
   while the person has no `claude_account`, and `claude_signing_out` while a
   sign-out waits; otherwise it seeds `oauthAccount` into the workspace's
   `.claude.json`, keeping every other key, owner-only, before the server starts.
@@ -219,7 +243,8 @@ credentials file every workspace of theirs shares (see
 `routers/git.py` names a workspace by its id (`workspace`, a query parameter or a
 body field, never a path) and runs git in it. `_run` finds the workspace among the
 signed-in person's ready ones (`Workspaces.ready`: `workspace_not_found` for another's
-or none, `workspace_not_ready` otherwise), and calls a verb of `repository.Repository` on
+or none, `workspace_not_ready` otherwise, `workspace_rebuilding` while a rebuild replaces
+its container), and calls a verb of `repository.Repository` on
 `Workspaces.repository(workspace)`: nothing is started and no server or workspace lock
 is taken. A change's audit target is the workspace's name; a commit's message and the
 files to stage reach git on stdin and are never recorded or logged.
@@ -343,7 +368,8 @@ shells, one per workspace (`Terminals`, `app.state.terminals`).
   origin (`origin_refused`), and for a query naming no workspace (`validation_failed`). Once
   accepted, the workspace is found among the person's (`Workspaces.owned`): another's, or none,
   is `workspace_not_found`, an administrator's look at another's included; one of theirs that is
-  not ready is `workspace_not_ready` (`Workspaces.ready`). Each is a `problem` frame, whose
+  not ready is `workspace_not_ready`, and one a rebuild replaces the container of
+  `workspace_rebuilding` (`Workspaces.ready`). Each is a `problem` frame, whose
   `problem` holds the problem details, and a close of `close_problem` plus the problem's status.
   The page then has `FIRST_RESIZE_SECONDS` to send its first `resize`, which it sends as the
   socket opens; a page that does not is closed with `close_policy`. The page cannot read a
@@ -369,9 +395,12 @@ shells, one per workspace (`Terminals`, `app.state.terminals`).
   so a shell that ended because its workspace went is `workspace_gone`); its page closing the
   socket or vanishing, which uvicorn's keepalive ping finds (`terminal_lost`); its person
   signing out of rcman (`me.sign_out`: `signed_out`); its workspace being deleted
-  (`Workspaces.on_removing`, before the container goes: `workspace_gone`); and, every
+  (`Workspaces.on_removing`, before the container goes: `workspace_gone`); a rebuild replacing
+  its container (`Workspaces.on_rebuilding`, before the old one is discarded:
+  `workspace_rebuilding`); and, every
   `REVOCATION_SECONDS`, a look at the table finding the person no longer active (`not_allowed`)
-  or the workspace no longer theirs and ready (`workspace_gone`), which catches what rcman did
+  or the workspace no longer theirs and ready (`workspace_gone`), or being rebuilt
+  (`workspace_rebuilding`), which catches what rcman did
   not do itself, as `rcman-admin`'s deletions. That is revocation, not a time limit: there is
   none, nor an idle timeout. A look that fails, as on a database that is busy, is logged and
   tried again at the next. Of what ends a terminal at the same moment, its own end says most,
@@ -414,7 +443,7 @@ shells, one per workspace (`Terminals`, `app.state.terminals`).
 | `close_policy` | `1008` | A resize whose size is not a whole number in range; a binary frame before the first resize; no first resize within `FIRST_RESIZE_SECONDS` |
 | `close_closing` | `1012` | rcman is stopping |
 | `close_problem` | `4000` | Plus the problem's status, after a `problem` frame |
-| `reasons` | `terminal_replaced`, `workspace_gone`, `signed_out`, `not_allowed`, `service_closing` | What a `closed` frame says |
+| `reasons` | `terminal_replaced`, `workspace_gone`, `workspace_rebuilding`, `signed_out`, `not_allowed`, `service_closing` | What a `closed` frame says |
 
 Binary frames are what is typed and what the shell prints, as bytes, both ways.
 
@@ -532,22 +561,24 @@ import the installer; `rcman_upgrade.Upgrades` is `app.state.upgrade`.
   `ClaudeVersions.rollouts_held`, the roll-outs' lock, without waiting (`rolling_out`: a
   roll-out, or the `sweep` of what one left, holds it); holding both,
   it refuses while systemd cannot be read (`units_unreadable`), the path unit is not loaded and
-  active (`path_inactive`), an upgrade is under way (`under_way`) or a workspace is being made
-  (`creating`); otherwise it records the request and writes the request file (`write_request`:
+  active (`path_inactive`), an upgrade is under way (`under_way`), a workspace is being made
+  (`creating`) or one is being rebuilt (`rebuilding`, `Workspaces.any_rebuilding`; see
+  [runtime.md](runtime.md#rebuilding)); otherwise it records the request and writes the request file (`write_request`:
   a write and a close, never through a link).
 - **The freeze.** `Upgrades.under_way` is `Workspaces.upgrading`: a request held whose run has
   not written its status, within the grace or while systemd shows the service running, or a
   status of this boot that says `running` and that systemd does not contradict; it asks
   systemd only past the grace or for such a status, so a listing costs a file read.
-  `Workspaces.create`, and so a clone, asks it under the images' lock, and
-  `ClaudeVersions.upgrade` after taking `_upgrading`, each refusing with `rcman_upgrading`;
-  since the admission holds both locks from its checks to its record, a creation or a roll-out
-  is either seen by its checks or refused. `GET /api/workspaces` and the versions report carry
-  it as `rcman_upgrading`, for the page to say why it offers neither.
+  `Workspaces.create`, and so a clone, and `Workspaces.rebuild` ask it under the images' lock,
+  and `ClaudeVersions.upgrade` after taking `_upgrading`, each refusing with `rcman_upgrading`;
+  since the admission holds both locks from its checks to its record, a creation, a rebuild or
+  a roll-out is either seen by its checks or refused. `GET /api/workspaces` and the versions
+  report carry it as `rcman_upgrading`, for the pages to say why they offer none of them.
 - **Tests.** `tests/test_rcman_upgrade.py` holds the report's shape and every reason, the states
   from recorded `systemctl show` output (`shown()`, which the real-machine checklist compares
   with the real thing), malformed output and status, the release read once, the admission's
-  race and locks, and `rcman_upgrading` from a creation, a clone and a roll-out.
+  race and locks, `rcman_upgrading` from a creation, a clone and a roll-out, and an upgrade and a
+  rebuild each refusing the other.
 
 ## Attention
 

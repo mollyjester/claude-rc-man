@@ -699,10 +699,12 @@ label:has(> input[type="checkbox"]) {
   border-radius: var(--radius-card);
   padding: var(--space-4);
 }
-.card > :first-child {
+/* A dialog drawn in a card is not one of its parts: it keeps the margin that puts it in the
+   middle (dialog.dialog). */
+.card > :first-child:not(dialog) {
   margin-top: 0;
 }
-.card > :last-child {
+.card > :last-child:not(dialog) {
   margin-bottom: 0;
 }
 /* A card whose rows run edge to edge, a table's or a list's, its parts divided by strokes: a
@@ -2172,14 +2174,17 @@ code.commit,
   font-family: var(--font-mono);
 }
 .upgrade-notices,
-.upgrade-consequences {
+.upgrade-consequences,
+.rebuild-list {
   margin: 0;
   padding-left: var(--space-5);
 }
-.upgrade-consequences {
+.upgrade-consequences,
+.rebuild-list {
   margin-bottom: var(--space-3);
 }
-.upgrade-consequences li + li {
+.upgrade-consequences li + li,
+.rebuild-list li + li {
   margin-top: var(--space-1);
 }
 /* The Claude Code versions page: the facts beside the newest release and the roll-out. */

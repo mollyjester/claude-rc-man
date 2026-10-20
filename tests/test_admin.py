@@ -115,6 +115,116 @@ def test_a_deletion_from_the_shell_leaves_the_store_to_the_service_to_prune(
     assert ClaudeVersions  # (the class the service prunes with)
 
 
+def bobs_workspace(env_file, state: str) -> int:
+    con = database(env_file)
+    try:
+        bob = people.by_email(con, BOB)
+        cursor = con.execute(
+            "insert into workspaces (person, name, state) values (?, 'his', ?)", (bob.id, state)
+        )
+        con.commit()
+        return cursor.lastrowid
+    finally:
+        con.close()
+
+
+def state_of(env_file, workspace: int) -> str | None:
+    con = database(env_file)
+    try:
+        found = con.execute("select state from workspaces where id = ?", (workspace,)).fetchone()
+        return found[0] if found else None
+    finally:
+        con.close()
+
+
+def test_delete_waits_for_a_workspace_the_service_is_making_and_succeeds(
+    env_file, tmp_path, capsys, monkeypatch
+):
+    """rcman-admin has none of the service's threads: the service, which makes the workspace,
+    finds it deleting once the step it is on ends, and removes it."""
+    import threading
+    import time
+
+    from rcman import workspaces as ws
+    from rcman.settings import Settings
+
+    from tests.conftest import MADE_WITHIN, host_runtime
+
+    monkeypatch.setattr(ws, "WORKING_POLL_SECONDS", 0.02)
+    run(env_file, "add", ALICE, "--admin", capsys=capsys)
+    run(env_file, "add", BOB, capsys=capsys)
+    con = database(env_file)
+    bob = people.by_email(con, BOB)
+    con.close()
+    with host_runtime(tmp_path) as runtime:
+        service = ws.Workspaces(Settings(_env_file=env_file), runtime)
+        release, real = threading.Event(), runtime.create
+        runtime.create = lambda spec: (release.wait(MADE_WITHIN), real(spec))
+        try:
+            made = service.create(bob, "his")
+
+            def let_go():  # once rcman-admin has marked it deleting, the making goes on
+                deadline = time.monotonic() + MADE_WITHIN
+                while state_of(env_file, made.id) != "deleting":
+                    if time.monotonic() > deadline:
+                        return
+                    time.sleep(0.01)
+                release.set()
+
+            threading.Thread(target=let_go, daemon=True).start()
+            code, out, err = run(env_file, "delete", BOB, runtime=runtime, capsys=capsys)
+        finally:
+            release.set()
+            service.close()
+        assert (code, err) == (0, "") and BOB in out
+        assert runtime.labelled() == {}
+    assert state_of(env_file, made.id) is None
+    con = database(env_file)
+    assert people.by_email(con, BOB) is None and people.by_email(con, ALICE) is not None
+    con.close()
+    assert (env_file.parent / "allowed-emails").read_text() == f"{ALICE}\n"
+
+
+def test_delete_with_the_service_down_leaves_a_workspace_being_made_deleting_for_restore(
+    env_file, tmp_path, capsys, monkeypatch
+):
+    from rcman import problems
+    from rcman import workspaces as ws
+    from rcman.settings import Settings
+
+    from tests.conftest import host_runtime
+
+    monkeypatch.setattr(ws, "WORKING_POLL_SECONDS", 0.02)
+    monkeypatch.setattr(ws, "MADE_WITHIN_SECONDS", 0.2)  # nothing makes it: the service is down
+    run(env_file, "add", ALICE, "--admin", capsys=capsys)
+    run(env_file, "add", BOB, capsys=capsys)
+    workspace = bobs_workspace(env_file, "creating")
+    con = database(env_file)
+    bob = people.by_email(con, BOB)
+    con.close()
+    with host_runtime(tmp_path) as runtime:
+        name = rt.container_name(workspace)
+        runtime.create(rt.Spec(name, bob.slot, workspace, bob.id))  # what the service had made
+        code, _, err = run(env_file, "delete", BOB, runtime=runtime, capsys=capsys)
+        assert code == 1 and problems.PERSON_DELETION_LEFT in err
+        assert state_of(env_file, workspace) == "deleting"  # left for restore to finish
+        con = database(env_file)
+        assert people.by_email(con, BOB).state == people.DELETING  # let in nowhere meanwhile
+        con.close()
+        assert BOB not in (env_file.parent / "allowed-emails").read_text()
+        assert runtime.exists(name)  # positive control for what restore removes
+        service = ws.Workspaces(Settings(_env_file=env_file), runtime)  # the service starts
+        try:
+            service.restore()
+        finally:
+            service.close()
+        assert runtime.labelled() == {}
+    assert state_of(env_file, workspace) is None
+    con = database(env_file)
+    assert people.by_email(con, BOB) is None
+    con.close()
+
+
 def test_deleting_someone_who_is_not_there_is_refused(env_file, capsys):
     code, _, err = run(env_file, "delete", BOB, capsys=capsys)
     assert code == 1 and "There is no such person." in err

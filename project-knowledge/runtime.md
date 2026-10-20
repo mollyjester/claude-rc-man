@@ -170,8 +170,9 @@ and catatonit. `compose` is refused, and an image with no `/usr/bin/podman` is s
   as Podman refuses a profile that is not there.
 - **What is accepted.** A nested container is no boundary inside the workspace, and shares its
   network; what nested containers store counts against no limit, nor does what `/tmp` holds. A
-  workspace keeps the image and the container it was made with, and rcman holds no way to give
-  one made without Podman, the `ROOT_PODMAN_STATE` tmpfs, `UNMASK_PROC`, the seccomp profile or
+  workspace keeps the image and the container it was made with until it is rebuilt (see
+  [Rebuilding](#rebuilding)), which makes its container again with all of this; rcman holds no
+  other way to give one made without Podman, the `ROOT_PODMAN_STATE` tmpfs, `UNMASK_PROC`, the seccomp profile or
   its own `/tmp` (one whose `/tmp` is on its root) what it lacks: the wrapper
   refuses one without the tmpfs (its image may have Podman), says there is no Podman in one whose
   image has none, and a new workspace is made in its place.
@@ -565,7 +566,24 @@ label, then the file's own, merged) and the parsing of an image's passwd and gro
   refusal, and fails the workspace in plain words (`runtime_gone`) and keeps them. A lifecycle
   command that fails or takes too long
   fails the workspace with its exit code and the tail of its output, and keeps the
-  container and volume for the person to look at.
+  container and volume for the person to look at or rebuild. The row's `failure` records the
+  kind of a failure that keeps the volume and its repository (`workspaces.RECOVERABLE`:
+  `hook_failed` and `hook_timeout` from the `HookFailed` `_run_commands` raises, and the
+  `image_gone`, `built_image_gone` and `default_image_gone` of `_image_gone`); every other
+  failure - a clone, a refusal, a restart while being made - leaves it null.
+- **The digest.** `devcontainer.digest` is a sha256 of the place the file was found in, its
+  bytes and, for a file that builds from a Dockerfile (`dockerfile_of`), the Dockerfile's bytes,
+  read by `read_path`: the reader's rules (no link on the way, `MAX_BYTES`, `READ_SECONDS`)
+  for any path in the work folder, with refusals of its own (`DOCKERFILE_REFUSALS`); no file at
+  all is `NO_FILE_DIGEST`. `_read_plan` makes it as it reads the file, and `_configure` stores
+  it in the row's `devcontainer_digest`, for no file too; a rebuild stores it at its commit. It
+  does not cover the rest of the build's context, the repository's own features or a tag that
+  names another image by now. `Workspaces.devcontainer_changed` (`GET
+  /api/workspaces/{id}/devcontainer`) reads it again through the channel
+  (`devcontainer.current_digest`, with `_channel_runner` changing to the work folder) and
+  compares; it asks nothing of a workspace that is not ready, is being rebuilt or worked on,
+  has no container or no digest (`devcontainer_digest` null), and answers null for those and
+  for a file that cannot be read or is refused.
 - **The user.** The plan's user is the image's user for `remoteUser`, else
   `containerUser`, else the image's own. `PodmanRuntime._ids` swaps the user's uid and gid
   with root's in the person's range, so that the user owns the volume, the shared
@@ -607,9 +625,16 @@ label, then the file's own, merged) and the parsing of an image's passwd and gro
   container's user, under the `timeout` tool with `HOOK_TIMEOUT_SECONDS`, with exactly
   `_hook_env`; a string by the image's `/bin/sh` or else the mounted busybox's shell, an
   array as a program. Only the last `HOOK_KEEP_BYTES` of each of a command's output streams
-  is ever held (`exec`'s `keep`). The create commands run once, in `_configure`;
-  `postStartCommand` runs there too and again after every start or re-creation in a restore,
-  before that workspace's server is started, and its failure is only logged. A container
+  is ever held (`exec`'s `keep`). The create commands run when the container is made: in
+  `_configure`, again in a rebuild's `_make_new` and its rollback (`_roll_back`), and in a
+  restore that settles a rebuild cut short while its container was replaced
+  (`_create_commands_again`). `Plan.create_commands` ends with `postStartCommand`, so it runs
+  there too. A failing one is a `HookFailed`: in `_configure` the row keeps its `kind` as its
+  `failure`, from `_make_new` it rolls a ready workspace's rebuild back (`_roll_back`) and
+  keeps a failed one failed, its `kind` the `failure` (`_recover`), and in `_roll_back` and
+  `_create_commands_again` it is only logged. `postStartCommand` alone (`_start_commands`) runs
+  again after every start or re-creation in a restore, before that workspace's server is
+  started, and its failure there is only logged. A container
   that kept running through a restart of rcman is not started, so nothing runs.
 
 ## Building an image
@@ -670,7 +695,17 @@ page](../docs/devcontainer.md#building-an-image).
   was kept; `remove_build` is also what a deletion calls, which ends a build in progress
   (killing the CLI's client would not). `Workspaces._remove_orphan_builds`, a step of the
   restore, removes `builders()` and `built_images()` that no workspace being made or stored
-  plan needs.
+  plan needs, and every `next_images()` of a workspace no rebuild is under way for.
+- **Two names.** An image built for a workspace is `built_name(id)`, tagged `BUILT_TAG`, which
+  its container is made from; a rebuild builds as `built_name(id, NEXT_TAG)`
+  (`BuildRequest.tag`), which a build never touches the other tag of, and `promote_build(id)`
+  then, under `_naming`, tags the next image as the built one and untags the next name; it can
+  be called again after a promotion that ended part way. `workspace_of_built_name` reads
+  either tag, `built_images()` lists the `BUILT_TAG` ones and `next_images()` the others, and
+  `remove_build(id, image=True, image_tag=...)` removes one of them by its name, never by force
+  and never by id. Deleting a workspace removes both (`_remove`, `_clear`), and the collection
+  keeps both names of every workspace. `HostRuntime` does not refuse to remove an image a
+  container is made from, as Podman does.
 - **Failures.** `BuildFailed` carries the redacted end of what the builder said and, where
   the runtime knows it, a `kind`; otherwise `builder.explain` finds the cause in the words
   (`CAUSES`), and `Workspaces._build_refusal` makes the `devcontainer.Refused` from
@@ -681,6 +716,115 @@ page](../docs/devcontainer.md#building-an-image).
 - **Restoring.** A plan whose image is one rcman built (`workspace_of_built_name`) is
   never pulled: if `built_images()` lacks it, the workspace fails with the
   `built_image_gone` message.
+
+## Rebuilding
+
+`Workspaces.rebuild` (`POST /api/workspaces/{id}/rebuild`, see
+[backend.md](backend.md#workspaces-and-servers); the administrators' account is
+[Rebuilding a workspace](../docs/devcontainer.md#rebuilding-a-workspace)) makes a workspace's
+container again on its volume from what the devcontainer.json in its work folder asks for
+now. It never goes through `_make` or `_configure`, whose refusal calls `_clear` and removes
+the volume; it shares their smaller steps (`_read_plan`, `_pulled`, `_built`,
+`_wait_for_build`), which take a `report` that writes to the row's `rebuild_log` instead of
+`log`.
+
+- **Admission.** `rebuild_refusal` is the one test, which the listing's `rebuildable` uses too:
+  refused while an upgrade of rcman is under way (`rcman_upgrading`), before the restore is
+  done (`rcman_starting`), while the workspace is being made or deleted (`workspace_not_ready`),
+  or anything works on it (`_working`, `_making`, a `rebuild_state` set: `workspace_rebuilding`); a ready workspace
+  needs a `source` (`rebuild_empty`) and its container (`rebuild_no_container`, from
+  `Runtime.exists`); a failed one needs a `failure` in `RECOVERABLE`, a `source` and its volume
+  (`Runtime.has_volume`), else `workspace_not_ready`. What the row says is looked at first
+  (`_rebuild_refusal_by_row`), and the runtime asked only about a workspace that passes it: the
+  listing asks `Runtime.labelled()` once for every container instead of `exists` for each
+  ready one, and `has_volume` for each failed one that passes. The
+  route needs `confirm` (`rebuild_confirm_required`). The runtime's part is asked before any
+  lock; the row's part again, and the write of `rebuild_state = preparing`, under `_images_lock`
+  and the workspace's lock, so that an upgrade's admission, which holds the images' lock, and
+  the rebuild each see the other: `rcman_upgrade._reason` gives `rebuilding` while
+  `any_rebuilding()` finds a phase in a row - but, once the restore is done, not a ready
+  workspace in `switching` that no thread of the service works on (`_left_in_switch`): the
+  upgrade's restart puts it back as `settle_left_over` would. The thread is kept in `_making`, so restore, the
+  orphan removals and the collection leave the workspace to it.
+- **Preparing** (`_prepare`, under `_working_on` and no lock): the file is read in the old
+  container, checked, and its image pulled or built as `NEXT_TAG`; the image read and the new
+  plan made, or, for no file, `default_image_id()` taken (none refuses with
+  `default_image_gone`). Any refusal or failure only writes `rebuild_error`, in the words of a
+  rebuild (`problems.rebuild_advice`), and removes the next image by its name; the container,
+  the volume and the old image are untouched. A pulled image is never removed here: the
+  collection removes it once nothing names it.
+- **Switching** (`_switch`): under the workspace's lock the phase becomes `switching`, from
+  which `ready()` refuses `workspace_rebuilding` (git, the servers' verbs, the terminal), the
+  listing reads no server and `pinned_servers` and `running` count it without reaching it; the
+  server, if tmux says it runs, is stopped with `Server.stop` - never `stop_server`, so
+  `wanted` is left as it is - and `claude_version` cleared. A server request that passed
+  `ready()` before and reaches the lock after is refused there too: `start_server`,
+  `stop_server`, `forget_server` and `confirm` look at the phase under the lock
+  (`_not_switching`). Then, without the lock, `on_rebuilding` (terminals.py ends the terminal
+  with `workspace_rebuilding`) and the channel closed; `_replace` discards the container, the
+  first step whose failure, of whatever kind, is rolled back. `_make_new` makes the new
+  container from the plan as built (a built image by its next name, and by id), with `_made_for` after it, which removes
+  the container and volume of a workspace deleted meanwhile; checks libc and git; runs every
+  create command, then `postStartCommand`. No lock is held through these, nor the person's
+  lock taken while a workspace's is held.
+- **Commit** (`_commit`): one write under the lock stores the plan by the built image's
+  `BUILT_TAG` name (`_Prepared.stored`), the default image's id where there is no plan (else
+  null), the digest, and `rebuild_state = promoting`; `_promote` then moves the built name
+  (`promote_build`), or removes the old built image by name where the new plan is not built;
+  only then is the phase cleared, and the channel closed again. A promotion that fails leaves
+  `promoting`, which the service's periodic look (`settle_left_over`, every
+  `IDLE_CHECK_SECONDS` once the restore is done) finishes for a row no thread of its works on,
+  and the next restore otherwise. Holding no lock, `start_server` starts the server again
+  if it ran before the switch (a start: `resume` needs the old tmux session, which is gone);
+  one that does not start is logged, and the restore starts it, `wanted` being still set.
+- **Rollback** (`_roll_back`): a failure while switching discards the new container, makes
+  one again from the stored plan or the workspace's `image_id`, runs the old create commands
+  and `postStartCommand` (a failing one only logged), starts the server again if it ran, and
+  writes `REBUILD_MESSAGES["rolled_back"]`
+  with the cause (a refusal's words, or a command's name, exit code and the tail of what it
+  printed, never the file's content). One that fails, and a failure nothing foresaw once the
+  phase is `switching` (`_rebuild_failed`), leave the workspace ready in `switching`
+  (`_left_to_put_back`): `ready()` refuses its server, git and terminal, no rebuild is offered,
+  the row's `server` is cleared (no server runs; `wanted` stays, so the restore starts it), and
+  `rollback_failed` with the cause is its `rebuild_error` and the last line of its
+  `rebuild_log`, which the page shows while a phase is set. The service's periodic look
+  (`settle_left_over`) puts it back as the restore does (see Restarts), each in a thread of its
+  own (`_putting_back`), and tries again at the next look while that fails; the restore at a
+  start does the same. Once done, the error becomes `put_back_later`, the cause kept, and the
+  server is started again if `wanted`. A failure nothing foresaw while preparing writes
+  `MESSAGES["workspace_failed"]` as the rebuild's error; in a failed workspace it adds it to the
+  steps, keeping `error` and `failure`.
+- **Recovery** (`_recover`): a failed workspace is read through its own container, started if
+  it stopped, or through one made from the current default image on its volume, which its row
+  does not record; then the same steps, with nothing to stop; the commit also makes it
+  `ready`, clearing `error`, `failure` and `log`. A failure keeps it `failed`, with the new
+  cause in `error` and the kind of a failed command, else the old kind, in `failure`, so it can
+  be rebuilt again; nothing is put back, `_clear` is never called and the volume stays; the
+  container stays only after a create command failed.
+- **Deleting.** `delete` treats a workspace with a rebuild thread, or, in `rcman-admin`, with a
+  phase in its row, as one being made: it marks it `deleting`, `_stop_working` ends what runs
+  (the watcher does it for `rcman-admin`'s), and the rebuild's end (`_rebuild_ended`) removes
+  it; `delete_person` waits for such workspaces as for those being made. `_rebuild_ended` looks
+  a second time after its slow steps (`_stopped`, the collection), having first taken its
+  thread out of `_making` under the workspace's lock, so that a deletion meanwhile is finished
+  by it or, after it, by the deletion itself. A row `rcman-admin` left `deleting` with a phase
+  that no thread of the service works on (`promoting` left over, a switch not put back) is
+  removed by `settle_left_over`. A deletion after the commit leaves the server unstarted: `start_server` refuses a workspace no longer ready.
+- **Restarts** (`_restore_rebuild`, `_restore_failed_rebuild`, before a restore looks at the
+  container): `preparing` is cleared, with `REBUILD_MESSAGES["restarted"]`, and the next image
+  removed; `switching` discards any container there, whatever image it is of - one of the old
+  image may be the new one, with another user, environment or commands -, so that the restore
+  makes it again from the old plan and runs its create commands again
+  (`_create_commands_again`), and keeps the phase until that is done (`_put_back`:
+  `restarted_switching`, or `put_back_later` after `rollback_failed`, `_put_back_error`). A
+  container that cannot be made now leaves it in `switching`, for `settle_left_over`; one whose
+  image is gone fails the workspace (`_image_gone`) and ends the phase (`_not_put_back`), the
+  failure's words kept. `promoting` finishes the promotion. A
+  failed workspace's phase is cleared with `restarted` in its `error`, its `failure` kept, its
+  container discarded if it was switching.
+- **The journal.** Each rebuild ends in one line on `rcman.workspaces`, `workspace <id>: ` and
+  the outcome `_rebuild`, `_replace`, `_roll_back` and `_recover` return: what it ended in, and
+  the first line of the reason where there is one.
 
 ## What rcman keeps, and brings back
 
@@ -708,21 +852,27 @@ the prefix it was started with.
   [A repository's devcontainer.json](#a-repositorys-devcontainerjson).
 - **Deleting.** `delete` marks it `deleting`, ends its terminal (see
   [The terminal's shell](#the-terminals-shell)), and removes its container and
-  volume, which ends its server, then its row — never the person's sign-in; one still being made goes once
-  it is made. One being cloned, pulled for, built for or running a lifecycle command is
+  volume, which ends its server, then its row — never the person's sign-in; one still being made
+  or rebuilt goes once that work stops (see [Rebuilding](#rebuilding), Deleting). One being cloned, pulled for, built for or running a lifecycle command is
   cancelled by deleting it: `_stop_working` sets its event, which stops a pull, and
   force-removes its builder, which ends a build, and its container, which ends git and the
   commands, and the
   making thread finds it `deleting` and finishes the removal; if the container
   cannot be removed now, the workspace goes when the work ends, at the latest at
-  its timeout. Deleting a person deletes each of theirs (see [people.md](people.md)).
+  its timeout. Cancelling works across processes through the row: a deletion from
+  `rcman-admin`, which has none of the service's events, only marks the row, and while the
+  work goes on `_working_on` keeps a thread (`_watch`) that reads the row every
+  `WORKING_POLL_SECONDS` and, once it is `deleting` or gone and no deletion in the service has
+  stopped the work, calls `_stop_working` as such a deletion does; the thread ends with the
+  work. Deleting a person deletes each of theirs (see [people.md](people.md)).
 - **Restoring.** When rcman starts, `restore` runs in the background, so rcman
   answers at once: it waits for the runtime, trying again while it is
   unavailable; finishes rows still `deleting`, and `creating` ones with no `source`, which are
   made again; fails a `creating` one with a `source`, which a restart interrupted
   while it was being made, with `CLONE_MESSAGES["restarted"]` (it is not cloned
   again, nor are its create commands run again, whatever it had done: the person
-  deletes it and decides); makes again a `ready` workspace whose container is
+  deletes it and decides); settles a rebuild a restart cut short (see
+  [Rebuilding](#rebuilding), Restarts); makes again a `ready` workspace whose container is
   gone, from its stored plan if it has one, and starts one that is stopped, and
   runs the plan's `postStartCommand` after either; ends what earlier terminals left
   in one that kept running (see [The terminal's shell](#the-terminals-shell)); removes what an interrupted
@@ -743,9 +893,9 @@ the prefix it was started with.
   workspace of the default image, from `workspaces.image_id`, recorded when it was first made
   (`_pinned`); a newer default image is for new workspaces. An id the storage no longer has
   is pulled again by the plan's digest (`runtime.repository_of` and the digest) and must
-  then be the very image; with no digest the workspace is failed, saying to delete it and
-  make it again (`image_gone`, `default_image_gone`, and for an image rcman built
-  `built_image_gone`). A plan with no id (one stored without) pulls its image's name as it
+  then be the very image; with no digest the workspace is failed, saying to rebuild or delete
+  it (`image_gone`, `default_image_gone`, and for an image rcman built `built_image_gone`,
+  each recorded as its `failure`). A plan with no id (one stored without) pulls its image's name as it
   always did (`Runtime.pull`, which uses the image the runtime has when the registry cannot be
   reached). If the registry says the image is not there or
   may not be had (`workspaces.image_is_gone` reads its words), the workspace is failed likewise;
@@ -758,9 +908,10 @@ the prefix it was started with.
   - no container, build, image or Claude Code version - when the table has no workspace but the
   runtime has some, which is logged as an error (`_table_is_empty_of_workspaces_there_are`);
   collects the images nothing refers to (`_collect_images`: not while a workspace is being made
-  or a plan cannot be read, never one a container is made from, never by force, and the keep
-  list is every stored plan's image and id, each workspace's `image_id`, the image built for
-  each workspace, and the runtime's own: every tag of the default and the builder repositories,
+  or rebuilt, but by a rebuild's own thread as it ends, nor when a plan cannot be read, never
+  one a container is made from, never by force, and the keep list is every stored plan's image
+  and id, each workspace's `image_id`, the image built for each workspace under both its names
+  (`BUILT_TAG`, `NEXT_TAG`), and the runtime's own: every tag of the default and the builder repositories,
   since an upgrade builds the next ones beside the service; an image with no name stays until it
   is `IMAGE_GRACE_SECONDS` old, being perhaps a layer of a build under way; names are compared
   fully qualified, as Podman lists them, `qualified_name`), which it does after a deletion too. It

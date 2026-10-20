@@ -97,6 +97,8 @@ function api() {
           server: null,
           server_error: null,
           claude_version: null,
+          rebuild: { state: null, log: null, error: null },
+          rebuildable: true,
         },
         {
           id: 2,
@@ -112,6 +114,7 @@ function api() {
         },
       ],
     },
+    "GET /api/workspaces/1/devcontainer": { changed: true },
     "GET /api/attention": NOTHING_TO_ATTEND,
     "GET /api/git/status": {
       branch: { name: "main", commit: "0123456789", upstream: null, ahead: null, behind: null },
@@ -288,6 +291,15 @@ const CHOICES: [string, Where, () => Promise<void>][] = [
     },
   ],
   ["deleting a workspace", "/?workspace=1", () => openTrash("alpha")],
+  [
+    "rebuilding a workspace",
+    "/?workspace=1",
+    async () => {
+      const card = await screen.findByRole("region", { name: m.containerTitle });
+      await userEvent.click(await within(card).findByRole("button", { name: m.rebuild }));
+      await screen.findByRole("dialog", { name: m.rebuildTitle("alpha") });
+    },
+  ],
   [
     "upgrading rcman",
     "/admin/rcman",

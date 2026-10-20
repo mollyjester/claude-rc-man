@@ -1,6 +1,7 @@
 """Workspaces: made, listed and deleted (backend/rcman/workspaces.py and its routes), and
 what rcman brings back when it starts, on the host runtime."""
 
+import contextlib
 import dataclasses
 import threading
 import time
@@ -10,7 +11,16 @@ from rcman import db
 from rcman import runtime as rt
 from rcman import workspaces as ws
 
-from tests.conftest import ALICE, BOB, MADE_WITHIN, as_user, changing, made_workspace, signed_in
+from tests.conftest import (
+    ALICE,
+    BOB,
+    MADE_WITHIN,
+    as_user,
+    changing,
+    host_runtime,
+    made_workspace,
+    signed_in,
+)
 
 
 def listed(client, who=ALICE) -> list[dict]:
@@ -796,3 +806,288 @@ def test_a_restore_runs_its_hooks_after_the_workspaces_and_past_one_that_fails(
     monkeypatch.setattr(service, "restore_hooks", [broken, lambda: seen.append("next")])
     service.restore()
     assert seen == ["workspaces", "broken", "next", "people"]
+
+
+# --- a deletion from another process (rcman-admin) stops what is being done ---------------
+
+# How soon work a deletion from another process stops must have ended: each held step below
+# would otherwise run on for MADE_WITHIN, until its gate gives up.
+STOPPED_WITHIN = 10.0
+# How long the planted twin watches a clone that no watcher stops: a great many of the
+# watcher's looks at the row, as quick_watch sets them.
+UNWATCHED_FOR = 0.5
+
+
+@pytest.fixture
+def quick_watch(monkeypatch):
+    monkeypatch.setattr(ws, "WORKING_POLL_SECONDS", 0.02)
+
+
+@pytest.fixture
+def recording(tmp_path):
+    from tests.test_clone import Recording
+
+    with host_runtime(tmp_path, Recording) as made:
+        yield made
+
+
+@pytest.fixture
+def flow(tmp_path):
+    from tests.test_devcontainer_flow import Flow
+
+    with host_runtime(tmp_path, Flow) as made:
+        yield made
+
+
+@pytest.fixture
+def publish(github_stand_in, tmp_path):
+    """``publish(files)``: the repository the clone tests clone, with ``files`` (name -> text)
+    committed in it."""
+    from tests.git_fixtures import fixture_git, make_repo
+
+    def publish(files: dict) -> None:
+        repo = make_repo(tmp_path / "src", origin=github_stand_in / "octo" / "widget.git")
+        for name, content in files.items():
+            (repo / name).parent.mkdir(parents=True, exist_ok=True)
+            (repo / name).write_text(content)
+        fixture_git(repo, "add", "-A")
+        fixture_git(repo, "commit", "-q", "-m", "A devcontainer")
+        fixture_git(repo, "push", "-q", "origin", "main")
+
+    return publish
+
+
+@contextlib.contextmanager
+def two_processes(settings, runtime):
+    """The service and rcman-admin: two Workspaces on the same database and the same Podman,
+    each with only its own threads and events, as two processes have."""
+    service = ws.Workspaces(settings, runtime)
+    shell = ws.Workspaces(settings, runtime, prunes=False)
+    try:
+        yield service, shell
+    finally:
+        shell.close()
+        service.close()
+
+
+def watchers(workspace_id: int) -> list[threading.Thread]:
+    return [
+        t
+        for t in threading.enumerate()
+        if t.name == f"{ws.WATCHER_PREFIX}{workspace_id}" and t.is_alive()
+    ]
+
+
+def gone_within(settings, workspace_id: int, seconds: float) -> bool:
+    deadline = time.monotonic() + seconds
+    while row(settings, workspace_id) is not None:
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.02)
+    return True
+
+
+def clone_deleted_elsewhere(settings, recording, within: float) -> tuple[bool, bool, str]:
+    """A clone the service runs, its git held until its container is removed, and rcman-admin
+    deleting the workspace: whether a watcher watched it, whether it was gone within
+    ``within`` seconds, and its container's name."""
+    from tests.test_clone import URL
+
+    recording.gate = threading.Event()
+    with two_processes(settings, recording) as (service, shell):
+        try:
+            made = service.create(_person(settings), None, URL)
+            assert recording.cloning.wait(MADE_WITHIN)
+            watched = bool(watchers(made.id))
+            assert recording.removed == []  # positive control: nothing has removed it yet
+            shell.delete(shell.get(made.id))  # marks it deleting: nothing of its own to stop
+            assert shell._working == {}
+            stopped = gone_within(settings, made.id, within)
+        finally:
+            recording.gate.set()
+        assert gone_within(settings, made.id, MADE_WITHIN)
+    return watched, stopped, made.container
+
+
+def test_a_deletion_from_another_process_stops_a_clone_promptly(settings, recording, quick_watch):
+    watched, stopped, name = clone_deleted_elsewhere(settings, recording, STOPPED_WITHIN)
+    assert watched and stopped
+    assert name in recording.removed and not recording.exists(name)
+
+
+def test_the_planted_twin_without_the_watcher_a_clone_deleted_elsewhere_runs_on(
+    settings, recording, quick_watch, monkeypatch
+):
+    monkeypatch.setattr(ws.Workspaces, "_watch", lambda self, *args: None)
+    watched, stopped, name = clone_deleted_elsewhere(settings, recording, UNWATCHED_FOR)
+    assert not watched  # the plant took effect: no watcher
+    assert not stopped  # and the guard fires: git ran on, its workspace deleted
+    assert not recording.exists(name)  # once let go, the service finished the deletion
+
+
+def deleted_elsewhere(settings, flow, made_by, held) -> tuple[int, float]:
+    """The service making a workspace until ``held`` is set, and rcman-admin deleting it then:
+    the workspace, and how long after the deletion it was gone."""
+    with two_processes(settings, flow) as (service, shell):
+        made = made_by(service)
+        assert held.wait(MADE_WITHIN)
+        assert watchers(made)  # positive control: the service watches it
+        began = time.monotonic()
+        shell.delete(shell.get(made))
+        assert gone_within(settings, made, STOPPED_WITHIN)
+        took = time.monotonic() - began
+    return made, took
+
+
+def cloned_by(publish, files):
+    from tests.test_clone import URL
+
+    publish(files)
+    return lambda service: service.create(_person(service.settings), None, URL).id
+
+
+def test_a_deletion_from_another_process_stops_a_pull(settings, flow, publish, quick_watch):
+    from tests.test_devcontainer_flow import IMAGE, config
+
+    flow.pull_gate = threading.Event()
+    try:
+        made, took = deleted_elsewhere(settings, flow, cloned_by(publish, config()), flow.pulling)
+    finally:
+        flow.pull_gate.set()
+    assert took < STOPPED_WITHIN
+    assert flow.pulled == []  # the pull did not finish
+    assert not [e for e in flow.events if e[0] == "create" and e[1] == IMAGE]
+    assert flow.labelled() == {} and not (flow.root / rt.container_name(made)).exists()
+
+
+def test_a_deletion_from_another_process_stops_a_build_and_removes_the_builder(
+    settings, flow, publish, quick_watch
+):
+    from tests.test_devcontainer_flow import building
+
+    flow.build_gate = threading.Event()
+    try:
+        made, took = deleted_elsewhere(
+            settings, flow, cloned_by(publish, building()), flow.building
+        )
+    finally:
+        flow.build_gate.set()
+    assert took < STOPPED_WITHIN
+    assert ("remove_build", made, False) in flow.events  # the watcher removed the builder
+    assert flow.builders() == set() and flow.built_images() == {}
+    assert not [e for e in flow.events if e[0] == "create" and e[1]]
+
+
+def test_a_deletion_from_another_process_stops_a_lifecycle_command(
+    settings, flow, publish, quick_watch
+):
+    from tests.test_devcontainer_flow import config
+
+    flow.gate = threading.Event()
+    try:
+        made, took = deleted_elsewhere(
+            settings, flow, cloned_by(publish, config(postCreateCommand="echo GATE")), flow.hooking
+        )
+    finally:
+        flow.gate.set()
+    assert took < STOPPED_WITHIN
+    name = rt.container_name(made)
+    assert ("remove", name) in flow.events
+    assert flow.labelled() == {} and not (flow.root / name).exists()
+
+
+def test_a_deletion_from_another_process_stops_a_restore_remaking_a_container(
+    settings, flow, quick_watch
+):
+    from tests.test_devcontainer_flow import IMAGE, a_plan, ready_with_plan, restoring
+
+    flow.pull_gate = threading.Event()
+    with two_processes(settings, flow) as (service, shell):
+        made = ready_with_plan(service, settings, flow, a_plan(), make_container=False)
+        thread = restoring(service)
+        try:
+            assert flow.pulling.wait(MADE_WITHIN)
+            assert watchers(made)  # positive control: the remaking is watched
+            began = time.monotonic()
+            shell.delete(shell.get(made))  # a ready one: rcman-admin removes it itself
+            assert row(settings, made) is None
+            thread.join(STOPPED_WITHIN)
+            assert not thread.is_alive() and time.monotonic() - began < STOPPED_WITHIN
+        finally:
+            flow.pull_gate.set()
+            thread.join(MADE_WITHIN)
+    name = rt.container_name(made)
+    assert flow.pulled == []  # the pull was stopped
+    assert not [e for e in flow.events if e[0] == "create" and e[1] == IMAGE]
+    assert name not in flow.labelled() and not (flow.root / name).exists()
+
+
+def test_the_watcher_ends_with_the_work_and_leaves_no_thread(service, settings, quick_watch):
+    made = insert(settings, 1, "watched", "creating")
+    with service._working_on(made) as cancel:
+        assert len(watchers(made)) == 1  # positive control: it is watched while worked on
+        time.sleep(5 * ws.WORKING_POLL_SECONDS)  # it looks at the row a few times meanwhile
+    assert watchers(made) == []
+    assert not cancel.is_set()  # nothing was stopped: the row is not being deleted
+    assert made not in service._working
+    with pytest.raises(RuntimeError), service._working_on(made):
+        assert len(watchers(made)) == 1
+        raise RuntimeError("planted: the work failed")
+    assert watchers(made) == []
+
+
+def test_a_deletion_in_the_same_process_is_not_stopped_twice_by_the_watcher(
+    settings, flow, publish, quick_watch
+):
+    from tests.test_devcontainer_flow import config
+
+    flow.pull_gate = threading.Event()
+    with two_processes(settings, flow) as (service, _):
+        try:
+            made = cloned_by(publish, config())(service)
+            assert flow.pulling.wait(MADE_WITHIN)
+            assert watchers(made)  # positive control: it is watched
+            service.delete(service.get(made))
+            assert gone_within(settings, made, STOPPED_WITHIN)
+        finally:
+            flow.pull_gate.set()
+    assert flow.events.count(("remove_build", made, False)) == 1
+
+
+@pytest.mark.filterwarnings("error::pytest.PytestUnhandledThreadExceptionWarning")
+def test_deleting_a_person_whose_workspace_its_own_making_could_not_remove_answers_at_once(
+    service, settings, runtime, monkeypatch
+):
+    """Nothing is left to wait for: the thread that made it is done, and restore finishes it."""
+    from rcman import problems
+    from rcman.problems import Problem
+
+    bob = _person(settings, BOB)
+    release, real = threading.Event(), runtime.create
+    runtime.create = lambda spec: (release.wait(MADE_WITHIN), real(spec))
+    made = service.create(bob, "stuck")
+
+    def refusing(name):
+        raise rt.RuntimeFailed("planted: it will not go")
+
+    monkeypatch.setattr(runtime, "remove", refusing)
+    out: list = []
+
+    def deleting():
+        try:
+            service.delete_person(bob)
+            out.append(None)
+        except Problem as refused:
+            out.append(refused)
+
+    thread = threading.Thread(target=deleting, daemon=True)
+    thread.start()
+    deadline = time.monotonic() + MADE_WITHIN
+    while (row(settings, made.id) or {"state": None})["state"] != ws.DELETING:
+        assert time.monotonic() < deadline
+        time.sleep(0.02)
+    release.set()
+    thread.join(STOPPED_WITHIN)
+    assert not thread.is_alive()
+    assert out[0].code == "workspace_failed" and out[0].title == problems.PERSON_DELETION_LEFT
+    assert row(settings, made.id)["state"] == ws.DELETING  # left for restore to finish

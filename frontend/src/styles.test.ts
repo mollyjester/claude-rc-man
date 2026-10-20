@@ -803,6 +803,33 @@ test("on a phone a dialog is a sheet from the screen's foot, and on a wider one 
   expect(ruleOf("dialog.dialog.large", mediaOf(PHONE))).toMatch(/width:\s*100%/);
 });
 
+// The cards a dialog is drawn in, as Rebuild's is in the Container card: a rule that sets the
+// margin of a card's first or last child, whatever it is, would take the dialog's margin: auto,
+// which keeps it in the middle, from it when the dialog is that child.
+const DIALOG_HOSTS = [".card", ".panel-section"];
+
+function marginsTakenFromDialogs(css: string): string[] {
+  return [...uncommented(css).matchAll(/([^{}]+)\{([^}]*)\}/g)]
+    .filter(([, , body]) => /(?:^|;)\s*margin(?:-[a-z-]+)?\s*:/.test(body))
+    .flatMap(([, selectors]) => selectors.split(","))
+    .map((selector) => selector.trim().replace(/\s+/g, " "))
+    .filter((selector) =>
+      DIALOG_HOSTS.some((host) =>
+        new RegExp(`(?:^|\\s)${host.replace(".", "\\.")} > (?::first-child|:last-child|\\*)`).test(
+          selector,
+        ),
+      ),
+    )
+    .filter((selector) => !selector.includes(":not(dialog)"));
+}
+
+test("a dialog drawn inside a card keeps the margin that puts it in the middle", () => {
+  expect(ruleOf(".card > :last-child:not(dialog)")).toMatch(/margin-bottom/); // positive control
+  expect(marginsTakenFromDialogs(STYLES)).toEqual([]);
+  const planted = `${STYLES}\n.card > :last-child { margin-bottom: 0; }`;
+  expect(marginsTakenFromDialogs(planted)).toEqual([".card > :last-child"]);
+});
+
 test("a dialog's footer keeps to the foot of the dialog while what is above it scrolls", () => {
   const footer = ruleOf("dialog.dialog .footer");
   expect(footer).toMatch(/position:\s*sticky/);

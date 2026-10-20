@@ -2,6 +2,7 @@ import {
   type FormEvent,
   type KeyboardEvent,
   type ReactNode,
+  type RefObject,
   useCallback,
   useEffect,
   useId,
@@ -18,7 +19,15 @@ import { BackIcon, PlusIcon, RepoIcon, TrashIcon, WorkspacesIcon } from "./Icons
 import { MessageBar } from "./MessageBar";
 import { m } from "./messages";
 import { asApiError, ProblemView, useFieldErrors } from "./ProblemView";
-import { ACTIONS, dotFor, ServerCard, StatusDot, type Workspace, WorkspaceBadge } from "./Servers";
+import {
+  ACTIONS,
+  dotFor,
+  REBUILDING,
+  ServerCard,
+  StatusDot,
+  type Workspace,
+  WorkspaceBadge,
+} from "./Servers";
 import { Terminal } from "./Terminal";
 import { usePopup } from "./usePopup";
 import { failureSentence } from "./workspaceError";
@@ -154,6 +163,15 @@ export function Dashboard({ pollMs }: { pollMs: number }) {
     refresh();
   }
 
+  // A workspace as an answer gave it, in the list's place of the one it was, until the next
+  // refresh, which is asked for at once.
+  function updated(workspace: Workspace) {
+    setWorkspaces(
+      (current) => current?.map((w) => (w.id === workspace.id ? workspace : w)) ?? null,
+    );
+    refresh();
+  }
+
   // A workspace that is not the selected one leaves the selection as it is.
   function deleted(workspace: Workspace) {
     setRemoving(null);
@@ -223,8 +241,10 @@ export function Dashboard({ pollMs }: { pollMs: number }) {
                 key={selected.id}
                 workspace={selected}
                 approved={approved}
+                upgrading={upgrading}
                 pollMs={pollMs}
                 onChange={refresh}
+                onUpdated={updated}
               />
             ) : (
               <section className="panel">
@@ -519,11 +539,21 @@ function NewWorkspace({
   );
 }
 
-// One of Overview's cards, named by its heading.
-function PanelSection({ title, children }: { title: string; children: ReactNode }) {
+// One of Overview's cards, named by its heading, which can be given focus (headingRef).
+function PanelSection({
+  title,
+  headingRef,
+  children,
+}: {
+  title: string;
+  headingRef?: RefObject<HTMLHeadingElement | null>;
+  children: ReactNode;
+}) {
   return (
     <section className="card panel-section" aria-label={title}>
-      <h3>{title}</h3>
+      <h3 ref={headingRef} tabIndex={headingRef ? -1 : undefined}>
+        {title}
+      </h3>
       {children}
     </section>
   );
@@ -707,15 +737,252 @@ function FailureSaid({ error, cloned }: { error: string | null; cloned: boolean 
   );
 }
 
-// The steps taken while a workspace is made, named where they are seen: a figure's name is not
-// shown by itself, and not every reader takes it from its caption.
-function Steps({ log }: { log: string }) {
+// The steps taken while a workspace is made or rebuilt, named where they are seen: a figure's
+// name is not shown by itself, and not every reader takes it from its caption. `live` while they
+// are still being taken, so that a new step is announced, politely.
+function Steps({ log, live = false }: { log: string; live?: boolean }) {
   const caption = useId();
   return (
     <figure aria-labelledby={caption}>
       <figcaption id={caption}>{m.workspaceLog}</figcaption>
-      <pre className="screen workspace-log">{log}</pre>
+      <pre className="screen workspace-log" aria-live={live ? "polite" : undefined}>
+        {log}
+      </pre>
     </figure>
+  );
+}
+
+// No rebuild under way, and none recorded.
+const NO_REBUILD = { state: null, log: null, error: null };
+const rebuildOf = (workspace: Workspace) => workspace.rebuild ?? NO_REBUILD;
+
+// Why a rebuild did not finish, as the server says it: its first line, which says what became of
+// the workspace and what to do, in the open; the rest, why it failed, behind Details.
+function RebuildFailed({ error }: { error: string }) {
+  const [first, ...rest] = error.trim().split("\n");
+  return (
+    <MessageBar kind="problem" role="alert">
+      <p>{m.rebuildFailed}</p>
+      <p>{first}</p>
+      {rest.length > 0 && (
+        <details>
+          <summary>{m.detailsTitle}</summary>
+          <pre className="screen workspace-error">{rest.join("\n")}</pre>
+        </details>
+      )}
+    </MessageBar>
+  );
+}
+
+// Rebuild, offered where the server says a rebuild may be asked for now (`rebuildable`) and rcman
+// is not being upgraded, and shown waiting while one is under way; it asks first. `primary` where
+// it is the thing to do next. Once one is started, focus goes to `focusAfter`, since the button
+// waits from then on.
+function RebuildAction({
+  workspace,
+  upgrading,
+  primary,
+  focusAfter,
+  onStarted,
+  onFailed,
+}: {
+  workspace: Workspace;
+  upgrading: boolean;
+  primary: boolean;
+  focusAfter: RefObject<HTMLElement | null>;
+  onStarted: (workspace: Workspace) => void;
+  onFailed: () => void;
+}) {
+  const [asking, setAsking] = useState(false);
+  // Set once a rebuild is started: focus moves once the dialog has given it back.
+  const refocus = useRef(false);
+  useEffect(() => {
+    if (asking || !refocus.current) return;
+    refocus.current = false;
+    focusAfter.current?.focus();
+  });
+  const running = rebuildOf(workspace).state !== null;
+  if (!running && (!workspace.rebuildable || upgrading)) return null;
+  return (
+    <>
+      <div className="actions">
+        <button
+          type="button"
+          className={primary && !running ? "primary" : undefined}
+          disabled={running}
+          onClick={() => setAsking(true)}
+        >
+          {running ? m.rebuildBusy : m.rebuild}
+        </button>
+      </div>
+      {asking && (
+        <RebuildWorkspaceDialog
+          workspace={workspace}
+          onStarted={(started) => {
+            refocus.current = true;
+            setAsking(false);
+            onStarted(started);
+          }}
+          onFailed={onFailed}
+          onCancel={() => setAsking(false)}
+        />
+      )}
+    </>
+  );
+}
+
+// Asks before a rebuild: what it does, what it ends and what it keeps, that the repository's
+// commands run again, and what the build may cost; for a failed workspace, that there is nothing
+// earlier to go back to. A refusal is shown in it.
+function RebuildWorkspaceDialog({
+  workspace,
+  onStarted,
+  onFailed,
+  onCancel,
+}: {
+  workspace: Workspace;
+  onStarted: (workspace: Workspace) => void;
+  onFailed: () => void;
+  onCancel: () => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<ApiError | null>(null);
+  const failed = workspace.state === "failed";
+
+  async function rebuild(event: FormEvent) {
+    event.preventDefault();
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const answer = await api.post<{ workspace: Workspace }>(
+        `/api/workspaces/${workspace.id}/rebuild`,
+        { confirm: true },
+      );
+      onStarted(answer.workspace);
+    } catch (e) {
+      setError(asApiError(e));
+      setBusy(false);
+      onFailed();
+    }
+  }
+
+  return (
+    <Dialog
+      owner="RebuildWorkspaceDialog"
+      title={m.rebuildTitle(workspace.name)}
+      onClose={onCancel}
+      closable={!busy}
+    >
+      <form noValidate onSubmit={rebuild}>
+        <p>{failed ? m.rebuildIntroFailed : m.rebuildIntro}</p>
+        {!failed && (
+          <>
+            <p>{m.rebuildEndsTitle}</p>
+            <ul className="rebuild-list">
+              {m.rebuildEnds.map((line) => (
+                <li key={line}>{line}</li>
+              ))}
+            </ul>
+          </>
+        )}
+        <p>{m.rebuildKeepsTitle}</p>
+        <ul className="rebuild-list">
+          {m.rebuildKeeps.map((line) => (
+            <li key={line}>{line}</li>
+          ))}
+        </ul>
+        <p>{failed ? m.rebuildCommandsFailed : m.rebuildCommands}</p>
+        <p>{m.rebuildMemory}</p>
+        <ProblemView error={error} />
+        <div className="actions footer">
+          <button type="submit" className="primary" disabled={busy}>
+            {busy ? m.rebuildBusy : m.rebuildConfirm}
+          </button>
+          <button type="button" disabled={busy} onClick={onCancel}>
+            {m.cancel}
+          </button>
+        </div>
+      </form>
+    </Dialog>
+  );
+}
+
+// Whether the workspace's devcontainer.json, or its Dockerfile, changed since its container was
+// made: asked when the card opens and every pollMs; null where the server does not know, and
+// where it could not be asked, which the card does not remark on. An answer older than one asked
+// for since is dropped.
+function useDevcontainerChanged(workspace: number, pollMs: number): boolean | null {
+  const [changed, setChanged] = useState<boolean | null>(null);
+  const latest = useRef(0);
+  useEffect(() => {
+    const ask = async () => {
+      const mine = ++latest.current;
+      let answer: boolean | null = null;
+      try {
+        const said = await api.get<{ changed: boolean | null }>(
+          `/api/workspaces/${workspace}/devcontainer`,
+        );
+        answer = said.changed;
+      } catch {
+        answer = null;
+      }
+      if (mine === latest.current) setChanged(answer);
+    };
+    ask();
+    const timer = pollMs > 0 ? setInterval(ask, pollMs) : undefined;
+    return () => {
+      clearInterval(timer);
+      latest.current++;
+    };
+  }, [workspace, pollMs]);
+  return changed;
+}
+
+// The Container card of a ready workspace's Overview: what its container is made from, whether
+// its devcontainer.json changed since, Rebuild, and how a rebuild goes or why the last one did
+// not finish.
+function ContainerCard({
+  workspace,
+  upgrading,
+  pollMs,
+  onUpdated,
+  onChange,
+}: {
+  workspace: Workspace;
+  upgrading: boolean;
+  pollMs: number;
+  onUpdated: (workspace: Workspace) => void;
+  onChange: () => void;
+}) {
+  const changed = useDevcontainerChanged(workspace.id, pollMs);
+  const heading = useRef<HTMLHeadingElement>(null);
+  const rebuild = rebuildOf(workspace);
+  const running = rebuild.state !== null;
+  return (
+    <PanelSection title={m.containerTitle} headingRef={heading}>
+      <p className="muted">{workspace.source === null ? m.containerEmpty : m.containerIntro}</p>
+      {changed === true && !running && (
+        <MessageBar kind="info">
+          <p>{m.devcontainerChanged}</p>
+        </MessageBar>
+      )}
+      {running && (
+        <MessageBar kind="info">
+          <p>{m.rebuildRunning}</p>
+        </MessageBar>
+      )}
+      {!running && rebuild.error && <RebuildFailed error={rebuild.error} />}
+      {rebuild.log && <Steps log={rebuild.log} live={running} />}
+      <RebuildAction
+        workspace={workspace}
+        upgrading={upgrading}
+        primary={changed === true}
+        focusAfter={heading}
+        onStarted={onUpdated}
+        onFailed={onChange}
+      />
+    </PanelSection>
   );
 }
 
@@ -827,13 +1094,17 @@ function TabPanel({
 function WorkspacePanel({
   workspace,
   approved,
+  upgrading,
   pollMs,
   onChange,
+  onUpdated,
 }: {
   workspace: Workspace;
   approved: string | null;
+  upgrading: boolean;
   pollMs: number;
   onChange: () => void;
+  onUpdated: (workspace: Workspace) => void;
 }) {
   const [tab, chooseTab] = useTab();
   const ready = workspace.state === "ready";
@@ -845,12 +1116,22 @@ function WorkspacePanel({
   }, [terminalShown]);
   const tabsId = useId();
   const cloning = workspace.state === "creating" && workspace.source !== null;
-  const { server, server_error: unread } = workspace;
+  const { server, server_error: serverError } = workspace;
+  // While a rebuild replaces its container, the server is not read: that is said, not a problem.
+  const replacing = serverError?.code === REBUILDING;
+  const unread = replacing ? null : serverError;
+  const rebuild = rebuildOf(workspace);
+  const failedRebuilding = workspace.state === "failed" && rebuild.state !== null;
+  // A failed workspace's steps are its last rebuild's where it had one, else its making's.
+  const steps = workspace.state === "failed" ? (rebuild.log ?? workspace.log) : workspace.log;
+  const title = useRef<HTMLHeadingElement>(null);
   return (
     <section aria-label={workspace.name} className="panel">
       <div className="panel-head">
         <div className="panel-title">
-          <h2>{workspace.name}</h2>
+          <h2 ref={title} tabIndex={-1}>
+            {workspace.name}
+          </h2>
           <WorkspaceBadge state={workspace.state} />
         </div>
         {workspace.source_page && (
@@ -878,18 +1159,34 @@ function WorkspacePanel({
           <p>{m.workspaceDeleting}</p>
         </MessageBar>
       )}
+      {workspace.state === "failed" &&
+        (failedRebuilding ? (
+          <MessageBar kind="info">
+            <p>{m.rebuildRunning}</p>
+          </MessageBar>
+        ) : (
+          <MessageBar kind="problem">
+            <FailureSaid error={workspace.error} cloned={workspace.source !== null} />
+          </MessageBar>
+        ))}
       {workspace.state === "failed" && (
-        <MessageBar kind="problem">
-          <FailureSaid error={workspace.error} cloned={workspace.source !== null} />
-        </MessageBar>
+        <RebuildAction
+          workspace={workspace}
+          upgrading={upgrading}
+          primary
+          focusAfter={title}
+          onStarted={onUpdated}
+          onFailed={onChange}
+        />
       )}
-      {!ready && workspace.log && <Steps log={workspace.log} />}
+      {!ready && steps && <Steps log={steps} live={failedRebuilding} />}
       {ready && (
         <>
           <TabList id={tabsId} tab={tab} onChoose={chooseTab} />
           <TabPanel id={tabsId} name="overview" shown={tab === "overview"}>
             <div className="overview">
               <PanelSection title={m.serverTitle}>
+                {replacing && <p>{m.serverRebuilding}</p>}
                 {unread && (
                   <>
                     <ProblemView error={new ApiError(0, unread.code, unread.title)} />
@@ -912,13 +1209,20 @@ function WorkspacePanel({
                   workspace.claude_version !== approved && (
                     <p className="muted">{m.serverVersionDiffers(approved)}</p>
                   )}
-                {!server && !unread && (
+                {!server && !serverError && (
                   <>
                     <p>{m.noServer}</p>
                     <StartServer workspace={workspace.id} onStarted={onChange} />
                   </>
                 )}
               </PanelSection>
+              <ContainerCard
+                workspace={workspace}
+                upgrading={upgrading}
+                pollMs={pollMs}
+                onUpdated={onUpdated}
+                onChange={onChange}
+              />
               <Changes workspace={workspace.id} pollMs={pollMs} />
             </div>
           </TabPanel>

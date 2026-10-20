@@ -25,6 +25,11 @@ make rcman read a file of the workspace's that is not its own. A file that is to
 comments and trailing commas, as devcontainer.json does. Its content is never shown in a
 message; a syntax error is reported by its line and column, and a key by its name.
 
+A file that builds from a Dockerfile has that Dockerfile read too, the same way, so that a
+change to it is seen (see [Rebuilding a workspace](#rebuilding-a-workspace)): a Dockerfile
+that is a symbolic link, or is in a folder that is one, is refused, and one bigger than the
+same `MAX_BYTES` is refused unread.
+
 ## What each key does
 
 The tables below are the policy itself, key by key; a test holds them equal to it.
@@ -56,9 +61,9 @@ entry of a label may not carry the keys that describe a build (`build`, `image`,
 | `init` | honoured | Accepted. Every workspace's container runs with an init process. |
 | `waitFor` | honoured | Accepted. The workspace is ready only after all its create commands have run. |
 | `overrideCommand` | honoured | Accepted when absent or true. rcman runs its own process in the container. |
-| `onCreateCommand` | honoured | Run once, as the container's user in the work folder, before the workspace is ready. A string runs in a shell, an array as a program, and the entries of an object one after another. A command that takes too long is stopped. |
-| `updateContentCommand` | honoured | Run once, as the container's user in the work folder, before the workspace is ready. A string runs in a shell, an array as a program, and the entries of an object one after another. A command that takes too long is stopped. |
-| `postCreateCommand` | honoured | Run once, as the container's user in the work folder, before the workspace is ready. A string runs in a shell, an array as a program, and the entries of an object one after another. A command that takes too long is stopped. |
+| `onCreateCommand` | honoured | Run once when the container is made, and again on each Rebuild, as the container's user in the work folder, before the workspace is ready. A string runs in a shell, an array as a program, and the entries of an object one after another. A command that takes too long is stopped. |
+| `updateContentCommand` | honoured | Run once when the container is made, and again on each Rebuild, as the container's user in the work folder, before the workspace is ready. A string runs in a shell, an array as a program, and the entries of an object one after another. A command that takes too long is stopped. |
+| `postCreateCommand` | honoured | Run once when the container is made, and again on each Rebuild, as the container's user in the work folder, before the workspace is ready. A string runs in a shell, an array as a program, and the entries of an object one after another. A command that takes too long is stopped. |
 | `postStartCommand` | honoured | Run as the create commands are, and again each time the workspace's container is started, before its Claude server is. |
 | `userEnvProbe` | honoured | Accepted but never run: commands get the environment of the file and the image, not one probed from a shell. |
 | `build` | honoured | rcman builds the image in a sandbox of its own, from a copy of the repository without its git folder, as the workspace is made. |
@@ -245,7 +250,7 @@ with no more than a workspace has. Which CLI and Node the builder image holds is
   know, and does not refuse what rcman does (`runArgs`, `mounts`, `privileged`), so rcman
   holds the whole file to the policy itself before anything is built. The file's own
   lifecycle commands, user and environment are not given to the CLI: rcman applies them
-  once, from the plan, so no command runs twice. The CLI is run with `--no-lockfile`, so the
+  from the plan alone, so no command runs twice when a container is made. The CLI is run with `--no-lockfile`, so the
   copy of the repository is not changed.
 - **Features.** A feature is one of the repository (`./name` in the folder of
   devcontainer.json), one in a registry that names its host, or one at an https address. What
@@ -271,7 +276,7 @@ with no more than a workspace has. Which CLI and Node the builder image holds is
   is made from it. An image that was loaded and not kept is removed by its id. An image
   bigger than `MAX_IMAGE_BYTES` in the same file is not copied.
 - **Progress.** The steps the build takes, and the copy, are lines of the workspace's
-  creation log, as an image pull's are, with what the CLI said redacted of the person's
+  creation log, or of its rebuild's, as an image pull's are, with what the CLI said redacted of the person's
   GitHub token.
 - **Waiting.** The number of builds at once is bounded (`MAX_BUILDS` in
   `backend/rcman/workspaces.py`); a build beyond it waits for a place, with a line in its
@@ -290,8 +295,12 @@ its volume and the archive are removed; a staging folder an earlier rcman left i
 when rcman starts.
 What stays is one image in rcman's storage for each workspace that was built, and a copy of
 it for each person's range that has run a workspace from it (see
-[The user and the shared sign-in](#the-user-and-the-shared-sign-in)). rcman does not check
-for free space first: a build that runs out of it fails as below.
+[The user and the shared sign-in](#the-user-and-the-shared-sign-in)). While a workspace is
+rebuilt its new image is built beside the old one, under a name of its own (`NEXT_TAG` in
+`backend/rcman/runtime.py`), so for a while the storage holds both; the new one takes the
+old one's name when the rebuild is done, and the old one is removed once nothing is made from
+it. One that a rebuild cut short by rcman's restart left is removed when rcman starts. rcman
+does not check for free space first: a build that runs out of it fails as below.
 
 ### When a build fails
 
@@ -313,16 +322,20 @@ apart, from the words the builder used (`CAUSES` in `backend/rcman/builder.py`):
 Any other failure says that the build could not be done, with the same end of the log. The
 messages are `problems.DEVCONTAINER_MESSAGES`. The container, the builder, its volume and
 the built image are all removed, leaving the failed entry only, as for a refused
-configuration.
+configuration. A build that fails during a [Rebuild](#rebuilding-a-workspace) removes only the
+builder, its volume and the new image: the workspace stays as it was.
 
 ## Lifecycle commands
 
 `onCreateCommand`, `updateContentCommand` and `postCreateCommand` are the create commands.
-They run once, in that order, as the specification runs them, and the workspace is not ready
-until they are done. `postStartCommand` runs after them, and again every time the
-workspace's container is started: when a person's machine restarts and rcman brings the
-workspace back, and when it is made again after a loss. A container that kept running while
-rcman restarted is not started, so `postStartCommand` does not run for it.
+They run when the workspace's container is made, in that order, as the specification runs
+them, and the workspace is not ready until they are done: once when the workspace is made, and
+again on each [Rebuild](#rebuilding-a-workspace), on the work folder they ran on before. They
+should therefore be safe to run again (idempotent): a command that clones a second repository
+or appends to a file should check first. `postStartCommand` runs after them, and again every
+time the workspace's container is started: when a person's machine restarts and rcman brings
+the workspace back, and when it is made again after a loss. A container that kept running
+while rcman restarted is not started, so `postStartCommand` does not run for it.
 
 - A command is run as the container's user in the work folder, with the environment above.
   A string is run by a shell, an array as a program, and the entries of an object one after
@@ -333,12 +346,18 @@ rcman restarted is not started, so `postStartCommand` does not run for it.
   token removed from it if it printed one; only the end of each command's output is kept
   (`HOOK_KEEP_BYTES`).
 - A create command that fails or times out fails the workspace, with its exit code and the
-  end of its output. The container and the volume are **kept** so the person can see what
-  happened; deleting the workspace removes them.
-- A failing `postStartCommand` is logged and does not stop the workspace or its server.
+  end of its output. The container and the volume are **kept**; the person can rebuild the
+  workspace, which runs its commands again on the same volume, or delete it, which removes
+  them. During a Rebuild of a ready workspace a failing command puts the workspace back as it
+  was instead (see below).
+- When the container is made, at the workspace's making or at a Rebuild, `postStartCommand`
+  is run as the create commands are, and fails the workspace, or the Rebuild, as they do. When
+  the container is started again, a failing `postStartCommand` is logged and does not stop the
+  workspace or its server.
 
 **A security note.** The commands are the repository's, and the person chose them by choosing
-the repository. They run inside the workspace with everything the workspace has, which
+the repository, or, at a Rebuild, by asking for it with the file that is in their workspace
+then. They run inside the workspace with everything the workspace has, which
 includes the person's GitHub token: git and gh read it from files that all of the
 person's workspaces share, and any command in a workspace can read those files. Treat a
 repository's lifecycle commands as the repository's code run with the person's token and
@@ -357,14 +376,92 @@ is made on the result. Only the failed
 entry stays, with the reason in plain words, which names the key to change. A person fixes
 the file, pushes the change, and makes the workspace again.
 
-A failing create command is different: it keeps the container and the volume, as above.
+A failing create command is different: it keeps the container and the volume, as above. During
+a Rebuild nothing is removed for a refusal: the workspace stays as it was, and the reason says
+to change the file and rebuild again.
 
-## Changing the file, and restoring
+## Rebuilding a workspace
 
-A changed devcontainer.json applies only to workspaces made afterwards. A workspace made
-earlier keeps the plan it was made from; a person who wants the change deletes the workspace
-and makes it again, losing what is in it. A later step will apply a changed file to an
-existing workspace.
+A changed devcontainer.json, or a changed Dockerfile it builds from, does not change a
+workspace by itself: the workspace keeps the plan it was made from. rcman records a digest of
+the file and its Dockerfile when the workspace is made and when it is rebuilt, and tells the
+person when the file in the workspace's work folder differs from it; the person then asks
+for a **Rebuild** (see [Workspaces](workspaces.md)), which makes the container again from what
+the file asks for now, on the same volume, keeping what is in the work folder. The file read is
+the one in the workspace as it is then, changed there or pulled. A workspace with no file is
+rebuilt from rcman's current default image, so a Rebuild is also how a workspace moves to a
+newer default image; a file removed makes the workspace from the default image again, and a
+file added makes it from the file's image.
+
+The digest covers the place the file was found in, what it holds and the Dockerfile it builds
+from, and nothing else: a change to another file of the build's context, to a feature of the
+repository's (`./name`), or a tag that names another image by now is not seen. A Rebuild asked
+for anyway applies them.
+
+A Rebuild takes these steps:
+
+1. **Preparing.** The file is read and held to the policy, and the image it names is pulled, or
+   the one it describes is built, beside the running container, which the person goes on
+   using. A refusal or a failure here changes nothing: the reason is shown with the workspace.
+2. **Switching.** The workspace's server, if it runs, is stopped, its terminal is ended and its
+   container is discarded; meanwhile the workspace's server, git and terminal are refused.
+   The person confirms this when they ask. The new container is made on the same volume, its
+   git and glibc are checked, and every create command runs, then `postStartCommand`.
+3. **Done.** The new plan is stored, the old image is removed once nothing is made from it, and
+   the server is started again in the new container if it was running. Claude Code's sessions
+   are those of the server started again; what was running in the old container, and its
+   `/tmp`, are gone.
+
+If anything fails while the container is replaced - the image cannot be run, has no usable git
+or glibc, or a create command fails - the workspace is **put back**: its container is made
+again from the image it was made from, its old create commands run again, then its
+`postStartCommand`, and its server is started again. What the new commands wrote to the work
+folder stays. The same holds when Podman does not answer while the old container is discarded.
+If even putting it back fails, or the rebuild fails in a way rcman did not foresee once the
+old container was being replaced, the workspace stays in the switch: its server, git and
+terminal stay refused, no server runs in it, and its steps say that it is put back as soon as
+rcman can. rcman tries again every little while, and when it starts: its container is made
+again from the image it was made from, its old create commands run again, and its server is
+started if it was running; if the image it was made from cannot be had by then, the workspace
+fails as in [Restoring](#restoring), and may be rebuilt. Such a workspace does not hold up an
+upgrade of rcman, whose restart puts it back too. Either way the workspace says what happened.
+
+A workspace that failed because a create command failed or took too long, or because the image
+it was made from cannot be had now, keeps its volume, and may be rebuilt too: it is read
+through its own container, or one made from rcman's default image where it has none, made as
+above, and is ready again when it is done. If that fails it stays failed, with the new reason,
+and may be rebuilt again; nothing is put back, and its volume is never removed. A workspace
+whose clone failed, whose file was refused when it was made, or that rcman's restart cut short
+while it was made, cannot be rebuilt: delete it and make it again.
+
+- **Limits.** The build of a Rebuild counts against the person's limits as any build does, and
+  runs while the workspace's server and Claude still run in the old container, so the two share
+  the person's memory limit (see [Limits](users.md#limits)); a limit set close to what a
+  server uses can make the build, or the server, fail.
+- **Users.** rcman maps a workspace's user onto the same host user as root has in the person's
+  other workspaces (see [The user and the shared sign-in](#the-user-and-the-shared-sign-in)),
+  and leaves every other id as it is. A Rebuild that changes `remoteUser`, or moves between the
+  default image and a file, changes which id inside the container is that host user: files the
+  old user owned stay owned by the host user the new one is, but they show, inside the
+  container, under the id that host user now has. From the default image (root) to a user with
+  uid 1000, files root wrote show as the new user's and files of uid 1000 show as root's; the
+  other way round, files of the image's user show as root's and files root wrote show as uid
+  1000's. The work folder, the Claude sign-in and git's configuration stay the workspace user's
+  in both directions; files of other ids in the volume, such as what a nested container stored,
+  may need their owners changed. Every id stays within the person's range.
+- **Upgrades.** A Rebuild is refused while rcman is upgraded, and an upgrade is refused while a
+  workspace is rebuilt (see [Installation](installation.md)).
+- **Restarts.** A Rebuild that rcman's restart cut short is settled when rcman starts: one that
+  was preparing leaves the workspace as it was; one that was replacing the container makes it
+  again from the image it was made from, with its create commands run again, whatever container
+  was there, since one of the same image may already be the new one, and stays in the switch,
+  tried again every little while, until that is done; one that had stored its new
+  plan is finished. The Rebuild of a failed workspace that a restart cut short leaves it
+  failed, and it may be rebuilt again. The workspace says so. A Rebuild that stored its new plan but could not
+  finish renaming the image it built is finished by rcman shortly afterwards, without a
+  restart.
+
+## Restoring
 
 The plan (the image, the user, the environment and the commands) is stored with the
 workspace, with the id of the image it was made from, and the digest where the image came from a
@@ -373,15 +470,17 @@ from the stored plan on the same volume, from the image of that id: a tag that n
 image by then changes nothing, and nothing is pulled while the image is in rcman's storage. A
 workspace made from rcman's own image is made again from the image it was made from, not from a
 newer one. If rcman's storage lacks the image, it is pulled by its digest where
-there is one; if it cannot be had, the workspace fails and says to delete it and make it again.
-An image that was built is never built again nor pulled: one that is missing from
+there is one; if it cannot be had, the workspace fails and says so, and may be rebuilt or
+deleted. An image that was built is never built again nor pulled: one that is missing from
 rcman's storage fails the workspace, which says so. Restoring also removes what no workspace
-needs: builders left by a build and their volumes, built images that no stored plan names,
-and the other images in rcman's storage that nothing refers to, such as images pulled for
-workspaces that are gone and older default images; it does so after a workspace or a person
-is deleted too, and never removes an image a container is made from. It keeps every image a
-stored plan or a workspace names, by name and by id, the default and the builder images with every tag they
-have, and an image with no name for a while after it was made. It removes nothing at all
-when the table of workspaces is empty while rcman's Podman holds some, which it writes to the
-[journal](journal.md) as an error. The create commands are not run again. A workspace that rcman's restart interrupted
-while it was being made fails and says so; it is not made again.
+needs: builders left by a build and their volumes, built images that no stored plan names, an
+image a Rebuild left, and the other images in rcman's storage that nothing refers to, such as
+images pulled for workspaces that are gone and older default images; it does so after a
+workspace or a person is deleted, and after a Rebuild, too, and never removes an image a
+container is made from. It keeps every image a stored plan or a workspace names, by name and by
+id, the default and the builder images with every tag they have, and an image with no name for
+a while after it was made. It removes nothing at all when the table of workspaces is empty
+while rcman's Podman holds some, which it writes to the [journal](journal.md) as an error. The
+create commands are not run again, except for a Rebuild cut short while the container was
+replaced (see [Rebuilding a workspace](#rebuilding-a-workspace)). A workspace that rcman's restart interrupted while it was
+being made fails and says so; it is not made again.

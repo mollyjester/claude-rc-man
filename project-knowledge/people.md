@@ -63,8 +63,13 @@ workspace is made for them (`not_allowed`); ends a sign-in of theirs that waits 
 (`on_person_deleting`, `Accounts.forget`) and, since `Accounts` also refuses their status, a
 new sign-in and a code once they are marked (`not_allowed`, so that none makes their volume
 again); deletes
-every workspace of theirs, container and volume, waiting for one still being
-made; then, under the person's lock, so that no sign-in or start of theirs is under way, their
+every workspace of theirs, container and volume, waiting, for up to `MADE_WITHIN_SECONDS`,
+until those still being made or rebuilt (a `rebuild_state` in the row) are gone: what makes
+or rebuilds one finishes its deletion once it notices
+(see [runtime.md](runtime.md#what-rcman-keeps-and-brings-back)), in the service's process even when the deletion
+is `rcman-admin`'s, so the wait is for the rows; one whose making in this process is over is
+not waited for. One left answers `workspace_failed` with `PERSON_DELETION_LEFT`
+(`backend/rcman/problems.py`); then, under the person's lock, so that no sign-in or start of theirs is under way, their
 Claude sign-in and git folder (see
 [runtime.md](runtime.md#a-persons-claude-sign-in)); drops the person's limits (their
 slice; see [runtime.md](runtime.md#limits)); then removes their row, their
@@ -91,7 +96,11 @@ release's virtualenv; the installer links it into `/usr/local/sbin` (see
 with from its environment file, `ENV_FILE`, or the one `--env-file` names, and
 migrates the database as the service does. Run as root, it runs itself again as
 rcman with `runuser`, with rcman's own runtime folder and home, so that it
-reaches rcman's Podman socket whatever root's shell had; deleting a person reaches Podman as rcman does, and `limits` reaches the user manager
+reaches rcman's Podman socket whatever root's shell had; deleting a person reaches Podman as rcman does
+(`delete` waits for a workspace of theirs that the service is making until the service, which
+finds it `deleting`, has removed it; with the service stopped it leaves that workspace
+`deleting`, answers `workspace_failed`, and the service finishes the deletion when it next
+starts), and `limits` reaches the user manager
 as rcman does (see [backend.md](backend.md#limits)): with no option it shows the limits of the
 person, or of their workspace with `--workspace`, and what is in use (not known where it cannot
 be read); with options it sets those and leaves the others, through `Workspaces.set_limits`, so
@@ -108,6 +117,6 @@ start.
 | `tests/test_accounts.py` | A person's sign-in removed before their row, a leftover one never reaching the next person given the same slot, nothing of a person being deleted made again, and a deletion waiting for the person's lock |
 | `tests/test_people.py` | Slots, addresses, the bound on people, the allowed list written whole by rename, and the People page's routes, deleting a person's workspaces and settings among them, and their limits |
 | `tests/test_identity.py` | Who is let in: an active person, by address in any case, and no one else from the moment they are removed or being deleted |
-| `tests/test_admin.py` | `rcman-admin`'s verbs, `limits` among them, its words, running itself again as rcman, and the installed script |
+| `tests/test_admin.py` | `rcman-admin`'s verbs, `limits` among them, `delete` waiting for a workspace the service is making and leaving it to restore when the service is down, its words, running itself again as rcman, and the installed script |
 | `tests/container/test_install_in_container.py` | The installed thing: the first administrator, `rcman-admin` by name as root, and the allowed list's owner and mode |
-| `tests/container/test_stack_in_podman.py` | The whole stack: its administrator, a person added and let in, one person unable to reach another's workspace, deleting a person leaving nothing labelled theirs, and limits set through the API |
+| `tests/container/test_stack_in_podman.py` | The whole stack: its administrator, a person added and let in, one person unable to reach another's workspace, deleting a person leaving nothing labelled theirs, through the People page and through `rcman-admin` while a rebuild of theirs runs a create command in the container it makes, and limits set through the API |

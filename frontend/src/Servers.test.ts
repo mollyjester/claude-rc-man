@@ -7,6 +7,7 @@ import {
   LABELS,
   LIVE,
   PRIMARY,
+  REBUILDING,
   type Workspace,
 } from "./Servers";
 
@@ -77,6 +78,8 @@ describe("the dot a workspace carries", () => {
     server: null,
     server_error: null,
     claude_version: null,
+    rebuild: { state: null, log: null, error: null },
+    rebuildable: false,
     ...extra,
   });
   const server = (state: string) => ({
@@ -107,5 +110,13 @@ describe("the dot a workspace carries", () => {
     expect(dotFor(at({ server_error: unread }))).toBe("problem");
     // even over a server that would be running
     expect(dotFor(at({ server_error: unread, server: server("ready") }))).toBe("problem");
+  });
+
+  test("is none while a rebuild replaces its container, which is not a problem", () => {
+    const rebuilding = { code: REBUILDING, title: "Planted." };
+    const switching = { state: "switching", log: null, error: null };
+    expect(dotFor(at({ server_error: rebuilding, rebuild: switching }))).toBeNull();
+    // a failed workspace keeps the problem dot whatever its server says
+    expect(dotFor(at({ state: "failed", server_error: rebuilding }))).toBe("problem");
   });
 });

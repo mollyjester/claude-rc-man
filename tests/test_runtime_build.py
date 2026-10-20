@@ -122,6 +122,13 @@ elif verb == "image" and sub == "rm":
     if exists("image-" + words[-1]):
         mark("image-" + words[-1], False)
     mark("tag-" + words[-1].replace("/", "%"), False)
+elif verb == "container" and sub == "exists":
+    sys.exit(0 if exists("container-" + words[-1]) else 1)
+elif verb == "container" and sub == "inspect":
+    if not exists("container-" + words[-1]):
+        print("Error: no such container " + words[-1], file=sys.stderr)
+        sys.exit(125)
+    print((STATE / ("container-" + words[-1])).read_text())
 elif verb == "load":
     assert words[1] == "-i", words
     path = Path(words[2])
@@ -621,6 +628,168 @@ def test_the_built_images_there_are_are_found_by_the_repository_rcman_names_them
     assert any(rt.BUILT_REPOSITORY in a for a in images)
 
 
+def test_a_workspace_has_a_built_name_and_a_next_name_and_no_other_tag():
+    assert rt.built_name(7) == rt.built_name(7, rt.BUILT_TAG) == "localhost/rcman-built/7:latest"
+    assert rt.built_name(7, rt.NEXT_TAG) == "localhost/rcman-built/7:next"
+    assert rt.NEXT_TAG != rt.BUILT_TAG
+    for tag in (rt.BUILT_TAG, rt.NEXT_TAG):
+        assert rt.workspace_of_built_name(rt.built_name(70, tag)) == 70
+    assert rt.workspace_of_built_name("localhost/rcman-built/7:other") is None
+    with pytest.raises(ValueError):
+        rt.built_name(7, "other")
+    assert request().tag == rt.BUILT_TAG  # a build is of the built name unless asked otherwise
+    with pytest.raises(ValueError):
+        request(tag="other")
+
+
+def test_the_next_images_are_listed_apart_from_the_built_ones(tmp_path):
+    stand_in = StandIn(tmp_path)
+    for name in (
+        rt.built_name(7),
+        rt.built_name(8, rt.NEXT_TAG),
+        rt.built_name(9),
+        rt.built_name(9, rt.NEXT_TAG),
+    ):
+        stand_in.tag(name).write_text(OLD)
+    runtime = runtime_with(stand_in)
+    assert runtime.built_images() == {7: rt.built_name(7), 9: rt.built_name(9)}
+    assert runtime.next_images() == {
+        8: rt.built_name(8, rt.NEXT_TAG),
+        9: rt.built_name(9, rt.NEXT_TAG),
+    }
+
+
+# --- a build of the next image, and its promotion ------------------------------------------------
+
+
+def test_a_next_build_names_the_next_image_and_never_touches_the_built_one(tmp_path):
+    stand_in = StandIn(tmp_path, preexisting={rt.built_name(7): OLD}, **SUCCESS)
+    stale = rt.built_name(7, rt.NEXT_TAG)
+    stand_in.tag(stale).write_text("c" * 64)  # what an earlier next build left
+    name = building(runtime_with(stand_in), tag=rt.NEXT_TAG)[0]()
+    assert name == stale and stand_in.tag(name).read_text() == IMAGE_ID
+    assert stand_in.tag(rt.built_name(7)).read_text() == OLD
+    assert not [c for c in stand_in.calls() if rt.built_name(7) in c]
+    removals = [c for c in stand_in.calls() if c[:2] == ["image", "rm"]]
+    assert removals and removals[0][-1] == stale  # the stale next image went first
+    assert ["tag", IMAGE_ID, stale] in stand_in.calls()
+
+
+@pytest.mark.parametrize(
+    "scenario", [{"tag_fails": True}, {"load_fails": True}, {"cli_code": 1, "outcome": "error"}]
+)
+def test_a_next_build_that_fails_where_the_container_is_lost_keeps_the_built_image(
+    tmp_path, scenario
+):
+    # No container uses the built image, so nothing would stop its removal.
+    stand_in = StandIn(tmp_path, preexisting={rt.built_name(7): OLD}, **{**SUCCESS, **scenario})
+    with pytest.raises(rt.RuntimeFailed):
+        building(runtime_with(stand_in), tag=rt.NEXT_TAG)[0]()
+    assert stand_in.tag(rt.built_name(7)).read_text() == OLD
+    assert not stand_in.tag(rt.built_name(7, rt.NEXT_TAG)).exists()
+    assert not [c for c in stand_in.calls() if rt.built_name(7) in c]
+    assert not stand_in.has("builder-rcman-build-7") and not stand_in.has("volume-rcman-build-7")
+
+
+def test_a_build_of_the_built_name_still_removes_the_built_image_when_it_fails(tmp_path):
+    """The twin of the case above: a build of the default tag is as it was."""
+    stand_in = StandIn(tmp_path, preexisting={rt.built_name(7): OLD}, tag_fails=True, **SUCCESS)
+    with pytest.raises(rt.RuntimeFailed):
+        building(runtime_with(stand_in))[0]()
+    assert not stand_in.tag(rt.built_name(7)).exists()
+
+
+def test_promoting_tags_the_next_image_with_the_built_name_and_untags_the_next_one(tmp_path):
+    upcoming, latest = rt.built_name(7, rt.NEXT_TAG), rt.built_name(7)
+    stand_in = StandIn(tmp_path, preexisting={latest: OLD, upcoming: IMAGE_ID})
+    runtime = runtime_with(stand_in)
+    assert runtime.promote_build(7) == latest
+    assert stand_in.tag(latest).read_text() == IMAGE_ID and not stand_in.tag(upcoming).exists()
+    calls = stand_in.calls()
+    assert calls.index(["tag", IMAGE_ID, latest]) < calls.index(["untag", IMAGE_ID, upcoming])
+    done = len(calls)
+    assert runtime.promote_build(7) == latest  # again: nothing to move, nothing moved
+    assert not [c for c in stand_in.calls()[done:] if c[0] in ("tag", "untag")]
+    assert stand_in.tag(latest).read_text() == IMAGE_ID
+
+
+def test_promoting_what_was_tagged_and_not_untagged_finishes_the_move(tmp_path):
+    upcoming, latest = rt.built_name(7, rt.NEXT_TAG), rt.built_name(7)
+    stand_in = StandIn(tmp_path, preexisting={latest: IMAGE_ID, upcoming: IMAGE_ID})
+    assert runtime_with(stand_in).promote_build(7) == latest
+    assert stand_in.tag(latest).read_text() == IMAGE_ID and not stand_in.tag(upcoming).exists()
+
+
+def test_promoting_where_there_is_no_image_is_a_failure_that_changes_nothing(tmp_path):
+    stand_in = StandIn(tmp_path)
+    with pytest.raises(rt.RuntimeFailed):
+        runtime_with(stand_in).promote_build(7)
+    assert not [c for c in stand_in.calls() if c[0] in ("tag", "untag")]
+
+
+def test_a_promotion_waits_for_another_workspaces_build_that_is_loading(tmp_path):
+    other = 9
+    stand_in = StandIn(
+        tmp_path,
+        load_seconds=1.0,
+        preexisting={rt.built_name(other): OLD, rt.built_name(other, rt.NEXT_TAG): "d" * 64},
+        **SUCCESS,
+    )
+    runtime = runtime_with(stand_in)
+    run, _, _ = building(runtime)
+    built: list[str] = []
+    building_ = threading.Thread(target=lambda: built.append(run()), daemon=True)
+    building_.start()
+    deadline = time.monotonic() + 30
+    while not stand_in.has("load-info") and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert stand_in.has("load-info")  # the build of 7 is loading, and holds the naming
+    promoted: list[str] = []
+    promoting = threading.Thread(target=lambda: promoted.append(runtime.promote_build(other)))
+    promoting.start()
+    building_.join(60)
+    promoting.join(60)
+    assert built == [rt.built_name(7)]  # the move was not taken for the load's doing
+    assert promoted == [rt.built_name(other)]
+    calls = stand_in.calls()
+    assert calls.index(["tag", IMAGE_ID, rt.built_name(7)]) < calls.index(
+        ["tag", "d" * 64, rt.built_name(other)]
+    )
+
+
+def test_promoting_holds_the_naming():
+    runtime = rt.PodmanRuntime(
+        rt.PodmanConfig(
+            socket=Path("/nowhere"),
+            image="localhost/rcman-workspace:test",
+            tools_dir=Path("/opt/rcman/tools"),
+            claude_store=Path("/var/lib/rcman/claude"),
+        )
+    )
+    held: list[bool] = []
+
+    def podman(*args, **kwargs):
+        held.append(runtime._naming.locked())
+        raise rt.RuntimeFailed("stop here")
+
+    runtime._podman = podman
+    with pytest.raises(rt.RuntimeFailed):
+        runtime.promote_build(7)
+    assert held and all(held)
+
+
+# --- whether a workspace has its volume -----------------------
+
+
+def test_has_volume_asks_for_the_workspaces_volume(tmp_path):
+    stand_in = StandIn(tmp_path)
+    runtime = runtime_with(stand_in)
+    assert not runtime.has_volume(7)
+    (stand_in.state / f"volume-{rt.container_name(7)}").write_text("")
+    assert runtime.has_volume(7)
+    assert ["volume", "exists", rt.container_name(7)] in stand_in.calls()
+
+
 # --- the image is staged, checked and only then loaded -------------------------------------------
 
 
@@ -757,6 +926,7 @@ OWN = {
     "default": "localhost/rcman-workspace:test",
     "builder": "localhost/rcman-builder:test",
     "another's built image": rt.built_name(9),
+    "another's next image": rt.built_name(9, rt.NEXT_TAG),
 }
 OLD, ATTACKER = "a" * 64, "b" * 64
 

@@ -34,13 +34,23 @@ from rcman.claude_server import Server, TmuxFailed
 from rcman.claude_versions import ClaudeVersions
 from rcman.filelock import FileLock
 from rcman.limits import Limits
-from rcman.problems import CLONE_MESSAGES, DEVCONTAINER_MESSAGES, Problem
+from rcman.problems import (
+    CLONE_MESSAGES,
+    DEVCONTAINER_MESSAGES,
+    MESSAGES,
+    PERSON_DELETION_LEFT,
+    REBUILD_MESSAGES,
+    Problem,
+    rebuild_advice,
+)
 from rcman.repository import ANSWER_MARGIN_SECONDS, KILL_GRACE_SECONDS, CloneFailed, Repository
 from rcman.runtime import (
+    BUILT_TAG,
     DIGEST,
     GH_CONFIG_DIR,
     LABEL_PERSON,
     LABEL_WORKSPACE,
+    NEXT_TAG,
     SYSTEMCTL_TIMEOUT,
     TIMED_OUT,
     BuildFailed,
@@ -62,6 +72,17 @@ log = logging.getLogger("rcman.workspaces")
 log.setLevel(logging.INFO)
 
 CREATING, READY, FAILED, DELETING = "creating", "ready", "failed", "deleting"
+# The phases of a rebuild (``Workspaces.rebuild``), kept in the row so that a restart of rcman
+# knows what it cut short: the new image is being made ready while the old container runs; the
+# old container is being replaced by the new one; the new plan is stored and the built image's
+# name is being moved onto it.
+REBUILD_PREPARING, REBUILD_SWITCHING, REBUILD_PROMOTING = "preparing", "switching", "promoting"
+# The kinds of failure (the row's ``failure``) that leave a workspace's volume and its
+# repository, so that a rebuild may make it again on them: a lifecycle command that failed or
+# took too long, and an image that is no longer to be had.
+RECOVERABLE = frozenset(
+    ("hook_failed", "hook_timeout", "image_gone", "built_image_gone", "default_image_gone")
+)
 # A channel unused this long is closed; it is opened again when next needed.
 CHANNEL_IDLE_SECONDS = 300.0
 # How often idle channels, and sign-outs that wait for servers that have ended, are
@@ -80,6 +101,12 @@ RUNTIME_WAIT_SECONDS = 5.0
 LISTING_WORKERS = 8
 # How long deleting a person waits for a workspace still being made.
 MADE_WITHIN_SECONDS = 600.0
+# How often work a deletion has to stop (``_working_on``) looks whether another process,
+# rcman-admin, deleted its workspace, and how often deleting a person looks whether the
+# workspaces being made are gone; and the name of the thread that looks, before the
+# workspace's id.
+WORKING_POLL_SECONDS = 1.0
+WATCHER_PREFIX = "watching-workspace-"
 # Most of what the runtime said that a failed workspace keeps.
 MAX_ERROR_CHARS = 2000
 # Most of the steps rcman wrote while making a workspace that are kept: the last ones.
@@ -188,6 +215,16 @@ class Workspace:
     # made from it and not from a newer default; None for a workspace with a plan, whose plan
     # holds the id, and until the first container of an older row is made.
     image_id: str | None = None
+    # The digest of the devcontainer.json it was made or last rebuilt from (devcontainer.digest);
+    # None where it is not known.
+    devcontainer_digest: str | None = None
+    # The phase of a rebuild under way (REBUILD_PREPARING and the others), or None; the steps of
+    # the last rebuild, and why it did not finish.
+    rebuild_state: str | None = None
+    rebuild_log: str | None = None
+    rebuild_error: str | None = None
+    # The kind of failure of a failed workspace, one of RECOVERABLE, or None for any other.
+    failure: str | None = None
 
     @property
     def container(self) -> str:
@@ -212,7 +249,49 @@ def _workspace(row: sqlite3.Row | None) -> Workspace | None:
         row["claude_version"],
         Limits(row["memory_mib"], row["cpu_percent"], row["pids"]),
         row["image_id"],
+        row["devcontainer_digest"],
+        row["rebuild_state"],
+        row["rebuild_log"],
+        row["rebuild_error"],
+        row["failure"],
     )
+
+
+class HookFailed(RuntimeFailed):
+    """A lifecycle command that failed (``kind`` hook_failed) or was stopped for taking too long
+    (hook_timeout): its name, its exit code and the tail of what it printed, without the
+    person's token."""
+
+    def __init__(self, message: str, kind: str, command: str, code: int, said: str):
+        super().__init__(message)
+        self.kind, self.command, self.code, self.said = kind, command, code, said
+
+
+class NotRebuilt(Exception):
+    """A rebuild that cannot go on, with what the person is told."""
+
+
+@dataclass(frozen=True)
+class _Read:
+    """What reading a workspace's devcontainer.json gave: the plan, None where there is no
+    file, and the digest of the file (devcontainer.digest)."""
+
+    plan: devcontainer.Plan | None
+    digest: str
+
+
+@dataclass(frozen=True)
+class _Prepared:
+    """What a rebuild makes the workspace from: ``plan``, as its container is made from it (a
+    built image by its NEXT_TAG name), and ``stored``, as the row keeps it (by its BUILT_TAG
+    name); or neither, and ``image_id``, the default image's; with the digest of the file and
+    whether the image was built."""
+
+    plan: devcontainer.Plan | None
+    stored: devcontainer.Plan | None
+    image_id: str | None
+    digest: str
+    built: bool
 
 
 def image_is_gone(said: str) -> bool:
@@ -317,6 +396,11 @@ class Workspaces:
         # The workspaces being made that a deletion has to stop: while git clones, an image is
         # pulled or a command runs. Each has the event the deletion sets; under _lock.
         self._working: dict[int, threading.Event] = {}
+        # The threads of ``settle_left_over`` putting back a workspace left in the switch, by
+        # workspace; under _lock.
+        self._putting_back: dict[int, threading.Thread] = {}
+        # The workspaces whose put-back failed and was said so, until it is done; under _lock.
+        self._put_back_failing: set[int] = set()
         # The places for builds: a build holds one from the moment it starts until it is done.
         self._builds = threading.BoundedSemaphore(MAX_BUILDS)
         self._closing = threading.Event()
@@ -333,6 +417,9 @@ class Workspaces:
         # Called with a workspace just before its container is removed: terminals.py ends its
         # terminal, through its channel, while the workspace is still there to end it in.
         self.on_removing: Callable[[Workspace], None] = lambda workspace: None
+        # Called with a workspace whose container a rebuild is about to replace: terminals.py
+        # ends its terminal, through its channel, while the old container is still there.
+        self.on_rebuilding: Callable[[Workspace], None] = lambda workspace: None
         # Called with a workspace whose container kept running while rcman was not: terminals.py
         # ends what the terminals of an earlier rcman left in it.
         self.on_kept_running: Callable[[Workspace], None] = lambda workspace: None
@@ -397,6 +484,28 @@ class Workspaces:
         """Whether a workspace is being made, which an upgrade of rcman would cut short."""
         return any(w.state == CREATING for w in self.everything())
 
+    def any_rebuilding(self) -> bool:
+        """Whether a workspace is being rebuilt, by its row: an upgrade of rcman would cut it
+        short too. Not a switch that could not be put back and that no thread of this process
+        works on, once the restore is done: the upgrade's restart puts it back as the periodic
+        look (``settle_left_over``) would, and refusing the upgrade for it would wait for what
+        the upgrade does itself."""
+        restored = self.restored.is_set()
+        return any(
+            w.rebuild_state is not None and not (restored and self._left_in_switch(w))
+            for w in self.everything()
+        )
+
+    def _left_in_switch(self, workspace: Workspace) -> bool:
+        """Whether the workspace is a ready one in the switch that no thread of this process
+        works on: one a rebuild could not put back, to be put back by ``settle_left_over`` or
+        the restore."""
+        return (
+            workspace.state == READY
+            and workspace.rebuild_state == REBUILD_SWITCHING
+            and not self._worked_on(workspace.id)
+        )
+
     def of_person(self, person: int) -> list[Workspace]:
         return [w for w in self.everything() if w.person == person]
 
@@ -408,9 +517,13 @@ class Workspaces:
         return found
 
     def ready(self, person: int, workspace_id: int) -> Workspace:
+        """The person's workspace, which must be ready, and not have its container replaced
+        by a rebuild just now (``workspace_rebuilding``)."""
         found = self.owned(person, workspace_id)
         if found.state != READY:
             raise Problem("workspace_not_ready")
+        if found.rebuild_state == REBUILD_SWITCHING:
+            raise Problem("workspace_rebuilding")
         return found
 
     def lock(self, workspace_id: int) -> threading.RLock:
@@ -486,20 +599,22 @@ class Workspaces:
         thread.start()
         return made
 
-    def _log(self, workspace_id: int, text: str) -> None:
-        """Add a step to the workspace's log, keeping at most the last LOG_MAX_CHARS
-        characters, from the start of a line: the line the cut falls in is dropped whole,
-        unless it is the only one."""
+    def _log(self, workspace_id: int, text: str, column: str = "log") -> None:
+        """Add a step to the workspace's log (``column``: ``log`` for its making,
+        ``rebuild_log`` for a rebuild), keeping at most the last LOG_MAX_CHARS characters, from
+        the start of a line: the line the cut falls in is dropped whole, unless it is the only
+        one."""
+        assert column in ("log", "rebuild_log")
         con = self._con()
         try:
             cut = f"substr(whole, {-LOG_MAX_CHARS})"
             con.execute(
-                f"update workspaces set log = (select case "
+                f"update workspaces set {column} = (select case "
                 f"when length(whole) <= {LOG_MAX_CHARS} then whole "
                 f"when substr(whole, {-LOG_MAX_CHARS - 1}, 1) = char(10) then {cut} "
                 f"when instr({cut}, char(10)) = 0 then {cut} "
                 f"else substr({cut}, instr({cut}, char(10)) + 1) end "
-                f"from (select coalesce(log || char(10), '') || ? as whole)) where id = ?",
+                f"from (select coalesce({column} || char(10), '') || ? as whole)) where id = ?",
                 (text, workspace_id),
             )
             con.commit()
@@ -509,7 +624,7 @@ class Workspaces:
     def _make(self, workspace: Workspace, slot: int) -> None:
         """Make the workspace, and clone its source if it has one; one deleted meanwhile is
         removed once it is made."""
-        refused = False
+        refused, failure = False, None
         try:
             self._log(workspace.id, "Making the workspace")
             self._apply_stored(workspace.id)  # before its container is in the slice
@@ -529,6 +644,7 @@ class Workspaces:
             if isinstance(failed, RuntimeUnavailable):  # what podman said holds paths
                 error = DEVCONTAINER_MESSAGES["runtime_gone"]
             refused = isinstance(failed, devcontainer.Refused)
+            failure = failed.kind if isinstance(failed, HookFailed) else None
         if refused:
             self._clear(workspace)
         with self.lock(workspace.id):
@@ -543,7 +659,7 @@ class Workspaces:
             elif error is None:
                 self._set(workspace.id, state=READY, error=None, log=None)
             else:
-                self._set(workspace.id, state=FAILED, error=error)
+                self._set(workspace.id, state=FAILED, error=error, failure=failure)
 
     def _clear(self, workspace: Workspace) -> None:
         """Remove the container and the volume of a workspace whose configuration or image was
@@ -553,23 +669,64 @@ class Workspaces:
         try:
             self.runtime.remove(workspace.container)
             self.runtime.remove_build(workspace.id, image=True)  # once nothing is made from it
+            self.runtime.remove_build(workspace.id, image=True, image_tag=NEXT_TAG)
         except (RuntimeFailed, RuntimeUnavailable) as failed:
             log.warning("the refused workspace %s could not be cleared: %s", workspace.id, failed)
 
     @contextlib.contextmanager
     def _working_on(self, workspace_id: int):
         """While the workspace is being worked on in a way a deletion has to stop - git clones
-        into it, an image is pulled, a command runs - ``delete`` sets the event this yields
-        and removes its container by force. The work notices the event, or that the container
-        is gone, and stops; the caller then finds the workspace deleting."""
-        cancel = threading.Event()
+        into it, an image is pulled or built, a command runs - ``delete`` sets the event this
+        yields and removes its builder and its container by force. A deletion from another
+        process, rcman-admin, which has none of this process's events, is found in the row by a
+        thread that watches it meanwhile (``_watch``), and does the same. The work notices the
+        event, or that the container is gone, and stops; the caller then finds the workspace
+        deleting, or gone. The watching thread ends before this does."""
+        cancel, done = threading.Event(), threading.Event()
         with self._lock:
             self._working[workspace_id] = cancel
+        watcher = threading.Thread(
+            target=self._watch,
+            args=(workspace_id, cancel, done),
+            name=f"{WATCHER_PREFIX}{workspace_id}",
+            daemon=True,
+        )
+        watcher.start()
         try:
             yield cancel
         finally:
+            done.set()
+            watcher.join()
             with self._lock:
                 self._working.pop(workspace_id, None)
+
+    def _watch(self, workspace_id: int, cancel: threading.Event, done: threading.Event) -> None:
+        """Every WORKING_POLL_SECONDS until ``done``: once the workspace's row is deleting or
+        gone and no deletion in this process has stopped the work already, stop it
+        (``_stop_working``), as a deletion here does. It looks under the workspace's lock, which
+        a deletion here holds from marking the row until it has set the event, so that it never
+        stops what that deletion stops; a lock that is held is tried again at the next look,
+        never waited for, so that the work's end never waits for it."""
+        lock = self.lock(workspace_id)
+        while not done.wait(WORKING_POLL_SECONDS):
+            if cancel.is_set():
+                return  # a deletion in this process stopped it
+            if not lock.acquire(blocking=False):
+                continue
+            try:
+                if cancel.is_set():
+                    return
+                try:
+                    now = self.get(workspace_id)
+                except sqlite3.Error as unread:
+                    log.warning("workspace %s could not be looked at: %s", workspace_id, unread)
+                    continue
+                if now is not None and now.state != DELETING:
+                    continue
+                self._stop_working(workspace_id)  # deleted by another process
+                return
+            finally:
+                lock.release()
 
     def _cancelled(self, workspace_id: int, cancel: threading.Event) -> bool:
         if cancel.is_set():
@@ -669,20 +826,26 @@ class Workspaces:
     def _configure(self, workspace: Workspace, slot: int) -> None:
         """Make the cloned workspace what its devcontainer.json says, if it has one: read and
         check the file, pull its image, make the container again from the image on the same
-        volume, check git and libc in it, and run the create commands. A file or image rcman
-        refuses is a devcontainer.Refused, which fails the workspace and removes everything
-        but its row; a failing command is a RuntimeFailed, which keeps the container and
-        volume. A workspace deleted meanwhile is left to its deletion."""
+        volume, check git and libc in it, and run the create commands, which run once here and
+        again only at a rebuild (``rebuild``). The digest of the file, or of there being none, is
+        recorded. A file or image rcman refuses is a devcontainer.Refused, which fails the
+        workspace and removes everything but its row; a failing command is a RuntimeFailed (a
+        HookFailed), which keeps the container and volume. A workspace deleted meanwhile is left
+        to its deletion."""
         with self._working_on(workspace.id) as cancel:
             if self._cancelled(workspace.id, cancel):
                 return
             name = workspace.container
-            plan = self._read_plan(workspace, cancel)
-            if plan is None:
+            read = self._read_plan(workspace, cancel, lambda t: self._log(workspace.id, t))
+            if read is None:
                 return
+            if read.plan is None:
+                self._set(workspace.id, devcontainer_digest=read.digest)
+                return
+            plan = read.plan
             if self._cancelled(workspace.id, cancel):  # nothing is discarded for a deleted one
                 return
-            self._set(workspace.id, environment=plan.to_json())
+            self._set(workspace.id, environment=plan.to_json(), devcontainer_digest=read.digest)
             self._log(workspace.id, "Making the workspace from the image")
             self.close_channel(name)
             self.runtime.discard(name)
@@ -717,25 +880,41 @@ class Workspaces:
             )
             self._log(workspace.id, "Created")
 
-    def _read_plan(self, workspace: Workspace, cancel: threading.Event):
-        """Read the workspace's devcontainer.json and the image it names or asks to have built,
-        and make the plan; None for no file, or when the workspace was deleted meanwhile."""
+    def _read_plan(
+        self,
+        workspace: Workspace,
+        cancel: threading.Event,
+        report: Callable[[str], None],
+        tag: str = BUILT_TAG,
+    ) -> _Read | None:
+        """Read the workspace's devcontainer.json in its container, and the Dockerfile it builds
+        from if it builds one, then pull the image it names or build the one it asks for, as
+        ``tag`` (a rebuild's is NEXT_TAG), and make the plan; what is done is said to ``report``.
+        The plan is None where there is no file; the digest is the file's, or NO_FILE_DIGEST.
+        None when the workspace was deleted meanwhile."""
         name = workspace.container
         run, _ = self._execs(name)
-        self._log(workspace.id, devcontainer.LOOKED_IN)
+        report(devcontainer.LOOKED_IN)
         layout = self.runtime.layout(name)
         found = devcontainer.read(run, layout)
         if found is None:
-            self._log(workspace.id, "There is no devcontainer.json")
-            return None
+            report("There is no devcontainer.json")
+            return _Read(None, devcontainer.NO_FILE_DIGEST)
         config = devcontainer.parse(found.text)
         checked = devcontainer.check(config, workspace.id, layout.work, found.path)
+        dockerfile = devcontainer.dockerfile_of(checked, found.path)
+        contents = None
+        if dockerfile is not None:
+            contents = devcontainer.read_path(
+                run, layout, dockerfile, **devcontainer.DOCKERFILE_REFUSALS
+            )
+        digest = devcontainer.digest(found, contents)
         if checked.ignored:
-            self._log(workspace.id, f"Ignored in devcontainer.json: {', '.join(checked.ignored)}")
+            report(f"Ignored in devcontainer.json: {', '.join(checked.ignored)}")
         if checked.build is None:
-            image = self._pulled(workspace, checked.image, cancel)
+            image = self._pulled(workspace, checked.image, cancel, report)
         else:
-            image = self._built(workspace, checked.build, found.path, cancel)
+            image = self._built(workspace, checked.build, found.path, cancel, report, tag)
         if image is None or self._cancelled(workspace.id, cancel):
             return None
         try:
@@ -755,13 +934,19 @@ class Workspaces:
         made = devcontainer.plan(
             config, facts, workspace.id, layout.work, image=image, size=self.runtime.id_range
         )
-        return None if self._cancelled(workspace.id, cancel) else made
+        return None if self._cancelled(workspace.id, cancel) else _Read(made, digest)
 
-    def _pulled(self, workspace: Workspace, image: str, cancel: threading.Event) -> str | None:
+    def _pulled(
+        self,
+        workspace: Workspace,
+        image: str,
+        cancel: threading.Event,
+        report: Callable[[str], None],
+    ) -> str | None:
         """Pull the image the file names; None when the workspace was deleted meanwhile."""
-        self._log(workspace.id, f"Pulling {image}")
+        report(f"Pulling {image}")
         try:
-            self.runtime.pull(image, lambda line: self._log(workspace.id, line), cancel)
+            self.runtime.pull(image, report, cancel)
         except RuntimeFailed as failed:
             if self._cancelled(workspace.id, cancel):
                 return None
@@ -772,13 +957,19 @@ class Workspaces:
         return image
 
     def _built(
-        self, workspace: Workspace, spec: devcontainer.BuildSpec, path: str, cancel
+        self,
+        workspace: Workspace,
+        spec: devcontainer.BuildSpec,
+        path: str,
+        cancel,
+        report: Callable[[str], None],
+        tag: str = BUILT_TAG,
     ) -> str | None:
         """Build the image the file asks for, in a builder of its own, once there is a place for
-        one more build; the name of the image that is kept, or None when the workspace was
-        deleted meanwhile. The label of the image is held to the policy before it is copied out
-        (``devcontainer.check_metadata``), a refusal naming the feature; any failure is a
-        :class:`devcontainer.Refused` in plain words, and leaves nothing."""
+        one more build, named with ``tag``; the name of the image that is kept, or None when the
+        workspace was deleted meanwhile. The label of the image is held to the policy before it
+        is copied out (``devcontainer.check_metadata``), a refusal naming the feature; any
+        failure is a :class:`devcontainer.Refused` in plain words, and leaves nothing."""
         made = devcontainer.build_config(spec, path)
         request = BuildRequest(
             workspace.id,
@@ -787,15 +978,16 @@ class Workspaces:
             workspace.container,
             made.path,
             made.text,
+            tag,
         )
-        if not self._wait_for_build(workspace, cancel):
+        if not self._wait_for_build(workspace, cancel, report):
             return None
         try:
-            self._log(workspace.id, "Building the image")
+            report("Building the image")
             try:
                 return self.runtime.build_image(
                     request,
-                    lambda line: self._log(workspace.id, self._shown(workspace.person, line)),
+                    lambda line: report(self._shown(workspace.person, line)),
                     cancel,
                     devcontainer.check_metadata,
                 )
@@ -806,11 +998,13 @@ class Workspaces:
         finally:
             self._builds.release()
 
-    def _wait_for_build(self, workspace: Workspace, cancel: threading.Event) -> bool:
-        """Take a place for a build, saying in the log that it waits when there is none free;
+    def _wait_for_build(
+        self, workspace: Workspace, cancel: threading.Event, report: Callable[[str], None]
+    ) -> bool:
+        """Take a place for a build, saying to ``report`` that it waits when there is none free;
         False, with no place taken, when the workspace was deleted meanwhile."""
         if not self._builds.acquire(blocking=False):
-            self._log(workspace.id, WAITING_FOR_BUILD)
+            report(WAITING_FOR_BUILD)
             while not self._builds.acquire(timeout=BUILD_QUEUE_POLL_SECONDS):
                 if self._cancelled(workspace.id, cancel):
                     return False
@@ -881,7 +1075,7 @@ class Workspaces:
         """Run the lifecycle commands one after another in the work folder, as the container's
         user, each under the ``timeout`` tool with HOOK_TIMEOUT_SECONDS, with exactly the
         environment ``_hook_env`` gives; what each printed, its tail and without the person's
-        token, goes to ``report``. A command that fails or is stopped is a RuntimeFailed with the
+        token, goes to ``report``. A command that fails or is stopped is a HookFailed with the
         exit code and the tail of its output; the commands after it do not run. A cancelled
         workspace is left alone."""
         if not commands:
@@ -929,7 +1123,7 @@ class Workspaces:
                 continue
             kind = "hook_timeout" if result.code in TIMED_OUT else "hook_failed"
             head = DEVCONTAINER_MESSAGES[kind].format(command=command.name, code=result.code)
-            raise RuntimeFailed(self._with_tail(head, said))
+            raise HookFailed(self._with_tail(head, said), kind, command.name, result.code, said)
 
     def _start_commands(self, workspace: Workspace, cancel: threading.Event | None = None) -> None:
         """Run the workspace's postStartCommand, if its plan has one, after its container was
@@ -1032,22 +1226,631 @@ class Workspaces:
                 f"{git_run.GIT_MIN_VERSION[0]}.{git_run.GIT_MIN_VERSION[1]} rcman needs"
             )
 
+    # --- rebuilding a workspace on its volume ------------------------------------------
+
+    def rebuild_refusal(
+        self, workspace: Workspace, containers: set[str] | None = None, asked: bool = False
+    ) -> str | None:
+        """Why the workspace may not be rebuilt now, as the code of the problem a request for it
+        is answered with, or None where it may: the one test the route and the listing's
+        ``rebuildable`` share. A ready workspace cloned from a repository, with its container,
+        may be; so may a failed one whose failure is RECOVERABLE and whose volume is there. None
+        may while rcman is upgraded, before its restore is done, or while anything else works
+        on the workspace. What the row says is looked at first, and the runtime is asked only
+        about a workspace that passes it: ``containers`` are the names of the containers there
+        are, where the caller asked the runtime for them all at once; ``asked`` says that the
+        runtime's part was found good already, and is not asked again."""
+        why = self._rebuild_refusal_by_row(workspace)
+        if why is not None or asked:
+            return why
+        if workspace.state == FAILED:
+            there = self._there(self.runtime.has_volume, workspace.id)
+            return None if there else "workspace_not_ready"
+        if containers is not None:
+            there = workspace.container in containers
+        else:
+            there = self._there(self.runtime.exists, workspace.container)
+        return None if there else "rebuild_no_container"
+
+    def _rebuild_refusal_by_row(self, workspace: Workspace) -> str | None:
+        """``rebuild_refusal`` as far as the workspace's row and this process tell it, asking
+        the runtime nothing."""
+        if self.upgrading():
+            return "rcman_upgrading"
+        if not self.restored.is_set():
+            return "rcman_starting"
+        if workspace.state in (CREATING, DELETING):
+            return "workspace_not_ready"
+        with self._lock:
+            working = workspace.id in self._working
+        if workspace.rebuild_state is not None or working or self._being_made(workspace.id):
+            return "workspace_rebuilding"
+        if workspace.state == FAILED:
+            if workspace.failure not in RECOVERABLE or not workspace.source:
+                return "workspace_not_ready"
+            return None
+        if not workspace.source:
+            return "rebuild_empty"
+        return None
+
+    def _containers(self) -> set[str]:
+        """The names of the workspaces' containers there are, asked of the runtime at once; none
+        where it cannot say."""
+        try:
+            return set(self.runtime.labelled())
+        except (RuntimeFailed, RuntimeUnavailable) as failed:
+            log.warning("which containers are there could not be told: %s", failed)
+            return set()
+
+    @staticmethod
+    def _there(ask: Callable, what) -> bool:
+        """``ask(what)``, the runtime's answer whether something is there; one it cannot give is
+        no."""
+        try:
+            return bool(ask(what))
+        except (RuntimeFailed, RuntimeUnavailable) as failed:
+            log.warning("whether %s is there could not be told: %s", what, failed)
+            return False
+
+    def rebuild(self, person: people.Person, workspace_id: int, confirm: bool) -> Workspace:
+        """Rebuild the person's workspace in the background: make its container again on the
+        same volume from what its devcontainer.json in its work folder asks for now, or from
+        rcman's current default image where it has none (``_replace``), or make a failed one that
+        kept its volume ready again so (``_recover``). ``confirm`` says the person accepts that
+        its server and terminal stop meanwhile. Refused as ``rebuild_refusal`` says; recorded
+        under the images' lock, which the admission of an upgrade holds, so that an upgrade and
+        a rebuild each see the other. The runtime is asked whether the container or the volume is
+        there before either lock is taken, and the row looked at again under them."""
+        found = self.owned(person.id, workspace_id)
+        if not confirm:
+            raise Problem("rebuild_confirm_required")
+        why = self.rebuild_refusal(found)
+        if why is not None:
+            raise Problem(why)
+        with self._images_lock, self.lock(found.id):
+            now = self.owned(person.id, workspace_id)
+            why = self.rebuild_refusal(now, asked=now.state == found.state)
+            if why is not None:
+                raise Problem(why)
+            self._set(now.id, rebuild_state=REBUILD_PREPARING, rebuild_log=None, rebuild_error=None)
+            now = self.get(now.id)
+            thread = threading.Thread(target=self._rebuild, args=(now, person.slot), daemon=True)
+            with self._lock:
+                self._making = {k: t for k, t in self._making.items() if t.is_alive()}
+                self._making[now.id] = thread
+            thread.start()
+        return now
+
+    def _rebuild(self, workspace: Workspace, slot: int) -> None:
+        """The rebuild's thread: what it ended in is one line of the journal. A workspace deleted
+        meanwhile is removed once it ends, as one being made is."""
+        try:
+            outcome = "cancelled"
+            try:
+                if workspace.state == FAILED:
+                    outcome = self._recover(workspace, slot)
+                else:
+                    outcome = self._replace(workspace, slot)
+            except Exception as failed:  # noqa: BLE001 - whatever it is, the rebuild ends
+                log.exception("the rebuild of workspace %s failed", workspace.id)
+                outcome = f"failed: {type(failed).__name__}"
+                self._rebuild_failed(workspace)
+            log.info("workspace %s: %s", workspace.id, outcome)
+        finally:
+            self._rebuild_ended(workspace)
+
+    def _rebuild_failed(self, workspace: Workspace) -> None:
+        """Say where the person sees it that the rebuild did not finish, for a reason nothing
+        foresaw: a failed workspace keeps its error and the kind of its failure, and its rebuild's
+        steps say so; a ready one whose container was being replaced is left in the switch, to
+        be put back by the service's periodic look or the next restore (``_left_to_put_back``),
+        since what its container is now is not known; another has it as its rebuild's error."""
+        words = MESSAGES["workspace_failed"]
+        with contextlib.suppress(sqlite3.Error):
+            now = self.get(workspace.id)
+            if now is None or now.state == DELETING:
+                return
+            if now.state == FAILED:
+                self._log(now.id, words, "rebuild_log")
+            elif now.rebuild_state == REBUILD_SWITCHING:
+                self._left_to_put_back(now.id, words)
+            else:
+                self._set(now.id, rebuild_error=words)
+
+    def _left_to_put_back(self, workspace_id: int, cause: str) -> None:
+        """Leave a ready workspace whose container could not be put back in the switch, which
+        refuses its server, git and terminal and is what the service's periodic look
+        (``settle_left_over``), or the next restore, puts back (``_restore_rebuild``): no server
+        runs in it meanwhile, though it should run again once it is put back; its rebuild's
+        error, and the last of its steps, which the person sees while it is in the switch, say
+        why and that it is put back as soon as rcman can."""
+        head = REBUILD_MESSAGES["rollback_failed"].split("{cause}")[0]
+        error = head + self._fit(cause, MAX_ERROR_CHARS - len(head))
+        self._set(workspace_id, rebuild_error=error, server=0)
+        self._log(workspace_id, error, "rebuild_log")
+
+    def _rebuild_ended(self, workspace: Workspace) -> None:
+        """Clear the phase of a rebuild that ended - not the last one, which is the restore's or
+        the service's to finish (``settle_left_over``), nor the switch of a ready workspace that
+        was not put back, which is the restore's -; finish deleting a workspace deleted
+        meanwhile; and remove the images nothing refers to any more, the old one among them. A
+        deletion while the images are removed finds the thread still at work and leaves the
+        workspace to it: so the thread, as it ends, stops counting as making it and looks again,
+        under the workspace's lock, after which a deletion removes it itself."""
+        with self.lock(workspace.id):
+            now = self.get(workspace.id)
+            if now is not None and now.state == DELETING:
+                self._remove_deleted(now)
+            elif now is not None and (
+                now.rebuild_state == REBUILD_PREPARING
+                or (now.rebuild_state == REBUILD_SWITCHING and now.state == FAILED)
+            ):
+                self._set(now.id, rebuild_state=None)
+        self._stopped(workspace.person)
+        self._collect_images_quietly()
+        with self.lock(workspace.id):
+            with self._lock:
+                if self._making.get(workspace.id) is threading.current_thread():
+                    del self._making[workspace.id]
+            now = self.get(workspace.id)
+            removed = now is not None and now.state == DELETING and self._remove_deleted(now)
+        if removed:
+            self._stopped(workspace.person)
+            self._collect_images_quietly()
+
+    def _remove_deleted(self, workspace: Workspace) -> bool:
+        """Remove a workspace whose deletion was left to what worked on it, under its lock, and
+        the person with it if they are being deleted and it was their last: whether it was. One
+        that cannot be removed now is left deleting, for the next look or restore to finish."""
+        try:
+            self._remove(workspace)
+        except Problem as refused:
+            log.warning("workspace %s could not be removed: %s", workspace.id, refused.code)
+            return False
+        self._finish_deleting(workspace.person)
+        return True
+
+    def _reporter(self, workspace_id: int) -> Callable[[str], None]:
+        return lambda text: self._log(workspace_id, text, "rebuild_log")
+
+    def _replace(self, workspace: Workspace, slot: int) -> str:
+        """Rebuild a ready workspace: (preparing) read its devcontainer.json in its container,
+        pull or build its image as NEXT_TAG and make the new plan, while the old container runs;
+        a refusal or a failure here changes nothing. (switching) Stop its server, end its
+        terminal and discard the container, then make the new one on the same volume, check it
+        and run every create command and then postStartCommand; a failure from the discard on,
+        whatever it is, puts the old one back (``_roll_back``). (promoting) Store the new plan,
+        then move the built image's name. The server, if it ran, is started again. No lock is
+        held through anything slow."""
+        report = self._reporter(workspace.id)
+        with self._working_on(workspace.id) as cancel:
+            if self._cancelled(workspace.id, cancel):
+                return "cancelled"
+            try:
+                prepared = self._prepare(workspace, cancel, report, advise=rebuild_advice)
+            except NotRebuilt as refused:
+                self._discard_next(workspace.id)
+                self._set(workspace.id, rebuild_error=str(refused), rebuild_state=None)
+                return f"refused: {str(refused).splitlines()[0]}"
+            if prepared is None:
+                return "cancelled"
+            switched = self._switch(workspace, cancel)
+            if switched is None:
+                return "cancelled"
+            was_running, prefix = switched
+            try:
+                self.runtime.discard(workspace.container)
+                made = self._make_new(workspace, slot, prepared, cancel, report)
+            except Exception as failed:  # noqa: BLE001 - whatever it is, the old one is put back
+                if self._cancelled(workspace.id, cancel):
+                    return "cancelled"
+                cause = self._cause_of(workspace, failed, rebuild_advice)
+                return self._roll_back(workspace, slot, cancel, report, cause, was_running, prefix)
+            if not made or not self._commit(workspace, prepared, cancel):
+                return "cancelled"
+        if was_running:
+            self._start_again(workspace.id, prefix)
+        return "rebuilt"
+
+    def _prepare(
+        self,
+        workspace: Workspace,
+        cancel: threading.Event,
+        report: Callable[[str], None],
+        advise: Callable[[str], str] = lambda words: words,
+    ) -> _Prepared | None:
+        """What the workspace is to be made from now: its file read in its container, and the
+        image it names pulled, or built as NEXT_TAG; rcman's current default image where it has
+        no file. None when the workspace was deleted meanwhile; a refusal or a failure is a
+        NotRebuilt in the words a person is shown, ``advise`` applied to a refusal's."""
+        try:
+            read = self._read_plan(workspace, cancel, report, NEXT_TAG)
+        except Exception as failed:  # noqa: BLE001 - whatever it is, nothing is rebuilt
+            if self._cancelled(workspace.id, cancel):
+                return None
+            raise NotRebuilt(self._cause_of(workspace, failed, advise)) from None
+        if read is None:
+            return None
+        if read.plan is None:
+            default = self.runtime.default_image_id()
+            if not default:
+                raise NotRebuilt(DEVCONTAINER_MESSAGES["default_image_gone"])
+            report("Making the workspace from rcman's own image")
+            return _Prepared(None, None, default, read.digest, False)
+        plan = read.plan
+        built = workspace_of_built_name(plan.image) is not None
+        stored = dataclasses.replace(plan, image=built_name(workspace.id)) if built else plan
+        return _Prepared(plan, stored, None, read.digest, built)
+
+    def _cause_of(
+        self, workspace: Workspace, failed: Exception, advise: Callable[[str], str]
+    ) -> str:
+        """Why a step of a rebuild failed, in the words a person is shown, at most
+        MAX_ERROR_CHARS: a refusal's (with ``advise`` applied), a command's name and exit code
+        and the end of what it printed, and nothing of the repository's files else."""
+        if isinstance(failed, NotRebuilt):
+            return str(failed)
+        if isinstance(failed, devcontainer.Refused):
+            return advise(str(failed))[:MAX_ERROR_CHARS]
+        if isinstance(failed, HookFailed):
+            head = REBUILD_MESSAGES[failed.kind].format(command=failed.command, code=failed.code)
+            return self._with_tail(head, failed.said)
+        if isinstance(failed, RuntimeUnavailable):
+            return MESSAGES["runtime_unavailable"]
+        said = self._redacted(workspace.person, str(failed) or type(failed).__name__)
+        return said[:MAX_ERROR_CHARS]
+
+    def _switch(self, workspace: Workspace, cancel: threading.Event) -> tuple[bool, str] | None:
+        """The start of the switch, short and under the workspace's lock: the phase is written,
+        from which its server and git are refused; its server, if it runs, is stopped, with no
+        change to whether it should run, and the version it ran is no longer recorded. Then,
+        without the lock, its terminal is ended and its channel closed; the caller discards the
+        container. Whether its server ran, and the prefix it is started again with; None when
+        the workspace was deleted meanwhile."""
+        with self.lock(workspace.id):
+            now = self.get(workspace.id)
+            if now is None or now.state == DELETING or cancel.is_set():
+                return None
+            self._set(now.id, rebuild_state=REBUILD_SWITCHING)
+            was_running = False
+            try:
+                server = self.server(now)
+                if server.tmux.exists() and server.tmux.exit_status() is None:
+                    was_running = True
+                    server.stop()
+            except Exception as failed:  # noqa: BLE001 - discarding the container ends it
+                log.warning("the server of workspace %s did not stop: %s", now.id, failed)
+            self._set(now.id, claude_version=None)
+        self._stopped(now.person)
+        try:
+            self.on_rebuilding(now)
+        except Exception:  # noqa: BLE001 - discarding the container ends whatever is left
+            log.exception("the terminal of workspace %s did not end", now.id)
+        self.close_channel(now.container)
+        return was_running, now.prefix or now.name
+
+    def _made_for(self, workspace_id: int, cancel: threading.Event) -> bool:
+        """After a container was made: whether its workspace is still there to go on with. One
+        deleted meanwhile has its container and volume removed here, under its lock, as its
+        deletion does, since the deletion may have looked for them before they were made."""
+        with self.lock(workspace_id):
+            now = self.get(workspace_id)
+            if now is not None and now.state != DELETING and not cancel.is_set():
+                return True
+            try:
+                self.runtime.remove(container_name(workspace_id))
+            except (RuntimeFailed, RuntimeUnavailable) as failed:
+                log.warning("workspace %s could not be removed: %s", workspace_id, failed)
+            return False
+
+    def _make_new(
+        self,
+        workspace: Workspace,
+        slot: int,
+        prepared: _Prepared,
+        cancel: threading.Event,
+        report: Callable[[str], None],
+    ) -> bool:
+        """Make the workspace's container from what it was prepared to be made from, on its
+        volume, and check and set it up as making a workspace does: libc and git, then every
+        create command and postStartCommand. A refusal or a failure is raised; False when the
+        workspace was deleted meanwhile."""
+        plan = prepared.plan
+        target = dataclasses.replace(
+            workspace,
+            environment=plan.to_json() if plan is not None else None,
+            image_id=prepared.image_id,
+        )
+        if self._cancelled(workspace.id, cancel):
+            return False
+        self._apply_stored(workspace.id)  # before its container is in the slice
+        report("Making the workspace from the image")
+        try:
+            self.runtime.create(self._spec(target, slot, plan))
+        except RuntimeFailed as failed:
+            if self._cancelled(workspace.id, cancel):
+                return False
+            said = str(failed).strip()[-MAX_SAID_CHARS:]
+            image = plan.image if plan is not None else "rcman's own image"
+            raise devcontainer.Refused("image_unrunnable", image=image, said=said) from None
+        if not self._made_for(workspace.id, cancel):
+            return False
+        base = self.runtime.layout(workspace.container)
+        layout = base if plan is None else self._plan_layout(base, plan)
+        if plan is not None:
+            self._check_libc(target, plan)
+        report("Checking git")
+        try:
+            self._check_git(target, layout)
+        except RuntimeFailed as unusable:
+            if plan is None:
+                raise
+            raise devcontainer.Refused(
+                "git_unusable", image=plan.image, said=str(unusable)
+            ) from None
+        if plan is not None:
+            self._run_commands(target, layout, plan.create_commands(), cancel, report)
+        return not self._cancelled(workspace.id, cancel)
+
+    def _commit(
+        self,
+        workspace: Workspace,
+        prepared: _Prepared,
+        cancel: threading.Event,
+        recovering: bool = False,
+    ) -> bool:
+        """The new container is good: store, in one write under the workspace's lock, its plan
+        (by the built image's BUILT_TAG name), the id of the default image it is made from where
+        it has no plan, the file's digest and the last phase; a recovered workspace is ready
+        again. Then move the built image's name, and end the rebuild. False when the workspace
+        was deleted meanwhile."""
+        with self.lock(workspace.id):
+            now = self.get(workspace.id)
+            if now is None or now.state == DELETING or cancel.is_set():
+                return False
+            columns = {
+                "environment": prepared.stored.to_json() if prepared.stored else None,
+                "image_id": prepared.image_id,
+                "devcontainer_digest": prepared.digest,
+                "rebuild_state": REBUILD_PROMOTING,
+            }
+            if recovering:
+                columns.update(state=READY, error=None, failure=None, log=None)
+            self._set(workspace.id, **columns)
+        if self._promote(self.get(workspace.id) or workspace):
+            self._set(workspace.id, rebuild_state=None, rebuild_log=None, rebuild_error=None)
+        self.close_channel(workspace.container)
+        return True
+
+    def _promote(self, workspace: Workspace) -> bool:
+        """Move the name of the image built for the workspace onto the one a rebuild built, where
+        its stored plan is of a built image; else remove the image built for it before, which
+        nothing is made from any more. Again after a promotion that ended part way, it finishes
+        it. Whether it was done: a failure is logged, and the caller leaves the row in the last
+        phase, for the next restore to finish."""
+        try:
+            plan = self._plan(workspace)
+            if plan is not None and workspace_of_built_name(plan.image) is not None:
+                self.runtime.promote_build(workspace.id)
+            else:
+                self.runtime.remove_build(workspace.id, image=True)
+        except (RuntimeFailed, RuntimeUnavailable) as failed:
+            log.warning("the image of workspace %s could not be renamed: %s", workspace.id, failed)
+            return False
+        return True
+
+    def _discard_next(self, workspace_id: int) -> None:
+        """Remove the image a rebuild built for the workspace, by its NEXT_TAG name only."""
+        try:
+            self.runtime.remove_build(workspace_id, image=True, image_tag=NEXT_TAG)
+        except (RuntimeFailed, RuntimeUnavailable) as failed:
+            log.warning(
+                "the image rebuilt for workspace %s was not removed: %s", workspace_id, failed
+            )
+
+    def _start_again(self, workspace_id: int, prefix: str) -> None:
+        """Start the server that ran before the rebuild in the new container, with the prefix it
+        had, holding no lock: one that does not start is logged, and the restore at rcman's next
+        start starts it, as it should run."""
+        now = self.get(workspace_id)
+        if now is None or now.state != READY:
+            return
+        try:
+            self.start_server(now, prefix)
+        except Problem as refused:
+            log.warning("the server of workspace %s did not start again: %s", now.id, refused.code)
+
+    def _roll_back(
+        self,
+        old: Workspace,
+        slot: int,
+        cancel: threading.Event,
+        report: Callable[[str], None],
+        cause: str,
+        was_running: bool,
+        prefix: str,
+    ) -> str:
+        """Put the workspace back as it was before a rebuild whose new container failed: discard
+        that container, make one again from the stored plan or the default image the workspace
+        was made from, on the same volume, run the old create commands and postStartCommand
+        again, and start the server again if it ran. What the new commands wrote to the volume
+        stays. One that cannot be put back is left in the switch, with no container
+        (``_left_to_put_back``), which the next restore makes again from the stored plan, with
+        its create commands. Why goes to the rebuild's error."""
+        report("Putting the workspace back as it was")
+        name = old.container
+        self.close_channel(name)
+        try:
+            self.runtime.discard(name)
+            if self._cancelled(old.id, cancel):
+                return "cancelled"
+            self._apply_stored(old.id)
+            self.runtime.create(self._spec(old, slot))
+            if not self._made_for(old.id, cancel):
+                return "cancelled"
+            error = REBUILD_MESSAGES["rolled_back"]
+            plan = self._plan(old)
+            if plan is not None:
+                layout = self._plan_layout(self.runtime.layout(name), plan)
+                try:
+                    self._run_commands(old, layout, plan.create_commands(), cancel, report)
+                except RuntimeFailed as failed:
+                    log.warning("workspace %s: an old create command failed: %s", old.id, failed)
+        except Exception as failed:  # noqa: BLE001 - whatever it is, it is put back later
+            if self._cancelled(old.id, cancel):
+                return "cancelled"
+            log.warning("workspace %s could not be put back: %s", old.id, failed)
+            with contextlib.suppress(RuntimeFailed, RuntimeUnavailable):
+                self.runtime.discard(name)
+            if self._cancelled(old.id, cancel):
+                return "cancelled"
+            self._discard_next(old.id)
+            self.close_channel(name)
+            self._left_to_put_back(old.id, cause)
+            return f"rollback failed: {cause.splitlines()[0] if cause else ''}"
+        if self._cancelled(old.id, cancel):
+            return "cancelled"
+        head = error.split("{cause}")[0]
+        self._discard_next(old.id)
+        self.close_channel(name)
+        self._set(
+            old.id,
+            rebuild_error=head + self._fit(cause, MAX_ERROR_CHARS - len(head)),
+            rebuild_state=None,
+        )
+        if was_running:
+            self._start_again(old.id, prefix)
+        return f"rolled back: {cause.splitlines()[0] if cause else ''}"
+
+    def _recover(self, workspace: Workspace, slot: int) -> str:
+        """Rebuild a failed workspace that kept its volume: read its file through its container
+        - the one there is, started if it stopped, or one made from rcman's current default
+        image on the volume where there is none - then make the container as ``_replace`` does,
+        and make the workspace ready. A failure keeps it failed, with why and what kind of
+        failure it was, and keeps its volume, so that it can be rebuilt again; its container is
+        kept only after a create command failed, for a look, as at its making."""
+        report = self._reporter(workspace.id)
+        name = workspace.container
+        with self._working_on(workspace.id) as cancel:
+            if self._cancelled(workspace.id, cancel):
+                return "cancelled"
+            try:
+                if not self._reading_container(workspace, slot, cancel):
+                    return "cancelled"
+                prepared = self._prepare(workspace, cancel, report)
+                if prepared is None:
+                    return "cancelled"
+                with self.lock(workspace.id):
+                    now = self.get(workspace.id)
+                    if now is None or now.state == DELETING or cancel.is_set():
+                        return "cancelled"
+                    self._set(workspace.id, rebuild_state=REBUILD_SWITCHING)
+                self.close_channel(name)
+                self.runtime.discard(name)
+                if not self._make_new(workspace, slot, prepared, cancel, report):
+                    return "cancelled"
+            except Exception as failed:  # noqa: BLE001 - whatever it is, it stays failed
+                if self._cancelled(workspace.id, cancel):
+                    return "cancelled"
+                if not isinstance(failed, HookFailed):
+                    self.close_channel(name)
+                    with contextlib.suppress(RuntimeFailed, RuntimeUnavailable):
+                        self.runtime.discard(name)
+                self._discard_next(workspace.id)
+                cause = self._cause_of(workspace, failed, lambda words: words)
+                kind = failed.kind if isinstance(failed, HookFailed) else workspace.failure
+                with self.lock(workspace.id):
+                    now = self.get(workspace.id)
+                    if now is not None and now.state != DELETING:
+                        self._set(workspace.id, error=cause, failure=kind, rebuild_state=None)
+                return f"not recovered: {cause.splitlines()[0]}"
+            if not self._commit(workspace, prepared, cancel, recovering=True):
+                return "cancelled"
+        return "rebuilt"
+
+    def _reading_container(self, workspace: Workspace, slot: int, cancel: threading.Event) -> bool:
+        """A container of the failed workspace on its volume to read its file through: the one it
+        has, started if it stopped, or one made from rcman's current default image, which the
+        row does not record. False when the workspace was deleted meanwhile."""
+        name = workspace.container
+        if self.runtime.exists(name):
+            if not self.runtime.running(name):
+                self.runtime.start(name)
+            return True
+        default = self.runtime.default_image_id()
+        if not default:
+            raise NotRebuilt(DEVCONTAINER_MESSAGES["default_image_gone"])
+        self._apply_stored(workspace.id)
+        reader = dataclasses.replace(workspace, environment=None, image_id=default)
+        self.runtime.create(self._spec(reader, slot))
+        return self._made_for(workspace.id, cancel)
+
+    def devcontainer_changed(self, person: int, workspace_id: int) -> bool | None:
+        """Whether the devcontainer.json in the person's workspace, or the Dockerfile it builds
+        from, is not what the workspace was made or last rebuilt from: read through its channel,
+        as making it reads them. None where that is not known: a workspace that is not ready,
+        is being rebuilt or worked on, has no container, or has no digest recorded, none of
+        which is asked anything; and a file that cannot be read, or that rcman refuses."""
+        found = self.owned(person, workspace_id)
+        if found.state != READY or found.rebuild_state is not None or not found.source:
+            return None
+        if not found.devcontainer_digest or self._being_made(found.id):
+            return None
+        with self._lock:
+            if found.id in self._working:
+                return None
+        try:
+            if not self.runtime.exists(found.container):
+                return None
+            run = self._channel_runner(found.container)
+            now = devcontainer.current_digest(run, self.runtime.layout(found.container), found.id)
+        except (
+            devcontainer.Refused,
+            RuntimeFailed,
+            RuntimeUnavailable,
+            ChannelBroken,
+            ChannelTimeout,
+        ) as unread:
+            log.info("the devcontainer.json of workspace %s was not read: %s", found.id, unread)
+            return None
+        return now != found.devcontainer_digest
+
+    def _channel_runner(self, name: str) -> Callable[..., Result]:
+        """The workspace's channel as devcontainer.read's runner, which may name the folder a
+        program runs in: a fixed script that changes to it first, given the folder and the argv
+        as its arguments."""
+        channel = self._channel(name)
+        layout = self.runtime.layout(name)
+
+        def run(argv: list[str], timeout: float, cwd: str | None = None) -> Result:
+            if cwd is None:
+                return channel.run(argv, timeout)
+            return channel.run(
+                [layout.shell, "-c", 'cd "$1" && shift && exec "$@"', "sh", cwd, *argv], timeout
+            )
+
+        return run
+
     def delete(self, workspace: Workspace) -> None:
         """Delete the workspace: its container and volume, its server with them, and its
-        row. One still being made goes once it is made."""
+        row. One still being made, or rebuilt, goes once what makes it stops: here, by a thread
+        of this process; in rcman-admin, which does not prune and has none, by the service's,
+        which a rebuild in the row stands for - its thread, or, where none works on it any more,
+        the service's periodic look (``settle_left_over``)."""
         with self.lock(workspace.id):
             now = self.get(workspace.id)
             if now is None:
                 return
             self._set(workspace.id, state=DELETING)
-            self._stop_working(now)  # what is being done to it stops: making, restoring
-            if now.state == CREATING:
+            self._stop_working(now.id)  # what is being done to it stops: making, restoring
+            elsewhere = now.rebuild_state is not None and not self.prunes
+            if now.state == CREATING or self._being_made(now.id) or elsewhere:
                 return
             self._remove(now)
         self._stopped(workspace.person)
         self._collect_images_quietly()
 
-    def _stop_working(self, workspace: Workspace) -> None:
+    def _stop_working(self, workspace_id: int) -> None:
         """End what is being done to the workspace that a deletion has to stop - git cloning
         into it, an image being pulled, a command running - by telling it to stop and removing
         the container by force, which kills what runs in it: cancelling is deleting the
@@ -1055,19 +1858,19 @@ class Workspaces:
         whose container cannot be removed now is removed when the work ends, at the latest at
         its timeout."""
         with self._lock:
-            cancel = self._working.get(workspace.id)
+            cancel = self._working.get(workspace_id)
         if cancel is None:
             return
         cancel.set()
         for remove in (
-            lambda: self.runtime.remove_build(workspace.id),  # the builder: it ends a build
-            lambda: self.runtime.remove(workspace.container),
+            lambda: self.runtime.remove_build(workspace_id),  # the builder: it ends a build
+            lambda: self.runtime.remove(container_name(workspace_id)),
         ):
             try:
                 remove()
             except (RuntimeFailed, RuntimeUnavailable) as failed:
                 log.warning(
-                    "the work on workspace %s could not be stopped: %s", workspace.id, failed
+                    "the work on workspace %s could not be stopped: %s", workspace_id, failed
                 )
 
     def _remove(self, workspace: Workspace) -> None:
@@ -1079,6 +1882,7 @@ class Workspaces:
         with answered():
             self.runtime.remove(workspace.container)
             self.runtime.remove_build(workspace.id, image=True)
+            self.runtime.remove_build(workspace.id, image=True, image_tag=NEXT_TAG)
         self._drop_limits(workspace.person, workspace.id)
         con = self._con()
         try:
@@ -1097,14 +1901,14 @@ class Workspaces:
         finally:
             con.close()
         self._person_deleting(person.id)  # a sign-in that waits for its code ends
-        for workspace in self.of_person(person.id):
+        theirs = self.of_person(person.id)
+        for workspace in theirs:
             self.delete(workspace)
-            with self._lock:
-                making = self._making.get(workspace.id)
-            if making is not None:  # still being made: it goes once it is
-                making.join(MADE_WITHIN_SECONDS)
-        if self.of_person(person.id):  # one could not be removed: rcman's next start tries
-            raise Problem("workspace_failed")
+        self._wait_while_made(
+            {w.id for w in theirs if w.state == CREATING or w.rebuild_state is not None}
+        )
+        if self.of_person(person.id):  # left: the work ends, or rcman's next start, finishes it
+            raise Problem("workspace_failed", title=PERSON_DELETION_LEFT)
         with self.person_lock(person.id):  # not while a sign-in or a start of theirs is under way
             self._person_deleting(person.id)
             self._drop_limits(person.id, None)  # slots are given again: not to the next person
@@ -1116,6 +1920,28 @@ class Workspaces:
             finally:
                 con.close()
         self._collect_images_quietly()  # what only their workspaces referred to
+
+    def _wait_while_made(self, workspace_ids: set[int]) -> None:
+        """Wait, for up to MADE_WITHIN_SECONDS, until the workspaces of ``workspace_ids``, which
+        were being made when they were deleted, are gone: their deletion is finished by what
+        makes them, once the step it is on ends - a thread of this process, or of the service's
+        when this is rcman-admin, whose threads this process cannot see, and so is found by the
+        rows. One whose making in this process is over is not waited for: its removal failed,
+        and rcman's next start finishes it."""
+        deadline = time.monotonic() + MADE_WITHIN_SECONDS
+        waiting = set(workspace_ids)
+        while True:
+            with self._lock:
+                making = dict(self._making)
+            waiting = {
+                i
+                for i in waiting
+                if self.get(i) is not None and (i not in making or making[i].is_alive())
+            }
+            if not waiting or time.monotonic() >= deadline:
+                return
+            if self._closing.wait(WORKING_POLL_SECONDS):
+                return
 
     def _person_deleting(self, person_id: int) -> None:
         """``on_person_deleting``, which never makes the deletion fail."""
@@ -1482,7 +2308,9 @@ class Workspaces:
             return self.server(workspace).status()
 
     def listing(self, workspaces: list[Workspace]) -> list[dict]:
-        """Each workspace as the API shows it, its server read side by side with the others'."""
+        """Each workspace as the API shows it, its server read side by side with the others',
+        but for one whose container a rebuild replaces just now, which is not reached; with its
+        rebuild, and whether one may be asked for now (``rebuild_refusal``, as the route asks)."""
 
         def shown(workspace: Workspace) -> dict:
             entry = {
@@ -1496,8 +2324,17 @@ class Workspaces:
                 "server": None,
                 "server_error": None,
                 "claude_version": None,
+                "rebuild": {
+                    "state": workspace.rebuild_state,
+                    "log": workspace.rebuild_log,
+                    "error": workspace.rebuild_error,
+                },
+                "rebuildable": self.rebuild_refusal(workspace, containers) is None,
             }
-            if workspace.state == READY:
+            if workspace.state == READY and workspace.rebuild_state == REBUILD_SWITCHING:
+                code = "workspace_rebuilding"
+                entry["server_error"] = {"code": code, "title": MESSAGES[code]}
+            elif workspace.state == READY:
                 try:
                     entry["server"] = self.server_status(workspace)
                 except Problem as problem:
@@ -1508,6 +2345,12 @@ class Workspaces:
 
         if not workspaces:
             return []
+        # The runtime is asked once for every container, and only where a ready workspace may be
+        # rebuilt as far as its row says.
+        asking = any(
+            w.state == READY and self._rebuild_refusal_by_row(w) is None for w in workspaces
+        )
+        containers = self._containers() if asking else set()
         with ThreadPoolExecutor(max_workers=min(len(workspaces), LISTING_WORKERS)) as pool:
             return list(pool.map(shown, workspaces))
 
@@ -1515,8 +2358,15 @@ class Workspaces:
         """Start the workspace's server, or resume it. It runs the approved Claude Code
         version, which is recorded on the workspace's row before it runs, and stays recorded
         until the server is stopped or forgotten (or the start leaves it not running); a
-        server that runs already is refused and its record is left as it is."""
+        server that runs already is refused and its record is left as it is. A workspace that is
+        no longer ready by the time the lock is had, one deleted meanwhile among them, is refused
+        (``workspace_not_ready``), and so is one whose container a rebuild has begun to replace
+        (``_not_switching``): nothing is started in it."""
         with self.person_lock(workspace.person), self.lock(workspace.id), answered():
+            now = self.get(workspace.id)
+            if now is None or now.state != READY:
+                raise Problem("workspace_not_ready")
+            self._not_switching(now.id)
             con = self._con()
             try:
                 account, signing_out = people.claude_account(con, workspace.person)
@@ -1600,8 +2450,17 @@ class Workspaces:
         if written.code != 0:
             raise RuntimeFailed(written.err.decode("utf-8", "replace").strip())
 
+    def _not_switching(self, workspace_id: int) -> None:
+        """Refuse what reaches the workspace's server once a rebuild has begun to replace its
+        container (``workspace_rebuilding``): called under the workspace's lock, which the
+        rebuild writes the switch under, by a request that found the workspace ready before."""
+        now = self.get(workspace_id)
+        if now is not None and now.rebuild_state == REBUILD_SWITCHING:
+            raise Problem("workspace_rebuilding")
+
     def stop_server(self, workspace: Workspace) -> dict:
         with self.lock(workspace.id), answered():
+            self._not_switching(workspace.id)
             self._set(workspace.id, wanted=0)
             answer = self.server(workspace).stop()
             self._set(workspace.id, claude_version=None)
@@ -1610,6 +2469,7 @@ class Workspaces:
 
     def forget_server(self, workspace: Workspace) -> dict:
         with self.lock(workspace.id), answered():
+            self._not_switching(workspace.id)
             answer = self.server(workspace).forget()
             self._set(workspace.id, server=0, wanted=0, claude_version=None)
         self._stopped(workspace.person)
@@ -1628,8 +2488,8 @@ class Workspaces:
             version = workspace.claude_version
             if version is None or (versions is not None and version not in versions):
                 continue
-            if workspace.id in starting:
-                found.append((workspace, version))
+            if workspace.id in starting or workspace.rebuild_state == REBUILD_SWITCHING:
+                found.append((workspace, version))  # not reached while its container is replaced
                 continue
             if workspace.state != READY:
                 continue
@@ -1666,6 +2526,9 @@ class Workspaces:
         for workspace in self.of_person(person):
             if workspace.state != READY or not workspace.server:
                 continue
+            if workspace.rebuild_state == REBUILD_SWITCHING:
+                found.append(workspace)  # not reached while its container is replaced
+                continue
             try:
                 status = self.server_status(workspace)
             except Problem:
@@ -1680,6 +2543,10 @@ class Workspaces:
         in meanwhile; one that does not stop is logged."""
         with self.person_lock(person):
             for workspace in self.running(person):
+                if workspace.rebuild_state == REBUILD_SWITCHING:
+                    # The rebuild has stopped it, and its start afterwards is refused.
+                    log.warning("the server of workspace %s is being rebuilt", workspace.id)
+                    continue
                 try:
                     self.stop_server(workspace)
                 except Problem as refused:
@@ -1689,6 +2556,7 @@ class Workspaces:
 
     def confirm(self, workspace: Workspace, answer: str) -> dict:
         with self.lock(workspace.id), answered():
+            self._not_switching(workspace.id)
             return self.server(workspace).confirm(answer)
 
     def output(self, workspace: Workspace) -> dict:
@@ -1763,17 +2631,26 @@ class Workspaces:
                 return
             time.sleep(RESTORE_POLL_SECONDS)
 
-    def _restore_task(self, workspace: Workspace, free: threading.BoundedSemaphore) -> None:
+    def _restore_task(
+        self,
+        workspace: Workspace,
+        free: threading.BoundedSemaphore | None = None,
+        only_switching: bool = False,
+    ) -> None:
         """One workspace's restore: its container, its start command, then its server if it
-        should be running."""
+        should be running and is out of any switch. With ``only_switching`` (``settle_left_over``)
+        nothing is done unless it is still a ready workspace in the switch, and what fails is
+        raised; else it is logged (``_step``)."""
+        step = (lambda call, *args: call(*args)) if only_switching else self._step
         try:
-            self._step(self._restore_workspace, workspace)
+            step(self._restore_workspace, workspace, only_switching)
             now = self.get(workspace.id)
-            if now is not None and now.state == READY and now.wanted:
+            if now is not None and now.state == READY and now.wanted and not now.rebuild_state:
                 if not self._closing.is_set():
-                    self._step(self._restore_server, now)
+                    step(self._restore_server, now)
         finally:
-            free.release()
+            if free is not None:
+                free.release()
 
     @staticmethod
     def _step(call, *args) -> None:
@@ -1834,14 +2711,16 @@ class Workspaces:
 
     def _collect_unreferenced(self) -> None:
         everything = self.everything()
+        me = threading.current_thread()  # a rebuild collects when it is done
         with self._lock:
-            making = any(t.is_alive() for t in self._making.values())
+            making = any(t.is_alive() and t is not me for t in self._making.values())
         if making or any(w.state == CREATING for w in everything):
             return
         ids: set[str] = set()
         names: set[str] = set()
         for workspace in everything:
             names.add(built_name(workspace.id))
+            names.add(built_name(workspace.id, NEXT_TAG))  # a rebuild's, until it is moved
             if workspace.image_id:
                 ids.add(workspace.image_id)
             try:
@@ -1886,23 +2765,34 @@ class Workspaces:
         for workspace_id, name in self.runtime.built_images().items():
             if name not in used and not self._being_made(workspace_id):
                 self._step(self.runtime.remove_build, workspace_id, True)
+        for workspace_id in self.runtime.next_images():  # what a rebuild cut short left
+            if not self._being_made(workspace_id):
+                self._step(self._discard_next, workspace_id)
 
-    def _restore_workspace(self, workspace: Workspace) -> None:
+    def _restore_workspace(self, workspace: Workspace, only_switching: bool = False) -> None:
         """Bring one workspace back as its row is now; one a request is making meanwhile is that
         request's. What is quick - the row's state, finishing a deletion, starting a container
         that stopped - is done under the workspace's lock. What can be slow - pulling the image
         and making the container again, the start command - is done without it, so that
         nothing waits for it; a deletion meanwhile sets the event that stops it
-        (``_working_on``)."""
+        (``_working_on``). With ``only_switching``, only a ready workspace in the switch that no
+        thread works on is looked at (``_left_in_switch``)."""
         if self._being_made(workspace.id):
             return
         with self.lock(workspace.id):
             now = self.get(workspace.id)
             if now is None or self._being_made(workspace.id):
                 return
+            if only_switching and not self._left_in_switch(now):
+                return
+            if now.state == FAILED and now.rebuild_state is not None:
+                self._restore_failed_rebuild(now)
+                return
             if now.state != READY:
                 self._restore_one(now)
                 return
+            again = self._restore_rebuild(now)  # a rebuild a restart cut short
+            now = self.get(now.id)
             lost = not self.runtime.exists(now.container)
             kept = not lost and self.runtime.running(now.container)
             if not lost and not kept:
@@ -1911,21 +2801,129 @@ class Workspaces:
             self.on_kept_running(now)  # outside the lock: it runs through the channel
             return
         with self._working_on(now.id) as cancel:
+            if lost and self._closing.is_set():
+                return  # rcman is closing: its next start makes it again
             if lost and not self._remake(now, cancel):
+                if again:
+                    self._not_put_back(now.id)
                 return
-            self._start_commands(now, cancel)
+            if again:
+                self._create_commands_again(now, cancel)
+                self._put_back(now.id, cancel)
+            else:
+                self._start_commands(now, cancel)
+
+    def _put_back(self, workspace_id: int, cancel: threading.Event) -> None:
+        """End the switch of a workspace whose container was made again from its stored plan,
+        under its lock: the rebuild's error says what happened (``_put_back_error``)."""
+        with self.lock(workspace_id):
+            now = self.get(workspace_id)
+            if now is None or cancel.is_set() or now.rebuild_state != REBUILD_SWITCHING:
+                return
+            self._set(
+                now.id, rebuild_state=None, rebuild_error=self._put_back_error(now.rebuild_error)
+            )
+        with self._lock:
+            self._put_back_failing.discard(workspace_id)
+        log.info("workspace %s was put back after its rebuild did not finish", workspace_id)
+
+    def _not_put_back(self, workspace_id: int) -> None:
+        """After a switch's container could not be made again: one whose image is gone, failed
+        (``_image_gone``), keeps what failed it and leaves the switch; one that may yet be made,
+        the pull failing for now or the like, stays in it, for the next look
+        (``settle_left_over``) or restore to try again."""
+        with self.lock(workspace_id):
+            now = self.get(workspace_id)
+            if now is not None and now.state == FAILED and now.rebuild_state is not None:
+                self._set(now.id, rebuild_state=None)
+
+    @staticmethod
+    def _put_back_error(error: str | None) -> str:
+        """What a workspace put back by a restore or ``settle_left_over`` is told: that rcman
+        restarted while its container was replaced; or, where its rebuild had failed and it could
+        not be put back at once (REBUILD_MESSAGES' ``rollback_failed``), that it was put back
+        afterwards, with why the rebuild failed."""
+        failed = REBUILD_MESSAGES["rollback_failed"].split("{cause}")[0]
+        if not error or not error.startswith(failed):
+            return REBUILD_MESSAGES["restarted_switching"]
+        head = REBUILD_MESSAGES["put_back_later"].split("{cause}")[0]
+        return head + Workspaces._fit(error[len(failed) :], MAX_ERROR_CHARS - len(head))
+
+    def _restore_rebuild(self, workspace: Workspace) -> bool:
+        """Settle the rebuild of a ready workspace that a restart cut short, or that could not
+        put it back, under its lock: while the new image was prepared nothing was changed, and
+        only the image is removed; while the container was replaced, any container there is
+        discarded, whatever image it is of, to be made again from the stored plan, with its
+        create commands run again, for which True is returned and the phase kept until that is
+        done (``_put_back``); after the new plan was stored, the built image's name is moved, as
+        the rebuild would have. The rebuild's error says what happened."""
+        state = workspace.rebuild_state
+        if state is None:
+            return False
+        if state == REBUILD_PREPARING:
+            error = REBUILD_MESSAGES["restarted"]
+            self._discard_next(workspace.id)
+        elif state == REBUILD_SWITCHING:
+            # Whatever image it is of, a container there may be the new one: one that keeps the
+            # image may change the user, the environment or the commands.
+            if self.runtime.exists(workspace.container):
+                self.close_channel(workspace.container)
+                self.runtime.discard(workspace.container)
+            self._discard_next(workspace.id)
+            return True  # the phase stays until it is put back (``_put_back``)
+        elif not self._promote(workspace):
+            return False  # left in its phase: the next restore tries again
+        else:
+            error = workspace.rebuild_error
+        self._set(workspace.id, rebuild_state=None, rebuild_error=error)
+        log.info(
+            "workspace %s: a rebuild cut short by a restart was settled (%s)", workspace.id, state
+        )
+        return False
+
+    def _restore_failed_rebuild(self, workspace: Workspace) -> None:
+        """Settle the rebuild of a failed workspace that a restart cut short: it stays failed,
+        with what failed it kept and its volume, and may be rebuilt again; a container being made
+        meanwhile is discarded."""
+        if workspace.rebuild_state == REBUILD_SWITCHING:
+            self.close_channel(workspace.container)
+            self.runtime.discard(workspace.container)
+        self._discard_next(workspace.id)
+        self._set(workspace.id, rebuild_state=None, error=REBUILD_MESSAGES["restarted"])
+
+    def _create_commands_again(self, workspace: Workspace, cancel: threading.Event) -> None:
+        """Run the create commands of the workspace's plan again, then its postStartCommand, in
+        its container made again: a failure is logged and nothing more."""
+        try:
+            plan = self._plan(workspace)
+            if plan is None:
+                return
+            layout = self._plan_layout(self.runtime.layout(workspace.container), plan)
+            self._run_commands(
+                workspace,
+                layout,
+                plan.create_commands(),
+                cancel,
+                lambda text: log.info("workspace %s: %s", workspace.id, text),
+            )
+        except Exception as failed:  # noqa: BLE001 - a command never stops a restore
+            log.warning("workspace %s: its create commands failed: %s", workspace.id, failed)
 
     def _remake(self, workspace: Workspace, cancel: threading.Event) -> bool:
         """Make a ready workspace's lost container again from the image it was made from: the
         plan's by its id, else (a plan with none) its name pulled again, else the default image
         the workspace was made from. An image the runtime's storage lacks is pulled by its
         digest where the plan has one. If the registry says it is not there, or may not be had,
-        the workspace is failed, in words that say to delete it and make it again; if the pull
-        fails otherwise - the network, a timeout, a registry that is down - nothing is decided:
-        it stays ready, without its container, and is made again the next time rcman starts:
-        only a restore makes a lost container again, and it runs once, as rcman starts. The
-        same holds for limits that cannot be applied before it is made. False when there is no
-        container to go on with, because of either or a deletion meanwhile."""
+        the workspace is failed, with the kind of failure recorded (RECOVERABLE): its words say
+        to rebuild it, which makes it from what its file asks for now on the same volume, or to
+        delete it and make it again; if the pull fails otherwise - the network, a timeout, a
+        registry that is down - nothing is decided: it stays ready, without its container, and
+        is made again the next time rcman starts: only a restore makes a lost container again,
+        and it runs once, as rcman starts. The same holds for limits that cannot be applied
+        before it is made. Only postStartCommand is run in it afterwards, but after a rebuild a
+        restart cut short while the container was replaced (``_restore_rebuild``), when every
+        create command is. False when there is no container to go on with, because of either or
+        a deletion meanwhile."""
         con = self._con()
         try:
             slot = people.by_id(con, workspace.person).slot
@@ -1936,7 +2934,7 @@ class Workspaces:
             workspace = self._pinned(workspace)
             if workspace.image_id and not self.runtime.has_image(workspace.image_id):
                 # A new default image is for new workspaces: this one is not made from it.
-                self._image_gone(workspace, DEVCONTAINER_MESSAGES["default_image_gone"])
+                self._image_gone(workspace, "default_image_gone")
                 return False
         elif plan.image_id:
             if not self._pinned_image_is_there(workspace, plan, cancel):
@@ -1944,7 +2942,7 @@ class Workspaces:
         elif workspace_of_built_name(plan.image) is not None:
             # An image rcman built is in its storage or nowhere: there is no registry to ask.
             if plan.image not in self.runtime.built_images().values():
-                self._image_gone(workspace, DEVCONTAINER_MESSAGES["built_image_gone"])
+                self._image_gone(workspace, "built_image_gone")
                 return False
         elif not self._pulled_again(workspace, plan, plan.image, cancel):
             return False
@@ -1964,9 +2962,10 @@ class Workspaces:
     ) -> bool:
         """Pull ``name``, the plan's image or the same image by its digest, because the runtime's
         storage may no longer have it. If the registry says it is not there, or may not be had,
-        the workspace is failed, in words that say to delete it and make it again; if the pull
-        fails otherwise - the network, a timeout, a registry that is down - nothing is decided:
-        False, and it stays ready without its container, made again the next time rcman starts."""
+        the workspace is failed (``image_gone``), in words that say to rebuild it or delete it;
+        if the pull fails otherwise - the network, a timeout, a registry that is down - nothing is
+        decided: False, and it stays ready without its container, made again the next time rcman
+        starts."""
         try:
             self.runtime.pull(name, None, cancel)
         except RuntimeFailed as failed:
@@ -1976,7 +2975,9 @@ class Workspaces:
             if not image_is_gone(str(failed)):
                 return False  # it may pass: the next restore tries again
             self._image_gone(
-                workspace, DEVCONTAINER_MESSAGES["image_gone"].format(image=plan.image)
+                workspace,
+                "image_gone",
+                DEVCONTAINER_MESSAGES["image_gone"].format(image=plan.image),
             )
             return False
         return True
@@ -1991,16 +2992,18 @@ class Workspaces:
         in plain words. An image rcman built is in the storage or nowhere."""
         built = workspace_of_built_name(plan.image) is not None
         if built and plan.image not in self.runtime.built_images().values():
-            self._image_gone(workspace, DEVCONTAINER_MESSAGES["built_image_gone"])
+            self._image_gone(workspace, "built_image_gone")
             return False
         if self.runtime.has_image(plan.image_id):
             return True
         if built:
-            self._image_gone(workspace, DEVCONTAINER_MESSAGES["built_image_gone"])
+            self._image_gone(workspace, "built_image_gone")
             return False
         if not DIGEST.match(plan.image_digest):
             self._image_gone(
-                workspace, DEVCONTAINER_MESSAGES["image_gone"].format(image=plan.image)
+                workspace,
+                "image_gone",
+                DEVCONTAINER_MESSAGES["image_gone"].format(image=plan.image),
             )
             return False
         by_digest = f"{repository_of(plan.image)}@{plan.image_digest}"
@@ -2008,23 +3011,27 @@ class Workspaces:
             return False
         if not self.runtime.has_image(plan.image_id):  # the digest names another image than this
             self._image_gone(
-                workspace, DEVCONTAINER_MESSAGES["image_gone"].format(image=plan.image)
+                workspace,
+                "image_gone",
+                DEVCONTAINER_MESSAGES["image_gone"].format(image=plan.image),
             )
             return False
         return True
 
-    def _image_gone(self, workspace: Workspace, error: str) -> None:
-        """Fail a ready workspace whose image is not to be had, with ``error``."""
+    def _image_gone(self, workspace: Workspace, kind: str, error: str | None = None) -> None:
+        """Fail a ready workspace whose image is not to be had: ``kind`` is the failure, and
+        the key of its message in DEVCONTAINER_MESSAGES unless ``error`` gives the words."""
         with self.lock(workspace.id):
             if (self.get(workspace.id) or workspace).state == READY:
-                self._set(workspace.id, state=FAILED, error=error)
+                words = error or DEVCONTAINER_MESSAGES[kind]
+                self._set(workspace.id, state=FAILED, error=words, failure=kind)
 
     def _restore_one(self, workspace: Workspace) -> None:
         if workspace.state == DELETING:
             self._remove(workspace)
         elif workspace.state == CREATING and workspace.source:
             # A clone is not made again, whatever it had cloned: the person decides.
-            self._set(workspace.id, state=FAILED, error=CLONE_MESSAGES["restarted"])
+            self._set(workspace.id, state=FAILED, error=CLONE_MESSAGES["restarted"], failure=None)
         elif workspace.state == CREATING:
             self.runtime.remove(workspace.container)  # whatever was made of it
             con = self._con()
@@ -2102,20 +3109,89 @@ class Workspaces:
         threading.Thread(target=self._close_idle_channels, daemon=True).start()
 
     def _close_idle_channels(self) -> None:
-        """Every IDLE_CHECK_SECONDS: close idle channels, and finish the sign-outs that
-        wait for servers that have ended."""
+        """Every IDLE_CHECK_SECONDS: close idle channels, finish the sign-outs that wait for
+        servers that have ended, and finish what rebuilds left that nothing works on
+        (``settle_left_over``)."""
         while not self._closing.wait(IDLE_CHECK_SECONDS):
             self.close_idle()
             self.settle_signing_out()
+            try:
+                self.settle_left_over()
+            except Exception:  # noqa: BLE001 - the next round tries again
+                log.exception("what rebuilds left could not be finished")
+
+    def settle_left_over(self) -> None:
+        """In the service, once its restore is done: finish what a rebuild left in a row that
+        no thread of this process works on. A workspace rcman-admin deleted during a rebuild,
+        which it leaves to the service, is removed, and its person with it if they are being
+        deleted and it was their last; the last phase of a rebuild whose built image's name could
+        not be moved is finished (``_promote``); and a ready workspace whose rebuild could not put
+        it back is put back as the restore does it, in a thread of its own, its server started
+        again if it should run, and stays in the switch, for the next look, if that fails too."""
+        if not self.prunes or not self.restored.is_set():
+            return
+        for workspace in self.everything():
+            if workspace.rebuild_state is None or self._worked_on(workspace.id):
+                continue
+            if self._left_in_switch(workspace):
+                # In a thread of its own, as it may be slow: the other looks go on meanwhile.
+                thread = threading.Thread(
+                    target=self._put_back_left, args=(workspace,), daemon=True
+                )
+                with self._lock:
+                    self._putting_back[workspace.id] = thread
+                thread.start()
+                continue
+            if workspace.state != DELETING and workspace.rebuild_state != REBUILD_PROMOTING:
+                continue
+            removed = False
+            with self.lock(workspace.id):
+                now = self.get(workspace.id)
+                if now is None or now.rebuild_state is None or self._worked_on(now.id):
+                    continue
+                if now.state == DELETING:
+                    removed = self._remove_deleted(now)
+                elif now.rebuild_state == REBUILD_PROMOTING and self._promote(now):
+                    self._set(now.id, rebuild_state=None, rebuild_log=None, rebuild_error=None)
+            if removed:
+                self._stopped(workspace.person)
+                self._collect_images_quietly()
+
+    def _put_back_left(self, workspace: Workspace) -> None:
+        """``settle_left_over``'s thread putting back a workspace left in the switch. The first
+        failure is logged as a warning, and the ones after it, at each look until it is put back,
+        only for debugging."""
+        try:
+            self._restore_task(workspace, only_switching=True)
+        except Exception as failed:  # noqa: BLE001 - the next look tries again
+            with self._lock:
+                again = workspace.id in self._put_back_failing
+                self._put_back_failing.add(workspace.id)
+            level = logging.DEBUG if again else logging.WARNING
+            log.log(level, "workspace %s was not put back yet: %s", workspace.id, failed)
+        finally:
+            with self._lock:
+                if self._putting_back.get(workspace.id) is threading.current_thread():
+                    del self._putting_back[workspace.id]
+
+    def _worked_on(self, workspace_id: int) -> bool:
+        """Whether a thread of this process makes, rebuilds or restores the workspace, or puts
+        it back (``settle_left_over``) - another than the one asking."""
+        with self._lock:
+            working = workspace_id in self._working
+            putting = self._putting_back.get(workspace_id)
+        if putting is not None and putting.is_alive() and putting is not threading.current_thread():
+            return True
+        return working or self._being_made(workspace_id)
 
     def close(self) -> None:
-        """Stop: let restore finish the step it is on, wait for the workspaces being made,
-        and close every channel."""
+        """Stop: let restore finish the step it is on, wait for the workspaces being made or put
+        back, and close every channel."""
         self._closing.set()
         if self._restoring is not None:
             self._restoring.join(timeout=2 * RUNTIME_WAIT_SECONDS)
         with self._lock:
-            threads = list(self._making.values())
+            threads = [*self._making.values(), *self._putting_back.values()]
         for thread in threads:
             thread.join(timeout=30)
         self.close_channels()

@@ -144,6 +144,19 @@ MIGRATIONS = [
     );
     insert into meta (id, install) values (1, lower(hex(randomblob(16))));
     """,
+    """
+    -- Rebuilding a workspace on its volume (workspaces.py). The digest of the devcontainer.json
+    -- it was made or last rebuilt from (devcontainer.digest), null where it is not known; the
+    -- phase of a rebuild under way, which a restart of rcman reads; the steps of the last
+    -- rebuild and why it did not finish; and what kind of failure a failed workspace had
+    -- (workspaces.RECOVERABLE names those a rebuild may mend), null where it is none of them.
+    alter table workspaces add column devcontainer_digest text;
+    alter table workspaces add column rebuild_state text
+        check (rebuild_state in ('preparing', 'switching', 'promoting'));
+    alter table workspaces add column rebuild_log text;
+    alter table workspaces add column rebuild_error text;
+    alter table workspaces add column failure text;
+    """,
 ]
 
 

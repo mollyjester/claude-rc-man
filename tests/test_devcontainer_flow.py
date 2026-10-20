@@ -108,9 +108,9 @@ class Flow(rt.HostRuntime):
         finally:
             self.builds_at_once -= 1
 
-    def remove_build(self, workspace, image=False):
+    def remove_build(self, workspace, image=False, **more):
         self.events.append(("remove_build", workspace, image))
-        super().remove_build(workspace, image)
+        super().remove_build(workspace, image, **more)
 
     def create(self, spec):
         self.events.append(("create", spec.image, spec.user))
@@ -1262,7 +1262,8 @@ def test_a_lost_container_whose_image_is_gone_fails_the_workspace_in_plain_words
     now = row(settings, workspace)
     assert now["state"] == "failed"
     assert now["error"] == problems.DEVCONTAINER_MESSAGES["image_gone"].format(image=IMAGE)
-    assert "delete the workspace" in now["error"].lower()
+    assert "rebuild the workspace" in now["error"].lower()
+    assert "delete it" in now["error"].lower()
     assert "make it again" in now["error"].lower()
     assert not runtime.exists(rt.container_name(workspace))
     service.restore()  # a second restart leaves it as it is, failing nothing again
@@ -2237,7 +2238,7 @@ def test_a_lost_container_whose_built_image_is_gone_fails_the_workspace_and_pull
     now = row(settings, workspace)
     assert now["state"] == "failed"
     assert now["error"] == problems.DEVCONTAINER_MESSAGES["built_image_gone"]
-    assert "delete the workspace" in now["error"].lower()
+    assert "rebuild the workspace" in now["error"].lower() and "delete it" in now["error"].lower()
     assert runtime.pulled == [] and not runtime.exists(rt.container_name(workspace))
 
 

@@ -90,6 +90,68 @@ async function withChanges(page: Page) {
   });
 }
 
+// The screenshot workspace as the listing gives it, with `extra` laid over it, and what the server
+// says of its devcontainer.json (`changed`).
+async function asListed(
+  page: Page,
+  id: number,
+  extra: Record<string, unknown>,
+  changed: boolean | null,
+) {
+  await page.route("**/api/workspaces", async (route) => {
+    const answer = await (await route.fetch()).json();
+    answer.workspaces = answer.workspaces.map((w: { id: number }) =>
+      w.id === id ? { ...w, ...extra } : w,
+    );
+    await route.fulfill({ json: answer });
+  });
+  await page.route(`**/api/workspaces/${id}/devcontainer`, (route) =>
+    route.fulfill({ json: { changed } }),
+  );
+}
+
+const REBUILD_STEPS = [
+  "Reading .devcontainer/devcontainer.json",
+  "Pulling mcr.microsoft.com/devcontainers/typescript-node:22",
+  "Making the container again",
+].join("\n");
+
+// The states of the Container card and of a failed workspace that a screenshot shows: each by its
+// name, what the listing gives and what the server says of the file.
+const REBUILD_STATES: [string, Record<string, unknown>, boolean | null][] = [
+  ["container-changed", { rebuildable: true }, true],
+  [
+    "container-rebuilding",
+    { rebuildable: false, rebuild: { state: "preparing", log: REBUILD_STEPS, error: null } },
+    null,
+  ],
+  [
+    "container-rolled-back",
+    {
+      rebuildable: true,
+      rebuild: {
+        state: null,
+        log: REBUILD_STEPS,
+        error:
+          "The rebuild failed, so the workspace was put back as it was: its container was made again from the image it had, and its create commands were run again. What the new commands wrote to the work folder stays. Why it failed is below.\npostCreateCommand failed, exit code 1.",
+      },
+    },
+    true,
+  ],
+  [
+    "failed-rebuildable",
+    {
+      state: "failed",
+      rebuildable: true,
+      server: null,
+      error:
+        "postCreateCommand failed, exit code 1. What it printed last is below.\nnpm ERR! missing script: setup",
+      log: REBUILD_STEPS,
+    },
+    null,
+  ],
+];
+
 // Every page's path: the route table's, a help page's filled in with the first help page.
 async function paths(page: Page): Promise<string[]> {
   const slugs: string[] = await page.evaluate(async () =>
@@ -164,6 +226,25 @@ for (const scheme of ["light", "dark"] as const) {
           await shot("drawer", false);
           await page.keyboard.press("Escape");
         }
+        await page.unrouteAll({ behavior: "ignoreErrors" });
+
+        // the Container card with the file changed, a rebuild under way and one rolled back, and
+        // a failed workspace offered a rebuild
+        for (const [what, extra, changed] of REBUILD_STATES) {
+          await asListed(page, id, extra, changed);
+          await page.goto(`/?workspace=${id}`);
+          await expect(page.getByRole("heading", { name: WORKSPACE, level: 2 })).toBeVisible();
+          await shot(what);
+          await page.unrouteAll({ behavior: "ignoreErrors" });
+        }
+        await asListed(page, id, { rebuildable: true }, true);
+        await page.goto(`/?workspace=${id}`);
+        await page
+          .getByRole("region", { name: m.containerTitle })
+          .getByRole("button", { name: m.rebuild })
+          .click();
+        await shot("rebuild-workspace", false);
+        await page.keyboard.press("Escape");
         await page.unrouteAll({ behavior: "ignoreErrors" });
 
         await page.goto(`/?workspace=${id}&tab=terminal`);

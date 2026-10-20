@@ -24,6 +24,7 @@ changes nothing: a page's report of a failure rcman could not see, written to th
 |---|---|---|
 | `workspace.create` | makes a workspace (see [Workspaces](workspaces.md)) | the workspace's name |
 | `workspace.delete` | deletes a workspace, with everything in it and its server | the workspace's name |
+| `workspace.rebuild` | asks for a workspace to be rebuilt on its volume from its devcontainer.json (see [Workspaces](workspaces.md)) | the workspace's name |
 | `server.start` | starts a workspace's server | the workspace's name |
 | `server.resume` | resumes a server that stopped | the workspace's name |
 | `server.stop` | stops a server | the workspace's name |
@@ -68,6 +69,7 @@ use rcman any more is `not_allowed`:
 | `terminal_lost` | The page of a terminal closed it, was reloaded, went to another workspace or stopped answering |
 | `terminal_replaced` | A terminal opened on the same workspace, in another tab or window, replaced it |
 | `workspace_gone` | The terminal's workspace was deleted, or is not ready |
+| `workspace_rebuilding` | The terminal's workspace is being rebuilt: its container is being made again |
 | `signed_out` | The person signed out of rcman |
 | `service_closing` | rcman stopped |
 

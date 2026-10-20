@@ -201,6 +201,15 @@ def cli(runtime: rt.PodmanRuntime, *args: str, timeout: float = 1200):
     return engine_of(runtime).cli(*args, timeout=timeout, text=True, errors="replace")
 
 
+def image_of(runtime: rt.PodmanRuntime, name: str) -> str | None:
+    """The id of the image the container ``name`` was made from, asked of the engine ``runtime``
+    drives; None where there is no such container."""
+    found = cli(runtime, "container", "inspect", "--format", "{{.Image}}", name)
+    if found.returncode != 0:
+        return None
+    return found.stdout.strip().removeprefix("sha256:")
+
+
 def on_host(runtime: rt.PodmanRuntime, path: str, format: str = "%u %g %a") -> list[str]:
     """``stat`` of a path in the engine's storage, as the engine's user namespace sees ids: a
     range's root is the range's base."""

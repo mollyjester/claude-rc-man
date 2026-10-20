@@ -1,4 +1,5 @@
-"""The signed-in person's workspaces: listing, making and deleting them."""
+"""The signed-in person's workspaces: listing, making, rebuilding and deleting them, and
+whether a workspace's devcontainer.json changed since it was made or last rebuilt."""
 
 from __future__ import annotations
 
@@ -20,6 +21,16 @@ WorkspaceId = Annotated[int, Path(ge=1, description="The workspace's id.")]
 
 class NewWorkspace(BaseModel):
     name: WorkspaceName = Field(description="The workspace's name, which is yours alone.")
+
+
+class Rebuild(BaseModel):
+    confirm: bool = Field(
+        False,
+        description=(
+            "True: you accept that the workspace's server and terminal stop while its "
+            "container is made again. A rebuild that is not confirmed is refused."
+        ),
+    )
 
 
 def listing(request: Request, identity: Identity) -> list[dict]:
@@ -61,6 +72,36 @@ def create(
     service = request.app.state.workspaces
     made = service.create(person_of(request, record.identity), body.name)
     return {"workspace": service.listing([made])[0]}
+
+
+@router.get("/{workspace}/devcontainer")
+def devcontainer(
+    workspace: WorkspaceId, request: Request, identity: Identity = Depends(current_user)
+) -> dict:
+    """Whether the workspace's devcontainer.json, or the Dockerfile it builds from, changed since
+    the workspace was made or last rebuilt (``changed``); null where that is not known: the
+    workspace is not ready, is being rebuilt, has no container or no record of the file, or the
+    file cannot be read."""
+    service = request.app.state.workspaces
+    return {"changed": service.devcontainer_changed(identity.person, workspace)}
+
+
+@router.post("/{workspace}/rebuild", status_code=202)
+def rebuild(
+    workspace: WorkspaceId,
+    body: Rebuild,
+    request: Request,
+    record: Record = Depends(Recorder("workspace.rebuild")),
+) -> dict:
+    """Rebuild the workspace on its volume from what its devcontainer.json asks for now, in the
+    background: its server and terminal stop while its container is made again, and its server
+    is started again afterwards if it ran. A failed workspace that kept its volume is made ready
+    so. Listed as rebuilding until then (``rebuild``)."""
+    service = request.app.state.workspaces
+    found = service.owned(record.identity.person, workspace)
+    record.target = found.name
+    started = service.rebuild(person_of(request, record.identity), found.id, body.confirm)
+    return {"workspace": service.listing([started])[0]}
 
 
 @router.delete("/{workspace}")

@@ -140,8 +140,8 @@ runuser -u rcman -- env -i PATH=/usr/bin:/bin HOME=/var/lib/rcman \
 17. **Rollback.** `sudo ./install.sh --rollback` switches `/opt/rcman/current` to the previous
     release and rcman answers; running `sudo ./install.sh` again brings the newest back.
 18. **A workspace's own `/tmp`.** After the reinstall, make a new workspace from rcman's own
-    repository (one made before keeps the container it was made with, `/tmp` and all). In its
-    **Terminal** tab, `stat -f -c %T /tmp` does not print `overlayfs` and `stat -f -c %T /var/tmp`
+    repository (one made before keeps the container it was made with, `/tmp` and all, until it is
+    rebuilt). In its **Terminal** tab, `stat -f -c %T /tmp` does not print `overlayfs` and `stat -f -c %T /var/tmp`
     does; `stat -c '%a %u %g' /tmp` prints `1777 0 0`. Run `RCMAN_REQUIRE_CONTAINER=1 make
     test-container` there: it collects the container suites and runs them, and the totals it
     prints show them passed, none skipped.
@@ -254,6 +254,25 @@ command that leaves a marker file, and `customizations` and `forwardPorts`:
 10. **Claude under a non-root user.** With the real binary, a server started in
     such a workspace reaches ready and answers a message; Claude does not run as
     root.
+
+## A rebuild
+
+What [Rebuilding a workspace](../docs/devcontainer.md#rebuilding-a-workspace) says, with the real
+Claude binary. With the repository above cloned as a workspace whose server is running, in the
+middle of a conversation, and a file of your own in its work folder:
+
+1. **The change is seen.** Change its devcontainer.json in the workspace (another lifecycle
+   command, say): the workspace says the file changed.
+2. **The rebuild.** Ask for a Rebuild and confirm: the server stops, the Terminal tab says the
+   workspace is being rebuilt, and the workspace comes back ready, its server running again,
+   `podman ps` as `rcman` showing a new container of the same name.
+3. **The work stays.** Your file is in the work folder, and the new command ran.
+4. **The sessions.** Claude's server in the new container takes up its Remote Control
+   sessions again: the session in claude.ai/code shows again and answers the next message.
+   Until this is checked, rcman's page says only that the server was started again after a
+   Rebuild, and promises nothing of its sessions.
+5. **A user changed.** Rebuild with `remoteUser` changed (to root and back): the work folder,
+   Claude's sign-in and git's configuration stay writable, and the server starts.
 
 ## Rolling out a version
 

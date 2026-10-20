@@ -233,6 +233,9 @@ def test_library_text_is_recognised():
         *problems.CLONE_MESSAGES.values(),
         *problems.CLAUDE_INSTALL_MESSAGES.values(),
         *problems.DEVCONTAINER_MESSAGES.values(),
+        *problems.REBUILD_MESSAGES.values(),
+        *problems.UPGRADE_REFUSED_MESSAGES.values(),
+        problems.PERSON_DELETION_LEFT,
         *problems.FIELD_MESSAGES.values(),
     ]
     for message in ours:
@@ -1121,3 +1124,35 @@ def test_the_refusals_push_and_sync_share_read_right_for_both():
     for code in ("detached_head", "no_commits_yet"):
         words = problems.MESSAGES[code].lower()
         assert words and "push" not in words and "sync" not in words, code
+
+
+def test_a_refusal_during_a_rebuild_says_to_rebuild_and_not_to_make_the_workspace_again():
+    """The file a rebuild reads is the workspace's own: it is changed there, and rebuilt."""
+    advised = [
+        m for m in problems.DEVCONTAINER_MESSAGES.values() if problems.MAKE_AGAIN_ADVICE in m
+    ]
+    assert len(advised) >= 5  # the positive: the advice is found where it is
+    for message in advised:
+        reworded = problems.rebuild_advice(message)
+        assert problems.MAKE_AGAIN_ADVICE not in reworded, message
+        assert problems.REBUILD_ADVICE in reworded, message
+    plain = problems.DEVCONTAINER_MESSAGES["musl"]
+    assert problems.rebuild_advice(plain) == plain
+
+
+def test_the_problems_of_a_rebuild_are_answered_with_their_own_status():
+    assert problems.STATUS["workspace_rebuilding"] == 409
+    assert problems.STATUS["rebuild_confirm_required"] == 422
+    for code in ("rebuild_empty", "rebuild_no_container", "rcman_starting"):
+        assert problems.STATUS[code] == 409, code
+    for key in (
+        "restarted",
+        "restarted_switching",
+        "rolled_back",
+        "rollback_failed",
+        "put_back_later",
+    ):
+        assert problems.REBUILD_MESSAGES[key], key
+    for key in ("rolled_back", "rollback_failed", "put_back_later"):
+        assert "{cause}" in problems.REBUILD_MESSAGES[key], key
+    assert "as soon as it can" in problems.REBUILD_MESSAGES["rollback_failed"]

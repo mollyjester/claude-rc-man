@@ -302,6 +302,8 @@ CALLS = {
     ("GET", "/api/servers/output"): {"params": {"workspace": 1}},
     ("POST", "/api/workspaces"): {"json": {"name": "another"}},
     ("DELETE", "/api/workspaces/{workspace}"): {},
+    ("POST", "/api/workspaces/{workspace}/rebuild"): {"json": {"confirm": True}},
+    ("GET", "/api/workspaces/{workspace}/devcontainer"): {},
     ("PATCH", "/api/me/settings"): {"json": {"prefix": "alice"}},
     ("POST", "/api/me/sign-out"): {"json": {"keep_sessions": True}},
     ("POST", "/api/git/stage"): {"json": {"workspace": 1, "files": ["README.md"]}},

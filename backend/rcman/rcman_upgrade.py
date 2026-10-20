@@ -282,6 +282,8 @@ class Upgrades:
             return "rolling_out"
         if self.workspaces.any_creating():
             return "creating"
+        if self.workspaces.any_rebuilding():
+            return "rebuilding"
         return None
 
     def _read(self) -> tuple[dict | None, dict[str, Unit] | None, bool]:

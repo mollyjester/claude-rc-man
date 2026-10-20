@@ -533,6 +533,19 @@ def test_a_deletion_while_a_terminal_opens_ends_it(client, workspace, alice, mon
     assert opened.terminal.cleaned and not alive(opened.terminal.leader[0])
 
 
+def test_a_rebuild_ends_the_terminal_of_its_workspace_with_a_reason_of_its_own(
+    client, workspace, alice
+):
+    opened = Opened(client, workspace["id"], alice)
+    service = client.app.state.workspaces
+    ending = threading.Thread(target=service.on_rebuilding, args=(service.get(workspace["id"]),))
+    ending.start()
+    ending.join(ANSWERS_WITHIN)
+    opened.ended()
+    assert opened.terminal.reason == terminals.WORKSPACE_REBUILDING
+    assert client.app.state.terminals.live(workspace["id"]) is None
+
+
 def test_a_sign_out_while_a_terminal_opens_ends_it(client, workspace, alice, monkeypatch):
     paused = opening_slowly(client, monkeypatch)
     thread, holder = opened_in_the_background(client, workspace["id"], alice)

@@ -191,7 +191,8 @@ else; this file is the full list. Rules are referred to by their bold name.
   stopping one; a command in a workspace is an argv
   too, and no text a person sent through rcman's interface is ever run by a
   shell there. The lifecycle commands of a repository's devcontainer.json are
-  not such text: the person chose them by choosing the repository, and a
+  not such text: the person chose them by choosing the repository, or by
+  asking for a Rebuild with the file that is in their workspace then, and a
   string command is run by a shell in the workspace, as the container's user,
   with a time limit. Nor is what a person types into the **Terminal** tab: it
   goes to an interactive shell that rcman starts in that person's own

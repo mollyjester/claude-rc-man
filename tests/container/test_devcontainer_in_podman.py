@@ -31,7 +31,7 @@ from rcman.workspaces import Workspaces
 from devtools import fake_claude as fake
 from tests.container import sizes
 from tests.container import test_github_in_podman as shared
-from tests.container.conftest import cli, on_host
+from tests.container.conftest import cli, image_of, on_host
 
 ADDRESS, EMAIL, TOKEN = shared.ADDRESS, shared.EMAIL, shared.TOKEN
 exists, gone, settled = shared.exists, shared.gone, shared.settled
@@ -1062,3 +1062,159 @@ def test_a_clone_without_a_devcontainer_file_is_the_ordinary_workspace(
     done = make(service, person, clones, "plain")
     assert (done.state, done.environment) == ("ready", None)
     assert out(podman.exec(done.container, ["id", "-u"])) == "0"
+
+
+# --- rebuilding a workspace on its volume -----------------------------------------------------
+
+
+def rebuilt(service, person, workspace_id: int, within: float = 300):
+    """Rebuild the workspace through the service and wait for the rebuild to end."""
+    service.restored.set()  # this service does not restore: nothing is brought back
+    service.rebuild(person[0], workspace_id, True)
+    with service._lock:
+        thread = service._making[workspace_id]
+    thread.join(within)
+    assert not thread.is_alive()
+    return service.get(workspace_id)
+
+
+def write_in(podman, service, workspace, path: str, text: str) -> None:
+    """Write ``text`` at ``path`` in the work folder, as the workspace's user, as a person
+    changes a file there."""
+    layout = plan_layout(service, workspace)
+    written = podman.exec(
+        workspace.container,
+        [layout.shell, "-c", 'cat > "$1"', "sh", f"{layout.work}/{path}"],
+        stdin=text.encode(),
+    )
+    assert written.code == 0, written.err
+
+
+def writable(podman, service, workspace, path: str) -> bool:
+    """Whether the workspace's user may write ``path``, a file or a folder."""
+    layout = plan_layout(service, workspace)
+    probe = 'if [ -d "$1" ]; then touch "$1/.probe" && rm "$1/.probe"; else [ -w "$1" ]; fi'
+    return podman.exec(workspace.container, [layout.shell, "-c", probe, "sh", path]).code == 0
+
+
+def stays_the_users(podman, service, workspace) -> None:
+    """The work folder, the shared credentials file and the git folder are the user's."""
+    layout = plan_layout(service, workspace)
+    for path in (
+        layout.work,
+        f"{layout.work}/mine.txt",
+        f"{layout.config}/{rt.CREDENTIALS}",
+        f"{layout.home}/{rt.GIT_HOME}",
+    ):
+        assert writable(podman, service, workspace, path), path
+
+
+def test_a_rebuild_applies_a_new_image_and_keeps_the_work_folder(
+    service, person, clones, podman, github_com, tmp_path, image, dev_image
+):
+    config = {"image": image, "postCreateCommand": "echo made >> .created"}
+    publish_repository(github_com, tmp_path, "rebuild-new-image", config)
+    done = make(service, person, clones, "rebuild-new-image")
+    assert done.state == "ready", done
+    write_in(podman, service, done, "mine.txt", "my work\n")
+    new = {"image": dev_image, "postCreateCommand": "echo made >> .created"}
+    write_in(podman, service, done, ".devcontainer/devcontainer.json", json.dumps(new))
+    assert service.devcontainer_changed(person[0].id, done.id) is True
+    now = rebuilt(service, person, done.id)
+    assert (now.state, now.rebuild_state, now.rebuild_error) == ("ready", None, None), now
+    plan = json.loads(now.environment)
+    assert plan["image"] == dev_image
+    assert image_of(podman, now.container) == plan["image_id"]
+    assert read_work(podman, service, now, "mine.txt") == "my work\n"
+    assert lines_of(podman, service, now, ".created") == ["made", "made"]  # postCreate again
+    assert service.devcontainer_changed(person[0].id, done.id) is False
+
+
+@pytest.mark.parametrize("direction", ["root-to-user", "user-to-root"])
+def test_a_rebuild_that_changes_the_user_keeps_the_users_files_writable(
+    service, person, clones, podman, github_com, tmp_path, dev_image, direction
+):
+    """The image's user is swapped with root in the person's range; a rebuild that changes
+    which user that is leaves the volume, the shared sign-in and the git folder the new
+    user's."""
+    first, second = ("root", DEV_USER) if direction == "root-to-user" else (DEV_USER, "root")
+    name = f"rebuild-{direction}"
+    publish_repository(github_com, tmp_path, name, {"image": dev_image, "remoteUser": first})
+    done = make(service, person, clones, name)
+    assert done.state == "ready", done
+    write_in(podman, service, done, "mine.txt", "my work\n")
+    write_in(
+        podman,
+        service,
+        done,
+        ".devcontainer/devcontainer.json",
+        json.dumps({"image": dev_image, "remoteUser": second}),
+    )
+    now = rebuilt(service, person, done.id)
+    assert (now.state, now.rebuild_error) == ("ready", None), now
+    assert out(run_in(podman, service, now, "id", "-un")) == second
+    stays_the_users(podman, service, now)
+    assert read_work(podman, service, now, "mine.txt") == "my work\n"
+
+
+def test_a_failed_rebuild_leaves_the_old_container_running_from_the_old_image(
+    service, person, clones, podman, github_com, tmp_path, dev_image
+):
+    publish_repository(
+        github_com, tmp_path, "rebuild-fails", {"image": dev_image, "postCreateCommand": "true"}
+    )
+    done = make(service, person, clones, "rebuild-fails")
+    old = json.loads(done.environment)["image_id"]
+    write_in(podman, service, done, "mine.txt", "my work\n")
+    broken = {"image": dev_image, "postCreateCommand": "echo it-broke; exit 3"}
+    write_in(podman, service, done, ".devcontainer/devcontainer.json", json.dumps(broken))
+    now = rebuilt(service, person, done.id)
+    assert now.state == "ready" and "exit code 3" in now.rebuild_error, now
+    assert podman.running(now.container) and image_of(podman, now.container) == old
+    assert json.loads(now.environment)["image_id"] == old
+    assert read_work(podman, service, now, "mine.txt") == "my work\n"
+
+
+def test_rcman_restarted_while_the_container_was_replaced_comes_back_on_the_old_image(
+    service, person, clones, podman, github_com, tmp_path, image, dev_image
+):
+    publish_repository(
+        github_com, tmp_path, "rebuild-restarted", {"image": dev_image, "postCreateCommand": "true"}
+    )
+    done = make(service, person, clones, "rebuild-restarted")
+    old = json.loads(done.environment)["image_id"]
+    write_in(podman, service, done, "mine.txt", "my work\n")
+    # Cut short after the new container was made from another image.
+    podman.discard(done.container)
+    other = dataclasses.replace(service._spec(done, person[0].slot), image=image, image_id="")
+    podman.create(other)
+    service._set(done.id, rebuild_state="switching")
+    again = Workspaces(service.settings, podman)
+    try:
+        again.restore()
+    finally:
+        again.close()
+    now = service.get(done.id)
+    assert (now.state, now.rebuild_state) == ("ready", None)
+    assert podman.running(now.container) and image_of(podman, now.container) == old
+    assert read_work(podman, service, now, "mine.txt") == "my work\n"
+
+
+def test_a_workspace_whose_post_create_failed_is_rebuilt_and_ready(
+    service, person, clones, podman, github_com, tmp_path, dev_image
+):
+    publish_repository(
+        github_com, tmp_path, "rebuild-recover", {"image": dev_image, "postCreateCommand": "exit 3"}
+    )
+    done = make(service, person, clones, "rebuild-recover")
+    assert (done.state, done.failure) == ("failed", "hook_failed"), done
+    write_in(
+        podman,
+        service,
+        done,
+        ".devcontainer/devcontainer.json",
+        json.dumps({"image": dev_image, "postCreateCommand": "echo fixed > .fixed"}),
+    )
+    now = rebuilt(service, person, done.id)
+    assert (now.state, now.error, now.failure) == ("ready", None, None), now
+    assert read_work(podman, service, now, ".fixed") == "fixed\n"

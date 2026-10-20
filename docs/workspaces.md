@@ -23,7 +23,7 @@ left. A workspace whose server is running, waiting for your answer, has a
 problem or is not running carries a dot before its name, whose shape and colour
 say which, and pointing at a dot names it. A workspace with no server carries
 none, except that one that failed to be made, or whose server rcman could not
-read, carries the problem dot:
+read, carries the problem dot; one whose container a rebuild is making again carries none:
 
 | Dot | Shape |
 |---|---|
@@ -45,8 +45,9 @@ name of its own.
 
 While an administrator has rcman upgraded from its web interface (see
 [Upgrading from the web interface](installation.md#upgrading-from-the-web-interface)),
-**New workspace** is not offered and the page says why: no workspace is made or
-cloned until the upgrade is done, since the restart it makes would cut one short.
+neither **New workspace** nor **Rebuild** is offered, and the page says why: no workspace is
+made, cloned or rebuilt until the upgrade is done, since the restart it makes would cut one
+short.
 Your workspaces and their servers keep running through it.
 
 To start from a repository on GitHub, give its address in **GitHub address
@@ -70,7 +71,10 @@ progress, which can take a long time for a big image, and when other builds are
 running, a line says that this one waits for them to finish. The build uses a
 copy of the repository's files, not the workspace itself, and cannot sign in to
 a private registry. What rcman supports and refuses is in
-[devcontainer.json support](devcontainer.md).
+[devcontainer.json support](devcontainer.md). A change to the file afterwards, made in the
+workspace or pulled into it, changes nothing by itself: the workspace's **Container** card says
+the file has changed, and **Rebuild** applies it (see
+[The Container card and rebuilding](#the-container-card-and-rebuilding)).
 
 The workspace you have selected is part of the page's address, so reloading
 the page keeps it, and the browser's back button returns to the workspace
@@ -82,12 +86,16 @@ on GitHub in a new tab, whatever state the workspace is in. The panel of a
 workspace that is ready has two tabs, **Overview**, shown first, and
 **Terminal** (see [The terminal](#the-terminal)); the arrow keys move between
 them. The tab you chose is part of the page's address, as the workspace is.
-**Overview** has two cards: **Claude server**, which shows the workspace's
+**Overview** has three cards: **Claude server**, which shows the workspace's
 server, or **Start** when it has none, and says why instead if rcman could not
-read the server; and below it **Changes**, for the git repository in the
+read the server, or that its container is being made again during a rebuild;
+below it **Container**, which says what the workspace's container is made from and
+offers **Rebuild** (see [The Container card and rebuilding](#the-container-card-and-rebuilding));
+and below that **Changes**, for the git repository in the
 workspace (see [Git](git.md)). A workspace that failed to be made says what went
 wrong in a sentence, with the words rcman got behind **Details**, and **Steps so
-far** beneath; it offers nothing but its trash button in the list. When the
+far** beneath; besides its trash button in the list, it offers **Rebuild** beside the
+reason where it can be rebuilt, as the next part says. When the
 repository's `devcontainer.json` is the cause, the reason names the setting to
 change, or the image rcman could not pull or use, or the command that failed or
 took too long, with what it printed last in the steps. A build that failed says
@@ -96,8 +104,9 @@ that did not answer, an image or feature that is not there or needs a sign-in, a
 Dockerfile step that failed, a feature that failed to install (named), no space
 left, a repository or image too big, or a build that took too long. After a
 refused configuration the workspace holds nothing but this entry; after a failed
-command it is kept so that you can look at what happened, and its trash button
-removes it. A workspace being made or being deleted says so, and offers nothing;
+command, or an image that could not be had, it keeps its files, so that you can look at
+what happened, rebuild it once the cause is fixed, or remove it with its trash button. A
+workspace being made or being deleted says so, and offers nothing;
 one being made from a GitHub repository can be deleted with its trash button, to
 stop it.
 
@@ -167,7 +176,9 @@ of the shapes above.
   it.
 - It ends when you close or reload the page, select another workspace or go to
   another page; when the shell exits, as `exit` does, and the tab says with what
-  exit code; when the workspace is deleted; when you sign out of rcman, which
+  exit code; when the workspace is deleted; when a rebuild makes its container
+  again, after which **Reconnect** opens a shell in the new one once the rebuild is
+  done; when you sign out of rcman, which
   ends your terminals in every browser; when an administrator removes you from
   rcman; and when rcman restarts or is upgraded, from a shell or from its web
   interface. Ending a terminal ends its
@@ -188,6 +199,43 @@ Inside the terminal every key goes to the shell, Tab among them, so that the
 shell can complete what you type; no key moves out of it: click outside the
 terminal to move out of it. Its colours follow the light or dark setting of your
 system, as the rest of the page does.
+
+### The Container card and rebuilding
+
+A workspace's container is made from its repository's `devcontainer.json` when the
+workspace is made, and keeps what the file asked for then. The **Container** card of
+**Overview** says what the container is made from. When the file in the workspace, or the
+Dockerfile it builds from, differs from the one the container was made from, the card says
+the file has changed and **Rebuild** stands out; otherwise **Rebuild** is offered plainly, to
+make the container again anyway, as from a newer image of the same name. **Rebuild** is not
+offered for an empty workspace, which has no repository to rebuild from, while rcman is being
+upgraded, nor at other times rcman would refuse it, such as while rcman is starting or while the
+workspace's container is not there.
+
+**Rebuild** asks first, and says what happens. The image is pulled or built while everything
+in the workspace keeps running; only then is its server stopped, its container made again and
+its server started again. A rebuild ends the terminal, every process in the workspace, those
+started with `nohup` or `setsid` too, the containers running inside it, what is in `/tmp`, the
+container's own files, and what the repository's create commands installed outside the
+workspace's files. It keeps the files in the workspace — the work folder, your home, Claude's
+settings and what Podman stored inside it — your Claude sign-in and git. The repository's
+lifecycle commands run again, so they must be safe to run again. The build shares your memory
+limit with what already runs: going over it ends the largest process, which may be a live Claude
+session (see [Limits](users.md#limits)). **Cancel** changes nothing.
+
+While it is rebuilt, the button says **Rebuilding…** and waits, and the card lists **Steps so
+far**. While the container is replaced, the **Claude server** card says so, and the terminal
+closes. A rebuild that did not finish says, in the card, what became of the workspace and what
+to do next: put back as it was, or left as it was after rcman restarted; **Rebuild** tries
+again. One that could not put the workspace back at once stays **Rebuilding…**, its last step
+saying why and that the workspace is put back as soon as rcman can; until then its server,
+git and terminal are not available. What happens at each step, and when the workspace is put
+back, is in [Rebuilding a workspace](devcontainer.md#rebuilding-a-workspace).
+
+A workspace that failed because a create command failed or took too long, or because its image
+could not be had, offers **Rebuild** beside the reason. The repository's commands run again on
+the existing files; if the rebuild fails again, the workspace stays failed with the new reason,
+since there is no earlier state to return to, and can be rebuilt again.
 
 ## Containers
 
@@ -212,14 +260,17 @@ while rcman builds the image holds in the workspace.
   anyone in the workspace may write in it, and only what they wrote is theirs to remove. An
   image whose `/tmp` is a link or not a folder is refused. What it
   holds is kept when the workspace is stopped and started, goes with the workspace's container,
-  when the workspace is deleted or rcman makes its container again, and counts against no limit
-  either. A workspace keeps the container it was made with: where `stat -f -c %T /tmp` in its
-  terminal prints `overlayfs`, its `/tmp` is on the container's own files, and a new workspace
-  has one of its own.
+  when the workspace is deleted or rebuilt or rcman makes its container again, and counts against
+  no limit either. A workspace keeps the container it was made with until it is rebuilt: where
+  `stat -f -c %T /tmp` in its terminal prints `overlayfs`, its `/tmp` is on the container's own
+  files, and a rebuild gives it one of its own (see
+  [The Container card and rebuilding](#the-container-card-and-rebuilding)); an empty workspace,
+  which cannot be rebuilt, gets one by a new workspace made in its place.
 - `podman` and `docker` say so where they cannot run: in a workspace whose image has no Podman
   and no `podman` or `docker` of its own, and in one whose container was made without what
-  Podman needs there. A workspace keeps the image and the container it was made with: make a
-  new workspace in its place, from the default image or another image with Podman.
+  Podman needs there. A workspace keeps the image and the container it was made with until it is
+  rebuilt: rebuild it, with its `devcontainer.json` naming the default image or another image with
+  Podman, or, for an empty workspace, make a new workspace in its place.
 
 ## Deleting a workspace
 
@@ -234,8 +285,8 @@ question says so rather than that nothing would be lost. Confirming with
 workspace was deleted; when it was the one selected, no workspace is selected,
 and otherwise the selection stays as it was.
 
-A workspace that is ready or failed can be deleted, and so can one being made
-from a GitHub repository. For any other, such as one being made empty or one
+A workspace that is ready or failed can be deleted, a workspace being rebuilt among them, and so
+can one being made from a GitHub repository. For any other, such as one being made empty or one
 already being deleted, the trash button says why it cannot be deleted now, and
 deletes nothing.
 
@@ -243,10 +294,12 @@ The sessions of its server stay in claude.ai/code, where they are archived or
 deleted.
 
 Deleting a workspace that is still being cloned, or that is pulling or
-building its image or running a command of its `devcontainer.json`, stops that and
-deletes the workspace. If rcman restarts while a workspace cloned from a repository is
-being made, the workspace is shown as failed, and says so; delete it and make it again. An
-empty workspace that was being made is made again when rcman starts.
+building its image or running a command of its `devcontainer.json`, while it is made or
+rebuilt, stops that and deletes the workspace. If rcman restarts while a workspace cloned from a
+repository is being made, the workspace is shown as failed, and says so; delete it and make it
+again. An empty workspace that was being made is made again when rcman starts. If rcman restarts
+while a workspace is being rebuilt, the rebuild is settled when it starts, and the workspace's
+**Container** card says how (see [Rebuilding a workspace](devcontainer.md#rebuilding-a-workspace)).
 
 ## Rules
 
@@ -257,7 +310,8 @@ empty workspace that was being made is made again when rcman starts.
   servers, but cannot start, stop or otherwise act on them.
 - Servers keep running when you close your browser, and while rcman restarts or
   is upgraded. When the machine restarts, rcman brings your workspaces back, and
-  starts again each server that was running.
+  starts again each server that was running. A rebuild you ask for stops the workspace's
+  server while its container is made again, and starts it again afterwards.
 - An administrator can limit the memory, CPU and processes of a workspace, and of all
   your workspaces together. A workspace is also held to your limits, and a
   memory limit is hard: a group that goes over it has its largest process ended,
@@ -370,6 +424,10 @@ Administrators can put limits on memory, CPU and processes on a person and on
 each of their workspaces, on the **People** page: see [Limits](users.md#limits).
 
 What a repository's `devcontainer.json` may ask of a workspace, and what rcman
-refuses, is in [devcontainer.json support](devcontainer.md). The lifecycle
-commands in it run with the person's GitHub token within reach; the note there
-says what that means.
+refuses, is in [devcontainer.json support](devcontainer.md), and so is what a
+Rebuild does. The lifecycle commands in it run with the person's GitHub token within
+reach, when the workspace is made and again at each Rebuild the person asks for, with the
+file that is in the workspace then; the note there says what that means. A Rebuild is refused
+while rcman is upgraded, and an upgrade while a workspace is rebuilt (see
+[Installation](installation.md)). On **Everyone's workspaces**, a workspace whose container a
+rebuild replaces just then is shown with the reason its server is not read.

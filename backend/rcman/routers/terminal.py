@@ -37,12 +37,13 @@ from rcman.audit import (
     TERMINAL_LOST,
     TERMINAL_REPLACED,
     WORKSPACE_GONE,
+    WORKSPACE_REBUILDING,
     Opened,
     Session,
 )
 from rcman.problems import Problem
 from rcman.terminals import Terminal
-from rcman.workspaces import READY
+from rcman.workspaces import READY, REBUILD_SWITCHING
 
 log = logging.getLogger("rcman.terminals")
 router = APIRouter(tags=["terminal"])
@@ -73,7 +74,14 @@ PROTOCOL = {
     "close_policy": 1008,
     "close_closing": 1012,
     "close_problem": problems.CLOSE_PROBLEM,
-    "reasons": (TERMINAL_REPLACED, WORKSPACE_GONE, SIGNED_OUT, NOT_ALLOWED, SERVICE_CLOSING),
+    "reasons": (
+        TERMINAL_REPLACED,
+        WORKSPACE_GONE,
+        WORKSPACE_REBUILDING,
+        SIGNED_OUT,
+        NOT_ALLOWED,
+        SERVICE_CLOSING,
+    ),
 }
 
 
@@ -115,7 +123,7 @@ def _resize_of(message: dict) -> tuple[int, int]:
 
 def _revoked(websocket: WebSocket, record: Opened, workspace: int) -> str | None:
     """Why the terminal may no longer be open, if it may not: its person is no longer allowed
-    in, or its workspace is no longer theirs and ready."""
+    in, its workspace is no longer theirs and ready, or a rebuild is replacing its container."""
     con = db.connect(websocket.app.state.settings.database)
     try:
         person = people.by_email(con, record.identity.email)
@@ -126,6 +134,8 @@ def _revoked(websocket: WebSocket, record: Opened, workspace: int) -> str | None
     found = websocket.app.state.workspaces.get(workspace)
     if found is None or found.person != record.identity.person or found.state != READY:
         return WORKSPACE_GONE
+    if found.rebuild_state == REBUILD_SWITCHING:
+        return WORKSPACE_REBUILDING
     return None
 
 

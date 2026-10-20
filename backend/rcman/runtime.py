@@ -167,14 +167,20 @@ STAGING_PREFIX = "rcman-image-"
 LABEL_BUILDER = "rcman.builder"
 # An image built for a workspace is named localhost/<BUILT_REPOSITORY>/<workspace>:<BUILT_TAG>,
 # in rcman's own storage. A person's devcontainer.json may not name such an image, or any by its
-# id (devcontainer.py), so no person's workspace is made from another's.
+# id (devcontainer.py), so no person's workspace is made from another's. A rebuild builds its
+# image as NEXT_TAG, beside the one the container is made from, and ``promote_build`` moves it to
+# BUILT_TAG.
 BUILT_REPOSITORY = "rcman-built"
 BUILT_TAG = "latest"
+NEXT_TAG = "next"
+BUILT_TAGS = (BUILT_TAG, NEXT_TAG)
 # The name Podman gives a volume it makes without being asked to.
 ANONYMOUS_VOLUME = re.compile(r"[0-9a-f]{64}\Z")
 # An image's digest as a registry names it, which a pull may be given after an "@".
 DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
-BUILT_NAME = re.compile(rf"localhost/{re.escape(BUILT_REPOSITORY)}/(\d+):{re.escape(BUILT_TAG)}\Z")
+BUILT_NAME = re.compile(
+    rf"localhost/{re.escape(BUILT_REPOSITORY)}/(\d+):({'|'.join(map(re.escape, BUILT_TAGS))})\Z"
+)
 # Where a one-off container that makes or reads a person's credentials file mounts
 # their account volume.
 ACCOUNT_MOUNT = "/account"
@@ -393,15 +399,29 @@ def container_name(workspace_id: int) -> str:
     return f"rcman-ws-{workspace_id}"
 
 
-def built_name(workspace_id: int) -> str:
-    """The name of the image built for the workspace."""
-    return f"localhost/{BUILT_REPOSITORY}/{workspace_id}:{BUILT_TAG}"
+def built_name(workspace_id: int, tag: str = BUILT_TAG) -> str:
+    """The name of the image built for the workspace: the one it is made from (BUILT_TAG), or
+    the one a rebuild builds (NEXT_TAG)."""
+    if tag not in BUILT_TAGS:
+        raise ValueError(f"{tag!r} is not a tag of an image built for a workspace")
+    return f"localhost/{BUILT_REPOSITORY}/{workspace_id}:{tag}"
 
 
 def workspace_of_built_name(name: str) -> int | None:
-    """The workspace an image built for it is named for, or None for any other name."""
+    """The workspace an image built for it is named for, with either tag, or None for any other
+    name."""
     found = BUILT_NAME.match(name)
     return int(found.group(1)) if found else None
+
+
+def _built_of(names, tag: str) -> dict[int, str]:
+    """Of ``names``, those of images built for workspaces with ``tag``: workspace -> name."""
+    found: dict[int, str] = {}
+    for name in names:
+        matched = BUILT_NAME.match(name)
+        if matched and matched.group(2) == tag:
+            found[int(matched.group(1))] = name
+    return found
 
 
 def account_volume(person: int) -> str:
@@ -445,7 +465,8 @@ class BuildRequest:
     """One build: for the workspace ``id`` of the person ``person``, in the builder's uid range
     ``slot``, of the repository in the work folder of the container ``source``. The CLI is given
     the file ``config_text``, which is written to ``config_path`` in the copy of the repository
-    (devcontainer.build_config)."""
+    (devcontainer.build_config). The image is named ``built_name(id, tag)``: a rebuild's is
+    NEXT_TAG, which leaves the image the container is made from alone."""
 
     id: int
     person: int
@@ -453,6 +474,10 @@ class BuildRequest:
     source: str
     config_path: str
     config_text: str
+    tag: str = BUILT_TAG
+
+    def __post_init__(self) -> None:
+        built_name(self.id, self.tag)  # refuses a tag that is neither
 
 
 @dataclass(frozen=True)
@@ -692,18 +717,33 @@ class Runtime(ABC):
         vet: Callable[[Mapping[str, str]], None],
     ) -> str:
         """Build the image ``request`` asks for in a builder of its own, and keep it in the
-        runtime's storage as ``built_name(request.id)``, which is returned. It begins by removing
-        what an earlier build of the same id left. ``progress`` is told the builder's steps and
-        the copy's progress; ``vet`` is called with the image's labels before the image is
-        copied out, and may raise to refuse it. Whatever happens the builder and its volume are
-        removed, and the image too unless it is kept: a build that fails, is refused or is
-        stopped leaves nothing. A failing build is a :class:`BuildFailed`; a stop (``cancel``
-        set, or ``remove_build`` called meanwhile) is a RuntimeFailed that is not."""
+        runtime's storage as ``built_name(request.id, request.tag)``, which is returned. It
+        begins by removing what an earlier build of the same id left, and the image of that
+        name. ``progress`` is told the builder's steps and the copy's progress; ``vet`` is
+        called with the image's labels before the image is copied out, and may raise to refuse
+        it. Whatever happens the builder and its volume are removed, and the image of that name
+        too unless it is kept: a build that fails, is refused or is stopped leaves nothing. An
+        image of the workspace's other tag is never touched. A failing build is a
+        :class:`BuildFailed`; a stop (``cancel`` set, or ``remove_build`` called meanwhile) is a
+        RuntimeFailed that is not."""
 
     @abstractmethod
-    def remove_build(self, workspace_id: int, image: bool = False) -> None:
+    def remove_build(
+        self, workspace_id: int, image: bool = False, image_tag: str = BUILT_TAG
+    ) -> None:
         """Remove the builder of the workspace's build and its volume, which ends a build in
-        progress, and with ``image`` the image built for it; nothing for what is not there."""
+        progress, and with ``image`` the image ``built_name(workspace_id, image_tag)``, never by
+        force; nothing for what is not there."""
+
+    @abstractmethod
+    def promote_build(self, workspace_id: int) -> str:
+        """Make the workspace's NEXT_TAG image its BUILT_TAG one: the image named
+        ``built_name(workspace_id, NEXT_TAG)`` is named ``built_name(workspace_id)``, which
+        it takes from any image that had it, and loses the other name; the built name is
+        returned. Where there is no next image and there is a built one it changes nothing, so
+        that it can be called again after a promotion that ended part way or in full;
+        RuntimeFailed where there is neither. Nothing that reads or names rcman's own images
+        meanwhile (a build's load) sees the name half moved."""
 
     @abstractmethod
     def builders(self) -> set[int]:
@@ -711,7 +751,17 @@ class Runtime(ABC):
 
     @abstractmethod
     def built_images(self) -> dict[int, str]:
-        """The images built for workspaces there are: workspace -> name."""
+        """The images built for workspaces there are, by their BUILT_TAG name: workspace ->
+        name."""
+
+    @abstractmethod
+    def next_images(self) -> dict[int, str]:
+        """The images rebuilds built for workspaces there are, by their NEXT_TAG name:
+        workspace -> name."""
+
+    @abstractmethod
+    def has_volume(self, workspace_id: int) -> bool:
+        """Whether the workspace's volume is there, whether or not its container is."""
 
     @abstractmethod
     def clean_probes(self) -> None:
@@ -1099,6 +1149,14 @@ class PodmanRuntime(Runtime):
     def running(self, name: str) -> bool:
         proc = self._podman("container", "inspect", "--format", "{{.State.Running}}", name)
         return proc.stdout.decode().strip() == "true"
+
+    def has_volume(self, workspace_id: int) -> bool:
+        proc = self._podman("volume", "exists", container_name(workspace_id), check=False)
+        if proc.returncode == 0:
+            return True
+        if proc.returncode == MISSING:
+            return False
+        raise RuntimeFailed(self._said(proc.stderr, "podman volume exists failed"))
 
     def create(self, spec: Spec) -> None:
         labels = [
@@ -1562,23 +1620,44 @@ class PodmanRuntime(Runtime):
 
     # --- building an image ------------------------------------------------------------------
 
-    def remove_build(self, workspace_id: int, image: bool = False) -> None:
+    def remove_build(
+        self, workspace_id: int, image: bool = False, image_tag: str = BUILT_TAG
+    ) -> None:
+        target = built_name(workspace_id, image_tag)  # refuses a tag that is neither, first
         name = builder.builder_name(workspace_id)
         self._remove_container(name)
         if self._podman("volume", "exists", name, check=False).returncode == 0:
             self._podman("volume", "rm", "--force", name)
         if image:
             # Without --force: an image a container is made from is not taken from under it.
-            self._podman("image", "rm", "--ignore", built_name(workspace_id))
+            self._podman("image", "rm", "--ignore", target)
 
-    def _discard_build(self, workspace_id: int, image: bool) -> None:
+    def _discard_build(self, workspace_id: int, image: bool, image_tag: str) -> None:
         """``remove_build`` for the end of a build, which never hides how the build ended."""
         try:
-            self.remove_build(workspace_id, image)
+            self.remove_build(workspace_id, image, image_tag=image_tag)
         except (RuntimeFailed, RuntimeUnavailable) as failed:
             log.warning(
                 "the build of workspace %s could not be cleaned up: %s", workspace_id, failed
             )
+
+    def _image_id_of(self, name: str) -> str | None:
+        """The id of the image named ``name``, or None where there is none."""
+        found = self._podman("image", "inspect", "--format", "{{.Id}}", name, check=False)
+        image = found.stdout.decode("utf-8", "replace").strip().removeprefix("sha256:")
+        return image if found.returncode == 0 and builder.is_image_id(image) else None
+
+    def promote_build(self, workspace_id: int) -> str:
+        upcoming, latest = built_name(workspace_id, NEXT_TAG), built_name(workspace_id)
+        with self._naming:
+            image = self._image_id_of(upcoming)
+            if image is None:
+                if self._image_id_of(latest) is None:
+                    raise RuntimeFailed(f"no image was built for workspace {workspace_id}")
+                return latest  # promoted already
+            self._podman("tag", image, latest)
+            self._podman("untag", image, upcoming)
+        return latest
 
     def builders(self) -> set[int]:
         found: set[int] = set()
@@ -1589,17 +1668,22 @@ class PodmanRuntime(Runtime):
                     found.add(int((entry.get("Labels") or {}).get(LABEL_BUILDER)))
         return found
 
-    def built_images(self) -> dict[int, str]:
+    def _built_names(self) -> list[str]:
+        """Every name an image of BUILT_REPOSITORY has."""
         proc = self._podman(
             "images", f"--filter=reference=localhost/{BUILT_REPOSITORY}/*", "--format=json"
         )
-        found: dict[int, str] = {}
-        for entry in json.loads(proc.stdout or b"[]") or []:
-            for name in [*(entry.get("Names") or []), *(entry.get("RepoTags") or [])]:
-                workspace = workspace_of_built_name(name)
-                if workspace is not None:
-                    found[workspace] = name
-        return found
+        return [
+            name
+            for entry in json.loads(proc.stdout or b"[]") or []
+            for name in [*(entry.get("Names") or []), *(entry.get("RepoTags") or [])]
+        ]
+
+    def built_images(self) -> dict[int, str]:
+        return _built_of(self._built_names(), BUILT_TAG)
+
+    def next_images(self) -> dict[int, str]:
+        return _built_of(self._built_names(), NEXT_TAG)
 
     def build_image(
         self,
@@ -1620,7 +1704,10 @@ class PodmanRuntime(Runtime):
             self._clean_staging()  # what is left, if no other build is under way
 
     def _build_image(self, request, name, ids, progress, cancel, vet) -> str:
-        self.remove_build(request.id, image=True)  # what an earlier build of this id left
+        target = built_name(request.id, request.tag)
+        # What an earlier build of this id left, and the image of this tag: never the other
+        # tag's, which a container may be made from.
+        self.remove_build(request.id, image=True, image_tag=request.tag)
         kept = False
         staging: Path | None = None
         loaded: str | None = None  # the id of an image this build put in the storage
@@ -1653,11 +1740,11 @@ class PodmanRuntime(Runtime):
                     loaded = image_id  # set before the load: a load that is stopped may have begun
                 self._load(archive, image_id, cancel)
                 self._hold_names(before, image_id, loaded is not None)
-                self._podman("tag", image_id, built_name(request.id))
+                self._podman("tag", image_id, target)
             kept = True
-            return built_name(request.id)
+            return target
         finally:
-            self._discard_build(request.id, image=not kept)
+            self._discard_build(request.id, image=not kept, image_tag=request.tag)
             if loaded is not None and not kept:
                 self._discard_loaded(loaded)
             if staging is not None:
@@ -1924,7 +2011,8 @@ class PodmanRuntime(Runtime):
 
     def _own_images(self) -> dict[str, str]:
         """Every name of rcman's own that an image has - the default workspace image, the
-        builder's, and each image built for a workspace - with the id of the image that has it."""
+        builder's, and each image built for a workspace, with either tag - with the id of the
+        image that has it."""
         own = {self.config.image, self.config.builder_image}
         own |= {f"{n}:latest" for n in own if ":" not in n.rsplit("/", 1)[-1]}
         proc = self._podman("images", "--format=json")
@@ -2276,7 +2364,10 @@ class HostRuntime(Runtime):
         # among them) or raises; none builds an image of no facts.
         self.builder_ids: set[int] = set()
         self.built: dict[int, str] = {}
+        self.next_built: dict[int, str] = {}  # the NEXT_TAG images, as ``built`` the others
         self.builds: list[BuildRequest] = []
+        # Held while a build names its image or a promotion moves one, as Podman's runtime does.
+        self._naming = threading.Lock()
         self.build_script: Callable[..., ImageFacts] | None = None
         # The canary: what stands for it where a test does not run the real one - a function
         # of the folder, the container's name and the version that returns the failed checks.
@@ -2340,6 +2431,9 @@ class HostRuntime(Runtime):
         if not self.exists(name):
             raise RuntimeFailed(f"no such workspace: {name}")
         return not (self.root / name / self.MARK_STOPPED).exists()
+
+    def has_volume(self, workspace_id: int) -> bool:
+        return (self.root / container_name(workspace_id)).is_dir()
 
     def create(self, spec: Spec) -> None:
         if spec.slot < 1:
@@ -2471,18 +2565,43 @@ class HostRuntime(Runtime):
     def clean_probes(self) -> None:
         """Nothing is made to read an image here, so nothing is left."""
 
-    def remove_build(self, workspace_id: int, image: bool = False) -> None:
+    def _built_by_tag(self, tag: str) -> dict[int, str]:
+        built_name(0, tag)  # refuses a tag that is neither
+        return self.built if tag == BUILT_TAG else self.next_built
+
+    def remove_build(
+        self, workspace_id: int, image: bool = False, image_tag: str = BUILT_TAG
+    ) -> None:
+        kept = self._built_by_tag(image_tag)
         self.builder_ids.discard(workspace_id)
         if image:
-            name = self.built.pop(workspace_id, None)
+            name = kept.pop(workspace_id, None)
             if name is not None:
                 self.images.pop(name, None)
+
+    def promote_build(self, workspace_id: int) -> str:
+        latest = built_name(workspace_id)
+        with self._naming:
+            upcoming = self.next_built.pop(workspace_id, None)
+            if upcoming is None:
+                if workspace_id not in self.built:
+                    raise RuntimeFailed(f"no image was built for workspace {workspace_id}")
+                return self.built[workspace_id]  # promoted already
+            facts = self.images.pop(upcoming, ImageFacts())
+            old = self.built.get(workspace_id)
+            if old is not None and old != latest:
+                self.images.pop(old, None)
+            self.images[latest], self.built[workspace_id] = facts, latest
+        return latest
 
     def builders(self) -> set[int]:
         return set(self.builder_ids)
 
     def built_images(self) -> dict[int, str]:
         return dict(self.built)
+
+    def next_images(self) -> dict[int, str]:
+        return dict(self.next_built)
 
     def _not_stopped(self, request: BuildRequest, cancel: threading.Event | None) -> None:
         if (cancel is not None and cancel.is_set()) or request.id not in self.builder_ids:
@@ -2495,7 +2614,7 @@ class HostRuntime(Runtime):
         cancel: threading.Event | None,
         vet: Callable[[Mapping[str, str]], None],
     ) -> str:
-        self.remove_build(request.id, image=True)
+        self.remove_build(request.id, image=True, image_tag=request.tag)
         self.builds.append(request)
         self.builder_ids.add(request.id)
         kept = False
@@ -2506,12 +2625,14 @@ class HostRuntime(Runtime):
             self._not_stopped(request, cancel)
             vet(facts.labels)
             self._not_stopped(request, cancel)
-            name = built_name(request.id)
-            self.images[name], self.built[request.id] = facts, name
+            name = built_name(request.id, request.tag)
+            with self._naming:
+                self.images[name] = facts
+                self._built_by_tag(request.tag)[request.id] = name
             kept = True
             return name
         finally:
-            self.remove_build(request.id, image=not kept)
+            self.remove_build(request.id, image=not kept, image_tag=request.tag)
 
     def labelled(self) -> dict[str, dict[str, str]]:
         if not self.root.is_dir():

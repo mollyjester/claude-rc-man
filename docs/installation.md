@@ -376,9 +376,12 @@ the profile is missing from the tools, no workspace can be made until the instal
 runs again.
 
 A workspace keeps the container and the image it was made with: where an upgrade changes how
-rcman makes a workspace's container, or the default image, only the workspaces made after it
-have the change. One made before keeps what it had; to give it the change, a colleague makes a
-new workspace in its place. A workspace whose container or image lacks what containers need
+rcman makes a workspace's container, or the default image, only the workspaces made or rebuilt
+after it have the change. One made before keeps what it had; to give it the change, a colleague
+rebuilds one cloned from a repository, which makes its container again on the same volume, from the current default
+image where its repository has no devcontainer.json (see
+[Rebuilding a workspace](devcontainer.md#rebuilding-a-workspace)), or makes a new workspace in
+its place. A workspace whose container or image lacks what containers need
 there says so when `podman` or `docker` runs in it (see [Containers](workspaces.md#containers)).
 
 A server keeps the environment it was started with. Where an upgrade changes
@@ -471,10 +474,11 @@ heading, asks first, then upgrades rcman to
 - workspaces and their Claude servers keep running;
 - every open **Terminal** tab closes as rcman restarts; reconnect once it is back;
 - a git action or a Claude sign-in in progress is cut off; do it again afterwards;
-- no workspace is made or cloned and no Claude Code version is rolled out, and
-  the pages that offer them say why.
+- no workspace is made, cloned or rebuilt and no Claude Code version is rolled out,
+  and the pages that offer them say why.
 
-rcman does not take the request while a workspace is being made, a Claude Code
+rcman does not take the request while a workspace is being made or rebuilt (a workspace a
+rebuild could not put back does not count: the upgrade's restart puts it back), a Claude Code
 version is being rolled out or what one left is being cleared away, rcman is
 clearing away images no workspace uses, or nothing watches the request file;
 the page says which. The page follows the upgrade
