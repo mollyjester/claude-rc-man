@@ -3,6 +3,8 @@ name = "claude-rc-man"
 version = "0.0.0"
 description = "Self-hosted web service to control Claude Code Remote Control servers"
 requires-python = ">=3.12"
+license = "MIT"
+license-files = ["LICENSE.md"]
 dependencies = [
     "fastapi>=0.142.2",
     "pydantic-settings>=2.15.0",
@@ -22,7 +24,7 @@ dev = [
 ]
 
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
