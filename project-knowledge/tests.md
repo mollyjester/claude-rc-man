@@ -79,7 +79,7 @@ kernel does with a slice is checked by hand ([real-claude-checklist.md](real-cla
 Everything git is tested against real git,
 never a fake: `tests/test_git_run.py` holds the parsers of `helpers/git_run.py`,
 `tests/test_repository.py` every verb of `repository.py` in host-runtime workspaces
-through a real channel and `exec`, `tests/test_devcontainer.py` the pure module (`devcontainer.py`) and the guard that holds the administrators' devcontainer page equal to its policy, `tests/test_devcontainer_flow.py` a workspace made from a repository's devcontainer.json on a host runtime with planted images, builds on a host runtime that records what it is asked (the places for builds and the waiting line, a cancel, the failures in plain words, the restore removing orphans and failing a workspace whose built image is gone), `tests/test_builder.py` the pure module `builder.py` (its argument lists, the reading of the builder's words, the pump, the copy of a repository with the host's own tar), `tests/test_runtime_build.py` `PodmanRuntime.build_image` against a stand-in for podman (the archive that is loaded, rcman's own names held across the load, the staging folders), `tests/test_headers.py` the security headers of every answer and the limit on a page's reports of failures, `tests/test_filelock.py` the lock file the service shares with `rcman-admin`, `tests/test_clone.py` a workspace made by cloning
+through a real channel and `exec`, `tests/test_devcontainer.py` the pure module (`devcontainer.py`) and the guard that holds the administrators' devcontainer page equal to its policy, `tests/test_devcontainer_flow.py` a workspace made from a repository's devcontainer.json on a host runtime with planted images, builds on a host runtime that records what it is asked (the places for builds and the waiting line, a cancel, the failures in plain words, the restore removing orphans and failing a workspace whose built image is gone), `tests/test_rebuild.py` rebuilding a workspace on its volume on the same host runtime (telling that its devcontainer.json changed, refusals that leave everything as it was, the switch and putting the old container back, a restart of rcman in each phase, deletions in each phase from the service and from `rcman-admin`, the interlock with an upgrade, the images' two names, and the rebuild of a failed workspace that kept its volume), `tests/test_builder.py` the pure module `builder.py` (its argument lists, the reading of the builder's words, the pump, the copy of a repository with the host's own tar), `tests/test_runtime_build.py` `PodmanRuntime.build_image` against a stand-in for podman (the archive that is loaded, rcman's own names held across the load, the staging folders, a rebuild's next name and its promotion to the built one), `tests/test_headers.py` the security headers of every answer and the limit on a page's reports of failures, `tests/test_filelock.py` the lock file the service shares with `rcman-admin`, `tests/test_clone.py` a workspace made by cloning
 (a phase of `creating`: its log, failures and their causes, token redaction, names,
 the repository's page, the route, cancel by deletion, restart recovery)
 on a host runtime that runs real git
@@ -271,7 +271,11 @@ helper made inside the holder's network and handed back.
   person's author and token, the create commands running once and `postStartCommand` at every
   start across a restart of rcman, a refused key or an Alpine image leaving nothing behind, a
   failing command keeping the workspace with its token redacted, and a deletion killing a
-  running command.
+  running command; and rebuilds: a new image applied with the work folder kept, a change of user
+  (root and uid 1000, both ways) leaving the user's files writable, a failed rebuild leaving the
+  old container running from the old image, a restart of rcman while the container was replaced
+  coming back on the old image, and a workspace whose `postCreateCommand` failed rebuilt and
+  ready.
 - `tests/container/test_builder_in_podman.py`: the devcontainer builder (`builder.py`,
   `build_image` in `runtime.py`) against real Podman and the real Dev Containers CLI, with the
   builder in the suites' builder slot. The builder pulls the images a build starts from, so the
@@ -295,7 +299,9 @@ helper made inside the holder's network and handed back.
   person at once, the deletion of one removing its image and the copies Podman made of it in the
   person's range and leaving the other's, the policy's refusal of a feature's request before the
   image is copied out and of a musl base after it, each leaving nothing, and a capability a build
-  gives `newuidmap` writing another user's map in the person's range, against a copy without it.
+  gives `newuidmap` writing another user's map in the person's range, against a copy without it;
+  and a built image rebuilt while its container runs, taking the built name only once the
+  rebuild is done, and a deletion by `rcman-admin` while a rebuild builds leaving nothing of it.
 - `tests/container/test_claude_versions_in_podman.py`: `ClaudeVersions` against real Podman, with
   the default image and a store of the module's own, and the fake `claude` as good, broken and
   checksum-failing Claude Code versions (`tests/claude_download.py`), served from a folder: a
@@ -315,7 +321,8 @@ helper made inside the holder's network and handed back.
   the stand-in, makes a workspace with a running server and limits on the person and the
   workspace; rcman stops, every container on the engine stops and the stand-in forgets what a
   restart forgets; rcman starts again, and the workspace runs again, its server is ready again,
-  and the limits are set again, from rcman's table, before the container starts.
+  and the limits are set again, from rcman's table, before the container starts; and a rebuild
+  that the restart cut short comes back on the old image.
 - `tests/container/test_install_in_container.py` and `tests/container/test_stack_in_podman.py`:
   below.
 - `tests/container/test_nest_in_podman.py`: the tools' `podman` and `docker` in a workspace of

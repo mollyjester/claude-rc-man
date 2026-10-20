@@ -341,6 +341,8 @@ for (const [width, phone] of [
 
 // Workspaces to show the trash buttons' dialogs: a ready one, and one being made.
 const READY = { ...WIDE, id: 7001, name: "alice-sheet-ready", source: null, source_page: null };
+// No rebuild under way, and none recorded.
+const NO_REBUILD = { state: null, log: null, error: null };
 const MAKING = { ...READY, id: 7002, name: "alice-sheet-making", state: "creating", server: null };
 
 // How each dialog of the page is opened, by the component that draws it.
@@ -365,6 +367,21 @@ const OPENERS: Record<string, (page: Page) => Promise<void>> = {
     await page.goto("/");
     await page
       .getByRole("button", { name: m.deleteWorkspaceNamed(MAKING.name), exact: true })
+      .click();
+  },
+  RebuildWorkspaceDialog: async (page) => {
+    await page.route("**/api/workspaces", (route) =>
+      route.fulfill({
+        json: {
+          workspaces: [{ ...READY, rebuildable: true, rebuild: NO_REBUILD }],
+          claude_approved: null,
+        },
+      }),
+    );
+    await page.goto(`/?workspace=${READY.id}`);
+    await page
+      .getByRole("region", { name: m.containerTitle })
+      .getByRole("button", { name: m.rebuild })
       .click();
   },
   RemoveTokenDialog: async (page) => {

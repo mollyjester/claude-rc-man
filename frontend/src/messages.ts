@@ -66,7 +66,7 @@ export const m = {
   } as Record<string, string>,
   // Beside New workspace while rcman is being upgraded, which makes none meanwhile.
   workspacesUpgrading:
-    "rcman is being upgraded, so no workspace can be made until the upgrade is done.",
+    "rcman is being upgraded, so no workspace can be made or rebuilt until the upgrade is done.",
   workspaceCreating: "This workspace is being made. It is ready in a moment.",
   workspaceCloningCancel: "To stop the clone, delete this workspace with its button in the list.",
   workspaceLog: "Steps so far",
@@ -126,6 +126,8 @@ export const m = {
     terminal_replaced:
       "The terminal was opened somewhere else, which took it over. Reconnect to take it back here.",
     workspace_gone: "The workspace is no longer ready, so its terminal was closed.",
+    workspace_rebuilding:
+      "The workspace is being rebuilt, which closed the terminal. Reconnect once the rebuild is done.",
     signed_out: "You signed out of rcman, which closed the terminal.",
     not_allowed: "You are no longer allowed into rcman, which closed the terminal.",
     service_closing: "rcman is restarting, which closed the terminal.",
@@ -134,6 +136,46 @@ export const m = {
 
   serverTitle: "Claude server",
   noServer: "No Claude server runs in this workspace.",
+  // While a rebuild replaces the workspace's container, its server is not read.
+  serverRebuilding:
+    "The workspace's container is being made again, so its server is not running just now. A server that ran is started again once that is done.",
+
+  // The Container card of a ready workspace's Overview, and rebuilding a workspace.
+  containerTitle: "Container",
+  containerIntro:
+    "Made from the repository's devcontainer.json, or from rcman's default image where it has none.",
+  containerEmpty:
+    "This workspace has no repository, so its container is made from rcman's default image and has nothing to be rebuilt from.",
+  devcontainerChanged:
+    "This workspace's devcontainer.json has changed since its container was made. Rebuild to apply it.",
+  rebuild: "Rebuild",
+  rebuildBusy: "Rebuilding…",
+  rebuildRunning: "This workspace is being rebuilt. The steps below say how far it is.",
+  // Before what the server says of a rebuild that did not finish.
+  rebuildFailed: "The last rebuild did not finish:",
+  rebuildTitle: (name: string) => `Rebuild ${name}?`,
+  rebuildIntro:
+    "rcman pulls or builds the image the devcontainer.json in the workspace asks for now, while everything keeps running. Only then is the server stopped, the container made again and the server started again.",
+  rebuildIntroFailed:
+    "rcman pulls or builds the image the devcontainer.json in the workspace asks for now, then makes the workspace's container again on its existing files.",
+  rebuildEndsTitle: "This ends:",
+  rebuildEnds: [
+    "The terminal, and every process in the workspace, those started with nohup or setsid too.",
+    "The containers running inside the workspace.",
+    "What is in /tmp, the container's own files, and what the earlier create commands installed outside the workspace's files.",
+  ],
+  rebuildKeepsTitle: "This is kept:",
+  rebuildKeeps: [
+    "The files in the workspace: the work folder, your home, Claude's settings and the storage of Podman inside it.",
+    "Your Claude sign-in, and git.",
+  ],
+  rebuildCommands:
+    "The repository's lifecycle commands (onCreateCommand, updateContentCommand, postCreateCommand and postStartCommand) run again, so they must be safe to run again.",
+  rebuildCommandsFailed:
+    "The repository's lifecycle commands run again on the existing files. If the rebuild fails again, the workspace stays failed: there is no earlier state to return to.",
+  rebuildMemory:
+    "The build runs beside what runs in your workspaces and shares your memory limit. Going over it ends the largest process, which may be a live Claude session.",
+  rebuildConfirm: "Rebuild",
   states: {
     starting: "Starting",
     trust_prompt: "Waiting for your answer",
@@ -325,6 +367,7 @@ export const m = {
   auditActions: {
     "workspace.create": "Made a workspace",
     "workspace.delete": "Deleted a workspace",
+    "workspace.rebuild": "Asked for a workspace to be rebuilt",
     "server.start": "Started a server",
     "server.resume": "Resumed a server",
     "server.stop": "Stopped a server",
@@ -366,6 +409,7 @@ export const m = {
     terminal_lost: "Its page closed it or went away",
     terminal_replaced: "Another terminal on the workspace replaced it",
     workspace_gone: "Its workspace was deleted or is no longer ready",
+    workspace_rebuilding: "Its workspace was being rebuilt",
     signed_out: "Signed out of rcman",
     service_closing: "rcman stopped",
   } as Record<string, string>,

@@ -445,12 +445,83 @@ def _plant_build(runtime: rt.Runtime, workspace: int) -> None:
         runtime._podman("tag", runtime.config.image, rt.built_name(workspace))
 
 
+def _plant_image(runtime: rt.Runtime, workspace: int, tag: str, image_id: str) -> str:
+    """An image named ``built_name(workspace, tag)``, with no builder. The host runtime is given
+    the id ``image_id``; Podman names its default image, whose id is its own."""
+    name = rt.built_name(workspace, tag)
+    if isinstance(runtime, rt.HostRuntime):
+        (runtime.built if tag == rt.BUILT_TAG else runtime.next_built)[workspace] = name
+        runtime.images[name] = rt.ImageFacts(id=image_id)
+    else:
+        runtime._podman("tag", runtime.config.image, name)
+    return name
+
+
 def removing_a_build_that_is_not_there_is_nothing(runtime, spec):
     workspace = 9100
     assert workspace not in runtime.builders() and workspace not in runtime.built_images()
     runtime.remove_build(workspace)
     runtime.remove_build(workspace, image=True)
+    runtime.remove_build(workspace, image=True, image_tag=rt.NEXT_TAG)
     assert workspace not in runtime.builders() and workspace not in runtime.built_images()
+    assert workspace not in runtime.next_images()
+
+
+def a_next_image_and_the_built_one_are_listed_apart_and_removed_apart(runtime, spec):
+    workspace = 9103
+    try:
+        latest = _plant_image(runtime, workspace, rt.BUILT_TAG, "a" * 64)
+        upcoming = _plant_image(runtime, workspace, rt.NEXT_TAG, "b" * 64)
+        assert latest != upcoming
+        assert runtime.built_images()[workspace] == latest
+        assert runtime.next_images()[workspace] == upcoming
+        assert upcoming not in runtime.built_images().values()
+        assert latest not in runtime.next_images().values()
+        runtime.remove_build(workspace, image=True, image_tag=rt.NEXT_TAG)
+        assert workspace not in runtime.next_images()
+        assert runtime.built_images()[workspace] == latest and runtime.has_image(latest)
+        _plant_image(runtime, workspace, rt.NEXT_TAG, "b" * 64)
+        runtime.remove_build(workspace, image=True)  # the built tag's, as before
+        assert workspace not in runtime.built_images()
+        assert runtime.next_images()[workspace] == upcoming and runtime.has_image(upcoming)
+    finally:
+        runtime.remove_build(workspace, image=True)
+        runtime.remove_build(workspace, image=True, image_tag=rt.NEXT_TAG)
+
+
+def promoting_moves_the_next_image_to_the_built_name_and_again_is_nothing(runtime, spec):
+    workspace = 9104
+    try:
+        with pytest.raises(rt.RuntimeFailed):
+            runtime.promote_build(workspace)  # neither image: nothing to promote
+        _plant_image(runtime, workspace, rt.BUILT_TAG, "a" * 64)
+        upcoming = _plant_image(runtime, workspace, rt.NEXT_TAG, "b" * 64)
+        new = runtime.image_facts(upcoming).id
+        assert new  # the positive control for the comparison below
+        latest = runtime.promote_build(workspace)
+        assert latest == rt.built_name(workspace)
+        assert workspace not in runtime.next_images() and not runtime.has_image(upcoming)
+        assert runtime.built_images()[workspace] == latest
+        assert runtime.image_facts(latest).id == new
+        assert runtime.promote_build(workspace) == latest  # a second time is nothing
+        assert runtime.built_images()[workspace] == latest
+        assert runtime.image_facts(latest).id == new and workspace not in runtime.next_images()
+    finally:
+        runtime.remove_build(workspace, image=True)
+        runtime.remove_build(workspace, image=True, image_tag=rt.NEXT_TAG)
+
+
+def has_volume_follows_the_volume_and_not_the_container(runtime, spec):
+    workspace = spec(17)
+    assert not runtime.has_volume(workspace.workspace)
+    try:
+        runtime.create(workspace)
+        assert runtime.has_volume(workspace.workspace)  # the positive control
+        runtime.discard(workspace.name)
+        assert not runtime.exists(workspace.name) and runtime.has_volume(workspace.workspace)
+    finally:
+        runtime.remove(workspace.name)
+    assert not runtime.has_volume(workspace.workspace)
 
 
 def a_build_that_is_there_is_listed_and_goes_with_or_without_its_image(runtime, spec):
@@ -602,6 +673,9 @@ CASES = [
     removing_a_build_that_is_not_there_is_nothing,
     a_build_that_is_there_is_listed_and_goes_with_or_without_its_image,
     a_builder_and_an_image_are_removed_in_one_call_when_asked,
+    a_next_image_and_the_built_one_are_listed_apart_and_removed_apart,
+    promoting_moves_the_next_image_to_the_built_name_and_again_is_nothing,
+    has_volume_follows_the_volume_and_not_the_container,
     ending_a_canary_that_is_not_there_is_nothing,
     a_terminal_runs_a_shell_on_its_pty_as_the_user_and_writes_its_pidfile,
 ]

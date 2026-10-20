@@ -96,7 +96,8 @@ RESERVED_ENV = frozenset(
 # and an image's are not taken: git reads the configuration rcman writes for the person, and
 # nothing in a repository's file may send it elsewhere.
 # The lifecycle commands rcman runs, in the order the specification runs them: the first
-# three once, when the workspace is made, and the last each time its container starts.
+# three when the workspace's container is made - once when the workspace is, and again on each
+# rebuild - and the last each time its container starts.
 CREATE_EVENTS = ("onCreateCommand", "updateContentCommand", "postCreateCommand")
 START_EVENT = "postStartCommand"
 EVENTS = (*CREATE_EVENTS, START_EVENT)
@@ -160,7 +161,8 @@ def _refuse(reason: str) -> Policy:
 
 
 _RUN_ONCE = (
-    "Run once, as the container's user in the work folder, before the workspace is ready. "
+    "Run once when the container is made, and again on each Rebuild, as the container's user "
+    "in the work folder, before the workspace is ready. "
     "A string runs in a shell, an array as a program, and the entries of an object one "
     "after another. A command that takes too long is stopped."
 )
@@ -328,12 +330,13 @@ log = logging.getLogger("rcman.devcontainer")
 MAX_LOGGED_CHARS = 300
 
 
-def _unreadable(step: str, result: Result) -> Refused:
-    """The refusal for a step of reading that failed, with what the step said on its error
-    stream - never what it read - in the journal, since the person's message cannot hold it."""
+def _unreadable(step: str, result: Result, kind: str = "unreadable") -> Refused:
+    """The refusal ``kind`` for a step of reading that failed, with what the step said on its
+    error stream - never what it read - in the journal, since the person's message cannot hold
+    it."""
     said = result.err.decode("utf-8", "replace").strip()[-MAX_LOGGED_CHARS:]
-    log.warning("reading devcontainer.json failed at %s: exit code %s: %s", step, result.code, said)
-    return Refused("unreadable")
+    log.warning("reading a file failed at %s: exit code %s: %s", step, result.code, said)
+    return Refused(kind)
 
 
 class ConfigFile(NamedTuple):
@@ -358,19 +361,110 @@ def read(run: Run, layout: Layout) -> ConfigFile | None:
     kind, _, path = answer.partition(" ")
     if kind != "file":
         return None
+    return ConfigFile(_text(_contents(run, layout, path, "too_big", "unreadable")), path)
+
+
+# Finds whether $1, a path in the work folder with no "..", is a file, and whether it or any
+# folder on the way to it is a link, which is not followed. Shell builtins only.
+PATH_PROBE = (
+    'rest="$1"; p=; while [ -n "$rest" ]; do '
+    'case "$rest" in */*) part="${rest%%/*}"; rest="${rest#*/}";; *) part="$rest"; rest=;; esac; '
+    'p="${p:+$p/}$part"; if [ -L "$p" ]; then echo link; exit 0; fi; done; '
+    'if [ -f "$p" ]; then echo file; else echo none; fi'
+)
+# The refusals ``read_path`` gives for a Dockerfile.
+DOCKERFILE_REFUSALS = {
+    "link": "dockerfile_symlink",
+    "big": "dockerfile_too_big",
+    "unreadable": "dockerfile_unreadable",
+}
+
+
+def read_path(
+    run: Run,
+    layout: Layout,
+    path: str,
+    *,
+    link: str = "symlink",
+    big: str = "too_big",
+    unreadable: str = "unreadable",
+) -> bytes | None:
+    """The bytes of the file at ``path`` in the work folder, relative to it and with no "..",
+    or None where there is none, read as ``read`` reads devcontainer.json: a link, the file's
+    or a folder's on the way to it, is not followed, and is :class:`Refused` as ``link``; a file
+    bigger than MAX_BYTES is refused as ``big`` unread, and one that cannot be read as
+    ``unreadable``, with nothing of what it holds in a message."""
+    probed = run([layout.shell, "-c", PATH_PROBE, "sh", path], READ_SECONDS, cwd=layout.work)
+    if probed.code != 0:
+        raise _unreadable("looking", probed, unreadable)
+    answer = probed.out.decode("utf-8", "replace").strip()
+    if answer == "link":
+        raise Refused(link)
+    if answer != "file":
+        return None
+    return _contents(run, layout, path, big, unreadable)
+
+
+def _contents(run: Run, layout: Layout, path: str, big: str, unreadable: str) -> bytes:
+    """What the file at ``path`` holds, measured first: one bigger than MAX_BYTES is refused as
+    ``big`` and never read."""
     sized = run([*layout.tool("wc"), "-c", path], READ_SECONDS, cwd=layout.work)
     try:
         size = int(sized.out.split()[0])
     except (IndexError, ValueError):
-        raise _unreadable("measuring", sized) from None
+        raise _unreadable("measuring", sized, unreadable) from None
     if sized.code != 0:
-        raise _unreadable("measuring", sized)
+        raise _unreadable("measuring", sized, unreadable)
     if size > MAX_BYTES:
-        raise Refused("too_big")
+        raise Refused(big)
     content = run([*layout.tool("cat"), path], READ_SECONDS, cwd=layout.work)
     if content.code != 0:
-        raise _unreadable("reading", content)
-    return ConfigFile(_text(content.out), path)
+        raise _unreadable("reading", content, unreadable)
+    return content.out
+
+
+# The digest a workspace whose repository has no devcontainer.json has: no file's digest is it.
+NO_FILE_DIGEST = hashlib.sha256(b"rcman: no devcontainer.json").hexdigest()
+
+
+def dockerfile_of(checked: Checked, path: str) -> str | None:
+    """The Dockerfile a file found at ``path`` builds its image from, as a path in the
+    repository, or None for a file that builds none."""
+    build = (checked.build.config.get("build") if checked.build else None) or {}
+    if "dockerfile" not in build:
+        return None
+    folder = posixpath.dirname(path) or "."
+    return posixpath.normpath(posixpath.join(folder, build["dockerfile"].replace("\\", "/")))
+
+
+def digest(found: ConfigFile | None, dockerfile: bytes | None = None) -> str:
+    """What tells whether a workspace's devcontainer.json changed: a sha256 of the place the
+    file was found in and what it holds, and of the Dockerfile it builds from where it builds
+    one; NO_FILE_DIGEST where there is no file. The rest of what a build is given - the other
+    files of its context, the repository's own features - and an image whose tag now names
+    another are not in it."""
+    if found is None:
+        return NO_FILE_DIGEST
+    hashed = hashlib.sha256()
+    for part in (b"file", found.path.encode(), found.text.encode()):
+        hashed.update(len(part).to_bytes(8, "big") + part)
+    if dockerfile is not None:
+        hashed.update(b"dockerfile" + len(dockerfile).to_bytes(8, "big") + dockerfile)
+    return hashed.hexdigest()
+
+
+def current_digest(run: Run, layout: Layout, workspace: int) -> str:
+    """The digest of the devcontainer.json in the workspace now, and of its Dockerfile, read as
+    making the workspace reads them; a file rcman refuses is :class:`Refused`."""
+    found = read(run, layout)
+    if found is None:
+        return NO_FILE_DIGEST
+    checked = check(parse(found.text), workspace, layout.work, found.path)
+    dockerfile = dockerfile_of(checked, found.path)
+    contents = None
+    if dockerfile is not None:
+        contents = read_path(run, layout, dockerfile, **DOCKERFILE_REFUSALS)
+    return digest(found, contents)
 
 
 def _text(raw: bytes) -> str:
@@ -993,7 +1087,8 @@ def build_config(spec: BuildSpec, path: str) -> BuildConfig:
     """The build-only configuration for a file found at ``path``: the file the CLI is given in
     its place, in the same folder, holding ``spec.config`` and nothing else. The label of the
     image it builds then carries the features' entries and not an entry of the file's own, so
-    the file's lifecycle commands run once, from the plan."""
+    the file's lifecycle commands run from the plan alone, once when the container is made and
+    again on each rebuild."""
     assert set(spec.config) <= set(BUILD_KEYS)
     folder = posixpath.dirname(path)
     return BuildConfig(
@@ -1144,7 +1239,9 @@ class Plan:
         return {k: v for k, v in merged.items() if v is not None}
 
     def create_commands(self) -> tuple[Command, ...]:
-        """The commands run once, when the workspace is made, in order."""
+        """The commands run when the workspace's container is made - once when the workspace is
+        made, and again on each rebuild - in order: every create command, then
+        postStartCommand."""
         return self.commands
 
     def start_commands(self) -> tuple[Command, ...]:

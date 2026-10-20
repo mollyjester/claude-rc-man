@@ -65,6 +65,22 @@ MESSAGES = {
     "workspace_not_ready": "The workspace is not ready: it is being made, or deleted, or failed.",
     "runtime_unavailable": "rcman cannot reach its containers just now. Try again in a moment.",
     "workspace_failed": "The workspace did not do what rcman asked of it.",
+    "workspace_rebuilding": (
+        "The workspace is being rebuilt, or rcman is working on its container. Try again once "
+        "that is done."
+    ),
+    "rebuild_confirm_required": (
+        "Rebuilding stops the workspace's server and terminal and makes its container again. "
+        "Confirm that this is what you want."
+    ),
+    "rebuild_empty": "An empty workspace has no repository, so it has nothing to be rebuilt from.",
+    "rebuild_no_container": (
+        "The workspace's container is not there just now, so it cannot be rebuilt. rcman makes "
+        "it again when it next starts."
+    ),
+    "rcman_starting": (
+        "rcman is still bringing the workspaces back after it started. Try again in a moment."
+    ),
     # servers
     "claude_not_installed": "Claude Code is not installed in the workspace: the approved "
     "version is not in the store, or the workspace cannot run it.",
@@ -146,6 +162,12 @@ CLONE_MESSAGES = {
         "rcman restarted while this workspace was being made; delete it and make it again."
     ),
 }
+# The title of ``workspace_failed`` when deleting a person leaves a workspace of theirs that
+# is still being made, or that could not be removed (workspaces.delete_person).
+PERSON_DELETION_LEFT = (
+    "A workspace of theirs is still being removed. They are let in nowhere meanwhile, and "
+    "rcman finishes deleting them once it is gone, at the latest when rcman next starts."
+)
 # Why rolling out a Claude Code version could not get it, in plain words, by the kind of
 # claude_release.ReleaseError: the problem's title when it is ``claude_install_failed``.
 CLAUDE_INSTALL_MESSAGES = {
@@ -183,6 +205,7 @@ UPGRADE_REFUSED_MESSAGES = {
         "Try again when it is done."
     ),
     "creating": "A workspace is being made. Try again once it is made.",
+    "rebuilding": "A workspace is being rebuilt. Try again once it is rebuilt.",
     "images": "rcman is clearing away images no workspace uses. Try again in a moment.",
 }
 # The status of ``claude_install_failed`` by kind: a release site that does not answer is a
@@ -238,6 +261,18 @@ DEVCONTAINER_MESSAGES = {
         "workspace again."
     ),
     "unreadable": "rcman could not read devcontainer.json in the workspace.",
+    "dockerfile_symlink": (
+        "The Dockerfile devcontainer.json builds from is a symbolic link, or is in a folder that "
+        "is one, and rcman does not follow links there. Make it an ordinary file, push the "
+        "change and make the workspace again."
+    ),
+    "dockerfile_too_big": (
+        "The Dockerfile devcontainer.json builds from is too big for rcman to read. Make it "
+        "smaller, push the change and make the workspace again."
+    ),
+    "dockerfile_unreadable": (
+        "rcman could not read the Dockerfile devcontainer.json builds from in the workspace."
+    ),
     "no_image": (
         'devcontainer.json names no image and no Dockerfile. Name an image with "image", or a '
         'Dockerfile to build with "build"; features need one of them to be installed on.'
@@ -275,7 +310,8 @@ DEVCONTAINER_MESSAGES = {
     ),
     "image_gone": (
         'The image "{image}" is no longer available, so this workspace\'s container cannot '
-        "be made again. Delete the workspace and make it again."
+        "be made again. Rebuild the workspace to make it from what its devcontainer.json asks "
+        "for now, keeping its files, or delete it and make it again."
     ),
     "pull_failed": (
         'rcman could not pull the image "{image}": {said} Check the image name and tag; an '
@@ -305,11 +341,14 @@ DEVCONTAINER_MESSAGES = {
     ),
     "default_image_gone": (
         "The image this workspace was made from is no longer in rcman's storage, so the "
-        "workspace's container cannot be made again. Delete the workspace and make it again."
+        "workspace's container cannot be made again. Rebuild the workspace to make it from "
+        "what its devcontainer.json asks for now, keeping its files, or delete it and make it "
+        "again."
     ),
     "built_image_gone": (
         "The image rcman built for this workspace is no longer in its storage, so the "
-        "workspace's container cannot be made again. Delete the workspace and make it again."
+        "workspace's container cannot be made again. Rebuild the workspace to build it again, "
+        "keeping its files, or delete it and make it again."
     ),
     "build_registry_unreachable": (
         "The build could not reach the network: a registry or an address it needs did not "
@@ -358,11 +397,57 @@ DEVCONTAINER_MESSAGES = {
     ),
     "hook_failed": (
         "{command} failed, exit code {code}. What it printed last is below. The workspace "
-        "was kept so that you can look at it; delete it to remove it."
+        "was kept: rebuild it to run its commands again, keeping its files, or delete it to "
+        "remove it."
     ),
     "hook_timeout": (
         "{command} took too long, so it was stopped. What it printed last is below. The "
-        "workspace was kept so that you can look at it; delete it to remove it."
+        "workspace was kept: rebuild it to run its commands again, keeping its files, or "
+        "delete it to remove it."
+    ),
+}
+# The advice a refusal of DEVCONTAINER_MESSAGES gives to a workspace being made, and what it
+# says in its place to one being rebuilt, whose file is read from its own work folder.
+MAKE_AGAIN_ADVICE = "push the change and make the workspace again"
+REBUILD_ADVICE = "then rebuild the workspace"
+
+
+def rebuild_advice(message: str) -> str:
+    """``message``, a refusal of DEVCONTAINER_MESSAGES, as a workspace being rebuilt is told it:
+    to change its file and rebuild it, not to make it again."""
+    return message.replace(f", {MAKE_AGAIN_ADVICE}", f", {REBUILD_ADVICE}")
+
+
+# What a workspace whose rebuild did not finish is told (workspaces.py), in plain words:
+# ``rebuild_error`` in its listing. {cause} is why it failed, in the words of
+# DEVCONTAINER_MESSAGES or of a lifecycle command that failed.
+REBUILD_MESSAGES = {
+    "restarted": (
+        "rcman restarted while this workspace was being rebuilt, so the rebuild was stopped "
+        "and the workspace was left as it was. Rebuild it again."
+    ),
+    "restarted_switching": (
+        "rcman restarted while this workspace's container was being replaced, so the "
+        "container was made again as it was before the rebuild and its create commands were "
+        "run again. Rebuild it again."
+    ),
+    "rolled_back": (
+        "The rebuild failed, so the workspace was put back as it was: its container was made "
+        "again from the image it had, and its create commands were run again. What the new "
+        "commands wrote to the work folder stays. Why it failed is below.\n{cause}"
+    ),
+    "hook_failed": "{command} failed, exit code {code}. What it printed last is below.",
+    "hook_timeout": ("{command} took too long, so it was stopped. What it printed last is below."),
+    "rollback_failed": (
+        "The rebuild failed, and the workspace could not be put back as it was at once: rcman "
+        "puts its container back as soon as it can, trying again every little while, and until "
+        "then its server, git and terminal are not available. Why it failed is below.\n{cause}"
+    ),
+    "put_back_later": (
+        "The rebuild failed, and the workspace could not be put back as it was at once, so it "
+        "was put back afterwards: its container was made again from the image it had, and its "
+        "create commands were run again. What the new commands wrote to the work folder stays. "
+        "Why it failed is below.\n{cause}"
     ),
 }
 STATUS = {
@@ -395,6 +480,11 @@ STATUS = {
     "workspace_not_ready": 409,
     "runtime_unavailable": 503,
     "workspace_failed": 502,
+    "workspace_rebuilding": 409,
+    "rebuild_confirm_required": 422,
+    "rebuild_empty": 409,
+    "rebuild_no_container": 409,
+    "rcman_starting": 409,
     "claude_not_installed": 409,
     "claude_install_failed": 409,
     "claude_checks_failed": 409,

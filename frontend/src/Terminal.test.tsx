@@ -133,7 +133,8 @@ const REFUSED_AGAIN = ["workspace_gone", "signed_out", "not_allowed"];
 const OPEN_AGAIN = PROTOCOL.reasons.filter((r) => !REFUSED_AGAIN.includes(r));
 
 test("the reasons are split between those that offer Reconnect and those that do not", () => {
-  expect(OPEN_AGAIN).toEqual(["terminal_replaced", "service_closing"]);
+  // a rebuild's new container takes a terminal once it is done
+  expect(OPEN_AGAIN).toEqual(["terminal_replaced", "workspace_rebuilding", "service_closing"]);
   for (const reason of REFUSED_AGAIN) expect(PROTOCOL.reasons).toContain(reason);
 });
 

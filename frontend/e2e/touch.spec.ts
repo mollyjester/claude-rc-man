@@ -688,6 +688,24 @@ function views(paths: string[], id: number, name: string, width: number): View[]
         return opened;
       },
     },
+    {
+      name: "rebuilding a workspace",
+      path: opened,
+      dialog: "RebuildWorkspaceDialog",
+      open: async (page) => {
+        // the world's workspace offered a rebuild, as the server offers one it may rebuild
+        await page.route("**/api/workspaces", async (route) => {
+          const answer = await (await route.fetch()).json();
+          for (const w of answer.workspaces) if (w.id === id) w.rebuildable = true;
+          await route.fulfill({ json: answer });
+        });
+        await page.reload();
+        const container = page.getByRole("region", { name: m.containerTitle });
+        const shown = await opens(() => container.getByRole("button", { name: m.rebuild }))(page);
+        await page.unroute("**/api/workspaces");
+        return shown;
+      },
+    },
     { name: "a workspace, Overview", path: opened },
     {
       name: "a workspace, Terminal",

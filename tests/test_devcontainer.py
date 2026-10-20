@@ -965,6 +965,96 @@ def test_a_file_that_cannot_be_read_says_so_without_its_content(work):
         file.chmod(0o600)
 
 
+def test_a_dockerfile_is_read_where_its_path_says_and_none_is_none(work):
+    folder = work.folder / ".devcontainer" / "image"
+    folder.mkdir(parents=True)
+    (folder / "Dockerfile").write_bytes(b"FROM ubuntu:24.04\n")
+    assert dc.read_path(work.run, work.layout, ".devcontainer/image/Dockerfile") == (
+        b"FROM ubuntu:24.04\n"
+    )
+    assert dc.read_path(work.run, work.layout, ".devcontainer/image/Other") is None
+    (folder / "Folder").mkdir()
+    assert dc.read_path(work.run, work.layout, ".devcontainer/image/Folder") is None
+
+
+@pytest.mark.parametrize("linked", ["file", "folder", "top"])
+def test_a_dockerfile_that_is_a_link_or_in_a_linked_folder_is_refused_unread(
+    work, tmp_path, linked
+):
+    elsewhere = tmp_path / "elsewhere"
+    (elsewhere / "inner").mkdir(parents=True)
+    (elsewhere / "inner" / "Dockerfile").write_text("FROM the-secret\n")
+    (elsewhere / "Dockerfile").write_text("FROM the-secret\n")
+    if linked == "file":
+        (work.folder / "a" / "inner").mkdir(parents=True)
+        (work.folder / "a" / "inner" / "Dockerfile").symlink_to(elsewhere / "Dockerfile")
+    elif linked == "folder":
+        (work.folder / "a").mkdir()
+        (work.folder / "a" / "inner").symlink_to(elsewhere / "inner")
+    else:
+        (work.folder / "a").symlink_to(elsewhere)
+    assert (work.folder / "a" / "inner" / "Dockerfile").read_text()  # the plant took effect
+    with pytest.raises(Refused) as refused:
+        dc.read_path(work.run, work.layout, "a/inner/Dockerfile", **dc.DOCKERFILE_REFUSALS)
+    assert refused.value.kind == "dockerfile_symlink"
+    assert "the-secret" not in str(refused.value)
+    assert not read_by(work, "cat") and not read_by(work, "wc")
+
+
+def test_a_dockerfile_that_is_too_big_is_refused_unread(work):
+    (work.folder / "Dockerfile").write_bytes(b"#" * (dc.MAX_BYTES + 1))
+    with pytest.raises(Refused) as refused:
+        dc.read_path(work.run, work.layout, "Dockerfile", **dc.DOCKERFILE_REFUSALS)
+    assert refused.value.kind == "dockerfile_too_big"
+    assert read_by(work, "wc") and not read_by(work, "cat")
+
+
+def checked_of(config: dict, path: str = dc.FILES[0]) -> dc.Checked:
+    return dc.check(config, 1, "/w", path)
+
+
+def test_the_dockerfile_of_a_file_is_its_path_in_the_repository_and_none_without_one():
+    assert dc.dockerfile_of(checked_of({"image": "ubuntu"}), dc.FILES[0]) is None
+    features = {"image": "ubuntu", "features": {"ghcr.io/o/f/x:1": {}}}
+    assert dc.dockerfile_of(checked_of(features), dc.FILES[0]) is None
+    built = {"build": {"dockerfile": "Dockerfile"}}
+    assert dc.dockerfile_of(checked_of(built), dc.FILES[0]) == ".devcontainer/Dockerfile"
+    up = {"build": {"dockerfile": "../docker/Dockerfile"}}
+    assert dc.dockerfile_of(checked_of(up), dc.FILES[0]) == "docker/Dockerfile"
+    older = {"dockerFile": "Dockerfile"}
+    assert dc.dockerfile_of(checked_of(older, dc.FILES[1]), dc.FILES[1]) == "Dockerfile"
+    slashes = {"build": {"dockerfile": "image\\Dockerfile"}}
+    assert dc.dockerfile_of(checked_of(slashes), dc.FILES[0]) == ".devcontainer/image/Dockerfile"
+
+
+def test_the_digest_changes_with_the_file_its_place_and_its_dockerfile_and_none_is_its_own():
+    one = dc.ConfigFile('{"image": "a"}', dc.FILES[0])
+    same = dc.digest(dc.ConfigFile('{"image": "a"}', dc.FILES[0]))
+    assert dc.digest(one) == same and len(same) == 64
+    others = {
+        dc.digest(dc.ConfigFile('{"image": "b"}', dc.FILES[0])),
+        dc.digest(dc.ConfigFile('{"image": "a"}', dc.FILES[1])),  # the same text elsewhere
+        dc.digest(one, b"FROM a\n"),
+        dc.digest(one, b"FROM b\n"),
+        dc.digest(None),
+        same,
+    }
+    assert len(others) == 6
+    assert dc.digest(None) == dc.digest(None) == dc.NO_FILE_DIGEST
+
+
+def test_the_digest_of_a_workspace_is_read_as_the_making_reads_it(work):
+    assert dc.current_digest(work.run, work.layout, 1) == dc.NO_FILE_DIGEST
+    (work.folder / ".devcontainer").mkdir()
+    text = json.dumps({"build": {"dockerfile": "Dockerfile"}})
+    (work.folder / ".devcontainer" / "devcontainer.json").write_text(text)
+    (work.folder / ".devcontainer" / "Dockerfile").write_text("FROM a\n")
+    expected = dc.digest(dc.ConfigFile(text, dc.FILES[0]), b"FROM a\n")
+    assert dc.current_digest(work.run, work.layout, 1) == expected
+    (work.folder / ".devcontainer" / "Dockerfile").write_text("FROM b\n")
+    assert dc.current_digest(work.run, work.layout, 1) != expected
+
+
 def test_the_places_looked_in_are_what_the_log_says():
     assert dc.FILES == (".devcontainer/devcontainer.json", ".devcontainer.json")
     for place in dc.FILES:

@@ -16,7 +16,14 @@ export const PROTOCOL = {
   close_policy: 1008,
   close_closing: 1012,
   close_problem: 4000,
-  reasons: ["terminal_replaced", "workspace_gone", "signed_out", "not_allowed", "service_closing"],
+  reasons: [
+    "terminal_replaced",
+    "workspace_gone",
+    "workspace_rebuilding",
+    "signed_out",
+    "not_allowed",
+    "service_closing",
+  ],
 } as const;
 
 export type Size = { cols: number; rows: number };

@@ -20,7 +20,12 @@ type Workspace = {
   server: Record<string, unknown> | null;
   server_error: { code: string; title: string } | null;
   claude_version: string | null;
+  rebuild: { state: string | null; log: string | null; error: string | null };
+  rebuildable: boolean;
 };
+
+// No rebuild under way, and none asked for before.
+const NO_REBUILD = { state: null, log: null, error: null };
 
 function workspace(id: number, name: string, extra: Partial<Workspace> = {}): Workspace {
   return {
@@ -34,6 +39,8 @@ function workspace(id: number, name: string, extra: Partial<Workspace> = {}): Wo
     server: null,
     server_error: null,
     claude_version: null,
+    rebuild: NO_REBUILD,
+    rebuildable: false,
     ...extra,
   };
 }
@@ -334,6 +341,20 @@ test("a workspace that failed, or whose server could not be read, has the proble
   expect(await entry("alpha")).toHaveAccessibleDescription(m.kinds.problem);
   expect(await entry("beta")).toHaveAccessibleDescription(m.kinds.problem);
   expectNoDot(await entry("gamma"));
+});
+
+test("a workspace whose container a rebuild replaces just now carries no problem dot", async () => {
+  dashboard([
+    workspace(1, "alpha", {
+      source: ADDRESS,
+      rebuild: { ...NO_REBUILD, state: "switching" },
+      server_error: { code: "workspace_rebuilding", title: "Planted: being rebuilt." },
+    }),
+    workspace(2, "beta", { server_error: { code: "workspace_failed", title: "Planted." } }),
+  ]);
+  renderApp();
+  expect(await entry("beta")).toHaveAccessibleDescription(m.kinds.problem); // control
+  expectNoDot(await entry("alpha"));
 });
 
 test.each(["creating", "failed", "deleting"])(
@@ -1875,4 +1896,324 @@ test("while Terminal is shown, the trash button's question still names the work 
   const dialog = await screen.findByRole("dialog");
   expect(await within(dialog).findByText(m.deleteWorkspaceUncommitted(1))).toBeInTheDocument();
   expect(within(dialog).getByText(m.deleteWorkspaceUnpushed(1))).toBeInTheDocument();
+});
+
+// --- the Container card, and rebuilding a workspace ---------------------------------
+
+// A cloned workspace that may be rebuilt now, with what more is given.
+const rebuildable = (extra: Partial<Workspace> = {}) =>
+  workspace(1, "alpha", { source: ADDRESS, source_page: ADDRESS, rebuildable: true, ...extra });
+
+// What the server says of the workspace's devcontainer.json.
+const changedSays = (changed: boolean | null) => ({
+  "GET /api/workspaces/1/devcontainer": { changed },
+});
+
+const containerCard = async (name = "alpha") =>
+  within(await within(await panel(name)).findByRole("region", { name: m.containerTitle }));
+
+const ROLLED_BACK =
+  "The rebuild failed, so the workspace was put back as it was. Why it failed is below.\nplanted: the image could not be pulled";
+
+test("Overview holds the Container card between Claude server and Changes, a sibling card of both", async () => {
+  dashboard([rebuildable()], changedSays(false));
+  renderApp("/?workspace=1");
+  const opened = within(await panel("alpha"));
+  const server = await opened.findByRole("region", { name: m.serverTitle });
+  const container = await opened.findByRole("region", { name: m.containerTitle });
+  const changes = await opened.findByRole("region", { name: m.changesTitle });
+  expect(container).toHaveClass("card");
+  expect(container.querySelector(".card")).toBeNull();
+  expect(container.parentElement).toBe(server.parentElement);
+  expect(server.nextElementSibling).toBe(container);
+  expect(container.nextElementSibling).toBe(changes);
+});
+
+test("a changed devcontainer.json is said in the card, and Rebuild leads as the primary button", async () => {
+  const fake = dashboard([rebuildable()], changedSays(true));
+  renderApp("/?workspace=1");
+  const card = await containerCard();
+  expect(await card.findByText(m.devcontainerChanged)).toBeInTheDocument();
+  expect(card.getByRole("button", { name: m.rebuild })).toHaveClass("primary");
+  expect(fake.made("GET", "/api/workspaces/1/devcontainer").length).toBeGreaterThan(0);
+});
+
+test.each([
+  ["unchanged", false],
+  ["not known", null],
+])(
+  "a devcontainer.json %s is not remarked on, and Rebuild is offered as a plain button",
+  async (_, changed) => {
+    const fake = dashboard([rebuildable()], changedSays(changed));
+    renderApp("/?workspace=1");
+    const card = await containerCard();
+    await waitFor(() =>
+      expect(fake.made("GET", "/api/workspaces/1/devcontainer").length).toBeGreaterThan(0),
+    );
+    const rebuild = await card.findByRole("button", { name: m.rebuild });
+    expect(rebuild).not.toHaveClass("primary");
+    expect(rebuild).toBeEnabled();
+    expect(card.queryByText(m.devcontainerChanged)).not.toBeInTheDocument();
+  },
+);
+
+test("a read of the file that fails is taken as not known: no notice and no alert", async () => {
+  dashboard([rebuildable()], {
+    "GET /api/workspaces/1/devcontainer": problem(409, "workspace_not_ready", "Planted."),
+  });
+  renderApp("/?workspace=1");
+  const card = await containerCard();
+  expect(await card.findByRole("button", { name: m.rebuild })).not.toHaveClass("primary");
+  expect(card.queryByRole("alert")).toBeNull();
+  expect(card.queryByText(m.devcontainerChanged)).not.toBeInTheDocument();
+});
+
+test("the file is asked about again as the page refreshes, and a change is said once it is seen", async () => {
+  let changed = false;
+  dashboard([rebuildable()], { "GET /api/workspaces/1/devcontainer": () => ({ changed }) });
+  renderApp("/?workspace=1", { pollMs: 50 });
+  const card = await containerCard();
+  await card.findByRole("button", { name: m.rebuild });
+  expect(card.queryByText(m.devcontainerChanged)).not.toBeInTheDocument();
+  changed = true;
+  expect(await card.findByText(m.devcontainerChanged)).toBeInTheDocument();
+  expect(card.getByRole("button", { name: m.rebuild })).toHaveClass("primary");
+});
+
+test("Rebuild is not offered for a workspace the server says cannot be rebuilt now", async () => {
+  dashboard([rebuildable(), workspace(2, "beta", { source: ADDRESS })], changedSays(true));
+  renderApp("/?workspace=1");
+  expect(await (await containerCard()).findByRole("button", { name: m.rebuild })).toBeEnabled(); // control
+  cleanup();
+  dashboard([workspace(2, "beta", { source: ADDRESS, rebuildable: false })], {
+    "GET /api/workspaces/2/devcontainer": { changed: true },
+  });
+  renderApp("/?workspace=2");
+  const card = await containerCard("beta");
+  expect(await card.findByText(m.devcontainerChanged)).toBeInTheDocument();
+  expect(card.queryByRole("button", { name: m.rebuild })).not.toBeInTheDocument();
+});
+
+test("while rcman is being upgraded, Rebuild is not offered", async () => {
+  dashboard([], {
+    "GET /api/workspaces": { ...listing([rebuildable()]), rcman_upgrading: true },
+    ...changedSays(true),
+  });
+  renderApp("/?workspace=1");
+  const card = await containerCard();
+  await card.findByText(m.devcontainerChanged);
+  expect(card.queryByRole("button", { name: m.rebuild })).not.toBeInTheDocument();
+  expect(screen.getByText(m.workspacesUpgrading)).toBeInTheDocument();
+});
+
+test("an empty workspace's card says it has nothing to be rebuilt from", async () => {
+  dashboard([workspace(1, "alpha")], changedSays(null));
+  renderApp("/?workspace=1");
+  const card = await containerCard();
+  expect(card.getByText(m.containerEmpty)).toBeInTheDocument();
+  expect(card.queryByRole("button", { name: m.rebuild })).not.toBeInTheDocument();
+});
+
+test("Rebuild asks first, naming what ends and what is kept, and Cancel sends nothing", async () => {
+  const fake = dashboard([rebuildable()], changedSays(true));
+  renderApp("/?workspace=1");
+  await userEvent.click(await (await containerCard()).findByRole("button", { name: m.rebuild }));
+  const dialog = within(await screen.findByRole("dialog", { name: m.rebuildTitle("alpha") }));
+  expect(dialog.getByText(m.rebuildIntro)).toBeInTheDocument();
+  for (const line of [...m.rebuildEnds, ...m.rebuildKeeps])
+    expect(dialog.getByText(line)).toBeInTheDocument();
+  expect(dialog.getByText(m.rebuildCommands)).toBeInTheDocument();
+  expect(dialog.getByText(m.rebuildMemory)).toBeInTheDocument();
+  expect(dialog.queryByText(m.rebuildCommandsFailed)).not.toBeInTheDocument();
+  // the words say what ends and what stays
+  const text = [...m.rebuildEnds, ...m.rebuildKeeps].join(" ");
+  for (const word of ["terminal", "nohup", "setsid", "in /tmp", "work folder", "home", "git"])
+    expect(text).toContain(word);
+  const confirm = dialog.getByRole("button", { name: m.rebuildConfirm });
+  expect(confirm).toHaveClass("primary");
+  await userEvent.click(dialog.getByRole("button", { name: m.cancel }));
+  await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+  expect(fake.made("POST", "/api/workspaces/1/rebuild")).toEqual([]);
+});
+
+test("confirming sends the confirmation, and the card shows the rebuild under way", async () => {
+  let current = rebuildable();
+  const fake = dashboard([], {
+    "GET /api/workspaces": () => listing([current]),
+    ...changedSays(true),
+    "POST /api/workspaces/1/rebuild": () => {
+      current = rebuildable({
+        rebuildable: false,
+        rebuild: { state: "preparing", log: "Pulling the image", error: null },
+      });
+      return { workspace: current };
+    },
+  });
+  renderApp("/?workspace=1");
+  const card = await containerCard();
+  await userEvent.click(await card.findByRole("button", { name: m.rebuild }));
+  const dialog = within(await screen.findByRole("dialog", { name: m.rebuildTitle("alpha") }));
+  await userEvent.click(dialog.getByRole("button", { name: m.rebuildConfirm }));
+  await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+  expect(fake.made("POST", "/api/workspaces/1/rebuild").map((c) => c.body)).toEqual([
+    { confirm: true },
+  ]);
+  const busy = await card.findByRole("button", { name: m.rebuildBusy });
+  expect(busy).toBeDisabled();
+  expect(card.getByRole("figure", { name: m.workspaceLog })).toHaveTextContent("Pulling the image");
+});
+
+test("a refused rebuild shows the server's reason in the dialog, and the list is fetched again", async () => {
+  const fake = dashboard([rebuildable()], {
+    ...changedSays(true),
+    "POST /api/workspaces/1/rebuild": problem(
+      409,
+      "workspace_rebuilding",
+      "Planted: the workspace is being rebuilt.",
+    ),
+  });
+  renderApp("/?workspace=1");
+  await userEvent.click(await (await containerCard()).findByRole("button", { name: m.rebuild }));
+  const dialog = within(await screen.findByRole("dialog", { name: m.rebuildTitle("alpha") }));
+  const before = fake.made("GET", "/api/workspaces").length;
+  await userEvent.click(dialog.getByRole("button", { name: m.rebuildConfirm }));
+  expect(await dialog.findByRole("alert")).toHaveTextContent(
+    "Planted: the workspace is being rebuilt.",
+  );
+  await waitFor(() => expect(fake.made("GET", "/api/workspaces").length).toBeGreaterThan(before));
+});
+
+test.each(["preparing", "switching", "promoting"])(
+  "while a rebuild is %s, Rebuild says it is rebuilding and waits, and the steps are announced politely",
+  async (state) => {
+    dashboard(
+      [
+        rebuildable({
+          rebuildable: false,
+          rebuild: { state, log: "Pulling the image\nMaking the container", error: null },
+        }),
+      ],
+      changedSays(null),
+    );
+    renderApp("/?workspace=1");
+    const card = await containerCard();
+    const busy = await card.findByRole("button", { name: m.rebuildBusy });
+    expect(busy).toBeDisabled();
+    expect(card.getByText(m.rebuildRunning)).toBeInTheDocument();
+    const steps = card.getByRole("figure", { name: m.workspaceLog });
+    expect(steps.querySelector('[aria-live="polite"]')).toHaveTextContent("Making the container");
+  },
+);
+
+test("a rebuild that did not finish says what happened and what to do next, as a problem", async () => {
+  dashboard(
+    [rebuildable({ rebuild: { state: null, log: "Pulling the image", error: ROLLED_BACK } })],
+    changedSays(true),
+  );
+  renderApp("/?workspace=1");
+  const card = await containerCard();
+  const alert = await card.findByRole("alert");
+  expect(alert).toHaveTextContent(m.rebuildFailed);
+  expect(alert).toHaveTextContent(ROLLED_BACK.split("\n")[0]);
+  expect(alert).toHaveTextContent("planted: the image could not be pulled");
+  expect(card.getByRole("button", { name: m.rebuild })).toBeEnabled(); // it can be tried again
+});
+
+test("a workspace whose container a rebuild replaces shows its server as being rebuilt, not as a problem", async () => {
+  dashboard(
+    [
+      rebuildable({
+        rebuildable: false,
+        rebuild: { state: "switching", log: null, error: null },
+        server_error: { code: "workspace_rebuilding", title: "Planted: being rebuilt." },
+      }),
+    ],
+    changedSays(null),
+  );
+  renderApp("/?workspace=1");
+  const server = within(
+    await within(await panel("alpha")).findByRole("region", { name: m.serverTitle }),
+  );
+  expect(server.getByText(m.serverRebuilding)).toBeInTheDocument();
+  expect(server.queryByRole("alert")).toBeNull();
+  expect(server.queryByText(m.serverUnreadNextStep)).not.toBeInTheDocument();
+  expect(server.queryByRole("button", { name: m.start })).not.toBeInTheDocument();
+});
+
+// --- rebuilding a workspace that failed ---------------------------------------------
+
+const HOOK_FAILED = "postCreateCommand failed, exit code 1. What it printed last is below.";
+
+test("a failed workspace that can be rebuilt offers Rebuild beside its reason", async () => {
+  dashboard([
+    rebuildable({ state: "failed", error: HOOK_FAILED, log: STEPS }),
+    workspace(2, "beta", { state: "failed", error: HOOK_FAILED, source: ADDRESS }),
+  ]);
+  renderApp("/?workspace=1");
+  const opened = within(await panel("alpha"));
+  const reason = opened.getByText(m.workspaceFailed);
+  const rebuild = opened.getByRole("button", { name: m.rebuild });
+  expect(rebuild).toHaveClass("primary");
+  expect(reason.compareDocumentPosition(rebuild) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  cleanup();
+  dashboard([workspace(2, "beta", { state: "failed", error: HOOK_FAILED, source: ADDRESS })]);
+  renderApp("/?workspace=2");
+  const other = within(await panel("beta"));
+  expect(other.getByText(m.workspaceFailed)).toBeInTheDocument();
+  expect(other.queryAllByRole("button")).toEqual([]);
+});
+
+test("rebuilding a failed workspace says its commands run again on the files, with nothing earlier to go back to", async () => {
+  const fake = dashboard([rebuildable({ state: "failed", error: HOOK_FAILED })], {
+    "POST /api/workspaces/1/rebuild": () => ({
+      workspace: rebuildable({ state: "failed", error: HOOK_FAILED }),
+    }),
+  });
+  renderApp("/?workspace=1");
+  await userEvent.click(within(await panel("alpha")).getByRole("button", { name: m.rebuild }));
+  const dialog = within(await screen.findByRole("dialog", { name: m.rebuildTitle("alpha") }));
+  expect(dialog.getByText(m.rebuildIntroFailed)).toBeInTheDocument();
+  expect(dialog.getByText(m.rebuildCommandsFailed)).toBeInTheDocument();
+  expect(dialog.queryByText(m.rebuildIntro)).not.toBeInTheDocument();
+  await userEvent.click(dialog.getByRole("button", { name: m.rebuildConfirm }));
+  await waitFor(() => expect(fake.made("POST", "/api/workspaces/1/rebuild")).toHaveLength(1));
+  expect(fake.made("POST", "/api/workspaces/1/rebuild")[0].body).toEqual({ confirm: true });
+});
+
+test("a failed workspace being rebuilt shows the rebuild's steps, and Rebuild waits", async () => {
+  dashboard([
+    rebuildable({
+      state: "failed",
+      error: HOOK_FAILED,
+      log: "the old steps",
+      rebuildable: false,
+      rebuild: { state: "preparing", log: "Reading devcontainer.json", error: null },
+    }),
+  ]);
+  renderApp("/?workspace=1");
+  const opened = within(await panel("alpha"));
+  expect(opened.getByText(m.rebuildRunning)).toBeInTheDocument();
+  expect(opened.getByRole("button", { name: m.rebuildBusy })).toBeDisabled();
+  const steps = opened.getByRole("figure", { name: m.workspaceLog });
+  expect(steps).toHaveTextContent("Reading devcontainer.json");
+  expect(steps).not.toHaveTextContent("the old steps");
+  expect(steps.querySelector('[aria-live="polite"]')).not.toBeNull();
+});
+
+test("a failed workspace whose rebuild failed again says the new reason, with the rebuild's steps", async () => {
+  dashboard([
+    rebuildable({
+      state: "failed",
+      error: "planted: the new reason",
+      log: "the old steps",
+      rebuild: { state: null, log: "Reading devcontainer.json", error: null },
+    }),
+  ]);
+  renderApp("/?workspace=1");
+  const opened = within(await panel("alpha"));
+  expect(opened.getByText("planted: the new reason")).toBeInTheDocument();
+  expect(opened.getByRole("figure", { name: m.workspaceLog })).toHaveTextContent(
+    "Reading devcontainer.json",
+  );
+  expect(opened.getByRole("button", { name: m.rebuild })).toBeEnabled();
 });

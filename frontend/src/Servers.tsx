@@ -121,11 +121,23 @@ export type Workspace = {
   server_error: { code: string; title: string } | null;
   // The Claude Code version its server started with, null while it has none running.
   claude_version: string | null;
+  // Its rebuild: the phase one is in (preparing, switching, promoting), null with none under
+  // way; the steps of the last one; and why the last one did not finish, null when it did.
+  rebuild: Rebuild;
+  // Whether a rebuild may be asked for now, as the server judges it.
+  rebuildable: boolean;
 };
 
+export type Rebuild = { state: string | null; log: string | null; error: string | null };
+
+// What the server reads while a rebuild replaces a workspace's container: not its server.
+export const REBUILDING = "workspace_rebuilding";
+
 // The dot a workspace carries: its server's kind, a problem where the workspace
-// failed or its server could not be read, and none otherwise.
+// failed or its server could not be read, and none otherwise, nor while a rebuild replaces
+// its container.
 export function dotFor(workspace: Workspace): Kind | null {
+  if (workspace.server_error?.code === REBUILDING && workspace.state !== "failed") return null;
   if (workspace.state === "failed" || workspace.server_error) return "problem";
   return workspace.server ? kindOf(workspace.server.state) : null;
 }

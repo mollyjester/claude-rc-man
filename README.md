@@ -29,7 +29,8 @@ Implemented and tested:
 - **A repository's devcontainer.json**, read when a workspace is cloned: an
   image or a Dockerfile and features, built in a sandbox of their own, with the
   user, the environment and the lifecycle commands; what a workspace may not ask
-  for is refused.
+  for is refused. A changed file is seen, and a workspace is rebuilt from it on
+  its own files when its owner asks.
 - **Claude Code versions** rolled out by an administrator after checks in a
   throwaway container; servers keep the version they started with.
 - **Upgrading rcman from its web interface**, off unless the installer turns it on:

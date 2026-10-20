@@ -42,6 +42,7 @@ from rcman.audit import (
     TERMINAL_LOST,
     TERMINAL_REPLACED,
     WORKSPACE_GONE,
+    WORKSPACE_REBUILDING,
 )
 from rcman.problems import Problem
 from rcman.runtime import Launch, Layout, RuntimeFailed
@@ -56,6 +57,7 @@ __all__ = [
     "TERMINAL_LOST",
     "TERMINAL_REPLACED",
     "WORKSPACE_GONE",
+    "WORKSPACE_REBUILDING",
     "Terminal",
     "Terminals",
     "end_leader",
@@ -402,6 +404,7 @@ class Terminals:
         # How many times each person signed out: a terminal opened across a sign-out is ended.
         self._sign_outs: dict[int, int] = {}
         service.on_removing = self.removing
+        service.on_rebuilding = self.rebuilding
         service.on_kept_running = self.kept_running
 
     def bind(self, loop: asyncio.AbstractEventLoop) -> None:
@@ -549,6 +552,11 @@ class Terminals:
     def removing(self, workspace: Workspace) -> None:
         """The workspace is about to be removed: end its terminal while it is there."""
         self._from_thread(self.end_workspace, workspace.id, WORKSPACE_GONE)
+
+    def rebuilding(self, workspace: Workspace) -> None:
+        """The workspace's container is about to be replaced by a rebuild: end its terminal
+        while the old one is still there."""
+        self._from_thread(self.end_workspace, workspace.id, WORKSPACE_REBUILDING)
 
     def kept_running(self, workspace: Workspace) -> None:
         """The workspace's container ran on while rcman did not: sweep it."""

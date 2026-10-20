@@ -7,12 +7,15 @@ signed in, in its test client; and ``systemctl`` the stand-in (tests/container/s
 keeps the slices' properties as the user manager does until a restart. The module makes a workspace
 of alice's, starts its server and sets limits on her and on the workspace; then rcman stops, every
 container on the engine is stopped, the stand-in forgets what a restart forgets, and rcman starts
-again. What a restart of the machine itself does to systemd and the kernel is checked by hand
+again. A second workspace is caught by the restart in the middle of a rebuild, its container
+replaced by one of another image while its row says the container is being switched. What a
+restart of the machine itself does to systemd and the kernel is checked by hand
 (project-knowledge/real-claude-checklist.md).
 """
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import re
 import subprocess
@@ -24,12 +27,13 @@ from fastapi.testclient import TestClient
 from rcman import db, limits, people
 from rcman import runtime as rt
 from rcman.main import create_app
+from rcman.problems import REBUILD_MESSAGES
 
 from devtools import fake_claude as fake
 from tests.conftest import ALICE, ORIGIN, as_user, changing, made_workspace
 from tests.container import sizes
 from tests.container import test_runtime_in_podman as base
-from tests.container.conftest import engine_runtime, engine_settings, stand_in
+from tests.container.conftest import engine_runtime, engine_settings, image_of, stand_in
 from tests.e2e_server import record_sign_in
 
 # How long the workspace and its server may take to be back.
@@ -84,7 +88,9 @@ def set_properties(state, after: float) -> dict[str, float]:
 
 
 @pytest.fixture(scope="module")
-def restarted(podman_service, default_image, engine_tools, fake_store, tmp_path_factory):
+def restarted(
+    podman_service, default_image, builder_image, engine_tools, fake_store, tmp_path_factory
+):
     folder = tmp_path_factory.mktemp("rcman")
     state = folder / "stand-in"
     systemctl = stand_in(folder, "systemctl", state)
@@ -135,6 +141,19 @@ def restarted(podman_service, default_image, engine_tools, fake_store, tmp_path_
             "processes": claude_processes(podman, name),
             "started": started(podman_service, name),
         }
+        # A rebuild cut short while it replaced the container: the old one discarded, a new one
+        # made from another image, and the row in the phase that says so.
+        service = client.app.state.workspaces
+        beta = made_workspace(client, ALICE, "beta")
+        beta_name = rt.container_name(beta["id"])
+        old_image = image_of(podman, beta_name)
+        podman.discard(beta_name)
+        other = dataclasses.replace(
+            service._spec(service.get(beta["id"]), alice.slot), image=builder_image, image_id=""
+        )
+        podman.create(other)
+        assert image_of(podman, beta_name) not in (None, old_image)  # the plant took effect
+        service._set(beta["id"], rebuild_state="switching")
 
     # The machine restarts: every container stops, and what the user manager held is gone.
     stopped = podman_service.cli("stop", "--all", "--time=10", timeout=600)
@@ -156,6 +175,8 @@ def restarted(podman_service, default_image, engine_tools, fake_store, tmp_path_
             "state": state,
             "rebooted": rebooted,
             "before": before,
+            "beta": beta["id"],
+            "beta_image": old_image,
         }
         for made in client.app.state.workspaces.everything():
             client.app.state.workspaces.delete(made)
@@ -197,3 +218,13 @@ def test_the_slots_the_module_uses_are_the_suites(restarted):
         con.close()
     assert person.slot in sizes.PEOPLE_SLOTS
     assert base.FIRST_WORKSPACE > restarted["workspace"]  # clear of the runtime module's ids
+
+
+def test_a_rebuild_cut_short_by_the_restart_comes_back_on_the_old_image(restarted):
+    podman, workspace = restarted["podman"], restarted["beta"]
+    name = rt.container_name(workspace)
+    until(lambda: podman.exists(name) and podman.running(name))
+    assert image_of(podman, name) == restarted["beta_image"]
+    now = restarted["client"].app.state.workspaces.get(workspace)
+    assert (now.state, now.rebuild_state) == ("ready", None)
+    assert now.rebuild_error == REBUILD_MESSAGES["restarted_switching"]

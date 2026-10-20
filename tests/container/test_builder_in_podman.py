@@ -43,7 +43,7 @@ from tests.container import github_stand_in as stand_in
 from tests.container import network, sizes
 from tests.container import test_devcontainer_in_podman as dev
 from tests.container import test_github_in_podman as shared
-from tests.container.conftest import cli, engine_runtime, engine_settings
+from tests.container.conftest import cli, engine_runtime, engine_settings, image_of
 from tests.github_server import GitHubServer
 
 exists, gone, settled = shared.exists, shared.gone, shared.settled
@@ -958,3 +958,75 @@ def test_a_capability_a_build_gives_newuidmap_holds_in_the_persons_range(
     assert real_podman.exec(done.container, ["sh", "-c", copied]).code == 0
     plain = real_podman.exec(done.container, mapped_by(copy))
     assert b"map=0" not in plain.out, plain  # the control: without the capability it cannot
+
+
+# --- rebuilding a workspace whose image was built ---------------------------------------------
+
+
+def test_a_built_image_is_rebuilt_while_its_container_runs_and_takes_its_name_after(
+    real_service, real_podman, person, real_clones, github_com, tmp_path
+):
+    publish_tree(github_com, tmp_path, "rebuild-built", REAL_FILES)
+    made = start(real_service, person, real_clones, "rebuild-built")
+    done = settled(real_service, made.id, REAL_WITHIN)
+    assert (done.state, done.error) == ("ready", None), done
+    old = json.loads(done.environment)["image_id"]
+    layout = real_service._layout(done)
+    changed = REAL_FILES[".devcontainer/Dockerfile"] + "ENV REBUILT=yes\n"
+    written = real_podman.exec(
+        done.container,
+        [layout.shell, "-c", 'cat > "$1"', "sh", f"{layout.work}/.devcontainer/Dockerfile"],
+        stdin=changed.encode(),
+    )
+    assert written.code == 0, written.err
+    real_service.restored.set()
+    real_service.rebuild(person[0], done.id, True)
+    deadline = time.monotonic() + REAL_WITHIN
+    while done.id not in real_podman.builders():  # the build runs beside the container
+        assert time.monotonic() < deadline
+        time.sleep(0.5)
+    assert real_podman.running(done.container) and image_of(real_podman, done.container) == old
+    with real_service._lock:
+        thread = real_service._making[done.id]
+    thread.join(REAL_WITHIN)
+    now = real_service.get(done.id)
+    assert (now.state, now.rebuild_state, now.rebuild_error) == ("ready", None, None), now
+    plan = json.loads(now.environment)
+    assert plan["image"] == rt.built_name(done.id) and plan["image_id"] != old
+    assert image_of(real_podman, now.container) == plan["image_id"]
+    assert real_podman.built_images().get(done.id) == rt.built_name(done.id)
+    assert done.id not in real_podman.next_images()
+    assert old not in image_ids(real_podman)  # the old image went once nothing used it
+    assert out_of(run_in(real_podman, real_service, now, "sh", "-c", "echo $REBUILT")) == "yes"
+
+
+def out_of(result: rt.Result) -> str:
+    return result.out.decode().strip()
+
+
+def test_a_deletion_by_rcman_admin_while_a_rebuild_builds_leaves_nothing_of_it(
+    real_service, real_podman, person, real_clones, github_com, tmp_path
+):
+    publish_tree(github_com, tmp_path, "rebuild-deleted", REAL_FILES)
+    made = start(real_service, person, real_clones, "rebuild-deleted")
+    done = settled(real_service, made.id, REAL_WITHIN)
+    assert done.state == "ready", done
+    real_service.restored.set()
+    real_service.rebuild(person[0], done.id, True)
+    deadline = time.monotonic() + REAL_WITHIN
+    while done.id not in real_podman.builders():
+        assert time.monotonic() < deadline
+        time.sleep(0.5)
+    admin = Workspaces(real_service.settings, real_podman, prunes=False)
+    try:
+        admin.delete(admin.get(done.id))
+    finally:
+        admin.close()
+    gone(real_service, done.id, REAL_WITHIN)
+    assert not [
+        name
+        for name, labels in real_podman.labelled().items()
+        if labels.get(rt.LABEL_WORKSPACE) == str(done.id)
+    ]
+    assert done.id not in real_podman.builders() and done.id not in real_podman.next_images()
+    assert done.id not in real_podman.built_images()

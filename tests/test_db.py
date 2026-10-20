@@ -401,7 +401,8 @@ def test_a_database_has_an_install_id_of_its_own_that_never_changes(tmp_path):
 def test_a_database_of_the_schema_before_the_install_id_gains_one(tmp_path):
     path = tmp_path / "old.db"
     con = sqlite3.connect(path)
-    for number, script in enumerate(db.MIGRATIONS[:-1], start=1):
+    last = next(i for i, script in enumerate(db.MIGRATIONS) if "create table meta" in script)
+    for number, script in enumerate(db.MIGRATIONS[:last], start=1):
         con.executescript(f"begin;\n{script}\npragma user_version = {number};\ncommit;")
     con.close()
     db.migrate(path)
@@ -410,3 +411,39 @@ def test_a_database_of_the_schema_before_the_install_id_gains_one(tmp_path):
         assert db.install_id(con)
     finally:
         con.close()
+
+
+REBUILD_COLUMNS = (
+    "devcontainer_digest",
+    "rebuild_state",
+    "rebuild_log",
+    "rebuild_error",
+    "failure",
+)
+
+
+def test_a_workspace_made_before_rebuilds_has_none_of_their_columns_set_after_the_migration(
+    tmp_path,
+):
+    """An old row's digest is unknown (null), and it is neither being rebuilt nor failed in a
+    way that is known."""
+    path, con = migrated_before(tmp_path, "rebuild_state")
+    names = [r[1] for r in con.execute("pragma table_info(workspaces)")]
+    assert "image_id" in names and not set(REBUILD_COLUMNS) & set(names)
+    con.close()
+    db.migrate(path)
+    con = sqlite3.connect(path)
+    found = con.execute(f"select name, {', '.join(REBUILD_COLUMNS)} from workspaces").fetchall()
+    assert found == [("old", *(None,) * len(REBUILD_COLUMNS))]
+
+
+def test_a_rebuild_state_is_one_of_its_phases_or_null(tmp_path):
+    path = tmp_path / "x.db"
+    db.migrate(path)
+    con = db.connect(path)
+    _person(con, "a@x.org", 1)
+    con.execute("insert into workspaces (person, name, state) values (1, 'w', 'ready')")
+    for phase in ("preparing", "switching", "promoting", None):
+        con.execute("update workspaces set rebuild_state = ? where id = 1", (phase,))
+    with pytest.raises(sqlite3.IntegrityError):
+        con.execute("update workspaces set rebuild_state = 'other' where id = 1")

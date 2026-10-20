@@ -234,7 +234,6 @@ def create_app():
     sys.path.insert(0, str(SRC))
     from rcman import db
     from rcman import people as rcman_people
-    from rcman import runtime as rt
     from rcman.main import create_app as rcman_app
 
     from tests.container import sizes
@@ -250,7 +249,16 @@ def create_app():
                 rcman_people.add(con, email, False, last_slot=sizes.PEOPLE_SLOTS[-1])
         finally:
             con.close()
-    runtime = rt.PodmanRuntime(
+    return rcman_app(made, runtime=runtime_of(made), builder_slot=sizes.BUILDER_SLOT)
+
+
+def runtime_of(made):
+    """The Podman runtime rcman runs with in the stack, at the suites' sizes."""
+    from rcman import runtime as rt
+
+    from tests.container import sizes
+
+    return rt.PodmanRuntime(
         rt.PodmanConfig(
             socket=made.podman_socket,
             image=made.workspace_image,
@@ -263,7 +271,31 @@ def create_app():
             slices=False,
         )
     )
-    return rcman_app(made, runtime=runtime, builder_slot=sizes.BUILDER_SLOT)
+
+
+def admin_delete(email: str) -> None:
+    """``rcman-admin delete <email>``: its own code (``admin_delete_here``), in a process of its
+    own beside the service, run by the interpreter and in the environment the service runs in
+    (``rcman_env``), which has the project's dependencies; this verb's ``python3`` has not."""
+    done = subprocess.run(
+        [f"{VENV}/bin/python", str(HERE / "stack.py"), "admin-delete-here", email],
+        env=rcman_env(), cwd=str(SRC), check=False,
+    )  # fmt: skip
+    assert done.returncode == 0, done.returncode
+
+
+def admin_delete_here(email: str) -> None:
+    """``admin_delete``'s process: ``rcman-admin delete <email>`` with the stack's settings and
+    runtime in place of an environment file (it runs as the stack's own account, so it does not
+    run itself again as another)."""
+    sys.path.insert(0, str(SRC))
+    from rcman import admin
+
+    args = admin._parser().parse_args(["delete", email])
+    made = settings()
+    code = admin._run(args, made, runtime_of(made))
+    assert code == 0, code
+    print("DELETED", flush=True)
 
 
 def started(name: str, argv: list[str], **more) -> None:
@@ -331,8 +363,10 @@ def wait(what: str, probe, within: float = ANSWERS_WITHIN) -> None:
         time.sleep(0.5)
 
 
-def rcman_started() -> None:
-    env = {
+def rcman_env() -> dict[str, str]:
+    """The environment rcman's own code runs in, in the stack: the project's virtual
+    environment, with the checkout's backend and tests on the path."""
+    return {
         "PATH": f"{VENV}/bin:/usr/local/bin:/usr/bin:/bin",
         "LANG": "C.UTF-8",
         "HOME": str(state()),
@@ -340,13 +374,16 @@ def rcman_started() -> None:
         "PYTHONDONTWRITEBYTECODE": "1",
         "RCMAN_STACK_CONFIG": os.environ["RCMAN_STACK_CONFIG"],
     }
+
+
+def rcman_started() -> None:
     SOCKET.parent.mkdir(parents=True, exist_ok=True)
     SOCKET.unlink(missing_ok=True)
     started(
         "rcman",
         [f"{VENV}/bin/python", "-m", "uvicorn", "--factory", "tests.container.stack:create_app",
          "--ws", "websockets-sansio", "--uds", str(SOCKET)],
-        env=env, cwd=str(SRC),
+        env=rcman_env(), cwd=str(SRC),
     )  # fmt: skip
     wait("rcman", lambda: socket_status("/api/health") == 200)
 
@@ -697,5 +734,6 @@ if __name__ == "__main__":
     verb, *arguments = sys.argv[1:]
     sys.path.insert(0, str(SRC / "backend"))
     run = {"up": up, "restart": restart, "check": check, "repository": repository,
-           "request": request, "identity": identity}[verb]  # fmt: skip
+           "request": request, "identity": identity,
+           "admin-delete": admin_delete, "admin-delete-here": admin_delete_here}[verb]  # fmt: skip
     run(*arguments)

@@ -156,7 +156,10 @@ is made from a copy of the repository's files without its top-level git folder
 
 The default image has `gh` too, from Ubuntu's packages. A workspace keeps the
 image it was made from, so one made from a default image without `gh` has
-none: make the workspace again, or install it there yourself
+none: rebuild a workspace cloned from a repository with no `devcontainer.json`,
+which makes it from the current default image (see
+[Rebuilding a workspace](devcontainer.md#rebuilding-a-workspace)), make it again,
+or install it there yourself
 (`apt-get update && apt-get install gh` in the **Terminal** tab), which lasts
 until its container is made again. Another image, `RCMAN_WORKSPACE_IMAGE` or
 one a repository's `devcontainer.json` names or builds, has `gh` only if it

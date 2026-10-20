@@ -475,6 +475,86 @@ def test_no_upgrade_is_admitted_while_a_workspace_is_being_made(client, show, se
     assert not up.REQUEST.exists()
 
 
+def test_no_upgrade_is_admitted_while_a_workspace_is_being_rebuilt(client, show, settings):
+    """The phase of a rebuild is in the row, so that one this process does not run, or one a
+    restart left, is seen too."""
+    creating_row(settings, "being-rebuilt")
+    con = db.connect(settings.database)
+    try:
+        con.execute("update workspaces set state = 'ready', rebuild_state = 'preparing'")
+        con.commit()
+    finally:
+        con.close()
+    assert reason(get(client)) == "rebuilding"
+    r = post(client)
+    assert (r.status_code, r.json()["reason"]) == (409, "rebuilding")
+    assert not up.REQUEST.exists()
+
+
+def cloned_workspace(client, github_stand_in, tmp_path) -> dict:
+    """A ready workspace of alice's, cloned from the stand-in for github.com, which a rebuild
+    may be asked for."""
+    from tests.git_fixtures import make_repo
+    from tests.test_clone import cloned
+
+    make_repo(tmp_path / "src", origin=github_stand_in / "octo" / "widget.git")
+    found = cloned(client)
+    assert found["state"] == "ready" and found["rebuildable"], found
+    return found
+
+
+def preparing_held(app, monkeypatch):
+    """Every rebuild held in its first phase, preparing, until the event this gives is set."""
+    from rcman import workspaces as ws
+
+    held, entered = threading.Event(), threading.Event()
+    real = ws.Workspaces._prepare
+
+    def prepare(self, *args, **more):
+        entered.set()
+        assert held.wait(30)
+        return real(self, *args, **more)
+
+    monkeypatch.setattr(ws.Workspaces, "_prepare", prepare)
+    return held, entered
+
+
+def test_an_upgrade_asked_for_while_a_real_rebuild_prepares_is_refused(
+    client, show, app, settings, github_stand_in, tmp_path, monkeypatch
+):
+    found = cloned_workspace(client, github_stand_in, tmp_path)
+    held, entered = preparing_held(app, monkeypatch)
+    r = client.post(
+        f"/api/workspaces/{found['id']}/rebuild", json={"confirm": True}, headers=changing(ALICE)
+    )
+    assert r.status_code == 202, r.text
+    try:
+        assert entered.wait(30)  # the rebuild is preparing, in its own thread
+        r = post(client)
+        assert (r.status_code, r.json()["reason"]) == (409, "rebuilding")
+        assert not up.REQUEST.exists()
+    finally:
+        held.set()
+    service = app.state.workspaces
+    with service._lock:
+        thread = service._making[found["id"]]
+    thread.join(30)
+    assert not thread.is_alive()
+    assert post(client).status_code == 202  # the positive: once it is over, it is admitted
+
+
+def test_a_rebuild_asked_for_once_an_upgrade_was_admitted_is_refused(
+    client, show, app, settings, github_stand_in, tmp_path
+):
+    found = cloned_workspace(client, github_stand_in, tmp_path)
+    assert post(client).status_code == 202
+    r = client.post(
+        f"/api/workspaces/{found['id']}/rebuild", json={"confirm": True}, headers=changing(ALICE)
+    )
+    assert (r.status_code, r.json()["code"]) == (409, "rcman_upgrading")
+    assert app.state.workspaces.get(found["id"]).rebuild_state is None
+
+
 def held_images(app):
     """An image collection that holds the images' lock until ``go`` is set."""
     service = app.state.workspaces
