@@ -24,6 +24,16 @@ the logger `rcman.claude_versions`: a version adopted as the approved one, a
 version removed from the store, one that could not be had, or a store that could
 not be looked into (see [Claude Code versions](claude-version.md)).
 
+When the instructions rcman gives Claude in every workspace (see
+[What Claude is told in a workspace](workspaces.md#what-claude-is-told-in-a-workspace)) are missing from rcman's
+tools, rcman says so in the journal, at error level from the logger `rcman.workspaces`, in two
+places, each with the words "the instructions for Claude are missing from the tools: run the
+installer again": once as it starts, alone, and once as it would bring the workspaces back,
+after "no workspace was brought back:". Until the installer has run again, no workspace is
+made, rebuilt or brought back: those that were ready still read **ready** in rcman's interface,
+though a container that stopped is not started and one that was lost is not made again, and
+their servers are not started.
+
 Those about the **Terminal** tab come from the logger `rcman.terminals`:
 something that went wrong with a terminal inside rcman, such as a shell that
 did not start or a session that could not be ended (see

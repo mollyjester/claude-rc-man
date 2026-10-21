@@ -33,7 +33,9 @@ class Settings(BaseSettings):
         "rcman's own user manager's, under XDG_RUNTIME_DIR, when unset.",
     )
     workspace_image: str = Field(
-        "localhost/rcman-workspace", description="The image new workspaces are made from."
+        "localhost/rcman-workspace",
+        description="The image new workspaces are made from, unless a repository's "
+        "devcontainer.json names or builds another; the installer names its default image here.",
     )
     builder_image: str = Field(
         "localhost/rcman-builder",
@@ -42,8 +44,10 @@ class Settings(BaseSettings):
     )
     tools_dir: Path = Field(
         Path("/opt/rcman/tools"),
-        description="The static tools mounted read-only into every workspace: tmux, busybox "
-        "and terminfo.",
+        description="The static tools mounted read-only into every workspace: tmux, busybox, "
+        "terminfo, the podman and docker wrappers with their configuration, the workspaces' "
+        "seccomp profile, and the instructions for Claude bound at Claude Code's managed "
+        "CLAUDE.md.",
     )
     claude_store: Path = Field(
         Path("/var/lib/rcman/claude"),

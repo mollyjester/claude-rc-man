@@ -680,6 +680,26 @@ def test_a_refused_file_or_image_changes_nothing_and_says_to_rebuild(
     assert row(settings, found["id"])["devcontainer_digest"] == digest  # nothing was rebuilt
 
 
+def test_a_rebuild_with_the_instructions_missing_leaves_the_old_container_running_and_says_why(
+    client, runtime, publish, settings
+):
+    """Found before the switch, so that nothing is discarded that cannot be made again."""
+    found = made(client, publish)
+    keep_work(runtime, found)
+    rewrite(runtime, found, to())
+    before = len(runtime.events)
+    runtime.instructions_ready = lambda: rt.INSTRUCTIONS_MISSING
+    done = rebuilt(client, found["id"])
+    assert done["state"] == "ready" and done["rebuild"]["state"] is None
+    assert done["rebuild"]["error"] == rt.INSTRUCTIONS_MISSING
+    unchanged(runtime, settings, found, before)
+    assert runtime.next_images() == {}
+    assert ("pull", OTHER) in runtime.events[before:]  # the positive: it was prepared
+    del runtime.instructions_ready  # the control: with them there, it is rebuilt
+    assert rebuilt(client, found["id"])["rebuild"]["error"] is None
+    assert spec_of(runtime, found).image == OTHER
+
+
 def test_a_refused_file_says_what_to_do_in_the_words_of_a_rebuild(client, runtime, publish):
     found = made(client, publish)
     rewrite(runtime, found, to(capAdd=["SYS_ADMIN"]))
@@ -1695,6 +1715,52 @@ def test_a_rebuild_of_a_failed_workspace_that_fails_keeps_it_failed_and_its_volu
     assert runtime.has_volume(failed["id"]) and work_kept(runtime, failed)
     assert runtime.exists(name_of(failed))  # kept for a look, as at its making
     assert entry(client, failed["id"])["rebuildable"] is True  # and it may be tried again
+
+
+def test_a_rebuild_of_a_failed_workspace_with_the_instructions_missing_keeps_its_container(
+    client, runtime, publish, settings
+):
+    """Found before the switch, as for a ready workspace: the container kept for a look is not
+    discarded for one that could not be made."""
+    failed = failed_by_its_command(client, publish)
+    keep_work(runtime, failed)
+    error, failure = failed["error"], row(settings, failed["id"])["failure"]
+    rewrite(runtime, failed, to(postCreateCommand="echo now-it-works"))
+    before = len(runtime.events)
+    runtime.instructions_ready = lambda: rt.INSTRUCTIONS_MISSING
+    done = rebuilt(client, failed["id"])
+    assert done["state"] == "failed" and done["error"] == rt.INSTRUCTIONS_MISSING
+    assert row(settings, failed["id"])["failure"] == failure  # the kind it failed of before
+    assert ("pull", OTHER) in runtime.events[before:]  # the positive: it was prepared
+    assert not [e for e in runtime.events[before:] if e[0] in ("discard", "remove")]
+    assert runtime.exists(name_of(failed)) and work_kept(runtime, failed)
+    assert entry(client, failed["id"])["rebuildable"] is True
+    assert error  # it said why it failed before, and now why it was not rebuilt
+    del runtime.instructions_ready  # the control: with them there, it is rebuilt
+    assert rebuilt(client, failed["id"])["state"] == "ready"
+
+
+def test_instructions_missing_when_the_new_container_is_made_are_not_blamed_on_the_image(
+    client, runtime, publish, settings
+):
+    """The file is there at the check and gone at create: the old container is put back, and
+    the error is the installation's, not image_unrunnable's."""
+    found = made(client, publish)
+    rewrite(runtime, found, to())
+    making = runtime.create
+
+    def create(spec):
+        if spec.image == OTHER:
+            raise rt.InstructionsMissing()
+        making(spec)
+
+    runtime.create = create
+    done = rebuilt(client, found["id"])
+    assert done["state"] == "ready"
+    assert rt.INSTRUCTIONS_MISSING in done["rebuild"]["error"]
+    unrunnable = problems.DEVCONTAINER_MESSAGES["image_unrunnable"].split("{")[0]
+    assert unrunnable not in done["rebuild"]["error"]
+    assert spec_of(runtime, found).image == IMAGE  # put back
 
 
 def test_a_refused_file_in_a_failed_workspace_keeps_its_volume(client, runtime, publish, settings):

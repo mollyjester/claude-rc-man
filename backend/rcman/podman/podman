@@ -11,6 +11,7 @@
 # is a tmpfs of root's alone that rcman mounts in every workspace (rcman/runtime.py
 # ROOT_PODMAN_STATE), empty at every start: RUN_MOUNT is the user's in a workspace whose user is
 # not root. Where the image has no Podman, the next program of the name on the PATH runs.
+# Where it has, HERE/publish.sh says what a port asked to be published comes to.
 B=/opt/rcman/bin/busybox
 HERE=/opt/rcman/podman
 PODMAN=/usr/bin/podman
@@ -70,6 +71,7 @@ if [ ! -x "$PODMAN" ]; then
 	say "this workspace's image has no Podman and no $NAME of its own; the default image has Podman: for Podman, make a new workspace from it"
 	exit 127
 fi
+. "$HERE/publish.sh"
 if [ "$(subcommand "$@")" = compose ]; then
 	say "compose is not run here; run each container with $NAME run"
 	exit 125

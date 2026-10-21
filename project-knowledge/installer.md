@@ -13,7 +13,7 @@ paths to the installer's.
 | `installer/upgrade.py` | The wrapper of the upgrade from the web interface, installed as `/opt/rcman/bin/rcman-upgrade` and run by `rcman-upgrade.service` (see [Upgrading from the web interface](#upgrading-from-the-web-interface)); the standard library only. Its checks of the clone and its owner are the installer's too |
 | `installer/install.py` | Everything else, using the standard library and the clone's `helpers/rules.py`, whose rules' sentences explain a refused setting; run with the system interpreter in isolated mode and UTF-8 mode, it writes no bytecode into the clone and takes the clone off its path once it has imported the rules |
 | `installer/templates/` | The files it writes, with `@NAME@` placeholders: the app's environment, oauth2-proxy's configuration, the two services, the Caddy site block, and the upgrade's two units. A test keeps `TEMPLATES` and the directory equal. Besides the settings, `render` fills in what the installer found out, which `found_out` returns: rcman's uid (`APP_UID`), the default image's name (`WORKSPACE_IMAGE`), the builder image's (`BUILDER_IMAGE`, written as `RCMAN_BUILDER_IMAGE`) and whether the upgrade from the web interface is on (`WEB_UPGRADE_ENABLED`, `true` or `false`, written as `RCMAN_WEB_UPGRADE`); and the wrapper's environment (`UPGRADE_ENVIRONMENT`, from `upgrade.ENVIRONMENT` by `unit_environment`) |
-| `installer/workspace/Containerfile` | The default workspace image, built with rcman's own Podman: git, `gh`, Podman with crun, catatonit and `uidmap` (its `newuidmap` and `newgidmap` given file capabilities in place of setuid, see [runtime.md](runtime.md#containers-in-a-workspace)) and what Claude Code and rcman need, from Ubuntu's packages, unpinned; a test reads its package list |
+| `installer/workspace/Containerfile` | The default workspace image, built with rcman's own Podman: git, `gh`, Podman with crun, catatonit and `uidmap` (its `newuidmap` and `newgidmap` given file capabilities in place of setuid, see [runtime.md](runtime.md#containers-in-a-workspace)), what Claude Code and rcman need, and the tools a repository's own setup commonly runs ([installation.md](../docs/installation.md#what-the-installer-does) lists them for administrators), from Ubuntu's packages, unpinned, all on one line; a test reads its package list (`tests/containers.py` `asked_packages`). Its label, `helpers/instructions.py` `TOOLS_LABEL` set to `1`, outside rcman's own `rcman.*` labels, says an image is it or is built from it, and so has its tools (see [runtime.md](runtime.md#workspace-instructions)) |
 | `installer/builder/` | The devcontainer builder image's build context: its `Containerfile`, the Podman configuration it carries (`containers.conf`, `storage.conf`), and `package.json` with `package-lock.json`, which pin the Dev Containers CLI by integrity |
 
 The pinned versions are `UV_VERSION`, `OAUTH2_PROXY_VERSION` and
@@ -252,14 +252,20 @@ back by
   (`.tmux-version`) changes; the system's static busybox, and `sh` as a link
   to it; the terminal descriptions `TERMINFO`, from the system's;
   `backend/rcman/tmux.conf` of the release; and, by `ensure_podman_tools`, the `podman` and
-  `docker` wrappers and their configuration from `backend/rcman/podman/` in `PODMAN_TOOLS`, and
+  `docker` wrappers, their configuration and the `publish.sh` they source (`PODMAN_PUBLISH`)
+  from `backend/rcman/podman/` in `PODMAN_TOOLS`, and
   the workspaces' seccomp profile `WORKSPACE_SECCOMP`, which `helpers/seccomp.py` derives from
   Podman's own (`PODMAN_SECCOMP`, which must be there) with its `UTS_CALLS` allowed;
   `tests/test_seccomp.py` holds the derived profile to Podman's with exactly those two calls
   allowed, and plants others, over a recorded copy of Podman's profile
   (`tests/fakes/podman-seccomp.json`) that a container test holds to the machine's (see
-  [runtime.md](runtime.md#containers-in-a-workspace)).
-- **The default image** (`ensure_image`): built from `CONTAINERFILE` unless
+  [runtime.md](runtime.md#containers-in-a-workspace)); and, by `ensure_instructions`, the
+  instructions for Claude, each file of `helpers/instructions.py` `FILES` made of the fragments
+  in `backend/rcman/instructions/` of the release, in the folder `instructions.FOLDER`, which
+  is `0755` and its files `0644`, a changed file renamed over the old one (see
+  [runtime.md](runtime.md#workspace-instructions)).
+- **The default image** (`ensure_image`): built from `CONTAINERFILE`, in the build context
+  `image_context` makes, which the container tests build it from too, unless
   Podman has it, named after the file's content (`workspace_image`), so that a
   changed file makes a new image, and the old one stays the workspaces' it is.
 - **The builder image** (`ensure_devcontainer_builder`): built from `BUILDER_DIR` with

@@ -27,7 +27,7 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
-from helpers import git_run, rules
+from helpers import git_run, instructions, rules
 from rcman import builder, db, devcontainer, limits, people
 from rcman.channel import Channel, ChannelBroken, ChannelTimeout, Result
 from rcman.claude_server import Server, TmuxFailed
@@ -55,6 +55,7 @@ from rcman.runtime import (
     TIMED_OUT,
     BuildFailed,
     BuildRequest,
+    InstructionsMissing,
     Layout,
     Runtime,
     RuntimeFailed,
@@ -830,8 +831,9 @@ class Workspaces:
         again only at a rebuild (``rebuild``). The digest of the file, or of there being none, is
         recorded. A file or image rcman refuses is a devcontainer.Refused, which fails the
         workspace and removes everything but its row; a failing command is a RuntimeFailed (a
-        HookFailed), which keeps the container and volume. A workspace deleted meanwhile is left
-        to its deletion."""
+        HookFailed), which keeps the container and volume; so are the instructions for Claude
+        missing from the tools (InstructionsMissing), which are looked for before the container
+        is discarded. A workspace deleted meanwhile is left to its deletion."""
         with self._working_on(workspace.id) as cancel:
             if self._cancelled(workspace.id, cancel):
                 return
@@ -846,6 +848,9 @@ class Workspaces:
             if self._cancelled(workspace.id, cancel):  # nothing is discarded for a deleted one
                 return
             self._set(workspace.id, environment=plan.to_json(), devcontainer_digest=read.digest)
+            missing = self.runtime.instructions_ready()  # before what cannot be made again goes
+            if missing is not None:
+                raise InstructionsMissing(missing)
             self._log(workspace.id, "Making the workspace from the image")
             self.close_channel(name)
             self.runtime.discard(name)
@@ -853,6 +858,8 @@ class Workspaces:
                 return
             try:
                 self.runtime.create(self._spec(workspace, slot, plan))
+            except InstructionsMissing:
+                raise  # the installation's, not the image's
             except RuntimeFailed as failed:
                 if self._cancelled(workspace.id, cancel):
                     return
@@ -931,6 +938,9 @@ class Workspaces:
                 raise devcontainer.Refused(
                     "image_labels", image=image, label=devcontainer.shown(label)
                 )
+        refused = instructions.refused_at(facts.managed)
+        if refused is not None:  # what rcman's instructions for Claude cannot be bound over
+            raise devcontainer.Refused("image_managed_folder", image=image, path=refused)
         made = devcontainer.plan(
             config, facts, workspace.id, layout.work, image=image, size=self.runtime.id_range
         )
@@ -1416,7 +1426,8 @@ class Workspaces:
     def _replace(self, workspace: Workspace, slot: int) -> str:
         """Rebuild a ready workspace: (preparing) read its devcontainer.json in its container,
         pull or build its image as NEXT_TAG and make the new plan, while the old container runs;
-        a refusal or a failure here changes nothing. (switching) Stop its server, end its
+        a refusal or a failure here, the instructions for Claude missing from the tools among
+        them, changes nothing. (switching) Stop its server, end its
         terminal and discard the container, then make the new one on the same volume, check it
         and run every create command and then postStartCommand; a failure from the discard on,
         whatever it is, puts the old one back (``_roll_back``). (promoting) Store the new plan,
@@ -1428,6 +1439,9 @@ class Workspaces:
                 return "cancelled"
             try:
                 prepared = self._prepare(workspace, cancel, report, advise=rebuild_advice)
+                missing = self.runtime.instructions_ready()  # the old one stays running
+                if prepared is not None and missing is not None:
+                    raise NotRebuilt(missing)
             except NotRebuilt as refused:
                 self._discard_next(workspace.id)
                 self._set(workspace.id, rebuild_error=str(refused), rebuild_state=None)
@@ -1567,6 +1581,8 @@ class Workspaces:
         report("Making the workspace from the image")
         try:
             self.runtime.create(self._spec(target, slot, plan))
+        except InstructionsMissing:
+            raise  # the installation's, not the image's
         except RuntimeFailed as failed:
             if self._cancelled(workspace.id, cancel):
                 return False
@@ -1676,7 +1692,10 @@ class Workspaces:
         again, and start the server again if it ran. What the new commands wrote to the volume
         stays. One that cannot be put back is left in the switch, with no container
         (``_left_to_put_back``), which the next restore makes again from the stored plan, with
-        its create commands. Why goes to the rebuild's error."""
+        its create commands. Why goes to the rebuild's error. The instructions for Claude were
+        there when the rebuild looked, before the switch; were they to go since, the old
+        container could not be made again here either (InstructionsMissing), and it is left in
+        the switch so."""
         report("Putting the workspace back as it was")
         name = old.container
         self.close_channel(name)
@@ -1728,7 +1747,10 @@ class Workspaces:
         image on the volume where there is none - then make the container as ``_replace`` does,
         and make the workspace ready. A failure keeps it failed, with why and what kind of
         failure it was, and keeps its volume, so that it can be rebuilt again; its container is
-        kept only after a create command failed, for a look, as at its making."""
+        kept only after a create command failed, for a look, as at its making, or where the
+        instructions for Claude are missing from the tools, which is looked at before it is
+        discarded: its error is then INSTRUCTIONS_MISSING in place of the one it had, and the
+        kind of its failure is kept."""
         report = self._reporter(workspace.id)
         name = workspace.container
         with self._working_on(workspace.id) as cancel:
@@ -1740,6 +1762,9 @@ class Workspaces:
                 prepared = self._prepare(workspace, cancel, report)
                 if prepared is None:
                     return "cancelled"
+                missing = self.runtime.instructions_ready()  # the container it has stays
+                if missing is not None:
+                    raise InstructionsMissing(missing)
                 with self.lock(workspace.id):
                     now = self.get(workspace.id)
                     if now is None or now.state == DELETING or cancel.is_set():
@@ -1752,7 +1777,7 @@ class Workspaces:
             except Exception as failed:  # noqa: BLE001 - whatever it is, it stays failed
                 if self._cancelled(workspace.id, cancel):
                     return "cancelled"
-                if not isinstance(failed, HookFailed):
+                if not isinstance(failed, (HookFailed, InstructionsMissing)):
                     self.close_channel(name)
                     with contextlib.suppress(RuntimeFailed, RuntimeUnavailable):
                         self.runtime.discard(name)
@@ -2612,7 +2637,12 @@ class Workspaces:
         holds one of the places until it is done, and what comes after (the removal of what no
         row is for, and the rest) waits for the last. The threads are daemons and look at
         ``_closing`` between steps; this returns once they are done, or as soon as rcman is
-        closing."""
+        closing. Nothing is brought back, and nothing discarded or made again, while the
+        instructions for Claude are missing from the tools: the journal says so."""
+        missing = self.runtime.instructions_ready()
+        if missing is not None:
+            log.error("no workspace was brought back: %s", missing)
+            return
         free = threading.BoundedSemaphore(RESTORE_WORKERS)
         threads = []
         for workspace in self.everything():
@@ -2700,8 +2730,9 @@ class Workspaces:
         images and old default images that nothing stored names, and what a load that was
         killed left. Kept: what a stored plan names (its image and its id), the id of the
         default image each workspace was made from, the image built for each workspace, and
-        what the runtime itself keeps (the current default image, the builder's); an image a
-        container is made from stays whatever is said here, since it is never removed by force.
+        what the runtime itself keeps (the current default image and any made after it, the
+        builder's). An image a container is made from stays whatever is said here, since it is
+        never removed by force.
         Nothing is collected while a workspace is being made, whose image may be pulled and not
         yet in a plan, or when a stored plan cannot be read: what is kept is then not known."""
         if not self.prunes:

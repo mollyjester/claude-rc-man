@@ -241,6 +241,42 @@ def test_a_stale_or_missing_seccomp_profile_is_said_loudly_and_a_current_one_is_
     assert all("run the installer again" in line for line in said)
 
 
+def test_a_missing_instructions_file_is_said_in_the_journal(tmp_path, caplog):
+    """No workspace can be made, nor any lost container made again, until the installer runs
+    again (rcman/runtime.py INSTRUCTIONS_MISSING)."""
+    from pathlib import Path
+
+    from rcman import main
+    from rcman import runtime as rt
+
+    from tests.test_runtime import told
+
+    tools = tmp_path / "tools"
+    runtime = rt.PodmanRuntime(rt.PodmanConfig(Path("/s"), "i", tools, Path("/c")))
+    with caplog.at_level("ERROR", logger=main.workspaces_log.name):
+        main.check_instructions(runtime)  # missing
+        told(tools)
+        main.check_instructions(runtime)  # the control: there
+    said = [r.getMessage() for r in caplog.records if r.levelname == "ERROR"]
+    assert said == [rt.INSTRUCTIONS_MISSING]
+
+
+def test_the_service_checks_the_instructions_of_its_runtime(tmp_path, monkeypatch, settings):
+    from rcman import main
+    from rcman import runtime as rt
+
+    from tests.conftest import host_runtime
+
+    checked = []
+    monkeypatch.setattr(main, "check_instructions", checked.append)
+    main.create_app(settings)
+    assert len(checked) == 1 and isinstance(checked[0], rt.PodmanRuntime)
+    assert checked[0].config.tools_dir == settings.tools_dir
+    with host_runtime(tmp_path) as runtime:
+        main.create_app(settings, runtime=runtime)
+    assert checked[1:] == [runtime]  # whose answer is that it needs none
+
+
 def test_the_service_checks_the_profile_of_its_own_podman_and_not_of_a_given_runtime(
     tmp_path, monkeypatch, settings
 ):

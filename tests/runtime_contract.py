@@ -6,7 +6,9 @@ that the host runtime the other tests use behaves as Podman does where it matter
 The ``CANARY_CASES`` need python3 in the runtime's image: tests/test_runtime.py runs them too,
 and tests/container/test_claude_versions_in_podman.py against Podman with the default image;
 they take the slot the canary runs in as ``slot``, the product's builder slot unless a runtime
-with ranges of another size is given another (tests/container/sizes.py).
+with ranges of another size is given another (tests/container/sizes.py). The
+``PODMAN_CASES`` are the Podman runtime's alone: tests/container/test_runtime_in_podman.py runs
+them, and tests/test_runtime.py does not.
 Each case takes a runtime and a ``spec(n)``, the n-th workspace a case may make,
 and removes what it made. Python standard library and the backend only.
 """
@@ -30,6 +32,8 @@ from pathlib import Path
 import pytest
 from rcman import runtime as rt
 from rcman.runtime import TIMED_OUT
+
+from helpers import instructions
 
 # How long a tmux server started through a channel is waited for.
 SETTLES_WITHIN = 10.0
@@ -649,6 +653,19 @@ def a_terminal_runs_a_shell_on_its_pty_as_the_user_and_writes_its_pidfile(runtim
             proc.wait()
 
 
+def the_instructions_for_claude_are_bound_read_only_at_the_managed_path(runtime, spec):
+    """The file of the tools the default image calls for (helpers/instructions.py), which only
+    the Podman runtime binds: the host runtime's workspaces run on the host."""
+    told = runtime.config.tools_dir / instructions.FOLDER / instructions.DEFAULT_TOOLS
+    with made(runtime, spec(18)) as name:
+        layout = runtime.layout(name)
+        read = [*layout.tool("cat"), instructions.MANAGED]
+        assert runtime.exec(name, read) == rt.Result(0, told.read_bytes(), b"")
+        written = runtime.exec(name, _sh(layout, f"echo more >> {instructions.MANAGED}"))
+        assert written.code != 0, written
+        assert runtime.exec(name, read).out == told.read_bytes()
+
+
 CASES = [
     a_workspace_that_is_made_exists_runs_and_is_labelled,
     removing_what_is_not_there_is_nothing,
@@ -685,3 +702,4 @@ CANARY_CASES = [
     a_good_candidate_passes_the_canary,
     a_broken_candidate_names_the_checks_it_fails_with_their_reports,
 ]
+PODMAN_CASES = [the_instructions_for_claude_are_bound_read_only_at_the_managed_path]

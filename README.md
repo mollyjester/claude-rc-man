@@ -20,10 +20,13 @@ Implemented and tested:
 - **A server in each workspace**, its screens read and the questions Claude
   asks answered.
 - **One Claude sign-in per person**, which every workspace of theirs shares.
+- **Instructions for Claude in every workspace**: what the workspace is, what lasts in it,
+  and where the cloud environment Remote Control describes to Claude differs from it.
 - **A terminal in each workspace**: a shell in the workspace's panel, as the
   container's own user, one per workspace.
 - **Containers in a workspace**: Podman, as `podman` and `docker`, in workspaces of the
-  default image or of an image with Podman of its own, kept inside the workspace.
+  default image or of an image with Podman of its own, kept inside the workspace, sharing
+  its network.
 - **git and gh in workspaces**: each person's commit author and GitHub token shared by
   all their workspaces, for git and for `gh`, and the Changes section of a workspace's panel.
 - **A repository's devcontainer.json**, read when a workspace is cloned: an

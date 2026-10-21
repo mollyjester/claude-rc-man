@@ -55,7 +55,7 @@ if not _on_path:
     sys.path.insert(0, str(REPO))
 _write_bytecode, sys.dont_write_bytecode = sys.dont_write_bytecode, True
 try:
-    from helpers import claude_release, seccomp
+    from helpers import claude_release, instructions, seccomp
     from helpers.rules import EMAIL, Rule
     from installer import upgrade
 finally:
@@ -85,6 +85,8 @@ TOOLS = ROOT / "tools"
 # derived from Podman's own default (helpers/seccomp.py).
 PODMAN_TOOLS = "podman"
 PODMAN_CONFIGURATION = ("containers.conf", "storage.conf", "registries.conf")
+# What the wrapper sources from its folder: what it says of a port published in a workspace.
+PODMAN_PUBLISH = "publish.sh"
 # What its bin folder holds, which comes before the image's own programs on every workspace's
 # PATH: the wrapper, and docker, a link to it.
 PODMAN_COMMANDS = ("podman", "docker")
@@ -1276,12 +1278,17 @@ def _install_file(source: Path, dest: Path, mode: int) -> None:
 
 
 def ensure_tools(
-    tools: Path = TOOLS, conf: Path | None = None, podman: Path | None = None
+    tools: Path = TOOLS,
+    conf: Path | None = None,
+    podman: Path | None = None,
+    fragments: Path | None = None,
 ) -> list[str]:
     """The static tools every workspace mounts read-only: tmux, built here from its pinned
     source, busybox and a shell that is busybox, the terminal descriptions, and tmux's
-    configuration ``conf``, by default the release's, and the Podman tools of ``podman``, by
-    default the release's (ensure_podman_tools). Root's, and readable by everyone: they
+    configuration ``conf``, by default the release's, the Podman tools of ``podman``, by
+    default the release's (ensure_podman_tools), and the instructions for Claude made of the
+    fragments in ``fragments``, by default the release's (ensure_instructions). Root's, and
+    readable by everyone: they
     are in a folder only root can write, and the program is built by rcman's Podman and
     comes out on standard output, so nothing here is made in a folder rcman can write."""
     changes = []
@@ -1334,12 +1341,35 @@ def ensure_tools(
     if write_if_changed(tools / "tmux.conf", conf.read_text(encoding="utf-8"), 0o644):
         changes.append("tmux.conf")
     changes += ensure_podman_tools(tools, podman or CURRENT / "backend" / "rcman" / PODMAN_TOOLS)
+    changes += ensure_instructions(
+        tools, fragments or CURRENT / "backend" / "rcman" / instructions.FOLDER
+    )
+    return changes
+
+
+def ensure_instructions(tools: Path, fragments: Path) -> list[str]:
+    """The instructions for Claude (helpers/instructions.py): each of its files made of the
+    fragments in ``fragments``, in the tools' folder of them, root's and readable by everyone,
+    and no other file there. A file whose text changed is renamed over the old one, so that a
+    container bound to it keeps the old one, whole, until its next start."""
+    folder = tools / instructions.FOLDER
+    folder.mkdir(parents=True, exist_ok=True)
+    os.chmod(folder, 0o755)
+    changes = []
+    for name in instructions.FILES:
+        if write_if_changed(folder / name, instructions.compose(fragments, name), 0o644):
+            changes.append(f"instructions {name}")
+    for found in sorted(folder.iterdir()):
+        if found.name not in instructions.FILES and not found.is_dir():
+            found.unlink()  # a file of another release, or a copy a killed run left staged
+            changes.append(f"instructions {found.name}")
     return changes
 
 
 def ensure_podman_tools(tools: Path, source: Path) -> list[str]:
-    """The podman and docker wrappers, their configuration from ``source`` and the workspaces'
-    seccomp profile, in the tools, root's and readable by everyone."""
+    """The podman and docker wrappers, their configuration and the script they source from
+    ``source``, and the workspaces' seccomp profile, in the tools, root's and readable by
+    everyone."""
     if not PODMAN_SECCOMP.is_file():
         raise InstallError(f"{PODMAN_SECCOMP}, Podman's seccomp profile, is not there")
     changes = []
@@ -1347,6 +1377,10 @@ def ensure_podman_tools(tools: Path, source: Path) -> list[str]:
     (folder / "bin").mkdir(parents=True, exist_ok=True)
     for path in (tools, folder, folder / "bin"):
         os.chmod(path, 0o755)
+    # What the wrapper sources is there before a wrapper that sources it.
+    sourced = (source / PODMAN_PUBLISH).read_text(encoding="utf-8")
+    if write_if_changed(folder / PODMAN_PUBLISH, sourced, 0o644):
+        changes.append(f"podman {PODMAN_PUBLISH}")
     wrapper = (source / "podman").read_text(encoding="utf-8")
     if write_if_changed(folder / "bin" / "podman", wrapper, 0o755):
         changes.append("podman")
@@ -1371,6 +1405,14 @@ def workspace_image() -> str:
     return f"localhost/rcman-workspace:{digest}"
 
 
+def image_context(context: Path) -> None:
+    """The default image's build context in the folder ``context``: its build file, readable
+    by everyone, as rcman's Podman, which builds it, reads it."""
+    shutil.copy(CONTAINERFILE, context / "Containerfile")
+    os.chmod(context, 0o755)
+    os.chmod(context / "Containerfile", 0o644)
+
+
 def ensure_image() -> list[str]:
     """The default workspace image, built with rcman's Podman unless it is there."""
     uid, image = app_uid(), workspace_image()
@@ -1378,9 +1420,7 @@ def ensure_image() -> list[str]:
         return []
     context = Path(tempfile.mkdtemp(prefix="rcman-image."))
     try:
-        shutil.copy(CONTAINERFILE, context / "Containerfile")
-        os.chmod(context, 0o755)
-        os.chmod(context / "Containerfile", 0o644)
+        image_context(context)
         run(as_rcman_podman(uid, "build", "--tag", image, "--file",
                             str(context / "Containerfile"), str(context)))  # fmt: skip
     finally:

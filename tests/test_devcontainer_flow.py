@@ -374,6 +374,143 @@ def test_an_image_with_labels_that_are_not_rcmans_is_taken(client, runtime, publ
     assert cloned(client)["state"] == "ready"
 
 
+def test_an_image_built_from_the_default_image_with_its_tools_label_is_taken(
+    client, runtime, publish
+):
+    """The default image's label is not one of rcman's own."""
+    from helpers import instructions
+
+    runtime.images[IMAGE] = rt.ImageFacts(
+        passwd=PASSWD, group=GROUP, labels={instructions.TOOLS_LABEL: "1"}
+    )
+    publish(config())
+    assert cloned(client)["state"] == "ready"
+
+
+# --- what is at Claude Code's managed path in the image, where rcman binds its instructions ---
+
+ETC, FOLDER_OF, MANAGED = "/etc", "/etc/claude-code", "/etc/claude-code/CLAUDE.md"
+
+
+def at_managed(**kinds) -> dict[str, str]:
+    """What the image's probe read at /etc, /etc/claude-code and its CLAUDE.md."""
+    from helpers import instructions
+
+    assert instructions.PATHS == (ETC, FOLDER_OF, MANAGED)
+    named = {"etc": ETC, "folder": FOLDER_OF, "claude_md": MANAGED}
+    return {named[key]: kind for key, kind in kinds.items()}
+
+
+@pytest.mark.parametrize(
+    ("managed", "path"),
+    [
+        (at_managed(etc="file"), ETC),
+        (at_managed(etc="folder", folder="file"), FOLDER_OF),
+    ],
+)
+def test_an_image_whose_etc_or_etc_claude_code_is_a_file_is_refused_as_image_managed_folder(
+    client, runtime, publish, managed, path
+):
+    runtime.images[IMAGE] = rt.ImageFacts(passwd=PASSWD, group=GROUP, managed=managed)
+    publish(config())
+    failed = cloned(client)
+    assert failed["state"] == "failed"
+    assert failed["error"] == problems.DEVCONTAINER_MESSAGES["image_managed_folder"].format(
+        image=IMAGE, path=path
+    )
+    no_trace(runtime, failed)
+    assert not [e for e in runtime.events if e[0] == "create" and e[1] == IMAGE]
+
+
+@pytest.mark.parametrize("kind", ["folder", "link", "other"])
+def test_an_image_whose_claude_md_is_not_a_regular_file_is_refused(client, runtime, publish, kind):
+    managed = at_managed(etc="folder", folder="folder", claude_md=kind)
+    runtime.images[IMAGE] = rt.ImageFacts(passwd=PASSWD, group=GROUP, managed=managed)
+    publish(config())
+    failed = cloned(client)
+    assert failed["error"] == problems.DEVCONTAINER_MESSAGES["image_managed_folder"].format(
+        image=IMAGE, path=MANAGED
+    )
+    no_trace(runtime, failed)
+
+
+@pytest.mark.parametrize(
+    "managed",
+    [
+        {},  # no /etc
+        at_managed(etc="folder"),
+        at_managed(etc="folder", folder="folder"),
+        at_managed(etc="folder", folder="folder", claude_md="file"),  # replaced by rcman's
+        # only a file is refused where a folder of the path is: what else there is, is not
+        at_managed(etc="other"),
+        at_managed(etc="folder", folder="other"),
+        at_managed(etc="folder", folder="link"),  # were podman not to follow it
+    ],
+)
+def test_an_image_with_folders_or_nothing_at_the_managed_path_is_taken(
+    client, runtime, publish, managed
+):
+    runtime.images[IMAGE] = rt.ImageFacts(passwd=PASSWD, group=GROUP, managed=managed)
+    publish(config())
+    assert cloned(client)["state"] == "ready"
+
+
+def test_an_image_whose_etc_claude_code_is_a_link_to_a_folder_is_accepted(client, runtime, publish):
+    """The probe reads a link as what it names, as podman cp follows it (the container suite
+    holds Podman to that), and the bind is made where the link leads."""
+    runtime.images[IMAGE] = rt.ImageFacts(
+        passwd=PASSWD, group=GROUP, managed=at_managed(etc="folder", folder="folder")
+    )
+    publish(config())
+    assert cloned(client)["state"] == "ready"
+
+
+def test_an_images_own_managed_settings_is_not_refused(client, runtime, publish):
+    """Only CLAUDE.md is replaced: the image's managed-settings.json beside it is not looked at,
+    and stays in the container (tests/container/test_runtime_in_podman.py)."""
+    from helpers import instructions
+
+    assert not [p for p in instructions.PATHS if p.endswith("managed-settings.json")]
+    runtime.images[IMAGE] = rt.ImageFacts(
+        passwd=PASSWD,
+        group=GROUP,
+        managed=at_managed(etc="folder", folder="folder", claude_md="file"),
+    )
+    publish(config())
+    assert cloned(client)["state"] == "ready"
+
+
+# --- the instructions for Claude missing from the tools ----------------------------------------
+
+
+@pytest.mark.parametrize("found", ["before the discard", "by create"])
+def test_missing_instructions_fail_the_workspace_without_blaming_the_image(
+    client, runtime, publish, settings, found
+):
+    """It is the installation's to put right, not the repository's: the workspace keeps its
+    volume, and its container where the file was found missing before it was discarded."""
+    if found == "before the discard":
+        runtime.instructions_ready = lambda: rt.INSTRUCTIONS_MISSING
+    else:
+        made = runtime.create
+
+        def create(spec):
+            if spec.image:
+                raise rt.InstructionsMissing()
+            made(spec)
+
+        runtime.create = create
+    publish(config())
+    failed = cloned(client)
+    assert failed["state"] == "failed"
+    assert failed["error"] == rt.INSTRUCTIONS_MISSING
+    name = name_of(failed)
+    assert (runtime.root / name).exists()  # its volume
+    if found == "before the discard":
+        assert runtime.exists(name)
+        assert not [e for e in runtime.events if e[0] in ("discard", "remove")]
+
+
 def test_a_refusal_says_what_to_change(client, runtime, publish):
     publish(config(capAdd=["SYS_ADMIN"]))
     failed = cloned(client)
@@ -1068,6 +1205,30 @@ def test_a_running_container_is_left_alone_by_a_restore(service, settings, runti
     assert runtime.pulled == []  # a container that is there needs no image
     assert not [a for _, a, _ in runtime.execs[before:] if "ran.txt" in " ".join(a)]
     assert [e for e in runtime.events if e[0] == "create"] == [("create", IMAGE, "root")]
+
+
+def test_a_restore_with_the_instructions_missing_discards_and_makes_nothing(
+    service, settings, runtime, caplog
+):
+    plan = a_plan(postStartCommand="echo start >> ran.txt")
+    lost = ready_with_plan(service, settings, runtime, plan, make_container=False, name="lost")
+    stopped = ready_with_plan(service, settings, runtime, plan, name="stopped")
+    runtime.stop(rt.container_name(stopped))
+    before = len(runtime.events)
+    runtime.instructions_ready = lambda: rt.INSTRUCTIONS_MISSING
+    with caplog.at_level("ERROR", logger="rcman.workspaces"):
+        service.restore()
+    assert not [e for e in runtime.events[before:] if e[0] in ("create", "discard", "remove")]
+    assert runtime.pulled == []
+    assert not runtime.exists(rt.container_name(lost))
+    assert not runtime.running(rt.container_name(stopped))
+    assert rt.INSTRUCTIONS_MISSING in caplog.text
+    for workspace in (lost, stopped):
+        assert row(settings, workspace)["state"] == "ready", workspace
+    del runtime.instructions_ready  # the control: with the instructions there, both come back
+    service.restore()
+    assert runtime.running(rt.container_name(lost))
+    assert runtime.running(rt.container_name(stopped))
 
 
 def test_a_workspace_made_from_a_clone_that_rcman_restarted_in_is_failed_in_generic_words(

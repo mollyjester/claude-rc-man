@@ -108,6 +108,17 @@ shows what each ran and what it got back. If the checks themselves cannot be
 run, for example because the container could not start, nothing is changed
 either, and trying again is the remedy.
 
+The checks do not look at what Claude makes of the instructions rcman gives it in every
+workspace (see
+[What Claude is told in a workspace](workspaces.md#what-claude-is-told-in-a-workspace)). The
+version rcman is tested with has been checked by hand for that. After rolling out another
+version, start a server in a workspace of the default image and, in a new session, check that
+Claude knows what it was told, for instance that work in `/rcman` is kept without a push, and
+that the text Remote Control adds to its system prompt still has a section headed "Your
+current remote execution environment", the one rcman's instructions correct. If either is not
+so, rcman's instructions do not reach Claude as they should: go back to the version approved
+before, which needs no download.
+
 The checksum comes from the same place as the program, the release site. It
 protects against a download that is damaged, not against a release site that
 has been compromised: rcman checks no signature. Point

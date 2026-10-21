@@ -56,7 +56,7 @@ from dataclasses import KW_ONLY, dataclass, field
 from pathlib import Path
 
 import helpers
-from helpers import claude_checks, rules
+from helpers import claude_checks, instructions, rules
 from rcman import builder, limits
 from rcman.channel import Channel, Result
 from rcman.limits import Caps, Limits, Usage
@@ -247,6 +247,11 @@ UNMASK_PROC = "--security-opt=unmask=/proc/*"
 # installer/install.py workspace_seccomp): Podman's default, with a container nested in the
 # workspace allowed to name its own UTS namespace.
 SECCOMP = "seccomp.json"
+# What is said when a file of the instructions for Claude (helpers/instructions.py), which the
+# installer writes into the tools, is not there: no workspace container is made without it.
+INSTRUCTIONS_MISSING = (
+    "the instructions for Claude are missing from the tools: run the installer again"
+)
 # The fields of PodmanConfig a test engine gives values of its own (keyword-only, the product's
 # values by default; tests/test_main.py holds the product to the defaults).
 INJECTED = ("range", "network", "slices")
@@ -282,6 +287,17 @@ SERVICE_UNREACHABLE = "cannot connect to podman"
 # The most of an image's passwd or group file that is read, in bytes, and what a tar adds to a
 # file it holds.
 MAX_ID_FILE_BYTES = 1024 * 1024
+# How much of a copy the image's probe reads to tell what is at a path: the extension headers
+# podman cp may put before the entry (EXTENSION_HEADERS: PAX, global PAX and GNU long names)
+# and the entry's own header. An entry whose extension data runs past it is not told
+# (IS_OTHER): at CLAUDE.md that is refused, as anything but a regular file is.
+PROBE_HEADER_BYTES = 16 * tarfile.BLOCKSIZE
+EXTENSION_HEADERS = (
+    tarfile.XHDTYPE,
+    tarfile.XGLTYPE,
+    tarfile.GNUTYPE_LONGNAME,
+    tarfile.GNUTYPE_LONGLINK,
+)
 TAR_OVERHEAD_BYTES = 64 * 1024
 # How much of what podman said on standard error is kept when it copies a file, and the words
 # of it that mean the file is not in the image.
@@ -388,6 +404,11 @@ def qualified_name(image: str) -> str:
     return name
 
 
+def _names_of(entry: dict) -> list[str]:
+    """The names of an image as ``podman images`` lists it, each once, in order."""
+    return list(dict.fromkeys([*(entry.get("Names") or []), *(entry.get("RepoTags") or [])]))
+
+
 def repository_of(image: str) -> str:
     """The name of ``image`` without its tag or digest."""
     name = image.partition("@")[0]
@@ -447,6 +468,14 @@ class RuntimeUnavailable(Exception):
 
 class RuntimeFailed(Exception):
     """Podman, or the host runtime, refused or failed; the message is what it said."""
+
+
+class InstructionsMissing(RuntimeFailed):
+    """A file of the instructions for Claude is not in the tools: the installation's to put
+    right, never the image's."""
+
+    def __init__(self, message: str = INSTRUCTIONS_MISSING):
+        super().__init__(message)
 
 
 class BuildFailed(RuntimeFailed):
@@ -511,7 +540,9 @@ class Spec:
 class ImageFacts:
     """What an image says about itself, read without running it: its passwd and group files
     (empty where it has none), the user it is set to run as, its environment, its labels, its
-    id, and the digest it was pulled by where it came from a registry (empty otherwise)."""
+    id, the digest it was pulled by where it came from a registry (empty otherwise), and what
+    it has at helpers/instructions.py PATHS: each path it has to what it is (IS_FOLDER and the
+    rest), a link read as what it names; nothing below a path that is not a folder is read."""
 
     passwd: str = ""
     group: str = ""
@@ -520,6 +551,7 @@ class ImageFacts:
     labels: Mapping[str, str] = field(default_factory=dict)
     id: str = ""
     digest: str = ""
+    managed: Mapping[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -658,7 +690,14 @@ class Runtime(ABC):
         """Make the workspace and its volume, start it, and make its folders; the person's
         credentials file is made sure of first, and bound at the workspace's
         ``config``/CREDENTIALS. The container is in the workspace's slice (``limits``), so
-        the limits set on it hold it; ``apply_limits`` before this is what puts them there."""
+        the limits set on it hold it; ``apply_limits`` before this is what puts them there.
+        InstructionsMissing, before anything is made, where ``instructions_ready`` says so."""
+
+    def instructions_ready(self) -> str | None:
+        """Why no workspace container can be made with the instructions for Claude, which is
+        why ``create`` fails, or None; asked of the tools alone, before a container is discarded
+        that could not be made again. None where the runtime binds none."""
+        return None
 
     @abstractmethod
     def start(self, name: str) -> None: ...
@@ -699,9 +738,12 @@ class Runtime(ABC):
     def collect_images(self, keep_ids: set[str], keep_names: set[str]) -> list[str]:
         """Remove the images in the runtime's storage that nothing keeps: those whose id is not in
         ``keep_ids`` and none of whose names is in ``keep_names``, and that the runtime does not
-        itself keep (the default image, the builder's). Never by force: an image a container is
-        made from stays, and so does one that cannot be removed, which is not an error. The
-        names (or ids, of those with none) that were removed."""
+        itself keep (the configured default image and those whose Created time is later, which
+        for the installer's default image, built here, is when it was built, and for an image
+        configured otherwise is that image's own build time; every builder's).
+        An old default image goes with the rest unless its id is kept. Never by force: an image
+        a container is made from stays, and so does one that cannot be removed, which is not an
+        error. The names (or ids, of those with none) that were removed."""
 
     @abstractmethod
     def default_image_id(self) -> str:
@@ -1170,6 +1212,7 @@ class PodmanRuntime(Runtime):
             raise RuntimeFailed("the id of the image is not an id")
         if self.exists(spec.name):
             raise RuntimeFailed(NAME_TAKEN.format(name=spec.name))
+        told = self._instructions(spec)  # before anything is made
         if self._podman("volume", "exists", spec.name, check=False).returncode != 0:
             self._podman("volume", "create", *labels, spec.name)
         else:
@@ -1207,6 +1250,8 @@ class PodmanRuntime(Runtime):
                 # An anonymous volume, made and attached in this run and removed with the container.
                 f"--volume={TMP_MOUNT}",
                 *self._mounts(spec.person, owned=mapped),
+                # What Claude is told; not in _mounts, which the sign-in container shares.
+                f"--volume={told}:{instructions.MANAGED}:ro",
                 *self._root_podman_state(),
                 # Where the process starts is the volume's mount, which exists and is the user's;
                 # the image's own working folder may be one the user cannot enter.
@@ -1229,6 +1274,35 @@ class PodmanRuntime(Runtime):
             # in it. RuntimeUnavailable is not caught: no removal can reach Podman then either.
             self._discard_unmade(spec.name)
             raise
+
+    def instructions_ready(self) -> str | None:
+        folder = self.config.tools_dir / instructions.FOLDER
+        if all((folder / name).is_file() for name in instructions.FILES):
+            return None
+        return INSTRUCTIONS_MISSING
+
+    def _instructions(self, spec: Spec) -> Path:
+        """The file of the instructions for Claude the workspace is told, as whether it is of
+        the default image and its image's labels say (``instructions.file_for``), read from the
+        image it is made from: by its id where it has one, else the plan's image or the default
+        image. InstructionsMissing where a file is not there, before anything is asked of
+        Podman; RuntimeFailed where the labels cannot be read."""
+        missing = self.instructions_ready()
+        if missing is not None:
+            raise InstructionsMissing(missing)
+        labels = self._image_labels(spec.image_id or spec.image or self.config.image)
+        name = instructions.file_for(spec.image is None, labels)
+        return self.config.tools_dir / instructions.FOLDER / name
+
+    def _image_labels(self, image: str) -> dict[str, str]:
+        found = self._podman("image", "inspect", "--format", "{{json .Labels}}", image)
+        try:
+            labels = json.loads(found.stdout.decode("utf-8", "replace") or "null") or {}
+        except ValueError:
+            labels = None
+        if not isinstance(labels, dict):
+            raise RuntimeFailed(f"the labels of the image {image} could not be read")
+        return labels
 
     def _discard_unmade(self, name: str) -> None:
         """Remove the container ``create`` made and could not finish; what Podman says when it
@@ -1493,6 +1567,7 @@ class PodmanRuntime(Runtime):
         )
         try:
             passwd, group = (self._copied(name, f"/etc/{f}", cancel) for f in ("passwd", "group"))
+            managed = self._managed_kinds(name, cancel)
         finally:
             self._remove_container(name, check=False)
         found = str(inspected.get("Id") or "").removeprefix("sha256:")
@@ -1506,29 +1581,40 @@ class PodmanRuntime(Runtime):
             id=found if builder.is_image_id(found) else "",
             # only an image that came from a registry has a digest to pull it by
             digest=digest if inspected.get("RepoDigests") and DIGEST.match(digest) else "",
+            managed=managed,
         )
 
     def has_image(self, image: str) -> bool:
         return self._podman("image", "exists", image, check=False).returncode == 0
 
     def collect_images(self, keep_ids: set[str], keep_names: set[str]) -> list[str]:
-        # Whole repositories of the default and builder images, every tag: an upgrade builds the
-        # next ones under tags these settings do not name yet. Names are compared as Podman lists
-        # them, fully qualified.
-        repositories = {
-            repository_of(qualified_name(n)) for n in (self.config.image, self.config.builder_image)
-        }
-        wanted = {qualified_name(n) for n in keep_names}
+        # The builder's repository whole, every tag: an upgrade builds the next one under a tag
+        # these settings do not name yet. Of the default image's, the configured one and those
+        # Created later, which an upgrade builds the same way (the installer's default image is
+        # built here, so its Created time is when it was built; for an image configured
+        # otherwise, it is that image's own build time); the whole repository where the
+        # configured one is not there, as nothing tells the old from the new then. Names are
+        # compared as Podman lists them, fully qualified.
+        default = qualified_name(self.config.image)
+        default_repository = repository_of(default)
+        builder_repository = repository_of(qualified_name(self.config.builder_image))
+        wanted = {qualified_name(n) for n in keep_names} | {default}
         listed = json.loads(self._podman("images", "--format=json").stdout or b"[]") or []
+        named = [(entry, _names_of(entry)) for entry in listed]
+        configured = [e for e, names in named if default in {qualified_name(n) for n in names}]
+        made = float(configured[0].get("Created") or 0) if configured else None
+        kept = {builder_repository} | ({default_repository} if made is None else set())
         removed: list[str] = []
         young = time.time() - IMAGE_GRACE_SECONDS
-        for entry in listed:
+        for entry, names in named:
             image = str(entry.get("Id") or "").removeprefix("sha256:")
-            names = [*(entry.get("Names") or []), *(entry.get("RepoTags") or [])]
-            names = list(dict.fromkeys(names))
+            qualified = [qualified_name(n) for n in names]
+            later = made is not None and float(entry.get("Created") or 0) > made
             if image in keep_ids or any(
-                qualified_name(n) in wanted or repository_of(qualified_name(n)) in repositories
-                for n in names
+                n in wanted
+                or repository_of(n) in kept
+                or (later and repository_of(n) == default_repository)
+                for n in qualified
             ):
                 continue
             if not names and float(entry.get("Created") or 0) > young:
@@ -1556,7 +1642,81 @@ class PodmanRuntime(Runtime):
         the image has none, or has it not as a file, or one too big to be a user database.
         Reading stops, and podman with it, at PODMAN_TIMEOUT or when ``cancel`` is set, which
         are a RuntimeFailed; so is any failure of podman but the file not being there."""
-        limit = MAX_ID_FILE_BYTES + TAR_OVERHEAD_BYTES
+        data = self._cp(container, path, MAX_ID_FILE_BYTES + TAR_OVERHEAD_BYTES, cancel)
+        if data is None or len(data) > MAX_ID_FILE_BYTES + TAR_OVERHEAD_BYTES:
+            return ""
+        try:
+            with tarfile.open(fileobj=io.BytesIO(data)) as archive:
+                for member in archive:
+                    reader = archive.extractfile(member) if member.isfile() else None
+                    if reader is not None:
+                        data = reader.read(MAX_ID_FILE_BYTES + 1)
+                        return (
+                            data.decode("utf-8", "replace")
+                            if len(data) <= MAX_ID_FILE_BYTES
+                            else ""
+                        )
+        except tarfile.TarError:
+            pass
+        return ""
+
+    def _managed_kinds(
+        self, container: str, cancel: threading.Event | None = None
+    ) -> dict[str, str]:
+        """What the image of a container that was made and not run has at each of
+        helpers/instructions.py PATHS, outermost first, as far as each is a folder: the first
+        header of what podman cp prints of it, read alone, podman stopped after it. podman cp
+        follows a link, so a link reads as what it names."""
+        kinds: dict[str, str] = {}
+        for path in instructions.PATHS:
+            kind = self._kind(container, path, cancel)
+            if kind is None:
+                break
+            kinds[path] = kind
+            if kind != instructions.IS_FOLDER:
+                break
+        return kinds
+
+    def _kind(self, container: str, path: str, cancel: threading.Event | None) -> str | None:
+        """What ``path`` of the container's image is, by the header of the first entry of its
+        copy, past the extension headers (PAX and GNU long names) before it, all within
+        PROBE_HEADER_BYTES; None where there is nothing there, IS_OTHER where what is there is
+        not told."""
+        data = self._cp(container, path, PROBE_HEADER_BYTES - 1, cancel)
+        if data is None:
+            return None
+        offset = 0
+        while True:
+            block = data[offset : offset + tarfile.BLOCKSIZE]
+            if len(block) < tarfile.BLOCKSIZE:
+                return None if offset == 0 else instructions.IS_OTHER
+            try:
+                header = tarfile.TarInfo.frombuf(block, "utf-8", "replace")
+            except tarfile.EOFHeaderError:
+                return None if offset == 0 else instructions.IS_OTHER
+            except tarfile.HeaderError:
+                return instructions.IS_OTHER
+            if header.type not in EXTENSION_HEADERS:
+                break
+            if header.size < 0:  # the base-256 form holds one, which would never be passed
+                return instructions.IS_OTHER
+            blocks = -(-header.size // tarfile.BLOCKSIZE)  # what the extension holds, rounded up
+            offset += tarfile.BLOCKSIZE * (1 + blocks)
+        if header.isdir():
+            return instructions.IS_FOLDER
+        if header.isreg():
+            return instructions.IS_FILE
+        if header.issym() or header.islnk():
+            return instructions.IS_LINK
+        return instructions.IS_OTHER
+
+    def _cp(
+        self, container: str, path: str, limit: int, cancel: threading.Event | None = None
+    ) -> bytes | None:
+        """What podman cp prints of ``path`` of a container that was made and not run, read up
+        to the first byte beyond ``limit``, where podman is stopped; None where podman says
+        there is nothing there. Reading stops, and podman with it, at PODMAN_TIMEOUT or when
+        ``cancel`` is set, which are a RuntimeFailed; so is any other failure of podman."""
         try:
             proc = subprocess.Popen(
                 self._argv("cp", f"{container}:{path}", "-"),
@@ -1573,7 +1733,7 @@ class PodmanRuntime(Runtime):
         waiting.register(proc.stdout, selectors.EVENT_READ, "out")
         waiting.register(proc.stderr, selectors.EVENT_READ, "err")
         try:
-            while waiting.get_map():  # never more than the limit of the file is read
+            while waiting.get_map():  # never more than the limit is read
                 if cancel is not None and cancel.is_set():
                     raise RuntimeFailed("reading the image was stopped")
                 if time.monotonic() > deadline:
@@ -1585,7 +1745,7 @@ class PodmanRuntime(Runtime):
                     elif key.data == "out":
                         data += chunk
                         if len(data) > limit:
-                            return ""
+                            return data
                     else:
                         said = (said + chunk)[:MAX_SAID_BYTES]
             code = proc.wait(timeout=max(deadline - time.monotonic(), PULL_POLL_SECONDS))
@@ -1601,22 +1761,9 @@ class PodmanRuntime(Runtime):
         if code != 0:
             words = said.decode("utf-8", "replace").strip()
             if any(phrase in words.lower() for phrase in FILE_ABSENT):
-                return ""
+                return None
             raise RuntimeFailed(words or "podman cp failed")
-        try:
-            with tarfile.open(fileobj=io.BytesIO(data)) as archive:
-                for member in archive:
-                    reader = archive.extractfile(member) if member.isfile() else None
-                    if reader is not None:
-                        data = reader.read(MAX_ID_FILE_BYTES + 1)
-                        return (
-                            data.decode("utf-8", "replace")
-                            if len(data) <= MAX_ID_FILE_BYTES
-                            else ""
-                        )
-        except tarfile.TarError:
-            pass
-        return ""
+        return data
 
     # --- building an image ------------------------------------------------------------------
 

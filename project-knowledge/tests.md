@@ -63,7 +63,16 @@ Workspaces in the backend's tests run on the host runtime (see
 the fake `claude`, real tmux, and a real channel through the host's `sh`.
 `tests/runtime_contract.py`, which is not a test module, holds the cases every
 runtime keeps, which `tests/test_runtime.py` runs against the host runtime and
-`tests/container/test_runtime_in_podman.py` against real Podman on the tests' engine.
+`tests/container/test_runtime_in_podman.py` against real Podman on the tests' engine, and
+its `PODMAN_CASES`, which hold what only the Podman runtime does, such as the instructions for
+Claude bound read-only at Claude Code's managed path, and which only
+`tests/container/test_runtime_in_podman.py` runs.
+
+The tools' `podman` and `docker` wrapper's reading of a published port,
+`backend/rcman/podman/publish.sh`, is tested on the host by `tests/test_podman_wrapper.py`,
+sourced as the wrapper sources it, by the static busybox's shell; its lists of Podman's options
+are held there to the help recorded in `tests/fakes/podman-help/`, and the recording to the
+default image's Podman by `tests/container/test_nest_in_podman.py`.
 
 Limits (see [runtime.md](runtime.md#limits)) are tested on the host runtime and a stand-in for
 `systemctl`, which records what it is asked: `tests/test_limits.py` the pure module `limits.py`
@@ -241,7 +250,14 @@ helper made inside the holder's network and handed back.
   mounts and the tmpfs, a person's credentials file their range's root's alone, a rename over it
   refused busy and a write in place shared, a sign-in container that removes itself, an
   unreachable socket told from a missing workspace, an exec running the image's own program
-  and answering without its mark, the channel's latency and its podman client's memory.
+  and answering without its mark, the channel's latency and its podman client's memory; the
+  `PODMAN_CASES` of the runtime contract; the instructions for Claude as a single file bound
+  read-only where the image has no `/etc/claude-code`, readable with swapped ids, in place of an
+  image's own `CLAUDE.md` with its other files there left visible, and a file renamed over on the
+  host reaching the workspace at its next start and not before; and the image probe's reading
+  of `/etc`, `/etc/claude-code` and the managed `CLAUDE.md` in real images, a link followed
+  along the path and at its end; and every command the default image's instructions name there
+  in the default image.
 - `tests/container/test_github_in_podman.py`: git in a workspace of the Podman runtime against
   `tests/github_server.py` served as `https://github.com` in a network of its own: the workspace
   in that network's namespace and not this process's, rcman's push (`Repository`), Claude's git
@@ -347,8 +363,12 @@ helper made inside the holder's network and handed back.
   user who
   is not root (a map over every id of the workspace but root's, a run and a build rootless), with
   its twin, a setuid `newuidmap` that cannot write the map; the image's `newuidmap` and
-  `newgidmap` with their capability and no setuid, and every package it asks for installed; and
+  `newgidmap` with their capability and no setuid, every package it asks for installed, the
+  tools a repository's setup needs, and no `/etc/claude-code` of its own; a published port
+  explained by `podman` and `docker`, as root and as a user who is not root, with the container
+  still run, the recorded helps held to the image's own Podman's; and
   in an image without Podman, the image's own `docker` after the wrappers run, and none told so,
+  a port it publishes not explained,
   the wrapper never taking a link to itself for it; and `podman` and `docker` found by name as the wrappers, and
   `git` as the image's, in the environment of Claude's programs and of the lifecycle commands.
 - `tests/container/test_engine_in_podman.py`: `create`'s own argv on the engine (the hostname,
@@ -468,7 +488,7 @@ snapshot is removed when the session ends.
 | Path | Contents |
 |---|---|
 | `tests/` | The test suite; `tests/test_<name>.py` tests the module `<name>.py`, wherever it is, `tests/` included, where there is one |
-| `tests/fakes/` | The fake `claude`, its recorded fixtures and the screens observed on a live server — see [fake-claude.md](fake-claude.md); and Podman's default seccomp profile as recorded (`podman-seccomp.json`), which `tests/test_seccomp.py` holds to the machine's |
+| `tests/fakes/` | The fake `claude`, its recorded fixtures and the screens observed on a live server — see [fake-claude.md](fake-claude.md); Podman's default seccomp profile as recorded (`podman-seccomp.json`), which `tests/test_seccomp.py` holds to the machine's; and Podman's help for the subcommands `publish.sh` reads and for its global options, recorded from the default image's Podman (`podman-help/`), which `tests/test_podman_wrapper.py` holds the wrapper's lists to and `tests/container/test_nest_in_podman.py` holds to that Podman's own help |
 | `helpers/` | What the backend shares with the installer and the fake `claude`, the standard library only: the rules values are refused by, what Claude's screens mean, running git, Claude Code's releases and their checked download (`claude_release.py`), and the checks a Claude Code version is held to with the canary program that runs them (`claude_checks.py`, `claude_canary.py`) |
 | `backend/` | The FastAPI application — see [backend.md](backend.md) |
 | `frontend/` | The React application, its component tests and its browser tests — see [frontend.md](frontend.md) |

@@ -5,7 +5,10 @@ as the installer writes them, an empty Claude store and the default workspace im
 (tests/runtime_contract.py) runs here first.
 """
 
+import dataclasses
 import json
+import os
+import shutil
 import subprocess
 import time
 from pathlib import Path
@@ -14,6 +17,7 @@ import pytest
 from rcman import channel as ch
 from rcman import runtime as rt
 
+from helpers import instructions
 from tests import runtime_contract
 from tests.container import sizes
 
@@ -52,6 +56,26 @@ def nothing_left(podman):
 @pytest.mark.parametrize("case", runtime_contract.CASES, ids=lambda case: case.__name__)
 def test_podman_keeps_the_contract(podman, case):
     case(podman, spec)
+
+
+@pytest.mark.parametrize("case", runtime_contract.PODMAN_CASES, ids=lambda case: case.__name__)
+def test_podman_keeps_its_own_cases(podman, case):
+    case(podman, spec)
+
+
+def test_every_case_of_the_contract_and_of_podmans_own_is_run_here():
+    from tests.collected import collect
+
+    module = "tests/container/test_runtime_in_podman.py"
+    found = set(collect([module]))
+    for test, cases in (
+        ("test_podman_keeps_the_contract", runtime_contract.CASES),
+        ("test_podman_keeps_its_own_cases", runtime_contract.PODMAN_CASES),
+    ):
+        assert cases  # non-vacuity
+        named = f"{module}::{test}"
+        ran = {n.removeprefix(named) for n in found if n.startswith(named + "[")}
+        assert ran == {f"[{case.__name__}]" for case in cases}, test
 
 
 @pytest.fixture
@@ -283,3 +307,259 @@ def test_a_git_file_is_written_with_no_container_left_and_the_data_not_on_a_comm
         assert "SECRET-FOR-THE-PODMAN-TEST" not in commands
     finally:
         podman.remove_account(who.person)
+
+
+# --- what Claude is told: a file of the tools bound read-only at Claude Code's managed path ------
+#
+# These hold the bind create makes, of the file of the tools the workspace's image calls for: where
+# the image has no /etc/claude-code, where the ids are swapped, over an image's own folder, and
+# what a rename of the file on the host, as the installer writes it, comes to.
+
+MANAGED = instructions.MANAGED
+BUSYBOX = f"{rt.TOOLS_MOUNT}/bin/busybox"
+OWNED_ID = 1000
+
+
+def told_text(runtime: rt.PodmanRuntime, name: str) -> bytes:
+    """The file ``name`` of the instructions in the runtime's tools, as the installer wrote it."""
+    return (runtime.config.tools_dir / instructions.FOLDER / name).read_bytes()
+
+
+@pytest.fixture
+def own_tools(podman_service, default_image, engine_tools, engine_store, engine_scratch):
+    """A runtime as ``podman`` is, but with a copy of the tools of its own, whose instructions a
+    test may write."""
+    from devtools import held_folders as hf
+    from tests.container.conftest import engine_runtime
+
+    with hf.held("rctold-") as folder:
+        shutil.copytree(engine_tools, folder, symlinks=True, dirs_exist_ok=True)
+        os.chmod(folder, 0o755)
+        yield engine_runtime(podman_service, default_image, folder, engine_store, engine_scratch)
+
+
+def image_of_files(
+    engine, name: str, entries: list[tuple[str, bytes, str, int]], labels: tuple[str, ...] = ()
+) -> str:
+    """An image of the host's static busybox imported as ``name``, with ``entries``: a path, the
+    content of a file (or b"" for what is not one), the kind (file, folder or link) and, for a
+    link, its target as the content; labelled ``labels``, each ``key=value``."""
+    import io
+    import tarfile
+
+    from installer import install as ins
+
+    kinds = {"file": tarfile.REGTYPE, "folder": tarfile.DIRTYPE, "link": tarfile.SYMTYPE}
+    data = io.BytesIO()
+    with tarfile.open(fileobj=data, mode="w") as tar:
+        tar.add(ins.BUSYBOX, arcname="bin/busybox")
+        for path, content, kind, mode in entries:
+            entry = tarfile.TarInfo(path)
+            entry.type, entry.mode = kinds[kind], mode
+            if kind == "link":
+                entry.linkname = content.decode()
+                tar.addfile(entry)
+            else:
+                entry.size = len(content) if kind == "file" else 0
+                tar.addfile(entry, io.BytesIO(content) if kind == "file" else None)
+    changes = [f"--change=LABEL {label}" for label in labels]
+    made = engine.cli("import", *changes, "-", name, input=data.getvalue(), timeout=300)
+    assert made.returncode == 0, made.stderr
+    return name
+
+
+def read_in(podman, name: str, path: str) -> rt.Result:
+    return podman.exec(name, [BUSYBOX, "cat", path])
+
+
+@pytest.mark.parametrize("image", ["default", "without-etc", "labelled"])
+def test_the_managed_file_is_bound_where_the_image_has_no_etc_claude_code(
+    podman_service, podman, image
+):
+    """The default image has none (tests/container/test_nest_in_podman.py); the others have no
+    /etc at all, one of them labelled as the default image is, as an image built from it is.
+    Each is told what its image calls for."""
+    name, told = None, instructions.DEFAULT_TOOLS
+    if image == "without-etc":
+        name = image_of_files(podman_service, "localhost/rcman-test-no-etc", [])
+        told = instructions.OWN_IMAGE
+    elif image == "labelled":
+        labels = (f"{instructions.TOOLS_LABEL}=1",)
+        name = image_of_files(podman_service, "localhost/rcman-test-labelled", [], labels)
+        assert podman.image_facts(name).labels.get(instructions.TOOLS_LABEL) == "1"  # the plant
+    # the files differ, so that which one is bound is known
+    assert len({told_text(podman, n) for n in instructions.FILES}) == len(instructions.FILES)
+    made = dataclasses.replace(spec(40), image=name)
+    try:
+        podman.create(made)
+        found = podman.exec(made.name, [BUSYBOX, "ls", "-l", "/etc/claude-code"])
+        assert found.code == 0 and b"CLAUDE.md" in found.out, found  # Podman made the folder
+        assert read_in(podman, made.name, MANAGED).out == told_text(podman, told)
+        written = podman.exec(made.name, [BUSYBOX, "sh", "-c", f"echo x > {MANAGED}"])
+        assert written.code != 0 and b"Read-only" in written.err, written
+        assert read_in(podman, made.name, MANAGED).out == told_text(podman, told)
+    finally:
+        podman.remove(made.name)
+        podman.remove_account(made.person)
+        if name:
+            podman_service.cli("rmi", "--force", name)
+
+
+def test_the_managed_file_is_readable_where_the_ids_are_swapped(podman_service, podman):
+    name = image_of_files(podman_service, "localhost/rcman-test-swapped", [])
+    made = dataclasses.replace(spec(41), image=name, user=f"{OWNED_ID}:{OWNED_ID}", uid=OWNED_ID,
+                               gid=OWNED_ID)  # fmt: skip
+    try:
+        podman.create(made)
+        shown = podman.exec(made.name, [BUSYBOX, "id", "-u"])
+        assert shown.out.strip() == str(OWNED_ID).encode()  # the control: the user is not root
+        assert read_in(podman, made.name, MANAGED).out == told_text(podman, instructions.OWN_IMAGE)
+    finally:
+        podman.remove(made.name)
+        podman.remove_account(made.person)
+        podman_service.cli("rmi", "--force", name)
+
+
+def test_an_images_own_managed_settings_stay_and_its_own_claude_md_is_replaced(
+    podman_service, podman
+):
+    entries = [
+        ("etc", b"", "folder", 0o755),
+        ("etc/claude-code", b"", "folder", 0o755),
+        ("etc/claude-code/managed-settings.json", b'{"own": true}\n', "file", 0o644),
+        (MANAGED[1:], b"the image's own\n", "file", 0o644),
+    ]
+    name = image_of_files(podman_service, "localhost/rcman-test-own-managed", entries)
+    made = dataclasses.replace(spec(42), image=name)
+    try:
+        assert podman.image_facts(name).managed == {  # what the image has, and is not refused for
+            "/etc": instructions.IS_FOLDER,
+            "/etc/claude-code": instructions.IS_FOLDER,
+            MANAGED: instructions.IS_FILE,
+        }
+        podman.create(made)
+        settings = read_in(podman, made.name, "/etc/claude-code/managed-settings.json")
+        assert settings.out == b'{"own": true}\n', settings
+        assert read_in(podman, made.name, MANAGED).out == told_text(podman, instructions.OWN_IMAGE)
+    finally:
+        podman.remove(made.name)
+        podman.remove_account(made.person)
+        podman_service.cli("rmi", "--force", name)
+
+
+def test_a_rename_over_the_managed_file_reaches_the_workspace_at_its_next_start_not_before(
+    own_tools,
+):
+    """What the installer's write_if_changed does: a new file renamed over the old. The bind
+    holds the old file until the container is started again, and then binds the new one."""
+    from installer import install as ins
+
+    podman, made = own_tools, spec(43)
+    path = podman.config.tools_dir / instructions.FOLDER / instructions.DEFAULT_TOOLS
+    old = path.read_bytes()
+    try:
+        podman.create(made)
+        assert read_in(podman, made.name, MANAGED).out == old
+        before = path.stat().st_ino
+        assert ins.write_if_changed(path, "rcman's new text\n", 0o644)
+        assert path.stat().st_ino != before  # the plant took effect, by a rename
+        assert read_in(podman, made.name, MANAGED).out == old  # not before
+        podman.stop(made.name)
+        podman.start(made.name)
+        assert read_in(podman, made.name, MANAGED).out == b"rcman's new text\n"
+    finally:
+        podman.remove(made.name)
+        podman.remove_account(made.person)
+
+
+def test_the_default_image_has_every_command_its_instructions_name(podman):
+    from tests.containers import named_commands
+
+    fragments = Path(__file__).resolve().parents[2] / "backend" / "rcman" / instructions.FOLDER
+    named = named_commands(
+        "".join((fragments / f).read_text() for f in (instructions.GH, instructions.TOOLS))
+    )
+    assert {"gh", "make", "unzip", "docker"} <= set(named)  # the positive
+    made = spec(45)
+    try:
+        podman.create(made)
+        layout = podman.layout(made.name)
+        look = [*layout.tool("env"), f"PATH={layout.path}", layout.shell, "-c", 'command -v "$1"']
+        for command in named:
+            found = podman.exec(made.name, [*look, "sh", command])
+            assert found.code == 0, (command, found)
+        absent = podman.exec(made.name, [*look, "sh", "no-such-tool"])
+        assert absent.code != 0  # the control: one that is not there is not found
+    finally:
+        podman.remove(made.name)
+        podman.remove_account(made.person)
+
+
+# --- what an image has at /etc/claude-code, as the image's probe reads it ------------------------
+
+ETC_KINDS = {
+    "folder": [
+        ("etc", b"", "folder", 0o755),
+        ("etc/claude-code", b"", "folder", 0o755),
+        (MANAGED[1:], b"own\n", "file", 0o644),
+    ],
+    "file": [("etc", b"", "folder", 0o755), ("etc/claude-code", b"a file\n", "file", 0o644)],
+    "link": [
+        ("etc", b"", "folder", 0o755),
+        ("elsewhere", b"", "folder", 0o755),
+        ("etc/claude-code", b"/elsewhere", "link", 0o777),
+    ],
+    "etc-link": [
+        ("real", b"", "folder", 0o755),
+        ("real/claude-code", b"", "folder", 0o755),
+        ("etc", b"/real", "link", 0o777),
+    ],
+    "claude-md-link": [
+        ("etc", b"", "folder", 0o755),
+        ("etc/claude-code", b"", "folder", 0o755),
+        (MANAGED[1:], b"/etc/passwd", "link", 0o777),
+    ],
+    "claude-md-link-file": [
+        ("etc", b"", "folder", 0o755),
+        ("etc/claude-code", b"", "folder", 0o755),
+        ("etc/claude-code/text", b"own\n", "file", 0o644),
+        (MANAGED[1:], b"/etc/claude-code/text", "link", 0o777),
+    ],
+    "claude-md-link-folder": [
+        ("etc", b"", "folder", 0o755),
+        ("etc/claude-code", b"", "folder", 0o755),
+        ("etc/claude-code/folder", b"", "folder", 0o755),
+        (MANAGED[1:], b"/etc/claude-code/folder", "link", 0o777),
+    ],
+    "absent": [("etc", b"", "folder", 0o755)],
+}
+# What the probe reads at /etc, /etc/claude-code and MANAGED, image by image; None where there is
+# nothing, or where nothing is read, below what is not a folder. podman cp follows a link, at the
+# end of the path as along it, so a link reads as what it names: a folder as a folder, a file as a
+# file, one that names nothing as nothing. A link is never seen as one, and what is refused is
+# judged by what a link names; were Podman to stop following them, the link cases here would read
+# a link and fail.
+FOLDER_IS, FILE_IS = instructions.IS_FOLDER, instructions.IS_FILE
+ETC_SEEN = {
+    "folder": (FOLDER_IS, FOLDER_IS, FILE_IS),
+    "file": (FOLDER_IS, FILE_IS, None),
+    "link": (FOLDER_IS, FOLDER_IS, None),
+    "etc-link": (FOLDER_IS, FOLDER_IS, None),
+    "claude-md-link": (FOLDER_IS, FOLDER_IS, None),
+    "claude-md-link-file": (FOLDER_IS, FOLDER_IS, FILE_IS),
+    "claude-md-link-folder": (FOLDER_IS, FOLDER_IS, FOLDER_IS),
+    "absent": (FOLDER_IS, None, None),
+}
+
+
+@pytest.mark.parametrize("kind", sorted(ETC_KINDS))
+def test_what_an_image_has_at_etc_claude_code_is_read_by_the_image_probe(
+    podman_service, podman, kind
+):
+    name = image_of_files(podman_service, f"localhost/rcman-test-etc-{kind}", ETC_KINDS[kind])
+    try:
+        facts = podman.image_facts(name)
+        seen = tuple(facts.managed.get(path) for path in instructions.PATHS)
+        assert seen == ETC_SEEN[kind], (kind, seen)
+    finally:
+        podman_service.cli("rmi", "--force", name)

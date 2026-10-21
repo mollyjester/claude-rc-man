@@ -7,11 +7,11 @@ stand-ins of tests/container/stand_ins.py as programs, and the whole stack
 
 The tools are those ``installer/install.py`` writes: busybox and its shell, the terminal
 descriptions, tmux's configuration, the Podman tools and the workspaces' seccomp profile of
-``ensure_podman_tools``, and tmux, built on the engine with the installer's own argument list
-from its pinned source in the toolchain (the ``toolchain`` fixture), as the installer builds it
-through rcman's own Podman. They are in held folders under /tmp, readable by everyone, as the
-installer's are: a container's ids are none of the user's, and pytest's own folders are the
-user's alone.
+``ensure_podman_tools``, the instructions for Claude of ``ensure_instructions``, and tmux,
+built on the engine with the installer's own argument list from its pinned source in the
+toolchain (the ``toolchain`` fixture), as the installer builds it through rcman's own Podman.
+They are in held folders under /tmp, readable by everyone, as the installer's are: a
+container's ids are none of the user's, and pytest's own folders are the user's alone.
 """
 
 from __future__ import annotations
@@ -71,6 +71,7 @@ def engine_tools(podman_service, toolchain):
             shutil.copyfile(source, folder / "terminfo" / entry)
         shutil.copyfile(REPO / "backend" / "rcman" / "tmux.conf", folder / "tmux.conf")
         ins.ensure_podman_tools(folder, ps.SHARED)
+        ins.ensure_instructions(folder, REPO / "backend" / "rcman" / "instructions")
         readable(folder)
         yield folder
 
@@ -132,11 +133,11 @@ def base_image(podman_service) -> str:
 
 @pytest.fixture(scope="session")
 def default_image(podman_service, tmp_path_factory) -> str:
-    """The default workspace image, built on the engine from the installer's own build file."""
-    text = ins.CONTAINERFILE.read_bytes()
+    """The default workspace image, built on the engine from the build context the installer
+    makes for it."""
     name = ins.workspace_image()  # the installer's own name for it
     context = tmp_path_factory.mktemp("default-image")
-    (context / "Containerfile").write_bytes(text)
+    ins.image_context(context)
     built = podman_service.cli(
         "build", "-q", "-t", name, "-f", str(context / "Containerfile"), str(context),
         timeout=1800,

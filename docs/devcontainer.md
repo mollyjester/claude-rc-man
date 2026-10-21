@@ -203,12 +203,25 @@ port names an image in rcman's storage and is never pulled.
   administrator loaded there needs no registry.
 - An image that carries a label beginning `rcman.` is refused: a container takes its image's
   labels, and those are the ones rcman finds its own containers by.
+- rcman puts its own instructions for Claude at `/etc/claude-code/CLAUDE.md` in every
+  workspace, read-only, in place of any file the image has there; the image's other files in
+  `/etc/claude-code`, such as `managed-settings.json`, stay as they are. What they say depends
+  on the image (see
+  [What Claude is told in a workspace](workspaces.md#what-claude-is-told-in-a-workspace)): an
+  image that carries the default image's label, `org.claude-rc-man.tools`, is told what the
+  default image's workspaces are. Such an image is the default image itself, named in `image`
+  by the name `RCMAN_WORKSPACE_IMAGE` holds (`localhost/rcman-workspace:<tag>`, in rcman's
+  storage), or an image built from it elsewhere and pushed to a registry, which keeps the
+  label. An image whose `/etc`
+  or `/etc/claude-code` is a file, or whose `/etc/claude-code/CLAUDE.md` is anything but an
+  ordinary file, is refused, read from the image before any container is made from it. A
+  link there is judged by what it leads to.
 - The image needs a **git** new enough for rcman (see [Git](git.md#images)), checked once the
   container runs, and **glibc**: an image built on musl, as Alpine ones are, is refused
   because Claude Code needs glibc. An image whose `/tmp` is a link or not a folder is refused,
   checked once the container runs: every workspace has a `/tmp` of its own (see
   [Containers](workspaces.md#containers)). Anything else rcman needs comes from rcman, not the image:
-  tmux, busybox and Claude Code are mounted into every workspace.
+  tmux, busybox, Claude Code and rcman's other tools are mounted into every workspace.
 - rcman starts its own process in the container, so the image's entrypoint and command are
   not run (`entrypoint` and `overrideCommand=false` are refused).
 - A name that could stand for an image rcman built for a workspace (its repository name is
@@ -478,8 +491,11 @@ image a Rebuild left, and the other images in rcman's storage that nothing refer
 images pulled for workspaces that are gone and older default images; it does so after a
 workspace or a person is deleted, and after a Rebuild, too, and never removes an image a
 container is made from. It keeps every image a stored plan or a workspace names, by name and by
-id, the default and the builder images with every tag they have, and an image with no name for
-a while after it was made. It removes nothing at all when the table of workspaces is empty
+id, the current default image and any default image built after it, which an upgrade builds
+before rcman restarts, the builder images with every tag they have, and an image with no name for
+a while after it was made. An older default image stays only while a workspace or a stored plan
+made from it remains; where the current default image is missing from rcman's storage, every
+default image stays. It removes nothing at all when the table of workspaces is empty
 while rcman's Podman holds some, which it writes to the [journal](journal.md) as an error. The
 create commands are not run again, except for a Rebuild cut short while the container was
 replaced (see [Rebuilding a workspace](#rebuilding-a-workspace)). A workspace that rcman's restart interrupted while it was
