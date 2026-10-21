@@ -42,7 +42,11 @@ pushes on GitHub as you with the token, without asking for a password.
 `gh`, in the default image, uses your GitHub token from Settings in all your
 workspaces: in the **Terminal** tab, in Claude's sessions, and in a
 repository's lifecycle commands. `gh issue create`, `gh pr create` or
-`gh api` work there as you, with no flags and no `gh auth login`. rcman points gh at the folder that holds git's configuration,
+`gh api` work there as you, with no flags and no `gh auth login`. Claude's sessions in a
+workspace of the default image, or of another image that carries its label, are told that gh is there and
+to use it for GitHub work (see
+[What Claude is told in a workspace](workspaces.md#what-claude-is-told-in-a-workspace)).
+rcman points gh at the folder that holds git's configuration,
 `~/.config/git` (`GH_CONFIG_DIR` names it), and writes gh's configuration and
 the token there, beside git's.
 

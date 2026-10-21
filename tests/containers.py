@@ -43,6 +43,37 @@ def digest_references(containerfile: Path) -> list[str]:
     return found
 
 
+# An apt-get install command's words, up to the end of its command, its continued lines with it.
+_APT_INSTALL = re.compile(r"apt-get\s+install\s+((?:\\\n|[^&;|\n])*)")
+
+
+def package_lines(text: str) -> list[str]:
+    """The lines of the apt-get install commands of a Containerfile's ``text`` that ask for a
+    package, and not only options, as they are written but for the continuation."""
+    return [
+        line
+        for command in _APT_INSTALL.findall(text)
+        for line in command.split("\\\n")
+        if any(not word.startswith("-") for word in line.split())
+    ]
+
+
+def asked_packages(text: str) -> list[str]:
+    """The packages the apt-get install commands of a Containerfile's ``text`` ask for, in
+    order: the words of their lines but the options."""
+    return [w for line in package_lines(text) for w in line.split() if not w.startswith("-")]
+
+
+# A command a text names: a lowercase word alone between backquotes, as `gh` is and neither
+# `gh auth status` nor `/rcman/work` nor `HOME` is.
+_NAMED_COMMAND = re.compile(r"`([a-z][a-z0-9+-]*)`")
+
+
+def named_commands(text: str) -> list[str]:
+    """The commands ``text`` names, each once, in order."""
+    return list(dict.fromkeys(_NAMED_COMMAND.findall(text)))
+
+
 def labels(holder: Path) -> list[str]:
     """podman run's arguments that label a container as the run holding ``holder``'s."""
     return ["--label", f"{HOLDER}={holder}"]

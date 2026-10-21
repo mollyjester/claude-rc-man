@@ -48,10 +48,21 @@ and keep iterating with them until you are satisfied with the outcome.
   hands back.
 - A runner's brief names the commands, the log files and the lines to report:
   each part's totals, collected count, each failing test with its first error
-  line, and each exit code. It runs them in the foreground with a timeout
-  long enough for the run and reports only once they have finished: a
-  background command it starts is stopped when it hands back. Check its
-  headline numbers against the log with one grep.
+  line, and each exit code. A foreground command is cut off at ten minutes,
+  shorter than `make check`, and a background command is stopped when the
+  runner hands back, which once ended a baseline in the middle of `e2e`. So
+  a run that can last longer than ten minutes is started in the background
+  with a timeout long enough for it, its exit code appended to its log. The
+  runner waits for the background command's own completion notice, and hands
+  back only after it arrives. It gets that notice only if it was itself
+  launched in the background (the Agent tool's `run_in_background`), by you
+  or by the subagent that dispatches it: a runner launched in the foreground
+  ends its turn without the notice, and its run is stopped with it. One runner
+  runs at a time in the working tree, since the pre-test hook commits and two
+  at once collide on git's index. It never waits with a loop that matches
+  command lines (`pgrep -f`) or a log line, which can match itself or never
+  come, and never end. Check
+  its headline numbers against the log with one grep.
 
 ## 1. Plan
 

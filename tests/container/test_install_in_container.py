@@ -151,6 +151,10 @@ def test_the_tools_are_static_and_root_s(installation):
     installation.check("test_the_tools_are_static_and_root_s")
 
 
+def test_the_instructions_for_claude_are_roots_and_readable_by_everyone(installation):
+    installation.check("test_the_instructions_for_claude_are_roots_and_readable_by_everyone")
+
+
 def test_the_tools_are_outside_rcmans_home_and_root_leaves_nothing_there_of_its_own(installation):
     installation.check(
         "test_the_tools_are_outside_rcmans_home_and_root_leaves_nothing_there_of_its_own"

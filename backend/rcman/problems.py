@@ -335,6 +335,12 @@ DEVCONTAINER_MESSAGES = {
         'The image "{image}" carries the label "{label}", which rcman uses for its own '
         "containers, and a container takes its image's labels. Use another image."
     ),
+    "image_managed_folder": (
+        'The image "{image}" has "{path}" as something rcman cannot put its instructions for '
+        'Claude over: they go in "/etc/claude-code/CLAUDE.md", so "/etc" and "/etc/claude-code" '
+        "must be folders and that file an ordinary file, where the image has them. Use another "
+        "image."
+    ),
     "runtime_gone": (
         "rcman could not reach its containers while it was making this workspace, so the "
         "workspace was not finished. Delete it and make it again."

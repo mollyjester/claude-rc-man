@@ -65,7 +65,8 @@ If the repository has a `devcontainer.json`, rcman reads it after the clone and
 makes the workspace from the image it names, running the commands it lists
 before the workspace is ready; the steps say what rcman is doing, and the
 workspace is shown as being made until it is done. A repository without one
-gets the default image. If the file describes an image to build, with a
+gets the default image, whose tools are listed in
+[the installation guide](installation.md#what-the-installer-does). If the file describes an image to build, with a
 Dockerfile or features, rcman builds it first: the steps show the build's
 progress, which can take a long time for a big image, and when other builds are
 running, a line says that this one waits for them to finish. The build uses a
@@ -254,6 +255,11 @@ while rcman builds the image holds in the workspace.
 
 - A container started in a workspace is no boundary inside it: it shares the workspace's
   network, and the workspace's user can reach whatever it holds.
+- Publishing a port, with `-p`, `--publish` or `-P`, publishes nothing: a container that shares
+  the workspace's network listens on the workspace's own ports, so one listening on port 8000 is
+  at `localhost:8000`, and two cannot listen on the same port. `podman` and `docker` say so when
+  asked to publish, unless `--network` or `--net` names a network other than `host`, or
+  `--pod` or `--pod-id-file` names a pod, and run the container as asked.
 - What containers store counts against no limit: the disk a workspace uses cannot be limited.
 - `/tmp` is the workspace container's own, on disk and not on the container's own files, so a
   Podman a program starts with its storage under `/tmp`, as rcman's own tests do, works there;
@@ -271,6 +277,54 @@ while rcman builds the image holds in the workspace.
   Podman needs there. A workspace keeps the image and the container it was made with until it is
   rebuilt: rebuild it, with its `devcontainer.json` naming the default image or another image with
   Podman, or, for an empty workspace, make a new workspace in its place.
+
+## What Claude is told in a workspace
+
+rcman gives Claude instructions of its own in every workspace: a file at
+`/etc/claude-code/CLAUDE.md`, which Claude Code reads into every session and which a session
+cannot leave out or change. It is read-only in the workspace, takes the place of any file the
+workspace's image has there. Your own instructions, in the
+repository's `CLAUDE.md` or in `~/.claude`, are read beside it as usual.
+
+Every workspace's sessions are told:
+
+- where the work folder and `HOME` are, that both last as long as the workspace, and that your
+  other sessions in the workspace share the work folder;
+- that what is installed or changed outside `/rcman` lasts only until the container is made
+  again, and that what must last belongs in the repository or its `devcontainer.json`;
+- that git takes your commit author and GitHub token from Settings (see
+  [Git](git.md#your-commit-author-and-github-token)), and that the
+  global git configuration is not to be changed;
+- that no port of the workspace can be reached from outside it, and that containers share the
+  workspace's network, so publishing a port publishes nothing (see [Containers](#containers));
+- that memory, CPU and processes may be limited.
+
+They are also told where the description of the environment that Claude Code's Remote Control
+adds to every session is wrong here. That description is of a cloud environment: Claude is told
+that this one runs on this machine, that the work in `/rcman` is kept without a commit or a push,
+that it has no environments or network policies of the cloud's, that `df` tells the truth about
+the disk, and that no browsers for tests are installed in advance.
+
+What else a session is told depends on the workspace's image:
+
+- **An image that carries the default image's label**, `org.claude-rc-man.tools`: the default
+  image, whether a workspace gets it by having no `devcontainer.json` or by one that names it,
+  or an image built from it and pushed to a registry (see
+  [The image](devcontainer.md#the-image)). Sessions are told that `gh` is there with your
+  GitHub token, to be used for GitHub work rather than GitHub's tools for Claude (see
+  [gh](git.md#gh)), which tools the image has, and that anything else can be installed with
+  `apt-get`.
+- **An older default image without that label**, which a workspace made from it keeps until it
+  is rebuilt: that `gh` is there, but not which tools the image has.
+- **Any other image**: nothing more.
+
+When rcman is upgraded with different instructions, a workspace's sessions are told them from
+the next time its container starts, as after the machine restarts or a rebuild. Until then they
+keep what they were told before.
+
+Where the instructions are missing from rcman's installation, no workspace is made or rebuilt:
+a new workspace fails, and a Rebuild leaves the container as it was, each saying that the
+installer is to be run again, which an administrator does (see [the journal](journal.md)).
 
 ## Deleting a workspace
 

@@ -109,6 +109,15 @@ def check_seccomp(tools: Path, default: Path = seccomp.PODMAN_DEFAULT) -> None:
         )
 
 
+def check_instructions(runtime: Runtime) -> None:
+    """Say in the journal when the instructions for Claude the runtime binds into every workspace
+    are missing from the tools: no workspace can be made, nor a lost container made again, until
+    the installer runs again."""
+    why = runtime.instructions_ready()
+    if why is not None:
+        workspaces_log.error("%s", why)
+
+
 def create_app(
     settings: Settings | None = None,
     runtime: Runtime | None = None,
@@ -128,6 +137,7 @@ def create_app(
     if runtime is None:  # rcman's own Podman, whose workspaces take the profile
         check_seccomp(settings.tools_dir)
     service = Workspaces(settings, runtime or podman_runtime(settings), builder_slot=builder_slot)
+    check_instructions(service.runtime)
     sign_ins = Accounts(service)
     terminals = Terminals(service)
 

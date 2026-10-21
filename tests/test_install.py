@@ -19,9 +19,11 @@ from pathlib import Path
 import pytest
 
 from installer import install as ins
+from tests.containers import asked_packages, package_lines
 
 REPO = Path(__file__).resolve().parent.parent
 PODMAN_SOURCES = REPO / "backend" / "rcman" / "podman"
+INSTRUCTION_SOURCES = REPO / "backend" / "rcman" / "instructions"
 
 
 # --- settings --------------------------------------------------------------------------
@@ -1006,6 +1008,7 @@ class ToolsHost:
         self.conf = tmp_path / "tmux.conf"
         self.conf.write_text("set -g mouse on\n")
         self.podman = PODMAN_SOURCES
+        self.fragments = INSTRUCTION_SOURCES
         tarball = tmp_path / "toolchain" / "tmux.tar.gz"
         tarball.parent.mkdir()
         tarball.write_bytes(b"source")
@@ -1027,7 +1030,9 @@ def test_the_tools_are_built_into_a_folder_of_roots_and_nothing_is_made_in_rcman
     tmp_path, monkeypatch
 ):
     host = ToolsHost(tmp_path, monkeypatch)
-    changes = ins.ensure_tools(host.tools, conf=host.conf, podman=host.podman)
+    changes = ins.ensure_tools(
+        host.tools, conf=host.conf, podman=host.podman, fragments=host.fragments
+    )
     assert f"tmux {ins.TMUX_VERSION}" in changes and "busybox" in changes and "tmux.conf" in changes
     assert (host.tools / "bin" / "tmux").read_bytes() == host.built
     assert os.readlink(host.tools / "bin" / "sh") == "busybox"
@@ -1057,13 +1062,17 @@ def test_a_tmux_that_arrived_short_is_refused_by_the_checksum_the_container_repo
         host = ToolsHost(folder, monkeypatch, built=short, reported=reported)
         assert ins.is_static(_written(folder, short))  # positive control: it looks fine
         with pytest.raises(ins.InstallError, match="sha256"):
-            ins.ensure_tools(host.tools, conf=host.conf, podman=host.podman)
+            ins.ensure_tools(
+                host.tools, conf=host.conf, podman=host.podman, fragments=host.fragments
+            )
         assert not (host.tools / "bin" / "tmux").exists()
         assert not [p for p in host.tools.rglob(".*")]
     folder = tmp_path / "ok"
     folder.mkdir()
     ok = ToolsHost(folder, monkeypatch)
-    assert f"tmux {ins.TMUX_VERSION}" in ins.ensure_tools(ok.tools, conf=ok.conf, podman=ok.podman)
+    assert f"tmux {ins.TMUX_VERSION}" in ins.ensure_tools(
+        ok.tools, conf=ok.conf, podman=ok.podman, fragments=ok.fragments
+    )
 
 
 def _written(folder: Path, data: bytes) -> Path:
@@ -1074,18 +1083,21 @@ def _written(folder: Path, data: bytes) -> Path:
 
 def test_the_tools_are_not_built_again_and_a_second_run_changes_nothing(tmp_path, monkeypatch):
     host = ToolsHost(tmp_path, monkeypatch)
-    ins.ensure_tools(host.tools, conf=host.conf, podman=host.podman)
+    ins.ensure_tools(host.tools, conf=host.conf, podman=host.podman, fragments=host.fragments)
     host.calls.clear()
-    assert ins.ensure_tools(host.tools, conf=host.conf, podman=host.podman) == []
+    assert (
+        ins.ensure_tools(host.tools, conf=host.conf, podman=host.podman, fragments=host.fragments)
+        == []
+    )
     assert host.calls == []
 
 
 def test_a_new_pin_builds_tmux_again(tmp_path, monkeypatch):
     host = ToolsHost(tmp_path, monkeypatch)
-    ins.ensure_tools(host.tools, conf=host.conf, podman=host.podman)
+    ins.ensure_tools(host.tools, conf=host.conf, podman=host.podman, fragments=host.fragments)
     monkeypatch.setattr(ins, "TMUX_SHA256", "1" * 64)
     assert f"tmux {ins.TMUX_VERSION}" in ins.ensure_tools(
-        host.tools, conf=host.conf, podman=host.podman
+        host.tools, conf=host.conf, podman=host.podman, fragments=host.fragments
     )
 
 
@@ -1093,7 +1105,7 @@ def test_a_new_pin_builds_tmux_again(tmp_path, monkeypatch):
 def test_a_tmux_that_is_not_static_is_refused_and_not_installed(tmp_path, monkeypatch, built):
     host = ToolsHost(tmp_path, monkeypatch, built=built)
     with pytest.raises(ins.InstallError, match="static"):
-        ins.ensure_tools(host.tools, conf=host.conf, podman=host.podman)
+        ins.ensure_tools(host.tools, conf=host.conf, podman=host.podman, fragments=host.fragments)
     assert not (host.tools / "bin" / "tmux").exists()
     assert not [p for p in host.tools.rglob(".*")]  # and no partial file
 
@@ -1201,14 +1213,80 @@ def test_the_default_image_is_ubuntu_pinned_by_tag_and_digest_with_what_rcman_ne
     [base] = from_lines(ins.CONTAINERFILE)
     assert base.startswith("docker.io/library/ubuntu:24.04@")
     assert PINNED_IMAGE.fullmatch(base), base
-    installed = re.search(r"--no-install-recommends\s*\\?\s*([^&]*)&&", containerfile)
-    assert installed, containerfile
-    packages = installed.group(1).replace("\\", " ").split()
+    packages = asked_packages(containerfile)
     assert "git" in packages  # positive control: the line is the one read
-    for package in ("git", "ca-certificates", "curl", "python3", "gh"):
+    # what Claude Code and rcman need, and the tools a repository's own setup commonly runs
+    wanted = ("git", "ca-certificates", "curl", "python3", "gh",
+              "make", "python3-venv", "tar", "xz-utils", "zip", "unzip")  # fmt: skip
+    for package in wanted:
         assert package in packages, package
     image = ins.workspace_image()
     assert image.startswith("localhost/rcman-workspace:") and len(image.split(":")[1]) == 12
+
+
+def test_the_default_image_is_labelled_as_having_the_default_images_tools():
+    """The label says the image is the default image or one built from it, so what Claude is
+    told about its tools holds."""
+    from helpers import instructions
+
+    labels = [
+        line.split(None, 1)[1]
+        for line in ins.CONTAINERFILE.read_text().splitlines()
+        if line.startswith("LABEL ")
+    ]
+    assert labels == [f"{instructions.TOOLS_LABEL}=1"]
+
+
+def test_the_containerfile_keeps_its_packages_on_one_line():
+    """One line to read and to change: a package added on a line of its own is a second
+    line of packages."""
+    lines = package_lines(ins.CONTAINERFILE.read_text())
+    assert len(lines) == 1, lines
+    assert "git" in lines[0].split()  # the control: the line found is the packages'
+
+
+def test_packages_on_two_lines_are_found_on_two_lines():
+    """The twin: a package moved onto a line of its own."""
+    text = ins.CONTAINERFILE.read_text()
+    planted = text.replace(" gh ", " gh \\\n      ", 1)
+    assert planted != text  # the plant took effect
+    assert len(package_lines(planted)) == 2
+
+
+def test_the_packages_asked_for_are_read_across_lines_without_options():
+    text = (
+        "RUN apt-get update -qq \\\n"
+        " && apt-get install -y -qq --no-install-recommends \\\n"
+        "      git curl \\\n      make \\\n"
+        " && apt-get purge -y gone \\\n"
+        " && apt-get install -y zip; rm -rf /var/lib/apt/lists/*\n"
+    )
+    assert asked_packages(text) == ["git", "curl", "make", "zip"]
+    assert asked_packages("RUN apt-get update\n") == []
+
+
+def test_the_commands_the_instructions_name_are_read_from_their_backquotes():
+    """What tests/container/test_runtime_in_podman.py looks for in the default image."""
+    from tests.containers import named_commands
+
+    text = "Use `gh`, `make` and `podman`/`docker`; `gh auth status`, `/rcman/work`, `HOME`, `-p`."
+    assert named_commands(text) == ["gh", "make", "podman", "docker"]
+    assert named_commands("No command here.") == []
+    tools = (INSTRUCTION_SOURCES / "tools.md").read_text()
+    assert {"git", "gh", "curl", "make", "python3", "tar", "xz", "zip", "unzip", "apt-get"} <= set(
+        named_commands(tools)
+    )
+
+
+def test_the_default_images_build_context_is_its_containerfile_readable_by_everyone(tmp_path):
+    """rcman's Podman builds it, not the account the installer runs as."""
+    context = tmp_path / "context"
+    context.mkdir(mode=0o700)
+    ins.image_context(context)
+    assert sorted(p.name for p in context.iterdir()) == ["Containerfile"]
+    assert (context / "Containerfile").read_bytes() == ins.CONTAINERFILE.read_bytes()
+    assert stat.S_IMODE(context.stat().st_mode) == 0o755
+    assert stat.S_IMODE((context / "Containerfile").stat().st_mode) == 0o644
 
 
 def containerfiles() -> list[Path]:
@@ -3258,6 +3336,10 @@ def test_the_podman_tools_are_written_root_readable_and_a_second_run_changes_not
         assert (folder / name).read_text() == (PODMAN_SOURCES / name).read_text()
         assert stat.S_IMODE((folder / name).stat().st_mode) == 0o644
     assert set(ins.PODMAN_CONFIGURATION) == {"containers.conf", "storage.conf", "registries.conf"}
+    # what the wrapper sources from beside its folder, $HERE, and runs nothing of on its own
+    sourced = folder / ins.PODMAN_PUBLISH
+    assert sourced.read_bytes() == (PODMAN_SOURCES / ins.PODMAN_PUBLISH).read_bytes()
+    assert stat.S_IMODE(sourced.stat().st_mode) == 0o644
     seccomp = tools / ins.WORKSPACE_SECCOMP
     from helpers import seccomp as profiles
 
@@ -3272,9 +3354,26 @@ def test_the_podman_tools_are_written_root_readable_and_a_second_run_changes_not
     assert ins.WORKSPACE_SECCOMP == rt.SECCOMP  # where the runtime looks for it
 
 
+def test_what_the_wrapper_sources_is_written_before_the_wrapper(tmp_path, monkeypatch):
+    """A wrapper written first would run, until the next file is written, sourcing a file that
+    is not there yet, or an older one."""
+    written = []
+    writes = ins.write_if_changed
+
+    def recorded(path, text, mode):
+        written.append(path.name)
+        return writes(path, text, mode)
+
+    monkeypatch.setattr(ins, "write_if_changed", recorded)
+    tools = tmp_path / "tools"
+    (tools / "bin").mkdir(parents=True)
+    ins.ensure_podman_tools(tools, PODMAN_SOURCES)
+    assert written.index(ins.PODMAN_PUBLISH) < written.index("podman")
+
+
 def test_ensure_tools_writes_the_podman_tools(tmp_path, monkeypatch):
     host = ToolsHost(tmp_path, monkeypatch)
-    ins.ensure_tools(host.tools, conf=host.conf, podman=host.podman)
+    ins.ensure_tools(host.tools, conf=host.conf, podman=host.podman, fragments=host.fragments)
     assert (host.tools / ins.PODMAN_TOOLS / "bin" / "podman").is_file()
     assert (host.tools / ins.WORKSPACE_SECCOMP).is_file()
 
@@ -3326,7 +3425,7 @@ def test_ensure_tools_takes_the_podman_sources_it_is_given(tmp_path, monkeypatch
     other = tmp_path / "elsewhere"
     shutil.copytree(PODMAN_SOURCES, other)
     (other / "registries.conf").write_text("# planted\n")
-    ins.ensure_tools(host.tools, conf=host.conf, podman=other)
+    ins.ensure_tools(host.tools, conf=host.conf, podman=other, fragments=host.fragments)
     assert (host.tools / ins.PODMAN_TOOLS / "registries.conf").read_text() == "# planted\n"
 
 
@@ -3356,6 +3455,81 @@ def test_the_wrappers_folder_guard_finds_a_planted_command(tmp_path):
     ins.ensure_podman_tools(tools, PODMAN_SOURCES)
     (tools / ins.PODMAN_TOOLS / "bin" / "git").write_text("#!/bin/sh\n")  # the plant
     assert extra_commands(tools) == {"git"}
+
+
+# --- what Claude is told in a workspace -------------------------------------------------------
+
+
+def test_the_instructions_are_written_each_of_its_fragments_in_order_and_root_readable(tmp_path):
+    from helpers import instructions as told
+
+    tools = tmp_path / "tools"
+    changes = ins.ensure_instructions(tools, INSTRUCTION_SOURCES)
+    assert told.FILES == {
+        told.OWN_IMAGE: (told.COMMON,),
+        told.DEFAULT_IMAGE: (told.COMMON, told.GH),
+        told.DEFAULT_TOOLS: (told.COMMON, told.GH, told.TOOLS),
+    }
+    folder = tools / told.FOLDER
+    assert {p.name for p in folder.iterdir()} == set(told.FILES)
+    assert stat.S_IMODE(folder.stat().st_mode) == 0o755
+    fragments = {p.name: p.read_text() for p in INSTRUCTION_SOURCES.iterdir()}
+    assert set(fragments) == {told.COMMON, told.GH, told.TOOLS}
+    for name, parts in told.FILES.items():
+        written = (folder / name).read_text()
+        assert written == "\n".join(fragments[part] for part in parts), name
+        assert stat.S_IMODE((folder / name).stat().st_mode) == 0o644
+    assert fragments[told.COMMON].startswith("# This workspace\n")
+    assert fragments[told.GH].startswith("## GitHub\n")
+    assert fragments[told.TOOLS].startswith("## Tools\n")
+    assert changes  # positive control for the second run
+    assert ins.ensure_instructions(tools, INSTRUCTION_SOURCES) == []
+    assert not [p for p in folder.iterdir() if p.name.startswith(".")]  # nothing left staged
+
+
+def test_a_changed_text_is_renamed_over_the_old_file(tmp_path):
+    """So that a container bound to the old file keeps it, whole, until its next start, which
+    binds the new one (tests/container/test_runtime_in_podman.py)."""
+    from helpers import instructions as told
+
+    sources = tmp_path / "sources"
+    shutil.copytree(INSTRUCTION_SOURCES, sources)
+    tools = tmp_path / "tools"
+    ins.ensure_instructions(tools, sources)
+    written = tools / told.FOLDER / told.OWN_IMAGE
+    before = written.stat().st_ino
+    with written.open() as held:
+        (sources / told.COMMON).write_text("# Another text\n")  # the plant
+        changes = ins.ensure_instructions(tools, sources)
+        assert held.read() == (INSTRUCTION_SOURCES / told.COMMON).read_text()  # the old, whole
+    assert written.read_text() == "# Another text\n"
+    assert written.stat().st_ino != before
+    assert set(changes) == {f"instructions {name}" for name in told.FILES}
+
+
+def test_a_file_of_the_instructions_folder_that_is_not_one_of_them_is_removed(tmp_path):
+    """As a file a release no longer writes, or a staged copy a killed run left."""
+    from helpers import instructions as told
+
+    tools = tmp_path / "tools"
+    ins.ensure_instructions(tools, INSTRUCTION_SOURCES)
+    folder = tools / told.FOLDER
+    for planted in ("old-name", f".{told.OWN_IMAGE}.abc123"):
+        (folder / planted).write_text("left over\n")
+    assert (folder / "old-name").exists()  # the plant took effect
+    changes = ins.ensure_instructions(tools, INSTRUCTION_SOURCES)
+    assert {p.name for p in folder.iterdir()} == set(told.FILES)
+    assert set(changes) == {"instructions old-name", f"instructions .{told.OWN_IMAGE}.abc123"}
+    assert ins.ensure_instructions(tools, INSTRUCTION_SOURCES) == []
+
+
+def test_ensure_tools_writes_the_instructions(tmp_path, monkeypatch):
+    from helpers import instructions as told
+
+    host = ToolsHost(tmp_path, monkeypatch)
+    ins.ensure_tools(host.tools, conf=host.conf, podman=host.podman, fragments=host.fragments)
+    for name in told.FILES:
+        assert (host.tools / told.FOLDER / name).is_file(), name
 
 
 # --- the kernel ------------------------------------------------------------------------------

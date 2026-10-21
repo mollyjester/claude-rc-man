@@ -240,7 +240,13 @@ it starts the fake only once the answer is waiting on the terminal.
    the version to its `kept_for` in `tests/fakes/observed/manifest.json`;
    if not, remove the screen and what recognises it, tests first.
 5. Run the whole suite, and `uv run pytest -m real_claude`.
-6. Commit the fixtures and both manifests together, with `helpers/claude-version`
+6. In a workspace of the default image on an installed rcman running the candidate, check
+   what Claude is told there, as the step on rcman's instructions in
+   [On an installed server](real-claude-checklist.md#on-an-installed-server) says: the managed
+   instructions still load into a session, and the text Remote Control appends to its system
+   prompt still has the heading the correction in `backend/rcman/instructions/common.md` names
+   (see [runtime.md](runtime.md#workspace-instructions)). The canary checks neither.
+7. Commit the fixtures and both manifests together, with `helpers/claude-version`
    naming the version: it is the version the installer installs and the one the
    Versions page calls the tested one (see [Claude Code versions](../docs/claude-version.md)).
    Approving it for workspaces is then an administrator's roll-out, not part of this list.

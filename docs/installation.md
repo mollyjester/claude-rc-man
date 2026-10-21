@@ -198,16 +198,23 @@ run and kept.
    - the tools every workspace has, whatever its image: tmux, built here into a
      program that needs nothing of any image, with busybox and the terminal
      descriptions; the `podman` and `docker` that run containers in a workspace,
-     with their configuration (see [Containers](workspaces.md#containers)); and the
-     seccomp profile of every workspace container, derived from Podman's own; in
+     with their configuration (see [Containers](workspaces.md#containers)); the
+     instructions rcman gives Claude in every workspace, made from the release's
+     `backend/rcman/instructions` (see
+     [What Claude is told in a workspace](workspaces.md#what-claude-is-told-in-a-workspace));
+     and the seccomp profile of every workspace container, derived from Podman's own; in
      `/opt/rcman/tools`. They are root's, outside rcman's home, so that rcman cannot
      replace what every workspace mounts;
    - the default workspace image, Ubuntu with git, `gh`, Podman (with `crun`,
-     `catatonit` and `uidmap`) and what Claude Code needs, from Ubuntu's packages as
+     `catatonit` and `uidmap`), what Claude Code needs and the tools a repository's
+     own setup commonly runs (`make`, Python's venv, `tar` with `xz`, `zip` and
+     `unzip`), from Ubuntu's packages as
      they are when it is built, from
      `installer/workspace/Containerfile`, named after that file's
      content, so that a changed file makes a new image and workspaces made
-     before keep theirs (see [Git](git.md#images)). A repository's devcontainer.json can name another
+     before keep theirs (see [Git](git.md#images)), until they are rebuilt; rcman
+     removes an older one once nothing is made from it (see
+     [Restoring](devcontainer.md#restoring)). A repository's devcontainer.json can name another
      image, which rcman pulls when a workspace is made (see
      [devcontainer.json support](devcontainer.md));
    - the builder image, from `installer/builder`: the Dev Containers CLI and a

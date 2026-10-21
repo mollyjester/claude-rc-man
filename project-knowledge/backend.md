@@ -15,7 +15,7 @@ the OpenAPI description it serves at `/api/openapi.json`, browsable at
 
 | Module | What it is |
 |---|---|
-| `main.py` | `create_app(settings, runtime, *, builder_slot)`: the app, its lifespan (migrations, the allowed list, audit retention, restoring workspaces) and its routers; with rcman's own Podman, `check_seccomp` first, which says in the journal when the workspaces' seccomp profile is missing or stale (see [runtime.md](runtime.md#containers-in-a-workspace)) |
+| `main.py` | `create_app(settings, runtime, *, builder_slot)`: the app, its lifespan (migrations, the allowed list, audit retention, restoring workspaces) and its routers; with rcman's own Podman, `check_seccomp` first, which says in the journal when the workspaces' seccomp profile is missing or stale (see [runtime.md](runtime.md#containers-in-a-workspace)); and `check_instructions`, which says there when the instructions for Claude are missing from the tools (see [runtime.md](runtime.md#workspace-instructions)) |
 | `settings.py` | The settings model |
 | `db.py` | SQLite connections and the schema, as migrations; `migrate` refuses a database newer than the code |
 | `identity.py` | Who is asking, and whether they may |

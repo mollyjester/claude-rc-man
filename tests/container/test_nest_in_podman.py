@@ -17,6 +17,7 @@ from rcman import runtime as rt
 
 from installer import install as ins
 from tests.container import sizes
+from tests.containers import asked_packages
 
 WRAPPER = f"{rt.TOOLS_MOUNT}/{ins.PODMAN_TOOLS}/bin/podman"
 DOCKER = f"{rt.TOOLS_MOUNT}/{ins.PODMAN_TOOLS}/bin/docker"
@@ -647,6 +648,64 @@ def test_compose_as_an_argument_of_another_subcommand_is_not_refused(
     assert said == "compose\n"
 
 
+# --- a published port ------------------------------------------------------------------------
+
+
+def test_the_recorded_helps_are_the_default_images_podmans_own(podman, nest_workspace):
+    """The helps tests/test_podman_wrapper.py holds publish.sh's lists to, read for their
+    options, against the help the default image's own Podman gives for each subcommand and
+    for itself."""
+    from tests.test_podman_wrapper import GLOBAL_HELP, RECORDED, SUBCOMMANDS, help_file
+    from tests.test_podman_wrapper import help_options as options
+
+    pairs = [
+        (help_file(sub), ok(run(podman, nest_workspace, *sub, "--help"))) for sub in SUBCOMMANDS
+    ]
+    pairs.append((GLOBAL_HELP, ok(run(podman, nest_workspace, "--help"))))
+    assert all("--log-level" in text or "--publish" in text for _, text in pairs)  # each read
+    for name, text in pairs:
+        recorded = (RECORDED / name).read_text(encoding="utf-8")
+        assert options(recorded) == options(text), name
+
+
+@pytest.mark.parametrize("who", sorted(WHO))
+@pytest.mark.parametrize("program", [WRAPPER, DOCKER], ids=["podman", "docker"])
+@pytest.mark.parametrize("publish", [["-p", "80:80"], ["-dp", "80:80"]],
+                         ids=["p", "dp"])  # fmt: skip
+def test_a_published_port_is_explained_and_the_container_still_runs(
+    podman, nest_workspace, imported, who, program, publish
+):
+    as_who = WHO[who]
+    if as_who is not None:
+        ok(run(podman, nest_workspace, "import", "-", NESTED, stdin=tarball(), as_user=as_who))
+    name = program.rsplit("/", 1)[-1]
+    detached = publish[0] == "-dp"
+    said = run(podman, nest_workspace, "run", "--rm", *publish, "--pull=never", NESTED,
+               "busybox", "echo", "ran", program=program, as_user=as_who)  # fmt: skip
+    try:
+        assert said.code == 0, said
+        assert f"{name}: -p publishes no port here: a container shares".encode() in said.err, said
+        if detached:
+            assert re.fullmatch(rb"[0-9a-f]{64}\n", said.out), said  # it was started
+        else:
+            assert said.out == b"ran\n", said
+    finally:
+        if detached:
+            run(podman, nest_workspace, "rm", "-f", "-t0", said.out.decode().strip(),
+                program=program, as_user=as_who)  # fmt: skip
+
+
+def test_an_images_own_docker_is_not_explained(podman, without_podman):
+    plant = "printf '#!/bin/sh\necho the image docker \"$@\"\n' > /usr/local/bin/docker"
+    ok(podman.exec(without_podman, ["sh", "-c", plant + " && chmod 755 /usr/local/bin/docker"]))
+    try:
+        said = by_name(podman, without_podman, "docker", "run", "-p", "80:80", "img")
+        assert said.code == 0 and said.out == b"the image docker run -p 80:80 img\n", said
+        assert said.err == b"", said
+    finally:
+        podman.exec(without_podman, ["rm", "-f", "/usr/local/bin/docker"])
+
+
 # --- the default image ------------------------------------------------------------------------
 
 CAPABILITIES = """
@@ -671,17 +730,56 @@ def test_the_default_images_newuidmap_and_newgidmap_have_their_capability_and_no
 
 
 def test_the_default_image_has_every_package_it_asks_for_after_the_purge(podman, nest_workspace):
-    import re
-
-    asked = re.search(r"--no-install-recommends \\\n\s*([^\\]+)\\", ins.CONTAINERFILE.read_text())
-    packages = [p for p in asked.group(1).split() if p != "libcap2-bin"]
-    assert {"podman", "uidmap", "crun", "catatonit", "git", "gh"} <= set(packages)  # read whole
+    packages = [p for p in asked_packages(ins.CONTAINERFILE.read_text()) if p != "libcap2-bin"]
+    assert {"podman", "uidmap", "crun", "catatonit", "git", "gh", "unzip"} <= set(packages)
     shown = ok(podman.exec(nest_workspace, ["dpkg-query", "-W", "-f", "${Package} ${Status}\n",
                                             *packages]))  # fmt: skip
     installed = {line.split()[0] for line in shown.splitlines() if line.endswith("installed")}
     assert installed == set(packages), shown
     purged = podman.exec(nest_workspace, ["dpkg-query", "-W", "-f", "${Status}", "libcap2-bin"])
     assert b"install ok installed" not in purged.out  # setcap was removed once used
+
+
+# What a repository's own setup commonly runs: make, Python's venv with pip, and the archivers.
+# Each line is labelled with what it shows.
+TOOLS = """
+set -e
+for tool in make tar xz zip unzip; do echo "tool $tool $(command -v "$tool")"; done
+cd "$(mktemp -d)"
+python3 -m venv venv
+echo "pip $(venv/bin/python -m pip --version)"
+echo round > file
+tar -cJf file.tar.xz file
+zip -q file.zip file
+mkdir out
+tar -xJf file.tar.xz -C out
+unzip -q -d out/zip file.zip
+echo "xz $(cat out/file)"
+echo "zip $(cat out/zip/file)"
+"""
+
+
+def test_the_default_image_has_the_tools_a_repositorys_setup_needs(podman, nest_workspace):
+    shown = ok(podman.exec(nest_workspace, ["sh", "-c", TOOLS], timeout=300))
+    said = [line.split(" ", 1) for line in shown.splitlines()]
+    tools = {rest.split()[0]: rest.split()[1:] for label, rest in said if label == "tool"}
+    assert set(tools) == {"make", "tar", "xz", "zip", "unzip"}, shown
+    for tool, found in tools.items():
+        assert found and found[0].endswith(f"/{tool}"), (tool, shown)  # on the PATH
+    seen = {label: rest for label, rest in said if label != "tool"}
+    assert seen["pip"].startswith("pip ") and "/venv/" in seen["pip"], shown
+    assert (seen["xz"], seen["zip"]) == ("round", "round"), shown
+
+
+def test_the_default_image_has_no_etc_claude_code(podman):
+    """The folder of Claude Code's managed files is rcman's to give: the image itself, in a
+    container made of it alone, has none."""
+    from tests.container.conftest import cli
+
+    shown = cli(podman, "run", "--rm", "--pull=never", "--network=none", podman.config.image,
+                "ls", "-d", "/etc/claude-code", "/etc/apt")  # fmt: skip
+    assert "/etc/apt" in shown.stdout, shown  # the control: a folder that is there is listed
+    assert "/etc/claude-code" not in shown.stdout and "No such file" in shown.stderr, shown
 
 
 # --- the lock and the record hold whatever is left in the folder ------------------------------

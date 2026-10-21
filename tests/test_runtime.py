@@ -17,9 +17,20 @@ import pytest
 from rcman import runtime as rt
 
 from devtools.held_folders import tmux_sockets
+from helpers import instructions
 from tests import runtime_contract
 
 REPO = Path(__file__).resolve().parent.parent
+FRAGMENTS = REPO / "backend" / "rcman" / instructions.FOLDER
+
+
+def told(tools: Path) -> Path:
+    """``tools`` with the instructions for Claude in it, each file as the installer writes it."""
+    folder = tools / instructions.FOLDER
+    folder.mkdir(parents=True, exist_ok=True)
+    for name in instructions.FILES:
+        (folder / name).write_text(instructions.compose(FRAGMENTS, name))
+    return tools
 
 
 @pytest.fixture
@@ -108,7 +119,7 @@ def podman_runtime(tmp_path, recorder, **more) -> rt.PodmanRuntime:
         rt.PodmanConfig(
             socket=Path("/run/user/990/podman/podman.sock"),
             image="localhost/rcman-workspace:test",
-            tools_dir=Path("/opt/rcman/tools"),
+            tools_dir=told(tmp_path / "tools"),
             claude_store=Path("/var/lib/rcman/claude"),
             podman=str(recorder.program),
             **more,
@@ -142,7 +153,7 @@ def test_a_workspace_container_is_made_as_the_design_says(tmp_path):
         f"--uidmap=0:{base}:{rt.RANGE}",
         f"--gidmap=0:{base}:{rt.RANGE}",
         "--volume=rcman-ws-7:/rcman",
-        "--volume=/opt/rcman/tools:/opt/rcman:ro",
+        f"--volume={runtime.config.tools_dir}:/opt/rcman:ro",
         "--volume=/var/lib/rcman/claude:/opt/claude:ro",
         "--tmpfs=/run/rcman:mode=0700",
         "--label=rcman.workspace=7",
@@ -188,7 +199,7 @@ def test_a_volume_that_is_there_is_adopted_only_when_it_is_labelled_for_the_same
             runtime.create(spec_)
         assert "another person" in str(refused.value)
         assert not [c for c in recorder.calls() if c[3] == "run"]  # nothing was made on it
-    asked = next(c for c in recorder.calls() if "{{json .Labels}}" in c)
+    asked = next(c for c in recorder.calls() if "{{json .Labels}}" in c and c[3] == "volume")
     assert asked[3:5] == ["volume", "inspect"] and asked[-1] == "rcman-ws-7"
     assert not [c for c in recorder.calls() if c[3:5] == ["volume", "ls"]]  # no filter to trust
 
@@ -349,17 +360,61 @@ def test_images_nothing_keeps_are_removed_by_name_without_force_and_the_fixed_on
     assert not [a for call in asked for a in call if a.startswith("--force") or a == "-f"]
 
 
-def test_every_tag_of_the_default_and_builder_repositories_stays(tmp_path):
-    """An upgrade builds the next default and builder images under tags this service's
-    settings do not name yet."""
+def test_every_tag_of_the_builder_repository_stays(tmp_path):
+    """An upgrade builds the next builder image under a tag this service's settings do not
+    name yet."""
     listed = [
-        image_entry("1" * 64, "localhost/rcman-workspace:next"),
         image_entry("2" * 64, "localhost/rcman-builder:next", "localhost/rcman-builder:other"),
-        image_entry("3" * 64, "localhost/rcman-workspacey:1"),  # another repository
+        image_entry("3" * 64, "localhost/rcman-builderx:1"),  # another repository
     ]
     recorder = Recorder(tmp_path, {"images": (0, json.dumps(listed), "")})
     removed = podman_runtime(tmp_path, recorder).collect_images(set(), set())
-    assert removed == ["localhost/rcman-workspacey:1"]  # the control: others go
+    assert removed == ["localhost/rcman-builderx:1"]  # the control: others go
+
+
+def dated(entry: dict, created: int) -> dict:
+    return {**entry, "Created": created}
+
+
+# The configured default image, made at a time the other default images are dated against.
+CONFIGURED = dated(image_entry("4" * 64, "localhost/rcman-workspace:test"), 2_000_000_000)
+
+
+def test_an_old_default_image_a_workspace_is_pinned_to_stays_with_no_container(tmp_path):
+    pinned = dated(image_entry("1" * 64, "localhost/rcman-workspace:old"), 1_000_000_000)
+    other = dated(image_entry("2" * 64, "localhost/rcman-workspace:older"), 1_000_000_000)
+    recorder = Recorder(tmp_path, {"images": (0, json.dumps([CONFIGURED, pinned, other]), "")})
+    removed = podman_runtime(tmp_path, recorder).collect_images({"1" * 64}, set())
+    assert removed == ["localhost/rcman-workspace:older"]  # the control: one not pinned goes
+
+
+def test_an_old_default_image_nothing_pins_is_removed(tmp_path):
+    old = dated(image_entry("1" * 64, "localhost/rcman-workspace:old"), 1_000_000_000)
+    recorder = Recorder(tmp_path, {"images": (0, json.dumps([CONFIGURED, old]), "")})
+    removed = podman_runtime(tmp_path, recorder).collect_images(set(), set())
+    assert removed == ["localhost/rcman-workspace:old"]
+    asked = [c[3:] for c in recorder.calls() if c[3:5] == ["image", "rm"]]
+    assert asked == [["image", "rm", "localhost/rcman-workspace:old"]]  # the configured stays
+
+
+def test_a_newer_default_image_under_a_tag_not_configured_yet_stays(tmp_path):
+    """An upgrade builds the next default image under a tag this service's settings do not
+    name until it restarts."""
+    newer = dated(image_entry("1" * 64, "localhost/rcman-workspace:next"), 2_000_000_001)
+    same = dated(image_entry("2" * 64, "localhost/rcman-workspace:same"), 2_000_000_000)
+    recorder = Recorder(tmp_path, {"images": (0, json.dumps([CONFIGURED, newer, same]), "")})
+    removed = podman_runtime(tmp_path, recorder).collect_images(set(), set())
+    assert removed == ["localhost/rcman-workspace:same"]  # the control: not later is not kept
+
+
+def test_without_the_configured_image_the_default_repository_is_kept_whole(tmp_path):
+    listed = [
+        dated(image_entry("1" * 64, "localhost/rcman-workspace:old"), 1_000_000_000),
+        dated(image_entry("2" * 64, "localhost/rcman-workspacey:1"), 1_000_000_000),
+    ]
+    recorder = Recorder(tmp_path, {"images": (0, json.dumps(listed), "")})
+    removed = podman_runtime(tmp_path, recorder).collect_images(set(), set())
+    assert removed == ["localhost/rcman-workspacey:1"]  # the control: another repository goes
 
 
 def test_an_image_with_no_name_stays_while_it_is_young_enough_to_belong_to_a_build(tmp_path):
@@ -925,7 +980,9 @@ def test_a_container_of_the_users_own_is_made_from_the_image_as_the_user(tmp_pat
     assert "localhost/rcman-workspace:test" not in run
     assert not [a for a in run if a.startswith(("--privileged", "--cap", "-p"))]
     # the two every workspace container has, and no other
-    assert [a for a in run if a.startswith("--security-opt")] == WORKSPACE_SECURITY
+    assert [a for a in run if a.startswith("--security-opt")] == workspace_security(
+        tmp_path / "tools"
+    )
 
 
 def test_the_default_container_is_made_as_before_with_no_user_and_the_workspace_image(tmp_path):
@@ -1024,7 +1081,7 @@ def fake_podman(tmp_path: Path, body: str, container_exists: bool = False) -> rt
         rt.PodmanConfig(
             socket=Path("/run/user/990/podman/podman.sock"),
             image="localhost/rcman-workspace:test",
-            tools_dir=Path("/opt/rcman/tools"),
+            tools_dir=told(tmp_path / "tools"),
             claude_store=Path("/var/lib/rcman/claude"),
             podman=str(program),
         )
@@ -1259,7 +1316,8 @@ def test_an_image_is_read_without_being_run_or_mapped(tmp_path):
     assert name.startswith(rt.PROBE_PREFIX)
     assert any(c[0] == "rm" and c[-1] == name for c in calls)  # removed when done
     copied = [c[1] for c in calls if c[0] == "cp"]
-    assert copied == [f"{name}:/etc/passwd", f"{name}:/etc/group"] and all(
+    # and what /etc is, which is a file here, so that nothing below it is asked
+    assert copied == [f"{name}:/etc/passwd", f"{name}:/etc/group", f"{name}:/etc"] and all(
         c[2] == "-" for c in calls if c[0] == "cp"
     )
 
@@ -1991,8 +2049,11 @@ def test_a_terminal_is_given_only_a_pidfile_of_its_own_shape(host, pidfile):
 
 # --- what is injected: the range, the network and the slices ----------------------------------
 
-# What every workspace container is given, and nothing else is (see below).
-WORKSPACE_SECURITY = [rt.UNMASK_PROC, "--security-opt=seccomp=/opt/rcman/tools/seccomp.json"]
+
+def workspace_security(tools: Path) -> list[str]:
+    """What every workspace container is given, and nothing else is (see below), with the
+    tools ``tools``."""
+    return [rt.UNMASK_PROC, f"--security-opt=seccomp={tools}/seccomp.json"]
 
 
 def test_the_injected_fields_are_keyword_only_with_the_products_values_as_defaults():
@@ -2054,20 +2115,20 @@ def test_every_workspace_container_unmasks_proc_and_takes_the_workspace_seccomp_
     recorder = account_recorder(tmp_path)
     runtime = podman_runtime(tmp_path, recorder)
     runtime.create(rt.Spec("rcman-ws-7", slot=3, workspace=7, person=2))
-    assert [a for a in workspace_run(recorder) if a.startswith("--security-opt")] == (
-        WORKSPACE_SECURITY
-    )
+    security = workspace_security(runtime.config.tools_dir)
+    assert [a for a in workspace_run(recorder) if a.startswith("--security-opt")] == security
     assert rt.UNMASK_PROC == "--security-opt=unmask=/proc/*"
     runtime.start_sign_in(2, 3, 60)
     others = [r for r in runs(recorder) if "--name=rcman-ws-7" not in r]
     assert any("--name=" + rt.sign_in_name(2) in r for r in others)  # positive control
     for other in others:
-        assert not set(WORKSPACE_SECURITY) & set(other), other
+        assert not set(security) & set(other), other
     (tmp_path / "c").mkdir()
     canary, made = canary_recorder(tmp_path / "c")
     made.run_canary(CANDIDATE_FOLDER, rt.CANARY_NAME, "1.2.3")
     (ran,) = runs(canary)
-    assert f"--name={rt.CANARY_NAME}" in ran and not set(WORKSPACE_SECURITY) & set(ran)
+    security = workspace_security(made.config.tools_dir)
+    assert f"--name={rt.CANARY_NAME}" in ran and not set(security) & set(ran)
 
 
 def test_every_workspace_has_a_tmpfs_of_its_roots_for_roots_podman(tmp_path):
@@ -2429,3 +2490,337 @@ def test_the_canary_runs_in_the_slot_it_is_given_and_the_builders_by_default(tmp
     default, given = [c[3:] for c in recorder.calls() if c[3] == "run"]
     assert f"--uidmap=0:{people.BUILDER_SLOT * rt.RANGE}:{rt.RANGE}" in default
     assert f"--uidmap=0:{6 * rt.RANGE}:{rt.RANGE}" in given
+
+
+# --- what Claude is told: a file of the tools bound read-only at Claude Code's managed path ----
+
+LABELLED = json.dumps({instructions.TOOLS_LABEL: "1", "org.example.other": "x"})
+
+
+def bound_instructions(run: list[str]) -> list[str]:
+    """What a run binds at Claude Code's managed folder, or anywhere in it."""
+    return [a for a in run if "/etc/claude-code" in a]
+
+
+def labels_recorder(tmp_path: Path, answer: tuple[int, str, str]) -> Recorder:
+    """account_recorder's answers, with the image's labels answered ``answer``."""
+    return Recorder(
+        tmp_path,
+        {
+            "volume exists": (1, "", ""),
+            "volume inspect": (0, MOUNTPOINT + "\n", ""),
+            "volume inspect labels": (0, '{"rcman.person": "2"}', ""),
+            "image inspect": (0, "", ""),  # so that the labels are told apart by the verb
+            "image inspect labels": answer,
+        },
+    )
+
+
+def labels_asked(recorder: Recorder) -> list[list[str]]:
+    return [c[3:] for c in recorder.calls() if c[3:5] == ["image", "inspect"]]
+
+
+@pytest.mark.parametrize(
+    ("image", "labels", "named"),
+    [
+        (None, LABELLED, instructions.DEFAULT_TOOLS),
+        (None, json.dumps({"org.example.other": "x"}), instructions.DEFAULT_IMAGE),
+        (None, "null", instructions.DEFAULT_IMAGE),  # an image with no labels at all
+        # one built from the default image, which carries its label: told as the default is
+        ("docker.io/library/node:20", LABELLED, instructions.DEFAULT_TOOLS),
+        ("docker.io/library/node:20", json.dumps({"org.x": "y"}), instructions.OWN_IMAGE),
+        ("docker.io/library/node:20", "null", instructions.OWN_IMAGE),
+    ],
+)
+def test_the_instructions_bound_follow_the_spec_and_the_images_label(
+    tmp_path, image, labels, named
+):
+    """A workspace whose image carries the default image's label is told of gh and of the
+    default image's tools, whatever image it is; one of an old default image without it, of
+    gh; one of an image of its own without it, neither. The labels are those of the image the
+    workspace is made from."""
+    recorder = labels_recorder(tmp_path, (0, labels + "\n", ""))
+    runtime = podman_runtime(tmp_path, recorder)
+    runtime.create(rt.Spec("rcman-ws-7", slot=3, workspace=7, person=2, image=image))
+    told_file = runtime.config.tools_dir / instructions.FOLDER / named
+    assert told_file.is_file()
+    assert bound_instructions(workspace_run(recorder)) == [
+        f"--volume={told_file}:{instructions.MANAGED}:ro"
+    ]
+    shown = image or runtime.config.image
+    assert labels_asked(recorder) == [["image", "inspect", "--format", "{{json .Labels}}", shown]]
+
+
+@pytest.mark.parametrize("image", [None, "docker.io/library/node:20"])
+def test_a_container_made_again_from_an_images_id_reads_that_images_labels(tmp_path, image):
+    """Not those of whichever image the name names now: the default image's or the plan's."""
+    recorder = labels_recorder(tmp_path, (0, LABELLED, ""))
+    runtime = podman_runtime(tmp_path, recorder)
+    runtime.create(rt.Spec("rcman-ws-7", slot=3, workspace=7, person=2, image=image, image_id=ID_A))
+    assert labels_asked(recorder) == [["image", "inspect", "--format", "{{json .Labels}}", ID_A]]
+    told_file = runtime.config.tools_dir / instructions.FOLDER / instructions.DEFAULT_TOOLS
+    assert bound_instructions(workspace_run(recorder)) == [
+        f"--volume={told_file}:{instructions.MANAGED}:ro"
+    ]
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [(125, "", "Error: the image is not there\n"), (0, "not json\n", ""), (0, "[1]\n", "")],
+)
+@pytest.mark.parametrize("image", [None, "docker.io/library/node:20"])
+def test_a_failed_label_inspect_makes_no_volume_and_no_container(tmp_path, answer, image):
+    recorder = labels_recorder(tmp_path, answer)
+    with pytest.raises(rt.RuntimeFailed) as failed:
+        podman_runtime(tmp_path, recorder).create(
+            rt.Spec("rcman-ws-7", slot=3, workspace=7, person=2, image=image)
+        )
+    if answer[0]:
+        assert "the image is not there" in str(failed.value)
+    assert labels_asked(recorder)  # it was asked
+    calls = [c[3:] for c in recorder.calls()]
+    assert not [c for c in calls if c[0] == "run" or c[:2] == ["volume", "create"]], calls
+    (tmp_path / "control").mkdir()  # the control: with the labels read, it is made
+    made = labels_recorder(tmp_path / "control", (0, LABELLED, ""))
+    podman_runtime(tmp_path / "control", made).create(
+        rt.Spec("rcman-ws-7", slot=3, workspace=7, person=2)
+    )
+    assert workspace_run(made)
+
+
+@pytest.mark.parametrize("name", sorted(instructions.FILES))
+@pytest.mark.parametrize("planted", ["gone", "a folder"])
+@pytest.mark.parametrize("image", [None, "docker.io/library/node:20"])
+def test_a_missing_instructions_file_fails_create_before_podman_runs_and_names_the_installer(
+    tmp_path, name, planted, image
+):
+    recorder = account_recorder(tmp_path)
+    runtime = podman_runtime(tmp_path, recorder)
+    missing = runtime.config.tools_dir / instructions.FOLDER / name
+    missing.unlink()
+    if planted == "a folder":
+        missing.mkdir()
+    assert not missing.is_file()  # the plant took effect
+    spec_ = rt.Spec("rcman-ws-7", slot=3, workspace=7, person=2, image=image)
+    with pytest.raises(rt.InstructionsMissing) as failed:
+        runtime.create(spec_)
+    assert isinstance(failed.value, rt.RuntimeFailed)  # a failure of the runtime's, as any
+    assert str(failed.value) == rt.INSTRUCTIONS_MISSING
+    assert "run the installer again" in rt.INSTRUCTIONS_MISSING
+    assert not [c for c in recorder.calls() if c[3] in ("run", "volume", "image")]
+    if planted == "a folder":
+        missing.rmdir()
+    told(runtime.config.tools_dir)  # the control: with the file there again, it is made
+    runtime.create(spec_)
+    assert workspace_run(recorder)
+
+
+def test_instructions_ready_names_a_missing_file_and_asks_podman_nothing(tmp_path):
+    recorder = Recorder(tmp_path, {})
+    runtime = podman_runtime(tmp_path, recorder)
+    assert runtime.instructions_ready() is None  # the control: every file is there
+    for name in instructions.FILES:
+        told(runtime.config.tools_dir)
+        (runtime.config.tools_dir / instructions.FOLDER / name).unlink()
+        assert runtime.instructions_ready() == rt.INSTRUCTIONS_MISSING, name
+    assert recorder.calls() == []
+
+
+def test_only_a_workspace_container_binds_the_instructions(tmp_path):
+    """Not the account's container, the one that prepares a swapped map's folders, the sign-in
+    container, the canary, the probe of an image or the builder: none of them runs Claude for a
+    person's work."""
+    recorder = account_recorder(tmp_path)
+    runtime = podman_runtime(tmp_path, recorder)
+    runtime.create(owned_spec())
+    runtime.start_sign_in(2, 3, 60)
+    assert bound_instructions(workspace_run(recorder))  # the positive
+    others = [r for r in runs(recorder) if "--name=rcman-ws-7" not in r]
+    assert any("--name=" + rt.sign_in_name(2) in r for r in others)
+    assert any("--rm" in r and "--volume=rcman-ws-7:/rcman" in r for r in others)  # folders
+    assert any(rt.account_volume(2) in " ".join(r) for r in others if "--rm" in r)  # account
+    for other in others:
+        assert not bound_instructions(other), other
+    (tmp_path / "c").mkdir()
+    canary, made = canary_recorder(tmp_path / "c")
+    made.run_canary(CANDIDATE_FOLDER, rt.CANARY_NAME, "1.2.3")
+    (ran,) = runs(canary)
+    assert not bound_instructions(ran)
+    (tmp_path / "p").mkdir()  # the probe of an image, made and never started
+    probing = Recorder(tmp_path / "p", {"image inspect": (0, "{}", "")})
+    podman_runtime(tmp_path / "p", probing).image_facts("x/y:1")
+    (probe,) = [c[3:] for c in probing.calls() if c[3] == "create"]
+    assert any(a.startswith(f"--name={rt.PROBE_PREFIX}") for a in probe)
+    assert not bound_instructions(probe)
+    from tests.test_runtime_build import SUCCESS, StandIn, building, runtime_with
+
+    (tmp_path / "b").mkdir()
+    stand_in = StandIn(tmp_path / "b", **SUCCESS)
+    building(runtime_with(stand_in))[0]()
+    builder = next(c for c in stand_in.calls() if c[0] == "run")
+    assert "--name=rcman-build-7" in builder
+    assert not bound_instructions(builder)
+
+
+def test_the_host_runtime_gives_no_instructions_file(host):
+    """It runs on the host, where Claude Code's managed folder is the machine's own."""
+    assert host.instructions_ready() is None
+    with runtime_contract.made(host, spec(30)) as name:
+        assert host.exists(name)
+
+
+def header(kind: str) -> bytes:
+    """A tar of one entry of ``kind``, as podman cp prints what is at a path."""
+    import io
+    import tarfile
+
+    types = {"folder": tarfile.DIRTYPE, "file": tarfile.REGTYPE, "link": tarfile.SYMTYPE,
+             "fifo": tarfile.FIFOTYPE}  # fmt: skip
+    entry = tarfile.TarInfo("claude-code")
+    entry.type = types[kind]
+    if kind == "link":
+        entry.linkname = "/elsewhere"
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w") as archive:
+        archive.addfile(entry, io.BytesIO(b"") if kind == "file" else None)
+    return buffer.getvalue()
+
+
+def negative_extension() -> bytes:
+    """A PAX extension header whose size, in the base-256 form, is negative, then a folder: a
+    reader that took the size as it is would stand where it is for ever."""
+    import tarfile
+
+    data = bytearray(extended("folder", "pax"))
+    size = -tarfile.BLOCKSIZE  # what would hold the reader where it is
+    data[124:136] = b"\xff" + (256**11 + size).to_bytes(11, "big")
+    data[148:156] = b" " * 8
+    data[148:156] = b"%06o\0 " % sum(data[:512])
+    assert tarfile.TarInfo.frombuf(bytes(data[:512]), "utf-8", "replace").size == size  # plant
+    return bytes(data)
+
+
+def extended(kind: str, form: str) -> bytes:
+    """A tar of one entry of ``kind`` behind an extension header of ``form``: a PAX one that
+    spans blocks, or a GNU long name, as podman cp may print them before the entry itself."""
+    import io
+    import tarfile
+
+    types = {"folder": tarfile.DIRTYPE, "file": tarfile.REGTYPE}
+    entry = tarfile.TarInfo("claude-code" if form == "pax" else "claude-code-" + "x" * 120)
+    entry.type = types[kind]
+    if form == "pax":
+        entry.pax_headers = {"comment": "y" * 1500}
+    formats = {"pax": tarfile.PAX_FORMAT, "gnu": tarfile.GNU_FORMAT}
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w", format=formats[form]) as archive:
+        archive.addfile(entry, io.BytesIO(b"") if kind == "file" else None)
+    data = buffer.getvalue()
+    marker = {"pax": tarfile.XHDTYPE, "gnu": tarfile.GNUTYPE_LONGNAME}[form]
+    assert data[156:157] == marker  # the plant: the first header is the extension's
+    return data
+
+
+def probed_podman(tmp_path: Path, found: dict[str, bytes], linger: bool = False):
+    """A podman whose image has, at each path of ``found``, what podman cp prints for it, and
+    nothing anywhere else; with ``linger`` cp waits, once it has printed, as a big copy does."""
+    for number, data in enumerate(found.values()):
+        (tmp_path / f"cp{number}").write_bytes(data)
+    tars = {path: str(tmp_path / f"cp{number}") for number, path in enumerate(found)}
+    return fake_podman(
+        tmp_path,
+        "if args[:2] == ['image', 'inspect']:\n    sys.stdout.write('{}')\n"
+        "elif args[0] == 'cp':\n"
+        f"    tars = {tars!r}\n"
+        "    path = args[1].split(':', 1)[1]\n"
+        "    if path not in tars:\n"
+        "        print('Error: No such file or directory', file=sys.stderr)\n"
+        "        sys.exit(125)\n"
+        "    sys.stdout.buffer.write(open(tars[path], 'rb').read())\n"
+        "    sys.stdout.buffer.flush()\n"
+        f"    if {linger}:\n        time.sleep(60)\n",
+    )
+
+
+ETC, FOLDER_OF, MANAGED = instructions.PATHS
+FOLDER_IS, FILE_IS = instructions.IS_FOLDER, instructions.IS_FILE
+
+
+@pytest.mark.parametrize(
+    ("found", "read", "said"),
+    [
+        (  # a folder with a file in it
+            {ETC: header("folder"), FOLDER_OF: header("folder"), MANAGED: header("file")},
+            [ETC, FOLDER_OF, MANAGED],
+            {ETC: FOLDER_IS, FOLDER_OF: FOLDER_IS, MANAGED: FILE_IS},
+        ),
+        (  # a file where the folder would be: nothing below it is asked
+            {ETC: header("folder"), FOLDER_OF: header("file")},
+            [ETC, FOLDER_OF],
+            {ETC: FOLDER_IS, FOLDER_OF: FILE_IS},
+        ),
+        ({ETC: header("folder")}, [ETC, FOLDER_OF], {ETC: FOLDER_IS}),  # absent
+        ({}, [ETC], {}),  # no /etc at all
+        ({ETC: header("file")}, [ETC], {ETC: FILE_IS}),
+        (  # a folder where the file would be
+            {ETC: header("folder"), FOLDER_OF: header("folder"), MANAGED: header("folder")},
+            [ETC, FOLDER_OF, MANAGED],
+            {ETC: FOLDER_IS, FOLDER_OF: FOLDER_IS, MANAGED: FOLDER_IS},
+        ),
+        (  # what podman would print of a link if it did not follow it, as it does
+            {ETC: header("folder"), FOLDER_OF: header("link")},
+            [ETC, FOLDER_OF],
+            {ETC: FOLDER_IS, FOLDER_OF: instructions.IS_LINK},
+        ),
+        (
+            {ETC: header("folder"), FOLDER_OF: header("folder"), MANAGED: header("fifo")},
+            [ETC, FOLDER_OF, MANAGED],
+            {ETC: FOLDER_IS, FOLDER_OF: FOLDER_IS, MANAGED: instructions.IS_OTHER},
+        ),
+        (  # an extension header before the entry: what is judged is the entry
+            {
+                ETC: extended("folder", "pax"),
+                FOLDER_OF: extended("folder", "gnu"),
+                MANAGED: extended("file", "pax"),
+            },  # fmt: skip
+            [ETC, FOLDER_OF, MANAGED],
+            {ETC: FOLDER_IS, FOLDER_OF: FOLDER_IS, MANAGED: FILE_IS},
+        ),
+        (
+            {ETC: header("folder"), FOLDER_OF: extended("file", "gnu")},
+            [ETC, FOLDER_OF],
+            {ETC: FOLDER_IS, FOLDER_OF: FILE_IS},
+        ),
+        (  # a header that is not one
+            {ETC: b"x" * 1024},
+            [ETC],
+            {ETC: instructions.IS_OTHER},
+        ),
+    ],
+)
+def test_the_image_probe_says_what_the_image_has_at_the_managed_path(tmp_path, found, read, said):
+    facts = probed_podman(tmp_path, found).image_facts("x")
+    assert facts.managed == said
+    copied = [c[1].split(":", 1)[1] for c in fake_calls(tmp_path) if c[0] == "cp"]
+    assert copied == ["/etc/passwd", "/etc/group", *read]
+
+
+def test_an_extension_header_of_a_negative_size_is_not_told_and_ends_the_reading(tmp_path):
+    import threading
+
+    runtime = probed_podman(tmp_path, {ETC: negative_extension()})
+    found: list = []
+    reading = threading.Thread(target=lambda: found.append(runtime.image_facts("x")), daemon=True)
+    reading.start()
+    reading.join(30)
+    assert not reading.is_alive(), "the probe went round the header for ever"
+    assert found[0].managed == {ETC: instructions.IS_OTHER}
+
+
+def test_the_probe_reads_the_first_header_alone_and_does_not_wait_for_the_rest(tmp_path):
+    """What is at /etc is a folder, whose copy is the whole of /etc."""
+    found = {ETC: header("folder"), FOLDER_OF: header("folder"), MANAGED: header("file")}
+    began = time.monotonic()
+    facts = probed_podman(tmp_path, found, linger=True).image_facts("x")
+    assert time.monotonic() - began < 30  # not the minute each copy waits
+    assert facts.managed == {ETC: FOLDER_IS, FOLDER_OF: FOLDER_IS, MANAGED: FILE_IS}

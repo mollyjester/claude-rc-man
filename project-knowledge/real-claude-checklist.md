@@ -32,20 +32,28 @@ With a person added for the test (`sudo rcman-admin add`):
 4. Connect the test Claude account on the **Claude** page; start the
    workspace's server, then make a second workspace and start its server: both
    reach ready.
-5. Restart rcman (`sudo systemctl restart rcman`): the workspaces stay ready,
+5. In a new Remote Control session of a workspace of the default image, ask Claude
+   what it was told about this workspace: it answers from rcman's instructions
+   ([runtime.md](runtime.md#workspace-instructions)), chooses `gh` for GitHub work
+   over GitHub MCP tools, and, asked "will your work here be lost if you don't
+   push?" and "is `df` accurate here?", answers no and yes. The session's appended
+   system prompt still has the section headed "Your current remote execution
+   environment" that the instructions correct; if that heading changed, the
+   correction in `backend/rcman/instructions/common.md` is changed with it.
+6. Restart rcman (`sudo systemctl restart rcman`): the workspaces stay ready,
    and their servers keep running, without anyone doing anything.
-6. Reboot the machine, as [After the host restarts](#after-the-host-restarts)
+7. Reboot the machine, as [After the host restarts](#after-the-host-restarts)
    says: the workspaces are ready again afterwards, and their servers running,
    without anyone doing anything.
-7. **Sign out of Claude** with **Keep servers running until the last one stops** ticked: both servers
+8. **Sign out of Claude** with **Keep servers running until the last one stops** ticked: both servers
    keep running and **Start** is refused; stop both, and the page shows the
    account not connected.
-8. Delete the workspace with its trash button, **Delete workspace <name>** in the list, and remove the person (`sudo rcman-admin delete`):
+9. Delete the workspace with its trash button, **Delete workspace <name>** in the list, and remove the person (`sudo rcman-admin delete`):
    `podman volume ls` as `rcman` lists nothing of theirs.
-9. **Run `sudo ./install.sh` again** from the dedicated clone while a workspace's
-   server is running: it changes nothing and ends nothing, and the server is still
-   running afterwards, and `podman info` as `rcman` reports `crun` as its OCI
-   runtime.
+10. **Run `sudo ./install.sh` again** from the dedicated clone while a workspace's
+    server is running: it changes nothing and ends nothing, and the server is still
+    running afterwards, and `podman info` as `rcman` reports `crun` as its OCI
+    runtime.
 
 Write down what differed from this list. A screen rcman shows as
 **Unrecognised screen** is recorded as a new fixture, or, where no sequence
@@ -85,7 +93,7 @@ runuser -u rcman -- env -i PATH=/usr/bin:/bin HOME=/var/lib/rcman \
    containers, `/etc/subuid` and `/etc/subgid` have gained rcman's lines and no other
    changed, and the groups are the same but for `rcman`, `rcman-proxy` and `rcman-web`
    (with Caddy's account in the last).
-7. **Run the installer again** (step 9 of
+7. **Run the installer again** (step 10 of
    [On an installed server](#on-an-installed-server)): it changes nothing, and a workspace's
    container with limits on its slices keeps its process, its start time and its limits in the
    kernel's files (step 10), and rcman's user manager its process.

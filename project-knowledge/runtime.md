@@ -72,6 +72,9 @@ conmon and the network helper with them, live in rcman's user manager, not in
 - `--cgroup-parent` the workspace's slice, unless `PodmanConfig.slices` is off, and
   `--pids-limit=-1`, so that the slice's limits are the only limits (see [Limits](#limits));
 - a tmpfs at `ROOT_PODMAN_STATE`, the container root's, for the record of root's Podman;
+- the instructions for Claude, a file of the tools bound read-only at Claude Code's managed
+  path (see [Workspace instructions](#workspace-instructions)), in `create` itself and not in
+  `_mounts`, which the sign-in container shares;
 - `UNMASK_PROC` and the seccomp profile `SECCOMP` of the tools, so that a container nested in
   the workspace can mount a `/proc` of its own and name its own UTS namespace (see
   [Containers in a workspace](#containers-in-a-workspace)); no other container rcman starts has
@@ -112,12 +115,27 @@ network too; the account containers, the folders' preparation and the canary hav
 What a colleague is told of it is [the workspaces guide](../docs/workspaces.md#containers).
 The tools hold `podman` and `docker` (`backend/rcman/podman/podman`, `docker` a link to it) in
 their folder `podman/bin`, with the configuration beside them (`containers.conf`,
-`storage.conf`, `registries.conf`, from `backend/rcman/podman/`); the installer writes them
+`storage.conf`, `registries.conf`, from `backend/rcman/podman/`) and `publish.sh`, which the
+wrapper sources (`PODMAN_PUBLISH`); the installer writes them
 (`ensure_podman_tools`, see [installer.md](installer.md)); the folder holds `PODMAN_COMMANDS`
 and nothing else, which a test holds it to, since it is `PODMAN_BIN` on every workspace's PATH,
 right after Claude's folder (`PODMAN_LAYOUT.path` and `path_prefix`, so a plan's PATH keeps it
 first too), before the image's own programs, git among them. The default image holds Podman, crun
 and catatonit. `compose` is refused, and an image with no `/usr/bin/podman` is said to have none.
+
+- **A published port.** Where the image's Podman runs, `publish.sh` reads the arguments of `run`,
+  `create`, `container run|create` and `pod create` by the rules of Podman's option parser that
+  its lists of options let it follow: global options before and after the subcommand, letter
+  clusters with a letter's value in the rest of the cluster, the next argument or after an `=`,
+  up to the image, the pod's name, `--` or a letter it does not know. It says on standard error
+  that a `-p`, `--publish` or `-P` (`--publish-all`, not `=false`) publishes nothing, since the
+  container shares the workspace's network; Podman then runs as asked. Nothing is said where
+  `--network` or `--net` names anything but `host`, or `--pod` or `--pod-id-file` a pod. Its
+  lists of options are those Podman's help shows for those subcommands, with `--net`, an alias
+  the help hides, and the wrapper's `VALUED` for the global ones. The helps are recorded from the
+  default image's Podman in `tests/fakes/podman-help/`: `tests/test_podman_wrapper.py` holds the
+  lists to the recording, and `tests/container/test_nest_in_podman.py` the recording to the
+  image's own help.
 
 - **The configuration.** A nested container has pid, UTS and IPC namespaces of its own and
   shares the workspace's network, user and cgroup namespaces; cgroups are disabled (the
@@ -276,6 +294,56 @@ person's file bound as a workspace's, and the tools and the Claude Code store.
 It is labelled with the person only, never `rcman.workspace`, so `labelled`
 and restore never see it. `end_sign_in` removes it. What runs in it is
 [backend.md](backend.md#claude-accounts)'s.
+
+### Workspace instructions
+
+What Claude is told in every workspace is a file of rcman's, bound read-only by
+`PodmanRuntime.create` at `helpers/instructions.py` `MANAGED`, Claude Code's managed
+`CLAUDE.md`, which it reads into every session and which a session cannot leave out. It always
+replaces a file an image has there; the image's other files in that folder stay. What the text
+says is for colleagues in
+[the workspaces guide](../docs/workspaces.md#what-claude-is-told-in-a-workspace).
+
+- **The text.** Fragments in `backend/rcman/instructions/` (`instructions.COMMON` for every
+  workspace, `GH` for one of the default image or of an image that carries `TOOLS_LABEL`,
+  `TOOLS` for one of an image that carries it) make the files `instructions.FILES`, each its
+  fragments in order (`instructions.compose`). The installer writes them into the tools' folder
+  `instructions.FOLDER` (`ensure_instructions`, see [installer.md](installer.md)).
+- **Which file.** `instructions.file_for`, from the labels of the image a workspace is made
+  from, read with `podman image inspect` (`Spec.image_id` where it has one, else `Spec.image`
+  or the configured default image): a workspace whose image carries `TOOLS_LABEL`, the default
+  image, whether it has no devcontainer.json or one whose `image` names it, or an image built
+  from it outside rcman and pulled, which inherits the label, is told the whole text; one of a default image without the label (`Spec.image` unset), of gh too but not
+  of the tools; any other, the common text alone. A failure to read the labels fails `create`
+  before any volume or container is made.
+- **When it is missing.** `Runtime.instructions_ready` says why no workspace container can be
+  made, looking only at the tools (`HostRuntime`, which binds nothing, says nothing); `create`
+  raises `InstructionsMissing`, a `RuntimeFailed`, before it asks Podman anything. `Workspaces`
+  asks before anything is discarded: a workspace being made fails with `INSTRUCTIONS_MISSING`
+  and keeps its container and volume, never blamed on its image; a Rebuild leaves the old
+  container running and says why in its error, as does the Rebuild of a failed workspace,
+  which keeps the container it has; a restore brings nothing back, discarding, making and
+  starting nothing, and says why in the journal, its workspaces reading `ready` meanwhile; and
+  `main.check_instructions` says so in the journal when the service starts. The files could
+  still go between the look and a `create`, which then fails with `InstructionsMissing`
+  itself, a Rebuild's putting back of the old container among them.
+- **New text.** The installer renames a changed file over the old one, so a container keeps
+  the file it was started with until its next start, which binds the new one.
+- **An image's own managed path.** `image_facts` reads, through `podman cp`, the first tar
+  header of each of `instructions.PATHS` (`/etc`, `/etc/claude-code`, then `MANAGED`) as far
+  as each is a folder, stopping podman after it (`ImageFacts.managed`). `podman cp` follows a
+  link, so a link reads as what it leads to; the PAX and GNU long-name headers before an entry
+  are passed over, within a few blocks, and the entry is judged. `instructions.refused_at`
+  names a folder of the path that is a file, or `MANAGED` that is not a regular file, which
+  `_read_plan` refuses as `image_managed_folder`; anything else at a folder of the path is not
+  judged.
+- **Who gets none.** The sign-in, canary, builder, image-probe, folder-preparation and account
+  containers.
+
+The bind of a single file at a path the image lacks, readable with swapped ids, over an
+image's own folder, and taking a rename-over at the next start, and the probe's reading of
+links, are held by `tests/container/test_runtime_in_podman.py`; the text that reaches a real
+session is a check of [the real-Claude list](real-claude-checklist.md).
 
 ### The git folder
 
@@ -553,7 +621,7 @@ label, then the file's own, merged) and the parsing of an image's passwd and gro
   (`Runtime.image_facts`: a container made and never started, `podman cp` of the passwd and
   group files, which is stopped at `PODMAN_TIMEOUT` or when the workspace is deleted, and in
   which only podman saying the file is not there means the image has none: any other failure
-  fails the reading, so a user is never reported missing because a copy merely failed; the image's labels, user and environment); make the plan; store it in the
+  fails the reading, so a user is never reported missing because a copy merely failed; the image's labels, user and environment; and what it has at Claude Code's managed path, see [Workspace instructions](#workspace-instructions)); refuse an image that carries a label beginning `rcman.` (`image_labels`) or whose managed path cannot have the instructions bound over it (`image_managed_folder`); make the plan; store it in the
   row's `environment`; close the channel, `Runtime.discard` the container (the volume
   stays) and make it again from the image as the plan's user; check libc (an image on
   musl is refused) and git; run the create commands. The workspace stays `creating`
@@ -867,7 +935,9 @@ the prefix it was started with.
   work. Deleting a person deletes each of theirs (see [people.md](people.md)).
 - **Restoring.** When rcman starts, `restore` runs in the background, so rcman
   answers at once: it waits for the runtime, trying again while it is
-  unavailable; finishes rows still `deleting`, and `creating` ones with no `source`, which are
+  unavailable (where the instructions for Claude are missing from the tools, it leaves every
+  row as it is and brings no workspace back, and the other steps still run, see
+  [Workspace instructions](#workspace-instructions)); finishes rows still `deleting`, and `creating` ones with no `source`, which are
   made again; fails a `creating` one with a `source`, which a restart interrupted
   while it was being made, with `CLONE_MESSAGES["restarted"]` (it is not cloned
   again, nor are its create commands run again, whatever it had done: the person
@@ -911,8 +981,10 @@ the prefix it was started with.
   or rebuilt, but by a rebuild's own thread as it ends, nor when a plan cannot be read, never
   one a container is made from, never by force, and the keep list is every stored plan's image
   and id, each workspace's `image_id`, the image built for each workspace under both its names
-  (`BUILT_TAG`, `NEXT_TAG`), and the runtime's own: every tag of the default and the builder repositories,
-  since an upgrade builds the next ones beside the service; an image with no name stays until it
+  (`BUILT_TAG`, `NEXT_TAG`), and the runtime's own: the configured default image and every image
+  of its repository made after it, and every tag of the builder repository, since an upgrade builds
+  the next ones beside the service, and the whole default repository where the configured image is
+  not there, since nothing then tells the old from the new; an image with no name stays until it
   is `IMAGE_GRACE_SECONDS` old, being perhaps a layer of a build under way; names are compared
   fully qualified, as Podman lists them, `qualified_name`), which it does after a deletion too. It
   holds `_images_lock`, which `create` holds while it records a workspace, so a workspace is either

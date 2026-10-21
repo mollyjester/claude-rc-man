@@ -192,6 +192,19 @@ def test_the_tools_are_static_and_root_s():
     assert (ins.TOOLS / "tmux.conf").read_text() == conf
 
 
+def test_the_instructions_for_claude_are_roots_and_readable_by_everyone():
+    from helpers import instructions
+
+    folder = (ins.TOOLS / instructions.FOLDER).stat()
+    assert folder.st_uid == 0 and stat.S_IMODE(folder.st_mode) == 0o755
+    fragments = ROOT / "current" / "backend" / "rcman" / instructions.FOLDER
+    for name in instructions.FILES:
+        found = (ins.TOOLS / instructions.FOLDER / name).stat()
+        assert found.st_uid == 0 and stat.S_IMODE(found.st_mode) == 0o644, name
+        written = (ins.TOOLS / instructions.FOLDER / name).read_text()
+        assert written == instructions.compose(fragments, name), name
+
+
 def test_the_tools_are_outside_rcmans_home_and_root_leaves_nothing_there_of_its_own():
     """The tools are root's in a folder only root can write; nothing of building them is in
     rcman's home, and what is in the home is rcman's alone (root made none of it)."""
