@@ -132,6 +132,23 @@ function api() {
       remote: { branches: [], more: 0 },
     },
     "GET /api/github": { token: true },
+    "GET /api/monitor": {
+      scopes: { host: false, people: false, containers: false },
+      usage: { collected_at: null, error: null },
+      disk: { collected_at: null, error: null },
+      host: null,
+      people: null,
+      containers: null,
+    },
+    "GET /api/monitor/settings": {
+      settings: {
+        usage_interval_seconds: 60,
+        disk_interval_seconds: 3600,
+        host: false,
+        people: false,
+        containers: false,
+      },
+    },
   });
 }
 
@@ -201,6 +218,7 @@ const PAGES: [string, Where, () => Promise<void>][] = [
   ],
   ["a new workspace", "/", async () => void (await openNewWorkspace())],
   ["Claude Code versions", "/admin/claude", async () => {}],
+  ["the monitoring settings", "/admin/monitor", async () => {}],
   [
     "signing out of rcman",
     "/settings",

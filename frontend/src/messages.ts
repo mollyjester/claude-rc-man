@@ -28,6 +28,7 @@ export const m = {
   navAudit: "Audit trail",
   navEveryone: "Everyone's workspaces",
   navVersions: "Claude Code versions",
+  navMonitor: "Monitor",
   // The Upgrade rcman page's name in the sidebar, a noun as its neighbours' are; not "rcman"
   // alone, which is the top bar's link home.
   navRcman: "rcman release",
@@ -396,6 +397,7 @@ export const m = {
     "claude.disconnect": "Signed out of Claude",
     "claude.upgrade": "Rolled out a Claude Code version",
     "rcman.upgrade": "Asked for rcman to be upgraded",
+    "monitor.settings": "Changed the monitoring settings",
     "terminal.open": "Opened a terminal",
     "terminal.close": "A terminal closed",
   } as Record<string, string>,
@@ -651,6 +653,66 @@ export const m = {
     "This branch and the branch it tracks each have commits the other lacks, so it cannot be synced: merge or rebase it first.",
   gitSaid: "What git said",
   andMoreLines: (count: number) => `and ${count} more lines`,
+
+  // The Monitor page, for administrators (src/Monitor.tsx); docs/monitor.md names its parts in
+  // these words, which src/monitor-guide.test.ts holds it to.
+  monitorTitle: "Monitor",
+  monitorIntro:
+    "What the host, each person and each workspace container use now, as rcman last collected it.",
+  // The two rounds, by name, in the page's live region and in the guide.
+  monitorUsage: "Usage",
+  monitorDisk: "Disk",
+  // A round in the live region: when it last collected, in UTC, and how often it runs where that
+  // is known.
+  monitorCollected: (round: string, at: string | null, every: string | null) =>
+    `${round}: ${at === null ? "not collected yet" : `collected ${at} UTC`}${every === null ? "" : `, every ${every}`}.`,
+  monitorUsageFailed: "The last usage round failed. The figures shown are the last ones read.",
+  monitorDiskFailed: "The last disk round failed. The disk figures shown are the last ones read.",
+  monitorHost: "Host",
+  monitorPeople: "People",
+  monitorContainers: "Containers",
+  monitorCpu: "CPU",
+  monitorMemory: "Memory",
+  monitorMemoryWithSwap: "Memory with swap",
+  monitorProcesses: "Processes",
+  monitorPerson: "Person",
+  monitorState: "State",
+  monitorFilesystems: "Filesystems",
+  monitorNoContainers: "No workspaces.",
+  // Beside the host's CPU, a percent of one core.
+  monitorCores: (cores: number) =>
+    `of one core; ${cores === 1 ? "1 core" : `${cores} cores`} in all`,
+  monitorMemoryOf: (total: string) => `used of ${total}`,
+  monitorDiskOf: (size: string, free: string) => `used of ${size}, ${free} free`,
+  // Under a filesystem's figures: what of rcman's it holds (monitorRoles), as a list.
+  monitorFilesystemOf: (folders: string) => `Holds ${folders}`,
+  monitorRoles: {
+    database: "rcman's database",
+    root: "the host's root folder",
+    podman: "Podman's storage",
+  } as Record<string, string>,
+  // A figure rcman could not read, never shown as zero.
+  monitorNotKnown: "Not known",
+  // A part whose scope is switched off: an empty state that leads to the settings.
+  monitorOff: "Not collected",
+  monitorOffBody: (scope: string) => `“${scope}” is switched off in the monitoring settings.`,
+  monitorOffLink: "Go to monitoring settings",
+  monitorSettingsTitle: "Monitoring settings",
+  monitorSettingsLine:
+    "How often rcman collects, and what. A save applies at once, for every administrator.",
+  monitorUsageInterval: "Usage interval (seconds)",
+  monitorUsageIntervalHelp: "How often CPU, memory and processes are read. A read costs little.",
+  monitorDiskInterval: "Disk interval (seconds)",
+  monitorDiskIntervalHelp:
+    "How often the disk of every workspace is read. A read walks every file, so keep it rare.",
+  monitorCollect: "Collect",
+  monitorSave: "Save monitoring settings",
+  monitorSaving: "Saving…",
+  monitorSaved: "Monitoring settings saved.",
+  // Units, after a non-breaking space (src/format.ts): sizes in decimal SI, as Podman gives
+  // them, and intervals.
+  byteUnits: ["B", "kB", "MB", "GB", "TB", "PB", "EB"],
+  timeUnits: { second: "s", minute: "min", hour: "h" },
 
   problemFieldErrors: "Details:",
   problemCheckFields: "Check the fields marked below.",

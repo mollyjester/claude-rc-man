@@ -13,6 +13,7 @@ import { Link } from "react-router-dom";
 import { type ApiError, api } from "./api";
 import { browser } from "./browser";
 import { Dialog } from "./Dialog";
+import { utcMoment } from "./format";
 import { MessageBar } from "./MessageBar";
 import { m } from "./messages";
 import { asApiError, ProblemView } from "./ProblemView";
@@ -39,12 +40,6 @@ export const GUIDE_WEB_UPGRADE = "/help/installation#upgrading-from-the-web-inte
 export const GUIDE_ROLLBACK = "/help/installation#upgrading-and-rolling-back";
 
 const UNDER_WAY = new Set(["requested", "running"]);
-
-// A moment as a date and a time in UTC, as the audit trail shows it.
-function when(iso: string): string {
-  const at = new Date(iso);
-  return Number.isNaN(at.getTime()) ? iso : at.toISOString().slice(0, 19).replace("T", " ");
-}
 
 // A commit, whole, as code that no translation touches and that breaks where it must.
 const Commit = ({ commit }: { commit: string }) => (
@@ -200,8 +195,8 @@ function Facts({ report }: { report: Report }) {
     ],
     [m.upgradeLast, m.upgradeStates[report.state] ?? report.state],
   ];
-  if (report.started) rows.push([m.upgradeStarted, when(report.started)]);
-  if (report.finished) rows.push([m.upgradeFinished, when(report.finished)]);
+  if (report.started) rows.push([m.upgradeStarted, utcMoment(report.started)]);
+  if (report.finished) rows.push([m.upgradeFinished, utcMoment(report.finished)]);
   if (report.from) rows.push([m.upgradeFrom, <Commit key="from" commit={report.from} />]);
   if (report.to) rows.push([m.upgradeTo, <Commit key="to" commit={report.to} />]);
   if (report.notices.length > 0)

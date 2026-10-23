@@ -131,6 +131,15 @@ export const ServersIcon = () => (
   </Icon>
 );
 
+// A gauge, its needle on what is used now: the Monitor page.
+export const MonitorIcon = () => (
+  <Icon>
+    <path d="M2.5 12a5.5 5.5 0 0 1 11 0" />
+    <path d="M8 12l2.75-3.5" />
+    <path d="M2.5 12h11" />
+  </Icon>
+);
+
 // A tag: the versions of Claude Code.
 export const TagIcon = () => (
   <Icon>

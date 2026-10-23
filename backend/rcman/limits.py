@@ -25,6 +25,7 @@ __all__ = [
     "MIN_CPU_PERCENT",
     "MIN_MEMORY_MIB",
     "MIN_PIDS",
+    "MONITORED",
     "NONE",
     "PROPERTIES",
     "ROOT_SLICE",
@@ -48,6 +49,16 @@ ROOT_SLICE = "rcman.slice"
 PROPERTIES = ("MemoryMax", "MemorySwapMax", "CPUQuota", "TasksMax")
 # systemctl show prints this for a property of a unit that is not active.
 NOT_SET = "[not set]"
+# What the monitor (monitor.py) asks ``systemctl show`` of each slice, several slices in one
+# show; the Id tells their blocks apart.
+MONITORED = (
+    "Id",
+    "ActiveState",
+    "MemoryCurrent",
+    "MemorySwapCurrent",
+    "TasksCurrent",
+    "CPUUsageNSec",
+)
 
 
 class Refused(ValueError):

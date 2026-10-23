@@ -81,9 +81,12 @@ Limits (see [runtime.md](runtime.md#limits)) are tested on the host runtime and 
 restoring and dropping in `Workspaces`, `tests/test_people.py` and `tests/test_admin.py` the
 routes and `rcman-admin limits`, and `tests/test_rules.py` the rules of the three values. On the
 tests' engine the limits reach the stand-in for `systemctl` of `tests/container/stand_ins.py`, which
-keeps a slice's properties as the user manager does until a restart, and which
-`tests/test_stand_ins.py` holds to what rcman's own `limits.py` and runtime read of it; what the
-kernel does with a slice is checked by hand ([real-claude-checklist.md](real-claude-checklist.md)).
+keeps a slice's properties as the user manager does until a restart, and answers the monitor's
+one show of many slices with a block for each, nothing in use but CPU time that grows with the
+clock, so that wherever the stand-in runs, the stack's **Monitor** page among them, every person
+and workspace reads as one whole core busy; `tests/test_stand_ins.py` holds it to what rcman's
+own `limits.py`, monitor and runtime read of it; what the kernel does with a slice is checked by
+hand ([real-claude-checklist.md](real-claude-checklist.md)).
 
 Everything git is tested against real git,
 never a fake: `tests/test_git_run.py` holds the parsers of `helpers/git_run.py`,
@@ -256,8 +259,11 @@ helper made inside the holder's network and handed back.
   image's own `CLAUDE.md` with its other files there left visible, and a file renamed over on the
   host reaching the workspace at its next start and not before; and the image probe's reading
   of `/etc`, `/etc/claude-code` and the managed `CLAUDE.md` in real images, a link followed
-  along the path and at its end; and every command the default image's instructions name there
-  in the default image.
+  along the path and at its end; every command the default image's instructions name there
+  in the default image; and what the monitor reads of Podman: the disk read naming a
+  workspace's container and both its volumes, the recordings of `tests/fakes/podman-monitor/`
+  held to this Podman's tables and inspect, an inspect naming a container that is gone
+  answering those that are there, and the storage folder `info` names.
 - `tests/container/test_github_in_podman.py`: git in a workspace of the Podman runtime against
   `tests/github_server.py` served as `https://github.com` in a network of its own: the workspace
   in that network's namespace and not this process's, rcman's push (`Repository`), Claude's git
@@ -488,7 +494,7 @@ snapshot is removed when the session ends.
 | Path | Contents |
 |---|---|
 | `tests/` | The test suite; `tests/test_<name>.py` tests the module `<name>.py`, wherever it is, `tests/` included, where there is one |
-| `tests/fakes/` | The fake `claude`, its recorded fixtures and the screens observed on a live server — see [fake-claude.md](fake-claude.md); Podman's default seccomp profile as recorded (`podman-seccomp.json`), which `tests/test_seccomp.py` holds to the machine's; and Podman's help for the subcommands `publish.sh` reads and for its global options, recorded from the default image's Podman (`podman-help/`), which `tests/test_podman_wrapper.py` holds the wrapper's lists to and `tests/container/test_nest_in_podman.py` holds to that Podman's own help |
+| `tests/fakes/` | The fake `claude`, its recorded fixtures and the screens observed on a live server — see [fake-claude.md](fake-claude.md); Podman's default seccomp profile as recorded (`podman-seccomp.json`), which `tests/test_seccomp.py` holds to the machine's; Podman's help for the subcommands `publish.sh` reads and for its global options, recorded from the default image's Podman (`podman-help/`), which `tests/test_podman_wrapper.py` holds the wrapper's lists to and `tests/container/test_nest_in_podman.py` holds to that Podman's own help; and what the monitor reads of Podman, recorded from Podman on the tests' engine (`podman-monitor/`: `system df -v` with one workspace and with two, and with one holding many files, what it says when a volume cannot be read, `container inspect` and `info`), which `tests/test_monitor.py` reads and `tests/container/test_runtime_in_podman.py` holds to that Podman |
 | `helpers/` | What the backend shares with the installer and the fake `claude`, the standard library only: the rules values are refused by, what Claude's screens mean, running git, Claude Code's releases and their checked download (`claude_release.py`), and the checks a Claude Code version is held to with the canary program that runs them (`claude_checks.py`, `claude_canary.py`) |
 | `backend/` | The FastAPI application — see [backend.md](backend.md) |
 | `frontend/` | The React application, its component tests and its browser tests — see [frontend.md](frontend.md) |

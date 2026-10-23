@@ -50,7 +50,7 @@ def test_install_leaves_other_loggers_alone(planted):
 
 
 def test_the_app_sends_each_of_its_journal_loggers_to_stderr(settings, runtime):
-    from rcman import audit, claude_versions, terminals, unrecognised, workspaces
+    from rcman import audit, claude_versions, monitor, terminals, unrecognised, workspaces
     from rcman.main import create_app
     from rcman.routers import client_errors
 
@@ -61,6 +61,7 @@ def test_the_app_sends_each_of_its_journal_loggers_to_stderr(settings, runtime):
         workspaces.log,
         claude_versions.log,
         terminals.log,
+        monitor.log,
     )
     # An app made earlier in this process installed them with the standard error of
     # its time; they are taken off here, so that this app installs them afresh.

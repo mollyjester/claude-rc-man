@@ -157,6 +157,19 @@ MIGRATIONS = [
     alter table workspaces add column rebuild_error text;
     alter table workspaces add column failure text;
     """,
+    """
+    -- The Monitor page's settings (monitor.py): how often each of its rounds runs, in seconds,
+    -- and which scopes it collects. One row, made by the first save; none means the defaults,
+    -- which monitor.py holds, as it holds the bounds a save is refused outside of.
+    create table monitor_settings (
+        id integer primary key check (id = 1),
+        usage_interval_seconds integer not null check (usage_interval_seconds > 0),
+        disk_interval_seconds integer not null check (disk_interval_seconds > 0),
+        host integer not null check (host in (0, 1)),
+        people integer not null check (people in (0, 1)),
+        containers integer not null check (containers in (0, 1))
+    );
+    """,
 ]
 
 

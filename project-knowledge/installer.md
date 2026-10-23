@@ -378,9 +378,10 @@ reaches rcman through the socket.
   server refused until the person connects the fake `claude` once, after which it and a
   workspace made afterwards both reach ready, a restart of rcman leaving the server as it was,
   a stop leaving no Claude process, one person unable to reach another's workspace, deleting a
-  person leaving nothing labelled theirs, and an administrator's limits, set through the API,
+  person leaving nothing labelled theirs, an administrator's limits, set through the API,
   reaching `systemctl` (`rcman-admin` runs itself again as rcman's account, which the stack's
-  container has not; it is run by name as root in the stubbed installation). `tests/container/test_restored_in_container.py`
+  container has not; it is run by name as root in the stubbed installation), and the monitor's
+  usage round reading a running workspace's slice, and its person's, through `systemctl`. `tests/container/test_restored_in_container.py`
   checks that rcman, started again after every container has stopped, brings the workspace and
   its server back with the limits set again before the container starts.
 

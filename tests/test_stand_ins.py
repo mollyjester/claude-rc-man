@@ -126,3 +126,18 @@ def test_enable_without_now_starts_nothing(tmp_path, units):
     assert stand_in(tmp_path, units, "enable", "planted.path").returncode == 0
     assert stand_in(tmp_path, units, "is-enabled", "planted.path").returncode == 0
     assert stand_in(tmp_path, units, "is-active", "planted.path").returncode == 3
+
+
+def test_a_show_of_several_slices_is_read_by_the_monitor_slice_by_slice(systemctl):
+    """The monitor's one show of many slices (monitor.read_units): a block for each, with its
+    Id, parted by blank lines, and CPU time that grows between two shows."""
+    from rcman import monitor
+
+    runtime = runtime_with(systemctl)
+    units = [limits.person_slice(7), limits.workspace_slice(7, 12)]
+    first = monitor.read_units(runtime.show_slices(units))
+    second = monitor.read_units(runtime.show_slices(units))
+    assert set(first) == set(units)
+    for unit in units:
+        assert first[unit] is not None and first[unit].memory_bytes is not None
+        assert second[unit].cpu_nsec > first[unit].cpu_nsec

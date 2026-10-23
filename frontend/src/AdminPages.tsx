@@ -2,7 +2,8 @@ import type { ReactElement } from "react";
 
 import { Audit } from "./Audit";
 import { Everyone } from "./Everyone";
-import { AuditIcon, PeopleIcon, ServersIcon, TagIcon, UpgradeIcon } from "./Icons";
+import { AuditIcon, MonitorIcon, PeopleIcon, ServersIcon, TagIcon, UpgradeIcon } from "./Icons";
+import { Monitor } from "./Monitor";
 import { m } from "./messages";
 import { People } from "./People";
 import { Upgrade } from "./Upgrade";
@@ -31,6 +32,12 @@ export const ADMIN = {
     label: m.navEveryone,
     element: () => <Everyone />,
     icon: ServersIcon,
+  },
+  monitor: {
+    path: "/admin/monitor",
+    label: m.navMonitor,
+    element: () => <Monitor />,
+    icon: MonitorIcon,
   },
   versions: {
     path: "/admin/claude",

@@ -2083,6 +2083,51 @@ button.split-toggle {
 .setting-body > .message {
   margin-bottom: 0;
 }
+/* A group of checkboxes in a form, named by its legend as a field by its label, with no box of
+   its own. */
+fieldset.choices {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+fieldset.choices > legend {
+  margin: var(--space-3) 0 var(--space-1);
+  padding: 0;
+  font-weight: 600;
+}
+/* The Monitor page: when each round collected, under the page's line; the host's main figures
+   large, in tabular numerals, each on its name's baseline; under a filesystem's figures, the
+   folders it holds; what a failed round said, as it said it. */
+.cards > .monitor-collected {
+  margin: calc(-1 * var(--space-2)) 0 0;
+}
+.cards > .monitor-collected:empty {
+  display: none;
+}
+dl.monitor-figures {
+  align-items: baseline;
+}
+.figure {
+  font-size: var(--text-title-2);
+  font-weight: 600;
+  line-height: 1.75rem;
+  font-variant-numeric: tabular-nums;
+}
+.filesystem-of {
+  display: block;
+  font-size: var(--text-small);
+}
+.monitor-subhead {
+  margin: var(--space-4) 0 var(--space-2);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--border);
+  font-size: var(--text-body);
+}
+.monitor-error {
+  overflow-wrap: anywhere;
+  font-family: var(--font-mono);
+}
 /* The People page's Limits dialog: a part for each scope under a stroke, its title and what
    it uses in one row, its three fields side by side. */
 dialog.dialog.large {
@@ -2602,7 +2647,7 @@ td.result-failed {
   .card.flush td:not(.wrap) {
     white-space: nowrap;
   }
-  /* People and the audit trail (table.stacked): each row a list's row, drawn from the table
+  /* People, the audit trail and Monitor's tables (table.stacked): each row a list's row, drawn from the table
      itself, whose roles the markup says outright; the column headings kept for assistive
      technology only; the row's lead on its first line, with what is done or what came of it at
      the right; under it, muted, the rest one after another, its column's name (data-label)

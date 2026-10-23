@@ -1,0 +1,330 @@
+[
+     {
+          "Id": "73691af10c0489b8af9491f77866e7654769a7ab1f8b77c54f6a99c25bac2215",
+          "Created": "2026-10-23T14:42:04.620560876Z",
+          "Path": "/run/podman-init",
+          "Args": [
+               "--",
+               "sleep",
+               "2147483647"
+          ],
+          "State": {
+               "OciVersion": "1.1.0",
+               "Status": "running",
+               "Running": true,
+               "Paused": false,
+               "Restarting": false,
+               "OOMKilled": false,
+               "Dead": false,
+               "Pid": 326228,
+               "ConmonPid": 326207,
+               "ExitCode": 0,
+               "Error": "",
+               "StartedAt": "2026-10-23T14:42:23.176605069Z",
+               "FinishedAt": "0001-01-01T00:00:00Z",
+               "Health": {
+                    "Status": "",
+                    "FailingStreak": 0,
+                    "Log": null
+               },
+               "CheckpointedAt": "0001-01-01T00:00:00Z",
+               "RestoredAt": "0001-01-01T00:00:00Z"
+          },
+          "Image": "6277ab668b2ad3c3ab851d370faa1690d324b30db29d342527f61fed28f20f36",
+          "ImageDigest": "sha256:68ee22004a9109b44973313b02ff7b1de250f1de0f5ecb628d73f579aaff33ac",
+          "ImageName": "docker.io/library/ubuntu:24.04",
+          "Rootfs": "",
+          "Pod": "",
+          "ResolvConfPath": "/tmp/rcgate-ano_9ukw/r/overlay-containers/73691af10c0489b8af9491f77866e7654769a7ab1f8b77c54f6a99c25bac2215/userdata/resolv.conf",
+          "HostnamePath": "/tmp/rcgate-ano_9ukw/r/overlay-containers/73691af10c0489b8af9491f77866e7654769a7ab1f8b77c54f6a99c25bac2215/userdata/hostname",
+          "HostsPath": "/tmp/rcgate-ano_9ukw/r/overlay-containers/73691af10c0489b8af9491f77866e7654769a7ab1f8b77c54f6a99c25bac2215/userdata/hosts",
+          "StaticDir": "/tmp/rcgate-ano_9ukw/g/overlay-containers/73691af10c0489b8af9491f77866e7654769a7ab1f8b77c54f6a99c25bac2215/userdata",
+          "OCIConfigPath": "/tmp/rcgate-ano_9ukw/g/overlay-containers/73691af10c0489b8af9491f77866e7654769a7ab1f8b77c54f6a99c25bac2215/userdata/config.json",
+          "OCIRuntime": "crun",
+          "ConmonPidFile": "/tmp/rcgate-ano_9ukw/r/overlay-containers/73691af10c0489b8af9491f77866e7654769a7ab1f8b77c54f6a99c25bac2215/userdata/conmon.pid",
+          "PidFile": "/tmp/rcgate-ano_9ukw/r/overlay-containers/73691af10c0489b8af9491f77866e7654769a7ab1f8b77c54f6a99c25bac2215/userdata/pidfile",
+          "Name": "rcman-ws-1",
+          "RestartCount": 0,
+          "Driver": "overlay",
+          "MountLabel": "",
+          "ProcessLabel": "",
+          "AppArmorProfile": "",
+          "EffectiveCaps": [
+               "CAP_CHOWN",
+               "CAP_DAC_OVERRIDE",
+               "CAP_FOWNER",
+               "CAP_FSETID",
+               "CAP_KILL",
+               "CAP_NET_BIND_SERVICE",
+               "CAP_SETFCAP",
+               "CAP_SETGID",
+               "CAP_SETPCAP",
+               "CAP_SETUID",
+               "CAP_SYS_CHROOT"
+          ],
+          "BoundingCaps": [
+               "CAP_CHOWN",
+               "CAP_DAC_OVERRIDE",
+               "CAP_FOWNER",
+               "CAP_FSETID",
+               "CAP_KILL",
+               "CAP_NET_BIND_SERVICE",
+               "CAP_SETFCAP",
+               "CAP_SETGID",
+               "CAP_SETPCAP",
+               "CAP_SETUID",
+               "CAP_SYS_CHROOT"
+          ],
+          "ExecIDs": [],
+          "GraphDriver": {
+               "Name": "overlay",
+               "Data": {
+                    "LowerDir": "/tmp/rcgate-ano_9ukw/g/overlay/8ef04dd89f6963bdfa9cfbb94486199912c5821397df992dc2b24c724985be3e/diff:/tmp/rcgate-ano_9ukw/g/overlay/32ab39660fd51c6dc3aae486b42d42bbe8fe4c1db78eaf57bb9c21198de48a16/diff",
+                    "MergedDir": "/tmp/rcgate-ano_9ukw/g/overlay/ca2061b3f150e43854e7b8f5a08ee3f37144a7709f5c0ac00ed4a5124e3a3531/merged",
+                    "UpperDir": "/tmp/rcgate-ano_9ukw/g/overlay/ca2061b3f150e43854e7b8f5a08ee3f37144a7709f5c0ac00ed4a5124e3a3531/diff",
+                    "WorkDir": "/tmp/rcgate-ano_9ukw/g/overlay/ca2061b3f150e43854e7b8f5a08ee3f37144a7709f5c0ac00ed4a5124e3a3531/work"
+               }
+          },
+          "Mounts": [
+               {
+                    "Type": "volume",
+                    "Name": "2fd7447977a57331e3248a5eb1bf73e0e0f2ab2f1618cae6e78ea026a96dd8ca",
+                    "Source": "/tmp/rcgate-ano_9ukw/g/volumes/2fd7447977a57331e3248a5eb1bf73e0e0f2ab2f1618cae6e78ea026a96dd8ca/_data",
+                    "Destination": "/tmp",
+                    "Driver": "local",
+                    "Mode": "",
+                    "Options": [
+                         "nosuid",
+                         "nodev",
+                         "rbind"
+                    ],
+                    "RW": true,
+                    "Propagation": "rprivate"
+               },
+               {
+                    "Type": "volume",
+                    "Name": "rcman-ws-1",
+                    "Source": "/tmp/rcgate-ano_9ukw/g/volumes/rcman-ws-1/_data",
+                    "Destination": "/rcman",
+                    "Driver": "local",
+                    "Mode": "",
+                    "Options": [
+                         "nosuid",
+                         "nodev",
+                         "rbind"
+                    ],
+                    "RW": true,
+                    "Propagation": "rprivate"
+               }
+          ],
+          "Dependencies": [],
+          "NetworkSettings": {
+               "EndpointID": "",
+               "Gateway": "",
+               "IPAddress": "",
+               "IPPrefixLen": 0,
+               "IPv6Gateway": "",
+               "GlobalIPv6Address": "",
+               "GlobalIPv6PrefixLen": 0,
+               "MacAddress": "",
+               "Bridge": "",
+               "SandboxID": "",
+               "HairpinMode": false,
+               "LinkLocalIPv6Address": "",
+               "LinkLocalIPv6PrefixLen": 0,
+               "Ports": {},
+               "SandboxKey": "",
+               "Networks": {
+                    "host": {
+                         "EndpointID": "",
+                         "Gateway": "",
+                         "IPAddress": "",
+                         "IPPrefixLen": 0,
+                         "IPv6Gateway": "",
+                         "GlobalIPv6Address": "",
+                         "GlobalIPv6PrefixLen": 0,
+                         "MacAddress": "",
+                         "NetworkID": "host",
+                         "DriverOpts": null,
+                         "IPAMConfig": null,
+                         "Links": null
+                    }
+               }
+          },
+          "Namespace": "",
+          "IsInfra": false,
+          "IsService": false,
+          "KubeExitCodePropagation": "invalid",
+          "lockNumber": 1,
+          "Config": {
+               "Hostname": "rcman-ws-1",
+               "Domainname": "",
+               "User": "",
+               "AttachStdin": false,
+               "AttachStdout": false,
+               "AttachStderr": false,
+               "Tty": false,
+               "OpenStdin": false,
+               "StdinOnce": false,
+               "Env": [
+                    "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+                    "container=podman",
+                    "HOSTNAME=rcman-ws-1",
+                    "HOME=/root"
+               ],
+               "Cmd": [
+                    "sleep",
+                    "2147483647"
+               ],
+               "Image": "docker.io/library/ubuntu:24.04",
+               "Volumes": null,
+               "WorkingDir": "/rcman",
+               "Entrypoint": "",
+               "OnBuild": null,
+               "Labels": {
+                    "org.opencontainers.image.version": "24.04",
+                    "rcman.install": "gate-install",
+                    "rcman.person": "1",
+                    "rcman.workspace": "1"
+               },
+               "Annotations": {
+                    "io.container.manager": "libpod",
+                    "io.podman.annotations.init": "TRUE",
+                    "org.opencontainers.image.stopSignal": "15"
+               },
+               "StopSignal": 15,
+               "HealthcheckOnFailureAction": "none",
+               "CreateCommand": [
+                    "/usr/bin/podman",
+                    "--remote",
+                    "--url",
+                    "unix:///tmp/rcgate-ano_9ukw/s.sock",
+                    "run",
+                    "--detach",
+                    "--name=rcman-ws-1",
+                    "--hostname=rcman-ws-1",
+                    "--label=rcman.workspace=1",
+                    "--label=rcman.person=1",
+                    "--label=rcman.install=gate-install",
+                    "--init",
+                    "--network=host",
+                    "--pids-limit=-1",
+                    "--uidmap=0:8192:8192",
+                    "--gidmap=0:8192:8192",
+                    "--volume=rcman-ws-1:/rcman",
+                    "--volume=/tmp",
+                    "--workdir=/rcman",
+                    "docker.io/library/ubuntu:24.04",
+                    "sleep",
+                    "2147483647"
+               ],
+               "Umask": "0022",
+               "Timeout": 0,
+               "StopTimeout": 10,
+               "Passwd": true,
+               "sdNotifyMode": "container"
+          },
+          "HostConfig": {
+               "Binds": [
+                    "2fd7447977a57331e3248a5eb1bf73e0e0f2ab2f1618cae6e78ea026a96dd8ca:/tmp:rw,rprivate,nosuid,nodev,rbind",
+                    "rcman-ws-1:/rcman:rw,rprivate,nosuid,nodev,rbind"
+               ],
+               "CgroupManager": "cgroupfs",
+               "CgroupMode": "host",
+               "ContainerIDFile": "",
+               "LogConfig": {
+                    "Type": "k8s-file",
+                    "Config": null,
+                    "Path": "/tmp/rcgate-ano_9ukw/g/overlay-containers/73691af10c0489b8af9491f77866e7654769a7ab1f8b77c54f6a99c25bac2215/userdata/ctr.log",
+                    "Tag": "",
+                    "Size": "0B"
+               },
+               "NetworkMode": "host",
+               "PortBindings": {},
+               "RestartPolicy": {
+                    "Name": "",
+                    "MaximumRetryCount": 0
+               },
+               "AutoRemove": false,
+               "VolumeDriver": "",
+               "VolumesFrom": null,
+               "CapAdd": [],
+               "CapDrop": [],
+               "Dns": [],
+               "DnsOptions": [],
+               "DnsSearch": [],
+               "ExtraHosts": [],
+               "GroupAdd": [],
+               "IpcMode": "private",
+               "Cgroup": "",
+               "Cgroups": "disabled",
+               "Links": null,
+               "OomScoreAdj": 0,
+               "PidMode": "private",
+               "Privileged": false,
+               "PublishAllPorts": false,
+               "ReadonlyRootfs": false,
+               "SecurityOpt": [],
+               "Tmpfs": {},
+               "UTSMode": "private",
+               "UsernsMode": "private",
+               "IDMappings": {
+                    "UidMap": [
+                         "0:8192:8192"
+                    ],
+                    "GidMap": [
+                         "0:8192:8192"
+                    ]
+               },
+               "ShmSize": 65536000,
+               "Runtime": "oci",
+               "ConsoleSize": [
+                    0,
+                    0
+               ],
+               "Isolation": "",
+               "CpuShares": 0,
+               "Memory": 0,
+               "NanoCpus": 0,
+               "CgroupParent": "",
+               "BlkioWeight": 0,
+               "BlkioWeightDevice": null,
+               "BlkioDeviceReadBps": null,
+               "BlkioDeviceWriteBps": null,
+               "BlkioDeviceReadIOps": null,
+               "BlkioDeviceWriteIOps": null,
+               "CpuPeriod": 0,
+               "CpuQuota": 0,
+               "CpuRealtimePeriod": 0,
+               "CpuRealtimeRuntime": 0,
+               "CpusetCpus": "",
+               "CpusetMems": "",
+               "Devices": [],
+               "DiskQuota": 0,
+               "KernelMemory": 0,
+               "MemoryReservation": 0,
+               "MemorySwap": 0,
+               "MemorySwappiness": 0,
+               "OomKillDisable": false,
+               "Init": true,
+               "PidsLimit": 0,
+               "Ulimits": [
+                    {
+                         "Name": "RLIMIT_NOFILE",
+                         "Soft": 1048576,
+                         "Hard": 1048576
+                    },
+                    {
+                         "Name": "RLIMIT_NPROC",
+                         "Soft": 31611,
+                         "Hard": 31611
+                    }
+               ],
+               "CpuCount": 0,
+               "CpuPercent": 0,
+               "IOMaximumIOps": 0,
+               "IOMaximumBandwidth": 0,
+               "CgroupConf": null
+          }
+     }
+]

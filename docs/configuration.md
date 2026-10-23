@@ -10,7 +10,9 @@ when a value is invalid.
 
 The limits on what a person's workspaces may use are not settings of this kind:
 administrators set them per person and per workspace, and rcman keeps them in
-its database (see [Limits](users.md#limits)).
+its database (see [Limits](users.md#limits)). Nor are the settings of the
+**Monitor** page, which administrators change on that page and rcman keeps in its
+database (see [Monitor](monitor.md#monitoring-settings)).
 
 | Variable | What it sets |
 |---|---|

@@ -13,8 +13,10 @@ rcman and its installer ask of it:
 
 - ``systemctl --user set-property --runtime <slice> <properties>``, ``show`` and ``revert`` keep
   each slice's properties in ``slices.json``, as the user manager keeps runtime properties until
-  the machine restarts (``reboot`` below forgets them); ``show`` answers with them, nothing in
-  use, the slice active;
+  the machine restarts (``reboot`` below forgets them); ``show`` answers with them, a block for
+  each slice asked for, with its ``Id``, parted by blank lines as the user manager parts them,
+  the slice active and nothing in use but CPU time, which is the clock's
+  (``time.monotonic_ns``), so that the monitor reads every slice as one whole core busy;
 - the installer's ``systemctl`` (``daemon-reload``, ``enable`` with or without ``--now``,
   ``is-active``, ``restart``, ``start``, ``show``, ``--user --machine``): a service of
   /etc/systemd/system (or ``RCMAN_STAND_IN_UNITS``) that is started is run as its ``User=`` with
@@ -143,9 +145,13 @@ def user_manager(args: list[str]) -> int:
     if verb == "show":
         wanted = _properties(args)
         value_only = "--value" in args
-        for unit in words[1:] or [""]:
-            known = {**IN_USE, **UNSET, **slices.get(unit, {})}
-            for key in wanted or sorted(known):
+        for i, unit in enumerate(words[1:] or [""]):
+            if i:
+                print()  # as systemctl parts the units it shows: a blank line between
+            # CPU time that grows, as an active slice's does: nanoseconds of the clock
+            used = {"CPUUsageNSec": str(time.monotonic_ns())}
+            known = {"Id": unit, **IN_USE, **used, **UNSET, **slices.get(unit, {})}
+            for key in wanted or ["Id", *sorted(k for k in known if k != "Id")]:
                 shown = known.get(key, "")
                 print(shown if value_only else f"{key}={shown}")
         return 0

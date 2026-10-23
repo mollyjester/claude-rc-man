@@ -246,15 +246,17 @@ test("the drawer stays open while focus moves through it, and closes when Tab ta
   expect(button).toHaveAttribute("aria-expanded", "false");
 });
 
-test("the administration pages are People, everyone's workspaces, the Claude Code versions, the audit trail and rcman itself, in that order", () => {
+test("the administration pages are People, everyone's workspaces, Monitor, the Claude Code versions, the audit trail and rcman itself, in that order", () => {
   expect(ADMIN_PAGES.map((p) => p.label)).toEqual([
     m.navUsers,
     m.navEveryone,
+    m.navMonitor,
     m.navVersions,
     m.navAudit,
     m.navRcman,
   ]);
   expect(ADMIN.everyone.path).toBe("/admin/workspaces");
+  expect(ADMIN.monitor.path).toBe("/admin/monitor");
   expect(ADMIN.versions.path).toBe("/admin/claude");
   expect(ADMIN.rcman.path).toBe("/admin/rcman");
   expect(ADMIN_PAGES).toEqual(Object.values(ADMIN));
@@ -275,6 +277,16 @@ test("people who are not administrators are sent on from the Claude Code version
   expect(location().pathname).toBe("/");
   expect(fake.made("GET", "/api/claude/versions")).toHaveLength(0);
   expect(screen.queryByRole("heading", { name: m.versionsTitle })).not.toBeInTheDocument();
+});
+
+test("people who are not administrators are sent on from the Monitor page", async () => {
+  const fake = api(ME);
+  const { location } = renderApp("/admin/monitor");
+  await screen.findByRole("region", { name: m.navDashboard }); // the Workspaces page
+  expect(location().pathname).toBe("/");
+  expect(fake.made("GET", "/api/monitor")).toHaveLength(0);
+  expect(fake.made("GET", "/api/monitor/settings")).toHaveLength(0);
+  expect(screen.queryByRole("heading", { name: m.monitorTitle })).not.toBeInTheDocument();
 });
 
 test("the navigation leads to the Workspaces page", async () => {
