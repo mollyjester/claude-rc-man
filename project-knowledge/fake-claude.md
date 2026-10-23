@@ -249,6 +249,8 @@ it starts the fake only once the answer is waiting on the terminal.
 7. Commit the fixtures and both manifests together, with `helpers/claude-version`
    naming the version: it is the version the installer installs and the one the
    Versions page calls the tested one (see [Claude Code versions](../docs/claude-version.md)).
+   `tests/test_record_claude.py` holds `helpers/claude-version` equal to the fixtures
+   manifest's `claude_version`, so a mismatch fails `make check`.
    Approving it for workspaces is then an administrator's roll-out, not part of this list.
 
 Recording also leaves the scratch folders it trusted in that account's Claude

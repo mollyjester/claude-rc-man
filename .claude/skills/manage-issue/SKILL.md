@@ -50,14 +50,17 @@ and keep iterating with them until you are satisfied with the outcome.
   each part's totals, collected count, each failing test with its first error
   line, and each exit code. A foreground command is cut off at ten minutes,
   shorter than `make check`, and a background command is stopped when the
-  runner hands back, which once ended a baseline in the middle of `e2e`. So
+  runner hands back, however far the run has got. So
   a run that can last longer than ten minutes is started in the background
   with a timeout long enough for it, its exit code appended to its log. The
   runner waits for the background command's own completion notice, and hands
   back only after it arrives. It gets that notice only if it was itself
   launched in the background (the Agent tool's `run_in_background`), by you
   or by the subagent that dispatches it: a runner launched in the foreground
-  ends its turn without the notice, and its run is stopped with it. One runner
+  ends its turn without the notice, and its run is stopped with it. The same
+  holds one level up: an implementation, review or documentation subagent
+  that dispatches its own runner is itself launched in the background, or it
+  hands back before that runner reports. One runner
   runs at a time in the working tree, since the pre-test hook commits and two
   at once collide on git's index. It never waits with a loop that matches
   command lines (`pgrep -f`) or a log line, which can match itself or never

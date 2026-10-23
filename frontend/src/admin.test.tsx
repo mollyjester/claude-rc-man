@@ -1111,18 +1111,18 @@ test("each table is in a card of its own, named by its heading", async () => {
   }
 });
 
-test("it warns when the approved version is not the tested one, and only then", async () => {
-  versionsApi();
-  const { unmount } = renderApp("/admin/claude");
-  expect(await screen.findByText(m.versionsUntested)).toBeInTheDocument();
-  expect(screen.getByText(m.versionsUntested).closest(".message")).toHaveClass("message-warning");
-  unmount();
-
-  versionsApi({}, { ...REPORT, tested: "2.2.0" });
+test.each([
+  ["the approved version is not the tested one", REPORT, "2.2.0", "2.1.0"],
+  ["the approved version is the tested one", { ...REPORT, tested: "2.2.0" }, "2.2.0", "2.2.0"],
+  ["nothing is approved", { ...REPORT, approved: null }, m.versionsNone, "2.1.0"],
+])("no message is shown when %s", async (_state, report, approved, tested) => {
+  versionsApi({}, report);
   renderApp("/admin/claude");
   await versionsPage();
-  expect(definition(m.versionsTested)).toHaveTextContent("2.2.0"); // positive control: it loaded
-  expect(screen.queryByText(m.versionsUntested)).not.toBeInTheDocument();
+  // positive control: this case's report is the one shown
+  expect(definition(m.versionsApproved)).toHaveTextContent(approved);
+  expect(definition(m.versionsTested)).toHaveTextContent(tested);
+  expect(document.querySelector(".message")).toBeNull(); // no message bar of any kind
 });
 
 test("a version nothing is approved or recorded for is shown as none", async () => {
@@ -1131,7 +1131,6 @@ test("a version nothing is approved or recorded for is shown as none", async () 
   await versionsPage();
   expect(definition(m.versionsApproved)).toHaveTextContent(m.versionsNone);
   expect(definition(m.versionsPrevious)).toHaveTextContent(m.versionsNone);
-  expect(screen.queryByText(m.versionsUntested)).not.toBeInTheDocument(); // nothing to differ
 });
 
 test("the installed versions are listed with their standing and how many running servers use each", async () => {
