@@ -480,8 +480,6 @@ export const m = {
   versionsPrevious: "Previous version",
   versionsTested: "Tested version",
   versionsNone: "None",
-  versionsUntested:
-    "The approved version is not the one rcman was tested with. Screens that need a signed-in Claude account were not checked against it.",
   versionsInstalledTitle: "Installed versions",
   versionsVersion: "Version",
   versionsStanding: "Standing",

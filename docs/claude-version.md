@@ -51,8 +51,7 @@ In the **Administration** group of the sidebar, the **Claude Code versions**
 page shows:
 
 - the **Approved version**, the **Previous version** and the **Tested
-  version**, with a warning when the approved one is not the tested one,
-  because screens that need a signed-in account were not checked against it;
+  version**;
 - the **Installed versions**, with how many running servers use each, and
   **Use** beside each one that is not approved, which approves it again: the
   way to go back to the previous version, or to the tested one;

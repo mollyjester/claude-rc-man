@@ -9,7 +9,6 @@ import {
 } from "react";
 
 import { type ApiError, api } from "./api";
-import { MessageBar } from "./MessageBar";
 import { m } from "./messages";
 import { asApiError, ProblemView, useFieldErrors } from "./ProblemView";
 import { TableScroll } from "./TableScroll";
@@ -132,11 +131,6 @@ export function Versions() {
       <p className="page-intro muted">{m.versionsIntro}</p>
       <ProblemView error={loadError} />
       {report === null && !loadError && <p>{m.loading}</p>}
-      {report !== null && report.approved !== null && report.approved !== report.tested && (
-        <MessageBar kind="warning">
-          <p>{m.versionsUntested}</p>
-        </MessageBar>
-      )}
       <div className="versions-top">
         {report && (
           <section aria-labelledby={factsHeading} className="card">

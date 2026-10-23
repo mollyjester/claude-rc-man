@@ -12,6 +12,8 @@ import time
 from pathlib import Path
 
 import pytest
+from rcman import claude_versions as cv
+from rcman.runtime import HELPERS_DIR
 
 from devtools import held_folders, tmuxctl
 from devtools import record_claude as rec
@@ -134,6 +136,55 @@ def test_every_capture_belongs_to_a_defined_sequence_and_vice_versa():
 def test_manifest_records_one_claude_version():
     manifest = rec.load_manifest()
     assert rec.VERSION_PATTERN.fullmatch(manifest["claude_version"])
+
+
+# The tested version, the one rcman reads from TESTED_FILE in its helpers' folder (the Claude
+# Code versions page's "Tested version"), and the version the fixtures were recorded from must be
+# one: what is wrong when they are not, or None.
+def version_mismatch(helpers: Path, fixtures: Path) -> str | None:
+    tested_file = helpers / cv.TESTED_FILE
+    manifest_file = fixtures / rec.MANIFEST
+    tested = tested_file.read_text(encoding="utf-8").strip()
+    recorded = rec.load_manifest(fixtures)["claude_version"]
+    if tested == recorded:
+        return None
+    return f"{tested_file} names {tested}, but {manifest_file} records {recorded}"
+
+
+def test_the_tested_version_is_the_one_the_fixtures_were_recorded_from():
+    tested = (HELPERS_DIR / cv.TESTED_FILE).read_text(encoding="utf-8").strip()
+    recorded = rec.load_manifest(rec.FIXTURES)["claude_version"]
+    # positive control: a version was read from each
+    assert rec.VERSION_PATTERN.fullmatch(tested)
+    assert rec.VERSION_PATTERN.fullmatch(recorded)
+    assert version_mismatch(HELPERS_DIR, rec.FIXTURES) is None
+
+
+def plant_versions(root: Path, tested: str, recorded: str) -> tuple[Path, Path]:
+    helpers, fixtures = root / "helpers", root / "fixtures"
+    helpers.mkdir()
+    fixtures.mkdir()
+    (helpers / cv.TESTED_FILE).write_text(f"{tested}\n", encoding="utf-8")
+    manifest = json.dumps({"claude_version": recorded})
+    (fixtures / rec.MANIFEST).write_text(manifest, encoding="utf-8")
+    return helpers, fixtures
+
+
+def test_a_tested_version_the_fixtures_were_not_recorded_from_is_found(tmp_path):
+    helpers, fixtures = plant_versions(tmp_path, "9.9.9", "1.2.3")
+    # the plant took effect
+    assert (helpers / cv.TESTED_FILE).read_text(encoding="utf-8").strip() == "9.9.9"
+    assert rec.load_manifest(fixtures)["claude_version"] == "1.2.3"
+    problem = version_mismatch(helpers, fixtures)
+    assert problem is not None
+    for named in ("9.9.9", "1.2.3", str(helpers / cv.TESTED_FILE), str(fixtures / rec.MANIFEST)):
+        assert named in problem
+
+
+def test_a_tested_version_the_fixtures_were_recorded_from_is_not_a_problem(tmp_path):
+    helpers, fixtures = plant_versions(tmp_path, "1.2.3", "1.2.3")
+    assert rec.load_manifest(fixtures)["claude_version"] == "1.2.3"  # the plant took effect
+    assert version_mismatch(helpers, fixtures) is None
 
 
 # What a screen can give away that sanitising should have replaced: each kind, with the
