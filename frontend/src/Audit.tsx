@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { type ApiError, api } from "./api";
+import { utcMoment } from "./format";
 import { m } from "./messages";
 import { asApiError, ProblemView } from "./ProblemView";
 import { ROLE, TableScroll } from "./TableScroll";
@@ -13,13 +14,6 @@ type Event = {
   target: string | null;
   result: string;
 };
-
-// A moment as a date and a time in UTC, the same for everyone; what cannot be read as one is
-// shown as it is.
-function when(iso: string): string {
-  const at = new Date(iso);
-  return Number.isNaN(at.getTime()) ? iso : at.toISOString().slice(0, 19).replace("T", " ");
-}
 
 // A target as it was recorded, except that the settings someone changed, which are recorded as
 // a JSON object, are read as a list of each setting and what it was set to.
@@ -97,7 +91,7 @@ export function Audit() {
                   {events.map((e) => (
                     <tr key={e.id} {...ROLE.row}>
                       <td className="when" {...ROLE.cell}>
-                        <time dateTime={e.at}>{when(e.at)}</time>
+                        <time dateTime={e.at}>{utcMoment(e.at)}</time>
                       </td>
                       <td className="wrap meta" {...ROLE.cell}>
                         {e.email}

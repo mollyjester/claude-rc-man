@@ -10,11 +10,13 @@ import json
 import os
 import shutil
 import subprocess
+import threading
 import time
 from pathlib import Path
 
 import pytest
 from rcman import channel as ch
+from rcman import monitor
 from rcman import runtime as rt
 
 from helpers import instructions
@@ -563,3 +565,56 @@ def test_what_an_image_has_at_etc_claude_code_is_read_by_the_image_probe(
         assert seen == ETC_SEEN[kind], (kind, seen)
     finally:
         podman_service.cli("rmi", "--force", name)
+
+
+# --- what the monitor reads (backend/rcman/monitor.py) ---------------------------------------
+
+MONITOR_RECORDED = Path(__file__).resolve().parent.parent / "fakes" / "podman-monitor"
+
+
+def test_the_disk_read_names_a_workspaces_container_and_both_its_volumes(podman, workspace):
+    disk = monitor.read_disk(podman.disk_usage(threading.Event()))
+    found = monitor.read_inspected(podman.inspect_containers([workspace]))
+    labels = found[workspace].labels
+    assert labels[rt.LABEL_WORKSPACE] == str(spec(2).workspace)
+    assert labels[rt.LABEL_PERSON] == str(spec(2).person)
+    tmp = found[workspace].tmp_volume
+    assert tmp and rt.ANONYMOUS_VOLUME.match(tmp)
+    assert workspace in disk.containers
+    assert workspace in disk.volumes and tmp in disk.volumes
+
+
+def test_the_recorded_disk_read_has_the_real_ones_tables_and_columns(podman, workspace):
+    """The recording the tests read (tests/fakes/podman-monitor/) is held to what this Podman
+    prints: the same tables, each with the same columns."""
+    real = monitor.read_headers(podman.disk_usage(threading.Event()))
+    for name in ("df-v.txt", "df-v-two.txt", "df-v-100k.txt"):
+        recorded = monitor.read_headers((MONITOR_RECORDED / name).read_text())
+        assert recorded == real, name
+    assert set(real) == set(monitor.TABLES)  # non-vacuity
+
+
+def test_the_recorded_inspect_has_what_the_real_one_is_read_for(podman, workspace):
+    real = json.loads(podman.inspect_containers([workspace]))[0]
+    recorded = json.loads((MONITOR_RECORDED / "container-inspect.json").read_text())[0]
+    for entry in (real, recorded):
+        assert isinstance(entry["Name"], str) and isinstance(entry["Config"]["Labels"], dict)
+        assert {"Name", "Destination"} <= set(entry["Mounts"][0])
+    assert monitor.read_inspected(json.dumps([real]))[workspace].tmp_volume  # non-vacuity
+
+
+def test_an_inspect_naming_a_container_that_is_gone_answers_the_ones_that_are_there(
+    podman, workspace
+):
+    gone = rt.container_name(FIRST_WORKSPACE + 99)
+    assert not podman.exists(gone)  # positive control for the absence below
+    found = monitor.read_inspected(podman.inspect_containers([workspace, gone]))
+    assert set(found) == {workspace}
+
+
+def test_the_storage_folder_is_the_one_podman_info_names(podman_service, podman):
+    asked = podman_service.cli("info", "--format", "{{.Store.GraphRoot}}", timeout=120)
+    assert asked.returncode == 0, asked.stderr
+    assert podman.storage_root() == asked.stdout.decode().strip()
+    recorded = json.loads((MONITOR_RECORDED / "info.json").read_text())
+    assert recorded["store"]["graphRoot"]  # the recording has what is read from it

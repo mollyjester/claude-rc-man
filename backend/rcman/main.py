@@ -18,6 +18,7 @@ from rcman import (
     db,
     headers,
     journal,
+    monitor,
     people,
     problems,
     rcman_upgrade,
@@ -39,6 +40,7 @@ from rcman.routers import (
     terminal,
     workspaces,
 )
+from rcman.routers import monitor as monitor_router
 from rcman.routers import people as people_router
 from rcman.routers import rcman_upgrade as rcman_upgrade_router
 from rcman.runtime import PodmanConfig, PodmanRuntime, Runtime
@@ -132,6 +134,7 @@ def create_app(
         workspaces_log,
         claude_versions.log,
         terminals_log,
+        monitor.log,
     ):
         journal.install(log)
     if runtime is None:  # rcman's own Podman, whose workspaces take the profile
@@ -140,6 +143,7 @@ def create_app(
     check_instructions(service.runtime)
     sign_ins = Accounts(service)
     terminals = Terminals(service)
+    collector = monitor.Monitor(service.runtime, settings.database)
 
     @contextlib.asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -147,6 +151,7 @@ def create_app(
         service.versions.reconcile()  # the approved version is current, before any server starts
         terminals.bind(asyncio.get_running_loop())  # before restore, which sweeps through it
         service.start_background()  # restore: HTTP answers meanwhile
+        collector.start(service.restored)  # its first round waits for the restore
 
         async def daily():
             while True:
@@ -158,6 +163,11 @@ def create_app(
             yield
         finally:
             task.cancel()
+            # Before anything closes: a round under way is waited for, a disk read killed.
+            try:
+                await collector.stop()
+            except Exception:  # noqa: BLE001 - logged; the rest still closes
+                monitor.log.exception("the monitor did not stop")
             # uvicorn closes every WebSocket before this; whatever is left is closed here, and
             # nothing that goes wrong with it keeps the rest from closing
             try:
@@ -181,6 +191,7 @@ def create_app(
     app.state.versions = service.versions
     app.state.accounts = sign_ins
     app.state.terminals = terminals
+    app.state.monitor = collector
     app.state.git_account = GitAccount(service)
     service.restore_hooks.append(app.state.git_account.write_gh_for_everyone)
     app.state.watch = unrecognised.Watch()
@@ -207,6 +218,7 @@ def create_app(
         people_router,
         audit_log,
         attention,
+        monitor_router,
         docs,
         client_errors,
         terminal,

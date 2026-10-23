@@ -25,6 +25,11 @@ A candidate Claude Code version is tried by the *canary* (``run_canary``): a thr
 in the builder's uid range with no network, which runs the checks of helpers/claude_canary.py
 against the candidate and reports the ones it fails.
 
+The monitor (monitor.py) reads what the slices use (``show_slices``), the disk of the
+containers and volumes (``disk_usage``, a read it can kill), the volume at each workspace's /tmp
+(``inspect_containers``) and where Podman keeps its storage (``storage_root``), each as the text
+the program prints.
+
 Python standard library, the helpers and the backend's own channel and builder only.
 """
 
@@ -262,6 +267,12 @@ UNAVAILABLE = 125
 PODMAN_TIMEOUT = 300.0
 # What systemctl is given to answer: it talks to the user manager, which answers at once.
 SYSTEMCTL_TIMEOUT = 30.0
+# How long a disk read (``disk_usage``) may take before it is killed, and how often it is looked
+# at meanwhile, whether it is to be stopped.
+DISK_TIMEOUT = 120.0
+DISK_POLL_SECONDS = 0.25
+# What Podman says of a container it was asked to inspect that is not there.
+NO_SUCH_CONTAINER = "no such container"
 # What systemctl says when it cannot reach the user manager's bus.
 NO_BUS = "failed to connect to bus"
 # A container made from an image of a repository's choosing: Podman copies the image into the
@@ -908,6 +919,28 @@ class Runtime(ABC):
         a slice is never stopped, as that would stop the containers in it."""
 
     @abstractmethod
+    def show_slices(self, slices: list[str]) -> str:
+        """What ``systemctl --user show`` says of ``limits.MONITORED`` for every one of the
+        slices, in one call: a block for each, parted by blank lines (monitor.read_units).
+        RuntimeFailed where it cannot be read, RuntimeUnavailable where the user manager cannot
+        be reached."""
+
+    @abstractmethod
+    def disk_usage(self, cancel: threading.Event) -> str:
+        """What ``podman system df --verbose`` prints (monitor.read_disk), read to its end, or
+        killed and a RuntimeFailed when ``cancel`` is set or it outlasts DISK_TIMEOUT. One
+        volume that cannot be read fails the whole read."""
+
+    @abstractmethod
+    def inspect_containers(self, names: list[str]) -> str:
+        """What ``podman container inspect`` prints of the containers (monitor.read_inspected):
+        those that are there, where some are not. RuntimeFailed where it failed otherwise."""
+
+    @abstractmethod
+    def storage_root(self) -> str:
+        """The folder Podman keeps its storage in."""
+
+    @abstractmethod
     def run_canary(
         self, directory: Path, name: str, version: str, *, slot: int | None = None
     ) -> dict[str, dict]:
@@ -1168,6 +1201,63 @@ class PodmanRuntime(Runtime):
     def drop_limits(self, person: int, workspace: int | None) -> None:
         # Only revert: a slice stopped with a container running in it stops the container.
         self._systemctl("revert", limits.slice_of(person, workspace))
+
+    def show_slices(self, slices: list[str]) -> str:
+        asked = [arg for name in limits.MONITORED for arg in ("-p", name)]
+        return self._systemctl("show", *asked, *slices)
+
+    def disk_usage(self, cancel: threading.Event) -> str:
+        if cancel.is_set():
+            raise RuntimeFailed("the disk read was stopped")
+        try:
+            proc = subprocess.Popen(
+                self._argv("system", "df", "--verbose"),
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=podman_env(),
+            )
+        except FileNotFoundError:
+            raise RuntimeUnavailable(f"{self.config.podman} is not installed") from None
+        deadline = time.monotonic() + DISK_TIMEOUT
+        while True:
+            try:
+                out, err = proc.communicate(timeout=DISK_POLL_SECONDS)
+                break
+            except subprocess.TimeoutExpired:
+                stopped, late = cancel.is_set(), time.monotonic() > deadline
+                if stopped or late:
+                    proc.kill()
+                    proc.communicate()
+                    raise RuntimeFailed(
+                        "the disk read was stopped"
+                        if stopped
+                        else "podman system df did not finish in time"
+                    ) from None
+        said = err.decode("utf-8", "replace").strip()
+        if proc.returncode == UNAVAILABLE and SERVICE_UNREACHABLE in said.lower():
+            raise RuntimeUnavailable(said)
+        if proc.returncode != 0:
+            raise RuntimeFailed(said or "podman system df failed")
+        return out.decode("utf-8", "replace")
+
+    def inspect_containers(self, names: list[str]) -> str:
+        if not names:
+            return "[]"
+        proc = self._podman("container", "inspect", *names, check=False)
+        said = proc.stderr.decode("utf-8", "replace").strip()
+        if proc.returncode != 0 and not (
+            proc.returncode == UNAVAILABLE and NO_SUCH_CONTAINER in said.lower()
+        ):
+            raise RuntimeFailed(said or "podman container inspect failed")
+        return proc.stdout.decode("utf-8", "replace")
+
+    def storage_root(self) -> str:
+        proc = self._podman("info", "--format", "json")
+        try:
+            return str(json.loads(proc.stdout)["store"]["graphRoot"])
+        except (ValueError, KeyError, TypeError):
+            raise RuntimeFailed("podman info named no storage folder") from None
 
     def wait_ready(self, timeout: float) -> None:
         deadline = time.monotonic() + timeout
@@ -2463,6 +2553,59 @@ def parsed_canary_report(raw: bytes) -> dict[str, dict]:
 # --- the host -------------------------------------------------------------------------
 
 
+# The tables of ``podman system df --verbose`` and their columns, as Podman prints them
+# (tests/fakes/podman-monitor/): the host runtime's disk read is made in their shape.
+# Each table's title, the line that names it; the monitor's parser finds the tables by them.
+DF_IMAGES = "Images space usage:"
+DF_CONTAINERS = "Containers space usage:"
+DF_VOLUMES = "Local Volumes space usage:"
+DF_TABLES = (
+    (DF_IMAGES, ("REPOSITORY", "TAG", "IMAGE ID", "CREATED", "SIZE", "SHARED SIZE", "UNIQUE SIZE",
+                 "CONTAINERS")),
+    (DF_CONTAINERS, ("CONTAINER ID", "IMAGE", "COMMAND", "LOCAL VOLUMES", "SIZE", "CREATED",
+                     "STATUS", "NAMES")),
+    (DF_VOLUMES, ("VOLUME NAME", "LINKS", "SIZE")),
+)  # fmt: skip
+# The prefixes of Podman's sizes, decimal SI, each a step of SI_STEP from the one before.
+SI_PREFIXES = "kMGTPEZY"
+SI_STEP = 1000
+
+
+def si_size(count: int) -> str:
+    """A size as Podman prints one: decimal SI, with up to four significant digits."""
+    value, prefix = float(count), ""
+    for step in SI_PREFIXES:
+        if float(f"{value:.4g}") < SI_STEP:
+            break
+        value, prefix = value / SI_STEP, step
+    return f"{count}B" if not prefix else f"{value:.4g}{prefix}B"
+
+
+def df_text(rows: dict[str, list[tuple[str, ...]]]) -> str:
+    """The text of ``system df --verbose`` with ``rows`` by table title: each column as wide as
+    its widest cell, two spaces apart, as Podman's tables are."""
+    out = []
+    for title, header in DF_TABLES:
+        table = [header, *rows.get(title, [])]
+        widths = [max(len(row[i]) for row in table) for i in range(len(header))]
+        out.append(f"{title}\n\n")
+        for row in table:
+            cells = [cell.ljust(width) for cell, width in zip(row, widths, strict=True)]
+            out.append("  ".join(cells).rstrip() + "\n")
+        out.append("\n")
+    return "".join(out)
+
+
+def _folder_bytes(folder: Path) -> int:
+    """What the files under a folder hold, links not followed."""
+    total = 0
+    for path, _, files in os.walk(folder):
+        for name in files:
+            with contextlib.suppress(OSError):
+                total += os.lstat(os.path.join(path, name)).st_size
+    return total
+
+
 def _host_tool(name: str) -> list[str]:
     found = shutil.which(name, path="/usr/bin:/bin")
     if found is None:
@@ -2527,6 +2670,17 @@ class HostRuntime(Runtime):
         self.dropped: list[str] = []
         self.used: dict[str, Usage] = {}
         self.limits_error: Exception | None = None
+        # The monitor's readings (monitor.py): what ``systemctl show`` would say of each slice a
+        # test plants, by its name (a slice not planted is inactive); the disk read's text where a
+        # test gives one (one made from the workspaces' folders otherwise, ``_disk_report``), and
+        # failures it raises first, one a read; the inspect's text where a test gives one (one
+        # made from the workspaces here otherwise); and every call made, in order, with what it
+        # was asked. ``limits_error`` fails ``show_slices`` as it fails the slices' other calls.
+        self.slices_shown: dict[str, dict[str, str]] = {}
+        self.disk_report: str | None = None
+        self.disk_failures: list[Exception] = []
+        self.inspect_report: str | None = None
+        self.monitor_calls: list[tuple] = []
 
     def layout(self, name: str) -> Layout:
         volume = self.root / name
@@ -2933,6 +3087,68 @@ class HostRuntime(Runtime):
         name = limits.slice_of(person, workspace)
         self.limits.pop(name, None)
         self.dropped.append(name)
+
+    def show_slices(self, slices: list[str]) -> str:
+        self.monitor_calls.append(("show_slices", tuple(slices)))
+        if self.limits_error is not None:
+            raise self.limits_error
+        blocks = []
+        for name in slices:
+            shown = self.slices_shown.get(name) or {
+                "ActiveState": "inactive",
+                **{p: limits.NOT_SET for p in limits.MONITORED if p not in ("Id", "ActiveState")},
+            }
+            blocks.append("\n".join(f"{k}={v}" for k, v in {"Id": name, **shown}.items()))
+        return "\n\n".join(blocks) + "\n"
+
+    def disk_usage(self, cancel: threading.Event) -> str:
+        self.monitor_calls.append(("disk_usage",))
+        if cancel.is_set():
+            raise RuntimeFailed("the disk read was stopped")
+        if self.disk_failures:
+            raise self.disk_failures.pop(0)
+        return self.disk_report if self.disk_report is not None else self._disk_report()
+
+    def _disk_report(self) -> str:
+        """A disk read made from the workspaces here: each one's folder is its volume, and its
+        container and the volume at its /tmp (``inspect_containers``) hold nothing."""
+        containers, volumes = [], []
+        for name, labels in self.labelled().items():
+            if not self.exists(name):
+                continue
+            ident = f"{int(labels.get(LABEL_WORKSPACE, 0)):012x}"
+            status = "running" if self.running(name) else "exited"
+            containers.append((ident, "host", "sleep", "2", "0B", "now", status, name))
+            volumes.append((name, "1", si_size(_folder_bytes(self.root / name))))
+            volumes.append((f"{name}-tmp", "1", "0B"))
+        return df_text({DF_CONTAINERS: containers, DF_VOLUMES: volumes})
+
+    def inspect_containers(self, names: list[str]) -> str:
+        self.monitor_calls.append(("inspect_containers", tuple(names)))
+        if self.inspect_report is not None:
+            return self.inspect_report
+        labelled = self.labelled()
+        found = []
+        for name in names:
+            if name not in labelled or not self.exists(name):
+                continue
+            labels = dict(labelled[name])
+            spec = self.specs.get(name)
+            if spec is not None and spec.install:
+                labels[LABEL_INSTALL] = spec.install
+            found.append(
+                {
+                    "Name": name,
+                    "Config": {"Labels": labels},
+                    "Mounts": [{"Name": f"{name}-tmp", "Destination": TMP_MOUNT}],
+                }
+            )
+        return json.dumps(found)
+
+    def storage_root(self) -> str:
+        """The folder the workspaces are in, which stands for Podman's storage."""
+        self.monitor_calls.append(("storage_root",))
+        return str(self.root)
 
     def end_canary(self, name: str) -> None:
         """The canary is a program run to its end here, never one left behind."""

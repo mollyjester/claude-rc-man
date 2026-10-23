@@ -1,0 +1,19 @@
+Images space usage:
+
+REPOSITORY                 TAG            IMAGE ID      CREATED     SIZE        SHARED SIZE  UNIQUE SIZE  CONTAINERS
+docker.io/library/busybox  1.36           b116e1550744  3 years     4.66MB      0B           4.66MB       0
+docker.io/library/alpine   3.20           bf8527eb54c3  6 months    8.104MB     0B           8.104MB      0
+docker.io/library/debian   bookworm-slim  8da84df25d28  2 days      77.96MB     0B           77.96MB      0
+docker.io/library/ubuntu   24.04          6277ab668b2a  3 weeks     161.4MB     0B           161.4MB      1
+docker.io/library/python   3.12-slim      a33c10a97f11  2 days      123.5MB     0B           123.5MB      0
+
+Containers space usage:
+
+CONTAINER ID  IMAGE         COMMAND           LOCAL VOLUMES  SIZE        CREATED     STATUS      NAMES
+73691af10c04  6277ab668b2a  sleep 2147483647  2              11.39kB     33 seconds  running     rcman-ws-1
+
+Local Volumes space usage:
+
+VOLUME NAME                                                       LINKS       SIZE
+rcman-ws-1                                                        1           1MB
+2fd7447977a57331e3248a5eb1bf73e0e0f2ab2f1618cae6e78ea026a96dd8ca  1           26B

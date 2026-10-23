@@ -1,0 +1,180 @@
+{
+  "host": {
+    "arch": "amd64",
+    "buildahVersion": "1.33.7",
+    "cgroupManager": "cgroupfs",
+    "cgroupVersion": "v2",
+    "cgroupControllers": [
+      "cpu",
+      "memory",
+      "pids"
+    ],
+    "conmon": {
+      "package": "conmon_2.1.10+ds1-1build2_amd64",
+      "path": "/usr/bin/conmon",
+      "version": "conmon version 2.1.10, commit: unknown"
+    },
+    "cpus": 4,
+    "cpuUtilization": {
+      "userPercent": 11.95,
+      "systemPercent": 4.6,
+      "idlePercent": 83.45
+    },
+    "databaseBackend": "sqlite",
+    "distribution": {
+      "distribution": "ubuntu",
+      "version": "24.04",
+      "codename": "noble"
+    },
+    "eventLogger": "file",
+    "freeLocks": 2040,
+    "hostname": "rcman-ws-9",
+    "idMappings": {
+      "gidmap": [
+        {
+          "container_id": 0,
+          "host_id": 1000,
+          "size": 1
+        },
+        {
+          "container_id": 1,
+          "host_id": 1,
+          "size": 999
+        },
+        {
+          "container_id": 1000,
+          "host_id": 1001,
+          "size": 64535
+        }
+      ],
+      "uidmap": [
+        {
+          "container_id": 0,
+          "host_id": 1000,
+          "size": 1
+        },
+        {
+          "container_id": 1,
+          "host_id": 1,
+          "size": 999
+        },
+        {
+          "container_id": 1000,
+          "host_id": 1001,
+          "size": 64535
+        }
+      ]
+    },
+    "kernel": "6.8.0-147-generic",
+    "logDriver": "k8s-file",
+    "memFree": 2622386176,
+    "memTotal": 8326938624,
+    "networkBackend": "cni",
+    "networkBackendInfo": {
+      "backend": "cni",
+      "package": "containernetworking-plugins_1.1.1+ds1-3ubuntu0.24.04.3_amd64",
+      "path": "/usr/lib/cni",
+      "dns": {
+        
+      }
+    },
+    "ociRuntime": {
+      "name": "crun",
+      "package": "crun_1.14.1-1_amd64",
+      "path": "/usr/bin/crun",
+      "version": "crun version 1.14.1\ncommit: de537a7965bfbe9992e2cfae0baeb56a08128171\nrundir: /tmp/podman-run-1000/crun\nspec: 1.0.0\n+SYSTEMD +SELINUX +APPARMOR +CAP +SECCOMP +EBPF +WASM:wasmedge +YAJL"
+    },
+    "os": "linux",
+    "remoteSocket": {
+      "path": "unix:///tmp/rcgate-ano_9ukw/s.sock",
+      "exists": true
+    },
+    "serviceIsRemote": true,
+    "security": {
+      "apparmorEnabled": false,
+      "capabilities": "CAP_CHOWN,CAP_DAC_OVERRIDE,CAP_FOWNER,CAP_FSETID,CAP_KILL,CAP_NET_BIND_SERVICE,CAP_SETFCAP,CAP_SETGID,CAP_SETPCAP,CAP_SETUID,CAP_SYS_CHROOT",
+      "rootless": true,
+      "seccompEnabled": true,
+      "seccompProfilePath": "/usr/share/containers/seccomp.json",
+      "selinuxEnabled": false
+    },
+    "slirp4netns": {
+      "executable": "",
+      "package": "",
+      "version": ""
+    },
+    "pasta": {
+      "executable": "",
+      "package": "",
+      "version": ""
+    },
+    "swapFree": 0,
+    "swapTotal": 0,
+    "uptime": "108h 11m 55.00s (Approximately 4.50 days)",
+    "variant": "",
+    "linkmode": "dynamic"
+  },
+  "store": {
+    "configFile": "/tmp/rcgate-ano_9ukw/storage.conf",
+    "containerStore": {
+      "number": 4,
+      "paused": 0,
+      "running": 1,
+      "stopped": 3
+    },
+    "graphDriverName": "overlay",
+    "graphOptions": {
+      
+    },
+    "graphRoot": "/tmp/rcgate-ano_9ukw/g",
+    "graphRootAllocated": 102888095744,
+    "graphRootUsed": 29082914816,
+    "graphStatus": {
+      "Backing Filesystem": "extfs",
+      "Native Overlay Diff": "true",
+      "Supports d_type": "true",
+      "Supports shifting": "false",
+      "Supports volatile": "true",
+      "Using metacopy": "false"
+    },
+    "imageCopyTmpDir": "/var/tmp",
+    "imageStore": {
+      "number": 5
+    },
+    "runRoot": "/tmp/rcgate-ano_9ukw/r",
+    "volumePath": "/tmp/rcgate-ano_9ukw/g/volumes",
+    "transientStore": false
+  },
+  "registries": {
+    "search": [
+  "docker.io"
+]
+  },
+  "plugins": {
+    "volume": [
+      "local"
+    ],
+    "network": [
+      "bridge",
+      "macvlan",
+      "ipvlan"
+    ],
+    "log": [
+      "k8s-file",
+      "none",
+      "passthrough",
+      "journald"
+    ],
+    "authorization": null
+  },
+  "version": {
+    "APIVersion": "4.9.3",
+    "Version": "4.9.3",
+    "GoVersion": "go1.22.2",
+    "GitCommit": "",
+    "BuiltTime": "Thu Jan  1 00:00:00 1970",
+    "Built": 0,
+    "OsArch": "linux/amd64",
+    "Os": "linux"
+  }
+}

@@ -256,6 +256,33 @@ minimums) are in `helpers/rules.py`.
 - **What the installer prepares.** The controllers, and the lifted default ceiling on
   processes: `ensure_limits`, see [installer.md](installer.md).
 
+### What the monitor reads
+
+The monitor (`backend/rcman/monitor.py`, see [backend.md](backend.md#monitor)) reads through
+four methods of the runtime, each a text it parses itself:
+
+- `show_slices(slices)`: one `systemctl --user show` of `limits.MONITORED` for every slice
+  given, through `_systemctl`; a slice that never ran is shown inactive with nothing counted.
+- `disk_usage(cancel)`: `podman --remote system df --verbose`, which has no JSON with
+  `--verbose`, so its text tables are read. It runs through a `Popen` that is looked at every
+  `DISK_POLL_SECONDS` and killed when `cancel` is set (the monitor's stop) or after
+  `DISK_TIMEOUT`. Killing it ends only the `podman --remote` client: the service may finish the
+  walk it started. The Podman service walks every file of every volume for it, its cost growing
+  with the files, and one volume it cannot read, or a file deleted while it walks, fails the
+  whole read.
+- `inspect_containers(names)`: `podman --remote container inspect` of the workspaces'
+  containers, whose `Mounts` name the anonymous volume at `TMP_MOUNT` (`ps` lists only a mount's
+  destination). A name that is not there makes Podman fail (`NO_SUCH_CONTAINER`) after it
+  printed those that are, which are taken.
+- `storage_root()`: `store.graphRoot` of `podman --remote info`, asked once.
+
+The host runtime records each call in `monitor_calls` and answers what a test plants:
+`slices_shown` by slice, `disk_report` (otherwise made from its workspaces' folders, each a
+volume, in Podman's tables) with `disk_failures` raised first, `inspect_report` (otherwise made
+from its workspaces), and its own folder as the storage.
+The recordings the tests read are in `tests/fakes/podman-monitor/`, recorded from Podman on the
+tests' engine; `tests/container/test_runtime_in_podman.py` holds them to that Podman.
+
 ### A person's Claude sign-in
 
 Each person has one sign-in, Claude Code's credentials file (`CREDENTIALS`), in a volume

@@ -122,4 +122,7 @@ value, or `none` for no limit; an option left out leaves that limit as it is.
 
 Every change is in the [audit trail](audit.md), with the values set.
 
+What each person's workspaces, and each workspace's container, use now, disk
+included, is on the **Monitor** page (see [Monitor](monitor.md)).
+
 `rcman-admin --help` describes every command.

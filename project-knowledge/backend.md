@@ -15,7 +15,7 @@ the OpenAPI description it serves at `/api/openapi.json`, browsable at
 
 | Module | What it is |
 |---|---|
-| `main.py` | `create_app(settings, runtime, *, builder_slot)`: the app, its lifespan (migrations, the allowed list, audit retention, restoring workspaces) and its routers; with rcman's own Podman, `check_seccomp` first, which says in the journal when the workspaces' seccomp profile is missing or stale (see [runtime.md](runtime.md#containers-in-a-workspace)); and `check_instructions`, which says there when the instructions for Claude are missing from the tools (see [runtime.md](runtime.md#workspace-instructions)) |
+| `main.py` | `create_app(settings, runtime, *, builder_slot)`: the app, its lifespan (migrations, the allowed list, audit retention, restoring workspaces, the monitor's loops) and its routers; with rcman's own Podman, `check_seccomp` first, which says in the journal when the workspaces' seccomp profile is missing or stale (see [runtime.md](runtime.md#containers-in-a-workspace)); and `check_instructions`, which says there when the instructions for Claude are missing from the tools (see [runtime.md](runtime.md#workspace-instructions)) |
 | `settings.py` | The settings model |
 | `db.py` | SQLite connections and the schema, as migrations; `migrate` refuses a database newer than the code |
 | `identity.py` | Who is asking, and whether they may |
@@ -28,11 +28,12 @@ the OpenAPI description it serves at `/api/openapi.json`, browsable at
 | `journal.py` | `install(log)`: sends a logger's events to standard error, one bare line each, which systemd sends to the journal |
 | `unrecognised.py` | The watch on every server rcman reads, which writes output rcman does not recognise to the journal (see [Output rcman does not recognise](#output-rcman-does-not-recognise)) |
 | `everyone.py` | Everyone's workspaces and servers, for administrators |
+| `monitor.py`, `routers/monitor.py` | What the host, each person and each workspace container use now, collected in two rounds, and the monitor's settings, for administrators (see [Monitor](#monitor)) |
 | `headers.py` | The security headers every answer carries (see [Requests](#requests)) |
 | `ratelimit.py`, `filelock.py` | A token bucket for each name (the limits on a page's reports and on requests for an upgrade of rcman), and a re-entrant lock that is also a lock file, shared with `rcman-admin` (see [Limits](#limits)) |
 | `spa.py` | Serving the built frontend: its files, and `index.html` for every other path not under `/api`; installed after every router. `index.html` names the build's files by the hashes of their contents, which Vite puts in their names under `assets/`, so every file outside `assets/`, `index.html` among them, is served with `Cache-Control: no-cache`, which has the browser ask again before it uses the one it kept, and a page loaded after an upgrade names the new build's files; those under `assets/`, which never change, are kept for a year (`immutable`) |
 | `routes.py` | The app's routes as FastAPI resolves them after including routers, and which of them are for administrators |
-| `routers/` | One module per area: `me`, `workspaces`, `servers`, `git`, `github`, `claude`, `people`, `audit_log`, `attention`, `docs`, `client_errors`, `terminal`, `rcman_upgrade` |
+| `routers/` | One module per area: `me`, `workspaces`, `servers`, `git`, `github`, `claude`, `people`, `audit_log`, `attention`, `monitor`, `docs`, `client_errors`, `terminal`, `rcman_upgrade` |
 | `routers/workspaces.py` | The person's workspaces, under `/api/workspaces`: listing them with their servers, making one, deleting one, telling whether one's devcontainer.json changed and rebuilding one (see [Workspaces and servers](#workspaces-and-servers)); the listing is an object, `workspaces`, `claude_approved` (the version a server started now would run, `null` where none is), so that the page can set each server's `claude_version` beside it, and `rcman_upgrading`, whether an upgrade of rcman is under way (see [Upgrading rcman](#upgrading-rcman)) |
 | `routers/servers.py` | A workspace's server, under `/api/servers`: start, resume, stop, forget, confirm and output, each by the workspace's id; and everyone's, for administrators |
 | `accounts.py`, `routers/claude.py` | Each person's Claude sign-in, signing in and out of it, and its state; `routers/me.py` signs out of rcman — see [Claude accounts](#claude-accounts) |
@@ -580,6 +581,63 @@ import the installer; `rcman_upgrade.Upgrades` is `app.state.upgrade`.
   race and locks, `rcman_upgrading` from a creation, a clone and a roll-out, and an upgrade and a
   rebuild each refusing the other.
 
+## Monitor
+
+The administrators' account is [the Monitor guide](../docs/monitor.md); what the runtime
+runs for it is [runtime.md](runtime.md#what-the-monitor-reads). `monitor.py` holds the readers,
+the settings and the collector, `Monitor(runtime, database, *, clock, wait, now)`, whose seams
+are the monotonic clock, the wait between rounds and the wall time a round is stamped with.
+
+- **The rounds.** `usage_round` reads `/proc/stat` (the change since the round before, as a
+  percent of one core), `/proc/meminfo` (`MemTotal` less `MemAvailable`), the fourth field of
+  `/proc/loadavg` (tasks, threads counting, which `hidepid` does not hide) and `statvfs` of the
+  database's folder, `/` and Podman's storage (`filesystems`, one entry per device), and asks
+  the runtime once for the slices of the people and the workspaces that are on
+  (`show_slices`), matched to their blocks by `Id` (`read_units`): a block that cannot be read
+  makes only its unit unknown. A slice's CPU (`unit_cpu`) is unknown on its first reading, when
+  `CPUUsageNSec` dropped, when the slice was not active in the round before, and when it has
+  stopped since; switching a scope off drops the readings its CPU is counted from. `disk_round`
+  asks the runtime for `system df -v` (`read_disk`: the text tables, cut at the offsets of each
+  header's columns, sizes decimal SI) and for `container inspect` of every workspace's container
+  (`read_inspected`), and sums a workspace's volume, its `/tmp` volume and its container's layer
+  where the container's labels name the workspace, its person and this database's install
+  (`workspace_disk`). Each of the two disk reads that fails is tried once more (`DISK_ATTEMPTS`),
+  one that worked not again; a round that fails, in any part, keeps all the figures of the last
+  one that did not, and its `collected_at`. Each round
+  catches `Exception`, keeps its own `error`, and logs on `rcman.monitor` only when its failure
+  starts, changes or ends. An unknown figure is `None`, never 0.
+- **The settings.** `MonitorSettings`: the two intervals, with their defaults and bounds
+  (`Field(ge, le)` on a `StrictInt`), and the three scopes (`StrictBool`); every one is sent
+  on a save. They are kept in the table `monitor_settings`, one row (`id = 1`) the first save
+  makes; no row is `DEFAULTS`. `Monitor.changed` takes up a save: a new generation, the figures
+  of a scope now off dropped, and both loops woken with `loop.call_soon_threadsafe`. A round
+  takes the settings and the generation as it starts, and what it read of a scope that is off
+  by its end is dropped (`_keep`).
+- **The loops.** `Monitor.start(restored)`, from the lifespan, makes one task per round on the
+  service's event loop. Each runs its round in a thread (`_in_thread`) and awaits it, so it
+  never runs two at once; with the host on, the usage loop asks the runtime where Podman's
+  storage is (`prepare`, one `podman info`) before its round until it knows, which is outside
+  the rounds and so outside the cost guard below. A failure of a loop outside its round is
+  logged when it starts or changes. The first usage round runs once the workspaces
+  are restored; the first disk round one disk interval after that. A loop's next round is due
+  its interval after its last one ended, which a save does not move, and a loop with nothing on
+  waits for a save. `Monitor.stop`, which the lifespan awaits before anything closes, sets
+  `halted` (which kills a disk read and starts no round), cancels both tasks and awaits a round
+  under way.
+- **The routes**, for administrators (`routers/monitor.py`): `GET /api/monitor` is
+  `Monitor.snapshot`, built from the database's people and workspaces as they are now and the
+  figures kept; `GET /api/monitor/settings` answers `{"settings": ...}`; `PUT
+  /api/monitor/settings` saves the whole set (`Monitor.save`) and answers the same, audited as
+  `monitor.settings` with the settings as JSON. A value outside its bounds, or of the wrong
+  type, is refused at its field.
+
+`tests/test_monitor.py` holds the readers to the recordings, the rounds on the host runtime,
+the loops on a clock and a wait of its own, and what a round costs: with `subprocess` stubbed
+on a `PodmanRuntime`, a usage round runs `systemctl` once and Podman never, a disk round one
+`system df` and one `container inspect` (one more of each on its retry) and no `systemctl`, and
+nothing runs with every scope off; a planted runtime that asks `systemctl` once per slice fails
+it. `tests/test_monitor_routes.py` holds the routes.
+
 ## Attention
 
 `routers/attention.py` (`GET /api/attention`, for administrators) reports the
@@ -599,7 +657,7 @@ once accepted, and `<action>.close` when one that opened closes; whatever the ro
 recorded by the time it ends is recorded then. uvicorn configures only
 its own loggers, so `create_app` calls `journal.install` on each logger whose
 events go to the journal — `rcman.audit`, `rcman.client`, `rcman.unrecognised`,
-`rcman.workspaces`, `rcman.claude_versions` and `rcman.terminals` — which gives it one handler writing the bare line to
+`rcman.workspaces`, `rcman.claude_versions`, `rcman.terminals` and `rcman.monitor` — which gives it one handler writing the bare line to
 standard error; systemd sends it to the journal. `tests/test_journal.py` checks
 that the app installs each of them. `tests/test_audit.py` starts the app with the unit's own
 `ExecStart` and reads the line from its output. It also finds every changing

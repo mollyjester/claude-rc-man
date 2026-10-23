@@ -423,6 +423,36 @@ def test_an_administrators_limits_reach_systemctl_and_are_read_back(stack):
     )
 
 
+def test_the_monitor_reads_a_running_workspaces_slice_through_systemctl(stack):
+    """The usage round's one show of every slice reaches the user manager (the stand-in) and is
+    read slice by slice: a running workspace's memory is known. The shortest usage interval is
+    saved for the test, so that a round comes soon, and the defaults put back after."""
+    from rcman import monitor
+
+    alpha = workspace_of(stack, "alpha")
+    shortest = {
+        **monitor.DEFAULTS.model_dump(),
+        "usage_interval_seconds": monitor.USAGE_INTERVAL_MIN,
+    }
+    status, answer = stack.request("PUT", "/api/monitor/settings", body=shortest)
+    assert status == 200, answer
+    try:
+        deadline = time.monotonic() + 6 * monitor.USAGE_INTERVAL_MIN
+        while True:
+            status, snap = stack.request("GET", "/api/monitor")
+            assert status == 200, snap
+            (row,) = [c for c in snap["containers"] if c["id"] == alpha["id"]]
+            if row["memory_bytes"] is not None:
+                break
+            assert time.monotonic() < deadline, snap
+            time.sleep(1)
+        assert snap["usage"]["error"] is None
+        mine = [p for p in snap["people"] if p["id"] == person_id(stack)]
+        assert mine and mine[0]["memory_bytes"] is not None
+    finally:
+        stack.request("PUT", "/api/monitor/settings", body=monitor.DEFAULTS.model_dump())
+
+
 # --- the stack's network ----------------------------------------------------------------------
 
 

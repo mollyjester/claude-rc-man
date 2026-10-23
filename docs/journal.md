@@ -34,6 +34,14 @@ made, rebuilt or brought back: those that were ready still read **ready** in rcm
 though a container that stopped is not started and one that was lost is not made again, and
 their servers are not started.
 
+Those about the [Monitor](monitor.md) come from the logger `rcman.monitor`: a round
+that started to fail, or fails for another reason than before, with why, at error level, and
+that it collected again, at info level; nothing is written while a round goes on failing for
+the same reason, nor when it works. A fault in rcman's own loop around a round is written the
+same way, at error level with its traceback; and that rcman cannot tell where Podman's storage
+is, at warning level, once while it runs, in which case the host's filesystems leave Podman's
+storage out until it can.
+
 Those about the **Terminal** tab come from the logger `rcman.terminals`:
 something that went wrong with a terminal inside rcman, such as a shell that
 did not start or a session that could not be ended (see

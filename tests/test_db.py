@@ -447,3 +447,43 @@ def test_a_rebuild_state_is_one_of_its_phases_or_null(tmp_path):
         con.execute("update workspaces set rebuild_state = ? where id = 1", (phase,))
     with pytest.raises(sqlite3.IntegrityError):
         con.execute("update workspaces set rebuild_state = 'other' where id = 1")
+
+
+def test_the_monitor_settings_are_one_row_with_switches_and_positive_intervals(tmp_path):
+    """No row is made by the migration: a missing row is the defaults (monitor.py)."""
+    path = tmp_path / "x.db"
+    db.migrate(path)
+    con = db.connect(path)
+    assert con.execute("select count(*) from monitor_settings").fetchone()[0] == 0
+    insert = (
+        "insert into monitor_settings (id, usage_interval_seconds, disk_interval_seconds, "
+        "host, people, containers) values (?, ?, ?, ?, ?, ?)"
+    )
+    con.execute(insert, (1, 60, 3600, 1, 0, 1))  # positive control
+    for row in (
+        (2, 60, 3600, 1, 1, 1),  # a second row
+        (1, 60, 3600, 1, 1, 1),  # the first again
+    ):
+        with pytest.raises(sqlite3.IntegrityError):
+            con.execute(insert, row)
+    con.execute("delete from monitor_settings")
+    for row in (
+        (1, 0, 3600, 1, 1, 1),
+        (1, 60, -1, 1, 1, 1),
+        (1, 60, 3600, 2, 1, 1),
+        (1, 60, 3600, 1, -1, 1),
+        (1, 60, 3600, 1, 1, None),
+    ):
+        with pytest.raises(sqlite3.IntegrityError):
+            con.execute(insert, row)
+
+
+def test_a_database_of_the_schema_before_the_monitor_gains_its_table_and_no_row(tmp_path):
+    path, con = migrated_before(tmp_path, "monitor_settings")
+    tables = {r[0] for r in con.execute("select name from sqlite_master where type='table'")}
+    assert "workspaces" in tables and "monitor_settings" not in tables
+    con.close()
+    db.migrate(path)
+    con = sqlite3.connect(path)
+    assert con.execute("select count(*) from monitor_settings").fetchone()[0] == 0
+    assert con.execute("select name from workspaces").fetchall() == [("old",)]

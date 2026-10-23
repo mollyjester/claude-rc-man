@@ -311,6 +311,29 @@ runs are in [runtime.md](runtime.md#the-canary); the fake cannot show these.
    server keeps running the old one, its session stays attached, and stopping and
    starting it runs the new one.
 
+## The monitor
+
+On an installed server, as an administrator, with a person who has a running workspace and
+a server in it. What the monitor reads is in [backend.md](backend.md#monitor); the tests'
+engine has no user manager of rcman's, so this is checked here.
+
+1. **One show of many slices.** As rcman, run `systemctl --user show` with a `-p` for each of
+   `limits.MONITORED` and the slices of two people and a workspace, one of them never started:
+   the answer is a block per slice, parted by blank lines, each with its `Id`, and the one
+   never started shows `ActiveState=inactive`. Time it, with `time`, against one show of a
+   single slice: the cost of a usage round is that one call. Save the answer as
+   `tests/fakes/podman-monitor/systemctl-show.txt`, with the slices named as rcman names them,
+   and add a test in `tests/test_monitor.py` that reads it with `monitor.read_units`: until
+   then the parser is held to the format only through the stand-in of the stack
+   (`tests/container/stand_ins.py`) and the cases written in `tests/test_monitor.py`.
+2. **The page.** Open **Monitor**: after a usage interval, each person and workspace with a
+   running server shows CPU, memory and processes, the host its figures, and a workspace's
+   memory is below its person's. After a disk interval, or with the shortest one saved, the
+   workspace shows its disk.
+3. **A failure is said once.** Stop the Podman service rcman uses for a moment, wait past a
+   disk round, and start it again: the journal (`journalctl -u rcman`) holds one line from
+   `rcman.monitor` when the disk round started to fail and one when it collected again.
+
 ## The shared sign-in
 
 What Claude Code does with one credentials file bound into several workspaces,

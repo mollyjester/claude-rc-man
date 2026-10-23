@@ -40,6 +40,9 @@ Implemented and tested:
   an administrator's request, carried out by a root service of the installer's.
 - **Limits** on memory, CPU and processes, per person and per workspace, set by
   administrators.
+- **Monitor**: what the host, each person and each workspace container use now
+  (CPU, memory, processes and disk), collected in the background for administrators
+  (see [docs/monitor.md](docs/monitor.md)).
 - The backend API with its audit trail, the web interface, the installer and the
   end-to-end checks.
 

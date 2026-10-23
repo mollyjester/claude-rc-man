@@ -1031,6 +1031,73 @@ test.describe("People on a desktop", () => {
   });
 });
 
+// What GET /api/monitor answers for Monitor's tables on a phone: two rows in each, one with a
+// long address and name, one whose figures are not known.
+const LONG_ADDRESS = "someone-with-a-rather-long-address-indeed@a-long-domain.example.com";
+const UNKNOWN_FIGURES = { cpu_percent: null, memory_bytes: null, tasks: null, disk_bytes: null };
+const KNOWN_FIGURES = {
+  cpu_percent: 1234.5,
+  memory_bytes: 123_456_789_012,
+  tasks: 12_345,
+  disk_bytes: 987_654_321_098,
+};
+const MONITORED = {
+  scopes: { host: true, people: true, containers: true },
+  usage: { collected_at: "2026-10-23T10:00:00+00:00", error: null },
+  disk: { collected_at: "2026-10-23T09:00:00+00:00", error: null },
+  host: {
+    cpu_percent: 250.5,
+    cpus: 8,
+    memory_used_bytes: 6_200_000_000,
+    memory_total_bytes: 16_800_000_000,
+    tasks: 412,
+    disks: [],
+  },
+  people: [
+    { id: 1, email: LONG_ADDRESS, workspaces: 12, ...KNOWN_FIGURES },
+    { id: 2, email: BOB, workspaces: 0, ...UNKNOWN_FIGURES },
+  ],
+  containers: [
+    {
+      id: 1,
+      name: "a-workspace-with-a-rather-long-name-indeed",
+      owner: LONG_ADDRESS,
+      state: "ready",
+      ...KNOWN_FIGURES,
+    },
+    { id: 2, name: "beta", owner: BOB, state: "failed", ...UNKNOWN_FIGURES },
+  ],
+};
+
+for (const width of [360, 390]) {
+  test.describe(`Monitor on a phone ${width}px wide`, () => {
+    test.use({ isMobile: true, hasTouch: true, viewport: { width, height: 800 } });
+
+    test("draws each table's rows as a list's rows, inside their card, their cells apart", async ({
+      page,
+    }) => {
+      await signInAs(page, ALICE);
+      await page.route("**/api/monitor", (route) => route.fulfill({ json: MONITORED }));
+      await page.goto("/admin/monitor");
+      for (const name of [m.monitorPeople, m.monitorContainers]) {
+        const scroll = page.getByRole("region", { name, exact: true }).locator(".table-scroll");
+        await expect(scroll.locator("tbody tr").nth(1)).toBeVisible();
+        expect(await scroll.locator("table").evaluate((t) => getComputedStyle(t).display)).not.toBe(
+          "table",
+        );
+        const found = await rowFaults(scroll, false);
+        expect(found.rows, name).toBe(2); // positive control: the rows were measured
+        expect(found.faults, name).toEqual([]);
+      }
+      const widths = await page.evaluate(() => ({
+        scroll: document.documentElement.scrollWidth,
+        client: document.documentElement.clientWidth,
+      }));
+      expect(widths.scroll).toBeLessThanOrEqual(widths.client);
+    });
+  });
+}
+
 test.describe("the Versions page on a phone", () => {
   test.use({ isMobile: true, hasTouch: true, viewport: { width: 360, height: 800 } });
 

@@ -3,6 +3,7 @@
 import os
 import subprocess
 import sys
+import time
 
 import pytest
 
@@ -333,3 +334,36 @@ def test_the_defaults_guard_finds_a_changed_default(tmp_path, planted):
     control = control.replace("=8192", "=RANGE").replace("slot=6", "slot=None")
     (tmp_path / "plant.py").write_text(control + "\n")
     assert sized_defaults(tmp_path) == [], control
+
+
+# --- the monitor's loops --------------------------------------------------------------------
+
+
+def test_the_monitor_runs_once_the_workspaces_are_restored_and_stops_before_the_service_closes(
+    app,
+):
+    from fastapi.testclient import TestClient
+
+    from tests.conftest import ALICE, as_user
+
+    service, made = app.state.workspaces, app.state.monitor
+    seen = []
+    real = service.close
+
+    def close():
+        seen.append(
+            (made.halted.is_set(), bool(made.tasks), all(t.done() for t in made.tasks), made.busy)
+        )
+        real()
+
+    service.close = close
+    with TestClient(app) as client:
+        assert service.restored.wait(30)
+        deadline = time.monotonic() + 30
+        while not client.get("/api/monitor", headers=as_user(ALICE)).json()["usage"][
+            "collected_at"
+        ]:
+            assert time.monotonic() < deadline, "the first usage round did not run"
+            time.sleep(0.05)
+        assert seen == []  # positive control: running until the service stops
+    assert seen == [(True, True, True, False)]
