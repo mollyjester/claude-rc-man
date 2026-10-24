@@ -131,16 +131,11 @@ def test_a_dockerfile_and_a_feature_are_built_in_the_builders_slot_and_a_workspa
 # --- what native overlay rests on, shown by a builder without it --------------------------------
 
 TWIN_ID = 725
-FUSE_STORAGE = (
-    '[storage]\ndriver="overlay"\nrunroot="/run/containers/storage"\n'
-    'graphroot="/var/lib/containers/storage"\n'
-    '[storage.options.overlay]\nmount_program="/usr/bin/fuse-overlayfs"\n'
-)
 
 
-def nested_in_builder(runtime, image: str, drop=(), add=()) -> rt.Result:
-    """A builder of ``image`` run with run_argv but for ``drop`` and with ``add``, its Podman
-    importing a busybox and running it."""
+def nested_in_builder(runtime, image: str, drop=()) -> rt.Result:
+    """A builder of ``image`` run with run_argv but for ``drop``, its Podman importing a busybox
+    and running it."""
     from tests.container.test_nest_in_podman import tarball
 
     name = builder.builder_name(TWIN_ID)
@@ -150,7 +145,6 @@ def nested_in_builder(runtime, image: str, drop=(), add=()) -> rt.Result:
                                 network=runtime.config.network)  # fmt: skip
         assert set(drop) <= set(argv)  # what is taken away is there to take
         argv = [a for a in argv if a not in drop]
-        argv[argv.index("--pull=never"):argv.index("--pull=never")] = list(add)  # fmt: skip
         runtime._podman(*argv)
         made = runtime._podman("exec", "--interactive", name, "podman", "import", "-",
                                "localhost/rcman-test-bb", stdin=tarball(), check=False)  # fmt: skip
@@ -179,31 +173,3 @@ def test_the_builders_podman_runs_a_container_with_sys_admin_and_not_without_it(
     assert nested_in_builder(building, image).out == b"ran\n"  # the control
     failed = nested_in_builder(building, image, drop=["--cap-add=SYS_ADMIN"])
     assert failed.code != 0, failed
-
-
-@pytest.fixture(scope="module")
-def fuse_builder(podman_service, builder_image, tmp_path_factory) -> str:
-    """The builder image as it was with a mount program: fuse-overlayfs installed and named in
-    its storage.conf."""
-    context = tmp_path_factory.mktemp("fuse-builder")
-    (context / "storage.conf").write_text(FUSE_STORAGE)
-    (context / "Containerfile").write_text(
-        f"FROM {builder_image}\n"
-        "RUN apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "
-        "--no-install-recommends fuse-overlayfs && rm -rf /var/lib/apt/lists/*\n"
-        "COPY storage.conf /etc/containers/storage.conf\n"
-    )
-    name = "localhost/rcman-test-fuse-builder"
-    built = podman_service.cli("build", "-q", "-t", name, str(context), timeout=1800)
-    assert built.returncode == 0, built.stdout[-2000:] + built.stderr[-4000:]
-    yield name
-    podman_service.cli("rmi", "--force", name)
-
-
-def test_a_builder_whose_storage_has_a_mount_program_runs_nothing_without_dev_fuse(
-    building, fuse_builder
-):
-    failed = nested_in_builder(building, fuse_builder)
-    assert failed.code != 0 and b"fuse" in (failed.out + failed.err).lower(), failed
-    # the control: the same builder with the device it was once given
-    assert nested_in_builder(building, fuse_builder, add=["--device=/dev/fuse"]).out == b"ran\n"

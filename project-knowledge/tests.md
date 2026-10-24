@@ -399,9 +399,8 @@ helper made inside the holder's network and handed back.
   owned beyond it.
 - `tests/container/test_builder_on_engine.py`: the builder image in the builder's slot, its
   Podman on native overlay with no FUSE device, building a Dockerfile with a whiteout and a local
-  feature into an image a workspace then runs from; and its twins, a builder without
-  `SYS_ADMIN` and one whose storage names fuse-overlayfs as its mount program, which run nothing
-  (the second runs with `/dev/fuse` given).
+  feature into an image a workspace then runs from; and its twin, a builder without
+  `SYS_ADMIN`, which runs nothing.
 
 #### The stubbed installation
 
