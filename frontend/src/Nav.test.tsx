@@ -21,6 +21,7 @@ function api(me: Reply) {
       tested: "1.0.0",
       installed: [],
       drift: [],
+      failed: [],
       upgrading: false,
     },
     "GET /api/claude/latest": { latest: null },

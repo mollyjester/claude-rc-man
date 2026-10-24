@@ -49,6 +49,8 @@ KNOWN_ADMIN_ROUTES = {
     ("GET", "/api/claude/versions"),
     ("GET", "/api/claude/latest"),
     ("POST", "/api/claude/upgrade"),
+    ("PUT", "/api/claude/failures"),
+    ("DELETE", "/api/claude/failures/{version}"),
     ("GET", "/api/servers/everyone"),
     ("GET", "/api/attention"),
     ("GET", "/api/monitor"),

@@ -3,15 +3,23 @@
 Every workspace runs Claude Code from one store, ``claude_store``: ``versions/<version>``,
 one program each, and ``current``, a link to the approved one. Approvals are the rows of the
 ``claude_approvals`` table, never changed or deleted: the latest is the approved version, the
-latest one before it that names another version is the previous, and a rollback is a new
-row. The database is the truth and the link follows it (``reconcile``); the first time rcman
-runs it adopts what the installer left ``current`` naming as the first approval.
+latest one before it that names another version and is not marked failed is the previous,
+and a rollback is a new row. The database is the truth and the link follows it
+(``reconcile``); the first time rcman runs it adopts what the installer left ``current``
+naming as the first approval.
+
+An administrator may mark any version but the approved one as failed, with a reason or
+none: the rows of ``claude_failures``, one per version, deleted when the mark is removed. A
+version marked failed is neither rolled out nor approved again, even if it was approved
+before, until its mark is removed; it is never the previous version; and it leaves the store
+by the usual pruning once nothing else keeps it. The mark outlives its file.
 
 A server pins the version it starts with (workspaces.py): it resolves the approved version
 here, records it on its workspace's row and runs that exact file, so approving another
 version changes nothing of a server that runs, and a stop and a start does. A version is
 removed from the store (``prune``) only when it is neither the approved nor the previous
-one, and no server that runs, or cannot be read, started with it.
+one (the latest approved before it that is not marked failed), and no server that runs, or
+cannot be read, started with it.
 
 A rollout (``upgrade``) is synchronous and one at a time. The candidate is downloaded into a
 staging folder outside the store (or copied there, if the store has it already), held to the
@@ -30,6 +38,7 @@ import datetime as dt
 import logging
 import os
 import shutil
+import sqlite3
 import threading
 import time
 import uuid
@@ -63,6 +72,23 @@ class Approval:
     version: str
     at: str
     by: str
+
+
+@dataclass(frozen=True)
+class Failure:
+    """A version marked as failed: by whom, when, and why (None where no reason was given)."""
+
+    version: str
+    at: str
+    by: str
+    reason: str | None
+
+
+def reason_of(text: str | None) -> str | None:
+    """A mark's reason as it is kept: trimmed, and none where nothing is left."""
+    if text is None:
+        return None
+    return text.strip() or None
 
 
 def _set_link(folder: Path, name: str, target: str) -> None:
@@ -102,11 +128,23 @@ class ClaudeVersions:
         return found[-1].version if found else None
 
     def previous(self) -> str | None:
-        """The latest approved version that is not the approved one."""
+        """The latest approved version that is neither the approved one nor marked failed:
+        the last good one, which an administrator goes back to. Pruning keeps it while it is
+        in the store; it may be one that left the store before, when it was neither, and going
+        back to it then downloads it and runs the canary."""
         found = self.approvals()
         if not found:
             return None
-        return next((a.version for a in reversed(found) if a.version != found[-1].version), None)
+        failed = {f.version for f in self.failures()}
+        approved = found[-1].version
+        return next(
+            (
+                a.version
+                for a in reversed(found)
+                if a.version != approved and a.version not in failed
+            ),
+            None,
+        )
 
     def _approve(self, version: str, by: str) -> None:
         con = db.connect(self.settings.database)
@@ -118,6 +156,70 @@ class ClaudeVersions:
             con.commit()
         finally:
             con.close()
+
+    # --- versions marked as failed -----------------------------------------------------------
+
+    def failures(self) -> list[Failure]:
+        """The versions marked as failed, the newest mark first."""
+        con = db.connect(self.settings.database)
+        try:
+            rows = con.execute(
+                "select version, at, by, reason from claude_failures order by at desc, rowid desc"
+            )
+            return [Failure(row[0], row[1], row[2], row[3]) for row in rows.fetchall()]
+        finally:
+            con.close()
+
+    def _is_failed(self, version: str) -> bool:
+        con = db.connect(self.settings.database)
+        try:
+            found = con.execute("select 1 from claude_failures where version = ?", (version,))
+            return found.fetchone() is not None
+        finally:
+            con.close()
+
+    def mark_failed(self, version: str, by: str, reason: str | None) -> dict:
+        """Mark ``version`` as failed, by ``by``, with ``reason`` (trimmed; blank is none), and
+        the report afterwards. ``claude_version_approved`` for the approved version, and
+        ``claude_version_failed`` for one marked already, whose mark stays as it was. Any other
+        version may be marked, in the store or not, also while a rollout or an upgrade of rcman
+        runs: a rollout of the version that is under way is refused before it is approved
+        (``_commit``). The version may then leave the store, by the prune that follows, which
+        does nothing while a rollout runs; the next prune after it does."""
+        with self.lock:
+            if self.approved() is None:
+                self.reconcile()  # nothing is approved yet: adopt what the store names
+            if version == self.approved():
+                raise Problem("claude_version_approved")
+            con = db.connect(self.settings.database)
+            try:
+                con.execute(
+                    "insert into claude_failures (version, at, by, reason) values (?, ?, ?, ?)",
+                    (version, dt.datetime.now(dt.UTC).isoformat(), by, reason_of(reason)),
+                )
+                con.commit()
+            except sqlite3.IntegrityError:
+                raise Problem("claude_version_failed") from None
+            finally:
+                con.close()
+        self.prune_quietly()
+        return self.report()
+
+    def clear_failed(self, version: str) -> dict:
+        """Remove the mark of ``version``, and the report afterwards; ``claude_version_not_failed``
+        where it has none."""
+        with self.lock:
+            con = db.connect(self.settings.database)
+            try:
+                deleted = con.execute(
+                    "delete from claude_failures where version = ?", (version,)
+                ).rowcount
+                con.commit()
+            finally:
+                con.close()
+        if not deleted:
+            raise Problem("claude_version_not_failed")
+        return self.report()
 
     def tested(self) -> str:
         """The version rcman's recorded tests were made with."""
@@ -206,12 +308,14 @@ class ClaudeVersions:
     def upgrade(self, version: str, by: str) -> dict:
         """Approve ``version``: a new one, one in the store, or an earlier one again (a
         rollback). The report of what is approved afterwards. ``claude_upgrade_busy`` while
-        another rollout runs, ``claude_install_failed`` where the version is not a version or
-        cannot be had, ``claude_checks_failed`` where it fails the canary's checks, and a
-        RuntimeFailed where the canary could not run, and ``rcman_upgrading`` while an upgrade
-        of rcman is under way; in each the store is as it was. A
-        version that was approved before and is still in the store is approved again at once:
-        it passed the checks then, so a rollback needs neither a download nor a canary."""
+        another rollout runs, ``claude_version_failed`` where the version is marked as failed,
+        before anything is fetched or checked or once it is marked while it is checked,
+        ``claude_install_failed`` where the version is not a version or cannot be had,
+        ``claude_checks_failed`` where it fails the canary's checks, a RuntimeFailed where the
+        canary could not run, and ``rcman_upgrading`` while an upgrade of rcman is under way;
+        in each the store is as it was. A version that was approved before and is still in the
+        store is approved again at once: it passed the checks then, so a rollback needs neither
+        a download nor a canary."""
         if not rules.VERSION.fullmatch(version):
             raise self._install_failed("no_such_version")
         if not self._upgrading.acquire(blocking=False):
@@ -254,6 +358,8 @@ class ClaudeVersions:
 
     def _roll_out(self, version: str, by: str) -> None:
         with self.lock:
+            if self._is_failed(version):
+                raise Problem("claude_version_failed")
             if self._approved_before(version) and self._usable(self.versions_dir / version):
                 self._commit(version, by, None)
                 return
@@ -321,8 +427,12 @@ class ClaudeVersions:
         store (``partial``, if there is one to rename), the link ``current`` is switched to
         it, and only then is the approval recorded, so that what is approved is always what
         the link names. A link that cannot be switched fails the rollout with nothing
-        approved; an approval that cannot be recorded puts the link back."""
+        approved; an approval that cannot be recorded puts the link back. A version marked
+        failed meanwhile, while the canary ran, is ``claude_version_failed``, with nothing
+        changed."""
         with self.lock:
+            if self._is_failed(version):
+                raise Problem("claude_version_failed")
             if partial is not None and not self._usable(self.versions_dir / version):
                 os.replace(partial, self.versions_dir / version)
                 self._sync_folder(self.versions_dir)
@@ -362,7 +472,8 @@ class ClaudeVersions:
             return False
 
     def _kept(self) -> set[str | None]:
-        """The versions pruning never removes: the approved, the previous, the one the link
+        """The versions pruning never removes: the approved, the previous (never one marked
+        failed, so a marked version goes once nothing else keeps it), the one the link
         names and the tested one, which an administrator can go back to from the page."""
         return {self.approved(), self.previous(), self._current(), self.tested()}
 
@@ -425,12 +536,16 @@ class ClaudeVersions:
 
     def report(self) -> dict:
         """What the Versions page shows: the approved, previous and tested versions, each
-        version in the store with whether it is approved, previous and how many servers use
-        it, the servers that run another version than the approved one, whether a rollout
-        runs, and whether an upgrade of rcman is under way, which no rollout may start in."""
+        version in the store with whether it is approved, previous or marked failed and how
+        many servers use it, the servers that run another version than the approved one and
+        whether theirs is marked failed, the marks themselves (the newest first), whether a
+        rollout runs, and whether an upgrade of rcman is under way, which no rollout may start
+        in."""
         with self.lock:
             approved, previous = self.approved(), self.previous()
             installed = self.installed()
+            failures = self.failures()
+        failed = {f.version for f in failures}
         pinned = self.workspaces.pinned_servers()
         used: dict[str, int] = {}
         for _, version in pinned:
@@ -446,6 +561,7 @@ class ClaudeVersions:
                     "approved": v == approved,
                     "previous": v == previous,
                     "in_use": used.get(v, 0),
+                    "failed": v in failed,
                 }
                 for v in installed
             ],
@@ -456,9 +572,13 @@ class ClaudeVersions:
                     "email": emails.get(w.person),
                     "version": version,
                     "approved": approved,
+                    "failed": version in failed,
                 }
                 for w, version in pinned
                 if version != approved
+            ],
+            "failed": [
+                {"version": f.version, "at": f.at, "by": f.by, "reason": f.reason} for f in failures
             ],
             "upgrading": self.rolling_out(),
             "rcman_upgrading": self.workspaces.upgrading(),

@@ -402,6 +402,10 @@ const OPENERS: Record<string, (page: Page) => Promise<void>> = {
     await personAction(page, BOB, m.usersRemove);
   },
   UpgradeDialog: async (page) => void (await openUpgradeDialog(page)),
+  MarkFailedDialog: async (page) => {
+    await page.goto("/admin/claude");
+    await page.getByRole("button", { name: m.versionsMarkAnyFailed }).click();
+  },
 };
 
 // --- the Workspaces page: the list beside the panel, and on a phone the bar over the panel ---

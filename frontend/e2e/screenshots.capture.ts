@@ -275,6 +275,13 @@ for (const scheme of ["light", "dark"] as const) {
         await page.keyboard.press("Escape");
         await page.unroute("**/api/rcman/upgrade");
 
+        // the question that marks a Claude Code version as failed
+        await page.goto("/admin/claude");
+        await page.getByRole("button", { name: m.versionsMarkAnyFailed }).click();
+        await expect(page.getByRole("dialog", { name: m.versionsMarkAnyFailed })).toBeVisible();
+        await shot("mark-version-failed", false);
+        await page.keyboard.press("Escape");
+
         // a sign-out that waits for the last server, as the Claude page shows it
         await page.route("**/api/claude", async (route) => {
           const answer = await (await route.fetch()).json();

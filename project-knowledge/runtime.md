@@ -624,7 +624,7 @@ every observed screen (see [fake-claude.md](fake-claude.md)) by
 `Runtime.run_canary(directory, name, version)` tries a candidate Claude Code version: the file
 `CANDIDATE` in `directory`. It runs the checks of `helpers/claude_canary.py` (which are
 `helpers/claude_checks.py`'s) and returns the ones the candidate fails, each with its report;
-empty means it passes them all. `ClaudeVersions` runs it only for a version never approved before (an earlier approved one still in the store is approved again without it). A canary that could not report (it did not start, did not
+empty means it passes them all. `ClaudeVersions` runs it for a version never approved before and for one approved before that left the store (an earlier approved one still in the store is approved again without it), and never for a version marked as failed, which is refused before it (see [backend.md](backend.md#claude-code-versions)); a candidate that fails it is not marked as failed. A canary that could not report (it did not start, did not
 finish in `CANARY_SECONDS`, or printed something else) is a `RuntimeFailed`, which says nothing
 about the candidate. `end_canary` removes the container.
 

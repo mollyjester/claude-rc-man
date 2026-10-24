@@ -1,6 +1,7 @@
 """The rules values are refused by: each a regular expression and the sentence that
 explains it (helpers/rules.py)."""
 
+import functools
 import re
 import subprocess
 import typing
@@ -90,6 +91,7 @@ def helpers_rules() -> dict[str, Rule]:
         "MEMORY",
         "CPU",
         "PIDS",
+        "FAILURE_REASON",
     }
     assert names <= set(found), names - set(found)
     return found
@@ -126,6 +128,7 @@ def _limits():
         (rules.WORKSPACE_NAME, rules.MAX_WORKSPACE_NAME_LENGTH),
         (rules.AUTHOR_NAME, rules.MAX_AUTHOR_NAME_LENGTH),
         (rules.GITHUB_TOKEN, rules.MAX_GITHUB_TOKEN_LENGTH),
+        (rules.FAILURE_REASON, rules.MAX_FAILURE_REASON_LENGTH),
     ]
 
 
@@ -418,14 +421,20 @@ ALLOWED_FORMAT = {0x200C: "ZERO WIDTH NON-JOINER", 0x200D: "ZERO WIDTH JOINER"}
 
 def hangul_fillers() -> list[str]:
     """The Hangul fillers: letters by category, but they show as nothing."""
+    return list(_hangul_fillers())
+
+
+@functools.cache
+def _hangul_fillers() -> tuple[str, ...]:
+    """``hangul_fillers``, from one scan of the Unicode database per test process."""
     import sys
     import unicodedata
 
-    return [
+    return tuple(
         chr(c)
         for c in range(sys.maxunicode + 1)
         if {"HANGUL", "FILLER"} <= set(unicodedata.name(chr(c), "").split())
-    ]
+    )
 
 
 def format_characters() -> list[str]:
@@ -510,3 +519,69 @@ def test_names_git_would_trim_are_refused(tmp_path):
             f"Bob{c}"
         )
         assert refused is (c in trimmed), repr(c)
+
+
+# --- why a Claude Code version is marked as failed --------------------------------------------
+
+
+def unseen_characters() -> list[str]:
+    """Every character no reason may hold, from the Unicode database: every control, the line
+    and paragraph separators, every format character but the joiners, and the Hangul
+    fillers."""
+    return list(_unseen_characters())
+
+
+@functools.cache
+def _unseen_characters() -> tuple[str, ...]:
+    """``unseen_characters``, from one scan of the Unicode database per test process."""
+    import sys
+    import unicodedata
+
+    return (
+        tuple(
+            chr(c)
+            for c in range(sys.maxunicode + 1)
+            if not 0xD800 <= c <= 0xDFFF
+            and (
+                unicodedata.category(chr(c)) in ("Cc", "Zl", "Zp")
+                or (unicodedata.category(chr(c)) == "Cf" and c not in ALLOWED_FORMAT)
+            )
+        )
+        + _hangul_fillers()
+    )
+
+
+def test_a_reason_is_one_line_of_visible_text_of_bounded_length():
+    rule = rules.FAILURE_REASON
+    assert rule.fullmatch("Users report that it hangs at start.")  # positive control
+    assert rule.fullmatch("Сервер зависает: 50% запросов")
+    assert rule.fullmatch(" spaces at the ends ")  # the route trims them before the rule
+    assert rule.fullmatch("x" * rules.MAX_FAILURE_REASON_LENGTH)
+    assert not rule.fullmatch("x" * (rules.MAX_FAILURE_REASON_LENGTH + 1))
+    assert not rule.fullmatch("")  # the route takes it or_empty
+    assert rule.or_empty().fullmatch("")
+    for joiner in ALLOWED_FORMAT:
+        assert rule.fullmatch(f"a{chr(joiner)}b")
+
+
+def lets_through(rule: Rule) -> list[str]:
+    """The unseen characters ``rule`` takes alone or between letters."""
+    return [
+        f"U+{ord(c):04X}"
+        for c in unseen_characters()
+        if rule.fullmatch(f"a{c}b") or rule.fullmatch(c)
+    ]
+
+
+def test_a_reason_refuses_every_line_break_and_every_unseen_character():
+    found = unseen_characters()
+    for known in ("\n", "\r", "\t", "\x00", "\x85", chr(0x2028), chr(0x2029), chr(0x200B),
+                  chr(0x202E), chr(0xFEFF), chr(0xE0020), chr(0x3164)):  # fmt: skip
+        assert known in found, f"U+{ord(known):04X}"  # positive control: each kind is there
+    assert lets_through(rules.FAILURE_REASON) == []
+
+
+def test_the_reason_check_finds_a_rule_that_lets_a_line_break_through():
+    """Planted twin: a rule that takes any character is found letting the unseen through."""
+    planted = Rule(re.compile(r"[\s\S]{1,200}"), "Anything.")
+    assert {"U+000A", "U+2028", "U+200B", "U+3164"} <= set(lets_through(planted))

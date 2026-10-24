@@ -42,5 +42,5 @@ and the on-demand runs among them, and what each does:
 | Connecting a Claude account, signing out of Claude and of rcman, for colleagues | [docs/claude-account.md](docs/claude-account.md) |
 | git in workspaces, for colleagues | [docs/git.md](docs/git.md) |
 | A colleague's own settings, for colleagues | [docs/settings.md](docs/settings.md) |
-| The Claude Code version workspaces run, and rolling out another, for administrators | [docs/claude-version.md](docs/claude-version.md) |
+| The Claude Code version workspaces run, rolling out another, going back and marking one as failed, for administrators | [docs/claude-version.md](docs/claude-version.md) |
 | The design and the implementation plan | GitHub issues on `mollyjester/claude-rc-man` (label `design`, label `build-step`) |

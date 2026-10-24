@@ -40,7 +40,7 @@ the OpenAPI description it serves at `/api/openapi.json`, browsable at
 | `repository.py` | A workspace's git repository: the verbs of the Changes section, run in the workspace through its channel and `exec`, each wrapped in the workspace's `timeout` tool (see [git in workspaces](#git-in-workspaces)) |
 | `gitaccount.py` | A person's commit author and GitHub token, kept in SQLite and written into their volume's git folder (see [git in workspaces](#git-in-workspaces)) |
 | `routers/git.py`, `routers/github.py` | The git routes, by workspace id, and the person's GitHub token (see [git in workspaces](#git-in-workspaces)) |
-| `claude_versions.py` | `ClaudeVersions`: the approvals, the store, rolling out a version, pruning, and the report of the versions page (see [Claude Code versions](#claude-code-versions)) |
+| `claude_versions.py` | `ClaudeVersions`: the approvals, the versions marked as failed, the store, rolling out a version, pruning, and the report of the versions page (see [Claude Code versions](#claude-code-versions)) |
 | `routers/client_errors.py` | A page's reports of failures rcman could not see, `POST /api/client-errors`, written to the journal (see [Errors from the page](#errors-from-the-page)) |
 | `terminals.py`, `routers/terminal.py` | The Terminal tab: a shell in a workspace, carried over a WebSocket (see [The terminal](#the-terminal)) |
 | `rcman_upgrade.py`, `routers/rcman_upgrade.py` | Upgrading rcman from its web interface, rcman's side: the release it runs, the report, the request and its admission, and the freeze while one is under way (see [Upgrading rcman](#upgrading-rcman)) |
@@ -455,10 +455,11 @@ the store, `claude_store`: `versions/<version>`, `current` and `bin/claude`. The
 installer makes the store and rcman writes it from then on (see
 [the installer](installer.md#what-workspaces-are-made-of)). Approvals are the append-only table
 `claude_approvals` (triggers refuse an update and a delete): the latest is the approved
-version, the previous is the latest one naming another, and a rollback is a new row. The
-database is the truth and `current` follows it (`reconcile`, run when rcman starts, before
-the restore); with no approval yet, `reconcile` adopts what `current` names. A workspace's
-row records the version its server started with (`claude_version`).
+version, the previous is the latest one naming another that is not marked failed, and a
+rollback is a new row. The database is the truth and `current` follows it (`reconcile`, run
+when rcman starts, before the restore); with no approval yet, `reconcile` adopts what
+`current` names. A workspace's row records the version its server started with
+(`claude_version`).
 
 - **Pinning.** `Workspaces.start_server` resolves the approved version (`resolve`), records
   it on the row and starts the server with a layout that runs that exact file
@@ -476,19 +477,41 @@ row records the version its server started with (`claude_version`).
   (`Runtime.run_canary`, see [runtime.md](runtime.md#the-canary)); and only on a pass copied into
   the store under a partial name and renamed. A version that was approved before and is still in
   the store needs neither download nor canary, since it passed then: a rollback or re-approval
-  works with Podman unavailable, and a version never approved always goes through the canary.
+  works with Podman unavailable, unless the version is marked as failed (below); a version never
+  approved, and one approved before that left the store, always goes through the canary.
   The commit (`_commit`) switches `current` first and records the approval only afterwards, so
   what is approved is what the link names: if the switch fails nothing is approved, and if the
   recording fails the link is put back. After a crash the start of rcman repoints the link at
-  the approved version (`reconcile`; the database wins). The version field is trimmed and
-  validated before anything is done. A file of no length in the store is no version (`sweep`
+  the approved version (`reconcile`; the database wins). The version field is validated
+  before anything is done. A file of no length in the store is no version (`sweep`
   removes it). A refusal or failure leaves the store and the approvals as they were:
-  `claude_install_failed` (whose title says why, by
-  `problems.CLAUDE_INSTALL_MESSAGES`; status 502 for the kind `network`, 409 for the others, by
-  `CLAUDE_INSTALL_STATUS`), `claude_checks_failed` (the failing checks with their
-  reports in the problem's extra) and `claude_canary_failed` (the canary could not run).
+  `claude_version_failed` (the version is marked as failed, below), `claude_install_failed`
+  (whose title says why, by `problems.CLAUDE_INSTALL_MESSAGES`; status 502 for the kind
+  `network`, 409 for the others, by `CLAUDE_INSTALL_STATUS`), `claude_checks_failed` (the
+  failing checks with their reports in the problem's extra) and `claude_canary_failed` (the
+  canary could not run).
   The checksum comes from the release site with the program: it protects against corruption,
   not against a compromised source, and nothing checks a signature.
+- **Versions marked as failed.** `PUT /api/claude/failures` (body `{version, reason}`: the
+  version held to `rules.VERSION` as a field, so an empty one is refused under it; the reason
+  optional, trimmed and then held to `rules.FAILURE_REASON` or empty, blank being none) is
+  `mark_failed`, and `DELETE /api/claude/failures/{version}` is `clear_failed`; both are for
+  administrators, answer the report, and are audited as `claude.mark_failed` (target: the
+  version and the reason as JSON, not escaped to ASCII, the reason left out when there is
+  none) and `claude.clear_failed` (target: the version). A mark is a row of
+  `claude_failures`, one per version, deleted when the mark is removed, so the audit trail is
+  its history; it outlives the version's file. Both run under `lock`. Any version may be
+  marked but the approved one (`claude_version_approved`; with nothing approved yet,
+  `reconcile` adopts first); one marked already is `claude_version_failed`, and removing a
+  mark that is not there `claude_version_not_failed`. Marking is allowed while a roll-out or
+  an upgrade of rcman runs, and is followed by `prune_quietly`, which does nothing while a
+  roll-out runs. A roll-out of a marked version is `claude_version_failed` before anything
+  else, the shortcut for a version approved before among it, and `_commit` asks again under
+  `lock`, so a mark made while the canary runs stops the approval and the store and the
+  approvals stay as they were. A marked version is never the previous one: the previous is
+  the last good one, which pruning keeps while it is in the store; one that left the store
+  before is downloaded and run through the canary again when an administrator goes back to
+  it. Nothing marks a version by itself: a canary that fails marks nothing.
 - **Pruning.** `prune` removes the versions that are neither approved, previous, tested
   (`helpers/claude-version`) nor the one `current` names and that no server in
   `Workspaces.pinned_servers` uses (a server that runs, cannot be read, or is being started;
@@ -499,13 +522,16 @@ row records the version its server started with (`claude_version`).
   than `PRUNE_GRACE_SECONDS` ago stays: an upgrade of rcman puts its tested version there while
   the release before it runs, which does not know it. It asks the servers for their status without holding
   `lock`, then decides again under it, also keeping a version whose workspace record changed
-  meanwhile; it does nothing while a roll-out runs. It runs after a roll-out, after a server
-  is stopped or forgotten (`Workspaces._stopped`) and in the restore, with `sweep`,
+  meanwhile; it does nothing while a roll-out runs. It runs after a roll-out, after a version
+  is marked as failed, after a server is stopped or forgotten (`Workspaces._stopped`) and in
+  the restore, with `sweep`,
   which removes what a roll-out cut short left: staging folders, partial files and a canary.
 - **Reading.** `GET /api/claude/versions` is `report`: approved, previous and tested
   (`helpers/claude-version`) versions, the installed ones with whether each is approved or
-  previous and how many servers use it, the drift (running servers on another version) and
-  whether a roll-out runs (`upgrading`) or an upgrade of rcman is under way (`rcman_upgrading`).
+  previous, whether it is marked failed (`failed`) and how many servers use it, the drift
+  (running servers on another version, each with whether its version is marked failed), the
+  marks (`failed`: version, at, by and reason, the newest first) and whether a roll-out runs
+  (`upgrading`) or an upgrade of rcman is under way (`rcman_upgrading`).
   `GET /api/claude/latest` is the release site's newest version, only
   a suggestion (`null` where the site does not say). Both are for administrators.
   `GET /api/workspaces` and `everyone` carry each workspace's `claude_version`.

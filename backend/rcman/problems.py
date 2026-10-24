@@ -94,6 +94,11 @@ MESSAGES = {
     "was not approved and nothing was changed. Try again in a moment.",
     "claude_upgrade_busy": "Another Claude Code version is being rolled out. Try again when it "
     "is done.",
+    "claude_version_failed": "That Claude Code version is marked as failed. To roll it out, or "
+    "to mark it again, first remove its mark under Failed versions.",
+    "claude_version_approved": "The approved Claude Code version cannot be marked as failed. Use "
+    "another version first, then mark this one.",
+    "claude_version_not_failed": "That Claude Code version is not marked as failed.",
     # upgrading rcman
     "rcman_upgrade_refused": "rcman cannot be upgraded just now.",
     "rcman_upgrading": "rcman is being upgraded. Try again once the upgrade is done.",
@@ -496,6 +501,9 @@ STATUS = {
     "claude_checks_failed": 409,
     "claude_canary_failed": 502,
     "claude_upgrade_busy": 409,
+    "claude_version_failed": 409,
+    "claude_version_approved": 409,
+    "claude_version_not_failed": 404,
     "claude_not_logged_in": 409,
     "claude_signing_out": 409,
     "login_failed": 409,

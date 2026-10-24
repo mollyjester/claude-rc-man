@@ -487,3 +487,39 @@ def test_a_database_of_the_schema_before_the_monitor_gains_its_table_and_no_row(
     con = sqlite3.connect(path)
     assert con.execute("select count(*) from monitor_settings").fetchone()[0] == 0
     assert con.execute("select name from workspaces").fetchall() == [("old",)]
+
+
+def test_a_version_has_one_mark_as_failed_with_who_and_when_and_maybe_why(tmp_path):
+    path = tmp_path / "x.db"
+    db.migrate(path)
+    con = db.connect(path)
+    insert = "insert into claude_failures (version, at, by, reason) values (?, ?, ?, ?)"
+    con.execute(insert, ("1.2.3", "2026-01-01T00:00:00+00:00", "a@x.org", None))  # control
+    con.execute(insert, ("1.2.4", "2026-01-01T00:00:00+00:00", "a@x.org", "it hangs"))
+    for row in (
+        ("1.2.3", "2026-01-02T00:00:00+00:00", "b@x.org", "again"),  # a second mark
+        ("1.2.5", None, "a@x.org", None),
+        ("1.2.5", "2026-01-01T00:00:00+00:00", None, None),
+    ):
+        with pytest.raises(sqlite3.IntegrityError):
+            con.execute(insert, row)
+    con.execute("delete from claude_failures where version = '1.2.3'")  # a mark is removed
+    assert [tuple(r) for r in con.execute("select version from claude_failures")] == [("1.2.4",)]
+
+
+def test_a_database_of_the_schema_before_marks_keeps_its_approvals_and_has_no_mark(tmp_path):
+    path, con = migrated_before(tmp_path, "claude_failures")
+    con.execute(
+        "insert into claude_approvals (version, at, by) values "
+        "('1.0.0', '2026-01-01T00:00:00+00:00', 'rcman')"
+    )
+    con.commit()
+    tables = {r[0] for r in con.execute("select name from sqlite_master where type='table'")}
+    assert "claude_approvals" in tables and "claude_failures" not in tables
+    con.close()
+    db.migrate(path)
+    con = sqlite3.connect(path)
+    assert con.execute("select version, by from claude_approvals").fetchall() == [
+        ("1.0.0", "rcman")
+    ]
+    assert con.execute("select count(*) from claude_failures").fetchone()[0] == 0

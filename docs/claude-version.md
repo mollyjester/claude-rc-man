@@ -16,11 +16,13 @@ approved version stays as it is. Changing the tested version in a new release
 of rcman puts that version in the store, and an administrator decides whether
 to approve it.
 
-Approvals are kept in rcman's database. The latest is the approved version,
-the one before it that names another version is the previous version, and
-going back to an earlier version is a new approval, not an undo. When rcman
-starts for the first time with a store the installer filled, it takes the
-version `current` names as the first approval.
+Approvals are kept in rcman's database. The latest is the approved version;
+the latest before it that names another version and is not marked as failed
+(see [Marking a version as failed](#marking-a-version-as-failed)) is the
+previous version, the last good one; and going back to an earlier version is a
+new approval, not an undo. When rcman starts for the first time with a store
+the installer filled, it takes the version `current` names as the first
+approval.
 
 Claude Code's own self-update is turned off wherever Claude runs
 (`DISABLE_AUTOUPDATER`), so a workspace runs only a version of the store.
@@ -42,8 +44,12 @@ A version leaves the store only when it is neither the approved nor the
 previous version, nor the tested one, nor the one `current` names, no running server
 uses it, and it was not put in the store within `PRUNE_GRACE_SECONDS`
 (`backend/rcman/claude_versions.py`); rcman removes such versions
-after a roll-out, when servers stop and when it starts. A server whose state rcman
-cannot read counts as running. `rcman-admin` removes none.
+after a roll-out, after a version is marked as failed, when servers stop and
+when it starts. A server whose state rcman cannot read counts as running.
+`rcman-admin` removes none. A version marked as failed is never the previous
+version, so it leaves the store like any other once nothing else keeps it; its
+mark stays. The previous version, too, can be one that is not in the store: one
+that left it while it was neither approved nor previous.
 
 ## The versions page
 
@@ -52,15 +58,21 @@ page shows:
 
 - the **Approved version**, the **Previous version** and the **Tested
   version**;
-- the **Installed versions**, with how many running servers use each, and
-  **Use** beside each one that is not approved, which approves it again: the
-  way to go back to the previous version, or to the tested one;
+- the **Installed versions**, with how many running servers use each,
+  **Failed** beside one marked as failed, and beside each one that is neither
+  approved nor marked as failed **Use**, which approves it again, and **Mark as
+  failed**;
+- the **Failed versions**, each with why it was marked, by whom and when, and
+  **Remove mark**; at the card's head, **Mark a version as failed**, for a
+  version by its number, installed or not (see
+  [Marking a version as failed](#marking-a-version-as-failed));
 - **Servers on another version**: the running servers whose version is not the
   approved one, with their owners, who are asked nothing and told nothing but
-  the note above;
+  the note above, and **Failed** beside a version marked as failed;
 - the **Newest release**, which rcman asks the release site for and offers as
-  a suggestion with **Roll out**; nothing is installed or approved until an
-  administrator chooses it;
+  a suggestion with **Roll out**, or, where it is marked as failed, says so and
+  offers nothing; nothing is installed or approved until an administrator
+  chooses it;
 - a page that follows a roll-out another administrator has under way, and reads
   the versions again after an answer that one is under way;
 - a form to roll out any version by its number, with **Check and roll out**.
@@ -89,8 +101,11 @@ upgrade of rcman is not asked for while a roll-out runs. rcman:
 A version that was approved before and is still in the store passed the checks
 then, so going back to it, or approving it again, needs no download and no
 canary and works even while rcman cannot reach its containers; a version never
-approved always goes through the canary. A version number that is not one is
-refused at once.
+approved, or one approved before that has left the store, always goes through
+the download and the canary. A version number that is not one is refused at
+once, and so is a version marked as failed, approved before or not, before
+anything is downloaded or checked (see
+[Marking a version as failed](#marking-a-version-as-failed)).
 
 When a release site does not answer or a download stops part way, the request
 fails with a gateway error that tells you to try again; the other refusals are
@@ -115,16 +130,73 @@ version, start a server in a workspace of the default image and, in a new sessio
 Claude knows what it was told, for instance that work in `/rcman` is kept without a push, and
 that the text Remote Control adds to its system prompt still has a section headed "Your
 current remote execution environment", the one rcman's instructions correct. If either is not
-so, rcman's instructions do not reach Claude as they should: go back to the version approved
-before, which needs no download.
+so, rcman's instructions do not reach Claude as they should: go back to the previous version
+and mark the one you rolled out as failed, as
+[Going back to the previous version](#going-back-to-the-previous-version) says.
 
 The checksum comes from the same place as the program, the release site. It
 protects against a download that is damaged, not against a release site that
 has been compromised: rcman checks no signature. Point
 `RCMAN_CLAUDE_DOWNLOAD` only at a source you trust.
 
+## Going back to the previous version
+
+When a version you rolled out does not work as it should, go back to the
+**Previous version**, the last good one:
+
+1. Where the previous version is among the **Installed versions**, choose
+   **Use** beside it. It was approved before and is in the store, so it is
+   approved again at once, with no download and no canary. Where it has left
+   the store, it is not among the installed versions: roll it out by the
+   number the **Previous version** shows, with **Check and roll out**, which downloads it and runs it through
+   the canary again, as any roll-out does.
+2. Then mark the version you left as failed, with **Mark as failed** beside it,
+   so that nobody rolls it out again by mistake. The approved version cannot be
+   marked, so go back first and mark it afterwards.
+
+Going back restarts nothing: servers keep the version they started with until
+they are stopped and started again, and those on the version you left are
+listed under **Servers on another version**, with **Failed** beside it.
+
+## Marking a version as failed
+
+Any administrator can mark any version but the approved one as failed:
+installed or not, the newest release and the tested version among them. Use
+**Mark as failed** beside an installed version, or **Mark a version as
+failed** in the **Failed versions** card, which asks for the version's number.
+A reason is optional: one line, trimmed of spaces at either end, of at most
+the length `helpers/rules.py` allows (`FAILURE_REASON`). rcman records who
+marked the version and when, and the **Failed versions** card shows the
+reason, who and when. Marking may be done at any time, while a roll-out runs
+too.
+
+While a version is marked as failed:
+
+- a roll-out of it is refused before anything is downloaded or checked, even
+  where it was approved before and is still in the store, and **Use** is not
+  offered beside it;
+- a roll-out of it already under way when it is marked is stopped before it is
+  approved, and nothing is changed;
+- the **Newest release** card offers no **Roll out** for it;
+- it is never the **Previous version**, so pruning keeps it only while
+  something else does, such as a running server; it then leaves the store as
+  any version does, and its mark stays.
+
+rcman marks no version by itself: a roll-out whose checks fail changes nothing
+and marks nothing. Mark such a version yourself if you do not want it rolled
+out again.
+
+The only way to roll out a version marked as failed is to remove its mark
+first: **Remove mark** beside it in the **Failed versions** card removes the
+mark at once, without asking. The version can then be rolled out as any other,
+through the download and the canary where it is not in the store. A version
+marked already cannot be marked again; remove the mark first to give it
+another reason.
+
 ## Audit and journal
 
 A roll-out is the audit action `claude.upgrade`, with the version as its
-target and `ok` or the error code as its result (see [Audit trail](audit.md)).
+target and `ok` or the error code as its result. Marking a version as failed is
+`claude.mark_failed`, and removing a mark is `claude.clear_failed`; what each
+records is in [Audit trail](audit.md).
 What rcman logs about versions is in [The journal](journal.md).
