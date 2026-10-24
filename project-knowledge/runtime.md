@@ -527,6 +527,11 @@ test holds to the recorder's, so the contract tests check each is in Claude's
   time — is killed too, so no Claude process is left, a session's command in a
   session of its own included. The pane's process is read once, and only it is
   signalled. A server still running after all that is `timeout`.
+- **Starting again.** `start` on a session whose pane has exited (`remain-on-exit` keeps
+  it) runs the server again in that pane (`Tmux.respawn`), under the same tmux server.
+  tmux's process keeps the arguments of the `new-session` that started it, so `ps` shows
+  it with the first start's command line, an older version's path included, while the
+  pane's process, its child, runs the server's current command.
 - **Answering.** `confirm` answers the question the server is asking, one of
   `QUESTIONS` in `helpers/screens.py`, after `ANSWER_PACE_SECONDS`, and once more if Claude asks
   the same question again because the answer was too fast. It is done once the
@@ -589,7 +594,9 @@ the approved version, records it as the row's `claude_version` and starts the se
 runs (the rules and the pruning are [backend.md](backend.md#claude-code-versions)'s). The
 record stays until the server is stopped or forgotten, and a start that leaves nothing running
 clears it; a server whose state cannot be read keeps it. A restore starts servers the same
-way, so after a reboot they run the version approved then.
+way, so after a reboot they run the version approved then. The version a server runs is
+its row's `claude_version`, or the pane's process (`#{pane_pid}`), never the tmux server's
+command line (see "Starting again" above).
 
 ### Server states
 
