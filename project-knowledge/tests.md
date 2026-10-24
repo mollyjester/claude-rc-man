@@ -332,7 +332,8 @@ helper made inside the holder's network and handed back.
   the store once the last server that used it has stopped, the approved and previous ones
   staying; a broken or checksum-failing candidate leaving the store, the approvals, the
   containers and the staging folder as they were; the canary container as `run_canary` designs
-  it, looked at from outside and inside while it runs (the builder's uid range, no network, a
+  it, looked at from outside and inside while it runs (the builder's uid range, no network, its
+  `/proc/net/dev` naming only `lo` against one on the engine's network that names more, a
   read-only root, no capabilities, only the candidate and rcman's helpers mounted read-only and
   readable by that range, a stale one removed first, none left after); `--timeout` ending a
   container through `podman --remote run`; and the canary cases of `tests/runtime_contract.py`, in

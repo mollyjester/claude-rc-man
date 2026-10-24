@@ -345,6 +345,12 @@ def in_canary(podman, script: str) -> subprocess.CompletedProcess:
     return cli(podman, "exec", rt.CANARY_NAME, "sh", "-c", script)
 
 
+def interfaces(read: subprocess.CompletedProcess) -> list[str]:
+    """The interfaces a ``cat /proc/net/dev`` names: each line's name, past the two headers."""
+    assert read.returncode == 0, read.stderr
+    return [line.partition(":")[0].strip() for line in read.stdout.splitlines()[2:]]
+
+
 def test_the_canary_container_is_what_the_design_says(podman, image, tmp_path):
     folder = tmp_path / "candidate"
     slow_candidate(folder)
@@ -402,7 +408,22 @@ def test_the_canary_container_is_what_the_design_says(podman, image, tmp_path):
         assert [line.split()[1] for line in status.stdout.splitlines()] == [
             "0000000000000000", "0000000000000000", "1",
         ], status  # fmt: skip
-        assert in_canary(podman, "ls /sys/class/net").stdout.split() == ["lo"]  # no network
+        # No network. Read from /proc/net, which is the reader's own network namespace's, and
+        # not from /sys/class/net: where the engine's own /sys has masked paths, the kernel
+        # refuses the container a sysfs of its own and the runtime binds in the engine's.
+        assert interfaces(in_canary(podman, "cat /proc/net/dev")) == ["lo"]
+        on_network = cli(
+            podman,
+            "run",
+            "--rm",
+            "--pull=never",
+            f"--network={sizes.TEST_NETWORK}",
+            image,
+            "cat",
+            "/proc/net/dev",
+        )
+        # the control: one on the engine's network
+        assert len(interfaces(on_network)) > 1, on_network
         assert in_canary(podman, "touch /x").returncode != 0  # the root is read-only
         assert in_canary(podman, f"touch {rt.CANARY_CANDIDATE_MOUNT}/x").returncode != 0
         assert in_canary(podman, f"touch {helpers}/x").returncode != 0
