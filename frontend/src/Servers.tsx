@@ -108,6 +108,8 @@ export const LABELS: Record<Action, string> = {
 export type Workspace = {
   id: number;
   name: string;
+  // The name claude.ai and the Claude app give its server, its container's hostname.
+  device: string;
   state: "creating" | "ready" | "failed" | "deleting";
   error: string | null;
   // The address it is cloned from, null for an empty one; and the steps taken while it is

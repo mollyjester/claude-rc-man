@@ -70,6 +70,7 @@ describe("the dot a workspace carries", () => {
   const at = (extra: Partial<Workspace>): Workspace => ({
     id: 1,
     name: "alpha",
+    device: "rcman-ws-1",
     state: "ready",
     error: null,
     source: null,

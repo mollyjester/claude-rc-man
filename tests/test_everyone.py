@@ -43,7 +43,17 @@ def test_every_person_is_listed_with_their_workspaces_and_servers(app, client):
     assert found[CAROL] == {"email": CAROL, "workspaces": []}
 
 
-def test_a_workspace_shows_only_its_id_name_state_server_and_version(app, client):
+def test_each_workspace_shows_the_device_name_claude_shows_for_its_server(app, client):
+    alpha = made_workspace(client, ALICE, "alpha")
+    beta = made_workspace(client, BOB, "beta")
+    found = by_email(everyone.everyone(request_for(app)))
+    [a] = found[ALICE]["workspaces"]
+    [b] = found[BOB]["workspaces"]
+    assert (a["device"], b["device"]) == (f"rcman-ws-{alpha['id']}", f"rcman-ws-{beta['id']}")
+    assert a["device"] != b["device"]
+
+
+def test_a_workspace_shows_only_its_id_name_device_state_server_and_version(app, client):
     url = "https://github.com/octo/widget"
     r = client.post("/api/git/clone", json={"url": f"{url}.git"}, headers=changing(ALICE))
     assert r.status_code == 202, r.text
@@ -59,7 +69,15 @@ def test_a_workspace_shows_only_its_id_name_state_server_and_version(app, client
     assert own["source_page"] == url and own["source"] == f"{url}.git"
     assert own["error"] and own["log"]
     [shown] = by_email(everyone.everyone(request_for(app)))[ALICE]["workspaces"]
-    assert set(shown) == {"id", "name", "state", "server", "server_error", "claude_version"}
+    assert set(shown) == {
+        "id",
+        "name",
+        "device",
+        "state",
+        "server",
+        "server_error",
+        "claude_version",
+    }
     assert url not in str(shown) and own["log"] not in str(shown)
 
 

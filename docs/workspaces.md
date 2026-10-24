@@ -35,6 +35,14 @@ read, carries the problem dot; one whose container a rebuild is making again car
 A workspace that is not ready says so beside its name: **Being made**,
 **Failed** or **Being deleted**.
 
+Under each workspace's name, in small grey letters, is its device name, such as
+`rcman-ws-12`: the name claude.ai/code and the Claude app give its server, in
+their list of devices and beside each of its sessions. It tells you which of
+your workspaces a device there is. The panel's head shows it too, labelled
+**Device**. rcman gives it when the workspace is made, after the workspace's
+number rather than its name, and it stays the same for as long as the
+workspace is there.
+
 To make a workspace, choose **New workspace**, type its name in the dialog that
 opens and choose **Create**; **Cancel**, the cross at its top, or Escape closes
 the dialog. The new workspace is selected, and is shown as being made until it
@@ -153,11 +161,12 @@ you have, and **New**, beside it, is **New workspace**. The page shows the list
 or a workspace's panel, not both. Selecting a workspace shows its panel in the
 list's place, under a bar that stays at the top as the panel scrolls: the back
 arrow (**Back to workspaces**) returns to the list, and the workspace's name
-beside it opens your workspaces as a sheet from the foot of the screen, to go
-straight to another; Escape, or pressing above the sheet, closes it. Dialogs
-rise from the foot of the screen as a sheet, their buttons kept at its foot
-above the on-screen keyboard, and on any touch screen every button and link is
-at least a fingertip wide, but for a link inside a sentence.
+beside it opens your workspaces as a sheet from the foot of the screen, each
+with its device name under its name, to go straight to another; Escape, or
+pressing above the sheet, closes it. Dialogs rise from the foot of the screen as
+a sheet, their buttons kept at its foot above the on-screen keyboard, and on any
+touch screen every button and link is at least a fingertip wide, but for a link
+inside a sentence.
 
 ### The terminal
 
@@ -393,7 +402,8 @@ to end the server there without answering.
 
 Once it has started, a server is **ready to accept sessions**, and **Open in
 claude.ai** takes you to it on claude.ai/code, where you start a session; the
-Claude app lists it too. While a session is attached the server is **in use**,
+Claude app lists it too. Both name it by the workspace's device name, the one
+under its name in the list. While a session is attached the server is **in use**,
 and shows the session's name beside the same link.
 
 ## Stopping and resuming
@@ -456,10 +466,10 @@ it as it stops any server.
 
 The **Everyone's workspaces** page, in the **Administration** group of the
 sidebar, lists each person in rcman, by address, in a card of their own, with
-their workspaces: the name, the state — the workspace's while it is not ready,
-and otherwise its server's, or that it has none — the session's name, as each
-person's own Workspaces page shows them, and the Claude Code version a running
-server runs. It is for looking only; it has no buttons, because rcman lets only
+their workspaces: the name, the device name, the state — the workspace's while
+it is not ready, and otherwise its server's, or that it has none — the
+session's name, as each person's own Workspaces page shows them, and the Claude
+Code version a running server runs. It is for looking only; it has no buttons, because rcman lets only
 the person a workspace belongs to act on it. A workspace whose server rcman
 could not read is shown with the reason, and everything else is listed as usual.
 

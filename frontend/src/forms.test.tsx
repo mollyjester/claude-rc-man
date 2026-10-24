@@ -90,6 +90,7 @@ function api() {
         {
           id: 1,
           name: "alpha",
+          device: "rcman-ws-1",
           state: "ready",
           error: null,
           source: null,
@@ -104,6 +105,7 @@ function api() {
         {
           id: 2,
           name: "beta",
+          device: "rcman-ws-2",
           state: "creating",
           error: null,
           source: null,

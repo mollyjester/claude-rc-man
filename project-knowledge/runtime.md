@@ -24,6 +24,10 @@ conmon and the network helper with them, live in rcman's user manager, not in
 
 `PodmanRuntime.create` makes a container with:
 
+- `--name` and `--hostname` both its name, `rcman-ws-<id>` (`container_name`); Claude Code
+  names a Remote Control server after the machine's hostname, so this is the device name
+  claude.ai and the Claude app show for the workspace's server, and the one the workspaces list
+  shows (`device` in [backend.md](backend.md));
 - `--init`, so orphans are reaped;
 - the network `PodmanConfig.network`, `NETWORK` (slirp4netns with no way to the host's
   loopback) unless it is given another, and no port published;

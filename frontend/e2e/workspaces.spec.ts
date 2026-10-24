@@ -27,6 +27,15 @@ test("a workspace is made, and is ready", async ({ page }) => {
   const entry = workspaces(page).getByRole("button", { name: "alice-made", exact: true });
   await expect(entry).toHaveAttribute("aria-current", "true");
   expect(new URL(page.url()).searchParams.get("workspace")).toMatch(/^\d+$/);
+  // its row shows the device name the server sends for it, the one Claude shows for its server
+  const id = Number(new URL(page.url()).searchParams.get("workspace"));
+  const device = await page.evaluate(async (wanted) => {
+    const answer = await (await fetch("/api/workspaces")).json();
+    return answer.workspaces.find((w: { id: number }) => w.id === wanted).device as string;
+  }, id);
+  expect(device).toBe(`rcman-ws-${id}`);
+  await expect(entry.getByText(device, { exact: true })).toBeVisible();
+  await expect(made.getByText(device, { exact: true })).toBeVisible(); // and its panel's head
 
   // the address opens it again
   await page.reload();
@@ -124,9 +133,16 @@ test("a server's life: start, trust, stop, resume, stop and forget", async ({ pa
     /environment=/,
   );
   await expect(alpha.getByRole("button", { name: m.start })).toHaveCount(0);
+  // its dot's kind, then its device name, as the server sends it
+  const alphaDevice = await page.evaluate(async () => {
+    const answer = await (await fetch("/api/workspaces")).json();
+    return answer.workspaces.find((w: { name: string }) => w.name === "alice-alpha")
+      .device as string;
+  });
+  expect(alphaDevice).toMatch(/^rcman-ws-\d+$/);
   await expect(
     workspaces(page).getByRole("button", { name: "alice-alpha", exact: true }),
-  ).toHaveAccessibleDescription(m.kinds.running);
+  ).toHaveAccessibleDescription(`${m.kinds.running} ${alphaDevice}`);
 
   await card.getByRole("button", { name: m.stop }).click();
   await expect(card.getByText(m.states.stopped, { exact: true })).toBeVisible();

@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { vi } from "vitest";
 
 import { m } from "./messages";
-import { ACTIONS, KIND, LABELS, PRIMARY, WORKSPACE_KIND } from "./Servers";
+import { ACTIONS, KIND, type Kind, LABELS, PRIMARY, WORKSPACE_KIND } from "./Servers";
 import { fakeApi, ME, problem, type Routes, UNREACHABLE_REPLY } from "./test/fakeApi";
 import { sockets } from "./test/fakeSocket";
 import { expectRefused } from "./test/fields";
@@ -12,6 +12,7 @@ import { renderApp } from "./test/render";
 type Workspace = {
   id: number;
   name: string;
+  device: string;
   state: string;
   error: string | null;
   source: string | null;
@@ -31,6 +32,7 @@ function workspace(id: number, name: string, extra: Partial<Workspace> = {}): Wo
   return {
     id,
     name,
+    device: `rcman-ws-${id}`,
     state: "ready",
     error: null,
     source: null,
@@ -118,8 +120,14 @@ async function card() {
   return within(await within(await panel("alpha")).findByRole("article", { name: "alpha" }));
 }
 
+// What a row's name describes it with: its dot's kind, where it has one, then its device name.
+const described = (id: number, kind?: Kind) =>
+  [kind && m.kinds[kind], `rcman-ws-${id}`].filter(Boolean).join(" ");
+
 function expectNoDot(button: HTMLElement) {
-  expect(button).toHaveAccessibleDescription("");
+  expect(button.textContent).toMatch(/rcman-ws-\d+$/); // positive control: the row's device
+  const device = button.textContent!.match(/rcman-ws-\d+$/)![0];
+  expect(button).toHaveAccessibleDescription(device);
   expect(button.closest("li")!.querySelector(".dot")).toBeNull();
 }
 
@@ -211,6 +219,38 @@ test("each workspace is a row of the list, the selected one marked as a row, its
   expect(beta.firstElementChild?.querySelector(".dot")).toBeNull();
 });
 
+test("each row shows its own device name under its name, with no label, the name still the row's", async () => {
+  dashboard([workspace(1, "alpha", { device: "planted-device-a" }), workspace(2, "beta")]);
+  renderApp();
+  const alpha = await entry("alpha");
+  const beta = await entry("beta");
+  const device = within(alpha).getByText("planted-device-a");
+  expect(device).toHaveClass("device", "muted");
+  expect(device).toHaveAttribute("translate", "no");
+  expect(device.parentElement).toContainElement(within(alpha).getByText("alpha")); // under it
+  expect(within(beta).getByText("rcman-ws-2")).toHaveClass("device");
+  expect(alpha).not.toHaveTextContent("rcman-ws-2");
+  expect(alpha.textContent).toBe("alphaplanted-device-a"); // no label
+  expect(alpha).toHaveAccessibleDescription("planted-device-a");
+});
+
+test("the switcher's sheet shows each workspace's device name, the choice named by the workspace", async () => {
+  dashboard([workspace(1, "alpha"), workspace(2, "beta", { device: "planted-device-b" })]);
+  renderApp("/?workspace=1");
+  await panel("alpha");
+  const switcher = screen.getByRole("button", { name: m.switchWorkspaceFrom("alpha") });
+  await userEvent.click(switcher);
+  const sheet = within(document.getElementById(switcher.getAttribute("aria-controls")!)!);
+  const beta = sheet.getByRole("button", { name: "beta" });
+  const device = within(beta).getByText("planted-device-b");
+  expect(device).toHaveClass("device", "muted");
+  expect(device).toHaveAttribute("translate", "no");
+  expect(beta).toHaveAccessibleDescription("planted-device-b");
+  expect(within(sheet.getByRole("button", { name: "alpha" })).getByText("rcman-ws-1")).toHaveClass(
+    "device",
+  );
+});
+
 test("with a workspace selected, the bar over its panel leads back to the list, and its switcher, named by the workspace, opens the others as a sheet", async () => {
   dashboard([workspace(1, "alpha"), workspace(2, "beta", { state: "failed" })]);
   const { location } = renderApp("/?workspace=1");
@@ -229,7 +269,10 @@ test("with a workspace selected, the bar over its panel leads back to the list, 
   expect(sheet).toHaveClass("sheet");
   expect(within(sheet).getByText(m.switchWorkspace)).toBeInTheDocument(); // the sheet's title
   const choices = within(sheet).getAllByRole("button");
-  expect(choices.map((c) => c.textContent)).toEqual(["alpha", `beta ${m.workspaceStates.failed}`]);
+  expect(choices.map((c) => c.textContent)).toEqual([
+    "alpharcman-ws-1",
+    `betarcman-ws-2 ${m.workspaceStates.failed}`,
+  ]);
   const current = within(sheet).getByRole("button", { name: "alpha" });
   expect(current).toHaveAttribute("aria-current", "true");
   expect(current).toHaveFocus(); // the sheet opens where you are
@@ -310,13 +353,14 @@ test.each(Object.entries(KIND))(
     dashboard(withServer(state));
     renderApp();
     const alpha = await entry("alpha");
-    expect(alpha).toHaveAccessibleDescription(m.kinds[kind]);
+    expect(alpha).toHaveAccessibleDescription(described(1, kind));
     // its shape is the kind's class, its meaning a title on hover, and the
     // description is read once, through the name it describes
     const dot = alpha.closest("li")!.querySelector(".dot")!;
     expect(dot).toHaveClass(`dot-${kind}`);
     expect(dot).toHaveAttribute("title", m.kinds[kind]);
-    const description = document.getElementById(alpha.getAttribute("aria-describedby")!)!;
+    const [dotId] = alpha.getAttribute("aria-describedby")!.split(" ");
+    const description = document.getElementById(dotId)!;
     expect(description).toHaveTextContent(m.kinds[kind]);
     expect(description).toHaveAttribute("hidden");
     expectNoDot(await entry("beta"));
@@ -327,7 +371,7 @@ test("the check for no dot fails on a workspace that has one", async () => {
   dashboard(withServer("ready"));
   renderApp();
   const alpha = await entry("alpha");
-  expect(alpha).toHaveAccessibleDescription(m.kinds.running); // the plant took effect
+  expect(alpha).toHaveAccessibleDescription(described(1, "running")); // the plant took effect
   expect(() => expectNoDot(alpha)).toThrow();
 });
 
@@ -338,8 +382,8 @@ test("a workspace that failed, or whose server could not be read, has the proble
     workspace(3, "gamma"),
   ]);
   renderApp();
-  expect(await entry("alpha")).toHaveAccessibleDescription(m.kinds.problem);
-  expect(await entry("beta")).toHaveAccessibleDescription(m.kinds.problem);
+  expect(await entry("alpha")).toHaveAccessibleDescription(described(1, "problem"));
+  expect(await entry("beta")).toHaveAccessibleDescription(described(2, "problem"));
   expectNoDot(await entry("gamma"));
 });
 
@@ -353,7 +397,7 @@ test("a workspace whose container a rebuild replaces just now carries no problem
     workspace(2, "beta", { server_error: { code: "workspace_failed", title: "Planted." } }),
   ]);
   renderApp();
-  expect(await entry("beta")).toHaveAccessibleDescription(m.kinds.problem); // control
+  expect(await entry("beta")).toHaveAccessibleDescription(described(2, "problem")); // control
   expectNoDot(await entry("alpha"));
 });
 
@@ -858,6 +902,21 @@ test("a cloned workspace's panel names its repository in its head, a link to its
   expect(opened.queryByRole("link", { name: `${ADDRESS}.git/` })).not.toBeInTheDocument();
   expect(opened.queryByText(`${ADDRESS}.git/`)).not.toBeInTheDocument();
 });
+
+test.each(["creating", "ready", "failed", "deleting"])(
+  "the panel's head of a workspace that is %s names its device, labelled Device",
+  async (state) => {
+    dashboard([workspace(1, "alpha", { state, device: "planted-device-a" }), workspace(2, "beta")]);
+    renderApp("/?workspace=1");
+    const name = within(await panel("alpha")).getByRole("heading", { name: "alpha", level: 2 });
+    const head = within(name.closest(".panel-head") as HTMLElement);
+    const device = head.getByText("planted-device-a");
+    expect(device.tagName).toBe("CODE");
+    expect(device).toHaveAttribute("translate", "no");
+    expect(device.parentElement).toHaveTextContent(`${m.device} planted-device-a`);
+    expect(head.queryByText("rcman-ws-2")).not.toBeInTheDocument();
+  },
+);
 
 test("a page that is no address is shown whole", async () => {
   dashboard([workspace(1, "alpha", { source: "x", source_page: "not an address" })]);

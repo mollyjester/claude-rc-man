@@ -375,6 +375,21 @@ def test_a_workspace_with_no_server_is_listed_without_reaching_it(service, setti
     assert service.open_channels() == []
 
 
+def test_each_workspace_is_listed_with_its_own_device_name_in_every_state(
+    service, settings, runtime
+):
+    # The device name Claude shows for a workspace's server is its container's hostname, which
+    # is the container's name; two workspaces in each state, so that a constant cannot pass.
+    states = (ws.CREATING, ws.READY, ws.FAILED, ws.DELETING)
+    made = [insert(settings, 1, f"{state}-{n}", state) for state in states for n in (1, 2)]
+    for workspace in made:
+        runtime.create(spec(workspace))
+    listed = service.listing(service.everything())
+    assert {w["state"] for w in listed} == set(states)
+    assert [(w["id"], w["device"]) for w in listed] == [(i, f"rcman-ws-{i}") for i in made]
+    assert len({w["device"] for w in listed}) == len(made)
+
+
 def test_restore_finishes_deleting_a_person(service, settings, runtime):
     from rcman import people
 

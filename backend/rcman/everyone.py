@@ -39,6 +39,7 @@ def everyone(request: Request) -> list[dict]:
                     {
                         "id": w["id"],
                         "name": w["name"],
+                        "device": w["device"],
                         "state": w["state"],
                         "server": w["server"]
                         and {key: w["server"].get(key) for key in SERVER_FIELDS},

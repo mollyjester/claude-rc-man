@@ -8,6 +8,7 @@ import { StateBadge, WorkspaceBadge } from "./Servers";
 type Workspace = {
   id: number;
   name: string;
+  device: string;
   state: string;
   server: { state: string; session_name: string | null; exit_code: number | null } | null;
   server_error: { code: string; title: string } | null;
@@ -45,6 +46,9 @@ function PersonWorkspaces({ person }: { person: Person }) {
             return (
               <li key={workspace.id} className="list-row">
                 <span className="ws-name">{workspace.name}</span>
+                <code className="muted" translate="no" title={m.device}>
+                  {workspace.device}
+                </code>
                 <StateOf workspace={workspace} />
                 {workspace.server?.session_name && (
                   <code className="muted" title={m.sessionName}>

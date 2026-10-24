@@ -13,6 +13,7 @@ const server = (state: string, session_name: string | null = null) => ({
 const workspace = (id: number, name: string, extra: Record<string, unknown> = {}) => ({
   id,
   name,
+  device: `rcman-ws-${id}`,
   state: "ready",
   server: null,
   server_error: null,
@@ -30,7 +31,7 @@ const PEOPLE = {
           claude_version: "2.1.0",
         }),
         workspace(2, "beta", { server: server("stopped") }),
-        workspace(3, "gamma"),
+        workspace(3, "gamma", { device: "planted-device-g" }),
         workspace(4, "delta", { state: "creating" }),
         workspace(5, "epsilon", {
           server_error: {
@@ -94,6 +95,28 @@ test("each workspace is a row of its list with its state as a pill and its sessi
   const bob = await person("bob@example.com");
   expect(within(bob).getByText(m.everyoneNone)).toBeInTheDocument();
   expect(within(bob).queryAllByRole("listitem")).toEqual([]);
+});
+
+test("each workspace shows its own device name, the one Claude shows for its server", async () => {
+  api();
+  renderApp("/admin/workspaces");
+  const alice = await person("alice@example.com");
+  for (const [id, name] of [
+    [1, "alpha"],
+    [4, "delta"],
+  ] as const) {
+    const device = within(row(alice, name)).getByText(`rcman-ws-${id}`);
+    expect(device.tagName).toBe("CODE");
+    expect(device).toHaveAttribute("translate", "no");
+    expect(device).toHaveAttribute("title", m.device); // what it is, as the panel names it
+  }
+  expect(row(alice, "alpha")).not.toHaveTextContent("rcman-ws-4");
+  // what the server sends, not anything worked out from the id
+  expect(within(row(alice, "gamma")).getByText("planted-device-g")).toHaveAttribute(
+    "translate",
+    "no",
+  );
+  expect(row(alice, "gamma")).not.toHaveTextContent("rcman-ws-3");
 });
 
 test("a workspace shows the Claude Code version its server runs, and nothing where none does", async () => {
