@@ -199,7 +199,8 @@ def _found(pids: list[int]) -> dict[int, int | None]:
 
 def _stop(found: dict[int, int | None]) -> None:
     """Kill each process of ``found`` that is still the one found (its start time the same) and
-    wait until they are gone; one the user may not signal is left out of the wait, and said."""
+    wait until none is running (held_folders.running); one the user may not signal is left out
+    of the wait, and said."""
     killed = []
     for pid, started in found.items():
         if started is None or _start_time(pid) != started:
@@ -213,18 +214,10 @@ def _stop(found: dict[int, int | None]) -> None:
             continue
         killed.append(pid)
     deadline = time.monotonic() + GONE_WITHIN
-    while [p for p in killed if _running(p) and _start_time(p) == found[p]]:
+    while [p for p in killed if hf.running(p) and _start_time(p) == found[p]]:
         if time.monotonic() > deadline:
-            raise RuntimeError(f"processes not gone: {[p for p in killed if _running(p)]}")
+            raise RuntimeError(f"processes not gone: {[p for p in killed if hf.running(p)]}")
         time.sleep(0.1)
-
-
-def _running(pid: int) -> bool:
-    try:
-        text = Path(f"/proc/{pid}/stat").read_text()
-    except OSError:
-        return False
-    return text.rsplit(")", 1)[1].split()[0] != "Z"
 
 
 # A mount point as /proc/self/mountinfo writes it: a space, a tab, a newline and a backslash in

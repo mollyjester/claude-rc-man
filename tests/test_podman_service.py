@@ -15,6 +15,8 @@ import tarfile
 import time
 from pathlib import Path
 
+import pytest
+
 from devtools import held_folders as hf
 from tests import killed_runs as kr
 from tests import podman_service as ps
@@ -381,6 +383,23 @@ def test_a_process_that_may_not_be_signalled_is_left_and_said_and_the_rest_stopp
         for child in others:
             child.kill()
             child.wait(timeout=30)
+
+
+def test_a_process_whose_first_thread_has_ended_is_waited_on_while_another_runs(
+    tmp_path, monkeypatch
+):
+    """A process whose first thread has ended still holds its files while another thread runs:
+    the wait goes on until it has ended. The kill is withheld, so it never does."""
+    with kr.FirstThreadEnded(tmp_path) as helper:
+        pid = helper.start()
+        # the control: its first thread has ended
+        assert hf.state_and_threads(pid) == kr.FIRST_THREAD_ENDED
+        real_kill = os.kill
+        with monkeypatch.context() as patched:  # undone before the helper is ended and reaped
+            patched.setattr(os, "kill", lambda p, sig: None if p == pid else real_kill(p, sig))
+            patched.setattr(ps, "GONE_WITHIN", 0.5)
+            with pytest.raises(RuntimeError, match=f"processes not gone: \\[{pid}\\]"):
+                ps._stop(ps._found([pid]))
 
 
 def test_a_pid_given_again_since_it_was_found_is_not_signalled():

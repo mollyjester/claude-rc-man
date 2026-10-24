@@ -76,6 +76,38 @@ def removable(path: Path | str, roots: Iterable[Path] | None = None) -> Path:
     return given
 
 
+def state_and_threads_of(fields: list[str]) -> tuple[str, int]:
+    """The state and the count of threads (fields 3 and 20 of a stat) in ``fields``, a stat's
+    fields after the program's name."""
+    return fields[0], int(fields[17])
+
+
+def state_and_threads(pid: int) -> tuple[str, int] | None:
+    """A process's state and how many threads it has (``state_and_threads_of``); None for one
+    whose stat cannot be read."""
+    try:
+        fields = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
+    except OSError:
+        return None
+    return state_and_threads_of(fields)
+
+
+def runs(state: str, threads: int) -> bool:
+    """Whether a process of that state and count of threads has not ended: its state is not Z,
+    or it is Z with other threads still running. A process whose first thread has ended while
+    another thread runs reads Z, and still holds its open files, and with them its locks; it
+    reads Z with one thread only once every other thread has ended and been released, after its
+    files were closed."""
+    return state != "Z" or threads > 1
+
+
+def running(pid: int) -> bool:
+    """Whether ``pid`` is a process that has not ended (``runs``); False for one whose stat
+    cannot be read."""
+    found = state_and_threads(pid)
+    return found is not None and runs(*found)
+
+
 def own(path: Path, kind: Callable[[int], bool], uid: int | None = None) -> bool:
     """Whether the path itself, not what a link there points at, is of the kind (a
     stat.S_IS* test) and belongs to ``uid``, by default the current user."""

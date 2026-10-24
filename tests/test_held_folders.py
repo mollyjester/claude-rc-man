@@ -315,6 +315,23 @@ def test_unheld_says_whether_anything_holds_a_folder(tmp_path):
     assert not hf.unheld(folder, uid=os.getuid() + 1)  # someone else's
 
 
+def test_a_process_whose_first_thread_has_ended_runs_while_another_thread_does(tmp_path):
+    """A process whose first thread has ended reads Z while another thread runs, and holds its
+    files, and with them a held folder's lock, until the last thread has ended and been
+    released: only then does it read Z with one thread."""
+    folder = tmp_path / "held"
+    folder.mkdir()
+    with kr.FirstThreadEnded(tmp_path, holding=hf.lock(folder)) as helper:
+        pid = helper.start()  # which closes this process's copy of the lock
+        assert hf.state_and_threads(pid) == kr.FIRST_THREAD_ENDED
+        assert not hf.unheld(folder)  # the control: it still holds the lock
+        assert hf.running(pid)
+        helper.release()
+        kr.wait_for_state(pid, kr.ENDED)  # ended, not yet reaped
+        assert not hf.running(pid)
+        assert hf.unheld(folder)
+
+
 def test_remove_takes_the_lock_file_last(stem, monkeypatch):
     with hf.held(stem + "rch-") as folder:
         (folder / "a").mkdir()

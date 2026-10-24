@@ -116,8 +116,10 @@ _STATS = (
 
 
 def processes(listed: bytes) -> dict[int, tuple[int, int]]:
-    """Each process but a zombie, by id, with its session's id and its start time, from what
-    ``_STATS`` printed."""
+    """Each running process, by id, with its session's id and its start time, from what
+    ``_STATS`` printed. A process runs while its state is not Z, or while it is Z with other
+    threads still running (num_threads, field 20 of its stat, above one): one whose first thread
+    has ended reads Z while another thread runs, and is still a process to signal."""
     found = {}
     parts = listed.split(b"\0")
     for path, stat in zip(parts[0::2], parts[1::2], strict=False):
@@ -126,7 +128,7 @@ def processes(listed: bytes) -> dict[int, tuple[int, int]]:
             continue
         fields = stat.rpartition(b")")[2].split()
         try:
-            if fields[0] == b"Z":
+            if fields[0] == b"Z" and int(fields[17]) <= 1:
                 continue
             found[int(pid)] = (int(fields[3]), int(fields[19]))
         except (ValueError, IndexError):

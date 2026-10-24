@@ -200,13 +200,8 @@ is in [real-claude-checklist.md](real-claude-checklist.md#the-shared-sign-in).
 | Tests | Needs | Runs |
 |---|---|---|
 | `tests/test_fake_claude.py` | Nothing | Always. The recorder drives the fake exactly as it drives the real binary, each sequence in a test case of its own with an account of its own, and must reproduce every fixture but those of the sequences that need a person, whose screens the fake's sign-in tests check; each observed screen's scenario must show that screen |
-| `tests/test_claude_contract.py` | The real `claude`, no account | Always; skipped when `claude` is not installed unless `RCMAN_REQUIRE_REAL_CLAUDE=1`, which `make check` sets. The installed version must be the manifest's; the no-account screens must match the fixtures; every option rcman passes must be in `--help`, which is printed without a login; an empty and a `{}` credentials file read as signed out and are left as they are; `auth logout` removes the file |
+| `tests/test_claude_contract.py` | The real `claude`, no account | Always; skipped when `claude` is not installed unless `RCMAN_REQUIRE_REAL_CLAUDE=1`, which `make check` sets. The no-account screens must match the fixtures; every option rcman passes must be in `--help`, which is printed without a login; an empty and a `{}` credentials file read as signed out and are left as they are; `auth logout` removes the file |
 | `tests/test_claude_real_account.py` | The real `claude`, logged in | By hand: `uv run pytest -m real_claude`. Runs the account sequences and the one that submits an invalid sign-in code, and checks every option rcman passes against `--help` while logged in, under the account of the run: the folder `CLAUDE_CONFIG_DIR` names where it is set, otherwise the default configuration |
-
-The contract tests compare the installed `claude` with `manifest.json`. A
-machine whose `claude` updates itself fails them as soon as the installed
-version moves past the fixtures; that failure is the signal to approve the new
-version.
 
 `test_fake_reproduces_the_recorded_screens_of[trust_too_fast]` replays the
 recorder's own `trust_too_fast` sequence, which waits for `[y/N]` and only then
