@@ -17,6 +17,7 @@ function workspace(id: number, name: string, state = "ready") {
   return {
     id,
     name,
+    device: `rcman-ws-${id}`,
     state,
     error: null,
     source: null,

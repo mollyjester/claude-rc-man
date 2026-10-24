@@ -1155,8 +1155,8 @@ details.how > summary {
   align-items: center;
   min-width: 0;
 }
-/* A workspace's name: its dot, whose room is kept where it has none, then the name, cut short
-   with an ellipsis when it is too long. */
+/* A workspace's name: its dot, whose room is kept where it has none, then the name over its
+   device name, each cut short with an ellipsis when it is too long. */
 button.name {
   flex: 1 1 auto;
   justify-content: flex-start;
@@ -1181,11 +1181,31 @@ button.name[aria-current="true"] {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* A workspace's name over its device name, the name claude.ai and the Claude app give its
+   server: an identifier, in the monospace face, small and muted, cut short where it is long. */
+.names {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  padding: var(--space-1) 0;
+}
+.device {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-small);
+  font-weight: normal;
+}
+/* The dot keeps to the name's line, not the middle of the name and the device name under it. */
 .dot-slot {
   display: inline-flex;
   flex: none;
+  align-self: flex-start;
+  align-items: center;
   justify-content: center;
   width: 0.625rem;
+  height: var(--line-body);
+  margin-top: var(--space-1);
 }
 /* where no row has a dot, no room is kept for one */
 .workspaces:not(:has(.dot)) .dot-slot {
@@ -1291,6 +1311,9 @@ button.switcher {
 .sheet .list-row {
   padding: 0 var(--space-4);
 }
+.sheet button.name {
+  min-width: 0;
+}
 .panel-section label > textarea {
   display: block;
   width: 100%;
@@ -1310,8 +1333,8 @@ button.switcher {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
-/* A workspace's panel: its head, of its name, its state and its repository; then its tabs and
-   what each holds, with no box of its own around them. */
+/* A workspace's panel: its head, of its name, its state, its repository and its device name;
+   then its tabs and what each holds, with no box of its own around them. */
 .panel-head {
   display: flex;
   flex-wrap: wrap;
@@ -1327,6 +1350,14 @@ button.switcher {
 .panel-title h2 {
   margin: 0;
   font-size: var(--text-title-2);
+  overflow-wrap: anywhere;
+}
+/* The device name, after its label, all small and muted, the name in the monospace face; the
+   label never ends a line on its own. */
+p.panel-device {
+  min-width: 0;
+  margin: 0;
+  font-size: var(--text-small);
   overflow-wrap: anywhere;
 }
 /* The repository, muted, after its icon; a long one is cut short, its whole address its name. */
@@ -2177,8 +2208,9 @@ form.limits + form.limits {
 .limits .actions [role="status"] {
   margin: 0;
 }
-/* Everyone's workspaces: a card for each person, a row for each workspace, its name, its
-   state's pill, its session and its version, which the row's words wrap under on a phone. */
+/* Everyone's workspaces: a card for each person, a row for each workspace, its name, its device
+   name, its state's pill, its session and its version, which the row's words wrap under on a
+   phone. */
 .person-workspaces {
   list-style: none;
   margin: 0;

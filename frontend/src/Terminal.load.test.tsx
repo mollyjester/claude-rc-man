@@ -13,6 +13,7 @@ import { sockets } from "./test/fakeSocket";
 const ready = (id: number, name: string) => ({
   id,
   name,
+  device: `rcman-ws-${id}`,
   state: "ready",
   error: null,
   source: null,

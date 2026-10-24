@@ -13,6 +13,7 @@ import { ALICE, BOB, signInAs } from "./people";
 const WIDE = {
   id: 1,
   name: "alice-wide",
+  device: "rcman-ws-1",
   state: "ready",
   error: null,
   server_error: null,
@@ -68,7 +69,7 @@ for (const [width, columns] of [
 }
 
 // A workspace with no server, so with no dot, to stand beside WIDE in the list.
-const PLAIN = { ...WIDE, id: 2, name: "alice-plain", server: null };
+const PLAIN = { ...WIDE, id: 2, name: "alice-plain", device: "rcman-ws-2", server: null };
 
 test("each row of the list holds its dot before its name, on its line, and the names line up with a dot or without", async ({
   page,
@@ -80,7 +81,7 @@ test("each row of the list holds its dot before its name, on its line, and the n
   );
   await page.goto("/");
   const name = workspaces(page).getByRole("button", { name: WIDE.name, exact: true });
-  await expect(name).toHaveAccessibleDescription(m.kinds.problem);
+  await expect(name).toHaveAccessibleDescription(`${m.kinds.problem} ${WIDE.device}`);
   // measured in one go, so that nothing loading meanwhile moves one and not the others
   const rows = await workspaces(page).evaluate((list) =>
     [...list.querySelectorAll("li")].map((row) => {
@@ -89,10 +90,10 @@ test("each row of the list holds its dot before its name, on its line, and the n
       const range = document.createRange();
       range.selectNodeContents(text);
       const dot = row.querySelector(".dot")?.getBoundingClientRect() ?? null;
-      const b = button.getBoundingClientRect();
+      const line = text.getBoundingClientRect();
       return {
         textLeft: range.getBoundingClientRect().left,
-        button: { y: b.y, bottom: b.bottom },
+        line: { y: line.y, bottom: line.bottom },
         dot: dot && { x: dot.x, y: dot.y, bottom: dot.bottom },
       };
     }),
@@ -102,8 +103,9 @@ test("each row of the list holds its dot before its name, on its line, and the n
   expect(wide.dot).not.toBeNull();
   expect(plain.dot).toBeNull();
   expect(wide.dot!.x).toBeLessThan(wide.textLeft); // before the name
-  expect(wide.dot!.y).toBeGreaterThanOrEqual(wide.button.y); // on its line
-  expect(wide.dot!.bottom).toBeLessThanOrEqual(wide.button.bottom);
+  // on the name's line, not between it and the device name under it
+  expect(wide.dot!.y).toBeGreaterThanOrEqual(wide.line.y);
+  expect(wide.dot!.bottom).toBeLessThanOrEqual(wide.line.bottom);
   expect(Math.abs(wide.textLeft - plain.textLeft)).toBeLessThanOrEqual(1);
 });
 

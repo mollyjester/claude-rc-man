@@ -2341,6 +2341,9 @@ class Workspaces:
             entry = {
                 "id": workspace.id,
                 "name": workspace.name,
+                # The container's name, which under Podman is its hostname too: the device name
+                # claude.ai and the Claude app show for the workspace's server.
+                "device": workspace.container,
                 "state": workspace.state,
                 "error": workspace.error,
                 "source": workspace.source,

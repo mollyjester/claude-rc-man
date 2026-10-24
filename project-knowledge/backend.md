@@ -131,7 +131,12 @@ what should run in the workspace's row, which restoring reads. The listing
 reads every workspace's server side by side, in at most `LISTING_WORKERS`
 threads; a workspace whose server cannot be read is listed with why, as
 `server_error`, and one whose container a rebuild is replacing is not read and is listed with
-`workspace_rebuilding` there.
+`workspace_rebuilding` there. Each entry has `device`, the workspace's container name
+(`Workspace.container`, `rcman-ws-<id>`), in every state: under Podman it is also the
+container's hostname, which Claude Code names its server after, so it is the device name
+claude.ai and the Claude app show for the workspace's server
+([runtime.md](runtime.md#the-runtime)); the host runtime sets no hostname, so there it is only
+the name.
 
 Rebuilding (`routers/workspaces.py`; how it works is [runtime.md](runtime.md#rebuilding)):
 
@@ -153,7 +158,7 @@ Rebuilding (`routers/workspaces.py`; how it works is [runtime.md](runtime.md#reb
   route makes. A failed workspace's rebuild that failed says why in its `error`.
 
 `everyone.py` lists every person's workspaces for administrators
-(`GET /api/servers/everyone`), each workspace with only its id, name, state, server,
+(`GET /api/servers/everyone`), each workspace with only its id, name, `device`, state, server,
 `server_error` and `claude_version`, copied one by one from the listing, so nothing
 else the listing answers reaches it, and each server with only `SERVER_FIELDS` —
 never its screen or its claude.ai address. The listing is read-only: no route lets one

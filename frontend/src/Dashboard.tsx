@@ -337,6 +337,7 @@ function WorkspaceEntry({
   onRemove: (workspace: Workspace) => void;
 }) {
   const id = useId();
+  const deviceId = useId();
   const dot = dotFor(workspace);
   return (
     <li className={current ? "list-row selected" : "list-row"}>
@@ -344,12 +345,12 @@ function WorkspaceEntry({
         type="button"
         className="name"
         aria-current={current ? "true" : undefined}
-        aria-describedby={dot ? id : undefined}
+        aria-describedby={dot ? `${id} ${deviceId}` : deviceId}
         onClick={() => onSelect(workspace.id)}
       >
         {/* the dot's room is kept where there is none, so that the names line up */}
         <span className="dot-slot">{dot && <StatusDot kind={dot} id={id} />}</span>
-        <span className="name-text">{workspace.name}</span>
+        <WorkspaceNames workspace={workspace} deviceId={deviceId} />
       </button>
       {workspace.state !== "ready" && <WorkspaceBadge state={workspace.state} />}
       <button
@@ -362,6 +363,20 @@ function WorkspaceEntry({
         <TrashIcon />
       </button>
     </li>
+  );
+}
+
+// A workspace's name over its device name, the one claude.ai and the Claude app give its server,
+// small and with no label. The device name is left out of the button's name, which is the
+// workspace's, and read as its description instead (deviceId).
+function WorkspaceNames({ workspace, deviceId }: { workspace: Workspace; deviceId: string }) {
+  return (
+    <span className="names">
+      <span className="name-text">{workspace.name}</span>
+      <code className="device muted" id={deviceId} translate="no" aria-hidden="true">
+        {workspace.device}
+      </code>
+    </span>
   );
 }
 
@@ -427,12 +442,16 @@ function PanelBar({
                 type="button"
                 className="name"
                 aria-current={workspace.id === selected ? "true" : undefined}
+                aria-describedby={`${sheet.panelProps.id}-device-${workspace.id}`}
                 onClick={() => {
                   sheet.close(true);
                   onSelect(workspace.id);
                 }}
               >
-                <span className="name-text">{workspace.name}</span>
+                <WorkspaceNames
+                  workspace={workspace}
+                  deviceId={`${sheet.panelProps.id}-device-${workspace.id}`}
+                />
                 {workspace.state !== "ready" && (
                   <>
                     {" "}
@@ -1147,6 +1166,12 @@ function WorkspacePanel({
             <span>{repositoryOf(workspace.source_page)}</span>
           </a>
         )}
+        <p className="panel-device muted">
+          {/* a space that does not break, so that the label stays with the name */}
+          {m.device}
+          {"\u00a0"}
+          <code translate="no">{workspace.device}</code>
+        </p>
       </div>
       {workspace.state === "creating" && (
         <MessageBar kind="info">

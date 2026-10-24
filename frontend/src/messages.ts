@@ -219,6 +219,8 @@ export const m = {
   showScreen: "Show screen",
   openSession: "Open in claude.ai",
   sessionName: "Session",
+  // What a workspace's device name is, the name claude.ai and the Claude app give its server.
+  device: "Device",
   exitCode: (code: number) => `Exit status ${code}`,
   screenTitle: (name: string) => `Screen of ${name}`,
 

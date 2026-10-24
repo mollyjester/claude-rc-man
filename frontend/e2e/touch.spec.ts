@@ -675,6 +675,7 @@ function views(paths: string[], id: number, name: string, width: number): View[]
             ...answer.workspaces[0],
             id: 999_999,
             name: "alice-being-made",
+            device: "rcman-ws-999999",
             state: "creating",
             source: null,
             source_page: null,
