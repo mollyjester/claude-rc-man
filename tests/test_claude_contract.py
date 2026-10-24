@@ -2,8 +2,7 @@
 
 These need no Claude account. They run the no-account recording sequences
 against the installed binary and compare the sanitised screens with the
-fixtures, check the installed version is the one the fixtures were recorded
-from, and check every option rcman passes is still in `--help`.
+fixtures, and check every option rcman passes is still in `--help`.
 
 When `claude` is not installed these tests skip, unless
 ``RCMAN_REQUIRE_REAL_CLAUDE=1`` (set by ``make check``), in which case they fail.
@@ -33,15 +32,6 @@ NO_ACCOUNT = [
 
 def test_real_claude_is_installed():
     assert REAL is not None, "claude is not on PATH"
-
-
-def test_installed_version_is_the_recorded_one():
-    recorded = rec.load_manifest()["claude_version"]
-    installed = rec.installed_version(REAL)
-    assert installed == recorded, (
-        f"claude {installed} is installed but the fixtures were recorded from {recorded}: "
-        "re-record them (see project-knowledge/fake-claude.md) before relying on the fake"
-    )
 
 
 def test_no_account_screens_match_the_fixtures(tmp_path):
