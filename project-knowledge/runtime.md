@@ -562,14 +562,16 @@ runtime - and rcman adds no restriction and takes none away.
   container; `run` of the folder on the host runtime), one per terminal. The processes of the
   workspace are read through the channel, each `/proc/<pid>/stat` by itself with its path and a
   NUL after each, since a program's name may hold a newline (`terminals.process_table`). A
-  pidfile counts only while it is what the launcher writes, two bounded numbers, and names the
-  leader of its session by its start time, as the processes are read just then; anything else
-  signals nothing. Ending a session sends its processes SIGHUP, then SIGKILL (`end_leader`);
-  once the leader has been seen, the session is its own while it lasts, as the kernel gives a
-  session's id to no other process while any process is in it. A terminal's own cleanup ends the
-  session of the leader its pidfile named when it opened even when that leader has ended
-  already, as closing the pty ends it; nothing else ends a session whose leader is gone. A process
-  that left the session is left.
+  process is one of the workspace's, to be signalled, while its state is not Z, or is Z with
+  other threads still running, which is how a process whose first thread has ended reads
+  (`terminals.processes`). A pidfile counts only while it is what the launcher writes, two
+  bounded numbers, and names the leader of its session by its start time, as the processes are
+  read just then; anything else signals nothing. Ending a session sends its processes SIGHUP,
+  then SIGKILL (`end_leader`); once the leader has been seen, the session is its own while it
+  lasts, as the kernel gives a session's id to no other process while any process is in it. A
+  terminal's own cleanup ends the session of the leader its pidfile named when it opened even
+  when that leader has ended already, as closing the pty ends it; nothing else ends a session
+  whose leader is gone. A process that left the session is left.
 - **Sweeping.** What earlier terminals left is ended each time a terminal opens on the
   workspace, and, for a container that ran on while rcman did not, by `_restore_workspace`
   through `on_kept_running`: every session whose pidfile is not a live terminal's and whose

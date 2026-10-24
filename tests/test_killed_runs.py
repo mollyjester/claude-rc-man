@@ -252,6 +252,15 @@ def test_a_killed_run_is_gone_with_its_workers(tmp_path, sig):
         assert not any(kr.running(p) for p in pids)
 
 
+def test_a_process_whose_first_thread_has_ended_is_in_its_session_while_another_runs(tmp_path):
+    with kr.FirstThreadEnded(tmp_path) as helper:
+        pid = helper.start()
+        # the control: its first thread has ended
+        assert hf.state_and_threads(pid) == kr.FIRST_THREAD_ENDED
+        assert pid in kr._in_session(pid)
+        assert kr.running(pid)
+
+
 def test_a_released_run_ends_on_its_own(tmp_path):
     with kr.stem() as prefix, kr.KilledRun(tmp_path, {"test_tiny.py": TINY}, (prefix,)) as run:
         run.reports.wait("one")

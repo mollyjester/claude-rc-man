@@ -15,6 +15,7 @@ import contextlib
 import os
 import re
 import secrets
+import shlex
 import subprocess
 import sys
 import threading
@@ -28,6 +29,8 @@ from rcman import runtime as rt
 from rcman.main import create_app
 from rcman.problems import Problem
 
+from devtools import held_folders as hf
+from tests import killed_runs as kr
 from tests.conftest import ALICE, made_workspace
 
 # How long a shell is given to answer.
@@ -611,6 +614,51 @@ def test_a_process_named_with_a_newline_is_read_as_one(channel):
     finally:
         proc.kill()
         proc.wait()
+
+
+def test_a_process_whose_first_thread_has_ended_is_in_the_table(channel, tmp_path):
+    """Its stat reads Z while another thread of it runs, and it is still a process to end."""
+    layout, run = channel
+    with kr.FirstThreadEnded(tmp_path) as helper:
+        pid = helper.start()
+        # the control: its first thread has ended
+        assert hf.state_and_threads(pid) == kr.FIRST_THREAD_ENDED
+        table = terminals.process_table(layout, run)
+        assert table.get(pid) == (session_of(pid), start_time(pid))
+
+
+def test_the_table_drops_a_zombie_and_keeps_one_whose_other_threads_run():
+    def stat(pid: int, state: str, threads: int) -> bytes:
+        fields = [state, "1", str(pid), str(pid), *["0"] * 13, str(threads), "0", "77"]
+        return f"/proc/{pid}/stat\0{pid} (x) {' '.join(fields)}\0".encode()
+
+    listed = stat(10, "S", 1) + stat(11, "Z", 2) + stat(12, "Z", 1)
+    assert terminals.processes(listed) == {10: (10, 77), 11: (11, 77)}
+
+
+def test_ending_a_session_ends_a_member_whose_first_thread_has_ended(channel, tmp_path):
+    layout, run = channel
+    length = a_length()
+    with kr.FirstThreadEnded(tmp_path) as helper:
+        leader = subprocess.Popen(
+            ["setsid", "sh", "-c", f"{shlex.join(helper.argv)} & echo $!; exec sleep {length}"],
+            pass_fds=(helper.read_end,), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+        )  # fmt: skip
+        member = None
+        try:
+            member = int(leader.stdout.readline())
+            kr.wait_for_state(member, kr.FIRST_THREAD_ENDED)
+            wait_until(lambda: session_of(leader.pid) == leader.pid)
+            assert session_of(member) == leader.pid  # the control: it is of the leader's session
+            terminals.end_leader(layout, run, leader.pid, start_time(leader.pid), leader_gone=False)
+            assert leader.wait(timeout=ANSWERS_WITHIN) is not None
+            assert hf.state_and_threads(member) in (None, kr.ENDED)  # ended, all its threads
+        finally:
+            leader.kill()
+            if member is not None and hf.state_and_threads(member) not in (None, kr.ENDED):
+                os.kill(member, 9)
+            leader.wait()
+            leader.stdout.close()
 
 
 def test_a_pidfile_whose_shell_is_gone_signals_nothing_but_for_its_own_terminal(channel):

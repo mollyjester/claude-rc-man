@@ -6,6 +6,8 @@ writes, in a session of its own, with the environment the tests were started wit
 The tiny tests say what they made with report() and wait in hold() until the run is
 killed with kill() or released with finish(). Every wait has a deadline, and the run
 itself is ended by ``timeout`` past it, so a run whose test was itself killed ends too.
+FirstThreadEnded runs a process whose first thread has ended while another runs, which
+counts as running (held_folders.running).
 
 Everything read from a report is checked before it is used: a report is read only
 once it is complete, and a path in it only if it lies under the test's own tmp_path or
@@ -27,6 +29,7 @@ import sys
 import time
 from collections.abc import Iterable, Iterator
 from pathlib import Path
+from typing import IO
 
 from devtools import held_folders as hf
 from tests.collected import child_env
@@ -206,19 +209,104 @@ def stem() -> Iterator[str]:
         yield folder.name + "-"
 
 
+# --- a process whose first thread has ended ---------------------------------------------
+
+# Run with ``python -I``: a second thread waits on the read end the first argument names, and
+# the first thread then ends, as a multi-threaded process's first thread can while the others
+# are still exiting.
+_FIRST_THREAD_ENDS = """\
+import ctypes, os, sys, threading
+threading.Thread(target=os.read, args=(int(sys.argv[1]), 1)).start()
+ctypes.CDLL(None).pthread_exit(None)
+"""
+
+# How a process reads (held_folders.state_and_threads) once its first thread has ended while
+# another thread runs, and once all its threads have ended.
+FIRST_THREAD_ENDED = ("Z", 2)
+ENDED = ("Z", 1)
+
+
+def wait_for_state(pid: int, wanted: tuple[str, int], deadline: float = DEADLINE) -> None:
+    """Wait until ``pid`` reads ``wanted`` (held_folders.state_and_threads)."""
+    end = time.monotonic() + deadline
+    while (found := hf.state_and_threads(pid)) != wanted:
+        if time.monotonic() > end:
+            raise TimeoutError(f"process {pid} reads {found}, not {wanted}, after {deadline}s")
+        time.sleep(0.02)
+
+
+class FirstThreadEnded:
+    """A process whose first thread has ended while its second waits: its stat reads
+    FIRST_THREAD_ENDED, and it holds its open files, ``holding`` among them, until release()
+    lets the second thread end too. ``argv`` runs it, with ``read_end`` given to it as that same
+    descriptor; start() runs it in a session of its own, closes this process's ``holding``, and
+    waits until its first thread has ended. Leaving the ``with`` releases it, and ends and reaps
+    what start() ran."""
+
+    def __init__(self, tmp_path: Path, holding: IO | None = None):
+        script = tmp_path / "first_thread_ends.py"
+        script.write_text(_FIRST_THREAD_ENDS, encoding="utf-8")
+        self.read_end, self._write_end = os.pipe()
+        self.argv = [sys.executable, "-I", str(script), str(self.read_end)]
+        self._holding = holding
+        self.proc: subprocess.Popen | None = None
+
+    def __enter__(self) -> FirstThreadEnded:
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.release()
+        os.close(self.read_end)
+        if self._holding is not None:
+            self._holding.close()
+        if self.proc is not None:
+            try:
+                self.proc.communicate(timeout=DEADLINE)
+            except subprocess.TimeoutExpired:
+                self.proc.kill()
+                self.proc.communicate()
+
+    def start(self) -> int:
+        """Run it in a session of its own; its pid, once its first thread has ended. One that
+        ends instead fails at once, with what it said."""
+        kept = () if self._holding is None else (self._holding.fileno(),)
+        self.proc = subprocess.Popen(
+            self.argv,
+            pass_fds=(self.read_end, *kept),
+            start_new_session=True,
+            stdin=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+        )
+        if self._holding is not None:
+            self._holding.close()  # the process holds it now
+            self._holding = None
+        end = time.monotonic() + DEADLINE
+        while (found := hf.state_and_threads(self.proc.pid)) != FIRST_THREAD_ENDED:
+            if found in (None, ENDED):
+                said = self.proc.communicate()[1].decode(errors="replace")
+                code = self.proc.returncode
+                raise RuntimeError(f"the process ended instead, with {code}:\n{said}")
+            if time.monotonic() > end:
+                raise TimeoutError(f"process {self.proc.pid} reads {found} after {DEADLINE}s")
+            time.sleep(0.02)
+        return self.proc.pid
+
+    def release(self) -> None:
+        """Let its second thread end, by closing the pipe's write end."""
+        if self._write_end is not None:
+            os.close(self._write_end)
+            self._write_end = None
+
+
 # --- the run -----------------------------------------------------------------------------
 
 
-def running(pid: int) -> bool:
-    """Whether ``pid`` is a process that has not ended: a zombie has."""
-    try:
-        text = Path(f"/proc/{pid}/stat").read_text()
-    except OSError:
-        return False
-    return text.rsplit(")", 1)[1].split()[0] != "Z"
+# Whether a process has not ended (held_folders.running).
+running = hf.running
 
 
 def _in_session(sid: int) -> list[int]:
+    """The processes of session ``sid`` that have not ended (held_folders.runs)."""
     found = []
     for entry in os.listdir("/proc"):
         if not entry.isdigit():
@@ -227,7 +315,7 @@ def _in_session(sid: int) -> list[int]:
             fields = Path(f"/proc/{entry}/stat").read_text().rsplit(")", 1)[1].split()
         except OSError:
             continue
-        if int(fields[3]) == sid and fields[0] != "Z":
+        if int(fields[3]) == sid and hf.runs(*hf.state_and_threads_of(fields)):
             found.append(int(entry))
     return found
 

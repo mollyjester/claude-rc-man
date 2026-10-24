@@ -133,7 +133,8 @@ in the host's `/proc` by a `sleep` of a length no other test uses: `tests/test_t
 drives `terminals.py` without a WebSocket (what is typed and shown, a resize, ^C, what an end
 leaves and what it does not, open files, a replacement, an open only once the shell named itself,
 a deletion or sign-out that crosses an opening, the pidfile's checks, a program named with a
-newline, and the sweeps, the opening's and the restore's among them), and `tests/test_terminal.py`
+newline, a process whose first thread has ended, kept in the process table and ended with its
+session, and the sweeps, the opening's and the restore's among them), and `tests/test_terminal.py`
 the route through the test client's WebSocket (who may open what, the frames, what closes a
 terminal, the audit, nothing typed recorded or logged, the protocol held to backend.md's table and
 to the page's, `frontend/src/terminalSocket.ts`, loaded with Node) and, for a refused upgrade, a
@@ -545,7 +546,9 @@ a test makes depends on its own run to remove it:
   `/tmp`, or outside the root its caller names.
 - An engine a killed run left is removed by the next run that starts one, with
   every container and volume in it and whatever is still mounted in its storage (see
-  [The container suites](#the-container-suites)).
+  [The container suites](#the-container-suites)); the processes of the engine
+  it kills are waited on until none is running, by the same rule as a killed
+  run's (below).
 - The containers the suite starts itself on the engine are labelled by
   `tests/containers.py` with the path of a folder the run holds, its holder
   (`rcman.test.holder`), and the run removes them when it ends, with their
@@ -555,15 +558,22 @@ a test makes depends on its own run to remove it:
   engine goes whole with everything in it (above).
 
 `tests/killed_runs.py`, which is not a test module, tests all of this as the
-suite runs: a real `python -m pytest -n 2` over small test files, in a
-session of its own, killed with SIGTERM and with SIGKILL; the test then
-checks that the next run clears what the killed one left. It reads what the
-small tests made from reports written under another name and then renamed,
-only once a report is complete; it takes a path from a report only under the
-test's own `tmp_path`, itself a folder a removal may take, or in `/tmp` under the test's stem, a held folder
-whose name and `-` begin everything the test makes beside it, so tests that
-run at the same time never clear each other's; and its `scrub` refuses
-anything else, as every removal does.
+suite runs: a real `python -m pytest -n 2` over small test files, in a session
+of its own, killed with SIGTERM and with SIGKILL; the test then checks that
+the next run clears what the killed one left. A killed run is gone once no
+process of its session is running, by `running` in `devtools/held_folders.py`:
+a process runs while its state is not Z, or is Z with other threads still
+running, which is how a process whose first thread has ended reads; such a
+process still holds its open files, and with them a held folder's lock.
+`FirstThreadEnded` in `tests/killed_runs.py` makes such a process for the
+tests of `held_folders`, `killed_runs`, `podman_service` and `terminals`. The
+test reads what the small tests made from reports written under another name
+and then renamed, only once a report is complete; it takes a path from a
+report only under the test's own `tmp_path`, itself a folder a removal may
+take, or in `/tmp` under the test's stem, a held folder whose name and `-`
+begin everything the test makes beside it, so tests that run at the same time
+never clear each other's; and its `scrub` refuses anything else, as every
+removal does.
 
 ## Repository guards
 
