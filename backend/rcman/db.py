@@ -170,6 +170,18 @@ MIGRATIONS = [
         containers integer not null check (containers in (0, 1))
     );
     """,
+    """
+    -- The Claude Code versions an administrator marked as failed (claude_versions.py), which
+    -- are neither rolled out nor approved again while marked: who marked each and when, and
+    -- why, null where no reason was given. Removing a mark deletes its row, and the audit trail
+    -- keeps what was marked and removed. A mark outlives its version's file in the store.
+    create table claude_failures (
+        version text primary key not null,
+        at text not null,
+        by text not null,
+        reason text
+    );
+    """,
 ]
 
 

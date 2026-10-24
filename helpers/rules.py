@@ -203,6 +203,15 @@ GITHUB_URL = Rule(
     "Nothing else may be in it: no user name, password, port, query, fragment or "
     "percent sign.",
 )
+MAX_FAILURE_REASON_LENGTH = 200
+# Why an administrator marked a Claude Code version as failed (backend/rcman/claude_versions.py):
+# one line that shows as what it is, so nothing unseen; the route trims it, and a reason left
+# blank is none.
+FAILURE_REASON = Rule(
+    re.compile(rf"[^{_UNSEEN}]{{1,{MAX_FAILURE_REASON_LENGTH}}}"),
+    f"A reason is one line of at most {MAX_FAILURE_REASON_LENGTH} characters, and may not "
+    f"hold {_UNSEEN_WORDS}.",
+)
 # A Claude Code version, as its releases are numbered.
 VERSION = Rule(re.compile(r"[0-9]+\.[0-9]+\.[0-9]+"), "A Claude Code version looks like 1.2.3.")
 # The limits an administrator sets on a person or a workspace (backend/rcman/limits.py). A

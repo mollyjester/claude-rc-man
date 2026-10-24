@@ -1002,14 +1002,29 @@ test("a person who is no longer there is refused when the limits are asked for",
 
 // --- the Claude Code versions page -----------------------------------------------
 
-type Installed = { version: string; approved: boolean; previous: boolean; in_use: number };
-type Drift = { workspace: number; name: string; email: string; version: string; approved: string };
+type Installed = {
+  version: string;
+  approved: boolean;
+  previous: boolean;
+  in_use: number;
+  failed: boolean;
+};
+type Drift = {
+  workspace: number;
+  name: string;
+  email: string;
+  version: string;
+  approved: string;
+  failed: boolean;
+};
+type Failure = { version: string; at: string; by: string; reason: string | null };
 type Report = {
   approved: string | null;
   previous: string | null;
   tested: string;
   installed: Installed[];
   drift: Drift[];
+  failed: Failure[];
   upgrading: boolean;
   rcman_upgrading?: boolean;
 };
@@ -1019,6 +1034,7 @@ const installed = (version: string, extra: Partial<Installed> = {}): Installed =
   approved: false,
   previous: false,
   in_use: 0,
+  failed: false,
   ...extra,
 });
 
@@ -1034,8 +1050,16 @@ const REPORT: Report = {
     installed("2.0.0"),
   ],
   drift: [
-    { workspace: 5, name: "beta", email: "bob@example.com", version: "2.1.0", approved: "2.2.0" },
+    {
+      workspace: 5,
+      name: "beta",
+      email: "bob@example.com",
+      version: "2.1.0",
+      approved: "2.2.0",
+      failed: false,
+    },
   ],
+  failed: [],
   upgrading: false,
 };
 
@@ -1517,6 +1541,582 @@ test("the report is not read again at intervals while no rollout runs", async ()
   } finally {
     vi.useRealTimers();
   }
+});
+
+// --- versions marked as failed ------------------------------------------------------------
+
+// 2.0.0 marked as failed by alice, with a reason; 1.9.0 by bob with none, earlier.
+const MARK_200: Failure = {
+  version: "2.0.0",
+  at: "2026-10-20T09:15:00+00:00",
+  by: "alice@example.com",
+  reason: "Sessions hang after sign-in",
+};
+const MARK_190: Failure = {
+  version: "1.9.0",
+  at: "2026-10-01T08:00:00+00:00",
+  by: "bob@example.com",
+  reason: null,
+};
+
+// What a mark changes in a report: the version flagged wherever it is listed, and its mark first.
+function marking(report: Report, mark: Failure): Report {
+  return {
+    ...report,
+    installed: report.installed.map((i) =>
+      i.version === mark.version ? { ...i, failed: true } : i,
+    ),
+    drift: report.drift.map((d) => (d.version === mark.version ? { ...d, failed: true } : d)),
+    failed: [mark, ...report.failed.filter((f) => f.version !== mark.version)],
+  };
+}
+
+// What removing a mark changes in a report.
+function clearing(report: Report, version: string): Report {
+  return {
+    ...report,
+    installed: report.installed.map((i) => (i.version === version ? { ...i, failed: false } : i)),
+    drift: report.drift.map((d) => (d.version === version ? { ...d, failed: false } : d)),
+    failed: report.failed.filter((f) => f.version !== version),
+  };
+}
+
+const MARKED = marking(marking(REPORT, MARK_190), MARK_200);
+
+const failedCard = () => screen.findByRole("region", { name: m.versionsFailedTitle });
+
+async function openMark(from: HTMLElement) {
+  await userEvent.click(from);
+  return screen.findByRole("dialog", { name: m.versionsMarkAnyFailed });
+}
+
+test("a version marked as failed is shown so among the installed versions, and offers no Use", async () => {
+  versionsApi({}, MARKED);
+  renderApp("/admin/claude");
+  const region = await versionsPage();
+  const row = within(region).getByRole("row", { name: /2\.0\.0/ });
+  const pill = within(row).getByText(m.versionsStandingFailed);
+  expect(pill).toHaveClass("badge", "badge-problem");
+  expect(within(row).queryByRole("button")).not.toBeInTheDocument();
+  // positive control: an unmarked version that is not approved offers both
+  const previous = within(region).getByRole("row", { name: /2\.1\.0/ });
+  expect(within(previous).queryByText(m.versionsStandingFailed)).not.toBeInTheDocument();
+  expect(
+    within(previous).getByRole("button", { name: m.versionsUseVersion("2.1.0") }),
+  ).toBeInTheDocument();
+  expect(
+    within(previous).getByRole("button", { name: m.versionsMarkFailedVersion("2.1.0") }),
+  ).toHaveClass("secondary");
+});
+
+test("the approved version offers no Mark as failed", async () => {
+  versionsApi();
+  renderApp("/admin/claude");
+  const region = await versionsPage();
+  // positive control: the others do
+  expect(
+    within(region).getByRole("button", { name: m.versionsMarkFailedVersion("2.0.0") }),
+  ).toBeInTheDocument();
+  const approved = within(region).getByRole("row", { name: /2\.2\.0/ });
+  expect(within(approved).queryByRole("button")).not.toBeInTheDocument();
+});
+
+test("the versions marked as failed are listed with why, by whom and when, the newest first", async () => {
+  versionsApi({}, MARKED);
+  renderApp("/admin/claude");
+  const region = await failedCard();
+  expect(region).toHaveClass("card", "flush");
+  expect(
+    within(region)
+      .getAllByRole("columnheader")
+      .map((h) => h.textContent),
+  ).toEqual([
+    m.versionsVersion,
+    m.versionsReason,
+    m.versionsMarkedBy,
+    m.versionsMarkedAt,
+    m.versionsActions,
+  ]);
+  const rows = within(region).getAllByRole("row").slice(1);
+  expect(rows.map((r) => within(r).getAllByRole("cell")[0].textContent)).toEqual([
+    "2.0.0",
+    "1.9.0",
+  ]);
+  const cells = within(rows[0])
+    .getAllByRole("cell")
+    .map((c) => c.textContent);
+  expect(cells.slice(0, 4)).toEqual([
+    "2.0.0",
+    "Sessions hang after sign-in",
+    "alice@example.com",
+    "2026-10-20 09:15:00",
+  ]);
+  const none = within(rows[1]).getByText(m.versionsNoReason);
+  expect(none).toHaveClass("muted");
+  expect(
+    within(rows[1]).getByRole("button", { name: m.versionsClearFailedVersion("1.9.0") }),
+  ).toBeInTheDocument();
+  expect(within(region).queryByText(m.versionsFailedNone)).not.toBeInTheDocument();
+});
+
+test("with no version marked as failed, the card says so", async () => {
+  versionsApi();
+  renderApp("/admin/claude");
+  const region = await failedCard();
+  expect(within(region).getByText(m.versionsFailedNone)).toHaveClass("card-empty");
+  expect(within(region).queryByRole("table")).not.toBeInTheDocument();
+  // its head still offers a mark
+  expect(within(region).getByRole("button", { name: m.versionsMarkAnyFailed })).toBeInTheDocument();
+});
+
+test("Mark as failed opens the dialog with the row's version, and sends the version and the reason", async () => {
+  let report = REPORT;
+  const fake = versionsApi(
+    {
+      "PUT /api/claude/failures": (c) =>
+        (report = marking(report, {
+          version: "2.0.0",
+          at: "2026-10-24T10:00:00+00:00",
+          by: "alice@example.com",
+          reason: (c.body as { reason?: string }).reason ?? null,
+        })),
+    },
+    () => report,
+  );
+  renderApp("/admin/claude");
+  const region = await versionsPage();
+  const dialog = await openMark(
+    within(region).getByRole("button", { name: m.versionsMarkFailedVersion("2.0.0") }),
+  );
+  expect(within(dialog).getByText(m.versionsMarkExplain)).toBeInTheDocument();
+  const version = within(dialog).getByLabelText(m.versionsVersion);
+  expect(version).toHaveValue("2.0.0");
+  expect(version).toHaveAttribute("name", "version");
+  const reason = within(dialog).getByLabelText(m.versionsReason);
+  expect(reason).toHaveAttribute("name", "reason");
+  expect(reason).toHaveAttribute("autocomplete", "off");
+  expect(reason).toHaveAccessibleDescription(m.versionsReasonHelp);
+  await userEvent.type(reason, "Sessions hang");
+  await userEvent.click(within(dialog).getByRole("button", { name: m.versionsMarkFailed }));
+  await waitFor(() => expect(fake.made("PUT", "/api/claude/failures")).toHaveLength(1));
+  expect(fake.made("PUT", "/api/claude/failures")[0].body).toEqual({
+    version: "2.0.0",
+    reason: "Sessions hang",
+  });
+  await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+  expect(await screen.findByText(m.versionsMarked("2.0.0"))).toHaveAttribute("role", "status");
+  const card = await failedCard();
+  expect(within(card).getByRole("row", { name: /2\.0\.0/ })).toHaveTextContent("Sessions hang");
+  const row = within(region).getByRole("row", { name: /2\.0\.0/ });
+  expect(within(row).getByText(m.versionsStandingFailed)).toBeInTheDocument();
+  expect(within(row).queryByRole("button")).not.toBeInTheDocument();
+  // focus on the card's heading, since the button that opened the dialog went with its row
+  expect(within(card).getByRole("heading", { name: m.versionsFailedTitle })).toHaveFocus();
+});
+
+test("a mark with no reason sends none", async () => {
+  const fake = versionsApi({ "PUT /api/claude/failures": marking(REPORT, MARK_190) });
+  renderApp("/admin/claude");
+  const region = await versionsPage();
+  const dialog = await openMark(
+    within(region).getByRole("button", { name: m.versionsMarkFailedVersion("2.0.0") }),
+  );
+  await userEvent.click(within(dialog).getByRole("button", { name: m.versionsMarkFailed }));
+  await waitFor(() => expect(fake.made("PUT", "/api/claude/failures")).toHaveLength(1));
+  expect(fake.made("PUT", "/api/claude/failures")[0].body).toEqual({ version: "2.0.0" });
+});
+
+test("the card's own button opens the dialog with no version, and the one typed is sent", async () => {
+  const fake = versionsApi({
+    "PUT /api/claude/failures": {
+      ...REPORT,
+      failed: [{ ...MARK_200, version: "2.5.0" }],
+    },
+  });
+  renderApp("/admin/claude");
+  const card = await failedCard();
+  const dialog = await openMark(
+    within(card).getByRole("button", { name: m.versionsMarkAnyFailed }),
+  );
+  const version = within(dialog).getByLabelText(m.versionsVersion);
+  expect(version).toHaveValue("");
+  await userEvent.type(version, " 2.5.0 ");
+  await userEvent.click(within(dialog).getByRole("button", { name: m.versionsMarkFailed }));
+  await waitFor(() => expect(fake.made("PUT", "/api/claude/failures")).toHaveLength(1));
+  // sent without the spaces around it, as the roll-out form sends its version
+  expect(fake.made("PUT", "/api/claude/failures")[0].body).toEqual({ version: "2.5.0" });
+  expect(await screen.findByText(m.versionsMarked("2.5.0"))).toBeInTheDocument();
+  expect(within(card).getByRole("heading", { name: m.versionsFailedTitle })).toHaveFocus();
+});
+
+test("a refused mark is shown in the dialog, which stays open with what was typed", async () => {
+  const errors = [{ field: "reason", message: "planted reason for the reason" }];
+  versionsApi({
+    "PUT /api/claude/failures": problem(
+      422,
+      "validation_failed",
+      "Some of what was sent is not valid.",
+      { errors },
+    ),
+  });
+  renderApp("/admin/claude");
+  const region = await versionsPage();
+  const dialog = await openMark(
+    within(region).getByRole("button", { name: m.versionsMarkFailedVersion("2.0.0") }),
+  );
+  const reason = within(dialog).getByLabelText(m.versionsReason);
+  await userEvent.type(reason, "planted​words");
+  await userEvent.click(within(dialog).getByRole("button", { name: m.versionsMarkFailed }));
+  expect(await within(dialog).findByRole("alert")).toBeInTheDocument();
+  expectRefused(reason, "planted reason for the reason");
+  expect(reason).toHaveAccessibleDescription(expect.stringContaining(m.versionsReasonHelp));
+  expect(reason).toHaveFocus();
+  expect(reason).toHaveValue("planted​words");
+  expect(within(dialog).getByLabelText(m.versionsVersion)).toHaveValue("2.0.0");
+  expect(screen.getByRole("dialog", { name: m.versionsMarkAnyFailed })).toBeInTheDocument();
+});
+
+test("a version refused is shown under the Version field, and the dialog keeps what was typed", async () => {
+  const errors = [{ field: "version", message: "planted reason for the version" }];
+  const fake = versionsApi({
+    "PUT /api/claude/failures": problem(
+      422,
+      "validation_failed",
+      "Some of what was sent is not valid.",
+      { errors },
+    ),
+  });
+  renderApp("/admin/claude");
+  const card = await failedCard();
+  const dialog = await openMark(
+    within(card).getByRole("button", { name: m.versionsMarkAnyFailed }),
+  );
+  const reason = within(dialog).getByLabelText(m.versionsReason);
+  await userEvent.type(reason, "Sessions hang");
+  await userEvent.click(within(dialog).getByRole("button", { name: m.versionsMarkFailed }));
+  expect(await within(dialog).findByRole("alert")).toBeInTheDocument();
+  // the empty version is sent for the server to judge
+  expect(fake.made("PUT", "/api/claude/failures")[0].body).toEqual({
+    version: "",
+    reason: "Sessions hang",
+  });
+  const version = within(dialog).getByLabelText(m.versionsVersion);
+  expectRefused(version, "planted reason for the version");
+  expect(version).toHaveFocus();
+  expect(version).toHaveValue("");
+  expect(reason).toHaveValue("Sessions hang");
+  expect(screen.getByRole("dialog", { name: m.versionsMarkAnyFailed })).toBeInTheDocument();
+});
+
+test("a mark refused with the server's words reads the report again", async () => {
+  let report = REPORT;
+  const fake = versionsApi(
+    {
+      "PUT /api/claude/failures": () => {
+        report = marking(REPORT, MARK_200); // another administrator was first
+        return problem(409, "claude_version_failed", "planted: already marked");
+      },
+    },
+    () => report,
+  );
+  renderApp("/admin/claude");
+  const region = await versionsPage();
+  const dialog = await openMark(
+    within(region).getByRole("button", { name: m.versionsMarkFailedVersion("2.0.0") }),
+  );
+  await userEvent.click(within(dialog).getByRole("button", { name: m.versionsMarkFailed }));
+  expect(await within(dialog).findByRole("alert")).toHaveTextContent("planted: already marked");
+  await waitFor(() => expect(fake.made("GET", "/api/claude/versions")).toHaveLength(2));
+  expect(
+    await within(await failedCard()).findByRole("row", { name: /2\.0\.0/ }),
+  ).toBeInTheDocument();
+});
+
+test("Mark as failed is offered while a roll-out runs and while rcman is being upgraded", async () => {
+  versionsApi({}, { ...REPORT, upgrading: true, rcman_upgrading: true });
+  renderApp("/admin/claude");
+  const region = await versionsPage();
+  // positive control: rolling out is shut
+  expect(
+    within(region).getByRole("button", { name: m.versionsUseVersion("2.0.0") }),
+  ).toBeDisabled();
+  expect(
+    within(region).getByRole("button", { name: m.versionsMarkFailedVersion("2.0.0") }),
+  ).toBeEnabled();
+  const card = await failedCard();
+  expect(within(card).getByRole("button", { name: m.versionsMarkAnyFailed })).toBeEnabled();
+});
+
+test("Remove mark sends the version at once, and Use is offered for it again", async () => {
+  let report = MARKED;
+  const fake = versionsApi(
+    { "DELETE /api/claude/failures/2.0.0": () => (report = clearing(report, "2.0.0")) },
+    () => report,
+  );
+  renderApp("/admin/claude");
+  const card = await failedCard();
+  await userEvent.click(
+    within(card).getByRole("button", { name: m.versionsClearFailedVersion("2.0.0") }),
+  );
+  await waitFor(() => expect(fake.made("DELETE", "/api/claude/failures/2.0.0")).toHaveLength(1));
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument(); // no question asked
+  expect(await screen.findByText(m.versionsCleared("2.0.0"))).toHaveAttribute("role", "status");
+  const region = await versionsPage();
+  expect(
+    await within(region).findByRole("button", { name: m.versionsUseVersion("2.0.0") }),
+  ).toBeInTheDocument();
+  expect(within(card).queryByRole("row", { name: /2\.0\.0/ })).not.toBeInTheDocument();
+  expect(within(card).getByRole("row", { name: /1\.9\.0/ })).toBeInTheDocument();
+  expect(within(card).getByRole("heading", { name: m.versionsFailedTitle })).toHaveFocus();
+});
+
+test("a mark already removed elsewhere is said, and the report read again", async () => {
+  let report = MARKED;
+  const fake = versionsApi(
+    {
+      "DELETE /api/claude/failures/2.0.0": () => {
+        report = clearing(MARKED, "2.0.0");
+        return problem(404, "claude_version_not_failed", "planted: not marked");
+      },
+    },
+    () => report,
+  );
+  renderApp("/admin/claude");
+  const card = await failedCard();
+  await userEvent.click(
+    within(card).getByRole("button", { name: m.versionsClearFailedVersion("2.0.0") }),
+  );
+  expect(await within(card).findByRole("alert")).toHaveTextContent("planted: not marked");
+  await waitFor(() => expect(fake.made("GET", "/api/claude/versions")).toHaveLength(2));
+  await waitFor(() =>
+    expect(within(card).queryByRole("row", { name: /2\.0\.0/ })).not.toBeInTheDocument(),
+  );
+  // the button that had focus went with its row
+  expect(within(card).getByRole("heading", { name: m.versionsFailedTitle })).toHaveFocus();
+});
+
+test("each button of a row is named by its visible words, then the version (WCAG 2.5.3)", async () => {
+  versionsApi({}, MARKED);
+  renderApp("/admin/claude");
+  await versionsPage();
+  const card = await failedCard();
+  const buttons = [
+    screen.getByRole("button", { name: m.versionsUseVersion("2.1.0") }),
+    screen.getByRole("button", { name: m.versionsMarkFailedVersion("2.1.0") }),
+    within(card).getByRole("button", { name: m.versionsClearFailedVersion("2.0.0") }),
+  ];
+  for (const button of buttons) {
+    const name = button.getAttribute("aria-label") ?? "";
+    expect(name.startsWith(button.textContent ?? "-"), name).toBe(true);
+  }
+});
+
+test("the time a version was marked is headed as UTC, as the audit trail's is", async () => {
+  versionsApi({}, MARKED);
+  renderApp("/admin/claude");
+  const card = await failedCard();
+  expect(within(card).getByRole("columnheader", { name: m.versionsMarkedAt })).toBeInTheDocument();
+  expect(m.versionsMarkedAt).toMatch(/\(UTC\)$/);
+  expect(m.auditWhen).toMatch(/\(UTC\)$/); // positive control: the audit trail's says so
+});
+
+test("while a removal is out, Remove mark waits, and focus goes to the card's heading after it", async () => {
+  const slow = later<Report>();
+  const fake = versionsApi({ "DELETE /api/claude/failures/2.0.0": () => slow.reply }, MARKED);
+  renderApp("/admin/claude");
+  const card = await failedCard();
+  const remove = within(card).getByRole("button", { name: m.versionsClearFailedVersion("2.0.0") });
+  await userEvent.click(remove);
+  await waitFor(() => expect(fake.made("DELETE", "/api/claude/failures/2.0.0")).toHaveLength(1));
+  expect(remove).toBeDisabled();
+  expect(
+    within(card).getByRole("button", { name: m.versionsClearFailedVersion("1.9.0") }),
+  ).toBeDisabled(); // one removal at a time
+  await act(async () => slow.give(clearing(MARKED, "2.0.0")));
+  expect(await screen.findByText(m.versionsCleared("2.0.0"))).toBeInTheDocument();
+  expect(
+    within(card).getByRole("button", { name: m.versionsClearFailedVersion("1.9.0") }),
+  ).toBeEnabled();
+  expect(fake.made("DELETE", "/api/claude/failures/2.0.0")).toHaveLength(1);
+});
+
+test("a roll-out says nothing more of the last mark", async () => {
+  const fake = versionsApi({
+    "PUT /api/claude/failures": marking(REPORT, MARK_200),
+    "POST /api/claude/upgrade": approving(marking(REPORT, MARK_200), "2.1.0"),
+  });
+  renderApp("/admin/claude");
+  const region = await versionsPage();
+  const dialog = await openMark(
+    within(region).getByRole("button", { name: m.versionsMarkFailedVersion("2.0.0") }),
+  );
+  await userEvent.click(within(dialog).getByRole("button", { name: m.versionsMarkFailed }));
+  expect(await screen.findByText(m.versionsMarked("2.0.0"))).toBeInTheDocument();
+  await userEvent.click(
+    within(region).getByRole("button", { name: m.versionsUseVersion("2.1.0") }),
+  );
+  await waitFor(() => expect(fake.made("POST", "/api/claude/upgrade")).toHaveLength(1));
+  expect(await screen.findByText(m.versionsUpgraded("2.1.0"))).toBeInTheDocument();
+  expect(screen.queryByText(m.versionsMarked("2.0.0"))).not.toBeInTheDocument();
+});
+
+test.each([
+  [
+    "a row's Mark as failed",
+    () => screen.getByRole("button", { name: m.versionsMarkFailedVersion("2.0.0") }),
+  ],
+  [
+    "the card's Mark a version as failed",
+    () => screen.getByRole("button", { name: m.versionsMarkAnyFailed }),
+  ],
+])(
+  "from %s, Cancel and Escape close the dialog with nothing sent, focus back on what opened it",
+  async (_, opener) => {
+    const fake = versionsApi();
+    renderApp("/admin/claude");
+    await versionsPage();
+    await failedCard();
+    for (const close of [
+      () => userEvent.keyboard("{Escape}"),
+      (dialog: HTMLElement) =>
+        userEvent.click(within(dialog).getByRole("button", { name: m.cancel })),
+    ]) {
+      const button = opener();
+      const dialog = await openMark(button);
+      await userEvent.type(within(dialog).getByLabelText(m.versionsReason), "half-typed");
+      await close(dialog);
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+      expect(button).toHaveFocus();
+    }
+    expect(fake.made("PUT", "/api/claude/failures")).toHaveLength(0);
+  },
+);
+
+test("while a mark is out, the dialog says so, and Cancel, Escape and its close wait", async () => {
+  const slow = later<Report>();
+  const fake = versionsApi({ "PUT /api/claude/failures": () => slow.reply });
+  renderApp("/admin/claude");
+  const region = await versionsPage();
+  const dialog = await openMark(
+    within(region).getByRole("button", { name: m.versionsMarkFailedVersion("2.0.0") }),
+  );
+  await userEvent.click(within(dialog).getByRole("button", { name: m.versionsMarkFailed }));
+  await waitFor(() => expect(fake.made("PUT", "/api/claude/failures")).toHaveLength(1));
+  expect(within(dialog).getByRole("button", { name: m.versionsMarkBusy })).toBeDisabled();
+  expect(within(dialog).getByRole("button", { name: m.cancel })).toBeDisabled();
+  expect(within(dialog).getByRole("button", { name: m.closeDialog })).toBeDisabled();
+  await userEvent.keyboard("{Escape}");
+  expect(screen.getByRole("dialog", { name: m.versionsMarkAnyFailed })).toBeInTheDocument();
+  await act(async () => slow.give(marking(REPORT, MARK_200)));
+  await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+  expect(fake.made("PUT", "/api/claude/failures")).toHaveLength(1);
+});
+
+test("a mark of the approved version refused reads the report again", async () => {
+  let report = REPORT;
+  const fake = versionsApi(
+    {
+      "PUT /api/claude/failures": () => {
+        report = approving(REPORT, "2.0.0"); // approved meanwhile by another administrator
+        return problem(409, "claude_version_approved", "planted: the approved one");
+      },
+    },
+    () => report,
+  );
+  renderApp("/admin/claude");
+  const region = await versionsPage();
+  const dialog = await openMark(
+    within(region).getByRole("button", { name: m.versionsMarkFailedVersion("2.0.0") }),
+  );
+  await userEvent.click(within(dialog).getByRole("button", { name: m.versionsMarkFailed }));
+  expect(await within(dialog).findByRole("alert")).toHaveTextContent("planted: the approved one");
+  await waitFor(() => expect(fake.made("GET", "/api/claude/versions")).toHaveLength(2));
+  await waitFor(() => expect(definition(m.versionsApproved)).toHaveTextContent("2.0.0"));
+});
+
+test("when the newest release is marked as failed, the page says so and offers no Roll out", async () => {
+  versionsApi(
+    { "GET /api/claude/latest": { latest: "2.5.0" } },
+    { ...REPORT, failed: [{ ...MARK_200, version: "2.5.0" }] },
+  );
+  renderApp("/admin/claude");
+  const region = await screen.findByRole("region", { name: m.versionsLatestTitle });
+  const said = await within(region).findByText(m.versionsLatestFailed("2.5.0"));
+  expect(said).toHaveClass("muted");
+  expect(within(region).queryByText(m.versionsLatest("2.5.0"))).not.toBeInTheDocument();
+  expect(within(region).queryByRole("button")).not.toBeInTheDocument();
+});
+
+test.each([
+  [
+    "the form",
+    async () => {
+      await userEvent.type(await screen.findByLabelText(m.versionsUpgrade), "2.0.0");
+      await userEvent.click(screen.getByRole("button", { name: m.versionsUpgradeGo }));
+    },
+  ],
+  [
+    "Use",
+    async () => {
+      const region = await versionsPage();
+      await userEvent.click(
+        within(region).getByRole("button", { name: m.versionsUseVersion("2.0.0") }),
+      );
+    },
+  ],
+])(
+  "a roll-out from %s refused as marked failed is shown, and the report read again",
+  async (_, roll) => {
+    let report = REPORT;
+    const fake = versionsApi(
+      {
+        "POST /api/claude/upgrade": () => {
+          report = marking(REPORT, MARK_200); // marked meanwhile by another administrator
+          return problem(409, "claude_version_failed", "planted: marked as failed");
+        },
+      },
+      () => report,
+    );
+    renderApp("/admin/claude");
+    await roll();
+    expect(await screen.findByRole("alert")).toHaveTextContent("planted: marked as failed");
+    await waitFor(() => expect(fake.made("GET", "/api/claude/versions")).toHaveLength(2));
+    const region = await versionsPage();
+    const row = within(region).getByRole("row", { name: /2\.0\.0/ });
+    expect(await within(row).findByText(m.versionsStandingFailed)).toBeInTheDocument();
+  },
+);
+
+test("a server running a version marked as failed is flagged among the servers on another version", async () => {
+  versionsApi({}, marking(REPORT, { ...MARK_200, version: "2.1.0" }));
+  renderApp("/admin/claude");
+  const region = await screen.findByRole("region", { name: m.versionsDriftTitle });
+  const row = within(region).getByRole("row", { name: /beta/ });
+  const running = within(row).getAllByRole("cell")[2];
+  expect(running).toHaveTextContent("2.1.0");
+  expect(within(running).getByText(m.versionsStandingFailed)).toHaveClass("badge", "badge-problem");
+});
+
+test("a previous version no longer installed is shown among the facts and not as a row", async () => {
+  // 2.1.0 was marked as failed, so the previous version is one pruned from the store since
+  versionsApi(
+    {},
+    {
+      ...marking(REPORT, { ...MARK_200, version: "2.1.0" }),
+      previous: "1.8.0",
+      installed: REPORT.installed.map((i) => ({
+        ...i,
+        previous: false,
+        failed: i.version === "2.1.0",
+      })),
+    },
+  );
+  renderApp("/admin/claude");
+  const region = await versionsPage();
+  expect(definition(m.versionsPrevious)).toHaveTextContent("1.8.0");
+  expect(within(region).getAllByRole("row")).toHaveLength(4); // the heading row and three
+  expect(within(region).queryByRole("row", { name: /1\.8\.0/ })).not.toBeInTheDocument();
+  expect(within(region).queryByText(m.versionsStandingPrevious)).not.toBeInTheDocument();
 });
 
 // --- tables wider than a phone ----------------------------------------------------------

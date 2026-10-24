@@ -135,6 +135,46 @@ test("the Claude Code versions page shows the approved version and the installed
   await expect(page).toHaveURL("/");
 });
 
+test("a version not installed is marked as failed with a reason, the audit trail shows it, and the mark is removed", async ({
+  page,
+}) => {
+  // a version number no store holds, so that marking it touches nothing installed
+  const version = "9.9.1";
+  const reason = "Sessions hang after sign-in";
+  await page.route("**/api/claude/latest", (route) => route.fulfill({ json: { latest: null } }));
+  await signInAs(page, ALICE);
+  await page.goto("/admin/claude");
+  const card = page.getByRole("region", { name: m.versionsFailedTitle });
+  await expect(card.getByText(m.versionsFailedNone)).toBeVisible();
+  await card.getByRole("button", { name: m.versionsMarkAnyFailed }).click();
+  const dialog = page.getByRole("dialog", { name: m.versionsMarkAnyFailed });
+  await expect(dialog.getByLabel(m.versionsVersion)).toHaveValue("");
+  await dialog.getByLabel(m.versionsVersion).fill(version);
+  await dialog.getByLabel(m.versionsReason).fill(reason);
+  await dialog.getByRole("button", { name: m.versionsMarkFailed }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(card.getByText(m.versionsMarked(version))).toBeVisible();
+  const row = card.getByRole("row", { name: new RegExp(version.replace(/\./g, "\\.")) });
+  await expect(row).toContainText(reason);
+  await expect(row).toContainText(ALICE);
+
+  await openAdminPage(page, m.navAudit);
+  await expect(
+    page
+      .getByRole("row")
+      .filter({ hasText: m.auditActions["claude.mark_failed"] })
+      .filter({ hasText: version }),
+  ).not.toHaveCount(0);
+
+  await page.goto("/admin/claude");
+  await row.getByRole("button", { name: m.versionsClearFailedVersion(version) }).click();
+  await expect(card.getByText(m.versionsCleared(version))).toBeVisible();
+  await expect(card.getByText(m.versionsFailedNone)).toBeVisible();
+  await expect(
+    card.getByRole("row", { name: new RegExp(version.replace(/\./g, "\\.")) }),
+  ).toHaveCount(0);
+});
+
 test("people are added and removed, and the audit trail shows it", async ({ page, browser }) => {
   await signInAs(page, ALICE);
   await page.goto("/");

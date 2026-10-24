@@ -2,6 +2,7 @@
 is pruned (backend/rcman/claude_versions.py), on the host runtime. The routes are
 tests/test_claude.py's, a server's pinning tests/test_workspaces.py's."""
 
+import datetime as dt
 import hashlib
 import os
 import threading
@@ -740,6 +741,7 @@ def test_drift_lists_the_running_servers_that_run_another_version_than_the_appro
             "email": ALICE,
             "version": FAKE_VERSION,
             "approved": "1.1.0",
+            "failed": False,
         }
     ]
 
@@ -1123,3 +1125,273 @@ def test_the_canary_runs_in_the_builder_slot_the_service_is_given(world, monkeyp
     monkeypatch.setattr(world.service, "builder_slot", 6)
     world.versions.upgrade(NEW, ALICE)
     assert slots == [6]
+
+
+# --- a version marked as failed -------------------------------------------------------------
+
+
+def marks(world) -> list[tuple[str, str, str | None]]:
+    """The marks as the database holds them: version, who and why."""
+    con = db.connect(world.settings.database)
+    try:
+        rows = con.execute("select version, by, reason from claude_failures order by version")
+        return [(row[0], row[1], row[2]) for row in rows.fetchall()]
+    finally:
+        con.close()
+
+
+def test_a_version_marked_failed_is_not_rolled_out_and_nothing_changes(world):
+    claude_download.release(world.releases, NEW)
+    world.versions.mark_failed(NEW, BOB, "users report it hangs")
+    seen = canary_says(world)
+    before, approved = snapshot(world.store), approvals(world)
+    problem = refusal(world.versions.upgrade, NEW, ALICE)
+    assert (problem.code, problem.status) == ("claude_version_failed", 409)
+    assert problem.title == MESSAGES["claude_version_failed"]
+    assert seen == []  # neither fetched nor checked
+    assert snapshot(world.store) == before and approvals(world) == approved
+    assert not staging(world).exists()
+    # positive control: with the mark removed, the same rollout goes through the canary
+    world.versions.clear_failed(NEW)
+    assert world.versions.upgrade(NEW, ALICE)["approved"] == NEW
+    assert [s["version"] for s in seen] == [NEW]
+
+
+def test_using_a_version_approved_before_is_refused_once_it_is_marked_failed(world):
+    """The shortcut that approves again a version that passed the checks before is refused
+    too; the tested version stays in the store whatever is marked."""
+    tested = world.versions.tested()
+    install(world, tested)
+    approve_rows(world, tested, FAKE_VERSION)
+    seen = canary_says(world)
+    world.versions.mark_failed(tested, ALICE, None)
+    assert tested in present(world)
+    before, approved = snapshot(world.store), approvals(world)
+    problem = refusal(world.versions.upgrade, tested, BOB)
+    assert (problem.code, problem.status) == ("claude_version_failed", 409)
+    assert snapshot(world.store) == before and approvals(world) == approved
+    assert link(world) == f"versions/{FAKE_VERSION}"
+    # positive control: unmarked, it is approved again at once, without the canary
+    world.versions.clear_failed(tested)
+    assert world.versions.upgrade(tested, BOB)["approved"] == tested
+    assert seen == []
+
+
+def test_the_approved_version_cannot_be_marked_failed(world):
+    problem = refusal(world.versions.mark_failed, FAKE_VERSION, ALICE, "it hangs")
+    assert (problem.code, problem.status) == ("claude_version_approved", 409)
+    assert problem.title == MESSAGES["claude_version_approved"]
+    assert marks(world) == []
+    world.versions.mark_failed("1.1.0", ALICE, None)  # positive control: another may be
+    assert marks(world) == [("1.1.0", ALICE, None)]
+
+
+def test_the_version_the_store_names_cannot_be_marked_before_anything_is_approved(
+    tmp_path, settings, runtime
+):
+    service = ws.Workspaces(settings, runtime)  # no reconcile: nothing is approved yet
+    try:
+        assert service.versions.approvals() == []
+        problem = refusal(service.versions.mark_failed, FAKE_VERSION, ALICE, None)
+        assert problem.code == "claude_version_approved"
+        assert service.versions.approved() == FAKE_VERSION  # adopted, as a start would
+    finally:
+        service.close()
+
+
+def test_any_other_version_may_be_marked_installed_or_not_or_the_tested_one(world):
+    tested = world.versions.tested()
+    install(world, "1.1.0")
+    for version in ("1.1.0", "9.9.9", tested):
+        world.versions.mark_failed(version, ALICE, None)
+    assert marks(world) == sorted((v, ALICE, None) for v in ("1.1.0", "9.9.9", tested))
+    assert "9.9.9" not in present(world)  # marking puts nothing in the store
+
+
+def test_marking_a_version_already_marked_is_refused_and_keeps_the_first_mark(world):
+    world.versions.mark_failed(NEW, ALICE, "first")
+    [first] = world.versions.failures()
+    problem = refusal(world.versions.mark_failed, NEW, BOB, "second")
+    assert (problem.code, problem.status) == ("claude_version_failed", 409)
+    assert world.versions.failures() == [first]
+    assert (first.version, first.by, first.reason) == (NEW, ALICE, "first")
+
+
+def test_removing_a_mark_lets_the_version_be_rolled_out_again(world):
+    claude_download.release(world.releases, NEW)
+    canary_says(world)
+    world.versions.mark_failed(NEW, ALICE, "it hangs")
+    assert refusal(world.versions.upgrade, NEW, ALICE).code == "claude_version_failed"
+    report = world.versions.clear_failed(NEW)
+    assert report["failed"] == [] and marks(world) == []
+    assert world.versions.upgrade(NEW, ALICE)["approved"] == NEW
+
+
+def test_removing_a_mark_that_is_not_there_is_refused(world):
+    problem = refusal(world.versions.clear_failed, NEW)
+    assert (problem.code, problem.status) == ("claude_version_not_failed", 404)
+    assert problem.title == MESSAGES["claude_version_not_failed"]
+    world.versions.mark_failed(NEW, ALICE, None)
+    world.versions.clear_failed(NEW)  # positive control: one that is there is removed
+    assert marks(world) == []
+
+
+def test_a_blank_reason_is_no_reason(world):
+    for reason in (None, "", "   "):
+        world.versions.mark_failed(NEW, ALICE, reason)
+        assert marks(world) == [(NEW, ALICE, None)], repr(reason)
+        world.versions.clear_failed(NEW)
+    world.versions.mark_failed(NEW, ALICE, "  it hangs  ")
+    assert marks(world) == [(NEW, ALICE, "it hangs")]  # trimmed
+
+
+def test_the_previous_version_skips_versions_marked_failed(world):
+    approve_rows(world, "1.1.0", "1.2.0", "1.3.0")
+    assert world.versions.previous() == "1.2.0"
+    world.versions.mark_failed("1.2.0", ALICE, None)
+    assert (world.versions.approved(), world.versions.previous()) == ("1.3.0", "1.1.0")
+    world.versions.mark_failed("1.1.0", ALICE, None)
+    assert world.versions.previous() == FAKE_VERSION
+    world.versions.mark_failed(FAKE_VERSION, ALICE, None)
+    assert world.versions.previous() is None  # every other approved version is marked
+    world.versions.clear_failed("1.2.0")
+    assert world.versions.previous() == "1.2.0"
+
+
+def test_a_mark_outlives_the_versions_file_in_the_store(world):
+    install(world, "1.1.0")
+    world.versions.mark_failed("1.1.0", ALICE, "it hangs")
+    assert "1.1.0" not in present(world)  # pruned: nothing keeps it
+    assert marks(world) == [("1.1.0", ALICE, "it hangs")]
+    assert [f["version"] for f in world.versions.report()["failed"]] == ["1.1.0"]
+    claude_download.release(world.releases, "1.1.0")
+    seen = canary_says(world)
+    assert refusal(world.versions.upgrade, "1.1.0", ALICE).code == "claude_version_failed"
+    assert seen == []
+
+
+def test_marking_prunes_the_failed_version_unless_a_running_server_uses_it(world):
+    install(world, "1.1.0", "1.2.0")
+    approve_rows(world, "1.1.0", "1.2.0")
+    world.versions.reconcile()
+    running = insert_workspace(world, 1, "running", "1.1.0")
+    statuses(world, {running: "running"})
+    world.versions.mark_failed("1.1.0", ALICE, None)
+    assert "1.1.0" in present(world)  # a running server uses it
+    statuses(world, {running: "ended"})
+    world.versions.clear_failed("1.1.0")
+    world.versions.prune()
+    assert "1.1.0" in present(world)  # control: unmarked, it is the previous version
+    world.versions.mark_failed("1.1.0", ALICE, None)
+    assert "1.1.0" not in present(world)
+    assert world.versions.previous() == FAKE_VERSION  # whose file the control prune took
+    assert present(world) == ["1.2.0"]
+
+
+def test_prune_keeps_the_last_good_previous_version(world):
+    install(world, "1.1.0", "1.2.0", "1.3.0")
+    approve_rows(world, "1.1.0", "1.2.0", "1.3.0")
+    world.versions.reconcile()
+    assert world.versions.previous() == "1.2.0"  # control: the previous is the one before
+    world.versions.mark_failed("1.2.0", ALICE, None)
+    assert present(world) == ["1.1.0", "1.3.0"]  # FAKE_VERSION went too: a prune ran
+    assert world.versions.report()["previous"] == "1.1.0"
+
+
+def test_a_mark_made_while_that_version_is_checked_stops_its_approval(world):
+    claude_download.release(world.releases, NEW)
+    before, approved = snapshot(world.store), approvals(world)
+    checked = []
+
+    def marks_it(directory, name, version):
+        checked.append(version)
+        world.versions.mark_failed(NEW, BOB, "users report it hangs")
+        return {}  # it passes the checks
+
+    world.runtime.canary_script = marks_it
+    problem = refusal(world.versions.upgrade, NEW, ALICE)
+    assert (problem.code, problem.status) == ("claude_version_failed", 409)
+    assert checked == [NEW]  # the canary ran, and the mark was made meanwhile
+    assert snapshot(world.store) == before and approvals(world) == approved
+    assert link(world) == f"versions/{FAKE_VERSION}"
+    assert staged(world) == []
+    assert marks(world) == [(NEW, BOB, "users report it hangs")]
+
+
+def test_a_mark_waits_for_the_lock_an_approval_holds(world):
+    """An approval under way holds the lock; a mark of the version it approves waits for it,
+    and is then refused as the approved one."""
+    fake_claude(world.store, version="1.9.0")
+    fake_claude(world.store, version=FAKE_VERSION)
+    canary_says(world)
+    entered, release = threading.Event(), threading.Event()
+    real = world.versions._approve
+
+    def gated(version, by):
+        entered.set()
+        release.wait(30)
+        real(version, by)
+
+    world.versions._approve = gated
+    upgrading = threading.Thread(target=lambda: world.versions.upgrade("1.9.0", ALICE))
+    upgrading.start()
+    answers = []
+
+    def mark():
+        try:
+            world.versions.mark_failed("1.9.0", BOB, None)
+            answers.append("marked")
+        except Problem as refused:
+            answers.append(refused.code)
+
+    try:
+        assert entered.wait(30)
+        lock = watched(world)
+        marking = threading.Thread(target=mark)
+        marking.start()
+        assert lock.waiting.wait(30)  # the mark is at the lock the approval holds
+        assert marks(world) == [] and answers == []
+    finally:
+        release.set()
+        upgrading.join(60)
+    marking.join(60)
+    assert world.versions.approved() == "1.9.0"
+    assert answers == ["claude_version_approved"] and marks(world) == []
+
+
+def test_a_mark_is_made_while_rcman_is_upgraded(world, monkeypatch):
+    monkeypatch.setattr(world.service, "upgrading", lambda: True)
+    assert refusal(world.versions.upgrade, NEW, ALICE).code == "rcman_upgrading"  # control
+    world.versions.mark_failed(NEW, ALICE, None)
+    assert marks(world) == [(NEW, ALICE, None)]
+
+
+def test_the_report_names_marked_versions_with_who_when_and_why_and_flags_installed_and_drift(
+    world,
+):
+    install(world, "1.1.0")
+    approve_rows(world, "1.1.0")
+    world.versions.reconcile()  # the link names 1.1.0, so only the server keeps FAKE_VERSION
+    behind = insert_workspace(world, 1, "behind", FAKE_VERSION)
+    statuses(world, {behind: "running"})
+    first = world.versions.mark_failed(FAKE_VERSION, ALICE, "it hangs")
+    assert [f["version"] for f in first["failed"]] == [FAKE_VERSION]  # it answers the report
+    report = world.versions.mark_failed("9.9.9", BOB, None)
+    newest, oldest = report["failed"]
+    assert {k: newest[k] for k in ("version", "by", "reason")} == {
+        "version": "9.9.9",
+        "by": BOB,
+        "reason": None,
+    }
+    assert {k: oldest[k] for k in ("version", "by", "reason")} == {
+        "version": FAKE_VERSION,
+        "by": ALICE,
+        "reason": "it hangs",
+    }
+    assert set(newest) == {"version", "at", "by", "reason"}
+    assert dt.datetime.fromisoformat(newest["at"]) >= dt.datetime.fromisoformat(oldest["at"])
+    by_version = {entry["version"]: entry for entry in report["installed"]}
+    assert by_version[FAKE_VERSION]["failed"] is True  # kept: the running server uses it
+    assert by_version["1.1.0"]["failed"] is False
+    assert [(d["workspace"], d["failed"]) for d in report["drift"]] == [(behind, True)]
+    assert report["previous"] is None

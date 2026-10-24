@@ -2,22 +2,25 @@
 
 Signing in and out is accounts.py's; ``connection`` reads the account's state from
 its status, against the ``login_warning_days`` setting. The versions routes are the
-report of what is approved, installed and running, the rollout of a version, and the
-release site's suggestion of the latest one; the versions themselves are
-claude_versions.py's.
+report of what is approved, installed and running, the rollout of a version, marking a
+version as failed and removing the mark, and the release site's suggestion of the latest
+one; the versions themselves are claude_versions.py's.
 """
 
 from __future__ import annotations
 
 import datetime as dt
+import json
 import logging
+from typing import Annotated
 
-from fastapi import APIRouter, Depends, Request
-from pydantic import BaseModel, Field
+from fastapi import APIRouter, Depends, Path, Request
+from pydantic import BaseModel, BeforeValidator, Field
 
 from helpers import claude_release, rules
 from rcman import db, people
 from rcman.audit import Record, Recorder
+from rcman.claude_versions import reason_of
 from rcman.identity import Identity, admin_user, current_user
 from rcman.problems import Problem, ruled
 from rcman.runtime import RuntimeFailed, RuntimeUnavailable
@@ -28,6 +31,17 @@ router = APIRouter(prefix="/api/claude", tags=["claude"])
 MAX_CODE_LENGTH = 512
 Email = ruled(rules.EMAIL)
 Version = ruled(rules.VERSION)
+VersionInPath = Annotated[Version, Path(description="The version, such as 1.2.3.")]
+
+
+def _trimmed(value):
+    """Text without white space at either end, so its length is what is kept; anything else
+    as it came, for the type to refuse."""
+    return value.strip() if isinstance(value, str) else value
+
+
+# Trimmed before the rule is asked: the outermost validator runs first.
+Reason = Annotated[ruled(rules.FAILURE_REASON.or_empty()), BeforeValidator(_trimmed)]
 
 
 class LoginBody(BaseModel):
@@ -51,6 +65,13 @@ class LogoutBody(BaseModel):
 
 class UpgradeBody(BaseModel):
     version: Version = Field(description="Such as 1.2.3.")
+
+
+class FailureBody(BaseModel):
+    version: Version = Field(description="The version to mark, such as 1.2.3.")
+    reason: Reason | None = Field(
+        None, description="Why, in one line, trimmed first; none when left out, null or blank."
+    )
 
 
 def connection(status: dict, warning_days: int, now: dt.datetime | None = None) -> dict:
@@ -122,7 +143,9 @@ def logout(
 @router.get("/versions", dependencies=[Depends(admin_user)])
 def versions(request: Request) -> dict:
     """What is approved, what is installed and by how many servers used, which running servers
-    run another version than the approved one, and whether a rollout runs."""
+    run another version than the approved one, the versions marked as failed (who marked each,
+    when and why, the newest first) with a ``failed`` flag on each installed version and each
+    running server's, and whether a rollout runs."""
     return request.app.state.versions.report()
 
 
@@ -141,6 +164,32 @@ def upgrade(
     except RuntimeFailed as failed:
         log.warning("the checks of Claude Code %s could not be run: %s", body.version, failed)
         raise Problem("claude_canary_failed") from None
+
+
+@router.put("/failures", dependencies=[Depends(admin_user)])
+def mark_failed(
+    body: FailureBody,
+    request: Request,
+    record: Record = Depends(Recorder("claude.mark_failed")),
+) -> dict:
+    """Mark a version as failed, so that it is neither rolled out nor approved again until the
+    mark is removed; any version but the approved one. The report afterwards."""
+    reason = reason_of(body.reason)
+    record.target = json.dumps(
+        {"version": body.version} | ({"reason": reason} if reason else {}), ensure_ascii=False
+    )
+    return request.app.state.versions.mark_failed(body.version, record.identity.email, reason)
+
+
+@router.delete("/failures/{version}", dependencies=[Depends(admin_user)])
+def clear_failed(
+    version: VersionInPath,
+    request: Request,
+    record: Record = Depends(Recorder("claude.clear_failed")),
+) -> dict:
+    """Remove a version's mark as failed. The report afterwards."""
+    record.target = version
+    return request.app.state.versions.clear_failed(version)
 
 
 @router.get("/latest", dependencies=[Depends(admin_user)])

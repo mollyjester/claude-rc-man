@@ -1111,6 +1111,24 @@ def test_the_problems_of_rolling_out_a_claude_version_are_conflicts_in_plain_wor
     }
 
 
+def test_a_version_marked_as_failed_is_told_in_plain_words():
+    assert {
+        code: problems.STATUS[code]
+        for code in (
+            "claude_version_failed",
+            "claude_version_approved",
+            "claude_version_not_failed",
+        )
+    } == {
+        "claude_version_failed": 409,
+        "claude_version_approved": 409,
+        "claude_version_not_failed": 404,
+    }
+    assert "remove its mark" in problems.MESSAGES["claude_version_failed"]
+    assert "approved" in problems.MESSAGES["claude_version_approved"]
+    assert "not marked" in problems.MESSAGES["claude_version_not_failed"]
+
+
 def test_nothing_answers_that_rcman_cannot_do_it_yet():
     assert "not_available_yet" not in problems.MESSAGES
     assert "not_available_yet" not in problems.STATUS

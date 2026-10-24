@@ -739,6 +739,15 @@ p.card-empty {
   margin: 0;
   padding: var(--space-5) var(--space-4);
 }
+/* What was last done in a card whose rows run edge to edge, under its head; a live region, so
+   it stays in the page while it says nothing, and takes no room then. */
+.card-status {
+  margin: 0;
+  padding: var(--space-3) var(--space-4) 0;
+}
+.card-status:empty {
+  padding: 0;
+}
 /* A part of a card, under a stroke after the one before it. */
 .card-part + .card-part {
   margin-top: var(--space-4);

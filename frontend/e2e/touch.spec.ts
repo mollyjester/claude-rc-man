@@ -806,6 +806,12 @@ function views(paths: string[], id: number, name: string, width: number): View[]
       },
     },
     {
+      name: "marking a version as failed",
+      path: "/admin/claude",
+      dialog: "MarkFailedDialog",
+      open: opens((p) => p.getByRole("button", { name: m.versionsMarkAnyFailed })),
+    },
+    {
       name: "the help pages' contents",
       path: "/help/workspaces",
       // folded under a button only where they are not beside the article

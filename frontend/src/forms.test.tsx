@@ -66,6 +66,7 @@ function api() {
       tested: "1.0.0",
       installed: [],
       drift: [],
+      failed: [],
       upgrading: false,
     },
     "GET /api/claude/latest": { latest: null },
@@ -218,6 +219,14 @@ const PAGES: [string, Where, () => Promise<void>][] = [
   ],
   ["a new workspace", "/", async () => void (await openNewWorkspace())],
   ["Claude Code versions", "/admin/claude", async () => {}],
+  [
+    "marking a version as failed",
+    "/admin/claude",
+    async () => {
+      await userEvent.click(await screen.findByRole("button", { name: m.versionsMarkAnyFailed }));
+      await screen.findByRole("dialog", { name: m.versionsMarkAnyFailed });
+    },
+  ],
   ["the monitoring settings", "/admin/monitor", async () => {}],
   [
     "signing out of rcman",
@@ -1038,7 +1047,10 @@ describe("the forms on screen", () => {
     expect(seen).toContainEqual(
       expect.objectContaining({ entry: "Claude Code versions", id: "Versions.upgrade" }),
     );
-    const without = seen.filter((s) => s.entry !== "Claude Code versions");
+    // every entry that opens the versions page, its dialog's among them
+    const without = seen.filter(
+      (s) => s.entry !== "Claude Code versions" && s.entry !== "marking a version as failed",
+    );
     expect(coverageFaults(source, without).missing).toContain("Versions.upgrade");
   });
 

@@ -6,8 +6,18 @@ import { m } from "./messages";
 const GUIDE = resolve(__dirname, "../../docs/claude-version.md");
 
 // The names the guide must give in bold, as the page shows them: where the page is, and the
-// controls that roll a version out.
-const NAMED = [m.navAdmin, m.navVersions, m.versionsUpgradeGo, m.versionsUse, m.versionsRollout];
+// controls that roll a version out and that mark a version as failed.
+const NAMED = [
+  m.navAdmin,
+  m.navVersions,
+  m.versionsUpgradeGo,
+  m.versionsUse,
+  m.versionsRollout,
+  m.versionsFailedTitle,
+  m.versionsMarkFailed,
+  m.versionsMarkAnyFailed,
+  m.versionsClearFailed,
+];
 
 // Every piece of text in the message catalogue that is not worked out from values.
 function catalogue(value: unknown = m): string[] {
@@ -35,7 +45,7 @@ test("every name the Claude Code versions guide gives in bold is text the interf
   expect(unknownNames(guide)).toEqual([]);
 });
 
-test("the guide names the page and the controls that roll a version out", () => {
+test("the guide names the page and the controls that roll a version out and mark one as failed", () => {
   expect(missingNames(readFileSync(GUIDE, "utf-8"))).toEqual([]);
 });
 

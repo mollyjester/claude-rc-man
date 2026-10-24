@@ -334,6 +334,8 @@ CALLS = {
     ("POST", "/api/claude/code"): {"json": {"code": "x"}},
     ("POST", "/api/claude/logout"): {"json": {"keep_sessions": True}},
     ("POST", "/api/claude/upgrade"): {"json": {"version": "2.2.0"}},
+    ("PUT", "/api/claude/failures"): {"json": {"version": "2.2.0", "reason": "It hangs."}},
+    ("DELETE", "/api/claude/failures/{version}"): {},
     ("GET", "/api/rcman/upgrade"): {},
     ("POST", "/api/rcman/upgrade"): {},
     ("GET", "/api/docs/{slug}"): {},
@@ -369,9 +371,14 @@ CALLS = {
 
 
 def concrete(path):
-    """A route's path with its parameters filled in: bob, the second person, and the
-    first workspace."""
-    return path.replace("{person}", "2").replace("{workspace}", "1").replace("{slug}", "workspaces")
+    """A route's path with its parameters filled in: bob, the second person, the first
+    workspace, and a Claude Code version that is not the approved one."""
+    return (
+        path.replace("{person}", "2")
+        .replace("{workspace}", "1")
+        .replace("{slug}", "workspaces")
+        .replace("{version}", "2.2.0")
+    )
 
 
 def as_user(email):
