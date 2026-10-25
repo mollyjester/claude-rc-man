@@ -30,10 +30,14 @@ Implemented and tested:
 - **git and gh in workspaces**: each person's commit author and GitHub token shared by
   all their workspaces, for git and for `gh`, and the Changes section of a workspace's panel.
 - **A repository's devcontainer.json**, read when a workspace is cloned: an
-  image or a Dockerfile and features, built in a sandbox of their own, with the
+  image or a Dockerfile and features, built in a sandbox of their own, or
+  rcman's default image, with the
   user, the environment and the lifecycle commands; what a workspace may not ask
   for is refused. A changed file is seen, and a workspace is rebuilt from it on
   its own files when its owner asks.
+- **Forwarded ports**: the ports a workspace's devcontainer.json lists in `forwardPorts`,
+  each opened by the workspace's owner alone in their browser, through rcman, while an
+  administrator has turned forwarding on (see [docs/workspaces.md](docs/workspaces.md#ports)).
 - **Claude Code versions** rolled out by an administrator after checks in a
   throwaway container; servers keep the version they started with.
 - **Upgrading rcman from its web interface**, off unless the installer turns it on:
@@ -42,7 +46,8 @@ Implemented and tested:
   administrators.
 - **Monitor**: what the host, each person and each workspace container use now
   (CPU, memory, processes and disk), collected in the background for administrators
-  (see [docs/monitor.md](docs/monitor.md)).
+  (see [docs/monitor.md](docs/monitor.md)), with its settings and those of port forwarding
+  on the **Service settings** page (see [docs/service-settings.md](docs/service-settings.md)).
 - The backend API with its audit trail, the web interface, the installer and the
   end-to-end checks.
 

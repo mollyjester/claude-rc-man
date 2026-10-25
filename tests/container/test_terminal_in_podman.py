@@ -25,6 +25,7 @@ from tests.conftest import ALICE, ORIGIN, changing, made_workspace
 from tests.container import sizes
 from tests.container import test_runtime_in_podman as base
 from tests.container.conftest import engine_runtime, engine_settings
+from tests.container.execs import exec_ids
 from tests.test_terminal import opened, path, resize
 from tests.test_terminals import a_length, alive, sleeping, wait_until
 
@@ -58,40 +59,6 @@ def client(podman_service, default_image, engine_tools, engine_store, tmp_path_f
 @pytest.fixture(scope="module")
 def workspace(client):
     return made_workspace(client, ALICE, "terminal")
-
-
-def exec_ids(engine, name: str) -> list[str]:
-    """The exec sessions of the container that are running, as Podman's API tells each one. A
-    remote exec's record stays after it ends, until Podman's own cleanup removes it once the
-    exit delay conmon is given has passed (``--exit-delay``), so the record alone is not a
-    running exec."""
-    return [
-        session
-        for session in base.inspect(engine, name).get("ExecIDs") or []
-        if exec_session(engine, session).get("Running")
-    ]
-
-
-def exec_session(engine, session: str) -> dict:
-    """What Podman's API says of an exec session: nothing for one already removed."""
-    import http.client
-    import json
-    import socket
-
-    class Connection(http.client.HTTPConnection):
-        def connect(self):
-            self.sock = socket.socket(socket.AF_UNIX)
-            self.sock.settimeout(30)
-            self.sock.connect(str(engine.socket))
-
-    connection = Connection("podman")
-    try:
-        connection.request("GET", f"/v4.0.0/libpod/exec/{session}/json")
-        answer = connection.getresponse()
-        body = answer.read()
-    finally:
-        connection.close()
-    return json.loads(body) if answer.status == 200 else {}
 
 
 def test_what_is_typed_reaches_the_shell_and_comes_back(client, workspace):

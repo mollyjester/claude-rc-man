@@ -48,6 +48,14 @@ did not start or a session that could not be ended (see
 [The terminal](workspaces.md#the-terminal)). They never hold what was typed or
 shown.
 
+Those about [forwarded ports](installation.md#forwarded-ports) come from the logger
+`rcman.forward`: a relay to a port that did not start, a connection to the forwarding server
+that failed inside rcman, or WebSockets that could not all be closed. They never hold a way in
+to a port, a session's cookie, or anything sent to or from a port. Those about what relays to
+forwarded ports leave behind come from the logger `rcman.forwards`: that a relay left running in
+a workspace was ended, at info level, and that what a workspace's relays left could not be read,
+at warning level.
+
 Only the audit events are also in the audit trail. The journal keeps what it
 is given only within its own size limits; see
 [how long events are kept](audit.md#how-long-events-are-kept).

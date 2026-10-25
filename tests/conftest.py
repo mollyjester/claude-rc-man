@@ -7,6 +7,7 @@ from pathlib import Path
 pytest_plugins = ["pytester"]
 
 import pytest  # noqa: E402
+from rcman.forwarding_settings import DEFAULTS as forwarding_defaults  # noqa: E402
 from rcman.monitor import DEFAULTS as monitor_defaults  # noqa: E402
 
 from tests import container_marker  # noqa: E402
@@ -349,6 +350,10 @@ CALLS = {
     ("GET", "/api/monitor/settings"): {},
     # the monitor's defaults, from its settings model
     ("PUT", "/api/monitor/settings"): {"json": monitor_defaults.model_dump()},
+    ("GET", "/api/forwarding/settings"): {},
+    # the forwarding defaults, from its settings model
+    ("PUT", "/api/forwarding/settings"): {"json": forwarding_defaults.model_dump()},
+    ("GET", "/api/forward/hand-off"): {"params": {"host": "6080-1.ws.rcman.example.com"}},
     ("POST", "/api/client-errors"): {
         "json": {
             "kind": "unreachable",

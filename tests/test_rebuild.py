@@ -581,6 +581,34 @@ def test_a_workspace_of_the_default_image_is_rebuilt_from_the_current_default(
     assert work_kept(runtime, found)
 
 
+def test_a_rebuild_of_a_file_with_no_image_uses_the_current_default_image(
+    client, runtime, publish, settings
+):
+    default = settings.workspace_image
+    runtime.images[default] = rt.ImageFacts(passwd=PASSWD, group=GROUP, id=DEFAULT_ID)
+    no_image = {FILE: json.dumps({"postCreateCommand": OLD_COMMAND})}
+    found = made(client, publish, no_image)
+    assert (plan_of(settings, found["id"]).image_id, spec_of(runtime, found).image_id) == (
+        DEFAULT_ID,
+        DEFAULT_ID,
+    )
+    # The default image's name moves on to a newer image, as an upgrade of rcman makes one.
+    runtime.extra_ids.add(DEFAULT_ID)
+    runtime.images[default] = rt.ImageFacts(passwd=PASSWD, group=GROUP, id=NEWER_DEFAULT_ID)
+    keep_work(runtime, found)
+    rewrite(runtime, found, {FILE: json.dumps({"postCreateCommand": "echo new-made"})})
+    done = rebuilt(client, found["id"])
+    assert done["state"] == "ready" and done["rebuild"]["error"] is None, done
+    plan = plan_of(settings, found["id"])
+    assert (plan.image, plan.image_id) == (default, NEWER_DEFAULT_ID)
+    assert (spec_of(runtime, found).image, spec_of(runtime, found).image_id) == (
+        default,
+        NEWER_DEFAULT_ID,
+    )
+    assert "echo new-made" in ran(runtime)
+    assert work_kept(runtime, found)
+
+
 def test_a_file_added_makes_the_workspace_from_its_image(client, runtime, publish, settings):
     found = made(client, publish, {"README.md": "none\n"})
     rewrite(runtime, found, to(postCreateCommand="echo added"))

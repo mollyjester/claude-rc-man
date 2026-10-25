@@ -23,6 +23,7 @@ type Workspace = {
   claude_version: string | null;
   rebuild: { state: string | null; log: string | null; error: string | null };
   rebuildable: boolean;
+  ports: { port: number; label: string | null; url: string }[];
 };
 
 // No rebuild under way, and none asked for before.
@@ -43,6 +44,7 @@ function workspace(id: number, name: string, extra: Partial<Workspace> = {}): Wo
     claude_version: null,
     rebuild: NO_REBUILD,
     rebuildable: false,
+    ports: [],
     ...extra,
   };
 }
@@ -2275,4 +2277,101 @@ test("a failed workspace whose rebuild failed again says the new reason, with th
     "Reading devcontainer.json",
   );
   expect(opened.getByRole("button", { name: m.rebuild })).toBeEnabled();
+});
+
+// --- the Ports card -----------------------------------------------------------------
+
+// What the server lists of alpha's forwarded ports: one with a label, one without; ports below
+// 1024, which nothing here binds (tests/test_fixed_resources.py).
+const PORTS = [
+  { port: 680, label: "Pebble Emulator (noVNC)", url: "https://680-1.ws.rcman.example.com/" },
+  { port: 300, label: null, url: "https://300-1.ws.rcman.example.com/" },
+];
+
+// The listing with forwarding on or off, as the server says.
+const forwardingIs = (on: boolean, workspaces: Workspace[]) => ({
+  "GET /api/workspaces": { ...listing(workspaces), forwarding: on },
+});
+
+const portsCard = async () =>
+  within(await within(await panel("alpha")).findByRole("region", { name: m.portsTitle }));
+
+test("each port is shown as its real address, a link that opens a new tab, under its label or its number", async () => {
+  const shown = [workspace(1, "alpha", { ports: PORTS })];
+  dashboard(shown, forwardingIs(true, shown));
+  renderApp("/?workspace=1");
+  const card = await portsCard();
+  const rows = card.getAllByRole("listitem");
+  expect(rows).toHaveLength(PORTS.length);
+  rows.forEach((row, at) => {
+    const port = PORTS[at];
+    expect(row).toHaveClass("list-row");
+    expect(within(row).getByText(port.label ?? m.portNumbered(port.port))).toBeInTheDocument();
+    const link = within(row).getByRole("link", { name: port.url });
+    expect(link).toHaveAccessibleDescription(port.label ?? m.portNumbered(port.port));
+    expect(link).toHaveAttribute("href", port.url);
+    expect(link).toHaveTextContent(port.url);
+    expect(link).toHaveAttribute("target", "_blank");
+    expect(link).toHaveAttribute("rel", "noopener");
+    expect(link).toHaveAttribute("translate", "no");
+    expect(link).toHaveClass("port-link");
+  });
+  expect(card.queryByRole("button")).toBeNull(); // no Open, no copy: the address is the link
+});
+
+test("with forwarding on, the Ports card is between the Container card and Changes, a sibling of both", async () => {
+  const shown = [rebuildable({ ports: PORTS })];
+  dashboard(shown, { ...changedSays(false), ...forwardingIs(true, shown) });
+  renderApp("/?workspace=1");
+  const opened = within(await panel("alpha"));
+  const ports = await opened.findByRole("region", { name: m.portsTitle });
+  const container = await opened.findByRole("region", { name: m.containerTitle });
+  expect(ports).toHaveClass("card");
+  expect(container.nextElementSibling).toBe(ports);
+  const changes = await opened.findByRole("region", { name: m.changesTitle });
+  expect(ports.nextElementSibling).toBe(changes);
+});
+
+test.each([
+  ["off", false],
+  ["not said", undefined],
+])("with forwarding %s, there is no Ports card", async (_, on) => {
+  const shown = [rebuildable()];
+  const answer = on === undefined ? listing(shown) : { ...listing(shown), forwarding: on };
+  dashboard(shown, { ...changedSays(false), "GET /api/workspaces": answer });
+  renderApp("/?workspace=1");
+  const opened = within(await panel("alpha"));
+  expect(await opened.findByRole("region", { name: m.containerTitle })).toBeInTheDocument();
+  expect(opened.queryByRole("region", { name: m.portsTitle })).toBeNull();
+  expect(screen.queryByText(m.portsNone)).not.toBeInTheDocument();
+});
+
+test("a workspace that forwards no port says, quietly, that forwardPorts lists them", async () => {
+  const shown = [workspace(1, "alpha")];
+  dashboard(shown, forwardingIs(true, shown));
+  renderApp("/?workspace=1");
+  const card = await portsCard();
+  expect(m.portsNone).toContain("forwardPorts");
+  expect(m.portsNone).toMatch(/\brebuild\b/); // what to do after listing them
+  const none = card.getByText(m.portsNone);
+  expect(none).toHaveClass("muted");
+  expect(card.queryByRole("list")).toBeNull();
+  expect(card.queryByRole("link")).toBeNull();
+});
+
+test("while its container is stopped for a rebuild, the card says when its ports open again, and links to none", async () => {
+  const shown = [
+    rebuildable({
+      ports: PORTS,
+      rebuildable: false,
+      rebuild: { state: "switching", log: null, error: null },
+      server_error: { code: "workspace_rebuilding", title: "Planted: being rebuilt." },
+    }),
+  ];
+  dashboard(shown, { ...changedSays(null), ...forwardingIs(true, shown) });
+  renderApp("/?workspace=1");
+  const card = await portsCard();
+  expect(card.getByText(m.portsStopped)).toHaveClass("muted");
+  expect(card.queryByRole("link")).toBeNull();
+  expect(card.queryByText(m.portsNone)).not.toBeInTheDocument();
 });

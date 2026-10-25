@@ -75,6 +75,12 @@ class Settings(BaseSettings):
         description="Whether administrators may upgrade rcman from its web interface: the "
         "installer sets it, with the units that carry an upgrade out, when told to.",
     )
+    forward_socket: Path | None = Field(
+        None,
+        description="The unix socket rcman's forwarding server listens on, which Caddy passes "
+        "the requests for workspaces' forwarded ports to, and its questions whether it may get "
+        "a certificate for one; the installer sets it. Unset, no port is forwarded.",
+    )
     audit_max_rows: int = Field(
         100_000, ge=1, description="At most this many audit events are kept; the oldest go first."
     )

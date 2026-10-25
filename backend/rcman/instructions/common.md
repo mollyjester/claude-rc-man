@@ -13,8 +13,14 @@ You are running in a container of your own, made for one person.
 - git uses the commit author and GitHub token the person set in their settings,
   outside this container. Don't change `git config --global`: it is rewritten from
   those settings. Set an author per repository instead.
-- No port of this workspace can be reached from outside it. Nobody can open a
-  server you start here in a browser.
+- Only the ports listed in `forwardPorts` (the repository's devcontainer.json or
+  its image's) can be reached from outside this workspace, and
+  only when an administrator has turned forwarding on: then the person who owns the
+  workspace, and nobody else, opens each one in their browser at the address the
+  workspace page shows. No other port can be reached, and a change to
+  `forwardPorts` takes effect at the workspace's next rebuild.
+- A server meant to be opened that way must listen on `127.0.0.1` or `0.0.0.0`, not
+  on IPv6 only, and serve plain http.
 - Containers started with `podman` or `docker` share this workspace's network.
   `-p`, `--publish` and `-P` publish nothing. A container listening on port 8000 is
   at `localhost:8000`, and two containers can't listen on the same port.

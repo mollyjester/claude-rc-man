@@ -1393,6 +1393,30 @@ a.repo-link {
   margin: 0 auto 0 0;
   font-size: var(--text-title-3);
 }
+/* The Ports card: a row for each forwarded port, its name and then its address, the link itself,
+   in the monospace face; an address too long for the line wraps under the name, at the left,
+   rather than widen the card. */
+.ports {
+  list-style: none;
+  margin: var(--space-3) 0 0;
+  padding: 0;
+}
+.ports > .list-row {
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-3);
+  padding: var(--space-2) 0;
+}
+.port-name {
+  min-width: 0;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+a.port-link {
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: var(--text-small);
+  overflow-wrap: anywhere;
+}
 /* The Claude server, inside its card with no box of its own: its state's pill and version, what
    to do next, and its actions. */
 .server-head {
@@ -2208,6 +2232,11 @@ form.limits + form.limits {
 .limits .actions [role="status"] {
   margin: 0;
 }
+/* While a Service settings card's save is out, its status says so quietly: only a save done is a
+   success. Placed after every other rule for a status, each of which is less specific. */
+.setting-body > form[aria-busy="true"] + [role="status"] {
+  color: var(--muted);
+}
 /* Everyone's workspaces: a card for each person, a row for each workspace, its name, its device
    name, its state's pill, its session and its version, which the row's words wrap under on a
    phone. */
@@ -2858,6 +2887,10 @@ td.result-failed {
     align-items: center;
     justify-content: center;
   }
+  a.port-link {
+    display: inline-flex;
+    align-items: center;
+  }
   button,
   a.button,
   summary,
@@ -2874,6 +2907,7 @@ td.result-failed {
   details.how > summary,
   .files-head > button.subtle,
   a.repo-link,
+  a.port-link,
   .docs-toc nav a {
     min-height: var(--touch);
   }

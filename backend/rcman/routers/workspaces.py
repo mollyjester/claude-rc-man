@@ -1,5 +1,6 @@
-"""The signed-in person's workspaces: listing, making, rebuilding and deleting them, and
-whether a workspace's devcontainer.json changed since it was made or last rebuilt."""
+"""The signed-in person's workspaces: listing them, with the ports each forwards, making,
+rebuilding and deleting them, and whether a workspace's devcontainer.json changed since it was
+made or last rebuilt."""
 
 from __future__ import annotations
 
@@ -33,10 +34,22 @@ class Rebuild(BaseModel):
     )
 
 
+def owned(request: Request, person: int, workspaces: list) -> list[dict]:
+    """The person's own ``workspaces`` as the API shows them, each with its forwarded ports
+    (``ports``: each port, its label and its address, none while forwarding is off), whose hosts
+    are marked as wanted, since their owner is shown them (forward.Forwarding.shown). Only for
+    the person's own: nothing that lists another's workspaces gives their ports."""
+    service, forwarding = request.app.state.workspaces, request.app.state.forward
+    found = service.listing(workspaces)
+    for workspace, entry in zip(workspaces, found, strict=True):
+        entry["ports"] = forwarding.shown(person, workspace)
+    return found
+
+
 def listing(request: Request, identity: Identity) -> list[dict]:
     """The person's workspaces as the API shows them, each shown to the watch."""
     service = request.app.state.workspaces
-    found = service.listing(service.of_person(identity.person))
+    found = owned(request, identity.person, service.of_person(identity.person))
     request.app.state.watch.listed(identity.email, {w["name"]: w["server"] for w in found})
     return found
 
@@ -45,12 +58,13 @@ def listing(request: Request, identity: Identity) -> list[dict]:
 def workspaces(request: Request, identity: Identity = Depends(current_user)) -> dict:
     """The person's workspaces, the Claude Code version a server started now would run
     (``claude_approved``, None where none is installed), to set beside the version each
-    server runs, and whether an upgrade of rcman is under way (``rcman_upgrading``), while
-    which no workspace is made."""
+    server runs, whether an upgrade of rcman is under way (``rcman_upgrading``), while
+    which no workspace is made, and whether ports are forwarded now (``forwarding``)."""
     return {
         "workspaces": listing(request, identity),
         "claude_approved": request.app.state.versions.approved(),
         "rcman_upgrading": request.app.state.workspaces.upgrading(),
+        "forwarding": request.app.state.forward.on(),
     }
 
 
@@ -71,7 +85,7 @@ def create(
     record.target = body.name
     service = request.app.state.workspaces
     made = service.create(person_of(request, record.identity), body.name)
-    return {"workspace": service.listing([made])[0]}
+    return {"workspace": owned(request, record.identity.person, [made])[0]}
 
 
 @router.get("/{workspace}/devcontainer")
@@ -101,7 +115,7 @@ def rebuild(
     found = service.owned(record.identity.person, workspace)
     record.target = found.name
     started = service.rebuild(person_of(request, record.identity), found.id, body.confirm)
-    return {"workspace": service.listing([started])[0]}
+    return {"workspace": owned(request, record.identity.person, [started])[0]}
 
 
 @router.delete("/{workspace}")

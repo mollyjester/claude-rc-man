@@ -15,7 +15,7 @@ the OpenAPI description it serves at `/api/openapi.json`, browsable at
 
 | Module | What it is |
 |---|---|
-| `main.py` | `create_app(settings, runtime, *, builder_slot)`: the app, its lifespan (migrations, the allowed list, audit retention, restoring workspaces, the monitor's loops) and its routers; with rcman's own Podman, `check_seccomp` first, which says in the journal when the workspaces' seccomp profile is missing or stale (see [runtime.md](runtime.md#containers-in-a-workspace)); and `check_instructions`, which says there when the instructions for Claude are missing from the tools (see [runtime.md](runtime.md#workspace-instructions)) |
+| `main.py` | `create_app(settings, runtime, *, builder_slot)`: the app, its lifespan (migrations, the allowed list, audit retention, restoring workspaces, the monitor's loops, the forwarding server, started where `RCMAN_FORWARD_SOCKET` is set and stopped, its WebSockets closed and the workspaces it used swept, before the workspaces' service closes) and its routers; with rcman's own Podman, `check_seccomp` first, which says in the journal when the workspaces' seccomp profile is missing or stale (see [runtime.md](runtime.md#containers-in-a-workspace)); and `check_instructions`, which says there when the instructions for Claude are missing from the tools (see [runtime.md](runtime.md#workspace-instructions)) |
 | `settings.py` | The settings model |
 | `db.py` | SQLite connections and the schema, as migrations; `migrate` refuses a database newer than the code |
 | `identity.py` | Who is asking, and whether they may |
@@ -29,12 +29,13 @@ the OpenAPI description it serves at `/api/openapi.json`, browsable at
 | `unrecognised.py` | The watch on every server rcman reads, which writes output rcman does not recognise to the journal (see [Output rcman does not recognise](#output-rcman-does-not-recognise)) |
 | `everyone.py` | Everyone's workspaces and servers, for administrators |
 | `monitor.py`, `routers/monitor.py` | What the host, each person and each workspace container use now, collected in two rounds, and the monitor's settings, for administrators (see [Monitor](#monitor)) |
+| `forwarding_settings.py`, `routers/forwarding_settings.py` | The settings of port forwarding, for administrators, and the hook that hears of forwarding being turned off (see [Port forwarding's settings](#port-forwardings-settings)) |
 | `headers.py` | The security headers every answer carries (see [Requests](#requests)) |
 | `ratelimit.py`, `filelock.py` | A token bucket for each name (the limits on a page's reports and on requests for an upgrade of rcman), and a re-entrant lock that is also a lock file, shared with `rcman-admin` (see [Limits](#limits)) |
 | `spa.py` | Serving the built frontend: its files, and `index.html` for every other path not under `/api`; installed after every router. `index.html` names the build's files by the hashes of their contents, which Vite puts in their names under `assets/`, so every file outside `assets/`, `index.html` among them, is served with `Cache-Control: no-cache`, which has the browser ask again before it uses the one it kept, and a page loaded after an upgrade names the new build's files; those under `assets/`, which never change, are kept for a year (`immutable`) |
 | `routes.py` | The app's routes as FastAPI resolves them after including routers, and which of them are for administrators |
-| `routers/` | One module per area: `me`, `workspaces`, `servers`, `git`, `github`, `claude`, `people`, `audit_log`, `attention`, `monitor`, `docs`, `client_errors`, `terminal`, `rcman_upgrade` |
-| `routers/workspaces.py` | The person's workspaces, under `/api/workspaces`: listing them with their servers, making one, deleting one, telling whether one's devcontainer.json changed and rebuilding one (see [Workspaces and servers](#workspaces-and-servers)); the listing is an object, `workspaces`, `claude_approved` (the version a server started now would run, `null` where none is), so that the page can set each server's `claude_version` beside it, and `rcman_upgrading`, whether an upgrade of rcman is under way (see [Upgrading rcman](#upgrading-rcman)) |
+| `routers/` | One module per area: `me`, `workspaces`, `servers`, `git`, `github`, `claude`, `people`, `audit_log`, `attention`, `monitor`, `forwarding_settings`, `forward`, `docs`, `client_errors`, `terminal`, `rcman_upgrade` |
+| `routers/workspaces.py` | The person's workspaces, under `/api/workspaces`: listing them with their servers, making one, deleting one, telling whether one's devcontainer.json changed and rebuilding one (see [Workspaces and servers](#workspaces-and-servers)); the listing is an object, `workspaces`, `claude_approved` (the version a server started now would run, `null` where none is), so that the page can set each server's `claude_version` beside it, `rcman_upgrading`, whether an upgrade of rcman is under way (see [Upgrading rcman](#upgrading-rcman)), and `forwarding`, whether ports are forwarded now; every entry of the person's own, the listing's and those its other routes answer, has its forwarded ports (`ports`, see [Port forwarding](#port-forwarding)) |
 | `routers/servers.py` | A workspace's server, under `/api/servers`: start, resume, stop, forget, confirm and output, each by the workspace's id; and everyone's, for administrators |
 | `accounts.py`, `routers/claude.py` | Each person's Claude sign-in, signing in and out of it, and its state; `routers/me.py` signs out of rcman — see [Claude accounts](#claude-accounts) |
 | `repository.py` | A workspace's git repository: the verbs of the Changes section, run in the workspace through its channel and `exec`, each wrapped in the workspace's `timeout` tool (see [git in workspaces](#git-in-workspaces)) |
@@ -42,6 +43,8 @@ the OpenAPI description it serves at `/api/openapi.json`, browsable at
 | `routers/git.py`, `routers/github.py` | The git routes, by workspace id, and the person's GitHub token (see [git in workspaces](#git-in-workspaces)) |
 | `claude_versions.py` | `ClaudeVersions`: the approvals, the versions marked as failed, the store, rolling out a version, pruning, and the report of the versions page (see [Claude Code versions](#claude-code-versions)) |
 | `routers/client_errors.py` | A page's reports of failures rcman could not see, `POST /api/client-errors`, written to the journal (see [Errors from the page](#errors-from-the-page)) |
+| `forwards.py` | What relays to a workspace's forwarded ports leave behind, ended by the sweep (see [runtime.md](runtime.md#forwarded-ports)) |
+| `forward.py`, `routers/forward.py` | The forwarding server on `RCMAN_FORWARD_SOCKET`, its sessions, the ways in the hand-off hands out, the hosts marked as wanted, Caddy's ask and the caps on relays; and the hand-off, `GET /api/forward/hand-off` (see [Port forwarding](#port-forwarding)) |
 | `terminals.py`, `routers/terminal.py` | The Terminal tab: a shell in a workspace, carried over a WebSocket (see [The terminal](#the-terminal)) |
 | `rcman_upgrade.py`, `routers/rcman_upgrade.py` | Upgrading rcman from its web interface, rcman's side: the release it runs, the report, the request and its admission, and the freeze while one is under way (see [Upgrading rcman](#upgrading-rcman)) |
 | `routers/me.py` | Each person's own settings, changed with `PATCH /api/me/settings`, which changes only the settings sent; `prefix_of` and `author_of` are how the rest of the backend reads them |
@@ -57,9 +60,19 @@ the OpenAPI description it serves at `/api/openapi.json`, browsable at
   person's in the people table, which is read on every request, so a removal
   takes effect at once (see [people.md](people.md)). The routes that need no identity are `problems.PUBLIC_PATHS`:
   `/api/health` and the frontend's files.
-- **Origin.** A `POST`, `PUT`, `PATCH` or `DELETE`, and every upgrade to a WebSocket, must
-  carry an `Origin` header equal to `RCMAN_PUBLIC_ORIGIN` (`identity.changing`): a page of any
-  site may open a WebSocket, and the browser sends rcman's cookies with it.
+- **Origin.** A `POST`, `PUT`, `PATCH` or `DELETE`, and every upgrade to a WebSocket, must carry
+  an `Origin` header equal to `RCMAN_PUBLIC_ORIGIN` (`identity.changing`): a page of any site
+  may open a WebSocket, and the browser sends rcman's cookies with it. A route that changes
+  something although it is a `GET`, which carries no Origin, is named in `identity.NAVIGATIONS`
+  with what stands for the Origin there; `tests/test_identity.py` finds every route that records
+  an audit row with a method that is not one of `CHANGING` in the route table, and fails on one
+  not named, and on a name of no such route. The one there is the hand-off to a forwarded port,
+  whose reason the test finds here verbatim, on one line:
+  a navigation from a forwarded port's host, which sends no Origin: refused unless the browser says it loads a document, and it hands out a way in only to the person's own port.
+- **Forward hosts.** Requests to a forwarded port's host never reach the app's routes: Caddy
+  passes them to the forwarding server (see [Port forwarding](#port-forwarding)), which trusts no
+  identity header, judges each request by its own session cookie, and holds every request that
+  is not a top-level navigation to having come from the host's own pages.
 - **Headers.** Every answer carries `headers.SECURITY_HEADERS` (`SecurityHeaders`, an ASGI
   middleware installed by `create_app`): a policy that forbids framing and nothing more, so
   that the interactive description of the API, which loads scripts of its own, works;
@@ -302,10 +315,11 @@ files to stage reach git on stdin and are never recorded or logged.
   holds the image a repository's devcontainer.json names.
 - **A repository's devcontainer.json.** After the clone, `Workspaces._configure` reads
   the file with `devcontainer.read`, holds it to `devcontainer.POLICY` and makes the
-  workspace from the image it names or builds (see
+  workspace from the image it names or builds, or from the default image where it names
+  none and builds none (see
   [runtime.md](runtime.md#a-repositorys-devcontainerjson) and
   [Building an image](runtime.md#building-an-image)). Its plan is the `environment`
-  column of `workspaces` (null for a workspace of the default image), which a restore
+  column of `workspaces` (null for a workspace with no file), which a restore
   reads. A build copies its image through a staging folder in `scratch_dir`
   (see [Building an image](runtime.md#building-an-image)).
   `problems.DEVCONTAINER_MESSAGES` is what a refusal or a failed command says in
@@ -667,7 +681,133 @@ the loops on a clock and a wait of its own, and what a round costs: with `subpro
 on a `PodmanRuntime`, a usage round runs `systemctl` once and Podman never, a disk round one
 `system df` and one `container inspect` (one more of each on its retry) and no `systemctl`, and
 nothing runs with every scope off; a planted runtime that asks `systemctl` once per slice fails
-it. `tests/test_monitor_routes.py` holds the routes.
+it. `tests/test_monitor_routes.py` holds the routes. The page that changes the settings is
+**Service settings** ([the guide](../docs/service-settings.md#monitoring)).
+
+## Port forwarding's settings
+
+The administrators' account is [Port forwarding](../docs/service-settings.md#port-forwarding).
+`forwarding_settings.py` holds them; the forwarding server (see [Port forwarding](#port-forwarding))
+reads them on every request, and hears through the store's listener of forwarding being turned
+off.
+
+- **The settings.** `ForwardingSettings`: `enabled` (`StrictBool`), `idle_minutes` and
+  `absolute_hours` (`Field(ge, le)` on a `StrictInt`), with their defaults (`DEFAULTS`) and
+  bounds in the module; every one is sent on a save. An idle timeout as long as the lifetime or
+  longer is refused at `idle_minutes` with `IDLE_NOT_SHORTER` (a field validator, so the
+  lifetime is declared first and the check is skipped where the lifetime was refused itself).
+  The model speaks in the units the page shows, so a value refused is refused with a bound in
+  its own field's unit; `idle_seconds` and `absolute_seconds` are the same in seconds, which is
+  what the table `forwarding_settings` keeps, one row (`id = 1`) the first save makes, each a
+  whole number of its unit (a `check`); no row is `DEFAULTS`.
+- **The store.** `Store` (`app.state.forwarding_settings`) reads them once and then answers from
+  memory; `save` writes them and takes them up under a lock, so two saves take effect in the order
+  they were stored. `on_off(listener)` registers a listener that every save leaving forwarding off
+  calls, in the request's thread, once the settings are stored and taken up, in the order they were
+  registered: the hook through which whatever forwards ends its sessions in the process. A listener
+  that raises keeps none of the others from being called; the first exception is raised after them,
+  so the save answers `internal_error` and is audited so, with the settings stored.
+- **The routes**, for administrators (`routers/forwarding_settings.py`): `GET
+  /api/forwarding/settings` answers `{"settings": ...}`; `PUT /api/forwarding/settings` saves the
+  whole set (`Store.save`) and answers the same, audited as `forwarding.settings` with the settings
+  as JSON. A value outside its bounds, or of the wrong type, is refused at its field.
+
+`tests/test_forwarding_settings.py` holds them.
+
+## Port forwarding
+
+A workspace's forwarded ports (`Workspaces.ports_of`, its plan's `ports`) are reached by their
+owner's browser at `https://<port>-<workspace id>.ws.<DOMAIN>/`, DOMAIN the host of
+`RCMAN_PUBLIC_ORIGIN`; the transport and its relays are in
+[runtime.md](runtime.md#forwarded-ports), Caddy's two sites in
+[installer.md](installer.md#forwarded-ports).
+
+- **The server.** `forward.Forwarding` (`app.state.forward`), asyncio and h11 on the unix socket
+  `RCMAN_FORWARD_SOCKET` (mode `0666`, in the folder only Caddy's group may enter), started by the
+  lifespan once the restore is under way and stopped before the workspaces' service closes. It
+  answers `HEALTH_PATH` on any Host; until `Workspaces.restored` is set it forwards nothing.
+  `route` gives each request its handler (`HANDLERS`): the health, the ask, the way in, a
+  refusal, or the proxy. Every request is judged on its own, never by its connection, which Caddy
+  pools across hosts and people.
+- **Hosts.** `Hosts` holds the canonical form: lowercase, decimal, no leading zero, a port up to
+  65535; any other spelling is no port's, so no port has two certificates.
+- **The ask.** A request whose Host is the ask site's address (`ASK_HOST`) for `ASK_PATH` with
+  one `domain` is answered 200 only while forwarding is on and the restore is done, for a
+  canonical host of a ready workspace's port, marked as wanted in the last `WANTED_SECONDS`
+  (`mark_wanted`, which the listing and the hand-off call), and, for a host never approved
+  before, while a token of `new_hosts` (a `ratelimit.TokenBuckets` of `NEW_HOSTS_BURST` and
+  `NEW_HOSTS_PER_WEEK`) is left; 404 otherwise. Paths under `RESERVED` on a forward host are
+  refused, but the way in.
+- **The listing.** Each entry of a person's own workspaces (`owned` in `routers/workspaces.py`,
+  for the listing and the entries making, cloning and rebuilding answer) has `ports`
+  (`Forwarding.shown`): each port of its plan (`Workspaces.forwarded_ports`), its `label` (null
+  where it has none) and its `url`, `https://<host>/` with the public origin's port where that is
+  not the scheme's own; none while forwarding is off (`Forwarding.on`: the server serving and the
+  setting on), for a workspace that is not ready, or for another person's. Each host listed is
+  marked as wanted, its owner being shown its address, but while a rebuild replaces the
+  container, when it cannot be reached. Nothing that lists another person's workspaces, as
+  `everyone.py` does for administrators, gives or marks their ports. `tests/test_forward.py`
+  holds it, an administrator's views beside their owner's listing.
+- **The hand-off.** A navigation (`GET` or `HEAD`) with no session is answered 303 to
+  `HAND_OFF_PATH` on rcman's origin, its path and query kept in `RETURN_COOKIE`. The hand-off
+  (`routers/forward.py`), through oauth2-proxy, is refused unless `Sec-Fetch-Dest: document`,
+  serves only a canonical host of the person's own ready workspace's port, an administrator held
+  to their own ports alike, so that no one reaches another's port, marks it as wanted and mints
+  a way in: a value of its own whose hash alone is kept, bound to person, workspace and port,
+  spent once within `TOKEN_SECONDS`, with at most `MOST_OUTSTANDING_TOKENS` unspent and `mints`
+  per person (429 beyond either). It is audited as `forward.hand_off`. Its page has its own
+  `Referrer-Policy: strict-origin`, `Cache-Control: no-store` and a policy with `frame-ancestors
+  'none'`, and a script carrying a nonce posts the way in to `ENTER_PATH` on the port's host,
+  with a button where scripts do not run.
+- **The way in.** `POST ENTER_PATH` must carry rcman's own Origin; the way in is spent, whatever
+  comes of it, and the session (`SESSION_COOKIE`, `Secure; HttpOnly; Path=/; SameSite=Lax`) is
+  made with the setting read again and nothing awaited before, so a switch-off meanwhile is not
+  missed; a person holding `MOST_SESSIONS_PER_PERSON` already has one ended first: their oldest
+  for the same host, or else their oldest of all. The
+  way in waits `BODY_SECONDS` at most for its body, and answers 408 after. It is audited as
+  `forward.session`. The answer clears the return cookie and sends the
+  browser to its path, `/` for one that does not begin with `/`, or begins with `//` or `/\`.
+- **Every request.** `fetch_refusal`: `Sec-Fetch-Site` `same-origin` or `none` passes,
+  `same-site` and `cross-site` only for a top-level navigation `GET` or `HEAD`; without it, a
+  request that is not `GET` or `HEAD` needs the host's own Origin; an upgrade or such a request
+  with an Origin not the host's own is refused. Then the session for the host, and `refusal`: the
+  person active, owning the workspace, ready with the port in its plan.
+- **To the app and back.** `upstream_headers` drops the connection's own headers, the sign-in's
+  identity headers and rcman's and oauth2-proxy's cookies, and makes the Host, and an Origin of
+  the host's own, `localhost:<port>`; `downstream_headers` drops a `Set-Cookie` of rcman's names
+  and adds `Content-Security-Policy: frame-ancestors 'self'`. A 101 is spliced raw
+  (`_splice`), audited as `websocket.open` and `websocket.close`; plain proxied HTTP is a named
+  exemption in `HANDLERS`.
+- **Connections.** The server takes heads up to `MOST_HEAD` and answers a longer one 431, closes
+  a connection with no request on it for `IDLE_CONNECTION_SECONDS` (longer than Caddy keeps an
+  idle pooled one, so Caddy ends it first) or whose head takes longer than `HEAD_SECONDS` from
+  its first byte. An answer of its own waits for the rest of a request's body only where it is
+  short (`MOST_DRAINED`) and only for `DRAIN_SECONDS`; where the body has not all come by then,
+  or is longer, the answer closes the connection (`Exchange.answer`).
+- **Relays.** One per exchange, kept idle for the next request to its port
+  (`MOST_IDLE_PER_PORT`, `POOL_IDLE_SECONDS`); a workspace's and a person's are capped
+  (`MOST_RELAYS_PER_WORKSPACE`, `MOST_RELAYS_PER_PERSON`), idle ones ended first to make room,
+  the room taken (`Slot`) with nothing awaited after the last count and given back if the relay
+  does not start, so requests at once are held to the caps too; a request beyond is answered 503
+  with `Retry-After`. A relay kept idle that turns out to have ended before it said anything is
+  tried again once on a new one, where none of the request's body was spent on it and the
+  request is a `REPLAYABLE` one, or its head was never handed to the relay, its writing begun:
+  the app cannot have acted on it. A relay's input is closed only once the app's answer is
+  passed back whole or the app has closed; a WebSocket whose browser has gone waits
+  `SPLICE_DRAIN_SECONDS` for the app first.
+- **Sessions** end after the idle timeout with nothing under way (an exchange or an open
+  WebSocket counts, an idle connection does not), at their lifetime (`reap`, every
+  `REAP_SECONDS`), when forwarding is turned off (`off`, the store's listener, which only passes
+  the work to the server's loop, where the idle relays are ended too), when their workspace is
+  deleted or rebuilt or their person removed (after the workspaces' `on_removing`,
+  `on_rebuilding` and `on_person_deleting`), and for a newer one of their person's. A session's
+  end (`_end_session`) closes its WebSockets and cancels its exchanges under way, which closes
+  their browsers' connections, an answer still streaming among them; an exchange reads the
+  session's end, and the setting, again after anything it awaits (`_gone`), so an upgrade the
+  app switches once the session has ended is closed unswitched and unrecorded. Everything is in
+  memory and lost when rcman restarts.
+
+`tests/test_forward.py` holds it, on the host runtime.
 
 ## Attention
 
@@ -680,29 +820,29 @@ place of `ok`.
 
 ## Audit
 
-A route that changes something depends on `Recorder("<action>")`, which writes
-one row when the request finishes, with `ok` or the error code, and logs the
-same event as a JSON line on the `rcman.audit` logger. A WebSocket route depends on
-`Session("<action>")` instead, which writes `<action>.open` when the socket opens or is refused
-once accepted, and `<action>.close` when one that opened closes; whatever the route has not
-recorded by the time it ends is recorded then. uvicorn configures only
-its own loggers, so `create_app` calls `journal.install` on each logger whose
-events go to the journal — `rcman.audit`, `rcman.client`, `rcman.unrecognised`,
-`rcman.workspaces`, `rcman.claude_versions`, `rcman.terminals` and `rcman.monitor` — which gives it one handler writing the bare line to
-standard error; systemd sends it to the journal. `tests/test_journal.py` checks
-that the app installs each of them. `tests/test_audit.py` starts the app with the unit's own
-`ExecStart` and reads the line from its output. It also finds every changing
-route in the route table and fails on any that neither records nor is listed
-in `audit.EXEMPT` with a reason that also appears in
-[the audit guide](../docs/audit.md), and on any WebSocket route (`routes.websocket_routes`)
-without a `Session`; it then drives every audited route and
-checks its row, and holds the guide's table of actions to the actions the
-routes record. The results a row can have besides an error code are
-`audit.RESULTS`, and a test holds the guide's results table to them. The table is append-only: a trigger in `db.py`'s migrations
-aborts any `UPDATE`, so rows are only added, and deleted only by retention
-(see [the audit guide](../docs/audit.md#how-long-events-are-kept)), which
-`create_app`'s lifespan runs as the app starts and every
-`RETENTION_INTERVAL_SECONDS` after.
+A route that changes something depends on `Recorder("<action>")`, which writes one row when the
+request finishes, with `ok` or the error code, and logs the same event as a JSON line on the
+`rcman.audit` logger. A WebSocket route depends on `Session("<action>")` instead, which writes
+`<action>.open` when the socket opens or is refused once accepted, and `<action>.close` when one
+that opened closes; whatever the route has not recorded by the time it ends is recorded then.
+uvicorn configures only its own loggers, so `create_app` calls `journal.install` on each logger
+whose events go to the journal — `rcman.audit`, `rcman.client`, `rcman.unrecognised`,
+`rcman.workspaces`, `rcman.claude_versions`, `rcman.terminals`, `rcman.monitor`,
+`rcman.forward` and `rcman.forwards` — which gives it one handler writing the bare line to
+standard error; systemd sends it to the journal. `tests/test_journal.py` checks that the app installs each of them.
+`tests/test_audit.py` starts the app with the unit's own `ExecStart` and reads the line from its
+output. It also finds every changing route in the route table and fails on any that neither
+records nor is listed in `audit.EXEMPT` with a reason that also appears in [the audit
+guide](../docs/audit.md), and on any WebSocket route (`routes.websocket_routes`) without a
+`Session`; it then drives every audited route and checks its row, and holds the guide's table of
+actions to the actions the routes and the forwarding server's handlers record
+(`forward.HANDLERS`, held by `tests/test_forward.py` to the handlers the server serves, each
+recording or exempt with a reason the guide gives). The results a row can have besides an error
+code are `audit.RESULTS`, and a test holds the guide's results table to them. The table is
+append-only: a trigger in `db.py`'s migrations aborts any `UPDATE`, so rows are only added, and
+deleted only by retention (see [the audit guide](../docs/audit.md#how-long-events-are-kept)),
+which `create_app`'s lifespan runs as the app starts and every `RETENTION_INTERVAL_SECONDS`
+after.
 
 ## Errors from the page
 

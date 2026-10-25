@@ -54,7 +54,9 @@ def said(name: str, flag: str, shares: str = "a container") -> str:
     return (
         f"{name}: {flag} publishes no port here: {shares} shares this workspace's network, so "
         "what it listens on is on the workspace's own ports; reach it at localhost:<the port it "
-        "listens on>\n"
+        "listens on>. A port its devcontainer.json lists in forwardPorts is opened by the "
+        "workspace's owner from the workspace page, when an administrator has turned forwarding "
+        "on\n"
     )
 
 

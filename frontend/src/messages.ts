@@ -13,6 +13,8 @@ export const m = {
   // The cross at the top of every dialog, which closes it as Escape does.
   closeDialog: "Close dialog",
   save: "Save",
+  // A Save button's words while its save is out.
+  saving: "Saving…",
   saved: "Saved.",
 
   navDashboard: "Workspaces",
@@ -32,6 +34,9 @@ export const m = {
   // The Upgrade rcman page's name in the sidebar, a noun as its neighbours' are; not "rcman"
   // alone, which is the top bar's link home.
   navRcman: "rcman release",
+  // The settings of rcman as a whole, for administrators: named apart from the person's own
+  // Settings page.
+  navServiceSettings: "Service settings",
   signedInAs: (email: string) => `Signed in as ${email}`,
   // The top bar's menu of the person signed in, behind their avatar: who they are, and
   // signing out of rcman.
@@ -149,6 +154,16 @@ export const m = {
     "This workspace has no repository, so its container is made from rcman's default image and has nothing to be rebuilt from.",
   devcontainerChanged:
     "This workspace's devcontainer.json has changed since its container was made. Rebuild to apply it.",
+  // The Ports card of a ready workspace's Overview, shown while forwarding is on.
+  portsTitle: "Ports",
+  portsIntro:
+    "The ports this workspace's devcontainer.json forwards. Each opens in a new tab, for you alone.",
+  portNumbered: (port: number) => `Port ${port}`,
+  portsNone:
+    "This workspace forwards no port. List ports in forwardPorts of the repository's devcontainer.json, then rebuild the workspace.",
+  portsStopped:
+    "Rebuild is replacing the container. You can open the workspace's ports once it is done.",
+
   rebuild: "Rebuild",
   rebuildBusy: "Rebuilding…",
   rebuildRunning: "This workspace is being rebuilt. The steps below say how far it is.",
@@ -402,8 +417,13 @@ export const m = {
     "claude.clear_failed": "Removed a Claude Code version's failed mark",
     "rcman.upgrade": "Asked for rcman to be upgraded",
     "monitor.settings": "Changed the monitoring settings",
+    "forwarding.settings": "Changed the port forwarding settings",
     "terminal.open": "Opened a terminal",
     "terminal.close": "A terminal closed",
+    "forward.hand_off": "Opened a forwarded port",
+    "forward.session": "Was let in to a forwarded port",
+    "websocket.open": "Opened a WebSocket to a forwarded port",
+    "websocket.close": "A WebSocket to a forwarded port closed",
   } as Record<string, string>,
   // The results docs/audit.md lists; any other result is the code of the error the request
   // failed with, shown by its code beside the word for a failure.
@@ -418,6 +438,8 @@ export const m = {
     workspace_rebuilding: "Its workspace was being rebuilt",
     signed_out: "Signed out of rcman",
     service_closing: "rcman stopped",
+    forwarding_off: "Port forwarding was turned off",
+    session_ended: "Its session reached its lifetime, or made room for a newer one",
   } as Record<string, string>,
   auditEmpty: "Nothing recorded.",
 
@@ -720,8 +742,13 @@ export const m = {
   // A part whose scope is switched off: an empty state that leads to the settings.
   monitorOff: "Not collected",
   monitorOffBody: (scope: string) => `“${scope}” is switched off in the monitoring settings.`,
-  monitorOffLink: "Go to monitoring settings",
-  monitorSettingsTitle: "Monitoring settings",
+  monitorOffLink: "Open service settings",
+
+  // The Service settings page: a card for each part.
+  serviceSettingsTitle: "Service settings",
+  serviceSettingsIntro:
+    "Settings of rcman itself, the same for everyone. Each part saves on its own.",
+  monitorSettingsTitle: "Monitoring",
   monitorSettingsLine:
     "How often rcman collects, and what. A save applies at once, for every administrator.",
   monitorUsageInterval: "Usage interval (seconds)",
@@ -730,9 +757,22 @@ export const m = {
   monitorDiskIntervalHelp:
     "How often the disk of every workspace is read. A read walks every file, so keep it rare.",
   monitorCollect: "Collect",
+  monitorCollectHelp: "A part switched off is neither collected nor shown on the Monitor page.",
   monitorSave: "Save monitoring settings",
-  monitorSaving: "Saving…",
   monitorSaved: "Monitoring settings saved.",
+  forwardingTitle: "Port forwarding",
+  forwardingLine:
+    "How the ports a workspace's devcontainer.json lists are reached by their owner's browser, through rcman.",
+  forwardingEnabled: "Forward ports",
+  forwardingEnabledHelp:
+    "On, the page of each ready workspace shows its owner the address of each port it lists, which they alone can open; off, no port can be opened, and every session on one ends.",
+  forwardingIdle: "Idle timeout (minutes)",
+  forwardingIdleHelp:
+    "How long a session on a forwarded port is to last with nothing going on. Shorter than the absolute lifetime.",
+  forwardingAbsolute: "Absolute lifetime (hours)",
+  forwardingAbsoluteHelp: "How long such a session is to last in all, busy or not.",
+  forwardingSave: "Save port forwarding settings",
+  forwardingSaved: "Port forwarding settings saved.",
   // Units, after a non-breaking space (src/format.ts): sizes in decimal SI, as Podman gives
   // them, and intervals.
   byteUnits: ["B", "kB", "MB", "GB", "TB", "PB", "EB"],

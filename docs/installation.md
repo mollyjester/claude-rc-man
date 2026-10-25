@@ -14,6 +14,8 @@ rcman from its web interface (see
 - **A Google OAuth client.** Creating one is free; the steps are below.
 - **A host name** pointing at the machine, served by Caddy. Caddy is installed and
   running already; the installer does not install it, and its account must exist.
+- **A wildcard DNS record**, `*.ws.<DOMAIN>` for your host name `<DOMAIN>`, pointing at the
+  same machine, set once: each workspace's [forwarded port](#forwarded-ports) is a host under it.
 - **A dedicated clone** of this repository on `main`, owned by your own
   account and used for installing and nothing else, with git able to pull from
   GitHub as you (for a private repository, for example through `gh auth
@@ -102,12 +104,13 @@ The installer asks for what it needs the first time, and saves the answers in
 | The Google OAuth client secret | `--google-client-secret` | `RCMAN_INSTALL_GOOGLE_CLIENT_SECRET` |
 | The first administrator's Google address | `--admin-email` | `RCMAN_INSTALL_ADMIN_EMAIL` |
 | The local port oauth2-proxy listens on | `--proxy-port` | `RCMAN_INSTALL_PROXY_PORT` |
+| The local port Caddy asks rcman on before it gets a certificate for a forwarded port; not oauth2-proxy's | `--ask-port` | `RCMAN_INSTALL_ASK_PORT` |
 | The account Caddy runs as | `--caddy-user` | `RCMAN_INSTALL_CADDY_USER` |
 | Where Claude Code's releases are downloaded from | `--claude-download` | `RCMAN_INSTALL_CLAUDE_DOWNLOAD` |
 | Whether administrators may upgrade rcman from its web interface, `yes` or `no` | `--web-upgrade` | `RCMAN_INSTALL_WEB_UPGRADE` |
 
 An option wins over a variable, a variable over the saved answer, and the
-saved answer over asking. The port, Caddy's account, the download address and
+saved answer over asking. The ports, Caddy's account, the download address and
 upgrading from the web interface have defaults (`FIELDS` in `installer/install.py`)
 and are not asked for; upgrading from the web interface is off by default (see
 [Upgrading from the web interface](#upgrading-from-the-web-interface));
@@ -256,7 +259,9 @@ carries on, and running it again for the same commit changes nothing.
 ## What a workspace can reach
 
 A workspace has the network, as Claude Code and git need: it reaches the
-internet, and nothing reaches it, since it publishes no port. It cannot reach
+internet, and nothing reaches it, since it publishes no port, but the ports its
+devcontainer.json forwards, which only its owner's browser reaches, through rcman, while an
+administrator has turned forwarding on (see [Forwarded ports](#forwarded-ports)). It cannot reach
 another workspace, nor anything on this machine's loopback addresses, such as
 oauth2-proxy. It can reach **anything this machine serves on its other
 addresses**, and anything on the networks this machine is on, as rcman's own
@@ -307,11 +312,12 @@ runuser -u rcman -- env -i PATH=/usr/bin:/bin HOME=/var/lib/rcman \
 
 ## Caddy
 
-rcman listens on no network port. Its only listener is the unix socket
-`/run/rcman/rcman.sock`, in a directory only the group `rcman-web` may enter,
-and Caddy's account is that group's only member. rcman believes the address
+rcman listens on no network port. Its listeners are two unix sockets in
+`/run/rcman`, a directory only the group `rcman-web` may enter, and Caddy's account is that
+group's only member: `/run/rcman/rcman.sock`, rcman itself, and `/run/rcman/forward.sock`, its
+forwarding server (see [Forwarded ports](#forwarded-ports)). rcman believes the address
 Caddy passes it, so this is what keeps anyone else on the machine from
-passing one.
+passing one. The health check at the end of every run asks both.
 
 The installer prints the site block for your Caddyfile and keeps it in
 `/etc/rcman/Caddyfile.snippet`. Either `import` that file in your Caddyfile, so
@@ -319,7 +325,18 @@ it is always the current one, or copy the block in. It sends oauth2-proxy's
 own pages to oauth2-proxy, asks oauth2-proxy whether each other request is
 signed in, sends people who are not to the Google sign-in, and passes the
 signed-in address to rcman through the socket. It also removes any address a
-browser sends itself, so only oauth2-proxy can tell rcman who someone is.
+browser sends itself, so only oauth2-proxy can tell rcman who someone is. Two more sites in it
+are for forwarded ports: `*.ws.<DOMAIN>`, which passes every request for one to the
+forwarding server, and `http://127.0.0.1:<ask port>`, where Caddy asks rcman whether it may get
+a certificate (see [Forwarded ports](#forwarded-ports)).
+
+oauth2-proxy's sign-in cookie is `__Host-rcman-auth`, and the cookies it names
+after it, its CSRF cookie and the parts of a long session, begin with that name
+too ([`installer/templates/oauth2-proxy.cfg`](../installer/templates/oauth2-proxy.cfg)).
+A browser keeps a cookie with the `__Host-` prefix only when it is Secure, for
+the whole site and for this host name alone, and lets no other host set or
+replace it, so a page served on a name under your host name cannot sign a
+person in to rcman as someone else.
 
 The site block also has Caddy log every request, the polls included, to
 `/var/log/caddy/rcman-access.log`: one JSON line each, with the address, the
@@ -341,6 +358,10 @@ output:
   upgrade changes it. If your Caddyfile imports the snippet there is nothing
   to change in it; if it holds a copy, copy the block again. Then **restart**
   Caddy: it keeps the site block it started with until then.
+- **The global options** — with the site block's notice: the block Caddy's global options,
+  at the top of your Caddyfile, must hold once, `on_demand_tls` asking rcman at
+  `http://127.0.0.1:<ask port>/.rcman/ask` (see [Forwarded ports](#forwarded-ports)). Paste it
+  there once, beside `admin off`; change its port if you change `--ask-port`.
 - **Caddy's account joined `rcman-web`** — on the first installation, or when
   `--caddy-user` names another account. **Restart** Caddy. A reload is not
   enough, because only a Caddy that starts again belongs to the group, and
@@ -361,6 +382,61 @@ restart Caddy:
 The installer warns, on every run, while something answers on that address,
 at `127.0.0.1:2019`.
 
+### Forwarded ports
+
+A workspace whose devcontainer.json lists a port in `forwardPorts` has it reached by its owner's
+browser, and no one else's, at `https://<port>-<workspace id>.ws.<DOMAIN>/`, while an
+administrator has turned port forwarding on (see [Port
+forwarding](service-settings.md#port-forwarding)), as a link on the workspace's page (see
+[Ports](workspaces.md#ports)). Caddy passes every request for such a host to rcman's forwarding
+server, which lets it in only with a session of the port's owner, made when they open the
+address, and holds every request that is not a top-level navigation to having come from the
+port's own pages.
+
+- **Pasted once.** The two sites are in the site block; the global options are yours, and must
+  hold the `on_demand_tls` block the installer prints, once, here beside `admin off`:
+
+  ```
+  {
+  	admin off
+  	on_demand_tls {
+  		ask http://127.0.0.1:<ask port>/.rcman/ask
+  	}
+  }
+  ```
+
+  Without it, Caddy asks no one: it gets a certificate for any name under `*.ws.<DOMAIN>` that
+  anyone's browser or script asks it for, each one published and counted against your
+  authority's limits, though the forwarding server still lets no one in to a port that is not
+  theirs. The installer reads your Caddyfile, `/etc/caddy/Caddyfile`, as Caddy does
+  (`caddy adapt`, as Caddy's account), on every run, and warns while its global options do not
+  ask rcman, or when it cannot read them. The global options are Caddy's, not the site's: the
+  same `ask` decides for every other site of yours that gets certificates on demand, and rcman
+  says no to every name that is not a forwarded port's.
+
+- **Certificates.** Each forwarded port's host gets a certificate of its own, on demand, from
+  the authority Caddy uses (Let's Encrypt by default), only once rcman says yes: for a ready
+  workspace's listed port whose owner was shown its address, on their own workspace's page, or
+  opened it lately; an administrator's views of everyone's workspaces mark nothing. Let's Encrypt
+  gives a registered domain a limited number of new certificates a week, shared by every host
+  under it, your other sites' among them, so rcman says yes to new hosts at a rate well under
+  it (`NEW_HOSTS_BURST` and `NEW_HOSTS_PER_WEEK` in `backend/rcman/forward.py`), and a workspace
+  forwards a limited number of ports (`MAX_FORWARDED_PORTS` in `backend/rcman/devcontainer.py`).
+  Every certificate is published in the public certificate transparency logs, with its host.
+- **The ask** listens on `127.0.0.1` alone and passes only its exact path on, but any local user
+  of this machine can query it, and so learn which ports' hosts are wanted now.
+- **The sign-in cookie stays rcman's.** A forwarded port's host is under your host name, so its
+  app can set ordinary cookies for your domain, but not rcman's sign-in cookie, a `__Host-`
+  cookie (see [Caddy](#caddy)), nor the forwarding server's own. It can still set so many
+  cookies of its own that the browser drops older ones, rcman's sign-in among them, which
+  signs its owner out of rcman.
+- **A GET that changes something.** The forwarding server lets in a top-level navigation from
+  any page, so an app whose `GET` requests change something can be made to change it by any page
+  its owner visits while their session lasts, as with any site.
+
+Its log is Caddy's, `/var/log/caddy/rcman-forward-access.log`, rotated as rcman's own, with
+cookies, referrers, `Location`s and query strings left out.
+
 ## Upgrading and rolling back
 
 To upgrade, run `sudo ./install.sh` again from the dedicated clone: it pulls
@@ -373,6 +449,15 @@ their servers keep running, since they live in rcman's Podman and not in
 does not have yet is the one thing that would stop servers, and the installer
 refuses it while a container runs, with the commands to stop them (see step 4
 under [What the installer does](#what-the-installer-does)).
+
+An upgrade or a rollback that changes the name of oauth2-proxy's cookie (see
+[Caddy](#caddy)) signs everyone out of rcman once: oauth2-proxy reads only the
+cookie named in its configuration, so the one their browsers hold under the
+other name is ignored, and each person is sent to the Google sign-in again at
+their next request. Their workspaces and servers are not affected. After a
+rollback to the other name, a browser may still hold a sign-in of that name from
+before, which oauth2-proxy reads again, so people who signed out of rcman since
+should sign out again.
 
 Run the installer again after upgrading Podman, or Ubuntu's `containers-common`
 that holds Podman's seccomp profile: the workspaces' profile is derived from it when
@@ -559,7 +644,8 @@ Cloud console when you have no use for it.
      `.config/systemd/user.conf.d/rcman.conf` in rcman's home, goes with the
      home in step 7;
    - `/etc/tmpfiles.d/rcman.conf`, and the socket's folder `/run/rcman` with
-     rcman's socket `/run/rcman/rcman.sock`;
+     rcman's socket `/run/rcman/rcman.sock` and its forwarding server's
+     `/run/rcman/forward.sock`;
    - the command `/usr/local/sbin/rcman-admin`, a link.
 6. **Remove the accounts**: `userdel rcman-proxy`, then `userdel rcman` (the
    proxy's account is a member of rcman's group, so the group stays until the

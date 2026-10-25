@@ -420,6 +420,33 @@ def test_the_installer_warns_about_a_caddy_admin_api_on_loopback():
         caddy.wait(timeout=10)
 
 
+def test_the_installer_warns_when_caddys_global_options_do_not_ask_rcman():
+    """A Caddyfile that imports the site block but whose global options lack the ask is warned
+    about, as Caddy's own ``caddy adapt`` reads it; the planted positive: with the block the
+    installer prints in its global options, no such warning. The Caddyfile is put back after."""
+    port = ins.gather(ins.SETTINGS_FILE, {}, {}, None)["ASK_PORT"]
+    caddyfile = ins.CADDYFILE
+    before = caddyfile.read_bytes() if caddyfile.exists() else None
+    imported = f"import {ins.CADDY_SNIPPET}\n"
+    try:
+        caddyfile.parent.mkdir(parents=True, exist_ok=True)
+        caddyfile.write_text("{\n\tadmin off\n}\n" + imported)
+        proc = install()
+        assert proc.returncode == 0, proc.stdout + proc.stderr  # a warning, not a refusal
+        assert ins.caddy_ask_warning(False, port) in proc.stdout + proc.stderr
+        block = ins.global_block(port).replace("\n", "\n\t")
+        caddyfile.write_text("{\n\tadmin off\n\t" + block + "\n}\n" + imported)
+        proc = install()
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        for found in (False, None):
+            assert ins.caddy_ask_warning(found, port) not in proc.stdout + proc.stderr
+    finally:
+        if before is None:
+            caddyfile.unlink(missing_ok=True)
+        else:
+            caddyfile.write_bytes(before)
+
+
 def test_the_caddy_snippet_is_printed_and_valid():
     first_install = installed.first_install()
     assert "Add this to your Caddyfile" in first_install.stdout

@@ -10,9 +10,10 @@ when a value is invalid.
 
 The limits on what a person's workspaces may use are not settings of this kind:
 administrators set them per person and per workspace, and rcman keeps them in
-its database (see [Limits](users.md#limits)). Nor are the settings of the
-**Monitor** page, which administrators change on that page and rcman keeps in its
-database (see [Monitor](monitor.md#monitoring-settings)).
+its database (see [Limits](users.md#limits)). Nor are the settings of monitoring and of
+port forwarding, which administrators change on the **Service settings** page and rcman
+keeps in its database (see [Monitoring](service-settings.md#monitoring) and
+[Port forwarding](service-settings.md#port-forwarding)).
 
 | Variable | What it sets |
 |---|---|
@@ -25,6 +26,7 @@ database (see [Monitor](monitor.md#monitoring-settings)).
 | `RCMAN_TOOLS_DIR` | The tools every workspace has, read-only: tmux, busybox, terminal descriptions, `podman` and `docker` with their configuration, the workspaces' seccomp profile, and the instructions rcman gives Claude in every workspace (see [What Claude is told in a workspace](workspaces.md#what-claude-is-told-in-a-workspace)), which the installer makes |
 | `RCMAN_CLAUDE_STORE` | The Claude Code store every workspace has, read-only, which the installer makes and rcman then writes (see [Claude Code versions](claude-version.md)) |
 | `RCMAN_CLAUDE_DOWNLOAD` | The address Claude Code's releases are downloaded from, as the installer downloads them and as rcman does when an administrator rolls out another version (see [Claude Code versions](claude-version.md)) |
+| `RCMAN_FORWARD_SOCKET` | The unix socket rcman's forwarding server listens on, which Caddy passes the requests for workspaces' forwarded ports to, and asks whether it may get a certificate for one; the installer sets it (see [Forwarded ports](installation.md#forwarded-ports)). Unset, no port is forwarded |
 | `RCMAN_DOCS_DIR` | Where the documentation pages shown in rcman are |
 | `RCMAN_FRONTEND_DIR` | Where the built web interface is |
 | `RCMAN_AUDIT_RETENTION_DAYS` | How long audit events are kept (see [Audit trail](audit.md)) |

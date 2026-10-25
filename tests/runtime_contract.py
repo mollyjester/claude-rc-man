@@ -3,7 +3,9 @@
 Not a test module. tests/test_runtime.py runs them against the host runtime, and
 tests/container/test_runtime_in_podman.py against Podman on the tests' engine, so
 that the host runtime the other tests use behaves as Podman does where it matters.
-The ``CANARY_CASES`` need python3 in the runtime's image: tests/test_runtime.py runs them too,
+``port_argv_carries_bytes_both_ways`` needs python3 in the runtime's image, as the default
+workspace image and the host have it, for the listener it reaches. The ``CANARY_CASES`` need
+python3 in the runtime's image too: tests/test_runtime.py runs them too,
 and tests/container/test_claude_versions_in_podman.py against Podman with the default image;
 they take the slot the canary runs in as ``slot``, the product's builder slot unless a runtime
 with ranges of another size is given another (tests/container/sizes.py). The
@@ -26,6 +28,7 @@ import struct
 import subprocess
 import tempfile
 import termios
+import threading
 import time
 from pathlib import Path
 
@@ -653,6 +656,115 @@ def a_terminal_runs_a_shell_on_its_pty_as_the_user_and_writes_its_pidfile(runtim
             proc.wait()
 
 
+# Run by the workspace's python3 with the runtime folder: listens on 127.0.0.1 on a port the
+# kernel gives, which it writes to ``listener.port`` there, and takes one connection; reads
+# <size> bytes, answers them reversed, reads on to the end of file, and then writes to
+# ``listener.eof`` how much it read before and after it answered.
+PORT_LISTENER = r"""
+import os, socket, sys
+folder, size = sys.argv[1], int(sys.argv[2])
+made = socket.socket()
+made.bind(("127.0.0.1", 0))
+made.listen(1)
+with open(folder + "/listener.tmp", "w") as f:
+    f.write(str(made.getsockname()[1]))
+os.rename(folder + "/listener.tmp", folder + "/listener.port")
+peer, _ = made.accept()
+got = b""
+while len(got) < size and (chunk := peer.recv(65536)):
+    got += chunk
+peer.sendall(got[::-1])
+rest = 0
+try:
+    while chunk := peer.recv(65536):
+        rest += len(chunk)
+except OSError:
+    pass
+with open(folder + "/listener.tmp", "w") as f:
+    f.write(f"{len(got)} {rest}")
+os.rename(folder + "/listener.tmp", folder + "/listener.eof")
+peer.close()
+"""
+# Bytes each way: more than a pipe holds, so neither side can have taken them whole.
+PORT_BYTES = 256 * 1024
+
+
+def _read_in(runtime, name: str, path: str, within: float = SETTLES_WITHIN) -> bytes:
+    """The file ``path`` of the workspace, once it is there."""
+    layout = runtime.layout(name)
+    deadline = time.monotonic() + within
+    while (found := runtime.exec(name, [*layout.tool("cat"), path])).code != 0:
+        assert time.monotonic() < deadline, f"{path} never came: {found}"
+        time.sleep(0.1)
+    return found.out
+
+
+def _alive_in(runtime, name: str, pid: int) -> bool:
+    layout = runtime.layout(name)
+    return runtime.exec(name, _sh(layout, f"test -d /proc/{pid}")).code == 0
+
+
+def port_argv_carries_bytes_both_ways(runtime, spec):
+    """``port_argv``, run as the forwarding server runs it: its client writes bytes, more than a
+    pipe holds, in a thread, reads the listener's whole answer, then closes its input; the answer
+    is exact, the listener reads its end of file after everything it was sent, the pidfile names
+    a live process while the relay runs, and once the client's input is closed the relay ends by
+    itself, leaving that process gone and nothing reading or writing the client's pipes."""
+    with made(runtime, spec(19)) as name:
+        layout = runtime.layout(name)
+        pidfile = rt.forward_pidfile(layout)
+        with pytest.raises(ValueError):  # a pidfile that is not one of a relay is refused
+            runtime.port_argv(name, 80, f"{layout.run}/terminals/0123456789abcdef.pid")
+        with pytest.raises(ValueError):
+            runtime.port_argv(name, True, pidfile)
+        started = runtime.exec(name, _sh(layout, 'python3 -c "$1" "$2" "$3" </dev/null '
+                                         '>/dev/null 2>&1 & echo $!') + [
+            "sh", PORT_LISTENER, layout.run, str(PORT_BYTES)])  # fmt: skip
+        assert started.code == 0, started
+        listener = int(started.out.decode().strip())
+        try:
+            port = int(_read_in(runtime, name, f"{layout.run}/listener.port"))
+            launch = runtime.port_argv(name, port, pidfile)
+            relay = subprocess.Popen(
+                launch.argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE, env=launch.env,
+            )  # fmt: skip
+            try:
+                sent = os.urandom(PORT_BYTES)
+
+                def write() -> None:
+                    relay.stdin.write(sent)
+                    relay.stdin.flush()
+
+                writer = threading.Thread(target=write, daemon=True)
+                writer.start()
+                back, parts = b"", []
+                while len(back) < PORT_BYTES and (part := relay.stdout.read1(65536)):
+                    parts.append(part)
+                    back = b"".join(parts)
+                writer.join(timeout=SETTLES_WITHIN)
+                assert back == sent[::-1]
+                shell = int(_read_in(runtime, name, pidfile))
+                assert _alive_in(runtime, name, shell)  # the positive for its end below
+                relay.stdin.close()
+                assert relay.wait(timeout=SETTLES_WITHIN) is not None
+                assert relay.stdout.read() == b""
+            finally:
+                if relay.poll() is None:
+                    relay.kill()
+                relay.wait()
+                for stream in (relay.stdin, relay.stdout, relay.stderr):
+                    stream.close()
+            eof = _read_in(runtime, name, f"{layout.run}/listener.eof").decode()
+            assert eof.split()[0] == str(PORT_BYTES), eof
+            deadline = time.monotonic() + SETTLES_WITHIN
+            while _alive_in(runtime, name, shell):
+                assert time.monotonic() < deadline, "the relay's shell is still there"
+                time.sleep(0.1)
+        finally:
+            runtime.exec(name, [*layout.tool("kill"), "-KILL", str(listener)])
+
+
 def the_instructions_for_claude_are_bound_read_only_at_the_managed_path(runtime, spec):
     """The file of the tools the default image calls for (helpers/instructions.py), which only
     the Podman runtime binds: the host runtime's workspaces run on the host."""
@@ -695,6 +807,7 @@ CASES = [
     has_volume_follows_the_volume_and_not_the_container,
     ending_a_canary_that_is_not_there_is_nothing,
     a_terminal_runs_a_shell_on_its_pty_as_the_user_and_writes_its_pidfile,
+    port_argv_carries_bytes_both_ways,
 ]
 # The cases that run the canary's program in the runtime's own image, which therefore needs
 # python3, as the default workspace image has it.

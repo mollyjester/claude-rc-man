@@ -44,6 +44,7 @@ import logging
 import os
 import pwd
 import re
+import secrets
 import selectors
 import shlex
 import shutil
@@ -100,6 +101,26 @@ SIGNED_IN, NOT_SIGNED_IN_EMPTY, NOT_SIGNED_IN_UNREADABLE = "signed_in", "empty",
 # in this folder of the runtime folder, which goes with the container.
 TERMINALS = "terminals"
 TERMINAL_PIDFILE = re.compile(r"[0-9a-f]{16}\.pid\Z")
+# A forwarded port's relays (forwards.py): each writes its pidfile, named by a token of its own,
+# in the runtime folder, which goes with the container.
+FORWARD_PIDFILE = re.compile(r"forward-[0-9a-f]{16}\.pid\Z")
+# What a relay to a port runs, as the busybox it is given (the first argument) runs it with
+# ``sh -c``, under busybox's ``setsid``: $1 its pidfile, $2 the port on the workspace's loopback.
+# It writes its own id to the pidfile, then runs ``cat`` of its input into ``nc``; when either
+# ends - its input reaching its end, or the app closing its side - it removes its pidfile and
+# ``kill 0`` ends the relay's process group, the other with it, so a relay never outlives either
+# side, and leaves no pidfile but where it is killed. ``setsid`` makes the
+# shell lead a session and process group of its own, in the workspace, so that the group ``kill
+# 0`` ends holds the relay alone: the process an exec starts belongs to a group whose leader is
+# outside the container. busybox's ``setsid`` runs its program in its own place, without a fork,
+# unless what runs it leads a process group already, which neither an exec's process nor a
+# program rcman starts does. It carries no half-close, and its exit code carries no meaning.
+RELAY_SCRIPT = (
+    'echo $$ >"$1"; {{ {busybox} cat; {busybox} rm -f "$1"; kill 0; }} | '
+    '{{ {busybox} nc 127.0.0.1 "$2"; {busybox} rm -f "$1"; kill 0; }}'
+)
+# What a busybox the relay names may be called: it is written into the relay's script.
+BUSYBOX_PATH = re.compile(r"/[A-Za-z0-9/._-]+\Z")
 # What every shell of the Terminal tab is started by, a fixed program, as the workspace's shell
 # runs it with ``-c`` and its arguments: the work folder, the pidfile and the shell to fall back
 # on. It writes its own id and start time to the pidfile, which ending the terminal checks
@@ -581,7 +602,8 @@ class Layout:
     terminfo: str | None
     path: str
     user: str  # who the programs run as there
-    # name -> the argv that runs it there: env, kill, cat, wc, rm, mkdir, chmod, mv, timeout, tar
+    # name -> the argv that runs it there: env, kill, cat, wc, rm, mkdir, chmod, mv, timeout, tar,
+    # head, od
     tools: dict
     # The argv, but for the group's id, that sends SIGKILL to a whole process group:
     # busybox's kill refuses a "--" before it, and procps' kill needs one.
@@ -594,6 +616,9 @@ class Layout:
     # The Claude Code store as the programs in the workspace see it: a version is the file
     # ``versions/<version>`` in it.
     claude_root: str = ""
+    # The busybox a relay to a port runs (``relay_command``), by its path; none where there is
+    # none to run.
+    busybox: str = ""
 
     def tool(self, name: str) -> list[str]:
         return list(self.tools[name])
@@ -677,6 +702,33 @@ def terminal_command(layout: Layout, pidfile: str) -> list[str]:
         env["TERMINFO"] = layout.terminfo
     launcher = [layout.shell, "-c", TERMINAL_LAUNCHER, "rcman-terminal", layout.work, pidfile]
     return layout.with_env(env, [*launcher, layout.shell])
+
+
+def forward_pidfile(layout: Layout) -> str:
+    """A new pidfile for a relay to a port, in the workspace's runtime folder."""
+    return f"{layout.run}/forward-{secrets.token_hex(8)}.pid"
+
+
+def relay_shell(layout: Layout, pidfile: str, port: int) -> list[str]:
+    """The argv of the relay's shell (RELAY_SCRIPT) to ``port`` on the workspace's loopback,
+    writing ``pidfile``, a relay's pidfile in its runtime folder (``forward_pidfile``): what
+    the process its pidfile names runs."""
+    if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
+        raise ValueError(f"{port!r} is not a port")
+    folder, _, name = pidfile.rpartition("/")
+    if folder != layout.run or not FORWARD_PIDFILE.fullmatch(name):
+        raise ValueError(f"{pidfile!r} is not a relay's pidfile")
+    if not BUSYBOX_PATH.fullmatch(layout.busybox):
+        raise RuntimeFailed("busybox is not installed")
+    script = RELAY_SCRIPT.format(busybox=layout.busybox)
+    return [layout.busybox, "sh", "-c", script, "sh", pidfile, str(port)]
+
+
+def relay_command(layout: Layout, pidfile: str, port: int) -> list[str]:
+    """The relay, as the workspace runs it: its shell (``relay_shell``) under busybox's
+    ``setsid``, leading a session and process group of its own."""
+    shell = relay_shell(layout, pidfile, port)
+    return [layout.busybox, "setsid", *shell]
 
 
 class Runtime(ABC):
@@ -858,6 +910,14 @@ class Runtime(ABC):
         standard streams: ``setsid --ctty`` first, so that the pty becomes the controlling
         terminal of what it runs (^C, job control and a resize reach the shell), then the
         launcher (``terminal_command``), as the container's own user."""
+
+    @abstractmethod
+    def port_argv(self, name: str, port: int, pidfile: str) -> Launch:
+        """What relays a connection to ``port`` on the workspace's own loopback: its standard
+        input is passed to the port and what the port answers is its standard output, and it
+        ends by itself once either side ends (``relay_command``), its pidfile ``pidfile``
+        naming it while it runs. ValueError for a port that is not one and a pidfile that is not
+        a relay's."""
 
     @abstractmethod
     def ensure_account(self, person: int, slot: int) -> None:
@@ -1091,11 +1151,14 @@ PODMAN_LAYOUT = Layout(
             "wget",
             "timeout",
             "tar",
+            "head",
+            "od",
         )
     },
     kill_group=(*_busybox("kill"), "-KILL"),
     path_prefix=f"{CLAUDE_MOUNT}/bin:{PODMAN_BIN}",
     claude_root=CLAUDE_MOUNT,
+    busybox=f"{TOOLS_MOUNT}/bin/busybox",
 )
 
 
@@ -2405,6 +2468,12 @@ class PodmanRuntime(Runtime):
         argv = self._argv(*exec_, name, *terminal_command(layout, pidfile))
         return Launch([*_host_tool("setsid"), "--ctty", *argv], podman_env())
 
+    def port_argv(self, name: str, port: int, pidfile: str) -> Launch:
+        """An exec of the relay with no tty, its input the podman client's, as the container's
+        own user."""
+        command = relay_command(self.layout(name), pidfile, port)
+        return Launch(self._argv("exec", "--interactive", name, *command), podman_env())
+
     # --- a person's Claude sign-in ----------------------------------------------------
 
     def _account_run(
@@ -2711,9 +2780,12 @@ class HostRuntime(Runtime):
                     "mv",
                     "timeout",
                     "tar",
+                    "head",
+                    "od",
                 )
             },
             kill_group=(*_host_tool("kill"), "-KILL", "--"),
+            busybox=shutil.which("busybox", path="/usr/bin:/bin") or "",
         )
 
     def wait_ready(self, timeout: float) -> None:
@@ -2987,6 +3059,12 @@ class HostRuntime(Runtime):
     def terminal_argv(self, name: str, layout: Layout, pidfile: str) -> Launch:
         command = terminal_command(layout, pidfile)
         return Launch([*_host_tool("setsid"), "--ctty", *command], {"PATH": "/usr/bin:/bin"})
+
+    def port_argv(self, name: str, port: int, pidfile: str) -> Launch:
+        """The relay on the host, to the host's own 127.0.0.1: its ``setsid`` keeps the process
+        group its ``kill 0`` ends from being the one of what started it."""
+        command = relay_command(self.layout(name), pidfile, port)
+        return Launch(command, {"PATH": "/usr/bin:/bin"})
 
     def ensure_account(self, person: int, slot: int) -> None:
         found = self._account_file(person)

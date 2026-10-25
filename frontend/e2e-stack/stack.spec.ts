@@ -58,11 +58,13 @@ function makeRepository(workspace: number) {
 }
 
 // The stand-in GitHub the stack holds at github.com (tests/container/stack.py): the token it
-// takes and the addresses of its public and its private repository, which the container
-// suite passes as JSON (tests/container/test_stack_in_a_browser.py).
-const GITHUB: { token: string; public: string; private: string } = JSON.parse(
-  process.env.RCMAN_STACK_GITHUB ?? '{"token":"","public":"","private":""}',
-);
+// takes, the addresses of its public and its private repository and of the public one whose
+// devcontainer.json forwards a port, and that port, which the container suite passes as JSON
+// (tests/container/test_stack_in_a_browser.py).
+const GITHUB: { token: string; public: string; private: string; ports: string; port: number } =
+  JSON.parse(
+    process.env.RCMAN_STACK_GITHUB ?? '{"token":"","public":"","private":"","ports":"","port":0}',
+  );
 
 // The fake claude's one accepted code (devtools/fake_claude.py, ACCEPTED_CODE).
 const CODE = process.env.RCMAN_FAKE_CLAUDE_CODE ?? "";
@@ -399,4 +401,144 @@ test("a workspace's terminal runs a shell in its container, through Caddy and oa
   await runInTerminal(page, made, "exit 3");
   await expect(made.getByRole("status")).toHaveText(m.terminalExited(3));
   await expect(made.getByRole("button", { name: m.terminalReconnect })).toBeVisible();
+});
+
+// Starts the app of a forwarded port in a workspace (tests/container/stack.py ``serve-port``).
+function servePort(workspace: number, port: number) {
+  expect(IN_HOST).not.toEqual([]);
+  const [command, ...rest] = IN_HOST;
+  execFileSync(
+    command,
+    [...rest, "python3", "tests/container/stack.py", "serve-port", String(workspace), String(port)],
+    { stdio: "pipe" },
+  );
+}
+
+test("a forwarded port is reached by its owner through a plain link, a WebSocket included", async ({
+  page,
+  browser,
+}) => {
+  test.setTimeout(TEST_WITH_FIRST_WORKSPACE_WITHIN); // "stack-ports" is bob's first workspace
+  expect(GITHUB.ports).not.toBe("");
+  // An administrator turns forwarding on.
+  const alice = await browser.newPage();
+  await signIn(alice, ALICE);
+  await expectSignedInAs(alice, ALICE);
+  const saved = await alice.evaluate(async () => {
+    const r = await fetch("/api/forwarding/settings", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ enabled: true, absolute_hours: 12, idle_minutes: 5 }),
+    });
+    return r.status;
+  });
+  expect(saved).toBe(200);
+  await alice.close();
+
+  // bob's workspace, cloned from a repository whose devcontainer.json forwards the port.
+  await signIn(page, BOB);
+  await expectSignedInAs(page, BOB);
+  const form = await newWorkspace(page);
+  await form.getByLabel(m.newWorkspaceSource).fill(GITHUB.ports);
+  await form.getByRole("button", { name: m.create }).click();
+  await expect(panel(page, "stack-ports").getByRole("button", { name: m.start })).toBeVisible({
+    timeout: FIRST_WORKSPACE_WITHIN,
+  });
+  const id = await idOf(page, "stack-ports");
+  servePort(id, GITHUB.port);
+  const host = `${GITHUB.port}-${id}.ws.rcman.test`;
+
+  // Its owner's workspace page shows the port as its address, a link, which marks its host as
+  // wanted, so that Caddy may get it a certificate; the link opens it in a new tab, through the
+  // hand-off, on its own page. Then the session that made is forgotten.
+  const ports = panel(page, "stack-ports").getByRole("region", { name: m.portsTitle });
+  const address = ports.getByRole("link", { name: `https://${host}/` });
+  await expect(address).toHaveAttribute("href", `https://${host}/`);
+  const [opened] = await Promise.all([page.context().waitForEvent("page"), address.click()]);
+  await expect(opened).toHaveURL(`https://${host}/`);
+  await expect(opened.locator("#seen")).toHaveText("/");
+  await opened.close();
+  await page.context().clearCookies({ domain: host });
+
+  // A plain link from rcman's page signs the owner in and lands on its path and query.
+  await page.goto("/");
+  await expectSignedInAs(page, BOB);
+  const url = `https://${host}/some/where?x=1&y=two`;
+  await page.evaluate((href) => {
+    const link = document.createElement("a");
+    link.href = href;
+    link.textContent = "the forwarded port";
+    document.body.append(link);
+  }, url);
+  await page.getByRole("link", { name: "the forwarded port" }).click();
+  await expect(page).toHaveURL(url);
+  await expect(page.locator("#seen")).toHaveText("/some/where?x=1&y=two");
+
+  // A WebSocket from the port's own page is spliced through and echoes.
+  const echoed = await page.evaluate(
+    () =>
+      new Promise<string>((resolve, reject) => {
+        const socket = new WebSocket(`wss://${location.host}/ws`);
+        socket.onopen = () => socket.send("ping");
+        socket.onmessage = (event) => {
+          resolve(String(event.data));
+          socket.close();
+        };
+        socket.onerror = () => reject(new Error("the WebSocket failed"));
+      }),
+  );
+  expect(echoed).toBe("ping");
+
+  // The planted twin: the hand-off's way in, posted from the port's own origin rather than
+  // rcman's, is refused by the way in; the same way in, posted from the hand-off's own page, is
+  // taken. Only that page sends rcman's origin with a post to another: rcman's other pages keep
+  // their referrer to themselves (headers.py), so a form of theirs posts with Origin null. The
+  // hand-off is opened, as a navigation, in a context of bob's with scripts off, so that its page
+  // does not post its way in itself until its button is pressed.
+  const quiet = await browser.newContext({
+    javaScriptEnabled: false,
+    storageState: await page.context().storageState(),
+  });
+  const handOffPage = await quiet.newPage();
+  const handOff = await handOffPage.goto(`https://rcman.test/api/forward/hand-off?host=${host}`);
+  expect(handOff?.status()).toBe(200);
+  const token = (await handOffPage.locator('input[name="token"]').getAttribute("value")) ?? "";
+  expect(token).not.toBe("");
+  const post = async (on: Page, action: string) => {
+    await on.evaluate(
+      ([to, value]) => {
+        const posted = document.createElement("form");
+        posted.method = "post";
+        posted.action = to;
+        const field = document.createElement("input");
+        field.type = "hidden";
+        field.name = "token";
+        field.value = value;
+        posted.append(field);
+        document.body.append(posted);
+        posted.submit();
+      },
+      [action, token],
+    );
+  };
+  await post(page, "/.rcman/enter"); // from the port's own page
+  await expect(page.locator("body")).toContainText("origin_refused");
+  // The control: the same way in, unspent by the refusal, posted by the hand-off's own button.
+  await handOffPage.getByRole("button", { name: /^Continue to port / }).click();
+  await expect(handOffPage).toHaveURL(`https://${host}/`);
+  await expect(handOffPage.locator("#seen")).toHaveText("/");
+  await quiet.close();
+
+  // Anyone else, an administrator among them, opening the same address through the same Caddy
+  // is sent to the hand-off, which refuses them: it is not their port.
+  for (const other of [ALICE, DAVE]) {
+    const theirs = await browser.newPage();
+    await signIn(theirs, other);
+    await expectSignedInAs(theirs, other);
+    const refused = await theirs.goto(`https://${host}/some/where`);
+    await expect(theirs).toHaveURL(/^https:\/\/rcman\.test\/api\/forward\/hand-off\?/);
+    expect(refused?.status()).toBe(404);
+    expect(await refused?.text()).toContain("port_not_found");
+    await theirs.close();
+  }
 });

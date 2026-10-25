@@ -6,8 +6,10 @@ ready. When a workspace is made by cloning a repository (see [Workspaces](worksp
 rcman reads that file, holds it to the policy below, pulls the image it names or builds the
 one it describes ([Building an image](#building-an-image)), and makes the workspace's
 container from that image instead of from the default one
-([`RCMAN_WORKSPACE_IMAGE`](configuration.md)). A repository without the file gets the
-default image. A workspace made empty never has a file to read.
+([`RCMAN_WORKSPACE_IMAGE`](configuration.md)). A file that names no image and builds none is
+applied over the default image: its environment, user and commands are honoured as they
+would be for an image it named. A repository without the file gets the default image. A
+workspace made empty never has a file to read.
 
 This page is for administrators: what is supported, what is not, and what follows from it.
 A person sees only the steps and, when something fails, the reason (see
@@ -75,15 +77,15 @@ entry of a label may not carry the keys that describe a build (`build`, `image`,
 | `context` | honoured | The older form of build.context, used with dockerFile. |
 | `features` | honoured | Installed on the image by the builder: a feature of the repository ('./name' in the folder of devcontainer.json), of a registry (a reference, such as ghcr.io/owner/features/name:tag) or at an https address. What a feature asks of its container is held to this policy, naming the feature. |
 | `overrideFeatureInstallOrder` | honoured | The order features are installed in. |
+| `forwardPorts` | honoured | Each port, of the workspace itself, is forwarded: while an administrator has turned forwarding on, the workspace's owner, and no one else, opens it in a browser at an address of its own that the workspace page shows. |
+| `portsAttributes` | honoured | A port's label names it on the workspace page. A port served as https is refused; visibility, onAutoForward, requireLocalPort and elevateIfNeeded are ignored, and a public port is still its owner's alone. |
 
 ### Ignored
 
 | Key | What rcman does | Why |
 |---|---|---|
-| `forwardPorts` | ignored | rcman publishes no port of a workspace. |
-| `portsAttributes` | ignored | rcman publishes no port of a workspace. |
-| `otherPortsAttributes` | ignored | rcman publishes no port of a workspace. |
-| `appPort` | ignored | rcman publishes no port of a workspace. |
+| `otherPortsAttributes` | ignored | rcman publishes no port of a workspace, and forwards only the ports forwardPorts lists. |
+| `appPort` | ignored | rcman publishes no port of a workspace, and forwards only the ports forwardPorts lists. |
 | `postAttachCommand` | ignored | Nothing attaches an editor to a workspace, so nothing runs on attach. |
 | `customizations` | ignored | Settings of editors and tools, none of which rcman runs. |
 | `shutdownAction` | ignored | A workspace is stopped and removed only by rcman and its owner. |
@@ -116,8 +118,46 @@ entry of a label may not carry the keys that describe a build (`build`, `image`,
 | `overrideCommand=false` | refused | rcman runs its own process in the container, so the image's own command is not kept. |
 | `entrypoint` | refused | An entrypoint of an image or a feature is not run: rcman starts its own process in the container. |
 
-A file must name an image with `image` or a Dockerfile with `build`; one that names neither
-is refused.
+A file that names neither an image with `image` nor a Dockerfile with `build` is applied
+over the default image, and the steps say so; a file that names no image by mistake is
+therefore made from the default image rather than refused. One that has `features` as well
+is refused, because features are installed only on an image the file names or builds. So is
+one with no image whose `build`, or older `context` or `dockerFile`, names no Dockerfile:
+what it asks to build would be dropped, so rcman asks for a Dockerfile, an image, or none of
+those keys. Where the file names an image, a `build` with no Dockerfile builds nothing and
+its keys are ignored: the workspace is made from the image.
+
+## Forwarded ports
+
+The ports `forwardPorts` lists, in the file and in its image's metadata, are the workspace's
+forwarded ports. Each is a port of the workspace itself: a whole number, or `localhost:` and
+one; a port of another host is refused, and so is a file, with its image's, that lists more than
+a workspace may forward (`MAX_FORWARDED_PORTS` in `backend/rcman/devcontainer.py`). In
+`portsAttributes`, a port's `label` names it, `"protocol": "https"` is refused, since rcman passes
+a forwarded port on as http, and an attribute rcman does not know is refused; `"visibility":
+"public"` never opens a port to anyone but its owner. A change to them takes effect when the
+workspace is rebuilt.
+
+While an administrator has turned port forwarding on (see
+[Port forwarding](service-settings.md#port-forwarding)), the **Ports** card of a ready
+workspace's page shows its owner each port, by its label, at its own address,
+`https://<port>-<workspace id>.ws.<DOMAIN>/`, as a link that opens it; no one else can open it,
+an administrator included. A server must listen on `127.0.0.1` or `0.0.0.0` in the workspace, not
+on IPv6 only, to be reached. Whether forwarding is on or off, the workspace's steps name its
+forwarded ports, each with its label, and say that they open from its **Ports** card once the
+workspace is ready, while an administrator has port forwarding on.
+
+What follows for the machine, from [Forwarded ports](installation.md#forwarded-ports):
+
+- **Certificates.** Each port's address is a host of its own, with a certificate of its own,
+  which Caddy gets only for a host marked as wanted: shown to its owner on their workspace's page,
+  or opened by them, lately. Showing it to anyone else, an administrator looking at everyone's
+  workspaces among them, marks nothing.
+- **A limit for the whole domain.** New certificates count against the authority's weekly limit
+  for your registered domain, shared with every other site under it, so rcman asks for new hosts
+  at a rate well under it, and the cap on ports keeps one workspace from taking it all.
+- **Certificate transparency.** Every certificate, with its host, the port and the workspace's
+  number in it, is published in the public certificate transparency logs.
 
 ## Variables
 
@@ -195,7 +235,9 @@ name that ends in one of `LOCAL_SUFFIXES` in `backend/rcman/devcontainer.py`. A 
 the network of that machine, which a workspace's own network is kept from. A name that
 resolves to such an address, and a registry that redirects to one, are not caught: that would
 need the name resolved and the redirect followed. A name that begins `localhost/` with no
-port names an image in rcman's storage and is never pulled.
+port names an image in rcman's storage and is never pulled. A file that names no image and
+builds none has the default image (`RCMAN_WORKSPACE_IMAGE`), held to everything below as a
+named one is, and the workspace keeps the image it was made from until it is rebuilt.
 
 - rcman pulls it itself, as its own account, with the pull's lines in the steps. An image
   that needs a sign-in to its registry cannot be pulled.
@@ -203,19 +245,19 @@ port names an image in rcman's storage and is never pulled.
   administrator loaded there needs no registry.
 - An image that carries a label beginning `rcman.` is refused: a container takes its image's
   labels, and those are the ones rcman finds its own containers by.
-- rcman puts its own instructions for Claude at `/etc/claude-code/CLAUDE.md` in every
-  workspace, read-only, in place of any file the image has there; the image's other files in
+- rcman puts its own instructions for Claude at `/etc/claude-code/CLAUDE.md` in every workspace,
+  read-only, in place of any file the image has there; the image's other files in
   `/etc/claude-code`, such as `managed-settings.json`, stay as they are. What they say depends
-  on the image (see
-  [What Claude is told in a workspace](workspaces.md#what-claude-is-told-in-a-workspace)): an
-  image that carries the default image's label, `org.claude-rc-man.tools`, is told what the
-  default image's workspaces are. Such an image is the default image itself, named in `image`
-  by the name `RCMAN_WORKSPACE_IMAGE` holds (`localhost/rcman-workspace:<tag>`, in rcman's
-  storage), or an image built from it elsewhere and pushed to a registry, which keeps the
-  label. An image whose `/etc`
-  or `/etc/claude-code` is a file, or whose `/etc/claude-code/CLAUDE.md` is anything but an
-  ordinary file, is refused, read from the image before any container is made from it. A
-  link there is judged by what it leads to.
+  on the image (see [What Claude is told in a
+  workspace](workspaces.md#what-claude-is-told-in-a-workspace)): an image that carries the
+  default image's label, `org.claude-rc-man.tools`, is told what the default image's workspaces
+  are. Such an image is the default image itself, however a workspace comes to have it (a file
+  may also name it in `image`, by the name `RCMAN_WORKSPACE_IMAGE` holds,
+  `localhost/rcman-workspace:<tag>` in rcman's storage), or an image built from it elsewhere and
+  pushed to a registry, which keeps the label. An image whose `/etc` or `/etc/claude-code` is a
+  file, or whose `/etc/claude-code/CLAUDE.md` is anything but an ordinary file, is refused, read
+  from the image before any container is made from it. A link there is judged by what it leads
+  to.
 - The image needs a **git** new enough for rcman (see [Git](git.md#images)), checked once the
   container runs, and **glibc**: an image built on musl, as Alpine ones are, is refused
   because Claude Code needs glibc. An image whose `/tmp` is a link or not a folder is refused,
@@ -401,10 +443,11 @@ the file and its Dockerfile when the workspace is made and when it is rebuilt, a
 person when the file in the workspace's work folder differs from it; the person then asks
 for a **Rebuild** (see [Workspaces](workspaces.md)), which makes the container again from what
 the file asks for now, on the same volume, keeping what is in the work folder. The file read is
-the one in the workspace as it is then, changed there or pulled. A workspace with no file is
-rebuilt from rcman's current default image, so a Rebuild is also how a workspace moves to a
-newer default image; a file removed makes the workspace from the default image again, and a
-file added makes it from the file's image.
+the one in the workspace as it is then, changed there or pulled. A workspace with no file, or
+with a file that names no image and builds none, is rebuilt from rcman's current default
+image, so a Rebuild is also how a workspace moves to a newer default image; a file removed
+makes the workspace from the default image again, and a file added makes it from the file's
+image, or from the current default image where it names none and builds none.
 
 The digest covers the place the file was found in, what it holds and the Dockerfile it builds
 from, and nothing else: a change to another file of the build's context, to a feature of the
@@ -413,8 +456,9 @@ for anyway applies them.
 
 A Rebuild takes these steps:
 
-1. **Preparing.** The file is read and held to the policy, and the image it names is pulled, or
-   the one it describes is built, beside the running container, which the person goes on
+1. **Preparing.** The file is read and held to the policy, and the image it names is pulled
+   (the default image where it names none and builds none), or the one it describes is
+   built, beside the running container, which the person goes on
    using. A refusal or a failure here changes nothing: the reason is shown with the workspace.
 2. **Switching.** The workspace's server, if it runs, is stopped, its terminal is ended and its
    container is discarded; meanwhile the workspace's server, git and terminal are refused.

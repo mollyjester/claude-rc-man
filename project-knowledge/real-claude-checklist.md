@@ -85,9 +85,10 @@ runuser -u rcman -- env -i PATH=/usr/bin:/bin HOME=/var/lib/rcman \
    test, sign in as them, then remove them (`sudo rcman-admin delete`) while their page is
    open: their next request is refused at once, and they cannot sign in again.
 5. **No way to the machine's loopback.** From a shell in a workspace, a connection to
-   oauth2-proxy's port (`RCMAN_INSTALL_PROXY_PORT` in `/etc/rcman/install.env`) on
-   `127.0.0.1`, and on the gateway address the workspace's network shows, fails. rcman has
-   no port to try, only its socket, which no workspace can reach.
+   oauth2-proxy's port (`PROXY_PORT` in `/etc/rcman/install.env`), and to Caddy's ask
+   site (`ASK_PORT` there), on `127.0.0.1` and on the gateway
+   address the workspace's network shows, fails. rcman has
+   no port to try, only its two sockets, which no workspace can reach.
 6. **Nothing of the operator's disturbed.** Compared with what was written down: the
    machine's other sites answer through Caddy, Docker (where it is there) lists the same
    containers, `/etc/subuid` and `/etc/subgid` have gained rcman's lines and no other
@@ -155,7 +156,18 @@ runuser -u rcman -- env -i PATH=/usr/bin:/bin HOME=/var/lib/rcman \
     prints show them passed, none skipped.
 19. **The repository's own checks in a workspace.** In that workspace run `make check-all`:
     every part passes, as on a development machine.
-20. **Removal, on a spare machine.** Follow
+20. **Forwarded ports.** As [Forwarded ports](../docs/installation.md#forwarded-ports) says:
+    `dig +short 6080-1.ws.<DOMAIN>` (any name under the wildcard) gives the machine's address;
+    with the `on_demand_tls` block the installer printed pasted into Caddy's global options and
+    Caddy restarted, another run of the installer no longer warns that they do not ask rcman.
+    An administrator turns **Forward ports** on in **Service settings**. A colleague clones a
+    repository whose devcontainer.json lists a port in `forwardPorts`, serving a WebSocket app
+    such as noVNC on `127.0.0.1`; once ready, the workspace's **Ports** card shows the port's
+    link. Opened by its owner, it loads over a certificate from Let's Encrypt (the browser's
+    certificate viewer names the host and the issuer), passes through the hand-off without a
+    question, and the app works, its WebSocket included. The same address opened by another
+    person, an administrator among them, is refused at the hand-off.
+21. **Removal, on a spare machine.** Follow
    [Removing rcman](../docs/installation.md#removing-rcman): the commands that check that
    nothing is left print nothing, Caddy restarts and still serves its other sites, and
    the packages and the operator's accounts are as they were.
@@ -250,8 +262,10 @@ command that leaves a marker file, and `customizations` and `forwardPorts`:
 3. **The user.** `whoami` in a session shows `remoteUser`, and Claude's server
    runs as that user.
 4. **The lifecycle command.** Its marker file exists.
-5. **Ignored keys.** `customizations` and `forwardPorts` do not block the
-   workspace, and the steps name them as skipped.
+5. **Ignored and forwarded keys.** `customizations` does not block the
+   workspace, and the steps name it as skipped; `forwardPorts` is not named
+   there, a step names its port instead, and, with forwarding on, the
+   workspace's **Ports** card shows it.
 6. **No builder is left.** `podman ps -a` as `rcman` lists no builder
    container after the build.
 7. **The same repository again.** A second workspace from it starts.

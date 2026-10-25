@@ -17,6 +17,7 @@ keys, which are cut short and stripped of control characters. Every refusal is a
 from __future__ import annotations
 
 import base64
+import contextlib
 import hashlib
 import ipaddress
 import json
@@ -40,6 +41,11 @@ from rcman.runtime import (
 # The two places a devcontainer.json is looked for, in this order, and nowhere else.
 FILES = (".devcontainer/devcontainer.json", ".devcontainer.json")
 LOOKED_IN = f"devcontainer.json is looked for in {FILES[0]}, else {FILES[1]}, and nowhere else"
+# The step that says a file which names no image and builds none is applied over the default
+# image (settings.workspace_image).
+DEFAULT_IMAGE_USED = (
+    "devcontainer.json names no image and builds none, so rcman's default image is used"
+)
 # The most of the file rcman reads, in bytes, and how long reading it may take.
 MAX_BYTES = 256 * 1024
 READ_SECONDS = 30.0
@@ -166,7 +172,40 @@ _RUN_ONCE = (
     "A string runs in a shell, an array as a program, and the entries of an object one "
     "after another. A command that takes too long is stopped."
 )
-_NO_PORTS = "rcman publishes no port of a workspace."
+_ONLY_FORWARD_PORTS = (
+    "rcman publishes no port of a workspace, and forwards only the ports forwardPorts lists."
+)
+# The step that names the ports a workspace forwards, each with its label, in words true whether
+# forwarding is on or off (forwarded_step).
+FORWARDED_PORTS = (
+    "Forwarded ports: {ports}. They open from the workspace's Ports card once the workspace is "
+    "ready, while an administrator has port forwarding on."
+)
+# The keys of ports that are read into the plan's ``ports``.
+PORT_KEYS = ("forwardPorts", "portsAttributes")
+# The most ports a workspace may forward. Each forwarded port is a host of its own with a
+# certificate of its own, and Let's Encrypt limits how many new certificates a registered domain
+# gets each week, for every host under it alike: a few ports a workspace keeps that limit for
+# everyone else's.
+MAX_FORWARDED_PORTS = 8
+MAX_PORT = 65535
+# A port as forwardPorts may name one besides a number: on the workspace's own loopback, in
+# decimal with no leading zero; and a key of portsAttributes that is one port, written so.
+LOCAL_PORT = re.compile(r"localhost:([1-9][0-9]{0,4})\Z")
+CANONICAL_PORT = re.compile(r"[1-9][0-9]{0,4}\Z")
+# The attributes of a port that are ignored, by name; label and protocol are read, and any other
+# is refused as unknown.
+IGNORED_PORT_ATTRIBUTES = frozenset(
+    {"visibility", "onAutoForward", "requireLocalPort", "elevateIfNeeded"}
+)
+_FORWARD_PORTS_EXPECTED = (
+    'a list of ports of the workspace itself, each a whole number of a port or "localhost:" '
+    "followed by one"
+)
+_PORTS_ATTRIBUTES_EXPECTED = (
+    'an object of ports, each an object whose "label" is a string and whose "protocol", if '
+    'it has one, is "http"'
+)
 _BUILT = (
     "rcman builds the image in a sandbox of its own, from a copy of the repository without its "
     "git folder, as the workspace is made."
@@ -218,10 +257,18 @@ POLICY: dict[str, Policy] = {
         "Accepted but never run: commands get the environment of the file and the image, "
         "not one probed from a shell."
     ),
-    "forwardPorts": _ignore(_NO_PORTS),
-    "portsAttributes": _ignore(_NO_PORTS),
-    "otherPortsAttributes": _ignore(_NO_PORTS),
-    "appPort": _ignore(_NO_PORTS),
+    "forwardPorts": _honour(
+        "Each port, of the workspace itself, is forwarded: while an administrator has turned "
+        "forwarding on, the workspace's owner, and no one else, opens it in a browser at an "
+        "address of its own that the workspace page shows."
+    ),
+    "portsAttributes": _honour(
+        "A port's label names it on the workspace page. A port served as https is refused; "
+        "visibility, onAutoForward, requireLocalPort and elevateIfNeeded are ignored, and a "
+        "public port is still its owner's alone."
+    ),
+    "otherPortsAttributes": _ignore(_ONLY_FORWARD_PORTS),
+    "appPort": _ignore(_ONLY_FORWARD_PORTS),
     "postAttachCommand": _ignore(
         "Nothing attaches an editor to a workspace, so nothing runs on attach."
     ),
@@ -628,6 +675,8 @@ class _Part:
     build: dict = field(default_factory=dict)  # dockerfile, context, args, target: as given
     features: dict = field(default_factory=dict)
     install_order: list = field(default_factory=list)
+    forward_ports: list = field(default_factory=list)  # in order, each once
+    port_labels: dict = field(default_factory=dict)  # port -> its label
 
 
 @dataclass(frozen=True)
@@ -655,8 +704,8 @@ class BuildConfig:
 @dataclass(frozen=True)
 class Checked:
     """The file after the policy: the image it names (None for a file that builds from a
-    Dockerfile and names none), what is to be built if anything is, and the keys it has that are
-    ignored."""
+    Dockerfile and names none, or that names none and builds none, which is applied over the
+    default image), what is to be built if anything is, and the keys it has that are ignored."""
 
     image: str | None
     ignored: tuple[str, ...]
@@ -921,6 +970,9 @@ def _entry(entry: dict, origin: str, in_image: bool, folder: str = DEFAULT_FOLDE
         if policy.action == IGNORE:
             if key not in part.ignored:
                 part.ignored.append(key)
+        elif key in PORT_KEYS:
+            with _of_the_entry(origin, in_image):
+                _ports(part, key, value, origin, in_image)
         elif policy.action == HONOUR:
             if in_image and key in FILE_ONLY_KEYS:
                 if not _empty(value):
@@ -931,16 +983,92 @@ def _entry(entry: dict, origin: str, in_image: bool, folder: str = DEFAULT_FOLDE
                         reason=FILE_ONLY_REASON,
                     )
                 continue  # asks for nothing
-            try:
+            with _of_the_entry(origin, in_image):
                 _honoured(part, key, value, origin, folder, in_image)
-            except Refused as refused:
-                if in_image and refused.kind == "bad_value":
-                    raise Refused(
-                        "bad_value_in_image", entry=shown(origin), **refused.fields
-                    ) from None
-                raise
     _older_forms(part, entry, folder)
     return part
+
+
+# The refusals of a value that an image's entry gives in its own words, naming the entry.
+_IN_IMAGE = {"bad_value": "bad_value_in_image", "port_https": "port_https_in_image"}
+
+
+@contextlib.contextmanager
+def _of_the_entry(origin: str, in_image: bool):
+    """A refusal of a value raised inside, as the entry ``origin`` gives it: an image's names
+    the entry and says to use another image."""
+    try:
+        yield
+    except Refused as refused:
+        if in_image and refused.kind in _IN_IMAGE:
+            raise Refused(_IN_IMAGE[refused.kind], entry=shown(origin), **refused.fields) from None
+        raise
+
+
+def _port(item) -> int | None:
+    """The port an item of forwardPorts names on the workspace's own loopback: a whole number of
+    a port, or ``localhost:`` and one in decimal with no leading zero; None for anything else,
+    another host's port among them."""
+    if isinstance(item, bool):
+        return None
+    if isinstance(item, int):
+        return item if 1 <= item <= MAX_PORT else None
+    if isinstance(item, str) and (matched := LOCAL_PORT.fullmatch(item)):
+        number = int(matched[1])
+        return number if number <= MAX_PORT else None
+    return None
+
+
+def _canonical_port(text: str) -> int | None:
+    """The port a key of portsAttributes is, written as one port is in decimal with no leading
+    zero; None for a range, a pattern or any other spelling."""
+    if not CANONICAL_PORT.fullmatch(text):
+        return None
+    number = int(text)
+    return number if number <= MAX_PORT else None
+
+
+def _ports(part: _Part, key: str, value, origin: str, in_image: bool) -> None:
+    """forwardPorts and portsAttributes, read into ``part``: the ports, each once, and the label
+    of each port named as one. A value of the wrong kind is refused as any other is; https is
+    refused, since a forwarded port is passed on as http; and an attribute of a port that is
+    neither read nor ignored by name is refused as unknown."""
+    if key == "forwardPorts":
+        if not isinstance(value, list):
+            raise _bad(key, _FORWARD_PORTS_EXPECTED)
+        for item in value:
+            port = _port(item)
+            if port is None:
+                raise _bad(key, _FORWARD_PORTS_EXPECTED)
+            if port not in part.forward_ports:
+                part.forward_ports.append(port)
+        return
+    if not isinstance(value, dict) or not all(isinstance(a, dict) for a in value.values()):
+        raise _bad(key, _PORTS_ATTRIBUTES_EXPECTED)
+    for name, attributes in value.items():
+        for attribute, item in attributes.items():
+            if attribute == "label":
+                if not isinstance(item, str):
+                    raise _bad(key, _PORTS_ATTRIBUTES_EXPECTED)
+            elif attribute == "protocol":
+                if item == "https":
+                    raise Refused("port_https", port=shown(name))
+                if item != "http":
+                    raise _bad(key, _PORTS_ATTRIBUTES_EXPECTED)
+            elif attribute not in IGNORED_PORT_ATTRIBUTES:
+                inner = shown(f"{key}.{name}.{attribute}")
+                if in_image:
+                    raise Refused("unknown_key_in_image", key=inner, entry=shown(origin))
+                raise Refused("unknown_key", key=inner)
+        # An empty label is no label: it leaves the one an earlier entry gave the port.
+        port, text = _canonical_port(name), attributes.get("label")
+        if port is not None and text:
+            part.port_labels[port] = shown(text)
+
+
+def _too_many_ports(ports) -> None:
+    if len(ports) > MAX_FORWARDED_PORTS:
+        raise Refused("too_many_ports", most=MAX_FORWARDED_PORTS)
 
 
 def _older_forms(part: _Part, entry: dict, folder: str) -> None:
@@ -1051,7 +1179,11 @@ def check(config: dict, workspace: int = 0, work: str = "", path: str = FILES[0]
     have, or a value of the wrong kind, is :class:`Refused`; else the image it names, what is to
     be built, and the keys that are ignored. ``path`` is where the file is in the repository,
     which its paths are relative to, and ``workspace`` and ``work`` are what its variables stand
-    for. A file that names neither an image nor a Dockerfile is refused once nothing else is."""
+    for. A file that names neither an image nor a Dockerfile has no image and no build, and is
+    applied over the default image; with features it is refused once nothing else is, for they
+    are installed only on an image the file names or builds, and so is one with a ``build``
+    (or the older ``dockerFile`` or ``context``) that names no Dockerfile, whose build keys
+    would be dropped."""
     _shallow(config)
     part = _entry(
         _substituted_entry(config, _context(workspace, work)),
@@ -1060,7 +1192,12 @@ def check(config: dict, workspace: int = 0, work: str = "", path: str = FILES[0]
         folder=posixpath.dirname(path) or ".",
     )
     if part.image is None and "dockerfile" not in part.build:
-        raise Refused("no_image")
+        if part.features:
+            raise Refused("no_image")
+        for key in ("build", "dockerFile", "context"):  # the last two are the older forms
+            if key in config:
+                raise Refused("build_without_dockerfile", key=shown(key))
+    _too_many_ports(part.forward_ports)
     return Checked(part.image, tuple(part.ignored), _build_spec(part))
 
 
@@ -1202,10 +1339,43 @@ def resolve_user(spec: str, passwd: str, group: str, *, size: int = RANGE) -> Ac
 
 
 @dataclass(frozen=True)
+class Port:
+    """A port of the workspace that its devcontainer.json, or its image's metadata, forwards,
+    with the label portsAttributes gives it."""
+
+    port: int
+    label: str | None = None
+
+
+def forwarded_step(ports: tuple[Port, ...]) -> str:
+    """The step that names ``ports``, each with its label in quotation marks where it has one,
+    which may hold brackets of its own."""
+    named = [f"{p.port} \u201c{p.label}\u201d" if p.label else str(p.port) for p in ports]
+    return FORWARDED_PORTS.format(ports=", ".join(named))
+
+
+def _stored_ports(stored) -> tuple[Port, ...]:
+    """The ports ``Plan.to_json`` stored; ValueError for anything else."""
+    if not isinstance(stored, list):
+        raise ValueError("the stored ports are not a list")
+    found = []
+    for item in stored:
+        if not isinstance(item, dict) or set(item) != {"port", "label"}:
+            raise ValueError("a stored port is not one")
+        port, text = item["port"], item["label"]
+        if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= MAX_PORT:
+            raise ValueError("a stored port is not one")
+        if text is not None and not isinstance(text, str):
+            raise ValueError("a stored port's label is not one")
+        found.append(Port(port, text))
+    return tuple(found)
+
+
+@dataclass(frozen=True)
 class Plan:
     """What a workspace is made from, stored with its row: the image, the user and the ids of
     that user in it, the environment, the lifecycle commands in the order they run, and the
-    keys of the file that rcman ignored."""
+    keys of the file that rcman ignored, and the ports it forwards."""
 
     image: str
     user_name: str
@@ -1224,6 +1394,10 @@ class Plan:
     # the id, not from whatever the tag names by then.
     image_id: str = ""
     image_digest: str = ""
+    # The ports forwardPorts names, in the image's entries and then the file, each once, with
+    # the label portsAttributes gives each, the last one given winning. A plan stored before
+    # ports were planned has none.
+    ports: tuple[Port, ...] = ()
 
     @property
     def path(self) -> str | None:
@@ -1273,6 +1447,7 @@ class Plan:
             "image_path": self.image_path,
             "image_id": self.image_id,
             "image_digest": self.image_digest,
+            "ports": [{"port": p.port, "label": p.label} for p in self.ports],
         }
         return json.dumps(data, sort_keys=True)
 
@@ -1306,6 +1481,7 @@ class Plan:
                 data["image_path"],
                 data.get("image_id", ""),
                 data.get("image_digest", ""),
+                _stored_ports(data.get("ports", [])),
             )
         except (TypeError, KeyError, AttributeError, ValueError) as failed:
             raise ValueError("the stored plan is not one") from failed
@@ -1364,7 +1540,8 @@ def plan(
     with the last winning, the user is the last one named, and the lifecycle commands are
     collected. Anything an entry asks for that the policy refuses is :class:`Refused`, naming
     the entry. The plan's image is the file's ``image``, or ``image`` where that is given: the
-    image built for the file, whose label holds the features' entries and not the file's own."""
+    image built for the file, whose label holds the features' entries and not the file's own,
+    or the default image for a file that names none and builds none."""
     context = _context(workspace, work, dict(facts.env))
     entries = _metadata(facts.labels.get(METADATA_LABEL))
     _shallow(config)
@@ -1396,7 +1573,11 @@ def _merged(image: str, parts: list[_Part], facts, size: int) -> Plan:
     init = False
     ignored: list[str] = []
     commands: list[Command] = []
+    ports: list[int] = []
+    labels: dict[int, str] = {}
     for part in parts:
+        ports.extend(p for p in part.forward_ports if p not in ports)
+        labels.update(part.port_labels)
         container_env.update(part.container_env)
         remote_env.update(part.remote_env)
         remote_user = part.remote_user or remote_user
@@ -1404,6 +1585,7 @@ def _merged(image: str, parts: list[_Part], facts, size: int) -> Plan:
         init = init or part.init
         ignored.extend(k for k in part.ignored if k not in ignored)
         commands.extend(part.commands)
+    _too_many_ports(ports)
     ordered = sorted(commands, key=lambda c: EVENTS.index(c.event))  # stable
     who = remote_user or container_user or facts.user or "root"
     account = resolve_user(who, facts.passwd, facts.group, size=size)
@@ -1422,4 +1604,5 @@ def _merged(image: str, parts: list[_Part], facts, size: int) -> Plan:
         image_path=facts.env.get("PATH", ""),
         image_id=getattr(facts, "id", ""),
         image_digest=getattr(facts, "digest", ""),
+        ports=tuple(Port(p, labels.get(p)) for p in ports),
     )

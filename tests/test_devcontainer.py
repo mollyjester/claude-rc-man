@@ -191,6 +191,20 @@ def test_every_key_of_the_policy_has_a_fragment_and_every_fragment_a_key():
     assert all(p.reason.strip() for p in dc.POLICY.values())
 
 
+@pytest.mark.parametrize("key", ["forwardPorts", "portsAttributes"])
+def test_forward_ports_and_their_attributes_are_honoured_with_what_rcman_does_with_them(key):
+    policy = dc.POLICY[key]
+    assert policy.action == HONOUR
+    assert "forward" in policy.reason.lower() and "publishes no port" not in policy.reason
+
+
+@pytest.mark.parametrize("key", ["appPort", "otherPortsAttributes"])
+def test_the_port_keys_rcman_does_not_take_stay_ignored_saying_forwardports_is_the_way(key):
+    policy = dc.POLICY[key]
+    assert policy.action == IGNORE
+    assert "forwardPorts" in policy.reason
+
+
 def keys(action: str) -> list[str]:
     return sorted(k for k, p in dc.POLICY.items() if p.action == action)
 
@@ -265,20 +279,235 @@ def test_a_key_that_is_shown_is_cut_and_has_no_control_characters():
     assert "\u0007" not in str(refused.value) and len(str(refused.value)) < 1000
 
 
-def test_a_file_that_names_no_image_is_refused_once_nothing_else_is():
-    with pytest.raises(Refused) as refused:
-        dc.check({"remoteUser": "root"})
-    assert refused.value.kind == "no_image"
-    with pytest.raises(Refused) as first:  # a refusal of a key comes first
-        dc.check({"capAdd": ["X"]})
+def test_a_file_that_names_no_image_and_builds_nothing_is_checked_with_no_image_and_no_build():
+    checked = dc.check({"remoteUser": "root", "postCreateCommand": "true"})
+    assert (checked.image, checked.build) == (None, None)  # the default image is used for it
+    assert dc.dockerfile_of(checked, dc.FILES[0]) is None
+    with pytest.raises(Refused) as first:  # a refusal of a key comes before naming no image
+        dc.check({"capAdd": ["X"], "features": {FEATURE: {}}})
     assert first.value.kind == "refused_key"
+    with pytest.raises(Refused) as alone:  # without the refused key, it names no image
+        dc.check({"features": {FEATURE: {}}})
+    assert alone.value.kind == "no_image"
+
+
+# A file with no image that asks for a build but names no Dockerfile, the key it asks with, and
+# the same file naming one, which is accepted.
+NO_DOCKERFILE = [
+    ({"build": {"args": {"A": "b"}}}, "build", {"build": {"args": {"A": "b"}}}),
+    ({"build": {"context": ".."}}, "build", {"build": {"context": ".."}}),
+    ({"build": {"target": "dev"}}, "build", {"build": {"target": "dev"}}),
+    ({"build": {}}, "build", {"build": {}}),
+    ({"context": ".."}, "context", {"context": "..", "dockerFile": "Dockerfile"}),  # older form
+    ({"dockerFile": ""}, "dockerFile", {"dockerFile": "Dockerfile"}),
+]
+
+
+@pytest.mark.parametrize(("asked", "key", "named"), NO_DOCKERFILE)
+def test_a_file_with_no_image_whose_build_has_no_dockerfile_is_refused(asked, key, named):
+    with pytest.raises(Refused) as refused:
+        dc.check({**asked, "remoteUser": "root"})
+    assert refused.value.kind == "build_without_dockerfile"
+    said = str(refused.value)
+    assert f'remove "{key}"' in said and f'has "{key}"' in said
+    assert '"dockerfile"' in said and '"image"' in said
+    accepted = dc.check({"remoteUser": "root"})  # with no "build" at all it is applied
+    assert (accepted.image, accepted.build) == (None, None)
+
+
+@pytest.mark.parametrize(("asked", "key", "named"), NO_DOCKERFILE)
+def test_the_same_build_naming_a_dockerfile_is_accepted(asked, key, named):
+    if "build" in named:
+        named = {"build": {**named["build"], "dockerfile": "Dockerfile"}}
+    checked = dc.check({**named, "remoteUser": "root"})
+    assert checked.build is not None and dc.dockerfile_of(checked, dc.FILES[0]) is not None
+
+
+@pytest.mark.parametrize(
+    "asked", [{"build": {"args": {"A": "b"}}}, {"context": ".."}, {"dockerFile": ""}]
+)
+def test_a_file_naming_an_image_with_a_build_of_no_dockerfile_is_accepted_and_builds_nothing(
+    asked,
+):
+    checked = dc.check({"image": "ubuntu:24.04", **asked})
+    assert (checked.image, checked.build) == ("ubuntu:24.04", None)
+
+
+# The devcontainer.json of a repository that was refused for naming no image.
+REPORTED = {
+    "name": "Rat Scout Pebble Dev",
+    "forwardPorts": [6080],
+    "portsAttributes": {
+        "6080": {
+            "label": "Pebble Emulator (noVNC)",
+            "visibility": "public",
+            "onAutoForward": "notify",
+        }
+    },
+}
+
+
+def test_the_reported_file_with_only_name_and_ports_is_accepted_with_only_its_name_ignored():
+    checked = dc.check(REPORTED)
+    assert (checked.image, checked.build) == (None, None)
+    assert checked.ignored == ("name",)  # its ports are honoured, not ignored
+
+
+def test_the_reported_files_port_and_its_label_are_in_the_plan():
+    found = dc.plan(REPORTED, facts(), 7, WORK, "ubuntu:24.04")
+    assert found.ports == (dc.Port(6080, "Pebble Emulator (noVNC)"),)
+    assert found.ignored == ("name",)  # the ports are honoured
+
+
+# --- forwarded ports ----------------------------------------------------------------------------
+
+
+def test_forward_ports_merged_from_image_and_file_into_plan_ports():
+    entries = label(
+        {"id": "f", "forwardPorts": [3000, "localhost:808"],
+         "portsAttributes": {"3000": {"label": "From the image"}, "808": {"label": "Web"}}},
+        {"forwardPorts": [9000, 3000]},
+    )  # fmt: skip
+    config = with_image(
+        {"forwardPorts": [808, 4000, 4000], "portsAttributes": {"808": {"label": "Mine"}}}
+    )
+    found = planned(config, facts(labels=entries))
+    assert found.ports == (
+        dc.Port(3000, "From the image"),
+        dc.Port(808, "Mine"),  # the file's label, the last, wins
+        dc.Port(9000),
+        dc.Port(4000),  # duplicates dropped, the first place kept
+    )
+    assert planned(with_image({})).ports == ()  # none asked for, none planned
+    label_only = with_image({"portsAttributes": {"5000": {"label": "Not forwarded"}}})
+    assert planned(label_only).ports == ()  # a label alone forwards nothing
+    empty = with_image({"portsAttributes": {"3000": {"label": ""}}})
+    kept = planned(empty, facts(labels=entries)).ports[0]
+    assert kept == dc.Port(3000, "From the image")  # an empty label leaves the image's
+
+
+@pytest.mark.parametrize(
+    "item",
+    ["db:543", "127.0.0.1:300", "0.0.0.0:300", "LOCALHOST:300", "localhost:0300",
+     "localhost:+300", "localhost: 300", "localhost:", "localhost:70000", "localhost:0",
+     "300", "", 0, 65536, -1, True, 300.0, None, [300], {"port": 300}],
+)  # fmt: skip
+def test_forward_port_naming_another_host_is_refused(item):
+    with pytest.raises(Refused) as refused:
+        dc.check({"forwardPorts": [3000, item]})
+    assert refused.value.kind == "bad_value"
+    assert refused.value.fields["key"] == "forwardPorts"
+    assert not re.search(r"\d", refused.value.fields["expected"])
+    with pytest.raises(Refused) as in_image:  # the same in an image's entry names the entry
+        planned(with_image({}), facts(labels=label({"id": "f", "forwardPorts": [item]})))
+    assert in_image.value.kind == "bad_value_in_image" and in_image.value.fields["entry"] == "f"
+    accepted = dc.check({"forwardPorts": [3000, "localhost:301", 1, 65535]})  # the positive
+    assert accepted.ignored == ()
+
+
+@pytest.mark.parametrize("value", [3000, "localhost:300", {"3000": True}, None])
+def test_forward_ports_that_is_not_a_list_is_refused(value):
+    with pytest.raises(Refused) as refused:
+        dc.check({"forwardPorts": value})
+    assert (refused.value.kind, refused.value.fields["key"]) == ("bad_value", "forwardPorts")
+
+
+def test_more_forwarded_ports_than_the_cap_are_refused():
+    most = list(range(3000, 3000 + dc.MAX_FORWARDED_PORTS))
+    assert len(planned(with_image({"forwardPorts": most})).ports) == dc.MAX_FORWARDED_PORTS
+    assert dc.check({"forwardPorts": [*most, most[0]]})  # a duplicate is no port more
+    with pytest.raises(Refused) as alone:  # the file alone
+        dc.check({"forwardPorts": [*most, 9999]})
+    assert alone.value.kind == "too_many_ports"
+    assert alone.value.fields["most"] == dc.MAX_FORWARDED_PORTS
+    assert str(dc.MAX_FORWARDED_PORTS) in str(alone.value)
+    half = dc.MAX_FORWARDED_PORTS // 2 + 1
+    entries = label({"id": "f", "forwardPorts": most[:half]})
+    config = with_image({"forwardPorts": [p + 1000 for p in most[:half]]})
+    assert dc.check(config)  # the file alone is within the cap
+    with pytest.raises(Refused) as merged:  # with the image's, it is not
+        planned(config, facts(labels=entries))
+    assert merged.value.kind == "too_many_ports"
+
+
+def test_ports_attributes_label_kept_https_refused_others_ignored_by_name():
+    ignored = {"visibility": "public", "onAutoForward": "notify", "requireLocalPort": True,
+               "elevateIfNeeded": False}  # fmt: skip
+    config = with_image(
+        {
+            "forwardPorts": [3000, 3001, 3002],
+            "portsAttributes": {
+                "3000": {"label": "App", "protocol": "http", **ignored},
+                "3001": {"label": "x\u0007" + "y" * 500},
+                "3002": {"label": ""},
+                "3000-3010": {"label": "A range"},  # not one port: read but not kept
+                "03001": {"label": "Not canonical"},
+            },
+        }
+    )
+    found = planned(config)
+    assert found.ports[0] == dc.Port(3000, "App")
+    assert "\u0007" not in found.ports[1].label and len(found.ports[1].label) < 200
+    assert found.ports[2] == dc.Port(3002)
+    https = with_image({"portsAttributes": {"3000": {"protocol": "https"}}})
+    with pytest.raises(Refused) as refused:
+        dc.check(https)
+    assert refused.value.kind == "port_https" and refused.value.fields["port"] == "3000"
+    assert problems.MAKE_AGAIN_ADVICE in str(refused.value)
+    with pytest.raises(Refused) as in_image:
+        planned(with_image({}), facts(labels=label({"id": "f", "portsAttributes": {
+            "3000": {"protocol": "https"}}})))  # fmt: skip
+    assert in_image.value.kind == "port_https_in_image" and in_image.value.fields["entry"] == "f"
+    assert "Use another image." in str(in_image.value)
+    for bad in (
+        {"3000": {"protocol": "ftp"}},
+        {"3000": {"label": 5}},
+        {"3000": [1]},
+        {"3000": "App"},
+        [{"label": "App"}],
+    ):
+        with pytest.raises(Refused) as wrong:
+            dc.check(with_image({"portsAttributes": bad}))
+        assert (wrong.value.kind, wrong.value.fields["key"]) == ("bad_value", "portsAttributes")
+        assert not re.search(r"\d", wrong.value.fields["expected"])
+    with pytest.raises(Refused) as unknown:  # a key no entry of portsAttributes has
+        dc.check(with_image({"portsAttributes": {"3000": {"aKeyOfTheFuture": True}}}))
+    assert unknown.value.kind == "unknown_key"
+    assert "aKeyOfTheFuture" in unknown.value.fields["key"]
+    with pytest.raises(Refused) as unknown_in_image:
+        planned(with_image({}), facts(labels=label({"id": "f", "portsAttributes": {
+            "3000": {"aKeyOfTheFuture": True}}})))  # fmt: skip
+    assert unknown_in_image.value.kind == "unknown_key_in_image"
+    other = with_image({"otherPortsAttributes": {"aKeyOfTheFuture": [1], "protocol": "https"}})
+    assert dc.check(other).ignored == ("otherPortsAttributes",)  # never read
+
+
+def test_a_plan_from_before_ports_reads_with_none():
+    found = planned(with_image({"forwardPorts": [300]}))
+    assert found.ports == (dc.Port(300),)  # the positive: the plan has a port
+    stored = json.loads(found.to_json())
+    assert stored["ports"] == [{"port": 300, "label": None}]
+    del stored["ports"]
+    assert dc.Plan.from_json(json.dumps(stored)).ports == ()
+
+
+@pytest.mark.parametrize(
+    "ports",
+    [[{"port": True, "label": None}], [{"port": 0, "label": None}], [{"port": 70000}],
+     [{"port": 300, "label": 5}], [300], {"300": None}, "300"],
+)  # fmt: skip
+def test_a_stored_plan_whose_ports_are_damaged_is_not_taken(ports):
+    stored = json.loads(planned(with_image({})).to_json())
+    dc.Plan.from_json(json.dumps(stored))  # the control: it is taken as it is
+    with pytest.raises(ValueError):
+        dc.Plan.from_json(json.dumps({**stored, "ports": ports}))
 
 
 @pytest.mark.parametrize("image", ["", "-v", "--privileged", "a b", "a\nb", "x" * 600, 5])
 def test_an_image_that_could_be_taken_for_an_option_or_is_not_a_name_is_refused(image):
     with pytest.raises(Refused) as refused:
         dc.check({"image": image})
-    assert refused.value.kind in {"bad_value", "no_image"}
+    assert refused.value.kind == "bad_value"  # never taken as naming no image
 
 
 @pytest.mark.parametrize(
@@ -808,7 +1037,7 @@ def test_a_single_object_label_is_one_entry_and_no_label_is_none():
 def test_what_an_entry_ignores_is_logged_by_name_once():
     entries = label({"id": "f", "customizations": {}}, {"forwardPorts": [1]})
     found = planned(with_image({"forwardPorts": [2], "name": "n"}), facts(labels=entries))
-    assert sorted(found.ignored) == ["customizations", "forwardPorts", "id", "name"]
+    assert sorted(found.ignored) == ["customizations", "id", "name"]
 
 
 # --- the plan, stored ----------------------------------------------------------------------
@@ -822,10 +1051,12 @@ def test_a_plan_survives_being_stored_and_read_back():
             "remoteEnv": {"B": "2"},
             "postCreateCommand": {"x": "make", "y": ["make", "y"]},
             "postStartCommand": "serve",
-            "forwardPorts": [1],
+            "forwardPorts": [1, "localhost:300"],
+            "portsAttributes": {"300": {"label": "App"}},
         }
     )
     found = planned(config)
+    assert found.ports == (dc.Port(1), dc.Port(300, "App"))  # non-vacuity: it has ports
     again = dc.Plan.from_json(found.to_json())
     assert again == found
     assert json.loads(found.to_json())["image"] == "ubuntu:24.04"  # non-vacuity: it is JSON
@@ -1373,6 +1604,15 @@ def test_the_base_image_of_a_build_is_not_the_image_of_its_plan():
     assert dc.plan(config, facts(), 7, WORK, image=BUILT).image == BUILT
 
 
+def test_a_plan_with_no_image_in_the_file_is_made_of_the_image_it_is_given():
+    default = "localhost/rcman-workspace"
+    config = {"remoteUser": "dev", "containerEnv": {"A": "b"}, "postCreateCommand": "x"}
+    found = dc.plan(config, facts(id="d" * 64), 7, WORK, image=default)
+    assert (found.image, found.image_id) == (default, "d" * 64)
+    assert found.uid == 1234 and found.container_env["A"] == "b"
+    assert [c.shell for c in found.commands] == ["x"]
+
+
 def test_a_plan_without_an_image_and_without_a_built_one_is_refused():
     with pytest.raises(Refused) as refused:
         dc.plan({"build": {"dockerfile": "Dockerfile"}}, facts(), 7, WORK)
@@ -1632,6 +1872,7 @@ def test_every_message_of_the_catalogue_that_names_a_key_is_filled_by_what_raise
         "symlink",
         "unreadable",
         "no_image",
+        "build_without_dockerfile",
         "bad_value",
         "variable",
         "env_reserved",
@@ -1647,6 +1888,9 @@ def test_every_message_of_the_catalogue_that_names_a_key_is_filled_by_what_raise
         "image_unrunnable",
         "invalid_value",
         "too_deep",
+        "port_https",
+        "port_https_in_image",
+        "too_many_ports",
     }
     for message in problems.DEVCONTAINER_MESSAGES.values():
         assert not re.search(r"\d", message), message
@@ -1809,7 +2053,7 @@ def test_a_value_nested_too_deeply_is_refused_wherever_it_is_met(depth):
 
 
 def test_a_value_at_the_depth_limit_is_taken():
-    assert dc.check(with_image({"forwardPorts": nested(dc.MAX_DEPTH - 2)}))
+    assert dc.check(with_image({"extensions": nested(dc.MAX_DEPTH - 2)}))
 
 
 def test_a_variable_in_a_key_that_is_ignored_is_not_looked_at():

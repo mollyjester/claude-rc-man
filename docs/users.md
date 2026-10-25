@@ -33,7 +33,12 @@ On the **People** page, **Remove** asks first, in a dialog, then removes them. O
 sudo rcman-admin delete <google-email>
 ```
 
-From the moment the removal starts, they cannot sign in. Every workspace of
+From the moment the removal starts, they cannot sign in, and no request of theirs reaches one
+of their workspaces' [forwarded ports](installation.md#forwarded-ports). Removed on the
+**People** page, every way they had into those ports ends at once, its open WebSockets and the
+answers still coming closed with it. Removed with `rcman-admin`, which is another process than
+rcman's, each request is refused as it comes, and what was open, a WebSocket or an answer still
+coming, ends when the workspace's container is removed. Every workspace of
 theirs is deleted, with everything in it and its server, and their settings,
 their GitHub token and their Claude sign-in with them, and so are the limits on
 them. A workspace still being made or rebuilt stops promptly, wherever the removal was

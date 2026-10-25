@@ -32,7 +32,7 @@ rcman, it says so too, and keeps showing what it read before.
 On a phone each table is a list, a row for each person or workspace.
 
 A part whose scope is switched off says **Not collected**, with a link to the
-**Monitoring settings**.
+**Service settings** page, where it is switched on again.
 
 A workspace's disk is its volume, the volume at its `/tmp` and its container's own
 layer, together. A person's disk is the sum over their workspaces; it is not known
@@ -62,19 +62,11 @@ request to the user manager, the host's figures stay as they were too. A failure
 is also written to the [system journal](journal.md) when it starts, when its
 reason changes and when it ends, not at every run.
 
-## Monitoring settings
+## Its settings
 
-The **Monitoring settings**, a card at the foot of the page, set how often each
-round runs, in **Usage interval (seconds)** and **Disk interval (seconds)**, and
-which of **Host**, **People** and **Containers** are collected; **Save** saves them
-all, and the card says when they are saved. They are kept in rcman's database, not
-in its [configuration](configuration.md), and apply at once: a scope switched off is
-hidden at once, and a new interval counts from that round's last run, so a round
-whose new interval has passed already runs at once. Switching a scope off and on
-does not move a round. With every scope off, nothing is collected. The defaults, and
-the shortest and longest interval each round takes, are in
-`backend/rcman/monitor.py`; a value outside them is refused under its field. Saving
-them is recorded in the [audit trail](audit.md) as `monitor.settings`.
+How often each round runs, and which of **Host**, **People** and **Containers** are
+collected, are set on the **Service settings** page (see
+[Monitoring](service-settings.md#monitoring)).
 
 ## What it does not cover
 

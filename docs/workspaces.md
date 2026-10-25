@@ -69,21 +69,20 @@ clone is done the workspace is shown as being made, and its panel lists
 **Steps so far**. A clone of a large repository can take a while, and the panel
 does not show git's progress while it runs.
 
-If the repository has a `devcontainer.json`, rcman reads it after the clone and
-makes the workspace from the image it names, running the commands it lists
-before the workspace is ready; the steps say what rcman is doing, and the
-workspace is shown as being made until it is done. A repository without one
-gets the default image, whose tools are listed in
-[the installation guide](installation.md#what-the-installer-does). If the file describes an image to build, with a
-Dockerfile or features, rcman builds it first: the steps show the build's
-progress, which can take a long time for a big image, and when other builds are
-running, a line says that this one waits for them to finish. The build uses a
-copy of the repository's files, not the workspace itself, and cannot sign in to
-a private registry. What rcman supports and refuses is in
+If the repository has a `devcontainer.json`, rcman reads it after the clone and makes the
+workspace from the image it names, or from the default image where it names none and builds
+none, running the commands it lists before the workspace is ready; the steps say what rcman is
+doing, and the workspace is shown as being made until it is done. A repository without one gets
+the default image, whose tools are listed in [the installation
+guide](installation.md#what-the-installer-does). If the file describes an image to build, with a
+Dockerfile or features, rcman builds it first: the steps show the build's progress, which can
+take a long time for a big image, and when other builds are running, a line says that this one
+waits for them to finish. The build uses a copy of the repository's files, not the workspace
+itself, and cannot sign in to a private registry. What rcman supports and refuses is in
 [devcontainer.json support](devcontainer.md). A change to the file afterwards, made in the
 workspace or pulled into it, changes nothing by itself: the workspace's **Container** card says
-the file has changed, and **Rebuild** applies it (see
-[The Container card and rebuilding](#the-container-card-and-rebuilding)).
+the file has changed, and **Rebuild** applies it (see [The Container card and
+rebuilding](#the-container-card-and-rebuilding)).
 
 The workspace you have selected is part of the page's address, so reloading
 the page keeps it, and the browser's back button returns to the workspace
@@ -95,13 +94,14 @@ on GitHub in a new tab, whatever state the workspace is in. The panel of a
 workspace that is ready has two tabs, **Overview**, shown first, and
 **Terminal** (see [The terminal](#the-terminal)); the arrow keys move between
 them. The tab you chose is part of the page's address, as the workspace is.
-**Overview** has three cards: **Claude server**, which shows the workspace's
+**Overview** has these cards: **Claude server**, which shows the workspace's
 server, or **Start** when it has none, and says why instead if rcman could not
 read the server, or that its container is being made again during a rebuild;
 below it **Container**, which says what the workspace's container is made from and
 offers **Rebuild** (see [The Container card and rebuilding](#the-container-card-and-rebuilding));
-and below that **Changes**, for the git repository in the
-workspace (see [Git](git.md)). A workspace that failed to be made says what went
+then, while an administrator has turned port forwarding on, **Ports**, the ports you
+can open in your browser (see [Ports](#ports)); and last **Changes**, for the git
+repository in the workspace (see [Git](git.md)). A workspace that failed to be made says what went
 wrong in a sentence, with the words rcman got behind **Details**, and **Steps so
 far** beneath; besides its trash button in the list, it offers **Rebuild** beside the
 reason where it can be rebuilt, as the next part says. When the
@@ -247,6 +247,26 @@ could not be had, offers **Rebuild** beside the reason. The repository's command
 the existing files; if the rebuild fails again, the workspace stays failed with the new reason,
 since there is no earlier state to return to, and can be rebuilt again.
 
+### Ports
+
+A port that the repository's `devcontainer.json` lists in `forwardPorts` can be opened in your
+browser, while an administrator has turned port forwarding on (see
+[Port forwarding](service-settings.md#port-forwarding)); otherwise the **Ports** card is not
+shown. The card lists each port by the label `portsAttributes` gives it, or by its number, as
+in Port 6080, beside its address, such as `https://6080-12.ws.rcman.example.com/`: the address
+is the link, and opens the port in a new tab. You can keep it, and open it again later; if it
+does not open, open it from the workspace's page. Only you can open it, not even an
+administrator; the first time, and again once your session on the port has ended or rcman has
+restarted, rcman checks who you are on the way. A workspace that forwards no port says so, naming
+`forwardPorts`. While a rebuild makes the container again, the card says the ports can be opened
+once that is done. Stopping the workspace's Claude server does not close its ports: they follow
+the container.
+
+What runs on the port must listen on `127.0.0.1` or `0.0.0.0` in the workspace, not on IPv6
+only, and serve plain http. A change to `forwardPorts` takes effect at the next
+[rebuild](#the-container-card-and-rebuilding). What a repository may ask for, and what follows
+for the machine, is in [Forwarded ports](devcontainer.md#forwarded-ports).
+
 ## Containers
 
 A workspace made from the default image has Podman: `podman` and `docker`, both the same Podman,
@@ -267,8 +287,10 @@ while rcman builds the image holds in the workspace.
 - Publishing a port, with `-p`, `--publish` or `-P`, publishes nothing: a container that shares
   the workspace's network listens on the workspace's own ports, so one listening on port 8000 is
   at `localhost:8000`, and two cannot listen on the same port. `podman` and `docker` say so when
-  asked to publish, unless `--network` or `--net` names a network other than `host`, or
-  `--pod` or `--pod-id-file` names a pod, and run the container as asked.
+  asked to publish, and that a port listed in `forwardPorts` is opened from the workspace's page
+  (see [Ports](#ports)), unless `--network` or `--net` names a network other than `host`, or
+  `--pod` or `--pod-id-file` names a pod, and run the container as asked. A container's port
+  that the workspace forwards is opened as any other of the workspace's ports is.
 - What containers store counts against no limit: the disk a workspace uses cannot be limited.
 - `/tmp` is the workspace container's own, on disk and not on the container's own files, so a
   Podman a program starts with its storage under `/tmp`, as rcman's own tests do, works there;
@@ -304,8 +326,12 @@ Every workspace's sessions are told:
 - that git takes your commit author and GitHub token from Settings (see
   [Git](git.md#your-commit-author-and-github-token)), and that the
   global git configuration is not to be changed;
-- that no port of the workspace can be reached from outside it, and that containers share the
-  workspace's network, so publishing a port publishes nothing (see [Containers](#containers));
+- that only the ports listed in `forwardPorts` can be reached from outside the workspace, by
+  you alone, at the address the workspace's page shows, when an administrator has turned port
+  forwarding on, and that what serves them is to listen on `127.0.0.1` or `0.0.0.0`, not on IPv6
+  only (see [Ports](#ports));
+- that containers share the workspace's network, so publishing a port publishes nothing (see
+  [Containers](#containers));
 - that memory, CPU and processes may be limited.
 
 They are also told where the description of the environment that Claude Code's Remote Control
@@ -317,8 +343,8 @@ the disk, and that no browsers for tests are installed in advance.
 What else a session is told depends on the workspace's image:
 
 - **An image that carries the default image's label**, `org.claude-rc-man.tools`: the default
-  image, whether a workspace gets it by having no `devcontainer.json` or by one that names it,
-  or an image built from it and pushed to a registry (see
+  image, however a workspace comes to have it, or an image built from it and pushed to a
+  registry (see
   [The image](devcontainer.md#the-image)). Sessions are told that `gh` is there with your
   GitHub token, to be used for GitHub work rather than GitHub's tools for Claude (see
   [gh](git.md#gh)), which tools the image has, and that anything else can be installed with

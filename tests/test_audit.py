@@ -97,17 +97,22 @@ def test_a_websocket_route_without_a_session_is_detected():
 
 
 def recorded_actions(app) -> set[str]:
-    """Every action a route records: a changing request's, and a WebSocket's two."""
+    """Every action rcman records: each route's, a request's one (a changing request's, or a
+    navigation's that changes something, identity.NAVIGATIONS) and a WebSocket's two, and the
+    forwarding server's handlers' (forward.HANDLERS)."""
+    from rcman import forward
+
     return {
         action
-        for r in [*(c.route for c in changing_routes(app)), *routes.websocket_routes(app)]
+        for r in [*(c.route for c in routes.api_routes(app)), *routes.websocket_routes(app)]
         for action in audit.actions_of(r)
-    }
+    } | {action for handler in forward.HANDLERS.values() for action in handler.actions}
 
 
 def test_every_action_is_listed_in_the_guide(app):
     actions = recorded_actions(app)
-    assert {"terminal.open", "workspace.create"} <= actions  # one of each kind
+    # One of each kind: a change, a WebSocket, a navigation and the forwarding server's.
+    assert {"terminal.open", "workspace.create", "forward.hand_off", "websocket.close"} <= actions
     guide = (REPO / "docs" / "audit.md").read_text(encoding="utf-8")
     listed = set(
         re.findall(r"^\| `([a-z]+\.[a-z_]+)` \|", guide, re.MULTILINE)
@@ -135,6 +140,8 @@ def test_every_result_other_than_an_error_code_is_listed_in_the_guide():
         "workspace_rebuilding",
         "signed_out",
         "service_closing",
+        "forwarding_off",
+        "session_ended",
     }
     assert documented_results(guide) == set(audit.RESULTS)
 

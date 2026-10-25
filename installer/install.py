@@ -96,7 +96,10 @@ CLAUDE_STORE = STATE / "claude"
 DATABASE = STATE / "rcman.db"
 CADDY_SNIPPET = ETC / "Caddyfile.snippet"
 RUN = Path("/run/rcman")
-SOCKET = RUN / "rcman.sock"  # rcman's only listener; Caddy's group alone may enter RUN
+SOCKET = RUN / "rcman.sock"  # rcman's listener; Caddy's group alone may enter RUN
+# rcman's forwarding server (rcman/forward.py): workspaces' forwarded ports, and Caddy's ask.
+FORWARD_SOCKET = RUN / "forward.sock"
+ASK_PATH = "/.rcman/ask"  # rcman/forward.py ASK_PATH
 TMPFILES = Path("/etc/tmpfiles.d/rcman.conf")
 # Where the commands an administrator runs as root are put: on root's path. Each is a
 # script of the project (pyproject.toml), in the release's virtualenv.
@@ -255,6 +258,12 @@ FIELDS = {
     "GOOGLE_CLIENT_SECRET": ("Google OAuth client secret", True, None, None),
     "ADMIN_EMAIL": ("Google email address of the first administrator", False, None, EMAIL),
     "PROXY_PORT": ("Local port for oauth2-proxy", False, "4180", PORT),
+    "ASK_PORT": (
+        "Local port Caddy asks rcman on before it gets a certificate for a forwarded port",
+        False,
+        "4181",
+        PORT,
+    ),
     "CADDY_USER": ("Account Caddy runs as", False, "caddy", ACCOUNT),
     "CLAUDE_DOWNLOAD": (
         "Address Claude Code's releases are downloaded from",
@@ -324,6 +333,8 @@ def gather(
         if not values[key] or (pattern and not pattern.fullmatch(values[key])):
             why = f" {pattern.sentence}" if isinstance(pattern, Rule) else ""
             raise InstallError(f"invalid {key}: {values[key]!r}.{why}")
+    if values["ASK_PORT"] == values["PROXY_PORT"]:
+        raise InstallError(f"invalid ASK_PORT: {values['ASK_PORT']!r} is oauth2-proxy's port too.")
     return values
 
 
@@ -344,6 +355,7 @@ def _paths() -> dict[str, str]:
         "TOOLS": str(TOOLS),
         "CLAUDE_STORE": str(CLAUDE_STORE),
         "SOCKET": str(SOCKET),
+        "FORWARD_SOCKET": str(FORWARD_SOCKET),
         "OAUTH2_PROXY": str(oauth2_proxy_binary()),
         "CLONE": str(REPO),
         "UPGRADE_REQUEST": str(UPGRADE_REQUEST),
@@ -1795,6 +1807,7 @@ def _status_over_tcp(host: str, port: str, path: str) -> int:
 def health(settings: dict[str, str]) -> None:
     checks = {
         "rcman": lambda: _status_over_socket(SOCKET, "/api/health"),
+        "forwarding server": lambda: _status_over_socket(FORWARD_SOCKET, "/.rcman/health"),
         "oauth2-proxy": lambda: _status_over_tcp("127.0.0.1", settings["PROXY_PORT"], "/ping"),
     }
     deadline = time.monotonic() + HEALTH_TIMEOUT
@@ -1828,7 +1841,82 @@ def summary(release: str, changes: list[str], notices: list[str]) -> str:
     return json.dumps({"release": release, "changed": changes, "notices": notices})
 
 
-def caddy_notices(changes: list[str], caddy_user: str) -> list[str]:
+def global_block(ask_port: str) -> str:
+    """What Caddy's global options must hold for certificates of forwarded ports: they are got
+    on demand, and only once rcman's forwarding server, asked on the ask site, allows one."""
+    return f"on_demand_tls {{\n\task {ask_url(ask_port)}\n}}"
+
+
+# Where Ubuntu's Caddy reads its configuration: the global options rcman's block goes in.
+CADDYFILE = Path("/etc/caddy/Caddyfile")
+ADAPT_WITHIN = 60.0
+
+
+def ask_url(ask_port: str) -> str:
+    """Where Caddy asks rcman whether it may get a certificate for a host on demand."""
+    return f"http://127.0.0.1:{ask_port}{ASK_PATH}"
+
+
+def on_demand_asks(config: object) -> list[str]:
+    """The addresses Caddy's JSON configuration, as ``caddy adapt`` gives it, asks before it gets
+    a certificate on demand: ``ask`` (Caddy 2.6, Ubuntu's) or an ``http`` permission's
+    ``endpoint`` (later Caddy)."""
+    found: object = config
+    for key in ("apps", "tls", "automation", "on_demand"):
+        found = found.get(key) if isinstance(found, dict) else None
+    if not isinstance(found, dict):
+        return []
+    asks = [found["ask"]] if isinstance(found.get("ask"), str) else []
+    permission = found.get("permission")
+    if isinstance(permission, dict) and permission.get("module") == "http":
+        if isinstance(permission.get("endpoint"), str):
+            asks.append(permission["endpoint"])
+    return asks
+
+
+def caddy_asks_rcman(caddy_user: str, ask_port: str, caddyfile: Path = CADDYFILE) -> bool | None:
+    """Whether the Caddyfile's global options ask rcman before an on-demand certificate, as
+    ``caddy adapt`` reads the file, as Caddy's account, which works with the admin API off and
+    starts nothing; None where it could not be read so."""
+    argv = ["caddy", "adapt", "--adapter", "caddyfile", "--config", str(caddyfile)]
+    # As everywhere ``run`` is given a timeout: one that passes kills runuser, which may leave
+    # caddy itself running a moment longer.
+    try:
+        done = run(argv, user=caddy_user, check=False, timeout=ADAPT_WITHIN)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if done.returncode != 0:
+        return None
+    try:
+        config = json.loads(done.stdout)
+    except ValueError:
+        return None
+    return ask_url(ask_port) in on_demand_asks(config)
+
+
+def caddy_ask_warning(found: bool | None, ask_port: str) -> str | None:
+    """What to warn of after ``caddy_asks_rcman`` found ``found``: nothing where the global
+    options ask rcman."""
+    if found:
+        return None
+    if found is None:
+        why = (
+            f"rcman could not read {CADDYFILE} with `caddy adapt` to check that its global "
+            "options ask rcman before Caddy gets a certificate on demand."
+        )
+    else:
+        why = (
+            f"The global options of {CADDYFILE} do not ask rcman before Caddy gets a "
+            "certificate on demand."
+        )
+    return (
+        f"{why} Without that, Caddy gets a certificate for any name under *.ws.<DOMAIN> that "
+        "anyone asks it for, each one published, and each one counted against your certificate "
+        "authority's limits. Put this in the global options, once:\n" + global_block(ask_port)
+    )
+
+
+def caddy_notices(changes: list[str], caddy_user: str, ask_port: str) -> list[str]:
     """What to tell the administrator to do to Caddy after this run."""
     notices = []
     if str(CADDY_SNIPPET) in changes:
@@ -1836,6 +1924,11 @@ def caddy_notices(changes: list[str], caddy_user: str) -> list[str]:
             f"The Caddy site block changed ({CADDY_SNIPPET}). If your Caddyfile imports "
             "it, nothing more is needed there; if it holds a copy, copy it again. "
             "Then restart Caddy."
+        )
+        notices.append(
+            "Caddy's global options, the block at the top of your Caddyfile, must hold this "
+            "once, for the certificates of forwarded ports; put it there if it is not, or "
+            "change its port if it is another:\n" + global_block(ask_port)
         )
     elif f"{caddy_user} in group {WEB_GROUP}" in changes:
         notices.append(
@@ -1911,15 +2004,18 @@ def main(argv: list[str]) -> int:
         # only now: the service runs with the new builder image's name, and an older one
         # is no one's but a build still running from it
         prune_devcontainer_builder_images(app_uid(), devcontainer_builder_image())
-        notices = caddy_notices(changes, settings["CADDY_USER"])
-        exposed = caddy_admin_exposed()
-        print(summary(release, changes, notices + ([CADDY_ADMIN_WARNING] if exposed else [])))
+        notices = caddy_notices(changes, settings["CADDY_USER"], settings["ASK_PORT"])
+        warnings = [CADDY_ADMIN_WARNING] if caddy_admin_exposed() else []
+        asks = caddy_asks_rcman(settings["CADDY_USER"], settings["ASK_PORT"])
+        unasked = caddy_ask_warning(asks, settings["ASK_PORT"])
+        warnings += [unasked] if unasked else []
+        print(summary(release, changes, notices + warnings))
         print(f"\nAdd this to your Caddyfile ({CADDY_SNIPPET}):\n")
         print(CADDY_SNIPPET.read_text(encoding="utf-8"))
         for notice in notices:
             print(notice)
-        if exposed:
-            print(f"Warning: {CADDY_ADMIN_WARNING}", file=sys.stderr)
+        for warning in warnings:
+            print(f"Warning: {warning}", file=sys.stderr)
         return 0
     except InstallError as error:
         print(f"install.sh: {error}", file=sys.stderr)

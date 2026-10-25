@@ -378,7 +378,11 @@ def test_forgetting_the_token_makes_the_very_next_push_fail_for_both(
 @pytest.fixture(scope="module")
 def service(podman, person):
     who, path = person
-    made = Workspaces(engine_settings(path, podman.config.claude_store), podman)
+    # The default image of the settings is the runtime's, as an installation's are.
+    settings = engine_settings(
+        path, podman.config.claude_store, workspace_image=podman.config.image
+    )
+    made = Workspaces(settings, podman)
     yield made
     made.close()
 

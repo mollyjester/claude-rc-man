@@ -1,8 +1,10 @@
 # Audit trail
 
 rcman records every request that changes something: who made it, what they did,
-to what, and whether it worked; and when a **Terminal** tab opens and closes.
-Requests that only read are not recorded. Administrators read the trail on the
+to what, and whether it worked; when a **Terminal** tab opens and closes; and, for a
+workspace's [forwarded ports](installation.md#forwarded-ports), each way in handed out, each
+session begun and each WebSocket opened and closed. Requests that only read are not
+recorded. Administrators read the trail on the
 **Audit trail** page in rcman, in the **Administration** group of the sidebar,
 newest first. The page says each action in plain words, with its code as the
 cell's tooltip, shows dates in UTC, and marks a request that failed with the
@@ -17,6 +19,13 @@ errors people's pages report, and output rcman does not recognise; both are
 described in [The system journal](journal.md). A page sends each report as a
 request of its own, `POST /api/client-errors`, which is not recorded because it
 changes nothing: a page's report of a failure rcman could not see, written to the journal only.
+
+Nor are the requests a forwarded port's pages make of the app in the workspace, one by one:
+plain proxied HTTP to a forwarded port is not recorded request by request, since it is the
+app's own traffic, as many requests as its pages make; who was let in to the port, and every
+WebSocket to it, are. Nor are the forwarding server's own answers that change nothing:
+whether it answers at all, Caddy's question whether it may get a certificate for a port's
+address, and its refusal of a request for what is no port's.
 
 ## What is recorded
 
@@ -36,7 +45,8 @@ changes nothing: a page's report of a failure rcman could not see, written to th
 | `person.delete` | removes a person, with all their workspaces (administrators) | the person's address |
 | `person.limits` | sets the limits on what a person's workspaces may use together (administrators) | the person's address and the limits set: `memory`, `cpu` and `pids`, each `none` for no limit |
 | `workspace.limits` | sets the limits on one workspace (administrators) | the person's address, a slash and the workspace's name, then the limits set as above |
-| `monitor.settings` | saves the settings of the **Monitor** page (administrators; see [Monitor](monitor.md#monitoring-settings)) | the settings saved, as JSON; none when they were refused |
+| `monitor.settings` | saves the monitoring settings on the **Service settings** page (administrators; see [Monitoring](service-settings.md#monitoring)) | the settings saved, as JSON; none when they were refused |
+| `forwarding.settings` | saves the port forwarding settings on the **Service settings** page (administrators; see [Port forwarding](service-settings.md#port-forwarding)) | the settings saved, as JSON; none when they were refused |
 | `git.stage` | stages files in a workspace's repository | the workspace's name |
 | `git.unstage` | unstages files | the workspace's name |
 | `git.commit` | commits what is staged | the workspace's name — the message is never recorded |
@@ -54,6 +64,10 @@ changes nothing: a page's report of a failure rcman could not see, written to th
 | `claude.disconnect` | signs their Claude account out, at once or once their last running server stops | none |
 | `terminal.open` | opens the **Terminal** tab on one of their workspaces — recorded also when the workspace is refused | the workspace's name; none when it was refused as not theirs or not there |
 | `terminal.close` | closes a **Terminal** tab that opened, or has it closed for them; the result says why | the workspace's name — nothing typed or shown is ever recorded |
+| `forward.hand_off` | opens a forwarded port of one of their workspaces, which hands them a way in to it, used once and soon expired (see [Forwarded ports](installation.md#forwarded-ports)) — recorded also when it is refused | the port's address, such as `6080-12.ws.rcman.example.com`; none when what was asked for is no port's address — the way in itself is never recorded |
+| `forward.session` | is let in to a forwarded port with the way in they were handed — recorded also when it is refused, where the way in was one rcman handed out | the port's address |
+| `websocket.open` | opens a WebSocket to a forwarded port, from the port's own pages | the port's address — nothing sent over it is ever recorded |
+| `websocket.close` | closes a WebSocket to a forwarded port, or has it closed for them; the result says why | the port's address |
 | `claude.upgrade` | rolls out a Claude Code version, or approves an installed one again (administrators; see [Claude Code versions](claude-version.md)) | the version |
 | `claude.mark_failed` | marks a Claude Code version as failed, so that it is not rolled out again until the mark is removed (administrators; see [Claude Code versions](claude-version.md)) | the version and the reason, as JSON (`{"version": ..., "reason": ...}`); no reason when none was given |
 | `claude.clear_failed` | removes a Claude Code version's mark as failed (administrators) | the version |
@@ -71,10 +85,12 @@ use rcman any more is `not_allowed`:
 | `pulled_not_pushed` | **Sync** brought the branch up to date, and the push failed |
 | `terminal_lost` | The page of a terminal closed it, was reloaded, went to another workspace or stopped answering |
 | `terminal_replaced` | A terminal opened on the same workspace, in another tab or window, replaced it |
-| `workspace_gone` | The terminal's workspace was deleted, or is not ready |
-| `workspace_rebuilding` | The terminal's workspace is being rebuilt: its container is being made again |
+| `workspace_gone` | The terminal's workspace, or the forwarded port's, was deleted, or is not ready, or the person it belongs to is being removed |
+| `workspace_rebuilding` | The terminal's workspace, or the forwarded port's, is being rebuilt: its container is being made again |
 | `signed_out` | The person signed out of rcman |
 | `service_closing` | rcman stopped |
+| `forwarding_off` | An administrator turned port forwarding off, which closed the WebSocket |
+| `session_ended` | The session the WebSocket was opened in reached its lifetime (see [Port forwarding](service-settings.md#port-forwarding)), or was the oldest of its person's when they had as many as they may |
 
 Administrators are warned about servers on an unrecognised screen, as described
 in [Workspaces](workspaces.md#for-administrators).

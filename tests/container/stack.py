@@ -10,14 +10,17 @@ network but its own loopback, which the stack's workspaces and the browser's con
 - rcman's app, made as tests/e2e_server.py makes one but with the Podman runtime at the suites'
   sizes (tests/container/sizes.py) on the engine, whose socket it is given; alice@example.com its
   first administrator, bob and carol let in; the fake claude in the store, which the browser tests
-  sign in to on the Claude page; its only listener the unix socket the installer gives it;
+  sign in to on the Claude page; its listeners the unix sockets the installer gives it, its
+  own and its forwarding server's;
 - oauth2-proxy (from the installer's toolchain) with the installer's own configuration, its Google
   endpoints pointed at tests/container/oidc_stub.py;
-- Caddy with the installer's own site block for rcman.test, its own certificate authority and its
-  admin API off, in front of rcman.test, auth.test (the stub) and github.com: the stand-in GitHub
-  (tests/github_server.py through tests/container/github_stand_in.py ``serve``, with a public and
-  a private repository) under a certificate of an authority of its own, which the workspaces'
-  image, derived from the default image, trusts, and where its git finds github.com;
+- Caddy with the installer's own site block for rcman.test and its forwarded ports, its own
+  certificate authority, its admin API off and on-demand certificates asked of a site on its
+  loopback (``global_options``), in front of rcman.test, auth.test (the stub) and github.com: the
+  stand-in GitHub (tests/github_server.py through tests/container/github_stand_in.py ``serve``,
+  with a public and a private repository, and a public one whose devcontainer.json forwards a
+  port) under a certificate of an authority of its own, which the workspaces' image, derived
+  from the default image, trusts, and where its git finds github.com;
 - the fake claude's releases, served, as the address rcman downloads Claude Code from;
 - ``systemctl`` the stand-in of tests/container/stand_ins.py, which rcman's limits reach.
 
@@ -26,13 +29,19 @@ naming the stack's configuration:
 
 - ``up`` starts all of it and returns once everything answers;
 - ``restart`` ends rcman's app and starts it again;
+- ``caddy [<file> [<ask address>]]`` ends Caddy and starts it again with the sites in the file
+  after the stack's own, or with the stack's own only, its global options asking the address
+  given or the stack's own ask site, failing with Caddy's version and its words where Caddy does
+  not load the result;
 - ``request <json>`` makes one request to rcman's socket as Caddy passes one on, and
   ``identity`` signs in through Caddy, oauth2-proxy and the stand-in for Google as a browser
-  does, each printing what it was answered;
+  does, and ``cookies`` signs in the same way one redirect at a time and then out, each printing
+  what it was answered;
 - ``repository <workspace id>``, which a browser test runs through the relay the browser's
   container has (tests/container/stack_exec.mjs), makes a git repository in that workspace's work
   folder, with a bare origin of its own in the workspace, one commit pushed, and changes left to
-  stage;
+  stage; and ``serve-port <workspace id> <port>``, run the same way, starts an app on that port
+  in the workspace (``PORT_APP``) and returns once it listens;
 - ``check``, after the browser tests, checks what they left: carol, whom they deleted, has nothing
   labelled hers left, the changes they staged, committed and pushed from the page are in the
   origin as the person set as the author, with an audit row for each step and none that holds what
@@ -64,8 +73,25 @@ ADMIN = "alice@example.com"
 OTHERS = ("bob@example.com", "carol@example.com")
 # The loopback ports of the stack's own network, which nothing else shares.
 STUB_PORT, GITHUB_PORT, RELEASES_PORT, PROXY_PORT = 9100, 9200, 9300, 4180
-# rcman's socket and its allowed list, where the installer puts them.
+# Where Caddy asks whether it may get a certificate for a host on demand (on_demand_tls), which
+# only a site served on that loopback port answers.
+ASK_PORT = 9400
+ASK_PATH = "/.rcman/ask"
+ASK_URL = f"http://127.0.0.1:{ASK_PORT}{ASK_PATH}"
+
+
+def global_options(ask: str = ASK_URL) -> str:
+    """The stack's own global options for Caddy: no admin API, certificates from its own
+    authority, which is not installed in the system's trust, and on-demand certificates only
+    once ``ask`` allows one; with no ``ask``, no ``on_demand_tls`` at all, as in a Caddyfile
+    that lacks the block the installer prints."""
+    on_demand = f"\ton_demand_tls {{\n\t\task {ask}\n\t}}\n" if ask else ""
+    return "{\n\tadmin off\n\tlocal_certs\n\tskip_install_trust\n" + on_demand + "}\n"
+
+
+# rcman's sockets and its allowed list, where the installer puts them.
 SOCKET = Path("/run/rcman/rcman.sock")
+FORWARD_SOCKET = Path("/run/rcman/forward.sock")
 ALLOWED = Path("/var/lib/rcman/allowed-emails")
 # The browser's image: Playwright's, at the version frontend/package-lock.json pins, by digest.
 PLAYWRIGHT_VERSION = "1.63.0"
@@ -85,18 +111,21 @@ def playwright_problem(image: str, lock: dict) -> str | None:
     return None
 
 
-# The verb the browser tests may have the suite run in the stack's container, and nothing else.
-RELAYED = ("python3", "tests/container/stack.py", "repository")
+# The verbs the browser tests may have the suite run in the stack's container, each with how
+# many arguments it takes, every one decimal digits, and nothing else.
+RELAYED = ("python3", "tests/container/stack.py")
+RELAYED_VERBS = {"repository": 1, "serve-port": 2}
 
 
 def relayed(argv: list[str]) -> bool:
-    """Whether ``argv`` is the one command the relay runs: the repository verb and an id."""
+    """Whether ``argv`` is a command the relay runs: one of RELAYED_VERBS with its numbers."""
+    if not isinstance(argv, list) or tuple(argv[: len(RELAYED)]) != RELAYED:
+        return False
+    verb, *numbers = argv[len(RELAYED) :] or [None]
     return (
-        isinstance(argv, list)
-        and len(argv) == len(RELAYED) + 1
-        and tuple(argv[: len(RELAYED)]) == RELAYED
-        and isinstance(argv[-1], str)
-        and argv[-1].isdigit()
+        isinstance(verb, str)
+        and len(numbers) == RELAYED_VERBS.get(verb, -1)
+        and all(isinstance(n, str) and re.fullmatch(r"[0-9]+", n) for n in numbers)
     )
 
 
@@ -166,6 +195,8 @@ printf 'new\\n' > notes.txt
 """
 # Seconds the stack may take to answer, and rcman to answer again after a restart.
 ANSWERS_WITHIN = 180
+# Seconds a process of the stack is given to end when asked, and again once killed.
+ENDS_WITHIN = 60
 
 # --- in the stack's container --------------------------------------------------------------
 
@@ -223,6 +254,7 @@ def settings():
         tools_dir=Path(held["tools"]),
         claude_store=Path(held["store"]),
         claude_download=f"http://127.0.0.1:{RELEASES_PORT}",
+        forward_socket=FORWARD_SOCKET,
         docs_dir=SRC / "docs",
         frontend_dir=Path(DIST),
     )
@@ -310,19 +342,39 @@ def started(name: str, argv: list[str], **more) -> None:
     (logs / f"{name}.pid").write_text(str(child.pid))
 
 
+def group_alive(pid: int) -> bool:
+    try:
+        os.killpg(pid, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
 def ended(name: str) -> None:
+    """The process ``name`` and its group ended: asked to end, then killed once
+    ``ENDS_WITHIN`` has passed; one whose group is still there after that ends the verb."""
     pid_file = state() / "logs" / f"{name}.pid"
     pid = int(pid_file.read_text())
-    with contextlib.suppress(ProcessLookupError):
-        os.killpg(pid, signal.SIGTERM)
-    deadline = time.monotonic() + 60
-    while time.monotonic() < deadline:
-        try:
-            os.killpg(pid, 0)
-        except ProcessLookupError:
+    for sent in (signal.SIGTERM, signal.SIGKILL):
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(pid, sent)
+        deadline = time.monotonic() + ENDS_WITHIN
+        while group_alive(pid) and time.monotonic() < deadline:
+            time.sleep(0.1)
+        if not group_alive(pid):
             break
-        time.sleep(0.1)
+    else:
+        sys.exit(f"{name} (process group {pid}) did not end")
     pid_file.unlink()
+
+
+def running(pid: int) -> bool:
+    """Whether the process ``pid`` runs: is there and is not a zombie."""
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text()
+    except OSError:
+        return False
+    return stat.rpartition(")")[2].split()[0] != "Z"
 
 
 def answers(probe) -> bool:
@@ -398,7 +450,62 @@ def install_settings() -> dict[str, str]:
         "GOOGLE_CLIENT_SECRET": "test-client-secret",
         "COOKIE_SECRET": secrets.token_urlsafe(24),
         "PROXY_PORT": str(PROXY_PORT),
+        "ASK_PORT": str(ASK_PORT),
     }
+
+
+def caddy_env() -> dict[str, str]:
+    data = state() / "caddy"
+    return {"PATH": "/usr/bin:/bin", "HOME": str(data), "XDG_DATA_HOME": str(data / "data"),
+            "XDG_CONFIG_HOME": str(data / "config")}  # fmt: skip
+
+
+def caddy_certificates(folder: Path) -> Path:
+    """The folder of the certificates Caddy's own authority issued, one folder per host, in its
+    data folder in the stack's folder ``folder``."""
+    return folder / "caddy" / "data" / "caddy" / "certificates" / "local"
+
+
+def caddy_root(folder: Path) -> Path:
+    """The root certificate of the certificate authority of the stack's Caddy, in its data
+    folder in the stack's folder ``folder``."""
+    return folder / "caddy" / "data" / "caddy" / "pki" / "authorities" / "local" / "root.crt"
+
+
+def caddy_started(rendered: dict[str, str], sites: str = "", ask: str = ASK_URL) -> None:
+    """Caddy with the stack's global block asking ``ask``, the installer's site block rendered
+    with ``rendered``, the stack's own sites and then ``sites``, once it has loaded the file and
+    answers. A file it does not load ends the verb with Caddy's version and its words."""
+    sys.path.insert(0, str(SRC))
+    from installer import install as ins
+
+    pki = Path(config()["pki"])
+    Path("/var/log/caddy").mkdir(parents=True, exist_ok=True)
+    caddyfile = state() / "Caddyfile"
+    caddyfile.write_text(
+        global_options(ask)
+        + ins.render("Caddyfile", rendered)
+        + f"\n{AUTH} {{\n\treverse_proxy 127.0.0.1:{STUB_PORT}\n}}\n"
+        + f"\ngithub.com {{\n\ttls {pki / 'leaf.crt'} {pki / 'leaf.key'}\n"
+        + f"\treverse_proxy 127.0.0.1:{GITHUB_PORT}\n}}\n"
+        + sites
+    )
+    (state() / "caddy").mkdir(exist_ok=True)
+    loaded = ["--adapter", "caddyfile", "--config", str(caddyfile)]
+    checked = subprocess.run(
+        ["caddy", "validate", *loaded], env=caddy_env(), capture_output=True, text=True
+    )
+    if checked.returncode != 0:
+        version = subprocess.run(["caddy", "version"], capture_output=True, text=True).stdout
+        sys.exit(f"Caddy {version.strip()} does not load {caddyfile}:\n{checked.stderr}")
+    started("caddy", ["caddy", "run", *loaded], env=caddy_env())
+    probe = ["curl", "-sk", "-o", "/dev/null", "--resolve", f"{DOMAIN}:443:127.0.0.1"]
+    wait("caddy", lambda: subprocess.run([*probe, f"https://{DOMAIN}/"]).returncode == 0)
+    # What answered is the Caddy just started, not one an earlier start left running.
+    pid = int((state() / "logs" / "caddy.pid").read_text())
+    if not running(pid):
+        log = (state() / "logs" / "caddy.log").read_text(errors="replace")[-4000:]
+        sys.exit(f"the Caddy started ({pid}) is not running, yet Caddy answers:\n{log}")
 
 
 def up() -> None:
@@ -407,7 +514,6 @@ def up() -> None:
     from tests import claude_download
     from tests.container import github_stand_in as stand_in
 
-    held = config()
     version = (SRC / "helpers" / "claude-version").read_text().strip()
     releases = state() / "releases"
     claude_download.release(releases, version)
@@ -429,25 +535,7 @@ def up() -> None:
     )
     started("oauth2-proxy", [str(ins.oauth2_proxy_binary()), "--config", str(proxy_config)])
     wait("oauth2-proxy", lambda: tcp_answers(PROXY_PORT))
-    pki = Path(held["pki"])
-    Path("/var/log/caddy").mkdir(parents=True, exist_ok=True)
-    caddyfile = state() / "Caddyfile"
-    caddyfile.write_text(
-        "{\n\tadmin off\n\tlocal_certs\n\tskip_install_trust\n}\n"
-        + ins.render("Caddyfile", rendered)
-        + f"\n{AUTH} {{\n\treverse_proxy 127.0.0.1:{STUB_PORT}\n}}\n"
-        + f"\ngithub.com {{\n\ttls {pki / 'leaf.crt'} {pki / 'leaf.key'}\n"
-        + f"\treverse_proxy 127.0.0.1:{GITHUB_PORT}\n}}\n"
-    )
-    data = state() / "caddy"
-    data.mkdir(exist_ok=True)
-    started(
-        "caddy", ["caddy", "run", "--adapter", "caddyfile", "--config", str(caddyfile)],
-        env={"PATH": "/usr/bin:/bin", "HOME": str(data), "XDG_DATA_HOME": str(data / "data"),
-             "XDG_CONFIG_HOME": str(data / "config")},
-    )  # fmt: skip
-    probe = ["curl", "-sk", "-o", "/dev/null", "--resolve", f"{DOMAIN}:443:127.0.0.1"]
-    wait("caddy", lambda: subprocess.run([*probe, f"https://{DOMAIN}/"]).returncode == 0)
+    caddy_started(rendered)
     github = ["curl", "-sk", "-o", "/dev/null", "-w", "%{http_code}", "--resolve",
               "github.com:443:127.0.0.1",
               f"https://github.com/{stand_in.STACK_OWNER}/{stand_in.STACK_PUBLIC}/info/refs"
@@ -456,6 +544,18 @@ def up() -> None:
         github, capture_output=True, text=True).stdout == "200")  # fmt: skip
     (state() / "people.json").write_text(json.dumps(people()))
     print("READY", flush=True)
+
+
+def caddy(sites: str = "", ask: str = ASK_URL) -> None:
+    """Caddy ended and started again, with the sites in the file ``sites`` after the stack's
+    own, or with the stack's own only, its global options asking ``ask``, or asking nothing
+    where ``ask`` is empty. Where Caddy does not
+    load the result, the verb fails and Caddy is left ended. The settings are rendered again,
+    with a fresh cookie secret that only oauth2-proxy's configuration, which is not written
+    again, would hold: the Caddyfile has none."""
+    ended("caddy")
+    caddy_started(install_settings(), Path(sites).read_text() if sites else "", ask)
+    print("CADDY", flush=True)
 
 
 def restart() -> None:
@@ -485,44 +585,104 @@ def request(text: str) -> None:
     print(json.dumps([answer.status, answer.read().decode(errors="replace")]))
 
 
+class Browser:
+    """Requests to the stack's sites through Caddy, as a browser makes them, through one of
+    three openers: ``plain`` keeps no cookies and answers redirects as they are; ``follows``
+    keeps the cookies it is given in ``jar`` and follows redirects; ``steps`` keeps them in the
+    same ``jar`` and answers redirects as they are. ``fetch`` answers the status, the body and
+    the headers as a list of pairs."""
+
+    def __init__(self):
+        import http.cookiejar
+        import ssl
+        import urllib.request
+
+        context = ssl.create_default_context()
+        context.check_hostname, context.verify_mode = False, ssl.CERT_NONE  # Caddy's own authority
+        self.jar = http.cookiejar.CookieJar()
+
+        class Kept(urllib.request.HTTPRedirectHandler):
+            def redirect_request(self, *args):
+                return None
+
+        https = urllib.request.HTTPSHandler(context=context)
+        cookie_handler = urllib.request.HTTPCookieProcessor(self.jar)
+        self.plain = urllib.request.build_opener(https, Kept())
+        self.follows = urllib.request.build_opener(https, cookie_handler)
+        self.steps = urllib.request.build_opener(https, cookie_handler, Kept())
+
+    @staticmethod
+    def fetch(opener, url, headers=None):
+        import urllib.error
+        import urllib.request
+
+        try:
+            with opener.open(urllib.request.Request(url, headers=headers or {}), timeout=30) as r:
+                return r.status, r.read().decode(errors="replace"), r.headers.items()
+        except urllib.error.HTTPError as e:
+            return e.code, e.read().decode(errors="replace"), e.headers.items()
+
+
 def identity() -> None:
     """Through Caddy and oauth2-proxy, as a browser: a request that sets the identity header
     itself and has no session is sent to sign in, and once signed in through the stand-in for
     Google its header is not what rcman is told. What is printed, the JSON of what was seen."""
-    import http.cookiejar
-    import ssl
-    import urllib.error
     import urllib.parse
-    import urllib.request
 
-    context = ssl.create_default_context()
-    context.check_hostname, context.verify_mode = False, ssl.CERT_NONE  # Caddy's own authority
-    jar = http.cookiejar.CookieJar()
-
-    class Kept(urllib.request.HTTPRedirectHandler):
-        def redirect_request(self, *args):
-            return None
-
+    browser = Browser()
     spoof = {"X-Forwarded-Email": "evil@example.com"}
-    https = urllib.request.HTTPSHandler(context=context)
-    plain = urllib.request.build_opener(https, Kept())
-    browser = urllib.request.build_opener(https, urllib.request.HTTPCookieProcessor(jar))
-
-    def fetch(opener, url, headers=None):
-        try:
-            with opener.open(urllib.request.Request(url, headers=headers or {}), timeout=30) as r:
-                return r.status, r.read().decode(errors="replace"), dict(r.headers)
-        except urllib.error.HTTPError as e:
-            return e.code, e.read().decode(errors="replace"), dict(e.headers)
-
-    seen = {"unsigned": fetch(plain, f"https://{DOMAIN}/api/me", spoof)[:3:2]}
-    status, page, _ = fetch(browser, f"https://{DOMAIN}/oauth2/start?rd=/")
+    status, _, headers = browser.fetch(browser.plain, f"https://{DOMAIN}/api/me", spoof)
+    seen = {"unsigned": [status, dict(headers)]}
+    status, page, _ = browser.fetch(browser.follows, f"https://{DOMAIN}/oauth2/start?rd=/")
     form = dict(re.findall(r'name="([^"]+)" value="([^"]*)"', page))
     query = urllib.parse.urlencode({**form, "email": ADMIN})
-    status, _, _ = fetch(browser, f"https://{AUTH}/authorize?{query}")  # back to the callback
-    seen["signed_in"] = status
-    seen["me"] = fetch(browser, f"https://{DOMAIN}/api/me", spoof)[:2]
+    status, _, _ = browser.fetch(browser.follows, f"https://{AUTH}/authorize?{query}")
+    seen["signed_in"] = status  # back through the callback
+    seen["me"] = browser.fetch(browser.follows, f"https://{DOMAIN}/api/me", spoof)[:2]
     print(json.dumps(seen))
+
+
+def set_cookies_of(headers) -> list[list]:
+    """The ``Set-Cookie`` headers among ``headers``, each with its value left out, as
+    ``[name; attributes, whether the value was empty]``."""
+    found = []
+    for key, value in headers:
+        if key.lower() == "set-cookie":
+            pair, _, attributes = value.partition(";")
+            name, _, value = pair.partition("=")
+            found.append([name + ";" + attributes, value.strip().strip('"') == ""])
+    return found
+
+
+def cookies() -> None:
+    """A sign-in through Caddy, oauth2-proxy and the stand-in for Google, one redirect at a
+    time, as a browser makes it, then a sign-out. What is printed, the JSON of every
+    ``Set-Cookie`` the sign-in's responses from rcman's host carried, and the sign-out's (see
+    ``set_cookies_of``), and what ``/api/me`` answered after each."""
+    import urllib.parse
+
+    browser = Browser()
+    set_cookies = []
+    url = f"https://{DOMAIN}/oauth2/start?rd=/"
+    for _ in range(10):
+        status, page, headers = browser.fetch(browser.steps, url)
+        if urllib.parse.urlsplit(url).hostname == DOMAIN:
+            set_cookies += set_cookies_of(headers)
+        location = dict((k.lower(), v) for k, v in headers).get("location")
+        if status not in (301, 302, 303, 307) or not location:
+            break
+        url = urllib.parse.urljoin(url, location)
+        if urllib.parse.urlsplit(url).path == "/authorize" and "email=" not in url:
+            status, page, _ = browser.fetch(browser.steps, url)  # the stand-in's form
+            form = dict(re.findall(r'name="([^"]+)" value="([^"]*)"', page))
+            url = f"https://{AUTH}/authorize?" + urllib.parse.urlencode({**form, "email": ADMIN})
+    me = browser.fetch(browser.steps, f"https://{DOMAIN}/api/me")[:2]
+    _, _, headers = browser.fetch(browser.steps, f"https://{DOMAIN}/oauth2/sign_out")
+    signed_out = set_cookies_of(headers)
+    after, _, headers = browser.fetch(browser.steps, f"https://{DOMAIN}/api/me")
+    location = dict((k.lower(), v) for k, v in headers).get("location", "")
+    print(json.dumps({"set_cookies": set_cookies, "last": [status, url], "me": me,
+                      "signed_out": signed_out, "me_after": [after, location]}))  # fmt: skip
 
 
 def repository(workspace_id: str) -> None:
@@ -530,6 +690,78 @@ def repository(workspace_id: str) -> None:
     in_workspace(int(workspace_id), MAKE_REPOSITORY)
     (state() / "repository.json").write_text(json.dumps({"workspace": int(workspace_id)}))
     print("REPOSITORY", flush=True)
+
+
+# Run by the workspace's python3, on its 127.0.0.1 at the port it is given: the app of a
+# forwarded port the browser tests reach. A page that shows the path and query it was asked for
+# (``#seen``), and a WebSocket at any path that sends back every message it is sent.
+PORT_APP = r"""
+import base64, hashlib, html, sys
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+
+class Handler(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
+    def log_message(self, *args):
+        pass
+
+    def do_GET(self):
+        if self.headers.get("Upgrade", "").lower() == "websocket":
+            key = self.headers["Sec-WebSocket-Key"] + GUID
+            self.send_response(101)
+            self.send_header("Upgrade", "websocket")
+            self.send_header("Connection", "Upgrade")
+            accept = base64.b64encode(hashlib.sha1(key.encode()).digest()).decode()
+            self.send_header("Sec-WebSocket-Accept", accept)
+            self.end_headers()
+            self.close_connection = True
+            self.echo()
+            return
+        body = ("<!doctype html><title>forwarded</title><p id=seen>" + html.escape(self.path)
+                + "</p>").encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def echo(self):
+        read = self.rfile.read
+        while len(head := read(2)) == 2:
+            opcode, length = head[0] & 0x0F, head[1] & 0x7F
+            if length == 126:
+                length = int.from_bytes(read(2), "big")
+            elif length == 127:
+                length = int.from_bytes(read(8), "big")
+            mask = read(4) if head[1] & 0x80 else bytes(4)
+            data = bytes(b ^ mask[i % 4] for i, b in enumerate(read(length)))
+            if opcode == 8:
+                self.wfile.write(bytes([0x88, len(data)]) + data)
+                return
+            opcode = 10 if opcode == 9 else opcode
+            n = len(data)
+            size = bytes([n]) if n < 126 else (bytes([126]) + n.to_bytes(2, "big") if n < 65536
+                                               else bytes([127]) + n.to_bytes(8, "big"))
+            self.wfile.write(bytes([0x80 | opcode]) + size + data)
+
+ThreadingHTTPServer(("127.0.0.1", int(sys.argv[1])), Handler).serve_forever()
+"""
+# Run by the workspace's python3: whether something listens on its 127.0.0.1 at the port.
+PORT_OPEN = "import socket, sys; socket.create_connection(('127.0.0.1', int(sys.argv[1])), 2)"
+
+
+def serve_port(workspace_id: str, port: str) -> None:
+    """PORT_APP started in the workspace on ``port``, once it listens."""
+    container = f"rcman-ws-{int(workspace_id)}"
+    podman("exec", "--detach", container, "python3", "-c", PORT_APP, str(int(port)))
+    deadline = time.monotonic() + ANSWERS_WITHIN
+    while podman("exec", container, "python3", "-c", PORT_OPEN, str(int(port)),
+                 check=False).returncode != 0:  # fmt: skip
+        if time.monotonic() > deadline:
+            sys.exit(f"nothing listens on port {port} in {container}")
+        time.sleep(0.5)
+    print("SERVING", flush=True)
 
 
 def check() -> None:
@@ -733,7 +965,8 @@ def launched(engine, *, name: str, system_image: str, default_image: str, builde
 if __name__ == "__main__":
     verb, *arguments = sys.argv[1:]
     sys.path.insert(0, str(SRC / "backend"))
-    run = {"up": up, "restart": restart, "check": check, "repository": repository,
-           "request": request, "identity": identity,
+    run = {"up": up, "restart": restart, "caddy": caddy, "check": check, "repository": repository,
+           "serve-port": serve_port,
+           "request": request, "identity": identity, "cookies": cookies,
            "admin-delete": admin_delete, "admin-delete-here": admin_delete_here}[verb]  # fmt: skip
     run(*arguments)

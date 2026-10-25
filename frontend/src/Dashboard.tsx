@@ -22,6 +22,7 @@ import { asApiError, ProblemView, useFieldErrors } from "./ProblemView";
 import {
   ACTIONS,
   dotFor,
+  type ForwardedPort,
   REBUILDING,
   ServerCard,
   StatusDot,
@@ -93,6 +94,8 @@ export function Dashboard({ pollMs }: { pollMs: number }) {
   const [approved, setApproved] = useState<string | null>(null);
   // Whether rcman is being upgraded, while which no workspace is made.
   const [upgrading, setUpgrading] = useState(false);
+  // Whether ports are forwarded now, as the server says: the Ports card is shown only then.
+  const [forwarding, setForwarding] = useState(false);
   const upgradingNote = useId();
   const [error, setError] = useState<ApiError | null>(null);
   // What was done, shown until another workspace is selected.
@@ -125,11 +128,13 @@ export function Dashboard({ pollMs }: { pollMs: number }) {
         workspaces: Workspace[];
         claude_approved: string | null;
         rcman_upgrading?: boolean;
+        forwarding?: boolean;
       }>("/api/workspaces");
       if (mine === latest.current) {
         setWorkspaces(answer.workspaces);
         setApproved(answer.claude_approved);
         setUpgrading(answer.rcman_upgrading === true);
+        setForwarding(answer.forwarding === true);
         setError(null);
       }
     } catch (e) {
@@ -242,6 +247,7 @@ export function Dashboard({ pollMs }: { pollMs: number }) {
                 workspace={selected}
                 approved={approved}
                 upgrading={upgrading}
+                forwarding={forwarding}
                 pollMs={pollMs}
                 onChange={refresh}
                 onUpdated={updated}
@@ -1005,6 +1011,51 @@ function ContainerCard({
   );
 }
 
+// The Ports card of a ready workspace's Overview, shown while forwarding is on: each port the
+// server lists, by its label or its number, and its real address as a link that opens it in a new
+// tab, with no button beside it. While a rebuild replaces the container (`replacing`) no port can
+// be opened, which it says instead.
+function PortsCard({ workspace, replacing }: { workspace: Workspace; replacing: boolean }) {
+  const { ports } = workspace;
+  let body: ReactNode;
+  if (replacing) body = <p className="muted">{m.portsStopped}</p>;
+  else if (ports.length === 0) body = <p className="muted">{m.portsNone}</p>;
+  else
+    body = (
+      <>
+        <p className="muted">{m.portsIntro}</p>
+        <ul className="ports">
+          {ports.map((port) => (
+            <PortRow key={port.port} port={port} />
+          ))}
+        </ul>
+      </>
+    );
+  return <PanelSection title={m.portsTitle}>{body}</PanelSection>;
+}
+
+// A forwarded port's row: its name, which describes the link, and its address, the link itself.
+function PortRow({ port }: { port: ForwardedPort }) {
+  const name = useId();
+  return (
+    <li className="list-row">
+      <span id={name} className="port-name">
+        {port.label ?? m.portNumbered(port.port)}
+      </span>
+      <a
+        className="port-link"
+        href={port.url}
+        target="_blank"
+        rel="noopener"
+        translate="no"
+        aria-describedby={name}
+      >
+        {port.url}
+      </a>
+    </li>
+  );
+}
+
 // The tabs of a ready workspace's panel, in order, each by the name the address gives it
 // (`?tab=`); the first is the one shown when the address names none it knows.
 const TABS = [
@@ -1114,6 +1165,7 @@ function WorkspacePanel({
   workspace,
   approved,
   upgrading,
+  forwarding,
   pollMs,
   onChange,
   onUpdated,
@@ -1121,6 +1173,7 @@ function WorkspacePanel({
   workspace: Workspace;
   approved: string | null;
   upgrading: boolean;
+  forwarding: boolean;
   pollMs: number;
   onChange: () => void;
   onUpdated: (workspace: Workspace) => void;
@@ -1248,6 +1301,7 @@ function WorkspacePanel({
                 onUpdated={onUpdated}
                 onChange={onChange}
               />
+              {forwarding && <PortsCard workspace={workspace} replacing={replacing} />}
               <Changes workspace={workspace.id} pollMs={pollMs} />
             </div>
           </TabPanel>

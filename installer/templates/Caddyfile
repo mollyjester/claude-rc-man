@@ -28,3 +28,50 @@
 		}
 	}
 }
+
+# A workspace's forwarded port, at <port>-<workspace id>.ws.@DOMAIN@, for its owner alone: rcman's
+# forwarding server lets each request in or not, so nothing here signs anyone in. Each host's
+# certificate is got on demand, once rcman allows it (the global options' on_demand_tls, which
+# the installer prints, asks the site below).
+*.ws.@DOMAIN@ {
+	tls {
+		on_demand
+	}
+	# Its own log, without cookies, referrers, Locations or query strings, which can hold what
+	# the app keeps secret.
+	log {
+		output file /var/log/caddy/rcman-forward-access.log {
+			roll_size 50MiB
+			roll_keep 10
+			roll_keep_for 720h
+		}
+		format filter {
+			wrap json
+			fields {
+				request>headers>Cookie delete
+				request>headers>Referer delete
+				resp_headers>Set-Cookie delete
+				resp_headers>Location delete
+				request>uri regexp [?].* ""
+			}
+		}
+	}
+	# No identity reaches the forwarding server, nor the app, from the browser.
+	request_header -X-Forwarded-Email
+	request_header -X-Auth-Request-*
+	request_header -X-Forwarded-User
+	reverse_proxy unix/@FORWARD_SOCKET@
+}
+
+# Where Caddy asks whether it may get a certificate for a forwarded port's host: on the loopback
+# alone, passing only the exact ask path, as it came, to the forwarding server.
+http://127.0.0.1:@ASK_PORT@ {
+	bind 127.0.0.1
+	@ask expression "{http.request.orig_uri} == '/.rcman/ask' || {http.request.orig_uri}.startsWith('/.rcman/ask?')"
+	handle @ask {
+		reverse_proxy unix/@FORWARD_SOCKET@
+	}
+	handle {
+		respond 404
+	}
+}

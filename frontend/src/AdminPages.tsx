@@ -2,10 +2,19 @@ import type { ReactElement } from "react";
 
 import { Audit } from "./Audit";
 import { Everyone } from "./Everyone";
-import { AuditIcon, MonitorIcon, PeopleIcon, ServersIcon, TagIcon, UpgradeIcon } from "./Icons";
+import {
+  AuditIcon,
+  MonitorIcon,
+  PeopleIcon,
+  ServersIcon,
+  ServiceIcon,
+  TagIcon,
+  UpgradeIcon,
+} from "./Icons";
 import { Monitor } from "./Monitor";
 import { m } from "./messages";
 import { People } from "./People";
+import { ServiceSettings } from "./ServiceSettings";
 import { Upgrade } from "./Upgrade";
 import { Versions } from "./Versions";
 
@@ -51,6 +60,12 @@ export const ADMIN = {
     label: m.navRcman,
     element: () => <Upgrade />,
     icon: UpgradeIcon,
+  },
+  settings: {
+    path: "/admin/settings",
+    label: m.navServiceSettings,
+    element: () => <ServiceSettings />,
+    icon: ServiceIcon,
   },
 } satisfies Record<string, AdminPage>;
 

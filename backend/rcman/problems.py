@@ -81,6 +81,26 @@ MESSAGES = {
     "rcman_starting": (
         "rcman is still bringing the workspaces back after it started. Try again in a moment."
     ),
+    # forwarded ports (forward.py, routers/forward.py)
+    "forwarding_off": "Port forwarding is off: an administrator turns it on in Service settings.",
+    "forwarding_starting": (
+        "rcman is still bringing the workspaces back after it started. Try again in a moment."
+    ),
+    "port_not_found": "There is no such forwarded port, or its workspace is not ready.",
+    "hand_off_refused": "Open the port's address in the browser itself to reach it.",
+    "too_many_hand_offs": "Too many ports were opened just now. Try again in a moment.",
+    "forward_token_refused": (
+        "That way in to the port expired or was used already. Open the port's address again."
+    ),
+    "forward_not_signed_in": "Open the port's address in the browser first, to be let in.",
+    "fetch_refused": "The request did not come from the port's own pages.",
+    "too_many_connections": (
+        "Too many connections to forwarded ports are open just now. Try again in a moment."
+    ),
+    "too_many_relays": (
+        "Too many connections to this workspace's ports are open just now. Try again in a moment."
+    ),
+    "port_unreachable": "Nothing in the workspace answered on that port.",
     # servers
     "claude_not_installed": "Claude Code is not installed in the workspace: the approved "
     "version is not in the store, or the workspace cannot run it.",
@@ -279,8 +299,14 @@ DEVCONTAINER_MESSAGES = {
         "rcman could not read the Dockerfile devcontainer.json builds from in the workspace."
     ),
     "no_image": (
-        'devcontainer.json names no image and no Dockerfile. Name an image with "image", or a '
-        'Dockerfile to build with "build"; features need one of them to be installed on.'
+        'devcontainer.json has "features" but names no image and no Dockerfile to install them '
+        'on. Name an image with "image", or a Dockerfile to build with "build", push the change '
+        "and make the workspace again."
+    ),
+    "build_without_dockerfile": (
+        'devcontainer.json has "{key}" but names no Dockerfile to build, and no image. Name a '
+        'Dockerfile with "dockerfile" in "build" or an image with "image", or remove "{key}" '
+        "to use rcman's default image, push the change and make the workspace again."
     ),
     "bad_value": (
         'devcontainer.json has a value of the wrong kind for "{key}": it must be {expected}. '
@@ -328,6 +354,21 @@ DEVCONTAINER_MESSAGES = {
     "musl": (
         'The image "{image}" is built on musl, as Alpine images are, and Claude Code needs '
         "glibc. Use an image built on glibc, such as a Debian or Ubuntu one."
+    ),
+    "port_https": (
+        'devcontainer.json sets "protocol" to "https" for the port "{port}" in '
+        '"portsAttributes", and rcman passes a forwarded port on as http only. Serve http on '
+        'the port and remove "protocol", push the change and make the workspace again.'
+    ),
+    "port_https_in_image": (
+        'The image\'s metadata entry "{entry}" sets "protocol" to "https" for the port "{port}" '
+        'in "portsAttributes", and rcman passes a forwarded port on as http only. Use another '
+        "image."
+    ),
+    "too_many_ports": (
+        'devcontainer.json, with the metadata of its image, forwards more ports in "forwardPorts" '
+        "than the {most} a workspace may forward. Forward fewer, push the change and make the "
+        "workspace again."
     ),
     "bad_value_in_image": (
         'The image\'s metadata entry "{entry}" has a value of the wrong kind for "{key}": it must '
@@ -461,6 +502,12 @@ REBUILD_MESSAGES = {
         "Why it failed is below.\n{cause}"
     ),
 }
+# The words of the page that hands its owner over to a forwarded port (routers/forward.py).
+HAND_OFF_PAGE = {
+    "title": "Opening port {port}",
+    "lead": "Taking you to port {port} of the workspace {name}.",
+    "button": "Continue to port {port}",
+}
 STATUS = {
     "not_authenticated": 401,
     "not_allowed": 403,
@@ -486,6 +533,17 @@ STATUS = {
     "limit_below_use": 409,
     "usage_unknown": 409,
     "limits_not_applied": 502,
+    "forwarding_off": 404,
+    "forwarding_starting": 503,
+    "port_not_found": 404,
+    "hand_off_refused": 403,
+    "too_many_hand_offs": 429,
+    "forward_token_refused": 403,
+    "forward_not_signed_in": 401,
+    "fetch_refused": 403,
+    "too_many_connections": 503,
+    "too_many_relays": 503,
+    "port_unreachable": 502,
     "workspace_not_found": 404,
     "workspace_name_taken": 409,
     "workspace_not_ready": 409,

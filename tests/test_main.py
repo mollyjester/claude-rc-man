@@ -367,3 +367,89 @@ def test_the_monitor_runs_once_the_workspaces_are_restored_and_stops_before_the_
             time.sleep(0.05)
         assert seen == []  # positive control: running until the service stops
     assert seen == [(True, True, True, False)]
+
+
+# --- the forwarding server ------------------------------------------------------------------
+
+
+def test_the_lifespan_starts_the_forwarding_server_and_at_its_end_closes_and_sweeps_first(
+    settings, runtime
+):
+    """It listens once the app has started, answering its health on any Host; at the end its
+    WebSockets are closed, its relays ended and the workspaces it used swept, all before the
+    workspaces' service closes."""
+    import threading
+
+    from fastapi.testclient import TestClient
+    from rcman import forward
+    from rcman.forwarding_settings import DEFAULTS
+    from rcman.main import create_app
+
+    from devtools import held_folders as hf
+    from tests.conftest import ALICE, changing
+    from tests.test_forward import (
+        ASK,
+        DOMAIN,
+        SETTINGS_PATH,
+        Forward,
+        Socket,
+        Upstream,
+        forwarded,
+        let_in,
+        rows_of,
+        workspace_of,
+    )
+
+    upstream = Upstream()
+    threading.Thread(target=upstream.serve_forever, daemon=True).start()
+    with hf.held("rcfw-") as folder:
+        path = folder / "forward.sock"
+        app = create_app(settings.model_copy(update={"forward_socket": path}), runtime=runtime)
+        service, forwarding = app.state.workspaces, app.state.forward
+        seen = []
+        real_sweep, real_close = service.sweep_forwards, service.close
+
+        def sweep(workspace):
+            seen.append(("sweep", workspace.id, len(forwarding._relays)))
+            real_sweep(workspace)
+
+        def close():
+            seen.append(("close", path.exists()))
+            real_close()
+
+        service.sweep_forwards, service.close = sweep, close
+        conn = Forward(path)
+        try:
+            with TestClient(app) as client:
+                assert service.restored.wait(30)
+                for host in ("anything.example.com", ASK, f"6080-1.ws.{DOMAIN}", DOMAIN):
+                    r = Forward(path).ask("GET", forward.HEALTH_PATH, {"Host": host})
+                    assert (r.status, r.json()) == (200, {"status": "ok"}), host
+                r = client.put(SETTINGS_PATH, json={**DEFAULTS.model_dump(), "enabled": True},
+                               headers=changing(ALICE))  # fmt: skip
+                assert r.status_code == 200, r.text
+                [host] = forwarded(client, ALICE, [upstream.port])
+                opened = Socket(path, host, let_in(client, conn, host))
+                assert opened.status == 101 and opened.echo(b"x") == b"x"
+                assert seen == []  # the positive control: nothing swept or closed while it runs
+            assert opened.ended()
+            opened.close()
+        finally:
+            conn.close()
+            upstream.shutdown()
+            upstream.server_close()
+    assert seen == [("sweep", workspace_of(host), 0), ("close", False)]
+    assert rows_of(client, "websocket.close") == [(ALICE, host, "service_closing")]
+
+
+def test_without_its_socket_no_forwarding_server_starts(client):
+    from tests.conftest import ALICE, as_user
+
+    assert client.app.state.settings.forward_socket is None
+    assert not client.app.state.forward.serving
+    r = client.get(
+        "/api/forward/hand-off",
+        params={"host": "6080-1.ws.rcman.example.com"},
+        headers={**as_user(ALICE), "Sec-Fetch-Dest": "document"},
+    )
+    assert (r.status_code, r.json()["code"]) == (404, "forwarding_off")

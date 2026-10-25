@@ -523,3 +523,46 @@ def test_a_database_of_the_schema_before_marks_keeps_its_approvals_and_has_no_ma
         ("1.0.0", "rcman")
     ]
     assert con.execute("select count(*) from claude_failures").fetchone()[0] == 0
+
+
+def test_the_forwarding_settings_are_one_row_of_a_switch_and_whole_minutes_and_hours(tmp_path):
+    """No row is made by the migration: a missing row is the defaults (forwarding_settings.py).
+    The table keeps seconds; the page's units are whole minutes and whole hours."""
+    path = tmp_path / "x.db"
+    db.migrate(path)
+    con = db.connect(path)
+    assert con.execute("select count(*) from forwarding_settings").fetchone()[0] == 0
+    insert = (
+        "insert into forwarding_settings (id, enabled, idle_seconds, absolute_seconds) "
+        "values (?, ?, ?, ?)"
+    )
+    con.execute(insert, (1, 0, 300, 43200))  # positive control
+    for row in (
+        (2, 0, 300, 43200),  # a second row
+        (1, 1, 300, 43200),  # the first again
+    ):
+        with pytest.raises(sqlite3.IntegrityError):
+            con.execute(insert, row)
+    con.execute("delete from forwarding_settings")
+    for row in (
+        (1, 2, 300, 43200),
+        (1, None, 300, 43200),
+        (1, 0, 0, 43200),
+        (1, 0, 90, 43200),  # not whole minutes
+        (1, 0, 300, -3600),
+        (1, 0, 300, 5400),  # not whole hours
+        (1, 0, None, 43200),
+    ):
+        with pytest.raises(sqlite3.IntegrityError):
+            con.execute(insert, row)
+
+
+def test_a_database_of_the_schema_before_forwarding_gains_its_table_and_no_row(tmp_path):
+    path, con = migrated_before(tmp_path, "forwarding_settings")
+    tables = {r[0] for r in con.execute("select name from sqlite_master where type='table'")}
+    assert "claude_failures" in tables and "forwarding_settings" not in tables
+    con.close()
+    db.migrate(path)
+    con = sqlite3.connect(path)
+    assert con.execute("select count(*) from forwarding_settings").fetchone()[0] == 0
+    assert con.execute("select name from workspaces").fetchall() == [("old",)]

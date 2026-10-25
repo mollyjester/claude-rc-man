@@ -1,9 +1,9 @@
 import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { vi } from "vitest";
-
+import { ADMIN } from "./AdminPages";
 import { takeReports } from "./clientErrors";
-import { MONITOR_POLL_MS, SETTINGS_ANCHOR } from "./Monitor";
+import { MONITOR_POLL_MS } from "./Monitor";
 import { m } from "./messages";
 import {
   ADMIN_USER,
@@ -251,30 +251,43 @@ test.each([
   ["people", () => m.monitorPeople],
   ["containers", () => m.monitorContainers],
 ] as const)(
-  "%s switched off shows an empty state that leads to the settings",
+  "%s switched off shows an empty state that leads to the Service settings page",
   async (scope, name) => {
     api({ ...SNAPSHOT, scopes: { ...(SNAPSHOT.scopes as object), [scope]: false }, [scope]: null });
-    renderApp(PATH);
+    const { location } = renderApp(PATH);
     const off = await card(name());
     expect(await within(off).findByText(m.monitorOff)).toBeInTheDocument();
     expect(within(off).getByText(m.monitorOffBody(name()))).toBeInTheDocument();
     const link = within(off).getByRole("link", { name: m.monitorOffLink });
-    expect(link).toHaveAttribute("href", `#${SETTINGS_ANCHOR}`);
-    const settings = document.getElementById(SETTINGS_ANCHOR);
-    expect(settings).not.toBeNull();
-    expect(settings).toBe(screen.getByRole("region", { name: m.monitorSettingsTitle }));
+    expect(link).toHaveAttribute("href", ADMIN.settings.path);
     expect(within(off).queryByRole("table")).not.toBeInTheDocument();
-    // the link moves focus to the settings card, as the skip link does to the page
-    await userEvent.click(link);
-    expect(settings).toHaveFocus();
     // the others are shown
     const others = [m.monitorHost, m.monitorPeople, m.monitorContainers].filter(
       (n) => n !== name(),
     );
     for (const other of others)
       expect(within(await card(other)).queryByText(m.monitorOff)).not.toBeInTheDocument();
+    // the link leads to the page that holds the monitoring settings
+    await userEvent.click(link);
+    expect(location().pathname).toBe(ADMIN.settings.path);
+    expect(
+      await screen.findByRole("heading", { level: 1, name: m.serviceSettingsTitle }),
+    ).toBeInTheDocument();
   },
 );
+
+test("the page holds no settings form, and reads the settings once, for how often each round runs", async () => {
+  const fake = api();
+  renderApp(PATH);
+  await card(m.monitorHost);
+  await pass(MONITOR_POLL_MS * 2);
+  await waitFor(() => expect(fake.made("GET", "/api/monitor").length).toBeGreaterThan(1));
+  expect(document.querySelector("main form")).toBeNull();
+  expect(screen.queryByRole("region", { name: m.monitorSettingsTitle })).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: m.monitorSave })).not.toBeInTheDocument();
+  expect(fake.made("GET", "/api/monitor/settings")).toHaveLength(1);
+  expect(fake.made("PUT", "/api/monitor/settings")).toHaveLength(0);
+});
 
 test("the live region says when each round last collected, and how often each runs", async () => {
   api();
@@ -393,33 +406,6 @@ test("a read still out holds back the next: reads never overlap", async () => {
   await waitFor(() => expect(fake.made("GET", "/api/monitor")).toHaveLength(2));
 });
 
-test("a save while a read is out reads again once that read is done, never beside it", async () => {
-  let out = held();
-  let asked = 0;
-  const fake = api(
-    () => {
-      asked += 1;
-      return asked === 1 ? SNAPSHOT : out.reply;
-    },
-    { "PUT /api/monitor/settings": (call) => ({ settings: call.body }) },
-  );
-  renderApp(PATH);
-  await card(m.monitorHost);
-  await pass(MONITOR_POLL_MS); // the second read goes out, and is held
-  await waitFor(() => expect(fake.made("GET", "/api/monitor")).toHaveLength(2));
-  const settings = await settingsCard();
-  await userEvent.click(within(settings).getByRole("button", { name: m.monitorSave }));
-  expect(await within(settings).findByText(m.monitorSaved)).toBeInTheDocument();
-  await pass(0);
-  expect(fake.made("GET", "/api/monitor")).toHaveLength(2); // none beside the one out
-  const held2 = out;
-  out = held();
-  held2.release();
-  // the save's read follows at once, without waiting a whole interval
-  await waitFor(() => expect(fake.made("GET", "/api/monitor")).toHaveLength(3));
-  out.release();
-});
-
 test("with the settings not read, the live region says when each round collected, and not how often", async () => {
   api(SNAPSHOT, {
     "GET /api/monitor/settings": problem(
@@ -437,130 +423,4 @@ test("with the settings not read, the live region says when each round collected
   );
   expect(read(collected())).not.toContain("every");
   expect(screen.queryByLabelText(m.monitorUsageInterval)).not.toBeInTheDocument();
-});
-
-// --- the settings ---
-
-const settingsCard = () => card(m.monitorSettingsTitle);
-const field = async (label: string) =>
-  within(await settingsCard()).findByLabelText(label) as Promise<HTMLInputElement>;
-
-test("the settings form shows the settings saved, two whole numbers in seconds and the three scopes", async () => {
-  api();
-  renderApp(PATH);
-  const usage = await field(m.monitorUsageInterval);
-  const disk = await field(m.monitorDiskInterval);
-  expect(usage).toHaveValue("60");
-  expect(disk).toHaveValue("3600");
-  for (const input of [usage, disk]) {
-    expect(input).toHaveAttribute("type", "text");
-    expect(input).toHaveAttribute("inputmode", "numeric");
-    expect(input).toHaveAttribute("autocomplete", "off");
-  }
-  expect(usage).toHaveAttribute("name", "usage_interval_seconds");
-  expect(disk).toHaveAttribute("name", "disk_interval_seconds");
-  const settings = await settingsCard();
-  expect(within(settings).getByRole("group", { name: m.monitorCollect })).toBeInTheDocument();
-  for (const [name, label] of [
-    ["host", m.monitorHost],
-    ["people", m.monitorPeople],
-    ["containers", m.monitorContainers],
-  ]) {
-    const box = within(settings).getByRole("checkbox", { name: label });
-    expect(box).toBeChecked();
-    expect(box).toHaveAttribute("name", name);
-    // the label is the target: a press on its words toggles the box
-    await userEvent.click(within(settings).getByText(label));
-    expect(box).not.toBeChecked();
-  }
-  expect(settings.querySelector("form")).toHaveAttribute("novalidate");
-});
-
-test("a poll does not overwrite what is being typed into the settings", async () => {
-  const fake = api();
-  renderApp(PATH);
-  const usage = await field(m.monitorUsageInterval);
-  await userEvent.clear(usage);
-  await userEvent.type(usage, "120");
-  const before = fake.made("GET", "/api/monitor").length;
-  await pass(MONITOR_POLL_MS * 2);
-  await waitFor(() => expect(fake.made("GET", "/api/monitor").length).toBeGreaterThan(before));
-  expect(usage).toHaveValue("120");
-  expect(fake.made("GET", "/api/monitor/settings")).toHaveLength(1);
-});
-
-test("Save sends all five settings, the intervals as whole numbers, and says they were saved", async () => {
-  const fake = api(SNAPSHOT, {
-    "PUT /api/monitor/settings": (call) => ({ settings: call.body }),
-  });
-  renderApp(PATH);
-  const usage = await field(m.monitorUsageInterval);
-  await userEvent.clear(usage);
-  await userEvent.type(usage, "120");
-  const settings = await settingsCard();
-  await userEvent.click(within(settings).getByRole("checkbox", { name: m.monitorHost }));
-  const reads = fake.made("GET", "/api/monitor").length;
-  await userEvent.click(within(settings).getByRole("button", { name: m.monitorSave }));
-  await waitFor(() => expect(fake.made("PUT", "/api/monitor/settings")).toHaveLength(1));
-  expect(fake.made("PUT", "/api/monitor/settings")[0].body).toEqual({
-    usage_interval_seconds: 120,
-    disk_interval_seconds: 3600,
-    host: false,
-    people: true,
-    containers: true,
-  });
-  expect(await within(settings).findByText(m.monitorSaved)).toBeInTheDocument();
-  expect(within(settings).getByText(m.monitorSaved).closest('[role="status"]')).not.toBeNull();
-  // the button keeps its name, and what it is doing is said in the status line
-  expect(within(settings).getByRole("button", { name: m.monitorSave })).toHaveTextContent(m.save);
-  // the snapshot is read again at once, so that a scope switched off goes at once
-  await waitFor(() => expect(fake.made("GET", "/api/monitor").length).toBeGreaterThan(reads));
-  // and the live region takes the new interval
-  await waitFor(() => expect(read(collected())).toContain("2 min"));
-});
-
-test("what is not a whole number is sent as typed, for the server to judge", async () => {
-  const fake = api(SNAPSHOT, {
-    "PUT /api/monitor/settings": problem(422, "validation_failed", "Check the fields.", {
-      errors: [{ field: "usage_interval_seconds", message: "planted: not a whole number" }],
-    }),
-  });
-  renderApp(PATH);
-  const usage = await field(m.monitorUsageInterval);
-  await userEvent.clear(usage);
-  await userEvent.type(usage, "1.5");
-  await userEvent.click(within(await settingsCard()).getByRole("button", { name: m.monitorSave }));
-  await waitFor(() => expect(fake.made("PUT", "/api/monitor/settings")).toHaveLength(1));
-  expect(fake.made("PUT", "/api/monitor/settings")[0].body).toMatchObject({
-    usage_interval_seconds: "1.5",
-  });
-});
-
-test("a refusal is shown under each field it is about, and what was typed stays", async () => {
-  api(SNAPSHOT, {
-    "PUT /api/monitor/settings": problem(422, "validation_failed", "Check the fields.", {
-      errors: [
-        { field: "usage_interval_seconds", message: "planted: too short" },
-        { field: "disk_interval_seconds", message: "planted: too long" },
-        { field: "containers", message: "planted: not a choice" },
-      ],
-    }),
-  });
-  renderApp(PATH);
-  const usage = await field(m.monitorUsageInterval);
-  await userEvent.clear(usage);
-  await userEvent.type(usage, "5");
-  const settings = await settingsCard();
-  await userEvent.click(within(settings).getByRole("button", { name: m.monitorSave }));
-  const containers = within(settings).getByRole("checkbox", { name: m.monitorContainers });
-  for (const [input, message] of [
-    [usage, "planted: too short"],
-    [await field(m.monitorDiskInterval), "planted: too long"],
-    [containers, "planted: not a choice"],
-  ] as const) {
-    await waitFor(() => expect(input).toHaveAttribute("aria-invalid", "true"));
-    expect(input).toHaveAccessibleDescription(expect.stringContaining(message));
-  }
-  expect(usage).toHaveValue("5");
-  expect(within(settings).queryByText(m.monitorSaved)).not.toBeInTheDocument();
 });

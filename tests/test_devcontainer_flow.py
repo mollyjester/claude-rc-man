@@ -7,6 +7,7 @@ stand-in for github.com."""
 from __future__ import annotations
 
 import json
+import re
 import threading
 import time
 from pathlib import Path
@@ -541,12 +542,42 @@ def test_the_log_says_where_the_file_was_looked_for(client, runtime, publish):
 def test_the_log_names_the_keys_that_are_ignored_and_the_image_pulled(
     client, runtime, publish, ready_log
 ):
-    publish(config(forwardPorts=[3000], customizations={"vscode": {}}))
+    publish(config(name="Planted", customizations={"vscode": {}}, forwardPorts=[3000]))
     done = cloned(client)
     log = ready_log[done["id"]]
     assert dc.LOOKED_IN in log and f"Pulling {IMAGE}" in log
-    assert "forwardPorts" in log and "customizations" in log
-    assert "3000" not in log and "vscode" not in log  # names only, never values
+    [ignored] = [line for line in log.splitlines() if line.startswith("Ignored in")]
+    assert "name" in ignored and "customizations" in ignored
+    assert "forwardPorts" not in ignored  # honoured, so not called ignored
+    assert "Planted" not in log and "vscode" not in log  # names only, never values
+
+
+def test_the_steps_name_the_forwarded_ports_with_their_labels_in_words_true_on_or_off(
+    client, runtime, publish, ready_log
+):
+    runtime.images[IMAGE] = rt.ImageFacts(
+        passwd=PASSWD, group=GROUP,
+        labels={dc.METADATA_LABEL: json.dumps([{"id": "f", "forwardPorts": [700]}])},
+    )  # fmt: skip
+    label = {"680": {"label": "Pebble Emulator (noVNC)"}}
+    publish(config(forwardPorts=[680, "localhost:300"], portsAttributes=label))
+    done = cloned(client)
+    assert done["state"] == "ready", done
+    # the image's port first, then the file's: the plan's, not the file's alone
+    assert (
+        "Forwarded ports: 700, 680 \u201cPebble Emulator (noVNC)\u201d, 300. They open from the "
+        "workspace's Ports card once the workspace is ready, while an administrator has port "
+        "forwarding on."
+    ) in ready_log[done["id"]].splitlines()
+    assert not re.search(r"[0-9]", dc.FORWARDED_PORTS)  # no number but the ports themselves
+
+
+def test_a_file_that_forwards_no_port_has_no_step_for_ports(client, runtime, publish, ready_log):
+    publish(config(name="No ports"))
+    done = cloned(client)
+    lines = ready_log[done["id"]].splitlines()
+    assert dc.LOOKED_IN in lines  # positive control: the steps were read
+    assert not [line for line in lines if line.startswith("Forwarded ports")]
 
 
 def test_a_file_that_is_not_json_says_where_and_never_what_it_holds(client, runtime, publish):
@@ -609,6 +640,81 @@ def test_a_repository_with_no_file_is_made_as_before(client, runtime, publish, s
     assert [e for e in runtime.events if e[0] in ("pull", "discard")] == []
     assert row(settings, done["id"])["environment"] is None
     assert runtime.specs[name_of(done)].image is None  # the workspace image, not another
+
+
+DEFAULT_ID = "d" * 64
+
+
+def with_default_image(runtime, settings, **more) -> None:
+    """The default image (settings.workspace_image) in the runtime, with an id of its own."""
+    image = {"passwd": PASSWD, "group": GROUP, "env": {"PATH": "/default/bin:/bin"}}
+    runtime.images[settings.workspace_image] = rt.ImageFacts(**{**image, "id": DEFAULT_ID, **more})
+
+
+def test_a_file_with_no_image_makes_the_workspace_from_the_default_image(
+    client, runtime, publish, settings, ready_log
+):
+    with_default_image(runtime, settings)
+    publish({FILE: json.dumps({"name": "Pebble", "forwardPorts": [6080]})})
+    done = cloned(client)
+    assert done["state"] == "ready", done
+    stored = dc.Plan.from_json(row(settings, done["id"])["environment"])
+    assert (stored.image, stored.image_id) == (settings.workspace_image, DEFAULT_ID)  # pinned
+    spec = runtime.specs[name_of(done)]
+    assert (spec.image, spec.image_id) == (settings.workspace_image, DEFAULT_ID)
+    assert runtime.pulled == [settings.workspace_image]  # asked of the runtime as any image is
+    log = ready_log[done["id"]]
+    assert dc.DEFAULT_IMAGE_USED in log
+    [ignored] = [line for line in log.splitlines() if line.startswith("Ignored in")]
+    assert "name" in ignored and "forwardPorts" not in ignored  # its port is honoured
+    assert stored.ports == (dc.Port(6080),)
+
+
+def test_a_file_with_no_image_has_its_commands_and_env_applied_over_the_default_image(
+    client, runtime, publish, settings
+):
+    with_default_image(runtime, settings, user="dev")
+    publish(
+        {
+            FILE: json.dumps(
+                {
+                    "containerEnv": {"GREETING": "hello"},
+                    "remoteEnv": {"WHO": "${containerEnv:GREETING} there"},
+                    "onCreateCommand": "env > env.txt",
+                    "postStartCommand": "echo start >> ran.txt",
+                }
+            )
+        }
+    )
+    done = cloned(client)
+    assert done["state"] == "ready", done
+    work = work_of(runtime, done)
+    env = dict(line.split("=", 1) for line in (work / "env.txt").read_text().splitlines())
+    assert (env["GREETING"], env["WHO"]) == ("hello", "hello there")
+    stored = dc.Plan.from_json(row(settings, done["id"])["environment"])
+    assert stored.image_path == "/default/bin:/bin"  # the default image's own PATH
+    assert (work / "ran.txt").read_text().split() == ["start"]
+    assert runtime.specs[name_of(done)].uid == 1234  # the default image's user
+
+
+def test_features_with_no_image_still_fail_the_workspace_naming_what_to_add(
+    client, runtime, publish, settings
+):
+    with_default_image(runtime, settings)
+    publish(
+        {
+            FILE: json.dumps({"features": {"./feature": {}}}),
+            ".devcontainer/feature/devcontainer-feature.json": '{"id": "feature"}',
+            ".devcontainer/feature/install.sh": "#!/bin/sh\n",
+        }
+    )
+    failed = cloned(client)
+    assert failed["state"] == "failed"
+    assert failed["error"] == problems.DEVCONTAINER_MESSAGES["no_image"]
+    assert '"features"' in failed["error"]
+    assert '"image"' in failed["error"] and '"build"' in failed["error"]
+    assert runtime.pulled == [] and runtime.builds == []
+    no_trace(runtime, failed)
 
 
 def test_a_workspace_with_no_source_never_reads_a_file(client, runtime, settings):
@@ -764,7 +870,7 @@ def test_the_plan_is_stored_with_the_row_and_is_what_the_workspace_is_made_from(
     done = cloned(client)
     stored = dc.Plan.from_json(row(settings, done["id"])["environment"])
     assert (stored.image, stored.uid, stored.gid, stored.run_as) == (IMAGE, 1234, 1235, "dev")
-    assert stored.ignored == ("forwardPorts",)
+    assert (stored.ignored, stored.ports) == ((), (dc.Port(1),))  # honoured, not ignored
     assert [c.shell for c in stored.commands] == ["true"]
     assert stored.image_path == "/image/bin:/usr/bin:/bin"
 
