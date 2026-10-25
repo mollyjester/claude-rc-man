@@ -36,9 +36,13 @@ STATUS_MODE = 0o640
 STATES = ("running", "succeeded", "failed")
 # The status's fields, every one always there: the state; the boot it ran in; the invocation of
 # the unit that ran it ($INVOCATION_ID); when it started and finished; the commit of the
-# current release before and after; what the installer said to do afterwards; and the last line
-# of what went wrong.
-FIELDS = ("state", "boot_id", "invocation", "started", "finished", "from", "to", "notices", "error")
+# current release before and after; and the last line of what went wrong.
+FIELDS = ("state", "boot_id", "invocation", "started", "finished", "from", "to", "error")
+# A key no longer in FIELDS that a status read may still hold, dropped before it is checked: the
+# first upgrade from the web interface onto this release is finished by the old wrapper, still in
+# memory, which writes it; read with it, the status is not one, and --finish would mark the
+# upgrade that succeeded failed.
+LEFTOVER = "notices"
 ERROR_LENGTH = 500  # the most of the error line kept
 BOOT_ID = Path("/proc/sys/kernel/random/boot_id")
 
@@ -296,7 +300,10 @@ def read_status(path: Path | None = None) -> dict | None:
         found = json.loads((path or STATUS).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
-    if not isinstance(found, dict) or set(found) != set(FIELDS):
+    if not isinstance(found, dict):
+        return None
+    found.pop(LEFTOVER, None)
+    if set(found) != set(FIELDS):
         return None
     return found if found["state"] in STATES else None
 
@@ -325,18 +332,18 @@ def now() -> str:
 # --- a run --------------------------------------------------------------------------------
 
 
-def _copy(source, sink, lines: list[str]) -> None:
-    """What ``source`` says, to ``sink`` as it comes and into ``lines``."""
+def _copy(source, sink, lines: list[str] | None = None) -> None:
+    """What ``source`` says, to ``sink`` as it comes and into ``lines`` where given."""
     for line in iter(source.readline, ""):
         sink.write(line)
         sink.flush()
-        lines.append(line.rstrip("\n"))
+        if lines is not None:
+            lines.append(line.rstrip("\n"))
 
 
-def run_install(clone: Path) -> tuple[int, list[str], str | None]:
+def run_install(clone: Path) -> tuple[int, str | None]:
     """The clone's install.sh, run with ENVIRONMENT alone and no terminal, its output passed
-    on to the journal as it comes: its exit code, the notices of its summary line, and its
-    last error line."""
+    on to the journal as it comes: its exit code and its last error line."""
     child = subprocess.Popen(
         [str(clone / "install.sh")],
         env=ENVIRONMENT,
@@ -348,10 +355,9 @@ def run_install(clone: Path) -> tuple[int, list[str], str | None]:
         errors="replace",
         start_new_session=True,
     )
-    out: list[str] = []
     err: list[str] = []
     copiers = [
-        threading.Thread(target=_copy, args=(child.stdout, sys.stdout, out)),
+        threading.Thread(target=_copy, args=(child.stdout, sys.stdout)),
         threading.Thread(target=_copy, args=(child.stderr, sys.stderr, err)),
     ]
     for copier in copiers:
@@ -359,20 +365,11 @@ def run_install(clone: Path) -> tuple[int, list[str], str | None]:
     code = child.wait()
     for copier in copiers:
         copier.join()
-    notices: list[str] = []
-    for line in out:
-        if line.startswith("{"):
-            try:
-                summary = json.loads(line)
-            except ValueError:
-                continue
-            if isinstance(summary, dict) and isinstance(summary.get("notices"), list):
-                notices = [str(n) for n in summary["notices"]]
     lines = [line.strip() for line in err if line.strip()]
     # what install.sh and the installer say when they stop begins with its name
     said = [line for line in lines if line.startswith("install.sh:")]
     error = (said or lines or [None])[-1]
-    return code, notices, error[:ERROR_LENGTH] if error else None
+    return code, error[:ERROR_LENGTH] if error else None
 
 
 def upgrade(
@@ -381,18 +378,17 @@ def upgrade(
     """Check the clone, run its install.sh, and write the status as it goes, with the unit's
     ``invocation``: 0 when it succeeded."""
     status = dict.fromkeys(FIELDS)
-    status.update(state="running", boot_id=boot_id(), invocation=invocation, started=now(),
-                  notices=[])  # fmt: skip
+    status.update(state="running", boot_id=boot_id(), invocation=invocation, started=now())
     status["from"] = release()
     write_status(status, owner=owner)
     try:
         check_clone(clone, None, (*RCMAN_ACCOUNTS, caddy_user))
-        code, notices, error = run_install(clone)
+        code, error = run_install(clone)
     except (Refused, OSError) as refused:
-        code, notices, error = 1, [], str(refused)[:ERROR_LENGTH]
+        code, error = 1, str(refused)[:ERROR_LENGTH]
     status.update(
         state="succeeded" if code == 0 else "failed", finished=now(), to=release(),
-        notices=notices, error=None if code == 0 else error or f"install.sh exited {code}",
+        error=None if code == 0 else error or f"install.sh exited {code}",
     )  # fmt: skip
     write_status(status, owner=owner)
     return 0 if code == 0 else 1
@@ -408,7 +404,7 @@ def finish(environ: dict[str, str], owner: tuple[int, int] | None = None) -> int
     status = read_status()
     if status is None:
         status = dict.fromkeys(FIELDS)
-        status.update(state="running", boot_id=boot_id(), invocation=invocation, notices=[])
+        status.update(state="running", boot_id=boot_id(), invocation=invocation)
     if status["invocation"] != invocation:
         return 0
     if status["state"] == "running" or (status["state"] == "succeeded" and result != "success"):

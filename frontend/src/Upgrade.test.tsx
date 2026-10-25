@@ -34,7 +34,6 @@ const READY: Report = {
   finished: null,
   from: null,
   to: null,
-  notices: [],
   error: null,
 };
 const refused = (reason: string, title: string) => ({
@@ -70,7 +69,6 @@ const SUCCEEDED: Report = {
   finished: "2026-10-19T10:05:00+00:00",
   from: RELEASE,
   to: NEXT,
-  notices: ["planted: reload Caddy"],
 };
 const FAILED: Report = {
   ...READY,
@@ -232,7 +230,7 @@ test("a request that never started says so, and how to roll back is not offered 
   expect(screen.queryByRole("link", { name: m.upgradeRollBackLink })).not.toBeInTheDocument();
 });
 
-test("a finished upgrade's facts are shown, its commits as code and its notices listed", async () => {
+test("a finished upgrade's facts are shown, its commits as code", async () => {
   api(SUCCEEDED);
   renderApp(PATH);
   await page();
@@ -240,7 +238,6 @@ test("a finished upgrade's facts are shown, its commits as code and its notices 
   expect(fact(m.upgradeFrom)!.querySelector("code")).toHaveTextContent(RELEASE);
   expect(fact(m.upgradeTo)!.querySelector("code")).toHaveTextContent(NEXT);
   expect(fact(m.upgradeFinished)).toHaveTextContent("2026-10-19 10:05:00");
-  expect(screen.getByText("planted: reload Caddy")).toBeInTheDocument();
   // opened afresh after it, the page is the new one: nothing to reload
   expect(screen.queryByRole("button", { name: m.upgradeReload })).not.toBeInTheDocument();
 });

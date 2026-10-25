@@ -58,7 +58,6 @@ def status(state="succeeded", boot=BOOT, invocation=OLD_RUN, **more) -> dict:
         "finished": None if state == "running" else "2026-10-19T10:05:00+00:00",
         "from": OLD,
         "to": None if state == "running" else NEW,
-        "notices": [],
         "error": "install.sh: it went wrong" if state == "failed" else None,
     }
     found.update(more)
@@ -170,7 +169,7 @@ def alice(settings) -> people.Person:
 
 KEYS = {
     "release", "enabled", "available", "reason", "state", "started", "finished",
-    "from", "to", "notices", "error",
+    "from", "to", "error",
 }  # fmt: skip
 
 
@@ -242,16 +241,14 @@ def test_a_mark_that_names_no_commit_is_no_release(tmp_path, text):
 def test_with_no_status_the_last_upgrade_is_unknown_and_one_may_be_asked_for(client, show):
     report = get(client)
     assert (report["state"], report["available"], report["reason"]) == ("unknown", True, None)
-    assert (report["from"], report["to"], report["notices"], report["error"]) == (
-        None, None, [], None,
-    )  # fmt: skip
+    assert (report["from"], report["to"], report["error"]) == (None, None, None)
 
 
 def test_a_finished_upgrade_is_reported_from_its_status(paths, client, show):
-    write_status(paths, status("succeeded", notices=["Reload Caddy."]))
+    write_status(paths, status("succeeded"))
     report = get(client)
     assert report["state"] == "succeeded" and report["available"] is True
-    assert (report["from"], report["to"], report["notices"]) == (OLD, NEW, ["Reload Caddy."])
+    assert (report["from"], report["to"]) == (OLD, NEW)
     write_status(paths, status("failed"))
     report = get(client)
     assert (report["state"], report["error"]) == ("failed", "install.sh: it went wrong")
@@ -340,6 +337,13 @@ def test_a_request_that_never_started_is_not_started_once_the_grace_is_over(
     )  # fmt: skip
 
 
+def test_a_status_with_a_leftover_notices_key_reads_as_the_same_status_without_it(paths):
+    """The old wrapper, still in memory when the first upgrade onto this release finishes,
+    writes the key."""
+    write_status(paths, {**status("succeeded"), "notices": ["Reload Caddy."]})
+    assert up.read_status() == status("succeeded")
+
+
 MALFORMED_STATUS = [
     "",
     "not json",
@@ -347,8 +351,6 @@ MALFORMED_STATUS = [
     json.dumps({k: v for k, v in status().items() if k != "error"}),
     json.dumps({**status(), "more": 1}),
     json.dumps(status(state="done")),
-    json.dumps(status(notices="Reload Caddy.")),
-    json.dumps(status(notices=[1])),
     json.dumps(status(error="x" * (up.ERROR_LENGTH + 1))),
     json.dumps(status(started=5)),
     json.dumps(status(boot=None)),

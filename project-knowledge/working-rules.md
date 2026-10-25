@@ -206,12 +206,16 @@ else; this file is the full list. Rules are referred to by their bold name.
   as rcman, which is a named exemption. Every service the installer writes names the
   account it runs as, but one, a named exemption: `rcman-upgrade.service`, the
   upgrade from the web interface, which runs the clone's `install.sh` as root when
-  rcman asks for it, off unless an administrator turns it on. It is accepted with its
+  rcman asks for it, off unless an administrator turns it on; like every run of the
+  installer, it edits Caddy's configuration and restarts Caddy. It is accepted with its
   risk, stated plainly: whoever can push to `main` can run code as root, through
   `install.sh`, `installer/` and `uv sync` building the project as root; a GitHub
   token stored in rcman that can push is therefore a root credential; and while the
   option is on, the clone owner's account is effectively root without a password. The
   guard and its exemptions are in [tests.md](tests.md#repository-guards).
+- **The installer acts; it never instructs.** What a run needs done on the machine,
+  Caddy's configuration and its restart among them, the installer does and reports in
+  its summary line; what it cannot do is an error that stops the run.
 - **Every mutating endpoint is audited**, and every WebSocket route records
   when it opens and when it closes, and a test over the route table checks
   it. An exemption carries a reason that also appears in `docs/`.

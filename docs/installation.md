@@ -12,8 +12,10 @@ rcman from its web interface (see
 ## Before you start
 
 - **A Google OAuth client.** Creating one is free; the steps are below.
-- **A host name** pointing at the machine, served by Caddy. Caddy is installed and
-  running already; the installer does not install it, and its account must exist.
+- **A host name** pointing at the machine, served by Caddy. Caddy is installed from
+  Ubuntu's package and runs as `caddy.service`, from `/etc/caddy/Caddyfile`; the installer
+  does not install it, its account must exist, and the installer edits that Caddyfile and
+  restarts Caddy itself (see [Caddy](#caddy)).
 - **A wildcard DNS record**, `*.ws.<DOMAIN>` for your host name `<DOMAIN>`, pointing at the
   same machine, set once: each workspace's [forwarded port](#forwarded-ports) is a host under it.
 - **A dedicated clone** of this repository on `main`, owned by your own
@@ -246,10 +248,13 @@ run and kept.
    else is already there, the installer stops rather than replace it.
 11. **Adds the first administrator** with `rcman-admin`, unless they are there.
 12. **Starts the services**, restarting them when anything changed.
-13. **Checks** that both services answer — rcman on its socket, asked as `rcman`,
+13. **Puts rcman in Caddy**: writes rcman's site block, has your Caddyfile import it
+    and ask rcman before a certificate on demand, once Caddy accepts the result, and
+    restarts Caddy when what it runs with changed (see [Caddy](#caddy)).
+14. **Checks** that both services answer — rcman on its socket, asked as `rcman`,
     and oauth2-proxy on its local port — and waits for them to answer. It then
-    removes the older builder images, and prints the Caddy configuration and what
-    to do about Caddy, if anything.
+    removes the older builder images, and prints one line on standard output, what it
+    changed.
 
 When something it checks is not right, or a download fails, the installer says
 what on standard error and stops with a failure. Every step leaves things as they
@@ -319,9 +324,8 @@ forwarding server (see [Forwarded ports](#forwarded-ports)). rcman believes the 
 Caddy passes it, so this is what keeps anyone else on the machine from
 passing one. The health check at the end of every run asks both.
 
-The installer prints the site block for your Caddyfile and keeps it in
-`/etc/rcman/Caddyfile.snippet`. Either `import` that file in your Caddyfile, so
-it is always the current one, or copy the block in. It sends oauth2-proxy's
+The installer keeps rcman's site block for Caddy in `/etc/rcman/Caddyfile.snippet`,
+and has your Caddyfile, `/etc/caddy/Caddyfile`, import it. It sends oauth2-proxy's
 own pages to oauth2-proxy, asks oauth2-proxy whether each other request is
 signed in, sends people who are not to the Google sign-in, and passes the
 signed-in address to rcman through the socket. It also removes any address a
@@ -329,6 +333,53 @@ browser sends itself, so only oauth2-proxy can tell rcman who someone is. Two mo
 are for forwarded ports: `*.ws.<DOMAIN>`, which passes every request for one to the
 forwarding server, and `http://127.0.0.1:<ask port>`, where Caddy asks rcman whether it may get
 a certificate (see [Forwarded ports](#forwarded-ports)).
+
+On every run the installer, as root:
+
+- **Imports the site block**: the Caddyfile gets `import /etc/rcman/Caddyfile.snippet`. A copy
+  of rcman's sites pasted into it, a site with the address of one of the block's or one that
+  passes requests to `/run/rcman/`, is taken out, with those comment lines just above it that
+  are the block's own, and the `import` goes where the first was; a site of your own that
+  matches is taken out too, and comments of your own stay.
+- **Has Caddy ask rcman** before it gets a certificate on demand: the global options, at the
+  top of the Caddyfile, hold `on_demand_tls` asking rcman (see
+  [Forwarded ports](#forwarded-ports)). Where there are no global options it adds them; where
+  `on_demand_tls` asks another address it asks rcman instead, which then decides for every
+  other site of yours that gets certificates on demand. The rest of the file, `admin` among it,
+  stays as it was, byte for byte.
+- **Checks the result with Caddy** before it is put in place: `caddy validate`, run as Caddy's
+  account. Where Caddy refuses it, nothing of Caddy's is changed, Caddy is not restarted, and
+  the installer stops with Caddy's words. Where it passes, the Caddyfile as it was is kept in
+  `/etc/caddy/.Caddyfile.rcman-backup`, and the new one takes its place with the same owner and
+  mode. Before any restart of Caddy the Caddyfile is checked so, edited or not: one Caddy
+  refuses, a hand edit of yours among them, stops the installer with Caddy's words, and Caddy
+  keeps running as it was.
+- **Restarts Caddy**, `systemctl restart caddy.service`, when the Caddyfile, the site block or
+  Caddy's account differ from those Caddy was last restarted with, which it records in
+  `/etc/rcman/caddy.applied`; when Caddy's account has just joined `rcman-web`, since only a
+  Caddy that starts again belongs to the group and can reach rcman's socket; and when Caddy is
+  not running. It is a restart, not a reload, so every site of that Caddy stops for a moment.
+  Where Caddy does not come up again, the installer puts back what it changed in this run, the
+  Caddyfile and the site block, restarts Caddy again, and stops; where it changed neither, it
+  stops with what Caddy said.
+
+What it changed is in the line it prints. Before it changes anything of Caddy's, it stops where
+it cannot do this safely, and says why: mend the cause and run it again. It stops where:
+
+- `/etc/caddy` or the Caddyfile is not there, the Caddyfile is not a regular file, a link for
+  one, or `/etc/caddy` is not root's alone to write;
+- Caddy's account is root's (uid 0): Caddy's checks are never run as root;
+- Caddy runs as `caddy-api.service`, which reads no Caddyfile;
+- the Caddyfile is not UTF-8 text, has a quoted string that is not closed, a site without
+  braces, braces that do not balance, or a block with no address that is not the first, the
+  global options;
+- its `on_demand_tls` has a `permission`, is there twice, is not a block or has an `ask`
+  twice;
+- a closing brace the installer would add before, of the global options or of
+  `on_demand_tls`, is not on its own line.
+
+`caddy validate` reads the Caddyfile alone: environment variables a drop-in of `caddy.service`
+sets are not seen in the check.
 
 oauth2-proxy's sign-in cookie is `__Host-rcman-auth`, and the cookies it names
 after it, its CSRF cookie and the parts of a long session, begin with that name
@@ -351,36 +402,17 @@ and does not start. Run it as Caddy's account (`sudo -u caddy caddy validate
 --config /etc/caddy/Caddyfile`), or give the file back to that account with
 `chown` if root already made it.
 
-The installer says when Caddy needs something from you, at the end of its
-output:
-
-- **The site block changed** — on the first installation, and whenever an
-  upgrade changes it. If your Caddyfile imports the snippet there is nothing
-  to change in it; if it holds a copy, copy the block again. Then **restart**
-  Caddy: it keeps the site block it started with until then.
-- **The global options** — with the site block's notice: the block Caddy's global options,
-  at the top of your Caddyfile, must hold once, `on_demand_tls` asking rcman at
-  `http://127.0.0.1:<ask port>/.rcman/ask` (see [Forwarded ports](#forwarded-ports)). Paste it
-  there once, beside `admin off`; change its port if you change `--ask-port`.
-- **Caddy's account joined `rcman-web`** — on the first installation, or when
-  `--caddy-user` names another account. **Restart** Caddy. A reload is not
-  enough, because only a Caddy that starts again belongs to the group, and
-  until then it cannot reach rcman's socket.
-
 Caddy's admin API must not be reachable by other local users. By default it
 listens on `localhost:2019`, where any local user can rewrite Caddy's
-configuration — and so send rcman any address they like. Turn it off, or move
-it to a unix socket, in the global options at the top of your Caddyfile, then
-restart Caddy:
+configuration — and so send rcman any address they like. Turning it off, or moving
+it to a unix socket, in the global options at the top of the Caddyfile keeps them out;
+the installer leaves `admin` as it finds it:
 
 ```
 {
 	admin off
 }
 ```
-
-The installer warns, on every run, while something answers on that address,
-at `127.0.0.1:2019`.
 
 ### Forwarded ports
 
@@ -393,26 +425,23 @@ server, which lets it in only with a session of the port's owner, made when they
 address, and holds every request that is not a top-level navigation to having come from the
 port's own pages.
 
-- **Pasted once.** The two sites are in the site block; the global options are yours, and must
-  hold the `on_demand_tls` block the installer prints, once, here beside `admin off`:
+- **Asked of rcman.** The two sites are in the site block, and the installer has the global
+  options of the Caddyfile hold the `on_demand_tls` block that asks rcman (see [Caddy](#caddy)):
 
   ```
   {
-  	admin off
   	on_demand_tls {
   		ask http://127.0.0.1:<ask port>/.rcman/ask
   	}
   }
   ```
 
-  Without it, Caddy asks no one: it gets a certificate for any name under `*.ws.<DOMAIN>` that
-  anyone's browser or script asks it for, each one published and counted against your
-  authority's limits, though the forwarding server still lets no one in to a port that is not
-  theirs. The installer reads your Caddyfile, `/etc/caddy/Caddyfile`, as Caddy does
-  (`caddy adapt`, as Caddy's account), on every run, and warns while its global options do not
-  ask rcman, or when it cannot read them. The global options are Caddy's, not the site's: the
-  same `ask` decides for every other site of yours that gets certificates on demand, and rcman
-  says no to every name that is not a forwarded port's.
+  Without it Caddy would ask no one: it would get a certificate for any name under
+  `*.ws.<DOMAIN>` that anyone's browser or script asked it for, each one published and counted
+  against your authority's limits, though the forwarding server would still let no one in to a
+  port that is not theirs. The global options are Caddy's, not the site's: the same `ask`
+  decides for every other site of yours that gets certificates on demand, and rcman says no to
+  every name that is not a forwarded port's.
 
 - **Certificates.** Each forwarded port's host gets a certificate of its own, on demand, from
   the authority Caddy uses (Let's Encrypt by default), only once rcman says yes: for a ready
@@ -444,8 +473,8 @@ To upgrade, run `sudo ./install.sh` again from the dedicated clone: it pulls
 same from rcman's web interface (see
 [Upgrading from the web interface](#upgrading-from-the-web-interface)). rcman restarts, which takes a moment; the workspaces and
 their servers keep running, since they live in rcman's Podman and not in
-`rcman.service`. Then do what the installer says about Caddy, as described under
-[Caddy](#caddy). An upgrade that needs a range of subordinate ids rcman's account
+`rcman.service`. Where the upgrade changes rcman's site block, the installer restarts Caddy
+(see [Caddy](#caddy)), and every site of that Caddy stops for a moment. An upgrade that needs a range of subordinate ids rcman's account
 does not have yet is the one thing that would stop servers, and the installer
 refuses it while a container runs, with the commands to stop them (see step 4
 under [What the installer does](#what-the-installer-does)).
@@ -491,7 +520,8 @@ sudo ./install.sh --rollback
 ```
 
 It makes the previous release current and restarts the services; it neither
-updates the clone nor changes any setting. Rolling back again returns to the
+updates the clone nor changes any setting, and leaves Caddy, its configuration and
+rcman's site block as they are. Rolling back again returns to the
 newer release. The installer **refuses** a rollback when the database is at a
 schema version newer than the previous release reads, or when it cannot tell
 what that release reads, since that release might not start; it says so and
@@ -566,6 +596,8 @@ heading, asks first, then upgrades rcman to
 - workspaces and their Claude servers keep running;
 - every open **Terminal** tab closes as rcman restarts; reconnect once it is back;
 - a git action or a Claude sign-in in progress is cut off; do it again afterwards;
+- where the upgrade changes rcman's site block, Caddy restarts, and every site it serves,
+  your others too, stops for a moment (see [Caddy](#caddy));
 - no workspace is made, cloned or rebuilt and no Claude Code version is rolled out,
   and the pages that offer them say why.
 
@@ -606,10 +638,14 @@ Cloud console when you have no use for it.
    Workspaces run in rcman's own Podman, outside these services, so they keep
    running; step 3 ends them.
 2. **Take rcman out of Caddy**, or keep Caddy's `import` from dangling. Remove
-   the `import` of `/etc/rcman/Caddyfile.snippet` from your Caddyfile, or the
-   copy of the site block, and leave Caddy running for now: restart Caddy after
-   step 6, which removes the group, since Caddy keeps the groups it started
-   with. If you will install rcman again, keep the `import` instead, and keep
+   from `/etc/caddy/Caddyfile` the `import` of `/etc/rcman/Caddyfile.snippet` and
+   the `on_demand_tls` block, or its `ask`, that the installer put in the global
+   options, and leave Caddy running for now: restart Caddy after step 6, which
+   removes the group, since Caddy keeps the groups it started with, and before
+   step 7 removes the snippet. `/etc/caddy/.Caddyfile.rcman-backup` is the
+   Caddyfile as it was before the installer last changed it; delete it when you
+   have no use for it. `/etc/rcman/caddy.applied`, what Caddy was last restarted
+   with, goes with `/etc/rcman` in step 7. If you will install rcman again, keep the `import` instead, and keep
    the snippet, or an empty file in its place, at that path from the wipe to the
    reinstall: Caddy does not load a Caddyfile whose `import` names a file that
    is not there, and step 7 removes `/etc/rcman`, so make the empty file again
@@ -691,7 +727,7 @@ Cloud console when you have no use for it.
 
 ## Afterwards
 
-Once the installer has said what to do about Caddy and you have done it, check
+Once the installer has ended, check
 that nothing failed to start — `systemctl --failed` lists nothing — and open
 `https://<your host name>/`: Google asks the first administrator to sign in, with
 the address given as `RCMAN_INSTALL_ADMIN_EMAIL`, and rcman opens on the

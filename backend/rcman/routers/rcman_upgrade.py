@@ -33,7 +33,7 @@ def report(request: Request) -> dict:
     (``available``) and, where not, the problem a request would be refused with (``reason``),
     and the last upgrade: ``state`` (requested, running, succeeded, failed, not_started, or
     unknown where there is no status rcman can read) and its status's ``started``,
-    ``finished``, ``from``, ``to``, ``notices`` and ``error``."""
+    ``finished``, ``from``, ``to`` and ``error``."""
     return request.app.state.upgrade.report()
 
 

@@ -111,7 +111,7 @@ def test_a_playwright_image_of_another_version_is_found():
 
 
 def test_the_stacks_global_options_ask_what_they_are_given_or_nothing():
-    """The gate that shows what Caddy does without the installer's global block runs the
+    """The gate that shows what Caddy does without the installer's on_demand_tls runs the
     stack's Caddy with no ``on_demand_tls``; every other start asks the address given."""
     block = "\ton_demand_tls {\n\t\task http://127.0.0.1:1/.rcman/ask\n\t}\n"
     asking = st.global_options("http://127.0.0.1:1/.rcman/ask")

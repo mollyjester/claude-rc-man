@@ -229,7 +229,8 @@ ROOT_SERVICES = {
     "installer/templates/rcman-upgrade.service": (
         "the web upgrade: rcman asks for it by writing a file, and this oneshot runs the clone's "
         "install.sh as root, off by default and installed only when an administrator turns it "
-        "on. Accepted risk: whoever can push to main runs code as root, through install.sh, "
+        "on; as every run of the installer, it edits Caddy's configuration and restarts Caddy. "
+        "Accepted risk: whoever can push to main runs code as root, through install.sh, "
         "installer/ and uv sync building the project as root; so a GitHub token stored in rcman "
         "that can push to the repository is a root credential, and while the option is on the "
         "clone owner's account is root without a password"

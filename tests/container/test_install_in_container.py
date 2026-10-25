@@ -119,6 +119,10 @@ def installation(
             podman_service.cli("rm", "--force", "--time=0", name, timeout=300)
 
 
+def test_the_first_installation_puts_rcman_in_caddy_and_restarts_it(installation):
+    installation.check("test_the_first_installation_puts_rcman_in_caddy_and_restarts_it")
+
+
 def test_installing_leaves_nothing_owned_by_root_in_the_clone(installation):
     installation.check("test_installing_leaves_nothing_owned_by_root_in_the_clone")
 
@@ -207,18 +211,6 @@ def test_the_socket_group_is_kept_to_caddy_alone(installation):
 
 def test_no_listener_lets_a_local_user_impersonate(installation):
     installation.check("test_no_listener_lets_a_local_user_impersonate")
-
-
-def test_the_installer_warns_about_a_caddy_admin_api_on_loopback(installation):
-    installation.check("test_the_installer_warns_about_a_caddy_admin_api_on_loopback")
-
-
-def test_the_installer_warns_when_caddys_global_options_do_not_ask_rcman(installation):
-    installation.check("test_the_installer_warns_when_caddys_global_options_do_not_ask_rcman")
-
-
-def test_the_caddy_snippet_is_printed_and_valid(installation):
-    installation.check("test_the_caddy_snippet_is_printed_and_valid")
 
 
 def test_with_web_upgrade_off_no_upgrade_unit_exists(installation):

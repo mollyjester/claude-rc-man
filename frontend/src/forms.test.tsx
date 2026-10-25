@@ -80,7 +80,6 @@ function api() {
       finished: null,
       from: null,
       to: null,
-      notices: [],
       error: null,
     },
     "POST /api/claude/login": { url: "https://claude.com/x" },

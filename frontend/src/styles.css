@@ -2288,7 +2288,6 @@ code.commit,
 .upgrade-error {
   font-family: var(--font-mono);
 }
-.upgrade-notices,
 .upgrade-consequences,
 .rebuild-list {
   margin: 0;
