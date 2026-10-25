@@ -582,7 +582,8 @@ import the installer; `rcman_upgrade.Upgrades` is `app.state.upgrade`.
   those properties for each of the two units, an `ActiveState` among `ACTIVE_STATES`; anything
   else is an error, never idle. The service in one of `RUNNING` is a run under way, and the
   status's fields are given only where the status names the same invocation. Otherwise the
-  status (`read_status`: exactly its fields, of their types, the error within `ERROR_LENGTH`)
+  status (`read_status`: exactly its fields once the older wrapper's `LEFTOVER` key is dropped,
+  as the installer's own `read_status` does, of their types, the error within `ERROR_LENGTH`)
   says how the last one ended; none, or one it does not take, is `unknown`, never an error. A
   status that says `running` is `failed` where it is of another boot (`BOOT_ID`) or systemd
   shows the service not running, and `running` only where systemd cannot be read.
@@ -595,7 +596,7 @@ import the installer; `rcman_upgrade.Upgrades` is `app.state.upgrade`.
   restart, which only an upgrade that started makes.
 - **The report.** `GET /api/rcman/upgrade` is `release`, `enabled`, `available`, `reason`,
   `state` (`requested`, `running`, `succeeded`, `failed`, `not_started` or `unknown`) and the
-  status's `started`, `finished`, `from`, `to`, `notices` and `error`, the same keys whatever
+  status's `started`, `finished`, `from`, `to` and `error`, the same keys whatever
   the state. `reason` is `null`, or the problem a request would be refused with now:
   `rcman_upgrade_refused` with its `reason`, one of `problems.UPGRADE_REFUSED_MESSAGES`, whose
   words are its title. With the option off it is `disabled`, and systemd is not asked.

@@ -472,7 +472,10 @@ installer checks, notes the images it builds, and hands the installer the tmux b
 engine. A path unit started, as `rcman-upgrade.path` is, is only noted active and runs no
 service, since nothing changes its path; `tests/test_stand_ins.py` holds that, with a folder of
 planted units the stand-in reads in place of `/etc/systemd/system`, named by
-`RCMAN_STAND_IN_UNITS`. The checkout's files are at `/src` (see the snapshot, below); `tests/container/clone.py`
+`RCMAN_STAND_IN_UNITS`. A unit that is not there, such as `caddy.service`, is only noted active
+when it is restarted, and one never started, such as `caddy-api.service`, is neither active nor
+enabled: the installation's Caddy configuration is the package's Caddyfile, which the installer edits and
+checks with the real `caddy validate`, and a restart of Caddy is a recorded call. The checkout's files are at `/src` (see the snapshot, below); `tests/container/clone.py`
 makes them a git origin and a clone of the user `dev`'s, and `tests/container/installed.py` runs
 the installation with the fake `claude` as the release it downloads. The frontend's and the
 backend's packages come from caches filled beforehand in a container of the same image with the
@@ -490,7 +493,7 @@ sizes on the engine, whose socket it is given, alice its first administrator, bo
 in; oauth2-proxy from the installer's toolchain with the installer's own configuration, its
 Google endpoints pointed at `tests/container/oidc_stub.py`; Caddy with the installer's own site
 block for `rcman.test`, its own certificate authority, its admin API off and on-demand
-certificates asked of a site on its loopback (`GLOBAL_OPTIONS` in `stack.py`), in front of
+certificates asked of a site on its loopback (`global_options` in `stack.py`), in front of
 `rcman.test`, `auth.test` and `github.com`; the stand-in GitHub, `tests/github_server.py` through
 `github_stand_in.py serve`, with a public and a private repository, under a certificate of an
 authority of its own; the fake `claude`'s releases, served; and `systemctl` the stand-in. The
@@ -573,7 +576,7 @@ snapshot is removed when the session ends.
 | Path | Contents |
 |---|---|
 | `tests/` | The test suite; `tests/test_<name>.py` tests the module `<name>.py`, wherever it is, `tests/` included, where there is one |
-| `tests/fakes/` | The fake `claude`, its recorded fixtures and the screens observed on a live server — see [fake-claude.md](fake-claude.md); Podman's default seccomp profile as recorded (`podman-seccomp.json`), which `tests/test_seccomp.py` holds to the machine's; Podman's help for the subcommands `publish.sh` reads and for its global options, recorded from the default image's Podman (`podman-help/`), which `tests/test_podman_wrapper.py` holds the wrapper's lists to and `tests/container/test_nest_in_podman.py` holds to that Podman's own help; and what the monitor reads of Podman, recorded from Podman on the tests' engine (`podman-monitor/`: `system df -v` with one workspace and with two, and with one holding many files, what it says when a volume cannot be read, `container inspect` and `info`), which `tests/test_monitor.py` reads and `tests/container/test_runtime_in_podman.py` holds to that Podman |
+| `tests/fakes/` | The fake `claude`, its recorded fixtures and the screens observed on a live server — see [fake-claude.md](fake-claude.md); Podman's default seccomp profile as recorded (`podman-seccomp.json`), which `tests/test_seccomp.py` holds to the machine's; Podman's help for the subcommands `publish.sh` reads and for its global options, recorded from the default image's Podman (`podman-help/`), which `tests/test_podman_wrapper.py` holds the wrapper's lists to and `tests/container/test_nest_in_podman.py` holds to that Podman's own help; and what the monitor reads of Podman, recorded from Podman on the tests' engine (`podman-monitor/`: `system df -v` with one workspace and with two, and with one holding many files, what it says when a volume cannot be read, `container inspect` and `info`), which `tests/test_monitor.py` reads and `tests/container/test_runtime_in_podman.py` holds to that Podman; and Ubuntu's own `/etc/caddy/Caddyfile`, the caddy package's conffile (`ubuntu-Caddyfile`), which `tests/test_install.py` edits with the installer's `edit_caddyfile` and holds to the package's md5 |
 | `helpers/` | What the backend shares with the installer and the fake `claude`, the standard library only: the rules values are refused by, what Claude's screens mean, running git, Claude Code's releases and their checked download (`claude_release.py`), and the checks a Claude Code version is held to with the canary program that runs them (`claude_checks.py`, `claude_canary.py`) |
 | `backend/` | The FastAPI application — see [backend.md](backend.md) |
 | `frontend/` | The React application, its component tests and its browser tests — see [frontend.md](frontend.md) |

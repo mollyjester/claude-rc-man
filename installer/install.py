@@ -5,10 +5,10 @@ settings, the packages rootless Podman needs, system users and groups, rcman's
 subordinate ids, linger and Podman socket, the toolchain, a release built from
 the clone's commit, the static tools and the default workspace image, the
 Claude Code store, configuration, systemd services, the first administrator,
-and a health check; and, when an administrator turns it on, the units and the wrapper that
-let rcman's administrators upgrade it from its web interface (installer/upgrade.py). Every
-step leaves things as they are when they are already right, so running it again changes
-nothing.
+Caddy's configuration and its restart, and a health check; and, when an administrator
+turns it on, the units and the wrapper that let rcman's administrators upgrade it from its
+web interface (installer/upgrade.py). Every step leaves things as they are when they are
+already right, so running it again changes nothing.
 
 Root never follows a link inside a path rcman can write: the static tools are in a folder
 of root's, and whatever the installer makes inside rcman's home or the socket's folder is
@@ -44,6 +44,7 @@ import tarfile
 import tempfile
 import time
 from pathlib import Path
+from typing import NamedTuple
 
 REPO = Path(__file__).resolve().parent.parent
 # install.sh runs this in isolated mode, which puts nothing of the clone on the
@@ -226,14 +227,6 @@ SOCKET_WITHIN = 60.0
 # Where Claude Code's releases are: helpers/claude_release.py, which rcman fetches them with too.
 CLAUDE_DOWNLOAD = claude_release.DOWNLOAD
 HEALTH_TIMEOUT = 60.0
-CADDY_ADMIN_PORT = 2019  # Caddy's default admin API address is localhost:2019
-CADDY_ADMIN_HOST = "127.0.0.1"  # what localhost is
-CADDY_ADMIN_WARNING = (
-    f"Something answers on Caddy's admin API address, localhost:{CADDY_ADMIN_PORT} "
-    f"({CADDY_ADMIN_HOST}:{CADDY_ADMIN_PORT}). Any local user can "
-    "rewrite Caddy's configuration through it, and so reach rcman as anyone. Put `admin off` "
-    "(or an admin address on a unix socket) in the global options of your Caddyfile."
-)
 
 LABEL = r"(?!-)[A-Za-z0-9-]+(?<!-)"  # a host name label: no leading or trailing hyphen
 HOSTNAME = re.compile(LABEL + r"(?:\." + LABEL + r")+")
@@ -641,6 +634,8 @@ def check_caddy_user(name: str) -> None:
             f"there is no account {name!r} for Caddy; give the account Caddy runs as "
             "with --caddy-user"
         )
+    if pwd.getpwnam(name).pw_uid == 0:  # Caddy's configuration is checked as it, never as root
+        raise InstallError(f"Caddy's account {name!r} is root's; give Caddy an account of its own")
 
 
 def _add_account(name: str, *options: str) -> None:
@@ -1577,7 +1572,6 @@ def configure(settings: dict[str, str]) -> list[str]:
     files = [
         (ETC / "rcman.env", render("rcman.env", settings), 0o640, app_gid),
         (ETC / "oauth2-proxy.cfg", render("oauth2-proxy.cfg", settings), 0o640, proxy_gid),
-        (CADDY_SNIPPET, render("Caddyfile", settings), 0o644, None),
     ]
     for unit in UNITS:
         files.append((SYSTEMD / unit, render(unit, settings), 0o644, None))
@@ -1825,31 +1819,24 @@ def health(settings: dict[str, str]) -> None:
             time.sleep(1)
 
 
-def caddy_admin_exposed(port: int = CADDY_ADMIN_PORT) -> bool:
-    """Whether something accepts connections on Caddy's default admin API address."""
-    import socket
-
-    try:
-        socket.create_connection((CADDY_ADMIN_HOST, port), timeout=2).close()
-    except OSError:
-        return False
-    return True
+def summary(release: str, changes: list[str]) -> str:
+    """The one line a successful run prints, as JSON for programs to read: the release, and what
+    this run changed on the machine."""
+    return json.dumps({"release": release, "changed": changes})
 
 
-def summary(release: str, changes: list[str], notices: list[str]) -> str:
-    """The line the installer prints for programs to read, the upgrade wrapper among them."""
-    return json.dumps({"release": release, "changed": changes, "notices": notices})
+# --- Caddy ---------------------------------------------------------------------------------
 
-
-def global_block(ask_port: str) -> str:
-    """What Caddy's global options must hold for certificates of forwarded ports: they are got
-    on demand, and only once rcman's forwarding server, asked on the ask site, allows one."""
-    return f"on_demand_tls {{\n\task {ask_url(ask_port)}\n}}"
-
-
-# Where Ubuntu's Caddy reads its configuration: the global options rcman's block goes in.
+# Where Ubuntu's Caddy reads its configuration, which the installer edits (``ensure_caddy``).
 CADDYFILE = Path("/etc/caddy/Caddyfile")
-ADAPT_WITHIN = 60.0
+# The Caddyfile as it was before the installer last changed it.
+CADDY_BACKUP = CADDYFILE.parent / ".Caddyfile.rcman-backup"
+# What Caddy was last restarted with: a digest of the Caddyfile, the snippet and Caddy's account.
+CADDY_APPLIED = ETC / "caddy.applied"
+CADDY_UNIT = "caddy.service"
+# Ubuntu's other unit for Caddy, which reads no Caddyfile: configured through its admin API.
+CADDY_API_UNIT = "caddy-api.service"
+VALIDATE_WITHIN = 60.0
 
 
 def ask_url(ask_port: str) -> str:
@@ -1857,84 +1844,391 @@ def ask_url(ask_port: str) -> str:
     return f"http://127.0.0.1:{ask_port}{ASK_PATH}"
 
 
-def on_demand_asks(config: object) -> list[str]:
-    """The addresses Caddy's JSON configuration, as ``caddy adapt`` gives it, asks before it gets
-    a certificate on demand: ``ask`` (Caddy 2.6, Ubuntu's) or an ``http`` permission's
-    ``endpoint`` (later Caddy)."""
-    found: object = config
-    for key in ("apps", "tls", "automation", "on_demand"):
-        found = found.get(key) if isinstance(found, dict) else None
-    if not isinstance(found, dict):
-        return []
-    asks = [found["ask"]] if isinstance(found.get("ask"), str) else []
-    permission = found.get("permission")
-    if isinstance(permission, dict) and permission.get("module") == "http":
-        if isinstance(permission.get("endpoint"), str):
-            asks.append(permission["endpoint"])
-    return asks
+class CaddyToken(NamedTuple):
+    start: int  # offsets in the text
+    end: int
+    text: str  # as written, quotes and all
+    line: int  # the logical line: a newline inside quotes does not end one
 
 
-def caddy_asks_rcman(caddy_user: str, ask_port: str, caddyfile: Path = CADDYFILE) -> bool | None:
-    """Whether the Caddyfile's global options ask rcman before an on-demand certificate, as
-    ``caddy adapt`` reads the file, as Caddy's account, which works with the admin API off and
-    starts nothing; None where it could not be read so."""
-    argv = ["caddy", "adapt", "--adapter", "caddyfile", "--config", str(caddyfile)]
+def caddy_tokens(text: str) -> list[CaddyToken]:
+    """The Caddyfile's tokens, as far as the installer needs them: whitespace parts them, a
+    comment starts only where a token would, and a token that starts with a quote (``"…"``, with
+    backslash escapes) or a backtick runs to its closing one, whitespace and newlines and all. A
+    heredoc is not read as one."""
+    tokens, i, line = [], 0, 0
+    while i < len(text):
+        ch = text[i]
+        if ch == "\n":
+            line += 1
+            i += 1
+        elif ch in " \t\r":
+            i += 1
+        elif ch == "#":
+            end = text.find("\n", i)
+            i = len(text) if end == -1 else end
+        else:
+            start = i
+            quote = ch if ch in '"`' else None  # as in Caddy, a quote opens only a token
+            i += 1 if quote else 0
+            while i < len(text):
+                ch = text[i]
+                if quote:
+                    if quote == '"' and ch == "\\":
+                        i += 1
+                    elif ch == quote:
+                        quote = None
+                        i += 1
+                        break
+                elif ch in " \t\r\n":
+                    break
+                i += 1
+            if quote:
+                raise InstallError(f"{CADDYFILE}: a quoted string is not closed")
+            tokens.append(CaddyToken(start, i, text[start:i], line))
+    return tokens
+
+
+class CaddyEntry(NamedTuple):
+    kind: str  # "global", "import", "snippet" or "site"
+    header: list[CaddyToken]  # what comes before its "{": a site's addresses, the import's words
+    open: int  # the indexes of its braces among the tokens; -1 for an import
+    close: int
+
+
+def caddy_entries(tokens: list[CaddyToken]) -> list[CaddyEntry]:
+    """The top-level entries of a Caddyfile: a first bare ``{`` (the global options), ``import``
+    lines, ``(name)`` snippets and sites, each but an import a block in braces. Only a token that
+    is ``{`` or ``}`` alone is a brace: ``{host}`` is not. Refused: a site without braces,
+    unbalanced braces, and a bare block that is not the first."""
+    entries: list[CaddyEntry] = []
+    i = 0
+    while i < len(tokens):
+        j = i  # the header runs to its "{", across lines while a line ends with a comma
+        while tokens[j].text != "{" and j + 1 < len(tokens):
+            if tokens[j + 1].line != tokens[j].line and not tokens[j].text.endswith(","):
+                break
+            j += 1
+        header = tokens[i:j] if tokens[j].text == "{" else tokens[i : j + 1]
+        if any(t.text == "}" for t in header):
+            raise InstallError(f"{CADDYFILE}: its braces are unbalanced")
+        if tokens[j].text != "{":
+            if header[0].text != "import":
+                words = " ".join(t.text for t in header)
+                raise InstallError(
+                    f"{CADDYFILE}: {words!r} is a site without braces; give every site its "
+                    "braces { }"
+                )
+            entries.append(CaddyEntry("import", header, -1, -1))
+            i = j + 1
+            continue
+        depth, k = 0, j
+        for k in range(j, len(tokens)):
+            depth += {"{": 1, "}": -1}.get(tokens[k].text, 0)
+            if depth == 0:
+                break
+        if depth:
+            raise InstallError(f"{CADDYFILE}: its braces are unbalanced")
+        if not header:
+            if entries:
+                raise InstallError(
+                    f"{CADDYFILE}: a block with no address comes after another entry; only "
+                    "the global options, first in the file, may be one"
+                )
+            kind = "global"
+        elif len(header) == 1 and header[0].text.startswith("(") and header[0].text.endswith(")"):
+            kind = "snippet"
+        else:
+            kind = "site"
+        entries.append(CaddyEntry(kind, header, j, k))
+        i = k + 1
+    return entries
+
+
+def _directives(tokens: list[CaddyToken], open_: int, close: int) -> list[int]:
+    """The indexes of the tokens that begin a line directly inside the block open_..close."""
+    found, depth = [], 0
+    for k in range(open_ + 1, close):
+        if depth == 0 and tokens[k].line != tokens[k - 1].line:
+            found.append(k)
+        depth += {"{": 1, "}": -1}.get(tokens[k].text, 0)
+    return found
+
+
+def _line_start(text: str, offset: int) -> int:
+    return text.rfind("\n", 0, offset) + 1
+
+
+def _own_line(tokens: list[CaddyToken], close: int, what: str) -> None:
+    if tokens[close].line == tokens[close - 1].line:
+        raise InstallError(
+            f"{CADDYFILE}: the closing brace of {what} is not on its own line, where the "
+            "installer adds to it"
+        )
+
+
+def _line_end(tokens: list[CaddyToken], k: int) -> int:
+    """The index of the last token on token ``k``'s line."""
+    while k + 1 < len(tokens) and tokens[k + 1].line == tokens[k].line:
+        k += 1
+    return k
+
+
+def _site_addresses(entry: CaddyEntry) -> tuple[str, ...]:
+    return tuple(a for t in entry.header for a in t.text.split(",") if a)
+
+
+def _global_edits(
+    text: str, tokens: list[CaddyToken], entry: CaddyEntry | None, ask: str
+) -> tuple[list[tuple[int, int, str]], list[str]]:
+    """The splices that make the global options ask ``ask`` before an on-demand certificate."""
+    if entry is None:
+        block = f"{{\n\ton_demand_tls {{\n\t\task {ask}\n\t}}\n}}\n\n"
+        return [(0, 0, block)], ["global options with on_demand_tls added"]
+    heads = [k for k in _directives(tokens, entry.open, entry.close)
+             if tokens[k].text == "on_demand_tls"]  # fmt: skip
+    if len(heads) > 1:
+        raise InstallError(f"{CADDYFILE}: on_demand_tls is in its global options twice")
+    if not heads:
+        _own_line(tokens, entry.close, "the global options")
+        at = _line_start(text, tokens[entry.close].start)
+        indent = text[at : tokens[entry.close].start] + "\t"
+        block = f"{indent}on_demand_tls {{\n{indent}\task {ask}\n{indent}}}\n"
+        return [(at, at, block)], ["on_demand_tls added to the global options"]
+    head = heads[0]
+    open_ = _line_end(tokens, head)
+    if tokens[open_].text != "{":
+        raise InstallError(
+            f"{CADDYFILE}: on_demand_tls in its global options is not a block in braces"
+        )
+    close, depth = open_, 0
+    for close in range(open_, entry.close):
+        depth += {"{": 1, "}": -1}.get(tokens[close].text, 0)
+        if depth == 0:
+            break
+    if any(t.text == "permission" for t in tokens[open_:close]):
+        raise InstallError(
+            f"{CADDYFILE}: on_demand_tls in its global options has a permission, which the "
+            "installer does not change; give it an ask instead"
+        )
+    asks = [k for k in _directives(tokens, open_, close) if tokens[k].text == "ask"]
+    if len(asks) > 1:
+        raise InstallError(f"{CADDYFILE}: on_demand_tls has an ask twice")
+    if not asks:
+        _own_line(tokens, close, "on_demand_tls")
+        at = _line_start(text, tokens[close].start)
+        indent = text[at : tokens[close].start] + "\t"
+        return [(at, at, f"{indent}ask {ask}\n")], ["on_demand_tls ask added"]
+    k = asks[0]
+    last = _line_end(tokens, k)
+    if last == k:
+        return [(tokens[k].end, tokens[k].end, f" {ask}")], ["on_demand_tls ask added"]
+    old = text[tokens[k + 1].start : tokens[last].end]
+    if old == ask:
+        return [], []
+    return [(tokens[k + 1].start, tokens[last].end, ask)], [f"on_demand_tls ask {old} replaced"]
+
+
+def _copy_span(
+    text: str, tokens: list[CaddyToken], entry: CaddyEntry, comments: set[str]
+) -> tuple[int, int, bool]:
+    """Where a copy of a site of rcman's is, with the comment lines just above it that are lines of
+    the snippet's own ``comments``, and the blank lines after it; and whether there were such
+    blank lines."""
+    start = _line_start(text, entry.header[0].start)
+    while start > 0:
+        above = _line_start(text, start - 1)
+        line = text[above : start - 1].strip()
+        if not line.startswith("#") or line not in comments:
+            break
+        start = above
+    close = tokens[entry.close]
+    if entry.close + 1 < len(tokens) and tokens[entry.close + 1].line == close.line:
+        return start, close.end, False
+    end = text.find("\n", close.end)
+    end = len(text) if end == -1 else end + 1
+    blank = False
+    while end < len(text):
+        line_end = text.find("\n", end)
+        if line_end == -1 or text[end:line_end].strip():
+            break
+        end, blank = line_end + 1, True
+    return start, end, blank
+
+
+def edit_caddyfile(text: str, snippet: str, ask: str) -> tuple[str, list[str]]:
+    """``text``, a Caddyfile, with rcman in it, and what was changed: each copy of a site of
+    rcman's (one of the addresses of ``snippet``'s sites, or one passed to rcman's sockets) taken
+    out, the import of CADDY_SNIPPET where the first was or else at the end, and the global
+    options' on_demand_tls asking ``ask``, a different ask replaced. Everything else stays as it
+    was, byte for byte; ``admin`` is not touched. Raises InstallError where it cannot be done
+    safely: a permission in on_demand_tls, two of them, one without a block, and what
+    ``caddy_entries`` refuses."""
+    tokens = caddy_tokens(text)
+    entries = caddy_entries(tokens)
+    snippet_tokens = caddy_tokens(snippet)
+    ours = {_site_addresses(e) for e in caddy_entries(snippet_tokens) if e.kind == "site"}
+    socket = f"unix/{RUN}/"
+    comments = {line.strip() for line in snippet.splitlines() if line.strip().startswith("#")}
+    first = entries[0] if entries and entries[0].kind == "global" else None
+    edits, actions = _global_edits(text, tokens, first, ask)
+    imported = any(
+        e.kind == "import" and [t.text for t in e.header[1:]] == [str(CADDY_SNIPPET)]
+        for e in entries
+    )
+    put = imported
+    for entry in entries:
+        if entry.kind != "site":
+            continue
+        inside = tokens[entry.open : entry.close]
+        if _site_addresses(entry) not in ours and not any(
+            t.text.startswith(socket) for t in inside
+        ):
+            continue
+        start, end, blank = _copy_span(text, tokens, entry, comments)
+        replacement = ""
+        if not put:
+            replacement, put = f"import {CADDY_SNIPPET}\n" + ("\n" if blank else ""), True
+        edits.append((start, end, replacement))
+        actions.append(f"copy of the site {', '.join(_site_addresses(entry))} removed")
+    if not put:
+        joint = "" if not text or text.endswith("\n") else "\n"
+        edits.append((len(text), len(text), joint + ("\n" if text else "") +
+                      f"import {CADDY_SNIPPET}\n"))  # fmt: skip
+    if not imported:
+        actions.append(f"import {CADDY_SNIPPET} added")
+    for start, end, replacement in sorted(edits, key=lambda e: (e[0], e[1]), reverse=True):
+        text = text[:start] + replacement + text[end:]
+    return text, actions
+
+
+def _put_beside(path: Path, data: bytes, like: os.stat_result) -> Path:
+    """A new file in ``path``'s folder holding ``data``, with the mode and owner of ``like``."""
+    fd, name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(data)
+            os.fchmod(handle.fileno(), stat.S_IMODE(like.st_mode))
+            os.fchown(handle.fileno(), like.st_uid, like.st_gid)
+    except BaseException:
+        os.unlink(name)
+        raise
+    return Path(name)
+
+
+def caddy_validate(config: Path, caddy_user: str) -> None:
+    """Caddy's own check of ``config``, run as Caddy's account, never as root: a Caddyfile Caddy
+    refuses is an InstallError with Caddy's words."""
+    argv = ["caddy", "validate", "--adapter", "caddyfile", "--config", str(config)]
     # As everywhere ``run`` is given a timeout: one that passes kills runuser, which may leave
     # caddy itself running a moment longer.
     try:
-        done = run(argv, user=caddy_user, check=False, timeout=ADAPT_WITHIN)
-    except (OSError, subprocess.TimeoutExpired):
-        return None
+        done = run(argv, user=caddy_user, check=False, timeout=VALIDATE_WITHIN)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise InstallError(f"Caddy could not check {CADDYFILE}: {error}") from None
     if done.returncode != 0:
-        return None
-    try:
-        config = json.loads(done.stdout)
-    except ValueError:
-        return None
-    return ask_url(ask_port) in on_demand_asks(config)
+        words = (done.stderr or done.stdout or "").strip()
+        raise InstallError(f"Caddy refuses {CADDYFILE} as the installer would leave it:\n{words}")
 
 
-def caddy_ask_warning(found: bool | None, ask_port: str) -> str | None:
-    """What to warn of after ``caddy_asks_rcman`` found ``found``: nothing where the global
-    options ask rcman."""
-    if found:
-        return None
-    if found is None:
-        why = (
-            f"rcman could not read {CADDYFILE} with `caddy adapt` to check that its global "
-            "options ask rcman before Caddy gets a certificate on demand."
-        )
+def _put_back_snippet(old: bytes | None) -> None:
+    if old is None:
+        CADDY_SNIPPET.unlink(missing_ok=True)
     else:
-        why = (
-            f"The global options of {CADDYFILE} do not ask rcman before Caddy gets a "
-            "certificate on demand."
-        )
-    return (
-        f"{why} Without that, Caddy gets a certificate for any name under *.ws.<DOMAIN> that "
-        "anyone asks it for, each one published, and each one counted against your certificate "
-        "authority's limits. Put this in the global options, once:\n" + global_block(ask_port)
-    )
+        write_if_changed(CADDY_SNIPPET, old.decode("utf-8"), 0o644)
 
 
-def caddy_notices(changes: list[str], caddy_user: str, ask_port: str) -> list[str]:
-    """What to tell the administrator to do to Caddy after this run."""
-    notices = []
-    if str(CADDY_SNIPPET) in changes:
-        notices.append(
-            f"The Caddy site block changed ({CADDY_SNIPPET}). If your Caddyfile imports "
-            "it, nothing more is needed there; if it holds a copy, copy it again. "
-            "Then restart Caddy."
+def ensure_caddy(settings: dict[str, str], joined: bool, owner_uid: int = 0) -> list[str]:
+    """rcman in Caddy: the snippet written, the Caddyfile edited (``edit_caddyfile``) once Caddy,
+    as its own account, accepts the result, and Caddy restarted where what it runs with changed,
+    where Caddy's account ``joined`` rcman's group, or where Caddy is not running. What cannot be
+    done is an InstallError, with Caddy's files left as they were: a Caddyfile that is not a
+    regular file, a folder of it that is not ``owner_uid``'s (root's) alone to write, and Caddy run
+    as caddy-api.service, which reads no Caddyfile."""
+    folder = CADDYFILE.parent
+    try:
+        found, held = os.lstat(CADDYFILE), os.lstat(folder)
+    except OSError as error:
+        raise InstallError(f"Caddy's configuration is not there: {error}") from None
+    if not stat.S_ISREG(found.st_mode):
+        raise InstallError(f"{CADDYFILE} is not a regular file; the installer edits only one")
+    if not stat.S_ISDIR(held.st_mode) or held.st_uid != owner_uid or held.st_mode & 0o022:
+        raise InstallError(f"{folder} must be a folder of root's that no one else can write to")
+    for verb in ("is-active", "is-enabled"):
+        if run(["systemctl", verb, "--quiet", CADDY_API_UNIT], check=False).returncode == 0:
+            raise InstallError(
+                f"Caddy runs as {CADDY_API_UNIT}, which reads no Caddyfile; rcman needs Caddy "
+                f"run as {CADDY_UNIT}, from {CADDYFILE}"
+            )
+    caddy_user = settings["CADDY_USER"]
+    original = CADDYFILE.read_bytes()
+    try:
+        text = original.decode("utf-8")
+    except UnicodeDecodeError:
+        raise InstallError(f"{CADDYFILE} is not UTF-8 text") from None
+    snippet = render("Caddyfile", settings)
+    edited, actions = edit_caddyfile(text, snippet, ask_url(settings["ASK_PORT"]))
+    old_snippet = CADDY_SNIPPET.read_bytes() if CADDY_SNIPPET.exists() else None
+    changes = [str(CADDY_SNIPPET)] if write_if_changed(CADDY_SNIPPET, snippet, 0o644) else []
+    try:
+        if edited != text:
+            candidate = _put_beside(CADDYFILE, edited.encode("utf-8"), found)
+            try:
+                caddy_validate(candidate, caddy_user)
+                backup = _put_beside(CADDY_BACKUP, original, found)
+                try:
+                    os.replace(backup, CADDY_BACKUP)
+                finally:
+                    backup.unlink(missing_ok=True)
+                os.replace(candidate, CADDYFILE)
+            finally:
+                candidate.unlink(missing_ok=True)
+            changes += [f"{CADDYFILE}: {action}" for action in actions]
+        applied = hashlib.sha256(
+            b"\0".join((CADDYFILE.read_bytes(), CADDY_SNIPPET.read_bytes(), caddy_user.encode()))
+        ).hexdigest()
+        stamp = (
+            CADDY_APPLIED.read_text(encoding="utf-8").strip() if CADDY_APPLIED.exists() else None
         )
-        notices.append(
-            "Caddy's global options, the block at the top of your Caddyfile, must hold this "
-            "once, for the certificates of forwarded ports; put it there if it is not, or "
-            "change its port if it is another:\n" + global_block(ask_port)
-        )
-    elif f"{caddy_user} in group {WEB_GROUP}" in changes:
-        notices.append(
-            f"{caddy_user} joined the group {WEB_GROUP}: restart Caddy so it can reach rcman."
-        )
-    return notices
+        active = run(["systemctl", "is-active", "--quiet", CADDY_UNIT], check=False).returncode == 0
+        restart = stamp != applied or joined or not active
+        if edited == text and (changes or restart):
+            # Caddy is never restarted with a file it refuses, a hand edit's among them.
+            caddy_validate(CADDYFILE, caddy_user)
+    except InstallError:
+        _put_back_snippet(old_snippet)
+        raise
+    except OSError as error:
+        _put_back_snippet(old_snippet)
+        raise InstallError(f"{CADDYFILE} could not be changed: {error}") from None
+    if restart:
+        # The unit is Type=notify: a restart that succeeds is a Caddy that came up.
+        restarted = run(["systemctl", "restart", CADDY_UNIT], check=False)
+        if restarted.returncode != 0:
+            words = (restarted.stderr or restarted.stdout or "").strip()
+            why = f"journalctl -u {CADDY_UNIT} says why:\n{words}"
+            if edited == text and not changes:
+                raise InstallError(f"Caddy did not start again ({CADDY_UNIT}); {why}")
+            try:
+                try:
+                    if edited != text:
+                        os.replace(_put_beside(CADDYFILE, original, found), CADDYFILE)
+                finally:
+                    _put_back_snippet(old_snippet)
+            except OSError as error:
+                raise InstallError(
+                    f"Caddy did not start again with rcman in it ({CADDY_UNIT}), and what this "
+                    f"run changed could not all be put back ({error}); the Caddyfile before it "
+                    f"is {CADDY_BACKUP}; {why}"
+                ) from None
+            run(["systemctl", "restart", CADDY_UNIT], check=False)
+            raise InstallError(
+                f"Caddy did not start again with rcman in it ({CADDY_UNIT}); {CADDYFILE} and "
+                f"{CADDY_SNIPPET} are put back as they were, and {why}"
+            )
+        changes.append(f"{CADDY_UNIT} restarted")
+    write_if_changed(CADDY_APPLIED, applied + "\n", 0o644)
+    return changes
 
 
 # --- command line -----------------------------------------------------------------------
@@ -2000,22 +2294,14 @@ def main(argv: list[str]) -> int:
         added = ensure_admin(settings)
         start_services(restart=bool(changes))
         changes += added
+        # Caddy keeps the groups it started with: once its account joins rcman's, it restarts
+        joined = f"{settings['CADDY_USER']} in group {WEB_GROUP}" in changes
+        changes += ensure_caddy(settings, joined)
         health(settings)
         # only now: the service runs with the new builder image's name, and an older one
         # is no one's but a build still running from it
         prune_devcontainer_builder_images(app_uid(), devcontainer_builder_image())
-        notices = caddy_notices(changes, settings["CADDY_USER"], settings["ASK_PORT"])
-        warnings = [CADDY_ADMIN_WARNING] if caddy_admin_exposed() else []
-        asks = caddy_asks_rcman(settings["CADDY_USER"], settings["ASK_PORT"])
-        unasked = caddy_ask_warning(asks, settings["ASK_PORT"])
-        warnings += [unasked] if unasked else []
-        print(summary(release, changes, notices + warnings))
-        print(f"\nAdd this to your Caddyfile ({CADDY_SNIPPET}):\n")
-        print(CADDY_SNIPPET.read_text(encoding="utf-8"))
-        for notice in notices:
-            print(notice)
-        for warning in warnings:
-            print(f"Warning: {warning}", file=sys.stderr)
+        print(summary(release, changes))
         return 0
     except InstallError as error:
         print(f"install.sh: {error}", file=sys.stderr)

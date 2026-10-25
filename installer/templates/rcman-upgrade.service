@@ -1,7 +1,8 @@
 # Written by install.sh, when upgrading from the web interface is turned on.
 # The one service of rcman's that runs as root, named as such in tests/test_no_privilege_boundary.py
-# (ROOT_SERVICES), which says what that risks. rcman-upgrade.path starts it when rcman writes
-# its request; nothing else does, and the installer never restarts it.
+# (ROOT_SERVICES), which says what that risks. Like every run of the installer, it edits Caddy's
+# configuration and restarts Caddy. rcman-upgrade.path starts it when rcman writes its request;
+# nothing else does, and the installer never restarts it.
 [Unit]
 Description=Upgrade rcman from its clone, as rcman's administrators ask
 

@@ -84,7 +84,7 @@ def global_options(ask: str = ASK_URL) -> str:
     """The stack's own global options for Caddy: no admin API, certificates from its own
     authority, which is not installed in the system's trust, and on-demand certificates only
     once ``ask`` allows one; with no ``ask``, no ``on_demand_tls`` at all, as in a Caddyfile
-    that lacks the block the installer prints."""
+    that lacks the block the installer adds."""
     on_demand = f"\ton_demand_tls {{\n\t\task {ask}\n\t}}\n" if ask else ""
     return "{\n\tadmin off\n\tlocal_certs\n\tskip_install_trust\n" + on_demand + "}\n"
 

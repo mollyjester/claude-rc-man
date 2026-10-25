@@ -63,8 +63,8 @@ version is approved.
 
 ## After a fresh install or a reinstall
 
-On a real machine, as root, after `./install.sh` has ended and its notices about Caddy
-have been done (Caddy restarted). Write down, before the install, `/etc/subuid`,
+On a real machine, as root, after `./install.sh` has ended, having put rcman in
+`/etc/caddy/Caddyfile` and restarted Caddy. Write down, before the install, `/etc/subuid`,
 `/etc/subgid`, `getent group` and what the machine's other services answer. Podman is
 run as `rcman` the way the installer runs it (see
 [Podman's volumes are rcman's](../docs/installation.md#podmans-volumes-are-rcmans)):
@@ -158,8 +158,9 @@ runuser -u rcman -- env -i PATH=/usr/bin:/bin HOME=/var/lib/rcman \
     every part passes, as on a development machine.
 20. **Forwarded ports.** As [Forwarded ports](../docs/installation.md#forwarded-ports) says:
     `dig +short 6080-1.ws.<DOMAIN>` (any name under the wildcard) gives the machine's address;
-    with the `on_demand_tls` block the installer printed pasted into Caddy's global options and
-    Caddy restarted, another run of the installer no longer warns that they do not ask rcman.
+    the global options of `/etc/caddy/Caddyfile` hold the `on_demand_tls` block, asking rcman,
+    that the installer put there, and `sudo -u caddy caddy adapt --config /etc/caddy/Caddyfile`
+    shows that ask.
     An administrator turns **Forward ports** on in **Service settings**. A colleague clones a
     repository whose devcontainer.json lists a port in `forwardPorts`, serving a WebSocket app
     such as noVNC on `127.0.0.1`; once ready, the workspace's **Ports** card shows the port's
@@ -247,7 +248,9 @@ upgrade to. What the tests stand in for here is checked against the real thing:
 8. **The page follows the restart.** In a browser, through Caddy and oauth2-proxy, the page says
    the upgrade runs, says rcman is restarting while it is not reached, and offers
    **Reload page** at the end; the browser's console shows the failed reads, and
-   `sudo journalctl -u rcman --grep client_error` shows none from them.
+   `sudo journalctl -u rcman --grep client_error` shows none from them. With an upgrade that
+   changes rcman's site block, so that the installer restarts Caddy, the page follows through
+   that restart too, to **Reload page**.
 
 ## A repository with devcontainer.json and a feature
 

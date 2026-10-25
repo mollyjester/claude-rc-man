@@ -850,7 +850,7 @@ def caddy_named(stack) -> str:
 def test_ubuntu_caddy_without_the_global_ask_gives_any_host_under_the_wildcard_a_certificate(
     stack,
 ):
-    """What the installer's warning about the global options is for: with the forward site's
+    """What the installer's on_demand_tls in the global options is for: with the forward site's
     ``on_demand`` and no ``on_demand_tls`` in the global options, the Ubuntu package's Caddy loads
     the file and gets a certificate for any name under the wildcard that a client asks for, a
     random one, asking no one. The control: the same Caddy, its global options asking, refuses

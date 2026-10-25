@@ -475,7 +475,6 @@ export const m = {
   upgradeFinished: "Finished (UTC)",
   upgradeFrom: "Upgraded from",
   upgradeTo: "Upgraded to",
-  upgradeNotices: "What the installer asks of you",
   // A sentence that ends in a link to the guide, its words then the link's.
   upgradeOff:
     "Upgrading rcman from here is off. An administrator turns it on with the installer, from a shell, as the installation guide says in",

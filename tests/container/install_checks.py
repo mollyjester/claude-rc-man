@@ -10,6 +10,7 @@ each other.
 """
 
 import grp
+import hashlib
 import json
 import os
 import pwd
@@ -19,7 +20,6 @@ import stat
 import subprocess
 import sys
 import tempfile
-import time
 import traceback
 import urllib.error
 import urllib.request
@@ -102,6 +102,21 @@ def commit_in_origin(path, text, message):
     target.write_text(target.read_text() + text)
     git("commit", "-qam", message, cwd=work)
     git("push", "-q", "origin", "main", cwd=work)
+
+
+def test_the_first_installation_puts_rcman_in_caddy_and_restarts_it():
+    """The first installation edits the package's Caddyfile, which it keeps as its backup: the
+    Caddyfile imports rcman's site block, and ``caddy adapt``, run as Caddy's account, reads its
+    global options as asking rcman before an on-demand certificate; and Caddy was restarted."""
+    assert f"import {ins.CADDY_SNIPPET}\n" in ins.CADDYFILE.read_text()
+    port = ins.gather(ins.SETTINGS_FILE, {}, {}, None)["ASK_PORT"]
+    argv = ["caddy", "adapt", "--adapter", "caddyfile", "--config", str(ins.CADDYFILE)]
+    config = json.loads(sh(*argv, user="caddy").stdout)
+    assert config["apps"]["tls"]["automation"]["on_demand"]["ask"] == ins.ask_url(port)
+    conffiles = sh("dpkg-query", "-W", "-f=${Conffiles}", "caddy").stdout.split("\n")
+    [md5] = [f.split()[1] for f in conffiles if f.split()[:1] == [str(ins.CADDYFILE)]]
+    assert hashlib.md5(ins.CADDY_BACKUP.read_bytes()).hexdigest() == md5
+    assert installed.stood_in("systemctl", ["restart", "caddy.service"])
 
 
 def test_installing_leaves_nothing_owned_by_root_in_the_clone():
@@ -397,68 +412,6 @@ def test_no_listener_lets_a_local_user_impersonate():
     assert status == 200 and json.loads(text)["email"] == ADMIN and '"admin":true' in text
 
 
-def test_the_installer_warns_about_a_caddy_admin_api_on_loopback():
-    """Planted twin: a Caddy whose admin API is on loopback, as by default, is warned about."""
-    first_install = installed.first_install()
-    sys.path.insert(0, str(SRC))
-    from installer import install as ins
-
-    assert ins.CADDY_ADMIN_WARNING not in first_install.stdout + first_install.stderr
-    caddy = subprocess.Popen(
-        ["caddy", "run"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-    )  # no configuration: the admin API on localhost:2019
-    try:
-        deadline = time.monotonic() + 20
-        while ("127.0.0.1", 2019) not in listeners()[0] and time.monotonic() < deadline:
-            time.sleep(0.2)
-        assert ("127.0.0.1", 2019) in listeners()[0]
-        proc = install()
-        assert proc.returncode == 0, proc.stdout + proc.stderr  # a warning, not a refusal
-        assert ins.CADDY_ADMIN_WARNING in proc.stdout + proc.stderr
-    finally:
-        caddy.terminate()
-        caddy.wait(timeout=10)
-
-
-def test_the_installer_warns_when_caddys_global_options_do_not_ask_rcman():
-    """A Caddyfile that imports the site block but whose global options lack the ask is warned
-    about, as Caddy's own ``caddy adapt`` reads it; the planted positive: with the block the
-    installer prints in its global options, no such warning. The Caddyfile is put back after."""
-    port = ins.gather(ins.SETTINGS_FILE, {}, {}, None)["ASK_PORT"]
-    caddyfile = ins.CADDYFILE
-    before = caddyfile.read_bytes() if caddyfile.exists() else None
-    imported = f"import {ins.CADDY_SNIPPET}\n"
-    try:
-        caddyfile.parent.mkdir(parents=True, exist_ok=True)
-        caddyfile.write_text("{\n\tadmin off\n}\n" + imported)
-        proc = install()
-        assert proc.returncode == 0, proc.stdout + proc.stderr  # a warning, not a refusal
-        assert ins.caddy_ask_warning(False, port) in proc.stdout + proc.stderr
-        block = ins.global_block(port).replace("\n", "\n\t")
-        caddyfile.write_text("{\n\tadmin off\n\t" + block + "\n}\n" + imported)
-        proc = install()
-        assert proc.returncode == 0, proc.stdout + proc.stderr
-        for found in (False, None):
-            assert ins.caddy_ask_warning(found, port) not in proc.stdout + proc.stderr
-    finally:
-        if before is None:
-            caddyfile.unlink(missing_ok=True)
-        else:
-            caddyfile.write_bytes(before)
-
-
-def test_the_caddy_snippet_is_printed_and_valid():
-    first_install = installed.first_install()
-    assert "Add this to your Caddyfile" in first_install.stdout
-    assert "The Caddy site block changed" in first_install.stdout
-    snippet = (ETC / "Caddyfile.snippet").read_text()
-    assert snippet in first_install.stdout
-    path = Path("/tmp/Caddyfile")
-    path.write_text(snippet)
-    check = sh("caddy", "validate", "--adapter", "caddyfile", "--config", str(path), check=False)
-    assert check.returncode == 0, check.stdout + check.stderr
-
-
 UPGRADE_UNITS = [ins.SYSTEMD / unit for unit in ins.UPGRADE_UNITS]
 UPGRADE_STATUS = ins.UPGRADE_DIR / "status.json"
 
@@ -535,7 +488,6 @@ def test_a_wrapper_run_with_no_sudo_user_writes_the_status():
     assert found["from"] == commit and found["to"] == commit
     assert found["boot_id"] == Path("/proc/sys/kernel/random/boot_id").read_text().strip()
     assert found["started"] <= found["finished"] and found["error"] is None
-    assert isinstance(found["notices"], list)
     done = run_upgrade_unit("ExecStopPost", SERVICE_RESULT="success", EXIT_STATUS="0")
     assert done.returncode == 0, done.stderr
     assert upgrade_status() == found  # a run that ended by itself is left as it wrote it
@@ -565,8 +517,6 @@ def test_running_again_changes_nothing():
     proc = install()
     assert proc.returncode == 0, proc.stderr
     assert changes(proc)["changed"] == []
-    assert "The Caddy site block changed" not in proc.stdout
-    assert "restart Caddy" not in proc.stdout
     assert os.readlink(ROOT / "current") == release
     assert app("/api/health")[0] == 200
 

@@ -217,9 +217,10 @@ frontend's packages a clone holds few enough files for that to take no time), th
 Ubuntu's secure_path, and `GIT_ENVIRONMENT`, which install.sh gives git too), from `/`,
 with no terminal, copying what it prints to the journal as it comes; then writes `succeeded` or
 `failed`, the error being the last line `install.sh` or the installer said on standard error
-beginning `install.sh:`, or else the last line. The notices are those of the installer's summary line (`summary`: the JSON line of
-`release`, `changed` and `notices`, the Caddy notices and the warnings about Caddy's admin API
-and its global options). `--finish`
+beginning `install.sh:`, or else the last line. The installer's summary line (`summary`) is the
+JSON line of `release` and `changed`, what the run changed on the machine, Caddy's configuration
+and its restart among them; a successful run prints nothing else on standard output, and the
+wrapper does not read it. `--finish`
 reads only `$SERVICE_RESULT`, `$EXIT_STATUS`, `$INVOCATION_ID` and the status: it changes only a
 status of the same invocation, where one still `running`, or a `succeeded` one systemd did not
 see succeed, becomes `failed` with the result as its error; a missing or malformed one is
@@ -230,7 +231,12 @@ The status, `upgrade.STATUS`, is `/opt/rcman/upgrade/status.json`: root's and gr
 installer's folder is not there rather than make it, so that no record is left: no status, or
 one `read_status` does not take, reads to rcman as an upgrade whose state is unknown), and read
 back by
-`read_status`, which takes only a JSON object with exactly `FIELDS`:
+`read_status`, which takes only a JSON object with exactly `FIELDS` once it has dropped
+`LEFTOVER`, a key outside `FIELDS` that the wrapper of an earlier release writes: the first
+upgrade from the web interface onto this release is finished by that wrapper, still in memory,
+and without the drop `--finish` would take the status of an upgrade that succeeded for none and
+mark it failed. rcman's own `read_status` drops it too (see
+[backend.md](backend.md#upgrading-rcman)):
 
 | Field | Value |
 |---|---|
@@ -241,7 +247,6 @@ back by
 | `finished` | when it ended, the same, or `null` while it runs |
 | `from` | the commit in `/opt/rcman/current/.complete` before the run, or `null` |
 | `to` | that commit after the run, or `null` while it runs |
-| `notices` | a list of strings: what the installer said to do afterwards |
 | `error` | `null`, or the last line of what went wrong, at most `ERROR_LENGTH` characters |
 
 ## What workspaces are made of
@@ -322,9 +327,8 @@ can hold it (see [backend.md](backend.md#the-terminal)); uvicorn makes the socke
 world-writable, so the protection is its directory, `RUN`: owner `rcman`, group `WEB_GROUP`,
 mode 0750, made at boot by the `tmpfiles()` line in `TMPFILES` and made or repaired by
 `ensure_runtime_dir` on every run. The group's only member is `CADDY_USER`; `ensure_accounts`
-takes anyone else out. `caddy_notices` says when Caddy needs its site block replaced or a
-restart to join the group, and the installer warns when `caddy_admin_exposed` finds Caddy's
-admin API on loopback, since any local user could reconfigure Caddy through it. The health check
+takes anyone else out, and `ensure_caddy` restarts Caddy when its account has just joined, since
+Caddy keeps the groups it started with (see [Caddy](#caddy)). The health check
 reaches rcman through the socket, and its forwarding server through `FORWARD_SOCKET` beside it
 (`/.rcman/health`), as rcman both times (`_status_over_socket`); either not answering 200 within
 `HEALTH_TIMEOUT` fails the run.
@@ -346,13 +350,56 @@ The snippet (`installer/templates/Caddyfile`) holds two sites more, in the forms
   query, which alone is passed to `FORWARD_SOCKET`, never `SOCKET`; 404 for anything else.
 
 The ask port is the field `ASK_PORT`, with a default, saved as `PROXY_PORT` is, and refused where
-it is oauth2-proxy's. The global options are the operator's: with the snippet's notice,
-`caddy_notices` prints `global_block(ask_port)`, the `on_demand_tls` block that asks the ask
-site, to paste once. On every run `caddy_asks_rcman` reads `CADDYFILE` as Caddy does, with
-`caddy adapt` as `CADDY_USER` (which needs no admin API and starts nothing), and finds the ask
-address among the adapted configuration's on-demand asks (`on_demand_asks`: Caddy 2.6's `ask`, or
-a later Caddy's `http` permission's `endpoint`); `caddy_ask_warning` warns where it is not there,
-or where the file could not be read so, as the admin API warning is given.
+it is oauth2-proxy's. `ensure_caddy` has the global options' `on_demand_tls` ask the ask site,
+`ask_url(ask_port)` (see [Caddy](#caddy)).
+
+## Caddy
+
+The installer acts and never instructs: `ensure_caddy`, in `main` after `start_services` and
+before `health`, writes the snippet, `CADDY_SNIPPET`, puts rcman in `CADDYFILE` and restarts
+Caddy, and what it cannot do stops the run. Before anything is written it refuses a `CADDYFILE`
+that is not a regular file (`lstat`, so a link is refused), a folder of it that is not root's
+alone to write, and `CADDY_API_UNIT` active or enabled, which reads no Caddyfile.
+
+`edit_caddyfile(text, snippet, ask)` is pure: it returns the edited text and what it changed, and
+raises InstallError where it refuses. It splices at token offsets, so everything else stays byte
+for byte, and a second run changes nothing. Its tokenizer, `caddy_tokens`, reads only what this
+needs: a comment starts only where a token would, a quoted (`"…"`) or backticked part of a token
+holds whitespace, and a brace is only a `{` or `}` standing alone, so `{host}` and `{$VAR}` are
+none; heredocs and the rest are left to `caddy validate`. `caddy_entries` reads the top level:
+`import` lines, sites, `(name)` snippets, which are left alone, and a first bare `{`, the global
+options; it refuses a site without braces, unbalanced braces and a bare `{` that is not first.
+
+- **A pasted copy** is a top-level site whose addresses are those of one of the rendered
+  snippet's sites, or that proxies to `unix/<RUN>/`. Each is removed with the comment lines just
+  above it that are lines of the snippet's own comments, never others, and the blank lines after
+  it, and `import CADDY_SNIPPET` goes where the first was;
+  with neither a copy nor the import, the import is appended.
+- **The global options** (`_global_edits`): with none, a block with `on_demand_tls` asking
+  `ask` is prepended; with no `on_demand_tls`, one is inserted before the block's closing brace;
+  a missing `ask` is added and a different one replaced. Refused: a `permission` in it, two
+  `on_demand_tls`, one without a block, and a closing brace the installer adds before that does
+  not start its own line. `admin` is not touched.
+
+A Caddyfile that changes is written as a candidate beside it (`_put_beside`: `mkstemp` in its
+folder, given the original's mode and owner) and checked with `caddy_validate`, `caddy validate`
+as `CADDY_USER`, never as root, within `VALIDATE_WITHIN`. Where Caddy refuses it, the candidate is
+removed, the snippet put back, Caddy not restarted, and the run fails with Caddy's words; where
+it passes, the original goes to `CADDY_BACKUP` and the candidate replaces `CADDYFILE` by a
+rename. Where nothing was edited and the snippet changed or Caddy is to be restarted,
+`CADDYFILE` itself is checked so: Caddy is never restarted with a file it refuses, a hand edit's
+among them. Caddy, `CADDY_UNIT`,
+is restarted, never reloaded, when `CADDY_APPLIED`, the sha256 of the Caddyfile, the snippet and
+Caddy's account it was last restarted with, differs, when Caddy's account joined `WEB_GROUP`, or
+when Caddy is not active. The unit is `Type=notify`, so a failed restart is a Caddy that did not
+come up: what this run changed is put back, Caddy is restarted again, and the run fails; where
+it changed nothing, the run fails with Caddy's words alone. `check_caddy_user` refuses an
+account of uid 0. Each
+edit is in the summary line as `<CADDYFILE>: <what>`, the snippet's path where it changed, and
+`caddy.service restarted`.
+
+Not covered: `caddy validate` does not see variables a drop-in of the unit sets, and there is no
+health check through Caddy; the stubbed installation runs no Caddy.
 
 ## Tests
 
@@ -362,8 +409,8 @@ or where the file could not be read so, as the admin API warning is given.
   static program from another, the tmux source's and Claude Code's checksums,
   the image's tag and the builder image's, a range that is too small getting a
   second one, no range added while a container runs, the rollback refusal, the pins,
-  the Caddy notices, the snippet's sites for forwarded ports, the ask port, the check of the
-  global options' ask, and two callers filling one toolchain at once, and the steps that
+  the snippet's sites for forwarded ports, the ask port, the Caddyfile's edits and refusals,
+  `ensure_caddy`'s check and restart, the summary line as all a run prints, and two callers filling one toolchain at once, and the steps that
   write in rcman's home with `runuser` stood in for by the test's own user — and the
   guide held to the installer. It also holds the lock, through `install.sh` itself run from a
   scratch clone with stand-ins for `id` and `runuser` and its root rewritten into the test's
@@ -392,9 +439,9 @@ or where the file could not be read so, as the admin API warning is given.
   second run leaving `current` on the version rcman approved, the saved settings and the
   configuration files, the first administrator, `rcman-admin` by name as root, the socket's
   folder admitting Caddy's group alone and that group kept to Caddy, no listener (every TCP one
-  and every unix socket, tried as an ordinary user) letting a local user be someone in rcman, the warning about a Caddy admin API on loopback,
-  the warning about global options that do not ask rcman, and none once they do,
-  the Caddy snippet printed and valid, a second run changing nothing, saved settings needing
+  and every unix socket, tried as an ordinary user) letting a local user be someone in rcman, the package's
+  Caddyfile, kept as the backup, importing the snippet and asking rcman as `caddy adapt` reads
+  it as Caddy's account, with Caddy restarted, a second run changing nothing, saved settings needing
   no answers, a dirty clone and one that cannot fast-forward refused, self-update and rollback
   (and a rollback refused for a database newer than the release rolled back to), and the
   upgrade from the web interface: off, no unit or wrapper there; turned on, the path unit

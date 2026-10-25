@@ -44,7 +44,11 @@ COMPLETE = ".complete"  # installer/install.py COMPLETE: the release's commit an
 COMMIT = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 
 # The status's fields and states, and the longest error it holds (installer/upgrade.py).
-FIELDS = ("state", "boot_id", "invocation", "started", "finished", "from", "to", "notices", "error")
+FIELDS = ("state", "boot_id", "invocation", "started", "finished", "from", "to", "error")
+# A key no longer in FIELDS that a status may still hold, dropped before it is checked: the first
+# upgrade from the web interface onto this release is finished by the old wrapper, still in
+# memory, which writes it; read with it, the status is not one, and the report says unknown.
+LEFTOVER = "notices"
 STATES = ("running", "succeeded", "failed")
 ERROR_LENGTH = 500
 
@@ -76,11 +80,11 @@ REQUESTS_PER_MINUTE = 2.0
 # rcman can read).
 UNDER_WAY = ("requested", "running")
 # The status's fields the report gives, where there is no status of the state it gives.
-SHOWN = ("started", "finished", "from", "to", "notices", "error")
+SHOWN = ("started", "finished", "from", "to", "error")
 
 
 def nothing() -> dict:
-    return {**dict.fromkeys(SHOWN), "notices": []}
+    return dict.fromkeys(SHOWN)
 
 
 class ShowFailed(Exception):
@@ -126,20 +130,20 @@ def _text(value) -> bool:
 
 def read_status(path: Path | None = None) -> dict | None:
     """The status at ``path`` (STATUS), or None where there is none, rcman cannot read it, or it
-    is not one: exactly FIELDS, a state of STATES, text or null where text is, a list of text
-    for the notices, and an error no longer than ERROR_LENGTH."""
+    is not one: exactly FIELDS once LEFTOVER is dropped, a state of STATES, text or null where
+    text is, and an error no longer than ERROR_LENGTH."""
     try:
         found = json.loads((path or STATUS).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
-    if not isinstance(found, dict) or set(found) != set(FIELDS) or found["state"] not in STATES:
+    if not isinstance(found, dict):
+        return None
+    found.pop(LEFTOVER, None)
+    if set(found) != set(FIELDS) or found["state"] not in STATES:
         return None
     if not isinstance(found["boot_id"], str):
         return None
     if not all(_text(found[k]) for k in ("invocation", "started", "finished", "from", "to")):
-        return None
-    notices = found["notices"]
-    if not isinstance(notices, list) or not all(isinstance(n, str) for n in notices):
         return None
     if not _text(found["error"]) or len(found["error"] or "") > ERROR_LENGTH:
         return None

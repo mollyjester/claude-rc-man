@@ -476,8 +476,7 @@ def test_a_git_folder_that_is_a_file_is_refused(clone):
 
 def status(**fields) -> dict:
     found = dict.fromkeys(up.FIELDS)
-    found.update(state="running", boot_id="boot", started="2026-01-01T00:00:00+00:00",
-                 notices=[])  # fmt: skip
+    found.update(state="running", boot_id="boot", started="2026-01-01T00:00:00+00:00")
     found.update(fields)
     return found
 
@@ -493,7 +492,7 @@ def test_the_status_is_written_whole_with_its_mode_and_nothing_left_beside_it(tm
 
 def test_the_status_holds_exactly_its_fields():
     assert up.FIELDS == ("state", "boot_id", "invocation", "started", "finished", "from", "to",
-                         "notices", "error")  # fmt: skip
+                         "error")  # fmt: skip
 
 
 def test_a_status_with_another_field_or_without_one_is_refused(tmp_path):
@@ -536,6 +535,14 @@ def test_a_status_that_is_not_json_or_not_a_status_reads_as_none(tmp_path):
     assert up.read_status(path) == status()  # positive control
 
 
+def test_a_status_with_a_leftover_notices_key_reads_as_the_same_status_without_it(tmp_path):
+    """The old wrapper, still in memory when the first upgrade onto this release finishes,
+    writes the key."""
+    path = tmp_path / "status.json"
+    path.write_text(json.dumps({**status(state="succeeded"), "notices": ["Restart Caddy."]}))
+    assert up.read_status(path) == status(state="succeeded")
+
+
 def test_the_release_is_the_commit_its_complete_mark_names(tmp_path, monkeypatch):
     monkeypatch.setattr(up, "ROOT", tmp_path)
     assert up.release() is None
@@ -554,7 +561,7 @@ echo "Building."
 echo "a warning on the way" >&2
 {done}
 """
-SUCCEEDS = """echo '{"release": "abc", "changed": [], "notices": ["Restart Caddy."]}'
+SUCCEEDS = """echo '{"release": "abc", "changed": []}'
 echo 'snippet {'
 exit 0"""
 NPM_FAILS = """echo "install.sh: npm ci --no-audit --no-fund failed:" >&2
@@ -590,13 +597,13 @@ def with_install_sh(clone: Path, done: str) -> None:
     (clone / "install.sh").write_text(INSTALL_SH.format(done=done))
 
 
-def test_a_run_that_succeeds_writes_the_status_with_the_releases_and_notices(clone, installation):
+def test_a_run_that_succeeds_writes_the_status_with_the_releases(clone, installation):
     with_install_sh(clone, SUCCEEDS)
     assert up.upgrade(clone, "caddy") == 0
     found = json.loads(up.STATUS.read_text())
     assert found["state"] == "succeeded" and found["boot_id"] == "this-boot"
     assert found["from"] == "old-commit" and found["to"] == "old-commit"
-    assert found["notices"] == ["Restart Caddy."] and found["error"] is None
+    assert found["error"] is None
     assert found["started"] and found["finished"] >= found["started"]
 
 

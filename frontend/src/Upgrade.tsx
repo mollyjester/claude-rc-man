@@ -29,7 +29,6 @@ type Report = {
   finished: string | null;
   from: string | null;
   to: string | null;
-  notices: string[];
   error: string | null;
 };
 
@@ -199,15 +198,6 @@ function Facts({ report }: { report: Report }) {
   if (report.finished) rows.push([m.upgradeFinished, utcMoment(report.finished)]);
   if (report.from) rows.push([m.upgradeFrom, <Commit key="from" commit={report.from} />]);
   if (report.to) rows.push([m.upgradeTo, <Commit key="to" commit={report.to} />]);
-  if (report.notices.length > 0)
-    rows.push([
-      m.upgradeNotices,
-      <ul key="notices" className="upgrade-notices">
-        {report.notices.map((notice) => (
-          <li key={notice}>{notice}</li>
-        ))}
-      </ul>,
-    ]);
   return (
     <dl className="facts">
       {rows.map(([term, value]) => (

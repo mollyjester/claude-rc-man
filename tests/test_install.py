@@ -4,14 +4,12 @@ Real installations are tested in the container suite.
 """
 
 import ast
-import contextlib
 import hashlib
 import json
 import os
 import re
 import shlex
 import shutil
-import socket
 import stat
 import subprocess
 from pathlib import Path
@@ -90,6 +88,8 @@ def test_caddys_account_must_exist():
     ins.check_caddy_user(present)  # positive control: an account that exists passes
     with pytest.raises(ins.InstallError, match="no-such-caddy"):
         ins.check_caddy_user("no-such-caddy")
+    with pytest.raises(ins.InstallError, match="root"):  # Caddy's checks never run as root
+        ins.check_caddy_user(pwd.getpwuid(0).pw_name)
 
 
 def test_missing_values_are_asked_for_when_there_is_a_terminal(tmp_path):
@@ -367,113 +367,6 @@ def test_the_socket_directory_is_made_at_boot_for_rcman_and_caddys_group():
     assert ins.TMPFILES == Path("/etc/tmpfiles.d/rcman.conf")
 
 
-def test_the_site_block_notice_appears_exactly_when_the_snippet_changed():
-    changed = ins.caddy_notices([str(ins.CADDY_SNIPPET), "/etc/rcman/rcman.env"], "caddy", "445")
-    assert len(changed) == 2
-    notice = changed[0]
-    assert notice.startswith("The Caddy site block changed") and "restart Caddy" in notice
-    # It fits a Caddyfile that imports the snippet as well as one that holds a copy.
-    assert str(ins.CADDY_SNIPPET) in notice and "import" in notice and "copy" in notice
-    assert "replace yours" not in notice
-    assert ins.caddy_notices(["/etc/rcman/rcman.env"], "caddy", "445") == []
-    assert ins.caddy_notices([], "caddy", "445") == []
-
-
-def test_the_global_block_that_asks_rcman_is_printed_with_the_ask_port():
-    """Caddy's on-demand certificates are asked of rcman in the global options, which a site
-    block cannot hold: the notice gives the block to paste once, with the ask port."""
-    [_, notice] = ins.caddy_notices([str(ins.CADDY_SNIPPET)], "caddy", "445")
-    block = "on_demand_tls {\n\task http://127.0.0.1:445/.rcman/ask\n}"
-    assert block in notice and "global" in notice and "once" in notice
-    assert ins.global_block("445") == block
-    assert ins.ASK_PATH == "/.rcman/ask"
-
-
-ASKED = "http://127.0.0.1:445/.rcman/ask"
-
-
-@pytest.mark.parametrize(
-    "config, found",
-    [
-        ({"apps": {"tls": {"automation": {"on_demand": {"ask": ASKED}}}}}, True),  # Caddy 2.6
-        (
-            {
-                "apps": {
-                    "tls": {
-                        "automation": {
-                            "on_demand": {"permission": {"module": "http", "endpoint": ASKED}}
-                        }
-                    }
-                }
-            },
-            True,
-        ),  # later Caddy  # fmt: skip
-        ({"apps": {"tls": {"automation": {"on_demand": {"ask": ASKED + "x"}}}}}, False),
-        (
-            {
-                "apps": {
-                    "tls": {
-                        "automation": {
-                            "on_demand": {"permission": {"module": "other", "endpoint": ASKED}}
-                        }
-                    }
-                }
-            },
-            False,
-        ),  # fmt: skip
-        ({"apps": {"tls": {"automation": {}}}}, False),
-        ({"apps": {"http": {}}}, False),
-        ({}, False),
-        ({"apps": {"tls": {"automation": {"on_demand": ["junk"]}}}}, False),
-        ({"apps": {"tls": "junk"}}, False),
-    ],
-)
-def test_the_ask_is_found_in_caddys_adapted_configuration_in_either_form(config, found):
-    assert (ins.ask_url("445") in ins.on_demand_asks(config)) is found
-
-
-class AdaptedBy:
-    """``ins.run`` standing in for Caddy: it records what it is asked and answers ``out`` with
-    ``code``, or raises ``raises``."""
-
-    def __init__(self, out: str = "", code: int = 0, raises: Exception | None = None):
-        self.out, self.code, self.raises, self.asked = out, code, raises, []
-
-    def __call__(self, argv, user=None, check=True, **kw):
-        self.asked.append((argv, user, check))
-        if self.raises:
-            raise self.raises
-        return subprocess.CompletedProcess(argv, self.code, self.out, "")
-
-
-def test_caddys_global_options_are_read_by_caddy_adapt_as_caddys_account(monkeypatch):
-    asking = json.dumps({"apps": {"tls": {"automation": {"on_demand": {"ask": ASKED}}}}})
-    adapted = AdaptedBy(asking)
-    monkeypatch.setattr(ins, "run", adapted)
-    assert ins.caddy_asks_rcman("caddy", "445") is True  # the positive
-    [(argv, user, check)] = adapted.asked
-    assert argv == ["caddy", "adapt", "--adapter", "caddyfile", "--config", "/etc/caddy/Caddyfile"]
-    assert user == "caddy" and check is False
-    assert ins.CADDYFILE == Path("/etc/caddy/Caddyfile")
-    monkeypatch.setattr(ins, "run", AdaptedBy(json.dumps({"apps": {}})))
-    assert ins.caddy_asks_rcman("caddy", "445") is False
-    for unread in (AdaptedBy(asking, code=1), AdaptedBy("not json"),
-                   AdaptedBy(raises=FileNotFoundError("caddy")),
-                   AdaptedBy(raises=subprocess.TimeoutExpired("caddy", 60))):  # fmt: skip
-        monkeypatch.setattr(ins, "run", unread)
-        assert ins.caddy_asks_rcman("caddy", "445") is None
-
-
-def test_the_installer_warns_when_caddys_global_options_do_not_ask_rcman():
-    assert ins.caddy_ask_warning(True, "445") is None  # the positive: asked, no warning
-    missing = ins.caddy_ask_warning(False, "445")
-    assert ins.global_block("445") in missing and str(ins.CADDYFILE) in missing
-    assert "any" in missing and "*.ws." in missing
-    unread = ins.caddy_ask_warning(None, "445")
-    assert ins.global_block("445") in unread and "could not" in unread
-    assert missing != unread
-
-
 def snippet_site(snippet: str, address: str) -> str:
     """The site block of ``snippet`` that begins with ``address``, to its closing brace."""
     text = "\n" + snippet
@@ -540,50 +433,209 @@ def test_the_ask_port_defaults_and_may_not_be_the_proxy_port(tmp_path):
         ins.gather(tmp_path / "install.env", environ=same, flags={}, ask=None)
 
 
-def test_caddy_is_told_to_restart_when_it_joins_the_socket_group():
-    notices = ins.caddy_notices([f"caddy in group {ins.WEB_GROUP}"], "caddy", "445")
-    assert len(notices) == 1 and "restart Caddy" in notices[0]
-    assert ins.WEB_GROUP == "rcman-web"
+# --- Caddy's configuration ---------------------------------------------------------------
+
+# Ubuntu's own /etc/caddy/Caddyfile, the conffile of its caddy package (2.6.2-6ubuntu0.24.04.3),
+# recorded from the package's file, whose md5 is the one `dpkg-query -W -f='${Conffiles}' caddy`
+# gives; tests/container/install_checks.py holds the system image's to that md5 as well.
+RECORDED_CADDYFILE = REPO / "tests" / "fakes" / "ubuntu-Caddyfile"
+UBUNTU_CADDYFILE_MD5 = "8cbf072a3e390217a88c242a7f18ee76"
+UBUNTU_CADDYFILE = RECORDED_CADDYFILE.read_text(encoding="utf-8")
+ASK = "http://127.0.0.1:445/.rcman/ask"
+IMPORT = "import /etc/rcman/Caddyfile.snippet\n"
+ON_DEMAND = f"\ton_demand_tls {{\n\t\task {ASK}\n\t}}\n"
+GLOBAL = "{\n" + ON_DEMAND + "}\n\n"
+TRICKY = (
+    "# Global options, which a { in a comment does not open.\n"
+    "{\n"
+    "\temail admin@example.org # {\n"
+    "\t# }\n"
+    "}\n"
+    "\n"
+    "(common) {\n"
+    "\theader X-Host {host}\n"
+    '\trespond "}{"\n'
+    "}\n"
+    "\n"
+    "example.org {\n"
+    "\timport common\n"
+    "}\n"
+)
+FOREIGN_A = "a.example.org {\n\trespond a\n}\n\n"
+FOREIGN_B = "b.example.org {\n\trespond b\n}\n"
+MINE = "# The administrator's own note, which is not the snippet's.\n"
 
 
-# What localhost, the host of Caddy's default admin API address, is bound to.
-CADDY_LOCALHOST = "127.0.0.1"
+def edit_cases():
+    snippet = ins.render("Caddyfile", SETTINGS)
+    older = snippet_site(ins.render("Caddyfile", {**SETTINGS, "ASK_PORT": "446"}),
+                         "http://127.0.0.1:446")  # fmt: skip
+    asking_other = "{\n\ton_demand_tls {\n\t\task http://127.0.0.1:900/check\n\t\tinterval 2m\n"
+    return [
+        pytest.param(
+            UBUNTU_CADDYFILE,
+            GLOBAL + UBUNTU_CADDYFILE + "\n" + IMPORT,
+            ["global options with on_demand_tls added", f"import {ins.CADDY_SNIPPET} added"],
+            id="ubuntu",
+        ),
+        pytest.param(
+            TRICKY,
+            TRICKY.replace("\t# }\n}\n", "\t# }\n" + ON_DEMAND + "}\n") + "\n" + IMPORT,
+            ["on_demand_tls added to the global options", f"import {ins.CADDY_SNIPPET} added"],
+            id="comments-strings-placeholders-snippet",
+        ),
+        pytest.param(
+            asking_other + "\t}\n}\n\n" + IMPORT,
+            asking_other.replace("127.0.0.1:900/check", "127.0.0.1:445/.rcman/ask")
+            + "\t}\n}\n\n"
+            + IMPORT,
+            ["on_demand_tls ask http://127.0.0.1:900/check replaced"],
+            id="another-ask",
+        ),
+        pytest.param(
+            GLOBAL + FOREIGN_A + snippet + "\n" + FOREIGN_B + "\n" + MINE + older,
+            GLOBAL + FOREIGN_A + IMPORT + "\n" + FOREIGN_B + "\n" + MINE,
+            [
+                "copy of the site rcman.example.com removed",
+                "copy of the site *.ws.rcman.example.com removed",
+                "copy of the site http://127.0.0.1:445 removed",
+                "copy of the site http://127.0.0.1:446 removed",
+                f"import {ins.CADDY_SNIPPET} added",
+            ],
+            id="pasted-copies",
+        ),
+        pytest.param(
+            GLOBAL + UBUNTU_CADDYFILE + "\n" + IMPORT,
+            GLOBAL + UBUNTU_CADDYFILE + "\n" + IMPORT,
+            [],
+            id="imported",
+        ),
+        pytest.param(
+            "{\n\tadmin unix//run/caddy-admin.sock\n}\n\n" + IMPORT,
+            "{\n\tadmin unix//run/caddy-admin.sock\n" + ON_DEMAND + "}\n\n" + IMPORT,
+            ["on_demand_tls added to the global options"],
+            id="admin-untouched",
+        ),
+    ]
 
 
-@contextlib.contextmanager
-def reserved_port():
-    """A port bound on Caddy's admin host without listening: a connection to it is
-    refused, and while it is held no other process, a parallel test included, can take
-    it. Yields the port and its socket."""
-    with socket.socket(socket.AF_INET) as held:
-        held.bind((CADDY_LOCALHOST, 0))
-        yield held.getsockname()[1], held
+@pytest.mark.parametrize("text, edited, actions", edit_cases())
+def test_the_caddyfile_is_edited_to_import_rcman_and_ask_it_and_then_left_alone(
+    text, edited, actions
+):
+    snippet = ins.render("Caddyfile", SETTINGS)
+    assert ins.ask_url("445") == ASK
+    assert hashlib.md5(RECORDED_CADDYFILE.read_bytes()).hexdigest() == UBUNTU_CADDYFILE_MD5
+    assert ins.edit_caddyfile(text, snippet, ASK) == (edited, actions)
+    assert ins.edit_caddyfile(edited, snippet, ASK) == (edited, [])  # idempotent
 
 
-def bind(host, port):
-    with socket.socket(socket.AF_INET) as other:
-        other.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        other.bind((host, port))
+@pytest.mark.parametrize(
+    "text, why",
+    [
+        (":80\nrespond hi\n", "braces"),
+        ("a.example.org {\n\trespond a\n", "unbalanced"),
+        ("}\n", "unbalanced"),
+        (":80 {\n}\n{\n\tadmin off\n}\n", "global options"),
+        ("{\n\ton_demand_tls {\n\t\tpermission http {\n\t\t\tendpoint x\n\t\t}\n\t}\n}\n",
+         "permission"),
+        ("{\n" + ON_DEMAND + ON_DEMAND + "}\n", "twice"),
+        ("{\n\ton_demand_tls\n}\n", "block"),
+        ("{\n\temail a@example.org }\n", "own line"),
+        ("{\n\ton_demand_tls {\n\t\tinterval 2m }\n}\n", "own line"),
+    ],
+)  # fmt: skip
+def test_a_caddyfile_the_installer_cannot_edit_safely_is_refused(text, why):
+    snippet = ins.render("Caddyfile", SETTINGS)
+    with pytest.raises(ins.InstallError, match=why):
+        ins.edit_caddyfile(text, snippet, ASK)
 
 
-def test_a_reserved_port_cannot_be_taken_and_refuses_connections():
-    host = CADDY_LOCALHOST
-    bind(host, 0)  # positive control: the same bind succeeds on a port not held
-    with reserved_port() as (port, _):
-        with pytest.raises(OSError):
-            bind(host, port)
-        with pytest.raises(ConnectionRefusedError):
-            socket.create_connection((host, port), timeout=2).close()
+class CaddyMachine:
+    """``ins.run`` standing in for systemctl and Caddy: caddy-api.service is neither active nor
+    enabled, caddy.service is active once restarted, and ``caddy validate`` passes or fails
+    with Caddy's words. It records each argv and the account it ran as."""
+
+    def __init__(self, validates: bool = True, active: bool = False):
+        self.validates, self.active, self.calls = validates, active, []
+
+    def __call__(self, argv, user=None, check=True, **kw):
+        self.calls.append((list(argv), user))
+        code, err = 0, ""
+        if argv[:2] == ["caddy", "validate"]:
+            code, err = (0, "") if self.validates else (1, "Error: adapting config: bad thing")
+        elif argv[:2] == ["systemctl", "restart"]:
+            self.active = True
+        elif argv[:2] in (["systemctl", "is-active"], ["systemctl", "is-enabled"]):
+            code = 0 if argv[-1] == ins.CADDY_UNIT and self.active else 3
+        if check and code:
+            raise ins.InstallError(err)
+        return subprocess.CompletedProcess(argv, code, "", err)
+
+    def ran(self, *start: str) -> list:
+        return [(argv, user) for argv, user in self.calls if argv[: len(start)] == list(start)]
 
 
-def test_a_caddy_admin_api_on_loopback_is_noticed():
-    with reserved_port() as (port, held):
-        assert ins.caddy_admin_exposed(port=port) is False
-        held.listen()
-        assert ins.caddy_admin_exposed(port=port) is True  # positive control
-    assert ins.CADDY_ADMIN_PORT == 2019  # Caddy's default
-    assert "admin off" in ins.CADDY_ADMIN_WARNING
-    assert f"{CADDY_LOCALHOST}:{ins.CADDY_ADMIN_PORT}" in ins.CADDY_ADMIN_WARNING
+def test_ensure_caddy_validates_as_caddy_and_changes_nothing_when_caddy_refuses(
+    tmp_path, monkeypatch
+):
+    folder, etc = tmp_path / "caddy", tmp_path / "etc"
+    folder.mkdir(mode=0o755)
+    caddyfile = folder / "Caddyfile"
+    caddyfile.write_text(UBUNTU_CADDYFILE)
+    caddyfile.chmod(0o644)
+    monkeypatch.setattr(ins, "CADDYFILE", caddyfile)
+    monkeypatch.setattr(ins, "CADDY_BACKUP", folder / ".Caddyfile.rcman-backup")
+    monkeypatch.setattr(ins, "CADDY_SNIPPET", etc / "Caddyfile.snippet")
+    monkeypatch.setattr(ins, "CADDY_APPLIED", etc / "caddy.applied")
+    me = os.getuid()
+    # Caddy refuses the edited file: nothing is left changed, and Caddy is not restarted.
+    refusing = CaddyMachine(validates=False)
+    monkeypatch.setattr(ins, "run", refusing)
+    with pytest.raises(ins.InstallError, match="bad thing"):
+        ins.ensure_caddy(SETTINGS, False, owner_uid=me)
+    [(validate, user)] = refusing.ran("caddy", "validate")
+    candidate = Path(validate[validate.index("--config") + 1])
+    assert user == "caddy" and candidate.parent == folder and candidate != caddyfile
+    assert caddyfile.read_text() == UBUNTU_CADDYFILE
+    assert sorted(os.listdir(folder)) == ["Caddyfile"]
+    assert not ins.CADDY_SNIPPET.exists() and not ins.CADDY_APPLIED.exists()
+    assert refusing.ran("systemctl", "restart") == []
+    # The positive: Caddy accepts it, and it is put in place, backed up, and Caddy restarted.
+    accepting = CaddyMachine()
+    monkeypatch.setattr(ins, "run", accepting)
+    changes = ins.ensure_caddy(SETTINGS, False, owner_uid=me)
+    assert changes == [
+        str(ins.CADDY_SNIPPET),
+        f"{caddyfile}: global options with on_demand_tls added",
+        f"{caddyfile}: import {ins.CADDY_SNIPPET} added",
+        "caddy.service restarted",
+    ]
+    imported = f"import {ins.CADDY_SNIPPET}\n"
+    assert caddyfile.read_text() == GLOBAL + UBUNTU_CADDYFILE + "\n" + imported
+    assert stat.S_IMODE(caddyfile.stat().st_mode) == 0o644
+    assert ins.CADDY_BACKUP.read_text() == UBUNTU_CADDYFILE
+    assert ins.CADDY_SNIPPET.read_text() == ins.render("Caddyfile", SETTINGS)
+    assert accepting.ran("systemctl", "restart") == [(["systemctl", "restart", "caddy.service"],
+                                                      None)]  # fmt: skip
+    # Nothing to edit, Caddy not running: the Caddyfile is still checked before the restart, and
+    # one Caddy refuses, a hand edit of the administrator's, fails the run with no restart.
+    unchecked = CaddyMachine(validates=False)
+    monkeypatch.setattr(ins, "run", unchecked)
+    with pytest.raises(ins.InstallError, match="bad thing"):
+        ins.ensure_caddy(SETTINGS, False, owner_uid=me)
+    assert [argv[-1] for argv, _ in unchecked.ran("caddy", "validate")] == [str(caddyfile)]
+    assert unchecked.ran("systemctl", "restart") == []
+    # A Caddyfile that is a link is refused before anything runs.
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.write_text(UBUNTU_CADDYFILE)
+    caddyfile.unlink()
+    caddyfile.symlink_to(elsewhere)
+    linked = CaddyMachine()
+    monkeypatch.setattr(ins, "run", linked)
+    with pytest.raises(ins.InstallError, match="regular file"):
+        ins.ensure_caddy(SETTINGS, True, owner_uid=me)
+    assert linked.calls == [] and elsewhere.read_text() == UBUNTU_CADDYFILE
 
 
 def test_every_template_is_used():
@@ -752,7 +804,7 @@ NOT_MADE = {
     "COMMAND_DIR": "the system's folder; the files made in it are COMMANDS",
     "DATABASE": "rcman's, in its home; the installer asks rcman for its schema version",
     "UPGRADE_SOURCE": "in the clone; the wrapper is installed from it",
-    "CADDYFILE": "the operator's Caddy configuration, read by caddy adapt for its global options",
+    "CADDYFILE": "the operator's Caddy configuration, which the installer edits and does not make",
 }
 
 
@@ -2574,7 +2626,6 @@ def test_the_allowed_list_is_made_by_rcman_and_only_when_it_is_not_there(tmp_pat
     forbid_path_based_changes(monkeypatch, forbidden, state)
     monkeypatch.setattr(ins, "ETC", etc)
     monkeypatch.setattr(ins, "SYSTEMD", tmp_path / "systemd")
-    monkeypatch.setattr(ins, "CADDY_SNIPPET", etc / "Caddyfile.snippet")
     monkeypatch.setattr(ins, "STATE", state)
     monkeypatch.setattr(ins, "_gid", lambda group: os.getgid())
     calls: list[list[str]] = []
@@ -4169,11 +4220,41 @@ def test_the_steps_of_web_upgrade_come_where_they_must():
     # the units after the configuration, before the services start
     start = source.index("start_services(restart=bool(changes))")
     assert at("configure") < at("ensure_web_upgrade") < start
+    # Caddy once rcman runs, before rcman is asked through its sockets
+    assert start < at("ensure_caddy") < at("health")
 
 
-def test_the_summary_line_holds_the_notices():
-    line = ins.summary("abc", ["x"], ["Restart Caddy."])
-    assert json.loads(line) == {"release": "abc", "changed": ["x"], "notices": ["Restart Caddy."]}
+def test_a_successful_run_prints_exactly_the_summary_line(monkeypatch, capsys):
+    """What a run did is the summary line, and nothing else is printed: no instructions."""
+    monkeypatch.setattr(ins.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(ins.os, "chdir", lambda path: None)
+    monkeypatch.setattr(ins, "run", lambda *a, **kw: pytest.fail(f"ran {a}"))
+    monkeypatch.setattr(ins.subprocess, "run", lambda *a, **kw: pytest.fail(f"ran {a}"))
+    monkeypatch.setattr(upgrade, "clone_owner", lambda clone, sudo_user: ME)
+    monkeypatch.setattr(ins, "gather", lambda *a: dict(SETTINGS))
+    monkeypatch.setattr(ins, "save_settings", lambda path, settings: False)
+    monkeypatch.setattr(ins, "build_release", lambda repo, owner: ("abc", True))
+    monkeypatch.setattr(ins, "switch", lambda root, release: False)
+    monkeypatch.setattr(ins, "found_out", lambda settings: {})
+    monkeypatch.setattr(ins, "app_uid", lambda: 990)
+    monkeypatch.setattr(ins, "devcontainer_builder_image", lambda: "builder")
+    caddy = [f"{ins.CADDYFILE}: import {ins.CADDY_SNIPPET} added", "caddy.service restarted"]
+    monkeypatch.setattr(ins, "ensure_caddy", lambda settings, joined: caddy)
+    for name in ("check_kernel", "check_lock", "check_web_upgrade", "check_caddy_user",
+                 "check_containers_stopped_before_new_ranges", "start_services", "health",
+                 "prune_devcontainer_builder_images"):  # fmt: skip
+        monkeypatch.setattr(ins, name, lambda *a, **kw: None)
+    for name in ("ensure_packages", "ensure_accounts", "ensure_subordinate_ids", "ensure_podman",
+                 "ensure_oci_runtime", "ensure_limits", "ensure_runtime_dir", "ensure_toolchain",
+                 "ensure_tools", "ensure_image", "ensure_devcontainer_builder",
+                 "ensure_claude_store", "configure", "ensure_web_upgrade", "link_commands",
+                 "ensure_admin"):  # fmt: skip
+        monkeypatch.setattr(ins, name, lambda *a, **kw: [])
+    assert ins.main([]) == 0
+    printed = capsys.readouterr()
+    assert json.loads(printed.out) == {"release": "abc", "changed": ["release abc", *caddy]}
+    assert printed.out == ins.summary("abc", ["release abc", *caddy]) + "\n"
+    assert printed.err == ""
 
 
 # the installer's lock
