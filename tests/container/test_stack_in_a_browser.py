@@ -42,8 +42,12 @@ def test_the_whole_stack_in_a_browser(podman_service, system_image, default_imag
                                       labelled):  # fmt: skip
     """The browser specs of frontend/e2e-stack, in Playwright's own image, in a container that
     joins a stack of their own, signing in to the fake claude with the code it accepts; then
-    ``stack.py check``. Run on demand by ``make check-ui``, the ``stack`` marker keeping it out
-    of ``make test-container``."""
+    ``stack.py check``. Among them, a forwarded port of a workspace cloned from a repository that
+    lists it: the link the workspace page shows its owner opens it, a plain link signs its owner
+    in and lands on its path and query, a WebSocket from its page echoes, and its way in posted
+    from the port's own origin is refused (the planted twin of the hand-off's page). Run on
+    demand by ``make check-ui``, the ``stack`` marker keeping it out of
+    ``make test-container``."""
     with (
         a_stack(
             podman_service, f"rcman-test-stack-ui-{os.getpid()}", system_image, default_image,
@@ -60,6 +64,8 @@ def test_the_whole_stack_in_a_browser(podman_service, system_image, default_imag
                     "token": stand_in.STACK_TOKEN,
                     "public": f"https://github.com/{stand_in.STACK_OWNER}/{stand_in.STACK_PUBLIC}",
                     "private": f"https://github.com/{stand_in.STACK_OWNER}/{stand_in.STACK_PRIVATE}",
+                    "ports": f"https://github.com/{stand_in.STACK_OWNER}/{stand_in.STACK_PORTS}",
+                    "port": stand_in.STACK_PORT,
                 }),
                 "RCMAN_STACK_EXEC": json.dumps(command),
                 "CI": "1",

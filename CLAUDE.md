@@ -29,7 +29,8 @@ and the on-demand runs among them, and what each does:
 | What a workspace, its server, its terminal and the containers in it are, and what Claude is told in a workspace, for colleagues | [docs/workspaces.md](docs/workspaces.md) |
 | People, their uid-range slots, the allowed list, `rcman-admin`, their limits | [project-knowledge/people.md](project-knowledge/people.md) |
 | Adding and removing people, and limiting what they use, for administrators | [docs/users.md](docs/users.md) |
-| What the Monitor page shows of the host, each person and each workspace container, how it is collected, and its settings, for administrators | [docs/monitor.md](docs/monitor.md) |
+| What the Monitor page shows of the host, each person and each workspace container, and how it is collected, for administrators | [docs/monitor.md](docs/monitor.md) |
+| rcman's own settings, on the Service settings page: monitoring and port forwarding, for administrators | [docs/service-settings.md](docs/service-settings.md) |
 | What a repository's devcontainer.json may ask of a workspace, how an image of it is built, what is refused, and how a workspace is rebuilt from it, for administrators | [docs/devcontainer.md](docs/devcontainer.md) |
 | The backend: layout, requests, each area's routes (Claude Code versions and the terminal's WebSocket among them), audit | [project-knowledge/backend.md](project-knowledge/backend.md) |
 | The frontend: formatting and lint, the rules it keeps, the design system, layout, tests | [project-knowledge/frontend.md](project-knowledge/frontend.md) |

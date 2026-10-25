@@ -138,7 +138,7 @@ publishing_explained() {
 	done
 	flag=${published:-$all}
 	[ -n "$flag" ] && [ -z "$elsewhere" ] || return 0
-	say "$flag publishes no port here: $shares shares this workspace's network, so what it listens on is on the workspace's own ports; reach it at localhost:<the port it listens on>"
+	say "$flag publishes no port here: $shares shares this workspace's network, so what it listens on is on the workspace's own ports; reach it at localhost:<the port it listens on>. A port its devcontainer.json lists in forwardPorts is opened by the workspace's owner from the workspace page, when an administrator has turned forwarding on"
 }
 
 publishing_explained "$@"

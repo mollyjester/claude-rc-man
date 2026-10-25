@@ -140,6 +140,15 @@ export const MonitorIcon = () => (
   </Icon>
 );
 
+// A cog: the settings of rcman itself, apart from the sliders of a person's own.
+export const ServiceIcon = () => (
+  <Icon>
+    <circle cx="8" cy="8" r="2" />
+    <circle cx="8" cy="8" r="4.25" />
+    <path d="M8 1.75v2M8 12.25v2M1.75 8h2M12.25 8h2M3.6 3.6 5 5M11 11l1.4 1.4M3.6 12.4 5 11M11 5l1.4-1.4" />
+  </Icon>
+);
+
 // A tag: the versions of Claude Code.
 export const TagIcon = () => (
   <Icon>

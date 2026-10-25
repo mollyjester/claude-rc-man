@@ -28,7 +28,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
 from helpers import git_run, instructions, rules
-from rcman import builder, db, devcontainer, limits, people
+from rcman import builder, db, devcontainer, forwards, limits, people
 from rcman.channel import Channel, ChannelBroken, ChannelTimeout, Result
 from rcman.claude_server import Server, TmuxFailed
 from rcman.claude_versions import ClaudeVersions
@@ -757,7 +757,7 @@ class Workspaces:
     # --- a repository's devcontainer.json ----------------------------------------------
 
     def _plan(self, workspace: Workspace) -> devcontainer.Plan | None:
-        """The plan the workspace is made from, or None for one made from rcman's own image;
+        """The plan the workspace is made from, or None for one with no devcontainer.json;
         a stored plan that cannot be read is a RuntimeFailed, not a guess."""
         if not workspace.environment:
             return None
@@ -785,7 +785,7 @@ class Workspaces:
 
     def _spec(self, workspace: Workspace, slot: int, plan: devcontainer.Plan | None = None) -> Spec:
         """The container to make for the workspace: from the image of its plan, running as the
-        plan's user, or rcman's own image."""
+        plan's user, or, with no plan, the default image whose id the row recorded."""
         plan = plan or self._plan(workspace)
         base = Spec(
             workspace.container, slot, workspace.id, workspace.person, install=self._install()
@@ -895,8 +895,10 @@ class Workspaces:
         tag: str = BUILT_TAG,
     ) -> _Read | None:
         """Read the workspace's devcontainer.json in its container, and the Dockerfile it builds
-        from if it builds one, then pull the image it names or build the one it asks for, as
-        ``tag`` (a rebuild's is NEXT_TAG), and make the plan; what is done is said to ``report``.
+        from if it builds one, then pull the image it names, or the default image
+        (settings.workspace_image) where it names none and builds none, or build the one it asks
+        for, as ``tag`` (a rebuild's is NEXT_TAG), and make the plan; what is done is said to
+        ``report``.
         The plan is None where there is no file; the digest is the file's, or NO_FILE_DIGEST.
         None when the workspace was deleted meanwhile."""
         name = workspace.container
@@ -918,10 +920,14 @@ class Workspaces:
         digest = devcontainer.digest(found, contents)
         if checked.ignored:
             report(f"Ignored in devcontainer.json: {', '.join(checked.ignored)}")
-        if checked.build is None:
-            image = self._pulled(workspace, checked.image, cancel, report)
-        else:
+        if checked.build is not None:
             image = self._built(workspace, checked.build, found.path, cancel, report, tag)
+        elif checked.image is None:
+            report(devcontainer.DEFAULT_IMAGE_USED)
+            # The same image as the runtime's default, by construction (main.podman_runtime).
+            image = self._pulled(workspace, self.settings.workspace_image, cancel, report)
+        else:
+            image = self._pulled(workspace, checked.image, cancel, report)
         if image is None or self._cancelled(workspace.id, cancel):
             return None
         try:
@@ -944,6 +950,8 @@ class Workspaces:
         made = devcontainer.plan(
             config, facts, workspace.id, layout.work, image=image, size=self.runtime.id_range
         )
+        if made.ports:  # the file's and its image's, merged, so said once the plan is made
+            report(devcontainer.forwarded_step(made.ports))
         return None if self._cancelled(workspace.id, cancel) else _Read(made, digest)
 
     def _pulled(
@@ -953,7 +961,8 @@ class Workspaces:
         cancel: threading.Event,
         report: Callable[[str], None],
     ) -> str | None:
-        """Pull the image the file names; None when the workspace was deleted meanwhile."""
+        """Pull the image the file names, or the default image (which, in rcman's storage, is
+        not pulled); None when the workspace was deleted meanwhile."""
         report(f"Pulling {image}")
         try:
             self.runtime.pull(image, report, cancel)
@@ -1475,8 +1484,9 @@ class Workspaces:
     ) -> _Prepared | None:
         """What the workspace is to be made from now: its file read in its container, and the
         image it names pulled, or built as NEXT_TAG; rcman's current default image where it has
-        no file. None when the workspace was deleted meanwhile; a refusal or a failure is a
-        NotRebuilt in the words a person is shown, ``advise`` applied to a refusal's."""
+        no file, or where its file names none and builds none. None when the workspace was
+        deleted meanwhile; a refusal or a failure is a NotRebuilt in the words a person is
+        shown, ``advise`` applied to a refusal's."""
         try:
             read = self._read_plan(workspace, cancel, report, NEXT_TAG)
         except Exception as failed:  # noqa: BLE001 - whatever it is, nothing is rebuilt
@@ -1540,6 +1550,7 @@ class Workspaces:
             self.on_rebuilding(now)
         except Exception:  # noqa: BLE001 - discarding the container ends whatever is left
             log.exception("the terminal of workspace %s did not end", now.id)
+        self.sweep_forwards(now)
         self.close_channel(now.container)
         return was_running, now.prefix or now.name
 
@@ -1903,6 +1914,7 @@ class Workspaces:
             self.on_removing(workspace)
         except Exception:  # noqa: BLE001 - the container's removal ends whatever is left
             log.exception("the terminal of workspace %s did not end", workspace.id)
+        self.sweep_forwards(workspace)
         self.close_channel(workspace.container)
         with answered():
             self.runtime.remove(workspace.container)
@@ -2295,6 +2307,31 @@ class Workspaces:
         return Server(
             layout if version is None else layout.pinned(version), channel.run, workspace.id
         )
+
+    def sweep_forwards(self, workspace: Workspace) -> None:
+        """End what relays to the workspace's forwarded ports left in its container, through its
+        channel (forwards.py), if the container is there and runs; a failure is logged, and
+        never stops what called it."""
+        try:
+            name = workspace.container
+            if self.runtime.exists(name) and self.runtime.running(name):
+                forwards.sweep(self._layout(workspace), self.run_in(workspace))
+        except Exception:  # noqa: BLE001 - a backstop: the relays end by themselves
+            log.exception("the relays of workspace %s were not swept", workspace.id)
+
+    def forwarded_ports(self, workspace: Workspace) -> tuple[devcontainer.Port, ...]:
+        """The ports the workspace's plan forwards (``devcontainer.Plan.ports``), each with its
+        label, in its order: none for a workspace with no plan (no devcontainer.json), nor for one
+        whose stored plan cannot be read."""
+        try:
+            plan = self._plan(workspace)
+        except RuntimeFailed:
+            return ()
+        return () if plan is None else plan.ports
+
+    def ports_of(self, workspace: Workspace) -> tuple[int, ...]:
+        """The numbers of the ports the workspace forwards (``forwarded_ports``)."""
+        return tuple(p.port for p in self.forwarded_ports(workspace))
 
     def layout_of(self, workspace: Workspace) -> Layout:
         """Where the workspace's things are, as the programs run in it see them, with its plan
@@ -2831,6 +2868,8 @@ class Workspaces:
             kept = not lost and self.runtime.running(now.container)
             if not lost and not kept:
                 self.runtime.start(now.container)
+        if not lost:
+            self.sweep_forwards(now)  # outside the lock: it runs through the channel
         if kept:
             self.on_kept_running(now)  # outside the lock: it runs through the channel
             return

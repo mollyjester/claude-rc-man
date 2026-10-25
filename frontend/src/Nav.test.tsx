@@ -247,7 +247,7 @@ test("the drawer stays open while focus moves through it, and closes when Tab ta
   expect(button).toHaveAttribute("aria-expanded", "false");
 });
 
-test("the administration pages are People, everyone's workspaces, Monitor, the Claude Code versions, the audit trail and rcman itself, in that order", () => {
+test("the administration pages are People, everyone's workspaces, Monitor, the Claude Code versions, the audit trail, rcman itself and the service settings, in that order", () => {
   expect(ADMIN_PAGES.map((p) => p.label)).toEqual([
     m.navUsers,
     m.navEveryone,
@@ -255,11 +255,15 @@ test("the administration pages are People, everyone's workspaces, Monitor, the C
     m.navVersions,
     m.navAudit,
     m.navRcman,
+    m.navServiceSettings,
   ]);
   expect(ADMIN.everyone.path).toBe("/admin/workspaces");
   expect(ADMIN.monitor.path).toBe("/admin/monitor");
   expect(ADMIN.versions.path).toBe("/admin/claude");
   expect(ADMIN.rcman.path).toBe("/admin/rcman");
+  expect(ADMIN.settings.path).toBe("/admin/settings");
+  // the service's settings are named apart from the person's own Settings page
+  expect(ADMIN.settings.label).not.toBe(m.navSettings);
   expect(ADMIN_PAGES).toEqual(Object.values(ADMIN));
 });
 

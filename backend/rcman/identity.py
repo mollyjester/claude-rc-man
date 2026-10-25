@@ -21,6 +21,14 @@ from rcman.problems import Problem
 
 EMAIL_HEADER = "x-forwarded-email"
 CHANGING = {"POST", "PUT", "PATCH", "DELETE"}
+# The routes that change something although they are a GET, which carries no Origin, each with
+# what stands for the Origin there; the reasons are in project-knowledge/backend.md.
+NAVIGATIONS = {
+    ("GET", "/api/forward/hand-off"): (
+        "a navigation from a forwarded port's host, which sends no Origin: refused unless the "
+        "browser says it loads a document, and it hands out a way in only to the person's own port"
+    ),
+}
 
 
 @dataclass(frozen=True)

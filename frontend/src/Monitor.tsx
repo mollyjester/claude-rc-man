@@ -1,21 +1,13 @@
-import {
-  type FormEvent,
-  Fragment,
-  type ReactNode,
-  useCallback,
-  useEffect,
-  useId,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import { Fragment, type ReactNode, useEffect, useId, useMemo, useRef, useState } from "react";
+import { Link } from "react-router-dom";
 
+import { ADMIN } from "./AdminPages";
 import { type ApiError, api } from "./api";
 import { formatBytes, formatCount, formatPercent, formatSeconds, utcMoment } from "./format";
 import { MonitorIcon } from "./Icons";
 import { MessageBar } from "./MessageBar";
 import { m } from "./messages";
-import { asApiError, ProblemView, useFieldErrors } from "./ProblemView";
+import { asApiError, ProblemView } from "./ProblemView";
 import { WorkspaceBadge } from "./Servers";
 import { ROLE, TableScroll } from "./TableScroll";
 
@@ -59,42 +51,17 @@ type Snapshot = {
   containers: ContainerFigures[] | null;
 };
 
-// The monitor's settings, as GET and PUT /api/monitor/settings have them; their defaults and
-// bounds are the server's (backend/rcman/monitor.py).
-type Settings = {
-  usage_interval_seconds: number;
-  disk_interval_seconds: number;
-  host: boolean;
-  people: boolean;
-  containers: boolean;
-};
-type Interval = "usage_interval_seconds" | "disk_interval_seconds";
-type Scope = "host" | "people" | "containers";
+// The monitor's settings, as GET /api/monitor/settings has them: the page reads them only to
+// say how often each round runs. They are changed on the Service settings page
+// (src/ServiceSettings.tsx).
+type Settings = { usage_interval_seconds: number; disk_interval_seconds: number };
 
 // How often the page reads what is known again: it reads what rcman collected, and collects
 // nothing itself, so a read costs rcman little.
 export const MONITOR_POLL_MS = 5000;
-// The settings card's id, which a part switched off links to: the guide's section of the same
-// name (src/monitor-guide.test.ts).
-export const SETTINGS_ANCHOR = "monitoring-settings";
-
-const INTERVALS: [Interval, string, string][] = [
-  ["usage_interval_seconds", m.monitorUsageInterval, m.monitorUsageIntervalHelp],
-  ["disk_interval_seconds", m.monitorDiskInterval, m.monitorDiskIntervalHelp],
-];
-const SCOPES: [Scope, string][] = [
-  ["host", m.monitorHost],
-  ["people", m.monitorPeople],
-  ["containers", m.monitorContainers],
-];
-const LABELS = Object.fromEntries([
-  ...INTERVALS.map(([name, label]) => [name, label]),
-  ...SCOPES,
-]) as Record<string, string>;
-
 // The Monitor page, for administrators: what the host, each person and each workspace container
-// use now, as rcman last collected it, read again every MONITOR_POLL_MS; and the monitor's
-// settings, read once, which a read of the figures never overwrites.
+// use now, as rcman last collected it, read again every MONITOR_POLL_MS; and how often each
+// round runs, from the monitor's settings, read once.
 export function Monitor() {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   // Why the last read of the figures failed; the figures read before stay shown.
@@ -102,10 +69,7 @@ export function Monitor() {
   // The settings as saved, for the live region to say how often each round runs.
   const [saved, setSaved] = useState<Settings | null>(null);
   const [settingsError, setSettingsError] = useState<ApiError | null>(null);
-  // Bumped after a save, so that the figures are read again at once.
-  const [reading, setReading] = useState(0);
-  // The read that is out, settled either way, which a read waits for: reads never overlap, a
-  // save's among them.
+  // The read that is out, settled either way, which a read waits for: reads never overlap.
   const inflight = useRef<Promise<unknown> | null>(null);
 
   useEffect(() => {
@@ -115,9 +79,9 @@ export function Monitor() {
     );
   }, []);
 
-  // The figures, read now and then again a while after each answer, a read out already, as when
-  // a save asks for one, waited for first, so that reads never overlap. The read as the page
-  // opens notes its failure for rcman; every later one is quiet: its failure is shown here.
+  // The figures, read now and then again a while after each answer, a read out already waited
+  // for first, so that reads never overlap. The read as the page opens notes its failure for
+  // rcman; every later one is quiet: its failure is shown here.
   useEffect(() => {
     let stopped = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -142,16 +106,11 @@ export function Monitor() {
       }
       if (!stopped) timer = setTimeout(() => read(false), MONITOR_POLL_MS);
     };
-    read(reading === 0);
+    read(true);
     return () => {
       stopped = true;
       clearTimeout(timer);
     };
-  }, [reading]);
-
-  const onSaved = useCallback((settings: Settings) => {
-    setSaved(settings);
-    setReading((n) => n + 1);
   }, []);
 
   // The live region's words change only when a round collects, or the intervals saved change:
@@ -182,6 +141,7 @@ export function Monitor() {
         {collected}
       </p>
       <ProblemView error={readError} />
+      <ProblemView error={settingsError} />
       {snapshot?.usage.error && (
         <RoundFailed said={m.monitorUsageFailed} error={snapshot.usage.error} />
       )}
@@ -196,7 +156,6 @@ export function Monitor() {
           <ContainersCard containers={snapshot.containers} />
         </>
       )}
-      <SettingsCard saved={saved} error={settingsError} onSaved={onSaved} />
     </section>
   );
 }
@@ -232,7 +191,8 @@ function Figure({ value, aside }: { value: string | null; aside?: string | null 
   );
 }
 
-// A part whose scope is switched off: what is not there, and the way to the settings.
+// A part whose scope is switched off: what is not there, and the way to the page that holds the
+// monitoring settings.
 function Off({ scope }: { scope: string }) {
   return (
     <div className="empty-state">
@@ -241,17 +201,9 @@ function Off({ scope }: { scope: string }) {
       </span>
       <strong>{m.monitorOff}</strong>
       <p>{m.monitorOffBody(scope)}</p>
-      {/* moves focus to the settings card without putting a fragment in the address, as the skip link does */}
-      <a
-        className="button"
-        href={`#${SETTINGS_ANCHOR}`}
-        onClick={(event) => {
-          event.preventDefault();
-          document.getElementById(SETTINGS_ANCHOR)?.focus();
-        }}
-      >
+      <Link className="button" to={ADMIN.settings.path}>
         {m.monitorOffLink}
-      </a>
+      </Link>
     </div>
   );
 }
@@ -470,142 +422,5 @@ function ContainersCard({ containers }: { containers: ContainerFigures[] | null 
         </TableScroll>
       )}
     </TableCard>
-  );
-}
-
-// The settings card: shown once the settings are read, and its form filled from them once.
-function SettingsCard({
-  saved,
-  error,
-  onSaved,
-}: {
-  saved: Settings | null;
-  error: ApiError | null;
-  onSaved: (settings: Settings) => void;
-}) {
-  const heading = useId();
-  return (
-    <section id={SETTINGS_ANCHOR} tabIndex={-1} aria-labelledby={heading} className="card setting">
-      <div className="setting-intro">
-        <h2 id={heading}>{m.monitorSettingsTitle}</h2>
-        <p className="muted">{m.monitorSettingsLine}</p>
-      </div>
-      <div className="setting-body">
-        <ProblemView error={error} />
-        {saved && <SettingsForm initial={saved} onSaved={onSaved} />}
-      </div>
-    </section>
-  );
-}
-
-// What the form holds: the intervals as typed.
-type Typed = Record<Interval, string> & Record<Scope, boolean>;
-const typed = (settings: Settings): Typed => ({
-  ...settings,
-  usage_interval_seconds: String(settings.usage_interval_seconds),
-  disk_interval_seconds: String(settings.disk_interval_seconds),
-});
-// An interval as it is sent: a whole number as a number, anything else as typed, for the server
-// to judge.
-const WHOLE = /^\s*-?\d+\s*$/;
-const asSent = (text: string): number | string => (WHOLE.test(text) ? Number(text) : text);
-
-function SettingsForm({
-  initial,
-  onSaved,
-}: {
-  initial: Settings;
-  onSaved: (settings: Settings) => void;
-}) {
-  const [values, setValues] = useState(() => typed(initial));
-  const [status, setStatus] = useState<"idle" | "busy" | "saved">("idle");
-  const [error, setError] = useState<ApiError | null>(null);
-  const help = useId();
-  const fields = useFieldErrors(error);
-
-  const change = (next: Partial<Typed>) => {
-    setValues((current) => ({ ...current, ...next }));
-    setStatus("idle");
-  };
-
-  async function save(event: FormEvent) {
-    event.preventDefault();
-    setStatus("busy");
-    setError(null);
-    try {
-      const answer = await api.put<{ settings: Settings }>("/api/monitor/settings", {
-        usage_interval_seconds: asSent(values.usage_interval_seconds),
-        disk_interval_seconds: asSent(values.disk_interval_seconds),
-        host: values.host,
-        people: values.people,
-        containers: values.containers,
-      });
-      setValues(typed(answer.settings));
-      setStatus("saved");
-      onSaved(answer.settings);
-    } catch (e) {
-      setError(asApiError(e));
-      setStatus("idle");
-    }
-  }
-
-  return (
-    <>
-      <form noValidate onSubmit={save} ref={fields.form} aria-busy={status === "busy"}>
-        {INTERVALS.map(([name, label, line]) => (
-          <div key={name} className="field">
-            <label>
-              {label}
-              <input
-                type="text"
-                inputMode="numeric"
-                autoComplete="off"
-                spellCheck={false}
-                name={name}
-                value={values[name]}
-                onChange={(e) => change({ [name]: e.target.value })}
-                {...fields.input(name, `${help}-${name}`)}
-              />
-            </label>
-            {fields.message(name)}
-            <p id={`${help}-${name}`} className="help muted">
-              {line}
-            </p>
-          </div>
-        ))}
-        <fieldset className="choices">
-          <legend>{m.monitorCollect}</legend>
-          {SCOPES.map(([name, label]) => (
-            <Fragment key={name}>
-              <label>
-                <input
-                  type="checkbox"
-                  name={name}
-                  checked={values[name]}
-                  onChange={(e) => change({ [name]: e.target.checked })}
-                  {...fields.input(name)}
-                />
-                {label}
-              </label>
-              {fields.message(name)}
-            </Fragment>
-          ))}
-        </fieldset>
-        <div className="actions">
-          <button
-            type="submit"
-            className="primary"
-            disabled={status === "busy"}
-            aria-label={m.monitorSave}
-          >
-            {m.save}
-          </button>
-        </div>
-      </form>
-      <p role="status">
-        {status === "busy" ? m.monitorSaving : status === "saved" ? m.monitorSaved : ""}
-      </p>
-      <ProblemView error={error} labels={LABELS} inline />
-    </>
   );
 }

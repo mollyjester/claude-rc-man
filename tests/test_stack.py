@@ -1,6 +1,7 @@
 """tests/container/stack.py's relay of the browser tests' commands, on the machine: it runs only
-``python3 tests/container/stack.py repository <digits>`` and answers 2 to anything else, through
-its socket, which is its owner's alone; and the node client the browser's container runs."""
+``python3 tests/container/stack.py repository <digits>`` and ``serve-port <digits> <digits>``
+and answers 2 to anything else, through its socket, which is its owner's alone; and the node
+client the browser's container runs."""
 
 import json
 import os
@@ -16,6 +17,7 @@ from tests.container import stack as st
 
 CLIENT = Path(__file__).resolve().parent / "container" / "stack_exec.mjs"
 TAKEN = ["python3", "tests/container/stack.py", "repository", "12"]
+SERVING = ["python3", "tests/container/stack.py", "serve-port", "12", "8080"]
 
 
 @pytest.fixture
@@ -44,6 +46,11 @@ def test_the_repository_verb_is_run_and_its_answer_returned(relayed):
     assert ran == [TAKEN]
 
 
+def test_the_serve_port_verb_is_run(relayed):
+    path, ran = relayed
+    assert sent(path, SERVING)["code"] == 0 and ran == [SERVING]
+
+
 @pytest.mark.parametrize(
     "argv",
     [
@@ -52,8 +59,22 @@ def test_the_repository_verb_is_run_and_its_answer_returned(relayed):
         [*TAKEN[:3], "12", "13"],
         ["sh", "-c", "id"],
         [],
+        SERVING[:4],
+        [*SERVING[:4], "80; id"],
+        [*SERVING[:4], "٨٠"],
+        TAKEN[:2],
     ],  # fmt: skip
-    ids=["another verb", "not digits", "more", "another program", "nothing"],
+    ids=[
+        "another verb",
+        "not digits",
+        "more",
+        "another program",
+        "nothing",
+        "serve-port short",
+        "serve-port not digits",
+        "serve-port other digits",
+        "no verb",
+    ],  # fmt: skip
 )
 def test_anything_else_is_answered_2_and_not_run(relayed, argv):
     path, ran = relayed
@@ -87,3 +108,15 @@ def test_a_playwright_image_of_another_version_is_found():
     assert planted != st.PLAYWRIGHT_IMAGE  # the plant took effect
     assert st.playwright_problem(planted, lock)
     assert os.path.isfile(CLIENT)
+
+
+def test_the_stacks_global_options_ask_what_they_are_given_or_nothing():
+    """The gate that shows what Caddy does without the installer's global block runs the
+    stack's Caddy with no ``on_demand_tls``; every other start asks the address given."""
+    block = "\ton_demand_tls {\n\t\task http://127.0.0.1:1/.rcman/ask\n\t}\n"
+    asking = st.global_options("http://127.0.0.1:1/.rcman/ask")
+    assert block in asking
+    assert st.global_options() == st.global_options(st.ASK_URL)
+    bare = st.global_options("")
+    assert "on_demand_tls" not in bare and "ask" not in bare
+    assert bare == asking.replace(block, "")

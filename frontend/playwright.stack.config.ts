@@ -28,7 +28,8 @@ export default defineConfig({
     launchOptions: {
       args: [
         "--disable-dev-shm-usage",
-        `--host-resolver-rules=MAP rcman.test:443 127.0.0.1:${port}, MAP auth.test:443 127.0.0.1:${port}`,
+        `--host-resolver-rules=MAP rcman.test:443 127.0.0.1:${port}, MAP auth.test:443 127.0.0.1:${port}, ` +
+          `MAP *.ws.rcman.test:443 127.0.0.1:${port}`,
       ],
     },
   },

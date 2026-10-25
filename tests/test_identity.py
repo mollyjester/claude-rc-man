@@ -1,8 +1,12 @@
 """Who is asking: the proxy's email header, the people table, the origin."""
 
-from rcman import db, people, routes
+from pathlib import Path
+
+from rcman import db, identity, people, routes
 
 from tests.conftest import ALICE, BOB, CALLS, ORIGIN, as_user, changing, concrete
+
+REPO = Path(__file__).resolve().parent.parent
 
 
 def test_no_identity_is_401(client):
@@ -56,6 +60,8 @@ KNOWN_ADMIN_ROUTES = {
     ("GET", "/api/monitor"),
     ("GET", "/api/monitor/settings"),
     ("PUT", "/api/monitor/settings"),
+    ("GET", "/api/forwarding/settings"),
+    ("PUT", "/api/forwarding/settings"),
 }
 
 
@@ -98,6 +104,47 @@ def test_changes_need_the_public_origin(client):
         ).status_code
         == 200
     )
+
+
+def unnamed_navigations(app, named: dict) -> list[str]:
+    """The routes that record an audit row, and so change something, although their method
+    carries no Origin, that ``named`` does not name; and the names no such route has."""
+    from rcman import audit
+
+    recording_reads = {
+        (method, c.path)
+        for c in routes.api_routes(app)
+        if audit.action_of(c.route) is not None
+        for method in c.methods
+        if method not in identity.CHANGING
+    }
+    unnamed = [f"{m} {p}: changes something with no Origin" for m, p in
+               sorted(recording_reads - set(named))]  # fmt: skip
+    stale = [f"{m} {p}: no such route" for m, p in sorted(set(named) - recording_reads)]
+    return unnamed + stale
+
+
+def test_every_change_without_an_origin_is_a_named_navigation(app):
+    assert identity.NAVIGATIONS  # non-vacuity: the hand-off is one
+    assert unnamed_navigations(app, identity.NAVIGATIONS) == []
+    guide = (REPO / "project-knowledge" / "backend.md").read_text(encoding="utf-8")
+    assert all(reason in guide for reason in identity.NAVIGATIONS.values())
+
+
+def test_the_navigation_check_finds_an_unnamed_one_and_a_stale_name(app):
+    """Planted twin: a GET that records, not named, is found; and so is a name of no route."""
+    from fastapi import Depends
+    from rcman import audit
+
+    @app.get("/api/planted-recording-read")
+    def planted(record=Depends(audit.Recorder("planted.read"))):
+        return {}
+
+    assert unnamed_navigations(app, identity.NAVIGATIONS) == [
+        "GET /api/planted-recording-read: changes something with no Origin"
+    ]
+    stale = {**identity.NAVIGATIONS, ("GET", "/api/planted-gone"): "planted"}
+    assert "GET /api/planted-gone: no such route" in unnamed_navigations(app, stale)
 
 
 def test_reads_do_not_need_an_origin(client):

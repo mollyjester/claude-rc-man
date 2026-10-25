@@ -1,5 +1,7 @@
 """helpers/instructions.py: which file of the instructions for Claude a workspace is told, and
-where an image's managed path refuses the bind of it."""
+where an image's managed path refuses the bind of it, and what the files say of forwarded ports."""
+
+from pathlib import Path
 
 import pytest
 
@@ -52,3 +54,19 @@ def test_the_file_a_workspace_is_told_follows_its_image_and_the_tools_label(
 )
 def test_what_refuses_the_bind_is_a_file_for_a_folder_or_a_file_that_is_not_regular(kinds, refused):
     assert told.refused_at(kinds) == refused
+
+
+FRAGMENTS = Path(__file__).resolve().parent.parent / "backend" / "rcman" / told.FOLDER
+
+
+@pytest.mark.parametrize("name", sorted(told.FILES))
+def test_every_workspace_is_told_how_its_forwarded_ports_are_reached_and_where_to_listen(name):
+    text = told.compose(FRAGMENTS, name)
+    assert "/rcman/work" in text  # positive control: the file was made from its fragments
+    flat = " ".join(text.split())
+    assert "forwardPorts" in flat
+    assert "the address the workspace page shows" in flat
+    assert "an administrator has turned forwarding on" in flat  # true whether it is on or off
+    assert "127.0.0.1" in flat and "0.0.0.0" in flat and "IPv6" in flat
+    assert "`-p`, `--publish` and `-P` publish nothing" in flat
+    assert "No port of this workspace can be reached" not in flat  # forwarded ports can be

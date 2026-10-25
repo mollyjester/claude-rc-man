@@ -30,7 +30,8 @@ conmon and the network helper with them, live in rcman's user manager, not in
   shows (`device` in [backend.md](backend.md));
 - `--init`, so orphans are reaped;
 - the network `PodmanConfig.network`, `NETWORK` (slirp4netns with no way to the host's
-  loopback) unless it is given another, and no port published;
+  loopback) unless it is given another, and no port published (a forwarded port is reached
+  through an exec, see [Forwarded ports](#forwarded-ports));
 - `--uidmap` and `--gidmap` `0:<slot × range>:range`, the person's range, where `range` is
   `PodmanConfig.range`, `RANGE` unless it is given another (slot 0 is rcman's own ids, so no
   person has it). A workspace
@@ -94,8 +95,9 @@ file of the folder. One made for another person or another database, or with no 
 `VOLUME_OF_ANOTHER`. Ids are never given again (`autoincrement` in `db.py`), so a name does not
 come back for someone else within a database; the install id guards against a database restored
 from a backup, which hands the ids out again. A container made again is made from an image **id**
-(`Spec.image_id`, never a name that may have moved on): the plan's, or, for a workspace of the
-default image, the one recorded in the row when it was first made, `workspaces.image_id`.
+(`Spec.image_id`, never a name that may have moved on): the plan's, or, for a workspace with no
+plan (no devcontainer.json), the one recorded in the row when it was first made,
+`workspaces.image_id`.
 Every container removed goes with its anonymous volumes (`_remove_container`, `--volumes`): its
 `/tmp` and any its image declares. They are the only volumes of a workspace with no name of
 rcman's and no label; the sweep of volumes nothing uses (`_clean_volumes`) never takes a
@@ -133,7 +135,9 @@ and catatonit. `compose` is refused, and an image with no `/usr/bin/podman` is s
   clusters with a letter's value in the rest of the cluster, the next argument or after an `=`,
   up to the image, the pod's name, `--` or a letter it does not know. It says on standard error
   that a `-p`, `--publish` or `-P` (`--publish-all`, not `=false`) publishes nothing, since the
-  container shares the workspace's network; Podman then runs as asked. Nothing is said where
+  container shares the workspace's network, and that a port the devcontainer.json lists in
+  `forwardPorts` is opened by the workspace's owner from its page while forwarding is on;
+  Podman then runs as asked. Nothing is said where
   `--network` or `--net` names anything but `host`, or `--pod` or `--pod-id-file` a pod. Its
   lists of options are those Podman's help shows for those subcommands, with `--net`, an alias
   the help hides, and the wrapper's `VALUED` for the global ones. The helps are recorded from the
@@ -343,7 +347,7 @@ says is for colleagues in
 - **Which file.** `instructions.file_for`, from the labels of the image a workspace is made
   from, read with `podman image inspect` (`Spec.image_id` where it has one, else `Spec.image`
   or the configured default image): a workspace whose image carries `TOOLS_LABEL`, the default
-  image, whether it has no devcontainer.json or one whose `image` names it, or an image built
+  image however the workspace comes to have it, or an image built
   from it outside rcman and pulled, which inherits the label, is told the whole text; one of a default image without the label (`Spec.image` unset), of gh too but not
   of the tools; any other, the common text alone. A failure to read the labels fails `create`
   before any volume or container is made.
@@ -623,6 +627,88 @@ every observed screen (see [fake-claude.md](fake-claude.md)) by
 | `reconnected` | A live screen of Claude's log, the last line saying Remote Control has reconnected. Above the log may be the text Claude showed at its start, its questions answered: when the screen begins with Claude's first line, the wording before the first answer is free; from there on, and on a screen that begins elsewhere because the pane scrolled, every line is a log line, an answered question or one of `STARTUP_LINES` (`helpers/screens.py`). An unanswered question or any other line makes it `unrecognised`. `screen` is set |
 | `unrecognised` | A live screen that matches no known state; `screen` is set |
 
+## Forwarded ports
+
+A workspace's forwarded ports are its plan's `ports` (`devcontainer.Plan.ports`, see [A
+repository's devcontainer.json](#a-repositorys-devcontainerjson)). The forwarding server
+(`forward.py`, see [backend.md](backend.md#port-forwarding)) reaches one through this transport;
+this is the transport, and what cleans up after it.
+
+- **The relay.** `Runtime.port_argv(name, port, pidfile)` is what relays one connection to
+  `port` on the workspace's own loopback: its standard input goes to the port and what the port
+  answers is its standard output. Both runtimes run the same argv (`relay_command`): the
+  layout's busybox (`Layout.busybox`, the mounted one in a container, the host's on the host
+  runtime; a path of `BUSYBOX_PATH`'s characters, since it is written into the script) running
+  `setsid` and then `RELAY_SCRIPT` with `sh -c` (`relay_shell`), which writes its shell's id to
+  the pidfile, then runs `cat` of its input into `nc 127.0.0.1 <port>`. When either ends - `cat`
+  once its input has ended, whether its client closed it, was killed or crashed, or `nc` once
+  the app has closed its side - it removes its pidfile and `kill 0` ends the relay's process
+  group, the other with it, so a relay outlives neither side and leaves its pidfile only where
+  it is killed. `setsid` makes the shell lead a session and process group of its own inside the
+  workspace, which holds the relay alone: the process a Podman exec starts belongs to a group
+  whose leader is outside the container, which `kill 0` would otherwise reach. busybox's
+  `setsid` runs its program in its own place, without a fork, unless what runs it leads a
+  process group already, which neither an exec's process nor a program rcman starts does: what
+  starts a relay must never start it as a process group's leader, or `setsid` forks, its parent
+  exits at once, and the client sees the relay end before anything has crossed. On Podman it is
+  `podman --remote exec --interactive <container>`, as the container's own user; the host
+  runtime runs the same argv itself, reaching the host's own `127.0.0.1`. A relay's exit code
+  carries no meaning. A port that is not one, a pidfile that is not a relay's, and a layout
+  without a usable busybox are refused.
+- **What it cannot carry: a half-close.** The relay ends as soon as its input does, so a client
+  that ends its sending side and then waits for the answer has the relay ended before the answer
+  arrives, and the bytes it sent that are still in the pipe between `cat` and `nc` when the
+  input ends are dropped. What reaches a port through a relay must therefore close the relay's
+  input only once it no longer needs to send through it - after the app's answer has been passed
+  back whole, or once the app has closed its side - which the forwarding server keeps: it closes
+  a relay's input only after the answer it passed back is whole (`_release`), once the app has
+  closed, or, for a WebSocket whose browser has gone, after `SPLICE_DRAIN_SECONDS` in which the
+  app may close first; a browser's own half-close stops at Caddy and the server, and
+  `tests/test_forward.py` holds a request whose client half-closes to getting its whole answer.
+  It also starts no relay until the restore at rcman's start is done (`Workspaces.restored`),
+  because the restore sweeps every running workspace and would end a relay started meanwhile,
+  and starts each relay as a child that leads no process group (an asyncio subprocess with no
+  session of its own). A client that vanishes without closing its connection, such as a browser
+  leaving a WebSocket without a close frame, ends the relay when its input is closed, and what
+  it had sent that was still in that pipe is lost with it. The alternative that would carry a
+  half-close - ending a relay by its pidfile, with a second exec, when each connection ends - is
+  recorded for revisiting in [the decision on the
+  relay](https://github.com/mollyjester/claude-rc-man/issues/140#issuecomment-6392703184); it
+  would leave relays after a crash of rcman until the next sweep.
+- **Pidfiles** are `forward-<token>.pid` in the runtime folder (`FORWARD_PIDFILE`, made by
+  `forward_pidfile`): `RUN_MOUNT`, a tmpfs, in a container, so they go with its stop; `run` of
+  the folder on the host runtime. A relay removes its own as it ends, so only a relay that is
+  killed, or the folder's own writers, leave one for the sweep.
+- **Sweeping** (`forwards.sweep`) is the backstop for a relay left anyway: two fixed scripts
+  through the workspace's channel, one run each. The first lists the pidfiles that are files and
+  not empty, reads at most `MAX_PIDFILES` of them, each by its first `MAX_PIDFILE_BYTES` alone,
+  removes those beyond the bound and those that are links as it meets them, and prints every
+  process's `/proc/<pid>/stat` and the argv (`/proc/<pid>/cmdline`, at most `MAX_CMDLINE_BYTES`)
+  of each process a pidfile names, read once and written in hexadecimal by `od` in the same
+  pipe: the sweep keeps no file of its own in the runtime folder, which the workspace can write
+  in, and a process that ends or changes its argv meanwhile leaves nothing to disagree. A
+  pidfile is acted on only while it holds exactly an id and a newline, as `echo $$` writes one,
+  naming a process whose argv is exactly that of the shell of the relay that writes that pidfile
+  (`forwards.is_relay`); then that shell and every process descended from it, by their parents
+  in the stat, are ended, never a process group. The second script sends SIGKILL, in one
+  command, to each of those processes that still has the start time it was read with, so a pid
+  the kernel has given again is not signalled, and removes the pidfiles that were read. A
+  pidfile naming anything else, or no process, signals nothing and is removed; an empty one,
+  which a relay that has just started has not written yet, is left and does not count toward the
+  bound; what cannot be read whole acts on nothing. An accepted risk: a pidfile the workspace
+  replaces with a fifo, or a link to one, between the checks and the read can stall its own
+  sweep until the channel's request times out; meanwhile a deletion's sweep holds the
+  workspace's lock, and a restore's one of the restore's places. `Workspaces.sweep_forwards`
+  sweeps a workspace whose container is there and runs, logging a failure and never raising: in
+  `_remove` before the container goes, in `_switch` before a rebuild replaces the container, and
+  in `_restore_workspace` for a container that kept running and for one it started; and the
+  forwarding server sweeps every workspace it started a relay in as it stops, after closing its
+  relays and before the channels close. A sweep ends every relay of its workspace: in `_remove`
+  and `_switch` the workspace's forward sessions have been ended just before (`on_removing`,
+  `on_rebuilding`), and at the restore none can have started. A server's stop sweeps nothing:
+  forwarding follows the container, whose apps a server's stop leaves running. On the host
+  runtime, whose removal ends no relay, the sweep is what ends one.
+
 ## The canary
 
 `Runtime.run_canary(directory, name, version)` tries a candidate Claude Code version: the file
@@ -655,8 +741,14 @@ never followed, the size is capped, no content reaches a message), the JSON-with
 parser, the policy, the plan (`plan`: the entries of the image's `devcontainer.metadata`
 label, then the file's own, merged) and the parsing of an image's passwd and group files.
 
-- **Order.** Read and check the file (`check`: refusals before anything is pulled or built);
-  pull the image (`Runtime.pull`, its lines in the log), or for a file that builds one build
+- **Order.** Read and check the file (`check`: refusals before anything is pulled or built;
+  a file with no image, no Dockerfile and no features is `Checked(image=None, build=None)`,
+  with features `no_image`, and with a `build`, `context` or `dockerFile` that names no
+  Dockerfile `build_without_dockerfile`);
+  pull the image (`Runtime.pull`, its lines in the log; for a file with neither, the step
+  `devcontainer.DEFAULT_IMAGE_USED` and then `settings.workspace_image` through the same
+  `Workspaces._pulled`, never pulled for a `localhost/` name, its id pinned in the plan as
+  any image's), or for a file that builds one build
   it (see [Building an image](#building-an-image)); read the image without running it
   (`Runtime.image_facts`: a container made and never started, `podman cp` of the passwd and
   group files, which is stopped at `PODMAN_TIMEOUT` or when the workspace is deleted, and in
@@ -718,6 +810,19 @@ label, then the file's own, merged) and the parsing of an image's passwd and gro
   used. `PATH` may be set, with the folders of rcman's own programs (`path_prefix`: Claude's
   and `PODMAN_BIN`) kept first. Without a `PATH`
   of the file's, the image's is used.
+- **Ports.** `forwardPorts` and `portsAttributes` are honoured: read into the plan's `ports`
+  (`devcontainer._ports`), whatever the forwarding setting, and a value of the wrong kind in
+  either is refused as any other is. Once the plan is made, the steps name its ports, each with
+  its label (`forwarded_step`, `FORWARDED_PORTS`), in words true whether forwarding is on or
+  off. How they are forwarded is in [Forwarded ports](#forwarded-ports) and
+  [backend.md](backend.md#port-forwarding). A port is a whole number of one, or `localhost:` and
+  one in decimal with no leading zero; another host's port is refused. The ports are the
+  entries' and then the file's, each once, at most `MAX_FORWARDED_PORTS` (`too_many_ports`, for
+  the file alone in `check` and for the merged ports in `plan`). A port's `label` is taken from
+  a key of `portsAttributes` that is one port written so, the last one given winning; `protocol:
+  https` is refused (`port_https`), `IGNORED_PORT_ATTRIBUTES` are ignored by name, any other
+  attribute is refused as unknown, and `otherPortsAttributes` is never read. A plan stored
+  before ports were planned has none.
 - **The image's name.** `image` must be a plain registry reference, `[host[:port]/]path[:tag]
   [@digest]`, as written: no variable in it (it is the name that is pulled), and nothing
   that podman would read as a transport or a file (`docker-archive:`, `oci:`, `dir:` and the
@@ -973,48 +1078,46 @@ the prefix it was started with.
   `WORKING_POLL_SECONDS` and, once it is `deleting` or gone and no deletion in the service has
   stopped the work, calls `_stop_working` as such a deletion does; the thread ends with the
   work. Deleting a person deletes each of theirs (see [people.md](people.md)).
-- **Restoring.** When rcman starts, `restore` runs in the background, so rcman
-  answers at once: it waits for the runtime, trying again while it is
-  unavailable (where the instructions for Claude are missing from the tools, it leaves every
-  row as it is and brings no workspace back, and the other steps still run, see
-  [Workspace instructions](#workspace-instructions)); finishes rows still `deleting`, and `creating` ones with no `source`, which are
-  made again; fails a `creating` one with a `source`, which a restart interrupted
-  while it was being made, with `CLONE_MESSAGES["restarted"]` (it is not cloned
-  again, nor are its create commands run again, whatever it had done: the person
-  deletes it and decides); settles a rebuild a restart cut short (see
-  [Rebuilding](#rebuilding), Restarts); makes again a `ready` workspace whose container is
-  gone, from its stored plan if it has one, and starts one that is stopped, and
-  runs the plan's `postStartCommand` after either; ends what earlier terminals left
-  in one that kept running (see [The terminal's shell](#the-terminals-shell)); removes what an interrupted
+- **Restoring.** When rcman starts, `restore` runs in the background, so rcman answers at once:
+  it waits for the runtime, trying again while it is unavailable (where the instructions for
+  Claude are missing from the tools, it leaves every row as it is and brings no workspace back,
+  and the other steps still run, see [Workspace instructions](#workspace-instructions));
+  finishes rows still `deleting`, and `creating` ones with no `source`, which are made again;
+  fails a `creating` one with a `source`, which a restart interrupted while it was being made,
+  with `CLONE_MESSAGES["restarted"]` (it is not cloned again, nor are its create commands run
+  again, whatever it had done: the person deletes it and decides); settles a rebuild a restart
+  cut short (see [Rebuilding](#rebuilding), Restarts); makes again a `ready` workspace whose
+  container is gone, from its stored plan if it has one, and starts one that is stopped, and
+  runs the plan's `postStartCommand` after either; ends what earlier terminals left in one that
+  kept running (see [The terminal's shell](#the-terminals-shell)); removes what an interrupted
   read of an image left (`clean_probes`: probe containers, staging folders and the anonymous
   volumes nothing uses, `_clean_volumes`); applies the stored limits to the slices (see
-  [Limits](#limits)), before any container is started; and once the workspaces are back,
-  runs `Workspaces.restore_hooks`, each a step of its own, before what no row is for is
-  removed: what a module that imports `workspaces.py` brings back at a start.
+  [Limits](#limits)), before any container is started; and once the workspaces are back, runs
+  `Workspaces.restore_hooks`, each a step of its own, before what no row is for is removed: what
+  a module that imports `workspaces.py` brings back at a start.
   `GitAccount.write_gh_for_everyone` is one (`main.py`): `config.yml` for every person let in,
-  and `hosts.yml` for each with a token stored, under the person's lock, which makes the
-  account volume of anyone who had none. The workspaces are brought back up to
-  `RESTORE_WORKERS` at once, each in a thread of its own that goes on to start that
-  workspace's server if it should be running (pinned to the approved version, as above), so that a workspace that is slow, a start
-  command that hangs among the causes, does not keep another from being brought back; it
-  holds one of the places until it is done, and the removal of what no row is for, the
-  finishing of deletions and the settling of sign-outs wait for the last. A lost container is made again
+  and `hosts.yml` for each with a token stored, under the person's lock, which makes the account
+  volume of anyone who had none. The workspaces are brought back up to `RESTORE_WORKERS` at
+  once, each in a thread of its own that goes on to start that workspace's server if it should
+  be running (pinned to the approved version, as above), so that a workspace that is slow, a
+  start command that hangs among the causes, does not keep another from being brought back; it
+  holds one of the places until it is done, and the removal of what no row is for, the finishing
+  of deletions and the settling of sign-outs wait for the last. A lost container is made again
   from the image **id** its plan holds (`Workspaces._pinned_image_is_there`), or, for a
-  workspace of the default image, from `workspaces.image_id`, recorded when it was first made
-  (`_pinned`); a newer default image is for new workspaces. An id the storage no longer has
-  is pulled again by the plan's digest (`runtime.repository_of` and the digest) and must
-  then be the very image; with no digest the workspace is failed, saying to rebuild or delete
-  it (`image_gone`, `default_image_gone`, and for an image rcman built `built_image_gone`,
-  each recorded as its `failure`). A plan with no id (one stored without) pulls its image's name as it
-  always did (`Runtime.pull`, which uses the image the runtime has when the registry cannot be
-  reached). If the registry says the image is not there or
-  may not be had (`workspaces.image_is_gone` reads its words), the workspace is failed likewise;
-  any other failure of the pull - the network, a timeout, a
-  registry that is down - leaves it ready without its container, logged, and the next restore
-  tries again. What can be slow is done without the
-  workspace's lock and under `_working_on`, so a deletion stops it. Restore stops between
-  steps once rcman is closing;
-  discards (the volume stays) every labelled container no row is for, and removes nothing at all
+  workspace with no plan (no devcontainer.json), from `workspaces.image_id`, recorded when it
+  was first made (`_pinned`); a newer default image is for new workspaces. An id the storage no
+  longer has is pulled again by the plan's digest (`runtime.repository_of` and the digest) and
+  must then be the very image; with no digest the workspace is failed, saying to rebuild or
+  delete it (`image_gone`, `default_image_gone`, and for an image rcman built
+  `built_image_gone`, each recorded as its `failure`). A plan with no id (one stored without)
+  pulls its image's name as it always did (`Runtime.pull`, which uses the image the runtime has
+  when the registry cannot be reached). If the registry says the image is not there or may not
+  be had (`workspaces.image_is_gone` reads its words), the workspace is failed likewise; any
+  other failure of the pull - the network, a timeout, a registry that is down - leaves it ready
+  without its container, logged, and the next restore tries again. What can be slow is done
+  without the workspace's lock and under `_working_on`, so a deletion stops it. Restore stops
+  between steps once rcman is closing; discards (the volume stays) every labelled container no
+  row is for, and removes nothing at all
   - no container, build, image or Claude Code version - when the table has no workspace but the
   runtime has some, which is logged as an error (`_table_is_empty_of_workspaces_there_are`);
   collects the images nothing refers to (`_collect_images`: not while a workspace is being made

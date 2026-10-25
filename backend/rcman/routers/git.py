@@ -25,7 +25,7 @@ from rcman.identity import Identity, current_user
 from rcman.problems import Problem, ruled
 from rcman.repository import MAX_FILES_PER_CALL, MAX_PATH_LENGTH, Repository
 from rcman.routers.me import author_of
-from rcman.routers.workspaces import WorkspaceName, person_of
+from rcman.routers.workspaces import WorkspaceName, owned, person_of
 from rcman.workspaces import answered
 
 router = APIRouter(prefix="/api/git", tags=["git"])
@@ -233,4 +233,4 @@ def clone(
     record.target = body.url
     service = request.app.state.workspaces
     made = service.create(person_of(request, record.identity), body.name, body.url)
-    return {"workspace": service.listing([made])[0]}
+    return {"workspace": owned(request, record.identity.person, [made])[0]}

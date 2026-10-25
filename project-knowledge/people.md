@@ -62,7 +62,12 @@ removal takes effect at once in rcman whatever oauth2-proxy has read.
 workspace is made for them (`not_allowed`); ends a sign-in of theirs that waits for its code
 (`on_person_deleting`, `Accounts.forget`) and, since `Accounts` also refuses their status, a
 new sign-in and a code once they are marked (`not_allowed`, so that none makes their volume
-again); deletes
+again); ends their forward sessions and closes their WebSockets and exchanges under way to
+forwarded ports (`on_person_deleting`, `forward.Forwarding`, in the service's process only; a
+request on a session of theirs is refused from the mark on, as the session's person is read on
+every request, so a removal by `rcman-admin`, in a process of its own, refuses each request as it
+comes and leaves what is open to end with the container, see
+[backend.md](backend.md#port-forwarding)); deletes
 every workspace of theirs, container and volume, waiting, for up to `MADE_WITHIN_SECONDS`,
 until those still being made or rebuilt (a `rebuild_state` in the row) are gone: what makes
 or rebuilds one finishes its deletion once it notices

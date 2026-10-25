@@ -195,6 +195,7 @@ EXEMPT = {
             '        "GOOGLE_CLIENT_SECRET": "test-client-secret",\n'
             '        "COOKIE_SECRET": secrets.token_urlsafe(24),\n'
             '        "PROXY_PORT": str(PROXY_PORT),\n'
+            '        "ASK_PORT": str(ASK_PORT),\n'
             "    }"
         ),
     ): STACK_NETWORK,
@@ -210,13 +211,18 @@ EXEMPT = {
     ): STACK_NETWORK,
     (
         "tests/container/stack.py",
-        "up",
+        "caddy_started",
         'f"\\n{AUTH} {{\\n\\treverse_proxy 127.0.0.1:{STUB_PORT}\\n}}\\n"',
     ): STACK_NETWORK,
     (
         "tests/container/stack.py",
-        "up",
+        "caddy_started",
         'f"\\treverse_proxy 127.0.0.1:{GITHUB_PORT}\\n}}\\n"',
+    ): STACK_NETWORK,
+    (
+        "tests/container/stack.py",
+        "",
+        'f"http://127.0.0.1:{ASK_PORT}{ASK_PATH}"',
     ): STACK_NETWORK,
 }
 

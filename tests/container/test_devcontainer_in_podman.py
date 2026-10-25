@@ -22,11 +22,11 @@ import time
 from pathlib import Path
 
 import pytest
-from rcman import claude_server, db, people
+from rcman import claude_server, db, devcontainer, people
 from rcman import runtime as rt
 from rcman.problems import DEVCONTAINER_MESSAGES
 from rcman.repository import Repository
-from rcman.workspaces import Workspaces
+from rcman.workspaces import READY, Workspaces
 
 from devtools import fake_claude as fake
 from tests.container import sizes
@@ -922,6 +922,36 @@ def test_an_image_that_is_only_in_the_account_makes_a_workspace_with_no_registry
     done = make(service, person, clones, "local-image")
     assert (done.state, done.error) == ("ready", None), done
     assert json.loads(done.environment)["image"] == dev_image
+
+
+def test_a_file_naming_no_image_makes_a_ready_workspace_from_the_default_image(
+    service, person, clones, podman, github_com, tmp_path, monkeypatch
+):
+    """A file that names no image and builds none is applied over the default image, as if it
+    named it: the plan is of that image, pinned by its id, with the file's settings, and the
+    image, in rcman's storage, is not pulled."""
+    logs: dict[int, str | None] = {}  # each workspace's log as it became ready, which clears it
+    real = Workspaces._set
+
+    def set_(self, workspace_id, **columns):
+        if columns.get("state") == READY:
+            logs[workspace_id] = self.get(workspace_id).log
+        return real(self, workspace_id, **columns)
+
+    monkeypatch.setattr(Workspaces, "_set", set_)
+    config = {"name": "Pebble", "forwardPorts": [6080], "containerEnv": {"FROM_FILE": "yes"},
+              "postCreateCommand": "env | sort > env"}  # fmt: skip
+    publish_repository(github_com, tmp_path, "no-image", config)
+    done = make(service, person, clones, "no-image")
+    assert (done.state, done.error) == ("ready", None), done
+    plan = json.loads(done.environment)
+    assert plan["image"] == service.settings.workspace_image == podman.config.image
+    assert plan["image_id"] and plan["image_id"] == podman.default_image_id()
+    assert image_of(podman, done.container) == plan["image_id"]
+    env = dict(line.split("=", 1) for line in lines_of(podman, service, done, "env"))
+    assert env["FROM_FILE"] == "yes"
+    log = (logs[done.id] or "").splitlines()
+    assert devcontainer.DEFAULT_IMAGE_USED in log and rt.IN_STORAGE in log
 
 
 @pytest.mark.parametrize(

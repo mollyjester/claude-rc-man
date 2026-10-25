@@ -60,6 +60,9 @@ Your servers do not depend on it: with **Keep servers running after sign-out**,
 beside it in the menu, ticked, as it is at first, they keep running; untick it
 to have them stopped first. Your Claude account stays connected either way.
 Signing out ends your workspaces' terminals, in every browser (see
-[The terminal](workspaces.md#the-terminal)).
+[The terminal](workspaces.md#the-terminal)). It does not end your sessions on your
+workspaces' forwarded ports: a port you opened stays open in this browser until your session
+on it ends, after the idle timeout or the lifetime an administrator set (see
+[Ports](workspaces.md#ports)).
 
 You can change how your sessions' names begin in [Settings](settings.md).

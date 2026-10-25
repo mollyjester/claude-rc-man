@@ -338,6 +338,21 @@ test("a repository in a workspace's panel is cut short with an ellipsis, so a lo
   expect(ruleOf("a.repo-link")).toMatch(/min-width:\s*0/);
 });
 
+test("a forwarded port's address is in the monospace face and wraps, so a long one never widens the card", () => {
+  expect(ruleOf(".repo-link span")).toMatch(/white-space:\s*nowrap/); // positive control
+  expect(ruleOf("a.port-link")).toMatch(/font-family:\s*var\(--font-mono\)/);
+  expect(ruleOf("a.port-link")).toMatch(/overflow-wrap:\s*anywhere/);
+  expect(ruleOf("a.port-link")).toMatch(/min-width:\s*0/);
+});
+
+test("a card's status says Saving… in the muted colour, and that it is saved in the success colour", () => {
+  const saved = ruleOf('.setting-body > [role="status"]:not(:empty)');
+  expect(saved).toMatch(/color:\s*var\(--running\)/);
+  expect(ruleOf('.setting-body > form[aria-busy="true"] + [role="status"]')).toMatch(
+    /color:\s*var\(--muted\)/,
+  );
+});
+
 test("a commit message's box stands apart from its label", () => {
   expect(ruleOf(".panel-section label > textarea")).toMatch(/margin-top:\s*[0-9.]*[1-9]/);
 });
@@ -690,6 +705,7 @@ const TALL = [
   "nav a",
   ".skip-link",
   "a.repo-link",
+  "a.port-link",
 ];
 const WIDE = ["button", "a.button", "nav a"];
 

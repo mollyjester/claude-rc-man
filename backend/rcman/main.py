@@ -16,6 +16,8 @@ from rcman import (
     audit,
     claude_versions,
     db,
+    forward,
+    forwards,
     headers,
     journal,
     monitor,
@@ -26,6 +28,7 @@ from rcman import (
     unrecognised,
 )
 from rcman.accounts import Accounts
+from rcman.forwarding_settings import Store as ForwardingSettingsStore
 from rcman.gitaccount import GitAccount
 from rcman.routers import (
     attention,
@@ -40,6 +43,8 @@ from rcman.routers import (
     terminal,
     workspaces,
 )
+from rcman.routers import forward as forward_router
+from rcman.routers import forwarding_settings as forwarding_router
 from rcman.routers import monitor as monitor_router
 from rcman.routers import people as people_router
 from rcman.routers import rcman_upgrade as rcman_upgrade_router
@@ -135,6 +140,8 @@ def create_app(
         claude_versions.log,
         terminals_log,
         monitor.log,
+        forward.log,
+        forwards.log,
     ):
         journal.install(log)
     if runtime is None:  # rcman's own Podman, whose workspaces take the profile
@@ -144,6 +151,9 @@ def create_app(
     sign_ins = Accounts(service)
     terminals = Terminals(service)
     collector = monitor.Monitor(service.runtime, settings.database)
+    # Whatever forwards ports registers here to hear of forwarding being turned off (on_off).
+    forwarding_store = ForwardingSettingsStore(settings.database)
+    forwarding = forward.Forwarding(settings, service, forwarding_store)
 
     @contextlib.asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -152,6 +162,8 @@ def create_app(
         terminals.bind(asyncio.get_running_loop())  # before restore, which sweeps through it
         service.start_background()  # restore: HTTP answers meanwhile
         collector.start(service.restored)  # its first round waits for the restore
+        if settings.forward_socket is not None:  # it forwards nothing until the restore is done
+            await forwarding.start(settings.forward_socket)
 
         async def daily():
             while True:
@@ -175,6 +187,10 @@ def create_app(
             except Exception:  # noqa: BLE001 - logged; the restore's sweep ends what is left
                 workspaces_log.exception("the terminals did not all close")
             finally:
+                try:  # its WebSockets and relays closed, and swept, while the channels are open
+                    await forwarding.stop()
+                except Exception:  # noqa: BLE001 - logged; the restore's sweep ends what is left
+                    forward.log.exception("the forwarding server did not stop")
                 await asyncio.to_thread(sign_ins.close)
                 await asyncio.to_thread(service.close)
 
@@ -192,6 +208,8 @@ def create_app(
     app.state.accounts = sign_ins
     app.state.terminals = terminals
     app.state.monitor = collector
+    app.state.forwarding_settings = forwarding_store
+    app.state.forward = forwarding
     app.state.git_account = GitAccount(service)
     service.restore_hooks.append(app.state.git_account.write_gh_for_everyone)
     app.state.watch = unrecognised.Watch()
@@ -219,6 +237,8 @@ def create_app(
         audit_log,
         attention,
         monitor_router,
+        forwarding_router,
+        forward_router,
         docs,
         client_errors,
         terminal,

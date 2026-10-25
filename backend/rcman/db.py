@@ -182,6 +182,19 @@ MIGRATIONS = [
         reason text
     );
     """,
+    """
+    -- The settings of port forwarding (forwarding_settings.py): whether ports are forwarded, and
+    -- how long a session lasts with nothing going on and in all, in seconds, which the page shows
+    -- as whole minutes and whole hours. One row, made by the first save; none means the defaults,
+    -- which forwarding_settings.py holds, as it holds the bounds a save is refused outside of.
+    create table forwarding_settings (
+        id integer primary key check (id = 1),
+        enabled integer not null check (enabled in (0, 1)),
+        idle_seconds integer not null check (idle_seconds > 0 and idle_seconds % 60 = 0),
+        absolute_seconds integer not null
+            check (absolute_seconds > 0 and absolute_seconds % 3600 = 0)
+    );
+    """,
 ]
 
 

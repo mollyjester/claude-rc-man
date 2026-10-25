@@ -128,7 +128,12 @@ export type Workspace = {
   rebuild: Rebuild;
   // Whether a rebuild may be asked for now, as the server judges it.
   rebuildable: boolean;
+  // The ports it forwards, each with its label and its address, as the server gives them: none
+  // while forwarding is off, nor for a workspace that is not ready.
+  ports: ForwardedPort[];
 };
+
+export type ForwardedPort = { port: number; label: string | null; url: string };
 
 export type Rebuild = { state: string | null; log: string | null; error: string | null };
 

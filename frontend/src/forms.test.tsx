@@ -152,6 +152,9 @@ function api() {
         containers: false,
       },
     },
+    "GET /api/forwarding/settings": {
+      settings: { enabled: false, idle_minutes: 5, absolute_hours: 12 },
+    },
   });
 }
 
@@ -229,7 +232,7 @@ const PAGES: [string, Where, () => Promise<void>][] = [
       await screen.findByRole("dialog", { name: m.versionsMarkAnyFailed });
     },
   ],
-  ["the monitoring settings", "/admin/monitor", async () => {}],
+  ["the service settings", "/admin/settings", async () => {}],
   [
     "signing out of rcman",
     "/settings",

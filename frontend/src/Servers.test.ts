@@ -81,6 +81,7 @@ describe("the dot a workspace carries", () => {
     claude_version: null,
     rebuild: { state: null, log: null, error: null },
     rebuildable: false,
+    ports: [],
     ...extra,
   });
   const server = (state: string) => ({

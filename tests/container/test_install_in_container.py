@@ -213,6 +213,10 @@ def test_the_installer_warns_about_a_caddy_admin_api_on_loopback(installation):
     installation.check("test_the_installer_warns_about_a_caddy_admin_api_on_loopback")
 
 
+def test_the_installer_warns_when_caddys_global_options_do_not_ask_rcman(installation):
+    installation.check("test_the_installer_warns_when_caddys_global_options_do_not_ask_rcman")
+
+
 def test_the_caddy_snippet_is_printed_and_valid(installation):
     installation.check("test_the_caddy_snippet_is_printed_and_valid")
 

@@ -49,6 +49,9 @@ WORKSPACE_GONE = "workspace_gone"  # the workspace was deleted, or is no longer 
 WORKSPACE_REBUILDING = "workspace_rebuilding"  # its container is being made again by a rebuild
 SIGNED_OUT = "signed_out"  # its person signed out of rcman
 SERVICE_CLOSING = "service_closing"  # rcman stopped
+# How a WebSocket to a forwarded port (forward.py) ended, besides those above:
+FORWARDING_OFF = "forwarding_off"  # an administrator turned port forwarding off
+SESSION_ENDED = "session_ended"  # its session reached its lifetime, or made room for a newer
 RESULTS = (
     OK,
     UNRECOGNISED_SCREEN,
@@ -60,6 +63,8 @@ RESULTS = (
     WORKSPACE_REBUILDING,
     SIGNED_OUT,
     SERVICE_CLOSING,
+    FORWARDING_OFF,
+    SESSION_ENDED,
 )
 
 

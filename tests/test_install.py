@@ -142,6 +142,7 @@ def test_saved_settings_are_private_and_round_trip(tmp_path):
         ("DOMAIN", "x .com"),
         ("ADMIN_EMAIL", "nope"),
         ("PROXY_PORT", "80a"),
+        ("ASK_PORT", "80a"),
         ("CADDY_USER", "Caddy!"),
         ("CLAUDE_DOWNLOAD", "ftp://downloads.example.com"),
         ("CLAUDE_DOWNLOAD", "https://downloads.example.com/"),
@@ -250,6 +251,7 @@ SETTINGS = {
     "COOKIE_SECRET": "c" * 32,
     "ADMIN_EMAIL": "admin@example.com",
     "PROXY_PORT": "444",
+    "ASK_PORT": "445",
     "CADDY_USER": "caddy",
     "CLAUDE_DOWNLOAD": "https://downloads.example.com/releases",
     "WEB_UPGRADE": "no",
@@ -271,6 +273,7 @@ def test_app_environment_points_at_the_current_release():
     assert f"RCMAN_TOOLS_DIR={ins.TOOLS}\n" in env
     assert f"RCMAN_CLAUDE_STORE={ins.CLAUDE_STORE}\n" in env
     assert "RCMAN_CLAUDE_DOWNLOAD=https://downloads.example.com/releases\n" in env
+    assert "RCMAN_FORWARD_SOCKET=/run/rcman/forward.sock\n" in env
 
 
 def test_every_rendered_app_setting_exists_in_the_settings_model():
@@ -293,6 +296,31 @@ def test_oauth2_proxy_config_allows_only_the_allowlist():
     assert "email_domains" not in cfg  # any domain would bypass the allowlist
     assert 'cookie_secret = "' + "c" * 32 + '"' in cfg
     assert "set_xauthrequest = true" in cfg
+
+
+def proxy_options(cfg: str) -> dict[str, str]:
+    """oauth2-proxy's configuration as option names and their values as written."""
+    return {
+        key.strip(): value.strip()
+        for line in cfg.splitlines()
+        if "=" in line and not line.lstrip().startswith("#")
+        for key, value in [line.split("=", 1)]
+    }
+
+
+def test_oauth2_proxy_cookie_name_is_host_prefixed():
+    """The sign-in cookie, and with it the CSRF cookie and the session's chunks oauth2-proxy
+    names after it, are ``__Host-`` cookies, which a forwarded port's subdomain can neither set
+    nor replace: Secure, Path=/ and no Domain."""
+    options = proxy_options(ins.render("oauth2-proxy.cfg", SETTINGS))
+    assert options.get("cookie_name") == '"__Host-rcman-auth"', options
+    assert options.get("cookie_secure") == "true", options
+    assert options.get("cookie_path", '"/"') == '"/"', options  # oauth2-proxy's default is /
+    assert not [key for key in options if key.startswith("cookie_domain")], options
+    assert "cookie_csrf_per_request" not in options, options  # the CSRF cookie: <name>_csrf
+    # Planted positive: the parse sees a domain, a path and a comment for what they are.
+    planted = proxy_options('cookie_domains = [".x"]\ncookie_path = "/a"\n# cookie_name = "b"')
+    assert planted == {"cookie_domains": '[".x"]', "cookie_path": '"/a"'}, planted
 
 
 def test_units_run_as_their_own_users_and_the_app_on_its_socket():
@@ -319,7 +347,8 @@ def test_caddy_snippet_strips_the_identity_header_before_authenticating():
     assert strip < auth and "route {" in snippet[:strip]
     assert "copy_headers X-Auth-Request-Email>X-Forwarded-Email" in snippet
     assert "reverse_proxy unix//run/rcman/rcman.sock\n" in snippet
-    assert snippet.count("reverse_proxy") == 2  # oauth2-proxy's pages, and rcman
+    # oauth2-proxy's pages, rcman, the forwarded ports and the ask
+    assert snippet.count("reverse_proxy") == 4
 
 
 def test_caddy_snippet_logs_each_request_to_a_file_it_rotates_and_expires():
@@ -339,19 +368,180 @@ def test_the_socket_directory_is_made_at_boot_for_rcman_and_caddys_group():
 
 
 def test_the_site_block_notice_appears_exactly_when_the_snippet_changed():
-    changed = ins.caddy_notices([str(ins.CADDY_SNIPPET), "/etc/rcman/rcman.env"], "caddy")
-    assert len(changed) == 1
+    changed = ins.caddy_notices([str(ins.CADDY_SNIPPET), "/etc/rcman/rcman.env"], "caddy", "445")
+    assert len(changed) == 2
     notice = changed[0]
     assert notice.startswith("The Caddy site block changed") and "restart Caddy" in notice
     # It fits a Caddyfile that imports the snippet as well as one that holds a copy.
     assert str(ins.CADDY_SNIPPET) in notice and "import" in notice and "copy" in notice
     assert "replace yours" not in notice
-    assert ins.caddy_notices(["/etc/rcman/rcman.env"], "caddy") == []
-    assert ins.caddy_notices([], "caddy") == []
+    assert ins.caddy_notices(["/etc/rcman/rcman.env"], "caddy", "445") == []
+    assert ins.caddy_notices([], "caddy", "445") == []
+
+
+def test_the_global_block_that_asks_rcman_is_printed_with_the_ask_port():
+    """Caddy's on-demand certificates are asked of rcman in the global options, which a site
+    block cannot hold: the notice gives the block to paste once, with the ask port."""
+    [_, notice] = ins.caddy_notices([str(ins.CADDY_SNIPPET)], "caddy", "445")
+    block = "on_demand_tls {\n\task http://127.0.0.1:445/.rcman/ask\n}"
+    assert block in notice and "global" in notice and "once" in notice
+    assert ins.global_block("445") == block
+    assert ins.ASK_PATH == "/.rcman/ask"
+
+
+ASKED = "http://127.0.0.1:445/.rcman/ask"
+
+
+@pytest.mark.parametrize(
+    "config, found",
+    [
+        ({"apps": {"tls": {"automation": {"on_demand": {"ask": ASKED}}}}}, True),  # Caddy 2.6
+        (
+            {
+                "apps": {
+                    "tls": {
+                        "automation": {
+                            "on_demand": {"permission": {"module": "http", "endpoint": ASKED}}
+                        }
+                    }
+                }
+            },
+            True,
+        ),  # later Caddy  # fmt: skip
+        ({"apps": {"tls": {"automation": {"on_demand": {"ask": ASKED + "x"}}}}}, False),
+        (
+            {
+                "apps": {
+                    "tls": {
+                        "automation": {
+                            "on_demand": {"permission": {"module": "other", "endpoint": ASKED}}
+                        }
+                    }
+                }
+            },
+            False,
+        ),  # fmt: skip
+        ({"apps": {"tls": {"automation": {}}}}, False),
+        ({"apps": {"http": {}}}, False),
+        ({}, False),
+        ({"apps": {"tls": {"automation": {"on_demand": ["junk"]}}}}, False),
+        ({"apps": {"tls": "junk"}}, False),
+    ],
+)
+def test_the_ask_is_found_in_caddys_adapted_configuration_in_either_form(config, found):
+    assert (ins.ask_url("445") in ins.on_demand_asks(config)) is found
+
+
+class AdaptedBy:
+    """``ins.run`` standing in for Caddy: it records what it is asked and answers ``out`` with
+    ``code``, or raises ``raises``."""
+
+    def __init__(self, out: str = "", code: int = 0, raises: Exception | None = None):
+        self.out, self.code, self.raises, self.asked = out, code, raises, []
+
+    def __call__(self, argv, user=None, check=True, **kw):
+        self.asked.append((argv, user, check))
+        if self.raises:
+            raise self.raises
+        return subprocess.CompletedProcess(argv, self.code, self.out, "")
+
+
+def test_caddys_global_options_are_read_by_caddy_adapt_as_caddys_account(monkeypatch):
+    asking = json.dumps({"apps": {"tls": {"automation": {"on_demand": {"ask": ASKED}}}}})
+    adapted = AdaptedBy(asking)
+    monkeypatch.setattr(ins, "run", adapted)
+    assert ins.caddy_asks_rcman("caddy", "445") is True  # the positive
+    [(argv, user, check)] = adapted.asked
+    assert argv == ["caddy", "adapt", "--adapter", "caddyfile", "--config", "/etc/caddy/Caddyfile"]
+    assert user == "caddy" and check is False
+    assert ins.CADDYFILE == Path("/etc/caddy/Caddyfile")
+    monkeypatch.setattr(ins, "run", AdaptedBy(json.dumps({"apps": {}})))
+    assert ins.caddy_asks_rcman("caddy", "445") is False
+    for unread in (AdaptedBy(asking, code=1), AdaptedBy("not json"),
+                   AdaptedBy(raises=FileNotFoundError("caddy")),
+                   AdaptedBy(raises=subprocess.TimeoutExpired("caddy", 60))):  # fmt: skip
+        monkeypatch.setattr(ins, "run", unread)
+        assert ins.caddy_asks_rcman("caddy", "445") is None
+
+
+def test_the_installer_warns_when_caddys_global_options_do_not_ask_rcman():
+    assert ins.caddy_ask_warning(True, "445") is None  # the positive: asked, no warning
+    missing = ins.caddy_ask_warning(False, "445")
+    assert ins.global_block("445") in missing and str(ins.CADDYFILE) in missing
+    assert "any" in missing and "*.ws." in missing
+    unread = ins.caddy_ask_warning(None, "445")
+    assert ins.global_block("445") in unread and "could not" in unread
+    assert missing != unread
+
+
+def snippet_site(snippet: str, address: str) -> str:
+    """The site block of ``snippet`` that begins with ``address``, to its closing brace."""
+    text = "\n" + snippet
+    start = text.index(f"\n{address} {{\n") + 1
+    end = text.index("\n}\n", start)
+    return text[start : end + 2]
+
+
+def test_the_snippet_passes_every_forwarded_port_to_the_forward_socket_without_identity():
+    """The forwarded ports' wildcard site: certificates on demand, the sign-in's identity headers
+    deleted, the forwarding server's socket as its upstream, and a log of its own that keeps no
+    cookie, no referrer, no Location and no query string, in the forms Ubuntu's Caddy loads
+    (tests/container/test_stack_in_podman.py)."""
+    snippet = ins.render("Caddyfile", SETTINGS)
+    site = snippet_site(snippet, "*.ws.rcman.example.com")
+    assert "\ttls {\n\t\ton_demand\n\t}\n" in site
+    for header in ("X-Forwarded-Email", "X-Auth-Request-*", "X-Forwarded-User"):
+        assert f"\trequest_header -{header}\n" in site, header
+    assert "\treverse_proxy unix//run/rcman/forward.sock\n" in site
+    assert "rcman.sock" not in site and "forward_auth" not in site
+    assert str(ins.FORWARD_SOCKET) == "/run/rcman/forward.sock"
+    assert "output file /var/log/caddy/rcman-forward-access.log {" in site
+    for option in ("roll_size", "roll_keep", "roll_keep_for"):
+        assert f"\t\t\t{option} " in site
+    filtered = (
+        "\t\tformat filter {\n\t\t\twrap json\n\t\t\tfields {\n"
+        "\t\t\t\trequest>headers>Cookie delete\n"
+        "\t\t\t\trequest>headers>Referer delete\n"
+        "\t\t\t\tresp_headers>Set-Cookie delete\n"
+        "\t\t\t\tresp_headers>Location delete\n"
+        '\t\t\t\trequest>uri regexp [?].* ""\n'
+        "\t\t\t}\n\t\t}\n"
+    )
+    assert filtered in site
+
+
+def test_the_ask_site_is_bound_to_the_loopback_and_passes_only_the_exact_ask_path():
+    """Only Caddy's question reaches the forwarding server through it, never rcman's socket;
+    the request's target as it came is matched, so no spelling of another path passes."""
+    snippet = ins.render("Caddyfile", SETTINGS)
+    site = snippet_site(snippet, "http://127.0.0.1:445")
+    assert "\tbind 127.0.0.1\n" in site
+    target = "{http.request.orig_uri}"
+    exact = f"{target} == '/.rcman/ask' || {target}.startsWith('/.rcman/ask?')"
+    assert f'\t@ask expression "{exact}"\n' in site
+    assert "\thandle @ask {\n\t\treverse_proxy unix//run/rcman/forward.sock\n\t}\n" in site
+    assert "\thandle {\n\t\trespond 404\n\t}\n" in site
+    assert "rcman.sock" not in site and site.count("reverse_proxy") == 1
+    # The planted positive: the reader finds rcman's socket where it is.
+    assert "rcman.sock" in snippet_site(snippet, "rcman.example.com")
+
+
+def test_the_ask_port_defaults_and_may_not_be_the_proxy_port(tmp_path):
+    env = {
+        "RCMAN_INSTALL_DOMAIN": "x.example.com",
+        "RCMAN_INSTALL_GOOGLE_CLIENT_ID": "id",
+        "RCMAN_INSTALL_GOOGLE_CLIENT_SECRET": "secret",
+        "RCMAN_INSTALL_ADMIN_EMAIL": "a@example.com",
+    }
+    found = ins.gather(tmp_path / "install.env", environ=env, flags={}, ask=None)
+    assert found["ASK_PORT"] == ins.FIELDS["ASK_PORT"][2] != found["PROXY_PORT"]
+    same = {**env, "RCMAN_INSTALL_ASK_PORT": found["PROXY_PORT"]}
+    with pytest.raises(ins.InstallError, match="ASK_PORT"):
+        ins.gather(tmp_path / "install.env", environ=same, flags={}, ask=None)
 
 
 def test_caddy_is_told_to_restart_when_it_joins_the_socket_group():
-    notices = ins.caddy_notices([f"caddy in group {ins.WEB_GROUP}"], "caddy")
+    notices = ins.caddy_notices([f"caddy in group {ins.WEB_GROUP}"], "caddy", "445")
     assert len(notices) == 1 and "restart Caddy" in notices[0]
     assert ins.WEB_GROUP == "rcman-web"
 
@@ -562,6 +752,7 @@ NOT_MADE = {
     "COMMAND_DIR": "the system's folder; the files made in it are COMMANDS",
     "DATABASE": "rcman's, in its home; the installer asks rcman for its schema version",
     "UPGRADE_SOURCE": "in the clone; the wrapper is installed from it",
+    "CADDYFILE": "the operator's Caddy configuration, read by caddy adapt for its global options",
 }
 
 
@@ -3170,9 +3361,11 @@ def test_the_health_of_rcman_is_asked_as_rcman_through_its_socket_and_not_by_roo
     monkeypatch.setattr(ins, "run", run)
     monkeypatch.setattr(ins, "_status_over_tcp", lambda host, port, path: 200)
     ins.health(HEALTH_SETTINGS)
-    [(argv, kw)] = calls
+    [(argv, kw), (forward, forward_kw)] = calls  # rcman's socket, and its forwarding server's
     assert argv[:4] == RUNUSER and str(ins.SOCKET) in argv and "/api/health" in argv
     assert kw.get("cwd") == "/"
+    assert forward[:4] == RUNUSER and str(ins.FORWARD_SOCKET) in forward
+    assert "/.rcman/health" in forward and forward_kw.get("cwd") == "/"
     assert "socket." not in inspect_source(ins.health)  # and root opens no socket in it
     assert ".connect(" not in inspect_source(ins._status_over_socket)
 
@@ -3195,6 +3388,23 @@ def test_rcman_that_does_not_answer_ok_is_not_healthy(monkeypatch, answer):
     monkeypatch.setattr(ins.time, "sleep", lambda seconds: None)
     with pytest.raises(ins.InstallError, match="rcman"):
         ins.health(HEALTH_SETTINGS)
+
+
+def test_a_forwarding_server_that_does_not_answer_is_not_healthy(monkeypatch):
+    """rcman's own socket answers; its forwarding server's does not."""
+    monkeypatch.setattr(ins, "app_uid", lambda: 990)
+
+    def run(argv, **kw):
+        answered = str(ins.SOCKET) in argv
+        return subprocess.CompletedProcess(argv, 0 if answered else 1, "200\n", "")
+
+    monkeypatch.setattr(ins, "run", run)
+    monkeypatch.setattr(ins, "_status_over_tcp", lambda host, port, path: 200)
+    monkeypatch.setattr(ins, "HEALTH_TIMEOUT", 0.0)
+    monkeypatch.setattr(ins.time, "sleep", lambda seconds: None)
+    with pytest.raises(ins.InstallError, match="forwarding") as refused:
+        ins.health(HEALTH_SETTINGS)
+    assert "rcman," not in str(refused.value)  # the control: rcman itself was healthy
 
 
 def test_the_health_script_reports_the_status_rcman_answers_on_its_socket(tmp_path):

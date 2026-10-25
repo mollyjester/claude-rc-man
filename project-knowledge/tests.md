@@ -52,11 +52,13 @@ run and shared by all the workers through pytest's basetemp
 binary directly, without `npx`. The channel's latency test (`tests/test_channel.py`)
 takes up to a few batches of requests and fails only when every batch is over
 the bound, as a busy host can push one batch over it.
-The suite needs `tmux`, `git` and procps' `kill` on the host. Each test's tmux
-sockets are in a folder of its own, made under `/tmp` by `tmux_sockets` in
-`devtools/held_folders.py`, because a socket's path has to stay short, and removed,
-with every tmux server in it, when the test ends; one a killed run left is
-removed by a later run (see [What a killed run leaves](#what-a-killed-run-leaves)).
+The suite needs `tmux`, `git`, procps' `kill` and a busybox with `nc` and `setsid`
+on the host, as `busybox-static`, which `.devcontainer/Dockerfile` installs, has
+them. Each test's tmux sockets are in a folder of its own, made under `/tmp` by
+`tmux_sockets` in `devtools/held_folders.py`, because a socket's path has to stay
+short, and removed, with every tmux server in it, when the test ends; one a killed
+run left is removed by a later run (see
+[What a killed run leaves](#what-a-killed-run-leaves)).
 
 Workspaces in the backend's tests run on the host runtime (see
 [runtime.md](runtime.md#the-runtime)): a folder and a tmux socket per workspace,
@@ -66,7 +68,35 @@ runtime keeps, which `tests/test_runtime.py` runs against the host runtime and
 `tests/container/test_runtime_in_podman.py` against real Podman on the tests' engine, and
 its `PODMAN_CASES`, which hold what only the Podman runtime does, such as the instructions for
 Claude bound read-only at Claude Code's managed path, and which only
-`tests/container/test_runtime_in_podman.py` runs.
+`tests/container/test_runtime_in_podman.py` runs. Its case of `port_argv` reaches a listener
+the workspace's `python3` runs, so the runtime's image needs python3, as the default image and
+the host have it.
+
+The forwarding server, the hand-off and the ports the workspaces' listing gives
+(`backend/rcman/forward.py`, `routers/forward.py`, `routers/workspaces.py`) are
+`tests/test_forward.py`'s, the ask telling which hosts were marked as wanted, on the host
+runtime: its socket in a held folder (`rcfw-`), each request one Caddy would pass on, on a
+connection kept open as Caddy pools one, to an app of the test's own on the host's loopback,
+which the host runtime's relays reach; the server's clock is the test's where a session's idle
+timeout, its lifetime or a way in's expiry is reached; the app holds a request (`/held`), or an
+upgrade, until the test lets it answer, and streams an answer without end (`/endless`), so that
+what is under way as a session ends is seen to end. `tests/test_main.py` holds the lifespan's
+start and end of it.
+
+Forwarded ports' relays on the host runtime, whose relays are the host's processes, are
+`tests/test_forwards.py`'s: a relay ending with either side and removing its own pidfile; a real
+relay through `HostRuntime.port_argv` to a listener that holds every connection open, its client
+holding its input open, ended by a sweep and by each place a workspace sweeps (a deletion, the
+start of a rebuild's switch, a restore that finds the container running), with a decoy pidfile
+naming a bystander that is left running, a failing sweep only logged; and, against a relay the
+same harness sees ended, what `forwards.sweep` refuses to act on (a pidfile of anything but its
+relay's exact argv, one not written as `echo $$` writes one, a large one, a link, those beyond
+its bound, a process whose start time is no longer the one read, a name that is not a relay's
+pidfile, what it printed cut short), a process that ends just after its argv was read, and a
+regular file or a fifo planted where a file of the sweep's own could be, each leaving the relay
+in the same sweep ended, empty pidfiles left alone and not counted toward the bound, and the
+relay's argv, the same on both runtimes but for its busybox, whose path is refused where it
+could not be written into the script.
 
 The tools' `podman` and `docker` wrapper's reading of a published port,
 `backend/rcman/podman/publish.sh`, is tested on the host by `tests/test_podman_wrapper.py`,
@@ -152,7 +182,7 @@ exec runs is read from Podman's API. The runtime contract's terminal case (`test
 runtimes. In a browser, `frontend/e2e/terminal.spec.ts` types into the tab on the host runtime and
 reads what the shell works out, narrows the window and finds the size `stty size` gives follow it,
 opens the terminal in a second page, which takes it over, and finds a tab left at once and shown
-again fitted to its screen; the last test of `frontend/e2e-stack/stack.spec.ts` opens it through
+again fitted to its screen; a test of `frontend/e2e-stack/stack.spec.ts` opens it through
 Caddy and oauth2-proxy in a workspace of real Podman, as the container's root, reloads it and ends
 its shell. The page's side of the protocol, its states and its fakes are in
 [frontend.md](frontend.md).
@@ -295,7 +325,9 @@ helper made inside the holder's network and handed back.
   engine sees them; and, through `Workspaces` and a clone from the stand-in, Claude and the
   commands running as `remoteUser` with the file's environment and the image's, git with the
   person's author and token, the create commands running once and `postStartCommand` at every
-  start across a restart of rcman, a refused key or an Alpine image leaving nothing behind, a
+  start across a restart of rcman, a file that names no image and builds none made ready from
+  the default image without a pull, pinned by its id with the file's environment, a refused
+  key or an Alpine image leaving nothing behind, a
   failing command keeping the workspace with its token redacted, and a deletion killing a
   running command; and rebuilds: a new image applied with the work folder kept, a change of user
   (root and uid 1000, both ways) leaving the user's files writable, a failed rebuild leaving the
@@ -342,6 +374,25 @@ helper made inside the holder's network and handed back.
   readable by that range, a stale one removed first, none left after); `--timeout` ending a
   container through `podman --remote run`; and the canary cases of `tests/runtime_contract.py`, in
   the suites' builder slot.
+- `tests/container/test_forward_in_podman.py`: a port in a workspace of the default image, in a
+  network of its own, reached through the product's relay (`PodmanRuntime.port_argv`): under
+  busybox's `setsid`, the mounted busybox's shell writes its id to a pidfile and runs `cat` into
+  `nc`, and once either ends, it removes its pidfile and `kill 0` ends the relay's process
+  group. Binary bytes, more than a pipe holds, cross intact both ways, the client keeping its
+  input open until it has read the answer and its end of input reaching the listener as its end
+  of file; the pidfile names the relay's shell while it runs, which leads a process group
+  holding the relay's parts alone; once the client is killed, or only closes its input, while
+  the listener keeps its side open, and once the listener has answered and closed its side while
+  the client keeps its input open, no `nc`, `cat` or shell of the relay, no exec of it and no
+  pidfile of it is left, and the client gets the whole answer and then its end of file. Each
+  absence is read by a check that first sees a `nc` left running on purpose and the relay's
+  processes, exec and pidfile while it runs; the relay that ends only with its input, run when
+  the listener closes first, is seen to hang and to keep its pidfile. A relay left with both
+  sides held open is ended by `forwards.sweep` through the workspace's channel, and a decoy
+  pidfile naming a process of a separate exec signals nothing, that process and the listener
+  still running. The relay carries no half-close: a client that ends its input before the answer
+  comes ends the relay, and the answer the listener does send is cut short. Which execs run is
+  read from Podman's API by `tests/container/execs.py`.
 - `tests/container/test_terminal_in_podman.py`: the Terminal tab's shell, in workspaces of the
   default image made through the app (see the Terminal tab, below).
 - `tests/container/test_restored_in_container.py`: rcman's app on the engine, with `systemctl`
@@ -438,7 +489,8 @@ rcman's app made as `tests/e2e_server.py` makes one but with the Podman runtime 
 sizes on the engine, whose socket it is given, alice its first administrator, bob and carol let
 in; oauth2-proxy from the installer's toolchain with the installer's own configuration, its
 Google endpoints pointed at `tests/container/oidc_stub.py`; Caddy with the installer's own site
-block for `rcman.test`, its own certificate authority and its admin API off, in front of
+block for `rcman.test`, its own certificate authority, its admin API off and on-demand
+certificates asked of a site on its loopback (`GLOBAL_OPTIONS` in `stack.py`), in front of
 `rcman.test`, `auth.test` and `github.com`; the stand-in GitHub, `tests/github_server.py` through
 `github_stand_in.py serve`, with a public and a private repository, under a certificate of an
 authority of its own; the fake `claude`'s releases, served; and `systemctl` the stand-in. The
@@ -450,27 +502,50 @@ network (`stack_prepared`). `stack.py` says what each of its verbs does.
 `tests/container/test_stack_in_podman.py` runs, against a stack of its own, what an installation
 does once people and workspaces are there (see [installer.md](installer.md#tests)), through
 rcman's socket as Caddy passes requests on, and through Caddy and oauth2-proxy; and the stack's
-network: a workspace in the stack's network namespace and not this process's, with a hostname and
-a hosts file of its own, against the stack's, and git there finding the stand-in GitHub through
-the image. `tests/container/test_stack_in_a_browser.py` holds the one test `make check-ui`
-runs, which starts a stack of its own (the two stacks would number their workspaces alike, so they
-are never up at once) and runs the specs of `frontend/e2e-stack/` with `frontend/playwright.stack.config.ts` in
-Playwright's own image (`PLAYWRIGHT_IMAGE` in `stack.py`, by digest, at the version
-`frontend/package-lock.json` pins, which `tests/test_stack.py` holds it to) in a container that joins the
-stack's network, with the frontend's packages from `make frontend-setup`. The specs connect the
-fake `claude` on the **Claude** page with the code it accepts, which the suite passes them in
+network: a workspace in the stack's network namespace and not this process's, with a hostname
+and a hosts file of its own, against the stack's, and git there finding the stand-in GitHub
+through the image; and, with sites of its own added to the stack's Caddy for a while (`stack.py
+caddy`), a forwarded port's certificate got on demand only for a host a stand-in for rcman's ask
+allows, on an ask site bound to the loopback that passes only the ask's exact path, and the
+forward site's log keeping no cookie and no query string, against a twin site's that keeps them;
+with no `on_demand_tls` in the global options (`stack.py caddy` given an empty ask), a
+certificate got for any name under the wildcard, asking no one, against the same Caddy asking
+and refusing; and the installer's own site for forwarded ports, rendered for a domain of its own
+with the stand-in as its upstream, deleting every identity header a request gives itself,
+`X-Auth-Request-*` among them, which the twin passes on. Those sites are under names of their
+own (`gate`, `snip`) with an ask site on a port of its own, beside the installer's sites for
+forwarded ports, which the stack's Caddy holds too, the stack's global options asking the gate's
+for the while. `tests/container/test_stack_in_a_browser.py` holds the one test `make check-ui`
+runs, which starts a stack of its own (the two stacks would number their workspaces alike, so
+they are never up at once) and runs the specs of `frontend/e2e-stack/` with
+`frontend/playwright.stack.config.ts` in Playwright's own image (`PLAYWRIGHT_IMAGE` in
+`stack.py`, by digest, at the version `frontend/package-lock.json` pins, which
+`tests/test_stack.py` holds it to) in a container that joins the stack's network, with the
+frontend's packages from `make frontend-setup`. The specs connect the fake `claude` on the
+**Claude** page with the code it accepts, which the suite passes them in
 `RCMAN_FAKE_CLAUDE_CODE`, and the stand-in GitHub's token and addresses in `RCMAN_STACK_GITHUB`.
-`stack.py repository <workspace id>` is the verb a spec runs, through `RCMAN_STACK_EXEC`: a relay
-(`tests/container/stack_exec.mjs`) hands it to the suite, which runs it in the stack's container
-and nothing else, answering 2 to anything else, on a socket in a folder that are the user's
-alone (`command_relay` in `stack.py`; `tests/test_stack.py` holds it, with the node client, and
-`tests/test_network.py` the relay git reaches the builder module's stand-in through, each
-against what it refuses); it makes a repository in that workspace with a bare origin of its own
-and changes to stage. `stack.py check` then finds carol, whom the specs deleted, with nothing
-labelled hers left, the changes the specs staged, committed and pushed in the origin, as the
-author the spec set, with an audit row for each step, each workspace made by cloning ready with
-its repository's commit, and the token the specs stored in no audit row, workspace row or line of
-rcman's output.
+`stack.py repository <workspace id>` and `stack.py serve-port <workspace id> <port>` are the
+verbs a spec runs, through `RCMAN_STACK_EXEC`: a relay (`tests/container/stack_exec.mjs`) hands
+it to the suite, which runs it in the stack's container and nothing else, answering 2 to
+anything else, on a socket in a folder that are the user's alone (`command_relay` in `stack.py`;
+`tests/test_stack.py` holds it, with the node client, and `tests/test_network.py` the relay git
+reaches the builder module's stand-in through, each against what it refuses); the first makes a
+repository in that workspace with a bare origin of its own and changes to stage, the second
+starts an app on that port in that workspace (`PORT_APP`), which the last spec reaches as a
+forwarded port of a workspace cloned from the stand-in GitHub's repository that lists it: its
+owner opens the workspace's page and follows the port's link on its **Ports** card, which opens
+the port in a new tab through the hand-off; a plain link from rcman's page signs its owner in
+and lands on its path and query, a WebSocket from its page echoes, and its way in, read from the
+hand-off's page opened with scripts off, posted from the port's own origin is refused, while
+posted by that page's own button it is taken (rcman's other pages post to another origin with
+`Origin: null`); and an administrator and another person opening the same address are sent to
+the hand-off, which refuses them. Caddy gets a certificate only for a host marked as wanted,
+which the owner's workspace page showing its link does, and the spec forgets the session the
+link made before the plain link. `stack.py check` then finds carol, whom the specs deleted, with
+nothing labelled hers left, the changes the specs staged, committed and pushed in the origin, as
+the author the spec set, with an audit row for each step, each workspace made by cloning ready
+with its repository's commit, and the token the specs stored in no audit row, workspace row or
+line of rcman's output.
 
 A person's first workspace in the stack is slow, because rootless Podman keeps one copy of the
 default image per range of ids and copies it into the person's range, so the specs wait for it

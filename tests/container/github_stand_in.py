@@ -18,6 +18,7 @@ which serves tests/github_server.py as https://github.com itself, in a network o
 
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 import tempfile
@@ -32,6 +33,9 @@ STACK_OWNER = "octo"
 STACK_PUBLIC = "stack-public"
 STACK_PRIVATE = "stack-private"
 STACK_FILE = "README.md"
+# A public one whose devcontainer.json names no image and forwards STACK_PORT.
+STACK_PORTS = "stack-ports"
+STACK_PORT = 8080
 
 PACKAGES = """\
 RUN apt-get update -qq \\
@@ -83,10 +87,10 @@ def mint(folder: Path) -> Path:
 
 
 def seed(server) -> None:
-    """The repositories the whole-stack browser tests clone, on ``server``: a public one and
-    a private one, each with one commit on main."""
+    """The repositories the whole-stack browser tests clone, on ``server``: a public one, a
+    private one and a public one that forwards a port, each with one commit on main."""
     with tempfile.TemporaryDirectory(prefix="rcman-github-seed-") as scratch:
-        for name, private in ((STACK_PUBLIC, False), (STACK_PRIVATE, True)):
+        for name, private in ((STACK_PUBLIC, False), (STACK_PRIVATE, True), (STACK_PORTS, False)):
             bare = server.bare(STACK_OWNER, name, private=private)
             work = Path(scratch) / name
             git = [
@@ -101,6 +105,12 @@ def seed(server) -> None:
             subprocess.run(["git", "init", "-q", "-b", "main", str(work)], check=True)
             (work / STACK_FILE).write_text(f"# {name}\n")
             subprocess.run([*git, "add", STACK_FILE], check=True)
+            if name == STACK_PORTS:
+                (work / ".devcontainer").mkdir()
+                (work / ".devcontainer" / "devcontainer.json").write_text(
+                    json.dumps({"name": "Ports", "forwardPorts": [STACK_PORT]}) + "\n"
+                )
+                subprocess.run([*git, "add", ".devcontainer"], check=True)
             subprocess.run([*git, "commit", "-q", "-m", f"First commit of {name}"], check=True)
             subprocess.run([*git, "push", "-q", str(bare), "main"], check=True)
 

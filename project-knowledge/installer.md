@@ -218,7 +218,8 @@ Ubuntu's secure_path, and `GIT_ENVIRONMENT`, which install.sh gives git too), fr
 with no terminal, copying what it prints to the journal as it comes; then writes `succeeded` or
 `failed`, the error being the last line `install.sh` or the installer said on standard error
 beginning `install.sh:`, or else the last line. The notices are those of the installer's summary line (`summary`: the JSON line of
-`release`, `changed` and `notices`, the Caddy notices and the admin API warning). `--finish`
+`release`, `changed` and `notices`, the Caddy notices and the warnings about Caddy's admin API
+and its global options). `--finish`
 reads only `$SERVICE_RESULT`, `$EXIT_STATUS`, `$INVOCATION_ID` and the status: it changes only a
 status of the same invocation, where one still `running`, or a `succeeded` one systemd did not
 see succeed, becomes `failed` with the result as its error; a missing or malformed one is
@@ -324,7 +325,34 @@ mode 0750, made at boot by the `tmpfiles()` line in `TMPFILES` and made or repai
 takes anyone else out. `caddy_notices` says when Caddy needs its site block replaced or a
 restart to join the group, and the installer warns when `caddy_admin_exposed` finds Caddy's
 admin API on loopback, since any local user could reconfigure Caddy through it. The health check
-reaches rcman through the socket.
+reaches rcman through the socket, and its forwarding server through `FORWARD_SOCKET` beside it
+(`/.rcman/health`), as rcman both times (`_status_over_socket`); either not answering 200 within
+`HEALTH_TIMEOUT` fails the run.
+
+## Forwarded ports
+
+`rcman.env` sets `RCMAN_FORWARD_SOCKET` to `FORWARD_SOCKET`, in `RUN` beside `SOCKET`, which
+rcman's forwarding server listens on, making it world-writable as uvicorn makes its own: the
+protection is `RUN` (see [backend.md](backend.md#port-forwarding)). `ExecStart` is the same.
+The snippet (`installer/templates/Caddyfile`) holds two sites more, in the forms
+`tests/container/test_stack_in_podman.py` proves Ubuntu's Caddy loads:
+
+- `*.ws.@DOMAIN@`: `tls { on_demand }`; the sign-in's identity headers deleted
+  (`X-Forwarded-Email`, `X-Auth-Request-*`, `X-Forwarded-User`); `reverse_proxy` to
+  `FORWARD_SOCKET`; a log of its own whose `format filter` deletes `Cookie`, `Referer`,
+  `Set-Cookie` and `Location` and strips the query from the URI.
+- `http://127.0.0.1:@ASK_PORT@`: `bind 127.0.0.1`; an `expression` matcher on
+  `{http.request.orig_uri}`, the target as it came, equal to the ask path or that path and a
+  query, which alone is passed to `FORWARD_SOCKET`, never `SOCKET`; 404 for anything else.
+
+The ask port is the field `ASK_PORT`, with a default, saved as `PROXY_PORT` is, and refused where
+it is oauth2-proxy's. The global options are the operator's: with the snippet's notice,
+`caddy_notices` prints `global_block(ask_port)`, the `on_demand_tls` block that asks the ask
+site, to paste once. On every run `caddy_asks_rcman` reads `CADDYFILE` as Caddy does, with
+`caddy adapt` as `CADDY_USER` (which needs no admin API and starts nothing), and finds the ask
+address among the adapted configuration's on-demand asks (`on_demand_asks`: Caddy 2.6's `ask`, or
+a later Caddy's `http` permission's `endpoint`); `caddy_ask_warning` warns where it is not there,
+or where the file could not be read so, as the admin API warning is given.
 
 ## Tests
 
@@ -334,7 +362,8 @@ reaches rcman through the socket.
   static program from another, the tmux source's and Claude Code's checksums,
   the image's tag and the builder image's, a range that is too small getting a
   second one, no range added while a container runs, the rollback refusal, the pins,
-  the Caddy notices and two callers filling one toolchain at once, and the steps that
+  the Caddy notices, the snippet's sites for forwarded ports, the ask port, the check of the
+  global options' ask, and two callers filling one toolchain at once, and the steps that
   write in rcman's home with `runuser` stood in for by the test's own user — and the
   guide held to the installer. It also holds the lock, through `install.sh` itself run from a
   scratch clone with stand-ins for `id` and `runuser` and its root rewritten into the test's
@@ -364,6 +393,7 @@ reaches rcman through the socket.
   configuration files, the first administrator, `rcman-admin` by name as root, the socket's
   folder admitting Caddy's group alone and that group kept to Caddy, no listener (every TCP one
   and every unix socket, tried as an ordinary user) letting a local user be someone in rcman, the warning about a Caddy admin API on loopback,
+  the warning about global options that do not ask rcman, and none once they do,
   the Caddy snippet printed and valid, a second run changing nothing, saved settings needing
   no answers, a dirty clone and one that cannot fast-forward refused, self-update and rollback
   (and a rollback refused for a database newer than the release rolled back to), and the
@@ -374,16 +404,19 @@ reaches rcman through the socket.
 - `tests/container/test_stack_in_podman.py`: what an installation does once people and
   workspaces are there, in the whole stack (see [tests.md](tests.md#the-whole-stack)): the
   services answering, the stack's administrator, no listener taking an identity a request gives
-  itself and Caddy letting only oauth2-proxy set it, a person added, a workspace made, its
-  server refused until the person connects the fake `claude` once, after which it and a
-  workspace made afterwards both reach ready, a restart of rcman leaving the server as it was,
-  a stop leaving no Claude process, one person unable to reach another's workspace, deleting a
-  person leaving nothing labelled theirs, an administrator's limits, set through the API,
-  reaching `systemctl` (`rcman-admin` runs itself again as rcman's account, which the stack's
-  container has not; it is run by name as root in the stubbed installation), and the monitor's
-  usage round reading a running workspace's slice, and its person's, through `systemctl`. `tests/container/test_restored_in_container.py`
-  checks that rcman, started again after every container has stopped, brings the workspace and
-  its server back with the limits set again before the container starts.
+  itself and Caddy letting only oauth2-proxy set it, every cookie oauth2-proxy sets while
+  someone signs in, and its clearing of the session when they sign out, a `__Host-rcman-auth`
+  one (Secure, `Path=/`, no `Domain`), after which a request is sent to sign in, a person added,
+  a workspace made, its server refused until the person connects the fake `claude` once, after
+  which it and a workspace made afterwards both reach ready, a restart of rcman leaving the
+  server as it was, a stop leaving no Claude process, one person unable to reach another's
+  workspace, deleting a person leaving nothing labelled theirs, an administrator's limits, set
+  through the API, reaching `systemctl` (`rcman-admin` runs itself again as rcman's account,
+  which the stack's container has not; it is run by name as root in the stubbed installation),
+  and the monitor's usage round reading a running workspace's slice, and its person's, through
+  `systemctl`. `tests/container/test_restored_in_container.py` checks that rcman, started again
+  after every container has stopped, brings the workspace and its server back with the limits
+  set again before the container starts.
 
 What needs systemd, rcman's own rootless Podman, the kernel's limits or the journal is checked
 by hand after an installation ([real-claude-checklist.md](real-claude-checklist.md)).
