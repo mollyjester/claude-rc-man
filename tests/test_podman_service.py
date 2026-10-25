@@ -416,3 +416,51 @@ def test_a_pid_given_again_since_it_was_found_is_not_signalled():
         if child.poll() is None:
             child.kill()
             child.wait(timeout=30)
+
+
+# --- where the engine's processes run ---------------------------------------------------------
+
+
+class Stop(Exception):
+    """Raised in place of starting the engine's service, once what it was given is seen."""
+
+
+def ran_in_engines_folder(kwargs: dict, folder: Path) -> bool:
+    """Whether a process given ``kwargs`` runs in the engine's ``folder``: conmon writes a file
+    named oom into its working folder when it sees a container killed for want of memory, and
+    takes that folder from the service."""
+    return "cwd" in kwargs and Path(kwargs["cwd"]) == folder and Path(kwargs["cwd"]) != REPO
+
+
+def test_the_engines_service_runs_in_its_own_folder(monkeypatch):
+    seen: list[dict] = []
+
+    def popen(argv, **kwargs):
+        seen.append(kwargs)
+        raise Stop
+
+    monkeypatch.setattr(ps, "remove", lambda folder: hf.remove(folder))  # nothing of podman's
+    monkeypatch.setattr(ps.subprocess, "Popen", popen)
+    folder = None
+    with pytest.raises(Stop), ps.started("rcoomtest-") as engine:
+        folder = engine.folder  # never reached: the service is not started
+    assert folder is None and len(seen) == 1
+    held = Path(seen[0]["env"]["CONTAINERS_STORAGE_CONF"]).parent
+    assert held.name.startswith("rcoomtest-")
+    assert ran_in_engines_folder(seen[0], held)
+
+
+def test_the_engines_own_podman_calls_run_in_its_folder(monkeypatch, tmp_path):
+    seen: list[dict] = []
+    monkeypatch.setattr(ps.subprocess, "run", lambda argv, **kwargs: seen.append(kwargs))
+    engine = ps.Engine(tmp_path)
+    engine.cli("version")
+    engine.local("info")
+    assert len(seen) == 2 and all(ran_in_engines_folder(kwargs, tmp_path) for kwargs in seen)
+
+
+def test_a_process_with_no_folder_or_the_repositorys_is_not_in_the_engines_folder(tmp_path):
+    assert not ran_in_engines_folder({}, tmp_path)  # the planted twin: what Popen had
+    assert not ran_in_engines_folder({"cwd": REPO}, REPO)
+    assert not ran_in_engines_folder({"cwd": tmp_path / "other"}, tmp_path)
+    assert ran_in_engines_folder({"cwd": tmp_path}, tmp_path)

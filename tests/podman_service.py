@@ -93,7 +93,11 @@ class Engine:
 
     def cli(self, *args: str, timeout: float = 600, **kwargs) -> subprocess.CompletedProcess:
         return subprocess.run(
-            self.argv(*args), capture_output=True, timeout=timeout, env=env(self.folder), **kwargs
+            self.argv(*args),
+            capture_output=True,
+            timeout=timeout,
+            env=env(self.folder),
+            **{"cwd": self.folder, **kwargs},
         )
 
     def local(self, *args: str, timeout: float = 600, **kwargs) -> subprocess.CompletedProcess:
@@ -102,7 +106,7 @@ class Engine:
             capture_output=True,
             timeout=timeout,
             env=env(self.folder),
-            **kwargs,
+            **{"cwd": self.folder, **kwargs},
         )
 
 
@@ -313,7 +317,9 @@ def remove(folder: Path) -> None:
     if parts["root"].exists():
         run = [*local(folder)]
         for args in (["rm", "--all", "--force", "--time=0"], ["volume", "rm", "--all", "--force"]):
-            subprocess.run([*run, *args], capture_output=True, timeout=300, env=env(folder))
+            subprocess.run(
+                [*run, *args], capture_output=True, timeout=300, env=env(folder), cwd=folder
+            )
     _stop(_found(_with_descendants(_processes_naming(folder))))
     held = [str(parts[k]) for k in ("root", "runroot", "tmpdir") if parts[k].exists()]
     if held:
@@ -322,6 +328,7 @@ def remove(folder: Path) -> None:
             capture_output=True,
             timeout=300,
             env=env(folder),
+            cwd=folder,
         )
         if unmounted.returncode != 0:
             raise RuntimeError(unmounted.stderr.decode("utf-8", "replace"))
@@ -330,6 +337,7 @@ def remove(folder: Path) -> None:
             capture_output=True,
             timeout=300,
             env=env(folder),
+            cwd=folder,
         )
         if emptied.returncode != 0:
             raise RuntimeError(emptied.stderr.decode("utf-8", "replace"))
@@ -351,6 +359,9 @@ def started(prefix: str = PREFIX) -> Iterator[Engine]:
             service = subprocess.Popen(
                 [*local(folder), "system", "service", "--time=0", f"unix://{parts['socket']}"],
                 env=env(folder),
+                # In the folder, never the repository: conmon, which the service starts, writes
+                # a file named oom into the folder it was started in when it sees an OOM kill.
+                cwd=folder,
                 stdin=subprocess.DEVNULL,
                 stdout=log,
                 stderr=log,

@@ -184,8 +184,11 @@ user's own rootless Podman as `podman system service` on a socket of its own, wi
 workspaces' shared configuration (`backend/rcman/podman/containers.conf` and `registries.conf`)
 and storage of its own given by flags (rootless Podman reads the places of no other
 storage.conf), in a held folder under `/tmp` short enough for the run folder Podman takes
-(`RUNROOT_MAX`). The `podman_service` fixture in `tests/conftest.py` starts one for the
-session; it skips where the user's rootless Podman cannot run, unless
+(`RUNROOT_MAX`). Its service and its own podman calls run in that folder, never the
+repository: conmon, which the service starts, writes a file named `oom` into the folder it
+was started in when it sees an out-of-memory kill. The `podman_service` fixture in
+`tests/conftest.py` starts one for the session; it skips where the user's rootless Podman
+cannot run, unless
 `RCMAN_REQUIRE_CONTAINER=1`. Removing an engine removes its containers and volumes, stops its
 service and every process of the user's that names its folder (conmon among them) with every process
 below them (a build's RUN among them; one whose service died before it is below nothing that
