@@ -610,16 +610,25 @@ a test makes depends on its own run to remove it:
   run killed while making or removing it leaves. The name must be the prefix
   and exactly what `mkdtemp` adds, so a sweep never takes another prefix's
   folders. It leaves a folder whose lock is held, and anything that is not a
-  folder of the current user's with, if any, a lock file of theirs; it stops
+  folder of the current user's with, if any, a lock file of theirs. It stops
   only tmux servers whose sockets are the current user's, never one a link
-  points at; what it cannot read or remove, or what a removal refuses or fails at in a way of
+  points at, and among those only one a tmux server of the user's listens on.
+  Which program listens it tells from the listener's credentials, through a
+  connection that sends nothing: the pid and uid the kernel gives, and the
+  program that pid runs, a tmux replaced on disk since it started among them;
+  so it never speaks tmux to another program's socket. On a socket nothing
+  listens on, or one gone meanwhile, it runs no tmux. Another program's or
+  another user's listener, a killed run's engine among them, a listener it
+  cannot tell, and a tmux server that does not answer its `kill-server` within
+  `TMUX_GONE_WITHIN`, it leaves and says so on stderr; the socket's file goes
+  with the folder. What it cannot read or remove, or what a removal refuses or fails at in a way of
   its own (the engine's removal failing, say), it leaves, says so on stderr, and goes on past, to
   the others and to the run's own folder; one another run removed first it passes over in silence. The
   browser tests' worlds are held and cleared the same way, chosen by the
   exact shape of their name (see [frontend.md](frontend.md#tests)).
 - A held folder a test may fill with anything, as the `world` fixture in
   `tests/test_e2e_server.py` does, is removed with `remove_tree`, which also
-  stops a tmux server anywhere in it and makes each folder of the user's in
+  stops a tmux server anywhere in it, by the same rule, and makes each folder of the user's in
   it removable, following no link.
 - Every removal refuses, and raises, for a path that is not absolute or holds
   `.` or `..`, for the repository, the home folder, the working folder and
