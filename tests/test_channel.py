@@ -187,12 +187,63 @@ def test_closing_ends_the_shell_and_removes_its_files(run_dir):
     assert list(run_dir.iterdir()) == []
 
 
-def test_an_idle_channel_says_how_long_it_has_been_idle(channel):
-    channel.run([shutil.which("true")])
-    time.sleep(0.2)
-    assert channel.idle_seconds() >= 0.2
-    channel.run([shutil.which("true")])
-    assert channel.idle_seconds() < 0.2
+def test_a_closed_channel_refuses_a_request_and_starts_nothing(run_dir):
+    """Closing is final: what holds a closed channel cannot bring its shell back unseen."""
+    c = ch.Channel([SH, "-s"], tools, str(run_dir))
+    assert c.run([shutil.which("true")]).code == 0  # the control: it answers before
+    c.close()
+    with pytest.raises(ch.ChannelClosed):  # nothing was sent: a caller may ask elsewhere
+        c.run([shutil.which("true")])
+    assert c.process is None and list(run_dir.iterdir()) == []
+    never = ch.Channel([SH, "-s"], tools, str(run_dir))
+    never.close()  # closed before it was ever opened
+    with pytest.raises(ch.ChannelClosed):
+        never.run([shutil.which("true")])
+    assert never.process is None
+
+
+def test_a_close_while_the_shell_is_being_started_runs_nothing_and_ends_it(run_dir, tmp_path):
+    """A close that comes after the request found the channel open to it, but before its shell
+    was started, so there was nothing to kill: the shell is started, then ended, and the
+    request is refused as sent nowhere."""
+    c = ch.Channel([SH, "-s"], tools, str(run_dir))
+    start, started = c._start, []
+
+    def closed_first():
+        c.close()  # from the requesting thread, as another thread's would land: lock held
+        start()
+        started.append(c.process)
+
+    c._start = closed_first
+    marker = tmp_path / "ran"
+    with pytest.raises(ch.ChannelClosed):
+        c.run([shutil.which("touch"), str(marker)])
+    assert started and started[0].poll() is not None  # the control: one was started, and ended
+    assert not marker.exists() and c.process is None
+
+
+def test_only_a_channel_still_idle_is_marked_closed_and_a_marked_one_refuses_a_request(
+    channel, run_dir
+):
+    """What the idle closer chooses by: a channel is marked closed only while no request holds
+    it and it has been idle longer than asked; a request then is refused as sent nowhere."""
+    true = [shutil.which("true")]
+    assert channel.run(true).code == 0
+    with channel._lock:  # a request holds it
+        assert not channel.mark_closed_if_idle(0.0)
+    assert channel.run(true).code == 0  # it was not marked
+    channel._last -= 100
+    assert not channel.mark_closed_if_idle(1000.0)  # not idle that long
+    assert channel.run(true).code == 0
+    channel._last -= 100
+    assert channel.mark_closed_if_idle(50.0)
+    with pytest.raises(ch.ChannelClosed):
+        channel.run(true)
+    # The refusal leaves the shell to the close, which removes the channel's files through it.
+    assert channel.process is not None and channel.process.poll() is None
+    assert list(run_dir.iterdir())  # the control: the channel's files are there
+    channel.close()
+    assert channel.process is None and list(run_dir.iterdir()) == []
 
 
 def p95_of_a_hundred(channel, true: str) -> float:
@@ -267,6 +318,9 @@ def test_closing_does_not_wait_for_a_request_in_flight(run_dir):
     assert time.monotonic() - started < 5
     asking.join(10)
     assert not asking.is_alive() and failed  # the request fails as broken
+    with pytest.raises(ch.ChannelBroken):
+        c.run([shutil.which("true")])  # and the channel stays closed
+    assert c.process is None
 
 
 def test_a_channel_running_a_request_is_not_idle(channel):
@@ -276,9 +330,10 @@ def test_a_channel_running_a_request_is_not_idle(channel):
     asking.start()
     time.sleep(0.5)
     try:
-        assert channel.idle_seconds() < 100
+        assert not channel.mark_closed_if_idle(100.0)
     finally:
         asking.join(10)
+    assert channel.run([shutil.which("true")]).code == 0  # it was not marked
 
 
 @pytest.fixture

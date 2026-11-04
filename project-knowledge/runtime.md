@@ -459,7 +459,11 @@ that mean it did.
 `HostRuntime` keeps the same interface with a folder per workspace and the
 host's own programs — a person's credentials file in `ACCOUNTS` under its
 folder, linked to from each workspace's, and a sign-in container a folder that
-only `end_sign_in` removes — for the tests and `make e2e`; `tests/runtime_contract.py`
+only `end_sign_in` removes — for the tests and `make e2e`. Its stop ends what a
+container's stop ends of rcman's own: the tmux server, and the shell of every channel
+made to the workspace (`HostRuntime._end_channels`), once its runtime folder is removed,
+so a request in flight, or one that opened its channel again meanwhile, fails as broken
+rather than waiting on files the stop removed; `tests/runtime_contract.py`
 holds both runtimes to the same cases, on the host in `tests/test_runtime.py`
 and against real Podman on the tests' engine in
 `tests/container/test_runtime_in_podman.py`, apart from its canary cases (see [The canary](#the-canary)). A `Layout` says where a runtime's
@@ -486,14 +490,30 @@ and the two files' bytes. An argument with a newline or NUL is refused before
 anything is sent. Requests are answered one at a time, each within its
 timeout; one that is not is `ChannelTimeout`, and the channel is closed.
 
-Closing a channel does not wait for a request in flight: it kills the shell,
-and the request fails as broken. A channel is opened once more when conmon's
-error kept it from opening, and
+Closing a channel is final, and does not wait for a request in flight: it kills
+the shell, and the request fails as broken (`ChannelBroken`); a request to the
+channel afterwards, one whose shell the close came while it was starting among them,
+is refused as sent nowhere (`ChannelClosed`), and nothing opens the channel again. A
+channel is opened once more when conmon's error kept it from opening, and
 when it was found dead before a request was written; a request that was
-written is never sent again, since it may have run (`ChannelBroken`). A channel
+written is never sent again, since it may have run. A channel
 opens when rcman first runs a command in the workspace through it, and closes
-once it has been idle for `CHANNEL_IDLE_SECONDS` (`workspaces.py`); a workspace
-whose row records no server is listed without reaching it. `LATENCY_P95_SECONDS` in
+once it has been idle for `CHANNEL_IDLE_SECONDS` (`workspaces.py`): the idle closer
+marks it closed only while no request holds it (`Channel.mark_closed_if_idle`), so it
+kills no request in flight: one that reaches the channel afterwards is refused as sent
+nowhere, and asked again (below); a workspace
+whose row records no server is listed without reaching it. Whatever in rcman runs
+commands in a workspace across more than one request holds no channel of its own: its
+`run` finds the workspace's channel for each request (`Workspaces._channel_run`), making
+one if the last was closed, and asks a request refused as sent nowhere once more of the
+channel there is then, as a close between finding a channel and reaching it leaves one.
+The service makes a workspace's channel (`Workspaces._channel`) without its own lock
+held, since the runtime may ask the engine, and take locks of its own, to make one; of two
+requests that make one at once, both use the one put in first, and the other is closed
+unopened. Every close through `Workspaces.close_channel`, as a workspace's container goes or
+is replaced and as the service stops, is counted, so one made while such a close came is closed
+and not put in, and its request is refused as sent nowhere; the idle closer's closes are not
+counted. `LATENCY_P95_SECONDS` in
 `channel.py` is what a request may cost, and the container suites hold the
 podman client of a channel to a memory bound of its own.
 
@@ -591,8 +611,8 @@ runtime - and rcman adds no restriction and takes none away.
   leader still runs (`terminals.sweep`). A container that stopped lost its tmpfs, and its
   processes with it.
 - **Deleting.** `_remove` calls `on_removing` before the container goes, which ends the
-  workspace's terminal through its channel; on the host runtime, whose removal ends only tmux,
-  that is what ends the shell.
+  workspace's terminal through its channel; on the host runtime, whose removal ends only tmux
+  and the channels' shells, that is what ends the terminal's shell.
 
 ### The version a server runs
 

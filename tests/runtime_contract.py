@@ -34,6 +34,7 @@ from pathlib import Path
 
 import pytest
 from rcman import runtime as rt
+from rcman.channel import ChannelBroken
 from rcman.runtime import TIMED_OUT
 
 from helpers import instructions
@@ -142,6 +143,46 @@ def a_workspaces_files_outlive_a_stop(runtime, spec):
         runtime.stop(name)
         runtime.start(name)
         assert runtime.exec(name, [*layout.tool("cat"), f"{layout.work}/file"]).out == b"kept\n"
+
+
+# How long the request in flight in the case below may wait: far past any stop, so that the case
+# is judged by whether the stop ended the request, never by the request's own timeout.
+IN_FLIGHT_LIMIT = 10 * (rt.STOP_TIMEOUT_SECONDS + SETTLES_WITHIN)
+
+
+def a_stop_ends_a_channels_request_in_flight(runtime, spec):
+    """A stop ends every exec in the workspace, a channel's shell among them: a request in flight
+    has failed as broken by the time the stop is done, rather than waiting on a workspace that
+    stopped under it. Its FIFOs are in the work folder, and go with the workspace."""
+    with made(runtime, spec(20)) as name:
+        layout = runtime.layout(name)
+        assert layout.busybox, "mkfifo is busybox's here"
+        signal, hold = f"{layout.work}/signal", f"{layout.work}/hold"
+        fifos = runtime.exec(name, [layout.busybox, "mkfifo", signal, hold])
+        assert fifos.code == 0, fifos
+        channel = runtime.channel(name)
+        failed: list = []
+
+        def request():
+            script = f"echo running > {signal}; read line < {hold}"  # held: no one writes it
+            try:
+                channel.run(_sh(layout, script), timeout=IN_FLIGHT_LIMIT)
+            except Exception as error:  # noqa: BLE001 - whichever it is, the case says
+                failed.append(error)
+
+        asking = threading.Thread(target=request, daemon=True)
+        asking.start()
+        try:
+            # Answered once the request's command has opened the FIFO: it is running.
+            said = runtime.exec(name, [*layout.tool("cat"), signal], timeout=SETTLES_WITHIN)
+            assert said == rt.Result(0, b"running\n", b""), said
+            runtime.stop(name)
+            asking.join(SETTLES_WITHIN)  # judged once the stop is done
+            assert not asking.is_alive(), "the request outlived the stop"
+            assert len(failed) == 1 and isinstance(failed[0], ChannelBroken), failed
+        finally:
+            channel.close()  # ends the shell, if the stop left it
+            asking.join(SETTLES_WITHIN)
 
 
 def a_whole_process_group_is_ended_by_kill_group_of(runtime, spec):
@@ -785,6 +826,7 @@ CASES = [
     a_channel_runs_in_the_workspace,
     a_tmux_server_started_through_a_channel_outlives_it_and_not_a_stop,
     a_workspaces_files_outlive_a_stop,
+    a_stop_ends_a_channels_request_in_flight,
     a_whole_process_group_is_ended_by_kill_group_of,
     a_persons_workspaces_share_one_credentials_file_written_in_place,
     a_sign_in_container_has_the_persons_file_and_is_no_workspace,

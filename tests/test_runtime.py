@@ -7,6 +7,7 @@ tests/container/test_runtime_in_podman.py runs the same contract against real Po
 import dataclasses
 import json
 import os
+import select
 import shutil
 import subprocess
 import threading
@@ -15,6 +16,7 @@ from pathlib import Path
 
 import pytest
 from rcman import runtime as rt
+from rcman.channel import ChannelBroken
 
 from devtools.held_folders import tmux_sockets
 from helpers import instructions
@@ -2667,6 +2669,63 @@ def test_the_host_runtime_gives_no_instructions_file(host):
     assert host.instructions_ready() is None
     with runtime_contract.made(host, spec(30)) as name:
         assert host.exists(name)
+
+
+def test_a_channel_reopened_while_the_host_runtime_stops_does_not_outlive_the_stop(
+    host, tmp_path, monkeypatch
+):
+    """A channel whose shell has ended is opened again by its next request, whether or not the
+    workspace runs: one opened while the stop is removing the runtime folder is ended by the stop
+    all the same, so its request cannot wait on files the stop removed."""
+    with runtime_contract.made(host, spec(31)) as name:
+        layout = host.layout(name)
+        channel = host.channel(name)
+        assert channel.run([*layout.tool("cat"), "/dev/null"]).code == 0  # its shell runs
+        first = channel.process
+        os.killpg(first.pid, 9)  # it ended: the next request opens the channel again
+        first.wait()
+        signal, hold = tmp_path / "signal", tmp_path / "hold"
+        os.mkfifo(signal)
+        os.mkfifo(hold)
+        reader = os.open(signal, os.O_RDWR)  # writers of their own: no end-of-file meanwhile
+        holder = os.open(hold, os.O_RDWR)
+        failed: list = []
+        script = f"echo running > {signal}; read line < {hold}"
+
+        def request():
+            try:
+                channel.run([layout.shell, "-c", script], timeout=600)
+            except Exception as error:  # noqa: BLE001 - whichever it is, the test says
+                failed.append(error)
+
+        asking = threading.Thread(target=request, daemon=True)
+        rmtree = shutil.rmtree
+        reopened: list = []
+
+        def reopened_first(path, *args, **kwargs):
+            if str(path) == layout.run and asking.ident is None:
+                asking.start()  # this request opens the channel again
+                assert select.select([reader], [], [], 30)[0]  # and its command runs
+                reopened.append(channel.process)
+            return rmtree(path, *args, **kwargs)
+
+        monkeypatch.setattr(shutil, "rmtree", reopened_first)
+        try:
+            host.stop(name)
+            monkeypatch.undo()
+            # The controls: the request ran in the gap, in a shell opened anew for it.
+            assert asking.ident is not None and len(reopened) == 1
+            assert reopened[0] is not first and reopened[0].pid != first.pid
+            asking.join(10)
+            assert not asking.is_alive(), "the reopened shell outlived the stop"
+            assert len(failed) == 1 and isinstance(failed[0], ChannelBroken), failed
+        finally:
+            monkeypatch.undo()
+            channel.close()
+            os.write(holder, b"go\n")
+            asking.join(10)
+            os.close(reader)
+            os.close(holder)
 
 
 def header(kind: str) -> bytes:

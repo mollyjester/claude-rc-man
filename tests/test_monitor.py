@@ -1371,6 +1371,9 @@ def test_a_round_that_raises_does_not_end_its_loop(settings, runtime, caplog):
         made.start(restored)
         try:
             await until(lambda: len(calls) == 1)
+            # Only once the loop waits again: time moved any earlier is read by the failure's
+            # handling, which counts the next round from it.
+            await parked(times)
             times.advance(monitor.DEFAULTS.usage_interval_seconds)
             await until(lambda: len(calls) == 2)
         finally:

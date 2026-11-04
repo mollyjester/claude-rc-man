@@ -3,13 +3,17 @@ what rcman brings back when it starts, on the host runtime."""
 
 import contextlib
 import dataclasses
+import os
+import select
 import threading
 import time
 
 import pytest
+from rcman import channel as ch
 from rcman import db
 from rcman import runtime as rt
 from rcman import workspaces as ws
+from rcman.channel import ChannelBroken
 
 from tests.conftest import (
     ALICE,
@@ -365,6 +369,286 @@ def test_an_idle_channel_is_closed(service, settings, runtime, monkeypatch):
     monkeypatch.setattr(ws, "CHANNEL_IDLE_SECONDS", 0.1)
     time.sleep(0.2)
     service.close_idle()
+    assert service.open_channels() == []
+
+
+def test_a_channel_is_made_without_the_service_lock_held(service, settings, runtime, monkeypatch):
+    """The host runtime's channel asks whether the container runs, and a runtime may take
+    locks of its own to answer: the service lock is never held meanwhile."""
+
+    def lock_free() -> bool:
+        if not service._lock.acquire(blocking=False):  # a plain Lock: held by anyone
+            return False
+        service._lock.release()
+        return True
+
+    with service._lock:
+        assert not lock_free()  # the control: held is seen as held
+    real, seen = runtime.channel, []
+    monkeypatch.setattr(runtime, "channel", lambda name: (seen.append(lock_free()), real(name))[1])
+    workspace = insert(settings, 1, "free", "ready")
+    runtime.create(spec(workspace))
+    service.server(service.get(workspace)).status()
+    assert seen == [True]
+
+
+class Spare:
+    """A channel that is never opened, and says whether it was closed."""
+
+    def __init__(self):
+        self.closed = False
+
+    def close(self) -> None:
+        self.closed = True
+
+    def mark_closed_if_idle(self, seconds: float) -> bool:
+        return False
+
+
+def held_at_making(service, monkeypatch) -> tuple[list, threading.Event, threading.Event]:
+    """The runtime's channel made as a Spare, the first one held, once made, until ``go`` is
+    set: what was made, the event set when the first is being made, and ``go``."""
+    first_in, go = threading.Event(), threading.Event()
+    made: list[Spare] = []
+
+    def making(name):
+        mine = Spare()
+        made.append(mine)
+        if len(made) == 1:
+            first_in.set()
+            assert go.wait(30)
+        return mine
+
+    monkeypatch.setattr(service.runtime, "channel", making)
+    return made, first_in, go
+
+
+def test_two_requests_racing_for_a_channel_get_one_and_the_spare_is_closed(service, monkeypatch):
+    """The first request is still making its channel when the second makes and keeps its own:
+    the first is given the second's, and closes the one it made."""
+    made, first_in, go = held_at_making(service, monkeypatch)
+    got: dict[str, object] = {}
+    second_done = threading.Event()
+
+    def second_request():
+        got["second"] = service._channel("w")
+        second_done.set()
+
+    first = threading.Thread(target=lambda: got.setdefault("first", service._channel("w")))
+    second = threading.Thread(target=second_request)
+    first.start()
+    try:
+        assert first_in.wait(30)
+        second.start()
+        assert second_done.wait(30), "the second request waited on the first's making"
+    finally:
+        go.set()
+        first.join(30)
+        second.join(30)
+    assert len(made) == 2
+    assert got == {"first": made[1], "second": made[1]}
+    assert service._channels == {"w": made[1]}
+    assert made[0].closed and not made[1].closed
+
+
+def test_a_channel_closed_while_it_was_being_made_is_not_put_in_and_its_request_is_refused(
+    service, monkeypatch
+):
+    """A close while a request makes the workspace's channel (a deletion, a rebuild) wins: the
+    channel made meanwhile is closed, not kept, and its request is refused as sent nowhere
+    (ChannelClosed), which ``_channel_run`` asks once more. The next request makes one anew."""
+    made, first_in, go = held_at_making(service, monkeypatch)
+    failed: list = []
+
+    def request():
+        try:
+            service._channel("w")
+        except ch.ChannelClosed as error:
+            failed.append(error)
+
+    asking = threading.Thread(target=request)
+    asking.start()
+    try:
+        assert first_in.wait(30)
+        service.close_channel("w")
+    finally:
+        go.set()
+        asking.join(30)
+    assert len(failed) == 1 and made[0].closed
+    assert service._channels == {}
+    assert service._channel("w") is made[1]  # the control: a request afterwards gets one
+    assert service._channels == {"w": made[1]} and not made[1].closed
+
+
+def test_what_holds_a_workspaces_channel_works_after_the_idle_closer_closed_it(
+    service, settings, runtime, monkeypatch
+):
+    """The idle closer closes a channel that a terminal, a server, a repository or a read of
+    the devcontainer.json may hold for longer: each of them still runs its next request."""
+    workspace = insert(settings, 1, "held", "ready")
+    runtime.create(spec(workspace))
+    found = service.get(workspace)
+    name = found.container
+    server = service.server(found)
+    holders = {
+        "run_in": service.run_in(found),
+        "server": server.run,
+        "repository": service.repository(found).run,
+        "devcontainer": service._channel_runner(name),
+    }
+    monkeypatch.setattr(ws, "CHANNEL_IDLE_SECONDS", 0.0)
+    for what, run in holders.items():
+        assert run(["true"], 10).code == 0, what
+        assert service.open_channels() == [name], what  # the control: it opened one
+        service.close_idle()
+        assert service.open_channels() == [], what  # the control: and that one is closed
+        assert run(["true"], 10).code == 0, what
+    service.close_idle()
+    assert server.status() is None  # a server's own requests too
+    assert service.open_channels() == [name]
+    service.close_idle()
+    assert holders["devcontainer"](["true"], 10, cwd="/").code == 0
+
+
+@pytest.mark.parametrize("closer", ["idle", "close"])
+def test_a_request_whose_channel_is_closed_before_it_is_sent_runs_on_a_new_one(
+    service, settings, runtime, monkeypatch, closer
+):
+    """A request finds the workspace's channel, and the idle closer, or a close, closes it
+    before the request reaches it: nothing was sent, so it is run on the channel there is now."""
+    workspace = insert(settings, 1, "raced", "ready")
+    runtime.create(spec(workspace))
+    name = service.get(workspace).container
+    run = service.run_in(service.get(workspace))
+    assert run(["true"], 10).code == 0  # opens the channel, which is idle from now
+    [first] = [service._channels[name]]
+    found, go = threading.Event(), threading.Event()
+    lookup = service._channel
+
+    def held_after_the_lookup(of):
+        channel = lookup(of)
+        if channel is first:
+            found.set()
+            assert go.wait(30)
+        return channel
+
+    monkeypatch.setattr(service, "_channel", held_after_the_lookup)
+    monkeypatch.setattr(ws, "CHANNEL_IDLE_SECONDS", 0.0)
+    answers: list = []
+    asking = threading.Thread(target=lambda: answers.append(run(["echo", "ran"], 10)))
+    asking.start()
+    try:
+        assert found.wait(30)
+        if closer == "idle":
+            service.close_idle()
+        else:
+            service.close_channel(name)
+        assert service.open_channels() == []  # the control: the one it found is closed
+    finally:
+        go.set()
+        asking.join(30)
+    assert [a.out for a in answers] == [b"ran\n"]
+    assert service.open_channels() == [name] and service._channels[name] is not first
+
+
+def test_a_request_that_reaches_its_channel_as_the_idle_closer_closes_it_is_not_killed(
+    service, settings, runtime, monkeypatch, tmp_path
+):
+    """A request found the channel before the idle closer chose it, and reaches the channel
+    between that choice and the close: it is not killed in flight, but run, on the channel
+    there is then. The channel that was idle is closed all the same."""
+    workspace = insert(settings, 1, "window", "ready")
+    runtime.create(spec(workspace))
+    name = service.get(workspace).container
+    run = service.run_in(service.get(workspace))
+    assert run(["true"], 10).code == 0  # opens the channel, which is idle from now
+    first = service._channels[name]
+    files = first._files
+    assert all(os.path.exists(f) for f in files)  # the control: the channel's files are there
+    found, go = threading.Event(), threading.Event()
+    lookup = service._channel
+
+    def held_after_the_lookup(of):
+        channel = lookup(of)
+        if channel is first and not found.is_set():
+            found.set()
+            assert go.wait(30)
+        return channel
+
+    signal, done = tmp_path / "signal", tmp_path / "done"
+    os.mkfifo(signal)
+    os.mkfifo(done)
+    reader = os.open(signal, os.O_RDWR)  # a writer of its own: no end-of-file meanwhile
+    finisher = os.open(done, os.O_RDWR)
+    close = first.close
+
+    def closing():  # the idle closer's close of the channel it chose: the request comes first
+        go.set()
+        assert select.select([reader], [], [], 30)[0]  # the request's command is running
+        close()
+
+    first.close = closing
+    monkeypatch.setattr(service, "_channel", held_after_the_lookup)
+    monkeypatch.setattr(ws, "CHANNEL_IDLE_SECONDS", 0.0)
+    answers: list = []
+    failed: list = []
+
+    def request():
+        script = f"echo sent > {signal}; read line < {done}; echo ran"
+        try:
+            answers.append(run(["sh", "-c", script], 30))
+        except ChannelBroken as error:
+            failed.append(error)
+
+    asking = threading.Thread(target=request)
+    asking.start()
+    try:
+        assert found.wait(30)
+        service.close_idle()
+    finally:
+        go.set()
+        os.write(finisher, b"go\n")
+        asking.join(30)
+        os.close(reader)
+        os.close(finisher)
+    assert failed == [] and [a.out for a in answers] == [b"ran\n"]
+    assert first.process is None  # the idle one was closed
+    assert not any(os.path.exists(f) for f in files)  # and its files removed through its shell
+    assert service.open_channels() == [name] and service._channels[name] is not first
+
+
+def test_a_request_whose_channel_is_closed_once_it_was_sent_fails_and_is_not_run_again(
+    service, settings, runtime, tmp_path
+):
+    """The twin of the test above: a request that reached the shell may have run, so a close
+    then fails it as broken, and it is not run again."""
+    workspace = insert(settings, 1, "sent", "ready")
+    runtime.create(spec(workspace))
+    name = service.get(workspace).container
+    run = service.run_in(service.get(workspace))
+    count, signal = tmp_path / "count", tmp_path / "signal"
+    os.mkfifo(signal)
+    failed: list = []
+
+    def request():
+        script = f"echo x >> {count}; echo sent > {signal}; exec sleep 30"
+        try:
+            run(["sh", "-c", script], 60)
+        except ChannelBroken as error:
+            failed.append(error)
+
+    asking = threading.Thread(target=request)
+    asking.start()
+    reader = os.open(signal, os.O_RDWR)  # a writer of its own: no end-of-file meanwhile
+    try:
+        assert select.select([reader], [], [], 30)[0]  # the command is running
+        assert os.read(reader, 16) == b"sent\n"
+        service.close_channel(name)
+    finally:
+        os.close(reader)
+        asking.join(30)
+    assert len(failed) == 1 and not isinstance(failed[0], ch.ChannelClosed)
+    assert count.read_text() == "x\n"  # run once, not again
     assert service.open_channels() == []
 
 

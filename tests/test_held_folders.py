@@ -2,11 +2,16 @@
 killed run left."""
 
 import os
+import select
 import shutil
 import signal
+import socket
+import struct
 import subprocess
 import tempfile
+import threading
 from pathlib import Path
+from socket import SO_PEERCRED, SOL_SOCKET
 
 import pytest
 
@@ -158,6 +163,224 @@ def start_tmux(sock: Path) -> int:
     started = tmux(sock, "-f", "/dev/null", "new-session", "-d", "sleep", "600")
     assert started.returncode == 0, started.stderr
     return int(tmux(sock, "display-message", "-p", "#{pid}").stdout)
+
+
+def peer(sock: Path) -> tuple[int, int]:
+    """The pid and uid the kernel gives for what listens on ``sock``: connected to without
+    a byte sent, and closed."""
+    probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM | socket.SOCK_NONBLOCK)
+    with probe:
+        probe.connect(str(sock))
+        size = struct.calcsize("3i")
+        pid, uid, _ = struct.unpack("3i", probe.getsockopt(SOL_SOCKET, SO_PEERCRED, size))
+    return pid, uid
+
+
+def test_the_listener_of_a_tmux_servers_socket_is_its_server(stem):
+    """What the sweep tells a tmux server by: the kernel's credentials of what listens on its
+    socket are the server's own, its program is tmux, and a connection that sends nothing
+    leaves it answering."""
+    with hf.tmux_sockets(stem + "rch-") as folder:
+        sock = folder / "x.sock"
+        pid = start_tmux(sock)
+        assert peer(sock) == (pid, os.getuid())
+        assert Path(os.readlink(f"/proc/{pid}/exe")).name == "tmux"
+        answered = tmux(sock, "display-message", "-p", "#{pid}")
+        assert answered.returncode == 0 and int(answered.stdout) == pid, answered.stderr
+
+
+class Listener:
+    """Another program's socket at ``path``: it takes each connection, records what is sent on
+    it, and closes it, so a tmux client that speaks to it is answered with an end, not left
+    waiting. Its thread ends when close() is called."""
+
+    def __init__(self, path: Path):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.sock.bind(str(path))
+        self.sock.listen(8)
+        self.received: list[bytes] = []
+        self.got = threading.Event()
+        self._stop_r, self._stop_w = os.pipe()
+        self._thread = threading.Thread(target=self._serve)
+        self._thread.start()
+
+    def _take(self, conn: socket.socket) -> None:
+        with conn:
+            ready, _, _ = select.select([conn, self._stop_r], [], [])
+            data = conn.recv(65536) if conn in ready else b""
+            self.received.append(data)
+            if data:
+                self.got.set()
+
+    def _serve(self) -> None:
+        while True:
+            ready, _, _ = select.select([self.sock, self._stop_r], [], [])
+            if self._stop_r in ready:
+                return
+            self._take(self.sock.accept()[0])
+
+    def close(self) -> list[bytes]:
+        """End the thread, take what is still queued without waiting, and give what every
+        connection sent."""
+        os.write(self._stop_w, b"x")
+        self._thread.join()
+        self.sock.setblocking(False)
+        while True:
+            try:
+                conn = self.sock.accept()[0]
+            except BlockingIOError:
+                break
+            with conn:
+                conn.setblocking(False)
+                try:
+                    self.received.append(conn.recv(65536))
+                except BlockingIOError:
+                    self.received.append(b"")
+        self.sock.close()
+        os.close(self._stop_r)
+        os.close(self._stop_w)
+        return self.received
+
+
+@pytest.fixture
+def listener():
+    """Listener(path), each closed after the test."""
+    made: list[Listener] = []
+
+    def make(path: Path) -> Listener:
+        made.append(Listener(path))
+        return made[-1]
+
+    yield make
+    for each in made:
+        if each._thread.is_alive():
+            each.close()
+
+
+def heard(listener: Listener, sock: Path) -> None:
+    """The positive control: the listener records what is sent to it."""
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+        client.connect(str(sock))
+        client.sendall(b"ping")
+        assert listener.got.wait(10)
+    assert listener.received[-1] == b"ping"
+    listener.received.clear()
+
+
+def test_stop_tmux_passes_over_a_socket_another_program_listens_on(stem, listener, capsys):
+    with hf.held(stem + "rch-") as folder:
+        sock = folder / "s.sock"
+        other = listener(sock)
+        heard(other, sock)
+        hf.stop_tmux(folder)
+        sent = other.close()
+        assert not any(sent), sent
+        assert f"held_folders: left the listener on {sock}: " in capsys.readouterr().err
+
+
+def test_the_killed_run_sweep_passes_over_a_socket_another_program_listens_on_anywhere_in_it(
+    listener, capsys
+):
+    """As a killed run's engine folder holds its engine's live socket: the next stem clears the
+    folder, sends nothing to the socket, and says it left its listener."""
+    left = Path(tempfile.mkdtemp(prefix=kr.STEM, dir=hf.TMP))
+    (left / hf.LOCK).touch()  # a lock file nothing holds
+    beside = Path(f"{left}-engine")
+    sock = beside / "a" / "b" / "s.sock"
+    other = listener(sock)
+    heard(other, sock)
+    with kr.stem():
+        assert not os.path.lexists(left) and not os.path.lexists(beside)
+    sent = other.close()
+    assert not any(sent), sent
+    assert f"left the listener on {sock}: " in capsys.readouterr().err
+
+
+def test_a_socket_nothing_listens_on_starts_no_tmux(stem, monkeypatch):
+    with hf.held(stem + "rch-") as folder:
+        dead = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        dead.bind(str(folder / "dead.sock"))
+        dead.close()
+        pid = start_tmux(folder / "x.sock")
+        ran = recording_runs(monkeypatch)
+        hf.stop_tmux(folder)
+        monkeypatch.undo()
+        assert not kr.running(pid)
+        assert ran and all(str(folder / "x.sock") in argv for argv, _ in ran), ran  # the control
+        assert not [argv for argv, _ in ran if str(folder / "dead.sock") in argv], ran
+
+
+def recording_runs(monkeypatch, *, timing_out: str | None = None) -> list[tuple[list, dict]]:
+    """Every subprocess.run from now on, with its keywords; one whose argv holds
+    ``timing_out`` raises TimeoutExpired instead of running."""
+    run, ran = subprocess.run, []
+
+    def recording(argv, *args, **kwargs):
+        ran.append((list(argv), kwargs))
+        if timing_out is not None and timing_out in argv:
+            raise subprocess.TimeoutExpired(argv, kwargs.get("timeout"))
+        return run(argv, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", recording)
+    return ran
+
+
+def test_a_kill_server_that_does_not_return_in_time_is_left_and_said(stem, monkeypatch, capsys):
+    """No tmux the sweep runs may wait without end: kill-server is bounded, and one that does
+    not return in time leaves its server, said."""
+    with hf.held(stem + "rch-") as folder:
+        sock = folder / "x.sock"
+        pid = start_tmux(sock)
+        ran = recording_runs(monkeypatch, timing_out="kill-server")
+        try:
+            hf.stop_tmux(folder)
+        finally:
+            monkeypatch.undo()
+        try:
+            assert [argv[-1] for argv, _ in ran] == ["kill-server"]  # the control: got that far
+            assert all(kwargs.get("timeout") == hf.TMUX_GONE_WITHIN for _, kwargs in ran), ran
+            assert f"held_folders: left the listener on {sock}: " in capsys.readouterr().err
+            assert kr.running(pid)
+        finally:
+            tmux(sock, "kill-server")
+
+
+def test_a_tmux_server_whose_program_was_replaced_on_disk_is_still_stopped(stem, monkeypatch):
+    """A tmux upgraded while a killed run's server lived: its exe reads as ``tmux (deleted)``."""
+    with hf.held(stem + "rch-") as folder:
+        pid = start_tmux(folder / "x.sock")
+        readlink = os.readlink
+        monkeypatch.setattr(
+            os,
+            "readlink",
+            lambda path, *a, **k: (
+                readlink(path, *a, **k) + (" (deleted)" if str(path).endswith("/exe") else "")
+            ),
+        )
+        assert Path(os.readlink(f"/proc/{pid}/exe")).name == "tmux (deleted)"  # the plant took
+        try:
+            hf.stop_tmux(folder)
+        finally:
+            monkeypatch.undo()
+        assert not kr.running(pid)
+
+
+def test_a_socket_gone_before_it_is_looked_at_starts_no_tmux_and_is_not_said(
+    stem, monkeypatch, capsys
+):
+    """A socket removed between the listing of the folder and the look at it, as a run that
+    ends meanwhile removes its own: nothing to stop, nothing to say."""
+    with hf.held(stem + "rch-") as folder:
+        ran = recording_runs(monkeypatch)
+        hf._stop_server(folder / "gone.sock")
+        monkeypatch.undo()
+        assert ran == [] and capsys.readouterr().err == ""
+        start_tmux(folder / "x.sock")
+        ran = recording_runs(monkeypatch)
+        hf._stop_server(folder / "x.sock")
+        monkeypatch.undo()
+        assert ran  # the control: a live one is stopped through tmux
 
 
 def abandoned(parent: Path, prefix: str, *, tmux_in: str | None = "x.sock") -> tuple[Path, int]:

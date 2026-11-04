@@ -15,7 +15,8 @@ runs as an exec of its own (Runtime.exec).
 Requests are answered one at a time. A channel that cannot be opened because of
 conmon's error (``no logs from conmon``), and one found dead before a request was
 written, is opened again, once. A request that was written is never sent again,
-whatever happens to it: it may have run.
+whatever happens to it: it may have run. A channel that was closed is never opened again:
+every request to it fails as broken.
 """
 
 from __future__ import annotations
@@ -58,6 +59,11 @@ class ChannelBroken(Exception):
     """The channel could not be opened, or ended without answering a request."""
 
 
+class ChannelClosed(ChannelBroken):
+    """The channel was closed before the request was sent to it: nothing of it ran, so it may be
+    asked of another channel."""
+
+
 class ChannelTimeout(Exception):
     """A request was not answered in time; the channel was closed."""
 
@@ -82,6 +88,7 @@ class Channel:
         self._error_reader: threading.Thread | None = None
         self._files: tuple[str, str] = ("", "")
         self._last = time.monotonic()
+        self._closed = False
 
     # --- opening and closing ------------------------------------------------------
 
@@ -89,14 +96,23 @@ class Channel:
         return self.process is not None and self.process.poll() is None
 
     def _open(self) -> None:
-        """Start the shell and wait for it to answer; once more on conmon's error."""
+        """Start the shell and wait for it to answer; once more on conmon's error. A closed
+        channel is never opened again: ChannelClosed, also when the close came while the shell
+        was being started, which run() then ends."""
         for attempt in (1, 2):
+            if self._closed:
+                raise ChannelClosed("the channel was closed")
             try:
                 self._start()
-                return
             except ChannelBroken as error:
+                if self._closed:
+                    raise ChannelClosed("the channel was closed") from None
                 if attempt == 2 or CONMON_FAILED not in str(error):
                     raise
+                continue
+            if self._closed:
+                raise ChannelClosed("the channel was closed")
+            return
 
     def _start(self) -> None:
         self.process = subprocess.Popen(
@@ -164,9 +180,11 @@ class Channel:
             process.stdout.close()  # stderr is its reader's to close (_read_errors)
 
     def close(self) -> None:
-        """Remove the channel's files and end its shell. A request in flight is not waited
-        for: the shell is killed, and the request fails as broken, leaving its files to
-        the workspace's tmpfs."""
+        """Remove the channel's files and end its shell, for good: a request afterwards fails
+        as broken, and nothing opens it again. A request in flight is not waited for: the shell
+        is killed, and the request fails as broken, leaving its files to the workspace's
+        tmpfs."""
+        self._closed = True
         if not self._lock.acquire(blocking=False):
             process = self.process
             if process is not None:
@@ -182,11 +200,20 @@ class Channel:
         finally:
             self._lock.release()
 
-    def idle_seconds(self) -> float:
-        """How long since a request last began or ended; none while one runs."""
-        if self._lock.locked():
-            return 0.0
-        return time.monotonic() - self._last
+    def mark_closed_if_idle(self, seconds: float) -> bool:
+        """Mark the channel closed if no request holds it and none has begun or ended for longer
+        than ``seconds``, without waiting for a request that holds it: whether it was. A request
+        afterwards is refused as sent nowhere (ChannelClosed), and leaves the shell to close(),
+        which removes the channel's files and ends it."""
+        if not self._lock.acquire(blocking=False):
+            return False
+        try:
+            if time.monotonic() - self._last <= seconds:
+                return False
+            self._closed = True
+            return True
+        finally:
+            self._lock.release()
 
     # --- requests -------------------------------------------------------------------
 
@@ -194,6 +221,9 @@ class Channel:
         """Run ``argv`` with stdin from /dev/null; its exit code and two streams."""
         line = " ".join(quote(arg) for arg in argv)  # refuses before anything is sent
         with self._lock:
+            if self._closed:  # marked closed as idle (mark_closed_if_idle), or closed: its
+                # shell, if it has one, is left to close(), which removes the files through it
+                raise ChannelClosed("the channel was closed")
             self._last = time.monotonic()  # in use from now: not idle while it runs
             try:
                 if not self._alive():
@@ -207,6 +237,8 @@ class Channel:
                 return self._answer(time.monotonic() + timeout)
             finally:
                 self._last = time.monotonic()
+                if self._closed:  # closed while it opened, before there was a shell to kill
+                    self._end(grace=0)
 
     def _write_request(self, line: str) -> None:
         out, err = (quote(f) for f in self._files)

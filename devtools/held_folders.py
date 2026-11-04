@@ -16,7 +16,9 @@ import fcntl
 import os
 import re
 import shutil
+import socket
 import stat
+import struct
 import subprocess
 import sys
 import tempfile
@@ -32,8 +34,10 @@ LOCKING = ".locking"
 # Seconds a folder may be without its lock file: one is, only in the instants between
 # making it and taking its lock, and between emptying it and removing it.
 UNLOCKED_FOR = 60
-# Seconds to wait for a stopped tmux server to go.
+# Seconds to wait for a tmux server to answer kill-server, and then to go.
 TMUX_GONE_WITHIN = 10
+# What the kernel adds to the path of a running program's file once it is replaced or removed.
+DELETED = " (deleted)"
 # What mkdtemp adds to a prefix: eight of these.
 _MKDTEMP_TAIL = r"[a-z0-9_]{8}"
 
@@ -118,22 +122,64 @@ def own(path: Path, kind: Callable[[int], bool], uid: int | None = None) -> bool
     return kind(status.st_mode) and status.st_uid == (os.getuid() if uid is None else uid)
 
 
+def _listener(sock: Path) -> tuple[int, int]:
+    """The pid and uid of what listens on ``sock``, from the credentials the kernel gives a
+    connection to it, made without waiting and closed without a byte sent.
+    ConnectionRefusedError if nothing listens; another OSError (a full backlog among them) if it
+    cannot be told."""
+    size = struct.calcsize("3i")
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM | socket.SOCK_NONBLOCK) as probe:
+        probe.connect(str(sock))
+        pid, uid, _gid = struct.unpack(
+            "3i", probe.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, size)
+        )
+    return pid, uid
+
+
 def _stop_server(sock: Path) -> None:
-    tmux = ["tmux", "-S", str(sock)]
-    pid = subprocess.run(
-        [*tmux, "display-message", "-p", "#{pid}"], capture_output=True, text=True
-    ).stdout.strip()
-    subprocess.run([*tmux, "kill-server"], capture_output=True)
+    """Stop the tmux server of the current user's (their uid as this namespace sees it) that
+    listens on ``sock``, and wait for it to go. Which program listens is told from the
+    listener's credentials, without speaking tmux to it: on a socket nothing listens on, or one
+    gone meanwhile, no tmux is run; the listener on any other, one that cannot be told, and a
+    server that does not answer kill-server within TMUX_GONE_WITHIN are left and said."""
+    try:
+        pid, uid = _listener(sock)
+        if pid <= 0:
+            raise OSError("its listener's process is not visible here")
+        if uid != os.getuid():
+            raise OSError(f"its listener, process {pid}, is uid {uid}'s")
+        # A program replaced on disk while it runs reads as "<path> (deleted)".
+        program = Path(os.readlink(f"/proc/{pid}/exe").removesuffix(DELETED)).name
+        if program != "tmux":
+            raise OSError(f"its listener, process {pid}, is {program}, not tmux")
+    except (ConnectionRefusedError, FileNotFoundError):
+        return  # nothing listens, or the socket is gone: no server to stop
+    except OSError as error:
+        print(f"held_folders: left the listener on {sock}: {error}", file=sys.stderr)
+        return
+    try:
+        subprocess.run(
+            ["tmux", "-S", str(sock), "kill-server"], capture_output=True, timeout=TMUX_GONE_WITHIN
+        )
+    except subprocess.TimeoutExpired:
+        print(
+            f"held_folders: left the listener on {sock}: tmux, process {pid}, did not answer "
+            f"kill-server within {TMUX_GONE_WITHIN}s",
+            file=sys.stderr,
+        )
+        return
     # kill-server returns before the server has gone.
     deadline = time.monotonic() + TMUX_GONE_WITHIN
-    while pid and Path(f"/proc/{pid}").exists() and time.monotonic() < deadline:
+    while Path(f"/proc/{pid}").exists() and time.monotonic() < deadline:
         time.sleep(0.05)
 
 
 def stop_tmux(folder: Path) -> None:
     """Stop the tmux server on each socket in ``folder`` itself. tmux detaches from
     whatever started it, so a run that ends leaves it running. Only a socket of the
-    current user's, in a folder of theirs: a link could name any tmux server."""
+    current user's, in a folder of theirs: a link could name any tmux server; and only one
+    a tmux server of theirs listens on (``_stop_server``): another program's is left and
+    said, sent nothing."""
     if not own(folder, stat.S_ISDIR):
         return
     for sock in sorted(folder.glob("*.sock")):
@@ -156,8 +202,9 @@ def remove(
     stop: Callable[[Path], None] | None = None,
     roots: Iterable[Path] | None = None,
 ) -> None:
-    """Stop the folder's tmux servers with ``stop`` (by default stop_tmux) and remove
-    it, its lock file last, so a run killed while removing it leaves a folder with a
+    """Stop the folder's tmux servers with ``stop`` (by default stop_tmux, which leaves
+    another program's socket listened on, and says so) and remove it, sockets and all, its
+    lock file last, so a run killed while removing it leaves a folder with a
     lock file nothing holds. A link is refused, never followed."""
     folder = removable(folder, roots)
     if not stat.S_ISDIR(folder.lstat().st_mode):
@@ -176,8 +223,8 @@ def remove(
 
 def remove_tree(folder: Path, roots: Iterable[Path] | None = None) -> None:
     """remove(), for a folder tests may have filled with anything: every tmux server on
-    a socket of the current user's anywhere in it is stopped, and every folder of
-    theirs in it made theirs to remove. No link is followed."""
+    a socket of the current user's anywhere in it is stopped, by stop_tmux's rule, and every
+    folder of theirs in it made theirs to remove. No link is followed."""
     folder = removable(folder, roots)
     if own(folder, stat.S_ISDIR):
         os.chmod(folder, 0o700)
@@ -314,7 +361,8 @@ def tmux_sockets(prefix: str) -> Iterator[Path]:
 
     Under /tmp rather than under tmp_path because a unix socket's path has to stay
     short, and never named after tmp_path, whose name pytest-xdist's workers repeat.
-    Afterwards every tmux server with a socket in it is stopped and the folder removed;
+    Afterwards every tmux server of the user's with a socket in it is stopped (stop_tmux)
+    and the folder removed;
     one a killed run left is stopped and removed by the next run of the same prefix."""
     with held(prefix) as folder:
         yield folder

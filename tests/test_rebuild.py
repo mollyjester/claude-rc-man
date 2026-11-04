@@ -9,6 +9,7 @@ change to the file is written in the workspace's work folder, as a person makes 
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import json
 import logging
@@ -400,38 +401,66 @@ def test_a_rebuild_is_recorded_under_the_lock_an_upgrades_admission_holds(
 
 
 def test_whether_a_container_is_there_is_asked_without_the_lock_workspaces_are_recorded_under(
-    client, runtime, publish, settings
+    client, runtime, publish, settings, monkeypatch
 ):
     """A request for a rebuild asks the runtime before it takes the images' lock, which every
     workspace being made and the admission of an upgrade wait for."""
+    held = images_lock_held_when_the_request_asks(client, runtime, publish, monkeypatch)
+    assert held and not any(held)  # held: the control, that the request's call was seen
+
+
+def test_a_rebuild_that_asks_whether_its_container_is_there_under_the_images_lock_is_caught(
+    client, runtime, publish, settings, monkeypatch
+):
+    """The planted twin of the test above: the request asks under the images' lock, and that
+    is seen."""
+    held = images_lock_held_when_the_request_asks(
+        client, runtime, publish, monkeypatch, under_the_lock=True
+    )
+    assert held and all(held)
+
+
+def images_lock_held_when_the_request_asks(
+    client, runtime, publish, monkeypatch, *, under_the_lock=False
+) -> list[bool]:
+    """Whether the images' lock was held each time the request for a rebuild asked the runtime
+    whether a container is there, the rebuild having ended. The request's thread is told by
+    being inside ``rebuild``, and no lock is taken to tell it: the runtime is asked under the
+    service's own locks too. ``under_the_lock`` has the request ask under the images' lock."""
     found = made(client, publish)
     service = client.app.state.workspaces
-    real = runtime.exists
-    held: list = []
+    real_rebuild, real_exists = service.rebuild, runtime.exists
+    requests: set[int] = set()
+    held: list[bool] = []
+
+    def rebuild(*args):
+        requests.add(threading.get_ident())
+        try:
+            with service._images_lock if under_the_lock else contextlib.nullcontext():
+                return real_rebuild(*args)
+        finally:
+            requests.discard(threading.get_ident())
 
     def exists(name):
-        with service._lock:
-            rebuilding = threading.current_thread() in service._making.values()
-        if rebuilding:  # the rebuild's own thread: not the request's
-            return real(name)
-        free: list = []
+        if threading.get_ident() in requests:
+            free: list = []
 
-        def look():
-            free.append(service._images_lock.acquire(False))
-            if free[0]:
-                service._images_lock.release()
+            def look():  # from another thread, since the images' lock is reentrant
+                free.append(service._images_lock.acquire(False))
+                if free[0]:
+                    service._images_lock.release()
 
-        looking = threading.Thread(target=look)
-        looking.start()
-        looking.join()
-        held.append(not free[0])
-        return real(name)
+            looking = threading.Thread(target=look)
+            looking.start()
+            looking.join()
+            held.append(not free[0])
+        return real_exists(name)
 
-    runtime.exists = exists
+    monkeypatch.setattr(service, "rebuild", rebuild)
+    monkeypatch.setattr(runtime, "exists", exists)
     assert ask(client, found["id"]).status_code == 202
-    runtime.exists = real
     settled(client, found["id"])
-    assert held and not any(held)
+    return held
 
 
 def test_the_listing_asks_the_runtime_once_for_the_containers_of_every_workspace(
@@ -1151,7 +1180,7 @@ def test_the_terminal_is_ended_and_the_channel_closed_at_the_switch(client, runt
     service.on_rebuilding = lambda workspace: ended.append(
         (workspace.id, row_state(service, workspace.id))
     )
-    service.run_in(service.get(found["id"]))  # opens its channel
+    assert service.run_in(service.get(found["id"]))(["true"]).code == 0  # opens its channel
     assert name_of(found) in service.open_channels()
     held_at_the_new_command(client, runtime, found)
     assert ended == [(found["id"], ws.REBUILD_SWITCHING)]
