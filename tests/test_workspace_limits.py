@@ -979,6 +979,24 @@ def test_removing_a_container_no_row_is_for_drops_the_slice_it_was_in(service, s
 # --- the report is bounded -------------------------------------------------------------
 
 
+class FakeTime:
+    """The time module as workspaces.py sees it, but for a monotonic clock that moves only when
+    the test moves it."""
+
+    # It replaces ``time`` for the whole of workspaces.py, and rests on no thread but the
+    # caller's reading ``ws.time`` while the test runs: the service is not started, so none of
+    # its threads is.
+
+    def __init__(self):
+        self.now = 1000.0
+
+    def monotonic(self) -> float:
+        return self.now
+
+    def __getattr__(self, name):
+        return getattr(time, name)
+
+
 def test_the_report_gives_up_on_the_rest_once_its_time_is_used(
     service, settings, runtime, monkeypatch
 ):
@@ -986,12 +1004,14 @@ def test_the_report_gives_up_on_the_rest_once_its_time_is_used(
     for n in range(4):
         insert(settings, person.id, f"w{n}")
     monkeypatch.setattr(ws, "LIMITS_REPORT_SECONDS", 0.5)
+    clock = FakeTime()
+    monkeypatch.setattr(ws, "time", clock)
     asked = []
     real = runtime.usage
 
     def slow(person_id, workspace):
         asked.append(workspace)
-        time.sleep(0.3)
+        clock.now += 0.3  # each reading takes this long
         return real(person_id, workspace)
 
     runtime.usage = slow
