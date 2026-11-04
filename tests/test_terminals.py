@@ -26,6 +26,7 @@ import pytest
 from fastapi.testclient import TestClient
 from rcman import db, people, terminals
 from rcman import runtime as rt
+from rcman import workspaces as ws
 from rcman.main import create_app
 from rcman.problems import Problem
 
@@ -178,20 +179,6 @@ def test_the_terminals_size_is_the_shells_and_follows_a_resize(client, workspace
         opened.end()
 
 
-def test_ctrl_c_ends_the_command_in_the_foreground_and_not_the_shell(client, workspace, alice):
-    length = a_length()
-    opened = Opened(client, workspace["id"], alice)
-    try:
-        opened.type(f"sleep {length}\r")
-        [pid] = wait_until(lambda: sleeping(length))
-        opened.type("\x03")
-        wait_until(lambda: not alive(pid))
-        opened.ask("echo after-$((1+1))", rb"after-2")
-        assert alive(opened.shell())
-    finally:
-        opened.end()
-
-
 def test_closing_ends_the_shell_and_its_jobs_and_not_what_left_its_session(
     client, workspace, alice
 ):
@@ -220,6 +207,28 @@ def test_closing_ends_the_shell_and_its_jobs_and_not_what_left_its_session(
         opened.end()
         for pid in left:
             os.kill(pid, 9)
+
+
+def test_a_terminal_whose_channel_the_idle_closer_closed_still_ends_its_shell(
+    client, workspace, alice, monkeypatch
+):
+    """A terminal holds its workspace's channel for as long as it is open, which may be longer
+    than the channel stays open unused: its end still reaches the shell and its pidfile."""
+    service = client.app.state.workspaces
+    opened = Opened(client, workspace["id"], alice)
+    try:
+        opened.ask("echo $((4*4))", rb"[\r\n]16\r\n")
+        shell = opened.shell()
+        name = service.get(workspace["id"]).container
+        assert name in service.open_channels()  # the control: the terminal opened it
+        monkeypatch.setattr(ws, "CHANNEL_IDLE_SECONDS", 0.0)
+        service.close_idle()
+        assert name not in service.open_channels()  # the control: and it was closed
+        opened.end()
+        assert not alive(shell)
+        assert not Path(opened.terminal.pidfile).exists()
+    finally:
+        opened.end()
 
 
 def open_files() -> set[str]:

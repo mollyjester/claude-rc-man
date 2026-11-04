@@ -55,6 +55,7 @@ import tempfile
 import threading
 import time
 import uuid
+import weakref
 from abc import ABC, abstractmethod
 from collections import deque
 from collections.abc import Callable, Mapping
@@ -2738,6 +2739,11 @@ class HostRuntime(Runtime):
         self.applied: list[tuple[str, Limits]] = []
         self.dropped: list[str] = []
         self.used: dict[str, Usage] = {}
+        # The channels made to each workspace, whose shells its stop ends (and so its discard and
+        # its removal, which stop it), as a container's stop ends every exec in it; held weakly,
+        # so a channel nothing holds any more is let go, and one reopened is still among them.
+        self._channels: dict[str, weakref.WeakSet[Channel]] = {}
+        self._channels_lock = threading.Lock()
         self.limits_error: Exception | None = None
         # The monitor's readings (monitor.py): what ``systemctl show`` would say of each slice a
         # test plants, by its name (a slice not planted is inactive); the disk read's text where a
@@ -2859,6 +2865,9 @@ class HostRuntime(Runtime):
         self._stop_tmux(name)
         (self.root / name / self.MARK_STOPPED).touch()
         shutil.rmtree(self.layout(name).run, ignore_errors=True)
+        # Once the run folder is gone: a shell a request opened again until then is ended too,
+        # and one opened afterwards fails at once, its files nowhere to be written.
+        self._end_channels(name)
 
     def _stop_tmux(self, name: str) -> None:
         """What a container's stop ends: its tmux server, and everything in its panes."""
@@ -3054,7 +3063,23 @@ class HostRuntime(Runtime):
         if not self.running(name):
             raise RuntimeFailed(f"the workspace {name} is not running")
         layout = self.layout(name)
-        return Channel([layout.shell, "-s"], _host_tool, layout.run, env={"PATH": "/usr/bin:/bin"})
+        made = Channel([layout.shell, "-s"], _host_tool, layout.run, env={"PATH": "/usr/bin:/bin"})
+        with self._channels_lock:
+            self._channels.setdefault(name, weakref.WeakSet()).add(made)
+        return made
+
+    def _end_channels(self, name: str) -> None:
+        """What a container's stop does to the execs in it: the shell of every channel made to
+        the workspace is killed, with what it started. The channels are not closed: a request in
+        flight fails as broken, and the next one opens its channel again, or fails while the
+        workspace is stopped."""
+        with self._channels_lock:
+            channels = list(self._channels.get(name, ()))
+        for channel in channels:
+            process = channel.process
+            if process is not None and process.returncode is None:  # a reaped pid may be reused
+                with contextlib.suppress(ProcessLookupError, PermissionError):
+                    os.killpg(process.pid, 9)
 
     def terminal_argv(self, name: str, layout: Layout, pidfile: str) -> Launch:
         command = terminal_command(layout, pidfile)

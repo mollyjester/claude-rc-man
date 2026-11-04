@@ -29,7 +29,14 @@ from dataclasses import dataclass
 
 from helpers import git_run, instructions, rules
 from rcman import builder, db, devcontainer, forwards, limits, people
-from rcman.channel import Channel, ChannelBroken, ChannelTimeout, Result
+from rcman.channel import (
+    REQUEST_TIMEOUT,
+    Channel,
+    ChannelBroken,
+    ChannelClosed,
+    ChannelTimeout,
+    Result,
+)
 from rcman.claude_server import Server, TmuxFailed
 from rcman.claude_versions import ClaudeVersions
 from rcman.filelock import FileLock
@@ -381,6 +388,9 @@ class Workspaces:
         self.restored = threading.Event()
         self._lock = threading.Lock()
         self._channels: dict[str, Channel] = {}
+        # How often each workspace's channel has been closed: a channel made meanwhile is not
+        # put in (``_channel``).
+        self._channel_closes: dict[str, int] = {}
         self._locks: dict[int, threading.RLock] = {}
         self._person_locks: dict[int, threading.RLock] = {}
         # What reads or changes the limits on the slices, so that a check of the caps and the
@@ -1855,13 +1865,13 @@ class Workspaces:
         """The workspace's channel as devcontainer.read's runner, which may name the folder a
         program runs in: a fixed script that changes to it first, given the folder and the argv
         as its arguments."""
-        channel = self._channel(name)
+        channel_run = self._channel_run(name)
         layout = self.runtime.layout(name)
 
         def run(argv: list[str], timeout: float, cwd: str | None = None) -> Result:
             if cwd is None:
-                return channel.run(argv, timeout)
-            return channel.run(
+                return channel_run(argv, timeout)
+            return channel_run(
                 [layout.shell, "-c", 'cd "$1" && shift && exec "$@"', "sh", cwd, *argv], timeout
             )
 
@@ -2271,15 +2281,49 @@ class Workspaces:
     # --- channels and servers ------------------------------------------------------------
 
     def _channel(self, name: str) -> Channel:
+        """The workspace's channel, made if it has none. It is made without the service lock
+        held, since the runtime may ask the engine, and take locks of its own, to make it; of
+        two requests that made one at once, the one kept is the first put in, and the other's is
+        closed unopened. One made while the channel was closed (``close_channel``) is closed and
+        not put in, and its request is refused as sent nowhere (ChannelClosed), and
+        ``_channel_run`` asks once more."""
         with self._lock:
             channel = self._channels.get(name)
-            if channel is None:
-                channel = self._channels[name] = self.runtime.channel(name)
+            closes = self._channel_closes.get(name, 0)
+        if channel is not None:
             return channel
+        made = self.runtime.channel(name)
+        with self._lock:
+            closed = self._channel_closes.get(name, 0) != closes
+            channel = None if closed else self._channels.setdefault(name, made)
+        if channel is not made:
+            made.close()
+        if channel is None:
+            raise ChannelClosed("the workspace's channel was closed while it was being made")
+        return channel
+
+    def _channel_run(self, name: str) -> Callable[..., Result]:
+        """A channel's ``run`` that finds the workspace's channel for each request
+        (``_channel``), so that what holds it for long goes on working once the idle closer has
+        closed the channel it used last. A request whose channel was closed before it was sent
+        (ChannelClosed), as a close between finding the channel and reaching it leaves one, is
+        asked once more of the channel there is then: nothing of it ran. One that was sent is
+        never asked again."""
+
+        def run(argv: list[str], timeout: float = REQUEST_TIMEOUT) -> Result:
+            try:
+                return self._channel(name).run(argv, timeout)
+            except ChannelClosed:
+                return self._channel(name).run(argv, timeout)
+
+        return run
 
     def close_channel(self, name: str) -> None:
+        """Close the workspace's channel, and one being made meanwhile (``_channel``), as its
+        container goes or is replaced. A request afterwards makes a new one."""
         with self._lock:
             channel = self._channels.pop(name, None)
+            self._channel_closes[name] = self._channel_closes.get(name, 0) + 1
         if channel is not None:
             channel.close()
 
@@ -2292,20 +2336,32 @@ class Workspaces:
             return sorted(self._channels)
 
     def close_idle(self) -> None:
+        """Close the channels idle for longer than CHANNEL_IDLE_SECONDS. Each is chosen, and
+        marked closed, only while no request holds it (``Channel.mark_closed_if_idle``), under
+        the service lock, so a request that reaches it afterwards is refused as sent nowhere and
+        asked again of a new one (``_channel_run``), never killed in flight; its shell is ended
+        outside the lock. These closes are not counted: a channel made meanwhile is as good as
+        any."""
         with self._lock:
-            idle = [n for n, c in self._channels.items() if c.idle_seconds() > CHANNEL_IDLE_SECONDS]
-        for name in idle:
-            self.close_channel(name)
+            idle = [
+                (name, channel)
+                for name, channel in self._channels.items()
+                if channel.mark_closed_if_idle(CHANNEL_IDLE_SECONDS)
+            ]
+            for name, _ in idle:
+                del self._channels[name]
+        for _, channel in idle:
+            channel.close()
 
     def server(self, workspace: Workspace, version: str | None = None) -> Server:
         """The workspace's server; with ``version``, one that runs that exact version of
         Claude Code. Without one it reads, and runs nothing of Claude's but what a read needs,
         through the store's `current`."""
-        name = workspace.container
-        channel = self._channel(name)
         layout = self._layout(workspace)
         return Server(
-            layout if version is None else layout.pinned(version), channel.run, workspace.id
+            layout if version is None else layout.pinned(version),
+            self._channel_run(workspace.container),
+            workspace.id,
         )
 
     def sweep_forwards(self, workspace: Workspace) -> None:
@@ -2339,8 +2395,8 @@ class Workspaces:
         return self._layout(workspace)
 
     def run_in(self, workspace: Workspace) -> Callable[..., Result]:
-        """The ``run`` of the workspace's channel, opened as it is first used."""
-        return self._channel(workspace.container).run
+        """The ``run`` of the workspace's channel, opened as it is first used (``_channel_run``)."""
+        return self._channel_run(workspace.container)
 
     def _execs(self, name: str):
         """The runtime's exec as a repository's runners: without and with stdin."""
@@ -2359,7 +2415,7 @@ class Workspaces:
         """The git repository at the root of the workspace's work folder, run through its
         channel, and through ``exec`` for what carries stdin. Nothing is started for it."""
         name = workspace.container
-        return Repository(self._layout(workspace), self._channel(name).run, self._execs(name)[1])
+        return Repository(self._layout(workspace), self._channel_run(name), self._execs(name)[1])
 
     def server_status(self, workspace: Workspace, probe: bool = False) -> dict | None:
         """The workspace's server, or None; a workspace that records none is not reached,
