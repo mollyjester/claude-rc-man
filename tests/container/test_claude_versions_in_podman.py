@@ -21,7 +21,7 @@ import time
 from pathlib import Path
 
 import pytest
-from rcman import claude_versions, db, people
+from rcman import db, people
 from rcman import runtime as rt
 from rcman.problems import Problem
 from rcman.workspaces import Workspaces
@@ -30,6 +30,7 @@ from devtools import fake_claude as fake
 from devtools import held_folders as hf
 from helpers import claude_checks
 from tests import claude_download, runtime_contract
+from tests.clocks import PhasedClock
 from tests.container import sizes
 from tests.container import test_github_in_podman as shared
 from tests.container import test_runtime_in_podman as base
@@ -77,11 +78,9 @@ def download(tmp_path_factory):
 
 
 @pytest.fixture
-def store(monkeypatch, own_store):
+def store(own_store):
     """The store as the installer leaves it for rcman: the one version, which ``current`` names,
-    before and after the test. Pruning ages nothing here: the files are new, and a version put
-    in the store within the grace is never pruned (as in the host tests)."""
-    monkeypatch.setattr(claude_versions, "PRUNE_GRACE_SECONDS", 0.0)
+    before and after the test."""
 
     def reset() -> None:
         versions = own_store / "versions"
@@ -124,6 +123,10 @@ def service(person, podman, download, store):
         podman,
         builder_slot=sizes.BUILDER_SLOT,
     )
+    # Pruning ages nothing here: the files are new, and a version put in the store within the
+    # grace is never pruned, so the versions' wall time is far past any of theirs (as in the
+    # host tests).
+    made.versions.clock = PhasedClock(wall_start=4_000_000_000.0)
     yield made
     made.close()
 
@@ -248,6 +251,7 @@ def test_a_server_keeps_its_version_through_an_approval_and_a_restart_and_a_star
 
     # rcman ending and starting again, on the same database and Podman: the server runs on.
     again = Workspaces(service.settings, podman, builder_slot=sizes.BUILDER_SLOT)
+    again.versions.clock = PhasedClock(wall_start=4_000_000_000.0)  # as the service's
     try:
         again.restore()
         assert running_versions(podman, workspace.container) == {V0}

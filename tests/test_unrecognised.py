@@ -1,5 +1,6 @@
 """Output rcman does not recognise, written to the journal once per change."""
 
+import datetime as dt
 import hashlib
 import json
 import sqlite3
@@ -9,6 +10,7 @@ import pytest
 from rcman import unrecognised
 
 from devtools import fake_claude as fake
+from tests.clocks import PhasedClock
 from tests.conftest import ALICE, BOB, as_user, changing, fake_claude, made_workspace, signed_in
 from tests.test_journal import guide_check_fails_on_a_drifted_table, guide_fields
 from tests.test_screens import RECONNECTED_SCENARIOS
@@ -53,6 +55,14 @@ def test_a_server_turning_unrecognised_is_logged_once(journal):
     assert (line["email"], line["lines"]) == (ALICE, len(SCREEN))
     assert line["fingerprint"] == expected_fingerprint(SCREEN)
     assert "PLANTED-SCREEN-LINE" not in journal.text
+
+
+def test_a_line_is_stamped_with_the_watchs_clocks_wall_time(journal):
+    clock = PhasedClock(wall_start=2_000_000_000.0)
+    watch = unrecognised.Watch(clock)
+    watch.listed(ALICE, {"a": server("unrecognised")})
+    [line] = lines_logged(journal)
+    assert line["at"] == dt.datetime.fromtimestamp(clock.wall(), dt.UTC).isoformat()
 
 
 def test_it_is_logged_again_after_leaving_the_state(journal):

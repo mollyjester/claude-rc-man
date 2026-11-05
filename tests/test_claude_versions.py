@@ -6,7 +6,6 @@ import datetime as dt
 import hashlib
 import os
 import threading
-import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -18,9 +17,14 @@ from rcman.problems import CLAUDE_INSTALL_MESSAGES, MESSAGES, Problem
 
 from helpers import claude_checks, claude_release
 from tests import claude_download
+from tests.clocks import PhasedClock
 from tests.conftest import ALICE, BOB, FAKE_VERSION, fake_claude
 
 NEW = "2.0.0"
+
+
+# A wall time past that of any file a test writes now.
+FAR_FUTURE = 4_000_000_000.0
 
 
 @dataclass
@@ -34,13 +38,14 @@ class World:
 
 
 @pytest.fixture
-def world(tmp_path, settings, runtime, monkeypatch):
-    monkeypatch.setattr(cv, "PRUNE_GRACE_SECONDS", 0.0)  # tests that prune age nothing
+def world(tmp_path, settings, runtime):
     releases = tmp_path / "releases"
     releases.mkdir()
     with claude_download.served(releases) as url:
         settings.claude_download = url
         service = ws.Workspaces(settings, runtime)
+        # its wall time far past any real file's: no version the test puts in the store is new
+        service.versions.clock = PhasedClock(wall_start=FAR_FUTURE)
         service.versions.reconcile()
         try:
             yield World(
@@ -567,24 +572,34 @@ def test_prune_keeps_the_approved_the_previous_and_what_running_or_unreadable_se
     assert link(world) == "versions/1.5.0"
 
 
-def test_prune_leaves_a_version_put_in_the_store_a_moment_ago_by_an_upgrade_beside_it(
-    world, monkeypatch
-):
+def test_prune_leaves_a_version_put_in_the_store_a_moment_ago_by_an_upgrade_beside_it(world):
     """An upgrade of rcman puts its own tested version in the store while the service of the
-    release before it runs; that service does not know the version, which no approval names."""
-    monkeypatch.setattr(cv, "PRUNE_GRACE_SECONDS", 3600.0)
+    release before it runs; that service does not know the version, which no approval names.
+    It is new for PRUNE_GRACE_SECONDS of the versions' clock's wall time."""
     install(world, "2.5.0", "1.1.0")
     approve_rows(world, "1.1.0")
     world.versions.reconcile()
-    long_ago = time.time() - 2 * cv.PRUNE_GRACE_SECONDS
-    os.utime(world.store / "versions" / FAKE_VERSION, (long_ago, long_ago))
-    os.utime(world.store / "versions" / "1.1.0", (long_ago, long_ago))
+    wall, grace = world.versions.clock.wall(), cv.PRUNE_GRACE_SECONDS
+    put = world.store / "versions" / "2.5.0"
+    os.utime(put, (wall - (grace - 1), wall - (grace - 1)))
     assert world.versions.tested() not in ("2.5.0",)  # this service's tested version is another
     world.versions.prune()
-    assert "2.5.0" in present(world)  # new
-    os.utime(world.store / "versions" / "2.5.0", (long_ago, long_ago))
+    assert "2.5.0" in present(world)  # new: a second short of its grace
+    os.utime(put, (wall - grace, wall - grace))
     world.versions.prune()
-    assert "2.5.0" not in present(world)  # the control: once old it is an unapproved version
+    assert "2.5.0" not in present(world)  # the control: at its grace it is an unapproved version
+
+
+def test_approvals_and_failures_are_stamped_with_the_versions_clocks_wall_time(world):
+    at = dt.datetime.fromtimestamp(world.versions.clock.wall(), dt.UTC).isoformat()
+    con = db.connect(world.settings.database)
+    try:
+        rows = con.execute("select at from claude_approvals").fetchall()
+        assert [tuple(r) for r in rows] == [(at,)]  # adopted
+    finally:
+        con.close()
+    world.versions.mark_failed("1.1.0", ALICE, None)
+    assert [f.at for f in world.versions.failures()] == [at]
 
 
 def test_prune_keeps_the_tested_version_whatever_is_approved(world):

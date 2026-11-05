@@ -30,8 +30,33 @@ def test_now_wall_sleep_and_poll_are_the_standard_librarys(monkeypatch):
     assert REAL.now() == 5.0
     assert REAL.wall() == 1_700_000_000.0
     REAL.sleep(2.5)
-    REAL.poll(0.25)
+    assert REAL.poll(0.25) is False  # the twin: with nothing to end it, it sleeps
     assert slept == [2.5, 0.25]
+
+
+class Until(threading.Event):
+    """An event that records each wait on it."""
+
+    def __init__(self):
+        super().__init__()
+        self.waited: list[float | None] = []
+
+    def wait(self, timeout=None):
+        self.waited.append(timeout)
+        return super().wait(0)
+
+
+@pytest.mark.parametrize("given", [False, True])
+def test_a_poll_until_an_event_waits_on_it_and_says_whether_it_is_set(monkeypatch, given):
+    slept = []
+    monkeypatch.setattr(clock_module.time, "sleep", slept.append)
+    until = Until()
+    if given:
+        until.set()
+    assert REAL.poll(0.25, until=until) is given
+    assert until.waited == [0.25] and slept == []
+    assert REAL.poll(-1.0, until=until) is given
+    assert until.waited == [0.25, 0.0]
 
 
 def test_the_async_sleeps_are_asyncios(monkeypatch):

@@ -7,6 +7,7 @@ import dataclasses
 import os
 import signal
 import subprocess
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -20,7 +21,9 @@ from devtools import record_claude as rec
 from devtools import tmuxctl
 from devtools.held_folders import tmux_sockets
 from helpers import screens
+from tests.clocks import PhasedClock
 from tests.conftest import fake_claude
+from tests.hang_guard import HANG_GUARD
 from tests.test_screens import RECONNECTED_SCENARIOS
 
 REPO = Path(__file__).resolve().parent.parent
@@ -320,9 +323,10 @@ def test_a_trust_answer_that_lands_on_the_remote_control_prompt_is_accepted(worl
     assert (ended["state"], ended["exit_code"]) == ("exited", 1)
 
 
-def test_an_answer_that_leaves_the_question_unchanged_is_not_accepted(world, monkeypatch):
+def test_an_answer_that_leaves_the_question_unchanged_is_not_accepted(world):
     """Twin of the above: a question that stays asked after both tries is refused."""
-    monkeypatch.setattr(cs, "START_TIMEOUT", 1.0)
+    clock = PhasedClock()
+    server = on_clock(world, clock)
     log_in(world)
     world.binary.write_text(
         "#!/bin/sh\n"
@@ -334,10 +338,83 @@ def test_an_answer_that_leaves_the_question_unchanged_is_not_accepted(world, mon
         "done\n",
         encoding="utf-8",
     )
-    assert world.server.start("pfx")["server"]["state"] == "trust_prompt"
-    error = refused(world.server.confirm, "y")
-    assert error.code == "confirm_not_accepted"
+    assert server.start("pfx")["server"]["state"] == "trust_prompt"
+    confirming = Calling(clock, server.confirm, "y")
+    for _attempt in range(2):
+        clock.wait_parked(1)  # its pace before it answers
+        clock.advance(cs.ANSWER_PACE_SECONDS)
+    error = confirming.result()
+    assert isinstance(error, cs.ServerError) and error.code == "confirm_not_accepted"
     assert error.detail["server"]["state"] == "trust_prompt"
+
+
+@pytest.mark.parametrize("short", [False, True])
+def test_an_answer_waits_its_pace_and_types_nothing_before(world, short):
+    """On a `claude` that takes any answer at once: the fake's own refusal of an answer that
+    comes too fast is on real time."""
+    clock = PhasedClock()
+    server = on_clock(world, clock)
+    two_questions(world)
+    assert server.start("pfx")["server"]["state"] == "trust_prompt"
+    before = len(world.calls)
+    confirming = Calling(clock, server.confirm, "y")
+    clock.wait_parked(1)
+    [waiter] = clock.waiters()
+    assert (waiter.method, waiter.seconds) == ("sleep", cs.ANSWER_PACE_SECONDS)
+    if short:  # the twin: short of its pace, nothing is typed
+        clock.advance(cs.ANSWER_PACE_SECONDS / 2)
+        clock.wait_parked(1)
+        assert not [c for c in world.calls[before:] if "send-keys" in c]
+        clock.advance(cs.ANSWER_PACE_SECONDS / 2)
+    else:
+        clock.advance(cs.ANSWER_PACE_SECONDS)
+    assert confirming.result()["server"]["state"] == "remote_control_prompt"
+    assert [c for c in world.calls[before:] if "send-keys" in c]
+
+
+@pytest.mark.parametrize("short", [False, True])
+def test_a_start_that_never_leaves_starting_answers_timeout_past_its_deadline(world, short):
+    clock = PhasedClock()
+    server = on_clock(world, clock)
+    log_in(world)
+    world.binary.write_text(
+        f'#!/bin/sh\n[ "$1" = remote-control ] || exec {rec.FAKE_CLAUDE} "$@"\nexec sleep 600\n',
+        encoding="utf-8",
+    )
+    seen = clock.polls
+    starting = Calling(clock, server.start, "pfx")
+    clock.wait_polled(seen + 1)
+    clock.advance(cs.START_TIMEOUT if short else cs.START_TIMEOUT + cs.POLL_SECONDS)
+    if short:  # the twin: exactly at its deadline, it looks on
+        clock.wait_polled(clock.polls + 2)
+        assert starting.thread.is_alive()
+        clock.advance(cs.POLL_SECONDS)
+    error = starting.result()
+    assert isinstance(error, cs.ServerError) and error.code == "timeout"
+    assert error.detail["server"]["state"] == "starting"
+    world.server.tmux.kill()
+
+
+@pytest.mark.parametrize("short", [0, 1])
+def test_an_unrecognised_screen_is_an_answer_once_it_has_lasted_its_grace(world, short):
+    clock = PhasedClock()
+    server = on_clock(world, clock)
+    log_in(world)
+    world.binary.write_text(
+        f'#!/bin/sh\n[ "$1" = remote-control ] || exec {rec.FAKE_CLAUDE} "$@"\n'
+        "echo a screen rcman does not know\nexec sleep 600\n",
+        encoding="utf-8",
+    )
+    starting = Calling(clock, server.start, "pfx")
+    wait_state(world, "unrecognised")
+    clock.wait_polled(clock.polls + 2)  # the start has read it as unrecognised since
+    clock.advance(cs.UNRECOGNISED_GRACE_SECONDS - short)
+    if short:  # the twin: a second short of its grace, it is no answer yet
+        clock.wait_polled(clock.polls + 2)
+        assert starting.thread.is_alive()
+        clock.advance(short)
+    assert starting.result()["server"]["state"] == "unrecognised"
+    world.server.tmux.kill()
 
 
 def test_answered_compares_with_the_question_asked(world):
@@ -389,21 +466,21 @@ def child_pid(pid_file: Path) -> int:
     pytest.fail("the server's child never started")
 
 
-@pytest.mark.parametrize("ignored,ended_by", [(("INT",), "SIGTERM"), (("INT", "TERM"), "SIGKILL")])
-def test_stop_ends_a_server_that_ignores_ctrl_c(world, monkeypatch, ignored, ended_by):
-    quick_stop(monkeypatch)
+@pytest.mark.parametrize(
+    "ignored,ended_by,graces", [(("INT",), "SIGTERM", 1), (("INT", "TERM"), "SIGKILL", 2)]
+)
+def test_stop_ends_a_server_that_ignores_ctrl_c(world, ignored, ended_by, graces):
+    clock = PhasedClock()
+    server = on_clock(world, clock)
     log_in(world)
     pid_file = ignoring(world, *ignored, child=True)
-    world.server.start("pfx")
+    server.start("pfx")
     pid = child_pid(pid_file)
     assert alive(pid)  # known positive for the check below
     try:
-        began = time.monotonic()
-        out = world.server.stop()
-        took = time.monotonic() - began
+        out = stopped_past(clock, server, graces)
         assert out["server"]["state"] == "exited"
         assert out["server"]["exit_code"] == 128 + getattr(signal, ended_by)
-        assert took < QUICK_STOP["STOP_TIMEOUT"] + 2 * QUICK_STOP["END_GRACE_SECONDS"] + 5
         for _ in range(50):
             if not alive(pid):
                 break
@@ -420,18 +497,85 @@ def test_stop_ends_a_server_that_ignores_ctrl_c(world, monkeypatch, ignored, end
     assert world.server.status() is None
 
 
-def test_a_stop_leaves_nothing_the_server_started_even_in_a_session_of_its_own(world, monkeypatch):
+def kills(world, sig: str) -> list[list[str]]:
+    kill = world.layout.tool("kill")
+    return [c for c in world.calls if c[: len(kill)] == kill and f"-{sig}" in c]
+
+
+class Calling:
+    """``call(*args)`` in a thread the clock is lent to, with what it returned or raised."""
+
+    def __init__(self, clock: PhasedClock, call, *args):
+        self.out: list = []
+        self.thread = threading.Thread(target=self._run, args=(call, *args), daemon=True)
+        clock.lend(self.thread)
+        self.thread.start()
+
+    def _run(self, call, *args):
+        try:
+            self.out.append(call(*args))
+        except BaseException as error:  # noqa: BLE001 - kept for the test to look at
+            self.out.append(error)
+
+    def result(self):
+        self.thread.join(HANG_GUARD)
+        assert not self.thread.is_alive(), "the call did not end"
+        return self.out[0]
+
+
+def on_clock(world, clock: PhasedClock) -> cs.Server:
+    """The world's server, its waits on ``clock``."""
+    return cs.Server(world.layout, world.server.run, 1, clock=clock)
+
+
+def stopped_past(clock: PhasedClock, server: cs.Server, graces: int):
+    """``server.stop()``, moved past the first ``graces`` of its waits: STOP_TIMEOUT for
+    Ctrl+C, then END_GRACE_SECONDS after each signal. What it returned or raised."""
+    seen = clock.polls
+    stopping = Calling(clock, server.stop)
+    clock.wait_polled(seen + 1)  # it waits for the server to exit on Ctrl+C
+    waits = (cs.STOP_TIMEOUT, cs.END_GRACE_SECONDS, cs.END_GRACE_SECONDS)[:graces]
+    for i, grace in enumerate(waits):
+        if i:  # it waits after the signal the last move sent
+            clock.wait_polled(seen + 2)
+        clock.advance(grace + cs.POLL_SECONDS)
+        seen = clock.polls  # read after the advance: a poll counted after it looked after it
+    return stopping.result()
+
+
+@pytest.mark.parametrize("short", [False, True])
+def test_a_stop_signals_a_server_that_ignores_ctrl_c_once_past_its_grace(world, short):
+    clock = PhasedClock()
+    server = cs.Server(world.layout, world.server.run, 1, clock=clock)
+    log_in(world)
+    ignoring(world, "INT")
+    server.start("pfx")
+    seen = clock.polls
+    stopping = Calling(clock, server.stop)
+    clock.wait_polled(seen + 1)  # it waits for the server to exit on Ctrl+C
+    clock.advance(cs.STOP_TIMEOUT if short else cs.STOP_TIMEOUT + cs.POLL_SECONDS)
+    if short:  # the twin: exactly at its grace, it looks on and signals nothing
+        clock.wait_polled(clock.polls + 2)
+        assert stopping.thread.is_alive() and not kills(world, "TERM")
+        clock.advance(cs.POLL_SECONDS)
+    out = stopping.result()["server"]
+    assert (out["state"], out["exit_code"]) == ("exited", 128 + signal.SIGTERM)
+    assert kills(world, "TERM")
+
+
+def test_a_stop_leaves_nothing_the_server_started_even_in_a_session_of_its_own(world):
     """What a server started in a session of its own escapes a signal to its process
     group; the stop ends it as one of the server's own processes."""
-    quick_stop(monkeypatch)
+    clock = PhasedClock()
+    server = on_clock(world, clock)
     log_in(world)
     pid_file = ignoring(world, "INT", detached=True)
-    world.server.start("pfx")
+    server.start("pfx")
     pid = child_pid(pid_file)
     assert alive(pid)
     try:
         assert os.getsid(pid) == pid  # the plant took effect: a session of its own
-        world.server.stop()
+        stopped_past(clock, server, 1)
         for _ in range(50):
             if not alive(pid):
                 break
@@ -453,14 +597,15 @@ def test_a_server_that_stops_on_ctrl_c_is_not_signalled(world):
 
 
 def test_stop_answers_timeout_when_it_cannot_end_a_server(world, monkeypatch):
-    quick_stop(monkeypatch)
+    clock = PhasedClock()
+    server = on_clock(world, clock)
     log_in(world)
     ignoring(world, "INT")
-    world.server.start("pfx")
+    server.start("pfx")
     sent = []
     monkeypatch.setattr(cs.Tmux, "signal", lambda self, pid, sig: sent.append(sig))
-    error = refused(world.server.stop)
-    assert error.code == "timeout"
+    error = stopped_past(clock, server, 3)
+    assert isinstance(error, cs.ServerError) and error.code == "timeout"
     assert error.detail["server"]["state"] == "trust_prompt"
     assert sent == [signal.SIGTERM, signal.SIGKILL]
 
@@ -706,11 +851,12 @@ def _gone(pid: int) -> bool:
     return False
 
 
-def test_a_stop_ends_a_sessions_command_in_a_session_of_its_own(world, monkeypatch):
+def test_a_stop_ends_a_sessions_command_in_a_session_of_its_own(world):
     """As seen with a real account: a session stays in the pane's process group, and the
     commands it runs are in a session of their own (setsid), whose parent the group's
     kill ends first, so they are collected before anything is signalled."""
-    quick_stop(monkeypatch)
+    clock = PhasedClock()
+    server = on_clock(world, clock)
     log_in(world)
     pid_file = world.tmp_path / "command.pid"
     session = (
@@ -721,21 +867,22 @@ def test_a_stop_ends_a_sessions_command_in_a_session_of_its_own(world, monkeypat
         world.claude,
         before=f"if [ \"$1\" = remote-control ]; then\n  {session}fi\ntrap '' INT TERM\n",
     )
-    world.server.start("pfx")
+    server.start("pfx")
     pid = child_pid(pid_file)
     try:
         assert os.getsid(pid) == pid  # the plant took effect: a session of its own
-        world.server.stop()
+        stopped_past(clock, server, 2)  # it ignores SIGTERM too
         assert _gone(pid)
     finally:
         if alive(pid):
             os.kill(pid, signal.SIGKILL)
 
 
-def test_a_stop_ends_what_the_server_started_after_the_stop_began(world, monkeypatch):
+def test_a_stop_ends_what_the_server_started_after_the_stop_began(world):
     """A server may start a command while it is being stopped: what runs is collected
     again before each signal, while the server still holds it as a descendant."""
-    quick_stop(monkeypatch)
+    clock = PhasedClock()
+    server = on_clock(world, clock)
     log_in(world)
     pid_file = world.tmp_path / "late.pid"
     # The command writes its pid and its session's id, then becomes sleep.
@@ -755,9 +902,13 @@ def test_a_stop_ends_what_the_server_started_after_the_stop_began(world, monkeyp
             "fi\n"
         ),
     )
-    world.server.start("pfx")
+    starting = Calling(clock, server.start, "pfx")
+    wait_state(world, "unrecognised")  # what it says matches no state rcman knows
+    clock.wait_polled(clock.polls + 2)  # the start has read it as unrecognised since
+    clock.advance(cs.UNRECOGNISED_GRACE_SECONDS)
+    assert starting.result()["server"]["state"] == "unrecognised"
     try:
-        world.server.stop()
+        stopped_past(clock, server, 1)
         for _ in range(50):
             if pid_file.exists() and len(pid_file.read_text().split()) == 2:
                 break

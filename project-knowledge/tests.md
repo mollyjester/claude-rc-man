@@ -255,18 +255,34 @@ the time, and makes the waits that go through it, on that clock, the real one un
 gives its own. A test gives the app's parts theirs through the `clocks` fixture of
 `tests/conftest.py`, which `app` lists, so that each part has it from its start, before `client`
 starts the service: a module that moves a part's time overrides `clocks`, and a test that makes
-its own app passes `clocks=` to `create_app`. A part the test makes itself is given its clock as
+its own app passes `clocks=` to `create_app`. A test that asks for the `periodic` fixture has
+the service's periodic checks on that PhasedClock, which `clocks` gives them, and
+`periodic_round` does one round of them: it lends the checks' thread to `periodic`, advances it
+by `IDLE_CHECK_SECONDS` and returns once the checks wait again. A part the test makes itself is given its clock as
 an argument.
 
 The test's clock is `tests/clocks.py`'s `PhasedClock`, whose module docstring is its rules. It
 is frozen: its time moves only by `advance`, a sleep on it parks until an advance reaches it, and
 a wait ends on its primitive or on an advance past its deadline; a primitive of the standard
 library is looked at again every `STDLIB_SLICE` of real time, since an advance tells no
-condition of the product's. `poll` and `apoll` really sleep, at most `POLL_CAP`, and move no
-time. Each `advance` and `poke` is a new generation, and `wait_parked(n)`, or `until_parked(n)`
-in a coroutine, returns once exactly `n` waiters wait, each having looked at the latest one,
-which a waiter records only after it has looked at what it waits for and waits on: whatever the
-product had to do at that moment is done, with no real time waited out. Both wait at most the
+condition of the product's. `poll` and `apoll` really sleep, at most `POLL_CAP`, a `poll` given
+`until` waiting as long on that event instead, and move no time, in the free phase too; they are
+no waiters, and `wait_polled(n)` returns once at least `n` of them have returned, each counted
+after its sleep, so that in a loop that looks at the clock between its polls a second poll
+counted after an `advance` follows a look at the time after it. A thread, or for `apoll` a
+task, that polls on for the clock's hang bound of real time with no new generation, and with no
+gap of more than `POLL_GAP` of real time between one poll's return and its next, is hung: its
+poll raises `ClockHung`, recorded once as a violation, so that a loop that polls on a frozen
+clock for something that never comes fails, where a poll alone, which is no waiter, would go on
+until the hang guard ended the whole worker. A longer gap starts the bound again, since a pooled
+thread may poll for one thing and later for another. The clock holds threads and tasks weakly
+for this. A closed clock's polls go on without end. Each `advance` and `poke` is a
+new generation, and `wait_parked(n)`, or `until_parked(n)` in a coroutine, returns once exactly
+`n` waiters wait, each having looked at the latest one, which a waiter records only after it has
+looked at what it waits for and waits on: whatever the product had to do at that moment is done,
+with no real time waited out. A waiter holds the seconds it was given (`Waiter.seconds`), and
+`wait_parked_where(match, n)` asks the same of the waiters `match` picks out, the others
+ignored, so that a test can wait for one wait among those of a running app. Both wait at most the
 clock's hang bound unless given `within=`, so a test whose waiters never park fails only after
 that long. In `with clock.free():` a wait with seconds of the thread that entered it that is not
 satisfied moves the time by its seconds and returns as expired; the other threads' waits stay
@@ -284,6 +300,32 @@ closes, its fixtures letting go of what they hold before their teardown: `close`
 on the frozen clock, which nothing moves, and ends only at the hang bound, with `ClockHung`.
 `tests/conftest.py`'s `ended` waits, on the service's condition, until no thread that makes or
 rebuilds the workspace it names is left.
+
+A wait of the app's in its event loop, a forwarding server's or a terminal route's, is the
+thread of that loop's, which a fixture that depends on `client` lends to the clock
+(`client.portal.call(threading.current_thread)`); every forward test that advances lends it,
+since the reaper's pace is a waiter there that any advance of a second passes. A loop that polls
+something outside rcman, a server's stop or a sign-in's wait, is driven by running the call in
+a thread the clock is lent to, `wait_polled` for it to look, and an `advance` past its deadline.
+An advance past `IDLE_CONNECTION_SECONDS` or `POOL_IDLE_SECONDS` ends what the forwarding server
+keeps open, so a test that keeps a connection closes it before such an advance and asks again on
+a new one. A grace on a frozen clock ends only on its primitive, the app's teardown included:
+forward's `DRAIN_SECONDS`, `SPLICE_DRAIN_SECONDS`, `RELAY_ENDS_WITHIN` and `FROM_THREAD_SECONDS`
+and the terminals' `EXIT_DRAIN_SECONDS` and `END_GRACE_SECONDS` in `Terminal._end_program`, a
+wait for the program on the pty, end only when what they wait for does, so a test whose app is
+on such a clock either lets it, as a splice's browser that went waits for the app's side until
+the test moves the clock past `SPLICE_DRAIN_SECONDS`, or gives the part a clock of its own only
+where it asks for one (`tests/test_terminals.py`'s `clocks`). The same `END_GRACE_SECONDS` in
+`end_leader` is no waiter but a loop that polls the process table: on a frozen clock it ends
+when the session's processes have, or else at the hang bound, with `ClockHung`. A hangup ends a terminal's shell and its jobs only where SIGHUP is at its default in
+them, and an ignore survives exec: a suite started with SIGHUP ignored, as under `nohup`, would
+leave them running and `end_leader` polling. So `tests/conftest.py`'s `pytest_configure` catches
+an ignored SIGHUP with a handler that does nothing, which the suite's own process keeps and
+every program it starts has back at the default; `tests/test_conftest.py` holds it to that.
+`PhasedClock`'s default `wall_start` is earlier than any file a test writes, so on a phased
+clock of the Claude Code versions nothing in the store is old enough to be pruned unless the
+test gives it a later wall time. A part is given its clock only before anything uses it: through
+`clocks`, or, for a part a test makes itself, as soon as it is made.
 
 A clock is made in a test or a fixture of the test's own (`ClockOutsideTest` otherwise). Its
 hang bound is the one it is given, or else its tier's, read each time it is asked: `HANG_GUARD` for a

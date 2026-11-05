@@ -15,7 +15,7 @@ the OpenAPI description it serves at `/api/openapi.json`, browsable at
 
 | Module | What it is |
 |---|---|
-| `main.py` | `create_app(settings, runtime, *, builder_slot, clocks)`: the app, with `Clocks`, the clock of each part that is given one (see [Time](#time)), its lifespan (migrations, the allowed list, audit retention, restoring workspaces, the monitor's loops, the forwarding server, started where `RCMAN_FORWARD_SOCKET` is set and stopped, its WebSockets closed and the workspaces it used swept, before the workspaces' service closes) and its routers; with rcman's own Podman, `check_seccomp` first, which says in the journal when the workspaces' seccomp profile is missing or stale (see [runtime.md](runtime.md#containers-in-a-workspace)); and `check_instructions`, which says there when the instructions for Claude are missing from the tools (see [runtime.md](runtime.md#workspace-instructions)) |
+| `main.py` | `create_app(settings, runtime, *, builder_slot, clocks)`: the app, with `Clocks`, the clock of each part that is given one (see [Time](#time)), its lifespan (migrations, the allowed list, audit retention, then again every `RETENTION_INTERVAL_SECONDS` on the clock `Clocks.audit`, as of its wall time, restoring workspaces, the monitor's loops, the forwarding server, started where `RCMAN_FORWARD_SOCKET` is set and stopped, its WebSockets closed and the workspaces it used swept, before the workspaces' service closes) and its routers; with rcman's own Podman, `check_seccomp` first, which says in the journal when the workspaces' seccomp profile is missing or stale (see [runtime.md](runtime.md#containers-in-a-workspace)); and `check_instructions`, which says there when the instructions for Claude are missing from the tools (see [runtime.md](runtime.md#workspace-instructions)) |
 | `settings.py` | The settings model |
 | `db.py` | SQLite connections and the schema, as migrations; `migrate` refuses a database newer than the code |
 | `identity.py` | Who is asking, and whether they may |
@@ -239,7 +239,7 @@ credentials file every workspace of theirs shares (see
   with `keep_sessions`, the default, the person is marked signing out and
   `settle` finishes once none of their servers runs and no sign-in of theirs
   waits for its code — after a stop, a forget or a deletion, never failing
-  them; every `IDLE_CHECK_SECONDS`, which catches a server that ended by
+  them; every `IDLE_CHECK_SECONDS`, on the clock `Clocks.periodic`, which catches a server that ended by
   itself and leaves a person whose lock is held for its next round; when the
   Claude page reads the state; and when rcman starts. Without it, their running
   servers are stopped first and it finishes at once; the page offers that while
@@ -250,8 +250,9 @@ credentials file every workspace of theirs shares (see
   sign-in and sign-out of the same person take turns under
   `Workspaces.person_lock`, taken before any workspace's lock, so no start
   slips past a sign-out and a start seeds the account a sign-in has finished.
-  A code is taken only until two of `LOGIN_TIMEOUT` before the sign-in
-  container ends itself.
+  A code is taken only for `CODE_TAKEN_SECONDS` after the sign-in began, two of
+  `LOGIN_TIMEOUT` before the sign-in container ends itself, on the clock
+  `Clocks.accounts`, which the sign-in's waits are made on too.
 - **Signing out of rcman** (`POST /api/me/sign-out`, `me.sign_out`) ends the
   person's terminals (see [The terminal](#the-terminal)), stops the person's
   running servers unless `keep_sessions`, the default, and answers
@@ -538,8 +539,9 @@ when rcman starts, before the restore); with no approval yet, `reconcile` adopts
   flag are two writes, and only tmux saying there is none frees the version). `rcman-admin`
   does not prune or collect images (`Workspaces(prunes=False)`): its locks are not the
   service's, which does at the next stop, roll-out or start. A version put in the store less
-  than `PRUNE_GRACE_SECONDS` ago stays: an upgrade of rcman puts its tested version there while
-  the release before it runs, which does not know it. It asks the servers for their status without holding
+  than `PRUNE_GRACE_SECONDS` ago stays, by its file's time against the wall time of the
+  versions' clock (the service's, `Clocks.workspaces`): an upgrade of rcman puts its tested
+  version there while the release before it runs, which does not know it. It asks the servers for their status without holding
   `lock`, then decides again under it, also keeping a version whose workspace record changed
   meanwhile; it does nothing while a roll-out runs. It runs after a roll-out, after a version
   is marked as failed, after a server is stopped or forgotten (`Workspaces._stopped`) and in
@@ -589,7 +591,7 @@ import the installer; `rcman_upgrade.Upgrades` is `app.state.upgrade`.
   shows the service not running, and `running` only where systemd cannot be read.
 - **Requested.** An admitted request is held in memory with the invocations the service and
   the status named then. It is `requested`, and `not_started` once `UPGRADE_START_GRACE` has
-  passed, until the service runs, and `running` while it does; it is let go only when the
+  passed on the upgrades' clock (`Upgrades(clock=)`, `Clocks.upgrade`), until the service runs, and `running` while it does; it is let go only when the
   status names another invocation, which its run wrote, or systemd shows another invocation
   of the service that no longer runs, a run that ended before it wrote anything. So the
   moment between the service's start and the wrapper's first write freezes as the run does. It is not kept across a
@@ -605,14 +607,14 @@ import the installer; `rcman_upgrade.Upgrades` is `app.state.upgrade`.
   `Clocks.upgrade_requests`,
   `too_many_requests` with `Retry-After` past it) answers 202 with the report. `request`
   holds `Workspaces.recording_held`, the images' lock, which every workspace is recorded
-  under, waiting at most `ADMISSION_WAIT` (`images` otherwise), then
+  under, waiting at most `ADMISSION_WAIT` on the service's clock (`images` otherwise), then
   `ClaudeVersions.rollouts_held`, the roll-outs' lock, without waiting (`rolling_out`: a
   roll-out, or the `sweep` of what one left, holds it); holding both,
   it refuses while systemd cannot be read (`units_unreadable`), the path unit is not loaded and
   active (`path_inactive`), an upgrade is under way (`under_way`), a workspace is being made
   (`creating`) or one is being rebuilt (`rebuilding`, `Workspaces.any_rebuilding`; see
   [runtime.md](runtime.md#rebuilding)); otherwise it records the request and writes the request file (`write_request`:
-  a write and a close, never through a link).
+  a write and a close, never through a link, of the upgrades' clock's wall time).
 - **The freeze.** `Upgrades.under_way` is `Workspaces.upgrading`: a request held whose run has
   not written its status, within the grace or while systemd shows the service running, or a
   status of this boot that says `running` and that systemd does not contradict; it asks
@@ -876,7 +878,7 @@ write is bounded: every field is bounded, the request needs a signed-in person
 in the people table and the public `Origin`, like every changing request, and
 each line names who sent it. A person's reports are limited by a token bucket (`REPORTS_BURST`, refilled at
 `REPORTS_PER_MINUTE`, `ratelimit.TokenBuckets` on `app.state.client_error_limit`, on the clock
-`Clocks.client_errors`): the next is
+`Clocks.client_errors`, whose wall time each line is stamped with): the next is
 refused with `too_many_reports` (429, `Retry-After`) and writes nothing, and the page drops what
 rcman refuses. journald's own rate limit and size limits bound the rest.
 
@@ -917,17 +919,29 @@ Its default, `REAL`, a `RealClock`, holds nothing and hands each call to the sta
 the module is the standard library only, so that the canary can import it through the helpers
 mount. The markers beside it (`Deadline`, `Grace`, `Pace`, `PollExternal`, `RealBound`,
 `Handed`) say, in call form, what kind of seconds a value is; the module's docstring says what
-each means, and that a wait on rcman's own state is an event or a condition, never a poll. Every timing
+each means, and that a wait on rcman's own state is an event or a condition, never a poll. A
+`poll` may be given `until`, an event of rcman's own that only cuts the wait short, as the end
+of the work a watcher looks for, and never the thing polled; it answers whether that event is
+set, so that a watcher reads `while not clock.poll(seconds, until=done):`. Every timing
 constant carries its marker, and nothing outside the clock reads the time or waits on real time:
 `tests/test_on_the_clock.py` holds both, and names what is not on the clock yet
 ([tests.md](tests.md#repository-guards)).
 
 `create_app`'s `clocks`, a `Clocks`, gives each part of the app that takes a clock its own, a
-field for each, which `Clocks`' docstring names; a part's token buckets share its clock (the
-forwarding server's). Each is `REAL` unless a test gives its own (`tests/conftest.py`'s `clocks`
-fixture, [tests.md](tests.md#time-in-tests)). A part the runtime makes takes a clock as an
-argument too, and the runtime leaves it at `REAL` (`builder.ProgressLines`). The workspaces'
-service takes its clock as `Workspaces(clock=)`; `rcman-admin`'s stays on `REAL`.
+field for each, which `Clocks`' docstring names with what each holds: `forward`, `monitor`,
+`workspaces`, `periodic`, `servers`, `accounts`, `terminals`, `upgrade`, `audit`,
+`unrecognised`, `client_errors` and `upgrade_requests`; a part's token buckets share its clock
+(the forwarding server's). Each is `REAL` unless a test gives its own (`tests/conftest.py`'s
+`clocks` fixture, [tests.md](tests.md#time-in-tests)). A part the runtime makes takes a clock as
+an argument too, and the runtime leaves it at `REAL` (`builder.ProgressLines`). The workspaces'
+service takes its clock as `Workspaces(clock=)`, and passes it on to the `Repository`s it makes,
+whose verbs' deadlines are on it, and to its `ClaudeVersions(clock=)`; the servers its
+`server` makes take `Workspaces(servers_clock=)`, and its periodic checks
+`Workspaces(periodic_clock=)`, each `REAL` by default whatever `clock` is, so that a test that
+moves the service's time does not also hold its periodic checks or its servers' waits. What a
+part writes with the time, an audit row, a journal line, an approval, a request file, is
+stamped from that part's clock's `wall()`, and what it compares with a file's time too.
+`rcman-admin`'s parts, the installer's and the devtools' stay on `REAL`.
 `tests/test_main.py` walks the parts on `app.state` for every clock they hold and checks that
 each field of `Clocks`, and nothing else, reached them.
 

@@ -5,7 +5,6 @@ fake `claude`."""
 
 import json
 import os
-import time
 from pathlib import Path
 
 import pytest
@@ -565,9 +564,12 @@ import threading  # noqa: E402
 
 from rcman import accounts as acc  # noqa: E402
 from rcman import claude_server  # noqa: E402
-from rcman import workspaces as ws  # noqa: E402
+from rcman.main import Clocks  # noqa: E402
 
 from helpers.screens import LOGIN_SUCCEEDED  # noqa: E402
+from tests.clocks import PhasedClock  # noqa: E402
+from tests.conftest import fake_claude  # noqa: E402
+from tests.hang_guard import HANG_GUARD  # noqa: E402
 
 
 def in_thread(call, *args) -> tuple[threading.Thread, list]:
@@ -615,16 +617,7 @@ def test_a_start_in_progress_does_not_escape_a_sign_out(client, app, monkeypatch
         assert account_file(app, ALICE).read_bytes() == b""
 
 
-@pytest.fixture
-def quick_periodic_checks(monkeypatch):
-    """rcman's periodic checks every fraction of a second. The service reads the interval
-    when it starts, so a test takes this before ``client``, which starts it."""
-    monkeypatch.setattr(ws, "IDLE_CHECK_SECONDS", 0.2)
-
-
-def test_a_server_that_ends_by_itself_finishes_a_waiting_sign_out(
-    quick_periodic_checks, client, app
-):
+def test_a_server_that_ends_by_itself_finishes_a_waiting_sign_out(client, app, periodic_round):
     """Nothing but rcman's own periodic checks: no stop, and no Claude page read."""
     work = made_workspace(client, ALICE)
     connect(client)
@@ -635,10 +628,8 @@ def test_a_server_that_ends_by_itself_finishes_a_waiting_sign_out(
     app.state.workspaces.close_channels()
     app.state.workspaces.runtime.stop(name)  # its server ends
     app.state.workspaces.runtime.start(name)
-    deadline = time.monotonic() + 30
-    while fake.signed_in(account_file(app, ALICE).parent):
-        assert time.monotonic() < deadline, "the sign-out never finished"
-        time.sleep(0.2)
+    assert fake.signed_in(account_file(app, ALICE).parent)  # the control: it waits on
+    periodic_round()  # the round finishes it
     assert account_file(app, ALICE).read_bytes() == b""
 
 
@@ -657,13 +648,19 @@ def test_a_sign_in_begun_while_a_sign_out_waits_is_not_ended_by_it(client, app):
     assert r.json()["connection"] == "connected" and r.json()["signing_out"] is False
 
 
-def test_a_code_too_late_for_the_sign_in_container_is_refused(client, app, monkeypatch):
+@pytest.mark.parametrize("late", [0, 1])
+def test_a_code_too_late_for_the_sign_in_container_is_refused(client, app, clock, late):
     """The container ends itself CODE_WAIT_SECONDS after it starts; a code that would
-    reach it too close to that is refused rather than lost."""
-    monkeypatch.setattr(acc, "CODE_WAIT_SECONDS", 2 * acc.LOGIN_TIMEOUT)
-    client.post("/api/claude/login", json={}, headers=changing(ALICE))
+    reach it too close to that, past CODE_TAKEN_SECONDS, is refused rather than lost. The
+    twin, exactly at it, is taken."""
+    r = client.post("/api/claude/login", json={}, headers=changing(ALICE))
+    assert r.status_code == 200, r.text
+    clock.advance(acc.CODE_TAKEN_SECONDS + late)
     r = client.post("/api/claude/code", json={"code": fake.ACCEPTED_CODE}, headers=changing(ALICE))
-    assert (r.status_code, r.json()["code"]) == (409, "no_login_in_progress")
+    if late:
+        assert (r.status_code, r.json()["code"]) == (409, "no_login_in_progress")
+    else:
+        assert (r.status_code, r.json()["connection"]) == (200, "connected"), r.text
     assert sign_ins_left(app) == []
 
 
@@ -810,5 +807,136 @@ def test_a_login_that_ends_between_the_two_reads_is_never_an_exit_with_a_screen_
     from types import SimpleNamespace
 
     sign_in = SimpleNamespace(tmux=LoginEndingAfterTheFirstRead())
-    found = acc.Accounts.__new__(acc.Accounts)._wait(sign_in, lambda state: True)
+    accounts = acc.Accounts.__new__(acc.Accounts)
+    accounts.clock = PhasedClock()
+    found = accounts._wait(sign_in, lambda state: True)
     assert found["state"] == "succeeded", found
+
+
+# --- the waits of a sign-in, on a clock the test moves ----------------------------------------
+
+
+@pytest.fixture
+def clock(request):
+    """The sign-ins' clock, which the test moves; it does not move otherwise. Its wall time
+    starts where the test's parameter, if any, says."""
+    return PhasedClock(wall_start=getattr(request, "param", 1_700_000_000.0))
+
+
+@pytest.fixture
+def clocks(request):
+    """Given to the app before the client starts it (tests/conftest.py ``app``): the sign-ins
+    on ``clock`` and the periodic checks on ``periodic`` for a test that asks for each, on the
+    real one for the rest."""
+    given = {"clock": "accounts", "periodic": "periodic"}
+    return Clocks(**{
+        part: request.getfixturevalue(name)
+        for name, part in given.items()
+        if name in request.fixturenames
+    })  # fmt: skip
+
+
+class Seen:
+    """The states the sign-ins' screens were read as, told as each is read."""
+
+    def __init__(self, monkeypatch):
+        self.states: list[str] = []
+        self.told = threading.Condition()
+        real = acc.screens.classify_login
+
+        def classify(lines, exit_code):
+            found = real(lines, exit_code)
+            with self.told:
+                self.states.append(found["state"])
+                self.told.notify_all()
+            return found
+
+        monkeypatch.setattr(acc.screens, "classify_login", classify)
+
+    def wait_for(self, state: str) -> None:
+        with self.told:
+            assert self.told.wait_for(lambda: state in self.states, HANG_GUARD), self.states
+
+
+def lent_call(clock: PhasedClock, call, *args) -> tuple[threading.Thread, list]:
+    thread, out = in_thread(call, *args)
+    clock.lend(thread)
+    return thread, out
+
+
+def joined(thread: threading.Thread) -> None:
+    thread.join(HANG_GUARD)
+    assert not thread.is_alive()
+
+
+@pytest.mark.parametrize("short", [0, 1])
+def test_a_sign_in_screen_rcman_does_not_know_is_an_answer_once_it_has_lasted_its_grace(
+    client, app, clock, monkeypatch, short
+):
+    seen = Seen(monkeypatch)
+    fake_claude(app.state.settings.claude_store, env="FAKE_CLAUDE_SCENARIO=unrecognised")
+    thread, out = lent_call(clock, app.state.accounts.begin, person(app, ALICE), ALICE)
+    seen.wait_for("unrecognised")
+    clock.wait_polled(clock.polls + 1)  # it waits on, the screen unrecognised since
+    clock.advance(claude_server.UNRECOGNISED_GRACE_SECONDS - short)
+    if short:  # the twin: a second short of its grace, it is no answer yet
+        clock.wait_polled(clock.polls + 2)
+        assert thread.is_alive() and out == []
+        clock.advance(short)
+    joined(thread)
+    [refused] = out
+    assert isinstance(refused, Problem) and refused.code == "claude_unrecognised_output"
+    assert sign_ins_left(app) == []
+
+
+@pytest.mark.parametrize("short", [False, True])
+def test_a_sign_in_that_shows_no_link_answers_timeout_past_its_deadline(client, app, clock, short):
+    fake_claude(
+        app.state.settings.claude_store,
+        before='[ "$1" = auth ] && [ "$2" = login ] && exec sleep 600\n',
+    )
+    seen = clock.polls
+    thread, out = lent_call(clock, app.state.accounts.begin, person(app, ALICE), ALICE)
+    clock.wait_polled(seen + 1)
+    poll = claude_server.POLL_SECONDS
+    clock.advance(acc.LOGIN_TIMEOUT if short else acc.LOGIN_TIMEOUT + poll)
+    if short:  # the twin: exactly at its deadline, it looks on
+        clock.wait_polled(clock.polls + 2)
+        assert thread.is_alive() and out == []
+        clock.advance(poll)
+    joined(thread)
+    [refused] = out
+    assert isinstance(refused, Problem) and refused.code == "timeout"
+    assert sign_ins_left(app) == []
+
+
+@pytest.mark.parametrize("late", [0, 1])
+def test_a_sign_out_waits_for_a_sign_in_only_while_its_code_may_come(client, app, clock, late):
+    work = made_workspace(client, ALICE)
+    connect(client)
+    trusted(app, work)
+    start(client, work)
+    sign_out(client, True)  # it waits for the running server
+    r = client.post("/api/claude/login", json={}, headers=changing(ALICE))
+    assert r.status_code == 200, r.text
+    clock.advance(acc.CODE_TAKEN_SECONDS + late)
+    r = client.post("/api/servers/stop", json={"workspace": work["id"]}, headers=changing(ALICE))
+    assert r.status_code == 200, r.text
+    if late:  # past its time, the sign-in no longer holds the sign-out back
+        assert account_file(app, ALICE).read_bytes() == b""
+    else:
+        assert fake.signed_in(account_file(app, ALICE).parent)
+        assert sign_ins_left(app)
+
+
+@pytest.mark.parametrize("clock", [1_700_000_000.0, 4_000_000_000.0], indirect=True)
+def test_the_connection_is_read_at_the_sign_ins_clocks_time(client, app, clock):
+    connect(client)
+    expires = json.loads(account_file(app, ALICE).read_text())["claudeAiOauth"][
+        "refreshTokenExpiresAt"
+    ]
+    assert 1_700_000_000 < expires / 1000 < 4_000_000_000  # the plant lies between the two
+    r = client.get("/api/claude", headers=as_user(ALICE))
+    assert r.status_code == 200, r.text
+    wanted = "connected" if clock.wall() < expires / 1000 else "expired"
+    assert r.json()["connection"] == wanted

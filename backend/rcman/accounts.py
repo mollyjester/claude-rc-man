@@ -19,11 +19,10 @@ import datetime as dt
 import json
 import logging
 import threading
-import time
 from dataclasses import dataclass
 
 from helpers import screens
-from helpers.clock import Deadline, Handed
+from helpers.clock import REAL, Clock, Deadline, Handed
 from rcman import db, people
 from rcman.channel import Channel
 from rcman.claude_server import (
@@ -44,6 +43,9 @@ log.setLevel(logging.INFO)
 CODE_WAIT_SECONDS = Handed(900.0)
 # How long Claude may take to show its sign-in link, and to take a code.
 LOGIN_TIMEOUT = Deadline(60.0)
+# How long after a sign-in begins a code is still taken: while there is time to use it before
+# the container ends itself, two waits of Claude's to spare.
+CODE_TAKEN_SECONDS = Deadline(CODE_WAIT_SECONDS - 2 * LOGIN_TIMEOUT)
 # How long the container a sign-out runs `claude auth logout` in may live.
 LOGOUT_SECONDS = Handed(120.0)
 # The tmux buffer the code goes through.
@@ -55,7 +57,7 @@ class SignIn:
     name: str  # the sign-in container
     channel: Channel
     tmux: Tmux
-    until: float  # monotonic: the last moment a code is taken
+    until: float  # on the sign-ins' clock: the last moment a code is taken
 
 
 def _expiry(millis) -> str | None:
@@ -66,8 +68,11 @@ def _expiry(millis) -> str | None:
 
 
 class Accounts:
-    def __init__(self, workspaces: Workspaces):
+    """Each person's Claude sign-in; its deadlines and the times read on ``clock``."""
+
+    def __init__(self, workspaces: Workspaces, clock: Clock = REAL):
         self.workspaces = workspaces
+        self.clock = clock
         self.runtime = workspaces.runtime
         self.settings = workspaces.settings
         self._lock = threading.Lock()
@@ -173,7 +178,7 @@ class Accounts:
     def _wait(self, sign_in: SignIn, until) -> dict:
         """Poll until ``until`` holds. A screen being drawn matches nothing for a moment,
         so an unrecognised one counts only once it has lasted UNRECOGNISED_GRACE_SECONDS."""
-        deadline = time.monotonic() + LOGIN_TIMEOUT
+        deadline = self.clock.now() + LOGIN_TIMEOUT
         unrecognised_since = None
         while True:
             # The exit status first: a login that ends between the two reads is then read
@@ -181,25 +186,23 @@ class Accounts:
             exit_status = sign_in.tmux.exit_status()
             found = screens.classify_login(sign_in.tmux.screen(), exit_status)
             if found["state"] == "unrecognised":
-                unrecognised_since = unrecognised_since or time.monotonic()
-                if time.monotonic() - unrecognised_since >= UNRECOGNISED_GRACE_SECONDS:
+                unrecognised_since = unrecognised_since or self.clock.now()
+                if self.clock.now() - unrecognised_since >= UNRECOGNISED_GRACE_SECONDS:
                     return found
             elif until(found):
                 return found
             else:
                 unrecognised_since = None
-            if time.monotonic() > deadline:
+            if self.clock.now() > deadline:
                 raise Problem("timeout")
-            time.sleep(POLL_SECONDS)
+            self.clock.poll(POLL_SECONDS)
 
     def begin(self, person: people.Person, email: str) -> dict:
         """Start signing in as ``email``: the link to open; one begun before ends."""
         with self.lock(person.id):
             self._still_let_in(person.id)
             self._end(self._sign_ins.pop(person.id, None))
-            # A code is taken only while there is time to use it before the container
-            # ends itself: two waits of Claude's to spare.
-            until = time.monotonic() + CODE_WAIT_SECONDS - 2 * LOGIN_TIMEOUT
+            until = self.clock.now() + CODE_TAKEN_SECONDS
             with answered():
                 name = self.runtime.start_sign_in(person.id, person.slot, CODE_WAIT_SECONDS)
             layout = self.runtime.layout(name)
@@ -225,7 +228,7 @@ class Accounts:
         with self.lock(person.id):
             self._still_let_in(person.id)
             sign_in = self._sign_ins.pop(person.id, None)
-            if sign_in is None or time.monotonic() > sign_in.until:
+            if sign_in is None or self.clock.now() > sign_in.until:
                 self._end(sign_in)
                 raise Problem("no_login_in_progress")
             try:
@@ -297,7 +300,7 @@ class Accounts:
         with self.lock(person_id):
             _, signing_out = self._account(person_id)
             pending = self._sign_ins.get(person_id)
-            if pending is not None and time.monotonic() <= pending.until:
+            if pending is not None and self.clock.now() <= pending.until:
                 return
             if not signing_out or self.workspaces.running(person_id):
                 return

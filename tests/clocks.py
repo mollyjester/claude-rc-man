@@ -11,16 +11,21 @@ phases:
   holds, a task done) or on an advance past its deadline. A primitive of the standard library
   is looked at again every STDLIB_SLICE of real time, since nothing of the clock's is told when
   it changes; an advance tells no condition of the product's, whose lock another thread may
-  hold. ``poll`` really sleeps, at most POLL_CAP, and moves no time.
+  hold. ``poll`` really sleeps, at most POLL_CAP, or waits as long on the event it is given to
+  end it, and moves no time, and so does ``apoll``; ``wait_polled`` counts those that have
+  returned. A thread, or a task for ``apoll``, that polls on for the clock's hang bound of real
+  time with no new generation, and no gap of more than POLL_GAP between two polls, is hung: its
+  poll raises ClockHung.
 - **free** (``with clock.free():``): a wait of the thread that entered it that is not
   satisfied moves the time by its seconds and returns as expired; the other threads' waits
   stay frozen, and no move of the free thread's may pass one of their deadlines.
 
 Every timed wait but ``poll`` is a waiter while it waits, with its thread, its task, its
-deadline, where it was called from and the generation it last looked at. Each ``advance`` and
-``poke`` is a new generation; on each look a waiter first looks at its primitive and its
-deadline, and only one that waits on records the generation, so that ``parked(n)``, n waiters
-that all looked at the latest generation, means what they had to do then is done.
+seconds and deadline, where it was called from and the generation it last looked at. Each
+``advance`` and ``poke`` is a new generation; on each look a waiter first looks at its primitive
+and its deadline, and only one that waits on records the generation, so that ``parked(n)``, n
+waiters that all looked at the latest generation, means what they had to do then is done;
+``wait_parked_where`` asks it of the waiters a test picks out.
 
 What is refused raises ClockRefused in the caller: an advance past the deadline of a waiter of
 a thread the clock does not own, ``free`` while another thread has a timed waiter, and, in the
@@ -41,6 +46,7 @@ import dataclasses
 import sys
 import threading
 import time
+import weakref
 from collections.abc import Awaitable, Callable, Iterable, Iterator
 from typing import Any, TypeVar
 
@@ -52,6 +58,9 @@ from tests.container_marker import MARKER
 
 # The longest real sleep of a ``poll``.
 POLL_CAP = PollExternal(0.1)
+# A gap between two polls of one thread, or task, longer than this, of real time, starts their
+# hang bound again: what it polls for now is another thing.
+POLL_GAP = PollExternal(0.5)
 # How often a frozen wait looks again at a primitive of the standard library.
 STDLIB_SLICE = PollExternal(0.03)
 
@@ -88,6 +97,18 @@ class Waiter:
     # The generation it last looked at; None before its first look.
     generation: int | None = None
     loop: asyncio.AbstractEventLoop | None = None
+    # The seconds it was given.
+    seconds: float | None = None
+
+
+@dataclasses.dataclass
+class _Polling:
+    """A thread's, or a task's, polls since its bound began: the generation they are in,
+    when the first began, and when the last returned."""
+
+    generation: int
+    started: float
+    last: float | None = None
 
 
 _HERE = __file__
@@ -174,7 +195,12 @@ class PhasedClock:
         self.generation = 0
         self.waits: list[tuple[str, float | None, threading.Thread]] = []
         self.slept: list[float] = []
+        # The polls that have returned.
+        self.polls = 0
         self.violations: list[str] = []
+        # Each thread's, or task's, polls, held weakly: a pooled thread or a task is not kept.
+        self._polling: weakref.WeakKeyDictionary[object, _Polling] = weakref.WeakKeyDictionary()
+        self._hung: weakref.WeakSet[object] = weakref.WeakSet()
         registry.clocks.append(self)
 
     # --- what the test asks ---
@@ -216,6 +242,27 @@ class PhasedClock:
         with self._changed:
             if not self._changed.wait_for(lambda: self._parked(n), bound):
                 raise AssertionError(f"not {n} parked within {bound}s: {self._said()}")
+
+    def wait_parked_where(
+        self, match: Callable[[Waiter], bool], n: int = 1, within: float | None = None
+    ) -> None:
+        """``wait_parked`` over the waiters ``match`` takes, the others ignored: until exactly
+        ``n`` of them wait, each having looked at the latest generation."""
+        bound = self.hang_after if within is None else within
+        with self._changed:
+            if not self._changed.wait_for(lambda: self._parked(n, match), bound):
+                raise AssertionError(f"not {n} parked within {bound}s: {self._said()}")
+
+    def wait_polled(self, n: int, within: float | None = None) -> None:
+        """Until at least ``n`` polls, ``poll`` and ``apoll`` alike, have returned, told by each
+        as it returns, within ``within`` real seconds, by default the hang bound; AssertionError
+        after. A poll is counted once it has slept: in a loop that looks at the clock between
+        its polls, a second poll counted after an ``advance`` follows a look at the time after
+        it."""
+        bound = self.hang_after if within is None else within
+        with self._changed:
+            if not self._changed.wait_for(lambda: self.polls >= n, bound):
+                raise AssertionError(f"not {n} polled within {bound}s: {self.polls} were")
 
     async def until_parked(self, n: int, within: float | None = None) -> None:
         """``wait_parked`` for a coroutine, whose loop goes on meanwhile."""
@@ -300,10 +347,18 @@ class PhasedClock:
                 return
         self._block("sleep", seconds, None)
 
-    def poll(self, seconds: float) -> None:
+    def poll(self, seconds: float, until: threading.Event | None = None) -> bool:
         with self._lock:
             self._record("poll", seconds)
-        _sleep(min(max(seconds, 0.0), POLL_CAP))
+            self._polls_on(threading.current_thread(), "poll")
+        capped = min(max(seconds, 0.0), POLL_CAP)
+        if until is None:
+            _sleep(capped)
+        else:
+            until.wait(capped)
+        with self._lock:
+            self._polled(threading.current_thread())
+        return until is not None and until.is_set()
 
     def wait(self, event: threading.Event, seconds: float | None) -> bool:
         with self._lock:
@@ -376,7 +431,10 @@ class PhasedClock:
     async def apoll(self, seconds: float) -> None:
         with self._lock:
             self._record("apoll", seconds)
+            self._polls_on(asyncio.current_task(), "apoll")
         await _asleep(min(max(seconds, 0.0), POLL_CAP))
+        with self._lock:
+            self._polled(asyncio.current_task())
 
     async def await_event(self, event: asyncio.Event, seconds: float | None) -> bool:
         with self._lock:
@@ -485,10 +543,44 @@ class PhasedClock:
     def _moves_freely(self, seconds: float | None) -> bool:
         return seconds is not None and self._free is threading.current_thread()
 
-    def _parked(self, n: int) -> bool:
-        return len(self._waiters) == n and all(
-            w.generation == self.generation for w in self._waiters
+    def _parked(self, n: int, match: Callable[[Waiter], bool] | None = None) -> bool:
+        shown = self._waiters if match is None else [w for w in self._waiters if match(w)]
+        return len(shown) == n and all(w.generation == self.generation for w in shown)
+
+    def _polled(self, key: object) -> None:
+        self.polls += 1
+        polling = self._polling.get(key)
+        if polling is not None:
+            polling.last = time.monotonic()
+        self._changed.notify_all()
+
+    def _polls_on(self, key: object, method: str) -> None:
+        """A poll of ``key``, a thread or a task: ClockHung once it has polled for the hang
+        bound of real time with no new generation, and no gap of more than POLL_GAP since its
+        last poll returned; a closed clock's go on without end."""
+        if self._closed:
+            return
+        now = time.monotonic()
+        since = self._polling.get(key)
+        if (
+            since is None
+            or since.generation != self.generation
+            or (since.last is not None and now - since.last > POLL_GAP)
+        ):
+            self._polling[key] = _Polling(self.generation, now)
+            self._hung.discard(key)
+            return
+        bound = self.hang_after
+        if now - since.started < bound:
+            return
+        said = (
+            f"ClockHung: {method} of {threading.current_thread().name} at {_site()} polled on "
+            f"for {bound}s of real time with no advance"
         )
+        if key not in self._hung:  # recorded once, raised on each poll after
+            self._hung.add(key)
+            self._violate(said)
+        raise ClockHung(said)
 
     def _move(self, seconds: float | None, waiting: str | None = None) -> None:
         """Move the time on; ``waiting``, the wait that moves it in the free phase, whose
@@ -551,7 +643,7 @@ class PhasedClock:
                 f"{site}"
             )
         deadline = None if seconds is None else self._now + max(seconds, 0.0)
-        waiter = Waiter(method, me, task, deadline, site, None, loop)
+        waiter = Waiter(method, me, task, deadline, site, None, loop, seconds)
         self._waiters.append(waiter)
         if loop is not None:
             self._in_loop[loop] = self._in_loop.get(loop, 0) + 1

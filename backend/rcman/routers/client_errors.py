@@ -113,9 +113,10 @@ def report(
     if not limit.take(identity.email):
         wait = limit.seconds_until_allowed(identity.email)
         raise Problem("too_many_reports", headers={"Retry-After": str(wait)})
+    clock = request.app.state.client_errors_clock  # a report's time is on it, as its limit
     event = {
         "event": "client_error",
-        "at": dt.datetime.now(dt.UTC).isoformat(),
+        "at": dt.datetime.fromtimestamp(clock.wall(), dt.UTC).isoformat(),
         "email": identity.email,
         **body.model_dump(),
     }

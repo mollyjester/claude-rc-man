@@ -143,8 +143,9 @@ def _revoked(websocket: WebSocket, record: Opened, workspace: int) -> str | None
 async def _watch(websocket: WebSocket, record: Opened, workspace: int) -> str:
     """Look every REVOCATION_SECONDS; a look that fails, as on a database that is busy, is
     logged and the next one tried."""
+    clock = websocket.app.state.terminals.clock
     while True:
-        await asyncio.sleep(REVOCATION_SECONDS)
+        await clock.apoll(REVOCATION_SECONDS)
         try:
             reason = await asyncio.to_thread(_revoked, websocket, record, workspace)
         except Exception:  # noqa: BLE001 - see above
@@ -208,7 +209,7 @@ async def terminal(
         return
     try:
         try:
-            message = await asyncio.wait_for(websocket.receive(), FIRST_RESIZE_SECONDS)
+            message = await terminals.clock.within(websocket.receive(), FIRST_RESIZE_SECONDS)
         except TimeoutError:
             raise Refused(PROTOCOL["close_policy"]) from None
         if message["type"] == "websocket.disconnect":

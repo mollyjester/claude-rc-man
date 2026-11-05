@@ -5,6 +5,7 @@ import re
 import sqlite3
 from pathlib import Path
 
+import pytest
 from fastapi.routing import APIRoute
 from rcman import audit, db, routes
 
@@ -486,15 +487,85 @@ def test_retention_caps_the_row_count_keeping_the_newest(tmp_path):
     assert ages == [1, 2]
 
 
+# The audit clock's wall time in these tests: far from the real one, so that only the clock
+# can have said which rows are old.
+WALL = 2_000_000_000.0
+
+
 def test_retention_runs_when_the_app_starts(settings, runtime):
     from fastapi.testclient import TestClient
-    from rcman.main import create_app
+    from rcman.main import Clocks, create_app
 
-    now = dt.datetime.now(dt.UTC)
+    from tests.clocks import PhasedClock
+
+    clock = PhasedClock(wall_start=WALL)
+    now = dt.datetime.fromtimestamp(clock.wall(), dt.UTC)
     seed(settings.database, [settings.audit_retention_days + 1, 0], now).close()
-    with TestClient(create_app(settings, runtime=runtime)):
+    with TestClient(create_app(settings, runtime=runtime, clocks=Clocks(audit=clock))):
         pass
     assert [r["at"] for r in rows(settings)] == [now.isoformat()]  # the expired row only goes
+
+
+@pytest.mark.parametrize("short", [0, 1])
+def test_retention_runs_again_once_a_day(settings, runtime, short):
+    """A row that expires half a day after rcman starts goes at the next day's retention; the
+    twin, a second short of the day, keeps it."""
+    import threading
+
+    from fastapi.testclient import TestClient
+    from rcman.main import RETENTION_INTERVAL_SECONDS, Clocks, create_app
+
+    from tests.clocks import PhasedClock
+
+    clock = PhasedClock(wall_start=WALL)
+    days = settings.audit_retention_days
+    now = dt.datetime.fromtimestamp(clock.wall(), dt.UTC)
+    soon = now - dt.timedelta(days=days) + dt.timedelta(seconds=RETENTION_INTERVAL_SECONDS / 2)
+    seed(settings.database, [], now).close()
+
+    def daily(waiter) -> bool:
+        return waiter.method == "asleep" and waiter.seconds == RETENTION_INTERVAL_SECONDS
+
+    with TestClient(create_app(settings, runtime=runtime, clocks=Clocks(audit=clock))) as client:
+        clock.lend(client.portal.call(threading.current_thread))
+        clock.wait_parked_where(daily)
+        con = db.connect(settings.database)
+        try:
+            con.execute(
+                "insert into audit (at, email, action, target, result) "
+                "values (?, 'e', 'a', 't', 'ok')",
+                (soon.isoformat(),),
+            )
+            con.commit()
+        finally:
+            con.close()
+        clock.advance(RETENTION_INTERVAL_SECONDS - short)
+        clock.wait_parked_where(daily)  # a new one once a retention ran, the same otherwise
+        if short:
+            assert [r["at"] for r in rows(settings)] == [soon.isoformat()]  # nothing ran
+            clock.advance(short)
+            clock.wait_parked_where(daily)
+        assert rows(settings) == []
+
+
+def test_a_request_and_a_websocket_are_recorded_at_the_audit_clocks_wall_time(settings, runtime):
+    from fastapi.testclient import TestClient
+    from rcman.main import Clocks, create_app
+    from rcman.routers import terminal
+
+    from tests.clocks import PhasedClock
+
+    clock = PhasedClock(wall_start=WALL)
+    at = dt.datetime.fromtimestamp(clock.wall(), dt.UTC).isoformat()
+    with TestClient(create_app(settings, runtime=runtime, clocks=Clocks(audit=clock))) as client:
+        assert client.app.state.workspaces.restored.wait(30)
+        r = client.patch("/api/me/settings", json={"prefix": "pfx"}, headers=changing(BOB))
+        assert r.status_code == 200, r.text
+        path = f"{terminal.PROTOCOL['path']}?{terminal.PROTOCOL['query']}=999"
+        with client.websocket_connect(path, headers=changing(BOB)) as session:
+            assert session.receive_json()["type"] == terminal.PROTOCOL["problem"]  # not hers
+    recorded = [(r["action"], r["at"]) for r in rows(settings)]
+    assert recorded == [("settings.update", at), ("terminal.open", at)], recorded
 
 
 def test_what_git_and_github_routes_are_sent_is_never_recorded_or_logged(client, settings, caplog):

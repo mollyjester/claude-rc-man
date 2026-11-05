@@ -924,8 +924,21 @@ def tries_to_make(runtime, image: str) -> int:
     return len([e for e in runtime.events if e[0] == "create" and e[1] == image])
 
 
+def put_back_round(client, periodic_round) -> None:
+    """A round of the periodic checks, and the put-back it began, if any, ended."""
+    from tests.hang_guard import HANG_GUARD
+
+    periodic_round()
+    service = client.app.state.workspaces
+    with service._changed:
+        putting = list(service._putting_back.values())
+    for thread in putting:
+        thread.join(HANG_GUARD)
+        assert not thread.is_alive()
+
+
 def test_a_switch_left_to_put_back_is_put_back_by_the_service_without_a_restart(
-    quick_periodic_checks, client, app, runtime, publish, settings, caplog
+    client, app, runtime, publish, settings, caplog, periodic_round
 ):
     """The service's periodic look tries again what a restart would do, until it is done, and
     starts the server again that was running. The journal says the first failure and the
@@ -942,11 +955,14 @@ def test_a_switch_left_to_put_back_is_put_back_by_the_service_without_a_restart(
     rebuilt(client, found["id"])
     left_to_be_put_back(client, runtime, settings, found, "exit code 3")
     tried = tries_to_make(runtime, IMAGE)
-    wait_for(lambda: tries_to_make(runtime, IMAGE) >= tried + 3)  # it tried again, and again
+    for _ in range(3):  # it tries again at each round
+        put_back_round(client, periodic_round)
+    assert tries_to_make(runtime, IMAGE) >= tried + 3
     assert row(settings, found["id"])["rebuild_state"] == ws.REBUILD_SWITCHING
     before = len(ran(runtime))
     runtime.create = real
-    wait_for(lambda: row(settings, found["id"])["rebuild_state"] is None)
+    put_back_round(client, periodic_round)
+    assert row(settings, found["id"])["rebuild_state"] is None
     assert runtime.exists(name_of(found)) and spec_of(runtime, found).image == IMAGE
     assert work_kept(runtime, found)
     assert ran(runtime)[before:][:1] == [OLD_COMMAND]
@@ -960,17 +976,19 @@ def test_a_switch_left_to_put_back_is_put_back_by_the_service_without_a_restart(
     assert said.count(me + "was put back after its rebuild did not finish") == 1
 
 
-def test_closing_waits_for_a_put_back_under_way(quick_periodic_checks, settings, runtime, publish):
+def test_closing_waits_for_a_put_back_under_way(settings, runtime, publish):
     from fastapi.testclient import TestClient
     from rcman.main import Clocks, create_app
 
     from tests.clocks import PhasedClock
     from tests.hang_guard import HANG_GUARD
 
-    clock = PhasedClock()
-    app = create_app(settings, runtime=runtime, clocks=Clocks(workspaces=clock))
+    clock, periodic = PhasedClock(), PhasedClock()
+    app = create_app(settings, runtime=runtime, clocks=Clocks(workspaces=clock, periodic=periodic))
     with TestClient(app) as client:
         assert app.state.workspaces.restored.wait(30)
+        periodic.wait_parked(1)
+        periodic.lend(periodic.waiters()[0].thread)
         found = made(client, publish)
         rewrite(runtime, found, to(postCreateCommand="exit 3"))
         real = runtime.create
@@ -980,6 +998,7 @@ def test_closing_waits_for_a_put_back_under_way(quick_periodic_checks, settings,
         runtime.create_gate, runtime.creating = threading.Event(), threading.Event()
         runtime.create = real  # held at the gate from now on, as the put-back makes the container
         try:
+            periodic.advance(ws.IDLE_CHECK_SECONDS)  # a round begins the put-back
             assert runtime.creating.wait(HANG_GUARD)
             with service._changed:
                 putting = service._putting_back[found["id"]]
@@ -1567,13 +1586,6 @@ def test_deleting_as_the_rebuild_ends_leaves_nothing(client, runtime, publish, s
     no_trace(runtime, found)
 
 
-@pytest.fixture
-def quick_periodic_checks(monkeypatch):
-    """rcman's periodic checks every fraction of a second. The service reads the interval
-    when it starts, so a test takes this before ``client``, which starts it."""
-    monkeypatch.setattr(ws, "IDLE_CHECK_SECONDS", 0.2)
-
-
 def promotion_left(client, runtime, publish, settings) -> dict:
     """A workspace whose rebuild stored its new plan and could not move the built image's name,
     so that its last phase is left, with no thread working on it."""
@@ -1593,10 +1605,12 @@ def promotion_left(client, runtime, publish, settings) -> dict:
 
 
 def test_a_promotion_left_over_is_finished_by_the_service_without_a_restart(
-    quick_periodic_checks, client, runtime, publish, settings
+    client, runtime, publish, settings, periodic_round
 ):
     found = promotion_left(client, runtime, publish, settings)
-    wait_for(lambda: row(settings, found["id"])["rebuild_state"] is None)
+    assert row(settings, found["id"])["rebuild_state"] == ws.REBUILD_PROMOTING  # until a round
+    periodic_round()
+    assert row(settings, found["id"])["rebuild_state"] is None
     assert runtime.next_images() == {}
     assert runtime.images[rt.built_name(found["id"])].id == REBUILT_ID
     assert entry(client, found["id"])["rebuildable"] is True
@@ -1613,7 +1627,7 @@ def test_a_workspace_with_a_promotion_left_over_is_deleted_by_the_service(
 
 
 def test_a_workspace_with_a_promotion_left_over_is_deleted_through_rcman_admin(
-    quick_periodic_checks, client, runtime, publish, settings
+    client, runtime, publish, settings, periodic_round
 ):
     """No thread of the service works on it: the service finishes the deletion rcman-admin
     began, without a restart, and the person's deletion is done."""
@@ -1623,9 +1637,17 @@ def test_a_workspace_with_a_promotion_left_over_is_deleted_through_rcman_admin(
         raise rt.RuntimeFailed("the image could not be named")
 
     runtime.promote_build = promote_build
+    from tests.hang_guard import HANG_GUARD
+
     admin = ws.Workspaces(settings, runtime, prunes=False)
+    person = alice(settings)
+    deleting = threading.Thread(target=admin.delete_person, args=(person,), daemon=True)
     try:
-        admin.delete_person(alice(settings))
+        deleting.start()
+        wait_for(lambda: row(settings, found["id"])["state"] == ws.DELETING)
+        periodic_round()  # the service finishes what rcman-admin left to it
+        deleting.join(HANG_GUARD)
+        assert not deleting.is_alive()
     finally:
         admin.close()
     assert alice(settings) is None

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 import os
 import re
 import secrets
@@ -27,12 +28,14 @@ from fastapi.testclient import TestClient
 from rcman import db, people, terminals
 from rcman import runtime as rt
 from rcman import workspaces as ws
-from rcman.main import create_app
+from rcman.main import Clocks, create_app
 from rcman.problems import Problem
 
 from devtools import held_folders as hf
 from tests import killed_runs as kr
+from tests.clocks import PhasedClock
 from tests.conftest import ALICE, made_workspace
+from tests.hang_guard import HANG_GUARD
 
 # How long a shell is given to answer.
 ANSWERS_WITHIN = 15.0
@@ -148,6 +151,29 @@ class Opened:
     def shell(self) -> int:
         """The shell's process, as its pidfile names it."""
         return int(Path(self.terminal.pidfile).read_text().split()[0])
+
+
+@pytest.fixture
+def clock():
+    """The terminals' clock, which the test moves; it does not move otherwise."""
+    return PhasedClock()
+
+
+@pytest.fixture
+def clocks(request):
+    """Given to the app before the client starts it (tests/conftest.py ``app``): the terminals
+    on ``clock`` for a test that asks for it, on the real one for the rest, whose graces then
+    end by themselves."""
+    if "clock" in request.fixturenames:
+        return Clocks(terminals=request.getfixturevalue("clock"))
+    return Clocks()
+
+
+@pytest.fixture
+def lent(client, clock):
+    """The app's event loop's thread, lent to the clock: an advance may pass the deadlines of its
+    waiters there."""
+    clock.lend(client.portal.call(threading.current_thread))
 
 
 @pytest.fixture
@@ -310,7 +336,7 @@ def planted(layout, text: str) -> str:
 def test_a_pidfile_of_the_session_ends_it(channel, victim):
     layout, run = channel
     path = planted(layout, f"{victim.pid} {start_time(victim.pid)}\n")
-    terminals.end_session(layout, run, path)
+    terminals.end_session(layout, run, path, PhasedClock())
     assert victim.wait(timeout=ANSWERS_WITHIN) is not None  # the control for the cases below
     assert not Path(path).exists()
 
@@ -337,7 +363,7 @@ def test_a_pidfile_naming_another_process_signals_nothing(channel, victim):
         }
         for case, text in cases.items():
             path = planted(layout, text)
-            terminals.end_session(layout, run, path)
+            terminals.end_session(layout, run, path, PhasedClock())
             assert alive(pid) and alive(follower.pid), case
             assert not Path(path).exists(), case
     finally:
@@ -473,8 +499,9 @@ def test_a_terminal_is_open_once_its_shell_has_named_itself_and_an_end_at_once_e
     assert not alive(shell)
 
 
+@pytest.mark.parametrize("short", [0, 1])
 def test_a_shell_that_never_names_itself_is_not_opened_and_is_ended(
-    client, workspace, alice, monkeypatch
+    client, workspace, alice, lent, clock, monkeypatch, short
 ):
     length = a_length()
     runtime = client.app.state.workspaces.runtime
@@ -485,13 +512,30 @@ def test_a_shell_that_never_names_itself_is_not_opened_and_is_ended(
         return rt.Launch([*launch.argv[:2], "sleep", length], launch.env)  # writes no pidfile
 
     monkeypatch.setattr(runtime, "terminal_argv", silent)
-    monkeypatch.setattr(terminals, "PIDFILE_SECONDS", 1.0)
     screen = Screen()
-    with pytest.raises(Problem) as refused:
-        client.portal.call(
-            client.app.state.terminals.open, workspace["id"], alice, 80, 24, screen.send
-        )
-    assert refused.value.code == "workspace_failed"
+    refused: list[BaseException] = []
+
+    def opening():
+        try:
+            client.portal.call(
+                client.app.state.terminals.open, workspace["id"], alice, 80, 24, screen.send
+            )
+        except BaseException as error:  # noqa: BLE001 - kept for the test to look at
+            refused.append(error)
+
+    seen = clock.polls
+    thread = threading.Thread(target=opening, daemon=True)
+    thread.start()
+    clock.wait_polled(seen + 1)  # it looks for the pidfile
+    clock.advance(terminals.PIDFILE_SECONDS - short)
+    if short:  # the twin: a second short of its deadline, it looks on
+        clock.wait_polled(clock.polls + 2)
+        assert thread.is_alive() and not refused
+        clock.advance(short)
+    thread.join(HANG_GUARD)
+    assert not thread.is_alive()
+    [error] = refused
+    assert isinstance(error, Problem) and error.code == "workspace_failed"
     assert not sleeping(length)
     assert client.app.state.terminals.live(workspace["id"]) is None
 
@@ -659,7 +703,9 @@ def test_ending_a_session_ends_a_member_whose_first_thread_has_ended(channel, tm
             kr.wait_for_state(member, kr.FIRST_THREAD_ENDED)
             wait_until(lambda: session_of(leader.pid) == leader.pid)
             assert session_of(member) == leader.pid  # the control: it is of the leader's session
-            terminals.end_leader(layout, run, leader.pid, start_time(leader.pid), leader_gone=False)
+            terminals.end_leader(
+                layout, run, leader.pid, start_time(leader.pid), False, PhasedClock()
+            )
             assert leader.wait(timeout=ANSWERS_WITHIN) is not None
             assert hf.state_and_threads(member) in (None, kr.ENDED)  # ended, all its threads
         finally:
@@ -684,9 +730,11 @@ def test_a_pidfile_whose_shell_is_gone_signals_nothing_but_for_its_own_terminal(
         [member] = wait_until(lambda: sleeping(length))
         leader.wait(timeout=ANSWERS_WITHIN)
         assert session_of(member) == leader.pid  # the control: its session outlives its leader
-        terminals.end_session(layout, run, planted(layout, f"{leader.pid} {start}\n"))
+        terminals.end_session(
+            layout, run, planted(layout, f"{leader.pid} {start}\n"), PhasedClock()
+        )
         assert alive(member)
-        terminals.end_leader(layout, run, leader.pid, start, leader_gone=True)
+        terminals.end_leader(layout, run, leader.pid, start, True, PhasedClock())
         assert not alive(member)
     finally:
         for pid in sleeping(length):
@@ -720,3 +768,155 @@ def test_a_channel_that_fails_while_the_shell_names_itself_is_a_problem(
     assert refused.value.code == "workspace_failed"
     [terminal] = started
     assert terminal.cleaned and terminal.process.returncode is not None
+
+
+# --- the graces and deadlines, on a clock the test moves ---------------------------------------
+
+
+@pytest.mark.parametrize("short", [0, 1])
+def test_a_session_that_ignores_the_hangup_is_killed_once_its_grace_is_over(channel, short):
+    layout, run = channel
+    length = a_length()
+    leader = subprocess.Popen(
+        ["setsid", "sh", "-c", f"trap '' HUP; exec sleep {length}"], stdin=subprocess.DEVNULL
+    )
+    clock = PhasedClock()
+    try:
+        wait_until(
+            lambda: sleeping(length) == [leader.pid] and session_of(leader.pid) == leader.pid
+        )
+        ending = threading.Thread(
+            target=terminals.end_leader,
+            args=(layout, run, leader.pid, start_time(leader.pid), False, clock),
+            daemon=True,
+        )
+        clock.lend(ending)
+        ending.start()
+        clock.wait_polled(1)  # after the hangup, it looks for what is left
+        clock.advance(terminals.END_GRACE_SECONDS - short)
+        if short:  # the twin: short of its grace, it looks on and kills nothing
+            clock.wait_polled(clock.polls + 2)
+            assert ending.is_alive() and alive(leader.pid)
+            clock.advance(short)
+        ending.join(HANG_GUARD)
+        assert not ending.is_alive()
+        assert leader.wait(timeout=ANSWERS_WITHIN) == -9
+    finally:
+        leader.kill()
+        leader.wait()
+
+
+@pytest.mark.parametrize("short", [0, 1])
+def test_a_program_that_ignores_the_hangup_and_sigterm_is_killed_after_their_graces(short):
+    clock = PhasedClock()
+    length = a_length()
+
+    async def scenario():
+        process = await asyncio.create_subprocess_exec(
+            "sh", "-c", f"trap '' HUP TERM; echo ready; exec sleep {length}",
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+        )  # fmt: skip
+        try:
+            assert await process.stdout.readline() == b"ready\n"
+            terminal = terminals.Terminal(None, 1, None, None, "", clock)
+            terminal.process = process
+            ending = asyncio.create_task(terminal._end_program())
+            await clock.until_parked(1)  # the hangup's grace
+            clock.advance(terminals.END_GRACE_SECONDS - short)
+            if short:  # the twin: short of its grace, nothing is sent
+                await clock.until_parked(1)
+                assert process.returncode is None and not ending.done()
+                clock.advance(short)
+            await clock.until_parked(1)  # SIGTERM's, which it ignores
+            assert process.returncode is None
+            clock.advance(terminals.END_GRACE_SECONDS)
+            await ending
+            assert process.returncode == -9
+        finally:
+            if process.returncode is None:
+                process.kill()
+                await process.wait()
+
+    asyncio.run(scenario())
+
+
+class LoopThread:
+    """An event loop running in a thread of its own, as the terminals' loop runs."""
+
+    def __init__(self):
+        self.loop = asyncio.new_event_loop()
+        self.thread = threading.Thread(target=self.loop.run_forever, daemon=True)
+        self.thread.start()
+
+    def close(self) -> None:
+        self.loop.call_soon_threadsafe(self.loop.stop)
+        self.thread.join(HANG_GUARD)
+        assert not self.thread.is_alive()
+        self.loop.close()
+
+
+def made_terminals(clock) -> tuple[terminals.Terminals, LoopThread]:
+    import types
+
+    looping = LoopThread()
+    made = terminals.Terminals(types.SimpleNamespace(), clock)
+    made.bind(looping.loop)
+    return made, looping
+
+
+@pytest.mark.parametrize("short", [0, 1])
+def test_a_call_from_another_thread_is_given_up_after_its_deadline(caplog, short):
+    clock = PhasedClock()
+    made, looping = made_terminals(clock)
+    held = asyncio.Event()
+
+    async def held_call():
+        await held.wait()
+
+    caller = threading.Thread(target=made._from_thread, args=(held_call,), daemon=True)
+    clock.lend(caller)
+    try:
+        caller.start()
+        clock.wait_parked(1)
+        clock.advance(terminals.FROM_THREAD_SECONDS - short)
+        if short:  # the twin: short of its deadline, it waits on
+            clock.wait_parked(1)
+            assert caller.is_alive()
+            clock.advance(short)
+        caller.join(HANG_GUARD)
+        assert not caller.is_alive()
+        assert "held_call() did not finish" in caplog.text
+    finally:
+        looping.loop.call_soon_threadsafe(held.set)
+        looping.close()
+
+
+def test_a_call_from_another_thread_that_fails_is_logged(caplog):
+    caplog.set_level(logging.ERROR)
+    made, looping = made_terminals(PhasedClock())
+
+    async def failing():
+        raise RuntimeError("planted")
+
+    async def fine():
+        return None
+
+    try:
+        made._from_thread(fine)
+        assert caplog.records == []  # the control: one that finishes is not logged
+        made._from_thread(failing)
+    finally:
+        looping.close()
+    [record] = caplog.records
+    assert "failing() did not finish" in record.getMessage()
+    assert record.exc_info is not None and "planted" in str(record.exc_info[1])
+
+
+def test_a_sweep_ends_each_session_on_the_clock_it_is_given(channel, monkeypatch):
+    layout, run = channel
+    planted(layout, "1 1\n")
+    given = []
+    monkeypatch.setattr(terminals, "end_session", lambda *args: given.append(args[-1]))
+    clock = PhasedClock()
+    terminals.sweep(layout, run, set(), clock)
+    assert given == [clock]

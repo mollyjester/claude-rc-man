@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from fastapi import Depends, Request
 from starlette.requests import HTTPConnection
 
+from helpers.clock import Clock
 from rcman import db
 from rcman.identity import Identity, current_user
 from rcman.problems import code_of
@@ -77,9 +78,10 @@ class Record:
     result: str | None = None  # what to record when the request succeeds; ``ok`` when unset
 
 
-def write(con: sqlite3.Connection, record: Record, result: str) -> None:
+def write(con: sqlite3.Connection, record: Record, result: str, clock: Clock) -> None:
+    """Record ``record`` with ``result``, stamped with ``clock``'s wall time."""
     event = {
-        "at": dt.datetime.now(dt.UTC).isoformat(),
+        "at": dt.datetime.fromtimestamp(clock.wall(), dt.UTC).isoformat(),
         "email": record.identity.email,
         "action": record.action,
         "target": record.target,
@@ -101,15 +103,16 @@ class Recorder:
 
     def __call__(self, request: Request, identity: Identity = Depends(current_user)):
         record = Record(self.action, identity)
+        clock = request.app.state.audit_clock
         con = db.connect(request.app.state.settings.database)
         try:
             try:
                 yield record
             except Exception as error:
-                write(con, record, code_of(error))
+                write(con, record, code_of(error), clock)
                 raise
             else:
-                write(con, record, record.result or OK)
+                write(con, record, record.result or OK, clock)
         finally:
             con.close()
 
@@ -117,10 +120,11 @@ class Recorder:
 class Opened:
     """What a WebSocket's :class:`Session` records: its open and its close, each once."""
 
-    def __init__(self, action: str, identity: Identity, database):
+    def __init__(self, action: str, identity: Identity, database, clock: Clock):
         self.action = action
         self.identity = identity
         self.database = database
+        self.clock = clock
         self.target: str | None = None
         self.open: str | None = None  # the result recorded for the open, once it is
         self.close: str | None = None  # and for the close
@@ -128,7 +132,8 @@ class Opened:
     def _write(self, verb: str, result: str) -> None:
         con = db.connect(self.database)
         try:
-            write(con, Record(f"{self.action}.{verb}", self.identity, self.target), result)
+            record = Record(f"{self.action}.{verb}", self.identity, self.target)
+            write(con, record, result, self.clock)
         finally:
             con.close()
 
@@ -159,7 +164,8 @@ class Session:
         return (f"{self.action}.open", f"{self.action}.close")
 
     def __call__(self, connection: HTTPConnection, identity: Identity = Depends(current_user)):
-        record = Opened(self.action, identity, connection.app.state.settings.database)
+        app = connection.app
+        record = Opened(self.action, identity, app.state.settings.database, app.state.audit_clock)
         try:
             yield record
         except Exception as error:

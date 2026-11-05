@@ -1,8 +1,11 @@
 """The fixtures in tests/conftest.py that hold shared resources: the host runtime's tmux
-sockets, in a folder devtools/held_folders.py holds."""
+sockets, in a folder devtools/held_folders.py holds; and the SIGHUP the suite's children get."""
 
 import subprocess
+import sys
+from pathlib import Path
 
+import pytest
 from rcman import runtime as rt
 
 from tests.conftest import host_runtime
@@ -97,3 +100,32 @@ def test_a_module_off_the_engine_is_found():
         "container/test_c.py",  # one of its tests does not
         "container/test_d.py",  # it has no test that is collected
     }
+
+
+# A child Python started with SIGHUP ignored, as under nohup, which configures the suite or not
+# and says what a program it starts gets.
+SIGHUP_CHILD = """
+import signal, subprocess, sys
+signal.signal(signal.SIGHUP, signal.SIG_IGN)
+if sys.argv[1] == "configured":
+    import tests.conftest
+    tests.conftest.pytest_configure(None)
+    assert signal.getsignal(signal.SIGHUP) not in (signal.SIG_IGN, signal.SIG_DFL)
+status = subprocess.run(["cat", "/proc/self/status"], capture_output=True, text=True).stdout
+ignored = int(next(f.split()[1] for f in status.splitlines() if f.startswith("SigIgn:")), 16)
+print("ignored" if ignored & 1 << (signal.SIGHUP - 1) else "default")
+"""
+
+
+@pytest.mark.parametrize("configured", [False, True])
+def test_a_suite_started_ignoring_sighup_gives_its_children_its_default(configured):
+    """A terminal test's shell, and what it starts, end on a hangup only if SIGHUP is at its
+    default in them, which an ignore the suite was started with would not be."""
+    ran = subprocess.run(
+        [sys.executable, "-c", SIGHUP_CHILD, "configured" if configured else "not"],
+        capture_output=True,
+        text=True,
+        cwd=Path(__file__).resolve().parent.parent,
+    )
+    assert ran.returncode == 0, ran.stderr
+    assert ran.stdout.strip() == ("default" if configured else "ignored")

@@ -1047,9 +1047,9 @@ def test_the_server_is_started_through_the_layout_pinned_to_the_version(pinned, 
     seen = []
     real = cs.Server.__init__
 
-    def recording(self, layout, run, workspace):
+    def recording(self, layout, run, workspace, clock):
         seen.append(layout.claude)
-        real(self, layout, run, workspace)
+        real(self, layout, run, workspace, clock)
 
     cs.Server.__init__ = recording
     try:
@@ -1320,11 +1320,36 @@ def test_a_deletion_from_another_process_stops_a_restore_remaking_a_container(
     assert name not in flow.labelled() and not (flow.root / name).exists()
 
 
-def test_the_watcher_ends_with_the_work_and_leaves_no_thread(service, settings, quick_watch):
+class Untils(PhasedClock):
+    """A PhasedClock that records the event each ``poll`` is given to end it."""
+
+    def __init__(self):
+        super().__init__()
+        self.untils: list[threading.Event | None] = []
+
+    def poll(self, seconds, until=None):
+        self.untils.append(until)
+        return super().poll(seconds, until)
+
+
+def test_the_watcher_ends_with_the_work_and_leaves_no_thread(settings, runtime):
+    clock = Untils()
+    service = ws.Workspaces(settings, runtime, clock=clock)
+    try:
+        watched(service, clock, settings)
+    finally:
+        service.close()
+
+
+def watched(service, clock, settings) -> None:
     made = insert(settings, 1, "watched", "creating")
     with service._working_on(made) as cancel:
         assert len(watchers(made)) == 1  # positive control: it is watched while worked on
-        time.sleep(5 * ws.WORKING_POLL_SECONDS)  # it looks at the row a few times meanwhile
+        clock.wait_polled(3)  # it looks at the row a few times meanwhile
+        [until] = set(clock.untils)  # each poll ends on one event, not set while it works
+        assert until is not None and not until.is_set()
+    assert [w[:2] for w in clock.waits if w[0] == "poll"][:1] == [("poll", ws.WORKING_POLL_SECONDS)]
+    assert until.is_set()  # the work's end: so it ended the poll, without waiting it out
     assert watchers(made) == []
     assert not cancel.is_set()  # nothing was stopped: the row is not being deleted
     assert made not in service._working
@@ -1525,36 +1550,17 @@ def test_deleting_a_person_gives_up_on_their_making_thread_after_its_deadline(
     ended(timed, made.id, HANG_GUARD)
 
 
-class CountingClock(PhasedClock):
-    """A PhasedClock that tells each ``poll`` it was given, once it has slept."""
-
-    def __init__(self, *args, **more):
-        super().__init__(*args, **more)
-        self.polled = threading.Condition()
-        self.polls = 0
-
-    def poll(self, seconds):
-        super().poll(seconds)
-        with self.polled:
-            self.polls += 1
-            self.polled.notify_all()
-
-    def wait_polls(self, n: int) -> None:
-        with self.polled:
-            assert self.polled.wait_for(lambda: self.polls >= n, self.hang_after)
-
-
 def test_rcman_admin_deleting_a_person_polls_a_workspace_the_service_makes_until_it_is_gone(
     settings, runtime
 ):
-    shell_clock = CountingClock()
+    shell_clock = PhasedClock()
     bob = _person(settings, BOB)
     held = held_create(runtime)
     with two_processes(settings, runtime, shell_clock=shell_clock) as (service, shell):
         try:
             made = service.create(bob, "theirs")
             thread, out = deleting_person(shell, bob)
-            shell_clock.wait_polls(1)
+            shell_clock.wait_polled(1)
             assert ("poll", ws.WORKING_POLL_SECONDS) in waits_of(shell_clock, thread)
             assert thread.is_alive()
         finally:
@@ -1567,18 +1573,18 @@ def test_rcman_admin_deleting_a_person_polls_a_workspace_the_service_makes_until
 def test_rcman_admin_deleting_a_person_gives_up_on_a_row_nothing_makes_after_its_deadline(
     settings, runtime, short
 ):
-    shell_clock = CountingClock()
+    shell_clock = PhasedClock()
     bob = _person(settings, BOB)
     orphan = insert(settings, bob.id, "orphan", ws.CREATING)
     with two_processes(settings, runtime, shell_clock=shell_clock) as (_, shell):
         thread, out = deleting_person(shell, bob)
         shell_clock.lend(thread)
-        shell_clock.wait_polls(1)
+        shell_clock.wait_polled(1)
         assert ("poll", ws.WORKING_POLL_SECONDS) in waits_of(shell_clock, thread)
         shell_clock.advance(ws.MADE_WITHIN_SECONDS - short)
         if short:  # the twin: a second short, it looks on
             seen = shell_clock.polls
-            shell_clock.wait_polls(seen + 2)
+            shell_clock.wait_polled(seen + 2)
             assert thread.is_alive() and out == []
             shell_clock.advance(short)
         joined(thread)
@@ -1606,12 +1612,12 @@ def test_closing_ends_a_persons_deletion_waiting_for_their_making_thread_at_once
 
 
 def test_closing_ends_rcman_admins_deletion_polling_a_row_within_one_poll(settings, runtime):
-    shell_clock = CountingClock()
+    shell_clock = PhasedClock()
     bob = _person(settings, BOB)
     insert(settings, bob.id, "orphan", ws.CREATING)
     with two_processes(settings, runtime, shell_clock=shell_clock) as (_, shell):
         thread, out = deleting_person(shell, bob)
-        shell_clock.wait_polls(1)
+        shell_clock.wait_polled(1)
         shell.close()
         joined(thread)
         assert left(out)
@@ -1679,3 +1685,47 @@ def test_no_put_back_is_begun_once_rcman_is_closing(timed, settings, monkeypatch
     with timed._changed:
         assert timed._putting_back == {}
     assert begun == []
+
+
+# --- the periodic checks and the servers, each on a clock of its own --------------------------
+
+
+def test_the_periodic_checks_run_once_per_pace_and_end_at_once_with_the_service(
+    settings, runtime, monkeypatch
+):
+    clock = PhasedClock()
+    service = ws.Workspaces(settings, runtime, periodic_clock=clock)
+    rounds = []
+    monkeypatch.setattr(service, "close_idle", lambda: rounds.append(clock.now()))
+    try:
+        service.start_background()
+        clock.wait_parked(1)
+        [waiter] = clock.waiters()
+        assert (waiter.method, waiter.seconds) == ("wait", ws.IDLE_CHECK_SECONDS)
+        clock.lend(waiter.thread)
+        start = clock.now()
+        clock.advance(ws.IDLE_CHECK_SECONDS - 1)
+        clock.wait_parked(1)
+        assert rounds == []  # the twin: a second short of its pace, none
+        clock.advance(1)
+        clock.wait_parked(1)
+        assert rounds == [start + ws.IDLE_CHECK_SECONDS]
+        clock.advance(ws.IDLE_CHECK_SECONDS)
+        clock.wait_parked(1)
+        assert rounds == [start + ws.IDLE_CHECK_SECONDS, start + 2 * ws.IDLE_CHECK_SECONDS]
+    finally:
+        service.close()
+    clock.wait_parked(0)  # closing ended its wait, with no time moved
+    waiter.thread.join(HANG_GUARD)
+    assert not waiter.thread.is_alive() and len(rounds) == 2
+
+
+def test_a_workspaces_server_is_on_the_servers_clock(settings, runtime):
+    clock = PhasedClock()
+    service = ws.Workspaces(settings, runtime, servers_clock=clock)
+    try:
+        made = insert(settings, 1, "served", "ready")
+        assert service.server(service.get(made)).clock is clock
+        assert service.clock is not clock  # the twin: the service's own is another
+    finally:
+        service.close()

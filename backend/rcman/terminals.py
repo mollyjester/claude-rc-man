@@ -32,10 +32,10 @@ import re
 import secrets
 import struct
 import termios
-import time
+import threading
 from collections.abc import Awaitable, Callable
 
-from helpers.clock import Deadline, Grace, PollExternal
+from helpers.clock import REAL, Clock, Deadline, Grace, PollExternal
 from rcman import runtime as rt
 from rcman.audit import (
     SERVICE_CLOSING,
@@ -162,21 +162,24 @@ def _members(
     return sorted(p for p, (session, _) in table.items() if session == pid)
 
 
-def end_leader(layout: Layout, run: Run, pid: int, start: int, leader_gone: bool) -> None:
+def end_leader(
+    layout: Layout, run: Run, pid: int, start: int, leader_gone: bool, clock: Clock
+) -> None:
     """End the session ``pid`` leads, started at ``start``: SIGHUP to every process in it, then
-    SIGKILL to those left (``_members``). The leader is checked once, first; once it has been
-    seen, the session is its own while it lasts, however soon the leader ends."""
+    SIGKILL to those left (``_members``), each followed by END_GRACE_SECONDS on ``clock``. The
+    leader is checked once, first; once it has been seen, the session is its own while it
+    lasts, however soon the leader ends."""
     members = _members(process_table(layout, run), pid, start, leader_gone)
     for signal in ("HUP", "KILL"):
         if not members:
             return
         run([*layout.tool("kill"), f"-{signal}", *map(str, members)])
-        deadline = time.monotonic() + END_GRACE_SECONDS
+        deadline = clock.now() + END_GRACE_SECONDS
         while True:
             members = _members(process_table(layout, run), pid, start, leader_gone=True)
-            if not members or time.monotonic() >= deadline:
+            if not members or clock.now() >= deadline:
                 break
-            time.sleep(POLL_SECONDS)
+            clock.poll(POLL_SECONDS)
 
 
 def read_pidfile(layout: Layout, run: Run, pidfile: str) -> tuple[int, int] | None:
@@ -184,13 +187,13 @@ def read_pidfile(layout: Layout, run: Run, pidfile: str) -> tuple[int, int] | No
     return parsed_pidfile(read.out) if read.code == 0 else None
 
 
-def end_session(layout: Layout, run: Run, pidfile: str) -> None:
+def end_session(layout: Layout, run: Run, pidfile: str, clock: Clock) -> None:
     """End the session of the shell ``pidfile`` names, if it names one as the launcher wrote
     it and that shell still leads it, and remove the pidfile. A pidfile of anything else
     signals nothing."""
     named = read_pidfile(layout, run, pidfile)
     if named is not None:
-        end_leader(layout, run, *named, leader_gone=False)
+        end_leader(layout, run, *named, False, clock)
     run([*layout.tool("rm"), "-f", pidfile])
 
 
@@ -198,7 +201,7 @@ def end_session(layout: Layout, run: Run, pidfile: str) -> None:
 _LISTED = 'for f in "$1"/*.pid; do [ -f "$f" ] && echo "$f"; done; :'
 
 
-def sweep(layout: Layout, run: Run, keep: set[str]) -> None:
+def sweep(layout: Layout, run: Run, keep: set[str], clock: Clock) -> None:
     """End the sessions of the workspace's pidfiles but those in ``keep``, the live terminals',
     each only while its shell still leads it."""
     folder = f"{layout.run}/{rt.TERMINALS}"
@@ -206,7 +209,7 @@ def sweep(layout: Layout, run: Run, keep: set[str]) -> None:
     for path in listed.out.decode("utf-8", "replace").splitlines():
         name = path.rpartition("/")[2]
         if path == f"{folder}/{name}" and rt.TERMINAL_PIDFILE.fullmatch(name) and path not in keep:
-            end_session(layout, run, path)
+            end_session(layout, run, path, clock)
 
 
 def _set_size(fd: int, cols: int, rows: int) -> None:
@@ -224,8 +227,12 @@ def _woken(future: asyncio.Future) -> Callable[[], None]:
 class Terminal:
     """One shell on a pty: what is written to it, what it prints, and its end."""
 
-    def __init__(self, workspace: Workspace, person: int, layout: Layout, run: Run, pidfile: str):
+    def __init__(
+        self, workspace: Workspace, person: int, layout: Layout, run: Run, pidfile: str,
+        clock: Clock,
+    ):  # fmt: skip
         self.workspace = workspace
+        self.clock = clock
         self.person = person
         self.layout = layout
         self.run = run
@@ -292,8 +299,7 @@ class Terminal:
 
     async def _exit(self, output: asyncio.Task) -> None:
         self.exit_code = await self.process.wait()
-        with contextlib.suppress(TimeoutError):
-            await asyncio.wait_for(asyncio.shield(output), EXIT_DRAIN_SECONDS)
+        await self.clock.await_tasks({output}, EXIT_DRAIN_SECONDS)
         self._ended.set()
 
     async def write(self, data: bytes) -> None:
@@ -360,9 +366,9 @@ class Terminal:
         """The shell's session, by the leader its pidfile named when it opened, which may have
         ended as the pty closed; by its pidfile, if it never named one."""
         if self.leader is None:
-            end_session(self.layout, self.run, self.pidfile)
+            end_session(self.layout, self.run, self.pidfile, self.clock)
             return
-        end_leader(self.layout, self.run, *self.leader, leader_gone=True)
+        end_leader(self.layout, self.run, *self.leader, True, self.clock)
         self.run([*self.layout.tool("rm"), "-f", self.pidfile])
 
     def _read_pidfile(self) -> tuple[int, int] | None:
@@ -372,12 +378,12 @@ class Terminal:
     async def wait_for_pidfile(self, timeout: float) -> bool:
         """Wait until the launcher has written the pidfile, which then names the shell's
         session; False if the program on the pty ended first, or ``timeout`` passed."""
-        deadline = time.monotonic() + timeout
-        while self.process.returncode is None and time.monotonic() < deadline:
+        deadline = self.clock.now() + timeout
+        while self.process.returncode is None and self.clock.now() < deadline:
             self.leader = await asyncio.to_thread(self._read_pidfile)
             if self.leader is not None:
                 return True
-            await asyncio.sleep(POLL_SECONDS)
+            await self.clock.apoll(POLL_SECONDS)
         return False
 
     async def _end_program(self) -> None:
@@ -393,14 +399,15 @@ class Terminal:
                 with contextlib.suppress(ProcessLookupError):
                     signal()
             with contextlib.suppress(TimeoutError):
-                await asyncio.wait_for(process.wait(), END_GRACE_SECONDS)
+                await self.clock.within(process.wait(), END_GRACE_SECONDS)
 
 
 class Terminals:
     """Every terminal rcman has open: at most one per workspace."""
 
-    def __init__(self, service):
+    def __init__(self, service, clock: Clock = REAL):
         self.service = service
+        self.clock = clock
         self._live: dict[int, Terminal] = {}
         self._locks: dict[int, asyncio.Lock] = {}
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -455,14 +462,14 @@ class Terminals:
 
             def prepared() -> Launch:
                 with answered():
-                    sweep(layout, run, set())  # no other terminal of it is live: see above
+                    sweep(layout, run, set(), self.clock)  # no other terminal of it is live
                     made = run([*layout.tool("mkdir"), "-p", folder])
                     if made.code != 0:
                         raise RuntimeFailed(made.err.decode("utf-8", "replace").strip())
                     return self.service.runtime.terminal_argv(found.container, layout, pidfile)
 
             launch = await asyncio.to_thread(prepared)
-            terminal = Terminal(found, person, layout, run, pidfile)
+            terminal = Terminal(found, person, layout, run, pidfile, self.clock)
             try:
                 await terminal.start(launch, cols, rows, send)
             except OSError as error:
@@ -532,7 +539,7 @@ class Terminals:
                 return
             layout = await asyncio.to_thread(self.service.layout_of, found)
             keep = {t.pidfile for t in self._live.values() if t.workspace.id == workspace_id}
-            await asyncio.to_thread(sweep, layout, self.service.run_in(found), keep)
+            await asyncio.to_thread(sweep, layout, self.service.run_in(found), keep, self.clock)
 
     # --- from other threads ----------------------------------------------------------------
 
@@ -547,8 +554,13 @@ class Terminals:
                 loop.create_task(call(*args))  # the loop cannot wait for itself
                 return
         future = asyncio.run_coroutine_threadsafe(call(*args), loop)
+        done = threading.Event()
+        future.add_done_callback(lambda _: done.set())
+        if not self.clock.wait(done, FROM_THREAD_SECONDS):
+            log.error("%s%s did not finish within its time", call.__name__, args)
+            return
         try:
-            future.result(FROM_THREAD_SECONDS)
+            future.result()
         except Exception:  # noqa: BLE001 - logged; what called it goes on
             log.exception("%s%s did not finish", call.__name__, args)
 

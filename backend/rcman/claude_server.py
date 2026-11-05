@@ -16,11 +16,10 @@ from __future__ import annotations
 
 import json
 import signal as signals
-import time
 from collections.abc import Callable
 
 from helpers import rules, screens
-from helpers.clock import Deadline, Grace, Pace, PollExternal
+from helpers.clock import REAL, Clock, Deadline, Grace, Pace, PollExternal
 from rcman.channel import REQUEST_TIMEOUT, Result
 from rcman.problems import Problem
 from rcman.runtime import Layout, child_env
@@ -203,12 +202,14 @@ def _processes(stat_lines: str) -> dict[int, tuple[int, str]]:
 
 
 class Server:
-    """The server of the workspace ``workspace`` (its id), whose layout is ``layout``."""
+    """The server of the workspace ``workspace`` (its id), whose layout is ``layout``; its
+    deadlines and its paces are on ``clock``."""
 
-    def __init__(self, layout: Layout, run: Run, workspace: int):
+    def __init__(self, layout: Layout, run: Run, workspace: int, clock: Clock = REAL):
         self.layout = layout
         self.run = run
         self.workspace = workspace
+        self.clock = clock
         self.tmux = Tmux(layout, run)
 
     # --- reading -------------------------------------------------------------------
@@ -239,21 +240,21 @@ class Server:
         """Poll until ``until`` holds. A screen in transition matches no known state, so
         an unrecognised screen counts as an answer only once it has lasted
         UNRECOGNISED_GRACE_SECONDS."""
-        deadline = time.monotonic() + timeout
+        deadline = self.clock.now() + timeout
         unrecognised_since = None
         while True:
             server = self._server()
             if server["state"] == "unrecognised":
-                unrecognised_since = unrecognised_since or time.monotonic()
-                if time.monotonic() - unrecognised_since >= UNRECOGNISED_GRACE_SECONDS:
+                unrecognised_since = unrecognised_since or self.clock.now()
+                if self.clock.now() - unrecognised_since >= UNRECOGNISED_GRACE_SECONDS:
                     return server
             else:
                 unrecognised_since = None
                 if until(server):
                     return server
-            if time.monotonic() > deadline:
+            if self.clock.now() > deadline:
                 raise ServerError("timeout", server=server)
-            time.sleep(POLL_SECONDS)
+            self.clock.poll(POLL_SECONDS)
 
     # --- the sign-in ------------------------------------------------------------------
 
@@ -333,11 +334,11 @@ class Server:
 
     def _still_runs(self, pid: int, timeout: float) -> bool:
         """Wait up to ``timeout`` for the pane's process ``pid`` to exit; whether it has not."""
-        deadline = time.monotonic() + timeout
+        deadline = self.clock.now() + timeout
         while self.tmux.pane()[1] == pid and self.tmux.exit_status() is None:
-            if time.monotonic() > deadline:
+            if self.clock.now() > deadline:
                 return True
-            time.sleep(POLL_SECONDS)
+            self.clock.poll(POLL_SECONDS)
         return False
 
     def _process_table(self) -> dict[int, tuple[int, str]]:
@@ -380,7 +381,7 @@ class Server:
             raise ServerError("nothing_to_confirm")
         server = None
         for _attempt in range(2):
-            time.sleep(ANSWER_PACE_SECONDS)
+            self.clock.sleep(ANSWER_PACE_SECONDS)
             self.tmux.type(answer)
             server = self._wait(lambda s: self._answered(s, asked), START_TIMEOUT)
             if server["state"] != asked:

@@ -32,6 +32,7 @@ from rcman.repository import Repository
 from rcman.workspaces import Workspaces
 
 from helpers import git_run
+from helpers.clock import REAL
 from tests.container import github_stand_in as stand_in
 from tests.container import network
 from tests.container.conftest import engine_runtime, engine_settings
@@ -234,7 +235,7 @@ def test_the_image_check_accepts_the_image_with_git_and_refuses_one_without(
     podman, workspace, person, parts, without_git
 ):
     """Workspaces._check_git, run against real containers: the first time git runs in one."""
-    service = types.SimpleNamespace(runtime=podman)
+    service = types.SimpleNamespace(runtime=podman, clock=REAL)  # a real git, on real time
     service._execs = lambda name: Workspaces._execs(service, name)
     Workspaces._check_git(service, types.SimpleNamespace(container=workspace))  # no refusal
     version = git_in_it(podman, workspace, "--version")
@@ -247,7 +248,7 @@ def test_the_image_check_accepts_the_image_with_git_and_refuses_one_without(
     who = rt.Spec(rt.container_name(601), slot=owner.slot, workspace=601, person=owner.id)
     bare.create(who)
     try:
-        service = types.SimpleNamespace(runtime=bare)
+        service = types.SimpleNamespace(runtime=bare, clock=REAL)
         service._execs = lambda name: Workspaces._execs(service, name)
         with pytest.raises(rt.RuntimeFailed, match="git is not installed in the image"):
             Workspaces._check_git(service, types.SimpleNamespace(container=who.name))

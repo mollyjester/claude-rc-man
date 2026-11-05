@@ -14,6 +14,7 @@ from rcman import workspaces as ws
 from rcman.limits import Limits, Usage
 from rcman.problems import Problem
 
+from tests.clocks import PhasedClock
 from tests.conftest import ALICE, BOB, TMUX_CONF
 
 MIB = 1024**2
@@ -979,46 +980,32 @@ def test_removing_a_container_no_row_is_for_drops_the_slice_it_was_in(service, s
 # --- the report is bounded -------------------------------------------------------------
 
 
-class FakeTime:
-    """The time module as workspaces.py sees it, but for a monotonic clock that moves only when
-    the test moves it."""
-
-    # It replaces ``time`` for the whole of workspaces.py, and rests on no thread but the
-    # caller's reading ``ws.time`` while the test runs: the service is not started, so none of
-    # its threads is.
-
-    def __init__(self):
-        self.now = 1000.0
-
-    def monotonic(self) -> float:
-        return self.now
-
-    def __getattr__(self, name):
-        return getattr(time, name)
-
-
-def test_the_report_gives_up_on_the_rest_once_its_time_is_used(
-    service, settings, runtime, monkeypatch
-):
+@pytest.mark.parametrize("each,read", [(0.6, 2), (0.2, 5), (0.25, 5)])
+def test_the_report_gives_up_on_the_rest_once_its_time_is_used(settings, runtime, each, read):
+    """Each reading takes ``each`` of the report's time: at 0.6, the person's and the first
+    workspace's, then no time is left; the twin, at 0.2, reads all five; and at 0.25, exact in
+    binary, the fifth is looked at exactly at the deadline and still read."""
     person = person_of(settings)
     for n in range(4):
         insert(settings, person.id, f"w{n}")
-    monkeypatch.setattr(ws, "LIMITS_REPORT_SECONDS", 0.5)
-    clock = FakeTime()
-    monkeypatch.setattr(ws, "time", clock)
+    clock = PhasedClock()
+    service = ws.Workspaces(settings, runtime, clock=clock)
     asked = []
     real = runtime.usage
 
     def slow(person_id, workspace):
         asked.append(workspace)
-        clock.now += 0.3  # each reading takes this long
+        clock.advance(each * ws.LIMITS_REPORT_SECONDS)  # each reading takes this long
         return real(person_id, workspace)
 
     runtime.usage = slow
-    report = service.limits_report(person)
-    assert len(asked) == 2  # the person's and the first workspace's, then no time left
+    try:
+        report = service.limits_report(person)
+    finally:
+        service.close()
+    assert len(asked) == read
     assert report["person"]["usage"] is not None
-    assert [w["usage"] is None for w in report["workspaces"]] == [False, True, True, True]
+    assert [w["usage"] is None for w in report["workspaces"]] == [n >= read - 1 for n in range(4)]
     assert all(w["limits"] == Limits().text() for w in report["workspaces"])  # still shown
 
 

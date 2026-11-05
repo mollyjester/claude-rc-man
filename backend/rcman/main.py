@@ -60,12 +60,13 @@ from rcman.workspaces import log as workspaces_log
 RETENTION_INTERVAL_SECONDS = Pace(24 * 60 * 60)
 
 
-def _retention(settings: Settings) -> None:
+def _retention(settings: Settings, clock: Clock) -> None:
+    """Apply audit retention as of ``clock``'s wall time."""
     con = db.connect(settings.database)
     try:
         audit.apply_retention(
             con,
-            now=dt.datetime.now(dt.UTC),
+            now=dt.datetime.fromtimestamp(clock.wall(), dt.UTC),
             days=settings.audit_retention_days,
             max_rows=settings.audit_max_rows,
         )
@@ -94,15 +95,16 @@ def podman_runtime(settings: Settings) -> PodmanRuntime:
     )
 
 
-def _start(settings: Settings) -> None:
-    """Migrate the database, write the allowed list from it, and apply audit retention."""
+def _start(settings: Settings, clock: Clock) -> None:
+    """Migrate the database, write the allowed list from it, and apply audit retention as of
+    ``clock``'s wall time."""
     db.migrate(settings.database)
     con = db.connect(settings.database)
     try:
         people.write_allowed(con, settings.allowed_emails)
     finally:
         con.close()
-    _retention(settings)
+    _retention(settings, clock)
 
 
 def check_seccomp(tools: Path, default: Path = seccomp.PODMAN_DEFAULT) -> None:
@@ -130,14 +132,30 @@ def check_instructions(runtime: Runtime) -> None:
 @dataclass(frozen=True)
 class Clocks:
     """The clock of each part of the app that is given one (helpers/clock.py), the real one
-    unless a test gives its own: the forwarding server, with its limits on new hosts and ways in;
-    the monitor's loops and rounds; the workspaces' service, its waits on its own state and a
-    person's deletion; the limit on a page's reports of failures; and the limit on an
-    administrator's requests for an upgrade."""
+    unless a test gives its own: ``forward``, the forwarding server, with its limits on new
+    hosts and ways in, its graces and deadlines and the stamps of what it records; ``monitor``,
+    the monitor's loops and rounds; ``workspaces``, the workspaces' service, its waits on its
+    own state, a person's deletion, the watchers of work a deletion stops, the admission of an
+    upgrade to the images' lock, the limits report, its repositories' deadlines and its Claude
+    Code versions' stamps and ages; ``periodic``, the pace of its periodic checks; ``servers``,
+    each workspace's server, its deadlines, graces and paces; ``accounts``, the sign-ins and
+    the connection the Claude page reads; ``terminals``, the terminals' graces and deadlines and
+    the route's looks for revocation and first frame; ``upgrade``, the upgrades' grace for a
+    start and the request file's stamp; ``audit``, the audit trail's stamps and its daily
+    retention; ``unrecognised``, the stamps of the lines on output rcman does not recognise;
+    ``client_errors``, the limit on a page's reports of failures and their stamps; and
+    ``upgrade_requests``, the limit on an administrator's requests for an upgrade."""
 
     forward: Clock = REAL
     monitor: Clock = REAL
     workspaces: Clock = REAL
+    periodic: Clock = REAL
+    servers: Clock = REAL
+    accounts: Clock = REAL
+    terminals: Clock = REAL
+    upgrade: Clock = REAL
+    audit: Clock = REAL
+    unrecognised: Clock = REAL
     client_errors: Clock = REAL
     upgrade_requests: Clock = REAL
 
@@ -170,10 +188,12 @@ def create_app(
         runtime or podman_runtime(settings),
         builder_slot=builder_slot,
         clock=clocks.workspaces,
+        servers_clock=clocks.servers,
+        periodic_clock=clocks.periodic,
     )
     check_instructions(service.runtime)
-    sign_ins = Accounts(service)
-    terminals = Terminals(service)
+    sign_ins = Accounts(service, clocks.accounts)
+    terminals = Terminals(service, clocks.terminals)
     collector = monitor.Monitor(service.runtime, settings.database, clock=clocks.monitor)
     # Whatever forwards ports registers here to hear of forwarding being turned off (on_off).
     forwarding_store = ForwardingSettingsStore(settings.database)
@@ -181,7 +201,7 @@ def create_app(
 
     @contextlib.asynccontextmanager
     async def lifespan(app: FastAPI):
-        _start(settings)
+        _start(settings, clocks.audit)
         service.versions.reconcile()  # the approved version is current, before any server starts
         terminals.bind(asyncio.get_running_loop())  # before restore, which sweeps through it
         service.on_restored = collector.restored_now  # its first round waits for the restore
@@ -192,8 +212,8 @@ def create_app(
 
         async def daily():
             while True:
-                await asyncio.sleep(RETENTION_INTERVAL_SECONDS)
-                await asyncio.to_thread(_retention, settings)
+                await clocks.audit.asleep(RETENTION_INTERVAL_SECONDS)
+                await asyncio.to_thread(_retention, settings, clocks.audit)
 
         task = asyncio.create_task(daily())
         try:
@@ -237,10 +257,12 @@ def create_app(
     app.state.forward = forwarding
     app.state.git_account = GitAccount(service)
     service.restore_hooks.append(app.state.git_account.write_gh_for_everyone)
-    app.state.watch = unrecognised.Watch()
+    app.state.audit_clock = clocks.audit
+    app.state.watch = unrecognised.Watch(clocks.unrecognised)
+    app.state.client_errors_clock = clocks.client_errors
     app.state.client_error_limit = client_errors.new_limit(clocks.client_errors)
     # The release rcman runs is read now, once: an upgrade switches the release meanwhile.
-    app.state.upgrade = rcman_upgrade.Upgrades(settings, service)
+    app.state.upgrade = rcman_upgrade.Upgrades(settings, service, clocks.upgrade)
     service.upgrading = app.state.upgrade.under_way
     app.state.upgrade_limit = rcman_upgrade_router.new_limit(clocks.upgrade_requests)
     problems.install(app)

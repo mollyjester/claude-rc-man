@@ -56,8 +56,11 @@ class Clock(Protocol):
         """A Pace or a Grace."""
         ...
 
-    def poll(self, seconds: float) -> None:
-        """A PollExternal: between two looks at something outside rcman."""
+    def poll(self, seconds: float, until: threading.Event | None = None) -> bool:
+        """A PollExternal: between two looks at something outside rcman. ``until``, an event of
+        rcman's own, only cuts the wait short, as when the work the look is for is over; it is
+        never the thing polled. Whether ``until`` is set, False without one, so that a watcher
+        reads ``while not clock.poll(seconds, until=done):``."""
         ...
 
     def wait(self, event: threading.Event, seconds: float | None) -> bool:
@@ -118,8 +121,12 @@ class RealClock:
     def sleep(self, seconds: float) -> None:
         time.sleep(max(seconds, 0.0))
 
-    def poll(self, seconds: float) -> None:
-        time.sleep(max(seconds, 0.0))
+    def poll(self, seconds: float, until: threading.Event | None = None) -> bool:
+        if until is None:
+            time.sleep(max(seconds, 0.0))
+            return False
+        until.wait(_threading(seconds))
+        return until.is_set()
 
     def wait(self, event: threading.Event, seconds: float | None) -> bool:
         return event.wait(_threading(seconds))
