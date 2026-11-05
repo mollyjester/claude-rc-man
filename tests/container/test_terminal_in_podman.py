@@ -14,18 +14,21 @@ from __future__ import annotations
 
 import os
 import re
+import threading
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 from rcman import db, people
 from rcman.main import create_app
+from rcman.terminals import Terminal
 
 from tests.conftest import ALICE, ORIGIN, changing, made_workspace
 from tests.container import sizes
 from tests.container import test_runtime_in_podman as base
 from tests.container.conftest import engine_runtime, engine_settings
 from tests.container.execs import exec_ids
+from tests.hang_guard import CONTAINER_HANG_GUARD
 from tests.test_terminal import opened, path, resize
 from tests.test_terminals import a_length, alive, sleeping, wait_until
 
@@ -115,6 +118,13 @@ def test_the_shell_is_root_of_the_persons_range_and_not_rcman_on_the_host(client
         peer.ask("apt-get --version | head -n 1 | grep -c ^apt", rb"[\r\n]1\r\n")
 
 
+def its_exec_runs(now: list[str], before: list[str]) -> bool:
+    """Whether a terminal opened since ``before`` was read has its exec running ``now``: an exec
+    not in ``before``. Not a count: the exec of a terminal still ending when ``before`` was read
+    may be gone by ``now``."""
+    return bool(set(now) - set(before))
+
+
 def test_closing_leaves_no_process_and_no_exec_of_its_own(client, workspace):
     service = client.app.state.workspaces
     found = service.get(workspace["id"])
@@ -131,9 +141,8 @@ def test_closing_leaves_no_process_and_no_exec_of_its_own(client, workspace):
             if line.startswith("VmRSS:")
         )
         assert 0 < rss < base.CLIENT_MAX_RSS_BYTES, rss  # what the podman client holds
-        assert len(exec_ids(client.engine, found.container)) > len(
-            before
-        )  # the control: its exec is there, running
+        # the control: its exec is there, running
+        assert its_exec_runs(exec_ids(client.engine, found.container), before)
     wait_until(lambda: not alive(pid), timeout=30)
     wait_until(lambda: set(exec_ids(client.engine, found.container)) <= set(before), timeout=30)
     shell = service.layout_of(found).shell
@@ -159,3 +168,38 @@ def test_a_terminal_closed_as_soon_as_it_opens_leaves_no_shell_and_no_exec(clien
     table = service.run_in(found)([shell, "-c", "cat /proc/[0-9]*/cmdline"])
     assert table.code == 0 and table.out  # the control: the table was read
     assert b"rcman-terminal" not in table.out and b"-i\0" not in table.out
+
+
+def test_a_terminal_still_ending_is_not_taken_for_the_next_ones_exec(
+    client, workspace, monkeypatch
+):
+    """The control above, where the terminal before is still ending when ``before`` is read:
+    its exec is in ``before`` and gone once the next is open, so the count is the same though
+    the next one's exec runs. The end is held until ``before`` is read."""
+    service = client.app.state.workspaces
+    found = service.get(workspace["id"])
+    service.run_in(found)(["true"])  # the channel's own exec, open before and after
+    held = threading.Event()
+    real = Terminal._end_session
+
+    def ending(self):
+        held.wait(CONTAINER_HANG_GUARD)
+        return real(self)
+
+    monkeypatch.setattr(Terminal, "_end_session", ending)
+    alone = set(exec_ids(client.engine, found.container))
+    try:
+        with opened(client, ALICE, workspace["id"]) as peer:
+            peer.ask("echo first-$((1+1))", rb"first-2")
+            old = set(exec_ids(client.engine, found.container)) - alone
+        assert old  # the plant's ground: the first terminal's exec
+        before = exec_ids(client.engine, found.container)
+        assert old <= set(before)  # still ending, held
+    finally:
+        held.set()
+    with opened(client, ALICE, workspace["id"]) as peer:
+        peer.ask("echo second-$((2+2))", rb"second-4")
+        wait_until(lambda: not old & set(exec_ids(client.engine, found.container)), timeout=30)
+        now = exec_ids(client.engine, found.container)
+        assert len(now) <= len(before)  # the case: a count is met by the one that ended
+        assert its_exec_runs(now, before)
