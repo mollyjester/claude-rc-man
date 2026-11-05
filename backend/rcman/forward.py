@@ -48,7 +48,7 @@ answer closes the connection, as it does for a longer one. A connection with no
 request on it, or a head not whole HEAD_SECONDS after its first byte, is closed, and a head too
 long answered 431.
 
-Python standard library, h11 and the backend only.
+Python standard library, h11, helpers/clock.py and the backend only.
 """
 
 from __future__ import annotations
@@ -72,7 +72,7 @@ from pathlib import Path
 
 import h11
 
-from helpers.clock import REAL, Clock
+from helpers.clock import REAL, Clock, Deadline, Grace, Handed, Pace
 from rcman import audit, db, people, problems
 from rcman import runtime as rt
 from rcman.headers import SECURITY_HEADERS
@@ -97,12 +97,12 @@ FORWARD_HOST = r"([1-9][0-9]{0,4})-([1-9][0-9]{0,9})\.ws\."
 ASK_HOST = re.compile(r"127\.0\.0\.1:[1-9][0-9]{0,4}")
 
 # How long a host stays marked as wanted once its owner is shown its address or opens it.
-WANTED_SECONDS = 15 * 60
+WANTED_SECONDS = Deadline(15 * 60)
 # How long a way in the hand-off hands out may be spent, and how long a spent or expired one is
 # remembered after that, so that spending it again is told and recorded as such.
-TOKEN_SECONDS = 60
+TOKEN_SECONDS = Deadline(60)
 # How long the path a navigation was sent to the hand-off from is kept for its return.
-RETURN_SECONDS = 10 * 60
+RETURN_SECONDS = Handed(10 * 60)
 MOST_RETURN_PATH = 2048  # a longer one returns to /
 # The most unspent ways in a person may hold at once, and how many they may be handed in a
 # burst and then each minute.
@@ -117,20 +117,20 @@ WEEK = 7 * 24 * 3600
 MOST_RELAYS_PER_WORKSPACE = 32
 MOST_RELAYS_PER_PERSON = 64
 MOST_IDLE_PER_PORT = 4
-POOL_IDLE_SECONDS = 30
+POOL_IDLE_SECONDS = Deadline(30)
 # The most connections the server takes at once, Caddy's and any local user's.
 MOST_CONNECTIONS = 1024
 # What a refusal for want of room says to wait, in seconds.
-RETRY_AFTER_SECONDS = 5
+RETRY_AFTER_SECONDS = Handed(5)
 # How often the sessions are looked over for their ends.
-REAP_SECONDS = 1
+REAP_SECONDS = Pace(1)
 # How long a relay is given to end once its input is closed, before its client is killed.
-RELAY_ENDS_WITHIN = 10
+RELAY_ENDS_WITHIN = Grace(10)
 # How long a WebSocket whose client has gone waits for the app to close its side, so that what
 # the client sent last leaves the relay's pipe before its input is closed.
-SPLICE_DRAIN_SECONDS = 1
+SPLICE_DRAIN_SECONDS = Grace(1)
 # How long a thread's call waits for the loop to end what it ended.
-FROM_THREAD_SECONDS = 30
+FROM_THREAD_SECONDS = Deadline(30)
 READ_CHUNK = 1 << 16
 MOST_ENTER_BODY = 1024
 # The longest request head taken, and the longest answer head an app may send; a longer request
@@ -139,13 +139,13 @@ MOST_HEAD = 1 << 16
 # How long the way in waits for its body; how long a connection may have no request on it,
 # longer than Caddy keeps an idle pooled connection to an upstream (two minutes), so that Caddy
 # ends it first; and how long a request's head may take once it has begun.
-BODY_SECONDS = 10
+BODY_SECONDS = Deadline(10)
 # How long an answer of the server's own waits for the rest of a short body, MOST_DRAINED at
 # most, so as to keep its connection; a longer one, or one that takes longer, closes it.
-DRAIN_SECONDS = 1
+DRAIN_SECONDS = Grace(1)
 MOST_DRAINED = 1 << 16
-IDLE_CONNECTION_SECONDS = 150
-HEAD_SECONDS = 30
+IDLE_CONNECTION_SECONDS = Deadline(150)
+HEAD_SECONDS = Deadline(30)
 # The most sessions a person may have at once; one more ends their oldest.
 MOST_SESSIONS_PER_PERSON = 32
 

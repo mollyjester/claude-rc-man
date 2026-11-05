@@ -212,6 +212,17 @@ def test_each_marker_is_a_float_named_for_its_class(name):
     assert marker(3.0) == 3.0 and type(marker(3.0)) is float
 
 
+@pytest.mark.parametrize("name", MARKERS)
+def test_a_marker_hands_back_what_it_is_given(name):
+    """A marker labels a value and changes nothing: an int that an argument list or a header
+    shows stays an int, and shows as one."""
+    marker = getattr(clock_module, name)
+    assert marker(5) == 5 and type(marker(5)) is int
+    assert str(marker(5)) == "5"
+    held = object()
+    assert marker(held) is held
+
+
 def test_polling_own_state_has_no_marker():
     assert hasattr(clock_module, "PollExternal")  # the control: the markers are found by name
     assert not hasattr(clock_module, "PollOwn")

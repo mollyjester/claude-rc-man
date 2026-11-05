@@ -15,6 +15,7 @@ folder) the first time it runs, and runs it with the image's python3.
 
 from __future__ import annotations
 
+import ast
 import base64
 import contextlib
 import functools
@@ -27,20 +28,45 @@ import threading
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
-# What the fake reads: itself, the recorder it replays from, and the recordings.
-PARTS = (
-    "devtools/__init__.py",
-    "devtools/fake_claude.py",
-    "devtools/record_claude.py",
-    "devtools/tmuxctl.py",
-    "devtools/held_folders.py",
-    "helpers/__init__.py",
-    "helpers/claude_checks.py",
-    "helpers/screens.py",
-    "tests/fakes/claude",
-    "tests/fakes/fixtures",
-    "tests/fakes/observed",
-)
+# The fake's own program, and what the bundle holds beside its Python: the launcher it runs and
+# the recordings.
+FAKE = "devtools/fake_claude.py"
+DATA = ("tests/fakes/claude", "tests/fakes/fixtures", "tests/fakes/observed")
+
+
+def python_parts(root: Path = REPO, start: str = FAKE) -> tuple[str, ...]:
+    """The fake and every module of the repository it imports, followed through their own
+    imports, with the ``__init__.py`` of each package on the way: what the fake needs to run
+    from the bundle alone."""
+    found, todo = set(), [start]
+    while todo:
+        rel = todo.pop()
+        if rel in found:
+            continue
+        found.add(rel)
+        for node in ast.walk(ast.parse((root / rel).read_text(encoding="utf-8"))):
+            names = []
+            if isinstance(node, ast.Import):
+                names = [a.name for a in node.names]
+            elif isinstance(node, ast.ImportFrom):
+                base = (node.module or "").split(".") if node.module else []
+                if node.level:  # relative: from the file's own package, up a level for each dot
+                    package = Path(rel).parent.parts
+                    base = [*package[: len(package) - node.level + 1], *base]
+                base = ".".join(base)
+                names = [base, *(f"{base}.{a.name}" for a in node.names)]
+            for name in names:
+                parts = name.split(".")
+                for depth in range(1, len(parts) + 1):
+                    path = root.joinpath(*parts[:depth])
+                    for candidate in (path / "__init__.py", path.with_suffix(".py")):
+                        if candidate.is_file():
+                            todo.append(candidate.relative_to(root).as_posix())
+    return tuple(sorted(found))
+
+
+# What the bundle holds: the fake's Python, derived from its imports, and its data.
+PARTS = (*python_parts(), *DATA)
 MARK = "__BUNDLE__"
 KINDS = ("good", "broken", "failing")
 # What a ``broken`` release reports for its version: not the one it is released as.

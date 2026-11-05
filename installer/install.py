@@ -57,6 +57,7 @@ if not _on_path:
 _write_bytecode, sys.dont_write_bytecode = sys.dont_write_bytecode, True
 try:
     from helpers import claude_release, instructions, seccomp
+    from helpers.clock import Deadline, RealBound
     from helpers.rules import EMAIL, Rule
     from installer import upgrade
 finally:
@@ -123,7 +124,7 @@ UPGRADE_WRAPPER = ROOT / "bin" / "rcman-upgrade"
 UPGRADE_DIR = upgrade.STATUS_DIR
 UPGRADE_DIR_MODE = 0o750
 # How long the clone's origin may take to answer git ls-remote when the option is turned on.
-LS_REMOTE_TIMEOUT = 120
+LS_REMOTE_TIMEOUT = RealBound(120)
 # A clone's path as a unit's ExecStart= holds it as it is: nothing systemd would split, quote,
 # expand (% and $) or escape.
 UNIT_PATH = re.compile(r"/[A-Za-z0-9._/+-]*")
@@ -223,10 +224,10 @@ CGROUP_ROOT = Path("/sys/fs/cgroup")
 # The cgroup controllers limits on memory, CPU and processes need the user manager to have.
 LIMIT_CONTROLLERS = ("cpu", "memory", "pids")
 # How long rcman's user manager may take to bring up its Podman socket.
-SOCKET_WITHIN = 60.0
+SOCKET_WITHIN = Deadline(60.0)
 # Where Claude Code's releases are: helpers/claude_release.py, which rcman fetches them with too.
 CLAUDE_DOWNLOAD = claude_release.DOWNLOAD
-HEALTH_TIMEOUT = 60.0
+HEALTH_TIMEOUT = Deadline(60.0)
 
 LABEL = r"(?!-)[A-Za-z0-9-]+(?<!-)"  # a host name label: no leading or trailing hyphen
 HOSTNAME = re.compile(LABEL + r"(?:\." + LABEL + r")+")
@@ -1836,7 +1837,7 @@ CADDY_APPLIED = ETC / "caddy.applied"
 CADDY_UNIT = "caddy.service"
 # Ubuntu's other unit for Caddy, which reads no Caddyfile: configured through its admin API.
 CADDY_API_UNIT = "caddy-api.service"
-VALIDATE_WITHIN = 60.0
+VALIDATE_WITHIN = RealBound(60.0)
 
 
 def ask_url(ask_port: str) -> str:

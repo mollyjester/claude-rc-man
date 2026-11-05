@@ -1,10 +1,13 @@
 """The fake claude as a Claude Code release (tests/claude_download.py): what the
 installer downloads in the container suite, as it downloads the real one."""
 
+import ast
 import hashlib
+import importlib.util
 import json
 import os
 import subprocess
+from pathlib import Path
 
 from installer import install as ins
 from tests import claude_download
@@ -117,3 +120,52 @@ def test_an_unknown_kind_of_release_is_refused(tmp_path):
 
     with pytest.raises(ValueError):
         claude_download.release(tmp_path, "4.0.0", "perfect")
+
+
+def _repository_imports(rel: str, root: Path = claude_download.REPO) -> set[str]:
+    """The repository's own files a Python file imports, read independently of the bundle."""
+    found = set()
+    for node in ast.walk(ast.parse((root / rel).read_text(encoding="utf-8"))):
+        names = []
+        if isinstance(node, ast.Import):
+            names = [a.name for a in node.names]
+        elif isinstance(node, ast.ImportFrom):
+            package = Path(rel).parent.as_posix().replace("/", ".")
+            base = importlib.util.resolve_name("." * node.level + (node.module or ""), package)
+            names = [base, *(f"{base}.{a.name}" for a in node.names)]
+        for name in names:
+            path = root / Path(*name.split("."))
+            for candidate in (path.with_suffix(".py"), path / "__init__.py"):
+                if candidate.is_file():
+                    found.add(candidate.relative_to(root).as_posix())
+    return found
+
+
+def test_the_bundle_holds_every_module_of_the_repository_its_python_imports():
+    """The fake runs from the bundle alone: a module of the repository one of its files
+    imports, and that one's own, must be in it."""
+    python = [p for p in claude_download.PARTS if p.endswith(".py")]
+    assert "devtools/fake_claude.py" in python and "helpers/clock.py" in python
+    for rel in python:
+        assert _repository_imports(rel) <= set(python), rel
+
+
+def test_the_bundle_follows_an_import_planted_in_a_module_it_holds(tmp_path):
+    """Planted twin: the parts are derived, so a new import is followed."""
+    files = {
+        "devtools/__init__.py": "",
+        "devtools/fake_claude.py": "from devtools import first\n",
+        "devtools/first.py": "import helpers.second\nfrom . import third\n",
+        "devtools/third.py": "from .fourth import name\n",
+        "devtools/fourth.py": "name = 1\n",
+        "helpers/__init__.py": "",
+        "helpers/second.py": "import json\n",
+        "helpers/unused.py": "",
+    }
+    for rel, text in files.items():
+        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / rel).write_text(text, encoding="utf-8")
+    parts = set(claude_download.python_parts(tmp_path))
+    assert parts == set(files) - {"helpers/unused.py"}
+    for rel in parts:  # the independent reading agrees on the planted tree, relative imports too
+        assert _repository_imports(rel, tmp_path) <= parts, rel

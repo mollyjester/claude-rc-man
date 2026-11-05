@@ -288,7 +288,8 @@ and a frozen wait nothing ended within the hang bound (`ClockHung`, raised in th
 closed clock records nothing and raises nothing, and its waits stay frozen and still end on their
 primitive, so that a thread that outlives the test waits on quietly.
 `tests/test_clocks.py` holds the clock to this, the registry's own cases in child pytests;
-`tests/test_clock.py` holds the real clock to the standard library it hands each call to.
+`tests/test_clock.py` holds the real clock to the standard library it hands each call to, and
+[Time only through the clock](#repository-guards) holds the product to the clock.
 
 ### Known flaky test
 
@@ -831,6 +832,55 @@ it can fail, and a positive control that keeps an empty input from passing.
   Each layer has planted twins in a scratch repository, the plant confirmed
   before the guard is shown firing, and an empty corpus, or one without a
   Python file under each root or without a service template, fails the guard.
+- **Time only through the clock** (`tests/test_on_the_clock.py`). Nothing outside the clock
+  reads the time or waits on real time, and every timing value says what kind of seconds it
+  is. It reads the corpus of `devtools/docs_guard.py`: the Python files under `ROOTS` in the
+  test (`backend/rcman/`, `helpers/`, `helpers/clock.py` among them, and `installer/`) and the
+  fake `claude` (`FAKE`); the tests and the other devtools are outside it, and so are the
+  workspace's shell scripts and a child program's text held in a string. Its rules, each a
+  site's rule letter:
+  - *(a)* no time read and no timed wait but through a clock: what `RealClock`'s body hands
+    each call to, read from it, with the rest of `time`'s and `datetime`'s reads, the event
+    loop's time and timers and the standard library's other timed waits, a socket's timeouts
+    among them (`FORBIDDEN`, `WALL`, `TIMED`, `METHODS` and `TIMERS` in the test). An alias is
+    followed wherever the file imports it or assigns a time module or one of its classes to a
+    name, a reference counts without a call, and so does `getattr` of `time`. A wait with no
+    seconds is allowed, and so is `asyncio.sleep(0)`, a yield. A clock call is a call of a
+    timed method only the clock has, read from the protocol, on anything but a module, or of
+    one it shares with the standard library on a receiver whose last name holds "clock",
+    given its seconds where the protocol has them;
+  - *(b)* every seconds value at a timed site is classified: a clock call's seconds, at the
+    position of the `Clock` protocol's `seconds`; any `timeout=`, written or in a `**` of a
+    dict written out; a timeout the standard library takes by position
+    (`POSITIONAL_TIMEOUTS`); the corpus's own parameters named in `TIMED_PARAMETERS`, their
+    defaults, a class's fields of those names and what a call gives them, matched by the function's name, where only a value
+    that reads as seconds counts, since other parameters share the names; and what a program
+    is handed after `timeout` or `sleep` in an argument list, or in `--time=` and `--timeout=`,
+    written or formatted. `allowed` in the test says what is classified: a marker call, a
+    constant that has one or is exempt under *(e)*, followed across the corpus's imports, a
+    parameter or a local whose every value is classified, an object's attribute, a call's
+    result (`KEEPING`'s calls and `math.ceil` keep their arguments' kind),
+    `None` or `0`, and arithmetic of them in which a number is only a factor or a divisor of
+    something that is not a number. Seconds written as text (`SECONDS_TEXT`) are not
+    classified. The seconds of a wait *(a)* finds are that site's;
+  - *(c)* no name `PollOwn`: a wait on rcman's own state is an event or a condition;
+  - *(d)* no subscript or `.get` of `globals()`, `vars()` or `locals()`, which would hide a
+    constant from *(b)*;
+  - *(e)* every numeric constant, a module's or a class's, whose name `SECONDS_NAME` matches
+    is a marker call.
+
+  What it does not follow, which review covers, is listed in the test's docstring, a module
+  reached through `importlib` or `__import__` among it.
+
+  The markers are the `NewType`s of `helpers/clock.py`, read from it. `FORMS` in the test
+  plants each form, at module level and in a function, and `CLEAN` what it leaves alone. What
+  is not on the clock yet is `NOT_YET_ON_THE_CLOCK`, keyed by file, qualified name, rule and
+  the site's text, each with the number of sites it covers, its reason and its `Owner`, the
+  change that removes it; fewer sites than the number is stale, more are flagged, and an owner
+  with no exemption left fails. The one permanent exemption is the class `RealClock`, whose
+  every method's sites must be found. Planted twins run in memory and in a scratch repository,
+  where an untracked module is read and a root with no Python file, or a clock without
+  `RealClock`, fails the guard.
 - **The guide lists everything the installer makes** (`tests/test_install.py`).
   The "Removing rcman" section of `docs/installation.md` names every path,
   account, group, unit, command and package the installer's constants hold, as

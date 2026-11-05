@@ -914,7 +914,10 @@ Its default, `REAL`, a `RealClock`, holds nothing and hands each call to the sta
 the module is the standard library only, so that the canary can import it through the helpers
 mount. The markers beside it (`Deadline`, `Grace`, `Pace`, `PollExternal`, `RealBound`,
 `Handed`) say, in call form, what kind of seconds a value is; the module's docstring says what
-each means, and that a wait on rcman's own state is an event or a condition, never a poll.
+each means, and that a wait on rcman's own state is an event or a condition, never a poll. Every timing
+constant carries its marker, and nothing outside the clock reads the time or waits on real time:
+`tests/test_on_the_clock.py` holds both, and names what is not on the clock yet
+([tests.md](tests.md#repository-guards)).
 
 `create_app`'s `clocks`, a `Clocks`, gives each part of the app that takes a clock its own, a
 field for each, which `Clocks`' docstring names; a part's token buckets share its clock (the

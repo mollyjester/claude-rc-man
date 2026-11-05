@@ -46,6 +46,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from helpers import claude_release, rules
+from helpers.clock import Grace
 from rcman import db
 from rcman.problems import CLAUDE_INSTALL_MESSAGES, CLAUDE_INSTALL_STATUS, Problem
 from rcman.runtime import CANARY_NAME, CANDIDATE, HELPERS_DIR, RuntimeFailed, RuntimeUnavailable
@@ -59,7 +60,7 @@ STAGING_FOLDER = "claude-staging"
 # Who an approval is by when rcman made it itself: adopting what the installer left.
 ADOPTED_BY = "rcman"
 # How long a version just put in the store is left alone by pruning.
-PRUNE_GRACE_SECONDS = 3600.0
+PRUNE_GRACE_SECONDS = Grace(3600.0)
 # The store's files and folders are readable by every uid range (the workspaces') and
 # writable by their owner alone.
 MODE = 0o755

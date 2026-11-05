@@ -12,8 +12,10 @@ The markers say what kind of seconds a value is, where it is written, in call fo
 something to finish of itself; a Pace, a wait between two things done in turn; PollExternal, a
 wait between two looks at something outside rcman, which only ``poll`` is given; RealBound, a
 bound in real time handed to the standard library or a program (``subprocess``'s ``timeout=``);
-and Handed, a value written into another program's arguments. A wait between two looks at
-rcman's own state has no marker: it is an event or a condition instead.
+and Handed, a value written into what another program is given, its arguments or a header. A
+wait between two looks at rcman's own state has no marker: it is an event or a condition
+instead. Every timing constant carries its marker: tests/test_on_the_clock.py holds the product
+to that, and names what is not on the clock yet.
 
 The standard library only, with nothing beyond Python 3.12: the canary reaches it through the
 helpers mount (runtime.py), and a helper that uses it imports it at the top of its module.

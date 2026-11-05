@@ -22,6 +22,7 @@ from collections.abc import Callable, Iterable
 from pathlib import PurePosixPath
 
 from helpers import git_run
+from helpers.clock import Deadline, Handed
 from rcman import problems
 from rcman.channel import ChannelBroken, ChannelTimeout, Result
 from rcman.problems import Problem
@@ -41,14 +42,14 @@ HAS_PASSWORD = (
     'case $line in password=*[![:space:]]*) exit 0;; esac; done < "$1"; exit 1'
 )
 # How long a verb's git calls may take, all together; fetch, push and sync, over the network.
-GIT_TIMEOUT = 30.0
-GIT_NETWORK_TIMEOUT = 120.0
+GIT_TIMEOUT = Deadline(30.0)
+GIT_NETWORK_TIMEOUT = Deadline(120.0)
 # How long a clone may take: a whole repository, over the network.
-CLONE_TIMEOUT = 1800.0
+CLONE_TIMEOUT = Deadline(1800.0)
 # How long after TERM a git that has not ended is left before it is killed, and the time
 # a runner is given beyond a call's deadline to answer.
-KILL_GRACE_SECONDS = 5
-ANSWER_MARGIN_SECONDS = 10
+KILL_GRACE_SECONDS = Handed(5)
+ANSWER_MARGIN_SECONDS = Deadline(10)
 # The longest file name taken, and the most files one stage or unstage takes.
 MAX_PATH_LENGTH = 1024
 MAX_FILES_PER_CALL = 500

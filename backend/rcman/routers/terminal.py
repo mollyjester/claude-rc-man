@@ -29,6 +29,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Query, WebSocket
 from starlette.websockets import WebSocketDisconnect, WebSocketState
 
+from helpers.clock import Deadline, PollExternal
 from rcman import db, people, problems
 from rcman.audit import (
     OK,
@@ -52,10 +53,10 @@ router = APIRouter(tags=["terminal"])
 # browser tests' backend): the one whose keepalive ping ends a terminal whose page vanished.
 WEBSOCKETS = "websockets-sansio"
 # How often an open terminal looks whether its person and its workspace are still as it opened.
-REVOCATION_SECONDS = 5.0
+REVOCATION_SECONDS = PollExternal(5.0)
 # How long the page has, once the socket is accepted, to send the first resize; the page sends
 # it as the socket opens.
-FIRST_RESIZE_SECONDS = 15.0
+FIRST_RESIZE_SECONDS = Deadline(15.0)
 NOT_ALLOWED = "not_allowed"
 
 # The terminal's protocol: the route and its query, the frames, the sizes, the close codes and

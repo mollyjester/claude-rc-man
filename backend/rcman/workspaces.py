@@ -28,6 +28,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
 from helpers import git_run, instructions, rules
+from helpers.clock import Deadline, Handed, Pace, PollExternal
 from rcman import builder, db, devcontainer, forwards, limits, people
 from rcman.channel import (
     REQUEST_TIMEOUT,
@@ -92,28 +93,28 @@ RECOVERABLE = frozenset(
     ("hook_failed", "hook_timeout", "image_gone", "built_image_gone", "default_image_gone")
 )
 # A channel unused this long is closed; it is opened again when next needed.
-CHANNEL_IDLE_SECONDS = 300.0
+CHANNEL_IDLE_SECONDS = Deadline(300.0)
 # How often idle channels, and sign-outs that wait for servers that have ended, are
 # looked for.
-IDLE_CHECK_SECONDS = 30.0
+IDLE_CHECK_SECONDS = Pace(30.0)
 # How long the limits report may take in all: each reading asks the unit manager, one after the
 # other, and one that does not answer takes up to rcman's timeout for it. The readings left
 # when the time is used are not made, and are shown as not read.
-LIMITS_REPORT_SECONDS = 2 * SYSTEMCTL_TIMEOUT
+LIMITS_REPORT_SECONDS = Deadline(2 * SYSTEMCTL_TIMEOUT)
 # The file, in the database's folder, that the service and rcman-admin lock to change limits.
 LOCK_FILE = "rcman.lock"
 # How long one wait for the runtime lasts before restore tries again, or stops when
 # rcman does; and how long rcman's shutdown waits for restore to stop.
-RUNTIME_WAIT_SECONDS = 5.0
+RUNTIME_WAIT_SECONDS = Deadline(5.0)
 # How many workspaces' servers are read at once for a listing.
 LISTING_WORKERS = 8
 # How long deleting a person waits for a workspace still being made.
-MADE_WITHIN_SECONDS = 600.0
+MADE_WITHIN_SECONDS = Deadline(600.0)
 # How often work a deletion has to stop (``_working_on``) looks whether another process,
 # rcman-admin, deleted its workspace, and how often deleting a person looks whether the
 # workspaces being made are gone; and the name of the thread that looks, before the
 # workspace's id.
-WORKING_POLL_SECONDS = 1.0
+WORKING_POLL_SECONDS = PollExternal(1.0)
 WATCHER_PREFIX = "watching-workspace-"
 # Most of what the runtime said that a failed workspace keeps.
 MAX_ERROR_CHARS = 2000
@@ -127,8 +128,8 @@ NAME_TRIES = 1000
 REDACTED = "***"
 # How long one lifecycle command of a repository's devcontainer.json may run before it is
 # stopped, and how long after TERM it is left before it is killed.
-HOOK_TIMEOUT_SECONDS = 1800
-HOOK_KILL_GRACE_SECONDS = KILL_GRACE_SECONDS
+HOOK_TIMEOUT_SECONDS = Handed(1800)
+HOOK_KILL_GRACE_SECONDS = Handed(KILL_GRACE_SECONDS)
 # The most of a command's output the log keeps, and the most of what podman said that a failed
 # pull's message holds.
 HOOK_LOG_TAIL_CHARS = 1000

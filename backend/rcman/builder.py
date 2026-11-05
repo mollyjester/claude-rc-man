@@ -32,7 +32,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import NamedTuple
 
-from helpers.clock import REAL, Clock
+from helpers.clock import REAL, Clock, Deadline, Pace, PollExternal
 
 # --- what the builder is run with ----------------------------------------------------------------
 
@@ -150,10 +150,10 @@ def sink_argv(tar: Sequence[str], folder: str) -> list[str]:
 MAX_CONTEXT_BYTES = 2 * 1024**3
 MAX_IMAGE_BYTES = 20 * 1024**3
 # How long a build may take, and how long each copy may take.
-BUILD_SECONDS = 3600.0
-COPY_SECONDS = 3600.0
+BUILD_SECONDS = Deadline(3600.0)
+COPY_SECONDS = Deadline(3600.0)
 # How often a running build is looked at for a stop, and how many bytes the pump moves at once.
-BUILD_POLL_SECONDS = 1.0
+BUILD_POLL_SECONDS = PollExternal(1.0)
 CHUNK_BYTES = 1024 * 1024
 
 # The most of an image's description (``podman image inspect``) that is read from the builder,
@@ -173,7 +173,7 @@ IMAGE_ID = re.compile(r"[0-9a-f]{64}\Z")
 # How often a step of the build is reported to the person, and how many of the last lines of what
 # the builder said are kept for a failure, how long a line may be, how much of a line that has
 # not ended is held, and the most of what a command says that is kept.
-PROGRESS_SECONDS = 5.0
+PROGRESS_SECONDS = Pace(5.0)
 TAIL_LINES = 40
 MAX_LINE_CHARS = 300
 MAX_LINE_BYTES = 64 * 1024

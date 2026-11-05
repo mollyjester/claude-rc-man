@@ -23,6 +23,7 @@ import time
 from dataclasses import dataclass
 
 from helpers import screens
+from helpers.clock import Deadline, Handed
 from rcman import db, people
 from rcman.channel import Channel
 from rcman.claude_server import (
@@ -40,11 +41,11 @@ log = logging.getLogger("rcman.accounts")
 log.setLevel(logging.INFO)
 
 # How long a sign-in waits for its code; its container ends itself then.
-CODE_WAIT_SECONDS = 900.0
+CODE_WAIT_SECONDS = Handed(900.0)
 # How long Claude may take to show its sign-in link, and to take a code.
-LOGIN_TIMEOUT = 60.0
+LOGIN_TIMEOUT = Deadline(60.0)
 # How long the container a sign-out runs `claude auth logout` in may live.
-LOGOUT_SECONDS = 120.0
+LOGOUT_SECONDS = Handed(120.0)
 # The tmux buffer the code goes through.
 CODE_BUFFER = "rcman-code"
 
