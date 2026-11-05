@@ -320,10 +320,13 @@ class Relay:
     input goes to the port and whose output is what the port answers, and the HTTP state of the
     connection."""
 
-    def __init__(self, process: asyncio.subprocess.Process, target: Target, person: int):
+    def __init__(
+        self, process: asyncio.subprocess.Process, target: Target, person: int, clock: Clock
+    ):
         self.process = process
         self.target = target
         self.person = person
+        self.clock = clock
         self.http = h11.Connection(h11.CLIENT, max_incomplete_event_size=MOST_HEAD)
         self.watch: asyncio.Task | None = None
         self.closed = False
@@ -359,7 +362,7 @@ class Relay:
         with contextlib.suppress(Exception):
             self.process.stdin.close()
         try:
-            await asyncio.wait_for(self.process.wait(), RELAY_ENDS_WITHIN)
+            await self.clock.within(self.process.wait(), RELAY_ENDS_WITHIN)
         except TimeoutError:
             with contextlib.suppress(ProcessLookupError):
                 self.process.kill()
@@ -395,8 +398,9 @@ class Splice:
 class Exchange:
     """One request on a browser's connection, as Caddy passed it on."""
 
-    def __init__(self, conn: h11.Connection, reader, writer, request: h11.Request):
+    def __init__(self, conn: h11.Connection, reader, writer, request: h11.Request, clock: Clock):
         self.conn, self.reader, self.writer, self.request = conn, reader, writer, request
+        self.clock = clock
         self.method = request.method.decode("ascii", "replace")
         self.target = request.target.decode("ascii", "replace")
         self.path, _, self.query = self.target.partition("?")
@@ -461,7 +465,7 @@ class Exchange:
         close = not self.settled()
         if close:
             try:
-                close = await asyncio.wait_for(self.body(MOST_DRAINED), DRAIN_SECONDS) is None
+                close = await self.clock.within(self.body(MOST_DRAINED), DRAIN_SECONDS) is None
             except (TimeoutError, h11.RemoteProtocolError):
                 close = True
         sent = [*headers, ("content-length", str(len(body)))]
@@ -640,8 +644,14 @@ class Forwarding:
         if threading.get_ident() == self._loop_thread:
             loop.create_task(ending())
             return
+        done = threading.Event()
         try:
-            asyncio.run_coroutine_threadsafe(ending(), loop).result(FROM_THREAD_SECONDS)
+            future = asyncio.run_coroutine_threadsafe(ending(), loop)
+            future.add_done_callback(lambda _: done.set())
+            if not self.clock.wait(done, FROM_THREAD_SECONDS):
+                log.error("the forwarded ports were not all closed in time")
+                return
+            future.result()
         except Exception:  # noqa: BLE001 - logged; the sweep that follows ends what is left
             log.exception("the forwarded ports were not all closed")
 
@@ -655,8 +665,7 @@ class Forwarding:
                 for relay in self._idle.pop(key, []):
                     await self._drop(relay)
         for splice in splices:
-            with contextlib.suppress(TimeoutError):
-                await asyncio.wait_for(splice.finished.wait(), FROM_THREAD_SECONDS)
+            await self.clock.await_event(splice.finished, FROM_THREAD_SECONDS)
 
     # --- the hand-off's side (routers/forward.py), in a request's thread ------------------
 
@@ -795,13 +804,13 @@ class Forwarding:
                     if deadline is None:
                         within = IDLE_CONNECTION_SECONDS
                     else:
-                        within = deadline - asyncio.get_running_loop().time()
+                        within = deadline - self.clock.now()
                     try:
-                        data = await asyncio.wait_for(reader.read(READ_CHUNK), max(within, 0))
+                        data = await self.clock.within(reader.read(READ_CHUNK), within)
                     except TimeoutError:
                         return
                     if data and deadline is None:
-                        deadline = asyncio.get_running_loop().time() + HEAD_SECONDS
+                        deadline = self.clock.now() + HEAD_SECONDS
                     conn.receive_data(data)
                     continue
                 if type(event) is not h11.Request:
@@ -809,7 +818,7 @@ class Forwarding:
                 if head_size(event) > MOST_HEAD:
                     await self._refuse_head(conn, writer, 431)
                     return
-                exchange = Exchange(conn, reader, writer, event)
+                exchange = Exchange(conn, reader, writer, event, self.clock)
             handler = self.handlers[self.route(exchange)]
             switched = await handler(exchange)
             if switched or conn.our_state is not h11.DONE or conn.their_state is not h11.DONE:
@@ -898,7 +907,7 @@ class Forwarding:
             return False
         kind = (x.header("content-type") or "").partition(";")[0].strip().lower()
         try:
-            body = await asyncio.wait_for(x.body(MOST_ENTER_BODY), BODY_SECONDS)
+            body = await self.clock.within(x.body(MOST_ENTER_BODY), BODY_SECONDS)
         except TimeoutError:
             await x.bare(408)
             return False
@@ -962,7 +971,7 @@ class Forwarding:
         def write():
             con = db.connect(self.settings.database)
             try:
-                audit.write(con, record, result)
+                audit.write(con, record, result, self.clock)
             finally:
                 con.close()
 
@@ -1259,7 +1268,7 @@ class Forwarding:
         if self._gone(session):
             await self._drop(relay)
             return
-        opened = audit.Opened("websocket", session.identity, self.settings.database)
+        opened = audit.Opened("websocket", session.identity, self.settings.database, self.clock)
         opened.target = target.host
         splice = Splice(session)
         session.splices.add(splice)
@@ -1304,8 +1313,8 @@ class Forwarding:
             await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
             if up.done() and not down.done() and not ended.done():
                 # The browser has gone: what it sent last leaves the relay's pipe first.
-                await asyncio.wait({down, ended}, timeout=SPLICE_DRAIN_SECONDS,
-                                   return_when=asyncio.FIRST_COMPLETED)  # fmt: skip
+                await self.clock.await_tasks({down, ended}, SPLICE_DRAIN_SECONDS,
+                                             asyncio.FIRST_COMPLETED)  # fmt: skip
         finally:
             for task in tasks:
                 task.cancel()
@@ -1321,10 +1330,16 @@ class Forwarding:
         while idle:
             relay = idle.pop()
             if relay.usable():
-                relay.watch.cancel()
-                relay.watch = None
-                relay.reused, relay.heard, relay.head_written = True, False, False
-                return relay
+                watch, relay.watch = relay.watch, None
+                watch.cancel()
+                try:
+                    await asyncio.wait({watch})  # its read ended before it is read again
+                except BaseException:  # neither kept nor handed on: closed, off the caps
+                    await asyncio.shield(self._drop(relay))
+                    raise
+                if relay.usable():  # not ended by the watch meanwhile
+                    relay.reused, relay.heard, relay.head_written = True, False, False
+                    return relay
             await self._drop(relay)
         person = session.identity.person
         slot = await self._reserve(target, person)
@@ -1336,7 +1351,7 @@ class Forwarding:
             )  # fmt: skip
         finally:
             self._relays.discard(slot)
-        relay = Relay(process, target, person)
+        relay = Relay(process, target, person, self.clock)
         self._relays.add(relay)
         self._touched.add(target.workspace)
         return relay
@@ -1402,7 +1417,7 @@ class Forwarding:
         """An idle relay, ended when the app closes it or says anything, or after
         POOL_IDLE_SECONDS."""
         with contextlib.suppress(TimeoutError):
-            await asyncio.wait_for(relay.process.stdout.read(1), POOL_IDLE_SECONDS)
+            await self.clock.within(relay.process.stdout.read(1), POOL_IDLE_SECONDS)
         idle = self._idle.get(key, [])
         if relay in idle:
             idle.remove(relay)
@@ -1416,7 +1431,7 @@ class Forwarding:
 
     async def _reap_loop(self) -> None:
         while True:
-            await asyncio.sleep(REAP_SECONDS)
+            await self.clock.asleep(REAP_SECONDS)
             try:
                 self.reap()
             except Exception:  # noqa: BLE001 - the next round tries again

@@ -10,6 +10,7 @@ the real argv against a stand-in for systemctl."""
 
 from __future__ import annotations
 
+import datetime as dt
 import json
 import stat
 import threading
@@ -18,8 +19,11 @@ from pathlib import Path
 import pytest
 from rcman import db, people
 from rcman import rcman_upgrade as up
+from rcman.main import Clocks
 
+from tests.clocks import PhasedClock
 from tests.conftest import ALICE, BOB, as_user, changing, ended
+from tests.hang_guard import HANG_GUARD
 
 ROUTE = "/api/rcman/upgrade"
 BOOT = "6f1c2a7e-0d4b-4b1e-9a51-3c2d1e0f9a88"
@@ -83,6 +87,31 @@ def paths(tmp_path, monkeypatch):
     monkeypatch.setattr(up, "BOOT_ID", folder / "boot_id")
     monkeypatch.setattr(up, "PREFIX", folder / "current" / ".venv")
     return folder
+
+
+@pytest.fixture
+def clock():
+    """The upgrades' clock, which the test moves; it does not move otherwise."""
+    return PhasedClock()
+
+
+@pytest.fixture
+def service_clock():
+    """The workspaces' service's clock, which the test moves; it does not move otherwise."""
+    return PhasedClock()
+
+
+@pytest.fixture
+def clocks(request):
+    """Given to the app before the client starts it (tests/conftest.py ``app``): the upgrades
+    on ``clock`` and the service on ``service_clock`` for a test that asks for each, on the
+    real one for the rest."""
+    given = {"clock": "upgrade", "service_clock": "workspaces"}
+    return Clocks(**{
+        part: request.getfixturevalue(name)
+        for name, part in given.items()
+        if name in request.fixturenames
+    })  # fmt: skip
 
 
 @pytest.fixture
@@ -325,12 +354,16 @@ def test_a_run_that_started_and_ended_between_two_reports_is_seen_by_its_status(
     assert get(client)["state"] == "failed"
 
 
+@pytest.mark.parametrize("short", [0, 1])
 def test_a_request_that_never_started_is_not_started_once_the_grace_is_over(
-    paths, client, show, monkeypatch
+    paths, client, show, clock, short
 ):
     assert post(client).status_code == 202
     assert get(client)["state"] == "requested"
-    monkeypatch.setattr(up, "UPGRADE_START_GRACE", 0.0)
+    clock.advance(up.UPGRADE_START_GRACE - short)
+    if short:  # the twin: a second short of its grace, it is still requested
+        assert get(client)["state"] == "requested"
+        clock.advance(short)
     report = get(client)
     assert (report["state"], report["available"], report["reason"]) == (
         "not_started", True, None,
@@ -438,12 +471,14 @@ def test_systemctl_refusing_is_an_error(tmp_path, monkeypatch):
 # --- asking for an upgrade ----------------------------------------------------------------------
 
 
-def test_a_request_is_admitted_written_and_recorded(paths, client, show, settings):
+def test_a_request_is_admitted_written_and_recorded(paths, client, show, settings, clock):
     r = post(client)
     assert r.status_code == 202, r.text
     assert set(r.json()) == KEYS and r.json()["state"] == "requested"
     request = up.REQUEST
     assert request.is_file() and not request.is_symlink()
+    at = dt.datetime.fromtimestamp(clock.wall(), dt.UTC).isoformat(timespec="seconds")
+    assert request.read_text(encoding="utf-8") == at + "\n"  # stamped on the upgrades' clock
     assert stat.S_IMODE(request.stat().st_mode) & 0o077 == 0
     before = request.stat().st_mtime_ns
     last = audit_rows(settings)[-1]
@@ -454,15 +489,24 @@ def test_a_request_is_admitted_written_and_recorded(paths, client, show, setting
     assert request.stat().st_mtime_ns == before
 
 
-def test_a_request_after_one_that_never_started_is_admitted_again(paths, client, show, monkeypatch):
+@pytest.mark.parametrize("short", [0, 1])
+def test_a_request_after_one_that_never_started_is_admitted_again(
+    paths, client, show, clock, short
+):
     assert post(client).status_code == 202
-    monkeypatch.setattr(up, "UPGRADE_START_GRACE", 0.0)
+    clock.advance(up.UPGRADE_START_GRACE - short)
+    if short:  # the twin: a second short of its grace, the first still holds
+        r = post(client)
+        assert (r.status_code, r.json()["reason"]) == (409, "under_way")
+        clock.advance(short)
     assert post(client).status_code == 202
 
 
-def test_requests_are_limited_by_a_token_bucket(paths, client, show, monkeypatch):
-    monkeypatch.setattr(up, "UPGRADE_START_GRACE", 0.0)  # each request may be admitted again
-    answers = [post(client).status_code for _ in range(up.REQUESTS_BURST)]
+def test_requests_are_limited_by_a_token_bucket(paths, client, show, clock):
+    answers = []
+    for _ in range(up.REQUESTS_BURST):
+        answers.append(post(client).status_code)
+        clock.advance(up.UPGRADE_START_GRACE)  # each request may be admitted again
     assert answers == [202] * up.REQUESTS_BURST
     r = post(client)
     assert (r.status_code, r.json()["code"]) == (429, "too_many_requests")
@@ -571,14 +615,33 @@ def held_images(app):
     return go, thread
 
 
+@pytest.mark.parametrize("short", [0, 1])
 def test_a_request_waits_only_so_long_for_the_images_to_be_collected(
-    client, show, app, monkeypatch
+    client, show, app, service_clock, short
 ):
-    monkeypatch.setattr(up, "ADMISSION_WAIT", 0.2)
     go, thread = held_images(app)
+    answered: list = []
+
+    def asking():
+        try:
+            answered.append(app.state.upgrade.request())
+        except up.Refused as refused:
+            answered.append(refused)
+
+    asker = threading.Thread(target=asking, daemon=True)
+    service_clock.lend(asker)
     try:
-        r = post(client)
-        assert (r.status_code, r.json()["reason"]) == (409, "images")
+        asker.start()
+        service_clock.wait_parked(1)  # it waits for the images' lock
+        service_clock.advance(up.ADMISSION_WAIT - short)
+        if short:  # the twin: a second short of its wait, it waits on
+            service_clock.wait_parked(1)
+            assert asker.is_alive() and answered == []
+            service_clock.advance(short)
+        asker.join(HANG_GUARD)
+        assert not asker.is_alive()
+        [refused] = answered
+        assert isinstance(refused, up.Refused) and refused.extra["reason"] == "images"
         assert not up.REQUEST.exists()
     finally:
         go.set()
@@ -586,12 +649,14 @@ def test_a_request_waits_only_so_long_for_the_images_to_be_collected(
     assert post(client).status_code == 202  # once they are collected
 
 
-def test_a_request_waits_for_a_collection_within_the_admission_wait(client, show, app, settings):
+def test_a_request_waits_for_a_collection_within_the_admission_wait(
+    client, show, app, settings, service_clock
+):
     go, thread = held_images(app)
     answered: list = []
     asking = threading.Thread(target=lambda: answered.append(app.state.upgrade.request()))
     asking.start()
-    asking.join(0.3)
+    service_clock.wait_parked(1)
     assert asking.is_alive() and not up.REQUEST.exists()  # it waits for the lock
     go.set()
     asking.join(10)
@@ -682,7 +747,7 @@ def test_a_running_upgrade_freezes_creation_in_a_service_that_never_saw_the_requ
 
 
 def test_the_freeze_holds_while_a_started_run_has_not_written_its_status_yet(
-    paths, client, show, monkeypatch
+    paths, client, show, clock
 ):
     """Between the service's start and the wrapper's first write the status is the last run's:
     a report read then must not let the request go, or creation would be let in meanwhile."""
@@ -694,7 +759,7 @@ def test_the_freeze_holds_while_a_started_run_has_not_written_its_status_yet(
     r = client.post("/api/workspaces", json={"name": "another"}, headers=changing(ALICE))
     assert (r.status_code, r.json()["code"]) == (409, "rcman_upgrading")
     # still so once the grace for a start is over: the service runs
-    monkeypatch.setattr(up, "UPGRADE_START_GRACE", 0.0)
+    clock.advance(up.UPGRADE_START_GRACE)
     assert get(client)["state"] == "running"
     r = client.post("/api/workspaces", json={"name": "another"}, headers=changing(ALICE))
     assert (r.status_code, r.json()["code"]) == (409, "rcman_upgrading")

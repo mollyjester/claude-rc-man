@@ -2727,8 +2727,9 @@ def test_closing_removes_a_workspace_deleted_while_its_build_waited(
 ):
     from tests.test_workspaces import two_processes
 
-    monkeypatch.setattr(ws, "WORKING_POLL_SECONDS", 3600.0)  # the watchers do not look
     with two_processes(settings, runtime, service_clock=clock) as (service, shell):
+        # the watchers do not look: each waits for its work to end and no more
+        monkeypatch.setattr(service, "_watch", lambda workspace, cancel, done: done.wait())
         first, second = builder_and_waiter(service, clock, runtime, publish, settings)
         closing = None
         try:

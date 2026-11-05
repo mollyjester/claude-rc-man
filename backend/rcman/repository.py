@@ -17,12 +17,11 @@ from __future__ import annotations
 
 import functools
 import math
-import time
 from collections.abc import Callable, Iterable
 from pathlib import PurePosixPath
 
 from helpers import git_run
-from helpers.clock import Deadline, Handed
+from helpers.clock import REAL, Clock, Deadline, Handed
 from rcman import problems
 from rcman.channel import ChannelBroken, ChannelTimeout, Result
 from rcman.problems import Problem
@@ -102,14 +101,14 @@ def _as_problem(error: git_run.GitFailed | git_run.GitUnrecognised) -> Problem:
     return Problem("git_unrecognised_output", git=error.lines)
 
 
-def _verb(deadline: str = "GIT_TIMEOUT"):
-    """A verb: one deadline for all its git calls, read from the module's constant named
-    ``deadline`` when the verb is called, and git's refusals as problems."""
+def _verb(deadline: float):
+    """A verb: one deadline for all its git calls, ``deadline`` seconds on the repository's
+    clock from when the verb is called, and git's refusals as problems."""
 
     def wrap(method):
         @functools.wraps(method)
         def verb(self, *args, **kwargs):
-            until = time.monotonic() + globals()[deadline]
+            until = self.clock.now() + deadline
             try:
                 return method(self, until, *args, **kwargs)
             except (git_run.GitFailed, git_run.GitUnrecognised) as failed:
@@ -256,11 +255,12 @@ class Repository:
 
     ``run`` runs an argv in the workspace and answers its result within the seconds it is
     given (a channel's ``run``); ``run_stdin`` does the same with bytes on its standard
-    input (the runtime's ``exec``).
+    input (the runtime's ``exec``). A verb's deadline is on ``clock``.
     """
 
-    def __init__(self, layout: Layout, run: Run, run_stdin: RunStdin):
+    def __init__(self, layout: Layout, run: Run, run_stdin: RunStdin, clock: Clock = REAL):
         self.layout, self.run, self.run_stdin = layout, run, run_stdin
+        self.clock = clock
 
     @property
     def env(self) -> dict[str, str]:
@@ -286,7 +286,7 @@ class Repository:
     # --- running git -------------------------------------------------------------------
 
     def _seconds(self, deadline: float) -> int:
-        left = math.ceil(deadline - time.monotonic())
+        left = math.ceil(deadline - self.clock.now())
         if left < 1:
             raise Problem("git_timeout")
         return left
@@ -367,12 +367,12 @@ class Repository:
 
     # --- reading -----------------------------------------------------------------------
 
-    @_verb()
+    @_verb(GIT_TIMEOUT)
     def version(self, deadline: float) -> tuple[int, int]:
         """The major and minor version of the workspace's git."""
         return git_run.version_of(self._out(["--version"], deadline))
 
-    @_verb()
+    @_verb(GIT_TIMEOUT)
     def status(self, deadline: float) -> dict:
         branch = git_run.Branch()
         lists = {
@@ -412,7 +412,7 @@ class Repository:
             return branch.ahead
         return int(counted.out)
 
-    @_verb()
+    @_verb(GIT_TIMEOUT)
     def branches(self, deadline: float) -> dict:
         local = _Capped(MAX_LISTED_BRANCHES, "branches")
         remote = _Capped(MAX_LISTED_BRANCHES, "branches")
@@ -443,13 +443,13 @@ class Repository:
     def _names(files: list[str]) -> bytes:
         return b"".join(check_file(name) + b"\0" for name in files)
 
-    @_verb()
+    @_verb(GIT_TIMEOUT)
     def stage(self, deadline: float, files: list[str]) -> dict:
         names = self._names(files)
         self._git(["--literal-pathspecs", "add", *PATHSPEC_FROM_STDIN], deadline, stdin=names)
         return {}
 
-    @_verb()
+    @_verb(GIT_TIMEOUT)
     def unstage(self, deadline: float, files: list[str]) -> dict:
         """Unstage files; a staged rename's target takes its origin with it, which would
         otherwise stay staged as deleted."""
@@ -466,7 +466,7 @@ class Repository:
         )
         return {}
 
-    @_verb()
+    @_verb(GIT_TIMEOUT)
     def commit(self, deadline: float, message: str) -> dict:
         """Commit what is staged, with the message on stdin, as the global git
         configuration says; the message is never part of an answer."""
@@ -478,7 +478,7 @@ class Repository:
 
     # --- branches ----------------------------------------------------------------------
 
-    @_verb()
+    @_verb(GIT_TIMEOUT)
     def switch(self, deadline: float, branch: str, remote: bool = False) -> dict:
         """Switch to a local branch, or make a local branch tracking a remote one, which is
         refused before git is asked when a local branch keeps git from making it."""
@@ -493,7 +493,7 @@ class Repository:
         self._git(args, deadline)
         return {"branch": self._current(deadline)}
 
-    @_verb()
+    @_verb(GIT_TIMEOUT)
     def new_branch(self, deadline: float, name: str) -> dict:
         """Make a branch at the current commit and switch to it.
 
@@ -512,13 +512,13 @@ class Repository:
 
     # --- remotes -----------------------------------------------------------------------
 
-    @_verb("GIT_NETWORK_TIMEOUT")
+    @_verb(GIT_NETWORK_TIMEOUT)
     def fetch(self, deadline: float) -> dict:
         """git fetch --prune from the default remote: no files and no local branch change."""
         self._git(["fetch", "--prune"], deadline, network=True)
         return {}
 
-    @_verb("CLONE_TIMEOUT")
+    @_verb(CLONE_TIMEOUT)
     def clone(self, deadline: float, url: str) -> dict:
         """git clone of ``url`` into the work folder, which is empty: every branch, the
         default one checked out. Its own process, as a fetch's, so that it does not hold
@@ -620,7 +620,7 @@ class Repository:
             raise Problem("no_commits_yet")
         return upstream
 
-    @_verb("GIT_NETWORK_TIMEOUT")
+    @_verb(GIT_NETWORK_TIMEOUT)
     def push(self, deadline: float, check: bool = False) -> dict:
         """Push the current branch: one with no upstream as git push -u origin HEAD, and
         otherwise as git push, as the person's push.default says.
@@ -658,7 +658,7 @@ class Repository:
         pushed, problem = _push_problem(self.push)
         return {"commit": made["commit"], "push": pushed, "push_problem": problem}
 
-    @_verb("GIT_NETWORK_TIMEOUT")
+    @_verb(GIT_NETWORK_TIMEOUT)
     def sync(self, deadline: float) -> dict:
         """Bring the current branch up to date with its upstream, then push it, as one
         deadline: git fetch --prune, a fast-forward to the upstream where the branch is

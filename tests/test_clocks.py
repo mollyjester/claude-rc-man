@@ -6,7 +6,9 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import gc
 import threading
+import weakref
 
 import pytest
 
@@ -192,6 +194,161 @@ def test_a_poll_really_sleeps_no_more_than_its_cap_and_moves_no_time(monkeypatch
     assert slept == [("thread", POLL_CAP), ("async", POLL_CAP), ("thread", POLL_CAP / 2)]
     assert clock.now() == START and clock.waiters() == []
     assert [w[:2] for w in clock.waits] == [("poll", 30), ("apoll", 30), ("poll", POLL_CAP / 2)]
+
+
+class Until(threading.Event):
+    """An event that records each wait on it, and waits on it for none of the time."""
+
+    def __init__(self):
+        super().__init__()
+        self.waited: list[float | None] = []
+
+    def wait(self, timeout=None):
+        self.waited.append(timeout)
+        return super().wait(0)
+
+
+@pytest.mark.parametrize("given", [False, True])
+def test_a_poll_until_an_event_waits_on_it_no_more_than_the_cap_and_says_whether_it_is_set(
+    monkeypatch, given
+):
+    clock = PhasedClock()
+    slept = []
+    monkeypatch.setattr(clocks, "_sleep", slept.append)
+    until = Until()
+    if given:
+        until.set()
+    assert clock.poll(30, until=until) is given
+    assert clock.poll(POLL_CAP / 2, until=until) is given
+    assert until.waited == [POLL_CAP, POLL_CAP / 2] and slept == []  # on the event, not slept
+    assert clock.poll(30) is False  # the twin: without one, it sleeps
+    assert slept == [POLL_CAP]
+    assert clock.now() == START and clock.waiters() == []
+    assert [w[:2] for w in clock.waits] == [("poll", 30), ("poll", POLL_CAP / 2), ("poll", 30)]
+
+
+def test_a_poll_until_an_event_ends_when_it_is_set():
+    clock = PhasedClock(hang_after=600)
+    until = threading.Event()
+    gate = threading.Event()
+
+    def polling():
+        while not clock.poll(600, until=until):
+            gate.set()
+        return clock.now()
+
+    worker = lent(clock, polling)
+    assert gate.wait(JOIN)
+    until.set()
+    assert worker.value() == START  # it moved no time
+
+
+def test_wait_polled_counts_a_poll_once_it_has_slept(monkeypatch):
+    clock = PhasedClock()
+    held = threading.Event()
+    monkeypatch.setattr(clocks, "_sleep", lambda seconds: held.wait(JOIN))
+    worker = lent(clock, clock.poll, 30)
+    try:
+        with pytest.raises(AssertionError, match="not 1 polled"):  # the twin: still asleep
+            clock.wait_polled(1, within=0.05)
+    finally:
+        held.set()
+    clock.wait_polled(1)
+    assert worker.value() is False
+    with pytest.raises(AssertionError, match="not 2 polled"):
+        clock.wait_polled(2, within=0.05)
+
+
+def test_wait_polled_counts_a_poll_until_an_event_too():
+    clock = PhasedClock()
+    until = Until()
+    assert clock.poll(30, until=until) is False
+    clock.wait_polled(1, within=0.05)
+
+
+def test_wait_polled_counts_an_apoll_once_it_has_slept(monkeypatch):
+    clock = PhasedClock()
+
+    async def scenario():
+        held = asyncio.Event()
+
+        async def asleep(seconds):
+            await held.wait()
+
+        monkeypatch.setattr(clocks, "_asleep", asleep)
+        polling = asyncio.create_task(clock.apoll(30))
+        await asyncio.sleep(0)
+        assert clock.polls == 0  # the twin: still asleep
+        held.set()
+        await polling
+        assert clock.polls == 1
+
+    asyncio.run(scenario())
+    clock.wait_polled(1, within=0.05)
+
+
+def test_wait_polled_is_told_not_polled():
+    """``wait_polled`` waits on the clock's condition with the whole of its bound."""
+    clock = PhasedClock()
+    recorded = clock._changed = Recorded(clock._lock)
+    lent(clock, clock.poll, 0).value()
+    clock.wait_polled(1)
+    mine = [timeout for thread, timeout in recorded.waited if thread is threading.current_thread()]
+    assert all(t is not None and t > clock.hang_after / 2 for t in mine), mine
+    assert recorded.told >= 1  # the poll told it
+
+
+def test_a_waiter_has_the_seconds_it_was_given():
+    clock = PhasedClock()
+    event = threading.Event()
+    waiting = lent(clock, clock.wait, event, 7)
+    clock.wait_parked(1)
+    assert [(w.method, w.seconds, w.deadline) for w in clock.waiters()] == [("wait", 7, START + 7)]
+    event.set()
+    assert waiting.value() is True
+
+
+def test_wait_parked_where_counts_only_the_waiters_that_match():
+    clock = PhasedClock()
+    other = threading.Event()
+    condition = threading.Condition()
+    gate = threading.Event()
+    looks = []
+
+    def predicate():
+        looks.append(1)
+        if len(looks) == 2:  # its look after the poke is held
+            gate.wait(JOIN)
+        return False
+
+    def matching():
+        with condition:
+            return clock.wait_for(condition, predicate, 5)
+
+    def ours(w):
+        return w.seconds == 5
+
+    unmatched = lent(clock, clock.wait, other, 100)
+    clock.wait_parked(1)
+    with pytest.raises(AssertionError, match="not 1 parked"):  # twin: one parked, not matching
+        clock.wait_parked_where(ours, within=0.05)
+    matched = lent(clock, matching)
+    clock.wait_parked_where(ours)
+    clock.wait_parked(2)
+    with pytest.raises(AssertionError, match="not 2 parked"):
+        clock.wait_parked_where(ours, n=2, within=0.05)
+    try:
+        clock.poke()
+        clock.wait_parked_where(lambda w: w.seconds == 100)  # the other looked again
+        with pytest.raises(AssertionError, match="not 1 parked"):  # twin: ours did not yet
+            clock.wait_parked_where(ours, within=0.05)
+    finally:
+        gate.set()
+    clock.wait_parked_where(ours)
+    clock.advance(5)
+    assert matched.value() is False
+    other.set()
+    assert unmatched.value() is True
 
 
 # --- the free phase ---------------------------------------------------------------------------
@@ -451,6 +608,143 @@ def test_a_bound_given_to_the_clock_is_its_own():
     with pytest.raises(ClockHung, match="wait"):
         clock.wait(threading.Event(), None)
     clock.violations.clear()
+
+
+class RealTime:
+    """Real time as tests/clocks.py reads it, which the test moves."""
+
+    def __init__(self):
+        self.at = 0.0
+
+    def monotonic(self) -> float:
+        return self.at
+
+
+# The real time each poll takes in ``real``, exact in binary.
+TAKES = 0.25
+
+
+@pytest.fixture
+def real(monkeypatch) -> RealTime:
+    """The clock's real time the test's, each poll taking TAKES of it."""
+    made = RealTime()
+    monkeypatch.setattr(clocks, "time", made)
+
+    def sleep(seconds):
+        made.at += TAKES
+
+    async def asleep(seconds):
+        made.at += TAKES
+        await asyncio.sleep(0)
+
+    monkeypatch.setattr(clocks, "_sleep", sleep)
+    monkeypatch.setattr(clocks, "_asleep", asleep)
+    return made
+
+
+def polls(clock: PhasedClock, n: int) -> None:
+    """``n`` polls one after another, from 0 to n * TAKES of real time after the first began."""
+    for _ in range(n):
+        clock.poll(1)
+
+
+@pytest.mark.parametrize("how", ["poll", "apoll"])
+def test_polls_that_go_on_past_the_bound_with_no_advance_are_hung(real, how):
+    clock = PhasedClock(hang_after=1)
+
+    async def apolling():
+        for _ in range(4):  # the twin: the fourth begins within the bound
+            await clock.apoll(1)
+        with pytest.raises(ClockHung, match="apoll"):  # the fifth, at the bound
+            await clock.apoll(1)
+        with pytest.raises(ClockHung):  # it stays hung
+            await clock.apoll(1)
+
+    if how == "apoll":
+        asyncio.run(apolling())
+    else:
+        polls(clock, 4)  # the twin: the fourth begins within the bound
+        with pytest.raises(ClockHung, match="poll"):  # the fifth, at the bound
+            clock.poll(1)
+        with pytest.raises(ClockHung):  # it stays hung
+            clock.poll(1)
+    assert [v.split(":")[0] for v in clock.violations] == ["ClockHung"]  # recorded once
+    clock.violations.clear()  # seen: the teardown would fail the test on it
+
+
+@pytest.mark.parametrize("moved", ["advance", "poke"])
+def test_a_new_generation_between_polls_starts_their_bound_again(real, moved):
+    clock = PhasedClock(hang_after=1)
+    polls(clock, 3)
+    clock.advance(1) if moved == "advance" else clock.poke()
+    polls(clock, 4)
+    assert clock.violations == []
+
+
+@pytest.mark.parametrize("idle,hung", [(clocks.POLL_GAP, True), (clocks.POLL_GAP + TAKES, False)])
+def test_a_poll_after_a_gap_starts_the_bound_again(real, idle, hung):
+    """A thread that polled, then did something else for longer than POLL_GAP, as a worker of a
+    pool between two calls does, polls anew; the twin, idle exactly POLL_GAP, polls on."""
+    clock = PhasedClock(hang_after=1)
+    polls(clock, 3)
+    real.at += idle
+    if hung:
+        with pytest.raises(ClockHung):
+            clock.poll(1)
+        clock.violations.clear()
+    else:
+        polls(clock, 4)
+        assert clock.violations == []
+
+
+def test_each_thread_and_task_polls_within_a_bound_of_its_own(real):
+    clock = PhasedClock(hang_after=1)
+    polls(clock, 3)
+    stranger(clock.poll, 1).value()  # another thread's first poll, at 0.75
+    asyncio.run(clock.apoll(1))  # a task's first, at 1.0
+    assert clock.violations == []
+    with pytest.raises(ClockHung):  # the first thread's, past its bound
+        clock.poll(1)
+    clock.violations.clear()
+
+
+@pytest.mark.parametrize("hung", [False, True])
+def test_the_clock_keeps_no_task_alive_for_its_polls(real, hung):
+    """A task that polled, or whose poll was hung, is the clock's no longer once it is gone.
+    (A thread is kept in ``waits``, which the tests read.)"""
+    clock = PhasedClock(hang_after=TAKES if hung else 1)
+    task = weakref.ref(asyncio.run(task_that_apolls(clock, 2)))
+    gc.collect()
+    assert task() is None
+    assert len(clock.violations) == hung
+    clock.violations.clear()
+
+
+async def task_that_apolls(clock: PhasedClock, n: int) -> asyncio.Task:
+    async def apolls():
+        with contextlib.suppress(ClockHung):
+            for _ in range(n):
+                await clock.apoll(1)
+
+    polling = asyncio.create_task(apolls())
+    await polling
+    return polling
+
+
+def test_in_the_free_phase_a_wait_that_moves_the_time_starts_the_bound_again(real):
+    clock = PhasedClock(hang_after=1)
+    with clock.free():
+        polls(clock, 3)
+        clock.sleep(1)  # it moves the time
+        polls(clock, 4)
+    assert clock.violations == []
+
+
+def test_a_closed_clock_polls_on_without_a_bound(real):
+    clock = PhasedClock(hang_after=1)
+    clock.close()
+    polls(clock, 8)
+    assert clock.violations == []
 
 
 # --- asyncio's loops ------------------------------------------------------------------------

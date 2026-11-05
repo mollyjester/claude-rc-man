@@ -5,10 +5,13 @@ import json
 import typing
 from pathlib import Path
 
+import pytest
 from pydantic import BeforeValidator
+from rcman.main import Clocks
 from rcman.routers import client_errors
 from rcman.routers.client_errors import ClientErrorBody
 
+from tests.clocks import PhasedClock
 from tests.conftest import ALICE, CALLS, as_user, changing
 from tests.test_audit import json_events, rows, service_output
 from tests.test_journal import guide_check_fails_on_a_drifted_table, guide_fields
@@ -39,6 +42,28 @@ def test_a_report_is_one_json_line_with_who_sent_it(client, caplog):
     assert line["email"] == ALICE
     assert dt.datetime.fromisoformat(line["at"]).tzinfo is not None
     assert {k: v for k, v in line.items() if k not in ADDED} == BODY
+
+
+@pytest.fixture
+def clock():
+    """The client errors' clock: its wall time is what a report is stamped with."""
+    return PhasedClock(wall_start=2_000_000_000.0)
+
+
+@pytest.fixture
+def clocks(request):
+    """Given to the app before the client starts it (tests/conftest.py ``app``): the client
+    errors on ``clock`` for a test that asks for it, on the real one for the rest."""
+    if "clock" in request.fixturenames:
+        return Clocks(client_errors=request.getfixturevalue("clock"))
+    return Clocks()
+
+
+def test_a_report_is_stamped_with_its_clocks_wall_time(client, clock, caplog):
+    caplog.set_level("INFO", logger=LOGGER)
+    assert report(client).status_code == 200
+    [line] = reported(caplog)
+    assert line["at"] == dt.datetime.fromtimestamp(clock.wall(), dt.UTC).isoformat()
 
 
 def test_a_report_is_not_in_the_audit_trail(client, settings, caplog):

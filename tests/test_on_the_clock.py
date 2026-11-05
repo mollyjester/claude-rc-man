@@ -1156,7 +1156,6 @@ def idle_owners(exempt) -> list[Owner]:
 class Owner(enum.Enum):
     """The change that takes each exemption away, and with it its own name here."""
 
-    SERVICE_ON_THE_CLOCK = "the service's waits on the clock"
     RUNTIME_ON_THE_CLOCK = "the runtime, the helpers and the installer on the clock"
     FAKE_CLAUDE_CLOCK = "a fake claude with no clock of its own"
     LATENCY_OUT_OF_PASS_FAIL = "the latency checks out of pass/fail"
@@ -1169,12 +1168,6 @@ class NotYet(NamedTuple):
 
 
 # Why each is not on the clock yet.
-SERVICE_WAIT = "the service reads the time or waits on real time, not on its part's clock"
-WALL_STAMP = "a wall-clock stamp read from datetime or time, not from its part's clock's wall()"
-DEADLINE_BY_NAME = (
-    "a deadline read by its name from globals(), which hides it from the guard, until the wait"
-    " is on the clock"
-)
 RUNTIME_WAIT = (
     "the runtime reads the time or waits on real time; it and the parts it makes take no clock"
 )
@@ -1191,234 +1184,6 @@ FAKE_REAL_TIME = "the fake claude has no clock of its own and waits on real time
 LATENCY_BOUND = "a latency bound only the tests read, as a pass or a fail"
 # (file, qualname or "" at module level, rule, the site's text) -> what it covers.
 NOT_YET_ON_THE_CLOCK: dict[tuple[str, str, str, str], NotYet] = {
-    # Owner.SERVICE_ON_THE_CLOCK
-    ("backend/rcman/accounts.py", "Accounts._wait", "a", "time.monotonic()"): NotYet(
-        4, Owner.SERVICE_ON_THE_CLOCK, SERVICE_WAIT
-    ),
-    ("backend/rcman/accounts.py", "Accounts._wait", "a", "time.sleep(POLL_SECONDS)"): NotYet(
-        1, Owner.SERVICE_ON_THE_CLOCK, SERVICE_WAIT
-    ),
-    ("backend/rcman/accounts.py", "Accounts.begin", "a", "time.monotonic()"): NotYet(
-        1, Owner.SERVICE_ON_THE_CLOCK, SERVICE_WAIT
-    ),
-    ("backend/rcman/accounts.py", "Accounts.finish", "a", "time.monotonic()"): NotYet(
-        1, Owner.SERVICE_ON_THE_CLOCK, SERVICE_WAIT
-    ),
-    ("backend/rcman/accounts.py", "Accounts.settle", "a", "time.monotonic()"): NotYet(
-        1, Owner.SERVICE_ON_THE_CLOCK, SERVICE_WAIT
-    ),
-    ("backend/rcman/audit.py", "write", "a", "dt.datetime.now(dt.UTC)"): NotYet(
-        1, Owner.SERVICE_ON_THE_CLOCK, WALL_STAMP
-    ),
-    ("backend/rcman/claude_server.py", "Server._still_runs", "a", "time.monotonic()"): NotYet(
-        2, Owner.SERVICE_ON_THE_CLOCK, SERVICE_WAIT
-    ),
-    (
-        "backend/rcman/claude_server.py",
-        "Server._still_runs",
-        "a",
-        "time.sleep(POLL_SECONDS)",
-    ): NotYet(1, Owner.SERVICE_ON_THE_CLOCK, SERVICE_WAIT),
-    ("backend/rcman/claude_server.py", "Server._wait", "a", "time.monotonic()"): NotYet(
-        4, Owner.SERVICE_ON_THE_CLOCK, SERVICE_WAIT
-    ),
-    ("backend/rcman/claude_server.py", "Server._wait", "a", "time.sleep(POLL_SECONDS)"): NotYet(
-        1, Owner.SERVICE_ON_THE_CLOCK, SERVICE_WAIT
-    ),
-    (
-        "backend/rcman/claude_server.py",
-        "Server.confirm",
-        "a",
-        "time.sleep(ANSWER_PACE_SECONDS)",
-    ): NotYet(1, Owner.SERVICE_ON_THE_CLOCK, SERVICE_WAIT),
-    (
-        "backend/rcman/claude_versions.py",
-        "ClaudeVersions._approve",
-        "a",
-        "dt.datetime.now(dt.UTC)",
-    ): NotYet(1, Owner.SERVICE_ON_THE_CLOCK, WALL_STAMP),
-    ("backend/rcman/claude_versions.py", "ClaudeVersions._new", "a", "time.time()"): NotYet(
-        1, Owner.SERVICE_ON_THE_CLOCK, WALL_STAMP
-    ),
-    (
-        "backend/rcman/claude_versions.py",
-        "ClaudeVersions.mark_failed",
-        "a",
-        "dt.datetime.now(dt.UTC)",
-    ): NotYet(1, Owner.SERVICE_ON_THE_CLOCK, WALL_STAMP),
-    (
-        "backend/rcman/forward.py",
-        "Exchange.answer",
-        "a",
-        "asyncio.wait_for(self.body(MOST_DRAINED), DRAIN_SECONDS)",
-    ): NotYet(1, Owner.SERVICE_ON_THE_CLOCK, SERVICE_WAIT),
-    (
-        "backend/rcman/forward.py",
-        "Forwarding._connection",
-        "a",
-        "asyncio.get_running_loop().time()",
-    ): NotYet(2, Owner.SERVICE_ON_THE_CLOCK, SERVICE_WAIT),
-    (
-        "backend/rcman/forward.py",
-        "Forwarding._connection",
-        "a",
-        "asyncio.wait_for(reader.read(READ_CHUNK), max(within, 0))",
-    ): NotYet(1, Owner.SERVICE_ON_THE_CLOCK, SERVICE_WAIT),
-    (
-        "backend/rcman/forward.py",
-        "Forwarding._end_from_thread",
-        "a",
-        "asyncio.run_coroutine_threadsafe(ending(), loop).result(FROM_THREAD_SECONDS)",
-    ): NotYet(1, Owner.SERVICE_ON_THE_CLOCK, SERVICE_WAIT),
-    (
-        "backend/rcman/forward.py",
-        "Forwarding._end_where",
-        "a",
-        "asyncio.wait_for(splice.finished.wait(), FROM_THREAD_SECONDS)",
-    ): NotYet(1, Owner.SERVICE_ON_THE_CLOCK, SERVICE_WAIT),
-    (
-        "backend/rcman/forward.py",
-        "Forwarding._enter",
-        "a",
-        "asyncio.wait_for(x.body(MOST_ENTER_BODY), BODY_SECONDS)",
-    ): NotYet(1, Owner.SERVICE_ON_THE_CLOCK, SERVICE_WAIT),
-    (
-        "backend/rcman/forward.py",
-        "Forwarding._raw",
-        "a",
-        "asyncio.wait({down, ended}, timeout=SPLICE_DRAIN_SECONDS,\n"
-        + " " * 35
-        + "return_when=asyncio.FIRST_COMPLETED)",
-    ): NotYet(1, Owner.SERVICE_ON_THE_CLOCK, SERVICE_WAIT),
-    (
-        "backend/rcman/forward.py",
-        "Forwarding._reap_loop",
-        "a",
-        "asyncio.sleep(REAP_SECONDS)",
-    ): NotYet(1, Owner.SERVICE_ON_THE_CLOCK, SERVICE_WAIT),
-    (
-        "backend/rcman/forward.py",
-        "Forwarding._watch",
-        "a",
-        "asyncio.wait_for(relay.process.stdout.read(1), POOL_IDLE_SECONDS)",
-    ): NotYet(1, Owner.SERVICE_ON_THE_CLOCK, SERVICE_WAIT),
-    (
-        "backend/rcman/forward.py",
-        "Relay.close",
-        "a",
-        "asyncio.wait_for(self.process.wait(), RELAY_ENDS_WITHIN)",
-    ): NotYet(1, Owner.SERVICE_ON_THE_CLOCK, SERVICE_WAIT),
-    ("backend/rcman/main.py", "_retention", "a", "dt.datetime.now(dt.UTC)"): NotYet(
-        1, Owner.SERVICE_ON_THE_CLOCK, WALL_STAMP
-    ),
-    (
-        "backend/rcman/main.py",
-        "create_app.lifespan.daily",
-        "a",
-        "asyncio.sleep(RETENTION_INTERVAL_SECONDS)",
-    ): NotYet(1, Owner.SERVICE_ON_THE_CLOCK, SERVICE_WAIT),
-    ("backend/rcman/rcman_upgrade.py", "Upgrades._state", "a", "time.monotonic()"): NotYet(
-        1, Owner.SERVICE_ON_THE_CLOCK, SERVICE_WAIT
-    ),
-    ("backend/rcman/rcman_upgrade.py", "Upgrades.request", "a", "time.monotonic()"): NotYet(
-        1, Owner.SERVICE_ON_THE_CLOCK, SERVICE_WAIT
-    ),
-    ("backend/rcman/rcman_upgrade.py", "Upgrades.under_way", "a", "time.monotonic()"): NotYet(
-        1, Owner.SERVICE_ON_THE_CLOCK, SERVICE_WAIT
-    ),
-    ("backend/rcman/rcman_upgrade.py", "write_request", "a", "dt.datetime.now(dt.UTC)"): NotYet(
-        1, Owner.SERVICE_ON_THE_CLOCK, WALL_STAMP
-    ),
-    ("backend/rcman/repository.py", "Repository._seconds", "a", "time.monotonic()"): NotYet(
-        1, Owner.SERVICE_ON_THE_CLOCK, SERVICE_WAIT
-    ),
-    ("backend/rcman/repository.py", "_verb.wrap.verb", "a", "time.monotonic()"): NotYet(
-        1, Owner.SERVICE_ON_THE_CLOCK, SERVICE_WAIT
-    ),
-    ("backend/rcman/repository.py", "_verb.wrap.verb", "d", "globals()[deadline]"): NotYet(
-        1, Owner.SERVICE_ON_THE_CLOCK, DEADLINE_BY_NAME
-    ),
-    ("backend/rcman/routers/claude.py", "connection", "a", "dt.datetime.now(dt.UTC)"): NotYet(
-        1, Owner.SERVICE_ON_THE_CLOCK, WALL_STAMP
-    ),
-    ("backend/rcman/routers/client_errors.py", "report", "a", "dt.datetime.now(dt.UTC)"): NotYet(
-        1, Owner.SERVICE_ON_THE_CLOCK, WALL_STAMP
-    ),
-    (
-        "backend/rcman/routers/terminal.py",
-        "_watch",
-        "a",
-        "asyncio.sleep(REVOCATION_SECONDS)",
-    ): NotYet(1, Owner.SERVICE_ON_THE_CLOCK, SERVICE_WAIT),
-    (
-        "backend/rcman/routers/terminal.py",
-        "terminal",
-        "a",
-        "asyncio.wait_for(websocket.receive(), FIRST_RESIZE_SECONDS)",
-    ): NotYet(1, Owner.SERVICE_ON_THE_CLOCK, SERVICE_WAIT),
-    (
-        "backend/rcman/terminals.py",
-        "Terminal._end_program",
-        "a",
-        "asyncio.wait_for(process.wait(), END_GRACE_SECONDS)",
-    ): NotYet(1, Owner.SERVICE_ON_THE_CLOCK, SERVICE_WAIT),
-    (
-        "backend/rcman/terminals.py",
-        "Terminal._exit",
-        "a",
-        "asyncio.wait_for(asyncio.shield(output), EXIT_DRAIN_SECONDS)",
-    ): NotYet(1, Owner.SERVICE_ON_THE_CLOCK, SERVICE_WAIT),
-    (
-        "backend/rcman/terminals.py",
-        "Terminal.wait_for_pidfile",
-        "a",
-        "asyncio.sleep(POLL_SECONDS)",
-    ): NotYet(1, Owner.SERVICE_ON_THE_CLOCK, SERVICE_WAIT),
-    ("backend/rcman/terminals.py", "Terminal.wait_for_pidfile", "a", "time.monotonic()"): NotYet(
-        2, Owner.SERVICE_ON_THE_CLOCK, SERVICE_WAIT
-    ),
-    (
-        "backend/rcman/terminals.py",
-        "Terminals._from_thread",
-        "a",
-        "future.result(FROM_THREAD_SECONDS)",
-    ): NotYet(1, Owner.SERVICE_ON_THE_CLOCK, SERVICE_WAIT),
-    ("backend/rcman/terminals.py", "end_leader", "a", "time.monotonic()"): NotYet(
-        2, Owner.SERVICE_ON_THE_CLOCK, SERVICE_WAIT
-    ),
-    ("backend/rcman/terminals.py", "end_leader", "a", "time.sleep(POLL_SECONDS)"): NotYet(
-        1, Owner.SERVICE_ON_THE_CLOCK, SERVICE_WAIT
-    ),
-    ("backend/rcman/unrecognised.py", "Watch._write", "a", "dt.datetime.now(dt.UTC)"): NotYet(
-        1, Owner.SERVICE_ON_THE_CLOCK, WALL_STAMP
-    ),
-    (
-        "backend/rcman/workspaces.py",
-        "Workspaces._close_idle_channels",
-        "a",
-        "self._closing.wait(IDLE_CHECK_SECONDS)",
-    ): NotYet(1, Owner.SERVICE_ON_THE_CLOCK, SERVICE_WAIT),
-    (
-        "backend/rcman/workspaces.py",
-        "Workspaces._watch",
-        "a",
-        "done.wait(WORKING_POLL_SECONDS)",
-    ): NotYet(1, Owner.SERVICE_ON_THE_CLOCK, SERVICE_WAIT),
-    ("backend/rcman/workspaces.py", "Workspaces.limits_report", "a", "time.monotonic()"): NotYet(
-        1, Owner.SERVICE_ON_THE_CLOCK, SERVICE_WAIT
-    ),
-    (
-        "backend/rcman/workspaces.py",
-        "Workspaces.limits_report.used",
-        "a",
-        "time.monotonic()",
-    ): NotYet(1, Owner.SERVICE_ON_THE_CLOCK, SERVICE_WAIT),
-    (
-        "backend/rcman/workspaces.py",
-        "Workspaces.recording_held",
-        "a",
-        "self._images_lock.acquire(timeout=wait)",
-    ): NotYet(1, Owner.SERVICE_ON_THE_CLOCK, SERVICE_WAIT),
     # Owner.RUNTIME_ON_THE_CLOCK
     ("backend/rcman/builder.py", "", "e", "WATCH_SECONDS"): NotYet(
         1, Owner.RUNTIME_ON_THE_CLOCK, BUILD_CANCEL_POLL
@@ -1821,7 +1586,7 @@ def test_a_constant_whose_marker_is_dropped_is_flagged_where_it_is_used():
 
 # --- exemptions ----------------------------------------------------------------------------------
 
-EXEMPT_READ = {(PLANTED, "f", "a", "time.monotonic()"): NotYet(1, Owner.SERVICE_ON_THE_CLOCK, "x")}
+EXEMPT_READ = {(PLANTED, "f", "a", "time.monotonic()"): NotYet(1, Owner.RUNTIME_ON_THE_CLOCK, "x")}
 
 
 def test_an_exemption_covers_its_count_and_no_more():

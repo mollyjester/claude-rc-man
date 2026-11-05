@@ -1,6 +1,7 @@
 """Collection rules, the hang guard's hooks and the fixtures shared by the whole suite."""
 
 import os
+import signal
 import sys
 from pathlib import Path
 
@@ -22,6 +23,19 @@ def pytest_collection_modifyitems(config, items):
     container_marker.mark(items)
     if config.pluginmanager.has_plugin("timeout"):  # its marker is not known without it
         hang_guard.mark(items, float(config.getini(hang_guard.CONTAINER_TIMEOUT)))
+
+
+def _ignore_sighup(signum, frame) -> None:
+    """SIGHUP caught and dropped: what an ignore the suite was started with does for the
+    suite, which a program it starts does not inherit."""
+
+
+def pytest_configure(config):
+    """A suite started with SIGHUP ignored, as under nohup, catches it instead: an ignore
+    survives exec into the programs a test starts, a terminal's shell among them, which a
+    hangup then does not end; a caught signal is back at its default in each of them."""
+    if signal.getsignal(signal.SIGHUP) is signal.SIG_IGN:
+        signal.signal(signal.SIGHUP, _ignore_sighup)
 
 
 # --- the hang guard (tests/hang_guard.py; project-knowledge/tests.md, "The hang guard") ---
@@ -359,12 +373,39 @@ def settings(tmp_path, no_releases):
 
 
 @pytest.fixture
-def clocks():
-    """Each part's clock (main.py ``Clocks``), the real one for every part; a test that moves a
-    part's time itself overrides it, so that the part has the clock from its start."""
+def clocks(request):
+    """Each part's clock (main.py ``Clocks``), the real one for every part but the periodic
+    checks of a test that asks for ``periodic``; a test that moves another part's time itself
+    overrides it, so that the part has the clock from its start."""
     from rcman.main import Clocks
 
+    if "periodic" in request.fixturenames:
+        return Clocks(periodic=request.getfixturevalue("periodic"))
     return Clocks()
+
+
+@pytest.fixture
+def periodic():
+    """The clock of the service's periodic checks, which the test moves (``periodic_round``)."""
+    from tests.clocks import PhasedClock
+
+    return PhasedClock()
+
+
+@pytest.fixture
+def periodic_round(client, periodic):
+    """One round of the service's periodic checks, done once it waits again: their thread is
+    lent to ``periodic``, which nothing else moves."""
+    from rcman import workspaces
+
+    periodic.wait_parked(1)
+    periodic.lend(periodic.waiters()[0].thread)
+
+    def round_() -> None:
+        periodic.advance(workspaces.IDLE_CHECK_SECONDS)
+        periodic.wait_parked(1)
+
+    return round_
 
 
 @pytest.fixture

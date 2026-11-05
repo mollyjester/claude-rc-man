@@ -20,6 +20,7 @@ import socket
 import sqlite3
 import subprocess
 import sys
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -29,9 +30,11 @@ import pytest
 from rcman import audit, db, people, problems
 from rcman import runtime as rt
 from rcman.headers import SECURITY_HEADERS
+from rcman.main import Clocks
 from rcman.routers import terminal as route
 from starlette.testclient import WebSocketDenialResponse
 
+from tests.clocks import PhasedClock
 from tests.conftest import ALICE, BOB, changing, made_workspace
 from tests.test_terminals import a_length, alive, sleeping, wait_until
 
@@ -42,10 +45,26 @@ FRAME_WITHIN = 15.0
 
 
 @pytest.fixture
-def quick_revocation(monkeypatch):
-    """Revocation looked for often, before the service starts: it reads the value as it waits,
-    but a test that relies on it lists this before ``client`` all the same."""
-    monkeypatch.setattr(route, "REVOCATION_SECONDS", 0.2)
+def clock():
+    """The terminals' clock, which the test moves; it does not move otherwise."""
+    return PhasedClock()
+
+
+@pytest.fixture
+def clocks(request):
+    """Given to the app before the client starts it (tests/conftest.py ``app``): the terminals
+    on ``clock`` for a test that asks for it, on the real one for the rest, whose graces then
+    end by themselves."""
+    if "clock" in request.fixturenames:
+        return Clocks(terminals=request.getfixturevalue("clock"))
+    return Clocks()
+
+
+@pytest.fixture
+def lent(client, clock):
+    """The app's event loop's thread, lent to the clock: an advance may pass the deadlines of its
+    waiters there."""
+    clock.lend(client.portal.call(threading.current_thread))
 
 
 def path(workspace: int) -> str:
@@ -255,8 +274,14 @@ def test_deleting_the_workspace_closes_its_terminal(client, workspace, settings)
     ended_by(client, settings, workspace, delete, "workspace_gone")
 
 
+def revocation_looked_for(clock) -> bool:
+    """Whether an open terminal looked for revocation on its clock: an ``apoll``, which the
+    test's clock sleeps for at most its cap, so that a change of the rows is found at once."""
+    return ("apoll", route.REVOCATION_SECONDS) in [w[:2] for w in clock.waits]
+
+
 def test_a_workspace_marked_deleting_behind_rcmans_back_closes_its_terminal(
-    quick_revocation, client, workspace, settings
+    client, clock, workspace, settings
 ):
     def mark():
         con = db.connect(settings.database)
@@ -267,10 +292,11 @@ def test_a_workspace_marked_deleting_behind_rcmans_back_closes_its_terminal(
             con.close()
 
     ended_by(client, settings, workspace, mark, "workspace_gone")
+    assert revocation_looked_for(clock)
 
 
 def test_a_person_marked_deleting_behind_rcmans_back_loses_their_terminal(
-    quick_revocation, client, workspace, settings
+    client, clock, workspace, settings
 ):
     def mark():
         con = db.connect(settings.database)
@@ -280,6 +306,7 @@ def test_a_person_marked_deleting_behind_rcmans_back_loses_their_terminal(
             con.close()
 
     ended_by(client, settings, workspace, mark, "not_allowed")
+    assert revocation_looked_for(clock)
 
 
 def test_signing_out_closes_the_persons_terminal(client, workspace, settings):
@@ -709,9 +736,20 @@ def test_a_service_that_stops_closes_its_terminals_first(tmp_path):
 # --- what else ends a terminal, and what does not -------------------------------------------
 
 
-def test_a_page_that_sends_no_size_is_closed(monkeypatch, client, workspace, settings):
-    monkeypatch.setattr(route, "FIRST_RESIZE_SECONDS", 0.5)
+def first_frame(waiter) -> bool:
+    """The wait for the page's first frame."""
+    return waiter.method == "within" and waiter.seconds == route.FIRST_RESIZE_SECONDS
+
+
+@pytest.mark.parametrize("short", [0, 1])
+def test_a_page_that_sends_no_size_is_closed(client, lent, clock, workspace, settings, short):
     with client.websocket_connect(path(workspace["id"]), headers=changing(ALICE)) as session:
+        clock.wait_parked_where(first_frame, within=FRAME_WITHIN)
+        clock.advance(route.FIRST_RESIZE_SECONDS - short)
+        if short:  # the twin: a second short of it, the wait goes on and nothing is recorded
+            clock.wait_parked_where(first_frame, within=FRAME_WITHIN)
+            assert not [r for r in terminal_rows(settings) if r[0] == "terminal.open"]
+            clock.advance(short)
         assert Peer(session).closed()["code"] == PROTOCOL["close_policy"]
     assert client.app.state.terminals.live(workspace["id"]) is None
     assert terminal_rows(settings)[-1] == ("terminal.open", "alpha", "validation_failed")
@@ -750,7 +788,7 @@ def test_a_workspace_removed_behind_rcmans_back_ends_its_terminal(client, worksp
 
 
 def test_a_look_at_the_rows_that_fails_is_tried_again(
-    quick_revocation, client, workspace, settings, monkeypatch, caplog
+    client, clock, workspace, settings, monkeypatch, caplog
 ):
     real, failed = route._revoked, []
 
@@ -773,6 +811,7 @@ def test_a_look_at_the_rows_that_fails_is_tried_again(
         peer.closed()
         assert peer.frames[-1] == {"type": PROTOCOL["closed"], "reason": "workspace_gone"}
     assert "could not look at its rows" in caplog.text
+    assert revocation_looked_for(clock)
 
 
 def test_of_what_ends_a_terminal_together_its_own_end_says_most():

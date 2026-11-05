@@ -17,6 +17,7 @@ from rcman import runtime as rt
 from rcman.problems import Problem
 from rcman.repository import Repository
 
+from tests.clocks import PhasedClock
 from tests.git_fixtures import (
     FIXTURE_HOME,
     add_submodule,
@@ -74,8 +75,9 @@ class World:
         self.results.append(result)
         return result
 
-    def repository(self, layout: rt.Layout | None = None) -> Repository:
-        return Repository(layout or self.layout, self.run, self.run_stdin)
+    def repository(self, layout: rt.Layout | None = None, clock=None) -> Repository:
+        made = Repository(layout or self.layout, self.run, self.run_stdin)
+        return made if clock is None else Repository(made.layout, self.run, self.run_stdin, clock)
 
 
 @pytest.fixture
@@ -1375,48 +1377,62 @@ def test_git_runs_in_the_workspaces_folder_and_wrapped_in_a_timeout(git, repo, w
         assert "-s TERM -k" in text, argv
 
 
-def test_a_git_past_its_deadline_is_git_timeout(git, repo, monkeypatch):
+def test_a_git_past_its_deadline_is_git_timeout(repo, world, monkeypatch):
     hook = repo / ".git" / "hooks" / "pre-commit"
     hook.write_text("#!/bin/sh\nsleep 30\n")
     hook.chmod(0o755)
     write(repo / "a.txt")
-    git.stage(["a.txt"])
-    monkeypatch.setattr(repo_module, "GIT_TIMEOUT", 1.0)
+    clock = PhasedClock()
+    world.repository(clock=clock).stage(["a.txt"])
     monkeypatch.setattr(repo_module, "KILL_GRACE_SECONDS", 1)
+    real = world.run
+    moved: list = []
+
+    def late(argv, timeout):  # its first call takes all but a second of the verb's deadline
+        result = real(argv, timeout)
+        if not moved:
+            moved.append(clock.advance(repo_module.GIT_TIMEOUT - 1))
+        return result
+
+    world.run = late
+    git = world.repository(clock=clock)
     began = time.monotonic()
     refused(lambda: git.commit("m"), "git_timeout")
+    assert moved  # the plant took effect: the commit itself was handed a second
     assert time.monotonic() - began < 15
     assert fixture_git(repo, "log", "--format=%s") == "First commit\n"  # nothing committed
 
 
-def test_a_fetch_and_a_push_have_the_network_deadline_read_when_called(repo, world, monkeypatch):
+def handed(argv: list[str]) -> int:
+    """The seconds ``timeout`` is handed in a git call's argv."""
+    return int(argv[argv.index("-k") + 2])
+
+
+def test_a_fetch_and_a_push_have_the_network_deadline(repo, world):
     seen = []
     real_run, real_stdin = world.run, world.run_stdin
 
     def run(argv, timeout):
-        seen.append(("channel", argv, timeout))
+        seen.append(argv)
         return real_run(argv, timeout)
 
     def run_stdin(argv, stdin, timeout):
-        seen.append(("exec", argv, timeout))
+        seen.append(argv)
         return real_stdin(argv, stdin, timeout)
 
     world.run, world.run_stdin = run, run_stdin
-    monkeypatch.setattr(repo_module, "GIT_TIMEOUT", 7.0)
-    monkeypatch.setattr(repo_module, "GIT_NETWORK_TIMEOUT", 70.0)
-    git = world.repository()
+    git = world.repository(clock=PhasedClock())  # frozen: each call has its verb's whole deadline
     git.status()
-    local = max(t for _, _, t in seen)
-    assert local < 7 + 30  # positive control: a local verb waits for its own deadline
+    assert {handed(a) for a in seen} == {repo_module.GIT_TIMEOUT}  # a local verb's own
     seen.clear()
     git.fetch()
     commit_in(repo, "more.txt")
     git.push()
     commit_in(repo, "again.txt")
     git.sync()
-    network = [(how, argv, t) for how, argv, t in seen if "fetch" in argv or "push" in argv]
-    assert len(network) == 4 and all(t > local for _, _, t in network)
-    assert all(t < 70 + 30 for _, _, t in network)
+    network = [a for a in seen if "fetch" in a or "push" in a]
+    assert len(network) == 4
+    assert {handed(a) for a in seen} == {repo_module.GIT_NETWORK_TIMEOUT}
 
 
 def test_a_fetch_and_a_push_do_not_hold_the_channel_the_workspace_is_reached_through(
@@ -1443,38 +1459,36 @@ def test_a_fetch_and_a_push_do_not_hold_the_channel_the_workspace_is_reached_thr
     assert any("rev-parse" in a for a in on_channel)  # its quick reads still do
 
 
-def test_a_deadline_is_shared_by_every_git_call_of_a_verb(git, repo, monkeypatch, world):
+def stepping(world, clock: PhasedClock, step: float) -> list[int]:
+    """The world's channel moving ``clock`` on by ``step`` after each call it runs: the
+    seconds each call was handed."""
     seen = []
     real = world.run
 
-    def slow(argv, timeout):
-        seen.append(timeout)
-        time.sleep(0.6)
-        return real(argv, timeout)
+    def run(argv, timeout):
+        seen.append(handed(argv))
+        result = real(argv, timeout)
+        clock.advance(step)
+        return result
 
-    world.run = slow
-    monkeypatch.setattr(repo_module, "GIT_TIMEOUT", 2.0)
-    git = world.repository()
-    refused(git.status, "git_timeout")  # more calls than the deadline has time for
-    assert len(seen) >= 2
-    assert seen == sorted(seen, reverse=True)  # each has less time than the one before
+    world.run = run
+    return seen
 
 
-def test_every_git_call_of_a_sync_shares_the_one_network_deadline(git, repo, monkeypatch, world):
-    seen = []
-    real = world.run
+def test_a_deadline_is_shared_by_every_git_call_of_a_verb(git, repo, world):
+    clock = PhasedClock()
+    seen = stepping(world, clock, repo_module.GIT_TIMEOUT / 3)
+    refused(world.repository(clock=clock).status, "git_timeout")  # more calls than it has time for
+    # each has less time than the one before, from the verb's whole deadline
+    assert seen == [repo_module.GIT_TIMEOUT * k / 3 for k in (3, 2, 1)]
 
-    def slow(argv, timeout):
-        seen.append(timeout)
-        time.sleep(0.6)
-        return real(argv, timeout)
 
-    world.run = slow
+def test_every_git_call_of_a_sync_shares_the_one_network_deadline(git, repo, world):
+    clock = PhasedClock()
     commit_in(repo, "more.txt")
-    monkeypatch.setattr(repo_module, "GIT_NETWORK_TIMEOUT", 2.0)
-    refused(world.repository().sync, "git_timeout")  # more calls than the deadline has time for
-    assert len(seen) >= 2
-    assert seen == sorted(seen, reverse=True)  # each has less time than the one before
+    seen = stepping(world, clock, repo_module.GIT_NETWORK_TIMEOUT / 3)
+    refused(world.repository(clock=clock).sync, "git_timeout")  # more calls than it has time for
+    assert seen == [repo_module.GIT_NETWORK_TIMEOUT * k / 3 for k in (3, 2, 1)]
     assert on_remote(origin_of(repo), "main") != head_of(repo)  # it stopped before the push
 
 
@@ -1548,7 +1562,7 @@ def test_a_clone_is_git_clone_into_the_work_folder_in_a_process_of_its_own(world
     ]  # every branch of the repository, not the default one alone
 
 
-def test_a_clone_has_its_own_deadline_read_when_called(world, widget, monkeypatch):
+def test_a_clone_has_its_own_deadline(world, widget):
     seen = []
     real = world.run_stdin
 
@@ -1557,13 +1571,10 @@ def test_a_clone_has_its_own_deadline_read_when_called(world, widget, monkeypatc
         return real(argv, stdin, timeout)
 
     world.run_stdin = run_stdin
-    monkeypatch.setattr(repo_module, "GIT_NETWORK_TIMEOUT", 11.0)
-    monkeypatch.setattr(repo_module, "CLONE_TIMEOUT", 70.0)
-    world.repository().clone(CLONE_URL)
+    world.repository(clock=PhasedClock()).clone(CLONE_URL)
     ((argv, wait),) = seen
-    seconds = int(argv[argv.index("-k") + 2])
-    assert 69 <= seconds <= 70  # CLONE_TIMEOUT, not the network deadline of a fetch
-    assert wait > seconds
+    assert handed(argv) == repo_module.CLONE_TIMEOUT  # not the network deadline of a fetch
+    assert wait > handed(argv)
 
 
 def test_the_token_is_never_in_the_argv_or_the_stdin_of_a_clone(world, widget):
