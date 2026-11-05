@@ -192,6 +192,59 @@ machine, is checked by hand: [real-claude-checklist.md](real-claude-checklist.md
 and run by hand with `uv run pytest -m real_claude`; what they need is in
 [fake-claude.md](fake-claude.md).
 
+### The hang guard
+
+A test that hangs is ended by pytest-timeout, the suite's one hang guard, with the hooks
+`tests/conftest.py` adds, and every pytest run has it. It has a value per tier, both in
+`pyproject.toml`'s `[tool.pytest.ini_options]`, where a comment says what each covers:
+pytest-timeout's own `timeout`, which every test gets, and `container_timeout`, which
+`tests/conftest.py` registers and gives, as a `timeout` marker derived alongside the container
+marker (`tests/hang_guard.py`), to every test that carries the container marker, the whole-stack
+one among them, since the image builds of their session fixtures are charged to the test that
+first asks for them. That marker outranks `--timeout`, which changes only the other tests'
+value; `-o container_timeout=N` changes the container tests'. Each value is far beyond any
+plausible slowness of its tier, so the guard ends only a genuine hang and never decides a test
+that would have finished. The guard counts from a test's setup to the end of its teardown, also
+after its setup or call failed: pytest-timeout on its own stops the guard then, so a teardown
+could hang unguarded, and `tests/conftest.py` takes that cancel, unless the run is to enter the
+debugger (`--pdb`).
+
+The method, pytest-timeout's `timeout_method` there, is `thread`: a timer thread, on expiry,
+stops every process below the test's process (under pytest-xdist the worker's, never the
+controller's or another worker's), prints what the test printed and the stacks of every thread
+of the process, kills the processes it stopped, and ends the process with `os._exit`, unless a
+debugger is attached, as pytest-timeout's own timer allows. Each step is guarded: a failure to
+stop or kill them, or to report, is said on stderr, the processes stopped are killed, and the
+test is ended all the same. They are stopped first so
+that a test waiting on one is shown where it waits, and held by pidfds taken only while each
+start time is still the one read, so that a pid given again is never signalled; the processes
+below are looked at again until a look finds nothing new, within `KILL_PASSES` looks, so that
+none forks past the kill; one the user may not signal is neither stopped nor killed, and said on
+stderr (`stop_descendants` in `tests/hang_guard.py`). It ends a test whatever the test is
+blocked in, a worker thread it waits for that never ends, or code where no signal reaches it,
+which the `signal` method, raising in the test's main thread, does not: a non-daemon thread it
+leaves waiting keeps the interpreter from exiting, and with SIGALRM, the signal method's signal,
+masked, or a call that retries it, the signal never arrives. What ending the process costs: the
+test's teardown does not run, so it leaves what a killed run leaves (see [What a killed run
+leaves](#what-a-killed-run-leaves)); in `make test` pytest-xdist reports the worker as crashed
+while running the test, fails that test and starts another worker, and the run goes on; in the
+one-process runs, `make test-container` and `make check-ui`, the run ends there, its last output
+the guard's report with the test's frame in the stacks.
+
+`HANG_GUARD` and `CONTAINER_HANG_GUARD` in `tests/hang_guard.py`, each half its tier's guard,
+are what a test hands a product call as its timeout for something expected to happen:
+`HANG_GUARD` in the host tests, `CONTAINER_HANG_GUARD` in the container tests. A call given it
+early in a test ends, and the test fails as any other does, its teardown run, before the guard
+of its tier would end its process; successive waits that add up to more than the guard do not,
+and the guard ends the test. `tests/test_hang_guard.py` holds the guard to this, each case a
+child pytest with the project's configuration, `tests/conftest.py` loaded as a plugin, and a
+short guard, in one process and under pytest-xdist: each planted twin hangs a test in a way the
+guard must still end, and the test is ended, named wherever the guard's report can be written,
+and any child it started ended with it; a test that finishes under the project's own guard
+passes; and, in a child Python, a process the first look misses is stopped and killed by the
+next, and a pid whose start time is no longer the one read is not signalled.
+`tests/test_make.py` holds that every test of every target is under its tier's guard.
+
 ### Known flaky test
 
 `tests/test_claude_server.py::test_a_server_in_a_git_repository_starts_stops_and_resumes`
@@ -589,7 +642,10 @@ snapshot is removed when the session ends.
 A run that ends normally, or with Ctrl-C, removes what it made. A run killed
 by a signal — SIGTERM or SIGKILL to its process group, as a harness timeout
 or a closed terminal sends — runs no handler of its own, and a tmux server it
-started has detached into a session of its own and keeps running. So nothing
+started has detached into a session of its own and keeps running. A test process the
+[hang guard](#the-hang-guard) ends is the same, but for the processes below it, which the
+guard kills; what escapes that is a process that detached from it, as a tmux server or an
+engine's conmon does. So nothing
 a test makes depends on its own run to remove it:
 
 - What a test makes under its `tmp_path`, pytest removes in a later run.
@@ -813,7 +869,9 @@ it can fail, and a positive control that keeps an empty input from passing.
   `RCMAN_REQUIRE_CONTAINER=1`, and `make check` with
   `RCMAN_REQUIRE_REAL_CLAUDE=1`; none of them runs a test a
   bare `pytest` leaves out, as a target's own `-m` replaces the
-  `-m 'not real_claude'` of pyproject's `addopts`. `make lint` and
+  `-m 'not real_claude'` of pyproject's `addopts`; and every test that any target
+  `.PHONY` names runs is under its tier's hang guard, as pytest-timeout itself works out
+  each test's settings (see [The hang guard](#the-hang-guard)). `make lint` and
   `make format` run ruff and the frontend's script of the same name, and the
   real `make lint`, run over a frontend file planted in a scratch tree, fails
   when Biome would reformat it, when Biome finds a lint finding it reports as

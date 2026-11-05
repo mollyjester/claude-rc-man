@@ -1,6 +1,7 @@
 """tests/collected.py: what pytest collects for a command line."""
 
 from tests.collected import _selection_args, child_env, collect
+from tests.hang_guard import HOST_GUARD
 
 
 def test_a_test_is_collected_with_its_markers_and_fixtures():
@@ -8,6 +9,15 @@ def test_a_test_is_collected_with_its_markers_and_fixtures():
     this = "tests/test_collected.py::test_a_test_is_collected_with_its_markers_and_fixtures"
     assert this in found
     assert "tmp_path" in found["tests/test_collected.py::test_uses_tmp_path"]["fixtures"]
+
+
+def test_a_test_is_collected_with_its_hang_guard():
+    """The settings pytest-timeout gives a test, from pyproject; none without the plugin."""
+    this = "tests/test_collected.py::test_uses_tmp_path"
+    found = collect(["tests/test_collected.py"])
+    expected = {"timeout": HOST_GUARD, "method": "thread", "func_only": False}
+    assert found[this]["hang_guard"] == expected
+    assert collect(["tests/test_collected.py", "-p", "no:timeout"])[this]["hang_guard"] is None
 
 
 def test_uses_tmp_path(tmp_path):

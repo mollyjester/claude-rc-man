@@ -20,6 +20,7 @@ rcman-admin = "rcman.admin:main"
 dev = [
     "httpx2>=2.13.1",
     "pytest",
+    "pytest-timeout>=2.4.0,<2.5",  # tests/conftest.py mirrors its timeout_timer
     "pytest-xdist>=3.8.0",
     "ruff",
 ]
@@ -35,6 +36,15 @@ packages = ["helpers", "backend/rcman"]
 testpaths = ["tests"]
 pythonpath = ["."]
 addopts = "-ra --strict-markers -m 'not real_claude'"
+# The hang guard (pytest-timeout): a test still running this many seconds after its setup began
+# is ended, with the stacks of every thread. timeout is every test's; container_timeout, which
+# tests/conftest.py registers, the container tests' instead, the image builds of their session
+# fixtures charged to them. Each is far beyond any plausible slowness of its tier, so it ends only
+# a genuine hang. "thread" ends the test's whole process, whatever it is blocked in;
+# project-knowledge/tests.md, "The hang guard", says why. tests/hang_guard.py reads the values.
+timeout = 600
+container_timeout = 3600
+timeout_method = "thread"
 markers = [
     "container: derived in tests/container_marker.py from the podman_service fixture, the tests' own Podman engine: the test needs a container",
     "stack: the whole stack in a browser, in a container; run on demand by make check-ui, not by make test-container",

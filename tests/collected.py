@@ -3,7 +3,8 @@
 Not a test module. collect() runs pytest's collection in a child process from the
 repository root, with the environment the tests themselves were started with less
 anything that steers a run (RCMAN_*, PYTEST_* and COV_*), plus what the caller gives,
-and returns each selected test's markers and fixtures by node ID. The workers of a run
+and returns each selected test's markers, fixtures and hang guard (pytest-timeout's
+settings for it, as the plugin itself works them out) by node ID. The workers of a run
 share the answers (``shared``), so that each command line is collected once.
 """
 
@@ -32,10 +33,23 @@ out, args = sys.argv[1], sys.argv[2:]
 
 class Recorder:
     def pytest_collection_finish(self, session):
+        guard = session.config.pluginmanager.get_plugin("timeout")
+
+        def hang_guard(item):
+            if guard is None:
+                return None
+            settings = guard._get_item_settings(item)
+            return {
+                "timeout": settings.timeout,
+                "method": settings.method,
+                "func_only": settings.func_only,
+            }
+
         found = {
             item.nodeid: {
                 "markers": sorted({m.name for m in item.iter_markers()}),
                 "fixtures": sorted(item.fixturenames),
+                "hang_guard": hang_guard(item),
             }
             for item in session.items
         }
@@ -117,6 +131,7 @@ _collect = functools.cache(_shared_collect)
 
 
 def collect(args=(), env: dict[str, str] | None = None) -> dict[str, dict]:
-    """{node ID: {"markers": [...], "fixtures": [...]}} for every test pytest would run
-    for ``args``, run from the repository root with ``env`` added."""
+    """{node ID: {"markers": [...], "fixtures": [...], "hang_guard": {"timeout": seconds,
+    "method": ..., "func_only": ...} or None without the plugin}} for every test pytest would
+    run for ``args``, run from the repository root with ``env`` added."""
     return _collect(tuple(args), tuple(sorted((env or {}).items())))
