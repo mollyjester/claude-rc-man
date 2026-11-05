@@ -17,6 +17,7 @@ from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, BeforeValidator, Field
 from pydantic_core import PydanticKnownError
 
+from helpers.clock import Clock
 from rcman.identity import Identity, current_user
 from rcman.problems import Problem
 from rcman.ratelimit import TokenBuckets
@@ -34,8 +35,8 @@ REPORTS_PER_MINUTE = 20
 SECONDS_PER_MINUTE = 60
 
 
-def new_limit() -> TokenBuckets:
-    return TokenBuckets(REPORTS_BURST, REPORTS_PER_MINUTE / SECONDS_PER_MINUTE)
+def new_limit(clock: Clock) -> TokenBuckets:
+    return TokenBuckets(REPORTS_BURST, REPORTS_PER_MINUTE / SECONDS_PER_MINUTE, clock)
 
 
 # How many characters each kind of text in a report is cut to.

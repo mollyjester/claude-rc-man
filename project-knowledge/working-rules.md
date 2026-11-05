@@ -110,7 +110,11 @@ else; this file is the full list. Rules are referred to by their bold name.
   before the `client` fixture starts the service.** The service takes the
   value once, at start; a patch made afterwards changes nothing the running
   service uses, and the test passes or fails by timing. Such a patch goes in a
-  fixture the test lists before `client`.
+  fixture the test lists before `client`. A clock a test moves itself is given
+  the same way, through the `clocks` fixture `app` lists, or `create_app`'s
+  `clocks=` for an app the test makes, never set on a part after `client`
+  has started it
+  ([tests.md](tests.md#time-in-tests)).
 - **Throwaway probes go in a scratch directory** outside the repository and are
   deleted when done.
 - **The tests run alike on a developer's machine and in a workspace of

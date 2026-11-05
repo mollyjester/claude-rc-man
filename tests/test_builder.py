@@ -17,6 +17,8 @@ import pytest
 from rcman import builder, people
 from rcman import runtime as rt
 
+from tests.clocks import PhasedClock
+
 # --- what the builder is run with ----------------------------------------------------------------
 
 LABELS = {rt.LABEL_BUILDER: "7", rt.LABEL_PERSON: "2"}
@@ -428,17 +430,9 @@ def test_an_unclosed_feature_name_is_not_a_cause_by_itself():
 # --- reading its lines ----------------------------------------------------------------------------
 
 
-class Clock:
-    def __init__(self):
-        self.now = 1000.0
-
-    def __call__(self) -> float:
-        return self.now
-
-
 def lines(clock=None, **more):
     reported: list[str] = []
-    return builder.ProgressLines(reported.append, clock or Clock(), **more), reported
+    return builder.ProgressLines(reported.append, clock or PhasedClock(), **more), reported
 
 
 def test_lines_end_in_a_carriage_return_and_a_newline_and_start_with_a_time():
@@ -468,18 +462,18 @@ def test_only_podmans_own_step_lines_are_reported_the_rest_is_kept_for_the_tail(
 
 
 def test_step_lines_are_reported_at_most_once_in_the_interval_and_the_last_is_not_lost():
-    clock = Clock()
+    clock = PhasedClock()
     progress, reported = lines(clock)
     progress.feed(b"[1/3] STEP 1/4: FROM x\n")
-    clock.now += builder.PROGRESS_SECONDS / 4
+    clock.advance(builder.PROGRESS_SECONDS / 4)
     progress.feed(b"[1/3] STEP 2/4: RUN a\n")
-    clock.now += builder.PROGRESS_SECONDS / 4
+    clock.advance(builder.PROGRESS_SECONDS / 4)
     progress.feed(b"[1/3] STEP 3/4: RUN b\n")
     assert reported == ["[1/3] STEP 1/4: FROM x"]  # the others wait
-    clock.now += builder.PROGRESS_SECONDS
+    clock.advance(builder.PROGRESS_SECONDS)
     progress.feed(b"[1/3] STEP 4/4: RUN c\n")
     assert reported == ["[1/3] STEP 1/4: FROM x", "[1/3] STEP 4/4: RUN c"]
-    clock.now += builder.PROGRESS_SECONDS / 4
+    clock.advance(builder.PROGRESS_SECONDS / 4)
     progress.feed(b"[2/3] STEP 1/2: FROM y\n")
     assert len(reported) == 2
     progress.close()
@@ -487,12 +481,12 @@ def test_step_lines_are_reported_at_most_once_in_the_interval_and_the_last_is_no
 
 
 def test_a_step_that_waited_is_reported_when_the_interval_has_passed_without_another_step():
-    clock = Clock()
+    clock = PhasedClock()
     progress, reported = lines(clock)
     progress.feed(b"[1/3] STEP 1/4: FROM x\n")
     progress.feed(b"[1/3] STEP 2/4: RUN a\n")
     assert reported == ["[1/3] STEP 1/4: FROM x"]
-    clock.now += builder.PROGRESS_SECONDS * 2
+    clock.advance(builder.PROGRESS_SECONDS * 2)
     progress.feed(b"some other line\n")
     assert reported[-1] == "[1/3] STEP 2/4: RUN a"
 

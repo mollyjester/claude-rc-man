@@ -7,11 +7,13 @@ import asyncio
 import contextlib
 import datetime as dt
 import os
+from dataclasses import dataclass
 from pathlib import Path
 
 from fastapi import FastAPI
 
 from helpers import seccomp
+from helpers.clock import REAL, Clock
 from rcman import (
     audit,
     claude_versions,
@@ -125,13 +127,28 @@ def check_instructions(runtime: Runtime) -> None:
         workspaces_log.error("%s", why)
 
 
+@dataclass(frozen=True)
+class Clocks:
+    """The clock of each part of the app that is given one (helpers/clock.py), the real one
+    unless a test gives its own: the forwarding server, with its limits on new hosts and ways in;
+    the monitor's loops and rounds; the limit on a page's reports of failures; and the limit on
+    an administrator's requests for an upgrade."""
+
+    forward: Clock = REAL
+    monitor: Clock = REAL
+    client_errors: Clock = REAL
+    upgrade_requests: Clock = REAL
+
+
 def create_app(
     settings: Settings | None = None,
     runtime: Runtime | None = None,
     *,
     builder_slot: int = people.BUILDER_SLOT,
+    clocks: Clocks | None = None,
 ) -> FastAPI:
     settings = settings or Settings()
+    clocks = clocks or Clocks()
     for log in (
         audit.log,
         client_errors.log,
@@ -150,10 +167,10 @@ def create_app(
     check_instructions(service.runtime)
     sign_ins = Accounts(service)
     terminals = Terminals(service)
-    collector = monitor.Monitor(service.runtime, settings.database)
+    collector = monitor.Monitor(service.runtime, settings.database, clock=clocks.monitor)
     # Whatever forwards ports registers here to hear of forwarding being turned off (on_off).
     forwarding_store = ForwardingSettingsStore(settings.database)
-    forwarding = forward.Forwarding(settings, service, forwarding_store)
+    forwarding = forward.Forwarding(settings, service, forwarding_store, clocks.forward)
 
     @contextlib.asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -213,11 +230,11 @@ def create_app(
     app.state.git_account = GitAccount(service)
     service.restore_hooks.append(app.state.git_account.write_gh_for_everyone)
     app.state.watch = unrecognised.Watch()
-    app.state.client_error_limit = client_errors.new_limit()
+    app.state.client_error_limit = client_errors.new_limit(clocks.client_errors)
     # The release rcman runs is read now, once: an upgrade switches the release meanwhile.
     app.state.upgrade = rcman_upgrade.Upgrades(settings, service)
     service.upgrading = app.state.upgrade.under_way
-    app.state.upgrade_limit = rcman_upgrade_router.new_limit()
+    app.state.upgrade_limit = rcman_upgrade_router.new_limit(clocks.upgrade_requests)
     problems.install(app)
     headers.install(app)
 
