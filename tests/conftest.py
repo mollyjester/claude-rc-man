@@ -399,6 +399,23 @@ def made_workspace(client, who: str, name: str = "work") -> dict:
         time.sleep(0.05)
 
 
+@pytest.fixture
+def quick_watch(monkeypatch):
+    """The watcher of work a deletion stops (workspaces.py ``_watch``) looks at the row often."""
+    from rcman import workspaces
+
+    monkeypatch.setattr(workspaces, "WORKING_POLL_SECONDS", 0.02)
+
+
+def ended(service, workspace_id: int, within: float = MADE_WITHIN) -> None:
+    """Until no thread of ``service``'s that makes or rebuilds the workspace is left: told by
+    the service's condition, within ``within`` seconds."""
+    with service._changed:
+        assert service._changed.wait_for(
+            lambda: not any(h.workspace_id == workspace_id for h in service._unended), within
+        ), f"a thread making workspace {workspace_id} did not end within {within}s"
+
+
 def signed_in(app, workspace: dict, trusted: bool = False) -> None:
     """The fake `claude` of ``workspace`` signed in, with its folder trusted if ``trusted``."""
     from rcman.runtime import container_name

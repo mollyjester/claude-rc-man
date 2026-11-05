@@ -23,7 +23,7 @@ from rcman import devcontainer as dc
 from rcman import runtime as rt
 from rcman import workspaces as ws
 
-from tests.conftest import BOB, MADE_WITHIN, as_user, changing, host_runtime, signed_in
+from tests.conftest import BOB, MADE_WITHIN, as_user, changing, ended, host_runtime, signed_in
 from tests.git_fixtures import fixture_git, make_repo
 from tests.test_clone import ALICE, cloned, entry, listed, row
 from tests.test_devcontainer_flow import (
@@ -120,12 +120,7 @@ def ask(client, workspace_id: int, confirm=True, who=ALICE):
 
 def settled(client, workspace_id: int, who=ALICE) -> dict:
     """The workspace once nothing works on it any more: its rebuild ended."""
-    service = client.app.state.workspaces
-    with service._lock:
-        thread = service._making.get(workspace_id)
-    if thread is not None:
-        thread.join(MADE_WITHIN)
-        assert not thread.is_alive()
+    ended(client.app.state.workspaces, workspace_id)
     return entry(client, workspace_id, who)
 
 
@@ -965,27 +960,39 @@ def test_a_switch_left_to_put_back_is_put_back_by_the_service_without_a_restart(
     assert said.count(me + "was put back after its rebuild did not finish") == 1
 
 
-def test_closing_waits_for_a_put_back_under_way(
-    quick_periodic_checks, client, runtime, publish, settings
-):
-    found = made(client, publish)
-    rewrite(runtime, found, to(postCreateCommand="exit 3"))
-    real = runtime.create
-    failing_create(runtime, IMAGE)
-    rebuilt(client, found["id"])
-    service = client.app.state.workspaces
-    runtime.create_gate, runtime.creating = threading.Event(), threading.Event()
-    runtime.create = real  # held at the gate from now on, as the put-back makes the container
-    assert runtime.creating.wait(MADE_WITHIN)
-    with service._lock:
-        putting = service._putting_back[found["id"]]
-    closing = threading.Thread(target=service.close)
-    closing.start()
-    closing.join(0.5)
-    assert closing.is_alive()  # it waits for the put-back
-    runtime.create_gate.set()
-    closing.join(MADE_WITHIN)
-    assert not closing.is_alive() and not putting.is_alive()
+def test_closing_waits_for_a_put_back_under_way(quick_periodic_checks, settings, runtime, publish):
+    from fastapi.testclient import TestClient
+    from rcman.main import Clocks, create_app
+
+    from tests.clocks import PhasedClock
+    from tests.hang_guard import HANG_GUARD
+
+    clock = PhasedClock()
+    app = create_app(settings, runtime=runtime, clocks=Clocks(workspaces=clock))
+    with TestClient(app) as client:
+        assert app.state.workspaces.restored.wait(30)
+        found = made(client, publish)
+        rewrite(runtime, found, to(postCreateCommand="exit 3"))
+        real = runtime.create
+        failing_create(runtime, IMAGE)
+        rebuilt(client, found["id"])
+        service = client.app.state.workspaces
+        runtime.create_gate, runtime.creating = threading.Event(), threading.Event()
+        runtime.create = real  # held at the gate from now on, as the put-back makes the container
+        try:
+            assert runtime.creating.wait(HANG_GUARD)
+            with service._changed:
+                putting = service._putting_back[found["id"]]
+            closing = threading.Thread(target=service.close)
+            closing.start()
+            clock.wait_parked(1)
+            assert closing.is_alive()  # it waits for the put-back
+        finally:
+            runtime.create_gate.set()
+        closing.join(HANG_GUARD)
+        assert not closing.is_alive()
+        putting.join(HANG_GUARD)
+        assert not putting.is_alive()
 
 
 def test_a_put_back_is_not_begun_once_rcman_is_closing(client, runtime, publish, settings):
@@ -1452,10 +1459,7 @@ def test_deleting_while_the_image_is_prepared_leaves_nothing(client, runtime, pu
 
 def settled_gone(client, found: dict) -> None:
     service = client.app.state.workspaces
-    with service._lock:
-        thread = service._making.get(found["id"])
-    if thread is not None:
-        thread.join(MADE_WITHIN)
+    ended(service, found["id"])
     wait_for(lambda: service.get(found["id"]) is None)
 
 
@@ -1546,7 +1550,9 @@ def test_deleting_as_the_rebuild_ends_leaves_nothing(client, runtime, publish, s
 
     def collect():
         with service._lock:
-            rebuilding = service._making.get(found["id"]) is threading.current_thread()
+            rebuilding = (h := service._making.get(found["id"])) is not None and (
+                h.thread is threading.current_thread()
+            )
         if rebuilding and not deleted:
             deleted.append(None)
             assert row(settings, found["id"])["rebuild_state"] is None  # the rebuild ended

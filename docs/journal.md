@@ -6,7 +6,8 @@ stopping, and anything that went wrong inside rcman, such as a workspace it
 could not make or bring back when it started, how each
 [rebuild](devcontainer.md#rebuilding-a-workspace) of a workspace ended, in one line with the
 first line of the reason wherever there is one, that it is waiting for Podman
-to answer, that the workspaces' seccomp profile is missing or not the one derived from Podman's
+to answer, that it stopped before work on workspaces had ended, which it finishes when it next
+starts, that the workspaces' seccomp profile is missing or not the one derived from Podman's
 current one (see [Upgrading](installation.md#upgrading-and-rolling-back)), or that it removed nothing when it started because its table of
 workspaces is empty while Podman holds some (see
 [Podman's volumes](installation.md#podmans-volumes-are-rcmans)) — it writes three kinds of event there, each as one line of JSON:

@@ -39,6 +39,7 @@ from rcman import runtime as rt
 from rcman.problems import DEVCONTAINER_MESSAGES
 from rcman.workspaces import Workspaces
 
+from tests.conftest import ended
 from tests.container import github_stand_in as stand_in
 from tests.container import network, sizes
 from tests.container import test_devcontainer_in_podman as dev
@@ -986,9 +987,7 @@ def test_a_built_image_is_rebuilt_while_its_container_runs_and_takes_its_name_af
         assert time.monotonic() < deadline
         time.sleep(0.5)
     assert real_podman.running(done.container) and image_of(real_podman, done.container) == old
-    with real_service._lock:
-        thread = real_service._making[done.id]
-    thread.join(REAL_WITHIN)
+    ended(real_service, done.id, REAL_WITHIN)
     now = real_service.get(done.id)
     assert (now.state, now.rebuild_state, now.rebuild_error) == ("ready", None, None), now
     plan = json.loads(now.environment)

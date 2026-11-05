@@ -1156,7 +1156,6 @@ def idle_owners(exempt) -> list[Owner]:
 class Owner(enum.Enum):
     """The change that takes each exemption away, and with it its own name here."""
 
-    OWN_STATE_EVENTS = "events on rcman's own state"
     SERVICE_ON_THE_CLOCK = "the service's waits on the clock"
     RUNTIME_ON_THE_CLOCK = "the runtime, the helpers and the installer on the clock"
     FAKE_CLAUDE_CLOCK = "a fake claude with no clock of its own"
@@ -1170,7 +1169,6 @@ class NotYet(NamedTuple):
 
 
 # Why each is not on the clock yet.
-OWN_STATE_POLL = "polls rcman's own state on real time: it becomes an event or a condition"
 SERVICE_WAIT = "the service reads the time or waits on real time, not on its part's clock"
 WALL_STAMP = "a wall-clock stamp read from datetime or time, not from its part's clock's wall()"
 DEADLINE_BY_NAME = (
@@ -1193,52 +1191,6 @@ FAKE_REAL_TIME = "the fake claude has no clock of its own and waits on real time
 LATENCY_BOUND = "a latency bound only the tests read, as a pass or a fail"
 # (file, qualname or "" at module level, rule, the site's text) -> what it covers.
 NOT_YET_ON_THE_CLOCK: dict[tuple[str, str, str, str], NotYet] = {
-    # Owner.OWN_STATE_EVENTS
-    ("backend/rcman/monitor.py", "", "e", "RESTORED_POLL_SECONDS"): NotYet(
-        1, Owner.OWN_STATE_EVENTS, OWN_STATE_POLL
-    ),
-    ("backend/rcman/workspaces.py", "", "e", "BUILD_QUEUE_POLL_SECONDS"): NotYet(
-        1, Owner.OWN_STATE_EVENTS, OWN_STATE_POLL
-    ),
-    ("backend/rcman/workspaces.py", "", "e", "RESTORE_POLL_SECONDS"): NotYet(
-        1, Owner.OWN_STATE_EVENTS, OWN_STATE_POLL
-    ),
-    (
-        "backend/rcman/workspaces.py",
-        "Workspaces._restore_all",
-        "a",
-        "free.acquire(timeout=RESTORE_POLL_SECONDS)",
-    ): NotYet(1, Owner.OWN_STATE_EVENTS, OWN_STATE_POLL),
-    (
-        "backend/rcman/workspaces.py",
-        "Workspaces._restore_all",
-        "a",
-        "time.sleep(RESTORE_POLL_SECONDS)",
-    ): NotYet(1, Owner.OWN_STATE_EVENTS, OWN_STATE_POLL),
-    (
-        "backend/rcman/workspaces.py",
-        "Workspaces._wait_for_build",
-        "a",
-        "self._builds.acquire(timeout=BUILD_QUEUE_POLL_SECONDS)",
-    ): NotYet(1, Owner.OWN_STATE_EVENTS, OWN_STATE_POLL),
-    (
-        "backend/rcman/workspaces.py",
-        "Workspaces._wait_while_made",
-        "a",
-        "self._closing.wait(WORKING_POLL_SECONDS)",
-    ): NotYet(1, Owner.OWN_STATE_EVENTS, OWN_STATE_POLL),
-    ("backend/rcman/workspaces.py", "Workspaces._wait_while_made", "a", "time.monotonic()"): NotYet(
-        2, Owner.OWN_STATE_EVENTS, OWN_STATE_POLL
-    ),
-    (
-        "backend/rcman/workspaces.py",
-        "Workspaces.close",
-        "a",
-        "self._restoring.join(timeout=2 * RUNTIME_WAIT_SECONDS)",
-    ): NotYet(1, Owner.OWN_STATE_EVENTS, OWN_STATE_POLL),
-    ("backend/rcman/workspaces.py", "Workspaces.close", "a", "thread.join(timeout=30)"): NotYet(
-        1, Owner.OWN_STATE_EVENTS, OWN_STATE_POLL
-    ),
     # Owner.SERVICE_ON_THE_CLOCK
     ("backend/rcman/accounts.py", "Accounts._wait", "a", "time.monotonic()"): NotYet(
         4, Owner.SERVICE_ON_THE_CLOCK, SERVICE_WAIT

@@ -131,11 +131,13 @@ def check_instructions(runtime: Runtime) -> None:
 class Clocks:
     """The clock of each part of the app that is given one (helpers/clock.py), the real one
     unless a test gives its own: the forwarding server, with its limits on new hosts and ways in;
-    the monitor's loops and rounds; the limit on a page's reports of failures; and the limit on
-    an administrator's requests for an upgrade."""
+    the monitor's loops and rounds; the workspaces' service, its waits on its own state and a
+    person's deletion; the limit on a page's reports of failures; and the limit on an
+    administrator's requests for an upgrade."""
 
     forward: Clock = REAL
     monitor: Clock = REAL
+    workspaces: Clock = REAL
     client_errors: Clock = REAL
     upgrade_requests: Clock = REAL
 
@@ -163,7 +165,12 @@ def create_app(
         journal.install(log)
     if runtime is None:  # rcman's own Podman, whose workspaces take the profile
         check_seccomp(settings.tools_dir)
-    service = Workspaces(settings, runtime or podman_runtime(settings), builder_slot=builder_slot)
+    service = Workspaces(
+        settings,
+        runtime or podman_runtime(settings),
+        builder_slot=builder_slot,
+        clock=clocks.workspaces,
+    )
     check_instructions(service.runtime)
     sign_ins = Accounts(service)
     terminals = Terminals(service)
@@ -177,8 +184,9 @@ def create_app(
         _start(settings)
         service.versions.reconcile()  # the approved version is current, before any server starts
         terminals.bind(asyncio.get_running_loop())  # before restore, which sweeps through it
+        service.on_restored = collector.restored_now  # its first round waits for the restore
         service.start_background()  # restore: HTTP answers meanwhile
-        collector.start(service.restored)  # its first round waits for the restore
+        collector.start()
         if settings.forward_socket is not None:  # it forwards nothing until the restore is done
             await forwarding.start(settings.forward_socket)
 

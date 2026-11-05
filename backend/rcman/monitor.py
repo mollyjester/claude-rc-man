@@ -21,7 +21,8 @@ only when it starts, changes or ends (``log``).
 
 The loops (``Monitor.start``) are tasks of the service's event loop, one for each round, which
 run their round in a thread and never two of it at once. The first usage round runs once the
-workspaces are restored, the first disk round a whole disk interval after that. A save of the
+workspaces are restored, which the restore tells (``Monitor.restored_now``), the first disk round
+a whole disk interval after that. A save of the
 settings wakes both, from the request's thread, to their new intervals counted from their last
 round. ``Monitor.stop`` ends both and waits for a round under way, killing a disk read.
 """
@@ -44,7 +45,7 @@ from typing import Annotated
 
 from pydantic import BaseModel, Field, StrictBool, StrictInt
 
-from helpers.clock import REAL, Clock
+from helpers.clock import REAL, Clock, Pace
 from rcman import db, limits
 from rcman import runtime as rt
 
@@ -463,8 +464,8 @@ def workspace_disk(
 
 # --- the collector ----------------------------------------------------------------------
 
-# How often the loops look whether the workspaces are restored yet.
-RESTORED_POLL_SECONDS = 1.0
+# How long a loop waits after it failed outside its round before it tries again.
+LOOP_RETRY_SECONDS = Pace(1.0)
 # How many times a disk round reads: once, and once more where that failed.
 DISK_ATTEMPTS = 2
 
@@ -508,6 +509,10 @@ class Monitor:
         self._stat: tuple[tuple[int, int, int], float] | None = None
         self._units: dict[str, tuple[UnitReading, float]] = {}
         self._loop: asyncio.AbstractEventLoop | None = None
+        # Whether the workspaces are restored (``restored_now``), and the loops' event of it,
+        # made by ``start``; under _lock.
+        self._was_restored = False
+        self._restored: asyncio.Event | None = None
         self.usage_wake: asyncio.Event | None = None
         self.disk_wake: asyncio.Event | None = None
         self.tasks: list[asyncio.Task] = []
@@ -793,15 +798,29 @@ class Monitor:
 
     # --- the loops ---
 
-    def start(self, restored: threading.Event) -> None:
-        """Start both loops on the running event loop: the usage round once ``restored`` is set,
-        the disk round a whole disk interval after that."""
-        self._loop = asyncio.get_running_loop()
+    def start(self) -> None:
+        """Start both loops on the running event loop: the usage round once the workspaces are
+        restored (``restored_now``), the disk round a whole disk interval after that."""
+        with self._lock:
+            self._loop = asyncio.get_running_loop()
+            self._restored = asyncio.Event()
+            if self._was_restored:
+                self._restored.set()
         self.usage_wake, self.disk_wake = asyncio.Event(), asyncio.Event()
         self.tasks = [
-            asyncio.create_task(self._looping("usage", self.usage_wake, restored)),
-            asyncio.create_task(self._looping("disk", self.disk_wake, restored)),
+            asyncio.create_task(self._looping("usage", self.usage_wake)),
+            asyncio.create_task(self._looping("disk", self.disk_wake)),
         ]
+
+    def restored_now(self) -> None:
+        """From any thread, before ``start`` or after: the workspaces are restored, and the
+        loops begin (Workspaces.on_restored)."""
+        with self._lock:
+            self._was_restored = True
+            loop, restored = self._loop, self._restored
+        if loop is not None and restored is not None:
+            with contextlib.suppress(RuntimeError):  # the loop is closed: nothing to tell
+                loop.call_soon_threadsafe(restored.set)
 
     def halt(self) -> None:
         """From any thread: a round under way ends, killing a disk read, and none starts."""
@@ -830,10 +849,9 @@ class Monitor:
         # A stop cancels the loop and not the round, which it waits for (``stop``).
         return await asyncio.shield(future)
 
-    async def _looping(self, which: str, wake: asyncio.Event, restored: threading.Event) -> None:
-        while not restored.is_set():
-            await self.clock.await_event(wake, RESTORED_POLL_SECONDS)
-            wake.clear()
+    async def _looping(self, which: str, wake: asyncio.Event) -> None:
+        await self.clock.await_event(self._restored, None)
+        wake.clear()
         # The disk round's first is a whole interval away; the usage round's is now.
         last = self.clock.now() if which == "disk" else None
         while not self.halted.is_set():
@@ -865,7 +883,7 @@ class Monitor:
                     log.exception("the monitor's %s loop failed", which)
                     self._loop_errors[which] = said
                 last = self.clock.now()
-                timeout = RESTORED_POLL_SECONDS
+                timeout = LOOP_RETRY_SECONDS
             await self.clock.await_event(wake, timeout)
             wake.clear()
 

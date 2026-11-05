@@ -18,6 +18,7 @@ from rcman.monitor import Monitor, MonitorSettings
 
 from tests.clocks import PhasedClock
 from tests.conftest import ALICE, BOB, CAROL
+from tests.hang_guard import HANG_GUARD
 
 RECORDED = Path(__file__).resolve().parent / "fakes" / "podman-monitor"
 # The install label the recordings' containers carry (container-inspect.json).
@@ -1021,10 +1022,60 @@ def test_the_host_runtime_prints_sizes_as_podman_does(count, shown):
     assert monitor.parse_size(shown) == pytest.approx(count, rel=1e-3)
 
 
+def test_before_the_restore_the_loops_wait_without_end(settings, runtime):
+    made, clock, rounds = looping(settings, runtime)
+
+    async def scenario():
+        made.start()
+        try:
+            await parked(clock)
+            assert [w.deadline for w in clock.waiters()] == [None, None]
+            assert rounds.ran == []
+        finally:
+            await made.stop()
+
+    asyncio.run(scenario())
+
+
+def test_a_restore_told_before_the_loops_start_is_not_missed(settings, runtime):
+    made, clock, rounds = looping(settings, runtime)
+    began = clock.now()
+    made.restored_now()  # before start: no loop to tell yet
+
+    async def scenario():
+        made.start()
+        try:
+            await until(lambda: rounds.of("usage"))
+            assert clock.now() == began
+        finally:
+            await made.stop()
+
+    asyncio.run(scenario())
+
+
+def test_a_restore_told_from_another_thread_runs_the_usage_round_with_no_time_moved(
+    settings, runtime
+):
+    async def scenario(made, clock, rounds):
+        began = clock.now()
+        made.start()
+        try:
+            await parked(clock)
+            telling = threading.Thread(target=made.restored_now)
+            telling.start()
+            telling.join(HANG_GUARD)
+            assert not telling.is_alive()
+            await until(lambda: rounds.of("usage"))
+            assert rounds.of("disk") == [] and clock.now() == began
+        finally:
+            await made.stop()
+
+    for _ in range(2):  # each on a monitor of its own, started anew
+        asyncio.run(scenario(*looping(settings, runtime)))
+
+
 def test_a_loop_whose_settings_cannot_be_read_says_so_once(settings, runtime, caplog):
     made, clock, rounds = looping(settings, runtime)
-    restored = threading.Event()
-    restored.set()
 
     def unreadable():
         raise sqlite3.OperationalError("planted")
@@ -1032,11 +1083,12 @@ def test_a_loop_whose_settings_cannot_be_read_says_so_once(settings, runtime, ca
     made.settings = unreadable
 
     async def scenario():
-        made.start(restored)
+        made.start()
+        made.restored_now()
         try:
             for _ in range(3):
                 await parked(clock)
-                clock.advance(monitor.RESTORED_POLL_SECONDS)
+                clock.advance(monitor.LOOP_RETRY_SECONDS)
             await parked(clock)
         finally:
             await made.stop()
@@ -1044,7 +1096,7 @@ def test_a_loop_whose_settings_cannot_be_read_says_so_once(settings, runtime, ca
     with caplog.at_level(logging.ERROR, logger=monitor.log.name):
         asyncio.run(scenario())
     said = [r for r in caplog.records if r.name == monitor.log.name]
-    assert sum(seconds == monitor.RESTORED_POLL_SECONDS for _, seconds, _ in clock.waits) >= 6
+    assert sum(seconds == monitor.LOOP_RETRY_SECONDS for _, seconds, _ in clock.waits) >= 6
     assert len(said) == 2  # once for each loop
     assert rounds.ran == []
 
@@ -1111,18 +1163,16 @@ def test_the_first_usage_round_waits_for_the_restore_and_the_first_disk_round_a_
     settings, runtime
 ):
     made, clock, rounds = looping(settings, runtime)
-    restored = threading.Event()
     disk = monitor.DEFAULTS.disk_interval_seconds
 
     async def scenario():
-        made.start(restored)
+        made.start()
         try:
             for _ in range(3):
                 clock.advance(monitor.DEFAULTS.usage_interval_seconds)
                 await parked(clock)
             assert rounds.ran == []  # nothing before the restore
-            restored.set()
-            clock.advance(1)
+            made.restored_now()
             await until(lambda: rounds.of("usage"))
             await parked(clock)  # the round has ended: its interval counts from its end
             assert rounds.of("usage") == [clock.now()]
@@ -1142,12 +1192,11 @@ def test_the_first_usage_round_waits_for_the_restore_and_the_first_disk_round_a_
 
 def test_the_loops_run_apart_and_neither_overlaps_itself(settings, runtime):
     made, clock, rounds = looping(settings, runtime, disk_interval_seconds=600)
-    restored = threading.Event()
-    restored.set()
     usage = monitor.DEFAULTS.usage_interval_seconds
 
     async def scenario():
-        made.start(restored)
+        made.start()
+        made.restored_now()
         try:
             await until(lambda: rounds.of("usage"))
             await parked(clock)  # the round has ended: its interval counts from its end
@@ -1176,11 +1225,10 @@ def test_the_loops_run_apart_and_neither_overlaps_itself(settings, runtime):
 
 def test_a_save_wakes_the_loops_to_the_new_interval_from_their_last_round(settings, runtime):
     made, clock, rounds = looping(settings, runtime, usage_interval_seconds=3600)
-    restored = threading.Event()
-    restored.set()
 
     async def scenario():
-        made.start(restored)
+        made.start()
+        made.restored_now()
         try:
             await until(lambda: rounds.of("usage"))
             await parked(clock)  # the round has ended: its interval counts from its end
@@ -1203,12 +1251,11 @@ def test_a_round_that_ends_late_counts_the_next_from_its_end_and_a_save_too(sett
     while a round runs, so its interval, and a new one saved after, count from when it ended,
     not from when it started."""
     made, clock, rounds = looping(settings, runtime, usage_interval_seconds=3600)
-    restored = threading.Event()
-    restored.set()
     rounds.hold["usage"].clear()
 
     async def scenario():
-        made.start(restored)
+        made.start()
+        made.restored_now()
         try:
             await until(lambda: rounds.of("usage"))  # under way, and held
             started = rounds.of("usage")[0]
@@ -1233,12 +1280,11 @@ def test_a_round_that_ends_late_counts_the_next_from_its_end_and_a_save_too(sett
 
 def test_switching_a_scope_does_not_move_when_the_next_round_is_due(settings, runtime):
     made, clock, rounds = looping(settings, runtime)
-    restored = threading.Event()
-    restored.set()
     usage = monitor.DEFAULTS.usage_interval_seconds
 
     async def scenario():
-        made.start(restored)
+        made.start()
+        made.restored_now()
         try:
             await until(lambda: rounds.of("usage"))
             await parked(clock)  # the round has ended: its interval counts from its end
@@ -1260,11 +1306,10 @@ def test_switching_a_scope_does_not_move_when_the_next_round_is_due(settings, ru
 
 def test_with_every_scope_off_the_loops_wait_without_a_deadline(settings, runtime):
     made, clock, rounds = looping(settings, runtime, host=False, people=False, containers=False)
-    restored = threading.Event()
-    restored.set()
 
     async def scenario():
-        made.start(restored)
+        made.start()
+        made.restored_now()
         try:
             await parked(clock)
             clock.advance(10 * monitor.DEFAULTS.disk_interval_seconds)
@@ -1283,12 +1328,11 @@ def test_with_every_scope_off_the_loops_wait_without_a_deadline(settings, runtim
 
 def test_a_stop_ends_both_loops_and_waits_for_a_round_under_way(settings, runtime):
     made, clock, rounds = looping(settings, runtime)
-    restored = threading.Event()
-    restored.set()
     finished = []
 
     async def scenario():
-        made.start(restored)
+        made.start()
+        made.restored_now()
         rounds.hold["usage"].clear()
         await until(lambda: rounds.of("usage"))
 
@@ -1311,8 +1355,6 @@ def test_a_stop_ends_both_loops_and_waits_for_a_round_under_way(settings, runtim
 
 def test_a_round_that_raises_does_not_end_its_loop(settings, runtime, caplog):
     made, clock, rounds = looping(settings, runtime)
-    restored = threading.Event()
-    restored.set()
     calls = []
 
     def failing():
@@ -1322,7 +1364,8 @@ def test_a_round_that_raises_does_not_end_its_loop(settings, runtime, caplog):
     made.usage_round = failing
 
     async def scenario():
-        made.start(restored)
+        made.start()
+        made.restored_now()
         try:
             await until(lambda: len(calls) == 1)
             # Only once the loop waits again: time moved any earlier is read by the failure's

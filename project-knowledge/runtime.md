@@ -944,8 +944,13 @@ page](../docs/devcontainer.md#building-an-image).
   (`CAUSES`), and `Workspaces._build_refusal` makes the `devcontainer.Refused` from
   `problems.DEVCONTAINER_MESSAGES`. A refusal or failure removes the builder, the volume and
   the image, and the workspace's container and volume.
-- **Places.** `Workspaces._builds`, bounded by `MAX_BUILDS`, holds a build from its start;
-  one that waits logs `WAITING_FOR_BUILD` and polls its `cancel`.
+- **Places.** `Workspaces._build_places`, of `MAX_BUILDS` read when the service starts, holds a
+  build from its start; one that waits logs `WAITING_FOR_BUILD` and waits on `_changed` (see
+  [The workspaces' condition](#the-workspaces-condition)), woken by a place given back, its
+  deletion (its `cancel`, which `_stop_working` sets, the watcher among the callers) or rcman
+  closing, when it raises `Closing`: the workspace is left as it is, `creating` or in
+  `preparing`, for the next start to finish (see [Restoring](#what-rcman-keeps-and-brings-back)),
+  or removed if it was deleted meanwhile.
 - **Restoring.** A plan whose image is one rcman built (`workspace_of_built_name`) is
   never pulled: if `built_images()` lacks it, the workspace fails with the
   `built_image_gone` message.
@@ -977,8 +982,9 @@ the volume; it shares their smaller steps (`_read_plan`, `_pulled`, `_built`,
   the rebuild each see the other: `rcman_upgrade._reason` gives `rebuilding` while
   `any_rebuilding()` finds a phase in a row - but, once the restore is done, not a ready
   workspace in `switching` that no thread of the service works on (`_left_in_switch`): the
-  upgrade's restart puts it back as `settle_left_over` would. The thread is kept in `_making`, so restore, the
-  orphan removals and the collection leave the workspace to it.
+  upgrade's restart puts it back as `settle_left_over` would. The thread is kept in `_making`
+  (see [The workspaces' condition](#the-workspaces-condition)), so restore, the orphan removals
+  and the collection leave the workspace to it.
 - **Preparing** (`_prepare`, under `_working_on` and no lock): the file is read in the old
   container, checked, and its image pulled or built as `NEXT_TAG`; the image read and the new
   plan made, or, for no file, `default_image_id()` taken (none refuses with
@@ -1040,7 +1046,9 @@ the volume; it shares their smaller steps (`_read_plan`, `_pulled`, `_built`,
   it; `delete_person` waits for such workspaces as for those being made. `_rebuild_ended` looks
   a second time after its slow steps (`_stopped`, the collection), having first taken its
   thread out of `_making` under the workspace's lock, so that a deletion meanwhile is finished
-  by it or, after it, by the deletion itself. A row `rcman-admin` left `deleting` with a phase
+  by it or, after it, by the deletion itself; `_make`'s final look has the same shape. A rebuild
+  that ends in `Closing` keeps its phase, its `rebuild_state` and the images, and the next
+  start settles it as a restart. A row `rcman-admin` left `deleting` with a phase
   that no thread of the service works on (`promoting` left over, a switch not put back) is
   removed by `settle_left_over`. A deletion after the commit leaves the server unstarted: `start_server` refuses a workspace no longer ready.
 - **Restarts** (`_restore_rebuild`, `_restore_failed_rebuild`, before a restore looks at the
@@ -1058,6 +1066,49 @@ the volume; it shares their smaller steps (`_read_plan`, `_pulled`, `_built`,
 - **The journal.** Each rebuild ends in one line on `rcman.workspaces`, `workspace <id>: ` and
   the outcome `_rebuild`, `_replace`, `_roll_back` and `_recover` return: what it ended in, and
   the first line of the reason where there is one.
+
+## The workspaces' condition
+
+`Workspaces._changed`, a condition on a plain lock, not reentrant, is what every wait on the
+service's own state waits on, through the service's clock, and what each change of that state
+tells (`notify_all`, as the waiters look for different things). It guards:
+
+- `_build_places`, the places for builds (see [Building an image](#building-an-image)), given
+  back by `_give_back_build`, which refuses one more than `MAX_BUILDS`;
+- the `cancel` of work a deletion stops, which `_stop_working` sets under it;
+- `_closing`, set by `close`;
+- `_restore_running`, set by `start_background` and cleared as `restore` ends, after
+  `on_restored`, and `_restores_running`, the restore's tasks under way, which refuses to go
+  below none;
+- `_unended`, the threads that make or rebuild a workspace (`_Made`) that have not ended, and
+  `_ended_here`, the workspaces such a thread of this process ended for, until the workspace is
+  removed;
+- `_putting_back`, the put-backs of `settle_left_over` under way.
+
+A thread that makes or rebuilds a workspace has two marks: it counts as making it while its
+`_Made` is in `_making` (under `_lock`), which `_being_made`, `delete`, the collection and
+`_worked_on` read, and it has ended once it is out of `_unended`. It runs in `_run_made`, whose
+end takes it out of both, however it ended; `_make` and `_rebuild_ended` take it out of
+`_making` before their final look, under the workspace's lock. A thread that does not start has
+both marks taken away again, and `create` removes the row it recorded, `rebuild` its phase. The
+restore's own `_make` has no mark.
+
+**The lock order** is a workspace's lock, a person's lock or the images' lock, then `_changed`,
+then `_lock`. Nothing is waited for while `_lock` is held, beyond a channel's own lock tried
+without blocking (`close_idle`); a body under `_changed` reads or changes
+the state above, may take `_lock`, and reads no row, reports nothing and takes no other lock.
+No thread waits on `_changed` while it holds a lock. `tests/test_changed.py` holds the order,
+what each way a making thread ends leaves of its marks, and the deletion just after a workspace
+is made.
+
+**`close`**, rcman's shutdown, sets `_closing` and waits on `_changed`, `CLOSE_WITHIN_SECONDS` in
+all, for the restore and its tasks, the making and rebuilding threads, and the put-backs; then
+it closes every channel. What has not ended by then is said in the journal and left to the next
+start. Restore stops between steps, but a step under way is not cut short: a repository's
+lifecycle command, a pull or a server's start goes on, so one that hangs makes a shutdown wait
+the whole deadline. A workspace deleted while its build waited for a place is removed during
+the shutdown, and finished by the next restore if close gives up first. No put-back starts once
+rcman is closing.
 
 ## What rcman keeps, and brings back
 
@@ -1096,8 +1147,8 @@ the prefix it was started with.
   `rcman-admin`, which has none of the service's events, only marks the row, and while the
   work goes on `_working_on` keeps a thread (`_watch`) that reads the row every
   `WORKING_POLL_SECONDS` and, once it is `deleting` or gone and no deletion in the service has
-  stopped the work, calls `_stop_working` as such a deletion does; the thread ends with the
-  work. Deleting a person deletes each of theirs (see [people.md](people.md)).
+  stopped the work, calls `_stop_working` as such a deletion does, which also wakes a build that
+  waits for a place; the thread ends with the work. Deleting a person deletes each of theirs (see [people.md](people.md)).
 - **Restoring.** When rcman starts, `restore` runs in the background, so rcman answers at once:
   it waits for the runtime, trying again while it is unavailable (where the instructions for
   Claude are missing from the tools, it leaves every row as it is and brings no workspace back,
@@ -1118,7 +1169,8 @@ the prefix it was started with.
   `GitAccount.write_gh_for_everyone` is one (`main.py`): `config.yml` for every person let in,
   and `hosts.yml` for each with a token stored, under the person's lock, which makes the account
   volume of anyone who had none. The workspaces are brought back up to `RESTORE_WORKERS` at
-  once, each in a thread of its own that goes on to start that workspace's server if it should
+  once, counted under `_changed` (see [The workspaces' condition](#the-workspaces-condition)),
+  each in a thread of its own that goes on to start that workspace's server if it should
   be running (pinned to the approved version, as above), so that a workspace that is slow, a
   start command that hangs among the causes, does not keep another from being brought back; it
   holds one of the places until it is done, and the removal of what no row is for, the finishing
