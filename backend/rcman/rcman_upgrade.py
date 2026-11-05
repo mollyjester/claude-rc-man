@@ -30,6 +30,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from helpers.clock import Deadline, Grace, RealBound
 from rcman.problems import UPGRADE_REFUSED_MESSAGES, Problem
 from rcman.problems import body as problem_body
 from rcman.settings import Settings
@@ -59,7 +60,7 @@ SERVICE, PATH_UNIT = "rcman-upgrade.service", "rcman-upgrade.path"
 PROPERTIES = ("Id", "LoadState", "ActiveState", "InvocationID")
 SHOW_ARGS = ("show", "--no-pager", f"--property={','.join(PROPERTIES)}", "--", SERVICE, PATH_UNIT)
 SHOW_ENVIRONMENT = {"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8", "SYSTEMD_PAGER": ""}
-SHOW_TIMEOUT = 10.0
+SHOW_TIMEOUT = RealBound(10.0)
 # systemd's active states; a unit in one of RUNNING has a run under way (a oneshot's ExecStart is
 # activating, its ExecStopPost deactivating).
 ACTIVE_STATES = (
@@ -69,9 +70,9 @@ ACTIVE_STATES = (
 RUNNING = ("activating", "active", "deactivating", "reloading")
 
 # How long a request may wait for the path unit to start its run before it is not_started.
-UPGRADE_START_GRACE = 120.0
+UPGRADE_START_GRACE = Grace(120.0)
 # How long a request waits for the images' lock, held while images are collected.
-ADMISSION_WAIT = 10.0
+ADMISSION_WAIT = Deadline(10.0)
 # A person's requests: a burst, then a steady rate (ratelimit.py).
 REQUESTS_BURST = 3
 REQUESTS_PER_MINUTE = 2.0

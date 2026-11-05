@@ -13,7 +13,7 @@ from pathlib import Path
 from fastapi import FastAPI
 
 from helpers import seccomp
-from helpers.clock import REAL, Clock
+from helpers.clock import REAL, Clock, Pace
 from rcman import (
     audit,
     claude_versions,
@@ -57,7 +57,7 @@ from rcman.terminals import log as terminals_log
 from rcman.workspaces import Workspaces
 from rcman.workspaces import log as workspaces_log
 
-RETENTION_INTERVAL_SECONDS = 24 * 60 * 60
+RETENTION_INTERVAL_SECONDS = Pace(24 * 60 * 60)
 
 
 def _retention(settings: Settings) -> None:

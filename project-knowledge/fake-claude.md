@@ -270,7 +270,11 @@ downloads: `tests/claude_download.py` lays it out as a release —
 — and the suite serves it and gives the installer its address. The binary is
 one file, as Claude Code's is: a shell script holding the fake and what it
 reads, which unpacks itself under `$TMPDIR` the first time it runs and runs it
-with the image's `python3`. The default workspace image has `python3` for it.
+with the image's `python3`; the default workspace image has `python3` for it. What it holds
+is `PARTS` in `tests/claude_download.py`: `DATA`, the launcher it runs (`tests/fakes/claude`)
+and the recordings, and the fake's Python, which `python_parts` derives from the fake's
+imports, followed through the repository's own modules, so a module one of them comes to
+import is in the bundle at once.
 
 A release has a kind (`KINDS` in `tests/claude_download.py`): `good`, the fake reporting the
 version it is released as, which the file bakes in (the label `FAKE_CLAUDE_VERSION`, set by

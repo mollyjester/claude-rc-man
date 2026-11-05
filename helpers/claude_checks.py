@@ -32,6 +32,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from helpers import screens
+from helpers.clock import Deadline, Grace, PollExternal
 
 # One control token at a time: CSI sequences, OSC strings, other escapes, or a
 # single control character: C0, DEL or C1.
@@ -127,7 +128,7 @@ def scrub(text: str) -> str:
     return TOKEN.sub(lambda m: m.group(0) if m.group(0) in ("\n", "\t") else "", text)
 
 
-TIMEOUT = 60.0
+TIMEOUT = Deadline(60.0)
 CHECK_EMAIL = "check@example.com"
 # How much of a program's output a run keeps in memory, for each stream it reads;
 # the rest is read, so the program can finish, and counted.
@@ -140,8 +141,8 @@ READ_SIZE = 65536
 # and write on. POLL_SECONDS is how often a run looks for its program's exit, and is
 # also the quiet window: once the program has exited, a poll with nothing to read
 # ends the run.
-DRAIN_SECONDS = 0.5
-POLL_SECONDS = 0.05
+DRAIN_SECONDS = Grace(0.5)
+POLL_SECONDS = PollExternal(0.05)
 
 
 class Ran(tuple):

@@ -35,6 +35,7 @@ import termios
 import time
 from collections.abc import Awaitable, Callable
 
+from helpers.clock import Deadline, Grace, PollExternal
 from rcman import runtime as rt
 from rcman.audit import (
     SERVICE_CLOSING,
@@ -78,16 +79,16 @@ MAX_START = (1 << 64) - 1
 PIDFILE = re.compile(rb"([1-9][0-9]{0,9}) (0|[1-9][0-9]{0,19})\n")
 # How long the program on the pty is given to end once the pty is closed, and once more after
 # each signal; and the shell's session after each signal.
-END_GRACE_SECONDS = 2.0
-POLL_SECONDS = 0.05
+END_GRACE_SECONDS = Grace(2.0)
+POLL_SECONDS = PollExternal(0.05)
 # How long a shell is given to write its pidfile, after which its terminal is not opened.
-PIDFILE_SECONDS = 30.0
+PIDFILE_SECONDS = Deadline(30.0)
 # How long what a shell that exited printed last is still passed on, past its exit, while a job
 # of its holds the pty.
-EXIT_DRAIN_SECONDS = 1.0
+EXIT_DRAIN_SECONDS = Grace(1.0)
 # The longest a call from another thread (a deletion, a sign-out, the restore) waits for what
 # it asked of the terminals.
-FROM_THREAD_SECONDS = 180.0
+FROM_THREAD_SECONDS = Deadline(180.0)
 
 Run = Callable[..., object]
 Send = Callable[[bytes], Awaitable[None]]

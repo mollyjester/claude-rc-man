@@ -20,23 +20,24 @@ import time
 from collections.abc import Callable
 
 from helpers import rules, screens
+from helpers.clock import Deadline, Grace, Pace, PollExternal
 from rcman.channel import REQUEST_TIMEOUT, Result
 from rcman.problems import Problem
 from rcman.runtime import Layout, child_env
 
 SESSION = "rc-server"
-START_TIMEOUT = 30.0
+START_TIMEOUT = Deadline(30.0)
 # How long a stop waits for a server to exit on Ctrl+C before ending its process.
-STOP_TIMEOUT = 30.0
+STOP_TIMEOUT = Grace(30.0)
 # Once a stop ends a server's process: how long it waits after SIGTERM, and after SIGKILL.
-END_GRACE_SECONDS = 5.0
+END_GRACE_SECONDS = Grace(5.0)
 # Claude may refuse an answer that arrives too quickly after its question (the trust question does).
-ANSWER_PACE_SECONDS = 0.5
-POLL_SECONDS = 0.1
+ANSWER_PACE_SECONDS = Pace(0.5)
+POLL_SECONDS = PollExternal(0.1)
 # A screen in transition matches no known state for a moment.
-UNRECOGNISED_GRACE_SECONDS = 3.0
+UNRECOGNISED_GRACE_SECONDS = Grace(3.0)
 # How long `claude auth status` may take.
-SIGN_IN_CHECK_TIMEOUT = 60.0
+SIGN_IN_CHECK_TIMEOUT = Deadline(60.0)
 
 Run = Callable[..., Result]
 
