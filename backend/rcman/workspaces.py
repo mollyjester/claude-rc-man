@@ -28,7 +28,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
 from helpers import git_run, instructions, rules
-from helpers.clock import Deadline, Handed, Pace, PollExternal
+from helpers.clock import REAL, Clock, Deadline, Handed, Pace, PollExternal
 from rcman import builder, db, devcontainer, forwards, limits, people
 from rcman.channel import (
     REQUEST_TIMEOUT,
@@ -104,16 +104,19 @@ LIMITS_REPORT_SECONDS = Deadline(2 * SYSTEMCTL_TIMEOUT)
 # The file, in the database's folder, that the service and rcman-admin lock to change limits.
 LOCK_FILE = "rcman.lock"
 # How long one wait for the runtime lasts before restore tries again, or stops when
-# rcman does; and how long rcman's shutdown waits for restore to stop.
+# rcman does.
 RUNTIME_WAIT_SECONDS = Deadline(5.0)
+# How long rcman's shutdown (``close``) waits, in all, for restore, its workspaces' tasks, the
+# threads that make or rebuild a workspace and the put-backs to end.
+CLOSE_WITHIN_SECONDS = Deadline(30.0)
 # How many workspaces' servers are read at once for a listing.
 LISTING_WORKERS = 8
 # How long deleting a person waits for a workspace still being made.
 MADE_WITHIN_SECONDS = Deadline(600.0)
 # How often work a deletion has to stop (``_working_on``) looks whether another process,
-# rcman-admin, deleted its workspace, and how often deleting a person looks whether the
-# workspaces being made are gone; and the name of the thread that looks, before the
-# workspace's id.
+# rcman-admin, deleted its workspace, and how often deleting a person looks whether a workspace
+# no thread of this process makes is gone, the other process finishing it; and the name of the
+# thread that looks, before the workspace's id.
 WORKING_POLL_SECONDS = PollExternal(1.0)
 WATCHER_PREFIX = "watching-workspace-"
 # Most of what the runtime said that a failed workspace keeps.
@@ -137,10 +140,10 @@ MAX_SAID_CHARS = 500
 # The most of each of a command's output streams that is ever held, however much it prints:
 # its last bytes.
 HOOK_KEEP_BYTES = 64 * 1024
-# How many images are built at once, how often a build that waits for a place looks whether it is
-# stopped, and the line the log gets when it has to wait.
+# How many images are built at once, read when the service starts; a build that waits for a place
+# is woken by a place given back, its deletion or rcman closing (``_changed``). And the line the
+# log gets when it has to wait.
 MAX_BUILDS = 2
-BUILD_QUEUE_POLL_SECONDS = 0.5
 WAITING_FOR_BUILD = "Waiting for another build to finish"
 # How many workspaces a restore brings back at once; a slow one holds one of these places until
 # it is done, and what restore does after all of them (removing what no row is for, finishing
@@ -157,8 +160,6 @@ IMAGE_GONE_WORDS = (
     "denied",
     "repository does not exist",
 )
-# How often a restore looks whether its workspaces are done, and whether rcman is closing.
-RESTORE_POLL_SECONDS = 0.2
 # Prints musl when the image has the musl loader and no glibc one, as Alpine images do, and ok
 # otherwise. Shell builtins and globs only, so that it needs nothing of the image.
 LIBC_PROBE = (
@@ -364,6 +365,20 @@ def limits_answered():
         raise Problem("limits_not_applied") from None
 
 
+class Closing(Exception):
+    """rcman is closing: a build that waited for a place does not start, and what it was for is
+    left as it is, for the next start to finish."""
+
+
+@dataclass(eq=False)
+class _Made:
+    """A thread that makes or rebuilds a workspace: it counts as making it while it is in
+    ``_making``, and has ended once it is out of ``_unended``."""
+
+    thread: threading.Thread
+    workspace_id: int
+
+
 class Workspaces:
     def __init__(
         self,
@@ -372,13 +387,16 @@ class Workspaces:
         prunes: bool = True,
         *,
         builder_slot: int = people.BUILDER_SLOT,
+        clock: Clock = REAL,
     ):
         """``prunes`` is False in a process that is not the service (``rcman-admin``): the
         locks that keep a prune from removing a version a start pins are the service's own
         process's, so the service prunes, when a server stops, a version is rolled out and rcman
         starts. ``builder_slot`` is the slot of the uid range builds and the canary run in, the
-        product's unless a test engine gives its own; people are given the slots below it."""
+        product's unless a test engine gives its own; people are given the slots below it.
+        ``clock`` is what the waits on ``_changed``, and the person deletion's, are made through."""
         self.settings = settings
+        self.clock = clock
         self.runtime = runtime
         self.builder_slot = builder_slot
         self.prunes = prunes
@@ -404,25 +422,41 @@ class Workspaces:
         # It is also held across processes, by a lock file beside the database: rcman-admin
         # changes limits in a process of its own, beside the service.
         self._limits_lock = FileLock(settings.database.parent / LOCK_FILE)
-        self._making: dict[int, threading.Thread] = {}  # by workspace
+        # The condition every wait on this process's own state waits on, and is told by: see
+        # project-knowledge/runtime.md, "The workspaces' condition", for what it guards, who tells
+        # it and its place in the lock order. Not reentrant.
+        self._changed = threading.Condition(threading.Lock())
+        # The thread making or rebuilding each workspace; under _lock.
+        self._making: dict[int, _Made] = {}
+        # The making threads that have not ended, and the workspaces a making thread of this
+        # process ended for, until the workspace is removed; under _changed.
+        self._unended: set[_Made] = set()
+        self._ended_here: set[int] = set()
         # The workspaces being made that a deletion has to stop: while git clones, an image is
         # pulled or a command runs. Each has the event the deletion sets; under _lock.
         self._working: dict[int, threading.Event] = {}
         # The threads of ``settle_left_over`` putting back a workspace left in the switch, by
-        # workspace; under _lock.
+        # workspace; under _changed.
         self._putting_back: dict[int, threading.Thread] = {}
         # The workspaces whose put-back failed and was said so, until it is done; under _lock.
         self._put_back_failing: set[int] = set()
-        # The places for builds: a build holds one from the moment it starts until it is done.
-        self._builds = threading.BoundedSemaphore(MAX_BUILDS)
+        # The places for builds free, of MAX_BUILDS: a build holds one from the moment it starts
+        # until it is done; under _changed.
+        self._build_bound = MAX_BUILDS
+        self._build_places = MAX_BUILDS
+        # Set, under _changed, once rcman is closing.
         self._closing = threading.Event()
-        self._restoring: threading.Thread | None = None
+        # Whether restore runs, and how many of its workspaces' tasks do; under _changed.
+        self._restore_running = False
+        self._restores_running = 0
         # The workspaces whose server is being started, with the version recorded for it, which
         # is in use before any server runs it; under _lock.
         self._starting: set[int] = set()
         # Called with a person's id once a server of theirs may have stopped: accounts.py
         # finishes a sign-out that waits for their last running server.
         self.on_stopped: Callable[[int], None] = lambda person: None
+        # Called once a restore is over, in its thread: the monitor's loops begin (monitor.py).
+        self.on_restored: Callable[[], None] = lambda: None
         # Called with a person's id once they are being deleted: accounts.py ends a sign-in of
         # theirs that waits for its code.
         self.on_person_deleting: Callable[[int], None] = lambda person: None
@@ -561,8 +595,49 @@ class Workspaces:
 
     def _being_made(self, workspace_id: int) -> bool:
         with self._lock:
-            thread = self._making.get(workspace_id)
-        return thread is not None and thread.is_alive()
+            return workspace_id in self._making
+
+    def _made(self, workspace_id: int, target: Callable, *args) -> _Made:
+        """A thread, not started yet, that runs ``target(*args)`` for the workspace, with both its
+        marks: it counts as making the workspace, and has not ended."""
+        handle = _Made(
+            threading.Thread(target=lambda: self._run_made(handle, target, *args), daemon=True),
+            workspace_id,
+        )
+        with self._changed:
+            self._unended.add(handle)
+            with self._lock:
+                self._making[workspace_id] = handle
+        return handle
+
+    def _run_made(self, handle: _Made, target: Callable, *args) -> None:
+        """A making thread's run: once ``target`` is done, however it ended, it no longer counts
+        as making the workspace, and it has ended, which is told."""
+        try:
+            target(*args)
+        finally:
+            self._no_longer_making(handle.workspace_id)
+            self._ended(handle)
+
+    def _ended(self, handle: _Made) -> None:
+        with self._changed:
+            self._unended.discard(handle)
+            self._ended_here.add(handle.workspace_id)
+            self._changed.notify_all()
+
+    def _unstarted(self, handle: _Made) -> None:
+        """The marks of a making thread that did not start, taken away."""
+        with self._lock:
+            if self._making.get(handle.workspace_id) is handle:
+                del self._making[handle.workspace_id]
+        self._ended(handle)
+
+    def _no_longer_making(self, workspace_id: int) -> None:
+        """The current thread no longer counts as making the workspace."""
+        with self._lock:
+            made = self._making.get(workspace_id)
+            if made is not None and made.thread is threading.current_thread():
+                del self._making[workspace_id]
 
     # --- making and deleting ---------------------------------------------------------
 
@@ -604,11 +679,21 @@ class Workspaces:
             con.close()
             recording.release()
         made = self.get(cursor.lastrowid)
-        thread = threading.Thread(target=self._make, args=(made, person.slot), daemon=True)
-        with self._lock:
-            self._making = {k: t for k, t in self._making.items() if t.is_alive()}
-            self._making[made.id] = thread
-        thread.start()
+        handle = self._made(made.id, self._make, made, person.slot)
+        try:
+            handle.thread.start()
+        except BaseException:
+            self._unstarted(handle)
+            with self.lock(made.id):  # nothing of it was made
+                con = self._con()
+                try:
+                    con.execute("delete from workspaces where id = ?", (made.id,))
+                    con.commit()
+                finally:
+                    con.close()
+                with self._changed:  # removed, as ``_remove`` does
+                    self._ended_here.discard(made.id)
+            raise
         return made
 
     def _log(self, workspace_id: int, text: str, column: str = "log") -> None:
@@ -635,8 +720,12 @@ class Workspaces:
 
     def _make(self, workspace: Workspace, slot: int) -> None:
         """Make the workspace, and clone its source if it has one; one deleted meanwhile is
-        removed once it is made."""
-        refused, failure = False, None
+        removed once it is made. One whose build was to wait while rcman closes (``Closing``) is
+        left creating, for the next start to finish. The final look, under the workspace's lock,
+        comes after this thread no longer counts as making it, so that a deletion after it removes
+        the workspace itself."""
+        refused, failure, closing = False, None, False
+        error = None
         try:
             self._log(workspace.id, "Making the workspace")
             self._apply_stored(workspace.id)  # before its container is in the slice
@@ -647,7 +736,8 @@ class Workspaces:
             if workspace.source:
                 self._clone(workspace)
                 self._configure(workspace, slot)
-            error = None
+        except Closing:
+            closing = True
         except Exception as failed:  # noqa: BLE001 - whatever it is, the workspace failed
             # Redacted before it is cut, so that a token the cut would split is still found.
             error = self._redacted(workspace.person, str(failed) or type(failed).__name__)
@@ -660,6 +750,7 @@ class Workspaces:
         if refused:
             self._clear(workspace)
         with self.lock(workspace.id):
+            self._no_longer_making(workspace.id)
             now = self.get(workspace.id)
             if now is not None and now.state == DELETING:
                 try:
@@ -668,6 +759,8 @@ class Workspaces:
                     log.warning("workspace %s could not be removed: %s", now.id, refused.code)
                     return
                 self._finish_deleting(now.person)
+            elif closing:
+                return
             elif error is None:
                 self._set(workspace.id, state=READY, error=None, log=None)
             else:
@@ -1026,22 +1119,49 @@ class Workspaces:
                     return None
                 raise self._build_refusal(workspace, failed) from None
         finally:
-            self._builds.release()
+            self._give_back_build()
 
     def _wait_for_build(
         self, workspace: Workspace, cancel: threading.Event, report: Callable[[str], None]
     ) -> bool:
-        """Take a place for a build, saying to ``report`` that it waits when there is none free;
-        False, with no place taken, when the workspace was deleted meanwhile."""
-        if not self._builds.acquire(blocking=False):
+        """Take a place for a build, saying to ``report`` that it waits when there is none free,
+        and waiting on ``_changed`` until a place is given back, the workspace is deleted
+        (``cancel``, which ``_stop_working`` sets) or rcman closes (``Closing``). False, with no
+        place taken, when the workspace was deleted meanwhile."""
+        with self._changed:
+            taken = self._build_places > 0
+            if taken:
+                self._build_places -= 1
+        if not taken:
             report(WAITING_FOR_BUILD)
-            while not self._builds.acquire(timeout=BUILD_QUEUE_POLL_SECONDS):
-                if self._cancelled(workspace.id, cancel):
+            with self._changed:
+                self.clock.wait_for(
+                    self._changed,
+                    lambda: self._build_places > 0 or cancel.is_set() or self._closing.is_set(),
+                    None,
+                )
+                if cancel.is_set():
                     return False
-        if self._cancelled(workspace.id, cancel):
-            self._builds.release()
+                if self._closing.is_set():
+                    raise Closing()
+                self._build_places -= 1
+        try:
+            cancelled = self._cancelled(workspace.id, cancel)
+        except BaseException:
+            self._give_back_build()
+            raise
+        if cancelled:
+            self._give_back_build()
             return False
         return True
+
+    def _give_back_build(self) -> None:
+        """Give back a place for a build, telling those that wait for one."""
+        with self._changed:
+            if self._build_places >= self._build_bound:
+                raise ValueError("a place for a build was given back that was not taken")
+            self._build_places += 1
+            self._changed.notify_all()
 
     def _shown(self, person: int, text: str) -> str:
         """``text`` as the person is shown what a build said: without the control characters of
@@ -1344,16 +1464,20 @@ class Workspaces:
                 raise Problem(why)
             self._set(now.id, rebuild_state=REBUILD_PREPARING, rebuild_log=None, rebuild_error=None)
             now = self.get(now.id)
-            thread = threading.Thread(target=self._rebuild, args=(now, person.slot), daemon=True)
-            with self._lock:
-                self._making = {k: t for k, t in self._making.items() if t.is_alive()}
-                self._making[now.id] = thread
-            thread.start()
+            handle = self._made(now.id, self._rebuild, now, person.slot)
+            try:
+                handle.thread.start()
+            except BaseException:
+                self._unstarted(handle)
+                self._set(now.id, rebuild_state=None)
+                raise
         return now
 
     def _rebuild(self, workspace: Workspace, slot: int) -> None:
         """The rebuild's thread: what it ended in is one line of the journal. A workspace deleted
-        meanwhile is removed once it ends, as one being made is."""
+        meanwhile is removed once it ends, as one being made is. One whose build was to wait while
+        rcman closes (``Closing``) is left in its phase, for the next start to finish."""
+        closing = False
         try:
             outcome = "cancelled"
             try:
@@ -1361,13 +1485,15 @@ class Workspaces:
                     outcome = self._recover(workspace, slot)
                 else:
                     outcome = self._replace(workspace, slot)
+            except Closing:
+                outcome, closing = "closing", True
             except Exception as failed:  # noqa: BLE001 - whatever it is, the rebuild ends
                 log.exception("the rebuild of workspace %s failed", workspace.id)
                 outcome = f"failed: {type(failed).__name__}"
                 self._rebuild_failed(workspace)
             log.info("workspace %s: %s", workspace.id, outcome)
         finally:
-            self._rebuild_ended(workspace)
+            self._rebuild_ended(workspace, closing)
 
     def _rebuild_failed(self, workspace: Workspace) -> None:
         """Say where the person sees it that the rebuild did not finish, for a reason nothing
@@ -1399,11 +1525,13 @@ class Workspaces:
         self._set(workspace_id, rebuild_error=error, server=0)
         self._log(workspace_id, error, "rebuild_log")
 
-    def _rebuild_ended(self, workspace: Workspace) -> None:
+    def _rebuild_ended(self, workspace: Workspace, closing: bool = False) -> None:
         """Clear the phase of a rebuild that ended - not the last one, which is the restore's or
         the service's to finish (``settle_left_over``), nor the switch of a ready workspace that
-        was not put back, which is the restore's -; finish deleting a workspace deleted
-        meanwhile; and remove the images nothing refers to any more, the old one among them. A
+        was not put back, which is the restore's, nor any phase when rcman is closing
+        (``closing``), which the next start finishes -; finish deleting a workspace deleted
+        meanwhile; and, unless closing, remove the images nothing refers to any more, the old one
+        among them. A
         deletion while the images are removed finds the thread still at work and leaves the
         workspace to it: so the thread, as it ends, stops counting as making it and looks again,
         under the workspace's lock, after which a deletion removes it itself."""
@@ -1411,17 +1539,20 @@ class Workspaces:
             now = self.get(workspace.id)
             if now is not None and now.state == DELETING:
                 self._remove_deleted(now)
-            elif now is not None and (
-                now.rebuild_state == REBUILD_PREPARING
-                or (now.rebuild_state == REBUILD_SWITCHING and now.state == FAILED)
+            elif (
+                not closing
+                and now is not None
+                and (
+                    now.rebuild_state == REBUILD_PREPARING
+                    or (now.rebuild_state == REBUILD_SWITCHING and now.state == FAILED)
+                )
             ):
                 self._set(now.id, rebuild_state=None)
         self._stopped(workspace.person)
-        self._collect_images_quietly()
+        if not closing:
+            self._collect_images_quietly()
         with self.lock(workspace.id):
-            with self._lock:
-                if self._making.get(workspace.id) is threading.current_thread():
-                    del self._making[workspace.id]
+            self._no_longer_making(workspace.id)
             now = self.get(workspace.id)
             removed = now is not None and now.state == DELETING and self._remove_deleted(now)
         if removed:
@@ -1500,6 +1631,8 @@ class Workspaces:
         shown, ``advise`` applied to a refusal's."""
         try:
             read = self._read_plan(workspace, cancel, report, NEXT_TAG)
+        except Closing:
+            raise
         except Exception as failed:  # noqa: BLE001 - whatever it is, nothing is rebuilt
             if self._cancelled(workspace.id, cancel):
                 return None
@@ -1796,6 +1929,8 @@ class Workspaces:
                 self.runtime.discard(name)
                 if not self._make_new(workspace, slot, prepared, cancel, report):
                     return "cancelled"
+            except Closing:
+                raise
             except Exception as failed:  # noqa: BLE001 - whatever it is, it stays failed
                 if self._cancelled(workspace.id, cancel):
                     return "cancelled"
@@ -1884,18 +2019,25 @@ class Workspaces:
         of this process; in rcman-admin, which does not prune and has none, by the service's,
         which a rebuild in the row stands for - its thread, or, where none works on it any more,
         the service's periodic look (``settle_left_over``)."""
+        self._delete(workspace)
+
+    def _delete(self, workspace: Workspace) -> _Made | None:
+        """``delete``: the thread of this process the removal is left to, if one is."""
         with self.lock(workspace.id):
             now = self.get(workspace.id)
             if now is None:
-                return
+                return None
             self._set(workspace.id, state=DELETING)
             self._stop_working(now.id)  # what is being done to it stops: making, restoring
             elsewhere = now.rebuild_state is not None and not self.prunes
-            if now.state == CREATING or self._being_made(now.id) or elsewhere:
-                return
+            with self._lock:
+                made = self._making.get(now.id)
+            if now.state == CREATING or made is not None or elsewhere:
+                return made
             self._remove(now)
         self._stopped(workspace.person)
         self._collect_images_quietly()
+        return None
 
     def _stop_working(self, workspace_id: int) -> None:
         """End what is being done to the workspace that a deletion has to stop - git cloning
@@ -1908,7 +2050,9 @@ class Workspaces:
             cancel = self._working.get(workspace_id)
         if cancel is None:
             return
-        cancel.set()
+        with self._changed:  # a build that waits for a place is told
+            cancel.set()
+            self._changed.notify_all()
         for remove in (
             lambda: self.runtime.remove_build(workspace_id),  # the builder: it ends a build
             lambda: self.runtime.remove(container_name(workspace_id)),
@@ -1938,6 +2082,8 @@ class Workspaces:
             con.commit()
         finally:
             con.close()
+        with self._changed:
+            self._ended_here.discard(workspace.id)
 
     def delete_person(self, person: people.Person) -> None:
         """Delete a person: let them in nowhere, delete every workspace of theirs, then
@@ -1950,11 +2096,18 @@ class Workspaces:
             con.close()
         self._person_deleting(person.id)  # a sign-in that waits for its code ends
         theirs = self.of_person(person.id)
-        for workspace in theirs:
-            self.delete(workspace)
-        self._wait_while_made(
-            {w.id for w in theirs if w.state == CREATING or w.rebuild_state is not None}
-        )
+        own = [made for made in map(self._delete, theirs) if made is not None]
+        mine = {made.workspace_id for made in own}
+        with self._changed:
+            ended = set(self._ended_here)
+        external = {
+            w.id
+            for w in theirs
+            if (w.state == CREATING or w.rebuild_state is not None)
+            and w.id not in mine
+            and w.id not in ended
+        }
+        self._wait_while_made(own, external)
         if self.of_person(person.id):  # left: the work ends, or rcman's next start, finishes it
             raise Problem("workspace_failed", title=PERSON_DELETION_LEFT)
         with self.person_lock(person.id):  # not while a sign-in or a start of theirs is under way
@@ -1969,27 +2122,32 @@ class Workspaces:
                 con.close()
         self._collect_images_quietly()  # what only their workspaces referred to
 
-    def _wait_while_made(self, workspace_ids: set[int]) -> None:
-        """Wait, for up to MADE_WITHIN_SECONDS, until the workspaces of ``workspace_ids``, which
-        were being made when they were deleted, are gone: their deletion is finished by what
-        makes them, once the step it is on ends - a thread of this process, or of the service's
-        when this is rcman-admin, whose threads this process cannot see, and so is found by the
-        rows. One whose making in this process is over is not waited for: its removal failed,
-        and rcman's next start finishes it."""
-        deadline = time.monotonic() + MADE_WITHIN_SECONDS
-        waiting = set(workspace_ids)
+    def _wait_while_made(self, own: list[_Made], external: set[int]) -> None:
+        """Wait, for up to MADE_WITHIN_SECONDS in all, while the workspaces of a person being
+        deleted are still being made: their deletion is finished by what makes them, once the
+        step it is on ends. ``own``, this process's threads, are waited for on ``_changed`` until
+        each has ended, whatever its row says: one whose removal failed is not waited for again,
+        and rcman's next start finishes it. ``external``, rows no thread of this process makes -
+        the service's threads when this is rcman-admin, or a restore not done yet - are looked at
+        every WORKING_POLL_SECONDS until they are gone, or a thread of this process ended for
+        them. Closing ends both."""
+        deadline = self.clock.now() + MADE_WITHIN_SECONDS
+        handles = set(own)
+        with self._changed:
+            self.clock.wait_for(
+                self._changed,
+                lambda: self._closing.is_set() or not (handles & self._unended),
+                deadline - self.clock.now(),
+            )
+        waiting = set(external)
         while True:
-            with self._lock:
-                making = dict(self._making)
-            waiting = {
-                i
-                for i in waiting
-                if self.get(i) is not None and (i not in making or making[i].is_alive())
-            }
-            if not waiting or time.monotonic() >= deadline:
+            with self._changed:
+                waiting -= self._ended_here
+                closing = self._closing.is_set()
+            waiting = {i for i in waiting if self.get(i) is not None}
+            if not waiting or closing or self.clock.now() >= deadline:
                 return
-            if self._closing.wait(WORKING_POLL_SECONDS):
-                return
+            self.clock.poll(WORKING_POLL_SECONDS)
 
     def _person_deleting(self, person_id: int) -> None:
         """``on_person_deleting``, which never makes the deletion fail."""
@@ -2726,48 +2884,73 @@ class Workspaces:
             log.exception("restoring the workspaces failed")
         finally:
             self.restored.set()
+            try:
+                self.on_restored()
+            except Exception:  # noqa: BLE001 - what is told of it never fails the restore
+                log.exception("telling that the restore is over failed")
+            with self._changed:
+                self._restore_running = False
+                self._changed.notify_all()
 
     def _restore_all(self) -> None:
         """Bring each workspace back, up to RESTORE_WORKERS at once, each in a thread of its own
         with its server after it, so that one that is slow - an image to make a container from,
         a start command that hangs - does not keep another from being brought back, though it
         holds one of the places until it is done, and what comes after (the removal of what no
-        row is for, and the rest) waits for the last. The threads are daemons and look at
-        ``_closing`` between steps; this returns once they are done, or as soon as rcman is
-        closing. Nothing is brought back, and nothing discarded or made again, while the
+        row is for, and the rest) waits for the last. The places are counted under ``_changed``,
+        which each task tells as it ends. The threads are daemons and look at ``_closing`` between
+        steps; this returns once they are done, or as soon as rcman is closing, which ``close``
+        tells. Nothing is brought back, and nothing discarded or made again, while the
         instructions for Claude are missing from the tools: the journal says so."""
         missing = self.runtime.instructions_ready()
         if missing is not None:
             log.error("no workspace was brought back: %s", missing)
             return
-        free = threading.BoundedSemaphore(RESTORE_WORKERS)
-        threads = []
+        workers = RESTORE_WORKERS
         for workspace in self.everything():
-            while not free.acquire(timeout=RESTORE_POLL_SECONDS):
+            with self._changed:
+                self.clock.wait_for(
+                    self._changed,
+                    lambda: self._closing.is_set() or self._restores_running < workers,
+                    None,
+                )
                 if self._closing.is_set():
                     return
-            if self._closing.is_set():
-                return
+                self._restores_running += 1
             thread = threading.Thread(
-                target=self._restore_task, args=(workspace, free), daemon=True
+                target=self._restore_task, args=(workspace, True), daemon=True
             )
-            thread.start()
-            threads.append(thread)
-        while any(t.is_alive() for t in threads):
-            if self._closing.is_set():
-                return
-            time.sleep(RESTORE_POLL_SECONDS)
+            try:
+                thread.start()
+            except BaseException:
+                self._restore_ended()
+                raise
+        with self._changed:
+            self.clock.wait_for(
+                self._changed,
+                lambda: self._closing.is_set() or self._restores_running == 0,
+                None,
+            )
+
+    def _restore_ended(self) -> None:
+        """A task of ``_restore_all``'s has ended: its place is free, which is told."""
+        with self._changed:
+            if self._restores_running <= 0:
+                raise ValueError("a restore task ended that was not counted")
+            self._restores_running -= 1
+            self._changed.notify_all()
 
     def _restore_task(
         self,
         workspace: Workspace,
-        free: threading.BoundedSemaphore | None = None,
+        counted: bool = False,
         only_switching: bool = False,
     ) -> None:
         """One workspace's restore: its container, its start command, then its server if it
         should be running and is out of any switch. With ``only_switching`` (``settle_left_over``)
         nothing is done unless it is still a ready workspace in the switch, and what fails is
-        raised; else it is logged (``_step``)."""
+        raised; else it is logged (``_step``). A ``counted`` one holds a place of
+        ``_restore_all``'s, given back as it ends."""
         step = (lambda call, *args: call(*args)) if only_switching else self._step
         try:
             step(self._restore_workspace, workspace, only_switching)
@@ -2776,8 +2959,8 @@ class Workspaces:
                 if not self._closing.is_set():
                     step(self._restore_server, now)
         finally:
-            if free is not None:
-                free.release()
+            if counted:
+                self._restore_ended()
 
     @staticmethod
     def _step(call, *args) -> None:
@@ -2841,7 +3024,7 @@ class Workspaces:
         everything = self.everything()
         me = threading.current_thread()  # a rebuild collects when it is done
         with self._lock:
-            making = any(t.is_alive() and t is not me for t in self._making.values())
+            making = any(made.thread is not me for made in self._making.values())
         if making or any(w.state == CREATING for w in everything):
             return
         ids: set[str] = set()
@@ -3234,8 +3417,17 @@ class Workspaces:
     # --- running ---------------------------------------------------------------------------
 
     def start_background(self) -> None:
-        self._restoring = threading.Thread(target=self.restore, daemon=True)
-        self._restoring.start()
+        """Restore in a thread of its own, which ``close`` waits for, and the periodic checks."""
+        with self._changed:
+            self._restore_running = True
+        restoring = threading.Thread(target=self.restore, daemon=True)
+        try:
+            restoring.start()
+        except BaseException:
+            with self._changed:
+                self._restore_running = False
+                self._changed.notify_all()
+            raise
         threading.Thread(target=self._close_idle_channels, daemon=True).start()
 
     def _close_idle_channels(self) -> None:
@@ -3257,7 +3449,8 @@ class Workspaces:
         deleted and it was their last; the last phase of a rebuild whose built image's name could
         not be moved is finished (``_promote``); and a ready workspace whose rebuild could not put
         it back is put back as the restore does it, in a thread of its own, its server started
-        again if it should run, and stays in the switch, for the next look, if that fails too."""
+        again if it should run, and stays in the switch, for the next look, if that fails too.
+        None is begun once rcman is closing."""
         if not self.prunes or not self.restored.is_set():
             return
         for workspace in self.everything():
@@ -3268,9 +3461,17 @@ class Workspaces:
                 thread = threading.Thread(
                     target=self._put_back_left, args=(workspace,), daemon=True
                 )
-                with self._lock:
+                with self._changed:
+                    if self._closing.is_set():
+                        continue
                     self._putting_back[workspace.id] = thread
-                thread.start()
+                try:
+                    thread.start()
+                except BaseException:
+                    with self._changed:
+                        self._putting_back.pop(workspace.id, None)
+                        self._changed.notify_all()
+                    raise
                 continue
             if workspace.state != DELETING and workspace.rebuild_state != REBUILD_PROMOTING:
                 continue
@@ -3300,28 +3501,51 @@ class Workspaces:
             level = logging.DEBUG if again else logging.WARNING
             log.log(level, "workspace %s was not put back yet: %s", workspace.id, failed)
         finally:
-            with self._lock:
+            with self._changed:
                 if self._putting_back.get(workspace.id) is threading.current_thread():
                     del self._putting_back[workspace.id]
+                self._changed.notify_all()
 
     def _worked_on(self, workspace_id: int) -> bool:
         """Whether a thread of this process makes, rebuilds or restores the workspace, or puts
         it back (``settle_left_over``) - another than the one asking."""
-        with self._lock:
-            working = workspace_id in self._working
+        with self._changed:
             putting = self._putting_back.get(workspace_id)
-        if putting is not None and putting.is_alive() and putting is not threading.current_thread():
+            with self._lock:
+                working = workspace_id in self._working
+                made = workspace_id in self._making
+        if putting is not None and putting is not threading.current_thread():
             return True
-        return working or self._being_made(workspace_id)
+        return working or made
 
     def close(self) -> None:
-        """Stop: let restore finish the step it is on, wait for the workspaces being made or put
-        back, and close every channel."""
-        self._closing.set()
-        if self._restoring is not None:
-            self._restoring.join(timeout=2 * RUNTIME_WAIT_SECONDS)
-        with self._lock:
-            threads = [*self._making.values(), *self._putting_back.values()]
-        for thread in threads:
-            thread.join(timeout=30)
+        """Stop: let restore finish the step it is on, and wait, CLOSE_WITHIN_SECONDS in all, for
+        it, its workspaces' tasks, the threads making or rebuilding a workspace and the put-backs
+        to end, told by ``_changed``; then close every channel. What has not ended by then is
+        said in the journal, and left to the next start."""
+        with self._changed:
+            self._closing.set()
+            self._changed.notify_all()
+            done = self.clock.wait_for(
+                self._changed,
+                lambda: (
+                    not self._restore_running
+                    and self._restores_running == 0
+                    and not self._unended
+                    and not self._putting_back
+                ),
+                CLOSE_WITHIN_SECONDS,
+            )
+            left = (
+                self._restore_running,
+                self._restores_running,
+                sorted(made.workspace_id for made in self._unended),
+                sorted(self._putting_back),
+            )
+        if not done:
+            log.warning(
+                "rcman closes with work that did not end: restore running %s, %s restore tasks, "
+                "workspaces being made %s, being put back %s",
+                *left,
+            )
         self.close_channels()

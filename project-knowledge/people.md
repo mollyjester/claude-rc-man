@@ -68,12 +68,17 @@ request on a session of theirs is refused from the mark on, as the session's per
 every request, so a removal by `rcman-admin`, in a process of its own, refuses each request as it
 comes and leaves what is open to end with the container, see
 [backend.md](backend.md#port-forwarding)); deletes
-every workspace of theirs, container and volume, waiting, for up to `MADE_WITHIN_SECONDS`,
-until those still being made or rebuilt (a `rebuild_state` in the row) are gone: what makes
+every workspace of theirs, container and volume, waiting, for up to `MADE_WITHIN_SECONDS` in
+all, while those still being made or rebuilt (a `rebuild_state` in the row) are: what makes
 or rebuilds one finishes its deletion once it notices
-(see [runtime.md](runtime.md#what-rcman-keeps-and-brings-back)), in the service's process even when the deletion
-is `rcman-admin`'s, so the wait is for the rows; one whose making in this process is over is
-not waited for. One left answers `workspace_failed` with `PERSON_DELETION_LEFT`
+(see [runtime.md](runtime.md#what-rcman-keeps-and-brings-back)). A thread of this process that
+makes one is waited for until it ends, told by the service's condition
+([runtime.md](runtime.md#the-workspaces-condition)); one whose thread here has ended and whose
+removal failed is not waited for again, so the deletion answers at once. A row no thread of this
+process makes - in `rcman-admin`, whose deletion the service's threads finish, or one a restore
+under way has not reached - is looked at every `WORKING_POLL_SECONDS` until it is gone or a
+thread of this process has ended for it. rcman closing ends the wait. One left answers
+`workspace_failed` with `PERSON_DELETION_LEFT`
 (`backend/rcman/problems.py`); then, under the person's lock, so that no sign-in or start of theirs is under way, their
 Claude sign-in and git folder (see
 [runtime.md](runtime.md#a-persons-claude-sign-in)); drops the person's limits (their

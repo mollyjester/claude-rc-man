@@ -369,6 +369,19 @@ def test_the_monitor_runs_once_the_workspaces_are_restored_and_stops_before_the_
     assert seen == [(True, True, True, False)]
 
 
+def test_the_apps_restore_tells_the_monitor(app):
+    from fastapi.testclient import TestClient
+
+    service, made = app.state.workspaces, app.state.monitor
+    with made._lock:
+        assert not made._was_restored  # positive control: not before the app starts
+    with TestClient(app):
+        with service._changed:  # the restore is over, the monitor told
+            assert service._changed.wait_for(lambda: not service._restore_running, 30)
+        with made._lock:
+            assert made._was_restored
+
+
 # --- the forwarding server ------------------------------------------------------------------
 
 
@@ -508,6 +521,7 @@ def test_every_field_of_clocks_reaches_its_part(settings, runtime):
     assert {id(c) for c in reached} == {id(c) for c in given.values()}, reached
     assert app.state.forward.clock is given["forward"]
     assert app.state.monitor.clock is given["monitor"]
+    assert app.state.workspaces.clock is given["workspaces"]
     assert app.state.client_error_limit._clock is given["client_errors"]
     assert app.state.upgrade_limit._clock is given["upgrade_requests"]
 

@@ -19,7 +19,7 @@ import pytest
 from rcman import db, people
 from rcman import rcman_upgrade as up
 
-from tests.conftest import ALICE, BOB, as_user, changing
+from tests.conftest import ALICE, BOB, as_user, changing, ended
 
 ROUTE = "/api/rcman/upgrade"
 BOOT = "6f1c2a7e-0d4b-4b1e-9a51-3c2d1e0f9a88"
@@ -537,11 +537,7 @@ def test_an_upgrade_asked_for_while_a_real_rebuild_prepares_is_refused(
         assert not up.REQUEST.exists()
     finally:
         held.set()
-    service = app.state.workspaces
-    with service._lock:
-        thread = service._making[found["id"]]
-    thread.join(30)
-    assert not thread.is_alive()
+    ended(app.state.workspaces, found["id"])
     assert post(client).status_code == 202  # the positive: once it is over, it is admitted
 
 

@@ -661,13 +661,16 @@ a round is stamped with.
   of a scope now off dropped, and both loops woken with `loop.call_soon_threadsafe`. A round
   takes the settings and the generation as it starts, and what it read of a scope that is off
   by its end is dropped (`_keep`).
-- **The loops.** `Monitor.start(restored)`, from the lifespan, makes one task per round on the
+- **The loops.** `Monitor.start()`, from the lifespan, makes one task per round on the
   service's event loop. Each runs its round in a thread (`_in_thread`) and awaits it, so it
   never runs two at once; with the host on, the usage loop asks the runtime where Podman's
   storage is (`prepare`, one `podman info`) before its round until it knows, which is outside
   the rounds and so outside the cost guard below. A failure of a loop outside its round is
   logged when it starts or changes. The first usage round runs once the workspaces
-  are restored; the first disk round one disk interval after that. A loop's next round is due
+  are restored, which the restore tells from its thread: the lifespan sets
+  `Workspaces.on_restored` to `Monitor.restored_now`, which sets the loops' event through
+  `loop.call_soon_threadsafe`, or, before `start`, has `start` make it set; the first disk round
+  runs one disk interval after that. A loop's next round is due
   its interval after its last one ended, which a save does not move, and a loop with nothing on
   waits for a save. `Monitor.stop`, which the lifespan awaits before anything closes, sets
   `halted` (which kills a disk read and starts no round), cancels both tasks and awaits a round
@@ -923,7 +926,8 @@ constant carries its marker, and nothing outside the clock reads the time or wai
 field for each, which `Clocks`' docstring names; a part's token buckets share its clock (the
 forwarding server's). Each is `REAL` unless a test gives its own (`tests/conftest.py`'s `clocks`
 fixture, [tests.md](tests.md#time-in-tests)). A part the runtime makes takes a clock as an
-argument too, and the runtime leaves it at `REAL` (`builder.ProgressLines`).
+argument too, and the runtime leaves it at `REAL` (`builder.ProgressLines`). The workspaces'
+service takes its clock as `Workspaces(clock=)`; `rcman-admin`'s stays on `REAL`.
 `tests/test_main.py` walks the parts on `app.state` for every clock they hold and checks that
 each field of `Clocks`, and nothing else, reached them.
 

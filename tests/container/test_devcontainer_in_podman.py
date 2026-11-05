@@ -29,6 +29,7 @@ from rcman.repository import Repository
 from rcman.workspaces import READY, Workspaces
 
 from devtools import fake_claude as fake
+from tests.conftest import ended
 from tests.container import sizes
 from tests.container import test_github_in_podman as shared
 from tests.container.conftest import cli, image_of, on_host
@@ -1101,10 +1102,7 @@ def rebuilt(service, person, workspace_id: int, within: float = 300):
     """Rebuild the workspace through the service and wait for the rebuild to end."""
     service.restored.set()  # this service does not restore: nothing is brought back
     service.rebuild(person[0], workspace_id, True)
-    with service._lock:
-        thread = service._making[workspace_id]
-    thread.join(within)
-    assert not thread.is_alive()
+    ended(service, workspace_id, within)
     return service.get(workspace_id)
 
 

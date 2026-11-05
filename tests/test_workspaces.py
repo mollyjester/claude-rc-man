@@ -15,16 +15,20 @@ from rcman import runtime as rt
 from rcman import workspaces as ws
 from rcman.channel import ChannelBroken
 
+from helpers.clock import REAL
+from tests.clocks import PhasedClock
 from tests.conftest import (
     ALICE,
     BOB,
     MADE_WITHIN,
     as_user,
     changing,
+    ended,
     host_runtime,
     made_workspace,
     signed_in,
 )
+from tests.hang_guard import HANG_GUARD
 
 
 def listed(client, who=ALICE) -> list[dict]:
@@ -727,7 +731,7 @@ def test_a_workspace_made_while_restore_runs_is_left_to_be_made(service, setting
     restoring.join(3)  # restore has run past it, unless it waits on a create of its own
     release.set()
     restoring.join(60)
-    service._making[made.id].join(30)
+    ended(service, made.id)
     name = rt.container_name(made.id)
     assert [c for c in calls if c[1] == name] == [("create", name)]
     assert service.get(made.id).state == ws.READY
@@ -742,7 +746,7 @@ def test_restore_never_removes_a_workspace_whose_row_appeared_meanwhile(service,
         found = real()
         if not made:  # a workspace is made after restore read the table
             made["it"] = service.create(_person(settings), "late")
-            service._making[made["it"].id].join(30)
+            ended(service, made["it"].id)
             found = real()
         return found
 
@@ -768,7 +772,7 @@ def test_the_last_workspace_of_a_person_being_deleted_finishes_their_deletion(
         con.close()
     service.delete(service.get(made.id))
     release.set()
-    service._making[made.id].join(30)
+    ended(service, made.id)
     assert service.get(made.id) is None
     assert _person(settings, "bob@example.com") is None
     assert _person(settings) is not None  # positive control
@@ -788,7 +792,7 @@ def test_a_removal_that_fails_after_making_leaves_the_workspace_to_restore(
 
     monkeypatch.setattr(runtime, "remove", refusing)
     release.set()
-    service._making[made.id].join(30)
+    ended(service, made.id)
     assert service.get(made.id).state == ws.DELETING  # left for restore to finish
     assert "planted: it will not go" in caplog.text
 
@@ -1118,11 +1122,6 @@ UNWATCHED_FOR = 0.5
 
 
 @pytest.fixture
-def quick_watch(monkeypatch):
-    monkeypatch.setattr(ws, "WORKING_POLL_SECONDS", 0.02)
-
-
-@pytest.fixture
 def recording(tmp_path):
     from tests.test_clone import Recording
 
@@ -1157,11 +1156,11 @@ def publish(github_stand_in, tmp_path):
 
 
 @contextlib.contextmanager
-def two_processes(settings, runtime):
+def two_processes(settings, runtime, service_clock=REAL, shell_clock=REAL):
     """The service and rcman-admin: two Workspaces on the same database and the same Podman,
-    each with only its own threads and events, as two processes have."""
-    service = ws.Workspaces(settings, runtime)
-    shell = ws.Workspaces(settings, runtime, prunes=False)
+    each with only its own threads and events, as two processes have, and each on its clock."""
+    service = ws.Workspaces(settings, runtime, clock=service_clock)
+    shell = ws.Workspaces(settings, runtime, prunes=False, clock=shell_clock)
     try:
         yield service, shell
     finally:
@@ -1353,40 +1352,330 @@ def test_a_deletion_in_the_same_process_is_not_stopped_twice_by_the_watcher(
     assert flow.events.count(("remove_build", made, False)) == 1
 
 
-@pytest.mark.filterwarnings("error::pytest.PytestUnhandledThreadExceptionWarning")
-def test_deleting_a_person_whose_workspace_its_own_making_could_not_remove_answers_at_once(
-    service, settings, runtime, monkeypatch
-):
-    """Nothing is left to wait for: the thread that made it is done, and restore finishes it."""
-    from rcman import problems
+# --- a person's deletion waits for what makes their workspaces -------------------------------
+
+
+@pytest.fixture
+def clock():
+    return PhasedClock()
+
+
+@pytest.fixture
+def timed(settings, runtime, clock):
+    """The service on a clock of the test's, which no test moves but where it says so."""
+    made = ws.Workspaces(settings, runtime, clock=clock)
+    yield made
+    made.close()
+
+
+def held_create(runtime) -> threading.Event:
+    """Every container's making held until the event is set."""
+    held, real = threading.Event(), runtime.create
+    runtime.create = lambda spec: (held.wait(HANG_GUARD), real(spec))
+    return held
+
+
+def deleting_person(service, person) -> tuple[threading.Thread, list]:
+    """``delete_person`` in a thread of its own: the thread, and what it ended in."""
     from rcman.problems import Problem
 
-    bob = _person(settings, BOB)
-    release, real = threading.Event(), runtime.create
-    runtime.create = lambda spec: (release.wait(MADE_WITHIN), real(spec))
-    made = service.create(bob, "stuck")
-
-    def refusing(name):
-        raise rt.RuntimeFailed("planted: it will not go")
-
-    monkeypatch.setattr(runtime, "remove", refusing)
     out: list = []
 
-    def deleting():
+    def run():
         try:
-            service.delete_person(bob)
+            service.delete_person(person)
             out.append(None)
         except Problem as refused:
             out.append(refused)
 
-    thread = threading.Thread(target=deleting, daemon=True)
+    thread = threading.Thread(target=run, daemon=True)
     thread.start()
-    deadline = time.monotonic() + MADE_WITHIN
-    while (row(settings, made.id) or {"state": None})["state"] != ws.DELETING:
-        assert time.monotonic() < deadline
-        time.sleep(0.02)
-    release.set()
-    thread.join(STOPPED_WITHIN)
+    return thread, out
+
+
+def joined(thread: threading.Thread) -> None:
+    thread.join(HANG_GUARD)
     assert not thread.is_alive()
-    assert out[0].code == "workspace_failed" and out[0].title == problems.PERSON_DELETION_LEFT
+
+
+def waits_of(clock, thread) -> list[tuple[str, float | None]]:
+    return [(method, seconds) for method, seconds, t in clock.waits if t is thread]
+
+
+def left(out) -> bool:
+    from rcman import problems
+
+    return out[0].code == "workspace_failed" and out[0].title == problems.PERSON_DELETION_LEFT
+
+
+def test_deleting_a_person_waits_for_their_making_thread_on_one_wait_and_no_poll(
+    timed, clock, settings, runtime
+):
+    bob = _person(settings, BOB)
+    held = held_create(runtime)
+    made = timed.create(bob, "own")
+    thread, out = deleting_person(timed, bob)
+    clock.wait_parked(1)
+    assert waits_of(clock, thread) == [("wait_for", ws.MADE_WITHIN_SECONDS)]
+    assert thread.is_alive()
+    held.set()
+    joined(thread)
+    assert out == [None] and row(settings, made.id) is None
+    assert _person(settings, BOB) is None
+    assert "poll" not in [m for m, _ in waits_of(clock, thread)]
+
+
+@pytest.mark.filterwarnings("error::pytest.PytestUnhandledThreadExceptionWarning")
+def test_deleting_a_person_whose_workspace_its_own_making_could_not_remove_answers_at_once(
+    timed, clock, settings, runtime, monkeypatch
+):
+    """Nothing is left to wait for: the thread that made it is done, and restore finishes it."""
+    bob = _person(settings, BOB)
+    held = held_create(runtime)
+    made = timed.create(bob, "stuck")
+
+    def refusing(name):
+        raise rt.RuntimeFailed("planted: it will not go")
+
+    thread, out = deleting_person(timed, bob)
+    clock.wait_parked(1)
+    monkeypatch.setattr(runtime, "remove", refusing)
+    held.set()
+    joined(thread)
+    assert left(out)
     assert row(settings, made.id)["state"] == ws.DELETING  # left for restore to finish
+    assert "poll" not in [m for m, _ in waits_of(clock, thread)]
+
+
+def test_deleting_a_person_whose_making_thread_raised_at_its_end_answers_at_once(
+    timed, clock, settings, runtime, monkeypatch
+):
+    import sqlite3
+
+    caught: list[BaseException] = []
+    monkeypatch.setattr(threading, "excepthook", lambda args: caught.append(args.exc_value))
+    bob = _person(settings, BOB)
+    held = held_create(runtime)
+    made = timed.create(bob, "raising")
+
+    def failing(workspace):
+        raise sqlite3.OperationalError("planted: the database is locked")
+
+    thread, out = deleting_person(timed, bob)
+    clock.wait_parked(1)
+    monkeypatch.setattr(timed, "_remove", failing)  # what its final look calls
+    held.set()
+    joined(thread)
+    assert [type(e) for e in caught] == [sqlite3.OperationalError]
+    assert left(out) and row(settings, made.id) is not None
+    with timed._changed:
+        assert made.id in timed._ended_here
+    assert "poll" not in [m for m, _ in waits_of(clock, thread)]
+
+
+def test_deleting_a_person_whose_workspace_a_thread_here_left_creating_answers_at_once(
+    timed, clock, settings, monkeypatch
+):
+    """A making thread of this process ended and left the row creating: no thread makes it, and
+    it is not another process's either, so it is not looked at again."""
+    import sqlite3
+
+    caught: list[BaseException] = []
+    monkeypatch.setattr(threading, "excepthook", lambda args: caught.append(args.exc_value))
+    bob = _person(settings, BOB)
+    real = timed._set
+
+    def failing(workspace_id, **columns):
+        if columns.get("state") == ws.READY:
+            raise sqlite3.OperationalError("planted: the database is locked")
+        real(workspace_id, **columns)
+
+    monkeypatch.setattr(timed, "_set", failing)
+    made = timed.create(bob, "unfinished")
+    ended(timed, made.id, HANG_GUARD)
+    assert [type(e) for e in caught] == [sqlite3.OperationalError]
+    assert row(settings, made.id)["state"] == ws.CREATING  # positive: the row it left
+    assert not timed._being_made(made.id)
+    thread, out = deleting_person(timed, bob)
+    joined(thread)
+    assert left(out)
+    assert [m for m, _ in waits_of(clock, thread) if m == "poll"] == []
+
+
+@pytest.mark.parametrize("short", [1, 0])
+def test_deleting_a_person_gives_up_on_their_making_thread_after_its_deadline(
+    timed, clock, settings, runtime, short
+):
+    bob = _person(settings, BOB)
+    held = held_create(runtime)
+    made = timed.create(bob, "slow")
+    thread, out = deleting_person(timed, bob)
+    try:
+        clock.wait_parked(1)
+        clock.lend(thread)
+        clock.advance(ws.MADE_WITHIN_SECONDS - short)
+        if short:  # the twin: a second short, it waits on
+            clock.wait_parked(1)
+            assert thread.is_alive() and out == []
+            clock.advance(short)
+        joined(thread)
+        assert left(out)
+    finally:
+        held.set()
+    ended(timed, made.id, HANG_GUARD)
+
+
+class CountingClock(PhasedClock):
+    """A PhasedClock that tells each ``poll`` it was given, once it has slept."""
+
+    def __init__(self, *args, **more):
+        super().__init__(*args, **more)
+        self.polled = threading.Condition()
+        self.polls = 0
+
+    def poll(self, seconds):
+        super().poll(seconds)
+        with self.polled:
+            self.polls += 1
+            self.polled.notify_all()
+
+    def wait_polls(self, n: int) -> None:
+        with self.polled:
+            assert self.polled.wait_for(lambda: self.polls >= n, self.hang_after)
+
+
+def test_rcman_admin_deleting_a_person_polls_a_workspace_the_service_makes_until_it_is_gone(
+    settings, runtime
+):
+    shell_clock = CountingClock()
+    bob = _person(settings, BOB)
+    held = held_create(runtime)
+    with two_processes(settings, runtime, shell_clock=shell_clock) as (service, shell):
+        try:
+            made = service.create(bob, "theirs")
+            thread, out = deleting_person(shell, bob)
+            shell_clock.wait_polls(1)
+            assert ("poll", ws.WORKING_POLL_SECONDS) in waits_of(shell_clock, thread)
+            assert thread.is_alive()
+        finally:
+            held.set()
+        joined(thread)
+        assert out == [None] and row(settings, made.id) is None
+
+
+@pytest.mark.parametrize("short", [0, 1])
+def test_rcman_admin_deleting_a_person_gives_up_on_a_row_nothing_makes_after_its_deadline(
+    settings, runtime, short
+):
+    shell_clock = CountingClock()
+    bob = _person(settings, BOB)
+    orphan = insert(settings, bob.id, "orphan", ws.CREATING)
+    with two_processes(settings, runtime, shell_clock=shell_clock) as (_, shell):
+        thread, out = deleting_person(shell, bob)
+        shell_clock.lend(thread)
+        shell_clock.wait_polls(1)
+        assert ("poll", ws.WORKING_POLL_SECONDS) in waits_of(shell_clock, thread)
+        shell_clock.advance(ws.MADE_WITHIN_SECONDS - short)
+        if short:  # the twin: a second short, it looks on
+            seen = shell_clock.polls
+            shell_clock.wait_polls(seen + 2)
+            assert thread.is_alive() and out == []
+            shell_clock.advance(short)
+        joined(thread)
+        assert left(out)
+        assert row(settings, orphan)["state"] == ws.DELETING
+
+
+def test_closing_ends_a_persons_deletion_waiting_for_their_making_thread_at_once(
+    timed, clock, settings, runtime
+):
+    bob = _person(settings, BOB)
+    held = held_create(runtime)
+    made = timed.create(bob, "own")
+    thread, out = deleting_person(timed, bob)
+    clock.wait_parked(1)
+    closing = threading.Thread(target=timed.close, daemon=True)
+    closing.start()
+    try:
+        joined(thread)  # with the making thread still held
+        assert left(out)
+    finally:
+        held.set()
+    joined(closing)
+    ended(timed, made.id, HANG_GUARD)
+
+
+def test_closing_ends_rcman_admins_deletion_polling_a_row_within_one_poll(settings, runtime):
+    shell_clock = CountingClock()
+    bob = _person(settings, BOB)
+    insert(settings, bob.id, "orphan", ws.CREATING)
+    with two_processes(settings, runtime, shell_clock=shell_clock) as (_, shell):
+        thread, out = deleting_person(shell, bob)
+        shell_clock.wait_polls(1)
+        shell.close()
+        joined(thread)
+        assert left(out)
+
+
+# --- close ---------------------------------------------------------------------------------
+
+
+def test_close_waits_for_a_making_thread(timed, clock, settings, runtime):
+    held = held_create(runtime)
+    made = timed.create(_person(settings), "slow")
+    closing = threading.Thread(target=timed.close, daemon=True)
+    closing.start()
+    clock.wait_parked(1)
+    assert closing.is_alive()
+    held.set()
+    joined(closing)
+    with timed._changed:
+        assert timed._unended == set()
+    assert row(settings, made.id)["state"] == ws.READY
+
+
+def test_close_gives_up_after_its_deadline_and_says_what_is_left(
+    timed, clock, settings, runtime, caplog
+):
+    held = held_create(runtime)
+    made = timed.create(_person(settings), "slow")
+    closing = threading.Thread(target=timed.close, daemon=True)
+    closing.start()
+    try:
+        clock.wait_parked(1)
+        clock.lend(closing)
+        clock.advance(ws.CLOSE_WITHIN_SECONDS - 1)
+        clock.wait_parked(1)  # the twin: a second short, it waits on
+        assert closing.is_alive()
+        clock.advance(1)
+        joined(closing)
+        said = [r.getMessage() for r in caplog.records if r.name == "rcman.workspaces"]
+        assert [m for m in said if "did not end" in m and str(made.id) in m], said
+    finally:
+        held.set()
+    ended(timed, made.id, HANG_GUARD)
+
+
+def test_close_with_nothing_running_returns_at_once(timed, clock):
+    began = clock.now()
+    timed.close()
+    assert clock.now() == began and clock.waiters() == []
+
+
+def test_no_put_back_is_begun_once_rcman_is_closing(timed, settings, monkeypatch):
+    left_ = insert(settings, 1, "left", ws.READY)
+    con = db.connect(settings.database)
+    try:
+        con.execute("update workspaces set rebuild_state = ? where id = ?", ("switching", left_))
+        con.commit()
+    finally:
+        con.close()
+    begun: list = []
+    monkeypatch.setattr(timed, "_restore_task", lambda w, **k: begun.append(w.id))
+    timed.restored.set()
+    assert timed._left_in_switch(timed.get(left_))  # positive control: it would be put back
+    timed.close()
+    timed.settle_left_over()
+    with timed._changed:
+        assert timed._putting_back == {}
+    assert begun == []

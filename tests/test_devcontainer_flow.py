@@ -6,6 +6,7 @@ stand-in for github.com."""
 
 from __future__ import annotations
 
+import collections
 import json
 import re
 import threading
@@ -18,8 +19,10 @@ from rcman import devcontainer as dc
 from rcman import runtime as rt
 from rcman import workspaces as ws
 
-from tests.conftest import MADE_WITHIN, as_user, changing, host_runtime, made_workspace
+from tests.clocks import PhasedClock
+from tests.conftest import MADE_WITHIN, as_user, changing, ended, host_runtime, made_workspace
 from tests.git_fixtures import fixture_git, make_repo
+from tests.hang_guard import HANG_GUARD
 from tests.test_clone import (
     ALICE,
     TOKEN,
@@ -1469,14 +1472,18 @@ def test_closing_while_a_start_command_hangs_ends_the_restore_at_once(service, s
     runtime.gate = threading.Event()
     lost_with_hook(service, settings, runtime)
     thread = restoring(service)
+    closing = None
     try:
         assert runtime.hooking.wait(MADE_WITHIN)
-        service._closing.set()
+        closing = threading.Thread(target=service.close, daemon=True)
+        closing.start()  # it waits for the command, which is held
         thread.join(15)
         assert not thread.is_alive()
         assert service.restored.is_set()
     finally:
         runtime.gate.set()
+    closing.join(MADE_WITHIN)
+    assert not closing.is_alive()
 
 
 def test_deleting_a_workspace_whose_start_command_hangs_in_a_restore_stops_it(
@@ -1498,26 +1505,127 @@ def test_deleting_a_workspace_whose_start_command_hangs_in_a_restore_stops_it(
     assert rt.container_name(slow) not in runtime.labelled()  # nothing is left of it
 
 
+class HeldRestores:
+    """Each workspace's restore held, as it begins, until the test lets it go."""
+
+    def __init__(self, service):
+        self.told = threading.Condition()
+        self.begun: list[int] = []
+        self.go: dict[int, threading.Event] = collections.defaultdict(threading.Event)
+        service._restore_workspace = self._held
+
+    def _held(self, workspace, only_switching=False):
+        with self.told:
+            self.begun.append(workspace.id)
+            self.told.notify_all()
+        assert self.go[workspace.id].wait(HANG_GUARD)
+
+    def wait_begun(self, n: int) -> None:
+        with self.told:
+            assert self.told.wait_for(lambda: len(self.begun) >= n, HANG_GUARD)
+
+    def let_go(self, *ids: int) -> None:
+        for workspace in ids or list(self.go) + self.begun:
+            self.go[workspace].set()
+
+
+@pytest.fixture
+def restored_by(settings, runtime, clock):
+    """The service on the test's clock, each restore of a workspace held."""
+    made = ws.Workspaces(settings, runtime, clock=clock)
+    held = HeldRestores(made)
+    yield made, held
+    held.let_go()
+    made.close()
+
+
+def three_lost(settings) -> list[int]:
+    return [insert(settings, f"lost{n}", "ready", None) for n in range(3)]
+
+
 def test_no_more_workspaces_are_restored_at_once_than_the_bound_allows(
-    service, settings, runtime, monkeypatch
+    restored_by, clock, settings, monkeypatch
 ):
     monkeypatch.setattr(ws, "RESTORE_WORKERS", 2)
-    runtime.gate = threading.Event()
-    for number in range(4):
-        lost_with_hook(service, settings, runtime, name=f"slow{number}", wanted=False)
+    service, held = restored_by
+    ids = three_lost(settings)
     thread = restoring(service)
+    held.wait_begun(2)
+    clock.wait_parked(1)  # restore, waiting for a place
+    first_two = list(held.begun)
+    assert sorted(first_two) == ids[:2]  # the two in either order: they run at once
+    held.let_go(first_two[0])
+    held.wait_begun(3)
+    assert held.begun[2] == ids[2]
+    clock.wait_parked(1)  # restore, waiting for the last
+    assert thread.is_alive()
+    held.let_go(first_two[1])
+    clock.wait_parked(1)
+    assert thread.is_alive()
+    held.let_go(ids[2])
+    joined(thread)
+    assert service.restored.is_set()
+
+
+def test_closing_while_a_restore_waits_for_a_place_ends_it_at_once(
+    restored_by, clock, settings, monkeypatch
+):
+    monkeypatch.setattr(ws, "RESTORE_WORKERS", 1)
+    service, held = restored_by
+    ids = three_lost(settings)
+    thread = restoring(service)
+    held.wait_begun(1)
+    clock.wait_parked(1)
+    closing = closing_thread(service)
+    joined(thread)  # with its first workspace still held
+    assert held.begun == ids[:1]
+    clock.wait_parked(1)  # close, waiting for that workspace's restore
+    assert closing.is_alive()
+    held.let_go(ids[0])
+    joined(closing)
+
+
+@pytest.mark.parametrize("task_ends", [True, False])
+def test_close_waits_for_a_restore_task_and_gives_up_after_its_deadline(
+    restored_by, clock, settings, task_ends
+):
+    service, held = restored_by
+    lost = insert(settings, "lost", "ready", None)
+    thread = restoring(service)
+    held.wait_begun(1)
+    closing = closing_thread(service)
+    joined(thread)
+    clock.wait_parked(1)
+    clock.lend(closing)
+    clock.advance(ws.CLOSE_WITHIN_SECONDS - 1)
+    clock.wait_parked(1)  # a second short, it waits on
+    assert closing.is_alive()
+    if task_ends:  # close returns
+        held.let_go(lost)
+    else:  # its deadline: close gives up
+        clock.advance(1)
+    joined(closing)
+
+
+def test_close_waits_for_the_step_the_restore_is_on(settings, runtime, clock, monkeypatch):
+    service = ws.Workspaces(settings, runtime, clock=clock)
+    on, let_go = threading.Event(), threading.Event()
+    monkeypatch.setattr(runtime, "clean_probes", lambda: (on.set(), let_go.wait(HANG_GUARD)))
+    service.start_background()
     try:
-        deadline = time.monotonic() + MADE_WITHIN
-        while runtime.concurrent < 2:
-            assert time.monotonic() < deadline
-            time.sleep(0.02)
-        time.sleep(0.5)  # long enough for a third to start, if one could
-        assert runtime.most_at_once == 2
+        assert on.wait(HANG_GUARD)
+        closing = closing_thread(service)
+        clock.wait_parked(1)
+        assert closing.is_alive()
     finally:
-        runtime.gate.set()
-    thread.join(MADE_WITHIN)
-    assert not thread.is_alive() and runtime.most_at_once == 2
-    assert len([e for e in runtime.events if e[0] == "create"]) == 4
+        let_go.set()
+    joined(closing)
+    assert service.restored.is_set()
+
+
+def test_a_restore_task_ended_beyond_those_running_raises(service):
+    with pytest.raises(ValueError):
+        service._restore_ended()
 
 
 def test_a_lost_container_whose_image_is_gone_fails_the_workspace_in_plain_words(
@@ -2434,6 +2542,227 @@ def test_the_bound_on_builds_is_a_place_each_build_gives_back_even_when_it_fails
         assert cloned(client)["state"] == "failed"
     runtime.build_error = None
     assert cloned(client)["state"] == "ready"
+
+
+# --- the build queue on the service's clock -----------------------------------------------------
+
+
+@pytest.fixture
+def clock():
+    return PhasedClock()
+
+
+@pytest.fixture
+def timed(one_build_at_a_time, settings, runtime, clock):
+    """The service with one place for a build, on a clock of the test's that no test moves."""
+    made = ws.Workspaces(settings, runtime, clock=clock)
+    yield made
+    made.close()
+
+
+def builder_and_waiter(service, clock, runtime, publish, settings):
+    """Two workspaces cloned from a repository that builds its image: the first building, held
+    at the gate, the second parked waiting for its place."""
+    from tests.test_workspaces import _person
+
+    runtime.build_gate = threading.Event()
+    publish(building())
+    first = service.create(_person(settings), None, URL)
+    assert runtime.building.wait(HANG_GUARD)
+    second = service.create(_person(settings), None, URL)
+    clock.wait_parked(1)
+    return first.id, second.id
+
+
+def joined(thread: threading.Thread) -> None:
+    thread.join(HANG_GUARD)
+    assert not thread.is_alive()
+
+
+def closing_thread(service) -> threading.Thread:
+    thread = threading.Thread(target=service.close, daemon=True)
+    thread.start()
+    return thread
+
+
+def test_a_build_that_waits_parks_and_builds_once_the_place_is_given_back(
+    timed, clock, runtime, publish, settings
+):
+    began = clock.now()
+    first, second = builder_and_waiter(timed, clock, runtime, publish, settings)
+    assert ("wait_for", None) in [(m, s) for m, s, _ in clock.waits]
+    assert ws.WAITING_FOR_BUILD in row(settings, second)["log"]
+    assert len(runtime.builds) == 1
+    runtime.build_gate.set()
+    ended(timed, first, HANG_GUARD)
+    ended(timed, second, HANG_GUARD)
+    assert row(settings, first)["state"] == row(settings, second)["state"] == ws.READY
+    assert runtime.most_builds_at_once == 1 and len(runtime.builds) == 2
+    assert clock.now() == began
+
+
+def test_deleting_a_build_that_waits_ends_its_wait_at_once_and_builds_nothing(
+    timed, clock, runtime, publish, settings
+):
+    first, second = builder_and_waiter(timed, clock, runtime, publish, settings)
+    timed.delete(timed.get(second))
+    ended(timed, second, HANG_GUARD)  # the builder still holds its place
+    assert row(settings, second) is None
+    runtime.build_gate.set()
+    ended(timed, first, HANG_GUARD)
+    assert [b.id for b in runtime.builds] == [first]
+
+
+def test_the_twin_deleting_the_builder_leaves_the_waiter_parked_until_the_place_is_free(
+    timed, clock, runtime, publish, settings
+):
+    first, second = builder_and_waiter(timed, clock, runtime, publish, settings)
+    giving, let_go, real = threading.Event(), threading.Event(), timed._give_back_build
+
+    def give_back():
+        giving.set()
+        assert let_go.wait(HANG_GUARD)
+        real()
+
+    timed._give_back_build = give_back
+    try:
+        timed.delete(timed.get(first))  # its build is stopped; its place not given back yet
+        assert giving.wait(HANG_GUARD)
+        clock.wait_parked(1)
+        assert [b.id for b in runtime.builds] == [first]
+    finally:
+        runtime.build_gate.set()  # the waiter's build, once it has its place, is not held
+        let_go.set()
+    ended(timed, first, HANG_GUARD)
+    ended(timed, second, HANG_GUARD)
+    assert row(settings, second)["state"] == ws.READY
+    assert [b.id for b in runtime.builds] == [first, second]
+
+
+def test_a_deletion_by_rcman_admin_wakes_a_build_that_waits(
+    one_build_at_a_time, quick_watch, settings, runtime, publish, clock
+):
+    from tests.test_workspaces import two_processes
+
+    with two_processes(settings, runtime, service_clock=clock) as (service, shell):
+        first, second = builder_and_waiter(service, clock, runtime, publish, settings)
+        try:
+            shell.delete(shell.get(second))
+            ended(service, second, HANG_GUARD)
+            assert row(settings, second) is None
+        finally:
+            runtime.build_gate.set()
+        ended(service, first, HANG_GUARD)
+    assert [b.id for b in runtime.builds] == [first]
+
+
+@pytest.mark.filterwarnings("error::pytest.PytestUnhandledThreadExceptionWarning")
+def test_closing_while_a_build_waits_leaves_it_creating_and_close_waits_for_the_builder(
+    timed, clock, runtime, publish, settings
+):
+    first, second = builder_and_waiter(timed, clock, runtime, publish, settings)
+    closing = closing_thread(timed)
+    try:
+        ended(timed, second, HANG_GUARD)  # Closing: it does not build
+        assert row(settings, second)["state"] == ws.CREATING
+        assert ws.WAITING_FOR_BUILD in row(settings, second)["log"]
+        clock.wait_parked(1)  # close, waiting for the builder
+        assert closing.is_alive()
+    finally:
+        runtime.build_gate.set()
+    joined(closing)
+    assert [b.id for b in runtime.builds] == [first]
+    again = ws.Workspaces(settings, runtime)
+    try:
+        again.restore()
+    finally:
+        again.close()
+    assert row(settings, second)["error"] == problems.CLONE_MESSAGES["restarted"]
+
+
+@pytest.mark.filterwarnings("error::pytest.PytestUnhandledThreadExceptionWarning")
+@pytest.mark.parametrize("state", [ws.READY, ws.FAILED])
+def test_closing_while_a_rebuilds_build_waits_keeps_it_preparing(
+    timed, clock, runtime, publish, settings, state
+):
+    from tests.test_workspaces import _person
+
+    publish(building())
+    rebuilt = timed.create(_person(settings), None, URL).id
+    ended(timed, rebuilt, HANG_GUARD)
+    assert row(settings, rebuilt)["state"] == ws.READY
+    if state == ws.FAILED:  # one that kept its volume: _recover
+        set_environment(settings, rebuilt, row(settings, rebuilt)["environment"],
+                        state=ws.FAILED, failure="hook_failed")  # fmt: skip
+    runtime.build_gate, runtime.building = threading.Event(), threading.Event()
+    holder = timed.create(_person(settings), None, URL).id
+    assert runtime.building.wait(HANG_GUARD)
+    timed.restored.set()
+    timed.rebuild(_person(settings), rebuilt, True)
+    clock.wait_parked(1)
+    closing = closing_thread(timed)
+    try:
+        ended(timed, rebuilt, HANG_GUARD)
+        found = row(settings, rebuilt)
+        assert found["rebuild_state"] == ws.REBUILD_PREPARING and found["rebuild_error"] is None
+        clock.wait_parked(1)
+        assert closing.is_alive()
+    finally:
+        runtime.build_gate.set()
+    joined(closing)
+    again = ws.Workspaces(settings, runtime)
+    try:
+        again.restore()
+    finally:
+        again.close()
+    found = row(settings, rebuilt)
+    assert found["rebuild_state"] is None and found["state"] == state
+    words = found["rebuild_error"] if state == ws.READY else found["error"]
+    assert words == problems.REBUILD_MESSAGES["restarted"]
+    assert row(settings, holder)["state"] == ws.READY
+
+
+def test_closing_removes_a_workspace_deleted_while_its_build_waited(
+    one_build_at_a_time, settings, runtime, publish, clock, monkeypatch
+):
+    from tests.test_workspaces import two_processes
+
+    monkeypatch.setattr(ws, "WORKING_POLL_SECONDS", 3600.0)  # the watchers do not look
+    with two_processes(settings, runtime, service_clock=clock) as (service, shell):
+        first, second = builder_and_waiter(service, clock, runtime, publish, settings)
+        closing = None
+        try:
+            shell.delete(shell.get(second))
+            assert row(settings, second)["state"] == ws.DELETING
+            clock.wait_parked(1)  # positive control: nothing woke the waiter
+            closing = closing_thread(service)
+            ended(service, second, HANG_GUARD)
+            assert row(settings, second) is None
+        finally:
+            runtime.build_gate.set()
+        if closing is not None:
+            joined(closing)
+    assert [b.id for b in runtime.builds] == [first]
+
+
+def test_a_place_given_back_beyond_the_bound_raises(timed):
+    with pytest.raises(ValueError):
+        timed._give_back_build()
+
+
+def test_a_place_is_given_back_when_the_look_at_the_row_raises(timed, settings, monkeypatch):
+    import sqlite3
+
+    workspace = timed.get(insert(settings, "looked", "creating", URL))
+
+    def failing(workspace_id, cancel):
+        raise sqlite3.OperationalError("planted: the database is locked")
+
+    monkeypatch.setattr(timed, "_cancelled", failing)
+    with pytest.raises(sqlite3.OperationalError):
+        timed._wait_for_build(workspace, threading.Event(), lambda text: None)
+    with timed._changed:
+        assert timed._build_places == 1
 
 
 # --- a restart --------------------------------------------------------------------------------

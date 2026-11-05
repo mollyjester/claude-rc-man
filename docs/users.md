@@ -43,8 +43,8 @@ theirs is deleted, with everything in it and its server, and their settings,
 their GitHub token and their Claude sign-in with them, and so are the limits on
 them. A workspace still being made or rebuilt stops promptly, wherever the removal was
 started, and the removal waits for it to go, for a while at most (`MADE_WITHIN_SECONDS` in
-`backend/rcman/workspaces.py`). If it has not gone by then, as when rcman is not running, the
-removal says so: they stay unable to sign in,
+`backend/rcman/workspaces.py`). If it has not gone by then, as when rcman is not running, or
+rcman stops meanwhile, the removal says so: they stay unable to sign in,
 and rcman finishes removing them once the workspace is gone, at the latest when
 it next starts. Anyone may be removed — yourself and the last administrator too: root can
 always add an administrator again with `rcman-admin`.
