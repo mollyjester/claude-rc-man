@@ -4,8 +4,9 @@ import os
 import sys
 from pathlib import Path
 
-# The guards over how the suite is split run small pytest projects of their own.
-pytest_plugins = ["pytester"]
+# The guards over how the suite is split run small pytest projects of their own; the clocks
+# a test moves itself are held to their rules (tests/clocks.py).
+pytest_plugins = ["pytester", "tests.clocks"]
 
 import pytest  # noqa: E402
 from rcman.forwarding_settings import DEFAULTS as forwarding_defaults  # noqa: E402
@@ -358,10 +359,19 @@ def settings(tmp_path, no_releases):
 
 
 @pytest.fixture
-def app(settings, runtime):
+def clocks():
+    """Each part's clock (main.py ``Clocks``), the real one for every part; a test that moves a
+    part's time itself overrides it, so that the part has the clock from its start."""
+    from rcman.main import Clocks
+
+    return Clocks()
+
+
+@pytest.fixture
+def app(settings, runtime, clocks):
     from rcman.main import create_app
 
-    return create_app(settings, runtime=runtime)
+    return create_app(settings, runtime=runtime, clocks=clocks)
 
 
 @pytest.fixture

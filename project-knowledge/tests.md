@@ -77,8 +77,9 @@ The forwarding server, the hand-off and the ports the workspaces' listing gives
 `tests/test_forward.py`'s, the ask telling which hosts were marked as wanted, on the host
 runtime: its socket in a held folder (`rcfw-`), each request one Caddy would pass on, on a
 connection kept open as Caddy pools one, to an app of the test's own on the host's loopback,
-which the host runtime's relays reach; the server's clock is the test's where a session's idle
-timeout, its lifetime or a way in's expiry is reached; the app holds a request (`/held`), or an
+which the host runtime's relays reach; the server's clock is a `PhasedClock` the module gives
+through the `clocks` fixture ([Time in tests](#time-in-tests)), which does not move but where the
+test moves it, as a session's idle timeout, its lifetime or a way in's expiry is reached; the app holds a request (`/held`), or an
 upgrade, until the test lets it answer, and streams an answer without end (`/endless`), so that
 what is under way as a session ends is seen to end. `tests/test_main.py` holds the lifespan's
 start and end of it.
@@ -244,6 +245,50 @@ and any child it started ended with it; a test that finishes under the project's
 passes; and, in a child Python, a process the first look misses is stopped and killed by the
 next, and a pid whose start time is no longer the one read is not signalled.
 `tests/test_make.py` holds that every test of every target is under its tier's guard.
+A frozen wait on a test's own clock is bounded, unless the test gives its own bound, by the same
+value of its tier ([Time in tests](#time-in-tests)).
+
+### Time in tests
+
+A part of the backend given a clock (`helpers/clock.py`; [backend.md](backend.md#time)) reads
+the time, and makes the waits that go through it, on that clock, the real one unless the test
+gives its own. A test gives the app's parts theirs through the `clocks` fixture of
+`tests/conftest.py`, which `app` lists, so that each part has it from its start, before `client`
+starts the service: a module that moves a part's time overrides `clocks`, and a test that makes
+its own app passes `clocks=` to `create_app`. A part the test makes itself is given its clock as
+an argument.
+
+The test's clock is `tests/clocks.py`'s `PhasedClock`, whose module docstring is its rules. It
+is frozen: its time moves only by `advance`, a sleep on it parks until an advance reaches it, and
+a wait ends on its primitive or on an advance past its deadline; a primitive of the standard
+library is looked at again every `STDLIB_SLICE` of real time, since an advance tells no
+condition of the product's. `poll` and `apoll` really sleep, at most `POLL_CAP`, and move no
+time. Each `advance` and `poke` is a new generation, and `wait_parked(n)`, or `until_parked(n)`
+in a coroutine, returns once exactly `n` waiters wait, each having looked at the latest one,
+which a waiter records only after it has looked at what it waits for and waits on: whatever the
+product had to do at that moment is done, with no real time waited out. Both wait at most the
+clock's hang bound unless given `within=`, so a test whose waiters never park fails only after
+that long. In `with clock.free():` a wait with seconds of the thread that entered it that is not
+satisfied moves the time by its seconds and returns as expired; the other threads' waits stay
+frozen. The clock belongs to the thread that made it and those given to `lend`. Refused, with
+`ClockRefused` in the caller, are: an advance past the deadline of a waiter of a thread the
+clock does not own; entering the free phase from a thread the clock does not own, while it is
+free already, or while another thread, lent or not, has a timed waiter; and, in the free phase, a move past the deadline of a waiter
+of any thread but the free one, lent or not. A refusal raised inside a wait, which the product
+waiting may swallow, is also a violation. The monitor's tests never enter the free phase, since
+its rounds read the clock in the event loop's executor threads.
+
+A clock is made in a test or a fixture of the test's own (`ClockOutsideTest` otherwise). Its
+hang bound is the one it is given, or else its tier's, read each time it is asked: `HANG_GUARD` for a
+host test and `CONTAINER_HANG_GUARD` for a test that carries the container marker
+([the hang guard](#the-hang-guard)). The plugin's autouse fixture keeps the test's clocks and, at
+its teardown, closes them and fails the test on each violation they recorded: a refusal inside
+a wait; a thread not the clock's reading its time, or starting a timed wait, in the free phase;
+and a frozen wait nothing ended within the hang bound (`ClockHung`, raised in the waiter too). A
+closed clock records nothing and raises nothing, and its waits stay frozen and still end on their
+primitive, so that a thread that outlives the test waits on quietly.
+`tests/test_clocks.py` holds the clock to this, the registry's own cases in child pytests;
+`tests/test_clock.py` holds the real clock to the standard library it hands each call to.
 
 ### Known flaky test
 
@@ -630,7 +675,7 @@ snapshot is removed when the session ends.
 |---|---|
 | `tests/` | The test suite; `tests/test_<name>.py` tests the module `<name>.py`, wherever it is, `tests/` included, where there is one |
 | `tests/fakes/` | The fake `claude`, its recorded fixtures and the screens observed on a live server — see [fake-claude.md](fake-claude.md); Podman's default seccomp profile as recorded (`podman-seccomp.json`), which `tests/test_seccomp.py` holds to the machine's; Podman's help for the subcommands `publish.sh` reads and for its global options, recorded from the default image's Podman (`podman-help/`), which `tests/test_podman_wrapper.py` holds the wrapper's lists to and `tests/container/test_nest_in_podman.py` holds to that Podman's own help; and what the monitor reads of Podman, recorded from Podman on the tests' engine (`podman-monitor/`: `system df -v` with one workspace and with two, and with one holding many files, what it says when a volume cannot be read, `container inspect` and `info`), which `tests/test_monitor.py` reads and `tests/container/test_runtime_in_podman.py` holds to that Podman; and Ubuntu's own `/etc/caddy/Caddyfile`, the caddy package's conffile (`ubuntu-Caddyfile`), which `tests/test_install.py` edits with the installer's `edit_caddyfile` and holds to the package's md5 |
-| `helpers/` | What the backend shares with the installer and the fake `claude`, the standard library only: the rules values are refused by, what Claude's screens mean, running git, Claude Code's releases and their checked download (`claude_release.py`), and the checks a Claude Code version is held to with the canary program that runs them (`claude_checks.py`, `claude_canary.py`) |
+| `helpers/` | What the backend shares with the installer and the fake `claude`, the standard library only: the clock a part is given to read the time and wait on (`clock.py`, see [backend.md](backend.md#time) and [Time in tests](#time-in-tests)), the rules values are refused by, what Claude's screens mean, running git, Claude Code's releases and their checked download (`claude_release.py`), and the checks a Claude Code version is held to with the canary program that runs them (`claude_checks.py`, `claude_canary.py`) |
 | `backend/` | The FastAPI application — see [backend.md](backend.md) |
 | `frontend/` | The React application, its component tests and its browser tests — see [frontend.md](frontend.md) |
 | `tests/container/` | The container suites, what they run in their containers, and the system image they run rcman's installer and the whole stack in (`tests/container/system/`) |

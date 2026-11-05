@@ -10,7 +10,8 @@ command, the reading of the CLI's standard error (progress for the person, the e
 failure, and the cause in words), and the byte pump that copies the repository in and the image
 out.
 
-Python standard library only, and nothing of the backend: runtime.py imports it.
+The standard library and helpers/clock.py only, and nothing of the backend: runtime.py imports
+it.
 """
 
 from __future__ import annotations
@@ -30,6 +31,8 @@ from collections import deque
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import NamedTuple
+
+from helpers.clock import REAL, Clock
 
 # --- what the builder is run with ----------------------------------------------------------------
 
@@ -191,13 +194,13 @@ class ProgressLines:
     """The CLI's standard error, fed in as it arrives. It is line by line, the lines ending in a
     carriage return and a newline, each led by the time, and some - apt's progress - arrive in
     pieces. The last ``keep`` lines are kept (``tail``); Podman's markers of a step are passed
-    to ``report`` at most once in ``interval`` seconds by ``clock``, the latest one held back
+    to ``report`` at most once in ``interval`` seconds of ``clock``'s time, the latest one held back
     being passed on later or at ``close``."""
 
     def __init__(
         self,
         report: Callable[[str], None],
-        clock: Callable[[], float] = time.monotonic,
+        clock: Clock = REAL,
         *,
         keep: int = TAIL_LINES,
         interval: float = PROGRESS_SECONDS,
@@ -242,7 +245,7 @@ class ProgressLines:
         """Pass on the step that waits, if the interval has passed since the last, or at the end."""
         if self._waiting is None:
             return
-        now = self._clock()
+        now = self._clock.now()
         if final or self._last is None or now - self._last >= self._interval:
             line, self._waiting, self._last = self._waiting, None, now
             self._report(line)

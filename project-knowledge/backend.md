@@ -15,7 +15,7 @@ the OpenAPI description it serves at `/api/openapi.json`, browsable at
 
 | Module | What it is |
 |---|---|
-| `main.py` | `create_app(settings, runtime, *, builder_slot)`: the app, its lifespan (migrations, the allowed list, audit retention, restoring workspaces, the monitor's loops, the forwarding server, started where `RCMAN_FORWARD_SOCKET` is set and stopped, its WebSockets closed and the workspaces it used swept, before the workspaces' service closes) and its routers; with rcman's own Podman, `check_seccomp` first, which says in the journal when the workspaces' seccomp profile is missing or stale (see [runtime.md](runtime.md#containers-in-a-workspace)); and `check_instructions`, which says there when the instructions for Claude are missing from the tools (see [runtime.md](runtime.md#workspace-instructions)) |
+| `main.py` | `create_app(settings, runtime, *, builder_slot, clocks)`: the app, with `Clocks`, the clock of each part that is given one (see [Time](#time)), its lifespan (migrations, the allowed list, audit retention, restoring workspaces, the monitor's loops, the forwarding server, started where `RCMAN_FORWARD_SOCKET` is set and stopped, its WebSockets closed and the workspaces it used swept, before the workspaces' service closes) and its routers; with rcman's own Podman, `check_seccomp` first, which says in the journal when the workspaces' seccomp profile is missing or stale (see [runtime.md](runtime.md#containers-in-a-workspace)); and `check_instructions`, which says there when the instructions for Claude are missing from the tools (see [runtime.md](runtime.md#workspace-instructions)) |
 | `settings.py` | The settings model |
 | `db.py` | SQLite connections and the schema, as migrations; `migrate` refuses a database newer than the code |
 | `identity.py` | Who is asking, and whether they may |
@@ -31,7 +31,7 @@ the OpenAPI description it serves at `/api/openapi.json`, browsable at
 | `monitor.py`, `routers/monitor.py` | What the host, each person and each workspace container use now, collected in two rounds, and the monitor's settings, for administrators (see [Monitor](#monitor)) |
 | `forwarding_settings.py`, `routers/forwarding_settings.py` | The settings of port forwarding, for administrators, and the hook that hears of forwarding being turned off (see [Port forwarding's settings](#port-forwardings-settings)) |
 | `headers.py` | The security headers every answer carries (see [Requests](#requests)) |
-| `ratelimit.py`, `filelock.py` | A token bucket for each name (the limits on a page's reports and on requests for an upgrade of rcman), and a re-entrant lock that is also a lock file, shared with `rcman-admin` (see [Limits](#limits)) |
+| `ratelimit.py`, `filelock.py` | A token bucket for each name, refilled by the clock it is given (the limits on a page's reports, see [Errors from the page](#errors-from-the-page), on requests for an upgrade of rcman, see [Upgrading rcman](#upgrading-rcman), and on the forwarding server's new hosts and ways in, see [Port forwarding](#port-forwarding)), and a re-entrant lock that is also a lock file, shared with `rcman-admin` (see [Limits](#limits)) |
 | `spa.py` | Serving the built frontend: its files, and `index.html` for every other path not under `/api`; installed after every router. `index.html` names the build's files by the hashes of their contents, which Vite puts in their names under `assets/`, so every file outside `assets/`, `index.html` among them, is served with `Cache-Control: no-cache`, which has the browser ask again before it uses the one it kept, and a page loaded after an upgrade names the new build's files; those under `assets/`, which never change, are kept for a year (`immutable`) |
 | `routes.py` | The app's routes as FastAPI resolves them after including routers, and which of them are for administrators |
 | `routers/` | One module per area: `me`, `workspaces`, `servers`, `git`, `github`, `claude`, `people`, `audit_log`, `attention`, `monitor`, `forwarding_settings`, `forward`, `docs`, `client_errors`, `terminal`, `rcman_upgrade` |
@@ -601,7 +601,8 @@ import the installer; `rcman_upgrade.Upgrades` is `app.state.upgrade`.
   `rcman_upgrade_refused` with its `reason`, one of `problems.UPGRADE_REFUSED_MESSAGES`, whose
   words are its title. With the option off it is `disabled`, and systemd is not asked.
 - **Admission.** `POST /api/rcman/upgrade` (audited as `rcman.upgrade`; each administrator
-  limited by a token bucket of `REQUESTS_BURST`, refilled at `REQUESTS_PER_MINUTE`,
+  limited by a token bucket of `REQUESTS_BURST`, refilled at `REQUESTS_PER_MINUTE` by the clock
+  `Clocks.upgrade_requests`,
   `too_many_requests` with `Retry-After` past it) answers 202 with the report. `request`
   holds `Workspaces.recording_held`, the images' lock, which every workspace is recorded
   under, waiting at most `ADMISSION_WAIT` (`images` otherwise), then
@@ -631,8 +632,9 @@ import the installer; `rcman_upgrade.Upgrades` is `app.state.upgrade`.
 
 The administrators' account is [the Monitor guide](../docs/monitor.md); what the runtime
 runs for it is [runtime.md](runtime.md#what-the-monitor-reads). `monitor.py` holds the readers,
-the settings and the collector, `Monitor(runtime, database, *, clock, wait, now)`, whose seams
-are the monotonic clock, the wait between rounds and the wall time a round is stamped with.
+the settings and the collector, `Monitor(runtime, database, *, clock)`, whose clock (see
+[Time](#time)) gives its monotonic time, the waits of its loops on their events and the wall time
+a round is stamped with.
 
 - **The rounds.** `usage_round` reads `/proc/stat` (the change since the round before, as a
   percent of one core), `/proc/meminfo` (`MemTotal` less `MemAvailable`), the fourth field of
@@ -678,7 +680,7 @@ are the monotonic clock, the wait between rounds and the wall time a round is st
   type, is refused at its field.
 
 `tests/test_monitor.py` holds the readers to the recordings, the rounds on the host runtime,
-the loops on a clock and a wait of its own, and what a round costs: with `subprocess` stubbed
+the loops on a clock of its own (a `PhasedClock`, [tests.md](tests.md#time-in-tests)), and what a round costs: with `subprocess` stubbed
 on a `PodmanRuntime`, a usage round runs `systemctl` once and Podman never, a disk round one
 `system df` and one `container inspect` (one more of each on its retry) and no `systemctl`, and
 nothing runs with every scope off; a planted runtime that asks `systemctl` once per slice fails
@@ -737,7 +739,7 @@ owner's browser at `https://<port>-<workspace id>.ws.<DOMAIN>/`, DOMAIN the host
   canonical host of a ready workspace's port, marked as wanted in the last `WANTED_SECONDS`
   (`mark_wanted`, which the listing and the hand-off call), and, for a host never approved
   before, while a token of `new_hosts` (a `ratelimit.TokenBuckets` of `NEW_HOSTS_BURST` and
-  `NEW_HOSTS_PER_WEEK`) is left; 404 otherwise. Paths under `RESERVED` on a forward host are
+  `NEW_HOSTS_PER_WEEK`, on the forwarding server's clock) is left; 404 otherwise. Paths under `RESERVED` on a forward host are
   refused, but the way in.
 - **The listing.** Each entry of a person's own workspaces (`owned` in `routers/workspaces.py`,
   for the listing and the entries making, cloning and rebuilding answer) has `ports`
@@ -870,7 +872,8 @@ Anyone signed in can write to the journal this way, so what one request can
 write is bounded: every field is bounded, the request needs a signed-in person
 in the people table and the public `Origin`, like every changing request, and
 each line names who sent it. A person's reports are limited by a token bucket (`REPORTS_BURST`, refilled at
-`REPORTS_PER_MINUTE`, `ratelimit.TokenBuckets` on `app.state.client_error_limit`): the next is
+`REPORTS_PER_MINUTE`, `ratelimit.TokenBuckets` on `app.state.client_error_limit`, on the clock
+`Clocks.client_errors`): the next is
 refused with `too_many_reports` (429, `Retry-After`) and writes nothing, and the page drops what
 rcman refuses. journald's own rate limit and size limits bound the rest.
 
@@ -898,6 +901,28 @@ Nothing the watch is shown makes it raise: a fault in it is logged with its
 traceback and the request goes on. [The journal
 guide](../docs/journal.md#output-rcman-does-not-recognise) lists every field,
 and `tests/test_unrecognised.py` holds its table to a line the watch writes.
+
+## Time
+
+A part given a clock, `helpers/clock.py`'s `Clock`, reads the time from it, not from `time`:
+`now()` (monotonic) and `wall()` (seconds since the epoch). Its waits with seconds stand each for
+the standard library's call of the same kind, in a thread's form and in asyncio's, as the
+protocol's docstrings say, and `await_tasks`, as `asyncio.wait`, cancels nothing. Only a wait
+made through the clock is on its time; a wait a part makes through `time` or `asyncio` itself
+is on real time, and a test cannot move it.
+Its default, `REAL`, a `RealClock`, holds nothing and hands each call to the standard library;
+the module is the standard library only, so that the canary can import it through the helpers
+mount. The markers beside it (`Deadline`, `Grace`, `Pace`, `PollExternal`, `RealBound`,
+`Handed`) say, in call form, what kind of seconds a value is; the module's docstring says what
+each means, and that a wait on rcman's own state is an event or a condition, never a poll.
+
+`create_app`'s `clocks`, a `Clocks`, gives each part of the app that takes a clock its own, a
+field for each, which `Clocks`' docstring names; a part's token buckets share its clock (the
+forwarding server's). Each is `REAL` unless a test gives its own (`tests/conftest.py`'s `clocks`
+fixture, [tests.md](tests.md#time-in-tests)). A part the runtime makes takes a clock as an
+argument too, and the runtime leaves it at `REAL` (`builder.ProgressLines`).
+`tests/test_main.py` walks the parts on `app.state` for every clock they hold and checks that
+each field of `Clocks`, and nothing else, reached them.
 
 ## Tests
 

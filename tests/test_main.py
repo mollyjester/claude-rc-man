@@ -453,3 +453,78 @@ def test_without_its_socket_no_forwarding_server_starts(client):
         headers={**as_user(ALICE), "Sec-Fetch-Dest": "document"},
     )
     assert (r.status_code, r.json()["code"]) == (404, "forwarding_off")
+
+
+# --- each part's clock ------------------------------------------------------------------------
+
+
+def clocks_reached(app) -> list:
+    """Every clock (helpers/clock.py's RealClock, REAL among them, and tests/clocks.py's
+    PhasedClock, by their concrete type) that the parts on ``app.state`` hold, however deep,
+    once each."""
+    import types
+
+    from helpers.clock import RealClock
+    from tests.clocks import PhasedClock
+
+    found, seen = [], set()
+    todo = list(vars(app.state)["_state"].values())
+    while todo:
+        held = todo.pop()
+        if id(held) in seen or isinstance(held, (type, types.ModuleType, types.FunctionType)):
+            continue
+        seen.add(id(held))
+        if type(held) in (RealClock, PhasedClock):
+            found.append(held)
+            continue
+        if isinstance(held, dict):
+            todo.extend(held.values())
+        elif isinstance(held, (list, tuple, set, frozenset)):
+            todo.extend(held)
+        elif hasattr(held, "__dict__"):
+            todo.extend(vars(held).values())
+    return found
+
+
+def made_with_a_clock_per_field(settings, runtime):
+    """The app made with a clock of its own for every field of Clocks: (app, {field: clock})."""
+    import dataclasses
+
+    from rcman.main import Clocks, create_app
+
+    from tests.clocks import PhasedClock
+
+    given = {f.name: PhasedClock() for f in dataclasses.fields(Clocks)}
+    assert given  # non-vacuity: there are parts on a clock
+    return create_app(settings, runtime=runtime, clocks=Clocks(**given)), given
+
+
+def test_every_field_of_clocks_reaches_its_part(settings, runtime):
+    """Each field's clock is held by a part, and no part holds another clock, REAL among them.
+    That forward's token buckets run on forward's clock is held by
+    tests/test_forward.py::test_forwards_buckets_run_on_its_clock."""
+    app, given = made_with_a_clock_per_field(settings, runtime)
+    reached = clocks_reached(app)
+    assert {id(c) for c in reached} == {id(c) for c in given.values()}, reached
+    assert app.state.forward.clock is given["forward"]
+    assert app.state.monitor.clock is given["monitor"]
+    assert app.state.client_error_limit._clock is given["client_errors"]
+    assert app.state.upgrade_limit._clock is given["upgrade_requests"]
+
+
+def test_the_clock_check_finds_a_part_that_drops_its_clock(settings, runtime, monkeypatch):
+    """The twin: forward made on the real clock whatever it is given."""
+    from rcman import forward
+
+    from helpers.clock import REAL
+
+    real = forward.Forwarding.__init__
+
+    def dropping(self, settings, service, store, clock=REAL):
+        real(self, settings, service, store)
+
+    monkeypatch.setattr(forward.Forwarding, "__init__", dropping)
+    app, given = made_with_a_clock_per_field(settings, runtime)
+    reached = clocks_reached(app)
+    assert app.state.forward.clock is REAL  # the plant took effect
+    assert any(c is REAL for c in reached) and given["forward"] not in reached

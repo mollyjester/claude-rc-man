@@ -34,9 +34,11 @@ from pathlib import Path
 import pytest
 from rcman import db, devcontainer, forward
 from rcman.forwarding_settings import DEFAULTS
+from rcman.main import Clocks
 from rcman.ratelimit import TokenBuckets
 
 from devtools import held_folders as hf
+from tests.clocks import PhasedClock
 from tests.conftest import ALICE, BOB, ORIGIN, as_user, changing, made_workspace
 from tests.test_terminals import alive, wait_until
 
@@ -208,24 +210,38 @@ def turned_off(client) -> None:
     assert r.status_code == 200, r.text
 
 
-class Clock:
-    """The forwarding server's clock, moved by the test."""
-
-    def __init__(self):
-        self.now = time.monotonic()
-
-    def __call__(self) -> float:
-        return self.now
-
-    def advance(self, seconds: float) -> None:
-        self.now += seconds
+@pytest.fixture
+def clock():
+    """The forwarding server's clock, which the test moves; it does not move otherwise."""
+    return PhasedClock()
 
 
 @pytest.fixture
-def clock(client):
-    made = Clock()
-    client.app.state.forward.clock = made
-    return made
+def clocks(clock):
+    """Given to the app before the client starts it (tests/conftest.py ``app``)."""
+    return Clocks(forward=clock)
+
+
+def test_forwards_buckets_run_on_its_clock(client, clock):
+    forwarding = client.app.state.forward
+    for bucket in (forwarding.new_hosts, forwarding.mints):
+        assert bucket._clock is clock
+        while bucket.take("someone"):  # the burst
+            pass
+        assert not bucket.take("someone")
+        clock.advance(1 / bucket.per_second)
+        assert bucket.take("someone")  # refilled by the clock alone
+
+
+def test_a_bucket_on_another_clock_is_not_refilled_by_forwards(client, clock):
+    """The twin: a bucket on a clock of its own, drained, has no token after forward's advance.
+    Its own clock, not the real one: the real one could refill it while the test runs."""
+    for held in (client.app.state.forward.new_hosts, client.app.state.forward.mints):
+        bucket = TokenBuckets(held.burst, held.per_second, PhasedClock())
+        while bucket.take("someone"):
+            pass
+        clock.advance(1 / bucket.per_second)
+        assert not bucket.take("someone")
 
 
 def forwarded(
@@ -579,11 +595,13 @@ def test_ask_bucket_overflow_answers_404_for_new_hosts_only(client, on, conn):
     for host in (first, second):
         assert hand_off(client, host).status_code == 200
     forwarding = client.app.state.forward
-    forwarding.new_hosts = TokenBuckets(1, 1e-9)  # room for one new host, and none after
+    # room for one new host, and none after
+    forwarding.new_hosts = TokenBuckets(1, 1e-9, forwarding.clock)
     assert asked(conn, first) == 200  # new: it takes the one
     assert asked(conn, second) == 404  # new, and none is left
     assert asked(conn, first) == 200  # approved before: it takes none
-    forwarding.new_hosts = TokenBuckets(1, 1e-9)  # the control: with one left, it is approved
+    # the control: with one left, it is approved
+    forwarding.new_hosts = TokenBuckets(1, 1e-9, forwarding.clock)
     assert asked(conn, second) == 200
 
 
@@ -743,7 +761,8 @@ def test_mint_caps_answer_429(client, on, monkeypatch):
     assert int(r.headers["Retry-After"]) >= 1
     assert hand_off(client, host, who=BOB).status_code == 404  # another's count is his own
     monkeypatch.setattr(forward, "MOST_OUTSTANDING_TOKENS", 100)
-    client.app.state.forward.mints = TokenBuckets(1, 1e-9)  # one mint, and none after
+    forwarding = client.app.state.forward
+    forwarding.mints = TokenBuckets(1, 1e-9, forwarding.clock)  # one mint, and none after
     assert hand_off(client, host).status_code == 200
     r = hand_off(client, host)
     assert (r.status_code, r.json()["code"]) == (429, "too_many_hand_offs")

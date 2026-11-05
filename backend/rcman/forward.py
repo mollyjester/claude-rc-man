@@ -65,7 +65,6 @@ import os
 import re
 import secrets
 import threading
-import time
 import urllib.parse
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -73,6 +72,7 @@ from pathlib import Path
 
 import h11
 
+from helpers.clock import REAL, Clock
 from rcman import audit, db, people, problems
 from rcman import runtime as rt
 from rcman.headers import SECURITY_HEADERS
@@ -516,7 +516,7 @@ class Forwarding:
     """The forwarding server and what it keeps in memory (``app.state.forward``): sessions,
     ways in, wanted hosts, approved hosts and relays. Lost when rcman restarts."""
 
-    def __init__(self, settings, service, store, clock: Callable[[], float] = time.monotonic):
+    def __init__(self, settings, service, store, clock: Clock = REAL):
         self.settings, self.service, self.store = settings, service, store
         self.hosts = Hosts(settings.public_origin)
         self.clock = clock
@@ -524,8 +524,8 @@ class Forwarding:
         self._tokens: dict[str, Token] = {}
         self._wanted: dict[str, float] = {}
         self._approved: dict[str, None] = {}
-        self.new_hosts = TokenBuckets(NEW_HOSTS_BURST, NEW_HOSTS_PER_WEEK / WEEK)
-        self.mints = TokenBuckets(MINTS_BURST, MINTS_PER_MINUTE / 60)
+        self.new_hosts = TokenBuckets(NEW_HOSTS_BURST, NEW_HOSTS_PER_WEEK / WEEK, clock)
+        self.mints = TokenBuckets(MINTS_BURST, MINTS_PER_MINUTE / 60, clock)
         # The rest is the loop's alone.
         self._sessions: dict[str, Session] = {}
         self._relays: set[Relay] = set()
@@ -667,7 +667,7 @@ class Forwarding:
         if self.hosts.target(host) is None:
             return
         with self._lock:
-            now = self.clock()
+            now = self.clock.now()
             for held in [h for h, until in self._wanted.items() if until <= now]:
                 del self._wanted[held]
             self._wanted[host] = now + WANTED_SECONDS
@@ -711,7 +711,7 @@ class Forwarding:
             raise Problem(code)
         self.mark_wanted(host)
         with self._lock:
-            now = self.clock()
+            now = self.clock.now()
             self._prune_tokens(now)
             held = [
                 t
@@ -869,7 +869,7 @@ class Forwarding:
             return False
         with self._lock:
             until = self._wanted.get(target.host)
-            if until is None or until <= self.clock():
+            if until is None or until <= self.clock.now():
                 return False
         if not await asyncio.to_thread(self._open, target):
             return False
@@ -914,7 +914,7 @@ class Forwarding:
             return False
         record = audit.Record("forward.session", token.identity, target.host)
         spent, token.spent = token.spent, True  # once, whatever the attempt comes to
-        if spent or token.expires <= self.clock() or token.target != target:
+        if spent or token.expires <= self.clock.now() or token.target != target:
             await self._audit(record, "forward_token_refused")
             await x.problem("forward_token_refused")
             return False
@@ -930,7 +930,7 @@ class Forwarding:
             await x.problem("forwarding_off")
             return False
         value = secrets.token_urlsafe(32)
-        now = self.clock()
+        now = self.clock.now()
         key = _hash(value)
         person = token.identity.person
         held = [s for s in self._sessions.values() if s.identity.person == person]
@@ -955,7 +955,7 @@ class Forwarding:
     def _spend(self, value: str) -> Token | None:
         """The way in ``value`` is, if one was handed out and is still remembered."""
         with self._lock:
-            self._prune_tokens(self.clock())
+            self._prune_tokens(self.clock.now())
             return self._tokens.get(_hash(value))
 
     async def _audit(self, record: audit.Record, result: str) -> None:
@@ -995,7 +995,7 @@ class Forwarding:
     def session_of(self, x: Exchange, target: Target) -> Session | None:
         """The live session for the host that the request's cookies carry, if any."""
         settings = self.store.settings()
-        now = self.clock()
+        now = self.clock.now()
         for name, value in cookies_of(x.request.headers):
             if name != SESSION_COOKIE:
                 continue
@@ -1034,7 +1034,7 @@ class Forwarding:
         settings = self.store.settings()
         if not settings.enabled:
             self._end_session(session, audit.FORWARDING_OFF)
-        elif self.clock() - session.started >= settings.absolute_seconds:
+        elif self.clock.now() - session.started >= settings.absolute_seconds:
             self._end_session(session, audit.SESSION_ENDED)
         return session.ended
 
@@ -1060,7 +1060,7 @@ class Forwarding:
         task = asyncio.current_task()
         session.busy += 1
         session.exchanges.add(task)
-        session.last = self.clock()
+        session.last = self.clock.now()
         try:
             code = await asyncio.to_thread(self.refusal, session.identity.person, target)
             if code is not None:
@@ -1073,7 +1073,7 @@ class Forwarding:
         finally:
             session.exchanges.discard(task)
             session.busy -= 1
-            session.last = self.clock()
+            session.last = self.clock.now()
 
     async def _to_hand_off(self, x: Exchange, target: Target) -> None:
         """A navigation with no session: to the hand-off, on rcman's origin, with where it was
@@ -1426,7 +1426,7 @@ class Forwarding:
         """End the sessions past their lifetime, closing their WebSockets, and forget those
         idle for too long, the ways in no longer remembered and the marks expired."""
         settings = self.store.settings()
-        now = self.clock()
+        now = self.clock.now()
         for session in list(self._sessions.values()):
             if self._expired(session, now, settings):
                 self._end_session(session, audit.SESSION_ENDED)
