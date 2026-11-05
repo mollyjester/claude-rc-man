@@ -1,6 +1,7 @@
-"""Collection rules shared by the whole suite."""
+"""Collection rules, the hang guard's hooks and the fixtures shared by the whole suite."""
 
 import os
+import sys
 from pathlib import Path
 
 # The guards over how the suite is split run small pytest projects of their own.
@@ -10,13 +11,125 @@ import pytest  # noqa: E402
 from rcman.forwarding_settings import DEFAULTS as forwarding_defaults  # noqa: E402
 from rcman.monitor import DEFAULTS as monitor_defaults  # noqa: E402
 
-from tests import container_marker  # noqa: E402
+from tests import container_marker, hang_guard  # noqa: E402
 
 
 @pytest.hookimpl(tryfirst=True)
-def pytest_collection_modifyitems(items):
-    """Before -m selects: the derived markers (tests/container_marker.py)."""
+def pytest_collection_modifyitems(config, items):
+    """Before -m selects: the derived markers (tests/container_marker.py), and the container
+    tests' hang guard, which follows the container marker (tests/hang_guard.py)."""
     container_marker.mark(items)
+    if config.pluginmanager.has_plugin("timeout"):  # its marker is not known without it
+        hang_guard.mark(items, float(config.getini(hang_guard.CONTAINER_TIMEOUT)))
+
+
+# --- the hang guard (tests/hang_guard.py; project-knowledge/tests.md, "The hang guard") ---
+
+
+def pytest_addoption(parser):
+    parser.addini(hang_guard.CONTAINER_TIMEOUT, "The hang guard of the container tests, seconds")
+
+
+_INTERACTING = pytest.StashKey[bool]()
+
+
+@pytest.hookimpl(wrapper=True)
+def pytest_exception_interact(node):
+    """Marks the cancel pytest-timeout asks for when a setup or call fails, so that
+    pytest_timeout_cancel_timer can tell it from the one at the test's end."""
+    node.stash[_INTERACTING] = True
+    try:
+        return (yield)
+    finally:
+        node.stash[_INTERACTING] = False
+
+
+@pytest.hookimpl(tryfirst=True, optionalhook=True)  # none without the plugin
+def pytest_timeout_cancel_timer(item):
+    """pytest-timeout cancels the guard when a setup or call fails, which would leave the
+    teardown, a session fixture's among it, unguarded: that cancel is taken (the hook's first
+    result ends it) unless the run is to enter the debugger. The cancel at the test's end goes
+    through."""
+    if item.stash.get(_INTERACTING, False) and not item.config.getvalue("usepdb"):
+        return True
+    return None
+
+
+@pytest.hookimpl(tryfirst=True, optionalhook=True)  # none without the plugin
+def pytest_timeout_set_timer(item, settings):
+    """The thread method's timer. On expiry it ends the test as pytest-timeout's own does,
+    with what the test printed and the stacks of every thread, and kills every process below
+    this one: stopped before the stacks are taken, so that a test waiting on one is shown
+    where it waits, and killed after, before this process ends. Each step is guarded: a failure
+    to stop or kill them, or to report, is said on stderr, the processes stopped are killed, and
+    the test is ended all the same."""
+    import contextlib
+    import threading
+    import traceback
+
+    import pytest_timeout
+
+    if settings.method != "thread":
+        return None
+
+    def said():
+        """What failed, on stderr, unless that fails too."""
+        with contextlib.suppress(Exception):
+            traceback.print_exc()
+
+    # Mirrors pytest-timeout's own timeout_timer, with the stop and the kill around its report.
+    def expire():
+        if not settings.disable_debugger_detection and pytest_timeout.is_debugging():
+            return
+        held: dict[int, int] = {}
+        terminal = None
+        try:
+            try:
+                held = hang_guard.stop_descendants()
+            except Exception:
+                said()
+            stdout = stderr = None
+            try:  # first, so that what is said from here on reaches the real stderr
+                capman = item.config.pluginmanager.getplugin("capturemanager")
+                if capman:
+                    capman.suspend_global_capture(item)
+                    stdout, stderr = capman.read_global_capture()
+            except Exception:
+                said()
+            try:
+                terminal = item.config.get_terminal_writer()
+                terminal.sep("+", title="Timeout")
+                for title, text in (("Captured stdout", stdout), ("Captured stderr", stderr)):
+                    if text:
+                        terminal.sep("~", title=title)
+                        terminal.write(text)
+                pytest_timeout.dump_stacks(terminal)
+                terminal.sep("+", title="Timeout")
+            except Exception:
+                said()
+        finally:
+            try:
+                try:
+                    hang_guard.kill(held)
+                except Exception:
+                    said()
+                for stream in (terminal, sys.stdout, sys.stderr):
+                    with contextlib.suppress(Exception):
+                        if stream is not None:
+                            stream.flush()
+            finally:
+                os._exit(1)
+
+    timer = threading.Timer(settings.timeout, expire)
+    timer.name = f"{pytest_timeout.__name__} {item.nodeid}"
+
+    def cancel():
+        timer.cancel()
+        timer.join()
+
+    item.cancel_timeout = cancel
+    timer.start()
+    return True
 
 
 @pytest.fixture(scope="session", autouse=True)

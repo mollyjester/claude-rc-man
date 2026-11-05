@@ -3,8 +3,9 @@ test-container the tests that need a container but not the whole stack, make che
 the whole-stack browser test, make check the host tests with the lint and the frontend's
 tests, and make check-all all of those. The two on-demand runs, test-container and
 check-ui, are not part of make check. A container test that cannot run, or a test of the
-real claude, fails rather than skips where make requires it, and none of the runs runs a
-test that needs a real Claude account. make lint and make format cover both the Python
+real claude, fails rather than skips where make requires it, none of the runs runs a
+test that needs a real Claude account, and every test of every run is under the hang guard
+(tests/hang_guard.py). make lint and make format cover both the Python
 code and the frontend.
 
 Each target is run by the real make with uv, npm and npx replaced by recorders, so
@@ -25,6 +26,7 @@ import pytest
 
 from tests.collected import collect
 from tests.container_marker import MARKER
+from tests.hang_guard import CONTAINER_GUARD, HOST_GUARD
 
 REPO = Path(__file__).resolve().parent.parent
 MAKEFILE = REPO / "Makefile"
@@ -403,6 +405,78 @@ def test_make_check_all_without_the_real_claude_requirement_is_reported(tmp_path
     problems = check_all_problems(recorded(tmp_path, "check-all", makefile))
     assert len(problems) == 1, problems
     assert problems[0].startswith("without RCMAN_REQUIRE_REAL_CLAUDE=1: uv run pytest")
+
+
+# --- the hang guard: every test of every run under it ---
+
+
+def phony() -> list[str]:
+    """The Makefile's targets, as its .PHONY names them."""
+    found = re.findall(r"^\.PHONY:(.*)$", MAKEFILE.read_text(encoding="utf-8"), re.M)
+    assert len(found) == 1
+    return found[0].split()
+
+
+def guard_of(test: dict) -> dict:
+    """The hang guard a test should run under: its tier's, the container tests' for a test
+    carrying the container marker (tests/hang_guard.py)."""
+    timeout = CONTAINER_GUARD if MARKER in test["markers"] else HOST_GUARD
+    return {"timeout": timeout, "method": "thread", "func_only": False}
+
+
+def unguarded(calls: list[Call]) -> list[str]:
+    """The tests a target's pytest calls run under another hang guard than their tier's
+    (tests/hang_guard.py), or under none, as pytest-timeout itself works it out for each."""
+    problems = []
+    for call in calls:
+        if call.pytest_args() is None:
+            continue
+        for name, test in sorted(collect(call.pytest_args(), dict(call.env)).items()):
+            if test["hang_guard"] != guard_of(test):
+                problems.append(f"not under the hang guard ({test['hang_guard']}): {name}")
+    return problems
+
+
+@pytest.mark.parametrize("target", phony())
+def test_every_test_of_a_target_is_under_its_tiers_hang_guard(tmp_path, target):
+    assert unguarded(recorded(tmp_path, target)) == []
+
+
+def test_the_targets_run_tests_of_both_tiers(tmp_path):
+    """Non-vacuity for the above: some of the targets .PHONY names run pytest, and between them
+    they run tests of both tiers."""
+    ran = set().union(*(ran_by(recorded(tmp_path, target)) for target in phony()))
+    tests = everything()
+    assert ran & tests.host and ran & tests.container
+
+
+def test_a_run_without_the_hang_guard_is_reported(tmp_path):
+    """Planted twin: make check-ui leaving pytest-timeout out runs its test unguarded."""
+    makefile = planted(tmp_path, UI_M, f"{UI_M} -p no:timeout")
+    calls = recorded(tmp_path, "check-ui", makefile)
+    assert any("no:timeout" in c.argv for c in calls)  # the plant took effect
+    assert unguarded(calls) == [
+        f"not under the hang guard (None): {n}" for n in sorted(everything().stack)
+    ]
+
+
+def test_a_run_with_another_method_is_reported(tmp_path):
+    """Planted twin: make check-ui asking for the signal method, which leaves a test whose
+    worker thread never ends hanging."""
+    makefile = planted(tmp_path, UI_M, f"{UI_M} --timeout-method signal")
+    found = {"timeout": CONTAINER_GUARD, "method": "signal", "func_only": False}
+    assert unguarded(recorded(tmp_path, "check-ui", makefile)) == [
+        f"not under the hang guard ({found}): {n}" for n in sorted(everything().stack)
+    ]
+
+
+def test_a_container_test_under_the_host_guard_is_reported(tmp_path):
+    """Planted twin: make check-ui giving the container tests the host tests' guard."""
+    makefile = planted(tmp_path, UI_M, f"{UI_M} -o container_timeout={HOST_GUARD}")
+    found = {"timeout": HOST_GUARD, "method": "thread", "func_only": False}
+    assert unguarded(recorded(tmp_path, "check-ui", makefile)) == [
+        f"not under the hang guard ({found}): {n}" for n in sorted(everything().stack)
+    ]
 
 
 @pytest.mark.parametrize("target", RUNS)
