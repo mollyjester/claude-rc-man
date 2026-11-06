@@ -12,6 +12,7 @@ from rcman.runtime import container_name
 
 from helpers import rules
 from tests.conftest import ALICE, BOB, CAROL, as_user, changing, made_workspace
+from tests.hang_guard import HANG_GUARD
 
 
 @pytest.fixture
@@ -446,7 +447,7 @@ def test_a_workspace_that_is_not_ready_can_be_given_limits(client, app, settings
     release = threading.Event()
     runtime = app.state.workspaces.runtime
     real = runtime.create
-    runtime.create = lambda spec: (release.wait(30), real(spec))
+    runtime.create = lambda spec: (release.wait(HANG_GUARD), real(spec))
     try:
         r = client.post("/api/workspaces", json={"name": "slow"}, headers=changing(BOB))
         workspace = r.json()["workspace"]

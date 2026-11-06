@@ -15,7 +15,6 @@ import json
 import logging
 import shutil
 import threading
-import time
 
 import pytest
 from rcman import db, people, problems
@@ -23,8 +22,9 @@ from rcman import devcontainer as dc
 from rcman import runtime as rt
 from rcman import workspaces as ws
 
-from tests.conftest import BOB, MADE_WITHIN, as_user, changing, ended, host_runtime, signed_in
+from tests.conftest import BOB, as_user, changing, ended, host_runtime, signed_in
 from tests.git_fixtures import fixture_git, make_repo
+from tests.hang_guard import HANG_GUARD
 from tests.test_clone import ALICE, cloned, entry, listed, row
 from tests.test_devcontainer_flow import (
     FILE,
@@ -39,6 +39,8 @@ from tests.test_devcontainer_flow import (
     no_trace,
     work_of,
 )
+from tests.time_doubles import RecordingLock
+from tests.until import until
 
 OTHER = "registry.example.com/team/other:latest"
 OLD_ID, NEW_ID, DEFAULT_ID, NEWER_DEFAULT_ID = "a" * 64, "b" * 64, "d" * 64, "e" * 64
@@ -176,14 +178,6 @@ def alice(settings) -> people.Person:
         return people.by_email(con, ALICE)
     finally:
         con.close()
-
-
-def wait_for(check, within: float = MADE_WITHIN):
-    deadline = time.monotonic() + within
-    while not (found := check()):
-        assert time.monotonic() < deadline
-        time.sleep(0.02)
-    return found
 
 
 # --- telling that the file changed ----------------------------------------------------------
@@ -342,7 +336,7 @@ def test_a_second_rebuild_while_one_runs_is_refused(client, runtime, publish):
     runtime.pull_gate = threading.Event()
     runtime.pulling.clear()
     assert ask(client, found["id"]).status_code == 202
-    assert runtime.pulling.wait(MADE_WITHIN)
+    assert runtime.pulling.wait(HANG_GUARD)
     shown = entry(client, found["id"])
     assert shown["rebuild"]["state"] == ws.REBUILD_PREPARING and shown["rebuildable"] is False
     r = ask(client, found["id"])
@@ -372,14 +366,16 @@ def test_no_rebuild_is_asked_for_while_rcman_is_upgraded(client, runtime, publis
 
 
 def test_a_rebuild_is_recorded_under_the_lock_an_upgrades_admission_holds(
-    client, runtime, publish, settings
+    client, runtime, publish, settings, monkeypatch
 ):
     """The admission of an upgrade holds the images' lock from its checks to its record; a
     rebuild asked for meanwhile waits for it, then finds the upgrade under way."""
     found = made(client, publish)
     service = client.app.state.workspaces
+    lock = RecordingLock(service._images_lock)
+    monkeypatch.setattr(service, "_images_lock", lock)
     answers: list = []
-    with service.recording_held(5) as held:
+    with service.recording_held(HANG_GUARD) as held:
         assert held
         asking = threading.Thread(
             target=lambda: answers.append(
@@ -387,10 +383,11 @@ def test_a_rebuild_is_recorded_under_the_lock_an_upgrades_admission_holds(
             )
         )
         asking.start()
-        asking.join(0.3)
-        assert asking.is_alive()  # it waits for the lock
+        lock.wait_blocked(1, match=asking)  # it waits for the lock
+        assert answers == []
         service.upgrading = lambda: True
-    asking.join(10)
+    asking.join(HANG_GUARD)
+    assert not asking.is_alive()
     assert answers == ["rcman_upgrading"]
     assert row(settings, found["id"])["rebuild_state"] is None
 
@@ -550,7 +547,7 @@ def test_the_rebuild_log_says_what_is_done_and_is_kept_out_of_the_making_log(
     rewrite(runtime, found, to(postCreateCommand="echo GATE"))
     runtime.gate = threading.Event()
     assert ask(client, found["id"]).status_code == 202
-    assert runtime.hooking.wait(MADE_WITHIN)
+    assert runtime.hooking.wait(HANG_GUARD)
     shown = entry(client, found["id"])
     assert f"Pulling {OTHER}" in shown["rebuild"]["log"]
     assert "Running postCreateCommand" in shown["rebuild"]["log"]
@@ -567,7 +564,7 @@ def test_the_new_plan_is_stored_only_once_the_new_container_is_good(
     rewrite(runtime, found, to(postCreateCommand="echo GATE"))
     runtime.gate = threading.Event()
     assert ask(client, found["id"]).status_code == 202
-    assert runtime.hooking.wait(MADE_WITHIN)
+    assert runtime.hooking.wait(HANG_GUARD)
     assert spec_of(runtime, found).image == OTHER  # the new container is there
     assert plan_of(settings, found["id"]).image == IMAGE  # and the old plan is still stored
     assert row(settings, found["id"])["rebuild_state"] == ws.REBUILD_SWITCHING
@@ -650,7 +647,7 @@ def test_the_old_image_is_kept_until_the_switch_and_collected_after(
     runtime.pull_gate = threading.Event()
     runtime.pulling.clear()
     assert ask(client, found["id"]).status_code == 202
-    assert runtime.pulling.wait(MADE_WITHIN)
+    assert runtime.pulling.wait(HANG_GUARD)
     client.app.state.workspaces._collect_images()
     assert IMAGE in runtime.images  # the container is still made from it
     runtime.pull_gate.set()
@@ -968,7 +965,7 @@ def test_a_switch_left_to_put_back_is_put_back_by_the_service_without_a_restart(
     assert ran(runtime)[before:][:1] == [OLD_COMMAND]
     head = problems.REBUILD_MESSAGES["put_back_later"].split("{cause}")[0]
     assert row(settings, found["id"])["rebuild_error"].startswith(head)
-    server = wait_for(lambda: entry(client, found["id"])["server"])
+    server = until(lambda: entry(client, found["id"])["server"])
     assert server["exit_code"] is None
     said = [r.getMessage() for r in caplog.records if r.name == "rcman.workspaces"]
     me = f"workspace {found['id']} "
@@ -1096,7 +1093,7 @@ def test_a_runtime_that_fails_as_the_old_container_is_discarded_puts_the_workspa
     done = rebuilt(client, found["id"])
     assert failed == [name_of(found)]  # the plant took effect
     rolled_back(runtime, settings, found, done)
-    server = wait_for(lambda: entry(client, found["id"])["server"])
+    server = until(lambda: entry(client, found["id"])["server"])
     assert server["exit_code"] is None
     assert row(settings, found["id"])["wanted"] == 1
 
@@ -1161,7 +1158,7 @@ def held_at_the_new_command(client, runtime, found: dict) -> None:
     rewrite(runtime, found, to(postCreateCommand="echo GATE"))
     runtime.gate = threading.Event()
     assert ask(client, found["id"]).status_code == 202
-    assert runtime.hooking.wait(MADE_WITHIN)
+    assert runtime.hooking.wait(HANG_GUARD)
 
 
 def let_go(client, runtime, found: dict) -> dict:
@@ -1222,7 +1219,7 @@ def test_a_server_started_meanwhile_is_stopped_at_the_switch_and_started_again(
     runtime.pull_gate = threading.Event()
     runtime.pulling.clear()
     assert ask(client, found["id"]).status_code == 202
-    assert runtime.pulling.wait(MADE_WITHIN)
+    assert runtime.pulling.wait(HANG_GUARD)
     r = client.post("/api/servers", json={"workspace": found["id"]}, headers=changing(ALICE))
     assert r.status_code == 200, r.text  # allowed while the image is prepared
     started: list = []
@@ -1237,7 +1234,7 @@ def test_a_server_started_meanwhile_is_stopped_at_the_switch_and_started_again(
     assert stops == []
     assert started == [(found["id"], found["name"], False)]
     assert row(settings, found["id"])["wanted"] == 1
-    server = wait_for(lambda: entry(client, found["id"])["server"])
+    server = until(lambda: entry(client, found["id"])["server"])
     assert server["exit_code"] is None
 
 
@@ -1303,12 +1300,15 @@ def test_a_server_request_let_in_before_the_switch_is_refused_once_it_has_begun(
 
     def held(*args, **more):
         entered.set()
-        assert switched.wait(MADE_WITHIN)
+        assert switched.wait(HANG_GUARD)
         return real(*args, **more)
 
-    setattr(service, method, held)
+    for name in ("start_server", "stop_server", "forget_server", "confirm"):  # SERVER_REQUESTS
+        if name == method:
+            setattr(service, name, held)
+    assert getattr(service, method) is held
     assert ask(client, found["id"]).status_code == 202
-    assert runtime.pulling.wait(MADE_WITHIN)
+    assert runtime.pulling.wait(HANG_GUARD)
     body = {"workspace": found["id"], **({"answer": "y"} if verb == "confirm" else {})}
     answers: list = []
     request = threading.Thread(
@@ -1317,9 +1317,10 @@ def test_a_server_request_let_in_before_the_switch_is_refused_once_it_has_begun(
         )
     )
     request.start()
-    assert entered.wait(MADE_WITHIN)  # it was let in while the image was prepared
+    assert entered.wait(HANG_GUARD)  # it was let in while the image was prepared
     runtime.pull_gate.set()
-    request.join(MADE_WITHIN)
+    request.join(HANG_GUARD)
+    assert not request.is_alive()
     assert (answers[0].status_code, answers[0].json()["code"]) == (409, "workspace_rebuilding")
     now = row(settings, found["id"])
     assert (now["wanted"], now["server"], now["claude_version"]) == (0, 0, None)
@@ -1462,7 +1463,7 @@ def test_deleting_while_the_image_is_prepared_leaves_nothing(client, runtime, pu
     runtime.pull_gate = threading.Event()
     runtime.pulling.clear()
     assert ask(client, found["id"]).status_code == 202
-    assert runtime.pulling.wait(MADE_WITHIN)
+    assert runtime.pulling.wait(HANG_GUARD)
     assert (
         client.delete(f"/api/workspaces/{found['id']}", headers=changing(ALICE)).status_code == 200
     )
@@ -1474,7 +1475,7 @@ def test_deleting_while_the_image_is_prepared_leaves_nothing(client, runtime, pu
 def settled_gone(client, found: dict) -> None:
     service = client.app.state.workspaces
     ended(service, found["id"])
-    wait_for(lambda: service.get(found["id"]) is None)
+    until(lambda: service.get(found["id"]) is None)
 
 
 def test_deleting_while_the_new_container_runs_its_commands_leaves_nothing(
@@ -1498,7 +1499,7 @@ def test_deleting_while_a_build_runs_removes_the_builder_and_leaves_nothing(
     runtime.build_gate = threading.Event()
     runtime.building.clear()
     assert ask(client, found["id"]).status_code == 202
-    assert runtime.building.wait(MADE_WITHIN)
+    assert runtime.building.wait(HANG_GUARD)
     client.delete(f"/api/workspaces/{found['id']}", headers=changing(ALICE))
     settled_gone(client, found)
     no_trace(runtime, found)
@@ -1515,12 +1516,12 @@ def held_at_the_promotion(client, runtime, found: dict) -> threading.Event:
 
     def promote_build(workspace_id):
         promoting.set()
-        assert gate.wait(MADE_WITHIN)
+        assert gate.wait(HANG_GUARD)
         return real(workspace_id)
 
     runtime.promote_build = promote_build
     assert ask(client, found["id"]).status_code == 202
-    assert promoting.wait(MADE_WITHIN)
+    assert promoting.wait(HANG_GUARD)
     return gate
 
 
@@ -1535,7 +1536,7 @@ def test_a_deletion_by_rcman_admin_stops_the_rebuild_and_leaves_nothing(
         runtime.pull_gate = threading.Event()
         runtime.pulling.clear()
         assert ask(client, found["id"]).status_code == 202
-        assert runtime.pulling.wait(MADE_WITHIN)
+        assert runtime.pulling.wait(HANG_GUARD)
     elif phase == "switching":
         held_at_the_new_command(client, runtime, found)
     else:
@@ -1639,7 +1640,7 @@ def test_a_workspace_with_a_promotion_left_over_is_deleted_through_rcman_admin(
     deleting = threading.Thread(target=admin.delete_person, args=(person,), daemon=True)
     try:
         deleting.start()
-        wait_for(lambda: row(settings, found["id"])["state"] == ws.DELETING)
+        until(lambda: row(settings, found["id"])["state"] == ws.DELETING)
         periodic_round()  # the service finishes what rcman-admin left to it
         deleting.join(HANG_GUARD)
         assert not deleting.is_alive()
@@ -1658,7 +1659,7 @@ def test_deleting_a_person_through_rcman_admin_during_a_build_leaves_nothing_of_
     runtime.build_gate = threading.Event()
     runtime.building.clear()
     assert ask(client, found["id"]).status_code == 202
-    assert runtime.building.wait(MADE_WITHIN)
+    assert runtime.building.wait(HANG_GUARD)
     admin = ws.Workspaces(settings, runtime, prunes=False)
     try:
         admin.delete_person(alice(settings))
@@ -1879,7 +1880,7 @@ def test_deleting_a_failed_workspace_while_it_is_rebuilt_leaves_nothing(
     runtime.pull_gate = threading.Event()
     runtime.pulling.clear()
     assert ask(client, failed["id"]).status_code == 202
-    assert runtime.pulling.wait(MADE_WITHIN)
+    assert runtime.pulling.wait(HANG_GUARD)
     client.delete(f"/api/workspaces/{failed['id']}", headers=changing(ALICE))
     settled_gone(client, failed)
     no_trace(runtime, failed)

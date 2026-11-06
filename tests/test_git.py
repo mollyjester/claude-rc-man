@@ -20,8 +20,10 @@ from tests.git_fixtures import (
     push_branch_to_origin,
     write,
 )
+from tests.hang_guard import HANG_GUARD
 from tests.test_audit import rows
 from tests.test_repository import pushes_elsewhere
+from tests.until import until
 
 
 def area_routes(app, prefix: str) -> list[tuple[str, str]]:
@@ -209,7 +211,7 @@ def test_a_push_the_runtime_fails_after_the_commit_is_still_a_commit_not_pushed(
     runtime = app.state.workspaces.runtime
     real = runtime.exec
 
-    def exec_(name, argv, stdin=None, timeout=rt.PODMAN_TIMEOUT, cwd=None, keep=None, again=False):
+    def exec_(name, argv, stdin=None, timeout=HANG_GUARD, cwd=None, keep=None, again=False):
         if "push" in argv:
             raise rt.RuntimeFailed("the container went away")
         return real(name, argv, stdin, timeout, cwd, keep, again)
@@ -327,15 +329,12 @@ def test_a_workspace_that_is_not_ready_is_not_asked(client, app):
 
 
 def made_workspace_failed(client, workspace_id: int) -> dict:
-    import time
-
-    deadline = time.monotonic() + 30
-    while True:
+    def made():
         listed = client.get("/api/workspaces", headers=as_user(ALICE)).json()["workspaces"]
         found = next(w for w in listed if w["id"] == workspace_id)
-        if found["state"] != "creating" or time.monotonic() > deadline:
-            return found
-        time.sleep(0.05)
+        return None if found["state"] == "creating" else found
+
+    return until(made)
 
 
 def test_a_stopped_container_is_the_workspace_failing(client, app, work):
@@ -374,7 +373,7 @@ def test_git_needs_no_server_and_starts_none_and_takes_no_workspace_lock(client,
             daemon=True,
         )
         worker.start()
-        worker.join(15)
+        worker.join(HANG_GUARD)
     finally:
         lock.release()
     assert answered and answered[0].status_code == 200

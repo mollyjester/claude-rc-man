@@ -11,6 +11,7 @@ from rcman import db
 from helpers import claude_checks, rules
 from tests import claude_download
 from tests.conftest import ALICE, BOB, FAKE_VERSION, REPO, as_user, changing
+from tests.hang_guard import HANG_GUARD
 
 NEW = "2.0.0"
 
@@ -143,19 +144,20 @@ def test_a_second_rollout_at_once_is_a_conflict(client, app, releases):
 
     def slow(*args):
         entered.set()
-        release.wait(30)
+        release.wait(HANG_GUARD)
         return {}
 
     app.state.workspaces.runtime.canary_script = slow
     first = threading.Thread(target=lambda: upgrade(client))
     first.start()
     try:
-        assert entered.wait(30)
+        assert entered.wait(HANG_GUARD)
         r = upgrade(client, "2.1.0", who=ALICE)
         assert (r.status_code, r.json()["code"]) == (409, "claude_upgrade_busy")
     finally:
         release.set()
-        first.join(60)
+        first.join(HANG_GUARD)
+        assert not first.is_alive()
 
 
 def mark(client, version=NEW, reason=None, who=ALICE, body=None):

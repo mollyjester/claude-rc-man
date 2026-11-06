@@ -143,14 +143,15 @@ def test_delete_waits_for_a_workspace_the_service_is_making_and_succeeds(
     """rcman-admin has none of the service's threads: the service, which makes the workspace,
     finds it deleting once the step it is on ends, and removes it."""
     import threading
-    import time
 
     from rcman import workspaces as ws
     from rcman.settings import Settings
 
-    from tests.conftest import MADE_WITHIN, host_runtime
+    from tests.conftest import host_runtime
+    from tests.hang_guard import HANG_GUARD, pace
+    from tests.until import until
 
-    monkeypatch.setattr(ws, "WORKING_POLL_SECONDS", 0.02)
+    pace(monkeypatch, ws, "WORKING_POLL_SECONDS", 0.02)
     run(env_file, "add", ALICE, "--admin", capsys=capsys)
     run(env_file, "add", BOB, capsys=capsys)
     con = database(env_file)
@@ -159,16 +160,12 @@ def test_delete_waits_for_a_workspace_the_service_is_making_and_succeeds(
     with host_runtime(tmp_path) as runtime:
         service = ws.Workspaces(Settings(_env_file=env_file), runtime)
         release, real = threading.Event(), runtime.create
-        runtime.create = lambda spec: (release.wait(MADE_WITHIN), real(spec))
+        runtime.create = lambda spec: (release.wait(HANG_GUARD), real(spec))
         try:
             made = service.create(bob, "his")
 
             def let_go():  # once rcman-admin has marked it deleting, the making goes on
-                deadline = time.monotonic() + MADE_WITHIN
-                while state_of(env_file, made.id) != "deleting":
-                    if time.monotonic() > deadline:
-                        return
-                    time.sleep(0.01)
+                until(lambda: state_of(env_file, made.id) == "deleting")
                 release.set()
 
             threading.Thread(target=let_go, daemon=True).start()
@@ -193,9 +190,9 @@ def test_delete_with_the_service_down_leaves_a_workspace_being_made_deleting_for
     from rcman.settings import Settings
 
     from tests.conftest import host_runtime
+    from tests.hang_guard import runs_out
 
-    monkeypatch.setattr(ws, "WORKING_POLL_SECONDS", 0.02)
-    monkeypatch.setattr(ws, "MADE_WITHIN_SECONDS", 0.2)  # nothing makes it: the service is down
+    runs_out(monkeypatch, ws, "MADE_WITHIN_SECONDS")  # nothing makes it: the service is down
     run(env_file, "add", ALICE, "--admin", capsys=capsys)
     run(env_file, "add", BOB, capsys=capsys)
     workspace = bobs_workspace(env_file, "creating")

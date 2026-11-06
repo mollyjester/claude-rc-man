@@ -297,9 +297,9 @@ the periodic checks wait on between rounds; each goes into the first service mad
 (`into_the_first_service`), the app's where the test has one, so that rcman-admin's service in a
 test of two processes keeps its own. They are the conftest's `SEAMS`, which `app` asks for first
 wherever the test asks for them, itself or through another fixture. A module's own seam, as
-`test_rcman_upgrade.py`'s `images_lock` (a `RecordingLock` for the images' lock) and
-`test_accounts.py`'s `person_locks` (one for each person's lock), is listed by the test before
-`client`; a module's `fake_time` puts a `FakeTime` on the module it tests, and where the
+`test_rcman_upgrade.py`'s `images_lock` (a `RecordingLock` for the images' lock), is listed by
+the test before `client`, as is the conftest's `person_locks` (a `RecordingLock` for each
+person's lock, which `recorded_person_lock` gives); a module's `fake_time` puts a `FakeTime` on the module it tests, and where the
 periodic checks read that module's `time` too it holds them (`periodic`), so that the test owns
 every thread that reads it. `periodic_round` does one round of the checks: it ends their wait of
 `IDLE_CHECK_SECONDS` as if it had passed, and returns once they wait again. `ended` waits, on

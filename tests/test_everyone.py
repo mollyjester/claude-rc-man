@@ -1,6 +1,5 @@
 """Everyone's workspaces and servers, for administrators (backend/rcman/everyone.py)."""
 
-import time
 from types import SimpleNamespace
 
 from rcman import everyone
@@ -9,13 +8,13 @@ from tests.conftest import (
     ALICE,
     BOB,
     CAROL,
-    MADE_WITHIN,
     as_user,
     changing,
     fake_claude,
     made_workspace,
     signed_in,
 )
+from tests.until import until
 
 
 def request_for(app):
@@ -57,13 +56,12 @@ def test_a_workspace_shows_only_its_id_name_device_state_server_and_version(app,
     url = "https://github.com/octo/widget"
     r = client.post("/api/git/clone", json={"url": f"{url}.git"}, headers=changing(ALICE))
     assert r.status_code == 202, r.text
-    deadline = time.monotonic() + MADE_WITHIN
-    while True:
+
+    def made():
         [own] = client.get("/api/workspaces", headers=as_user(ALICE)).json()["workspaces"]
-        if own["state"] != "creating":
-            break
-        assert time.monotonic() < deadline, own
-        time.sleep(0.05)
+        return None if own["state"] == "creating" else own
+
+    own = until(made)
     # the person's own listing of the same workspace holds what is left out below
     assert own["state"] == "failed"  # no repository at the address, so it keeps its steps
     assert own["source_page"] == url and own["source"] == f"{url}.git"

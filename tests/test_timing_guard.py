@@ -186,7 +186,7 @@ ALLOWANCES = {
     "tier_guard": True, "not seconds": True, "double in a closure": True,
     "positional not seconds": True, "seconds only at a disagreeing slot": True,
     "constant": True, "parameter": True, "double (H7)": True, "a double's method (H7)": True,
-    "a double's helper (H7)": True, "loop variable not seconds": True,
+    "a double's helper (H7)": True, "typed double (H7)": True, "loop variable not seconds": True,
     "only seconds through a loose flow": True,
     "turn (H8)": True, "child loop (H13)": True, "benchmark (H10)": True,
 }  # fmt: skip
@@ -576,7 +576,24 @@ class FileScan:
                 fixture = self.fixtures.get(a.arg)
                 if fixture is not None and fixture is not fn and self.returns_double(fixture):
                     found.add(a.arg)
+                elif self.typed_double(a.annotation):
+                    found.add(a.arg)
         return frozenset(found)
+
+    def typed_parameter(self, fn: ast.AST, name: str) -> bool:
+        """Whether ``name`` is a parameter of ``fn`` typed as a double."""
+        return isinstance(fn, FUNCTIONS) and any(
+            a.arg == name and self.typed_double(a.annotation)
+            for a in fn.args.posonlyargs + fn.args.args + fn.args.kwonlyargs
+        )
+
+    def typed_double(self, annotation: ast.AST | None) -> bool:
+        """A parameter's annotation that names a double of tests/time_doubles.py, as a helper
+        handed the test's FakeTime declares it."""
+        if annotation is None or not ALLOWANCES["typed double (H7)"]:
+            return False
+        q = self.qual(annotation) or ""
+        return q.startswith("tests.time_doubles.") and q.rsplit(".", 1)[1] in DOUBLES
 
     def on_a_double(self, call: ast.Call) -> bool:
         if not isinstance(call.func, ast.Attribute):
@@ -600,7 +617,8 @@ class FileScan:
         scope = fn
         while scope is not None:  # bound here or outside, or a fixture: else no walk is needed
             if self.local_binds.get(scope, {}).get(name) or (
-                name in self.fixtures and name in self.parameter_names(scope)
+                (name in self.fixtures or self.typed_parameter(scope, name))
+                and name in self.parameter_names(scope)
             ):
                 break
             scope = self.function_of(scope)
@@ -1027,6 +1045,15 @@ class FileScan:
             return len(binds) == 1 and self.not_seconds(binds[0], at)
         return False
 
+    def words(self, node: ast.AST) -> bool:
+        """A str constant, or a list, tuple or set of them only: a constant whose name holds a
+        timing word by chance (WORKSPACE, INTERVALS) but whose value is words, not seconds."""
+        if not ALLOWANCES["not seconds"]:
+            return False
+        if isinstance(node, ast.List | ast.Tuple | ast.Set):
+            return bool(node.elts) and all(self.words(e) for e in node.elts)
+        return isinstance(node, ast.Constant) and isinstance(node.value, str)
+
     def seconds_like(self, node: ast.AST, at: ast.AST) -> bool:
         """At a known positional slot: a number, arithmetic, a name or a call that
         ``not_seconds`` does not show to be something else (a parameter, a fixture, a call's
@@ -1136,6 +1163,7 @@ class FileScan:
                     and isinstance(target, ast.Name)
                     and at_module_or_class
                     and timing_constant(target.id)
+                    and not self.words(value)
                     and not self.allowed(value, value, read_at_test_time=False)
                 ):
                     self.site(node, "P3", f"{target.id} = {self.text(value)}")
@@ -2021,9 +2049,15 @@ CLEAN = {
         "structure", "from rcman import repository\nfrom tests.hang_guard import runs_out\n"
         "def test_x(monkeypatch, m):\n    runs_out(monkeypatch, m, 'X_SECONDS')\n"
         "    runs_out(monkeypatch, m, 'Y_SECONDS', at=repository.FLOOR_SECONDS)\n"),
+    "a helper's parameter typed as a double (H7)": (
+        "typed double (H7)", "from tests.time_doubles import FakeTime\n"
+        "def stepping(fake: FakeTime):\n    def run():\n        fake.advance(5)\n"
+        "    return run\n"),
     "a docstring that names a sleep": ("structure", "def f():\n"
                                        "    '''Waits with $SLEEP 5 in the shell.'''\n"),
     # the review's third round
+    "a constant whose name holds a timing word but whose value is words": (
+        "not seconds", "WORKSPACE = 'workspace'\nINTERVALS = ['idle_minutes', 'absolute_hours']\n"),
     "a join of a name bound to a list": ("not seconds", "def f(sep):\n    parts = ['a']\n"
                                          "    return sep.join(parts)\n"),
     "what is not seconds at a disagreeing slot": (

@@ -137,7 +137,7 @@ def test_the_code_reaches_claude_through_stdin_and_never_an_argv(client, app, mo
     runtime = app.state.workspaces.runtime
     real_exec, real_run = runtime.exec, channel.Channel.run
 
-    def exec_(name, argv, stdin=None, timeout=rt.PODMAN_TIMEOUT, cwd=None, keep=None, again=False):
+    def exec_(name, argv, stdin=None, timeout=HANG_GUARD, cwd=None, keep=None, again=False):
         argvs.append(argv)
         stdins.append(stdin)
         return real_exec(name, argv, stdin, timeout, cwd, keep, again)
@@ -565,11 +565,10 @@ import threading  # noqa: E402
 
 from rcman import accounts as acc  # noqa: E402
 from rcman import claude_server  # noqa: E402
-from rcman import workspaces as ws  # noqa: E402
 
 from helpers.screens import LOGIN_SUCCEEDED  # noqa: E402
-from tests.conftest import fake_claude  # noqa: E402
-from tests.time_doubles import FakeTime, RecordingLock  # noqa: E402
+from tests.conftest import fake_claude, recorded_person_lock  # noqa: E402
+from tests.time_doubles import FakeTime  # noqa: E402
 
 
 def in_thread(call, *args) -> tuple[threading.Thread, list]:
@@ -584,30 +583,6 @@ def in_thread(call, *args) -> tuple[threading.Thread, list]:
     thread = threading.Thread(target=run, daemon=True)
     thread.start()
     return thread, out
-
-
-@pytest.fixture
-def person_locks(monkeypatch):
-    """Every person's lock (``Workspaces.person_lock``) as a RecordingLock, one for each lock,
-    put in before ``client`` starts the service, so that a test sees a take of it blocked rather
-    than waiting for one (``recorded_person_lock``)."""
-    real, made, guard = ws.Workspaces.person_lock, {}, threading.Lock()
-
-    def person_lock(self, person_id):
-        lock = real(self, person_id)
-        with guard:
-            if id(lock) not in made:
-                made[id(lock)] = (lock, RecordingLock(lock))  # the lock kept: its id stays its
-            return made[id(lock)][1]
-
-    monkeypatch.setattr(ws.Workspaces, "person_lock", person_lock)
-
-
-def recorded_person_lock(app, person_id: int) -> RecordingLock:
-    """The person's lock as ``person_locks`` put it in, which the test lists before ``client``."""
-    lock = app.state.workspaces.person_lock(person_id)
-    assert isinstance(lock, RecordingLock), "the test lists person_locks before client"
-    return lock
 
 
 @pytest.mark.parametrize("keep", [True, False])
@@ -673,17 +648,6 @@ def test_a_sign_in_begun_while_a_sign_out_waits_is_not_ended_by_it(client, app):
     r = client.post("/api/claude/code", json={"code": fake.ACCEPTED_CODE}, headers=changing(ALICE))
     assert r.status_code == 200, r.text
     assert r.json()["connection"] == "connected" and r.json()["signing_out"] is False
-
-
-def test_a_code_too_late_for_the_sign_in_container_is_refused(client, app, monkeypatch):
-    """The container ends itself CODE_WAIT_SECONDS after it starts; a code that would
-    reach it too close to that is refused rather than lost. Here a code is taken only until a
-    second before the sign-in began, so it is too late however soon it comes."""
-    monkeypatch.setattr(acc, "CODE_WAIT_SECONDS", 2 * acc.LOGIN_TIMEOUT - 1)
-    client.post("/api/claude/login", json={}, headers=changing(ALICE))
-    r = client.post("/api/claude/code", json={"code": fake.ACCEPTED_CODE}, headers=changing(ALICE))
-    assert (r.status_code, r.json()["code"]) == (409, "no_login_in_progress")
-    assert sign_ins_left(app) == []
 
 
 def test_a_stop_succeeds_whatever_finishing_a_sign_out_does(client, app):
@@ -913,7 +877,7 @@ def test_a_sign_in_that_shows_no_link_answers_timeout_past_its_deadline(
 ):
     fake_claude(
         app.state.settings.claude_store,
-        before='[ "$1" = auth ] && [ "$2" = login ] && exec sleep 600\n',
+        before=f'[ "$1" = auth ] && [ "$2" = login ] && exec sleep {3 * HANG_GUARD}\n',
     )
     start = fake_time.mark()
     thread, out = in_thread(app.state.accounts.begin, person(app, ALICE), ALICE)
@@ -934,8 +898,9 @@ def test_a_sign_in_that_shows_no_link_answers_timeout_past_its_deadline(
 def test_a_code_is_taken_until_two_of_claudes_waits_before_the_container_ends(
     fake_time, client, app, late
 ):
-    """The twin of the code too late: exactly at the end of its window a code is taken, a
-    second past it refused."""
+    """The container ends itself CODE_WAIT_SECONDS after it starts; a code that would reach it
+    too close to that is refused rather than lost. Exactly at the end of its window a code is
+    taken, a second past it refused."""
     r = client.post("/api/claude/login", json={}, headers=changing(ALICE))
     assert r.status_code == 200, r.text
     fake_time.advance(CODE_TAKEN + late)

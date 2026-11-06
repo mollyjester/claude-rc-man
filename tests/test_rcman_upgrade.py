@@ -21,7 +21,7 @@ from rcman import rcman_upgrade as up
 from rcman import workspaces as ws
 
 from tests.conftest import ALICE, BOB, as_user, changing, ended
-from tests.hang_guard import HANG_GUARD
+from tests.hang_guard import HANG_GUARD, runs_out
 from tests.time_doubles import FakeTime, RecordingLock
 
 ROUTE = "/api/rcman/upgrade"
@@ -623,17 +623,16 @@ def test_a_request_waits_only_so_long_for_the_images_to_be_collected(
     client, show, app, monkeypatch
 ):
     """With no wait at all against a collection that does not end until the test lets it."""
-    waits = up.ADMISSION_WAIT
-    monkeypatch.setattr(up, "ADMISSION_WAIT", 0)
     go, thread = held_images(app)
     try:
-        r = post(client)
+        with monkeypatch.context() as patched:
+            runs_out(patched, up, "ADMISSION_WAIT")
+            r = post(client)
         assert (r.status_code, r.json()["reason"]) == (409, "images")
         assert not up.REQUEST.exists()
     finally:
         go.set()
         thread.join(HANG_GUARD)
-    monkeypatch.setattr(up, "ADMISSION_WAIT", waits)
     assert post(client).status_code == 202  # once they are collected
 
 

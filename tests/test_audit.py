@@ -9,7 +9,8 @@ from fastapi.routing import APIRoute
 from rcman import audit, db, routes
 
 from tests.conftest import ALICE, BOB, CALLS, changing, concrete, made_workspace
-from tests.hang_guard import HANG_GUARD
+from tests.hang_guard import HANG_GUARD, pace
+from tests.until import until
 
 REPO = Path(__file__).resolve().parent.parent
 CHANGING = {"POST", "PUT", "PATCH", "DELETE"}
@@ -383,7 +384,6 @@ def service_output(tmp_path, settings, method, path, body, headers) -> list[str]
     import os
     import socket
     import subprocess
-    import time
 
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
@@ -402,15 +402,17 @@ def service_output(tmp_path, settings, method, path, body, headers) -> list[str]
     with output.open("wb") as log:
         proc = subprocess.Popen(argv, cwd=REPO, env=env, stdout=log, stderr=subprocess.STDOUT)
     try:
-        deadline = time.monotonic() + HANG_GUARD
-        while True:
+
+        def healthy() -> bool:
             try:
-                if _request(port, sock, "GET", "/api/health")[0] == 200:
-                    break
+                return _request(port, sock, "GET", "/api/health")[0] == 200
             except OSError:
-                pass
-            assert time.monotonic() < deadline, output.read_text()
-            time.sleep(0.1)
+                return False
+
+        try:
+            until(healthy)
+        except AssertionError as never:
+            raise AssertionError(output.read_text()) from never
         status, text = _request(
             port,
             sock,
@@ -502,21 +504,16 @@ def test_retention_runs_again_while_the_app_runs(settings, runtime, monkeypatch)
     """A row that has expired since rcman started goes at a later retention, and one that has
     not stays. Its pace is shortened, the test waiting for what it makes happen: the daily pace
     itself is not tested."""
-    import time
-
     from fastapi.testclient import TestClient
     from rcman import main
 
-    monkeypatch.setattr(main, "RETENTION_INTERVAL_SECONDS", 0.05)
+    pace(monkeypatch, main, "RETENTION_INTERVAL_SECONDS", 0.05)
     with TestClient(main.create_app(settings, runtime=runtime)) as client:
         assert client.app.state.workspaces.restored.wait(HANG_GUARD)
         now = dt.datetime.now(dt.UTC)
         expired = settings.audit_retention_days + 1
         seed(settings.database, [expired, 0], now).close()  # after the start's own retention
-        deadline = time.monotonic() + HANG_GUARD
-        while len(rows(settings)) > 1:
-            assert time.monotonic() < deadline, "the expired row was never taken"
-            time.sleep(0.05)
+        until(lambda: len(rows(settings)) <= 1)
     assert [r["at"] for r in rows(settings)] == [now.isoformat()]
 
 

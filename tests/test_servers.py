@@ -1,14 +1,15 @@
 """A workspace's server through the routes, on the host runtime with the fake claude."""
 
 import sqlite3
-import time
 
 import pytest
 from rcman import db
 from rcman.problems import FIELD_MESSAGES
 
 from tests.conftest import ALICE, BOB, as_user, changing, fake_claude, made_workspace, signed_in
+from tests.hang_guard import HANG_GUARD
 from tests.test_screens import RECONNECTED_SCENARIOS
+from tests.until import until
 
 
 def workspaces(client, who=ALICE) -> list[dict]:
@@ -20,13 +21,11 @@ def server_of(client, workspace, who=ALICE):
 
 
 def wait_state(client, workspace, state, who=ALICE):
-    server = None
-    for _ in range(100):
+    def reached():
         server = server_of(client, workspace, who)
-        if server and server["state"] == state:
-            return server
-        time.sleep(0.1)
-    raise AssertionError(f"never {state}: {server}")
+        return server if server and server["state"] == state else None
+
+    return until(reached)
 
 
 def post(client, verb, workspace, who=ALICE, **body):
@@ -105,7 +104,7 @@ def test_a_workspace_that_is_not_ready_has_no_server(client, app):
     release = threading.Event()
     runtime = app.state.workspaces.runtime
     real = runtime.create
-    runtime.create = lambda spec: (release.wait(30), real(spec))
+    runtime.create = lambda spec: (release.wait(HANG_GUARD), real(spec))
     try:
         made = client.post("/api/workspaces", json={"name": "slow"}, headers=changing(ALICE))
         r = post(client, "", made.json()["workspace"])
