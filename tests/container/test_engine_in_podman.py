@@ -16,7 +16,6 @@ import pty
 import select
 import subprocess
 import tarfile
-import time
 from pathlib import Path
 
 import pytest
@@ -24,12 +23,14 @@ from rcman import runtime as rt
 
 from tests import podman_service as ps
 from tests.container import sizes
+from tests.hang_guard import CONTAINER_HANG_GUARD
+from tests.until import until
 
 CONTAINER_SUITES = Path(__file__).resolve().parent
 # The length of a sleep no other test runs, by which a process the test starts in the workspace
-# is found on the host.
-MARKER_SLEEP = "31337"
-GONE_WITHIN = 30
+# is found on the host: past the test's end (rule (g) of "Time in tests"), and a fraction of a
+# second of its own.
+MARKER_SLEEP = f"{3 * CONTAINER_HANG_GUARD + 0.31337}"
 
 
 @pytest.fixture(scope="module")
@@ -47,7 +48,7 @@ def workspace(podman):
 def sign_in(podman, workspace):
     """A sign-in container of the same person: made without the workspace's seccomp profile or
     its unmasked /proc."""
-    name = podman.start_sign_in(workspace.person, workspace.slot, 600)
+    name = podman.start_sign_in(workspace.person, workspace.slot, 3 * CONTAINER_HANG_GUARD)
     try:
         yield name
     finally:
@@ -100,13 +101,11 @@ def test_the_terminal_runs_a_shell_in_it(podman, workspace):
     try:
         os.write(main, b"echo $((6*7))\r")
         seen = b""
-        deadline = time.monotonic() + 60
-        while b"42\r\n" not in seen and time.monotonic() < deadline:
-            if select.select([main], [], [], 1)[0]:
-                seen += os.read(main, 4096)
-        assert b"42\r\n" in seen, seen
+        while b"42\r\n" not in seen:
+            assert select.select([main], [], [], CONTAINER_HANG_GUARD)[0], seen
+            seen += os.read(main, 4096)
         os.write(main, b"exit\r")
-        assert shell.wait(timeout=60) == 0
+        assert shell.wait(timeout=CONTAINER_HANG_GUARD) == 0
     finally:
         if shell.poll() is None:
             shell.kill()
@@ -162,11 +161,11 @@ def nested_run(runtime, name: str) -> rt.Result:
 
     work = runtime.layout(name).work
     imported = runtime.exec(name, [WRAPPER, "import", "-", "localhost/rcman-test-bb"],
-                            stdin=tarball(), cwd=work, timeout=600)  # fmt: skip
+                            stdin=tarball(), cwd=work, timeout=CONTAINER_HANG_GUARD)  # fmt: skip
     assert imported.code == 0, imported  # the import runs nothing
     argv = [WRAPPER, "run", "--rm", "--pull=never", "localhost/rcman-test-bb", "busybox", "true"]
     return runtime.exec(name, argv,
-                        cwd=work, timeout=600)  # fmt: skip
+                        cwd=work, timeout=CONTAINER_HANG_GUARD)  # fmt: skip
 
 
 def test_a_workspace_made_without_the_unmask_has_a_covered_proc_and_runs_no_nested_container(
@@ -282,10 +281,13 @@ def plant(podman, name: str) -> None:
 
 
 def gone(uids: range) -> list:
-    deadline = time.monotonic() + GONE_WITHIN
-    while (left := processes_in(uids)) and time.monotonic() < deadline:
-        time.sleep(0.2)
-    return left
+    """Nothing once every process of ``uids`` has gone, which it waits for; what is still
+    there if they have not at the hang bound."""
+    try:
+        until(lambda: not processes_in(uids))
+    except AssertionError:
+        return processes_in(uids)
+    return []
 
 
 def test_nothing_of_a_workspace_runs_once_it_is_stopped_or_removed(podman, podman_service):

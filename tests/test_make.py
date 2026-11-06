@@ -33,7 +33,7 @@ import pytest
 
 from tests.collected import collect
 from tests.container_marker import MARKER
-from tests.hang_guard import CONTAINER_GUARD, HANG_GUARD, HOST_GUARD
+from tests.hang_guard import CONTAINER_GUARD, HANG_GUARD, HOST_GUARD, STACK_GUARD, stack_guard
 
 REPO = Path(__file__).resolve().parent.parent
 MAKEFILE = REPO / "Makefile"
@@ -473,14 +473,29 @@ def makefile_rules(text: str) -> dict[str, Rule]:
     return rules
 
 
+def submade(rule: Rule) -> list[str]:
+    """The targets a recipe makes with ``$(MAKE)``: the words after it that are no option, no
+    variable's value and no comment."""
+    found = []
+    for line in rule.recipe:
+        called = re.match(r"^[@+-]*\$[({]MAKE[)}]\s+(.*)$", line)
+        if called:
+            for word in shlex.split(called.group(1), comments=True):
+                if not word.startswith("-") and "=" not in word:
+                    found.append(word)
+    return found
+
+
 def made_with(rules: dict[str, Rule], target: str) -> set[str]:
-    """``target`` and every target it makes first, at any depth."""
+    """``target`` and every target it makes, first or with ``$(MAKE)`` in its recipe, at any
+    depth."""
     seen, todo = set(), [target]
     while todo:
         name = todo.pop()
         if name not in seen:
             seen.add(name)
-            todo += rules.get(name, Rule()).prerequisites
+            rule = rules.get(name, Rule())
+            todo += [*rule.prerequisites, *submade(rule)]
     return seen
 
 
@@ -607,6 +622,9 @@ def test_only_make_benchmark_runs_the_benchmark_and_in_one_process():
         ("check-all: check test-container check-ui",
          "check-all: check test-container check-ui benchmark", False,
          "make check-all makes make benchmark"),
+        ("before the live reinstall\n",
+         "before the live reinstall\n\t@$(MAKE) --no-print-directory benchmark  # planted\n",
+         False, "make check-all makes make benchmark"),
         (f"{BENCH_M} -s", BENCH_M, False,
          "make benchmark does not show what its tests report (-s)"),
         (f"{BENCH_M} -s", f"{BENCH_M} -s -n 8", False,
@@ -645,8 +663,13 @@ def phony() -> list[str]:
 
 def guard_of(test: dict) -> dict:
     """The hang guard a test should run under: its tier's, the container tests' for a test
-    carrying the container marker (tests/hang_guard.py)."""
-    timeout = CONTAINER_GUARD if MARKER in test["markers"] else HOST_GUARD
+    carrying the container marker, and the whole stack's own for the one carrying the stack
+    marker (tests/hang_guard.py)."""
+    timeout = HOST_GUARD
+    if STACK in test["markers"]:
+        timeout = STACK_GUARD
+    elif MARKER in test["markers"]:
+        timeout = CONTAINER_GUARD
     return {"timeout": timeout, "method": "thread", "func_only": False}
 
 
@@ -690,7 +713,7 @@ def test_a_run_with_another_method_is_reported(tmp_path):
     """Planted twin: make check-ui asking for the signal method, which leaves a test whose
     worker thread never ends hanging."""
     makefile = planted(tmp_path, UI_M, f"{UI_M} --timeout-method signal")
-    found = {"timeout": CONTAINER_GUARD, "method": "signal", "func_only": False}
+    found = {"timeout": STACK_GUARD, "method": "signal", "func_only": False}
     assert unguarded(recorded(tmp_path, "check-ui", makefile)) == [
         f"not under the hang guard ({found}): {n}" for n in sorted(everything().stack)
     ]
@@ -699,7 +722,7 @@ def test_a_run_with_another_method_is_reported(tmp_path):
 def test_a_container_test_under_the_host_guard_is_reported(tmp_path):
     """Planted twin: make check-ui giving the container tests the host tests' guard."""
     makefile = planted(tmp_path, UI_M, f"{UI_M} -o container_timeout={HOST_GUARD}")
-    found = {"timeout": HOST_GUARD, "method": "thread", "func_only": False}
+    found = {"timeout": stack_guard(HOST_GUARD), "method": "thread", "func_only": False}
     assert unguarded(recorded(tmp_path, "check-ui", makefile)) == [
         f"not under the hang guard ({found}): {n}" for n in sorted(everything().stack)
     ]

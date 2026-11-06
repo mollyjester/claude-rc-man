@@ -11,9 +11,10 @@ parents, owners and bindings. It flags
 - P2s, a sleep or a timeout written in a child program's source: the shell's ``sleep N`` and
   ``timeout [options] N``, Python's ``time.sleep(N)``, the numbers of an argv of the ``timeout``
   tool, ``sleep`` and the length after it in an argv, a call's arguments or a child's Python
-  (``["sleep", "600"]``, ``engine.cli(..., "busybox", "sleep", "600")``), and a child's loop on
-  a clock, or one that sleeps on a count; an interpolated one too, unless it is a multiple of the
-  guard or RUNS_OUT (a sleep: a multiple of the guard). An argv compared runs nothing;
+  (``["sleep", "600"]``, ``engine.cli(..., "busybox", "sleep", "600")``, ``str(60)`` there, or a
+  number a helper's caller gives the helper's parameter that is the length), and a child's loop
+  on a clock, or one that sleeps on a count; an interpolated one too, unless it is a multiple of
+  the guard or RUNS_OUT (a sleep: twice the guard or more). An argv compared runs nothing;
 - P3, a timeout that is not allowed: a keyword of a timing name; a known positional, where a
   name or a call is seconds unless shown to be something else; a value at a position the
   parameter table or a parameter's flow gives (at a position of a name whose definitions
@@ -24,7 +25,10 @@ parents, owners and bindings. It flags
   itself, of the guard, of a name that cannot be resolved, a restoring setattr, and runs_out
   given anything but 0 or a product's floor;
 - a module defining HANG_GUARD, CONTAINER_HANG_GUARD or tier_guard other than
-  tests/hang_guard.py.
+  tests/hang_guard.py;
+- the tier rule, TIER: HANG_GUARD in what the container tests run, CONTAINER_HANG_GUARD in what
+  the host tests run, and either in what both run, where only tier_guard() gives the asking
+  test's (``tier_reach``).
 
 An allowed value is the tier's guard or a multiple of it of at least 1, plus a number of at least 0
 or through int(), float() or round(), tier_guard() where a test reads it, None, -1 (the standard
@@ -196,6 +200,161 @@ def build_table(trees: Iterable[ast.AST]) -> Table:
     return table
 
 
+# --- the tiers ----------------------------------------------------------------------------------
+
+CONTAINER_ROOT = "tests/container/"
+# Each tier's guard. A test of the container tier is one that uses the tests' engine, as the
+# container marker is derived (tests/container_marker.py), and all of tests/container/.
+TIER_GUARDS = {"host": "HANG_GUARD", "container": "CONTAINER_HANG_GUARD"}
+ENGINE_FIXTURES = {"podman_service"}
+
+
+def own_tier(path: str) -> str:
+    return "container" if path.startswith(CONTAINER_ROOT) else "host"
+
+
+def top_names(stmt: ast.AST) -> set[str]:
+    """The names a top-level statement defines."""
+    if isinstance(stmt, (*FUNCTIONS, ast.ClassDef)):
+        return {stmt.name}
+    targets = []
+    if isinstance(stmt, ast.Assign):
+        targets = stmt.targets
+    elif isinstance(stmt, ast.AnnAssign | ast.AugAssign):
+        targets = [stmt.target]
+    return {n.id for t in targets for n in ast.walk(t) if isinstance(n, ast.Name)}
+
+
+def is_fixture_def(fn: ast.AST) -> bool:
+    for d in getattr(fn, "decorator_list", []):
+        target = d.func if isinstance(d, ast.Call) else d
+        if getattr(target, "attr", None) == "fixture" or getattr(target, "id", None) == "fixture":
+            return True
+    return False
+
+
+def is_autouse(fn: ast.AST) -> bool:
+    return any(
+        isinstance(d, ast.Call)
+        and any(k.arg == "autouse" and getattr(k.value, "value", False) for k in d.keywords)
+        for d in getattr(fn, "decorator_list", [])
+    )
+
+
+def tier_reach(trees: dict[str, ast.AST]) -> dict[str, dict[str, set[str]]]:
+    """For each file, the tiers whose tests reach each of its top-level names. The roots are
+    every top-level name of tests/container/, a test elsewhere, of the container tier where it
+    asks for the tests' engine through its fixtures, and tests/conftest.py's autouse fixtures,
+    which every test runs. A name is reached through the names its statement uses: of its own
+    module, imported from another of the project's, or a fixture its function asks for. Each
+    statement is walked once."""
+    by_module = {module_name(p): p for p in trees}
+    defs: dict[str, dict[str, list[ast.AST]]] = {}
+    imports: dict[str, dict[str, tuple[str, str | None]]] = {}
+    fixtures: dict[str, set[str]] = {}
+    # each top-level statement's names loaded, attributes of a name, and parameters
+    uses: dict[int, tuple[set[str], set[tuple[str, str]], set[str]]] = {}
+    for path, tree in trees.items():
+        defs[path], fixtures[path] = {}, set()
+        found = imports[path] = {}
+        for stmt in tree.body:
+            for name in top_names(stmt):
+                defs[path].setdefault(name, []).append(stmt)
+            if isinstance(stmt, FUNCTIONS) and is_fixture_def(stmt):
+                fixtures[path].add(stmt.name)
+            names, attributes, parameters = set(), set(), set()
+            uses[id(stmt)] = (names, attributes, parameters)
+            for node in ast.walk(stmt):
+                kind = type(node)
+                if kind is ast.Name:
+                    if type(node.ctx) is ast.Load:
+                        names.add(node.id)
+                elif kind is ast.Attribute:
+                    if type(node.value) is ast.Name:
+                        attributes.add((node.value.id, node.attr))
+                elif kind is ast.FunctionDef or kind is ast.AsyncFunctionDef:
+                    parameters.update(FileScan.parameter_names(node))
+                elif kind is ast.ImportFrom:
+                    if node.module and not node.level:
+                        for a in node.names:
+                            whole = f"{node.module}.{a.name}"
+                            if whole in by_module:
+                                found[a.asname or a.name] = (by_module[whole], None)
+                            elif node.module in by_module:
+                                found[a.asname or a.name] = (by_module[node.module], a.name)
+                elif kind is ast.Import:
+                    for a in node.names:
+                        if a.asname and a.name in by_module:
+                            found[a.asname] = (by_module[a.name], None)
+
+    def fixture_of(path: str, name: str) -> str | None:
+        """Where the fixture ``name`` a function of ``path`` asks for is defined."""
+        for where in (path, "tests/container/conftest.py" if own_tier(path) == "container"
+                      else None, "tests/conftest.py"):  # fmt: skip
+            if where in fixtures and name in fixtures[where]:
+                return where
+        return None
+
+    def asks_for_the_engine(path: str, fn: ast.AST, seen: set) -> bool:
+        for a in FileScan.parameter_names(fn):
+            if a in ENGINE_FIXTURES:
+                return True
+            where = fixture_of(path, a)
+            if where is not None and (where, a) not in seen:
+                seen.add((where, a))
+                if any(
+                    isinstance(d, FUNCTIONS) and asks_for_the_engine(where, d, seen)
+                    for d in defs[where].get(a, [])
+                ):
+                    return True
+        return False
+
+    reached: dict[str, dict[str, set[str]]] = {p: {} for p in trees}
+    todo: list[tuple[str, str, str]] = []
+
+    def reach(path: str, name: str, tier: str) -> None:
+        tiers = reached[path].setdefault(name, set())
+        if tier not in tiers:
+            tiers.add(tier)
+            todo.append((path, name, tier))
+
+    for path, tree in trees.items():
+        for stmt in tree.body:
+            if path.startswith(CONTAINER_ROOT):
+                for name in top_names(stmt):
+                    reach(path, name, "container")
+            elif isinstance(stmt, FUNCTIONS) and path == "tests/conftest.py" and is_autouse(stmt):
+                for tier in TIER_GUARDS:
+                    reach(path, stmt.name, tier)
+            elif Path(path).name.startswith("test_") and path.startswith("tests/"):
+                tests = []
+                if isinstance(stmt, FUNCTIONS) and stmt.name.startswith("test"):
+                    tests = [stmt]
+                elif isinstance(stmt, ast.ClassDef) and stmt.name.startswith("Test"):
+                    tests = [f for f in stmt.body if isinstance(f, FUNCTIONS)]
+                for fn in tests:
+                    container = asks_for_the_engine(path, fn, set())
+                    reach(path, stmt.name, "container" if container else "host")
+    while todo:
+        path, name, tier = todo.pop()
+        local, imported = defs[path], imports[path]
+        for stmt in local.get(name, []):
+            names, attributes, parameters = uses[id(stmt)]
+            for n in names:
+                if n in local:
+                    reach(path, n, tier)
+                elif n in imported and imported[n][1] is not None:
+                    reach(*imported[n], tier)
+            for value, attr in attributes:
+                if value in imported and imported[value][1] is None:
+                    reach(imported[value][0], attr, tier)
+            for a in parameters:
+                where = fixture_of(path, a)
+                if where is not None:
+                    reach(where, a, tier)
+    return reached
+
+
 # --- the allowances, each a switch the mutation run turns off ------------------------------------
 
 ALLOWANCES = {
@@ -216,8 +375,17 @@ class FileScan:
     """The sites of one file. ``modules`` maps a module of the project to its tree, to resolve
     a constant imported from it and a fixture of tests/conftest.py."""
 
-    def __init__(self, path: str, tree: ast.AST, source: str, modules: dict | None = None):
+    def __init__(
+        self,
+        path: str,
+        tree: ast.AST,
+        source: str,
+        modules: dict | None = None,
+        reached: dict[str, set[str]] | None = None,
+    ):
         self.path = path
+        # the tiers whose tests reach each top-level name of the file (``tier_reach``)
+        self.reached = reached or {}
         self.source = source
         self.tree = tree
         self.modules = modules or {}
@@ -371,6 +539,8 @@ class FileScan:
                 self.local_binds.get(fn, {}).get(node.id) or node.id in self.parameter_names(fn)
             ):
                 return None  # a local name shadows the module's import
+            if self.path == "tests/hang_guard.py" and node.id in GUARD_NAMES:
+                return f"{GUARD_MODULE}.{node.id}"  # the guard's own module: a value made of it
             return self.imported.get(node.id) or self.module_aliases.get(node.id)
         if isinstance(node, ast.Attribute):
             inner = self.qual(node.value)
@@ -398,8 +568,9 @@ class FileScan:
         return self.guard_multiple(node) and ALLOWANCES["guard"]
 
     def outlasts(self, node: ast.AST) -> bool:
-        """A child's sleep that outlasts the test: a multiple of the guard (rule (g))."""
-        return self.guard_multiple(self.child_time(node)) and ALLOWANCES["guard"]
+        """A child's sleep that outlasts the test: twice the guard or more (rule (g))."""
+        least = 2 if ALLOWANCES.get("P2s twice the guard", True) else 1
+        return self.guard_multiple(self.child_time(node), least) and ALLOWANCES["guard"]
 
     def child_time(self, node: ast.AST, depth: int = 0) -> ast.AST:
         """What a child's time is written from: an f-string's one value, str()'s argument, and a
@@ -428,11 +599,11 @@ class FileScan:
         q = self.qual(node)
         return q is not None and q.split(".")[0] in PRODUCT
 
-    def guard_multiple(self, node: ast.AST) -> bool:
-        """The guard, a multiple of it of at least 1, either plus a number of at least 0, and
-        int(), float() or round() of one, as ``int(2 * tier_guard())``."""
+    def guard_multiple(self, node: ast.AST, least: float = 1) -> bool:
+        """The guard, a multiple of it of at least ``least``, either plus a number of at least
+        0, and int(), float() or round() of one, as ``int(2 * tier_guard())``."""
         if self.is_guard(node) or self.is_tier_guard_call(node):
-            return True
+            return least <= 1
         if (
             isinstance(node, ast.Call)
             and getattr(node.func, "id", None) in ("int", "float", "round")
@@ -440,11 +611,14 @@ class FileScan:
             and not node.keywords
             and ALLOWANCES.get("guard through int", True)
         ):
-            return self.guard_multiple(node.args[0])
+            return self.guard_multiple(node.args[0], least)
         if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mult | ast.Add):
-            least = 1 if isinstance(node.op, ast.Mult) else 0
+            times = isinstance(node.op, ast.Mult)
             for k, g in ((node.left, node.right), (node.right, node.left)):
-                if (n := number(k)) is not None and n >= least and self.guard_multiple(g):
+                n = number(k)
+                if n is None or n < (1 if times else 0):
+                    continue
+                if self.guard_multiple(g, least / n if times else least):
                     return True
         return False
 
@@ -808,6 +982,7 @@ class FileScan:
     def scan(self) -> FileScan:
         self._clocks()
         self._defining_the_guard()
+        self._tier_rule()
         for node in self.calls:
             self._call(node)
         for node in self.parents:
@@ -1294,6 +1469,7 @@ class FileScan:
                 and self.guard_multiple(node.value)
                 and self.allowed(node.value, node.value, read_at_test_time=False)
                 and ALLOWANCES.get("P3 alias", True)
+                and self.path != "tests/hang_guard.py"  # where the guard's values are made
             ):
                 self.site(node, "P3", f"{t.id} = {self.text(node.value)}: an alias of the guard")
             if isinstance(t, ast.Attribute) and timing_constant(t.attr):
@@ -1312,6 +1488,38 @@ class FileScan:
                 defined = [node.name]
             if set(defined) & (GUARD_NAMES | {"tier_guard"}):
                 self.site(node, "GUARD", f"defines {', '.join(defined)}")
+
+    # the tier rule -----------------------------------------------------------------------------
+
+    def tiers_at(self, node: ast.AST) -> set[str]:
+        """The tiers whose tests run ``node``: those that reach the top-level statement it is
+        in, or, where none is known to, the tier of its file's folder."""
+        stmt = node
+        while (parent := self.parents.get(stmt)) is not None and parent is not self.tree:
+            stmt = parent
+        tiers = set().union(*(self.reached.get(n, set()) for n in top_names(stmt)))
+        return tiers or {own_tier(self.path)}
+
+    def _tier_rule(self) -> None:
+        """A guard of the wrong tier: HANG_GUARD in what the container tests run,
+        CONTAINER_HANG_GUARD in what the host tests run, and either in what both run, where
+        only tier_guard() gives the asking test's."""
+        if self.path == "tests/hang_guard.py" or not ALLOWANCES.get("tier rule", True):
+            return
+        for node in self.parents:
+            if not (isinstance(node, ast.Name | ast.Attribute) and isinstance(node.ctx, ast.Load)):
+                continue
+            q = self.qual(node)
+            if q is None or not q.startswith(GUARD_MODULE + "."):
+                continue
+            name = q.rpartition(".")[2]
+            if name not in GUARD_NAMES:
+                continue
+            tiers = self.tiers_at(node)
+            if len(tiers) > 1:
+                self.site(node, "TIER", f"{name} in what both tiers run: tier_guard()")
+            elif name != TIER_GUARDS[next(iter(tiers))]:
+                self.site(node, "TIER", f"{name} in what the {next(iter(tiers))} tests run")
 
     # P2s --------------------------------------------------------------------------------------
 
@@ -1457,7 +1665,9 @@ class FileScan:
     def _sleep_argv(self, elts: list[ast.AST], node: ast.AST) -> None:
         """``sleep`` and the length it is given, in an argv or a call's arguments, as
         ``["sleep", "600"]`` and ``engine.cli("run", image, "busybox", "sleep", "600")``: a
-        length that is not a multiple of the guard (rule (g)). ``infinity`` outlasts anything."""
+        length that is not twice the guard or more (rule (g)), a number through str() among
+        them; where a helper's parameter is the length, what each call of it in the module
+        gives. ``infinity`` outlasts anything."""
         if not ALLOWANCES.get("P2s sleep argv", True):
             return
         for i, e in enumerate(elts[:-1]):
@@ -1465,18 +1675,50 @@ class FileScan:
                 continue
             later = elts[i + 1]
             written = self.child_time(later)
-            if isinstance(written, ast.Constant):
-                if not isinstance(written.value, str) or not NUMERIC.fullmatch(written.value):
-                    continue  # infinity, or what is no length an argv gives
-                if float(written.value) == 0:
-                    continue
-            elif not (
-                isinstance(later, ast.JoinedStr)
-                or (isinstance(later, ast.Call) and getattr(later.func, "id", None) == "str")
-            ) or self.outlasts(later):
-                continue  # what is not written as a string here is no argv's length
-            self.site(node, "P2s", f"a sleep's argv: {self.text(node)}")
-            return
+            helper = self.helper_given(later, node)
+            if helper is not None and ALLOWANCES.get("P2s sleep argv parameter", True):
+                # its callers in the module give the length: each is checked where it does
+                for call, value in self.given_to(helper, later.id):
+                    if self.a_sleeps_length(self.child_time(value), value):
+                        self.site(call, "P2s", f"a sleep's length: {self.text(call)}")
+                return
+            if self.a_sleeps_length(written, later):
+                self.site(node, "P2s", f"a sleep's argv: {self.text(node)}")
+                return
+
+    def given_to(self, helper: ast.AST, name: str) -> list[tuple[ast.Call, ast.AST]]:
+        """Each call of the module's ``helper`` and what it gives its parameter ``name``."""
+        params = positional_parameters(helper)
+        index = params.index(name) if name in params else -1
+        found = []
+        for call in self.calls:
+            if getattr(call.func, "id", None) != helper.name:
+                continue
+            value = call.args[index] if 0 <= index < len(call.args) else None
+            for kw in call.keywords:
+                if kw.arg == name:
+                    value = kw.value
+            if value is not None:
+                found.append((call, value))
+        return found
+
+    def a_sleeps_length(self, written: ast.AST, later: ast.AST) -> bool:
+        """Whether ``later``, written as ``written``, is a length given ``sleep`` that does
+        not outlast the test: a number, or a string of one, but 0, and an f-string or str() of
+        what is not twice the guard. ``infinity`` outlasts anything."""
+        if isinstance(written, ast.Constant):
+            value = written.value
+            if isinstance(value, bool) or not isinstance(value, str | int | float):
+                return False
+            if isinstance(value, str) and not NUMERIC.fullmatch(value):
+                return False  # infinity, or what is no length an argv gives
+            return float(value) != 0
+        if not (
+            isinstance(later, ast.JoinedStr)
+            or (isinstance(later, ast.Call) and getattr(later.func, "id", None) == "str")
+        ):
+            return False  # what is not written as a string here is no argv's length
+        return not self.outlasts(later)
 
     # P4 ---------------------------------------------------------------------------------------
 
@@ -1710,11 +1952,15 @@ def scan_of(module: str, modules: dict) -> FileScan:
 
 
 def scan_source(
-    path: str, source: str, table: Table | None = None, modules: dict | None = None
+    path: str,
+    source: str,
+    table: Table | None = None,
+    modules: dict | None = None,
+    reached: dict[str, set[str]] | None = None,
 ) -> FileScan:
     """One file scanned alone: its own flows are the only ones its calls are checked against."""
     table = table or Table()
-    scan = FileScan(path, ast.parse(source), source, modules).scan()
+    scan = FileScan(path, ast.parse(source), source, modules, reached).scan()
     scan.table_flows(table)
     scan.finish(table, set(scan.flows))
     return scan
@@ -1728,11 +1974,15 @@ def scan_source(
 STAND_INS = {
     "devtools/fake_claude.py": "runs as `claude` in a workspace, imitating Claude Code's timing",
     "devtools/pre_test_commit.py": "the pre-test hook: its DEADLINE and GRACE are its behaviour",
+    "tests/container/stand_ins.py": "runs as systemctl, loginctl and rcman's podman in the "
+    "container suites, imitating their timing (a unit's stop)",
+    "tests/container/github_stand_in.py": "serves the tests' GitHub in a container",
+    "tests/container/oidc_stub.py": "runs as Google's sign-in in the whole stack",
 }
 GUARD_FILE = "tests/test_timing_guard.py"
 
-# The roots of the scope now: host Python and devtools. tests/container/ and the TypeScript
-# scope join it in the later steps of #149.
+# The roots of the scope now: the Python of tests/, tests/container/ among them, and devtools.
+# The TypeScript scope joins it in a later step of #149.
 SCOPE = ("tests", "devtools")
 TABLE_ROOTS = ("backend", "helpers", "tests", "devtools")
 
@@ -1749,13 +1999,9 @@ def listed(roots: Iterable[str], repo: Path = REPO) -> list[str]:
 
 
 def scoped_files(roots: Iterable[str] = SCOPE, repo: Path = REPO) -> list[str]:
-    """The Python files of ``roots`` that git does not ignore, but the stand-ins and, for now,
-    tests/container/. No root: no file."""
-    return [
-        f
-        for f in listed(roots, repo)
-        if not f.startswith("tests/container/") and f not in STAND_INS
-    ]
+    """The Python files of ``roots`` that git does not ignore, but the stand-ins. No root: no
+    file."""
+    return [f for f in listed(roots, repo) if f not in STAND_INS]
 
 
 def module_name(path: str) -> str:
@@ -1779,9 +2025,10 @@ def scan_tree(files: Iterable[str] | None = None) -> Tree:
     trees = {p: ast.parse(s) for p, s in sources.items()}
     table = build_table(trees.values())
     modules = {module_name(p): t for p, t in trees.items()}
+    reached = tier_reach({p: t for p, t in trees.items() if p.startswith(("tests/", "devtools/"))})
     _SCANS.clear()
     scans = [
-        FileScan(f, trees[f], sources[f], modules).scan()
+        FileScan(f, trees[f], sources[f], modules, reached.get(f)).scan()
         for f in (scoped_files() if files is None else files)
     ]
     for s in scans:
@@ -1830,9 +2077,10 @@ NAMED = (
           "wait records, whose parameters are named wait"),
     Named("H2", "tests/time_doubles.py", ("",), frozenset({"P3"}),
           "the doubles' POLL_CAP and POLL_GAP"),
-    Named("H3", "tests/hang_guard.py", ("tier_guard", "runs_out", "pace"),
+    Named("H3", "tests/hang_guard.py", ("tier_guard", "runs_out", "pace", "mark"),
           frozenset({"P3", "P4"}),
-          "the tier's guard, and runs_out and pace, which set the name a test gives them"),
+          "the tier's guard, runs_out and pace, which set the name a test gives them, and the "
+          "whole stack's test's own hang guard, derived from the container tests' guard"),
     Named("H3", "tests/conftest.py", ("pytest_timeout_set_timer", "pytest_collection_modifyitems"),
           frozenset({"P2", "P3"}),
           "the hang guard's timer, and the container tests' guard read from pytest's ini"),
@@ -1850,6 +2098,16 @@ NAMED = (
           "until's, tier_guard's and runs_out's own tests: a guard of 0 that until has run out "
           "against, the container tier read from the registry, and runs_out given a floor and "
           "a deadline it refuses"),
+    Named("H4", "tests/test_until.py",
+          ("test_a_container_tests_tier_guard_is_the_container_hang_guard",
+           "test_a_program_the_tests_start_takes_the_guard_it_is_handed",
+           "test_a_tests_own_tier_comes_before_a_guard_handed_by_a_fixture"),
+          frozenset({"TIER"}),
+          "tier_guard's own tests, in a host test: that it gives the container tier's guard "
+          "where the container tier asks"),
+    Named("H4", "tests/test_hang_guard.py",
+          ("test_each_tiers_hang_guard_is_outlived_by_its_guard_whose_method_is_thread",),
+          frozenset({"TIER"}), "the hang guard's own test of each tier's value, in a host test"),
     Named("H12", "devtools/tmuxctl.py",
           ("", "Pane.wait_for", "Pane.wait_exit", "Pane.wait_stable", "Pane.close"),
           frozenset({"P1", "P2", "P3"}),
@@ -2258,6 +2516,22 @@ PLANTED = {
         "        setattr(self, name, value)\n    monkeypatch.setattr(C, 'init', init)\n"
         "def test_x(monkeypatch):\n    into(monkeypatch, 'POLL_SECONDS', 0.5)\n", 3,
         "P4 branch"),
+    "a sleep argv of a number through str()": (
+        "P2s", "def f():\n    return ['$SLEEP', str(60)]\n", 2, "P2s sleep argv"),
+    "a sleep argv of a name bound to a number through str()": (
+        "P2s", "LENGTH = 60\ndef f():\n    return ['$SLEEP', str(LENGTH)]\n", 3, "P2s sleep argv"),
+    "a sleep argv whose helper's caller gives a number": (
+        "P2s", "def held(n):\n    return ['$SLEEP', n]\ndef test_x():\n    held('60')\n", 4,
+        "P2s sleep argv parameter"),
+    "a sleep argv of the guard once": (
+        "P2s", "from tests.hang_guard import HANG_GUARD\n"
+        "def f():\n    return ['$SLEEP', f'{HANG_GUARD:g}']\n", 3, "P2s twice the guard"),
+    "a shell sleep of the guard once": (
+        "P2s", "from tests.hang_guard import HANG_GUARD\n"
+        "argv = ['sh', '-c', f'$SLEEP {HANG_GUARD:g}']\n", 2, "P2s twice the guard"),
+    "a shell sleep of the guard and a bit": (
+        "P2s", "from tests.hang_guard import HANG_GUARD\n"
+        "argv = ['sh', '-c', f'$SLEEP {HANG_GUARD + 7:g}']\n", 2, "P2s twice the guard"),
     # the guard's own names
     "a local HANG_GUARD": ("GUARD", "HANG_GUARD = 0.5\n", 1, "guard names"),
 }  # fmt: skip
@@ -2269,7 +2543,7 @@ CLEAN = {
     "a multiple of the guard": ("guard", "from tests.hang_guard import HANG_GUARD\n"
                                 "def f(g):\n    g(timeout=2 * HANG_GUARD)\n"),
     "the guard through its module": ("guard", "from tests import hang_guard\n"
-                                     "def f(g):\n    g(timeout=hang_guard.CONTAINER_HANG_GUARD)\n"),
+                                     "def f(g):\n    g(timeout=hang_guard.HANG_GUARD)\n"),
     "tier_guard in a test": ("tier_guard", "from tests.hang_guard import tier_guard\n"
                              "def f(g):\n    g(timeout=tier_guard())\n"),
     "None": ("none", "def f(g):\n    g(timeout=None)\n"),
@@ -2389,6 +2663,10 @@ CLEAN = {
         "argv = ['$SLEEP', OUTLASTING]\nbuilt = f'RUN [\"busybox\", \"$SLEEP\", \"{BUILD}\"]'\n"
         "def test_x(engine):\n    engine.cli('run', 'bb', '$SLEEP', f'{3 * tier_guard():g}')\n"
         "    code = f\"os.execv('/bin/$SLEEP', ['$SLEEP', '{3 * HANG_GUARD:g}'])\"\n"),
+    "a sleep argv whose helper's callers give what outlasts the test": (
+        "guard", "from tests.hang_guard import tier_guard\n"
+        "def held(n):\n    return ['$SLEEP', n]\n"
+        "def test_x():\n    held(f'{2 * tier_guard():g}')\n    held('infinity')\n"),
     "a sleep argv of infinity, compared, or no argv": (
         "structure", "def f(d, s, run):\n    argv = ['$SLEEP', 'infinity']\n"
         "    assert run[-2:] == ['$SLEEP', '600']\n    d._record('$SLEEP', s)\n"),
@@ -2462,6 +2740,54 @@ def test_an_allowance_turned_off_flags_its_clean_twin(monkeypatch):
     """Planted twin of the allowances: H7 off, the fake's calls are sites."""
     monkeypatch.setitem(ALLOWANCES, "double (H7)", False)
     assert flagged(CLEAN["a fake's sleep and advance (H7)"][1]) != []
+
+
+# --- the tier rule ------------------------------------------------------------------------------
+
+USES = "def helper(g):\n    g(timeout={given})\n"
+BOTH = ("container", "host")
+TIERED = {
+    # (the file, the tiers that reach helper, the guard it gives): whether it is a TIER site
+    ("tests/container/test_c.py", None, "hang_guard.HANG_GUARD"): True,
+    ("tests/container/test_c.py", None, "hang_guard.CONTAINER_HANG_GUARD"): False,
+    ("tests/test_h.py", None, "hang_guard.CONTAINER_HANG_GUARD"): True,
+    ("tests/test_h.py", None, "hang_guard.HANG_GUARD"): False,
+    ("tests/shared.py", BOTH, "hang_guard.HANG_GUARD"): True,
+    ("tests/shared.py", BOTH, "hang_guard.CONTAINER_HANG_GUARD"): True,
+    ("tests/shared.py", BOTH, "hang_guard.tier_guard()"): False,
+    ("tests/shared.py", ("container",), "hang_guard.HANG_GUARD"): True,
+    ("tests/shared.py", ("container",), "3 * hang_guard.CONTAINER_HANG_GUARD"): False,
+}
+
+
+@pytest.mark.parametrize(("path", "tiers", "guard"), sorted(TIERED, key=str))
+def test_a_guard_of_another_tier_is_flagged(path, tiers, guard):
+    """Planted twins of the tier rule, and its CLEAN twins: each tier's own guard, and
+    tier_guard() where both tiers run the code."""
+    source = "from tests import hang_guard\n" + USES.format(given=guard)
+    reached = {"helper": set(tiers)} if tiers else None
+    found = [(s.form, s.line) for s in scan_source(path, source, Table(), None, reached).sites]
+    assert found == ([("TIER", 3)] if TIERED[path, tiers, guard] else []), found
+
+
+TREES = {
+    "tests/shared.py": "def helper():\n    pass\ndef unused():\n    pass\n",
+    "tests/container/test_c.py": "from tests.shared import helper\ndef test_c():\n    helper()\n",
+    "tests/test_h.py": "from tests import shared\ndef test_h():\n    shared.helper()\n"
+                       "def test_e(engine):\n    pass\n",
+    "tests/conftest.py": "import pytest\n@pytest.fixture\ndef engine(podman_service):\n"
+                         "    return GIVES\nGIVES = 1\n",
+}  # fmt: skip
+
+
+def test_the_tiers_are_reached_through_imports_and_fixtures():
+    """Each tier's roots: all of tests/container/, and a test elsewhere by whether it asks for
+    the engine, through a fixture of conftest's here; what each reaches through an import, a
+    module's attribute and a fixture; and a name nothing reaches is in no tier."""
+    reached = tier_reach({p: ast.parse(s) for p, s in TREES.items()})
+    assert reached["tests/shared.py"] == {"helper": {"host", "container"}}
+    assert reached["tests/test_h.py"] == {"test_h": {"host"}, "test_e": {"container"}}
+    assert reached["tests/conftest.py"] == {"engine": {"container"}, "GIVES": {"container"}}
 
 
 # --- named patterns: clean twins and stale checks ------------------------------------------------
@@ -2585,10 +2911,10 @@ def test_an_autouse_fixture_added_is_seen():
 
 def test_each_root_of_the_scope_is_read_and_holds_a_named_file():
     files = scoped_files()
-    for root, known in (("tests", "tests/test_until.py"), ("devtools", "devtools/tmuxctl.py")):
+    for root, known in (("tests", "tests/test_until.py"), ("devtools", "devtools/tmuxctl.py"),
+                        ("tests/container", "tests/container/stack.py")):  # fmt: skip
         assert any(f.startswith(root + "/") for f in files), root
         assert known in files
-    assert not any(f.startswith("tests/container/") for f in files)  # a later step's
     assert not set(STAND_INS) & set(files)
 
 
@@ -2600,10 +2926,10 @@ def test_an_empty_scope_reads_nothing():
 
 def test_a_planted_file_in_each_root_is_read(tmp_path):
     """A file of the scanned shape, planted under each root of a scratch repository, is listed
-    and its site found; one under tests/container/ and a stand-in are not listed."""
+    and its site found, tests/container/ among them; a stand-in is not listed."""
     subprocess.run(["git", "init", "-q", str(tmp_path)], check=True, timeout=HANG_GUARD)
-    planted = ["devtools/planted.py", "tests/planted.py"]
-    for rel in [*planted, "tests/container/planted.py", "devtools/fake_claude.py"]:
+    planted = ["devtools/planted.py", "tests/container/planted.py", "tests/planted.py"]
+    for rel in [*planted, "devtools/fake_claude.py", "tests/container/stand_ins.py"]:
         (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
         (tmp_path / rel).write_text(placed("import time\ntime.$SLEEP(1)\n"), encoding="utf-8")
     assert scoped_files(SCOPE, tmp_path) == planted

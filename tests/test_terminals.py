@@ -33,7 +33,7 @@ from rcman.problems import Problem
 from devtools import held_folders as hf
 from tests import killed_runs as kr
 from tests.conftest import ALICE, made_workspace
-from tests.hang_guard import HANG_GUARD
+from tests.hang_guard import HANG_GUARD, tier_guard
 from tests.time_doubles import FakeTime
 from tests.until import until
 
@@ -76,7 +76,7 @@ def sleep_argv(length: str) -> list[str]:
     """A ``sleep`` that outlasts the test (rule (g)), so that what ends it is the test's or the
     product's doing, never its own end; ``length`` (``a_length``) is added to it, which finds
     it."""
-    return ["sleep", f"{3 * HANG_GUARD:g}", length]
+    return ["sleep", f"{3 * tier_guard():g}", length]
 
 
 def sleep_of(length: str) -> str:

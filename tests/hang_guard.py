@@ -39,6 +39,26 @@ CONTAINER_HANG_GUARD: float = CONTAINER_GUARD / 2
 
 CONTAINER_TIMEOUT = "container_timeout"
 
+# The whole stack's browser test, the one carrying STACK_MARKER, has bounds of its own, each
+# beyond the one inside it, so that the innermost ends first and names what hung: a spec's own,
+# in frontend/playwright.stack.config.ts, at the tier's hang guard; the podman client's kill of
+# the specs' run (STACK_SPECS_GUARD), beyond a hung spec's bound and every other spec; and
+# its hang guard (``stack_guard``), beyond the session's image builds charged to it, at the
+# container tests' guard, and twice the specs' run, for the stack's own start and its check.
+# Playwright's run has no bound of its own (its globalTimeout, which would name no test, is 0).
+STACK_MARKER = "stack"
+
+
+def stack_guard(container_guard: float) -> float:
+    """The whole stack's browser test's hang guard, for a container guard: the guard itself
+    and twice the specs' run (STACK_SPECS_GUARD) of its hang guard."""
+    return container_guard + 2 * (1.5 * container_guard / 2)
+
+
+# The podman client's kill of the stack's specs' run.
+STACK_SPECS_GUARD: float = 1.5 * CONTAINER_HANG_GUARD
+STACK_GUARD: float = stack_guard(CONTAINER_GUARD)
+
 # Rule (a) in a child program's source: the seconds a ``timeout`` or a deadline written there is
 # given to run out against a stand-in that never finishes. 1, the smallest whole second every
 # tool takes; it has run out at any speed, as what it bounds never ends.
@@ -58,10 +78,12 @@ def tier_guard() -> float:
     (tests/time_doubles.py) took it from the marker; in a session or module fixture, which no
     test's registry covers, the one it names itself with ``handed``; in a program the tests
     start, the one handed to it in RCMAN_HANG_GUARD. Read when asked, never at import or in a
-    parameter's default, where no test's tier is known."""
-    from tests import time_doubles  # it imports this module
+    parameter's default, where no test's tier is known. The registry is looked for, not
+    imported: it imports pytest, which a program the tests start in a container may not have,
+    and where pytest runs tests it is loaded already, as a plugin of tests/conftest.py."""
+    time_doubles = sys.modules.get("tests.time_doubles")
 
-    if time_doubles._running:
+    if time_doubles is not None and time_doubles._running:
         return float(globals()[time_doubles._running[-1].tier])
     if _HANDED:
         return _HANDED[-1]
@@ -108,11 +130,14 @@ def pace(monkeypatch, module, name: str, seconds: float) -> None:
 
 def mark(items, container_guard: float) -> None:
     """Give every item that carries the container marker (tests/container_marker.py, which
-    must have marked them) the guard ``container_guard``."""
+    must have marked them) the guard ``container_guard``, and the whole stack's test, which
+    carries STACK_MARKER too, its own derived from it (``stack_guard``)."""
     import pytest
 
     for item in items:
-        if item.get_closest_marker(MARKER) is not None:
+        if item.get_closest_marker(STACK_MARKER) is not None:
+            item.add_marker(pytest.mark.timeout(stack_guard(container_guard)))
+        elif item.get_closest_marker(MARKER) is not None:
             item.add_marker(pytest.mark.timeout(container_guard))
 
 

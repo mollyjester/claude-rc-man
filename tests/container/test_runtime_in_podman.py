@@ -22,6 +22,8 @@ from rcman import runtime as rt
 from helpers import instructions
 from tests import runtime_contract
 from tests.container import sizes
+from tests.hang_guard import CONTAINER_HANG_GUARD
+from tests.until import SLOW, until
 
 # The most memory one channel's podman client may hold: one is open per workspace with a
 # server, so it bounds what rcman's channels cost.
@@ -92,7 +94,7 @@ def workspace(podman):
 
 
 def inspect(engine, name: str) -> dict:
-    found = engine.cli("container", "inspect", name, timeout=120)
+    found = engine.cli("container", "inspect", name, timeout=CONTAINER_HANG_GUARD)
     assert found.returncode == 0, found.stderr
     return json.loads(found.stdout)[0]
 
@@ -100,13 +102,15 @@ def inspect(engine, name: str) -> dict:
 def unshare_stat(engine, path: str) -> list[str]:
     """``%u %g %a`` of ``path``, as the engine's user namespace sees ids: a range's root is the
     range's base."""
-    found = engine.local("unshare", "stat", "-c", "%u %g %a", path, timeout=120)
+    found = engine.local("unshare", "stat", "-c", "%u %g %a", path, timeout=CONTAINER_HANG_GUARD)
     assert found.returncode == 0, found.stderr
     return found.stdout.decode().split()
 
 
 def volume_mount(engine, volume: str) -> str:
-    mount = engine.cli("volume", "inspect", "--format", "{{.Mountpoint}}", volume, timeout=120)
+    mount = engine.cli(
+        "volume", "inspect", "--format", "{{.Mountpoint}}", volume, timeout=CONTAINER_HANG_GUARD
+    )
     assert mount.returncode == 0, mount.stderr
     return mount.stdout.decode().strip()
 
@@ -250,14 +254,16 @@ def test_a_rename_over_the_bound_file_is_refused_busy_and_a_write_in_place_is_sh
 
 
 def test_a_sign_in_container_removes_itself_when_its_time_is_up(podman):
+    """Its time is its process's, a ``sleep`` of its seconds: once that process ends, the
+    container goes by itself. Given a time past the test, it is seen there (the control), and its
+    process is then ended from outside, as its time running out ends it, with no removal asked
+    for (rule (a), with nothing left to race)."""
     who = spec(3)
-    name = podman.start_sign_in(who.person, who.slot, seconds=3)
+    name = podman.start_sign_in(who.person, who.slot, seconds=3 * CONTAINER_HANG_GUARD)
     try:
         assert podman.exists(name)  # positive control
-        deadline = time.monotonic() + 60
-        while podman.exists(name):
-            assert time.monotonic() < deadline, "the sign-in container is still there"
-            time.sleep(0.5)
+        podman._podman("kill", name)
+        until(lambda: not podman.exists(name), SLOW)
     finally:
         podman.end_sign_in(name)
         podman.remove_account(who.person)
@@ -376,7 +382,9 @@ def image_of_files(
                 entry.size = len(content) if kind == "file" else 0
                 tar.addfile(entry, io.BytesIO(content) if kind == "file" else None)
     changes = [f"--change=LABEL {label}" for label in labels]
-    made = engine.cli("import", *changes, "-", name, input=data.getvalue(), timeout=300)
+    made = engine.cli(
+        "import", *changes, "-", name, input=data.getvalue(), timeout=CONTAINER_HANG_GUARD
+    )
     assert made.returncode == 0, made.stderr
     return name
 
@@ -624,7 +632,9 @@ def test_an_inspect_naming_a_container_that_is_gone_answers_the_ones_that_are_th
 
 
 def test_the_storage_folder_is_the_one_podman_info_names(podman_service, podman):
-    asked = podman_service.cli("info", "--format", "{{.Store.GraphRoot}}", timeout=120)
+    asked = podman_service.cli(
+        "info", "--format", "{{.Store.GraphRoot}}", timeout=CONTAINER_HANG_GUARD
+    )
     assert asked.returncode == 0, asked.stderr
     assert podman.storage_root() == asked.stdout.decode().strip()
     recorded = json.loads((MONITOR_RECORDED / "info.json").read_text())

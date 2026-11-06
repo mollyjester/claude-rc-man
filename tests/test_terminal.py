@@ -32,7 +32,7 @@ from rcman.routers import terminal as route
 from starlette.testclient import WebSocketDenialResponse
 
 from tests.conftest import ALICE, BOB, changing, made_workspace
-from tests.hang_guard import HANG_GUARD, pace
+from tests.hang_guard import HANG_GUARD, pace, tier_guard
 from tests.test_terminals import a_length, alive, sleep_of, sleeping
 from tests.until import until
 
@@ -66,7 +66,7 @@ class Peer:
 
     def _next(self) -> dict:
         async def receive():
-            with anyio.fail_after(HANG_GUARD):
+            with anyio.fail_after(tier_guard()):
                 return await self.session._send_rx.receive()
 
         return self.session.portal.call(receive)

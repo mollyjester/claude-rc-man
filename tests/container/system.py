@@ -9,10 +9,10 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 
+from tests.hang_guard import CONTAINER_HANG_GUARD
+
 CONTEXT = Path(__file__).resolve().parent / "system"
 REPOSITORY = "localhost/rcman-test-system"
-# Seconds a build of an image on the engine may take: its packages come from the network.
-BUILT_WITHIN = 1800
 
 
 def image_name() -> str:
@@ -27,7 +27,7 @@ def build(engine) -> str:
     if engine.cli("image", "exists", name).returncode != 0:
         built = engine.cli(
             "build", "-q", "-t", name, "-f", str(CONTEXT / "Containerfile"), str(CONTEXT),
-            timeout=BUILT_WITHIN,
+            timeout=CONTAINER_HANG_GUARD,
         )  # fmt: skip
         assert built.returncode == 0, (built.stdout + built.stderr).decode(errors="replace")
     return name

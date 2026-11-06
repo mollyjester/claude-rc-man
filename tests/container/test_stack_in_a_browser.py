@@ -17,13 +17,11 @@ from devtools.fake_claude import ACCEPTED_CODE
 from tests.container import github_stand_in as stand_in
 from tests.container import stack as st
 from tests.container.conftest import a_stack
+from tests.hang_guard import STACK_SPECS_GUARD
 
 REPO = Path(__file__).resolve().parent.parent.parent
 # Where the browser's container has the frontend's files, and the relay's folder.
 FRONTEND, RELAY = "/work/frontend", "/relay"
-# What all the stack's specs may take together: every test at its limit, and the two that
-# make a person's first workspace at theirs (frontend/e2e-stack/timing.ts), with room over.
-STACK_SPECS_WITHIN = 2400
 
 
 def ran_in(stack):
@@ -76,7 +74,7 @@ def test_the_whole_stack_in_a_browser(podman_service, system_image, default_imag
                 "-v", f"{REPO / 'frontend'}:{FRONTEND}", "-v", f"{source / 'tests'}:/work/tests:ro",
                 "-v", f"{folder}:{RELAY}", "-w", FRONTEND, st.PLAYWRIGHT_IMAGE,
                 "npx", "playwright", "test", "--config", "playwright.stack.config.ts",
-                "--reporter=line", timeout=STACK_SPECS_WITHIN,
+                "--reporter=line", timeout=STACK_SPECS_GUARD,
             )  # fmt: skip
         said = (browser.stdout + browser.stderr).decode(errors="replace")
         assert browser.returncode == 0, said[-12000:]

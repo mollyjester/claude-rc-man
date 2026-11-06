@@ -20,7 +20,7 @@ import sys
 from pathlib import Path
 
 from devtools.held_folders import held
-from tests.hang_guard import HANG_GUARD
+from tests.hang_guard import tier_guard
 
 REPO = Path(__file__).resolve().parent.parent
 
@@ -101,7 +101,7 @@ def _child_collect(args: tuple[str, ...], env: tuple[tuple[str, str], ...]) -> d
             env=child_env(dict(env)),
             capture_output=True,
             text=True,
-            timeout=HANG_GUARD,
+            timeout=tier_guard(),
         )
         if proc.returncode != 0 or not out.exists():
             raise RuntimeError(

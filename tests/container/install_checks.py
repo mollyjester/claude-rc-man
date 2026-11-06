@@ -46,6 +46,7 @@ sys.path.insert(0, str(SRC))
 sys.path.insert(0, str(SRC / "backend"))
 
 from installer import install as ins  # noqa: E402
+from tests.hang_guard import CONTAINER_HANG_GUARD  # noqa: E402
 
 
 def first() -> None:
@@ -402,7 +403,7 @@ def test_no_listener_lets_a_local_user_impersonate():
     # oauth2-proxy without its cookie names no one.
     request = urllib.request.Request("http://127.0.0.1:4180/oauth2/auth", headers=spoof)
     try:
-        urllib.request.urlopen(request, timeout=10)
+        urllib.request.urlopen(request, timeout=CONTAINER_HANG_GUARD)
         raise AssertionError("oauth2-proxy accepted a request without its cookie")
     except urllib.error.HTTPError as error:
         assert error.code == 401
@@ -434,7 +435,8 @@ def run_upgrade_unit(key: str, **environ: str) -> subprocess.CompletedProcess:
     env = dict(item.split("=", 1) for value in unit["Environment"] for item in shlex.split(value))
     return subprocess.run(
         shlex.split(unit[key][0]), env={**env, **environ}, stdin=subprocess.DEVNULL, cwd="/",
-        capture_output=True, text=True, errors="replace", timeout=2400, start_new_session=True,
+        capture_output=True, text=True, errors="replace", timeout=CONTAINER_HANG_GUARD,
+        start_new_session=True,
     )  # fmt: skip
 
 

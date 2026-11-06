@@ -218,10 +218,17 @@ A test that hangs is ended by pytest-timeout, the suite's one hang guard, with t
 `pyproject.toml`'s `[tool.pytest.ini_options]`, where a comment says what each covers:
 pytest-timeout's own `timeout`, which every test gets, and `container_timeout`, which
 `tests/conftest.py` registers and gives, as a `timeout` marker derived alongside the container
-marker (`tests/hang_guard.py`), to every test that carries the container marker, the whole-stack
-one among them, since the image builds of their session fixtures are charged to the test that
-first asks for them. That marker outranks `--timeout`, which changes only the other tests'
-value; `-o container_timeout=N` changes the container tests'. Each value is far beyond any
+marker (`tests/hang_guard.py`), to every test that carries the container marker, since the image
+builds of their session fixtures are charged to the test that first asks for them. The
+whole-stack test, which also carries the `stack` marker, gets its own, derived from it
+(`stack_guard`), so that the innermost of its bounds ends first and names what hung: a spec's
+own in `frontend/playwright.stack.config.ts`, whose run has no bound of its own
+(`globalTimeout: 0`, as a run ended by it names no test); the podman client's kill of the
+specs' run (`STACK_SPECS_GUARD`, one and a half times the container tier's hang guard), beyond a
+hung spec's bound and every other spec; and the test's guard (`STACK_GUARD`), the container
+tests' guard for the builds and twice the specs' run. That marker outranks `--timeout`, which
+changes only the other tests' value; `-o container_timeout=N` changes the container tests', and
+the whole-stack test's with it. Each value is far beyond any
 plausible slowness of its tier, so the guard ends only a genuine hang and never decides a test
 that would have finished. The guard counts from a test's setup to the end of its teardown, also
 after its setup or call failed: pytest-timeout on its own stops the guard then, so a teardown
@@ -260,7 +267,12 @@ and the guard ends the test. Code both tiers run (`tests/runtime_contract.py`,
 the test that asks; a session or module fixture, which no test's tier covers, names its tier's
 guard with `handed`, as the engine's `started(guard)` does for what runs while the engine lasts:
 `podman_service`, the session's engine, is started with `CONTAINER_HANG_GUARD`, which it keeps
-handed for the whole session, while a test's own tier still comes first in the test.
+handed for the whole session, while a test's own tier still comes first in the test. The
+programs the container suites run in a container from the checkout's files
+(`tests/container/stack.py`, `install_checks.py` and `installed.py`) are handed it in
+`RCMAN_HANG_GUARD` by the exec that runs them, which is how `until` there knows its bound;
+`tier_guard` looks for the doubles' registry without importing it, as such a program has no
+pytest.
 `tests/test_hang_guard.py` holds the guard to this, each case a
 child pytest with the project's configuration, `tests/conftest.py` loaded as a plugin, and a
 short guard, in one process and under pytest-xdist: each planted twin hangs a test in a way the
@@ -386,20 +398,28 @@ making the file once it has seen what it needs; `tests/test_terminals.py`'s `sle
 of a second of its own added to it.
 
 **The timing guard** (`tests/test_timing_guard.py`) holds every test to these rules by a static
-scan of the Python of `tests/` and `devtools/`, `tests/container/` aside (`SCOPE`), which imports
-and runs nothing it scans; it reads `backend/` and `helpers/` too, for the parameters of a timing
+scan of the Python of `tests/`, `tests/container/` among it, and `devtools/` (`SCOPE`), which
+imports and runs nothing it scans; it reads `backend/` and `helpers/` too, for the parameters of a timing
 name each function takes. It flags elapsed real time compared, a clock read or a name derived
 from one in a comparison or a difference (P1); a sleep in test code, or a `threading.Timer` or a
 loop's `call_later` (P2); a sleep or a `timeout` written in a child program's source, unless it
-is a guard's multiple, `RUNS_OUT` or the pace of a child's wait loop, and `sleep` given its
-length in an argv or a call's arguments (`["sleep", "600"]`, `engine.cli(…, "busybox", "sleep",
-"600")`), in a test or in a child's Python, unless the length is a guard's multiple, an argv
-that is compared, and so runs nothing, aside (P2s); a timeout that is not
+is a guard's multiple (a sleep: twice the guard or more, rule (g)), `RUNS_OUT` or the pace of a
+child's wait loop, and `sleep` given its length in an argv or a call's arguments (`["sleep",
+"600"]`, `["sleep", str(60)]`, `engine.cli(…, "busybox", "sleep", "600")`), in a test or in a
+child's Python, or as a helper's parameter, at each call of the helper that gives a number,
+unless the length is twice the guard or more, an argv that is compared, and so runs nothing,
+aside (P2s); a timeout that is not
 allowed, at a keyword or a parameter of a timing name, at a known position of a wait, in a
 parameter's default, in a module's or a class's constant of a timing name, or in
 `pytest.mark.timeout` (P3); and a product's timing constant patched to a value that is not
 allowed, the time module patched, a value given back by a second setattr, or a name a setattr is
-given that cannot be resolved (P4). The allowed values are the tier's guard and its multiples,
+given that cannot be resolved (P4); and a guard of another tier (TIER): `HANG_GUARD` in what the
+container tests run, `CONTAINER_HANG_GUARD` in what the host tests run, and either in what both
+run, where only `tier_guard()` gives the asking test's. Which tests run a piece of code is worked
+out from the import graph (`tier_reach`): every top-level name of `tests/container/`, a test
+elsewhere, of the container tier where it asks for the tests' engine through its fixtures, as the
+container marker is derived, and `tests/conftest.py`'s autouse fixtures are the roots, and a name
+is reached through the names, imports and fixtures its statement uses. The allowed values are the tier's guard and its multiples,
 also plus a number or through `int()` (`str(int(2 * tier_guard()))`), `tier_guard()` where a
 test reads it, `None`, `-1` and `0`. A timing name is a word of the name between underscores,
 `guard` among a parameter's (`handed`, `started` and `usable` take only an allowed value), and
@@ -417,8 +437,11 @@ timeout its caller passes, which a test gives as its tier's guard, and the recor
 command-line watch, which no test reaches but a module marked `real_claude`, run by hand (H12),
 a killed run's own hang bound in `tests/killed_runs.py`, `hold` and `shell_hold`, derived from
 the tier's guard (H14), and the sweep of held folders, whose
-deadlines are its behaviour (Q1); and the programs of `STAND_INS`, which run only as another
-program, whose timing is theirs. Planted twins show each form flagged and each allowance clean;
+deadlines are its behaviour (Q1), the tests of `tier_guard` and of each tier's value, which name
+the container tier's guard in a host test (H4), and the whole stack's test's own hang guard in
+`mark` (H3); and the programs of `STAND_INS`, which run only as another program, whose timing is
+theirs: the fake `claude`, the pre-test hook, and the container suites' stand-ins for
+`systemctl`, `loginctl` and rcman's `podman`, for GitHub and for Google's sign-in. Planted twins show each form flagged and each allowance clean;
 `test_no_test_waits_on_real_time` scans the real tree once, and fails on any site, on a stale
 named pattern or stand-in, and on a scan that saw no site or made none of the allowances it is
 known to make.
@@ -432,11 +455,9 @@ time could tell, and these are given up:
 - "promptly": where a test asserted that something ended within a time, its result is still
   asserted and the cause that must not act is pushed past the guard, so that a defect fails
   the test, but an ending that is slow without being a hang passes;
-- in `tests/test_claude_checks.py`, a pattern split over two reads of a child's output, for
-  which a test of the runner's search over a screen fed in two pieces stands, and a pattern
-  read only after the leader's exit was seen, an order the test cannot force, its exit code
-  still asserted;
-- in `tests/test_filelock.py`, two threads made likely to overlap on the lock;
+- in `tests/container/test_devcontainer_in_podman.py`, that two workspaces writing the shared
+  credentials at once really overlapped: each now starts once it has read the other's first
+  write and writes a count of rounds, and how far they overlapped is printed, not asserted;
 - the timing of `RealWatch` (`devtools/record_claude.py`), its quiet windows against the real
   `claude` and the minute after which the pane's waits give up, which only the recorder's
   command line exercises, by hand;
@@ -1060,17 +1081,19 @@ it can fail, and a positive control that keeps an empty input from passing.
   read without make, from the Makefile's rules and pyproject's `addopts`, each pytest call's
   `-m` worked out for every set of the markers a test may carry: `make benchmark` runs the
   `benchmark` tests, in one process, with `-s` and `RCMAN_REQUIRE_CONTAINER=1`, no other
-  target's pytest call, nor a bare `pytest`, runs one, and no target makes `make benchmark`,
-  `make check-all` included; the three other runs' split is read from what make ran.
+  target's pytest call, nor a bare `pytest`, runs one, and no target makes `make benchmark`, as
+  a prerequisite or with `$(MAKE)` in its recipe, `make check-all` included; the three other runs' split is read from what make ran.
   `make test-container`
   runs the `container` tests but the `stack` one, which `make check-ui` runs;
   `make check` runs the host tests and holds no on-demand run;
-  `make check-all` runs every test but the benchmark's, its container tests with
+  `make check-all` runs every test
+  but the benchmark's, its container tests with
   `RCMAN_REQUIRE_CONTAINER=1`, and `make check` with
   `RCMAN_REQUIRE_REAL_CLAUDE=1`; none of them runs a test a
   bare `pytest` leaves out for a real Claude account, as a target's own `-m` replaces the
   `-m` of pyproject's `addopts`; and every test that any target
-  `.PHONY` names runs is under its tier's hang guard, as pytest-timeout itself works out
+  `.PHONY` names runs is under its tier's hang guard, the whole-stack test under its own
+  (`STACK_GUARD`), as pytest-timeout itself works out
   each test's settings (see [The hang guard](#the-hang-guard)). `make lint` and
   `make format` run ruff and the frontend's script of the same name, and the
   real `make lint`, run over a frontend file planted in a scratch tree, fails

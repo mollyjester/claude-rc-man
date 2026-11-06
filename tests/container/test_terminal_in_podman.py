@@ -50,7 +50,7 @@ def client(podman_service, default_image, engine_tools, engine_store, tmp_path_f
     podman = engine_runtime(podman_service, default_image, engine_tools, engine_store, folder)
     app = create_app(settings, runtime=podman, builder_slot=sizes.BUILDER_SLOT)
     with TestClient(app) as made:
-        assert made.app.state.workspaces.restored.wait(120)
+        assert made.app.state.workspaces.restored.wait(CONTAINER_HANG_GUARD)
         made.alice, made.engine = alice, podman_service
         try:
             yield made

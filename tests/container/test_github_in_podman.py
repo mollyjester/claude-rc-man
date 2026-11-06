@@ -18,7 +18,6 @@ import os
 import ssl
 import subprocess
 import threading
-import time
 import types
 from pathlib import Path
 
@@ -38,6 +37,7 @@ from tests.container.conftest import engine_runtime, engine_settings
 from tests.github_server import GitHubServer
 from tests.github_tokens import AWKWARD_TOKENS
 from tests.hang_guard import CONTAINER_HANG_GUARD
+from tests.until import until
 
 ADDRESS, PORT = stand_in.ADDRESS, stand_in.PORT
 TOKEN = "github_pat_podman-test-token"
@@ -410,24 +410,20 @@ def publish(github_com, tmp_path, name: str, private: bool = False) -> Path:
     return bare
 
 
-def settled(service, workspace_id: int, within: float = CONTAINER_HANG_GUARD):
-    """The workspace once it is no longer being made."""
-    deadline = time.monotonic() + within
-    while True:
+def settled(service, workspace_id: int):
+    """The workspace once it is no longer being made (None for one that is gone)."""
+
+    def made():
         now = service.get(workspace_id)
-        if now is None or now.state != "creating":
-            return now
-        assert time.monotonic() < deadline, now
-        time.sleep(0.2)
+        return [now] if now is None or now.state != "creating" else None
+
+    return until(made)[0]
 
 
-def gone(service, workspace_id: int, within: float = CONTAINER_HANG_GUARD) -> None:
+def gone(service, workspace_id: int) -> None:
     """Wait until the workspace's row is gone, which a deletion of one being made leaves to
     the thread that was making it."""
-    deadline = time.monotonic() + within
-    while service.get(workspace_id) is not None:
-        assert time.monotonic() < deadline, service.get(workspace_id)
-        time.sleep(0.2)
+    until(lambda: service.get(workspace_id) is None)
 
 
 def exists(runtime: rt.PodmanRuntime, kind: str, name: str) -> bool:
@@ -572,10 +568,7 @@ def test_deleting_a_workspace_that_is_being_cloned_stops_git_and_leaves_nothing(
     try:
         made = service.create(person[0], "slow", "https://github.com/octo/slow-one")
         clones.append(made)
-        deadline = time.monotonic() + CONTAINER_HANG_GUARD
-        while len(github_com.requests) == before:  # git is connected, and waits for the answer
-            assert time.monotonic() < deadline, service.get(made.id)
-            time.sleep(0.1)
+        until(lambda: len(github_com.requests) != before)  # git connected, waits for the answer
         now = service.get(made.id)
         assert now.state == "creating" and now.log.splitlines()[-1] == f"Cloning {now.source}"
         top = podman._podman("top", made.container, "args", check=False)

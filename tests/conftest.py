@@ -481,7 +481,7 @@ def client(app):
     from fastapi.testclient import TestClient
 
     with TestClient(app) as c:
-        assert app.state.workspaces.restored.wait(hang_guard.HANG_GUARD)
+        assert app.state.workspaces.restored.wait(hang_guard.tier_guard())
         yield c
 
 

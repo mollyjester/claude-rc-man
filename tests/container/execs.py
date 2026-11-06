@@ -9,13 +9,15 @@ import http.client
 import json
 import socket
 
+from tests.hang_guard import CONTAINER_HANG_GUARD
+
 
 def exec_ids(engine, name: str) -> list[str]:
     """The exec sessions of the container that are running, as Podman's API tells each one. A
     remote exec's record stays after it ends, until Podman's own cleanup removes it once the
     exit delay conmon is given has passed (``--exit-delay``), so the record alone is not a
     running exec."""
-    found = engine.cli("container", "inspect", name, timeout=120)
+    found = engine.cli("container", "inspect", name, timeout=CONTAINER_HANG_GUARD)
     assert found.returncode == 0, found.stderr
     return [
         session
@@ -30,7 +32,7 @@ def exec_session(engine, session: str) -> dict:
     class Connection(http.client.HTTPConnection):
         def connect(self):
             self.sock = socket.socket(socket.AF_UNIX)
-            self.sock.settimeout(30)
+            self.sock.settimeout(CONTAINER_HANG_GUARD)
             self.sock.connect(str(engine.socket))
 
     connection = Connection("podman")

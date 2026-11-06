@@ -18,7 +18,6 @@ import json
 import os
 import subprocess
 import threading
-import time
 from pathlib import Path
 
 import pytest
@@ -34,6 +33,7 @@ from tests.container import sizes
 from tests.container import test_github_in_podman as shared
 from tests.container.conftest import cli, image_of, on_host
 from tests.hang_guard import CONTAINER_HANG_GUARD
+from tests.until import SLOW, until
 
 ADDRESS, EMAIL, TOKEN = shared.ADDRESS, shared.EMAIL, shared.TOKEN
 exists, gone, settled = shared.exists, shared.gone, shared.settled
@@ -313,15 +313,29 @@ def test_a_pull_that_is_cancelled_stops_podman(podman, tmp_path):
     run is a wrapper that notes its process and then is a pull that never ends."""
     wrapper = tmp_path / "podman"
     pid_file = tmp_path / "pid"
-    wrapper.write_text(f"#!/bin/sh\necho $$ > {pid_file}\nexec sleep 3600\n")
+    wrapper.write_text(
+        f"#!/bin/sh\necho $$ > {pid_file}\nexec sleep {3 * CONTAINER_HANG_GUARD:g}\n"
+    )
     wrapper.chmod(0o755)
     hanging = rt.PodmanRuntime(dataclasses.replace(podman.config, podman=str(wrapper)))
     cancel = threading.Event()
-    threading.Timer(1.0, cancel.set).start()
-    began = time.monotonic()
-    with pytest.raises(rt.RuntimeFailed):
-        hanging.pull("docker.io/library/alpine:3.20", cancel=cancel)
-    assert time.monotonic() - began < 60
+    failed: list[BaseException] = []
+
+    def pulling() -> None:
+        try:
+            hanging.pull("docker.io/library/alpine:3.20", cancel=cancel)
+        except BaseException as error:  # noqa: BLE001 - what the pull ended with is asserted
+            failed.append(error)
+
+    # The pull's own deadline (PULL_TIMEOUT) is past the join: only the cancel ends it within.
+    assert rt.PULL_TIMEOUT >= 2 * CONTAINER_HANG_GUARD
+    thread = threading.Thread(target=pulling, daemon=True)
+    thread.start()
+    until(pid_file.exists)  # the pull runs
+    cancel.set()
+    thread.join(CONTAINER_HANG_GUARD)
+    assert not thread.is_alive()
+    assert len(failed) == 1 and isinstance(failed[0], rt.RuntimeFailed), failed
     pid = int(pid_file.read_text())  # positive control: it ran
     assert not alive(pid)
     # And the real one, cancelled before it starts, fails without a pull being made.
@@ -463,14 +477,21 @@ def test_a_workspace_of_the_users_own_keeps_the_limits_of_every_workspace(
 # takes no lock on the file (Claude's own lock is a file beside its configuration folder, and
 # each workspace has a folder of its own), so none is taken here either.
 WRITER = r"""
-import json, sys, time
-path, who, duration, start_at, salt = sys.argv[1:6]
-duration, start_at, salt = float(duration), float(start_at), int(salt)
-while time.time() < start_at:  # both writers begin at one moment, however late each started
-    pass
+import json, sys
+path, who, rounds_of, salt = sys.argv[1:5]
+rounds_of, salt = int(rounds_of), int(salt)
+with open(path, "r+") as handle:  # the start: each says it is there, then waits for the other's
+    handle.truncate(0)
+    handle.write(json.dumps({"writer": who, "n": -1}))
+while True:
+    with open(path) as handle:
+        try:
+            if json.loads(handle.read()).get("writer") not in (who, "start"):
+                break
+        except ValueError:
+            pass  # the other's write, half done
 rounds = saw_other = empty = torn = 0
-first, end = time.time(), start_at + duration
-while time.time() < end:
+while rounds < rounds_of:
     with open(path, "r+") as handle:  # in place: a rename onto the bound file is refused busy
         text = handle.read()
         if not text.strip():
@@ -493,7 +514,7 @@ while time.time() < end:
         handle.flush()
     rounds += 1
 print(json.dumps({"who": who, "rounds": rounds, "saw_other": saw_other, "empty": empty,
-                  "torn": torn, "first": first, "last": time.time()}))
+                  "torn": torn}))
 """
 
 # One in-place write of a text of the length given, as the refresh does it.
@@ -548,12 +569,8 @@ def test_a_root_workspace_and_the_users_read_and_write_the_credentials_file_in_p
     assert say(podman, own, f"rm -f {path}.new").code == 0
 
 
-# How long after the test asks both writers to start they begin, which is longer than starting
-# a command in a container takes; and how long they write, together.
-WRITERS_START_AFTER, WRITERS_RUN_FOR = 6.0, 3.0
-# The least rounds each must manage in that time, and the least times each must read what the
-# other wrote, for the two to have taken part in one interleaving.
-LEAST_ROUNDS, LEAST_SEEN = 50, 5
+# The rounds each writer writes, once both are there.
+WRITERS_ROUNDS = 500
 # The lengths, in bytes, of the texts the workspaces take turns to write, a shorter after a
 # longer among them, and how many turns they take.
 TURN_LENGTHS, TURNS = (900, 120, 500, 60, 700), 20
@@ -594,34 +611,31 @@ def test_two_workspaces_refreshing_the_shared_credentials_at_the_same_moment_are
     empty, or left with the tail of a longer text. This is an accepted risk (the Claude account
     page of the documentation says so), and what rcman does about it is to notice: a file that
     holds no sign-in while the account is connected is reported as signed out unexpectedly.
-    So what is asserted is that the two really overlapped (so that a clean run means something),
-    that the file stays the person's alone, and that rcman reads the final file as it is: a
-    sign-in if it is whole JSON of one writer's, and none if it is not. The incidents are
-    printed, for whoever reads the run."""
+    Each begins its rounds once it has read the other's first write, so that both are there;
+    how far they then overlap is the machine's, and is printed with the incidents, for whoever
+    reads the run, not asserted. What is asserted is that the file stays the person's alone,
+    and that rcman reads the final file as it is: a sign-in if it is whole JSON of one
+    writer's, and none if it is not."""
     root, own, path = two
     who = person[0]
     mount = volume_path(podman, rt.account_volume(who.id))
     initial = json.dumps({"writer": "start", **fake.credentials()})
     assert say(podman, root, f"printf '%s' '{initial}' > {path}").code == 0
     before = on_host(podman, f"{mount}/{rt.CREDENTIALS}", "%i %u %g %a")
-    start_at = time.time() + WRITERS_START_AFTER
     with concurrent.futures.ThreadPoolExecutor(2) as pool:
         writers = [
             pool.submit(
                 podman.exec,
                 name,
-                ["python3", "-c", WRITER, path, who_, str(WRITERS_RUN_FOR), str(start_at), salt],
+                ["python3", "-c", WRITER, path, who_, str(WRITERS_ROUNDS), salt],
             )
             for name, who_, salt in ((root, "root", "0"), (own, "dev", "211"))
         ]
-        done = [w.result(timeout=600) for w in writers]
+        done = [w.result(timeout=CONTAINER_HANG_GUARD) for w in writers]
     assert [d.code for d in done] == [0, 0], [(d.out, d.err) for d in done]
     stats = {s["who"]: s for s in (json.loads(d.out) for d in done)}
     print("concurrent refreshes of the shared credentials:", stats)
-    for mine in stats.values():
-        assert mine["rounds"] >= LEAST_ROUNDS, stats
-        assert mine["saw_other"] + mine["empty"] + mine["torn"] >= LEAST_SEEN, stats
-    assert max(s["first"] for s in stats.values()) < min(s["last"] for s in stats.values())
+    assert all(s["rounds"] == WRITERS_ROUNDS for s in stats.values()), stats
     final = podman.read_account(who.id, who.slot)
     try:
         whole = json.loads(final).get("writer") in ("root", "dev")
@@ -1031,35 +1045,38 @@ def test_a_failing_create_command_keeps_the_workspace_says_why_and_hides_the_tok
     assert left_of(podman, done.container) == []
 
 
+# A postCreateCommand's step that outlasts the test (rule (g) of "Time in tests").
+HOOK_STEP = f"sleep {3 * CONTAINER_HANG_GUARD:g}"
+
+
 def test_deleting_a_workspace_whose_command_is_running_kills_it_and_leaves_nothing(
     service, person, clones, podman, github_com, tmp_path, dev_image
 ):
     config = {
         "image": dev_image,
         "remoteUser": DEV_USER,
-        "postCreateCommand": "echo begun > begun; sleep 3000",
+        "postCreateCommand": f"echo begun > begun; {HOOK_STEP}",
     }
     publish_repository(github_com, tmp_path, "slow-hook", config)
     made = service.create(person[0], "slow-hook", "https://github.com/octo/slow-hook")
     clones.append(made)
     layout = podman.layout(made.container)
-    deadline = time.monotonic() + 300
-    while True:
-        assert time.monotonic() < deadline, service.get(made.id)
+
+    def begun() -> bool:
         try:
-            if podman.exec(made.container, [*layout.tool("cat"), f"{layout.work}/begun"]).code == 0:
-                break
+            return (
+                podman.exec(made.container, [*layout.tool("cat"), f"{layout.work}/begun"]).code == 0
+            )
         except rt.RuntimeFailed:
-            pass  # the container is not there yet
-        time.sleep(0.3)
+            return False  # the container is not there yet
+
+    until(begun, SLOW)
     now = service.get(made.id)
     assert now.state == "creating" and now.log.splitlines()[-1] == "Running postCreateCommand"
     top = cli(podman, "top", made.container, "user", "args")
-    assert "sleep 3000" in top.stdout, top.stdout + top.stderr  # positive: it is running there
-    started = time.monotonic()
+    assert HOOK_STEP in top.stdout, top.stdout + top.stderr  # positive: it is running there
     service.delete(now)
-    gone(service, made.id, 60)
-    assert time.monotonic() - started < 60  # not after the sleep
+    gone(service, made.id)  # the command outlasts the hang bound: only the deletion ends it
     assert left_of(podman, made.container) == []
     assert probes(podman) == []
 
