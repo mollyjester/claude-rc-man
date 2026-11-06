@@ -26,10 +26,10 @@ import re
 import subprocess
 import sys
 import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from helpers.clock import REAL, Clock, Deadline, Grace, RealBound
 from rcman.problems import UPGRADE_REFUSED_MESSAGES, Problem
 from rcman.problems import body as problem_body
 from rcman.settings import Settings
@@ -59,7 +59,7 @@ SERVICE, PATH_UNIT = "rcman-upgrade.service", "rcman-upgrade.path"
 PROPERTIES = ("Id", "LoadState", "ActiveState", "InvocationID")
 SHOW_ARGS = ("show", "--no-pager", f"--property={','.join(PROPERTIES)}", "--", SERVICE, PATH_UNIT)
 SHOW_ENVIRONMENT = {"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8", "SYSTEMD_PAGER": ""}
-SHOW_TIMEOUT = RealBound(10.0)
+SHOW_TIMEOUT = 10.0
 # systemd's active states; a unit in one of RUNNING has a run under way (a oneshot's ExecStart is
 # activating, its ExecStopPost deactivating).
 ACTIVE_STATES = (
@@ -69,9 +69,9 @@ ACTIVE_STATES = (
 RUNNING = ("activating", "active", "deactivating", "reloading")
 
 # How long a request may wait for the path unit to start its run before it is not_started.
-UPGRADE_START_GRACE = Grace(120.0)
+UPGRADE_START_GRACE = 120.0
 # How long a request waits for the images' lock, held while images are collected.
-ADMISSION_WAIT = Deadline(10.0)
+ADMISSION_WAIT = 10.0
 # A person's requests: a burst, then a steady rate (ratelimit.py).
 REQUESTS_BURST = 3
 REQUESTS_PER_MINUTE = 2.0
@@ -105,7 +105,7 @@ class Unit:
 
 @dataclass(frozen=True)
 class Request:
-    """A request admitted: when (on the upgrades' clock), and the invocations the service and the
+    """A request admitted: when (monotonic seconds), and the invocations the service and the
     status named then, so that a run started since is one that names another."""
 
     at: float
@@ -209,9 +209,8 @@ class Upgrades:
     """The upgrade of the rcman this process is: its release, read once; the report; whether
     one is under way; and the admission of a request (``request``)."""
 
-    def __init__(self, settings: Settings, workspaces, clock: Clock = REAL):
+    def __init__(self, settings: Settings, workspaces):
         self.settings = settings
-        self.clock = clock
         self.workspaces = workspaces
         self.release = running_release()
         # Asks systemd; the tests give recorded answers in its place.
@@ -257,7 +256,7 @@ class Upgrades:
         if request is not None:
             if units is not None and units[SERVICE].running:
                 return "running", nothing()  # started, and has written nothing yet
-            waited = self.clock.now() - request.at
+            waited = time.monotonic() - request.at
             return ("requested" if waited < UPGRADE_START_GRACE else "not_started"), nothing()
         if units is not None and units[SERVICE].running:
             own = status is not None and status["invocation"] == units[SERVICE].invocation
@@ -328,7 +327,7 @@ class Upgrades:
         with self._lock:
             request = self._request
         if request is not None and not self._written(request, status):
-            if self.clock.now() - request.at < UPGRADE_START_GRACE:
+            if time.monotonic() - request.at < UPGRADE_START_GRACE:
                 return True
             try:  # past the grace, only a run of the service holds it
                 units = self._units()
@@ -366,12 +365,12 @@ class Upgrades:
                     raise refusal(why)
                 with self._lock:
                     self._request = Request(
-                        self.clock.now(),
+                        time.monotonic(),
                         units[SERVICE].invocation,
                         status["invocation"] if status else None,
                     )
                 try:
-                    write_request(self.clock)
+                    write_request()
                 except OSError:
                     with self._lock:
                         self._request = None
@@ -379,15 +378,13 @@ class Upgrades:
         return self._report("requested", nothing(), "under_way")
 
 
-def write_request(clock: Clock, path: Path | None = None) -> None:
+def write_request(path: Path | None = None) -> None:
     """Write the request file, which the path unit watches: a write and a close, which
-    PathModified= sees, of a file of rcman's own that is never followed through a link. It
-    holds the time on ``clock``'s wall."""
+    PathModified= sees, of a file of rcman's own that is never followed through a link."""
     flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW | os.O_CLOEXEC
     fd = os.open(path or REQUEST, flags, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as handle:
-        at = dt.datetime.fromtimestamp(clock.wall(), dt.UTC)
-        handle.write(at.isoformat(timespec="seconds") + "\n")
+        handle.write(dt.datetime.now(dt.UTC).isoformat(timespec="seconds") + "\n")
 
 
 class Refused(Problem):

@@ -77,9 +77,8 @@ The forwarding server, the hand-off and the ports the workspaces' listing gives
 `tests/test_forward.py`'s, the ask telling which hosts were marked as wanted, on the host
 runtime: its socket in a held folder (`rcfw-`), each request one Caddy would pass on, on a
 connection kept open as Caddy pools one, to an app of the test's own on the host's loopback,
-which the host runtime's relays reach; the server's clock is a `PhasedClock` the module gives
-through the `clocks` fixture ([Time in tests](#time-in-tests)), which does not move but where the
-test moves it, as a session's idle timeout, its lifetime or a way in's expiry is reached; the app holds a request (`/held`), or an
+which the host runtime's relays reach; the server's clock is the test's where a session's idle
+timeout, its lifetime or a way in's expiry is reached; the app holds a request (`/held`), or an
 upgrade, until the test lets it answer, and streams an answer without end (`/endless`), so that
 what is under way as a session ends is seen to end. `tests/test_main.py` holds the lifespan's
 start and end of it.
@@ -122,7 +121,7 @@ hand ([real-claude-checklist.md](real-claude-checklist.md)).
 Everything git is tested against real git,
 never a fake: `tests/test_git_run.py` holds the parsers of `helpers/git_run.py`,
 `tests/test_repository.py` every verb of `repository.py` in host-runtime workspaces
-through a real channel and `exec`, `tests/test_devcontainer.py` the pure module (`devcontainer.py`) and the guard that holds the administrators' devcontainer page equal to its policy, `tests/test_devcontainer_flow.py` a workspace made from a repository's devcontainer.json on a host runtime with planted images, builds on a host runtime that records what it is asked (the places for builds and the waiting line, on a clock the test holds, a cancel and closing while a build waits, the failures in plain words, the restore removing orphans and failing a workspace whose built image is gone), `tests/test_rebuild.py` rebuilding a workspace on its volume on the same host runtime (telling that its devcontainer.json changed, refusals that leave everything as it was, the switch and putting the old container back, a restart of rcman in each phase, deletions in each phase from the service and from `rcman-admin`, the interlock with an upgrade, the images' two names, and the rebuild of a failed workspace that kept its volume), `tests/test_builder.py` the pure module `builder.py` (its argument lists, the reading of the builder's words, the pump, the copy of a repository with the host's own tar), `tests/test_runtime_build.py` `PodmanRuntime.build_image` against a stand-in for podman (the archive that is loaded, rcman's own names held across the load, the staging folders, a rebuild's next name and its promotion to the built one), `tests/test_headers.py` the security headers of every answer and the limit on a page's reports of failures, `tests/test_filelock.py` the lock file the service shares with `rcman-admin`, `tests/test_clone.py` a workspace made by cloning
+through a real channel and `exec`, `tests/test_devcontainer.py` the pure module (`devcontainer.py`) and the guard that holds the administrators' devcontainer page equal to its policy, `tests/test_devcontainer_flow.py` a workspace made from a repository's devcontainer.json on a host runtime with planted images, builds on a host runtime that records what it is asked (the places for builds and the waiting line, a cancel and closing while a build waits, the failures in plain words, the restore removing orphans and failing a workspace whose built image is gone), `tests/test_rebuild.py` rebuilding a workspace on its volume on the same host runtime (telling that its devcontainer.json changed, refusals that leave everything as it was, the switch and putting the old container back, a restart of rcman in each phase, deletions in each phase from the service and from `rcman-admin`, the interlock with an upgrade, the images' two names, and the rebuild of a failed workspace that kept its volume), `tests/test_builder.py` the pure module `builder.py` (its argument lists, the reading of the builder's words, the pump, the copy of a repository with the host's own tar), `tests/test_runtime_build.py` `PodmanRuntime.build_image` against a stand-in for podman (the archive that is loaded, rcman's own names held across the load, the staging folders, a rebuild's next name and its promotion to the built one), `tests/test_headers.py` the security headers of every answer and the limit on a page's reports of failures, `tests/test_filelock.py` the lock file the service shares with `rcman-admin`, `tests/test_clone.py` a workspace made by cloning
 (a phase of `creating`: its log, failures and their causes, token redaction, names,
 the repository's page, the route, cancel by deletion, restart recovery)
 on a host runtime that runs real git
@@ -168,8 +167,8 @@ newline, a process whose first thread has ended, kept in the process table and e
 session, and the sweeps, the opening's and the restore's among them), and `tests/test_terminal.py`
 the route through the test client's WebSocket (who may open what, the frames, what closes a
 terminal, the audit, nothing typed recorded or logged, the protocol held to backend.md's table and
-to the page's, `frontend/src/terminalSocket.ts`, loaded with Node) and, for a refused upgrade, a
-peer that vanished and a service that stops, through real uvicorn running `tests/e2e_server.py`
+to the page's, `frontend/src/terminalSocket.ts`, loaded with Node) and, for a refused upgrade
+and a service that stops, through real uvicorn running `tests/e2e_server.py`
 with the options of the unit's `ExecStart`. `tests/container/test_terminal_in_podman.py` runs on
 the tests' engine, with the default workspace image built from the installer's build file and
 workspaces made through the app: the shell through `podman --remote exec` on a tty of its own, a
@@ -245,114 +244,105 @@ and any child it started ended with it; a test that finishes under the project's
 passes; and, in a child Python, a process the first look misses is stopped and killed by the
 next, and a pid whose start time is no longer the one read is not signalled.
 `tests/test_make.py` holds that every test of every target is under its tier's guard.
-A frozen wait on a test's own clock is bounded, unless the test gives its own bound, by the same
-value of its tier ([Time in tests](#time-in-tests)).
 
 ### Time in tests
 
-A part of the backend given a clock (`helpers/clock.py`; [backend.md](backend.md#time)) reads
-the time, and makes the waits that go through it, on that clock, the real one unless the test
-gives its own. A test gives the app's parts theirs through the `clocks` fixture of
-`tests/conftest.py`, which `app` lists, so that each part has it from its start, before `client`
-starts the service: a module that moves a part's time overrides `clocks`, and a test that makes
-its own app passes `clocks=` to `create_app`. A test that asks for the `periodic` fixture has
-the service's periodic checks on that PhasedClock, which `clocks` gives them, and
-`periodic_round` does one round of them: it lends the checks' thread to `periodic`, advances it
-by `IDLE_CHECK_SECONDS` and returns once the checks wait again. A part the test makes itself is given its clock as
-an argument.
+The product reads the time and waits through the standard library, beside the few callables
+some parts have long taken for it (forwarding's and the monitor's `clock`, the token buckets'),
+and gains no seam for a test: what a test asserts of time is made certain from the test's side
+alone. `tests/time_doubles.py`, a plugin `tests/conftest.py` loads, holds the doubles a test
+puts in place of a product's own, and its module docstring is their rules:
 
-The test's clock is `tests/clocks.py`'s `PhasedClock`, whose module docstring is its rules. It
-is frozen: its time moves only by `advance`, a sleep on it parks until an advance reaches it, and
-a wait ends on its primitive or on an advance past its deadline; a primitive of the standard
-library is looked at again every `STDLIB_SLICE` of real time, since an advance tells no
-condition of the product's. `poll` and `apoll` really sleep, at most `POLL_CAP`, a `poll` given
-`until` waiting as long on that event instead, and move no time, in the free phase too; they are
-no waiters, and `wait_polled(n)` returns once at least `n` of them have returned, each counted
-after its sleep, so that in a loop that looks at the clock between its polls a second poll
-counted after an `advance` follows a look at the time after it. A thread, or for `apoll` a
-task, that polls on for the clock's hang bound of real time with no new generation, and with no
-gap of more than `POLL_GAP` of real time between one poll's return and its next, is hung: its
-poll raises `ClockHung`, recorded once as a violation, so that a loop that polls on a frozen
-clock for something that never comes fails, where a poll alone, which is no waiter, would go on
-until the hang guard ended the whole worker. A longer gap starts the bound again, since a pooled
-thread may poll for one thing and later for another. The clock holds threads and tasks weakly
-for this. A closed clock's polls go on without end. Each `advance` and `poke` is a
-new generation, and `wait_parked(n)`, or `until_parked(n)` in a coroutine, returns once exactly
-`n` waiters wait, each having looked at the latest one, which a waiter records only after it has
-looked at what it waits for and waits on: whatever the product had to do at that moment is done,
-with no real time waited out. A waiter holds the seconds it was given (`Waiter.seconds`), and
-`wait_parked_where(match, n)` asks the same of the waiters `match` picks out, the others
-ignored, so that a test can wait for one wait among those of a running app. Both wait at most the
-clock's hang bound unless given `within=`, so a test whose waiters never park fails only after
-that long. In `with clock.free():` a wait with seconds of the thread that entered it that is not
-satisfied moves the time by its seconds and returns as expired; the other threads' waits stay
-frozen. The clock belongs to the thread that made it and those given to `lend`. Refused, with
-`ClockRefused` in the caller, are: an advance past the deadline of a waiter of a thread the
-clock does not own; entering the free phase from a thread the clock does not own, while it is
-free already, or while another thread, lent or not, has a timed waiter; and, in the free phase, a move past the deadline of a waiter
-of any thread but the free one, lent or not. A refusal raised inside a wait, which the product
-waiting may swallow, is also a violation. The monitor's tests never enter the free phase, since
-its rounds read the clock in the event loop's executor threads.
+- `FakeTime`, for a module's `time` (`monkeypatch.setattr(module, "time", fake)`): `monotonic`
+  and `time` move only by `advance`. A sleep, polling by default, really sleeps at most
+  `POLL_CAP` and moves no time; with `parking` set, or given a test of a sleep's seconds that
+  picks it, it parks until an advance covers it. Each sleep is numbered as it begins and counted
+  as it returns (`sleeps_begun`, `sleeps_returned`, `mark()`), so that `wait_sleep_begun(after=k)`
+  waits for a look begun after a point the test saw, and `wait_sleeps_returned(after=k, n)` for
+  `n` looks begun and ended after it. It is used only where the test owns every thread that
+  reads that module's `time`.
+- `WatchedCondition`, for a condition, `Workspaces._changed` among them, on a lock it is given
+  or a plain one: its `wait_for` is its own, since the standard library's reckons its timeout
+  from a clock no patch reaches. In virtual mode a timeout never runs out by itself, and
+  `expire(match)` ends a wait as if it had.
+- `ControlledEvent`, for an event, `Workspaces._closing` among them: a `wait` given seconds ends
+  only on `set` or `expire(match)`.
+- `RecordingLock`, around a lock or an RLock: each acquire is recorded, and one that blocked is
+  recorded once a try without blocking has failed and before it blocks (`wait_blocked`).
 
-A test that gives the workspaces' service a PhasedClock lets every thread that makes or rebuilds
-a workspace, every put-back and every restore task it holds end before its app or service
-closes, its fixtures letting go of what they hold before their teardown: `close` waits for them
-on the frozen clock, which nothing moves, and ends only at the hang bound, with `ClockHung`.
-`tests/conftest.py`'s `ended` waits, on the service's condition, until no thread that makes or
-rebuilds the workspace it names is left.
+A double is put in place before any thread that reads it starts: a module's `time` by
+`monkeypatch` before the call, and a part of the app by a fixture that runs before `client`
+starts the service. `tests/conftest.py`'s `changed` puts a virtual `WatchedCondition` into the
+workspaces' service as its `_changed`, and `periodic` a `ControlledEvent` as its `_closing`, which
+the periodic checks wait on between rounds; each goes into the first service made after it
+(`into_the_first_service`), the app's where the test has one, so that rcman-admin's service in a
+test of two processes keeps its own. They are the conftest's `SEAMS`, which `app` asks for first
+wherever the test asks for them, itself or through another fixture. A module's own seam, as
+`test_rcman_upgrade.py`'s `images_lock` (a `RecordingLock` for the images' lock) and
+`test_accounts.py`'s `person_locks` (one for each person's lock), is listed by the test before
+`client`; a module's `fake_time` puts a `FakeTime` on the module it tests, and where the
+periodic checks read that module's `time` too it holds them (`periodic`), so that the test owns
+every thread that reads it. `periodic_round` does one round of the checks: it ends their wait of
+`IDLE_CHECK_SECONDS` as if it had passed, and returns once they wait again. `ended` waits, on
+the service's condition, until no thread that makes or rebuilds the workspace it names is left.
 
-A wait of the app's in its event loop, a forwarding server's or a terminal route's, is the
-thread of that loop's, which a fixture that depends on `client` lends to the clock
-(`client.portal.call(threading.current_thread)`); every forward test that advances lends it,
-since the reaper's pace is a waiter there that any advance of a second passes. A loop that polls
-something outside rcman, a server's stop or a sign-in's wait, is driven by running the call in
-a thread the clock is lent to, `wait_polled` for it to look, and an `advance` past its deadline.
-An advance past `IDLE_CONNECTION_SECONDS` or `POOL_IDLE_SECONDS` ends what the forwarding server
-keeps open, so a test that keeps a connection closes it before such an advance and asks again on
-a new one. A grace on a frozen clock ends only on its primitive, the app's teardown included:
-forward's `DRAIN_SECONDS`, `SPLICE_DRAIN_SECONDS`, `RELAY_ENDS_WITHIN` and `FROM_THREAD_SECONDS`
-and the terminals' `EXIT_DRAIN_SECONDS` and `END_GRACE_SECONDS` in `Terminal._end_program`, a
-wait for the program on the pty, end only when what they wait for does, so a test whose app is
-on such a clock either lets it, as a splice's browser that went waits for the app's side until
-the test moves the clock past `SPLICE_DRAIN_SECONDS`, or gives the part a clock of its own only
-where it asks for one (`tests/test_terminals.py`'s `clocks`). The same `END_GRACE_SECONDS` in
-`end_leader` is no waiter but a loop that polls the process table: on a frozen clock it ends
-when the session's processes have, or else at the hang bound, with `ClockHung`. A hangup ends a terminal's shell and its jobs only where SIGHUP is at its default in
-them, and an ignore survives exec: a suite started with SIGHUP ignored, as under `nohup`, would
-leave them running and `end_leader` polling. So `tests/conftest.py`'s `pytest_configure` catches
-an ignored SIGHUP with a handler that does nothing, which the suite's own process keeps and
-every program it starts has back at the default; `tests/test_conftest.py` holds it to that.
-`PhasedClock`'s default `wall_start` is earlier than any file a test writes, so on a phased
-clock of the Claude Code versions nothing in the store is old enough to be pruned unless the
-test gives it a later wall time. A part is given its clock only before anything uses it: through
-`clocks`, or, for a part a test makes itself, as soon as it is made.
+Every wait on a double is recorded, with its thread, its seconds and an ordinal of the
+double's, under the primitive's own lock and only once what it waits for has been seen not to
+hold: a recorded waiter really waits, and what is told after the record reaches it. A test waits
+for records through the double's own condition (`wait_waiting`, `wait_parked`, `wait_blocked`,
+the sleeps' waits), never by polling, and picks a wait out by a match: its thread, its seconds or
+a predicate on the record, so that `_closing`'s periodic wait of `IDLE_CHECK_SECONDS` is told
+from a person's deletion's look of `WORKING_POLL_SECONDS`. A `_changed` wait is matched by its
+seconds only where they are exact: `close`'s `CLOSE_WITHIN_SECONDS`, handed as it is, and
+`MADE_WITHIN_SECONDS` in a person's deletion with `FakeTime` on the module's `time`; elsewhere by
+thread or by predicate.
 
-A clock is made in a test or a fixture of the test's own (`ClockOutsideTest` otherwise). Its
-hang bound is the one it is given, or else its tier's, read each time it is asked: `HANG_GUARD` for a
-host test and `CONTAINER_HANG_GUARD` for a test that carries the container marker
-([the hang guard](#the-hang-guard)). The plugin's autouse fixture keeps the test's clocks and, at
-its teardown, closes them and fails the test on each violation they recorded: a refusal inside
-a wait; a thread not the clock's reading its time, or starting a timed wait, in the free phase;
-and a frozen wait nothing ended within the hang bound (`ClockHung`, raised in the waiter too). A
-closed clock records nothing and raises nothing, and its waits stay frozen and still end on their
-primitive, so that a thread that outlives the test waits on quietly.
-`tests/test_clocks.py` holds the clock to this, the registry's own cases in child pytests;
-`tests/test_clock.py` holds the real clock to the standard library it hands each call to, and
-[Time only through the clock](#repository-guards) holds the product to the clock.
+**The hang bound.** A frozen wait that nothing ends within the double's hang bound, `HANG_GUARD`
+for a host test and `CONTAINER_HANG_GUARD` for one that carries the container marker
+([the hang guard](#the-hang-guard)) unless the double is given its own, raises `DoubleHung` in its
+waiter, and so does a polling `FakeTime` loop that goes as long with no advance. A thread's
+sleeps count as one loop only while no more than `POLL_GAP` of real time passes between one's
+return and its next: a longer gap starts the bound again, as a pooled thread may poll for one
+thing and later for another. A test's own wait on a double fails as long after. A lock's
+blocked acquire has no bound of its own: it is ended by what holds the lock, or by the hang
+guard. `DoubleHung` is a BaseException, which the product's `except Exception` lets by, and
+each is also recorded: the plugin's autouse fixture fails the test at its teardown on any hang
+of any double the test made, so a hang in a product thread whose caller never sees it still
+fails the test. A double is made in a test or a fixture of the test's own (`DoubleOutsideTest`
+otherwise); at the test's end it is closed, records no hang, and its waits go on until what
+they wait for ends them. `tests/test_time_doubles.py` holds the doubles to this, the registry's
+own cases in child pytests.
 
-### Known flaky test
+**The rules.** A test that waits on time keeps these:
 
-`tests/test_claude_server.py::test_a_server_in_a_git_repository_starts_stops_and_resumes`
-can fail in a parallel `make test`, at its last assertion: the ready read after
-the resume has `session_name` `None`. It does not fail in repeated runs on an
-idle machine. The cause is suspected, not proven: `wait_state` returns on the
-first capture whose state is `ready` without looking at `session_name`, and
-`_session_name` in `helpers/screens.py` gives `None` when the Capacity line is
-the last line or the line after it is blank, so a capture between the pane
-receiving the Capacity line and receiving the name line reads as ready with no
-name. What would settle it is a probe of capture timing on an idle machine,
-reading the pane repeatedly while the fake draws its ready screen. The test,
-`wait_state` and `_session_name` are left as they are.
+- (a) A deadline meant to run out is patched to 0 against a stand-in that never finishes, and
+  covers nothing that must succeed; a control runs before the patch, or after
+  `monkeypatch.setattr` puts the original back.
+- (b) A deadline over something that must happen is left as it is, or raised to `HANG_GUARD`
+  before `client`.
+- (c) To tell which of two causes ended something, never assert the time it took. Where the call
+  runs in another thread, or the test waits on an event, the cause that must not act is pushed
+  beyond twice `HANG_GUARD` and the other waited for within `HANG_GUARD`. Where the call is
+  synchronous in the test's thread, the cause is not pushed past the hang bound, which would hang
+  the worker until the guard ends it: either the deadline that must not act is set to
+  `HANG_GUARD`, so that the wrong cause ends as another problem the test asserts against, or the
+  call runs in a thread joined within `HANG_GUARD`, and the test asserts it ended.
+- (d) A pace may be shortened where the test only waits, within `HANG_GUARD`, for what the pace
+  makes happen.
+- (e) Something is asserted not to have happened only after a point the test observed: a recorded
+  wait, a blocked acquire, a parked sleep, a stand-in that says it was entered; never after a
+  sleep or a `join(N)`.
+- (f) Every bound on something that must happen in a test (`wait(N)`, `join(N)`, a deadline loop,
+  a socket's or a subprocess's timeout, `fail_after`) is `HANG_GUARD`, or `CONTAINER_HANG_GUARD`
+  in a container test.
+- (g) A stand-in meant to outlast the test sleeps beyond twice `HANG_GUARD`, or until it is
+  killed.
+
+A hangup ends a terminal's shell and its jobs only where SIGHUP is at its default in them, and
+an ignore survives exec: a suite started with SIGHUP ignored, as under `nohup`, would leave them
+running and `end_leader` polling. So `tests/conftest.py`'s `pytest_configure` catches an ignored
+SIGHUP with a handler that does nothing, which the suite's own process keeps and every program
+it starts has back at the default; `tests/test_conftest.py` holds it to that.
 
 ### The container suites
 
@@ -661,10 +651,8 @@ allows, on an ask site bound to the loopback that passes only the ask's exact pa
 forward site's log keeping no cookie and no query string, against a twin site's that keeps them;
 with no `on_demand_tls` in the global options (`stack.py caddy` given an empty ask), a
 certificate got for any name under the wildcard, asking no one, against the same Caddy asking
-and refusing; and the installer's own site for forwarded ports, rendered for a domain of its own
-with the stand-in as its upstream, deleting every identity header a request gives itself,
-`X-Auth-Request-*` among them, which the twin passes on. Those sites are under names of their
-own (`gate`, `snip`) with an ask site on a port of its own, beside the installer's sites for
+and refusing. Those sites are under a name of their
+own (`gate`) with an ask site on a port of its own, beside the installer's sites for
 forwarded ports, which the stack's Caddy holds too, the stack's global options asking the gate's
 for the while. `tests/container/test_stack_in_a_browser.py` holds the one test `make check-ui`
 runs, which starts a stack of its own (the two stacks would number their workspaces alike, so
@@ -725,7 +713,7 @@ snapshot is removed when the session ends.
 |---|---|
 | `tests/` | The test suite; `tests/test_<name>.py` tests the module `<name>.py`, wherever it is, `tests/` included, where there is one |
 | `tests/fakes/` | The fake `claude`, its recorded fixtures and the screens observed on a live server — see [fake-claude.md](fake-claude.md); Podman's default seccomp profile as recorded (`podman-seccomp.json`), which `tests/test_seccomp.py` holds to the machine's; Podman's help for the subcommands `publish.sh` reads and for its global options, recorded from the default image's Podman (`podman-help/`), which `tests/test_podman_wrapper.py` holds the wrapper's lists to and `tests/container/test_nest_in_podman.py` holds to that Podman's own help; and what the monitor reads of Podman, recorded from Podman on the tests' engine (`podman-monitor/`: `system df -v` with one workspace and with two, and with one holding many files, what it says when a volume cannot be read, `container inspect` and `info`), which `tests/test_monitor.py` reads and `tests/container/test_runtime_in_podman.py` holds to that Podman; and Ubuntu's own `/etc/caddy/Caddyfile`, the caddy package's conffile (`ubuntu-Caddyfile`), which `tests/test_install.py` edits with the installer's `edit_caddyfile` and holds to the package's md5 |
-| `helpers/` | What the backend shares with the installer and the fake `claude`, the standard library only: the clock a part is given to read the time and wait on (`clock.py`, see [backend.md](backend.md#time) and [Time in tests](#time-in-tests)), the rules values are refused by, what Claude's screens mean, running git, Claude Code's releases and their checked download (`claude_release.py`), and the checks a Claude Code version is held to with the canary program that runs them (`claude_checks.py`, `claude_canary.py`) |
+| `helpers/` | What the backend shares with the installer and the fake `claude`, the standard library only: the rules values are refused by, what Claude's screens mean, running git, Claude Code's releases and their checked download (`claude_release.py`), and the checks a Claude Code version is held to with the canary program that runs them (`claude_checks.py`, `claude_canary.py`) |
 | `backend/` | The FastAPI application — see [backend.md](backend.md) |
 | `frontend/` | The React application, its component tests and its browser tests — see [frontend.md](frontend.md) |
 | `tests/container/` | The container suites, what they run in their containers, and the system image they run rcman's installer and the whole stack in (`tests/container/system/`) |
@@ -881,55 +869,6 @@ it can fail, and a positive control that keeps an empty input from passing.
   Each layer has planted twins in a scratch repository, the plant confirmed
   before the guard is shown firing, and an empty corpus, or one without a
   Python file under each root or without a service template, fails the guard.
-- **Time only through the clock** (`tests/test_on_the_clock.py`). Nothing outside the clock
-  reads the time or waits on real time, and every timing value says what kind of seconds it
-  is. It reads the corpus of `devtools/docs_guard.py`: the Python files under `ROOTS` in the
-  test (`backend/rcman/`, `helpers/`, `helpers/clock.py` among them, and `installer/`) and the
-  fake `claude` (`FAKE`); the tests and the other devtools are outside it, and so are the
-  workspace's shell scripts and a child program's text held in a string. Its rules, each a
-  site's rule letter:
-  - *(a)* no time read and no timed wait but through a clock: what `RealClock`'s body hands
-    each call to, read from it, with the rest of `time`'s and `datetime`'s reads, the event
-    loop's time and timers and the standard library's other timed waits, a socket's timeouts
-    among them (`FORBIDDEN`, `WALL`, `TIMED`, `METHODS` and `TIMERS` in the test). An alias is
-    followed wherever the file imports it or assigns a time module or one of its classes to a
-    name, a reference counts without a call, and so does `getattr` of `time`. A wait with no
-    seconds is allowed, and so is `asyncio.sleep(0)`, a yield. A clock call is a call of a
-    timed method only the clock has, read from the protocol, on anything but a module, or of
-    one it shares with the standard library on a receiver whose last name holds "clock",
-    given its seconds where the protocol has them;
-  - *(b)* every seconds value at a timed site is classified: a clock call's seconds, at the
-    position of the `Clock` protocol's `seconds`; any `timeout=`, written or in a `**` of a
-    dict written out; a timeout the standard library takes by position
-    (`POSITIONAL_TIMEOUTS`); the corpus's own parameters named in `TIMED_PARAMETERS`, their
-    defaults, a class's fields of those names and what a call gives them, matched by the function's name, where only a value
-    that reads as seconds counts, since other parameters share the names; and what a program
-    is handed after `timeout` or `sleep` in an argument list, or in `--time=` and `--timeout=`,
-    written or formatted. `allowed` in the test says what is classified: a marker call, a
-    constant that has one or is exempt under *(e)*, followed across the corpus's imports, a
-    parameter or a local whose every value is classified, an object's attribute, a call's
-    result (`KEEPING`'s calls and `math.ceil` keep their arguments' kind),
-    `None` or `0`, and arithmetic of them in which a number is only a factor or a divisor of
-    something that is not a number. Seconds written as text (`SECONDS_TEXT`) are not
-    classified. The seconds of a wait *(a)* finds are that site's;
-  - *(c)* no name `PollOwn`: a wait on rcman's own state is an event or a condition;
-  - *(d)* no subscript or `.get` of `globals()`, `vars()` or `locals()`, which would hide a
-    constant from *(b)*;
-  - *(e)* every numeric constant, a module's or a class's, whose name `SECONDS_NAME` matches
-    is a marker call.
-
-  What it does not follow, which review covers, is listed in the test's docstring, a module
-  reached through `importlib` or `__import__` among it.
-
-  The markers are the `NewType`s of `helpers/clock.py`, read from it. `FORMS` in the test
-  plants each form, at module level and in a function, and `CLEAN` what it leaves alone. What
-  is not on the clock yet is `NOT_YET_ON_THE_CLOCK`, keyed by file, qualified name, rule and
-  the site's text, each with the number of sites it covers, its reason and its `Owner`, the
-  change that removes it; fewer sites than the number is stale, more are flagged, and an owner
-  with no exemption left fails. The one permanent exemption is the class `RealClock`, whose
-  every method's sites must be found. Planted twins run in memory and in a scratch repository,
-  where an untracked module is read and a root with no Python file, or a clock without
-  `RealClock`, fails the guard.
 - **The guide lists everything the installer makes** (`tests/test_install.py`).
   The "Removing rcman" section of `docs/installation.md` names every path,
   account, group, unit, command and package the installer's constants hold, as

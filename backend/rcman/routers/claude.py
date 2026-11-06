@@ -74,14 +74,14 @@ class FailureBody(BaseModel):
     )
 
 
-def connection(status: dict, warning_days: int, now: dt.datetime) -> dict:
-    """The account's state at ``now``: not_connected, connected, expiring or expired."""
+def connection(status: dict, warning_days: int, now: dt.datetime | None = None) -> dict:
+    """The account's state: not_connected, connected, expiring or expired."""
     if not status.get("logged_in"):
         return {"connection": "not_connected", "account": None, "login_expires_at": None}
     expires = status.get("login_expires_at")
     state = "connected"
     if expires:
-        left = dt.datetime.fromisoformat(expires) - now
+        left = dt.datetime.fromisoformat(expires) - (now or dt.datetime.now(dt.UTC))
         if left <= dt.timedelta(0):
             state = "expired"
         elif left <= dt.timedelta(days=warning_days):
@@ -99,8 +99,7 @@ def _person(request: Request, identity: Identity) -> people.Person:
 
 
 def _answer(request: Request, status: dict) -> dict:
-    now = dt.datetime.fromtimestamp(request.app.state.accounts.clock.wall(), dt.UTC)
-    found = connection(status, request.app.state.settings.login_warning_days, now)
+    found = connection(status, request.app.state.settings.login_warning_days)
     return {
         **found,
         "signing_out": status.get("signing_out", False),

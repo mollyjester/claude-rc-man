@@ -3,7 +3,7 @@
 Starting a process in a container costs hundreds of milliseconds, which polls and
 screen reads cannot afford, so a workspace's commands go through one shell that
 stays open: ``podman --remote exec -i <container> busybox sh -s``, or the host's
-``sh -s`` for the host runtime (runtime.py). Python standard library and helpers/clock.py only.
+``sh -s`` for the host runtime (runtime.py). Python standard library only.
 
 The protocol: each request is one line, the argv quoted for the shell, run with
 stdin from /dev/null and its two output streams into files of the channel's own
@@ -31,13 +31,9 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from helpers.clock import Deadline, Grace
-
 # How long opening a channel, and a request by default, may take.
-OPEN_TIMEOUT = Deadline(60.0)
-REQUEST_TIMEOUT = Deadline(60.0)
-# How long the shell is given to end of itself once its input ends, before it is killed.
-END_GRACE_SECONDS = Grace(2)
+OPEN_TIMEOUT = 60.0
+REQUEST_TIMEOUT = 60.0
 # The most of one stream a request's answer keeps; the rest is read and dropped.
 MAX_OUTPUT_BYTES = 8 * 1024 * 1024
 # How much of what the channel's command writes on stderr is kept, for a failure's message.
@@ -165,7 +161,7 @@ class Channel:
             self._error_reader.join(timeout=5)
         return ChannelBroken(bytes(self._errors).decode("utf-8", "replace").strip() or said)
 
-    def _end(self, grace: float = END_GRACE_SECONDS) -> None:
+    def _end(self, grace: float = 2) -> None:
         """End the shell: told to by the end of its input, and killed, with whatever it
         started in its session, if it has not ended within ``grace`` seconds."""
         process, self.process = self.process, None

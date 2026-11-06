@@ -18,8 +18,6 @@ import json
 import logging
 import threading
 
-from helpers.clock import REAL, Clock
-
 log = logging.getLogger("rcman.unrecognised")
 log.setLevel(logging.INFO)
 
@@ -43,8 +41,7 @@ class Watch:
     """What one rcman process has seen and written, shared by every request. Nothing it
     is shown makes it raise: a fault here never fails the request."""
 
-    def __init__(self, clock: Clock = REAL):
-        self.clock = clock  # its wall time is what a line is stamped with
+    def __init__(self):
         self._lock = threading.Lock()
         # Each person's workspaces whose server was last seen in state unrecognised.
         self.servers: dict[str, set[str]] = {}
@@ -130,7 +127,7 @@ class Watch:
         lines = lines if isinstance(lines, list) else []
         event = {
             "event": "unrecognised",
-            "at": dt.datetime.fromtimestamp(self.clock.wall(), dt.UTC).isoformat(),
+            "at": dt.datetime.now(dt.UTC).isoformat(),
             "email": email,
             "code": code,
             "verb": verb,

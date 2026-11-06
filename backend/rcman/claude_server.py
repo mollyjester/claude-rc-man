@@ -16,27 +16,27 @@ from __future__ import annotations
 
 import json
 import signal as signals
+import time
 from collections.abc import Callable
 
 from helpers import rules, screens
-from helpers.clock import REAL, Clock, Deadline, Grace, Pace, PollExternal
 from rcman.channel import REQUEST_TIMEOUT, Result
 from rcman.problems import Problem
 from rcman.runtime import Layout, child_env
 
 SESSION = "rc-server"
-START_TIMEOUT = Deadline(30.0)
+START_TIMEOUT = 30.0
 # How long a stop waits for a server to exit on Ctrl+C before ending its process.
-STOP_TIMEOUT = Grace(30.0)
+STOP_TIMEOUT = 30.0
 # Once a stop ends a server's process: how long it waits after SIGTERM, and after SIGKILL.
-END_GRACE_SECONDS = Grace(5.0)
+END_GRACE_SECONDS = 5.0
 # Claude may refuse an answer that arrives too quickly after its question (the trust question does).
-ANSWER_PACE_SECONDS = Pace(0.5)
-POLL_SECONDS = PollExternal(0.1)
+ANSWER_PACE_SECONDS = 0.5
+POLL_SECONDS = 0.1
 # A screen in transition matches no known state for a moment.
-UNRECOGNISED_GRACE_SECONDS = Grace(3.0)
+UNRECOGNISED_GRACE_SECONDS = 3.0
 # How long `claude auth status` may take.
-SIGN_IN_CHECK_TIMEOUT = Deadline(60.0)
+SIGN_IN_CHECK_TIMEOUT = 60.0
 
 Run = Callable[..., Result]
 
@@ -202,14 +202,12 @@ def _processes(stat_lines: str) -> dict[int, tuple[int, str]]:
 
 
 class Server:
-    """The server of the workspace ``workspace`` (its id), whose layout is ``layout``; its
-    deadlines and its paces are on ``clock``."""
+    """The server of the workspace ``workspace`` (its id), whose layout is ``layout``."""
 
-    def __init__(self, layout: Layout, run: Run, workspace: int, clock: Clock = REAL):
+    def __init__(self, layout: Layout, run: Run, workspace: int):
         self.layout = layout
         self.run = run
         self.workspace = workspace
-        self.clock = clock
         self.tmux = Tmux(layout, run)
 
     # --- reading -------------------------------------------------------------------
@@ -240,21 +238,21 @@ class Server:
         """Poll until ``until`` holds. A screen in transition matches no known state, so
         an unrecognised screen counts as an answer only once it has lasted
         UNRECOGNISED_GRACE_SECONDS."""
-        deadline = self.clock.now() + timeout
+        deadline = time.monotonic() + timeout
         unrecognised_since = None
         while True:
             server = self._server()
             if server["state"] == "unrecognised":
-                unrecognised_since = unrecognised_since or self.clock.now()
-                if self.clock.now() - unrecognised_since >= UNRECOGNISED_GRACE_SECONDS:
+                unrecognised_since = unrecognised_since or time.monotonic()
+                if time.monotonic() - unrecognised_since >= UNRECOGNISED_GRACE_SECONDS:
                     return server
             else:
                 unrecognised_since = None
                 if until(server):
                     return server
-            if self.clock.now() > deadline:
+            if time.monotonic() > deadline:
                 raise ServerError("timeout", server=server)
-            self.clock.poll(POLL_SECONDS)
+            time.sleep(POLL_SECONDS)
 
     # --- the sign-in ------------------------------------------------------------------
 
@@ -334,11 +332,11 @@ class Server:
 
     def _still_runs(self, pid: int, timeout: float) -> bool:
         """Wait up to ``timeout`` for the pane's process ``pid`` to exit; whether it has not."""
-        deadline = self.clock.now() + timeout
+        deadline = time.monotonic() + timeout
         while self.tmux.pane()[1] == pid and self.tmux.exit_status() is None:
-            if self.clock.now() > deadline:
+            if time.monotonic() > deadline:
                 return True
-            self.clock.poll(POLL_SECONDS)
+            time.sleep(POLL_SECONDS)
         return False
 
     def _process_table(self) -> dict[int, tuple[int, str]]:
@@ -381,7 +379,7 @@ class Server:
             raise ServerError("nothing_to_confirm")
         server = None
         for _attempt in range(2):
-            self.clock.sleep(ANSWER_PACE_SECONDS)
+            time.sleep(ANSWER_PACE_SECONDS)
             self.tmux.type(answer)
             server = self._wait(lambda s: self._answered(s, asked), START_TIMEOUT)
             if server["state"] != asked:

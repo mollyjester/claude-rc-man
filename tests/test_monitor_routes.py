@@ -6,8 +6,8 @@ import sqlite3
 import pytest
 from rcman import monitor
 
-from tests.clocks import PhasedClock
 from tests.conftest import ALICE, BOB, as_user, changing, made_workspace
+from tests.hang_guard import HANG_GUARD
 
 DEFAULTS = monitor.DEFAULTS.model_dump()
 
@@ -168,26 +168,36 @@ def test_a_scope_switched_off_reads_as_null_at_once(client):
     assert snap["containers"] == []  # positive control: another scope is still there
 
 
-def test_a_save_wakes_both_loops(settings, runtime):
-    """The loops wait on their events through the monitor's clock, which does not move; a save
-    sets both events, from the request's thread, and each loop's wait returns and it waits
-    again, to its interval."""
-    from fastapi.testclient import TestClient
-    from rcman.main import Clocks, create_app
+def test_a_save_wakes_both_loops(app, settings):
+    """The loops wait on the injected wait; a save sets both their events, from the request's
+    thread, and each wait returns with its event set. The loops' wait for the restore is not
+    one of them."""
+    import threading
 
-    clock = PhasedClock()
-    app = create_app(settings, runtime=runtime, clocks=Clocks(monitor=clock))
+    from fastapi.testclient import TestClient
+
+    made = app.state.monitor
+    woken = []
+    told = threading.Condition()
+    real = made.wait
+
+    async def recording(event, timeout):
+        await real(event, timeout)
+        if event.is_set() and event is not made._restored:
+            with told:
+                woken.append(event)
+                told.notify_all()
+
+    made.wait = recording
     with TestClient(app) as client:
-        assert app.state.workspaces.restored.wait(30)
-        clock.wait_parked(2)  # both loops wait
-        before = len(clock.waits)
+        assert app.state.workspaces.restored.wait(HANG_GUARD)
+        with told:
+            before = len(woken)
         r = client.put(
             "/api/monitor/settings", json={**DEFAULTS, "host": False}, headers=changing(ALICE)
         )
         assert r.status_code == 200
-        clock.poke()
-        clock.wait_parked(2)  # both woke, and wait again
-        again = [seconds for method, seconds, _ in clock.waits[before:] if method == "await_event"]
-    saved = monitor.DEFAULTS
-    assert saved.usage_interval_seconds != saved.disk_interval_seconds  # each loop's is its own
-    assert {saved.usage_interval_seconds, saved.disk_interval_seconds} <= set(again), again
+        with told:
+            both = told.wait_for(lambda: len({id(e) for e in woken[before:]}) >= 2, HANG_GUARD)
+            assert both, woken
+    assert {id(e) for e in woken[before:]} == {id(made.usage_wake), id(made.disk_wake)}

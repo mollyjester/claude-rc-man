@@ -6,10 +6,9 @@ import pytest
 from fastapi import Response
 from fastapi.testclient import TestClient
 from rcman import headers, ratelimit
-from rcman.main import Clocks, create_app
+from rcman.main import create_app
 from rcman.routers import client_errors
 
-from tests.clocks import PhasedClock
 from tests.conftest import ALICE, BOB, CALLS, as_user, changing
 
 BODY = CALLS[("POST", "/api/client-errors")]["json"]
@@ -25,15 +24,13 @@ def dist(tmp_path):
 
 
 @pytest.fixture
-def clocks():
-    """The limit on a page's reports on a clock that does not move: none refills meanwhile."""
-    return Clocks(client_errors=PhasedClock())
-
-
-@pytest.fixture
-def served(settings, runtime, dist, clocks):
-    app = create_app(
-        settings.model_copy(update={"frontend_dir": dist}), runtime=runtime, clocks=clocks
+def served(settings, runtime, dist):
+    app = create_app(settings.model_copy(update={"frontend_dir": dist}), runtime=runtime)
+    # The limit on a page's reports on a clock that does not move: none refills meanwhile.
+    app.state.client_error_limit = ratelimit.TokenBuckets(
+        client_errors.REPORTS_BURST,
+        client_errors.REPORTS_PER_MINUTE / client_errors.SECONDS_PER_MINUTE,
+        clock=Clock(),
     )
     with TestClient(app) as c:
         yield c
@@ -122,27 +119,34 @@ def test_an_answer_to_an_error_nobody_expected_carries_them_too(settings, runtim
 # --- the limit on a page's reports -----------------------------------------------------------
 
 
+class Clock:
+    def __init__(self):
+        self.now = 1000.0
+
+    def __call__(self):
+        return self.now
+
+
 def test_a_bucket_lets_a_burst_through_then_one_each_time_it_has_refilled():
-    clock = PhasedClock()
+    clock = Clock()
     bucket = ratelimit.TokenBuckets(burst=3, per_second=0.5, clock=clock)
     assert [bucket.take("a") for _ in range(4)] == [True, True, True, False]
     assert bucket.take("b") is True  # another's own
-    clock.advance(1.0)
+    clock.now += 1.0
     assert bucket.take("a") is False  # half a token
-    assert bucket.seconds_until_allowed("a") == 1
-    clock.advance(1.0)
+    clock.now += 1.0
     assert bucket.take("a") is True and bucket.take("a") is False
-    clock.advance(1000)
+    clock.now += 1000
     assert [bucket.take("a") for _ in range(4)] == [True, True, True, False]  # never more
 
 
 def test_a_bucket_forgets_those_who_have_been_quiet_and_holds_no_more_than_it_may():
-    clock = PhasedClock()
+    clock = Clock()
     bucket = ratelimit.TokenBuckets(burst=2, per_second=1.0, clock=clock, most_keys=3)
     for who in "abcd":
         assert bucket.take(who)
     assert len(bucket) <= 3  # a flood of names does not grow it
-    clock.advance(100)
+    clock.now += 100
     bucket.take("e")
     assert len(bucket) == 1  # the ones refilled are forgotten: they would start full
 

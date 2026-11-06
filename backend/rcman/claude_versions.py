@@ -40,12 +40,12 @@ import os
 import shutil
 import sqlite3
 import threading
+import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
 from helpers import claude_release, rules
-from helpers.clock import REAL, Clock, Grace
 from rcman import db
 from rcman.problems import CLAUDE_INSTALL_MESSAGES, CLAUDE_INSTALL_STATUS, Problem
 from rcman.runtime import CANARY_NAME, CANDIDATE, HELPERS_DIR, RuntimeFailed, RuntimeUnavailable
@@ -59,7 +59,7 @@ STAGING_FOLDER = "claude-staging"
 # Who an approval is by when rcman made it itself: adopting what the installer left.
 ADOPTED_BY = "rcman"
 # How long a version just put in the store is left alone by pruning.
-PRUNE_GRACE_SECONDS = Grace(3600.0)
+PRUNE_GRACE_SECONDS = 3600.0
 # The store's files and folders are readable by every uid range (the workspaces') and
 # writable by their owner alone.
 MODE = 0o755
@@ -101,9 +101,8 @@ def _set_link(folder: Path, name: str, target: str) -> None:
 
 
 class ClaudeVersions:
-    def __init__(self, settings: Settings, runtime, workspaces, clock: Clock = REAL):
+    def __init__(self, settings: Settings, runtime, workspaces):
         self.settings = settings
-        self.clock = clock
         self.runtime = runtime
         self.workspaces = workspaces
         self.store = settings.claude_store
@@ -147,16 +146,12 @@ class ClaudeVersions:
             None,
         )
 
-    def _stamp(self) -> str:
-        """Now, on the clock's wall, as an approval or a failure records it."""
-        return dt.datetime.fromtimestamp(self.clock.wall(), dt.UTC).isoformat()
-
     def _approve(self, version: str, by: str) -> None:
         con = db.connect(self.settings.database)
         try:
             con.execute(
                 "insert into claude_approvals (version, at, by) values (?, ?, ?)",
-                (version, self._stamp(), by),
+                (version, dt.datetime.now(dt.UTC).isoformat(), by),
             )
             con.commit()
         finally:
@@ -200,7 +195,7 @@ class ClaudeVersions:
             try:
                 con.execute(
                     "insert into claude_failures (version, at, by, reason) values (?, ?, ?, ?)",
-                    (version, self._stamp(), by, reason_of(reason)),
+                    (version, dt.datetime.now(dt.UTC).isoformat(), by, reason_of(reason)),
                 )
                 con.commit()
             except sqlite3.IntegrityError:
@@ -469,12 +464,10 @@ class ClaudeVersions:
             log.exception("the Claude Code store could not be pruned")
 
     def _new(self, version: str) -> bool:
-        """Whether the version was put in the store within ``PRUNE_GRACE_SECONDS`` of the
-        clock's wall time, by its file's time: an upgrade of rcman puts its tested version there
-        while this service, which does not know it, runs."""
+        """Whether the version was put in the store within ``PRUNE_GRACE_SECONDS``: an upgrade
+        of rcman puts its tested version there while this service, which does not know it, runs."""
         try:
-            age = self.clock.wall() - (self.versions_dir / version).stat().st_mtime
-            return age < PRUNE_GRACE_SECONDS
+            return time.time() - (self.versions_dir / version).stat().st_mtime < PRUNE_GRACE_SECONDS
         except OSError:
             return False
 

@@ -110,11 +110,11 @@ else; this file is the full list. Rules are referred to by their bold name.
   before the `client` fixture starts the service.** The service takes the
   value once, at start; a patch made afterwards changes nothing the running
   service uses, and the test passes or fails by timing. Such a patch goes in a
-  fixture the test lists before `client`. A clock a test moves itself is given
-  the same way, through the `clocks` fixture `app` lists, or `create_app`'s
-  `clocks=` for an app the test makes, never set on a part after `client`
-  has started it
-  ([tests.md](tests.md#time-in-tests)).
+  fixture the test lists before `client`. A seam a test puts in for time - a
+  module's `time`, the workspaces' `_changed` or `_closing`, a lock - is put in
+  the same way, by a fixture that runs before `client` starts the service: one
+  of the conftest's `SEAMS`, which `app` asks for first, or one the test lists
+  before `client` ([tests.md](tests.md#time-in-tests)).
 - **Throwaway probes go in a scratch directory** outside the repository and are
   deleted when done.
 - **The tests run alike on a developer's machine and in a workspace of
@@ -220,10 +220,6 @@ else; this file is the full list. Rules are referred to by their bold name.
 - **The installer acts; it never instructs.** What a run needs done on the machine,
   Caddy's configuration and its restart among them, the installer does and reports in
   its summary line; what it cannot do is an error that stops the run.
-- **Time only through a clock.** Nothing outside `helpers/clock.py`'s `RealClock` reads the
-  time or waits on real time, and every timing value carries the marker of its kind
-  ([backend.md](backend.md#time)); what is not on the clock yet is a named exemption with the
-  change that removes it.
 - **Every mutating endpoint is audited**, and every WebSocket route records
   when it opens and when it closes, and a test over the route table checks
   it. An exemption carries a reason that also appears in `docs/`.

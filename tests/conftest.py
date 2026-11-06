@@ -5,9 +5,9 @@ import signal
 import sys
 from pathlib import Path
 
-# The guards over how the suite is split run small pytest projects of their own; the clocks
-# a test moves itself are held to their rules (tests/clocks.py).
-pytest_plugins = ["pytester", "tests.clocks"]
+# The guards over how the suite is split run small pytest projects of their own; the test
+# doubles for time (tests/time_doubles.py) are held to their hang bound.
+pytest_plugins = ["pytester", "tests.time_doubles"]
 
 import pytest  # noqa: E402
 from rcman.forwarding_settings import DEFAULTS as forwarding_defaults  # noqa: E402
@@ -372,47 +372,75 @@ def settings(tmp_path, no_releases):
     return made
 
 
+def into_the_first_service(monkeypatch, name: str, double) -> None:
+    """``double`` put in as ``name`` of the first workspaces' service made from here on, the
+    app's where the test has one, before any thread of it starts; a service made after it, as
+    rcman-admin's in a test of two processes, keeps its own."""
+    from rcman.workspaces import Workspaces
+
+    real, given = Workspaces.__init__, []
+
+    def init(self, *args, **kwargs):
+        real(self, *args, **kwargs)
+        if not given:
+            given.append(self)
+            setattr(self, name, double)
+
+    monkeypatch.setattr(Workspaces, "__init__", init)
+
+
 @pytest.fixture
-def clocks(request):
-    """Each part's clock (main.py ``Clocks``), the real one for every part but the periodic
-    checks of a test that asks for ``periodic``; a test that moves another part's time itself
-    overrides it, so that the part has the clock from its start."""
-    from rcman.main import Clocks
+def changed(monkeypatch):
+    """The workspaces' condition (``Workspaces._changed``) a virtual WatchedCondition
+    (tests/time_doubles.py), in the first service made (``into_the_first_service``): ``app``
+    asks for it first where the test does."""
+    from tests.time_doubles import WatchedCondition
 
-    if "periodic" in request.fixturenames:
-        return Clocks(periodic=request.getfixturevalue("periodic"))
-    return Clocks()
+    made = WatchedCondition(virtual=True)
+    into_the_first_service(monkeypatch, "_changed", made)
+    return made
 
 
 @pytest.fixture
-def periodic():
-    """The clock of the service's periodic checks, which the test moves (``periodic_round``)."""
-    from tests.clocks import PhasedClock
+def periodic(monkeypatch):
+    """The event the service's periodic checks wait on between rounds (``Workspaces._closing``)
+    a ControlledEvent (tests/time_doubles.py), in the first service made
+    (``into_the_first_service``): the test ends a wait itself (``periodic_round``), and close
+    sets it as ever."""
+    from tests.time_doubles import ControlledEvent
 
-    return PhasedClock()
+    made = ControlledEvent()
+    into_the_first_service(monkeypatch, "_closing", made)
+    return made
 
 
 @pytest.fixture
 def periodic_round(client, periodic):
-    """One round of the service's periodic checks, done once it waits again: their thread is
-    lent to ``periodic``, which nothing else moves."""
+    """One round of the service's periodic checks, done once they wait again: their wait of
+    IDLE_CHECK_SECONDS is ended as if it had passed, and a new one is waited for."""
     from rcman import workspaces
 
-    periodic.wait_parked(1)
-    periodic.lend(periodic.waiters()[0].thread)
+    periodic.wait_parked(1, match=workspaces.IDLE_CHECK_SECONDS)
 
     def round_() -> None:
-        periodic.advance(workspaces.IDLE_CHECK_SECONDS)
-        periodic.wait_parked(1)
+        periodic.expire(workspaces.IDLE_CHECK_SECONDS)
+        periodic.wait_parked(1, match=workspaces.IDLE_CHECK_SECONDS)
 
     return round_
 
 
+# What a test puts into the app's parts, each before ``app`` makes them, where the test asks.
+SEAMS = ("changed", "periodic")
+
+
 @pytest.fixture
-def app(settings, runtime, clocks):
+def app(request, settings, runtime):
     from rcman.main import create_app
 
-    return create_app(settings, runtime=runtime, clocks=clocks)
+    for seam in SEAMS:
+        if seam in request.fixturenames:
+            request.getfixturevalue(seam)
+    return create_app(settings, runtime=runtime)
 
 
 @pytest.fixture
@@ -448,9 +476,13 @@ def quick_watch(monkeypatch):
     monkeypatch.setattr(workspaces, "WORKING_POLL_SECONDS", 0.02)
 
 
-def ended(service, workspace_id: int, within: float = MADE_WITHIN) -> None:
+def ended(service, workspace_id: int, within: float | None = None) -> None:
     """Until no thread of ``service``'s that makes or rebuilds the workspace is left: told by
-    the service's condition, within ``within`` seconds."""
+    the service's condition, within ``within`` seconds, HANG_GUARD unless given (a container
+    test gives CONTAINER_HANG_GUARD)."""
+    from tests.hang_guard import HANG_GUARD
+
+    within = HANG_GUARD if within is None else within
     with service._changed:
         assert service._changed.wait_for(
             lambda: not any(h.workspace_id == workspace_id for h in service._unended), within

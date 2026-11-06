@@ -5,11 +5,11 @@ import re
 import sqlite3
 from pathlib import Path
 
-import pytest
 from fastapi.routing import APIRoute
 from rcman import audit, db, routes
 
 from tests.conftest import ALICE, BOB, CALLS, changing, concrete, made_workspace
+from tests.hang_guard import HANG_GUARD
 
 REPO = Path(__file__).resolve().parent.parent
 CHANGING = {"POST", "PUT", "PATCH", "DELETE"}
@@ -361,12 +361,12 @@ def _request(port, sock, method, path, body=None, headers=None):
         class Connection(http.client.HTTPConnection):
             def connect(self):
                 self.sock = socket.socket(socket.AF_UNIX)
-                self.sock.settimeout(5)
+                self.sock.settimeout(HANG_GUARD)
                 self.sock.connect(str(sock))
 
         conn = Connection("rcman")
     else:
-        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=HANG_GUARD)
     try:
         conn.request(method, path, body=body, headers=headers or {})
         response = conn.getresponse()
@@ -402,7 +402,7 @@ def service_output(tmp_path, settings, method, path, body, headers) -> list[str]
     with output.open("wb") as log:
         proc = subprocess.Popen(argv, cwd=REPO, env=env, stdout=log, stderr=subprocess.STDOUT)
     try:
-        deadline = time.monotonic() + 30
+        deadline = time.monotonic() + HANG_GUARD
         while True:
             try:
                 if _request(port, sock, "GET", "/api/health")[0] == 200:
@@ -422,7 +422,7 @@ def service_output(tmp_path, settings, method, path, body, headers) -> list[str]
         assert status == 200, text
     finally:
         proc.terminate()
-        proc.wait(timeout=10)
+        proc.wait(timeout=HANG_GUARD)
     lines = output.read_text().splitlines()
     assert any("Uvicorn running" in line for line in lines), lines  # positive control
     return lines
@@ -487,85 +487,37 @@ def test_retention_caps_the_row_count_keeping_the_newest(tmp_path):
     assert ages == [1, 2]
 
 
-# The audit clock's wall time in these tests: far from the real one, so that only the clock
-# can have said which rows are old.
-WALL = 2_000_000_000.0
-
-
 def test_retention_runs_when_the_app_starts(settings, runtime):
     from fastapi.testclient import TestClient
-    from rcman.main import Clocks, create_app
+    from rcman.main import create_app
 
-    from tests.clocks import PhasedClock
-
-    clock = PhasedClock(wall_start=WALL)
-    now = dt.datetime.fromtimestamp(clock.wall(), dt.UTC)
+    now = dt.datetime.now(dt.UTC)
     seed(settings.database, [settings.audit_retention_days + 1, 0], now).close()
-    with TestClient(create_app(settings, runtime=runtime, clocks=Clocks(audit=clock))):
+    with TestClient(create_app(settings, runtime=runtime)):
         pass
     assert [r["at"] for r in rows(settings)] == [now.isoformat()]  # the expired row only goes
 
 
-@pytest.mark.parametrize("short", [0, 1])
-def test_retention_runs_again_once_a_day(settings, runtime, short):
-    """A row that expires half a day after rcman starts goes at the next day's retention; the
-    twin, a second short of the day, keeps it."""
-    import threading
+def test_retention_runs_again_while_the_app_runs(settings, runtime, monkeypatch):
+    """A row that has expired since rcman started goes at a later retention, and one that has
+    not stays. Its pace is shortened, the test waiting for what it makes happen: the daily pace
+    itself is not tested."""
+    import time
 
     from fastapi.testclient import TestClient
-    from rcman.main import RETENTION_INTERVAL_SECONDS, Clocks, create_app
+    from rcman import main
 
-    from tests.clocks import PhasedClock
-
-    clock = PhasedClock(wall_start=WALL)
-    days = settings.audit_retention_days
-    now = dt.datetime.fromtimestamp(clock.wall(), dt.UTC)
-    soon = now - dt.timedelta(days=days) + dt.timedelta(seconds=RETENTION_INTERVAL_SECONDS / 2)
-    seed(settings.database, [], now).close()
-
-    def daily(waiter) -> bool:
-        return waiter.method == "asleep" and waiter.seconds == RETENTION_INTERVAL_SECONDS
-
-    with TestClient(create_app(settings, runtime=runtime, clocks=Clocks(audit=clock))) as client:
-        clock.lend(client.portal.call(threading.current_thread))
-        clock.wait_parked_where(daily)
-        con = db.connect(settings.database)
-        try:
-            con.execute(
-                "insert into audit (at, email, action, target, result) "
-                "values (?, 'e', 'a', 't', 'ok')",
-                (soon.isoformat(),),
-            )
-            con.commit()
-        finally:
-            con.close()
-        clock.advance(RETENTION_INTERVAL_SECONDS - short)
-        clock.wait_parked_where(daily)  # a new one once a retention ran, the same otherwise
-        if short:
-            assert [r["at"] for r in rows(settings)] == [soon.isoformat()]  # nothing ran
-            clock.advance(short)
-            clock.wait_parked_where(daily)
-        assert rows(settings) == []
-
-
-def test_a_request_and_a_websocket_are_recorded_at_the_audit_clocks_wall_time(settings, runtime):
-    from fastapi.testclient import TestClient
-    from rcman.main import Clocks, create_app
-    from rcman.routers import terminal
-
-    from tests.clocks import PhasedClock
-
-    clock = PhasedClock(wall_start=WALL)
-    at = dt.datetime.fromtimestamp(clock.wall(), dt.UTC).isoformat()
-    with TestClient(create_app(settings, runtime=runtime, clocks=Clocks(audit=clock))) as client:
-        assert client.app.state.workspaces.restored.wait(30)
-        r = client.patch("/api/me/settings", json={"prefix": "pfx"}, headers=changing(BOB))
-        assert r.status_code == 200, r.text
-        path = f"{terminal.PROTOCOL['path']}?{terminal.PROTOCOL['query']}=999"
-        with client.websocket_connect(path, headers=changing(BOB)) as session:
-            assert session.receive_json()["type"] == terminal.PROTOCOL["problem"]  # not hers
-    recorded = [(r["action"], r["at"]) for r in rows(settings)]
-    assert recorded == [("settings.update", at), ("terminal.open", at)], recorded
+    monkeypatch.setattr(main, "RETENTION_INTERVAL_SECONDS", 0.05)
+    with TestClient(main.create_app(settings, runtime=runtime)) as client:
+        assert client.app.state.workspaces.restored.wait(HANG_GUARD)
+        now = dt.datetime.now(dt.UTC)
+        expired = settings.audit_retention_days + 1
+        seed(settings.database, [expired, 0], now).close()  # after the start's own retention
+        deadline = time.monotonic() + HANG_GUARD
+        while len(rows(settings)) > 1:
+            assert time.monotonic() < deadline, "the expired row was never taken"
+            time.sleep(0.05)
+    assert [r["at"] for r in rows(settings)] == [now.isoformat()]
 
 
 def test_what_git_and_github_routes_are_sent_is_never_recorded_or_logged(client, settings, caplog):

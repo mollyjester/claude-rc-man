@@ -33,6 +33,7 @@ from tests.conftest import ended
 from tests.container import sizes
 from tests.container import test_github_in_podman as shared
 from tests.container.conftest import cli, image_of, on_host
+from tests.hang_guard import CONTAINER_HANG_GUARD
 
 ADDRESS, EMAIL, TOKEN = shared.ADDRESS, shared.EMAIL, shared.TOKEN
 exists, gone, settled = shared.exists, shared.gone, shared.settled
@@ -1098,7 +1099,7 @@ def test_a_clone_without_a_devcontainer_file_is_the_ordinary_workspace(
 # --- rebuilding a workspace on its volume -----------------------------------------------------
 
 
-def rebuilt(service, person, workspace_id: int, within: float = 300):
+def rebuilt(service, person, workspace_id: int, within: float = CONTAINER_HANG_GUARD):
     """Rebuild the workspace through the service and wait for the rebuild to end."""
     service.restored.set()  # this service does not restore: nothing is brought back
     service.rebuild(person[0], workspace_id, True)

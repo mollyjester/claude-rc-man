@@ -38,14 +38,14 @@ import os
 import re
 import sqlite3
 import threading
-from collections.abc import Callable
+import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Annotated
 
 from pydantic import BaseModel, Field, StrictBool, StrictInt
 
-from helpers.clock import REAL, Clock, Pace
 from rcman import db, limits
 from rcman import runtime as rt
 
@@ -465,9 +465,19 @@ def workspace_disk(
 # --- the collector ----------------------------------------------------------------------
 
 # How long a loop waits after it failed outside its round before it tries again.
-LOOP_RETRY_SECONDS = Pace(1.0)
+LOOP_RETRY_SECONDS = 1.0
 # How many times a disk round reads: once, and once more where that failed.
 DISK_ATTEMPTS = 2
+
+
+async def wait_for(event: asyncio.Event, timeout: float | None) -> None:
+    """Until ``event`` is set or ``timeout`` seconds have passed; None waits for the event."""
+    with contextlib.suppress(TimeoutError):
+        await asyncio.wait_for(event.wait(), timeout)
+
+
+def _utc_now() -> str:
+    return dt.datetime.now(dt.UTC).isoformat(timespec="seconds")
 
 
 @dataclass
@@ -486,10 +496,12 @@ class Monitor:
         runtime: rt.Runtime,
         database: Path,
         *,
-        clock: Clock = REAL,
+        clock: Callable[[], float] = time.monotonic,
+        wait: Callable[[asyncio.Event, float | None], Awaitable[None]] = wait_for,
+        now: Callable[[], str] = _utc_now,
     ):
         self.runtime, self.database = runtime, database
-        self.clock = clock
+        self.clock, self.wait, self.now = clock, wait, now
         self._lock = threading.Lock()
         # Held across a save's write and its taking up, so that two saves take effect in the order
         # they were stored.
@@ -596,7 +608,7 @@ class Monitor:
 
     def _read_host(self) -> tuple[dict, tuple[tuple[int, int, int], float]]:
         stat = read_stat((PROC / "stat").read_text())
-        at = self.clock.now()
+        at = self.clock()
         used, total = read_meminfo((PROC / "meminfo").read_text())
         tasks = read_loadavg((PROC / "loadavg").read_text())
         folders = [("database", self.database.parent), ("root", Path("/"))]
@@ -640,7 +652,7 @@ class Monitor:
                         }
                     )
                 read = read_units(self.runtime.show_slices(list(slices))) if slices else {}
-                at = self.clock.now()
+                at = self.clock()
                 if settings.people:
                     figures["people"] = {}
                 if settings.containers:
@@ -727,9 +739,7 @@ class Monitor:
         if generation != self.generation:
             figures = {s: f for s, f in figures.items() if getattr(self._settings, s)}
         state.figures.update(figures)
-        state.collected_at = dt.datetime.fromtimestamp(self.clock.wall(), dt.UTC).isoformat(
-            timespec="seconds"
-        )
+        state.collected_at = self.now()
 
     def _failed(self, which: str, error: Exception) -> None:
         said = str(error) or type(error).__name__
@@ -850,10 +860,10 @@ class Monitor:
         return await asyncio.shield(future)
 
     async def _looping(self, which: str, wake: asyncio.Event) -> None:
-        await self.clock.await_event(self._restored, None)
+        await self.wait(self._restored, None)
         wake.clear()
         # The disk round's first is a whole interval away; the usage round's is now.
-        last = self.clock.now() if which == "disk" else None
+        last = self.clock() if which == "disk" else None
         while not self.halted.is_set():
             try:
                 settings = await self._in_thread(self.settings)
@@ -864,7 +874,7 @@ class Monitor:
                     on, interval = settings.disk_on, settings.disk_interval_seconds
                 timeout = None
                 if on:
-                    due = 0.0 if last is None else last + interval - self.clock.now()
+                    due = 0.0 if last is None else last + interval - self.clock()
                     if due <= 0:
                         if which == "usage":
                             if settings.host:  # where Podman's storage is: for the host's disks
@@ -872,7 +882,7 @@ class Monitor:
                             await self._in_thread(self.usage_round)
                         else:
                             await self._in_thread(self.disk_round)
-                        last = self.clock.now()
+                        last = self.clock()
                         continue
                     timeout = due
             except asyncio.CancelledError:
@@ -882,9 +892,9 @@ class Monitor:
                 if self._loop_errors[which] != said:
                     log.exception("the monitor's %s loop failed", which)
                     self._loop_errors[which] = said
-                last = self.clock.now()
+                last = self.clock()
                 timeout = LOOP_RETRY_SECONDS
-            await self.clock.await_event(wake, timeout)
+            await self.wait(wake, timeout)
             wake.clear()
 
 

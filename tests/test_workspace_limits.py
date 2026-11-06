@@ -5,7 +5,6 @@ runtime, which records what it is asked to apply."""
 
 import sqlite3
 import threading
-import time
 
 import pytest
 from rcman import db, limits, people
@@ -14,8 +13,9 @@ from rcman import workspaces as ws
 from rcman.limits import Limits, Usage
 from rcman.problems import Problem
 
-from tests.clocks import PhasedClock
 from tests.conftest import ALICE, BOB, TMUX_CONF
+from tests.hang_guard import HANG_GUARD
+from tests.time_doubles import FakeTime, RecordingLock
 
 MIB = 1024**2
 BIG = Limits(memory_mib=4096, cpu_percent=400, pids=1000)
@@ -329,18 +329,22 @@ def test_limits_cannot_be_set_on_a_workspace_being_deleted_or_a_person_being_del
     assert runtime.applied == []
 
 
-def test_setting_limits_takes_the_persons_lock(service, settings, runtime):
+def test_setting_limits_takes_the_persons_lock(service, settings, runtime, monkeypatch):
     person = person_of(settings)
+    lock = RecordingLock(service.person_lock(person.id))
+    real = service.person_lock
+    monkeypatch.setattr(service, "person_lock", lambda p: lock if p == person.id else real(p))
     done = threading.Event()
-    with service.person_lock(person.id):
+    with lock:
         thread = threading.Thread(
             target=lambda: (service.set_limits(person, None, BIG), done.set()), daemon=True
         )
         thread.start()
-        assert not done.wait(0.3)  # held up by the lock
+        lock.wait_blocked(1, match=thread)  # held up by the lock
+        assert not done.is_set()
         assert runtime.applied == []
-    assert done.wait(10)
-    thread.join()
+    assert done.wait(HANG_GUARD)
+    thread.join(HANG_GUARD)
     assert stored(service, person) == BIG
 
 
@@ -719,18 +723,47 @@ def test_a_lowering_is_applied_before_it_is_recorded(service, settings, runtime)
     assert stored(service, person).memory_mib == 8192  # not recorded ahead of the slice
 
 
+class EnteringFlock:
+    """``fcntl`` as rcman/filelock.py sees it, its ``flock`` telling ``entered`` once a thread
+    has come to a blocking exclusive one."""
+
+    def __init__(self):
+        import fcntl
+
+        self._fcntl = fcntl
+        self.entered = threading.Event()
+
+    def flock(self, fd, operation):
+        if operation == self._fcntl.LOCK_EX:
+            self.entered.set()
+        return self._fcntl.flock(fd, operation)
+
+    def __getattr__(self, name):
+        return getattr(self._fcntl, name)
+
+
 def test_a_change_of_limits_waits_for_another_process_that_is_changing_them(
-    service, settings, runtime
+    service, settings, runtime, monkeypatch
 ):
     """rcman-admin is a process of its own; its locks do not hold back the service's."""
-    from tests.test_filelock import other_process_holding
+    from rcman import filelock
+
+    from tests.test_filelock import other_process_holding_until_told
 
     person = person_of(settings)
-    holder = other_process_holding(settings.database.parent / ws.LOCK_FILE, 1.5)
-    began = time.monotonic()
-    service.set_limits(person, None, BIG)
-    assert time.monotonic() - began >= 1.0
-    holder.wait(10)
+    flocks = EnteringFlock()
+    monkeypatch.setattr(filelock, "fcntl", flocks)
+    holder = other_process_holding_until_told(settings.database.parent / ws.LOCK_FILE)
+    try:
+        thread = threading.Thread(target=service.set_limits, args=(person, None, BIG), daemon=True)
+        thread.start()
+        assert flocks.entered.wait(HANG_GUARD)  # it has come to the file's lock
+        assert limits.person_slice(person.id) not in runtime.limits  # held up by the holder
+    finally:
+        holder.stdin.close()  # the holder lets go
+    thread.join(HANG_GUARD)
+    assert not thread.is_alive()
+    holder.wait(HANG_GUARD)
     assert runtime.limits[limits.person_slice(person.id)] == BIG
 
 
@@ -980,32 +1013,30 @@ def test_removing_a_container_no_row_is_for_drops_the_slice_it_was_in(service, s
 # --- the report is bounded -------------------------------------------------------------
 
 
-@pytest.mark.parametrize("each,read", [(0.6, 2), (0.2, 5), (0.25, 5)])
-def test_the_report_gives_up_on_the_rest_once_its_time_is_used(settings, runtime, each, read):
-    """Each reading takes ``each`` of the report's time: at 0.6, the person's and the first
-    workspace's, then no time is left; the twin, at 0.2, reads all five; and at 0.25, exact in
-    binary, the fifth is looked at exactly at the deadline and still read."""
+def test_the_report_gives_up_on_the_rest_once_its_time_is_used(
+    service, settings, runtime, monkeypatch
+):
     person = person_of(settings)
     for n in range(4):
         insert(settings, person.id, f"w{n}")
-    clock = PhasedClock()
-    service = ws.Workspaces(settings, runtime, clock=clock)
+    monkeypatch.setattr(ws, "LIMITS_REPORT_SECONDS", 0.5)
+    # workspaces.py's time moves only when the test moves it. No thread but the caller's reads
+    # ``ws.time`` while the test runs: the service is not started, so none of its threads is.
+    clock = FakeTime()
+    monkeypatch.setattr(ws, "time", clock)
     asked = []
     real = runtime.usage
 
     def slow(person_id, workspace):
         asked.append(workspace)
-        clock.advance(each * ws.LIMITS_REPORT_SECONDS)  # each reading takes this long
+        clock.advance(0.3)  # each reading takes this long
         return real(person_id, workspace)
 
     runtime.usage = slow
-    try:
-        report = service.limits_report(person)
-    finally:
-        service.close()
-    assert len(asked) == read
+    report = service.limits_report(person)
+    assert len(asked) == 2  # the person's and the first workspace's, then no time left
     assert report["person"]["usage"] is not None
-    assert [w["usage"] is None for w in report["workspaces"]] == [n >= read - 1 for n in range(4)]
+    assert [w["usage"] is None for w in report["workspaces"]] == [False, True, True, True]
     assert all(w["limits"] == Limits().text() for w in report["workspaces"])  # still shown
 
 

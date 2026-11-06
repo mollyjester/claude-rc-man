@@ -28,7 +28,6 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
 from typing import NamedTuple
 
-from helpers.clock import Deadline
 from rcman.channel import Result
 from rcman.problems import DEVCONTAINER_MESSAGES
 from rcman.runtime import (
@@ -49,7 +48,7 @@ DEFAULT_IMAGE_USED = (
 )
 # The most of the file rcman reads, in bytes, and how long reading it may take.
 MAX_BYTES = 256 * 1024
-READ_SECONDS = Deadline(30.0)
+READ_SECONDS = 30.0
 # The label by which an image carries the settings of its features and base image.
 METADATA_LABEL = "devcontainer.metadata"
 # What the file's own entry is called where an entry has to be named.

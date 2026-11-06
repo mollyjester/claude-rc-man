@@ -64,7 +64,6 @@ from pathlib import Path
 
 import helpers
 from helpers import claude_checks, instructions, rules
-from helpers.clock import Deadline, Grace, Handed, PollExternal, RealBound
 from rcman import builder, limits
 from rcman.channel import Channel, Result
 from rcman.limits import Caps, Limits, Usage
@@ -188,7 +187,7 @@ HELPERS_DIR = Path(helpers.__file__).resolve().parent
 # The canary's home and temporary folder: a tmpfs the candidate may fill and nothing outlasts.
 CANARY_TMP = "/tmp"
 # How long the checks may take in all: every check's own limit, and one more for the container.
-CANARY_SECONDS = Handed((len(claude_checks.CHECKS) + 1) * claude_checks.TIMEOUT)
+CANARY_SECONDS = (len(claude_checks.CHECKS) + 1) * claude_checks.TIMEOUT
 # The name a folder starts with in which an image copied out of a builder is staged.
 STAGING_PREFIX = "rcman-image-"
 # What a builder container and its volume carry besides the person: which workspace's build it is.
@@ -287,18 +286,13 @@ INJECTED = ("range", "network", "slices")
 # reach Podman at all, or failed before running anything.
 MISSING = 1
 UNAVAILABLE = 125
-PODMAN_TIMEOUT = RealBound(300.0)
+PODMAN_TIMEOUT = 300.0
 # What systemctl is given to answer: it talks to the user manager, which answers at once.
-SYSTEMCTL_TIMEOUT = RealBound(30.0)
-# What podman is given to answer while the runtime waits for it to be ready.
-VERSION_TIMEOUT = RealBound(30.0)
-# What a container made to run nothing of its own sleeps: the longest signed 32-bit number of
-# seconds, which outlasts the container.
-SLEEP_FOREVER_SECONDS = Handed(2147483647)
+SYSTEMCTL_TIMEOUT = 30.0
 # How long a disk read (``disk_usage``) may take before it is killed, and how often it is looked
 # at meanwhile, whether it is to be stopped.
-DISK_TIMEOUT = Deadline(120.0)
-DISK_POLL_SECONDS = PollExternal(0.25)
+DISK_TIMEOUT = 120.0
+DISK_POLL_SECONDS = 0.25
 # What Podman says of a container it was asked to inspect that is not there.
 NO_SUCH_CONTAINER = "no such container"
 # What systemctl says when it cannot reach the user manager's bus.
@@ -306,17 +300,17 @@ NO_BUS = "failed to connect to bus"
 # A container made from an image of a repository's choosing: Podman copies the image into the
 # person's uid range the first time the range uses it, which takes much longer than
 # PODMAN_TIMEOUT for a big one.
-IMAGE_CREATE_TIMEOUT = RealBound(1800.0)
+IMAGE_CREATE_TIMEOUT = 1800.0
 # How long pulling an image may take in all, how often a pull is looked at, and how many of
 # the last lines it printed an error keeps.
-PULL_TIMEOUT = Deadline(3600.0)
-PULL_POLL_SECONDS = PollExternal(1.0)
+PULL_TIMEOUT = 3600.0
+PULL_POLL_SECONDS = 1.0
 PULL_TAIL_LINES = 5
 # What a pull says when the image it could not pull is one the runtime has already.
 USING_LOCAL_IMAGE = "The pull failed; the image already here is used"
 # How long an image with no name is left alone: it may be a layer of a build under way, which an
 # upgrade runs beside the service.
-IMAGE_GRACE_SECONDS = Grace(3600.0)
+IMAGE_GRACE_SECONDS = 3600.0
 # What is said of an image named ``localhost/...``, which is never pulled.
 IN_STORAGE = "The image is in rcman's storage; nothing is pulled"
 # What podman says, with the exit code UNAVAILABLE, when it cannot reach its service at all.
@@ -345,9 +339,9 @@ FILE_ABSENT = ("no such file", "could not be found", "does not exist")
 # The label and the name prefix of the container made to read an image without running it.
 LABEL_PROBE = "rcman.probe"
 PROBE_PREFIX = "rcman-probe-"
-STOP_TIMEOUT_SECONDS = Handed(10)
+STOP_TIMEOUT_SECONDS = 10
 # How long a command's output readers are waited for once it has ended.
-TAIL_JOIN_SECONDS = Grace(5.0)
+TAIL_JOIN_SECONDS = 5.0
 # What a command run under the ``timeout`` tool exits with when it was ended for taking too
 # long: GNU timeout's 124 and busybox's 128 + the signal, which a process that exec reports
 # as the negative signal, and GNU timeout, which kills itself with KILL after it has killed
@@ -388,7 +382,7 @@ EXEC_SCRIPT = (
     "exit 127\n"
 )
 # How long one wait for Podman's socket polls, between tries.
-READY_POLL_SECONDS = PollExternal(1.0)
+READY_POLL_SECONDS = 1.0
 
 
 # The variables that move git's configuration from where rcman writes it (the git folder, which
@@ -1333,7 +1327,7 @@ class PodmanRuntime(Runtime):
         deadline = time.monotonic() + timeout
         while True:
             try:
-                self._podman("version", timeout=VERSION_TIMEOUT)
+                self._podman("version", timeout=30)
                 return
             except (RuntimeUnavailable, RuntimeFailed) as error:
                 if time.monotonic() > deadline:
@@ -1422,7 +1416,7 @@ class PodmanRuntime(Runtime):
                 f"--entrypoint={TOOLS_MOUNT}/bin/busybox",
                 spec.image_id or spec.image or self.config.image,
                 "sleep",
-                str(SLEEP_FOREVER_SECONDS),
+                "2147483647",
                 timeout=IMAGE_CREATE_TIMEOUT if spec.image or spec.image_id else PODMAN_TIMEOUT,
             )
             self._own_tmp(spec.name)
@@ -3227,13 +3221,9 @@ class HostRuntime(Runtime):
                 continue
             ident = f"{int(labels.get(LABEL_WORKSPACE, 0)):012x}"
             status = "running" if self.running(name) else "exited"
-            # Its volume and the one at its /tmp, each used by it alone.
-            own = [
-                (name, "1", si_size(_folder_bytes(self.root / name))),
-                (f"{name}-tmp", "1", "0B"),
-            ]
-            containers.append((ident, "host", "sleep", str(len(own)), "0B", "now", status, name))
-            volumes += own
+            containers.append((ident, "host", "sleep", "2", "0B", "now", status, name))
+            volumes.append((name, "1", si_size(_folder_bytes(self.root / name))))
+            volumes.append((f"{name}-tmp", "1", "0B"))
         return df_text({DF_CONTAINERS: containers, DF_VOLUMES: volumes})
 
     def inspect_containers(self, names: list[str]) -> str:

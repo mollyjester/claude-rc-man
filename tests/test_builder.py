@@ -17,7 +17,8 @@ import pytest
 from rcman import builder, people
 from rcman import runtime as rt
 
-from tests.clocks import PhasedClock
+from tests.hang_guard import HANG_GUARD
+from tests.time_doubles import FakeTime
 
 # --- what the builder is run with ----------------------------------------------------------------
 
@@ -264,30 +265,68 @@ def test_the_pump_stops_at_the_limit_and_ends_both_commands(tmp_path):
         assert not alive(int((tmp_path / f"{name}.pid").read_text()))
 
 
+def held_pump(tmp_path, **more) -> tuple[threading.Thread, list]:
+    """A pump whose source sends nothing until it is killed, in a thread of the test's, once both
+    of its commands run: the thread, and what the pump raised."""
+    source = ["sh", "-c", f"echo $$ > {tmp_path}/source.pid; exec sleep {int(3 * HANG_GUARD)}"]
+    sink = ["sh", "-c", f"echo $$ > {tmp_path}/sink.pid; exec cat > /dev/null"]
+    raised: list = []
+
+    def run():
+        try:
+            builder.pump(source, sink, env=os.environ, limit=None, **more)
+        except builder.PumpStopped as stopped:
+            raised.append(stopped)
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    deadline = time.monotonic() + HANG_GUARD
+    while not all(
+        (tmp_path / f"{name}.pid").exists() and (tmp_path / f"{name}.pid").read_text().strip()
+        for name in ("source", "sink")
+    ):
+        assert time.monotonic() < deadline, "the pump's commands never started"
+        time.sleep(0.05)
+    return thread, raised
+
+
+def ended(tmp_path, thread: threading.Thread, raised: list) -> builder.PumpStopped:
+    thread.join(HANG_GUARD)
+    assert not thread.is_alive()
+    for name in ("source", "sink"):
+        assert not alive(int((tmp_path / f"{name}.pid").read_text()))
+    [stopped] = raised
+    return stopped
+
+
 def test_a_cancel_ends_both_commands_at_once(tmp_path):
-    source = ["sh", "-c", f"echo $$ > {tmp_path}/source.pid; exec sleep 60"]
-    sink = ["sh", "-c", f"echo $$ > {tmp_path}/sink.pid; exec cat > /dev/null"]
     cancel = threading.Event()
-    threading.Timer(0.5, cancel.set).start()
-    began = time.monotonic()
-    with pytest.raises(builder.PumpStopped) as stopped:
-        builder.pump(source, sink, env=os.environ, limit=None, cancel=cancel, seconds=60)
-    assert stopped.value.reason == builder.CANCELLED
-    assert time.monotonic() - began < 20
-    for name in ("source", "sink"):
-        assert not alive(int((tmp_path / f"{name}.pid").read_text()))
+    thread, raised = held_pump(tmp_path, cancel=cancel, seconds=60)
+    cancel.set()
+    assert ended(tmp_path, thread, raised).reason == builder.CANCELLED
 
 
-def test_a_pump_that_takes_too_long_is_ended_with_both_commands(tmp_path):
-    source = ["sh", "-c", f"echo $$ > {tmp_path}/source.pid; exec sleep 60"]
-    sink = ["sh", "-c", f"echo $$ > {tmp_path}/sink.pid; exec cat > /dev/null"]
-    began = time.monotonic()
-    with pytest.raises(builder.PumpStopped) as stopped:
-        builder.pump(source, sink, env=os.environ, limit=None, cancel=None, seconds=0.5)
-    assert stopped.value.reason == builder.TIMED_OUT
-    assert time.monotonic() - began < 20
-    for name in ("source", "sink"):
-        assert not alive(int((tmp_path / f"{name}.pid").read_text()))
+def test_a_pump_that_takes_too_long_is_ended_with_both_commands(tmp_path, monkeypatch):
+    """On the pump's time, which only the test moves (tests/time_doubles.py): its watchdog,
+    the one other thread that reads it, looks every WATCH_SECONDS of real time."""
+    fake, told, reads = FakeTime(), threading.Condition(), []
+    real = fake.monotonic
+
+    def monotonic() -> float:  # each read recorded with its thread
+        now = real()
+        with told:
+            reads.append(threading.current_thread())
+            told.notify_all()
+        return now
+
+    fake.monotonic = monotonic
+    monkeypatch.setattr(builder, "time", fake)
+    thread, raised = held_pump(tmp_path, cancel=None, seconds=60)
+    with told:  # the pump thread's first read is its deadline's: any move from here on is past
+        # it; a thread left over from another test that reads the module's time is not counted
+        assert told.wait_for(lambda: thread in reads, HANG_GUARD)
+    fake.advance(61)
+    assert ended(tmp_path, thread, raised).reason == builder.TIMED_OUT
 
 
 def test_a_cancel_set_before_the_pump_starts_stops_it_without_running_anything(tmp_path):
@@ -430,9 +469,17 @@ def test_an_unclosed_feature_name_is_not_a_cause_by_itself():
 # --- reading its lines ----------------------------------------------------------------------------
 
 
+class Clock:
+    def __init__(self):
+        self.now = 1000.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
 def lines(clock=None, **more):
     reported: list[str] = []
-    return builder.ProgressLines(reported.append, clock or PhasedClock(), **more), reported
+    return builder.ProgressLines(reported.append, clock or Clock(), **more), reported
 
 
 def test_lines_end_in_a_carriage_return_and_a_newline_and_start_with_a_time():
@@ -462,18 +509,18 @@ def test_only_podmans_own_step_lines_are_reported_the_rest_is_kept_for_the_tail(
 
 
 def test_step_lines_are_reported_at_most_once_in_the_interval_and_the_last_is_not_lost():
-    clock = PhasedClock()
+    clock = Clock()
     progress, reported = lines(clock)
     progress.feed(b"[1/3] STEP 1/4: FROM x\n")
-    clock.advance(builder.PROGRESS_SECONDS / 4)
+    clock.now += builder.PROGRESS_SECONDS / 4
     progress.feed(b"[1/3] STEP 2/4: RUN a\n")
-    clock.advance(builder.PROGRESS_SECONDS / 4)
+    clock.now += builder.PROGRESS_SECONDS / 4
     progress.feed(b"[1/3] STEP 3/4: RUN b\n")
     assert reported == ["[1/3] STEP 1/4: FROM x"]  # the others wait
-    clock.advance(builder.PROGRESS_SECONDS)
+    clock.now += builder.PROGRESS_SECONDS
     progress.feed(b"[1/3] STEP 4/4: RUN c\n")
     assert reported == ["[1/3] STEP 1/4: FROM x", "[1/3] STEP 4/4: RUN c"]
-    clock.advance(builder.PROGRESS_SECONDS / 4)
+    clock.now += builder.PROGRESS_SECONDS / 4
     progress.feed(b"[2/3] STEP 1/2: FROM y\n")
     assert len(reported) == 2
     progress.close()
@@ -481,12 +528,12 @@ def test_step_lines_are_reported_at_most_once_in_the_interval_and_the_last_is_no
 
 
 def test_a_step_that_waited_is_reported_when_the_interval_has_passed_without_another_step():
-    clock = PhasedClock()
+    clock = Clock()
     progress, reported = lines(clock)
     progress.feed(b"[1/3] STEP 1/4: FROM x\n")
     progress.feed(b"[1/3] STEP 2/4: RUN a\n")
     assert reported == ["[1/3] STEP 1/4: FROM x"]
-    clock.advance(builder.PROGRESS_SECONDS * 2)
+    clock.now += builder.PROGRESS_SECONDS * 2
     progress.feed(b"some other line\n")
     assert reported[-1] == "[1/3] STEP 2/4: RUN a"
 

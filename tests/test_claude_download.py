@@ -145,7 +145,7 @@ def test_the_bundle_holds_every_module_of_the_repository_its_python_imports():
     """The fake runs from the bundle alone: a module of the repository one of its files
     imports, and that one's own, must be in it."""
     python = [p for p in claude_download.PARTS if p.endswith(".py")]
-    assert "devtools/fake_claude.py" in python and "helpers/clock.py" in python
+    assert "devtools/fake_claude.py" in python and "helpers/claude_checks.py" in python
     for rel in python:
         assert _repository_imports(rel) <= set(python), rel
 

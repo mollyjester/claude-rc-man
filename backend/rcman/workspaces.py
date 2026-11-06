@@ -22,12 +22,12 @@ import logging
 import re
 import sqlite3
 import threading
+import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
 from helpers import git_run, instructions, rules
-from helpers.clock import REAL, Clock, Deadline, Handed, Pace, PollExternal
 from rcman import builder, db, devcontainer, forwards, limits, people
 from rcman.channel import (
     REQUEST_TIMEOUT,
@@ -92,31 +92,31 @@ RECOVERABLE = frozenset(
     ("hook_failed", "hook_timeout", "image_gone", "built_image_gone", "default_image_gone")
 )
 # A channel unused this long is closed; it is opened again when next needed.
-CHANNEL_IDLE_SECONDS = Deadline(300.0)
+CHANNEL_IDLE_SECONDS = 300.0
 # How often idle channels, and sign-outs that wait for servers that have ended, are
 # looked for.
-IDLE_CHECK_SECONDS = Pace(30.0)
+IDLE_CHECK_SECONDS = 30.0
 # How long the limits report may take in all: each reading asks the unit manager, one after the
 # other, and one that does not answer takes up to rcman's timeout for it. The readings left
 # when the time is used are not made, and are shown as not read.
-LIMITS_REPORT_SECONDS = Deadline(2 * SYSTEMCTL_TIMEOUT)
+LIMITS_REPORT_SECONDS = 2 * SYSTEMCTL_TIMEOUT
 # The file, in the database's folder, that the service and rcman-admin lock to change limits.
 LOCK_FILE = "rcman.lock"
 # How long one wait for the runtime lasts before restore tries again, or stops when
 # rcman does.
-RUNTIME_WAIT_SECONDS = Deadline(5.0)
+RUNTIME_WAIT_SECONDS = 5.0
 # How long rcman's shutdown (``close``) waits, in all, for restore, its workspaces' tasks, the
 # threads that make or rebuild a workspace and the put-backs to end.
-CLOSE_WITHIN_SECONDS = Deadline(30.0)
+CLOSE_WITHIN_SECONDS = 30.0
 # How many workspaces' servers are read at once for a listing.
 LISTING_WORKERS = 8
 # How long deleting a person waits for a workspace still being made.
-MADE_WITHIN_SECONDS = Deadline(600.0)
+MADE_WITHIN_SECONDS = 600.0
 # How often work a deletion has to stop (``_working_on``) looks whether another process,
 # rcman-admin, deleted its workspace, and how often deleting a person looks whether a workspace
 # no thread of this process makes is gone, the other process finishing it; and the name of the
 # thread that looks, before the workspace's id.
-WORKING_POLL_SECONDS = PollExternal(1.0)
+WORKING_POLL_SECONDS = 1.0
 WATCHER_PREFIX = "watching-workspace-"
 # Most of what the runtime said that a failed workspace keeps.
 MAX_ERROR_CHARS = 2000
@@ -130,8 +130,8 @@ NAME_TRIES = 1000
 REDACTED = "***"
 # How long one lifecycle command of a repository's devcontainer.json may run before it is
 # stopped, and how long after TERM it is left before it is killed.
-HOOK_TIMEOUT_SECONDS = Handed(1800)
-HOOK_KILL_GRACE_SECONDS = Handed(KILL_GRACE_SECONDS)
+HOOK_TIMEOUT_SECONDS = 1800
+HOOK_KILL_GRACE_SECONDS = KILL_GRACE_SECONDS
 # The most of a command's output the log keeps, and the most of what podman said that a failed
 # pull's message holds.
 HOOK_LOG_TAIL_CHARS = 1000
@@ -386,23 +386,13 @@ class Workspaces:
         prunes: bool = True,
         *,
         builder_slot: int = people.BUILDER_SLOT,
-        clock: Clock = REAL,
-        servers_clock: Clock = REAL,
-        periodic_clock: Clock = REAL,
     ):
         """``prunes`` is False in a process that is not the service (``rcman-admin``): the
         locks that keep a prune from removing a version a start pins are the service's own
         process's, so the service prunes, when a server stops, a version is rolled out and rcman
         starts. ``builder_slot`` is the slot of the uid range builds and the canary run in, the
-        product's unless a test engine gives its own; people are given the slots below it.
-        ``clock`` is what the waits on ``_changed``, the person deletion's, the watchers' of work
-        a deletion stops, the images' lock's, the limits report's deadline and its repositories'
-        deadlines are made through, and its Claude Code versions' clock; ``servers_clock`` is
-        each server's that ``server`` makes; ``periodic_clock`` the periodic checks' pace."""
+        product's unless a test engine gives its own; people are given the slots below it."""
         self.settings = settings
-        self.clock = clock
-        self.servers_clock = servers_clock
-        self.periodic_clock = periodic_clock
         self.runtime = runtime
         self.builder_slot = builder_slot
         self.prunes = prunes
@@ -484,7 +474,7 @@ class Workspaces:
         # restart the upgrade makes would cut either short. Asked under the images' lock, which
         # the admission of an upgrade holds.
         self.upgrading: Callable[[], bool] = lambda: False
-        self.versions = ClaudeVersions(settings, runtime, self, clock)
+        self.versions = ClaudeVersions(settings, runtime, self)
         self.versions.prunes = prunes
 
     # --- the table ---------------------------------------------------------------------
@@ -525,7 +515,7 @@ class Workspaces:
         """The images' lock, which every workspace is recorded under, held for what is in the
         block, waiting at most ``wait`` seconds for it: whether it was had. The admission of an
         upgrade of rcman holds it, so that a workspace is recorded before it or refused after."""
-        held = self.clock.acquire(self._images_lock, wait)
+        held = self._images_lock.acquire(timeout=wait)
         try:
             yield held
         finally:
@@ -819,7 +809,7 @@ class Workspaces:
         stops what that deletion stops; a lock that is held is tried again at the next look,
         never waited for, so that the work's end never waits for it."""
         lock = self.lock(workspace_id)
-        while not self.clock.poll(WORKING_POLL_SECONDS, until=done):
+        while not done.wait(WORKING_POLL_SECONDS):
             if cancel.is_set():
                 return  # a deletion in this process stopped it
             if not lock.acquire(blocking=False):
@@ -858,7 +848,7 @@ class Workspaces:
             run, run_stdin = self._execs(workspace.container)
             layout = self.runtime.layout(workspace.container)
             try:
-                Repository(layout, run, run_stdin, self.clock).clone(workspace.source)
+                Repository(layout, run, run_stdin).clone(workspace.source)
             except Exception as failed:  # noqa: BLE001 - whatever it is, the clone failed
                 self._log(workspace.id, "The clone failed")
                 raise RuntimeFailed(self._clone_failure(workspace, failed)) from None
@@ -1141,8 +1131,7 @@ class Workspaces:
         if not taken:
             report(WAITING_FOR_BUILD)
             with self._changed:
-                self.clock.wait_for(
-                    self._changed,
+                self._changed.wait_for(
                     lambda: self._build_places > 0 or cancel.is_set() or self._closing.is_set(),
                     None,
                 )
@@ -1366,9 +1355,7 @@ class Workspaces:
         """The image must hold a git that rcman can use: one new enough, which the workspace
         is failed without otherwise."""
         run, run_stdin = self._execs(workspace.container)
-        repository = Repository(
-            layout or self.runtime.layout(workspace.container), run, run_stdin, self.clock
-        )
+        repository = Repository(layout or self.runtime.layout(workspace.container), run, run_stdin)
         try:
             found = repository.version()
         except Problem as refused:
@@ -2139,13 +2126,12 @@ class Workspaces:
         the service's threads when this is rcman-admin, or a restore not done yet - are looked at
         every WORKING_POLL_SECONDS until they are gone, or a thread of this process ended for
         them. Closing ends both."""
-        deadline = self.clock.now() + MADE_WITHIN_SECONDS
+        deadline = time.monotonic() + MADE_WITHIN_SECONDS
         handles = set(own)
         with self._changed:
-            self.clock.wait_for(
-                self._changed,
+            self._changed.wait_for(
                 lambda: self._closing.is_set() or not (handles & self._unended),
-                deadline - self.clock.now(),
+                deadline - time.monotonic(),
             )
         waiting = set(external)
         while True:
@@ -2153,9 +2139,10 @@ class Workspaces:
                 waiting -= self._ended_here
                 closing = self._closing.is_set()
             waiting = {i for i in waiting if self.get(i) is not None}
-            if not waiting or closing or self.clock.now() >= deadline:
+            if not waiting or closing or time.monotonic() >= deadline:
                 return
-            self.clock.poll(WORKING_POLL_SECONDS)
+            if self._closing.wait(WORKING_POLL_SECONDS):
+                return
 
     def _person_deleting(self, person_id: int) -> None:
         """``on_person_deleting``, which never makes the deletion fail."""
@@ -2302,10 +2289,10 @@ class Workspaces:
         finally:
             con.close()
 
-        deadline = self.clock.now() + LIMITS_REPORT_SECONDS
+        deadline = time.monotonic() + LIMITS_REPORT_SECONDS
 
         def used(workspace_id: int | None) -> dict | None:
-            if self.clock.now() > deadline:
+            if time.monotonic() > deadline:
                 return None  # no time left for this one: not read
             try:
                 now = self.runtime.usage(person.id, workspace_id)
@@ -2529,7 +2516,6 @@ class Workspaces:
             layout if version is None else layout.pinned(version),
             self._channel_run(workspace.container),
             workspace.id,
-            self.servers_clock,
         )
 
     def sweep_forwards(self, workspace: Workspace) -> None:
@@ -2583,9 +2569,7 @@ class Workspaces:
         """The git repository at the root of the workspace's work folder, run through its
         channel, and through ``exec`` for what carries stdin. Nothing is started for it."""
         name = workspace.container
-        return Repository(
-            self._layout(workspace), self._channel_run(name), self._execs(name)[1], self.clock
-        )
+        return Repository(self._layout(workspace), self._channel_run(name), self._execs(name)[1])
 
     def server_status(self, workspace: Workspace, probe: bool = False) -> dict | None:
         """The workspace's server, or None; a workspace that records none is not reached,
@@ -2920,8 +2904,7 @@ class Workspaces:
         workers = RESTORE_WORKERS
         for workspace in self.everything():
             with self._changed:
-                self.clock.wait_for(
-                    self._changed,
+                self._changed.wait_for(
                     lambda: self._closing.is_set() or self._restores_running < workers,
                     None,
                 )
@@ -2937,8 +2920,7 @@ class Workspaces:
                 self._restore_ended()
                 raise
         with self._changed:
-            self.clock.wait_for(
-                self._changed,
+            self._changed.wait_for(
                 lambda: self._closing.is_set() or self._restores_running == 0,
                 None,
             )
@@ -3445,7 +3427,7 @@ class Workspaces:
         """Every IDLE_CHECK_SECONDS: close idle channels, finish the sign-outs that wait for
         servers that have ended, and finish what rebuilds left that nothing works on
         (``settle_left_over``)."""
-        while not self.periodic_clock.wait(self._closing, IDLE_CHECK_SECONDS):
+        while not self._closing.wait(IDLE_CHECK_SECONDS):
             self.close_idle()
             self.settle_signing_out()
             try:
@@ -3537,8 +3519,7 @@ class Workspaces:
         with self._changed:
             self._closing.set()
             self._changed.notify_all()
-            done = self.clock.wait_for(
-                self._changed,
+            done = self._changed.wait_for(
                 lambda: (
                     not self._restore_running
                     and self._restores_running == 0
