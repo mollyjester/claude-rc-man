@@ -28,13 +28,13 @@ from rcman.workspaces import Workspaces
 
 from devtools import fake_claude as fake
 from devtools import held_folders as hf
+from devtools.fake_store import FAKE_VERSION
 from helpers import claude_checks
 from tests import claude_download, runtime_contract
 from tests.container import sizes
 from tests.container import test_github_in_podman as shared
 from tests.container import test_runtime_in_podman as base
 from tests.container.conftest import cli, engine_runtime, engine_settings, fill_store
-from tests.fake_store import FAKE_VERSION
 from tests.hang_guard import CONTAINER_HANG_GUARD
 from tests.until import SLOW, until
 

@@ -109,7 +109,7 @@ def fill_store(store: Path, version: str) -> None:
 @pytest.fixture(scope="session")
 def fake_store():
     """A Claude Code store holding the fake `claude`, for the modules whose workspaces run it."""
-    from tests.fake_store import FAKE_VERSION
+    from devtools.fake_store import FAKE_VERSION
 
     with hf.held("rcfake-") as folder:
         fill_store(folder, FAKE_VERSION)

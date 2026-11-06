@@ -1,5 +1,5 @@
-"""The Claude Code store the tests give the host runtime: the fake `claude` as the installer
-leaves the real one. Not a test module."""
+"""The Claude Code store the tests and the screenshots' world (devtools/world.py) give the host
+runtime: the fake `claude` as the installer leaves the real one."""
 
 from __future__ import annotations
 

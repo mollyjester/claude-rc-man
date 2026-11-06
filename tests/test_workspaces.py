@@ -297,7 +297,7 @@ def test_restore_starts_a_wanted_server_with_its_prefix_and_leaves_a_running_one
     from pathlib import Path
 
     from devtools import fake_claude as fake
-    from tests.e2e_server import record_sign_in
+    from devtools.world import record_sign_in
 
     wanted = insert(settings, 1, "wanted", "ready", wanted=1, server=1, prefix="pfx")
     running = insert(settings, 1, "running", "ready", wanted=1, server=1, prefix="pfx")
@@ -1035,7 +1035,7 @@ def test_a_start_that_is_refused_before_a_server_exists_records_nothing(
     pinned, client, app, settings
 ):
     made = made_workspace(client, ALICE, "alpha")  # not signed in to Claude in the workspace
-    from tests.e2e_server import record_sign_in
+    from devtools.world import record_sign_in
 
     record_sign_in(settings.database, 1)
     r = start(client, made)

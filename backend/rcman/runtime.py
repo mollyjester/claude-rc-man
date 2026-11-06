@@ -8,7 +8,7 @@ workspace of theirs binds as its own, and a short-lived sign-in container
 ``podman --remote`` against its own user manager's socket, with a fixed argv
 and an allowlisted environment, never through a shell. ``HostRuntime`` keeps
 the same interface with a folder and a tmux socket per workspace, for the tests
-and ``make e2e``; tests/runtime_contract.py holds both to the same cases.
+and ``make screenshots``; tests/runtime_contract.py holds both to the same cases.
 
 A repository's devcontainer.json may ask for an image to be built (``build_image``): by the
 devcontainer CLI, in a *builder* container of its own that rcman starts for the one build, in a

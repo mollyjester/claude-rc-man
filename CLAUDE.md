@@ -12,7 +12,7 @@ Control servers. What it does and how far it is implemented: [README.md](README.
 ## Commands
 
 The `make` targets, from `make setup` to `make check`, the gating and full check,
-the on-demand runs and `make check-containers`, which runs both, and what each does:
+the on-demand run, `make test-container`, and what each does:
 [project-knowledge/tests.md](project-knowledge/tests.md).
 
 ## Where to look

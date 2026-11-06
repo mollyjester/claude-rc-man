@@ -11,8 +11,8 @@ anything. It is split as the shell splits it, into simple commands joined by
 ``&&``, ``||``, ``;``, ``|``, ``&`` or a newline; the shell words in
 ``KEYWORDS``, assignments and the wrappers ``env``, ``timeout``, ``nice``,
 ``time``, ``exec``, ``command``, ``nohup``, ``uv run``, ``uvx``, ``npx`` and
-``python -m`` are taken off. What remains runs tests when it is pytest, Vitest
-or ``playwright test`` without an option in ``NOT_A_RUN``; an npm script whose
+``python -m`` are taken off. What remains runs tests when it is pytest or
+Vitest without an option in ``NOT_A_RUN``; an npm script whose
 text, read the same way, does; or a make target whose recipe or prerequisites,
 read from the Makefile without running make, do. Where it runs follows a
 ``cd`` at the start of the command, outside any subshell, and make's ``-C``;
@@ -340,7 +340,7 @@ def _tests_run_in(words: list[str], directory: Path, depth: int) -> Path | None:
     """The folder ``words``, a simple command run in ``directory``, runs tests in,
     or None when it runs none."""
     name = Path(words[0]).name
-    if name in ("pytest", "py.test", "vitest") or (name == "playwright" and words[1:2] == ["test"]):
+    if name in ("pytest", "py.test", "vitest"):
         return None if NOT_A_RUN.intersection(words[1:]) else directory
     if name == "npm":
         script = _npm_script(_options("npm", words[1:]))

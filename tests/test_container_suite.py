@@ -1,11 +1,11 @@
 """What the container suites share that is not a suite of its own, on the tests' engine
-(tests/podman_service.py): the engine itself, a checkout's snapshot cloned in a container, the
-containers a killed run left, and the whole stack in a browser.
+(tests/podman_service.py): the engine itself, a checkout's snapshot cloned in a container, and
+the containers a killed run left.
 
 Every test here takes the ``podman_service`` fixture, so it carries the ``container`` marker
 (tests/container_marker.py). Where the user's rootless Podman cannot run the tests skip, unless
-``RCMAN_REQUIRE_CONTAINER=1`` (set by ``make test-container`` and ``make check-ui``, the
-on-demand runs that ``make check-containers`` runs together), in which case they fail.
+``RCMAN_REQUIRE_CONTAINER=1`` (set by ``make test-container``, the on-demand run), in which
+case they fail.
 Every container started here is labelled as its run's, so a later run removes one a killed run
 left, with its anonymous volumes (tests/containers.py). The checkout reaches a container as a
 snapshot of its files (tests/snapshot.py), mounted read-only at /src.

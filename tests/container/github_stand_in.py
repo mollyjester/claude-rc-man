@@ -13,12 +13,11 @@ which serves tests/github_server.py as https://github.com itself, in a network o
   another container's network gets no hosts file of that container's), and, for a base that is
   not rcman's own, has git and python3;
 - run as a program, ``serve`` serves the bare repositories under a folder with the token,
-  after making the public and the private repository the whole-stack browser tests clone.
+  after making the public repository the whole stack's checks clone.
 """
 
 from __future__ import annotations
 
-import json
 import subprocess
 import sys
 import tempfile
@@ -26,16 +25,12 @@ import threading
 from pathlib import Path
 
 CA_NAME = "rcman-test-github-ca"
-# The token the whole-stack browser tests give the Settings page, and the stand-in takes.
+# The token the stand-in serves the stack with.
 STACK_TOKEN = "github_pat_stack-test-token"
-# The repositories the stand-in is made with for them: owner, name, and whether private.
+# The public repository the stand-in is made with for the stack: owner, name and its one file.
 STACK_OWNER = "octo"
 STACK_PUBLIC = "stack-public"
-STACK_PRIVATE = "stack-private"
 STACK_FILE = "README.md"
-# A public one whose devcontainer.json names no image and forwards STACK_PORT.
-STACK_PORTS = "stack-ports"
-STACK_PORT = 8080
 
 PACKAGES = """\
 RUN apt-get update -qq \\
@@ -87,32 +82,25 @@ def mint(folder: Path) -> Path:
 
 
 def seed(server) -> None:
-    """The repositories the whole-stack browser tests clone, on ``server``: a public one, a
-    private one and a public one that forwards a port, each with one commit on main."""
+    """The public repository the whole stack's checks clone, on ``server``, with one commit on
+    main."""
     with tempfile.TemporaryDirectory(prefix="rcman-github-seed-") as scratch:
-        for name, private in ((STACK_PUBLIC, False), (STACK_PRIVATE, True), (STACK_PORTS, False)):
-            bare = server.bare(STACK_OWNER, name, private=private)
-            work = Path(scratch) / name
-            git = [
-                "git",
-                "-C",
-                str(work),
-                "-c",
-                "user.name=Octo",
-                "-c",
-                "user.email=octo@example.com",
-            ]
-            subprocess.run(["git", "init", "-q", "-b", "main", str(work)], check=True)
-            (work / STACK_FILE).write_text(f"# {name}\n")
-            subprocess.run([*git, "add", STACK_FILE], check=True)
-            if name == STACK_PORTS:
-                (work / ".devcontainer").mkdir()
-                (work / ".devcontainer" / "devcontainer.json").write_text(
-                    json.dumps({"name": "Ports", "forwardPorts": [STACK_PORT]}) + "\n"
-                )
-                subprocess.run([*git, "add", ".devcontainer"], check=True)
-            subprocess.run([*git, "commit", "-q", "-m", f"First commit of {name}"], check=True)
-            subprocess.run([*git, "push", "-q", str(bare), "main"], check=True)
+        bare = server.bare(STACK_OWNER, STACK_PUBLIC, private=False)
+        work = Path(scratch) / STACK_PUBLIC
+        git = [
+            "git",
+            "-C",
+            str(work),
+            "-c",
+            "user.name=Octo",
+            "-c",
+            "user.email=octo@example.com",
+        ]
+        subprocess.run(["git", "init", "-q", "-b", "main", str(work)], check=True)
+        (work / STACK_FILE).write_text(f"# {STACK_PUBLIC}\n")
+        subprocess.run([*git, "add", STACK_FILE], check=True)
+        subprocess.run([*git, "commit", "-q", "-m", f"First commit of {STACK_PUBLIC}"], check=True)
+        subprocess.run([*git, "push", "-q", str(bare), "main"], check=True)
 
 
 def serve(root: str, host: str, port: str) -> None:

@@ -3,8 +3,7 @@ installation does once people and workspaces are there, through rcman's own sock
 passes requests on, and through Caddy and oauth2-proxy; the network the stack's workspaces
 share; and what the stack's Caddy does for a forwarded port: certificates on demand, asked of a
 site on its loopback, and for any name when nothing is asked; a log without cookies or query
-strings; and the installer's own site deleting the identity headers. The browser tests run against
-a stack of their own (tests/container/test_stack_in_a_browser.py).
+strings; and the installer's own site deleting the identity headers.
 
 The stack's workspaces run on the engine (tests/podman_service.py) at the suites' sizes
 (tests/container/sizes.py), in the default image with the stand-in GitHub's authority trusted, and

@@ -1,26 +1,24 @@
 #!/usr/bin/python3
-"""The whole of rcman in one container of the tests' engine, for the browser tests and the
-checks of the whole stack.
+"""The whole of rcman in one container of the tests' engine, for the checks of the whole stack
+(tests/container/test_stack_in_podman.py).
 
 On the host, ``launched`` starts it (``a_stack`` in tests/container/conftest.py): a container of the
 system image (tests/container/system/) on the tests' engine (tests/podman_service.py) with no
-network but its own loopback, which the stack's workspaces and the browser's container join
-(``container:<its name>``). In it, as processes of their own, run:
+network but its own loopback, which the stack's workspaces join (``container:<its name>``). In
+it, as processes of their own, run:
 
-- rcman's app, made as tests/e2e_server.py makes one but with the Podman runtime at the suites'
+- rcman's app, made as devtools/world.py makes one but with the Podman runtime at the suites'
   sizes (tests/container/sizes.py) on the engine, whose socket it is given; alice@example.com its
-  first administrator, bob and carol let in; the fake claude in the store, which the browser tests
-  sign in to on the Claude page; its listeners the unix sockets the installer gives it, its
-  own and its forwarding server's;
+  first administrator, bob and carol let in; the fake claude in the store; its listeners the unix
+  sockets the installer gives it, its own and its forwarding server's;
 - oauth2-proxy (from the installer's toolchain) with the installer's own configuration, its Google
   endpoints pointed at tests/container/oidc_stub.py;
 - Caddy with the installer's own site block for rcman.test and its forwarded ports, its own
   certificate authority, its admin API off and on-demand certificates asked of a site on its
   loopback (``global_options``), in front of rcman.test, auth.test (the stub) and github.com: the
   stand-in GitHub (tests/github_server.py through tests/container/github_stand_in.py ``serve``,
-  with a public and a private repository, and a public one whose devcontainer.json forwards a
-  port) under a certificate of an authority of its own, which the workspaces' image, derived
-  from the default image, trusts, and where its git finds github.com;
+  with a public repository) under a certificate of an authority of its own, which the
+  workspaces' image, derived from the default image, trusts, and where its git finds github.com;
 - the fake claude's releases, served, as the address rcman downloads Claude Code from;
 - ``systemctl`` the stand-in of tests/container/stand_ins.py, which rcman's limits reach.
 
@@ -36,17 +34,7 @@ naming the stack's configuration:
 - ``request <json>`` makes one request to rcman's socket as Caddy passes one on, and
   ``identity`` signs in through Caddy, oauth2-proxy and the stand-in for Google as a browser
   does, and ``cookies`` signs in the same way one redirect at a time and then out, each printing
-  what it was answered;
-- ``repository <workspace id>``, which a browser test runs through the relay the browser's
-  container has (tests/container/stack_exec.mjs), makes a git repository in that workspace's work
-  folder, with a bare origin of its own in the workspace, one commit pushed, and changes left to
-  stage; and ``serve-port <workspace id> <port>``, run the same way, starts an app on that port
-  in the workspace (``PORT_APP``) and returns once it listens;
-- ``check``, after the browser tests, checks what they left: carol, whom they deleted, has nothing
-  labelled hers left, the changes they staged, committed and pushed from the page are in the
-  origin as the person set as the author, with an audit row for each step and none that holds what
-  was written; the workspaces they made by cloning are ready with their repository's commit; and
-  the GitHub token they stored is in no audit row, workspace row or line of rcman's output.
+  what it was answered.
 """
 
 from __future__ import annotations
@@ -58,7 +46,6 @@ import re
 import shutil
 import signal
 import socket
-import sqlite3
 import subprocess
 import sys
 from pathlib import Path
@@ -68,7 +55,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from tests.hang_guard import CONTAINER_HANG_GUARD, EXEC_GUARD, GUARD_VARIABLE  # noqa: E402
-from tests.until import SLOW, until  # noqa: E402
+from tests.until import until  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
 SRC = HERE.parent.parent
@@ -99,107 +86,11 @@ def global_options(ask: str = ASK_URL) -> str:
 SOCKET = Path("/run/rcman/rcman.sock")
 FORWARD_SOCKET = Path("/run/rcman/forward.sock")
 ALLOWED = Path("/var/lib/rcman/allowed-emails")
-# The browser's image: Playwright's, at the version frontend/package-lock.json pins, by digest.
-PLAYWRIGHT_VERSION = "1.63.0"
-PLAYWRIGHT_IMAGE = (
-    f"mcr.microsoft.com/playwright:v{PLAYWRIGHT_VERSION}-noble"
-    "@sha256:eff16c30e6f3f4af0a03fa4b706120d5e9b0891c344a27d64559aff5900a4a27"
-)
-
-
-def playwright_problem(image: str, lock: dict) -> str | None:
-    """Why ``image`` is not Playwright's image at the version ``lock`` (frontend/package-lock.json)
-    pins, or None: the browser and the tests' own Playwright must be one release."""
-    pinned = lock["packages"]["node_modules/playwright"]["version"]
-    found = re.search(r":v(\d+\.\d+\.\d+)-", image)
-    if found is None or found[1] != pinned:
-        return f"{image} is not Playwright {pinned}, which frontend/package-lock.json pins"
-    return None
-
-
-# The verbs the browser tests may have the suite run in the stack's container, each with how
-# many arguments it takes, every one decimal digits, and nothing else.
-RELAYED = ("python3", "tests/container/stack.py")
-RELAYED_VERBS = {"repository": 1, "serve-port": 2}
-
-
-def relayed(argv: list[str]) -> bool:
-    """Whether ``argv`` is a command the relay runs: one of RELAYED_VERBS with its numbers."""
-    if not isinstance(argv, list) or tuple(argv[: len(RELAYED)]) != RELAYED:
-        return False
-    verb, *numbers = argv[len(RELAYED) :] or [None]
-    return (
-        isinstance(verb, str)
-        and len(numbers) == RELAYED_VERBS.get(verb, -1)
-        and all(isinstance(n, str) and re.fullmatch(r"[0-9]+", n) for n in numbers)
-    )
-
-
-@contextlib.contextmanager
-def command_relay(run, folder: Path):
-    """A unix socket in ``folder`` (a held folder, its owner's alone) on which the browser's
-    container asks for a command (tests/container/stack_exec.mjs): ``run(argv)``, giving the exit
-    code and what it printed, for the command ``relayed`` takes, and code 2 for anything else.
-    The socket is its owner's alone too: the browser's container runs as that owner. The
-    socket's path."""
-    import threading
-
-    os.chmod(folder, 0o700)
-    path = folder / "s"
-    listening = socket.socket(socket.AF_UNIX)
-    listening.bind(str(path))
-    os.chmod(path, 0o600)
-    listening.listen(4)
-
-    def serve() -> None:
-        while True:
-            try:
-                client, _ = listening.accept()
-            except OSError:
-                return
-            with client:
-                parts = []
-                while part := client.recv(65536):
-                    parts.append(part)
-                try:
-                    asked = json.loads(b"".join(parts) or b"[]")
-                except ValueError:
-                    asked = None
-                if relayed(asked):
-                    code, output = run(asked)
-                else:
-                    code, output = 2, f"not a command of the stack's: {asked}\n"
-                client.sendall(json.dumps({"code": code, "output": output}).encode())
-
-    threading.Thread(target=serve, daemon=True).start()
-    try:
-        yield path
-    finally:
-        listening.close()
-
-
 # Where the backend's packages and the built frontend are in the stack's container.
 VENV = "/opt/rcman-test-venv"
 DIST = "/opt/rcman-test-dist"
-# Which workspace got a repository, and what the browser tests are to have made of it.
-WORK, ORIGIN = "/rcman/work", "/rcman/home/origin.git"
-AUTHOR = ("Alice", "alice@example.com")  # set on the Settings page; the address is the sign-in
-SETUP = ("Setup", "setup@example.com")
-MESSAGE = "Add notes"
-MAKE_REPOSITORY = f"""
-set -e
-cd {WORK}
-git init -q -b main
-printf 'one\\n' > hello.txt
-git add hello.txt
-git -c user.name={SETUP[0]} -c user.email={SETUP[1]} commit -q -m 'First commit'
-git init -q --bare -b main {ORIGIN}
-git remote add origin {ORIGIN}
-git push -q -u origin main
-printf 'two\\n' >> hello.txt
-printf 'new\\n' > notes.txt
-"""
-
+# A workspace's work folder.
+WORK = "/rcman/work"
 # --- in the stack's container --------------------------------------------------------------
 
 
@@ -221,22 +112,8 @@ def podman(*args: str, check: bool = True) -> subprocess.CompletedProcess:
     return proc
 
 
-def in_workspace(workspace_id: int, script: str) -> str:
-    """A script run by the workspace's busybox shell; what it printed."""
-    found = podman("exec", f"rcman-ws-{workspace_id}", "/opt/rcman/bin/busybox", "sh", "-c", script)
-    return found.stdout
-
-
 def database() -> Path:
     return state() / "rcman.db"
-
-
-def people() -> dict[str, int]:
-    con = sqlite3.connect(f"file:{database()}?mode=ro", uri=True)
-    try:
-        return dict(con.execute("select email, id from people"))
-    finally:
-        con.close()
 
 
 def settings():
@@ -263,7 +140,7 @@ def settings():
 
 
 def create_app():
-    """rcman's app, as tests/e2e_server.py makes one but on the engine: the people of the stack,
+    """rcman's app, as devtools/world.py makes one but on the engine: the people of the stack,
     made once, and the Podman runtime at the suites' sizes."""
     sys.path.insert(0, str(SRC))
     from rcman import db
@@ -540,7 +417,6 @@ def up() -> None:
               "?service=git-upload-pack"]  # fmt: skip
     wait("the stand-in GitHub", lambda: subprocess.run(
         github, capture_output=True, text=True).stdout == "200")  # fmt: skip
-    (state() / "people.json").write_text(json.dumps(people()))
     print("READY", flush=True)
 
 
@@ -686,172 +562,6 @@ def cookies() -> None:
                       "me_after": [after, location]}))  # fmt: skip
 
 
-def repository(workspace_id: str) -> None:
-    """A repository in the workspace, with a bare origin in it, and changes to stage."""
-    in_workspace(int(workspace_id), MAKE_REPOSITORY)
-    (state() / "repository.json").write_text(json.dumps({"workspace": int(workspace_id)}))
-    print("REPOSITORY", flush=True)
-
-
-# Run by the workspace's python3, on its 127.0.0.1 at the port it is given: the app of a
-# forwarded port the browser tests reach. A page that shows the path and query it was asked for
-# (``#seen``), and a WebSocket at any path that sends back every message it is sent.
-PORT_APP = r"""
-import base64, hashlib, html, sys
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
-
-class Handler(BaseHTTPRequestHandler):
-    protocol_version = "HTTP/1.1"
-
-    def log_message(self, *args):
-        pass
-
-    def do_GET(self):
-        if self.headers.get("Upgrade", "").lower() == "websocket":
-            key = self.headers["Sec-WebSocket-Key"] + GUID
-            self.send_response(101)
-            self.send_header("Upgrade", "websocket")
-            self.send_header("Connection", "Upgrade")
-            accept = base64.b64encode(hashlib.sha1(key.encode()).digest()).decode()
-            self.send_header("Sec-WebSocket-Accept", accept)
-            self.end_headers()
-            self.close_connection = True
-            self.echo()
-            return
-        body = ("<!doctype html><title>forwarded</title><p id=seen>" + html.escape(self.path)
-                + "</p>").encode()
-        self.send_response(200)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
-
-    def echo(self):
-        read = self.rfile.read
-        while len(head := read(2)) == 2:
-            opcode, length = head[0] & 0x0F, head[1] & 0x7F
-            if length == 126:
-                length = int.from_bytes(read(2), "big")
-            elif length == 127:
-                length = int.from_bytes(read(8), "big")
-            mask = read(4) if head[1] & 0x80 else bytes(4)
-            data = bytes(b ^ mask[i % 4] for i, b in enumerate(read(length)))
-            if opcode == 8:
-                self.wfile.write(bytes([0x88, len(data)]) + data)
-                return
-            opcode = 10 if opcode == 9 else opcode
-            n = len(data)
-            size = bytes([n]) if n < 126 else (bytes([126]) + n.to_bytes(2, "big") if n < 65536
-                                               else bytes([127]) + n.to_bytes(8, "big"))
-            self.wfile.write(bytes([0x80 | opcode]) + size + data)
-
-ThreadingHTTPServer(("127.0.0.1", int(sys.argv[1])), Handler).serve_forever()
-"""
-# Run by the workspace's python3: whether something listens on its 127.0.0.1 at the port.
-PORT_OPEN = "import socket, sys; socket.create_connection(('127.0.0.1', int(sys.argv[1])), 2)"
-
-
-def serve_port(workspace_id: str, port: str) -> None:
-    """PORT_APP started in the workspace on ``port``, once it listens."""
-    container = f"rcman-ws-{int(workspace_id)}"
-    podman("exec", "--detach", container, "python3", "-c", PORT_APP, str(int(port)))
-    try:
-        until(lambda: podman("exec", container, "python3", "-c", PORT_OPEN, str(int(port)),
-                             check=False).returncode == 0, SLOW)  # fmt: skip
-    except AssertionError:
-        sys.exit(f"nothing listens on port {port} in {container}")
-    print("SERVING", flush=True)
-
-
-def check() -> None:
-    """What the browser tests left: nothing of carol's, whom they deleted."""
-    carol = json.loads((state() / "people.json").read_text())["carol@example.com"]
-    label = f"label=rcman.person={carol}"
-    left = podman("ps", "--all", "--quiet", "--filter", label).stdout.split()
-    volumes = podman("volume", "ls", "--quiet", "--filter", label).stdout.split()
-    assert left == [] and volumes == [], (left, volumes)
-    assert "carol@example.com" not in people()
-    assert "carol@example.com" not in ALLOWED.read_text()
-    pushed()
-    cloned()
-    print("CHECKED", flush=True)
-
-
-def pushed() -> None:
-    """The changes the browser tests staged, committed and pushed are in the origin as the
-    person's commit, the workspace has nothing left to commit, and the audit has a row for
-    each step but none holding the message."""
-    workspace = json.loads((state() / "repository.json").read_text())["workspace"]
-    log = in_workspace(workspace, f"git -C {ORIGIN} log --format='%an|%ae|%s' main").splitlines()
-    assert log == [f"{AUTHOR[0]}|{AUTHOR[1]}|{MESSAGE}", f"{SETUP[0]}|{SETUP[1]}|First commit"], log
-    assert in_workspace(workspace, f"git -C {ORIGIN} show main:notes.txt") == "new\n"
-    assert in_workspace(workspace, f"git -C {ORIGIN} show main:hello.txt") == "one\ntwo\n"
-    assert in_workspace(workspace, f"git -C {WORK} status --porcelain") == ""
-    here = in_workspace(workspace, f"git -C {WORK} rev-parse HEAD")
-    assert here == in_workspace(workspace, f"git -C {ORIGIN} rev-parse main")  # nothing left
-
-    con = sqlite3.connect(f"file:{database()}?mode=ro", uri=True)
-    try:
-        rows = con.execute(
-            "select action, target, result from audit where email = ? and action like 'git.%' "
-            "order by id",
-            (ADMIN,),
-        ).fetchall()
-        name = con.execute("select name from workspaces where id = ?", (workspace,)).fetchone()[0]
-        everything = " ".join(" ".join(map(str, row)) for row in con.execute("select * from audit"))
-    finally:
-        con.close()
-    steps = ["git.stage", "git.commit", "git.push"]
-    assert [row for row in rows if row[0] in steps][:3] == [(a, name, "ok") for a in steps], rows
-    assert MESSAGE not in everything and "notes.txt" not in everything  # what was written
-
-
-def cloned() -> None:
-    """The workspaces the browser tests made by cloning from the stand-in GitHub: each is
-    ready, holds its repository's commit, and was made by an audited ``git.clone`` that
-    names the address; the token the browser tests stored is in rcman's database and in no
-    audit row, workspace row or line of rcman's output."""
-    sys.path.insert(0, str(SRC))
-    from tests.container import github_stand_in as stand_in
-
-    public = f"https://github.com/{stand_in.STACK_OWNER}/{stand_in.STACK_PUBLIC}"
-    private = f"https://github.com/{stand_in.STACK_OWNER}/{stand_in.STACK_PRIVATE}"
-    con = sqlite3.connect(f"file:{database()}?mode=ro", uri=True)
-    try:
-        clones = con.execute(
-            "select target, result from audit where email = ? and action = 'git.clone' order by id",
-            (ADMIN,),
-        ).fetchall()
-        workspaces = con.execute(
-            "select id, name, state, source, error, log from workspaces where person = "
-            "(select id from people where email = ?) and source is not null order by id",
-            (ADMIN,),
-        ).fetchall()
-        stored = con.execute("select token from github_tokens").fetchall()
-        everything = "\n".join(
-            " ".join(map(str, row))
-            for table in ("audit", "workspaces", "user_settings")
-            for row in con.execute(f"select * from {table}")
-        )
-    finally:
-        con.close()
-    # The public one, the private one that failed without a token, the private one again.
-    assert clones == [(a, "ok") for a in (public, private, private)], clones
-    assert [(w[1], w[2], w[3], w[4], w[5]) for w in workspaces] == [
-        (stand_in.STACK_PUBLIC, "ready", public, None, None),
-        (stand_in.STACK_PRIVATE, "ready", private, None, None),
-    ], workspaces  # the failed one was deleted
-    for workspace, name, *_ in workspaces:
-        log = in_workspace(workspace, f"git -C {WORK} log --format=%s").splitlines()
-        assert log == [f"First commit of {name}"], (name, log)
-    assert [row[0] for row in stored] == [stand_in.STACK_TOKEN], "the token was not stored"
-    assert stand_in.STACK_TOKEN not in everything
-    output = (state() / "logs" / "rcman.log").read_text(errors="replace")
-    assert public in output and "git.clone" in output  # positive: the audit is in its output
-    assert stand_in.STACK_TOKEN not in output
-
-
 # --- on the host ----------------------------------------------------------------------------
 
 
@@ -969,8 +679,7 @@ def launched(engine, *, name: str, system_image: str, default_image: str, builde
 if __name__ == "__main__":
     verb, *arguments = sys.argv[1:]
     sys.path.insert(0, str(SRC / "backend"))
-    run = {"up": up, "restart": restart, "caddy": caddy, "check": check, "repository": repository,
-           "serve-port": serve_port,
-           "request": request, "identity": identity, "cookies": cookies,
-           "admin-delete": admin_delete, "admin-delete-here": admin_delete_here}[verb]  # fmt: skip
+    run = {"up": up, "restart": restart, "caddy": caddy, "request": request, "identity": identity,
+           "cookies": cookies, "admin-delete": admin_delete,
+           "admin-delete-here": admin_delete_here}[verb]  # fmt: skip
     run(*arguments)

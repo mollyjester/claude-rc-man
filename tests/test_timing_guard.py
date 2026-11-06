@@ -2047,28 +2047,16 @@ def scan_tree(files: Iterable[str] | None = None) -> Tree:
 
 # The frontend's tests and their configs, under frontend/: the component tests vite.config.ts's
 # ``include`` names (TS_TESTS, which a test holds to it), everything under TS_DIRS, and TS_CONFIGS.
-TS_DIRS = ("src/test/", "e2e/", "e2e-stack/")
+TS_DIRS = ("src/test/",)
 TS_TESTS = re.compile(r"^src/(.+/)?[^/]+\.test\.tsx?$")
 TS_INCLUDE = "src/**/*.test.{ts,tsx}"
-TS_CONFIGS = (
-    "vite.config.ts", "playwright.config.ts", "playwright.stack.config.ts",
-    "playwright.screenshots.config.ts",
-)  # fmt: skip
+TS_CONFIGS = ("vite.config.ts",)
 # The frontend's hang guards: the only names a timeout there may be given, besides 0.
 TS_GUARD_FILE = "src/test/hangGuard.ts"
-# The tier of a file, by where it is: the component tests' (Vitest in jsdom), the browser tests'
-# and the whole stack's (frontend/src/test/hangGuard.ts). A guard of another tier is a TIER site.
-TS_TIERS = (
-    ("STACK", ("e2e-stack/", "playwright.stack.config.ts")),
-    ("BROWSER", ("e2e/", "playwright.config.ts", "playwright.screenshots.config.ts")),
-    ("UNIT", ("src/", "vite.config.ts")),
-)
-# The keys every config sets (P3c): each Playwright config's, the web server's where it has one,
-# and Vitest's in vite.config.ts.
-PLAYWRIGHT_KEYS = (
-    "timeout", "globalTimeout", "expect.timeout", "use.actionTimeout", "use.navigationTimeout",
-)  # fmt: skip
-SERVER_KEYS = ("webServer.timeout",)
+# The tier of a file, by where it is: the component tests' (Vitest in jsdom), the one tier
+# (frontend/src/test/hangGuard.ts). A guard of another tier would be a TIER site.
+TS_TIERS = (("UNIT", ("src/", "vite.config.ts")),)
+# The keys the config sets (P3c): Vitest's in vite.config.ts.
 VITEST_KEYS = ("test.testTimeout", "test.hookTimeout", "test.teardownTimeout")
 TS_CLOCKS = {("Date", "now"), ("performance", "now")}
 TS_COMPARE = {"<", ">", "<=", ">=", "==", "===", "!=", "!=="}
@@ -2152,19 +2140,16 @@ def _ts_resolve(rel: str, given: str) -> str | None:
 
 
 class TsScan:
-    """The sites of one TypeScript file, ``rel`` under frontend/. ``configs`` holds the trees
-    of the configs, by ``rel``, for a config that spreads another's."""
+    """The sites of one TypeScript file, ``rel`` under frontend/."""
 
-    def __init__(self, rel: str, source: str, tree: dict, configs: dict | None = None):
+    def __init__(self, rel: str, source: str, tree: dict):
         self.rel, self.source, self.tree = rel, source, tree
-        self.configs = configs or {}
         self.encoded = source.encode("utf-16-le")
         self.tier = ts_tier(rel)
         self.sites: list[Site] = []
         self.derived: list[tuple[str, Site]] = []
-        # local name -> the name it imports from hangGuard.ts; local name -> a config's rel
+        # local name -> the name it imports from hangGuard.ts
         self.guards: dict[str, str] = {}
-        self.defaults: dict[str, str] = {}
         for node in tree["body"]:
             if node["type"] != "ImportDeclaration":
                 continue
@@ -2176,8 +2161,6 @@ class TsScan:
                     and spec["type"] == "ImportSpecifier"
                 ):
                     self.guards[local] = spec["imported"].get("name") or spec["imported"]["value"]
-                elif spec["type"] == "ImportDefaultSpecifier" and f"{target}.ts" in TS_CONFIGS:
-                    self.defaults[local] = f"{target}.ts"
 
     @property
     def path(self) -> str:
@@ -2326,7 +2309,7 @@ class TsScan:
             if any(self._clocked(a, derived) for a in [*given, *args]):
                 self.flag(node, "P1", where)
 
-    # P3c: every config sets every key.
+    # P3c: the config sets every key.
     def _exported(self, tree: dict) -> dict | None:
         for node in tree["body"]:
             if node["type"] == "ExportDefaultDeclaration":
@@ -2336,52 +2319,24 @@ class TsScan:
                 return value if value.get("type") == "ObjectExpression" else None
         return None
 
-    def _flat(self, obj: dict, scan: TsScan, prefix: str = "") -> dict[str, dict]:
-        """The keys an object literal sets, as dotted paths, the keys of what it spreads of
-        another config among them, where it spreads that config (``...base``) or a part of it
-        (``...base.use``)."""
+    def _flat(self, obj: dict, prefix: str = "") -> dict[str, dict]:
+        """The keys an object literal sets, as dotted paths."""
         found: dict[str, dict] = {}
         for prop in obj["properties"]:
-            if prop["type"] == "SpreadElement":
-                found |= self._spread(_ts_unwrap(prop["argument"]), scan, prefix)
-                continue
             key = _ts_key(prop)
             if key is None:
                 continue
             value = _ts_unwrap(prop["value"])
             found[prefix + key] = prop
             if value.get("type") == "ObjectExpression":
-                found |= self._flat(value, scan, f"{prefix}{key}.")
+                found |= self._flat(value, f"{prefix}{key}.")
         return found
-
-    def _spread(self, arg: dict, scan: TsScan, prefix: str) -> dict[str, dict]:
-        part = ""
-        while arg.get("type") == "MemberExpression" and not arg.get("computed"):
-            part = f"{arg['property']['name']}.{part}"
-            arg = _ts_unwrap(arg["object"])
-        other = scan.defaults.get(arg.get("name", ""))
-        if other is None or other not in self.configs:
-            return {}
-        inner = TsScan(other, "", self.configs[other], self.configs)
-        exported = inner._exported(inner.tree)
-        if exported is None:
-            return {}
-        return {
-            prefix + key.removeprefix(part): prop
-            for key, prop in self._flat(exported, inner).items()
-            if key.startswith(part)
-        }
 
     def _config_keys(self) -> None:
         exported = self._exported(self.tree)
         node = next(n for n in self.tree["body"] if n["type"] == "ExportDefaultDeclaration")
-        found = {} if exported is None else self._flat(exported, self)
-        if self.rel == "vite.config.ts":
-            wanted = VITEST_KEYS
-        else:
-            server = any(k == "webServer" or k.startswith("webServer.") for k in found)
-            wanted = PLAYWRIGHT_KEYS + (SERVER_KEYS if server else ())
-        for key in wanted:
+        found = {} if exported is None else self._flat(exported)
+        for key in VITEST_KEYS:
             if key not in found:
                 self.flag(node, "P3c", "", f"{key} is not set")
 
@@ -2395,10 +2350,9 @@ class TsTree:
 def ts_scan_sources(sources: dict[str, str], trees: dict[str, dict] | None = None) -> TsTree:
     """The sites of TypeScript files, by ``rel`` under frontend/, parsed together once."""
     trees = parse_ts(sources) if trees is None else trees
-    configs = {rel: trees[rel] for rel in sources if rel in TS_CONFIGS}
     sites, derived = [], []
     for rel, source in sources.items():
-        scan = TsScan(rel, source, trees[rel], configs).scan()
+        scan = TsScan(rel, source, trees[rel]).scan()
         sites += scan.sites
         derived += scan.derived
     return TsTree(sites, derived)
@@ -2449,7 +2403,7 @@ NAMED = (
     Named("hang guard", "tests/hang_guard.py", ("tier_guard", "runs_out", "pace", "mark"),
           frozenset({"P3", "P4"}),
           "the tier's guard, runs_out and pace, which set the name a test gives them, and the "
-          "whole stack's test's own hang guard, derived from the container tests' guard"),
+          "container tests' guard given to each of them"),
     Named("hang guard", "tests/conftest.py",
           ("pytest_timeout_set_timer", "pytest_collection_modifyitems"),
           frozenset({"P2", "P3"}),
@@ -2478,13 +2432,6 @@ NAMED = (
     Named("guard tests", "tests/test_hang_guard.py",
           ("test_each_tiers_hang_guard_is_outlived_by_its_guard_whose_method_is_thread",),
           frozenset({"TIER"}), "the hang guard's own test of each tier's value, in a host test"),
-    Named("guard tests", "tests/test_hang_guard.py", ("frontend_guard_problems",),
-          frozenset({"TIER"}),
-          "the frontend's hang guards held, in a host test, to each tier's, the whole stack's to "
-          "the container tier's"),
-    Named("guard tests", "tests/test_e2e_server.py", ("",), frozenset({"TIER"}),
-          "the whole stack's config's resolved limit held, in a host test, to the container "
-          "tier's hang guard, under which its specs run"),
     Named("recorder's watch", "devtools/tmuxctl.py",
           ("", "Pane.wait_for", "Pane.wait_exit", "Pane.wait_stable", "Pane.close"),
           frozenset({"P1", "P2", "P3"}),
@@ -3207,7 +3154,7 @@ def test_a_stand_in_named_only_by_the_guard_is_reported():
 DERIVED = {"double", "child loop", "benchmark"}
 UNDER_DOUBLES = ("tests/test_workspace_limits.py", "tests/test_monitor.py")
 # The allowances the scan of the frontend's TypeScript must have made, each at least once.
-TS_DERIVED = {"turn", "guard", "zero"}
+TS_DERIVED = {"turn", "guard"}
 
 
 def real_tree_problems(tree: Tree) -> list[str]:
@@ -3329,15 +3276,11 @@ def test_a_planted_file_in_each_root_is_read(tmp_path):
 # --- the frontend's TypeScript: its twins and its scope ------------------------------------------
 
 UNIT_IMPORT = 'import { UNIT_HANG_GUARD_MS } from "./test/hangGuard";\n'
-GUARDS = (
-    "import { BROWSER_HANG_GUARD_MS as H, BROWSER_TEST_GUARD_MS as T }"
-    ' from "./src/test/hangGuard";\n'
-)
-CONFIG = 'import { defineConfig } from "@playwright/test";\n' + GUARDS
-# A Playwright config that sets every key; ``{more}`` adds to its object.
-WHOLE = (
-    CONFIG + "export default defineConfig({\n  timeout: T,\n  globalTimeout: 0,\n"
-    "  expect: { timeout: H },\n  use: { actionTimeout: H, navigationTimeout: H },\n{more}});\n"
+# Vitest's config, setting the keys ``{keys}`` names.
+VITE = (
+    'import {{ defineConfig }} from "vitest/config";\n'
+    'import {{ UNIT_TEST_GUARD_MS as T }} from "./src/test/hangGuard";\n'
+    "export default defineConfig({{\n  test: {{ {keys} }},\n}});\n"
 )
 
 # name: (form, {rel under frontend/: source}, the rel flagged, its line)
@@ -3360,10 +3303,10 @@ PLANTED_TS = {
     "a clock in a matcher": (
         "P1",
         {
-            "e2e/x.spec.ts": "const start = Date.now();\n"
+            "src/x.test.ts": "const start = Date.now();\n"
             "expect(Date.now()).toBeLessThan(start + 9);\n"
         },
-        "e2e/x.spec.ts",
+        "src/x.test.ts",
         2,
     ),
     "shouldAdvanceTime": (
@@ -3374,8 +3317,8 @@ PLANTED_TS = {
     ),
     "waitForTimeout": (
         "P2",
-        {"e2e/x.spec.ts": "await page.waitForTimeout(100);\n"},
-        "e2e/x.spec.ts",
+        {"src/test/x.ts": "await page.waitForTimeout(100);\n"},
+        "src/test/x.ts",
         1,
     ),
     "setTimeout with a delay": (
@@ -3393,8 +3336,8 @@ PLANTED_TS = {
     "setInterval": ("P2", {"src/x.test.tsx": "setInterval(f, 1000);\n"}, "src/x.test.tsx", 1),
     "a timeout option": (
         "P3",
-        {"e2e/x.spec.ts": "await expect(x).toBeVisible({ timeout: 2000 });\n"},
-        "e2e/x.spec.ts",
+        {"src/x.test.tsx": "await expect(x).toBeVisible({ timeout: 2000 });\n"},
+        "src/x.test.tsx",
         1,
     ),
     "a Timeout key": (
@@ -3405,18 +3348,18 @@ PLANTED_TS = {
     ),
     "test.setTimeout": (
         "P3",
-        {"e2e-stack/x.spec.ts": "test.setTimeout(90_000);\n"},
-        "e2e-stack/x.spec.ts",
+        {"src/x.test.ts": "test.setTimeout(90_000);\n"},
+        "src/x.test.ts",
         1,
     ),
-    "test.slow": ("P3", {"e2e/x.spec.ts": "test.slow();\n"}, "e2e/x.spec.ts", 1),
+    "test.slow": ("P3", {"src/x.test.ts": "test.slow();\n"}, "src/x.test.ts", 1),
     "testInfo.slow": (
         "P3",
-        {"e2e/x.spec.ts": 'test("x", async ({ page }, testInfo) => {\n  testInfo.slow();\n});\n'},
-        "e2e/x.spec.ts",
+        {"src/x.test.ts": 'test("x", async ({ page }, testInfo) => {\n  testInfo.slow();\n});\n'},
+        "src/x.test.ts",
         2,
     ),
-    "test.info().slow": ("P3", {"e2e/x.spec.ts": "test.info().slow();\n"}, "e2e/x.spec.ts", 1),
+    "test.info().slow": ("P3", {"src/x.test.ts": "test.info().slow();\n"}, "src/x.test.ts", 1),
     "userEvent with a delay": (
         "P2",
         {"src/x.test.tsx": "const user = userEvent.setup({\n  delay: 50,\n});\n"},
@@ -3438,10 +3381,10 @@ PLANTED_TS = {
     "a timeout through a parameter": (
         "P3",
         {
-            "e2e/nav.ts": "export async function made(p, wait) {\n"
+            "src/test/x.ts": "export async function made(p, wait) {\n"
             "  await expect(p).toBeVisible({ timeout: wait });\n}\n"
         },
-        "e2e/nav.ts",
+        "src/test/x.ts",
         2,
     ),
     "a local guard": (
@@ -3450,52 +3393,10 @@ PLANTED_TS = {
         "src/x.test.ts",
         1,
     ),
-    "another tier's guard": (
-        "TIER",
-        {
-            "e2e-stack/x.spec.ts": "import { BROWSER_HANG_GUARD_MS } from "
-            '"../src/test/hangGuard";\nawait expect(x).toBeVisible('
-            "{ timeout: BROWSER_HANG_GUARD_MS });\n"
-        },
-        "e2e-stack/x.spec.ts",
-        2,
-    ),
-    "a config without a key": (
-        "P3c",
-        {
-            "playwright.config.ts": CONFIG + "export default defineConfig({\n"
-            "  timeout: T,\n  globalTimeout: 0,\n  expect: { timeout: H },\n"
-            "  use: { actionTimeout: H },\n});\n"
-        },
-        "playwright.config.ts",
-        3,
-    ),
-    "a web server without its timeout": (
-        "P3c",
-        {"playwright.config.ts": WHOLE.replace("{more}", '  webServer: { command: "x" },\n')},
-        "playwright.config.ts",
-        3,
-    ),
     "Vitest without a hook's": (
         "P3c",
-        {
-            "vite.config.ts": 'import { defineConfig } from "vitest/config";\n'
-            'import { UNIT_TEST_GUARD_MS as T } from "./src/test/hangGuard";\n'
-            "export default defineConfig({\n  test: { testTimeout: T, "
-            "teardownTimeout: T },\n});\n"
-        },
+        {"vite.config.ts": VITE.format(keys="testTimeout: T, teardownTimeout: T")},
         "vite.config.ts",
-        3,
-    ),
-    "a config spreading one without a key": (
-        "P3c",
-        {
-            "playwright.config.ts": WHOLE.replace("navigationTimeout: H", "").replace("{more}", ""),
-            "playwright.screenshots.config.ts": 'import { defineConfig } from "@playwright/test";\n'
-            'import base from "./playwright.config";\nexport default defineConfig({\n  ...base,\n'
-            '  use: { ...base.use, trace: "off" },\n});\n',
-        },
-        "playwright.screenshots.config.ts",
         3,
     ),
 }
@@ -3518,16 +3419,9 @@ CLEAN_TS = {
         "turn",
         {"src/test/x.ts": "await new Promise((r) => setTimeout(r));\nsetTimeout(f, 0);\n"},
     ),
-    "every key set, a config's own and spread": (
+    "every key set": (
         "structure",
-        {
-            "playwright.config.ts": WHOLE.replace(
-                "{more}", '  webServer: { command: "x", timeout: H },\n'
-            ),
-            "playwright.screenshots.config.ts": 'import { defineConfig } from "@playwright/test";\n'
-            'import base from "./playwright.config";\nexport default defineConfig({\n  ...base,\n'
-            '  use: { ...base.use, trace: "off" },\n});\n',
-        },
+        {"vite.config.ts": VITE.format(keys="testTimeout: T, hookTimeout: T, teardownTimeout: T")},
     ),
     "a clock read and not compared": (
         "structure",
@@ -3562,19 +3456,20 @@ FORMS = {
     "P2": ("time.sleep", "waitForTimeout"),
     "P2s": ("a shell sleep", None),
     "P3": ("a join", "a timeout option"),
-    "P3c": (None, "a config without a key"),
+    "P3c": (None, "Vitest without a hook's"),
     "P4": ("a monkeypatched deadline", None),
     "GUARD": ("a local HANG_GUARD", "a local guard"),
-    "TIER": (None, "another tier's guard"),
+    "TIER": (None, None),
 }
 NOT_SPELLED = {
-    ("P2s", "ts"): "the frontend's tests start no child program from a source they write: what "
-    "they run is an argv (execFileSync in e2e-stack/stack.spec.ts)",
+    ("P2s", "ts"): "the frontend's tests start no child program",
     ("P3c", "python"): "pytest's limits are the hang guard's, in pyproject.toml, which "
     "tests/test_hang_guard.py and tests/test_make.py hold",
     ("P4", "ts"): "an ES module's exports are read-only bindings, which no test can set: no spec "
     "patches a module's timing constant",
     ("TIER", "python"): "spelled by TIERED's twins, which give the tiers that reach a helper",
+    ("TIER", "ts"): "one tier: the component tests' (frontend/src/test/hangGuard.ts), so no "
+    "guard is another tier's",
 }
 
 
@@ -3637,8 +3532,7 @@ def test_every_form_planted_is_in_the_table():
 
 def test_the_typescript_scope_is_the_frontends_tests_and_their_configs():
     rels = ts_scope()
-    for known in ("src/api.test.ts", "src/test/setup.ts", "src/test/hangGuard.ts",
-                  "e2e/touch.spec.ts", "e2e-stack/stack.spec.ts", *TS_CONFIGS):  # fmt: skip
+    for known in ("src/api.test.ts", "src/test/setup.ts", "src/test/hangGuard.ts", *TS_CONFIGS):
         assert known in rels, known
     assert "src/api.ts" not in rels  # the product's own
     vite = (FRONTEND / "vite.config.ts").read_text(encoding="utf-8")
@@ -3649,11 +3543,11 @@ def test_the_typescript_scope_is_the_frontends_tests_and_their_configs():
 
 def test_a_planted_typescript_file_in_each_root_is_read(tmp_path):
     """A file of the scanned shape planted under each root of the TypeScript scope, in a
-    scratch repository, is listed and its site found, each of the four configs among them,
-    whose unset limits are found too; the product's own, and another config, are not listed."""
+    scratch repository, is listed and its site found, the config among them, whose unset
+    limits are found too; the product's own, and another config, are not listed."""
     subprocess.run(["git", "init", "-q", str(tmp_path)], check=True, timeout=HANG_GUARD)
     frontend = tmp_path / "frontend"
-    planted = sorted(["src/x.test.tsx", "src/test/x.ts", "e2e/x.ts", "e2e-stack/x.ts", *TS_CONFIGS])
+    planted = sorted(["src/x.test.tsx", "src/test/x.ts", *TS_CONFIGS])
     for rel in [*planted, "src/x.tsx", "other.config.ts"]:
         (frontend / rel).parent.mkdir(parents=True, exist_ok=True)
         (frontend / rel).write_text("setInterval(f, 1);\nexport default {};\n", encoding="utf-8")

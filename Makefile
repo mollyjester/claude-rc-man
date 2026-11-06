@@ -1,9 +1,9 @@
-# No target runs beside another under make -j: check-containers runs its parts one after the
-# other, stopping at the first red one, and each on-demand run starts an engine of its own and
-# builds the same images, which side by side would only compete for the machine.
+# No target runs beside another under make -j: make test-container and make benchmark each start
+# an engine of their own and build the same images, which side by side would only compete for
+# the machine.
 .NOTPARALLEL:
 
-.PHONY: setup test test-container check-ui benchmark lint format frontend-setup frontend-test frontend-build e2e screenshots check check-containers
+.PHONY: setup test test-container benchmark lint format frontend-setup frontend-test frontend-build screenshots check
 
 setup: frontend-setup  ## install the development environment
 	uv sync
@@ -19,22 +19,12 @@ test:  ## every Python test that runs on the host, in parallel
 test-container: export RCMAN_REQUIRE_CONTAINER = 1
 # In one process, as the container tests share the images their session fixtures build,
 # which each pytest-xdist worker would build again.
-test-container:  ## on demand: the Python tests that need a container but not the whole stack; they fail rather than skip
-	uv run pytest -m "container and not stack and not real_claude and not benchmark"
-
-check-ui: export RCMAN_REQUIRE_CONTAINER = 1
-# In one process, like test-container, whose reason holds here too.
-check-ui:  ## on demand: the whole stack in a browser; needs make frontend-setup once, like e2e
-	uv run pytest -m "stack and not real_claude and not benchmark"
-
-# One after the other (.NOTPARALLEL above). It stops at the first part that is red;
-# make -k check-containers runs both parts and reports each red one, so that everything red
-# is fixed together.
-check-containers: test-container check-ui  ## on demand: both on-demand runs, stopping at the first red one (make -k: both); when the working rules require them, and before the live reinstall
+test-container:  ## on demand: the Python tests that need a container; they fail rather than skip; when the working rules require them, and before the live reinstall
+	uv run pytest -m "container and not real_claude and not benchmark"
 
 benchmark: export RCMAN_REQUIRE_CONTAINER = 1
 # In one process, like test-container, as its Podman test needs the tests' engine; -s shows
-# what each test reports. In no other target, check-containers included: it decides nothing.
+# what each test reports. In no other target: it decides nothing.
 benchmark:  ## on demand, not a check: the tests that measure and report; they fail only when they cannot measure
 	uv run pytest -m "benchmark and not real_claude" -s
 
@@ -48,7 +38,7 @@ format:  ## apply formatting and safe lint fixes, to the Python code and the fro
 	uv run ruff check --fix .
 	cd frontend && npm run format
 
-frontend-setup:  ## install the frontend's packages and Playwright's browser
+frontend-setup:  ## install the frontend's packages and the browser make screenshots drives
 	cd frontend && npm ci && npx playwright install chromium
 
 frontend-test:  ## type-check the frontend and run its component tests
@@ -57,12 +47,9 @@ frontend-test:  ## type-check the frontend and run its component tests
 frontend-build:  ## build the frontend into frontend/dist
 	cd frontend && npm run build
 
-e2e: frontend-build  ## the built frontend in a browser, against the real backend
-	cd frontend && npx playwright test
-
-# Not a test: it asserts nothing, and no test run takes it (tests/test_make.py).
+# Not a test: it asserts nothing (devtools/screenshots.py).
 screenshots: frontend-build  ## not a test: every page at a phone's and a desktop's width, light and dark, into frontend/test-results/screenshots/
-	cd frontend && npx playwright test --config playwright.screenshots.config.ts
+	uv run python -m devtools.screenshots
 
 check: export RCMAN_REQUIRE_REAL_CLAUDE = 1
-check: lint test frontend-test e2e  ## the full check: lint and every test that runs on the host; tests that would skip fail instead
+check: lint test frontend-test frontend-build  ## the full check: lint and every test that runs on the host; tests that would skip fail instead

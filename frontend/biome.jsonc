@@ -9,15 +9,7 @@
     // Named explicitly rather than taken from .gitignore, so that what is
     // checked does not depend on git or on what happens to be ignored. The
     // lock file is npm's own output.
-    "includes": [
-      "src/**",
-      "e2e/**",
-      "e2e-stack/**",
-      "*.ts",
-      "*.json",
-      "index.html",
-      "!package-lock.json"
-    ]
+    "includes": ["src/**", "screenshots/**", "*.ts", "*.json", "index.html", "!package-lock.json"]
   },
   "formatter": {
     // Spaces, as in the rest of the repository, rather than Biome's tabs.
@@ -82,14 +74,8 @@
   },
   "overrides": [
     {
-      // The tests: the component tests, their support in src/test/, and the browser tests.
-      "includes": [
-        "src/**/*.test.ts",
-        "src/**/*.test.tsx",
-        "src/test/**",
-        "e2e/**",
-        "e2e-stack/**"
-      ],
+      // The tests: the component tests and their support in src/test/.
+      "includes": ["src/**/*.test.ts", "src/**/*.test.tsx", "src/test/**"],
       "linter": {
         "rules": {
           "style": {

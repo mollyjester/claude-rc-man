@@ -14,8 +14,8 @@ import { UNIT_HANG_GUARD_MS } from "./hangGuard";
 // test has the stand-in in its place.
 vi.mock("../xtermView", () => import("./fakeXterm"));
 
-// jsdom has the <dialog> element but not its behaviour: every test has the stand-in, which
-// e2e/touch.spec.ts holds the browser's own to.
+// jsdom has the <dialog> element but not its behaviour: every test has the stand-in
+// (src/test/fakeDialog.ts).
 installDialog();
 
 // How long a findBy* or waitFor waits: the component tests' step (src/test/hangGuard.ts), a bound

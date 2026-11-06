@@ -308,7 +308,7 @@ def github_stand_in(tmp_path_factory):
         yield base
 
 
-from tests.fake_store import FAKE_VERSION, fake_claude  # noqa: E402,F401 - the tests' own
+from devtools.fake_store import FAKE_VERSION, fake_claude  # noqa: E402,F401 - the tests' own
 
 
 @contextlib.contextmanager
@@ -530,7 +530,7 @@ def signed_in(app, workspace: dict, trusted: bool = False) -> None:
     layout = workspaces.runtime.layout(container_name(workspace["id"]))
     folders = [layout.work] if trusted else []
     fake.write_state(Path(layout.config), logged_in=True, trusted=folders)
-    from tests.e2e_server import record_sign_in
+    from devtools.world import record_sign_in
 
     record_sign_in(workspaces.settings.database, workspaces.get(workspace["id"]).person)
 
