@@ -186,7 +186,8 @@ ALLOWANCES = {
     "tier_guard": True, "not seconds": True, "double in a closure": True,
     "positional not seconds": True, "seconds only at a disagreeing slot": True,
     "constant": True, "parameter": True, "double (H7)": True, "a double's method (H7)": True,
-    "a double's helper (H7)": True,
+    "a double's helper (H7)": True, "loop variable not seconds": True,
+    "only seconds through a loose flow": True,
     "turn (H8)": True, "child loop (H13)": True, "benchmark (H10)": True,
 }  # fmt: skip
 
@@ -205,7 +206,9 @@ class FileScan:
         self.modules = modules or {}
         self.sites: list[Site] = []
         self.derived: list[tuple[str, Site]] = []
-        self.flows: set[tuple[str, int, str, bool]] = set()  # (function, index, name, method)
+        # (function, index, name, method, loose): a loose flow's callers are checked only
+        # where they give a value shown to be seconds
+        self.flows: set[tuple[str, int, str, bool, bool]] = set()
         self.assignments: list[tuple[ast.AST, ast.AST, ast.AST]] = []
         self.module_aliases: dict[str, str] = {}
         self.imported: dict[str, str] = {}
@@ -452,7 +455,7 @@ class FileScan:
             x.arg for x in (a.vararg, a.kwarg) if x
         ]
 
-    def parameter_allowed(self, fn: ast.AST, name: str) -> bool:
+    def parameter_allowed(self, fn: ast.AST, name: str, loose: bool = False) -> bool:
         """A helper's parameter: not a test's, a fixture's or a lambda's, with an allowed default
         if it has one; its callers are checked at each call through the flow it records."""
         if not ALLOWANCES["parameter"]:
@@ -465,7 +468,7 @@ class FileScan:
         params = positional_parameters(fn)
         method = isinstance(self.owner.get(fn), ast.ClassDef)
         index = params.index(name) if name in params else -1
-        self.flows.add((fn.name, index, name, method))
+        self.flows.add((fn.name, index, name, method, loose))
         return True
 
     @staticmethod
@@ -693,7 +696,7 @@ class FileScan:
         self._setattrs()
         return self
 
-    def finish(self, table: Table, flows: set[tuple[str, int, str, bool]]) -> list[Site]:
+    def finish(self, table: Table, flows: set[tuple[str, int, str, bool, bool]]) -> list[Site]:
         """The calls checked against the parameter table and the flows of every file, then the
         sites, the benchmark's left out."""
         self._table_calls(table, flows)
@@ -824,10 +827,11 @@ class FileScan:
         if self.on_a_double(node):
             if (node.args or node.keywords) and self.allow("double (H7)", node, "P3"):
                 return
-        elif node.keywords and self.builds_a_double(node):
+        keywords = node.keywords
+        if keywords and self.builds_a_double(node):
             if self.allow("a double's helper (H7)", node, "P3"):
-                return
-        for kw in node.keywords:
+                keywords = []  # its keywords go to the double; its flows are still checked
+        for kw in keywords:
             if kw.arg and TIMING_KEYWORD.search(kw.arg) and not self.allowed(kw.value, node):
                 if ALLOWANCES.get("P3 keywords", True):
                     self.site(node, "P3", f"{kw.arg}={self.text(kw.value)} in {self.text(f)}")
@@ -872,12 +876,12 @@ class FileScan:
             return
         self.site(node, "P4", f"runs_out at {self.text(at)}: not 0 or a floor (G-FLOOR)")
 
-    def _table_calls(self, table: Table, flows: set[tuple[str, int, str, bool]]) -> None:
+    def _table_calls(self, table: Table, flows: set[tuple[str, int, str, bool, bool]]) -> None:
         if not ALLOWANCES.get("P3 table", True):
             return
-        by_function: dict[str, list[tuple[int, str, bool]]] = {}
-        for fname, index, pname, method in flows:
-            by_function.setdefault(fname, []).append((index, pname, method))
+        by_function: dict[str, list[tuple[int, str, bool, bool]]] = {}
+        for fname, index, pname, method, loose in sorted(flows):
+            by_function.setdefault(fname, []).append((index, pname, method, loose))
         for node in self.calls:
             if id(node) in self.flagged_calls and ALLOWANCES.get("P3 one site", True):
                 continue  # one call, one site
@@ -892,7 +896,11 @@ class FileScan:
                 continue
             if self.on_a_double(node) and ALLOWANCES["double (H7)"]:
                 continue
-            if self.builds_a_double(node) and ALLOWANCES["a double's helper (H7)"]:
+            if (
+                not ALLOWANCES.get("P3 flow past a double's helper", True)
+                and self.builds_a_double(node)
+                and ALLOWANCES["a double's helper (H7)"]
+            ):
                 continue
             before = len(self.sites)
             checked: set[int] = set()
@@ -908,15 +916,20 @@ class FileScan:
                 if not ALLOWANCES.get("P3 every value", True) and not self.timeish(value):
                     continue
                 if ALLOWANCES["seconds only at a disagreeing slot"]:
-                    # a name of no agreed meaning: only what is shown to be seconds; a name
-                    # that flows from a caller is checked at that caller, through its flow
+                    # a name of no agreed meaning: only what is shown to be seconds; a helper's
+                    # parameter is checked at its callers, through a loose flow
+                    helper = self.helper_given(value, node)
+                    if helper is not None and ALLOWANCES.get("P3 disagreeing parameter", True):
+                        if not self.parameter_allowed(helper, value.id, loose=True):
+                            self.site(node, "P3", f"{name} at {i}: {self.text(value)}")
+                        continue
                     if not self.positively_seconds(value, node):
                         continue
                 elif self.not_seconds(value, node):
                     continue
                 if not self.allowed(value, node):
                     self.site(node, "P3", f"{name} at {i}: {self.text(value)}")
-            for index, pname, method in by_function.get(name, ()):
+            for index, pname, method, loose in by_function.get(name, ()):
                 if not method and isinstance(f, ast.Attribute):
                     # a module's function called through its module: only one of the project's
                     if q is None or not ALLOWANCES.get("P3 flow through a module", True):
@@ -928,6 +941,12 @@ class FileScan:
                 if value is None or index in checked:
                     continue
                 checked.add(index)
+                if (
+                    loose
+                    and ALLOWANCES["only seconds through a loose flow"]
+                    and not self.positively_seconds(value, node)
+                ):
+                    continue  # given to a slot of no agreed meaning: only seconds are checked
                 if method and (
                     self.not_seconds(value, node)
                     or (not ALLOWANCES.get("P3 every value", True) and not self.timeish(value))
@@ -936,6 +955,39 @@ class FileScan:
                 if not self.allowed(value, node):
                     self.site(node, "P3", f"{name}'s {pname}: {self.text(value)}")
             del self.sites[before + 1 :]  # one site per call
+
+    def helper_given(self, value: ast.AST, at: ast.AST) -> ast.AST | None:
+        """The helper (not a test, a fixture or a lambda) whose parameter ``value`` is."""
+        helper = self.function_of(at)
+        if (
+            isinstance(value, ast.Name)
+            and isinstance(helper, FUNCTIONS)
+            and value.id in self.parameter_names(helper)
+            and not self.is_test(helper)
+            and not self.is_fixture(helper)
+        ):
+            return helper
+        return None
+
+    def table_flows(self, table: Table) -> None:
+        """Before the flows of every file are put together: a helper's parameter given at a
+        position of the table flows to the helper's callers, loosely where the name's
+        definitions disagree."""
+        for node in self.calls:
+            f, args, _ = self.unwrapped(node)
+            name = f.attr if isinstance(f, ast.Attribute) else getattr(f, "id", None)
+            agreed = table.positions.get(name, ())
+            if not ALLOWANCES.get("P3 table position flow", True):
+                agreed = ()
+            for i, loose in [(i, False) for i in agreed] + [
+                (i, True) for i in table.disagreeing.get(name, ())
+            ]:
+                if i < len(args) and (
+                    not loose or ALLOWANCES.get("P3 disagreeing parameter", True)
+                ):
+                    helper = self.helper_given(args[i], node)
+                    if helper is not None:
+                        self.parameter_allowed(helper, args[i].id, loose=loose)
 
     def unwrapped(self, node: ast.Call):
         """The function, arguments and keywords a call gives: functools.partial's own."""
@@ -960,6 +1012,13 @@ class FileScan:
         if isinstance(node, self.NOT_SECONDS):
             return True
         if isinstance(node, ast.Name):
+            looped = self.loop_iterable(node, at)
+            if looped is not None and ALLOWANCES["loop variable not seconds"]:
+                return (
+                    isinstance(looped, ast.Tuple | ast.List)
+                    and bool(looped.elts)
+                    and all(self.not_seconds(e, at) for e in looped.elts)
+                )
             fn = self.function_of(at)
             binds = self.bindings_in(fn, node.id) if fn is not None else []
             if not binds:
@@ -1326,20 +1385,35 @@ class FileScan:
         module-local helper's parameter given a literal at every call."""
         if not isinstance(node, ast.Name):
             return None
-        parent = self.parents.get(at)
-        while parent is not None:
-            if isinstance(parent, ast.For) and isinstance(parent.target, ast.Name) and (
-                parent.target.id == node.id):  # fmt: skip
-                it = parent.iter
-                if isinstance(it, ast.Tuple | ast.List) and all(
-                    isinstance(e, ast.Constant) and isinstance(e.value, str) for e in it.elts
-                ):
-                    return [e.value for e in it.elts]
-                return None
-            parent = self.parents.get(parent)
+        it = self.loop_iterable(node, at)
+        if it is not None:
+            if isinstance(it, ast.Tuple | ast.List) and all(
+                isinstance(e, ast.Constant) and isinstance(e.value, str) for e in it.elts
+            ):
+                return [e.value for e in it.elts]
+            return None
         fn = self.function_of(at)
         if isinstance(fn, FUNCTIONS) and node.id in self.parameter_names(fn):
             return self.literal_arguments(fn, node.id)
+        return None
+
+    COMPREHENSIONS = (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)
+
+    def loop_iterable(self, node: ast.Name, at: ast.AST) -> ast.AST | None:
+        """What ``node`` loops over, where ``at`` is in a for loop or a comprehension whose
+        target it is; None where it is no loop variable there."""
+        parent = self.parents.get(at)
+        while parent is not None:
+            if isinstance(parent, ast.For):
+                loops = [(parent.target, parent.iter)]
+            elif isinstance(parent, self.COMPREHENSIONS):
+                loops = [(g.target, g.iter) for g in parent.generators]
+            else:
+                loops = []
+            for target, it in loops:
+                if isinstance(target, ast.Name) and target.id == node.id:
+                    return it
+            parent = self.parents.get(parent)
         return None
 
     def literal_arguments(self, fn: ast.AST, param: str) -> list[str] | None:
@@ -1381,8 +1455,10 @@ def scan_source(
     path: str, source: str, table: Table | None = None, modules: dict | None = None
 ) -> FileScan:
     """One file scanned alone: its own flows are the only ones its calls are checked against."""
+    table = table or Table()
     scan = FileScan(path, ast.parse(source), source, modules).scan()
-    scan.finish(table or Table(), scan.flows)
+    scan.table_flows(table)
+    scan.finish(table, set(scan.flows))
     return scan
 
 
@@ -1450,6 +1526,8 @@ def scan_tree(files: Iterable[str] | None = None) -> Tree:
         FileScan(f, trees[f], sources[f], modules).scan()
         for f in (scoped_files() if files is None else files)
     ]
+    for s in scans:
+        s.table_flows(table)
     flows = set().union(*(s.flows for s in scans)) if scans else set()
     sites, derived = [], []
     for s in scans:
@@ -1487,9 +1565,11 @@ NAMED = (
           "until's PACE and SLOW, the paces between looks"),
     Named("H2", "tests/time_doubles.py",
           ("_Double._hang_left", "FakeTime._poll", "FakeTime.sleep", "WatchedCondition.wait_for",
-           "ControlledEvent.wait"),
+           "ControlledEvent.wait", "_Double._until", "FakeTime._park", "_Double.wait_waiting",
+           "_Double._expire", "RecordingLock.acquire", "RecordingLock.wait_blocked"),
           frozenset({"P1", "P2", "P3"}),
-          "the doubles' hang bound, which only turns a frozen wait into DoubleHung"),
+          "the doubles' hang bound, which only turns a frozen wait into DoubleHung, and their "
+          "wait records, whose parameters are named wait"),
     Named("H2", "tests/time_doubles.py", ("",), frozenset({"P3"}),
           "the doubles' POLL_CAP and POLL_GAP"),
     Named("H3", "tests/hang_guard.py", ("tier_guard", "runs_out", "pace"),
@@ -1505,10 +1585,13 @@ NAMED = (
           "the short hang bounds given to the doubles whose ending of a hang the test asserts"),
     Named("H4", "tests/test_until.py",
           ("test_a_condition_that_never_holds_fails_at_the_tiers_guard_with_what_it_last_gave",
-           "test_a_container_tests_tier_guard_is_the_container_hang_guard"),
+           "test_a_container_tests_tier_guard_is_the_container_hang_guard",
+           "test_runs_out_puts_a_deadline_at_the_floor_the_product_takes",
+           "test_runs_out_refuses_a_deadline_that_is_not_shortened"),
           frozenset({"P4"}),
-          "until's and tier_guard's own tests: a guard of 0 that until has run out against, and "
-          "the container tier read from the registry"),
+          "until's, tier_guard's and runs_out's own tests: a guard of 0 that until has run out "
+          "against, the container tier read from the registry, and runs_out given a floor and "
+          "a deadline it refuses"),
     Named("Q1", "devtools/held_folders.py", ("", "_stop_server", "unheld", "_clear"),
           frozenset({"P1", "P2", "P3"}),
           "the sweep of held folders: UNLOCKED_FOR and TMUX_GONE_WITHIN are its behaviour, and "
@@ -1832,6 +1915,17 @@ PLANTED = {
     "a disagreeing name given an imported number": (
         "P3", "from tests.planted_constants import SHORT\n" + fn("go('a', SHORT)"), 3,
         "P3 seconds through an import"),
+    # the review's fourth round
+    "a helper's parameter at a disagreeing slot given a number": (
+        "P3", "def helper(p, n):\n    go(p, n)\ndef test_x(p):\n    helper(p, 0.5)\n", 4,
+        "P3 disagreeing parameter"),
+    "a helper's parameter at a table position given a number": (
+        "P3", "def helper(p, n):\n    held(p, n)\ndef test_x(p):\n    helper(p, 0.5)\n", 4,
+        "P3 table position flow"),
+    "a parameter of a helper that builds a double": (
+        "P3", "from tests.time_doubles import FakeTime\ndef looping(t, timeout=None):\n"
+        "    t.join(timeout=timeout)\n    return FakeTime()\n"
+        "def test_x(t):\n    looping(t, timeout=0.5)\n", 6, "P3 flow past a double's helper"),
     # the guard's own names
     "a local HANG_GUARD": ("GUARD", "HANG_GUARD = 0.5\n", 1, "guard names"),
 }  # fmt: skip
@@ -1928,6 +2022,13 @@ CLEAN = {
         "from tests.planted_constants import NAME\nfrom tests.people import BOB\n"
         + fn("go(BOB, tmp_path)\ngo(NAME, folder)\ngo(*args)\ngo(r.json(), url)",
              "tmp_path, folder, args, r, url")),
+    "a helper's parameters at a disagreeing slot given what is not seconds": (
+        "only seconds through a loose flow",
+        "def helper(c, p):\n    go(c, p)\n" + fn("helper(client, tmp_path)", "client, tmp_path")),
+    "a wait on a loop variable over names": (
+        "loop variable not seconds",
+        fn("for name in ('one', 'two'):\n    run.wait(name)\n"
+           "found = [run.wait(n) for n in ('one', 'two')]", "run")),
     "a Clock's advance (H7)": ("double (H7)", "from tests.time_doubles import Clock\n"
                                "def test_x():\n    clock = Clock()\n    clock.advance(600)\n"),
     "a double's method as a value (H7)": (
