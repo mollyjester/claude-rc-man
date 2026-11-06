@@ -336,16 +336,17 @@ def test_make_check_without_the_host_run_is_reported(tmp_path):
     assert problems == [f"not run by make check: {n}" for n in sorted(everything().host)]
 
 
-def test_make_check_containers_without_the_container_run_is_reported(tmp_path):
-    """Planted twin: make check-containers without test-container misses those container
-    tests."""
+def test_make_check_containers_with_the_host_run_for_the_container_run_is_reported(tmp_path):
+    """Planted twin: make check-containers making make test in place of make test-container
+    misses those container tests and runs the host tests, which make check runs."""
     makefile = planted(
-        tmp_path, "check-containers: test-container check-ui", "check-containers: check-ui"
+        tmp_path, "check-containers: test-container check-ui", "check-containers: test check-ui"
     )
     tests = everything()
     problems = on_demand_problems(recorded(tmp_path, "check-containers", makefile))
     assert problems == [
-        f"not run by make check-containers: {n}" for n in sorted(tests.container - tests.stack)
+        *(f"not run by make check-containers: {n}" for n in sorted(tests.container - tests.stack)),
+        *(f"a host test in make check-containers: {n}" for n in sorted(tests.host)),
     ]
 
 

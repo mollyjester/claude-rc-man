@@ -65,4 +65,4 @@ screenshots: frontend-build  ## not a test: every page at a phone's and a deskto
 	cd frontend && npx playwright test --config playwright.screenshots.config.ts
 
 check: export RCMAN_REQUIRE_REAL_CLAUDE = 1
-check: lint test frontend-test e2e  ## lint and every test that runs on the host; tests that would skip fail instead
+check: lint test frontend-test e2e  ## the full check: lint and every test that runs on the host; tests that would skip fail instead
