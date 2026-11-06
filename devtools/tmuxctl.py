@@ -8,8 +8,9 @@ final screen and exit status can still be read.
 
 Its waits look at the screen every POLL_SECONDS. Each gives up only when its caller passes a
 ``timeout``, as the recorder's command line does against the real `claude` (RealWatch in
-devtools/record_claude.py); with none it waits until what it waits for comes about, and a test,
-which passes none, is ended by its hang guard instead. ``timeout=0`` gives up after one look.
+devtools/record_claude.py); with none it waits until what it waits for comes about. A test passes
+its tier's hang guard, so that a hang fails there with the screen in the TimeoutError's message;
+``timeout=0`` gives up after one look.
 """
 
 from __future__ import annotations
@@ -60,7 +61,7 @@ class Pane:
             raise RuntimeError("a Pane runs one program; respawn with rerun()")
         self._tmux(
             "new-session", "-d", "-s", "p", "-x", str(self.width), "-y", str(self.height),
-            "sleep", "86400",
+            "sleep", "infinity",
         )  # fmt: skip
         self._tmux("set-option", "-t", "p", "remain-on-exit", "on")
         self._tmux("set-option", "-t", "p", "remain-on-exit-format", "")

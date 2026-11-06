@@ -14,6 +14,7 @@ import pytest
 
 from devtools import held_folders as hf
 from tests import killed_runs as kr
+from tests.hang_guard import HANG_GUARD
 
 REPO = Path(__file__).resolve().parent.parent
 TMP = hf.TMP
@@ -190,7 +191,17 @@ def test_scrub_removes_its_own_without_following_links(tmp_path, stem_prefix):
     (left / "deep").chmod(0)
     sock = left / "x.sock"
     started = subprocess.run(
-        ["tmux", "-S", str(sock), "-f", "/dev/null", "new-session", "-d", "sleep", "600"]
+        [
+            "tmux",
+            "-S",
+            str(sock),
+            "-f",
+            "/dev/null",
+            "new-session",
+            "-d",
+            "sleep",
+            f"{3 * HANG_GUARD:g}",
+        ]
     )
     assert started.returncode == 0 and stat.S_ISSOCK(sock.lstat().st_mode)
     kr.scrub(str(left), (stem_prefix,), tmp_path)

@@ -38,12 +38,13 @@ def other_process_holding_until_told(path):
 
 def waiting_on(path: Path) -> bool:
     """Whether a lock of the file at ``path`` is waited for, as the kernel's table of locks
-    (/proc/locks) says: a waiter's line is marked ``->``, and names the file by its inode."""
-    found = os.stat(path)
-    inode = f"{os.major(found.st_dev):02x}:{os.minor(found.st_dev):02x}:{found.st_ino}"
+    (/proc/locks) says: a waiter's line is marked ``->``, and names the file by its inode, the
+    last part of its ``major:minor:inode``. The device is not matched: on btrfs a file's st_dev
+    is not the device the table names."""
+    inode = f":{os.stat(path).st_ino}"
     return any(
-        "->" in line and inode in line.split()
-        for line in Path("/proc/locks").read_text().splitlines()
+        "->" in fields and any(f.count(":") == 2 and f.endswith(inode) for f in fields)
+        for fields in (line.split() for line in Path("/proc/locks").read_text().splitlines())
     )
 
 

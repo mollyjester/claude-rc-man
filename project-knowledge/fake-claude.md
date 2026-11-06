@@ -245,8 +245,10 @@ is given and has no default:
   capture it is for, and at the hang bound it fails with how the last screen
   differs.
 
-No test's watch gives the pane's waits a limit: a hang is ended by the test's
-hang guard. The fake's own threshold, `MIN_ANSWER_SECONDS`, is held against a
+Every test's watch, and every test that waits on a pane itself, gives the
+pane's waits the tier's guard (`tier_guard()`, or `HANG_GUARD` in a host test),
+so that a hang fails there with tmuxctl's `TimeoutError` and the screen the pane
+last showed; a test meant to see a wait give up passes `0`. The fake's own threshold, `MIN_ANSWER_SECONDS`, is held against a
 clock only the test moves (`tests/test_fake_claude.py`).
 
 ## Approving a new Claude Code version

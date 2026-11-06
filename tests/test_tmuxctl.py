@@ -7,6 +7,7 @@ import pytest
 
 from devtools import held_folders, tmuxctl
 from helpers import screens
+from tests.hang_guard import HANG_GUARD
 from tests.until import until
 
 # Waits, in the program a test runs, until it is signalled or killed.
@@ -21,7 +22,7 @@ def pane():
 
 def test_the_panes_tmux_server_is_in_a_held_folder_of_its_own(pane, tmp_path):
     """So a run killed by a signal leaves it for the next run to stop."""
-    pane.run(["sleep", "60"], cwd=tmp_path, env={})
+    pane.run(["sleep", f"{3 * HANG_GUARD:g}"], cwd=tmp_path, env={})
     folder = pane.socket.parent
     assert held_folders.made_with("rcp-")(folder.name) and folder.parent == held_folders.TMP
     assert not held_folders.unheld(folder)
@@ -29,21 +30,21 @@ def test_the_panes_tmux_server_is_in_a_held_folder_of_its_own(pane, tmp_path):
 
 def test_screen_shows_command_output_and_exit_status(pane, tmp_path):
     pane.run([sys.executable, "-c", "print('hello'); raise SystemExit(3)"], cwd=tmp_path, env={})
-    assert pane.wait_exit() == 3
+    assert pane.wait_exit(timeout=HANG_GUARD) == 3
     assert pane.screen() == ["hello"]
 
 
 def test_environment_is_exactly_what_was_given(pane, tmp_path):
     code = "import os; print(sorted(k for k in os.environ if k.startswith('RCT_')))"
     pane.run([sys.executable, "-c", code], cwd=tmp_path, env={"RCT_A": "1"})
-    pane.wait_exit()
+    pane.wait_exit(timeout=HANG_GUARD)
     assert pane.screen() == ["['RCT_A']"]
 
 
 def test_working_directory_is_set(pane, tmp_path):
     (tmp_path / "sub").mkdir()
     pane.run([sys.executable, "-c", "import os; print(os.getcwd())"], cwd=tmp_path / "sub", env={})
-    pane.wait_exit()
+    pane.wait_exit(timeout=HANG_GUARD)
     assert pane.screen() == [str(tmp_path / "sub")]
 
 
@@ -53,15 +54,15 @@ def test_arguments_are_not_shell_interpreted(pane, tmp_path):
         cwd=tmp_path,
         env={},
     )
-    pane.wait_exit()
+    pane.wait_exit(timeout=HANG_GUARD)
     assert pane.screen() == ["$HOME; echo x"]
 
 
 def test_typed_text_reaches_the_program(pane, tmp_path):
     pane.run([sys.executable, "-c", "print('got', input('> '))"], cwd=tmp_path, env={})
-    pane.wait_for(r"^>$")  # trailing space is trimmed
+    pane.wait_for(r"^>$", timeout=HANG_GUARD)  # trailing space is trimmed
     pane.type_line("abc#def")
-    pane.wait_exit()
+    pane.wait_exit(timeout=HANG_GUARD)
     assert pane.screen() == ["> abc#def", "got abc#def"]
 
 
@@ -72,9 +73,9 @@ def test_interrupt_delivers_sigint(pane, tmp_path):
         "print('ready'); signal.pause()\n"
     )
     pane.run([sys.executable, "-c", code], cwd=tmp_path, env={})
-    pane.wait_for(r"^ready$")
+    pane.wait_for(r"^ready$", timeout=HANG_GUARD)
     pane.interrupt()
-    assert pane.wait_exit() == 0
+    assert pane.wait_exit(timeout=HANG_GUARD) == 0
     # The tty echoes ^C, but may send SIGINT first, so the two come in either order.
     screen = pane.screen()
     assert screen[0] == "ready"
@@ -89,7 +90,7 @@ def test_wait_for_times_out_with_the_screen_in_the_message(pane, tmp_path):
         cwd=tmp_path,
         env={},
     )
-    pane.wait_for(r"nothing useful")
+    pane.wait_for(r"nothing useful", timeout=HANG_GUARD)
     with pytest.raises(TimeoutError, match="nothing useful"):
         pane.wait_for(r"never appears", timeout=0)  # it never does: given up at any speed
 
@@ -104,7 +105,7 @@ def test_screen_trims_trailing_blank_lines_and_spaces(pane, tmp_path):
     pane.run(
         [sys.executable, "-c", "print(); print('a   '); print(); print()"], cwd=tmp_path, env={}
     )
-    pane.wait_exit()
+    pane.wait_exit(timeout=HANG_GUARD)
     assert pane.screen() == ["", "a"]
 
 
@@ -136,9 +137,9 @@ def test_closing_kills_the_tmux_server(tmp_path):
 
 def test_rerun_replaces_the_program_on_a_cleared_screen(pane, tmp_path):
     pane.run([sys.executable, "-c", "print('first')"], cwd=tmp_path, env={})
-    pane.wait_exit()
+    pane.wait_exit(timeout=HANG_GUARD)
     pane.rerun([sys.executable, "-c", "print('second'); raise SystemExit(4)"], cwd=tmp_path, env={})
-    assert pane.wait_exit() == 4
+    assert pane.wait_exit(timeout=HANG_GUARD) == 4
     assert pane.screen() == ["second"]
 
 
@@ -148,13 +149,13 @@ def test_death_by_signal_reports_128_plus_the_signal(pane, tmp_path):
         cwd=tmp_path,
         env={},
     )
-    assert pane.wait_exit() == 128 + 15
+    assert pane.wait_exit(timeout=HANG_GUARD) == 128 + 15
 
 
 def test_exit_status_of_an_unreaped_process_comes_from_proc(monkeypatch, pane, tmp_path):
     """tmux can report a pane dead before it has reaped the process (a zombie)."""
     pane.run([sys.executable, "-c", "raise SystemExit(5)"], cwd=tmp_path, env={})
-    pane.wait_exit()
+    pane.wait_exit(timeout=HANG_GUARD)
     real = pane._tmux
 
     def unreaped(*args, **kw):
@@ -185,7 +186,7 @@ def test_a_closed_pane_can_run_again_at_once(tmp_path):
     with held_folders.tmux_sockets("rcp-") as sockets, tmuxctl.Pane(socket_dir=sockets) as p:
         for i in range(5):
             p.run([sys.executable, "-c", f"print({i})"], cwd=tmp_path, env={})
-            p.wait_exit()
+            p.wait_exit(timeout=HANG_GUARD)
             assert p.screen() == [str(i)]
             p.close()
 
@@ -199,10 +200,10 @@ def test_signal_reaches_the_program_itself(pane, tmp_path):
         "print('ready'); signal.pause()\n"
     )
     pane.run([sys.executable, "-c", code], cwd=tmp_path, env={})
-    pane.wait_for(r"^ready$")
+    pane.wait_for(r"^ready$", timeout=HANG_GUARD)
     pane.interrupt()  # ignored: it is the signal that ends it
     pane.signal(signal.SIGTERM)
-    assert pane.wait_exit() == 128 + signal.SIGTERM
+    assert pane.wait_exit(timeout=HANG_GUARD) == 128 + signal.SIGTERM
 
 
 def alive(pid: int) -> bool:

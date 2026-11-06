@@ -27,6 +27,8 @@ from tests.until import until
 
 REPO = Path(__file__).resolve().parent.parent
 FRONTEND = REPO / "frontend"
+# The length of a sleep that outlasts the test (rule (g) of "Time in tests").
+OUTLASTING = f"{3 * HANG_GUARD:g}"
 CONFIGS = ("playwright.config.ts", "playwright.stack.config.ts", "playwright.screenshots.config.ts")
 # The screenshots make screenshots takes, which no test run reads (project-knowledge/tests.md).
 SCREENSHOTS = "e2e/screenshots.capture.ts"
@@ -76,7 +78,7 @@ def world(monkeypatch):
 def _start_tmux(sock: Path, started: list[int]) -> int:
     sock.parent.mkdir(parents=True, exist_ok=True)
     subprocess.run(
-        ["tmux", "-S", str(sock), "-f", "/dev/null", "new-session", "-d", "sleep", "600"],
+        ["tmux", "-S", str(sock), "-f", "/dev/null", "new-session", "-d", "sleep", OUTLASTING],
         check=True,
     )
     pid = int(

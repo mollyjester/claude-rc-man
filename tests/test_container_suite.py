@@ -17,6 +17,7 @@ from pathlib import Path
 
 from tests import containers
 from tests.git_fixtures import fixture_git, make_repo, write
+from tests.hang_guard import CONTAINER_HANG_GUARD
 from tests.snapshot import snapshot
 
 REPO = Path(__file__).resolve().parent.parent
@@ -106,9 +107,9 @@ def test_a_worktree_mounted_as_it_is_is_not_a_repository_in_a_container(
 
 # --- the containers a run starts itself ----------------------------------------------------
 
-# What a probe container runs: long enough to outlive a check, never so long that one a
-# failed test leaves runs on.
-PROBE = ["sleep", "300"]
+# What a probe container runs: a sleep that outlasts the test (rule (g) of "Time in tests"). One
+# a failed test leaves is removed by a later run, as its run's (tests/containers.py).
+PROBE = ["sleep", f"{3 * CONTAINER_HANG_GUARD:g}"]
 
 
 def _probe(engine: list[str], image: str, labels: list[str]) -> str:

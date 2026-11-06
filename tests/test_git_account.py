@@ -482,12 +482,14 @@ def test_a_failed_write_changes_nothing(client, app, runtime, failure, status, c
 
 def test_a_save_and_a_forget_take_the_persons_lock(person_locks, client, app, runtime):
     lock = recorded_person_lock(app, 1)
+    here = threading.current_thread()
     done = threading.Event()
     lock.acquire()
     try:
         worker = threading.Thread(target=lambda: (save(client), done.set()), daemon=True)
         worker.start()
-        lock.wait_blocked(1)  # the request's thread waits for the lock
+        # the request's thread, the server's and not the worker's, which waits for the answer
+        lock.wait_blocked(1, match=lambda w: w.thread not in (worker, here))
         assert not done.is_set()
     finally:
         lock.release()

@@ -385,9 +385,7 @@ def into_the_first_service(monkeypatch, name: str, double) -> None:
         real(self, *args, **kwargs)
         if not given:
             given.append(self)
-            for seam in ("_changed", "_closing"):  # the parts a test may put a double in
-                if seam == name:
-                    setattr(self, seam, double)
+            setattr(self, name, double)
 
     monkeypatch.setattr(Workspaces, "__init__", init)
 

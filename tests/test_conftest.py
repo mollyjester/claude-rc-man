@@ -9,6 +9,7 @@ import pytest
 from rcman import runtime as rt
 
 from tests.conftest import host_runtime
+from tests.hang_guard import HANG_GUARD
 
 
 def tmux(sock, *args):
@@ -24,6 +25,8 @@ def same_named(tmp_path):
     return paths
 
 
+# The length of a sleep that outlasts the test (rule (g) of "Time in tests").
+OUTLASTING = f"{3 * HANG_GUARD:g}"
 SPEC = rt.Spec(rt.container_name(1), slot=1, workspace=1, person=1)
 
 
@@ -43,7 +46,7 @@ def test_one_runtimes_teardown_leaves_anothers_tmux_alone(tmp_path):
     with host_runtime(one) as a:
         a.create(SPEC)
         sock = socket_of(a)
-        assert tmux(sock, "new-session", "-d", "-s", "kept", "sleep", "600").returncode == 0
+        assert tmux(sock, "new-session", "-d", "-s", "kept", "sleep", OUTLASTING).returncode == 0
         with host_runtime(two) as b:
             b.create(SPEC)
             assert tmux(sock, "has-session", "-t", "kept").returncode == 0  # positive control
@@ -54,7 +57,7 @@ def test_one_runtimes_teardown_leaves_anothers_tmux_alone(tmp_path):
 def test_the_socket_folder_is_removed_after_the_test(tmp_path):
     with host_runtime(tmp_path) as runtime:
         sock = runtime.sockets / "probe.sock"
-        assert tmux(sock, "new-session", "-d", "-s", "a", "sleep", "600").returncode == 0
+        assert tmux(sock, "new-session", "-d", "-s", "a", "sleep", OUTLASTING).returncode == 0
         folder = runtime.sockets
         assert folder.is_dir() and sock.exists()  # positive control
     assert not folder.exists()

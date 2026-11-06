@@ -20,7 +20,7 @@ import pytest
 from devtools import held_folders as hf
 from tests import killed_runs as kr
 from tests import podman_service as ps
-from tests.hang_guard import tier_guard
+from tests.hang_guard import CONTAINER_HANG_GUARD, tier_guard
 from tests.until import until
 
 REPO = Path(__file__).resolve().parent.parent
@@ -66,7 +66,7 @@ def engine_left(prefix: str) -> tuple[subprocess.Popen, Path]:
         "    made = engine.cli('import', '-', 'localhost/bb', input=sys.stdin.buffer.read())\n"
         "    assert made.returncode == 0, made.stderr\n"
         "    ran = engine.cli('run', '-d', '--name=left', 'localhost/bb', 'busybox', 'sleep',\n"
-        "                     '600')\n"
+        f"                     '{3 * tier_guard():g}')\n"
         "    assert ran.returncode == 0, ran.stderr\n"
         "    print(engine.folder, flush=True)\n"
         f"    time.sleep({3 * tier_guard()})\n"
@@ -116,7 +116,9 @@ def test_an_engine_that_ends_leaves_no_process_and_no_folder(podman_service):
             folder = engine.folder
             made = engine.cli("import", "-", "localhost/bb", input=busybox_tarball())
             assert made.returncode == 0, made.stderr
-            ran = engine.cli("run", "-d", "localhost/bb", "busybox", "sleep", "600")
+            ran = engine.cli(
+                "run", "-d", "localhost/bb", "busybox", "sleep", f"{3 * tier_guard():g}"
+            )
             assert ran.returncode == 0, ran.stderr
             assert ps._processes_naming(folder)  # positive control
         until(lambda: ps._processes_naming(folder) == [])
@@ -174,8 +176,9 @@ def test_an_engine_left_with_a_mount_in_its_storage_is_removed_by_the_next(podma
                 ps.remove(folder)
 
 
-# The length of the sleep of a build's RUN that no other test runs, by which it is found.
-BUILD_SLEEP = "4711"
+# The length of the sleep of a build's RUN: beyond the test (rule (g) of "Time in tests"), and
+# no other test's, by which it is found.
+BUILD_SLEEP = f"{3 * CONTAINER_HANG_GUARD + 7:g}"
 
 
 def processes_sleeping(length: str) -> list[int]:

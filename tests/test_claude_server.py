@@ -28,6 +28,8 @@ from tests.until import until
 
 REPO = Path(__file__).resolve().parent.parent
 TMUX_CONF = REPO / "backend" / "rcman" / "tmux.conf"
+# The length of a sleep that outlasts the test (rule (g) of "Time in tests").
+OUTLASTING = f"{3 * HANG_GUARD:g}"
 NAME = rt.container_name(1)
 
 
@@ -827,7 +829,7 @@ def test_an_attached_terminal_does_not_resize_a_server(world):
 def test_without_the_pin_an_attached_terminal_resizes_the_window(world):
     """Twin: a window made as rcman makes one, but not pinned, takes the terminal's size."""
     made = tmux(world, "new-session", "-d", "-s", "unpinned", "-x", str(screens.WIDTH),
-                "-y", str(screens.HEIGHT), "sleep", "600")  # fmt: skip
+                "-y", str(screens.HEIGHT), "sleep", OUTLASTING)  # fmt: skip
     assert made.returncode == 0, made.stderr
     with attached(world, "unpinned"):
         width, height = resized(world, "unpinned")
@@ -867,7 +869,9 @@ def test_a_server_whose_window_cannot_be_pinned_is_still_found(world):
 def test_tmux_conf_sets_no_global_window_size(world, tmp_path):
     """A global ``window-size manual`` kills tmux 3.4's server at the next detached
     new-session, so servers' windows are pinned one by one instead."""
-    made = tmux(world, "new-session", "-d", "-s", "probe", "-x", "10", "-y", "5", "sleep", "600")
+    made = tmux(
+        world, "new-session", "-d", "-s", "probe", "-x", "10", "-y", "5", "sleep", OUTLASTING
+    )
     assert made.returncode == 0, made.stderr
     assert tmux(world, "show-options", "-gv", "remain-on-exit").stdout.strip() == "on"
     bare = Path(world.layout.tmux_socket).parent / "bare.sock"
@@ -882,8 +886,8 @@ def test_tmux_conf_sets_no_global_window_size(world, tmp_path):
     planted = tmp_path / "tmux.conf"
     planted.write_text(TMUX_CONF.read_text(encoding="utf-8") + "set -g window-size manual\n")
     tmux(world, "kill-server")
-    died = tmux(world, "new-session", "-d", "-s", "probe", "-x", "10", "-y", "5", "sleep", "600",
-                conf=planted)  # fmt: skip
+    died = tmux(world, "new-session", "-d", "-s", "probe", "-x", "10", "-y", "5", "sleep",
+                OUTLASTING, conf=planted)  # fmt: skip
     assert died.returncode != 0
     assert "server exited unexpectedly" in died.stderr
 

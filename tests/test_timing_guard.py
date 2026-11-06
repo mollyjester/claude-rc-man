@@ -10,8 +10,10 @@ parents, owners and bindings. It flags
   with any argument but 0, and threading.Timer, loop.call_later and loop.call_at;
 - P2s, a sleep or a timeout written in a child program's source: the shell's ``sleep N`` and
   ``timeout [options] N``, Python's ``time.sleep(N)``, the numbers of an argv of the ``timeout``
-  tool, and a child's loop on a clock, or one that sleeps on a count; an interpolated one too,
-  unless it is a multiple of the guard or RUNS_OUT;
+  tool, ``sleep`` and the length after it in an argv, a call's arguments or a child's Python
+  (``["sleep", "600"]``, ``engine.cli(..., "busybox", "sleep", "600")``), and a child's loop on
+  a clock, or one that sleeps on a count; an interpolated one too, unless it is a multiple of the
+  guard or RUNS_OUT (a sleep: a multiple of the guard). An argv compared runs nothing;
 - P3, a timeout that is not allowed: a keyword of a timing name; a known positional, where a
   name or a call is seconds unless shown to be something else; a value at a position the
   parameter table or a parameter's flow gives (at a position of a name whose definitions
@@ -24,14 +26,18 @@ parents, owners and bindings. It flags
 - a module defining HANG_GUARD, CONTAINER_HANG_GUARD or tier_guard other than
   tests/hang_guard.py.
 
-An allowed value is the tier's guard or a multiple of it of at least 1, tier_guard() where a test
-reads it, None, -1 (the standard library's "no limit") and 0; a constant whose single binding,
-at module or class level, is allowed; and a parameter of a helper (not a test, a fixture or a
-lambda) whose default is allowed and whose every caller gives an allowed value, which the scan
-checks at each call. The only exemptions are the named patterns of NAMED, each with its reason
-and a stale check, the derived allowances H7 (a double: a call on one, its bound method as a
-value, and the keywords of a helper of the module that returns one it builds), H8 (a turn of
-0), H10 (the benchmark) and H13 (a child's wait loop), and STAND_INS.
+An allowed value is the tier's guard or a multiple of it of at least 1, plus a number of at least 0
+or through int(), float() or round(), tier_guard() where a test reads it, None, -1 (the standard
+library's "no limit") and 0; a constant whose single binding, at module or class level, is
+allowed; and a parameter of a helper (not a test, a fixture or a lambda) whose default is allowed
+and whose every caller gives an allowed value, which the scan checks at each call. A timing name
+is a word of the name (a keyword's or a parameter's, ``guard`` among them, or a constant's, its
+longer words also run together, as IDLETIMEOUT); a string that reads as a number is seconds.
+The only exemptions are the named patterns of NAMED, each with its reason and a stale check,
+the derived allowances H7 (a double: a call on one, its bound method as a value, the keywords of
+a helper of the module that returns one it builds, and a helper's parameter typed as one where
+every call of the helper in the module gives one), H8 (a turn of 0), H10 (the benchmark) and H13
+(a child's wait loop), and STAND_INS.
 """
 
 from __future__ import annotations
@@ -56,12 +62,14 @@ PROJECT = {"tests", "devtools", "rcman", "helpers", "backend"}
 PRODUCT = {"rcman", "helpers"}
 
 TIMING_KEYWORD = re.compile(
-    r"^(timeout|within|deadline|seconds|wait|quiet|interval|delay|every|grace)$"
+    r"^(timeout|within|deadline|seconds|wait|quiet|interval|delay|every|grace|guard)$"
     r"|_(timeout|seconds|within|interval|delay|wait|grace|after)$"
 )
-# A word of a constant's name, between underscores: WORKSPACE is not PACE, nor RELAYS DELAY.
+# A word of a constant's name, between underscores: WORKSPACE is not PACE, nor RELAYS DELAY. The
+# longer words are also seen run together with what comes before them, as IDLETIMEOUT and MAXWAIT.
 TIMING_CONSTANT = re.compile(
     r"(^|_)(TIMEOUT|SECONDS|WITHIN|DEADLINE|GRACE|WAIT|PACE|TICK|POLL|INTERVAL|DELAY|QUIET)S?(_|$)"
+    r"|(^|_)[A-Z0-9]+(TIMEOUT|SECONDS|DEADLINE|GRACE|WAIT|INTERVAL|DELAY)S?(_|$)"
     r"|_FOR$|_LIMIT$"
 )
 
@@ -103,6 +111,13 @@ SHELL_LOOP = re.compile(r"\bwhile\b(?P<cond>[^;]*?);\s*do\b(?P<body>.*?)\bdone\b
 CHILD_CLOCK = re.compile(r"\bdate\b|\$SECONDS|\btime\.(monotonic|time|perf_counter)\b")
 CHILD_COUNTER = re.compile(r"-(lt|le|gt|ge|eq)\s+\S*\d")
 CHILD_SLEEP = re.compile(r"\bsleep\b")
+# A sleep given as an argv, in a child's Python source: ['sleep', '600'].
+ARGV_SLEEP = re.compile(
+    r"""(?P<q>['"])(?P<what>(?:/(?:usr/)?bin/)?sleep)(?P=q)\s*,\s*(?P<r>['"])"""
+    r"(?P<n>\d*\.?\d+|\{[^}]*\})(?P=r)"
+)
+SLEEP_TOOLS = {"sleep", "/bin/sleep", "/usr/bin/sleep"}
+NUMERIC = re.compile(r"\s*[-+]?(\d+\.?\d*|\.\d+)([eE][-+]?\d+)?\s*")
 
 
 @dataclass(frozen=True, order=True)
@@ -223,6 +238,7 @@ class FileScan:
         self.flagged_calls: set[int] = set()
         self._assigned: dict[ast.AST, dict[str, list[ast.AST]]] = {}
         self.globals: set[str] = set()
+        self._proving: set[tuple[int, str]] = set()
         self.lines = source.splitlines()
         self._walk()
         self.calls.sort(key=operator.attrgetter("lineno", "col_offset"))
@@ -376,20 +392,59 @@ class FileScan:
 
     def outlasts_or_runs_out(self, node: ast.AST) -> bool:
         """A child's time: RUNS_OUT (rule (a)), or a multiple of the guard (rule (g))."""
+        node = self.child_time(node)
         if self.is_runs_out(node):
             return ALLOWANCES["runs out"]
         return self.guard_multiple(node) and ALLOWANCES["guard"]
+
+    def outlasts(self, node: ast.AST) -> bool:
+        """A child's sleep that outlasts the test: a multiple of the guard (rule (g))."""
+        return self.guard_multiple(self.child_time(node)) and ALLOWANCES["guard"]
+
+    def child_time(self, node: ast.AST, depth: int = 0) -> ast.AST:
+        """What a child's time is written from: an f-string's one value, str()'s argument, and a
+        name's one binding, in the function or the module."""
+        if depth > 3:
+            return node
+        if isinstance(node, ast.JoinedStr):
+            inner = [v.value for v in node.values if isinstance(v, ast.FormattedValue)]
+            texts = [v for v in node.values if isinstance(v, ast.Constant) and v.value]
+            if len(inner) == 1 and not texts:
+                return self.child_time(inner[0], depth + 1)
+            return node
+        if isinstance(node, ast.Call) and getattr(node.func, "id", None) == "str" and node.args:
+            return self.child_time(node.args[0], depth + 1)
+        if isinstance(node, ast.Name) and ALLOWANCES.get("P2s a name's binding", True):
+            fn = self.function_of(node)
+            binds = self.bindings_in(fn, node.id) if fn is not None else []
+            if not binds and not (fn is not None and node.id in self.parameter_names(fn)):
+                value = self.single_binding(self.module_binds.get(node.id, []), node.id)
+                binds = [value] if value is not None and node.id not in self.globals else []
+            if len(binds) == 1:
+                return self.child_time(binds[0], depth + 1)
+        return node
 
     def is_product(self, node: ast.AST) -> bool:
         q = self.qual(node)
         return q is not None and q.split(".")[0] in PRODUCT
 
     def guard_multiple(self, node: ast.AST) -> bool:
+        """The guard, a multiple of it of at least 1, either plus a number of at least 0, and
+        int(), float() or round() of one, as ``int(2 * tier_guard())``."""
         if self.is_guard(node) or self.is_tier_guard_call(node):
             return True
-        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mult):
+        if (
+            isinstance(node, ast.Call)
+            and getattr(node.func, "id", None) in ("int", "float", "round")
+            and len(node.args) == 1
+            and not node.keywords
+            and ALLOWANCES.get("guard through int", True)
+        ):
+            return self.guard_multiple(node.args[0])
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mult | ast.Add):
+            least = 1 if isinstance(node.op, ast.Mult) else 0
             for k, g in ((node.left, node.right), (node.right, node.left)):
-                if (n := number(k)) is not None and n >= 1 and self.guard_multiple(g):
+                if (n := number(k)) is not None and n >= least and self.guard_multiple(g):
                     return True
         return False
 
@@ -578,16 +633,72 @@ class FileScan:
                 fixture = self.fixtures.get(a.arg)
                 if fixture is not None and fixture is not fn and self.returns_double(fixture):
                     found.add(a.arg)
-                elif self.typed_double(a.annotation):
+                elif self.typed_double(a.annotation) and self.given_a_double(fn, a.arg):
                     found.add(a.arg)
         return frozenset(found)
 
     def typed_parameter(self, fn: ast.AST, name: str) -> bool:
-        """Whether ``name`` is a parameter of ``fn`` typed as a double."""
+        """Whether ``name`` is a parameter of ``fn`` typed as a double, and given one."""
         return isinstance(fn, FUNCTIONS) and any(
-            a.arg == name and self.typed_double(a.annotation)
+            a.arg == name and self.typed_double(a.annotation) and self.given_a_double(fn, name)
             for a in fn.args.posonlyargs + fn.args.args + fn.args.kwonlyargs
         )
+
+    def given_a_double(self, fn: ast.AST, name: str) -> bool:
+        """Whether every call of ``fn`` in this module gives its parameter ``name`` a double, as
+        a literal argument is resolved: its annotation alone is not trusted. A function with no
+        such call, or named other than where it is called, is given none that is shown."""
+        if not ALLOWANCES.get("P3 typed double given", True):
+            return True
+        key = (id(fn), name)
+        if key in self._proving:
+            return False  # a call of its own: shown by its other callers or not at all
+        self._proving.add(key)
+        try:
+            calls = self.calls_of(fn)
+            if not calls:
+                return False
+            params = positional_parameters(fn)
+            index = params.index(name) if name in params else None
+            for call in calls:
+                given = call.args[index] if index is not None and index < len(call.args) else None
+                for kw in call.keywords:
+                    if kw.arg == name:
+                        given = kw.value
+                if given is None or not (
+                    self.makes_double(given)
+                    or (isinstance(given, ast.Name) and self.a_double(given, call))
+                ):
+                    return False
+            return True
+        finally:
+            self._proving.discard(key)
+
+    def calls_of(self, fn: ast.AST) -> list[ast.Call] | None:
+        """The calls of ``fn`` in this module: of its name, of a method's name on any object, of
+        a class for its __init__; None where its name is also used as a value."""
+        owner = self.owner.get(fn)
+        method = isinstance(owner, ast.ClassDef)
+        name = owner.name if method and fn.name == "__init__" else fn.name
+        by_attribute = method and fn.name != "__init__"
+        found, called = [], set()
+        for call in self.calls:
+            f = call.func
+            if (by_attribute and isinstance(f, ast.Attribute) and f.attr == name) or (
+                not by_attribute and isinstance(f, ast.Name) and f.id == name
+            ):
+                found.append(call)
+                called.add(id(f))
+        if not by_attribute:
+            for node in self.parents:
+                if (
+                    isinstance(node, ast.Name)
+                    and node.id == name
+                    and isinstance(node.ctx, ast.Load)
+                    and id(node) not in called
+                ):
+                    return None  # handed on as a value, given what is not seen here
+        return found
 
     def typed_double(self, annotation: ast.AST | None) -> bool:
         """A parameter's annotation that names a double of tests/time_doubles.py, as a helper
@@ -713,6 +824,8 @@ class FileScan:
                 self._joined(node)
             elif isinstance(node, ast.List | ast.Tuple):
                 self._timeout_argv(node)
+                if not isinstance(self.parents.get(node), ast.Compare):
+                    self._sleep_argv(node.elts, node)  # one compared runs nothing: it is expected
         self._setattrs()
         return self
 
@@ -831,6 +944,7 @@ class FileScan:
         q = self.qual(node.func)
         f = node.func
         name = f.attr if isinstance(f, ast.Attribute) else getattr(f, "id", None)
+        self._sleep_argv(node.args, node)
         if ALLOWANCES.get("P2 branch", True):
             if q in SLEEPS:
                 if node.args and number(node.args[0]) == 0 and self.allow("turn (H8)", node, "P2"):
@@ -1049,12 +1163,17 @@ class FileScan:
 
     def words(self, node: ast.AST) -> bool:
         """A str constant, or a list, tuple or set of them only: a constant whose name holds a
-        timing word by chance (WORKSPACE, INTERVALS) but whose value is words, not seconds."""
+        timing word by chance (WORKSPACE, INTERVALS) but whose value is words, not seconds. A
+        string that reads as a number, as '0.01', is seconds written as words, and is not."""
         if not ALLOWANCES["not seconds"]:
             return False
         if isinstance(node, ast.List | ast.Tuple | ast.Set):
             return bool(node.elts) and all(self.words(e) for e in node.elts)
-        return isinstance(node, ast.Constant) and isinstance(node.value, str)
+        return (
+            isinstance(node, ast.Constant)
+            and isinstance(node.value, str)
+            and not (NUMERIC.fullmatch(node.value) and ALLOWANCES.get("P3 numeric words", True))
+        )
 
     def seconds_like(self, node: ast.AST, at: ast.AST) -> bool:
         """At a known positional slot: a number, arithmetic, a name or a call that
@@ -1212,13 +1331,17 @@ class FileScan:
                 self.site(node, "P1", f"a child's loop on a clock or a count: {cond.strip()}")
             loops.append((m.start(), m.end(), clock or counted_sleep))
         python_loops = self._python_loop_lines(text)
-        for m in SHELL.finditer(text):
+        found = [*SHELL.finditer(text)]
+        if ALLOWANCES.get("P2s sleep argv", True):
+            found += ARGV_SLEEP.finditer(text)
+        for m in found:
             n, what = m.group("n"), m.group("what").strip()
             if n.startswith("{"):
                 index = n[1:-1]
                 if index.isdigit() and int(index) < len(values):
                     value = values[int(index)]
-                    if self.outlasts_or_runs_out(value):
+                    timed = self.outlasts if "sleep" in what else self.outlasts_or_runs_out
+                    if timed(value):
                         continue
                 self.site(node, "P2s", f"{what} {n}: interpolated, not the guard or RUNS_OUT")
                 continue
@@ -1329,7 +1452,31 @@ class FileScan:
                     value = later.args[0]
                 if not self.outlasts_or_runs_out(value):
                     self.site(node, "P2s", f"timeout argv: {self.text(node)}")
-                    return
+                return  # the length is given: the command follows
+
+    def _sleep_argv(self, elts: list[ast.AST], node: ast.AST) -> None:
+        """``sleep`` and the length it is given, in an argv or a call's arguments, as
+        ``["sleep", "600"]`` and ``engine.cli("run", image, "busybox", "sleep", "600")``: a
+        length that is not a multiple of the guard (rule (g)). ``infinity`` outlasts anything."""
+        if not ALLOWANCES.get("P2s sleep argv", True):
+            return
+        for i, e in enumerate(elts[:-1]):
+            if not (isinstance(e, ast.Constant) and e.value in SLEEP_TOOLS):
+                continue
+            later = elts[i + 1]
+            written = self.child_time(later)
+            if isinstance(written, ast.Constant):
+                if not isinstance(written.value, str) or not NUMERIC.fullmatch(written.value):
+                    continue  # infinity, or what is no length an argv gives
+                if float(written.value) == 0:
+                    continue
+            elif not (
+                isinstance(later, ast.JoinedStr)
+                or (isinstance(later, ast.Call) and getattr(later.func, "id", None) == "str")
+            ) or self.outlasts(later):
+                continue  # what is not written as a string here is no argv's length
+            self.site(node, "P2s", f"a sleep's argv: {self.text(node)}")
+            return
 
     # P4 ---------------------------------------------------------------------------------------
 
@@ -1417,6 +1564,8 @@ class FileScan:
         if not isinstance(node, ast.Name):
             return None
         fn = self.function_of(at)
+        if self.reassigned(fn, node.id):
+            return None  # what it was given is not what it is here
         values = self.loop_values(node, at)
         if values is None and isinstance(fn, FUNCTIONS):
             values = self.parametrized(fn, node.id)
@@ -1425,9 +1574,30 @@ class FileScan:
                               for e in values):  # fmt: skip
                 return [e.value for e in values]
             return None
-        if isinstance(fn, FUNCTIONS) and node.id in self.parameter_names(fn):
-            return self.literal_arguments(fn, node.id)
+        while isinstance(fn, FUNCTIONS):  # the function's parameter, or a closure's
+            if node.id in self.parameter_names(fn):
+                return self.literal_arguments(fn, node.id)
+            if self.local_binds.get(fn, {}).get(node.id) or not ALLOWANCES.get("P4 closure", True):
+                return None
+            fn = self.function_of(fn)
+            if self.reassigned(fn, node.id):
+                return None
         return None
+
+    def reassigned(self, fn: ast.AST | None, name: str) -> bool:
+        """Whether ``name`` is assigned in ``fn`` other than as a loop's target."""
+        if fn is None or not ALLOWANCES.get("P4 reassigned", True):
+            return False
+        for n in ast.walk(fn):
+            if isinstance(n, ast.Assign):
+                targets = n.targets
+            elif isinstance(n, ast.AugAssign | ast.AnnAssign | ast.NamedExpr):
+                targets = [n.target]
+            else:
+                continue
+            if any(isinstance(t, ast.Name) and t.id == name for x in targets for t in ast.walk(x)):
+                return True
+        return False
 
     @staticmethod
     def _part(items: ast.AST, at: int, of: int) -> list[ast.AST] | None:
@@ -1683,17 +1853,18 @@ NAMED = (
     Named("H12", "devtools/tmuxctl.py",
           ("", "Pane.wait_for", "Pane.wait_exit", "Pane.wait_stable", "Pane.close"),
           frozenset({"P1", "P2", "P3"}),
-          "tmuxctl's look at the screen every POLL_SECONDS, and its give-up only where a caller "
-          "passes a timeout, as RealWatch does; a test passes none, or 0 (rule (a))"),
+          "tmuxctl's look at the screen every POLL_SECONDS, and its give-up at the timeout a "
+          "caller passes: RealWatch's, or a test's, which passes its tier's guard, which only "
+          "ends a hang, or 0 (rule (a))"),
     Named("H12", "devtools/record_claude.py", ("RealWatch",), frozenset({"P1", "P2", "P3"}),
           "the recorder's command line's watch, against the real claude with a person at hand: "
-          "no test reaches it (test_record_claude.py's test_no_test_reaches_the_command_lines_"
-          "watch)"),
-    Named("H14", "tests/killed_runs.py", ("hold", "shell_hold", "KilledRun.__init__"),
-          frozenset({"P1", "P2", "P2s"}),
+          "no test reaches it but a module marked real_claude, which is run by hand against the "
+          "real claude as the command line is, and is exempt (test_record_claude.py's "
+          "test_no_test_reaches_the_command_lines_watch)"),
+    Named("H14", "tests/killed_runs.py", ("hold", "shell_hold"), frozenset({"P1", "P2", "P2s"}),
           "a killed run's own hang bound: hold() and shell_hold() give up at the deadline the run "
-          "is handed, the tier's guard from its start, and timeout kills the run at twice the "
-          "guard; each only ends a run nothing killed or released"),
+          "is handed, the tier's guard from its start, which only ends a run nothing killed or "
+          "released"),
     Named("Q1", "devtools/held_folders.py", ("", "_stop_server", "unheld", "_clear"),
           frozenset({"P1", "P2", "P3"}),
           "the sweep of held folders: UNLOCKED_FOR and TMUX_GONE_WITHIN are its behaviour, and "
@@ -1761,6 +1932,8 @@ TABLE_DEFS = (
     "def held(path, seconds):\n    pass\n"
     "def go(argv, seconds):\n    pass\n"
     "def go(seconds, argv):\n    pass\n"
+    "def handed(guard):\n    pass\n"
+    "def started(guard, prefix=None):\n    pass\n"
 )
 
 
@@ -1852,7 +2025,8 @@ PLANTED = {
         f"a {kw} keyword": ("P3", f"def f(g):\n    g({kw}=2.5)\n", 2, "P3 keywords")
         for kw in ("timeout", "within", "deadline", "seconds", "wait", "quiet", "interval",
                    "delay", "every", "grace", "hold_timeout", "hold_seconds", "hold_within",
-                   "poll_interval", "start_delay", "max_wait", "stop_grace", "hang_after")
+                   "poll_interval", "start_delay", "max_wait", "stop_grace", "hang_after",
+                   "guard")
     },
     # P3 positionals
     "a join": ("P3", "def f(t):\n    t.join(5)\n", 2, "P3 positional join"),
@@ -2036,6 +2210,54 @@ PLANTED = {
         "P3", "from tests.time_doubles import FakeTime\ndef looping(t, timeout=None):\n"
         "    t.join(timeout=timeout)\n    return FakeTime()\n"
         "def test_x(t):\n    looping(t, timeout=0.5)\n", 6, "P3 flow past a double's helper"),
+    # the review of #149 G2's first handovers
+    "a guard handed short": ("P3", "from tests.hang_guard import handed\n"
+                             + fn("with handed(0.5):\n    pass"), 3, "P3 table"),
+    "an engine started with a short guard": (
+        "P3", "from tests import podman_service as ps\n" + fn("with ps.started(0.5):\n    pass"),
+        3, "P3 table"),
+    "a typed double given a real event": (
+        "P3", "import threading\nfrom tests.time_doubles import ControlledEvent\n"
+        "def waited(e: ControlledEvent):\n    assert e.wait(1)\n"
+        "def test_x():\n    waited(threading.Event())\n", 4, "P3 typed double given"),
+    "a typed double no call is seen to give": (
+        "P3", "import threading\nfrom tests.time_doubles import ControlledEvent\n"
+        "def waited(e: ControlledEvent):\n    assert e.wait(1)\n"
+        "def test_x():\n    threading.Thread(target=waited, args=(threading.Event(),))\n", 4,
+        "P3 typed double given"),
+    "a sleep argv": ("P2s", "import subprocess\nsubprocess.Popen(['$SLEEP', '5'])\n", 2,
+                     "P2s sleep argv"),
+    "a sleep argv by its path": ("P2s", "argv = ['/bin/$SLEEP', '60']\n", 1, "P2s sleep argv"),
+    "a sleep in a call's arguments": (
+        "P2s", "def f(engine):\n    engine.cli('run', 'bb', 'busybox', '$SLEEP', '600')\n", 2,
+        "P2s sleep argv"),
+    "a sleep argv of an f-string": ("P2s", "def f(n):\n    return ['$SLEEP', f'{n}']\n", 2,
+                                    "P2s sleep argv"),
+    "a sleep argv of a name bound to a number": (
+        "P2s", "LENGTH = '600'\ndef f():\n    return ['$SLEEP', LENGTH]\n", 3, "P2s sleep argv"),
+    "a sleep argv in a child's Python": (
+        "P2s", "code = \"import os; os.execv('/bin/$SLEEP', ['$SLEEP', '600'])\"\n", 1,
+        "P2s sleep argv"),
+    "a sleep argv split over lines in a child's Python": (
+        "P2s", "code = (\"run('busybox', '$SLEEP',\\n\"\n        \"    '600')\\n\")\n", 1,
+        "P2s sleep argv"),
+    "a seconds constant written as a string": ("P3", "POLL_SECONDS = '0.01'\n", 1,
+                                               "P3 numeric words"),
+    "a timing name run together": ("P3", "IDLETIMEOUT = 0.5\n", 1, "P3 constants"),
+    "a timing name run together after a word": ("P3", "MAXWAIT = 2\n", 1, "P3 constants"),
+    "a loop's name assigned again": (
+        "P4", "def test_x(monkeypatch, m):\n    for name in ('A',):\n"
+        "        name = 'POLL_SECONDS'\n        monkeypatch.setattr(m, name, 0.01)\n", 4,
+        "P4 reassigned"),
+    "a parametrized name assigned again": (
+        "P4", "import pytest\n@pytest.mark.parametrize('name', ['A'])\n"
+        "def test_x(monkeypatch, m, name):\n    name = name + '_SECONDS'\n"
+        "    monkeypatch.setattr(m, name, 0.01)\n", 5, "P4 reassigned"),
+    "a closure's name given a timing literal": (
+        "P4", "def into(monkeypatch, name, value):\n    def init(self):\n"
+        "        setattr(self, name, value)\n    monkeypatch.setattr(C, 'init', init)\n"
+        "def test_x(monkeypatch):\n    into(monkeypatch, 'POLL_SECONDS', 0.5)\n", 3,
+        "P4 branch"),
     # the guard's own names
     "a local HANG_GUARD": ("GUARD", "HANG_GUARD = 0.5\n", 1, "guard names"),
 }  # fmt: skip
@@ -2135,7 +2357,8 @@ CLEAN = {
     "a helper's parameter typed as a double (H7)": (
         "typed double (H7)", "from tests.time_doubles import FakeTime\n"
         "def stepping(fake: FakeTime):\n    def run():\n        fake.advance(5)\n"
-        "    return run\n"),
+        "    return run\n"
+        "def test_x():\n    stepping(FakeTime())()\n    made = FakeTime()\n    stepping(made)\n"),
     "a docstring that names a sleep": ("structure", "def f():\n"
                                        "    '''Waits with $SLEEP 5 in the shell.'''\n"),
     # the review's third round
@@ -2160,6 +2383,22 @@ CLEAN = {
     "a double's method as a value (H7)": (
         "a double's method (H7)", "from tests.time_doubles import Time\n"
         "def helper(m):\n    times = Time()\n    return m(clock=times.clock, wait=times.wait)\n"),
+    "a sleep argv that outlasts the test": (
+        "guard", "from tests.hang_guard import HANG_GUARD, tier_guard\n"
+        "OUTLASTING = f'{3 * HANG_GUARD:g}'\nBUILD = f'{3 * HANG_GUARD + 7:g}'\n"
+        "argv = ['$SLEEP', OUTLASTING]\nbuilt = f'RUN [\"busybox\", \"$SLEEP\", \"{BUILD}\"]'\n"
+        "def test_x(engine):\n    engine.cli('run', 'bb', '$SLEEP', f'{3 * tier_guard():g}')\n"
+        "    code = f\"os.execv('/bin/$SLEEP', ['$SLEEP', '{3 * HANG_GUARD:g}'])\"\n"),
+    "a sleep argv of infinity, compared, or no argv": (
+        "structure", "def f(d, s, run):\n    argv = ['$SLEEP', 'infinity']\n"
+        "    assert run[-2:] == ['$SLEEP', '600']\n    d._record('$SLEEP', s)\n"),
+    "a timeout argv at int() of the guard's multiple": (
+        "guard", "import sys\nfrom tests.hang_guard import tier_guard\ndef f():\n"
+        "    return ['timeout', '-s', 'KILL', str(int(2 * tier_guard())), sys.executable]\n"),
+    "a closure's name given literals": (
+        "structure", "def into(monkeypatch, name, double):\n    def init(self):\n"
+        "        setattr(self, name, double)\n    monkeypatch.setattr(C, 'init', init)\n"
+        "def test_x(monkeypatch):\n    into(monkeypatch, '_changed', 1)\n"),
     "a helper that builds a double given its intervals (H7)": (
         "a double's helper (H7)", "from tests.time_doubles import Time\n"
         "def looping(s, **changes):\n    times = Time()\n    return s, times\n"
@@ -2186,6 +2425,8 @@ def test_the_parameter_table_records_agreeing_and_disagreeing_names():
         "recording_held": frozenset({0}),
         "held": frozenset({1}),
         "advance": frozenset({0}),
+        "handed": frozenset({0}),
+        "started": frozenset({0}),
     }
     assert table.disagreeing == {"run": frozenset({1, 2}), "go": frozenset({0, 1})}
 

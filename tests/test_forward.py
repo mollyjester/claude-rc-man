@@ -1591,6 +1591,95 @@ def test_a_connection_with_nothing_on_it_or_a_head_that_never_ends_is_closed(
                 waiting.close()
 
 
+class HeadReads:
+    """forward's ``asyncio``, as its head reads see it: the loop's time, read through
+    ``get_running_loop()``, is ``clock``, which only the test moves, and each read of a head is
+    recorded, with the seconds the product gives it and the time it read just before (None
+    where it read none since the last read). Everything else is asyncio's own."""
+
+    def __init__(self, clock: Clock):
+        self.clock = clock
+        self.read_at: float | None = None
+        self.reads: list[tuple[float, float | None]] = []
+        self.told = threading.Condition()
+
+    def __getattr__(self, name):
+        return getattr(asyncio, name)
+
+    def get_running_loop(self):
+        return LoopTimeOf(asyncio.get_running_loop(), self)
+
+    async def wait_for(self, awaited, *given):
+        """asyncio's, given the product's own seconds as they are."""
+        if getattr(awaited, "__qualname__", "") == "StreamReader.read":
+            with self.told:
+                self.reads.append((given[0], self.read_at))
+                self.read_at = None
+                self.told.notify_all()
+        return await asyncio.wait_for(awaited, *given)
+
+    def timed(self, after: int) -> tuple[int, float, float]:
+        """The first read from ``after`` on that the product reckoned from the time: its index,
+        the seconds it was given, and the time read for them."""
+
+        def found():
+            for i in range(after, len(self.reads)):
+                if self.reads[i][1] is not None:
+                    return i
+            return None
+
+        with self.told:
+            assert self.told.wait_for(lambda: found() is not None, HANG_GUARD), self.reads
+            i = found()
+            return i, *self.reads[i]
+
+
+class LoopTimeOf:
+    """The running loop, but for its ``time()``, which is the clock of ``reads``."""
+
+    def __init__(self, loop, reads: HeadReads):
+        self._loop, self._reads = loop, reads
+
+    def __getattr__(self, name):
+        return getattr(self._loop, name)
+
+    def time(self) -> float:
+        self._reads.read_at = self._reads.clock.now
+        return self._reads.read_at
+
+
+def test_a_head_dripped_a_byte_at_a_time_is_cut_off_at_its_one_deadline(client, monkeypatch):
+    """HEAD_SECONDS runs from the head's first byte: bytes that keep coming do not move it. The
+    loop's time, as forward reads it, is a clock only the test moves, a quarter of HEAD_SECONDS
+    before each byte; every read after the first byte is given what is left of the one deadline,
+    its seconds and the time read for them adding up to it, so that a deadline that moved fails
+    at the first drip; and the read at the deadline, given nothing, closes the connection.
+    HEAD_SECONDS is raised to beyond the hang guard, so that each read's real wait outlasts the
+    drip it waits for."""
+    monkeypatch.setattr(forward, "HEAD_SECONDS", 4 * HANG_GUARD)
+    clock = Clock()
+    reads = HeadReads(clock)
+    monkeypatch.setattr(forward, "asyncio", reads)
+    deadline = clock.now + forward.HEAD_SECONDS
+    dripping = raw_request(client.app.state.settings.forward_socket, "GET / HTTP/1.1\r\nX: ")
+    try:
+        seen, after = [], 0
+        while True:
+            index, within, now = reads.timed(after)
+            seen.append((within, now))
+            assert within + now == deadline, seen  # what is left of the one deadline
+            if within <= 0:
+                break
+            after = index + 1
+            clock.advance(forward.HEAD_SECONDS / 4)
+            dripping.sendall(b"a")
+        assert seen[-1] == (0, deadline) and len(seen) >= 5, seen  # four drips, then cut off
+        got, ended = read_to_end(dripping)
+        assert ended and got == b"", got
+    finally:
+        dripping.close()
+
+
 def test_a_head_longer_than_the_most_is_answered_431(client, conn):
     path = client.app.state.settings.forward_socket
     # The planted positive: a head well over h11's own default, under the most, is taken.

@@ -120,8 +120,8 @@ else; this file is the full list. Rules are referred to by their bold name.
   the same way, by a fixture that runs before `client` starts the service: one
   of the conftest's `SEAMS`, which `app` asks for first, or one the test lists
   before `client` ([tests.md](tests.md#time-in-tests)).
-- **A test shortens a product's deadline only with `runs_out`, and a pace only with
-  `pace`** (`tests/hang_guard.py`), each undone by the `monkeypatch` it is given, never by a
+- **A test shortens a product's deadline only with `runs_out`, or set to 0 for a deadline
+  meant to run out at once, and a pace only with `pace`** (`tests/hang_guard.py`), each undone by the `monkeypatch` it is given, never by a
   second setattr; it waits for what it cannot be told of with `until`, and every other bound
   it gives is the tier's hang guard. The timing guard holds every test to it
   ([tests.md](tests.md#time-in-tests)).

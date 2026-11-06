@@ -915,7 +915,7 @@ def sleeping_podman(tmp_path: Path) -> tuple[Path, Path]:
         "#!/usr/bin/env python3\n"
         "import os\n"
         f"open({str(pidfile)!r}, 'w').write(str(os.getpid()))\n"
-        "os.execv('/bin/sleep', ['sleep', '600'])\n"
+        f"os.execv('/bin/sleep', ['sleep', '{3 * HANG_GUARD:g}'])\n"
     )
     program.chmod(0o755)
     return program, pidfile

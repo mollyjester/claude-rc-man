@@ -258,7 +258,9 @@ of its tier would end its process; successive waits that add up to more than the
 and the guard ends the test. Code both tiers run (`tests/runtime_contract.py`,
 `tests/podman_service.py`, `tests/containers.py`) reads `tier_guard()` when it waits, the tier of
 the test that asks; a session or module fixture, which no test's tier covers, names its tier's
-guard with `handed`, as the engine's `started(guard)` does for what runs while the engine lasts.
+guard with `handed`, as the engine's `started(guard)` does for what runs while the engine lasts:
+`podman_service`, the session's engine, is started with `CONTAINER_HANG_GUARD`, which it keeps
+handed for the whole session, while a test's own tier still comes first in the test.
 `tests/test_hang_guard.py` holds the guard to this, each case a
 child pytest with the project's configuration, `tests/conftest.py` loaded as a plugin, and a
 short guard, in one process and under pytest-xdist: each planted twin hangs a test in a way the
@@ -389,27 +391,57 @@ and runs nothing it scans; it reads `backend/` and `helpers/` too, for the param
 name each function takes. It flags elapsed real time compared, a clock read or a name derived
 from one in a comparison or a difference (P1); a sleep in test code, or a `threading.Timer` or a
 loop's `call_later` (P2); a sleep or a `timeout` written in a child program's source, unless it
-is a guard's multiple, `RUNS_OUT` or the pace of a child's wait loop (P2s); a timeout that is not
+is a guard's multiple, `RUNS_OUT` or the pace of a child's wait loop, and `sleep` given its
+length in an argv or a call's arguments (`["sleep", "600"]`, `engine.cli(…, "busybox", "sleep",
+"600")`), in a test or in a child's Python, unless the length is a guard's multiple, an argv
+that is compared, and so runs nothing, aside (P2s); a timeout that is not
 allowed, at a keyword or a parameter of a timing name, at a known position of a wait, in a
 parameter's default, in a module's or a class's constant of a timing name, or in
 `pytest.mark.timeout` (P3); and a product's timing constant patched to a value that is not
 allowed, the time module patched, a value given back by a second setattr, or a name a setattr is
 given that cannot be resolved (P4). The allowed values are the tier's guard and its multiples,
-`tier_guard()` where a test reads it, `None`, `-1` and `0`. A timing name is a word of the name
-between underscores; a name a setattr is given is resolved through a loop over literals, the
-tuples such a loop unpacks, a test's literal `parametrize` and a helper's literal arguments. What
-the scan allows where it finds it is a call on a double (`tests/time_doubles.py`), a turn of 0, a
-benchmark test, and a child's wait loop. The only other exemptions are its named patterns,
+also plus a number or through `int()` (`str(int(2 * tier_guard()))`), `tier_guard()` where a
+test reads it, `None`, `-1` and `0`. A timing name is a word of the name between underscores,
+`guard` among a parameter's (`handed`, `started` and `usable` take only an allowed value), and
+a constant's longer words also run together (`IDLETIMEOUT`, `MAXWAIT`); a string that reads as
+a number, as `'0.01'`, is seconds. A name a setattr is given is resolved through a loop over
+literals, the tuples such a loop unpacks, a test's literal `parametrize` and a helper's literal
+arguments, a closure's too, and not where the function assigns the name again. What the scan
+allows where it finds it is a call on a double (`tests/time_doubles.py`), a helper's parameter
+typed as one only where every call of the helper in its module is seen to give it one, a turn
+of 0, a benchmark test, and a child's wait loop. The only other exemptions are its named patterns,
 `NAMED`, each with its reason and a stale check that fails once its subject holds no site:
 `until`'s own pace and bound (H1), the doubles' hang bound (H2), the hang guard with `runs_out`
-and `pace` (H3), the short bounds the tests of these hand them (H4), tmuxctl's give-up and the
-recorder's command-line watch, which no test reaches (H12), a killed run's own hang bound in
-`tests/killed_runs.py`, derived from the tier's guard (H14), and the sweep of held folders, whose
+and `pace` (H3), the short bounds the tests of these hand them (H4), tmuxctl's give-up, at the
+timeout its caller passes, which a test gives as its tier's guard, and the recorder's
+command-line watch, which no test reaches but a module marked `real_claude`, run by hand (H12),
+a killed run's own hang bound in `tests/killed_runs.py`, `hold` and `shell_hold`, derived from
+the tier's guard (H14), and the sweep of held folders, whose
 deadlines are its behaviour (Q1); and the programs of `STAND_INS`, which run only as another
 program, whose timing is theirs. Planted twins show each form flagged and each allowance clean;
 `test_no_test_waits_on_real_time` scans the real tree once, and fails on any site, on a stale
 named pattern or stand-in, and on a scan that saw no site or made none of the allowances it is
 known to make.
+
+**What the tests no longer check.** A test that raced time checked a few things only an elapsed
+time could tell, and these are given up:
+
+- whether the channel's 95th percentile is under `LATENCY_P95_SECONDS`, on the host and through
+  Podman, and how long a redaction takes against its size: [the benchmark](#the-benchmark)
+  reports them and decides no run, and `make test` still ends a redaction that never ends;
+- "promptly": where a test asserted that something ended within a time, its result is still
+  asserted and the cause that must not act is pushed past the guard, so that a defect fails
+  the test, but an ending that is slow without being a hang passes;
+- in `tests/test_claude_checks.py`, a pattern split over two reads of a child's output, for
+  which a test of the runner's search over a screen fed in two pieces stands, and a pattern
+  read only after the leader's exit was seen, an order the test cannot force, its exit code
+  still asserted;
+- in `tests/test_filelock.py`, two threads made likely to overlap on the lock;
+- the timing of `RealWatch` (`devtools/record_claude.py`), its quiet windows against the real
+  `claude` and the minute after which the pane's waits give up, which only the recorder's
+  command line exercises, by hand;
+- how the real `claude` treats an answer typed before its question, which the `trust_too_fast`
+  replay holds on the fake's side only ([fake-claude.md](fake-claude.md)).
 
 A hangup ends a terminal's shell and its jobs only where SIGHUP is at its default in them, and
 an ignore survives exec: a suite started with SIGHUP ignored, as under `nohup`, would leave them
@@ -1024,8 +1056,13 @@ it can fail, and a positive control that keeps an empty input from passing.
   and `make check-all` with `uv`, `npm` and `npx` replaced by recorders, and
   reads which tests each pytest command they ran selects from pytest's own
   collection: every test is in exactly one of `make test`,
-  `make test-container`, `make check-ui` and `make benchmark`; `make benchmark` runs the
-  `benchmark` tests, in one process, and no other target runs them; `make test-container`
+  `make test-container`, `make check-ui` and `make benchmark`. The benchmark's part of that is
+  read without make, from the Makefile's rules and pyproject's `addopts`, each pytest call's
+  `-m` worked out for every set of the markers a test may carry: `make benchmark` runs the
+  `benchmark` tests, in one process, with `-s` and `RCMAN_REQUIRE_CONTAINER=1`, no other
+  target's pytest call, nor a bare `pytest`, runs one, and no target makes `make benchmark`,
+  `make check-all` included; the three other runs' split is read from what make ran.
+  `make test-container`
   runs the `container` tests but the `stack` one, which `make check-ui` runs;
   `make check` runs the host tests and holds no on-demand run;
   `make check-all` runs every test but the benchmark's, its container tests with

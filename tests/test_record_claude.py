@@ -18,6 +18,7 @@ from rcman.runtime import HELPERS_DIR
 from devtools import held_folders, tmuxctl
 from devtools import record_claude as rec
 from tests import killed_runs as kr
+from tests.hang_guard import HANG_GUARD
 from tests.until import until
 
 CTX = rec.Context(cwd="/work/proj-x", config_dir="/cfg/dir", version="9.9.9")
@@ -291,10 +292,10 @@ class Unread:
     watches over a program that says what it has drawn are in tests/claude_watches.py.)"""
 
     def on_screen(self, pane, pattern):
-        return pane.wait_for(pattern)
+        return pane.wait_for(pattern, timeout=HANG_GUARD)
 
     def exited(self, pane):
-        return pane.wait_exit()
+        return pane.wait_exit(timeout=HANG_GUARD)
 
     def env(self, sequence, folder):
         return {}

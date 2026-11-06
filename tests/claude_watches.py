@@ -13,8 +13,8 @@ the fake says it has done, or on the screen it expects.
   is settled once it is, sanitised, the fixture of the capture it is for. It has no ignored
   input, no gate and no person to wait on.
 
-Neither gives the pane's waits a limit: a hang is ended by the tier's hang guard, through
-until's own bound or the test's.
+Each gives the pane's waits the tier's guard (tier_guard()), so that a hang ends there with
+tmuxctl's TimeoutError and the screen it last showed, as until's own bound ends the other waits.
 """
 
 from __future__ import annotations
@@ -96,10 +96,10 @@ class TraceWatch:
     """The recorder's watch over the fake, through its trace and its gate."""
 
     def on_screen(self, pane, pattern):
-        return pane.wait_for(pattern)
+        return pane.wait_for(pattern, timeout=tier_guard())
 
     def exited(self, pane):
-        return pane.wait_exit()
+        return pane.wait_exit(timeout=tier_guard())
 
     def __init__(self) -> None:
         self._taken: dict[tuple[str, str], int] = {}
@@ -129,10 +129,10 @@ class ExpectWatch:
     how the last screen differs."""
 
     def on_screen(self, pane, pattern):
-        return pane.wait_for(pattern)
+        return pane.wait_for(pattern, timeout=tier_guard())
 
     def exited(self, pane):
-        return pane.wait_exit()
+        return pane.wait_exit(timeout=tier_guard())
 
     def __init__(self, expected: dict[str, rec.Recorded]) -> None:
         self.expected = expected

@@ -11,16 +11,22 @@ and the frontend.
 
 Each target is run by the real make with uv, npm and npx replaced by recorders, so
 what a target would run is read from what it ran; which tests a pytest command line
-selects is read from pytest's own collection (tests/collected.py).
+selects is read from pytest's own collection (tests/collected.py). The benchmark's place is
+read from the Makefile and pyproject.toml themselves, without make: each pytest call's marker
+expression, worked out for every set of the markers, and the targets each target makes.
 """
 
+import ast
+import itertools
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
-from dataclasses import dataclass
+import tomllib
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import pytest
@@ -90,20 +96,17 @@ def selected(calls: list[Call]) -> dict[Call, set[str]]:
 
 
 STACK = "stack"
-BENCHMARK = "benchmark"
-RUNS = ("test", "test-container", "check-ui", "benchmark")
+RUNS = ("test", "test-container", "check-ui")
 
 
 @dataclass(frozen=True)
 class Collected:
-    """What a bare pytest collects, with the benchmark tests it leaves out: every test,
-    those carrying the container marker, those carrying the stack marker and those carrying
-    the benchmark marker."""
+    """What a bare pytest collects: every test, those carrying the container marker and
+    those carrying the stack marker."""
 
     full: set[str]
     container: set[str]
     stack: set[str]
-    benchmark: set[str]
 
     @property
     def host(self) -> set[str]:
@@ -111,14 +114,11 @@ class Collected:
 
 
 def everything() -> Collected:
-    """Every test but those of a real Claude account: a bare pytest's, which pyproject's
-    addopts leaves the benchmark out of, and the benchmark's own."""
-    found = collect() | collect(["-m", f"{BENCHMARK} and not real_claude"])
+    found = collect()
     return Collected(
         set(found),
         {n for n, t in found.items() if MARKER in t["markers"]},
         {n for n, t in found.items() if STACK in t["markers"]},
-        {n for n, t in found.items() if BENCHMARK in t["markers"]},
     )
 
 
@@ -126,45 +126,24 @@ def ran_by(calls: list[Call]) -> set[str]:
     return set().union(*selected(calls).values()) if calls else set()
 
 
-def split_problems(
-    test: list[Call], container: list[Call], ui: list[Call], bench: list[Call]
-) -> list[str]:
-    """What is wrong with the split between the four targets' pytest calls: every test
-    belongs to exactly one run, which is make benchmark for a benchmark test, and for any
-    other make test for a test that runs on the host, make test-container for a container
-    test but the whole-stack one, and make check-ui for the whole-stack one; and none of the
-    runs runs a test of a real Claude account."""
+def split_problems(test: list[Call], container: list[Call], ui: list[Call]) -> list[str]:
+    """What is wrong with the split between the three targets' pytest calls: every test
+    belongs to exactly one run, which is make test for a test that runs on the host, make
+    test-container for a container test but the whole-stack one, and make check-ui for
+    the whole-stack one; and none of the runs runs a test a bare pytest leaves out."""
     tests = everything()
-    host, ran, shown, measured = ran_by(test), ran_by(container), ran_by(ui), ran_by(bench)
-    problems = [
-        f"in none of the runs: {n}" for n in sorted(tests.full - host - ran - shown - measured)
-    ]
-    for tests_run, target in (
-        (host, "make test"),
-        (ran, "make test-container"),
-        (shown, "make check-ui"),
-    ):
-        problems += [
-            f"a benchmark test in {target}: {n}" for n in sorted(tests.benchmark & tests_run)
-        ]
-    problems += [f"not in make benchmark: {n}" for n in sorted(tests.benchmark - measured)]
-    problems += [
-        f"not a benchmark test, in make benchmark: {n}"
-        for n in sorted((measured & tests.full) - tests.benchmark)
-    ]
+    host, ran, shown = ran_by(test), ran_by(container), ran_by(ui)
+    problems = [f"in none of the runs: {n}" for n in sorted(tests.full - host - ran - shown)]
     problems += [f"a container test in make test: {n}" for n in sorted(tests.container & host)]
     problems += [
-        f"not in make test-container: {n}"
-        for n in sorted(tests.container - tests.stack - tests.benchmark - ran)
+        f"not in make test-container: {n}" for n in sorted(tests.container - tests.stack - ran)
     ]
     problems += [f"a stack test in make test-container: {n}" for n in sorted(tests.stack & ran)]
     problems += [
         f"not a container test, in make test-container: {n}"
         for n in sorted((ran & tests.full) - tests.container)
     ]
-    problems += [
-        f"not in make check-ui: {n}" for n in sorted(tests.stack - tests.benchmark - shown)
-    ]
+    problems += [f"not in make check-ui: {n}" for n in sorted(tests.stack - shown)]
     problems += [
         f"not a stack test, in make check-ui: {n}"
         for n in sorted((shown & tests.full) - tests.stack)
@@ -173,16 +152,15 @@ def split_problems(
         (host, "make test"),
         (ran, "make test-container"),
         (shown, "make check-ui"),
-        (measured, "make benchmark"),
     ):
         problems += left_out(tests_run, tests.full, target)
     return problems
 
 
 def left_out(ran: set[str], full: set[str], target: str) -> list[str]:
-    """Collected a target runs that are not among ``full``, the tests but those of a real
-    Claude account. A target's own -m replaces the -m of pyproject's addopts, so without its
-    own 'not real_claude' a target runs the tests that need a real Claude account."""
+    """Collected a target runs that a bare pytest leaves out. A target's own -m replaces the
+    -m of pyproject's addopts, so without its own 'not real_claude' a target runs the tests
+    that need a real Claude account, and without its own 'not benchmark' the benchmark's."""
     return [f"left out of a bare run, in {target}: {n}" for n in sorted(ran - full)]
 
 
@@ -198,31 +176,25 @@ def without_real_claude(runs: dict[Call, set[str]], only: set[str] | None = None
 
 def check_problems(check: list[Call]) -> list[str]:
     """What make check would get wrong: a host test none of its pytest calls selects, an
-    on-demand test (a container test) or a benchmark test it runs, a test of a real Claude
-    account, or a call without RCMAN_REQUIRE_REAL_CLAUDE=1, where the tests of the real
-    claude would skip."""
+    on-demand test (a container test) it runs, a test a bare pytest leaves out, or a call
+    without RCMAN_REQUIRE_REAL_CLAUDE=1, where the tests of the real claude would skip."""
     tests = everything()
     runs = selected(check)
     ran = set().union(*runs.values()) if runs else set()
-    problems = [f"not run by make check: {n}" for n in sorted(tests.host - tests.benchmark - ran)]
+    problems = [f"not run by make check: {n}" for n in sorted(tests.host - ran)]
     problems += [f"an on-demand test in make check: {n}" for n in sorted(tests.container & ran)]
-    problems += [f"a benchmark test in make check: {n}" for n in sorted(tests.benchmark & ran)]
     return problems + left_out(ran, tests.full, "make check") + without_real_claude(runs)
 
 
 def check_all_problems(check_all: list[Call]) -> list[str]:
-    """What make check-all would get wrong: a test but the benchmark's that none of its
-    pytest calls selects, a benchmark test it runs, a test of a real Claude account, a call
-    selecting container tests without RCMAN_REQUIRE_CONTAINER=1, where they would skip, or a
-    call selecting host tests without RCMAN_REQUIRE_REAL_CLAUDE=1, where the tests of the
-    real claude would."""
+    """What make check-all would get wrong: a test none of its pytest calls selects, a
+    test a bare pytest leaves out, a call selecting container tests without
+    RCMAN_REQUIRE_CONTAINER=1, where they would skip, or a call selecting host tests
+    without RCMAN_REQUIRE_REAL_CLAUDE=1, where the tests of the real claude would."""
     tests = everything()
     runs = selected(check_all)
     ran = set().union(*runs.values()) if runs else set()
-    problems = [
-        f"not run by make check-all: {n}" for n in sorted(tests.full - tests.benchmark - ran)
-    ]
-    problems += [f"a benchmark test in make check-all: {n}" for n in sorted(tests.benchmark & ran)]
+    problems = [f"not run by make check-all: {n}" for n in sorted(tests.full - ran)]
     problems += left_out(ran, tests.full, "make check-all")
     problems += [
         f"container tests without RCMAN_REQUIRE_CONTAINER=1: {' '.join(call.argv)}"
@@ -233,7 +205,7 @@ def check_all_problems(check_all: list[Call]) -> list[str]:
 
 
 def split_of(tmp_path: Path, **makefiles: Path) -> list[str]:
-    """split_problems for the four targets, each from its entry of ``makefiles`` (by
+    """split_problems for the three targets, each from its entry of ``makefiles`` (by
     the target's name with _ for -) or else the real Makefile."""
     calls = {
         target: recorded(tmp_path, target, makefiles.get(target.replace("-", "_"), MAKEFILE))
@@ -249,27 +221,11 @@ def known_positives(tests: Collected) -> None:
     browser = "tests/container/test_stack_in_a_browser.py::test_the_whole_stack_in_a_browser"
     assert browser in tests.stack
     assert tests.stack <= tests.container  # a stack test needs the container too
-    assert "tests/test_make.py::test_every_test_is_in_exactly_one_of_the_four_runs" in tests.host
+    assert "tests/test_make.py::test_every_test_is_in_exactly_one_of_the_three_runs" in tests.host
     assert any(n.startswith("tests/test_rules.py::test_the_backend_and_") for n in tests.host)
-    assert HOST_BENCHMARK in tests.benchmark and HOST_BENCHMARK in tests.host
-    assert PODMAN_BENCHMARK in tests.benchmark and PODMAN_BENCHMARK in tests.container
-    assert REDACTION_BENCHMARK in tests.benchmark
-    assert (
-        "tests/test_channel.py::test_only_a_channel_over_the_bound_in_every_batch_is_reported"
-        in (tests.host - tests.benchmark)
-    )
 
 
-HOST_BENCHMARK = "tests/test_channel.py::test_the_channels_latency_on_the_host"
-PODMAN_BENCHMARK = (
-    "tests/container/test_runtime_in_podman.py::test_the_channels_latency_through_podman"
-)
-REDACTION_BENCHMARK = (
-    "tests/test_claude_checks.py::test_how_long_redacting_a_screen_takes_by_its_size"
-)
-
-
-def test_every_test_is_in_exactly_one_of_the_four_runs(tmp_path):
+def test_every_test_is_in_exactly_one_of_the_three_runs(tmp_path):
     runs = {target: recorded(tmp_path, target) for target in RUNS}
     for calls in runs.values():
         assert [c.pytest_args() is not None for c in calls] == [True]
@@ -284,9 +240,7 @@ def test_make_check_runs_the_host_tests_and_no_on_demand_run(tmp_path):
     assert check_problems(check) == []
 
 
-def test_make_check_all_runs_every_test_but_the_benchmark_and_container_tests_cannot_skip(
-    tmp_path,
-):
+def test_make_check_all_runs_every_test_and_container_tests_cannot_skip(tmp_path):
     check_all = recorded(tmp_path, "check-all")
     assert len([c for c in check_all if c.pytest_args() is not None]) >= 3  # non-vacuity
     assert check_all_problems(check_all) == []
@@ -340,9 +294,8 @@ def test_container_tests_run_by_make_test_are_reported(tmp_path):
     """Planted twin: make test without the container filter runs the container tests."""
     makefile = planted(tmp_path, TEST_M, "")
     problems = split_of(tmp_path, test=makefile)
-    tests = everything()
     assert problems == [
-        f"a container test in make test: {n}" for n in sorted(tests.container - tests.benchmark)
+        f"a container test in make test: {n}" for n in sorted(everything().container)
     ]
 
 
@@ -364,8 +317,7 @@ def test_make_check_with_the_container_run_is_reported(tmp_path):
     tests = everything()
     problems = check_problems(recorded(tmp_path, "check", makefile))
     assert problems == [
-        f"an on-demand test in make check: {n}"
-        for n in sorted(tests.container - tests.stack - tests.benchmark)
+        f"an on-demand test in make check: {n}" for n in sorted(tests.container - tests.stack)
     ]
 
 
@@ -380,8 +332,7 @@ def test_make_check_without_the_host_run_is_reported(tmp_path):
     """Planted twin: make check without test misses every host test."""
     makefile = planted(tmp_path, "check: lint test ", "check: lint ")
     problems = check_problems(recorded(tmp_path, "check", makefile))
-    tests = everything()
-    assert problems == [f"not run by make check: {n}" for n in sorted(tests.host - tests.benchmark)]
+    assert problems == [f"not run by make check: {n}" for n in sorted(everything().host)]
 
 
 def test_make_check_all_without_the_container_run_is_reported(tmp_path):
@@ -390,8 +341,7 @@ def test_make_check_all_without_the_container_run_is_reported(tmp_path):
     tests = everything()
     problems = check_all_problems(recorded(tmp_path, "check-all", makefile))
     assert problems == [
-        f"not run by make check-all: {n}"
-        for n in sorted(tests.container - tests.stack - tests.benchmark)
+        f"not run by make check-all: {n}" for n in sorted(tests.container - tests.stack)
     ]
 
 
@@ -416,75 +366,6 @@ def test_container_tests_that_could_skip_are_reported(tmp_path):
         assert "pytest" in problems[0]
 
 
-# --- make benchmark: on demand, in no other target ---
-
-
-def phony() -> list[str]:
-    """The Makefile's targets, as its .PHONY names them."""
-    found = re.findall(r"^\.PHONY:(.*)$", MAKEFILE.read_text(encoding="utf-8"), re.M)
-    assert len(found) == 1
-    return found[0].split()
-
-
-@pytest.mark.parametrize(("target", "old"), [("test", TEST_M), ("test-container", CONTAINER_M)])
-def test_a_benchmark_test_run_by_another_target_is_reported(tmp_path, target, old):
-    """Planted twin: make test, or make test-container, without its 'and not benchmark' runs
-    the benchmark tests of its tier too, which only make benchmark runs."""
-    makefile = planted(tmp_path, old, old.replace(" and not benchmark", ""))
-    tests = everything()
-    tier = tests.host if target == "test" else tests.container - tests.stack
-    expected = sorted(tests.benchmark & tier)
-    assert expected  # non-vacuity: the benchmark has a test of each of these tiers
-    assert split_of(tmp_path, **{target.replace("-", "_"): makefile}) == [
-        f"a benchmark test in make {target}: {n}" for n in expected
-    ]
-
-
-def test_a_benchmark_left_out_of_make_benchmark_is_in_none_of_the_runs(tmp_path):
-    """Planted twin: make benchmark deselecting a benchmark test leaves it in none of the runs."""
-    makefile = planted(tmp_path, BENCH_M, f"{BENCH_M} --deselect {HOST_BENCHMARK}")
-    assert split_of(tmp_path, benchmark=makefile) == [
-        f"in none of the runs: {HOST_BENCHMARK}",
-        f"not in make benchmark: {HOST_BENCHMARK}",
-    ]
-
-
-def test_make_check_all_with_the_benchmark_is_reported(tmp_path):
-    """Planted twin: make check-all gaining make benchmark runs the benchmark, which no target
-    but make benchmark runs."""
-    makefile = planted(
-        tmp_path,
-        "check-all: check test-container check-ui",
-        "check-all: check test-container check-ui benchmark",
-    )
-    calls = recorded(tmp_path, "check-all", makefile)
-    (bench,) = [c for c in calls if c.pytest_args() and "benchmark and not real_claude" in c.argv]
-    assert check_all_problems(calls) == [
-        *(f"a benchmark test in make check-all: {n}" for n in sorted(everything().benchmark)),
-        # make benchmark sets no RCMAN_REQUIRE_REAL_CLAUDE, which only make check needs
-        f"without RCMAN_REQUIRE_REAL_CLAUDE=1: {' '.join(bench.argv)}",
-    ]
-
-
-@pytest.mark.parametrize("target", [t for t in phony() if t != "benchmark"])
-def test_no_target_but_make_benchmark_runs_a_benchmark_test(tmp_path, target):
-    benchmark = everything().benchmark
-    assert benchmark  # non-vacuity
-    assert ran_by(recorded(tmp_path, target)) & benchmark == set()
-
-
-def test_make_benchmark_runs_in_one_process_and_its_container_test_cannot_skip(tmp_path):
-    """One pytest call, without workers, printing what each test reports (-s), with
-    RCMAN_REQUIRE_CONTAINER=1, as its Podman test would otherwise skip."""
-    calls = [c for c in recorded(tmp_path, "benchmark") if c.pytest_args() is not None]
-    assert len(calls) == 1
-    (call,) = calls
-    assert "-s" in call.pytest_args()
-    assert not any(a.startswith(("-n", "--numprocesses", "--dist")) for a in call.pytest_args())
-    assert ("RCMAN_REQUIRE_CONTAINER", "1") in call.env
-    assert ran_by(calls) == everything().benchmark
-
-
 def real_claude_tests() -> list[str]:
     """The tests a bare pytest leaves out, by pyproject's addopts; non-vacuity: some."""
     found = sorted(collect(["-m", "real_claude"]))
@@ -502,7 +383,6 @@ def real_claude_tests() -> list[str]:
             '-m "container and not stack and not benchmark or real_claude"',
         ),
         ("check-ui", UI_M, '-m "stack and not benchmark or real_claude"'),
-        ("benchmark", BENCH_M, '-m "benchmark or real_claude"'),
     ],
 )
 def test_real_claude_tests_run_by_a_target_are_reported(tmp_path, target, old, new):
@@ -541,7 +421,226 @@ def test_make_check_all_without_the_real_claude_requirement_is_reported(tmp_path
     assert problems[0].startswith("without RCMAN_REQUIRE_REAL_CLAUDE=1: uv run pytest")
 
 
+# --- make benchmark: on demand, and in no other target, read from the Makefile itself ---
+
+PYPROJECT = REPO / "pyproject.toml"
+BENCHMARK = "benchmark"
+MARKERS = ("container", STACK, "real_claude", BENCHMARK)
+# Every set of the markers a test may carry, for which a marker expression is worked out.
+MARKER_SETS = [
+    frozenset(c) for n in range(len(MARKERS) + 1) for c in itertools.combinations(MARKERS, n)
+]
+BENCHMARK_TESTS = {
+    "tests/test_channel.py::test_the_channels_latency_on_the_host",
+    "tests/container/test_runtime_in_podman.py::test_the_channels_latency_through_podman",
+    "tests/test_claude_checks.py::test_how_long_redacting_a_screen_takes_by_its_size",
+}
+
+
+@dataclass
+class Rule:
+    """A target of the Makefile: the targets it makes first, its own exports and its recipe."""
+
+    prerequisites: list[str] = field(default_factory=list)
+    exports: dict[str, str] = field(default_factory=dict)
+    recipe: list[str] = field(default_factory=list)
+
+
+def makefile_rules(text: str) -> dict[str, Rule]:
+    """The Makefile's rules, as make reads this one: ``target: prerequisites  ## help``,
+    ``target: export NAME = value``, and the recipe's tab-led lines under a rule."""
+    rules: dict[str, Rule] = {}
+    current = None
+    for line in text.splitlines():
+        if line.startswith("\t"):
+            if current is not None:
+                current.recipe.append(line.strip())
+            continue
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        found = re.match(r"^([A-Za-z][\w.-]*):(?![=:])(.*)$", line)
+        if not found or found.group(1).startswith("."):
+            current = None
+            continue
+        rule = rules.setdefault(found.group(1), Rule())
+        rest = found.group(2).split("#", 1)[0].strip()
+        if exported := re.match(r"^export\s+(\w+)\s*=\s*(.*)$", rest):
+            rule.exports[exported.group(1)] = exported.group(2).strip()
+            current = None
+        else:
+            rule.prerequisites += rest.split()
+            current = rule
+    return rules
+
+
+def made_with(rules: dict[str, Rule], target: str) -> set[str]:
+    """``target`` and every target it makes first, at any depth."""
+    seen, todo = set(), [target]
+    while todo:
+        name = todo.pop()
+        if name not in seen:
+            seen.add(name)
+            todo += rules.get(name, Rule()).prerequisites
+    return seen
+
+
+def pytest_calls(rule: Rule) -> list[list[str]]:
+    """The arguments of each `uv run pytest` of a recipe."""
+    words = [shlex.split(line) for line in rule.recipe]
+    return [w[3:] for w in words if w[:3] == ["uv", "run", "pytest"]]
+
+
+def marker_expression(args: list[str]) -> str | None:
+    """A pytest command line's -m, the last one given, as pytest takes it; None without one."""
+    found = None
+    for i, a in enumerate(args):
+        if a == "-m" and i + 1 < len(args):
+            found = args[i + 1]
+        elif a.startswith("-m") and len(a) > 2:
+            found = a[2:]
+    return found
+
+
+def picks(expression: str, markers: frozenset[str]) -> bool:
+    """Whether -m ``expression`` selects a test carrying ``markers``: and, or, not and the
+    markers' names, which is all the Makefile and pyproject use."""
+
+    def value(node: ast.AST) -> bool:
+        if isinstance(node, ast.BoolOp):
+            parts = [value(v) for v in node.values]
+            return all(parts) if isinstance(node.op, ast.And) else any(parts)
+        if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
+            return not value(node.operand)
+        if isinstance(node, ast.Name) and node.id in MARKERS:
+            return node.id in markers
+        raise AssertionError(f"not a marker expression this reads: {expression!r}")
+
+    return value(ast.parse(expression, mode="eval").body)
+
+
+def benchmark_problems(makefile: str, pyproject: str) -> list[str]:
+    """What is wrong with the benchmark's place, read from the Makefile and pyproject.toml:
+    a bare pytest, or a pytest call of a target but make benchmark, that selects a benchmark
+    test, for any set of markers it may carry with it; make benchmark's call selecting any
+    other than the benchmark's tests but those of a real Claude account; a target that makes
+    make benchmark; and make benchmark not one pytest call, in one process (no -n or --dist),
+    with -s and RCMAN_REQUIRE_CONTAINER=1."""
+    rules = makefile_rules(makefile)
+    addopts = tomllib.loads(pyproject)["tool"]["pytest"]["ini_options"]["addopts"]
+    bare = marker_expression(shlex.split(addopts))
+    problems = [
+        f"a bare pytest runs a benchmark test carrying {sorted(m)}"
+        for m in MARKER_SETS
+        if BENCHMARK in m and (bare is None or picks(bare, m))
+    ]
+    for target, rule in sorted(rules.items()):
+        for args in pytest_calls(rule):
+            expression = marker_expression(args) or bare
+            for m in MARKER_SETS:
+                chosen = expression is None or picks(expression, m)
+                if target != BENCHMARK and BENCHMARK in m and chosen:
+                    problems.append(f"make {target} runs a benchmark test carrying {sorted(m)}")
+                wanted = BENCHMARK in m and "real_claude" not in m
+                if target == BENCHMARK and chosen != wanted:
+                    what = "runs" if chosen else "leaves out"
+                    problems.append(f"make benchmark {what} a test carrying {sorted(m)}")
+        if target != BENCHMARK and BENCHMARK in made_with(rules, target):
+            problems.append(f"make {target} makes make benchmark")
+    bench = rules.get(BENCHMARK, Rule())
+    calls = pytest_calls(bench)
+    if len(calls) != 1 or len(bench.recipe) != 1:
+        problems.append(f"make benchmark is not one pytest call: {bench.recipe}")
+    for args in calls:
+        if "-s" not in args:
+            problems.append("make benchmark does not show what its tests report (-s)")
+        if any(a.startswith(("-n", "--numprocesses", "--dist")) for a in args):
+            problems.append(f"make benchmark runs in more than one process: {args}")
+    if bench.exports.get("RCMAN_REQUIRE_CONTAINER") != "1":
+        problems.append("make benchmark lets its container test skip")
+    return problems
+
+
+def benchmark_marked() -> set[str]:
+    """The tests a @pytest.mark.benchmark decorates, read from their source."""
+    found = set()
+    for path in sorted((REPO / "tests").rglob("test_*.py")):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) and any(
+                ast.unparse(d) == "pytest.mark.benchmark" for d in node.decorator_list
+            ):
+                found.add(f"{path.relative_to(REPO)}::{node.name}")
+    return found
+
+
+def test_only_make_benchmark_runs_the_benchmark_and_in_one_process():
+    """The four runs' split, as far as the benchmark goes, and make benchmark's own arguments,
+    read without make. make benchmark takes the benchmark tests, those of a real Claude account
+    aside, and no other target's pytest call, nor a bare pytest, takes one; no target makes it,
+    check-all included. The three other runs' split of what is left is held with make itself
+    (test_every_test_is_in_exactly_one_of_the_three_runs)."""
+    makefile = MAKEFILE.read_text(encoding="utf-8")
+    rules = makefile_rules(makefile)
+    # Non-vacuity: the targets' pytest calls are read, and the benchmark's tests are marked.
+    assert {t for t, r in rules.items() if pytest_calls(r)} == {*RUNS, BENCHMARK}
+    assert pytest_calls(rules[BENCHMARK]) == [shlex.split(BENCH_M) + ["-s"]]
+    assert "check-ui" in made_with(rules, "check-all") and "lint" in made_with(rules, "check")
+    assert benchmark_marked() == BENCHMARK_TESTS
+    assert benchmark_problems(makefile, PYPROJECT.read_text(encoding="utf-8")) == []
+
+
+@pytest.mark.parametrize(
+    ("old", "new", "pyproject", "first"),
+    [
+        (TEST_M, TEST_M.replace(" and not benchmark", ""), False,
+         "make test runs a benchmark test carrying ['benchmark']"),
+        (CONTAINER_M, CONTAINER_M.replace(" and not benchmark", ""), False,
+         "make test-container runs a benchmark test carrying ['benchmark', 'container']"),
+        (UI_M, UI_M.replace(" and not benchmark", ""), False,
+         "make check-ui runs a benchmark test carrying ['benchmark', 'stack']"),
+        (TEST_M, "", False, None),  # addopts' -m then, which leaves the benchmark out
+        ("not real_claude and not benchmark", "not real_claude", True,
+         "a bare pytest runs a benchmark test carrying ['benchmark']"),
+        (BENCH_M, '-m "benchmark"', False,
+         "make benchmark runs a test carrying ['benchmark', 'real_claude']"),
+        (BENCH_M, '-m "benchmark and not real_claude and not container"', False,
+         "make benchmark leaves out a test carrying ['benchmark', 'container']"),
+        ("check-all: check test-container check-ui",
+         "check-all: check test-container check-ui benchmark", False,
+         "make check-all makes make benchmark"),
+        (f"{BENCH_M} -s", BENCH_M, False,
+         "make benchmark does not show what its tests report (-s)"),
+        (f"{BENCH_M} -s", f"{BENCH_M} -s -n 8", False,
+         "make benchmark runs in more than one process: "
+         "['-m', 'benchmark and not real_claude', '-s', '-n', '8']"),
+        ("benchmark: export RCMAN_REQUIRE_CONTAINER = 1\n", "", False,
+         "make benchmark lets its container test skip"),
+    ],
+)  # fmt: skip
+def test_a_planted_fault_in_the_benchmarks_place_is_reported(old, new, pyproject, first):
+    """Planted twins of the above, each a change to the Makefile or to pyproject's addopts, and
+    one control: make test without its own -m leaves the benchmark out by addopts'."""
+    makefile, project = MAKEFILE.read_text(encoding="utf-8"), PYPROJECT.read_text(encoding="utf-8")
+    changed = project if pyproject else makefile
+    assert old in changed, old
+    planted_text = changed.replace(old, new, 1)
+    if pyproject:
+        problems = benchmark_problems(makefile, planted_text)
+    else:
+        problems = benchmark_problems(planted_text, project)
+    if first is None:
+        assert problems == []
+    else:
+        assert problems and problems[0] == first, problems
+
+
 # --- the hang guard: every test of every run under it ---
+
+
+def phony() -> list[str]:
+    """The Makefile's targets, as its .PHONY names them."""
+    found = re.findall(r"^\.PHONY:(.*)$", MAKEFILE.read_text(encoding="utf-8"), re.M)
+    assert len(found) == 1
+    return found[0].split()
 
 
 def guard_of(test: dict) -> dict:

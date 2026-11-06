@@ -17,6 +17,7 @@ import pytest
 
 from devtools import record_claude as rec
 from tests.claude_watches import ExpectWatch
+from tests.hang_guard import HANG_GUARD
 
 REAL = shutil.which("claude")
 REQUIRED = os.environ.get("RCMAN_REQUIRE_REAL_CLAUDE") == "1"
@@ -78,6 +79,7 @@ def _claude(args: list[str], config_dir) -> subprocess.CompletedProcess:
         stdin=subprocess.DEVNULL,
         capture_output=True,
         text=True,
+        timeout=HANG_GUARD,
     )
 
 
