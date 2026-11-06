@@ -8,9 +8,10 @@ How the test suite is organised and run. The rules the suite follows are in
 | Command | What it does |
 |---|---|
 | `make setup` | Creates the development environment: `make frontend-setup`, then `uv sync` |
-| `make test` | Runs every Python test that runs on the host, in parallel with pytest-xdist: all but those marked `container`, and those marked `real_claude`, which no target runs. `TEST_WORKERS` (in the `Makefile`, which says why) is the number of workers; `--dist worksteal` gives an idle worker the queue of a busy one |
+| `make test` | Runs every Python test that runs on the host, in parallel with pytest-xdist: all but those marked `container`, those marked `benchmark`, which `make benchmark` runs, and those marked `real_claude`, which no target runs. `TEST_WORKERS` (in the `Makefile`, which says why) is the number of workers; `--dist worksteal` gives an idle worker the queue of a busy one |
 | `make test-container` | On demand: runs the Python tests marked `container`, except the whole-stack one, in one process; the `Makefile` says why. It sets `RCMAN_REQUIRE_CONTAINER=1`, so they fail instead of skipping where the user's rootless Podman cannot run |
 | `make check-ui` | On demand: runs the whole-stack test, the one marked `stack`, in one process; it needs `make frontend-setup` once, like `make e2e`. It sets `RCMAN_REQUIRE_CONTAINER=1` |
+| `make benchmark` | On demand, and not a check: runs the tests marked `benchmark`, which measure and report, in one process, printing what each reports; each fails only when it cannot measure. It sets `RCMAN_REQUIRE_CONTAINER=1`, as one of them runs through Podman. No other target runs them, `make check-all` included; see [The benchmark](#the-benchmark) |
 | `make lint` | Checks formatting and lint: ruff for the Python code, Biome for the frontend, with the frontend's packages `make frontend-setup` installs |
 | `make format` | Applies formatting and safe lint fixes: ruff for the Python code, Biome for the frontend |
 | `make frontend-setup` | Installs the frontend's packages and Playwright's browser |
@@ -19,7 +20,7 @@ How the test suite is organised and run. The rules the suite follows are in
 | `make e2e` | Builds the frontend and runs the browser tests |
 | `make screenshots` | Not a test: builds the frontend and captures every page, at a phone's and a desktop's width, light and dark, into `frontend/test-results/screenshots/`, for a look at the design; see [Screenshots](#screenshots) |
 | `make check` | Lint, `make test`, the frontend tests and the browser tests; no on-demand run. It sets `RCMAN_REQUIRE_REAL_CLAUDE=1`, so tests that would skip for want of the real `claude` fail instead |
-| `make check-all` | `make check`, `make test-container` and `make check-ui`, one after the other: for the end of a change and before the live reinstall |
+| `make check-all` | `make check`, `make test-container` and `make check-ui`, one after the other, which is every test but the benchmark's: for the end of a change and before the live reinstall |
 
 `make check` is the gating check; `make test-container` and `make check-ui` are
 the on-demand runs. When each runs, and how a run is read, are working rules:
@@ -36,8 +37,8 @@ than moved out; the tests that need a container, marked `container` (see
 below), run on demand: `make test-container` runs them but the whole-stack
 test, which carries the `stack` marker as well and which `make check-ui` runs.
 `tests/test_make.py` holds the split: every test is in exactly one of
-`make test`, `make test-container` and `make check-ui`, `make check` holds no
-on-demand run, and `make check-all` runs every test. To work on
+`make test`, `make test-container`, `make check-ui` and `make benchmark`, `make check` holds no
+on-demand run, and `make check-all` runs every test but the benchmark's. To work on
 what a container suite covers, run its module directly, as in
 `RCMAN_REQUIRE_CONTAINER=1 uv run pytest tests/container/test_github_in_podman.py -k gh`.
 
@@ -49,9 +50,7 @@ default), since no test is about surviving a crash and production
 keeps the default; the collections `tests/test_make.py` reads are made once per
 run and shared by all the workers through pytest's basetemp
 (`tests/collected.py`); and `tests/test_e2e_server.py` calls the Playwright
-binary directly, without `npx`. The channel's latency test (`tests/test_channel.py`)
-takes up to a few batches of requests and fails only when every batch is over
-the bound, as a busy host can push one batch over it.
+binary directly, without `npx`.
 The suite needs `tmux`, `git`, procps' `kill` and a busybox with `nc` and `setsid`
 on the host, as `busybox-static`, which `.devcontainer/Dockerfile` installs, has
 them. Each test's tmux sockets are in a folder of its own, made under `/tmp` by
@@ -191,6 +190,26 @@ What needs a real Claude account, and what needs systemd, the kernel's limits or
 machine, is checked by hand: [real-claude-checklist.md](real-claude-checklist.md). Tests marked `real_claude` are deselected by default
 and run by hand with `uv run pytest -m real_claude`; what they need is in
 [fake-claude.md](fake-claude.md).
+
+### The benchmark
+
+A test marked `benchmark` measures how long something takes and reports it; it asserts no
+time, so no machine's speed decides a run, and it fails only when it cannot measure. Each
+prints its figures, which `make benchmark` shows, and records them with pytest's
+`record_property`. The benchmark tests stay in the modules of what they measure, and
+`make benchmark` alone runs them: pyproject's `addopts` leaves them out of a bare `pytest`,
+and each other target's own `-m` leaves them out too, as `tests/test_make.py` holds. They
+are:
+
+- the channel's 95th percentile against `LATENCY_P95_SECONDS` in `channel.py`, on the host
+  (`tests/test_channel.py`), in up to `LATENCY_BATCHES` batches, as a busy host can push one
+  batch over the bound and a slow channel is over it in every batch; and through Podman, on
+  the tests' engine (`tests/container/test_runtime_in_podman.py`), which carries the derived
+  `container` marker as well and is under the container tests' hang guard;
+- the redaction of a screen (`tests/test_claude_checks.py`), the time each of its large
+  cases takes against its size. `make test` holds the same cases ended, each run in a thread
+  joined within `HANG_GUARD` and asserted to have ended with the right result, so that a
+  redaction that never ends fails its test rather than hanging the run.
 
 ### The hang guard
 
@@ -425,7 +444,8 @@ helper made inside the holder's network and handed back.
   mounts and the tmpfs, a person's credentials file their range's root's alone, a rename over it
   refused busy and a write in place shared, a sign-in container that removes itself, an
   unreachable socket told from a missing workspace, an exec running the image's own program
-  and answering without its mark, the channel's latency and its podman client's memory; the
+  and answering without its mark, its podman client's memory, and the channel's latency, as a
+  benchmark that only `make benchmark` runs; the
   `PODMAN_CASES` of the runtime contract; the instructions for Claude as a single file bound
   read-only where the image has no `/etc/claude-code`, readable with swapped ids, in place of an
   image's own `CLAUDE.md` with its other files there left visible, and a file renamed over on the
@@ -945,14 +965,15 @@ it can fail, and a positive control that keeps an empty input from passing.
   and `make check-all` with `uv`, `npm` and `npx` replaced by recorders, and
   reads which tests each pytest command they ran selects from pytest's own
   collection: every test is in exactly one of `make test`,
-  `make test-container` and `make check-ui`; `make test-container` runs the
-  `container` tests but the `stack` one, which `make check-ui` runs;
+  `make test-container`, `make check-ui` and `make benchmark`; `make benchmark` runs the
+  `benchmark` tests, in one process, and no other target runs them; `make test-container`
+  runs the `container` tests but the `stack` one, which `make check-ui` runs;
   `make check` runs the host tests and holds no on-demand run;
-  `make check-all` runs every test, its container tests with
+  `make check-all` runs every test but the benchmark's, its container tests with
   `RCMAN_REQUIRE_CONTAINER=1`, and `make check` with
   `RCMAN_REQUIRE_REAL_CLAUDE=1`; none of them runs a test a
-  bare `pytest` leaves out, as a target's own `-m` replaces the
-  `-m 'not real_claude'` of pyproject's `addopts`; and every test that any target
+  bare `pytest` leaves out for a real Claude account, as a target's own `-m` replaces the
+  `-m` of pyproject's `addopts`; and every test that any target
   `.PHONY` names runs is under its tier's hang guard, as pytest-timeout itself works out
   each test's settings (see [The hang guard](#the-hang-guard)). `make lint` and
   `make format` run ruff and the frontend's script of the same name, and the

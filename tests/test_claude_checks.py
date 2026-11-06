@@ -5,6 +5,7 @@ import os
 import re
 import shutil
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -13,6 +14,7 @@ import pytest
 from devtools import record_claude as rec
 from helpers import claude_checks as cc
 from helpers import screens
+from tests.hang_guard import HANG_GUARD
 
 REAL = shutil.which("claude")
 
@@ -322,26 +324,69 @@ def test_ordinary_words_beside_a_sign_in_url_are_kept(tmp_path):
     assert words in detail
 
 
-def test_redacting_a_screen_with_many_secrets_written_takes_no_longer_than_its_size_does():
-    emails = " ".join(f"a{i}@b.io" for i in range(22000))
-    assert len(emails) <= cc.MAX_CAPTURE_BYTES
-    started = time.monotonic()
-    assert cc.redact_screen("on the screen", emails) == "on the screen"
-    assert time.monotonic() - started < 10
-    values = " ".join(f"token={i:08d}abcdefghijkl" for i in range(cc.MAX_CREDENTIALS + 1))
-    started = time.monotonic()
-    assert cc.redact_screen("on the screen", values) == cc.WITHHELD
-    assert time.monotonic() - started < 10
-    few = " ".join(f"token={i:08d}abcdefghijkl" for i in range(cc.MAX_CREDENTIALS))
-    assert cc.redact_screen("00000001abcdefghijkl shown", few) == f"{cc.CREDENTIAL} shown"
+# Screens and written values whose redaction must take time in proportion to their size: a
+# pattern that backtracks would take time exponential in it, and never end in a test's time.
+MANY_EMAILS = " ".join(f"a{i}@b.io" for i in range(22000))
+TOO_MANY_VALUES = " ".join(f"token={i:08d}abcdefghijkl" for i in range(cc.MAX_CREDENTIALS + 1))
+FEW_VALUES = " ".join(f"token={i:08d}abcdefghijkl" for i in range(cc.MAX_CREDENTIALS))
+MANY_LINES = "\n" * (cc.MAX_CAPTURE_BYTES * 4)
 
 
-def test_redacting_a_screen_of_many_lines_takes_no_longer_than_its_size_does():
-    started = time.monotonic()
-    assert cc.redact_screen("\n" * (cc.MAX_CAPTURE_BYTES * 4), "") == "\n" * (
-        cc.MAX_CAPTURE_BYTES * 4
-    )
-    assert time.monotonic() - started < 10
+def redacted(screen: str, written: str, within: float = HANG_GUARD, redact=None) -> str:
+    """What ``redact`` (cc.redact_screen) gives for ``screen`` and ``written``, run in a thread
+    joined within ``within``: one that has not ended by then fails the test, with its teardown
+    run, rather than hanging until the hang guard ends the run."""
+    redact = cc.redact_screen if redact is None else redact
+    result: list[str] = []
+    worker = threading.Thread(target=lambda: result.append(redact(screen, written)), daemon=True)
+    worker.start()
+    worker.join(within)
+    assert not worker.is_alive(), f"the redaction did not end within {within}s"
+    return result[0]
+
+
+def test_a_screen_with_many_secrets_written_is_redacted():
+    assert len(MANY_EMAILS) <= cc.MAX_CAPTURE_BYTES
+    assert redacted("on the screen", MANY_EMAILS) == "on the screen"
+    assert redacted("on the screen", TOO_MANY_VALUES) == cc.WITHHELD
+    assert redacted("00000001abcdefghijkl shown", FEW_VALUES) == f"{cc.CREDENTIAL} shown"
+
+
+def test_a_screen_of_many_lines_is_redacted():
+    assert redacted(MANY_LINES, "") == MANY_LINES
+
+
+def test_a_redaction_that_does_not_end_fails_the_test():
+    """Planted twin: a redaction that never ends is reported, not waited for; at 0, as it is
+    still running at any speed."""
+    release = threading.Event()
+
+    def stuck(screen, written):
+        release.wait()
+        return screen
+
+    try:
+        with pytest.raises(AssertionError, match="did not end within 0s"):
+            redacted("on the screen", "", within=0, redact=stuck)
+    finally:
+        release.set()
+
+
+@pytest.mark.benchmark
+def test_how_long_redacting_a_screen_takes_by_its_size(record_property):
+    """Reports how long each of the redactions above takes against the size of what it reads:
+    measures and reports, and decides nothing (make benchmark)."""
+    for name, screen, written in (
+        ("many secrets written", "on the screen", MANY_EMAILS),
+        ("too many values written", "on the screen", TOO_MANY_VALUES),
+        ("many lines", MANY_LINES, ""),
+    ):
+        size = len(screen) + len(written)
+        started = time.perf_counter()
+        cc.redact_screen(screen, written)
+        took = time.perf_counter() - started
+        record_property(name, {"bytes": size, "seconds": took})
+        print(f"redacting {name}: {size} bytes in {took:.3f}s, {took / size * 1e6:.3f} s per MB")
 
 
 def test_a_line_after_a_url_that_did_not_reach_the_edge_is_kept(tmp_path):

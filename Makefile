@@ -3,7 +3,7 @@
 # the same images, which side by side would only compete for the machine.
 .NOTPARALLEL:
 
-.PHONY: setup test test-container check-ui lint format frontend-setup frontend-test frontend-build e2e screenshots check check-all
+.PHONY: setup test test-container check-ui benchmark lint format frontend-setup frontend-test frontend-build e2e screenshots check check-all
 
 setup: frontend-setup  ## install the development environment
 	uv sync
@@ -14,18 +14,24 @@ setup: frontend-setup  ## install the development environment
 # tests do not leave the rest waiting at the end.
 TEST_WORKERS ?= 8
 test:  ## every Python test that runs on the host, in parallel
-	uv run pytest -n $(TEST_WORKERS) --dist worksteal -m "not container and not real_claude"
+	uv run pytest -n $(TEST_WORKERS) --dist worksteal -m "not container and not real_claude and not benchmark"
 
 test-container: export RCMAN_REQUIRE_CONTAINER = 1
 # In one process, as the container tests share the images their session fixtures build,
 # which each pytest-xdist worker would build again.
 test-container:  ## on demand: the Python tests that need a container but not the whole stack; they fail rather than skip
-	uv run pytest -m "container and not stack and not real_claude"
+	uv run pytest -m "container and not stack and not real_claude and not benchmark"
 
 check-ui: export RCMAN_REQUIRE_CONTAINER = 1
 # In one process, like test-container, whose reason holds here too.
 check-ui:  ## on demand: the whole stack in a browser; needs make frontend-setup once, like e2e
-	uv run pytest -m "stack and not real_claude"
+	uv run pytest -m "stack and not real_claude and not benchmark"
+
+benchmark: export RCMAN_REQUIRE_CONTAINER = 1
+# In one process, like test-container, as its Podman test needs the tests' engine; -s shows
+# what each test reports. In no other target, check-all included: it decides nothing.
+benchmark:  ## on demand, not a check: the tests that measure and report; they fail only when they cannot measure
+	uv run pytest -m "benchmark and not real_claude" -s
 
 lint:  ## check formatting and lint: ruff for the Python code, Biome for the frontend
 	uv run ruff format --check .

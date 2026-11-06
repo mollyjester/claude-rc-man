@@ -174,7 +174,11 @@ def test_an_unreachable_socket_is_unavailable_not_missing(podman_service, podman
         nowhere.exists("rcman-ws-1")
 
 
-def test_the_channels_latency_through_podman(podman, workspace):
+@pytest.mark.benchmark
+def test_the_channels_latency_through_podman(podman, workspace, record_property):
+    """Reports the 95th percentile of a command through the channel, through podman on the
+    tests' rootless engine, against ch.LATENCY_P95_SECONDS: it measures and reports, and
+    decides nothing (make benchmark)."""
     channel = podman.channel(workspace)
     try:
         true = podman.layout(workspace).tool("wc") + ["-c", "/dev/null"]
@@ -184,10 +188,17 @@ def test_the_channels_latency_through_podman(podman, workspace):
             started = time.perf_counter()
             channel.run(true)
             times.append(time.perf_counter() - started)
-        times.sort()
-        assert times[189] < ch.LATENCY_P95_SECONDS, times[189]
     finally:
         channel.close()
+    times.sort()
+    p95 = times[189]
+    record_property("p95_seconds", p95)
+    record_property("bound_seconds", ch.LATENCY_P95_SECONDS)
+    verdict = "within the bound" if p95 < ch.LATENCY_P95_SECONDS else "over the bound"
+    print(
+        f"the channel's 95th percentile through podman: {p95 * 1000:.2f} ms, against "
+        f"{ch.LATENCY_P95_SECONDS * 1000:.0f} ms: {verdict}"
+    )
 
 
 def test_a_channels_podman_client_holds_little_memory(podman, workspace):

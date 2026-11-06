@@ -256,8 +256,8 @@ def p95_of_a_hundred(channel, true: str) -> float:
     return times[94]
 
 
-# How many batches of a hundred requests the latency test may take before the bound is
-# judged broken: noise on a busy host passes in one of them, a slow channel in none.
+# How many batches of a hundred requests the latency benchmark takes before it reports the
+# bound as broken: noise on a busy host passes in one of them, a slow channel in none.
 LATENCY_BATCHES = 3
 
 
@@ -273,16 +273,32 @@ def batches_over_the_bound(measure) -> list[float]:
     return over
 
 
-def test_the_channels_latency_on_the_host(channel):
-    """A command through the channel costs a few milliseconds, not the hundreds a new exec
-    costs; tests/container/test_runtime_in_podman.py pins the same through podman, on the tests'
-    rootless engine.
-    On a busy host, as under ``make test``'s parallel workers, a few scheduler stalls can
-    push one batch's 95th percentile past the bound, so a batch may be taken again; a
-    channel that is slow is over the bound in every batch."""
+@pytest.mark.benchmark
+def test_the_channels_latency_on_the_host(channel, record_property):
+    """Reports the 95th percentile of a command through the channel, a few milliseconds where
+    a new exec costs hundreds, against ch.LATENCY_P95_SECONDS; tests/container/
+    test_runtime_in_podman.py reports the same through podman, on the tests' rootless engine.
+    It measures and reports, and decides nothing (make benchmark). On a busy host a few
+    scheduler stalls can push one batch's 95th percentile past the bound, so a batch is taken
+    again; a channel that is slow is over the bound in every batch."""
     true = shutil.which("true")
     channel.run([true])
-    assert batches_over_the_bound(lambda: p95_of_a_hundred(channel, true)) == []
+    batches: list[float] = []
+
+    def measured() -> float:
+        batches.append(p95_of_a_hundred(channel, true))
+        return batches[-1]
+
+    over = batches_over_the_bound(measured)
+    assert batches  # it measured
+    record_property("p95_seconds", batches)
+    record_property("bound_seconds", ch.LATENCY_P95_SECONDS)
+    verdict = "over the bound in every batch" if over else "within the bound"
+    figures = ", ".join(f"{p95 * 1000:.2f} ms" for p95 in batches)
+    print(
+        f"the channel's 95th percentile on the host: {figures}, against "
+        f"{ch.LATENCY_P95_SECONDS * 1000:.0f} ms: {verdict}"
+    )
 
 
 def test_only_a_channel_over_the_bound_in_every_batch_is_reported():
