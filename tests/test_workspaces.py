@@ -15,8 +15,6 @@ from rcman import runtime as rt
 from rcman import workspaces as ws
 from rcman.channel import ChannelBroken
 
-from helpers.clock import REAL
-from tests.clocks import PhasedClock
 from tests.conftest import (
     ALICE,
     BOB,
@@ -29,6 +27,7 @@ from tests.conftest import (
     signed_in,
 )
 from tests.hang_guard import HANG_GUARD
+from tests.time_doubles import ControlledEvent, FakeTime
 
 
 def listed(client, who=ALICE) -> list[dict]:
@@ -1047,9 +1046,9 @@ def test_the_server_is_started_through_the_layout_pinned_to_the_version(pinned, 
     seen = []
     real = cs.Server.__init__
 
-    def recording(self, layout, run, workspace, clock):
+    def recording(self, layout, run, workspace):
         seen.append(layout.claude)
-        real(self, layout, run, workspace, clock)
+        real(self, layout, run, workspace)
 
     cs.Server.__init__ = recording
     try:
@@ -1156,11 +1155,15 @@ def publish(github_stand_in, tmp_path):
 
 
 @contextlib.contextmanager
-def two_processes(settings, runtime, service_clock=REAL, shell_clock=REAL):
+def two_processes(settings, runtime, shell_closing=None):
     """The service and rcman-admin: two Workspaces on the same database and the same Podman,
-    each with only its own threads and events, as two processes have, and each on its clock."""
-    service = ws.Workspaces(settings, runtime, clock=service_clock)
-    shell = ws.Workspaces(settings, runtime, prunes=False, clock=shell_clock)
+    each with only its own threads and events, as two processes have. ``shell_closing``, a
+    ControlledEvent, is rcman-admin's closing event where the test gives one, put in before any
+    thread of its starts."""
+    service = ws.Workspaces(settings, runtime)
+    shell = ws.Workspaces(settings, runtime, prunes=False)
+    if shell_closing is not None:
+        shell._closing = shell_closing
     try:
         yield service, shell
     finally:
@@ -1320,42 +1323,47 @@ def test_a_deletion_from_another_process_stops_a_restore_remaking_a_container(
     assert name not in flow.labelled() and not (flow.root / name).exists()
 
 
-class Untils(PhasedClock):
-    """A PhasedClock that records the event each ``poll`` is given to end it."""
+def worked_on(service, workspace_id: int, body) -> list[BaseException]:
+    """``body(cancel)`` run inside ``service._working_on(workspace_id)``, in a thread joined
+    under HANG_GUARD: what it raised."""
+    raised: list[BaseException] = []
 
-    def __init__(self):
-        super().__init__()
-        self.untils: list[threading.Event | None] = []
+    def run():
+        try:
+            with service._working_on(workspace_id) as cancel:
+                body(cancel)
+        except BaseException as failed:  # noqa: BLE001 - handed to the test
+            raised.append(failed)
 
-    def poll(self, seconds, until=None):
-        self.untils.append(until)
-        return super().poll(seconds, until)
-
-
-def test_the_watcher_ends_with_the_work_and_leaves_no_thread(settings, runtime):
-    clock = Untils()
-    service = ws.Workspaces(settings, runtime, clock=clock)
-    try:
-        watched(service, clock, settings)
-    finally:
-        service.close()
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    thread.join(HANG_GUARD)
+    assert not thread.is_alive()  # the work's end ended the watcher's wait, and so the work
+    return raised
 
 
-def watched(service, clock, settings) -> None:
+def test_the_watcher_ends_with_the_work_and_leaves_no_thread(service, settings, monkeypatch):
+    # Its look is never due within the test: only the work's end ends the watcher's wait.
+    monkeypatch.setattr(ws, "WORKING_POLL_SECONDS", 2 * HANG_GUARD)
     made = insert(settings, 1, "watched", "creating")
-    with service._working_on(made) as cancel:
-        assert len(watchers(made)) == 1  # positive control: it is watched while worked on
-        clock.wait_polled(3)  # it looks at the row a few times meanwhile
-        [until] = set(clock.untils)  # each poll ends on one event, not set while it works
-        assert until is not None and not until.is_set()
-    assert [w[:2] for w in clock.waits if w[0] == "poll"][:1] == [("poll", ws.WORKING_POLL_SECONDS)]
-    assert until.is_set()  # the work's end: so it ended the poll, without waiting it out
+    seen: list = []
+
+    def work(cancel):
+        seen.append((len(watchers(made)), cancel))
+
+    assert worked_on(service, made, work) == []
+    [(watching, cancel)] = seen
+    assert watching == 1  # positive control: it is watched while worked on
     assert watchers(made) == []
     assert not cancel.is_set()  # nothing was stopped: the row is not being deleted
     assert made not in service._working
-    with pytest.raises(RuntimeError), service._working_on(made):
-        assert len(watchers(made)) == 1
+
+    def failing(cancel):
+        seen.append(len(watchers(made)))
         raise RuntimeError("planted: the work failed")
+
+    [raised] = worked_on(service, made, failing)
+    assert isinstance(raised, RuntimeError) and seen[-1] == 1
     assert watchers(made) == []
 
 
@@ -1381,14 +1389,33 @@ def test_a_deletion_in_the_same_process_is_not_stopped_twice_by_the_watcher(
 
 
 @pytest.fixture
-def clock():
-    return PhasedClock()
+def fake(monkeypatch):
+    """The workspaces module's time, frozen unless the test moves it: only a person's deletion,
+    in the test's own thread, reads it here."""
+    made = FakeTime()
+    monkeypatch.setattr(ws, "time", made)
+    return made
 
 
 @pytest.fixture
-def timed(settings, runtime, clock):
-    """The service on a clock of the test's, which no test moves but where it says so."""
-    made = ws.Workspaces(settings, runtime, clock=clock)
+def looks(monkeypatch):
+    """The first service's closing event a ControlledEvent: a person's deletion's look at rows
+    another process makes (``WORKING_POLL_SECONDS``) waits on it until the test ends it."""
+    from tests.conftest import into_the_first_service
+
+    made = ControlledEvent()
+    into_the_first_service(monkeypatch, "_closing", made)
+    return made
+
+
+@pytest.fixture
+def timed(settings, runtime, changed, looks, fake):
+    """The service with the test's condition (``changed``), closing event (``looks``) and time
+    (``fake``). The two doubles tell their records on one condition, before any thread of the
+    service's starts, so that a test can wait for a wait on either (``deletion_waits``)."""
+    looks._told = changed._told
+    made = ws.Workspaces(settings, runtime)
+    assert made._changed is changed and made._closing is looks
     yield made
     made.close()
 
@@ -1401,7 +1428,8 @@ def held_create(runtime) -> threading.Event:
 
 
 def deleting_person(service, person) -> tuple[threading.Thread, list]:
-    """``delete_person`` in a thread of its own: the thread, and what it ended in."""
+    """``delete_person`` in a thread of its own: the thread, and what it ended in. A service whose
+    closing event is a ControlledEvent has it told once the deletion answered (``answered``)."""
     from rcman.problems import Problem
 
     out: list = []
@@ -1412,6 +1440,10 @@ def deleting_person(service, person) -> tuple[threading.Thread, list]:
             out.append(None)
         except Problem as refused:
             out.append(refused)
+        finally:
+            if isinstance(service._closing, ControlledEvent):
+                with service._closing._told:
+                    service._closing._told.notify_all()
 
     thread = threading.Thread(target=run, daemon=True)
     thread.start()
@@ -1423,8 +1455,25 @@ def joined(thread: threading.Thread) -> None:
     assert not thread.is_alive()
 
 
-def waits_of(clock, thread) -> list[tuple[str, float | None]]:
-    return [(method, seconds) for method, seconds, t in clock.waits if t is thread]
+def waits_of(double, thread) -> list:
+    """The waits recorded on ``double`` by ``thread``."""
+    return [w for w in double.waits if w.thread is thread]
+
+
+def deletion_waits(thread: threading.Thread, changed, looks) -> None:
+    """Until the deletion in ``thread`` waits: for its making thread, on ``changed``, or for a
+    look at the rows, on ``looks`` (``timed``'s doubles, which tell on one condition)."""
+    changed._until(
+        lambda: waits_of(changed, thread) or waits_of(looks, thread), "the deletion's wait", None
+    )
+
+
+def answered(thread: threading.Thread, out: list, looks) -> None:
+    """Until the deletion in ``thread`` has answered, or has looked at the rows once (a wait on
+    ``looks``): it must have answered without looking."""
+    looks._until(lambda: out or waits_of(looks, thread), "the deletion's answer or a look", None)
+    assert waits_of(looks, thread) == []  # it did not look at the rows
+    joined(thread)
 
 
 def left(out) -> bool:
@@ -1434,25 +1483,26 @@ def left(out) -> bool:
 
 
 def test_deleting_a_person_waits_for_their_making_thread_on_one_wait_and_no_poll(
-    timed, clock, settings, runtime
+    timed, changed, looks, settings, runtime
 ):
     bob = _person(settings, BOB)
     held = held_create(runtime)
     made = timed.create(bob, "own")
     thread, out = deleting_person(timed, bob)
-    clock.wait_parked(1)
-    assert waits_of(clock, thread) == [("wait_for", ws.MADE_WITHIN_SECONDS)]
+    [waiting] = changed.wait_waiting(1, match=thread)
+    assert waiting.seconds == ws.MADE_WITHIN_SECONDS
     assert thread.is_alive()
     held.set()
     joined(thread)
     assert out == [None] and row(settings, made.id) is None
     assert _person(settings, BOB) is None
-    assert "poll" not in [m for m, _ in waits_of(clock, thread)]
+    assert [w.ended for w in waits_of(changed, thread)] == ["predicate"]  # its thread's end
+    assert waits_of(looks, thread) == []  # no look at the rows
 
 
 @pytest.mark.filterwarnings("error::pytest.PytestUnhandledThreadExceptionWarning")
 def test_deleting_a_person_whose_workspace_its_own_making_could_not_remove_answers_at_once(
-    timed, clock, settings, runtime, monkeypatch
+    timed, changed, looks, settings, runtime, monkeypatch
 ):
     """Nothing is left to wait for: the thread that made it is done, and restore finishes it."""
     bob = _person(settings, BOB)
@@ -1463,17 +1513,16 @@ def test_deleting_a_person_whose_workspace_its_own_making_could_not_remove_answe
         raise rt.RuntimeFailed("planted: it will not go")
 
     thread, out = deleting_person(timed, bob)
-    clock.wait_parked(1)
+    deletion_waits(thread, changed, looks)
     monkeypatch.setattr(runtime, "remove", refusing)
     held.set()
-    joined(thread)
+    answered(thread, out, looks)
     assert left(out)
     assert row(settings, made.id)["state"] == ws.DELETING  # left for restore to finish
-    assert "poll" not in [m for m, _ in waits_of(clock, thread)]
 
 
 def test_deleting_a_person_whose_making_thread_raised_at_its_end_answers_at_once(
-    timed, clock, settings, runtime, monkeypatch
+    timed, changed, looks, settings, runtime, monkeypatch
 ):
     import sqlite3
 
@@ -1487,19 +1536,18 @@ def test_deleting_a_person_whose_making_thread_raised_at_its_end_answers_at_once
         raise sqlite3.OperationalError("planted: the database is locked")
 
     thread, out = deleting_person(timed, bob)
-    clock.wait_parked(1)
+    deletion_waits(thread, changed, looks)
     monkeypatch.setattr(timed, "_remove", failing)  # what its final look calls
     held.set()
-    joined(thread)
+    answered(thread, out, looks)
     assert [type(e) for e in caught] == [sqlite3.OperationalError]
     assert left(out) and row(settings, made.id) is not None
     with timed._changed:
         assert made.id in timed._ended_here
-    assert "poll" not in [m for m, _ in waits_of(clock, thread)]
 
 
 def test_deleting_a_person_whose_workspace_a_thread_here_left_creating_answers_at_once(
-    timed, clock, settings, monkeypatch
+    timed, looks, settings, monkeypatch
 ):
     """A making thread of this process ended and left the row creating: no thread makes it, and
     it is not another process's either, so it is not looked at again."""
@@ -1522,27 +1570,25 @@ def test_deleting_a_person_whose_workspace_a_thread_here_left_creating_answers_a
     assert row(settings, made.id)["state"] == ws.CREATING  # positive: the row it left
     assert not timed._being_made(made.id)
     thread, out = deleting_person(timed, bob)
-    joined(thread)
+    answered(thread, out, looks)
     assert left(out)
-    assert [m for m, _ in waits_of(clock, thread) if m == "poll"] == []
 
 
-@pytest.mark.parametrize("short", [1, 0])
 def test_deleting_a_person_gives_up_on_their_making_thread_after_its_deadline(
-    timed, clock, settings, runtime, short
+    timed, changed, settings, runtime
 ):
+    """The wait's timeout is the whole deadline, exactly (the time is frozen): run out, the
+    deletion answers that work is left. Its twin a second short is given up: the condition's
+    timeout never runs out by itself, so its seconds stand in."""
     bob = _person(settings, BOB)
     held = held_create(runtime)
     made = timed.create(bob, "slow")
     thread, out = deleting_person(timed, bob)
     try:
-        clock.wait_parked(1)
-        clock.lend(thread)
-        clock.advance(ws.MADE_WITHIN_SECONDS - short)
-        if short:  # the twin: a second short, it waits on
-            clock.wait_parked(1)
-            assert thread.is_alive() and out == []
-            clock.advance(short)
+        [waiting] = changed.wait_waiting(1, match=thread)
+        assert waiting.seconds == ws.MADE_WITHIN_SECONDS
+        assert thread.is_alive() and out == []  # it never runs out by itself
+        changed.expire(thread)
         joined(thread)
         assert left(out)
     finally:
@@ -1550,56 +1596,66 @@ def test_deleting_a_person_gives_up_on_their_making_thread_after_its_deadline(
     ended(timed, made.id, HANG_GUARD)
 
 
+def look(closing, n: int = 1) -> None:
+    """Until rcman-admin's deletion waits for its next look at the rows."""
+    closing.wait_waiting(n, match=ws.WORKING_POLL_SECONDS)
+
+
 def test_rcman_admin_deleting_a_person_polls_a_workspace_the_service_makes_until_it_is_gone(
     settings, runtime
 ):
-    shell_clock = PhasedClock()
+    shell_closing = ControlledEvent()
     bob = _person(settings, BOB)
     held = held_create(runtime)
-    with two_processes(settings, runtime, shell_clock=shell_clock) as (service, shell):
+    with two_processes(settings, runtime, shell_closing) as (service, shell):
         try:
             made = service.create(bob, "theirs")
             thread, out = deleting_person(shell, bob)
-            shell_clock.wait_polled(1)
-            assert ("poll", ws.WORKING_POLL_SECONDS) in waits_of(shell_clock, thread)
+            look(shell_closing)
             assert thread.is_alive()
         finally:
             held.set()
+        ended(service, made.id, HANG_GUARD)  # the service removed it, as it was deleting
+        assert row(settings, made.id) is None
+        assert thread.is_alive() and out == []  # positive: it has not looked again yet
+        shell_closing.expire(ws.WORKING_POLL_SECONDS)
         joined(thread)
-        assert out == [None] and row(settings, made.id) is None
+        assert out == [None]
 
 
 @pytest.mark.parametrize("short", [0, 1])
 def test_rcman_admin_deleting_a_person_gives_up_on_a_row_nothing_makes_after_its_deadline(
-    settings, runtime, short
+    settings, runtime, monkeypatch, short
 ):
-    shell_clock = PhasedClock()
+    fake = FakeTime()
+    monkeypatch.setattr(ws, "time", fake)  # read only by the deletion, the test's thread
+    shell_closing = ControlledEvent()
     bob = _person(settings, BOB)
     orphan = insert(settings, bob.id, "orphan", ws.CREATING)
-    with two_processes(settings, runtime, shell_clock=shell_clock) as (_, shell):
+    with two_processes(settings, runtime, shell_closing) as (_, shell):
         thread, out = deleting_person(shell, bob)
-        shell_clock.lend(thread)
-        shell_clock.wait_polled(1)
-        assert ("poll", ws.WORKING_POLL_SECONDS) in waits_of(shell_clock, thread)
-        shell_clock.advance(ws.MADE_WITHIN_SECONDS - short)
+        look(shell_closing)
+        fake.advance(ws.MADE_WITHIN_SECONDS - short)
         if short:  # the twin: a second short, it looks on
-            seen = shell_clock.polls
-            shell_clock.wait_polled(seen + 2)
+            for _ in range(2):
+                shell_closing.expire(ws.WORKING_POLL_SECONDS)
+                look(shell_closing)
             assert thread.is_alive() and out == []
-            shell_clock.advance(short)
+            fake.advance(short)
+        shell_closing.expire(ws.WORKING_POLL_SECONDS)
         joined(thread)
         assert left(out)
         assert row(settings, orphan)["state"] == ws.DELETING
 
 
 def test_closing_ends_a_persons_deletion_waiting_for_their_making_thread_at_once(
-    timed, clock, settings, runtime
+    timed, changed, settings, runtime
 ):
     bob = _person(settings, BOB)
     held = held_create(runtime)
     made = timed.create(bob, "own")
     thread, out = deleting_person(timed, bob)
-    clock.wait_parked(1)
+    changed.wait_waiting(1, match=thread)
     closing = threading.Thread(target=timed.close, daemon=True)
     closing.start()
     try:
@@ -1611,27 +1667,37 @@ def test_closing_ends_a_persons_deletion_waiting_for_their_making_thread_at_once
     ended(timed, made.id, HANG_GUARD)
 
 
-def test_closing_ends_rcman_admins_deletion_polling_a_row_within_one_poll(settings, runtime):
-    shell_clock = PhasedClock()
+def test_closing_ends_rcman_admins_deletion_waiting_for_its_next_look_at_once(settings, runtime):
+    shell_closing = ControlledEvent()
     bob = _person(settings, BOB)
     insert(settings, bob.id, "orphan", ws.CREATING)
-    with two_processes(settings, runtime, shell_clock=shell_clock) as (_, shell):
+    with two_processes(settings, runtime, shell_closing) as (_, shell):
         thread, out = deleting_person(shell, bob)
-        shell_clock.wait_polled(1)
+        look(shell_closing)
         shell.close()
         joined(thread)
         assert left(out)
+        assert [w.ended for w in waits_of(shell_closing, thread)] == ["set"]
 
 
 # --- close ---------------------------------------------------------------------------------
 
 
-def test_close_waits_for_a_making_thread(timed, clock, settings, runtime):
+@pytest.fixture
+def on_changed(settings, runtime, changed):
+    """The service, its condition the test's (``changed``)."""
+    made = ws.Workspaces(settings, runtime)
+    yield made
+    made.close()
+
+
+def test_close_waits_for_a_making_thread(on_changed, changed, settings, runtime):
+    timed = on_changed
     held = held_create(runtime)
     made = timed.create(_person(settings), "slow")
     closing = threading.Thread(target=timed.close, daemon=True)
     closing.start()
-    clock.wait_parked(1)
+    changed.wait_waiting(1, match=closing)
     assert closing.is_alive()
     held.set()
     joined(closing)
@@ -1641,19 +1707,18 @@ def test_close_waits_for_a_making_thread(timed, clock, settings, runtime):
 
 
 def test_close_gives_up_after_its_deadline_and_says_what_is_left(
-    timed, clock, settings, runtime, caplog
+    on_changed, changed, settings, runtime, caplog
 ):
+    timed = on_changed
     held = held_create(runtime)
     made = timed.create(_person(settings), "slow")
     closing = threading.Thread(target=timed.close, daemon=True)
     closing.start()
     try:
-        clock.wait_parked(1)
-        clock.lend(closing)
-        clock.advance(ws.CLOSE_WITHIN_SECONDS - 1)
-        clock.wait_parked(1)  # the twin: a second short, it waits on
-        assert closing.is_alive()
-        clock.advance(1)
+        [waiting] = changed.wait_waiting(1, match=closing)
+        assert waiting.seconds == ws.CLOSE_WITHIN_SECONDS  # its deadline is the bound's
+        assert closing.is_alive()  # the deadline never runs out by itself
+        changed.expire(closing)
         joined(closing)
         said = [r.getMessage() for r in caplog.records if r.name == "rcman.workspaces"]
         assert [m for m in said if "did not end" in m and str(made.id) in m], said
@@ -1662,10 +1727,9 @@ def test_close_gives_up_after_its_deadline_and_says_what_is_left(
     ended(timed, made.id, HANG_GUARD)
 
 
-def test_close_with_nothing_running_returns_at_once(timed, clock):
-    began = clock.now()
-    timed.close()
-    assert clock.now() == began and clock.waiters() == []
+def test_close_with_nothing_running_returns_at_once(on_changed, changed):
+    on_changed.close()
+    assert changed.waits == []  # it did not wait at all
 
 
 def test_no_put_back_is_begun_once_rcman_is_closing(timed, settings, monkeypatch):
@@ -1687,45 +1751,31 @@ def test_no_put_back_is_begun_once_rcman_is_closing(timed, settings, monkeypatch
     assert begun == []
 
 
-# --- the periodic checks and the servers, each on a clock of its own --------------------------
+# --- the periodic checks ---------------------------------------------------------------------
 
 
 def test_the_periodic_checks_run_once_per_pace_and_end_at_once_with_the_service(
-    settings, runtime, monkeypatch
+    settings, runtime, periodic, monkeypatch
 ):
-    clock = PhasedClock()
-    service = ws.Workspaces(settings, runtime, periodic_clock=clock)
+    """One round each time the wait of IDLE_CHECK_SECONDS runs out, none before. The twin a
+    second short of the pace is given up: the wait never runs out by itself, so its seconds stand
+    in."""
+    service = ws.Workspaces(settings, runtime)
+    assert service._closing is periodic
     rounds = []
-    monkeypatch.setattr(service, "close_idle", lambda: rounds.append(clock.now()))
+    monkeypatch.setattr(service, "close_idle", lambda: rounds.append(len(rounds)))
     try:
         service.start_background()
-        clock.wait_parked(1)
-        [waiter] = clock.waiters()
-        assert (waiter.method, waiter.seconds) == ("wait", ws.IDLE_CHECK_SECONDS)
-        clock.lend(waiter.thread)
-        start = clock.now()
-        clock.advance(ws.IDLE_CHECK_SECONDS - 1)
-        clock.wait_parked(1)
-        assert rounds == []  # the twin: a second short of its pace, none
-        clock.advance(1)
-        clock.wait_parked(1)
-        assert rounds == [start + ws.IDLE_CHECK_SECONDS]
-        clock.advance(ws.IDLE_CHECK_SECONDS)
-        clock.wait_parked(1)
-        assert rounds == [start + ws.IDLE_CHECK_SECONDS, start + 2 * ws.IDLE_CHECK_SECONDS]
+        [waiter] = periodic.wait_waiting(1, match=ws.IDLE_CHECK_SECONDS)
+        assert rounds == []  # none before its pace has passed
+        periodic.expire(ws.IDLE_CHECK_SECONDS)
+        periodic.wait_waiting(1, match=ws.IDLE_CHECK_SECONDS)
+        assert rounds == [0]
+        periodic.expire(ws.IDLE_CHECK_SECONDS)
+        periodic.wait_waiting(1, match=ws.IDLE_CHECK_SECONDS)
+        assert rounds == [0, 1]
     finally:
         service.close()
-    clock.wait_parked(0)  # closing ended its wait, with no time moved
     waiter.thread.join(HANG_GUARD)
     assert not waiter.thread.is_alive() and len(rounds) == 2
-
-
-def test_a_workspaces_server_is_on_the_servers_clock(settings, runtime):
-    clock = PhasedClock()
-    service = ws.Workspaces(settings, runtime, servers_clock=clock)
-    try:
-        made = insert(settings, 1, "served", "ready")
-        assert service.server(service.get(made)).clock is clock
-        assert service.clock is not clock  # the twin: the service's own is another
-    finally:
-        service.close()
+    assert [w.ended for w in waits_of(periodic, waiter.thread)] == ["expired", "expired", "set"]

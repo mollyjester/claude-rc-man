@@ -21,16 +21,14 @@ from devtools import record_claude as rec
 from devtools import tmuxctl
 from devtools.held_folders import tmux_sockets
 from helpers import screens
-from tests.clocks import PhasedClock
 from tests.conftest import fake_claude
 from tests.hang_guard import HANG_GUARD
 from tests.test_screens import RECONNECTED_SCENARIOS
+from tests.time_doubles import FakeTime
 
 REPO = Path(__file__).resolve().parent.parent
 TMUX_CONF = REPO / "backend" / "rcman" / "tmux.conf"
 NAME = rt.container_name(1)
-# Short deadlines for a stop, so a test of what happens after them is quick.
-QUICK_STOP = {"STOP_TIMEOUT": 1.0, "END_GRACE_SECONDS": 1.0}
 
 
 @dataclass
@@ -87,14 +85,26 @@ def refused(call, *args) -> cs.ServerError:
     return raised.value
 
 
-def wait_state(world, wanted, tries=100):
-    server = None
-    for _ in range(tries):
-        server = world.server.status()
-        if server and server["state"] == wanted:
-            return server
+def within_the_guard(found, what: str):
+    """``found()`` looked at until it gives something, within HANG_GUARD."""
+    deadline = time.monotonic() + HANG_GUARD
+    while not (got := found()):
+        assert time.monotonic() < deadline, f"{what} did not come about within {HANG_GUARD}s"
         time.sleep(0.1)
-    pytest.fail(f"never reached {wanted}; last: {server}")
+    return got
+
+
+def wait_state(world, wanted, named=False):
+    """The server once it is read as ``wanted``; with ``named``, once its session's name is
+    read too, which a screen still being drawn may not show yet."""
+
+    def found():
+        server = world.server.status()
+        if server and server["state"] == wanted and (server["session_name"] or not named):
+            return server
+        return None
+
+    return within_the_guard(found, f"the state {wanted}")
 
 
 def alive(pid: int) -> bool:
@@ -105,9 +115,80 @@ def alive(pid: int) -> bool:
     return state != "Z"
 
 
-def quick_stop(monkeypatch):
-    for name, value in QUICK_STOP.items():
-        monkeypatch.setattr(cs, name, value)
+@pytest.fixture
+def fake_time(monkeypatch) -> FakeTime:
+    """claude_server's time, which only the test moves (tests/time_doubles.py): the test calls
+    the server itself, so every thread that reads it is the test's."""
+    made = FakeTime()
+    monkeypatch.setattr(cs, "time", made)
+    return made
+
+
+class Calling:
+    """``call(*args)`` in a thread of the test's, with what it returned or raised."""
+
+    def __init__(self, call, *args):
+        self.out: list = []
+        self.thread = threading.Thread(target=self._run, args=(call, *args), daemon=True)
+        self.thread.start()
+
+    def _run(self, call, *args):
+        try:
+            self.out.append(call(*args))
+        except BaseException as error:  # noqa: BLE001 - kept for the test to look at
+            self.out.append(error)
+
+    def result(self):
+        self.thread.join(HANG_GUARD)
+        assert not self.thread.is_alive(), "the call did not end"
+        return self.out[0]
+
+
+class Signals:
+    """The signals the server's stop sends, each with the fake time's mark as it was sent;
+    with ``deliver`` False none reaches the server."""
+
+    def __init__(self, server: cs.Server, fake: FakeTime, deliver: bool = True):
+        self.sent: list[tuple[int, int]] = []
+        self.told = threading.Condition()
+        real = server.tmux.signal
+
+        def signal_(pid, sig):
+            with self.told:
+                self.sent.append((sig, fake.mark()))
+                self.told.notify_all()
+            if deliver:
+                real(pid, sig)
+
+        server.tmux.signal = signal_
+
+    def mark_of(self, n: int) -> int:
+        """The mark at which the ``n``th signal was sent, once it has been."""
+        with self.told:
+            assert self.told.wait_for(lambda: len(self.sent) >= n, HANG_GUARD)
+            return self.sent[n - 1][1]
+
+    def kinds(self) -> list[int]:
+        with self.told:
+            return [sig for sig, _ in self.sent]
+
+
+def stopped_past(world, fake: FakeTime, graces: int, deliver=True, before=None):
+    """``world.server.stop()`` moved past its first ``graces`` waits: STOP_TIMEOUT for Ctrl+C,
+    each moved once a look of the wait has begun, and so its deadline is taken; then
+    END_GRACE_SECONDS after each signal, once a look begun after that signal is. ``before`` is
+    called before the first move. What the stop returned or raised, and the signals sent."""
+    signals = Signals(world.server, fake, deliver)
+    start = fake.mark()
+    stopping = Calling(world.server.stop)
+    fake.wait_sleep_begun(after=start)  # it waits for the server to exit on Ctrl+C
+    if before is not None:
+        before()
+    fake.advance(cs.STOP_TIMEOUT + cs.POLL_SECONDS)
+    for n in range(1, graces):
+        fake.wait_sleep_begun(after=signals.mark_of(n))
+        fake.advance(cs.END_GRACE_SECONDS + cs.POLL_SECONDS)
+    return stopping.result(), signals.kinds()
 
 
 # --- the lifecycle ---------------------------------------------------------------------
@@ -157,7 +238,6 @@ def test_start_trust_confirm_ready_stop_resume_forget(world):
     assert world.server.status() is None
 
 
-# Known to fail rarely, under load: see "Known flaky test" in project-knowledge/tests.md.
 def test_a_server_in_a_git_repository_starts_stops_and_resumes(world):
     from tests.git_fixtures import fixture_git, make_repo
 
@@ -169,13 +249,13 @@ def test_a_server_in_a_git_repository_starts_stops_and_resumes(world):
     repo.rmdir()
     assert world.server.start("pfx")["server"]["state"] == "trust_prompt"
     world.server.confirm("y")
-    ready = wait_state(world, "ready")
+    ready = wait_state(world, "ready", named=True)
     screen = world.server.output()["screen"]
     assert any(line.endswith("· feature-x") for line in screen)
     assert not any("Spawn mode" in line for line in screen)
     assert world.server.stop()["server"]["state"] == "stopped"
     world.server.resume("pfx")
-    assert wait_state(world, "ready")["session_name"] == ready["session_name"]
+    assert wait_state(world, "ready", named=True)["session_name"] == ready["session_name"]
 
 
 def test_confirm_refuses_when_nothing_is_asked(world):
@@ -325,8 +405,6 @@ def test_a_trust_answer_that_lands_on_the_remote_control_prompt_is_accepted(worl
 
 def test_an_answer_that_leaves_the_question_unchanged_is_not_accepted(world):
     """Twin of the above: a question that stays asked after both tries is refused."""
-    clock = PhasedClock()
-    server = on_clock(world, clock)
     log_in(world)
     world.binary.write_text(
         "#!/bin/sh\n"
@@ -338,57 +416,103 @@ def test_an_answer_that_leaves_the_question_unchanged_is_not_accepted(world):
         "done\n",
         encoding="utf-8",
     )
-    assert server.start("pfx")["server"]["state"] == "trust_prompt"
-    confirming = Calling(clock, server.confirm, "y")
-    for _attempt in range(2):
-        clock.wait_parked(1)  # its pace before it answers
-        clock.advance(cs.ANSWER_PACE_SECONDS)
-    error = confirming.result()
-    assert isinstance(error, cs.ServerError) and error.code == "confirm_not_accepted"
+    assert world.server.start("pfx")["server"]["state"] == "trust_prompt"
+    error = refused(world.server.confirm, "y")
+    assert error.code == "confirm_not_accepted"
     assert error.detail["server"]["state"] == "trust_prompt"
 
 
+def typed(server: cs.Server, fake: FakeTime) -> list[tuple[str, int]]:
+    """Each answer the server types from here on, with the fake time's mark as it was typed."""
+    answers: list[tuple[str, int]] = []
+    real = server.tmux.type
+
+    def type_(text):
+        answers.append((text, fake.mark()))
+        real(text)
+
+    server.tmux.type = type_
+    return answers
+
+
+def paced(seconds: float) -> bool:
+    """Only the answer's pace parks: the waits for the screen after it poll."""
+    return seconds == cs.ANSWER_PACE_SECONDS
+
+
 @pytest.mark.parametrize("short", [False, True])
-def test_an_answer_waits_its_pace_and_types_nothing_before(world, short):
-    """On a `claude` that takes any answer at once: the fake's own refusal of an answer that
-    comes too fast is on real time."""
-    clock = PhasedClock()
-    server = on_clock(world, clock)
+def test_an_answer_waits_its_pace_and_types_nothing_before(world, fake_time, short):
+    """On a `claude` that takes any answer at once, so that what holds the answer back is the
+    server's pace and nothing of the fake's."""
     two_questions(world)
-    assert server.start("pfx")["server"]["state"] == "trust_prompt"
-    before = len(world.calls)
-    confirming = Calling(clock, server.confirm, "y")
-    clock.wait_parked(1)
-    [waiter] = clock.waiters()
-    assert (waiter.method, waiter.seconds) == ("sleep", cs.ANSWER_PACE_SECONDS)
-    if short:  # the twin: short of its pace, nothing is typed
-        clock.advance(cs.ANSWER_PACE_SECONDS / 2)
-        clock.wait_parked(1)
-        assert not [c for c in world.calls[before:] if "send-keys" in c]
-        clock.advance(cs.ANSWER_PACE_SECONDS / 2)
+    assert world.server.start("pfx")["server"]["state"] == "trust_prompt"
+    answers = typed(world.server, fake_time)
+    fake_time.parking = paced
+    confirming = Calling(world.server.confirm, "y")
+    [pace] = fake_time.wait_parked(1, match=cs.ANSWER_PACE_SECONDS)
+    assert answers == []
+    if short:  # the twin: short of its pace, it has looked at the time again and typed nothing
+        fake_time.advance(cs.ANSWER_PACE_SECONDS / 2)
+        assert fake_time.wait_parked(1, match=cs.ANSWER_PACE_SECONDS) == [pace]
+        assert answers == []
+        fake_time.advance(cs.ANSWER_PACE_SECONDS / 2)
     else:
-        clock.advance(cs.ANSWER_PACE_SECONDS)
+        fake_time.advance(cs.ANSWER_PACE_SECONDS)
     assert confirming.result()["server"]["state"] == "remote_control_prompt"
-    assert [c for c in world.calls[before:] if "send-keys" in c]
+    assert pace.ended == "advanced"
+    assert answers == [("y", pace.ordinal)]  # typed as the pace ended, no sleep between
+
+
+def test_an_answer_claude_found_too_fast_is_given_again_after_its_pace(world, fake_time):
+    log_in(world)
+    world.binary.write_text(
+        "#!/bin/sh\n"
+        f'[ "$1" = remote-control ] || exec {rec.FAKE_CLAUDE} "$@"\n'
+        "printf 'Trust /x? [y/N] '\n"
+        "read answer\n"
+        # One write: the refusal and the question asked again are on the screen together.
+        f"printf '{screens.TOO_FAST}\\nTrust /x? [y/N] '\n"
+        "read answer\n"
+        "printf 'Enable Remote Control? (y/n)\\n'\n"
+        "read answer\n"
+        "exit 1\n",
+        encoding="utf-8",
+    )
+    assert world.server.start("pfx")["server"]["state"] == "trust_prompt"
+    answers = typed(world.server, fake_time)
+    fake_time.parking = paced
+    confirming = Calling(world.server.confirm, "y")
+    [first] = fake_time.wait_parked(1, match=cs.ANSWER_PACE_SECONDS)
+    assert answers == []
+    fake_time.advance(cs.ANSWER_PACE_SECONDS)
+    [second] = fake_time.wait_parked(
+        1, match=lambda w: w.seconds == cs.ANSWER_PACE_SECONDS and w.ordinal > first.ordinal
+    )
+    assert [text for text, _ in answers] == ["y"]  # once, before the second pace began
+    assert answers[0][1] == first.ordinal  # typed as the first pace ended, no sleep between
+    fake_time.advance(cs.ANSWER_PACE_SECONDS)
+    assert confirming.result()["server"]["state"] == "remote_control_prompt"
+    assert [text for text, _ in answers] == ["y", "y"]
+    assert answers[1][1] == second.ordinal
 
 
 @pytest.mark.parametrize("short", [False, True])
-def test_a_start_that_never_leaves_starting_answers_timeout_past_its_deadline(world, short):
-    clock = PhasedClock()
-    server = on_clock(world, clock)
+def test_a_start_that_never_leaves_starting_answers_timeout_past_its_deadline(
+    world, fake_time, short
+):
     log_in(world)
     world.binary.write_text(
         f'#!/bin/sh\n[ "$1" = remote-control ] || exec {rec.FAKE_CLAUDE} "$@"\nexec sleep 600\n',
         encoding="utf-8",
     )
-    seen = clock.polls
-    starting = Calling(clock, server.start, "pfx")
-    clock.wait_polled(seen + 1)
-    clock.advance(cs.START_TIMEOUT if short else cs.START_TIMEOUT + cs.POLL_SECONDS)
+    start = fake_time.mark()
+    starting = Calling(world.server.start, "pfx")
+    fake_time.wait_sleep_begun(after=start)  # a look begun: its deadline is taken
+    fake_time.advance(cs.START_TIMEOUT if short else cs.START_TIMEOUT + cs.POLL_SECONDS)
     if short:  # the twin: exactly at its deadline, it looks on
-        clock.wait_polled(clock.polls + 2)
+        fake_time.wait_sleeps_returned(after=fake_time.mark(), n=2)
         assert starting.thread.is_alive()
-        clock.advance(cs.POLL_SECONDS)
+        fake_time.advance(cs.POLL_SECONDS)
     error = starting.result()
     assert isinstance(error, cs.ServerError) and error.code == "timeout"
     assert error.detail["server"]["state"] == "starting"
@@ -396,23 +520,22 @@ def test_a_start_that_never_leaves_starting_answers_timeout_past_its_deadline(wo
 
 
 @pytest.mark.parametrize("short", [0, 1])
-def test_an_unrecognised_screen_is_an_answer_once_it_has_lasted_its_grace(world, short):
-    clock = PhasedClock()
-    server = on_clock(world, clock)
+def test_an_unrecognised_screen_is_an_answer_once_it_has_lasted_its_grace(world, fake_time, short):
     log_in(world)
     world.binary.write_text(
         f'#!/bin/sh\n[ "$1" = remote-control ] || exec {rec.FAKE_CLAUDE} "$@"\n'
         "echo a screen rcman does not know\nexec sleep 600\n",
         encoding="utf-8",
     )
-    starting = Calling(clock, server.start, "pfx")
+    starting = Calling(world.server.start, "pfx")
     wait_state(world, "unrecognised")
-    clock.wait_polled(clock.polls + 2)  # the start has read it as unrecognised since
-    clock.advance(cs.UNRECOGNISED_GRACE_SECONDS - short)
+    # Two looks begun after it was seen: the second read it as unrecognised, and took its time.
+    fake_time.wait_sleep_begun(after=fake_time.mark(), n=2)
+    fake_time.advance(cs.UNRECOGNISED_GRACE_SECONDS - short)
     if short:  # the twin: a second short of its grace, it is no answer yet
-        clock.wait_polled(clock.polls + 2)
+        fake_time.wait_sleeps_returned(after=fake_time.mark(), n=2)
         assert starting.thread.is_alive()
-        clock.advance(short)
+        fake_time.advance(short)
     assert starting.result()["server"]["state"] == "unrecognised"
     world.server.tmux.kill()
 
@@ -459,33 +582,27 @@ def ignoring(world, *signals, child=False, detached=False):
 
 
 def child_pid(pid_file: Path) -> int:
-    for _ in range(50):
-        if pid_file.exists() and pid_file.read_text().strip():
-            return int(pid_file.read_text())
-        time.sleep(0.1)
-    pytest.fail("the server's child never started")
+    def found():
+        return pid_file.exists() and pid_file.read_text().strip()
+
+    return int(within_the_guard(found, "the server's child"))
 
 
 @pytest.mark.parametrize(
     "ignored,ended_by,graces", [(("INT",), "SIGTERM", 1), (("INT", "TERM"), "SIGKILL", 2)]
 )
-def test_stop_ends_a_server_that_ignores_ctrl_c(world, ignored, ended_by, graces):
-    clock = PhasedClock()
-    server = on_clock(world, clock)
+def test_stop_ends_a_server_that_ignores_ctrl_c(world, fake_time, ignored, ended_by, graces):
     log_in(world)
     pid_file = ignoring(world, *ignored, child=True)
-    server.start("pfx")
+    world.server.start("pfx")
     pid = child_pid(pid_file)
     assert alive(pid)  # known positive for the check below
     try:
-        out = stopped_past(clock, server, graces)
+        out, sent = stopped_past(world, fake_time, graces)
         assert out["server"]["state"] == "exited"
         assert out["server"]["exit_code"] == 128 + getattr(signal, ended_by)
-        for _ in range(50):
-            if not alive(pid):
-                break
-            time.sleep(0.1)
-        assert not alive(pid)
+        assert sent == [signal.SIGTERM, signal.SIGKILL][:graces]
+        assert _gone(pid)
     finally:
         if alive(pid):
             os.kill(pid, signal.SIGKILL)
@@ -497,90 +614,37 @@ def test_stop_ends_a_server_that_ignores_ctrl_c(world, ignored, ended_by, graces
     assert world.server.status() is None
 
 
-def kills(world, sig: str) -> list[list[str]]:
-    kill = world.layout.tool("kill")
-    return [c for c in world.calls if c[: len(kill)] == kill and f"-{sig}" in c]
-
-
-class Calling:
-    """``call(*args)`` in a thread the clock is lent to, with what it returned or raised."""
-
-    def __init__(self, clock: PhasedClock, call, *args):
-        self.out: list = []
-        self.thread = threading.Thread(target=self._run, args=(call, *args), daemon=True)
-        clock.lend(self.thread)
-        self.thread.start()
-
-    def _run(self, call, *args):
-        try:
-            self.out.append(call(*args))
-        except BaseException as error:  # noqa: BLE001 - kept for the test to look at
-            self.out.append(error)
-
-    def result(self):
-        self.thread.join(HANG_GUARD)
-        assert not self.thread.is_alive(), "the call did not end"
-        return self.out[0]
-
-
-def on_clock(world, clock: PhasedClock) -> cs.Server:
-    """The world's server, its waits on ``clock``."""
-    return cs.Server(world.layout, world.server.run, 1, clock=clock)
-
-
-def stopped_past(clock: PhasedClock, server: cs.Server, graces: int):
-    """``server.stop()``, moved past the first ``graces`` of its waits: STOP_TIMEOUT for
-    Ctrl+C, then END_GRACE_SECONDS after each signal. What it returned or raised."""
-    seen = clock.polls
-    stopping = Calling(clock, server.stop)
-    clock.wait_polled(seen + 1)  # it waits for the server to exit on Ctrl+C
-    waits = (cs.STOP_TIMEOUT, cs.END_GRACE_SECONDS, cs.END_GRACE_SECONDS)[:graces]
-    for i, grace in enumerate(waits):
-        if i:  # it waits after the signal the last move sent
-            clock.wait_polled(seen + 2)
-        clock.advance(grace + cs.POLL_SECONDS)
-        seen = clock.polls  # read after the advance: a poll counted after it looked after it
-    return stopping.result()
-
-
 @pytest.mark.parametrize("short", [False, True])
-def test_a_stop_signals_a_server_that_ignores_ctrl_c_once_past_its_grace(world, short):
-    clock = PhasedClock()
-    server = cs.Server(world.layout, world.server.run, 1, clock=clock)
+def test_a_stop_signals_a_server_that_ignores_ctrl_c_once_past_its_grace(world, fake_time, short):
     log_in(world)
     ignoring(world, "INT")
-    server.start("pfx")
-    seen = clock.polls
-    stopping = Calling(clock, server.stop)
-    clock.wait_polled(seen + 1)  # it waits for the server to exit on Ctrl+C
-    clock.advance(cs.STOP_TIMEOUT if short else cs.STOP_TIMEOUT + cs.POLL_SECONDS)
-    if short:  # the twin: exactly at its grace, it looks on and signals nothing
-        clock.wait_polled(clock.polls + 2)
-        assert stopping.thread.is_alive() and not kills(world, "TERM")
-        clock.advance(cs.POLL_SECONDS)
+    world.server.start("pfx")
+    signals = Signals(world.server, fake_time)
+    start = fake_time.mark()
+    stopping = Calling(world.server.stop)
+    fake_time.wait_sleep_begun(after=start)  # a look begun: its deadline is taken
+    fake_time.advance(cs.STOP_TIMEOUT if short else cs.STOP_TIMEOUT + cs.POLL_SECONDS)
+    if short:  # the twin: exactly at its grace, a whole look after the move signals nothing
+        fake_time.wait_sleeps_returned(after=fake_time.mark(), n=2)
+        assert stopping.thread.is_alive() and signals.kinds() == []
+        fake_time.advance(cs.POLL_SECONDS)
     out = stopping.result()["server"]
     assert (out["state"], out["exit_code"]) == ("exited", 128 + signal.SIGTERM)
-    assert kills(world, "TERM")
+    assert signals.kinds() == [signal.SIGTERM]
 
 
-def test_a_stop_leaves_nothing_the_server_started_even_in_a_session_of_its_own(world):
+def test_a_stop_leaves_nothing_the_server_started_even_in_a_session_of_its_own(world, fake_time):
     """What a server started in a session of its own escapes a signal to its process
     group; the stop ends it as one of the server's own processes."""
-    clock = PhasedClock()
-    server = on_clock(world, clock)
     log_in(world)
     pid_file = ignoring(world, "INT", detached=True)
-    server.start("pfx")
+    world.server.start("pfx")
     pid = child_pid(pid_file)
     assert alive(pid)
     try:
         assert os.getsid(pid) == pid  # the plant took effect: a session of its own
-        stopped_past(clock, server, 1)
-        for _ in range(50):
-            if not alive(pid):
-                break
-            time.sleep(0.1)
-        assert not alive(pid)
+        stopped_past(world, fake_time, 1)
+        assert _gone(pid)
     finally:
         if alive(pid):
             os.kill(pid, signal.SIGKILL)
@@ -596,15 +660,11 @@ def test_a_server_that_stops_on_ctrl_c_is_not_signalled(world):
     assert not [c for c in world.calls if c[: len(kill)] == kill and "-TERM" in c]
 
 
-def test_stop_answers_timeout_when_it_cannot_end_a_server(world, monkeypatch):
-    clock = PhasedClock()
-    server = on_clock(world, clock)
+def test_stop_answers_timeout_when_it_cannot_end_a_server(world, fake_time):
     log_in(world)
     ignoring(world, "INT")
-    server.start("pfx")
-    sent = []
-    monkeypatch.setattr(cs.Tmux, "signal", lambda self, pid, sig: sent.append(sig))
-    error = stopped_past(clock, server, 3)
+    world.server.start("pfx")
+    error, sent = stopped_past(world, fake_time, 3, deliver=False)
     assert isinstance(error, cs.ServerError) and error.code == "timeout"
     assert error.detail["server"]["state"] == "trust_prompt"
     assert sent == [signal.SIGTERM, signal.SIGKILL]
@@ -624,10 +684,10 @@ def test_a_signal_goes_only_to_the_process_the_pane_still_runs(world, monkeypatc
 
 def test_a_server_at_the_spawn_mode_question_is_ended_by_stop(world, monkeypatch):
     """Claude asks the spawn mode in a repository when started without --spawn, and
-    ignores Ctrl+C there; the SIGTERM of the stop ends it."""
+    ignores Ctrl+C there; the SIGTERM of the stop ends it. The confirm is on real time, the
+    fake's pace for an answer being real; the stop on the test's."""
     from tests.git_fixtures import make_repo
 
-    quick_stop(monkeypatch)
     log_in(world)
     repo = make_repo(world.tmp_path / "repo")
     for name in os.listdir(repo):
@@ -644,8 +704,11 @@ def test_a_server_at_the_spawn_mode_question_is_ended_by_stop(world, monkeypatch
     asked = world.server.confirm("y")["server"]
     assert asked["state"] == "unrecognised"
     assert any("Spawn mode" in line for line in asked["screen"])
-    out = world.server.stop()["server"]
-    assert (out["state"], out["exit_code"]) == ("exited", 128 + signal.SIGTERM)
+    fake_time = FakeTime()
+    monkeypatch.setattr(cs, "time", fake_time)
+    out, sent = stopped_past(world, fake_time, 1)
+    assert (out["server"]["state"], out["server"]["exit_code"]) == ("exited", 128 + signal.SIGTERM)
+    assert sent == [signal.SIGTERM]
 
 
 # --- what a server is started with ---------------------------------------------------
@@ -729,24 +792,25 @@ def attached(world, session=cs.SESSION):
             env={"PATH": os.environ["PATH"], "TERM": "xterm-256color"},
         )
         size = f"{TERMINAL[0]}x{TERMINAL[1]}"
-        for _ in range(100):
-            clients = tmux(
+
+        def clients():
+            listed = tmux(
                 world, "list-clients", "-t", f"={session}", "-F", "#{client_width}x#{client_height}"
             )
-            if clients.stdout.split() == [size]:
-                break
-            time.sleep(0.1)
-        else:
-            pytest.fail(f"no terminal of {size} attached; it shows:\n{terminal.text()}")
+            return listed.stdout.split() == [size]
+
+        within_the_guard(clients, f"a terminal of {size} attached")
         yield
 
 
 def resized(world, session=cs.SESSION) -> tuple[int, int]:
-    for _ in range(50):
-        if (size := window_size(world, session))[0] == TERMINAL[0]:
-            return size
-        time.sleep(0.1)
-    return window_size(world, session)
+    """The window's size once it has taken the terminal's width."""
+
+    def found():
+        size = window_size(world, session)
+        return size if size[0] == TERMINAL[0] else None
+
+    return within_the_guard(found, "the terminal's width")
 
 
 def test_an_attached_terminal_does_not_resize_a_server(world):
@@ -844,19 +908,13 @@ def test_no_claude_in_the_workspace_is_claude_not_installed(world):
 
 
 def _gone(pid: int) -> bool:
-    for _ in range(50):
-        if not alive(pid):
-            return True
-        time.sleep(0.1)
-    return False
+    return within_the_guard(lambda: not alive(pid), f"the end of {pid}")
 
 
-def test_a_stop_ends_a_sessions_command_in_a_session_of_its_own(world):
+def test_a_stop_ends_a_sessions_command_in_a_session_of_its_own(world, fake_time):
     """As seen with a real account: a session stays in the pane's process group, and the
     commands it runs are in a session of their own (setsid), whose parent the group's
     kill ends first, so they are collected before anything is signalled."""
-    clock = PhasedClock()
-    server = on_clock(world, clock)
     log_in(world)
     pid_file = world.tmp_path / "command.pid"
     session = (
@@ -867,22 +925,23 @@ def test_a_stop_ends_a_sessions_command_in_a_session_of_its_own(world):
         world.claude,
         before=f"if [ \"$1\" = remote-control ]; then\n  {session}fi\ntrap '' INT TERM\n",
     )
-    server.start("pfx")
+    world.server.start("pfx")
     pid = child_pid(pid_file)
     try:
         assert os.getsid(pid) == pid  # the plant took effect: a session of its own
-        stopped_past(clock, server, 2)  # it ignores SIGTERM too
+        stopped_past(world, fake_time, 2)
         assert _gone(pid)
     finally:
         if alive(pid):
             os.kill(pid, signal.SIGKILL)
 
 
-def test_a_stop_ends_what_the_server_started_after_the_stop_began(world):
+def test_a_stop_ends_what_the_server_started_after_the_stop_began(world, monkeypatch):
     """A server may start a command while it is being stopped: what runs is collected
-    again before each signal, while the server still holds it as a descendant."""
-    clock = PhasedClock()
-    server = on_clock(world, clock)
+    again before each signal, while the server still holds it as a descendant. Its grace is
+    passed only once the command it started on Ctrl+C has said who it is. Its start is on real
+    time, its screen being one rcman does not recognise, which counts only after its grace; the
+    stop on the test's."""
     log_in(world)
     pid_file = world.tmp_path / "late.pid"
     # The command writes its pid and its session's id, then becomes sleep.
@@ -902,17 +961,17 @@ def test_a_stop_ends_what_the_server_started_after_the_stop_began(world):
             "fi\n"
         ),
     )
-    starting = Calling(clock, server.start, "pfx")
-    wait_state(world, "unrecognised")  # what it says matches no state rcman knows
-    clock.wait_polled(clock.polls + 2)  # the start has read it as unrecognised since
-    clock.advance(cs.UNRECOGNISED_GRACE_SECONDS)
-    assert starting.result()["server"]["state"] == "unrecognised"
+    world.server.start("pfx")
+
+    def told() -> None:
+        within_the_guard(
+            lambda: pid_file.exists() and len(pid_file.read_text().split()) == 2, "the command"
+        )
+
+    fake_time = FakeTime()
+    monkeypatch.setattr(cs, "time", fake_time)
     try:
-        stopped_past(clock, server, 1)
-        for _ in range(50):
-            if pid_file.exists() and len(pid_file.read_text().split()) == 2:
-                break
-            time.sleep(0.1)
+        stopped_past(world, fake_time, 1, before=told)
         pid, sid = (int(x) for x in pid_file.read_text().split())
         assert sid == pid  # the plant took effect: a session of its own
         assert _gone(pid)

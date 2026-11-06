@@ -17,7 +17,6 @@ from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, BeforeValidator, Field
 from pydantic_core import PydanticKnownError
 
-from helpers.clock import Clock
 from rcman.identity import Identity, current_user
 from rcman.problems import Problem
 from rcman.ratelimit import TokenBuckets
@@ -35,8 +34,8 @@ REPORTS_PER_MINUTE = 20
 SECONDS_PER_MINUTE = 60
 
 
-def new_limit(clock: Clock) -> TokenBuckets:
-    return TokenBuckets(REPORTS_BURST, REPORTS_PER_MINUTE / SECONDS_PER_MINUTE, clock)
+def new_limit() -> TokenBuckets:
+    return TokenBuckets(REPORTS_BURST, REPORTS_PER_MINUTE / SECONDS_PER_MINUTE)
 
 
 # How many characters each kind of text in a report is cut to.
@@ -113,10 +112,9 @@ def report(
     if not limit.take(identity.email):
         wait = limit.seconds_until_allowed(identity.email)
         raise Problem("too_many_reports", headers={"Retry-After": str(wait)})
-    clock = request.app.state.client_errors_clock  # a report's time is on it, as its limit
     event = {
         "event": "client_error",
-        "at": dt.datetime.fromtimestamp(clock.wall(), dt.UTC).isoformat(),
+        "at": dt.datetime.now(dt.UTC).isoformat(),
         "email": identity.email,
         **body.model_dump(),
     }

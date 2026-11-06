@@ -46,6 +46,7 @@ from tests.container import test_devcontainer_in_podman as dev
 from tests.container import test_github_in_podman as shared
 from tests.container.conftest import cli, engine_runtime, engine_settings, image_of
 from tests.github_server import GitHubServer
+from tests.hang_guard import CONTAINER_HANG_GUARD
 
 exists, gone, settled = shared.exists, shared.gone, shared.settled
 # The fixtures of that module, which pytest finds here by these names.
@@ -987,7 +988,7 @@ def test_a_built_image_is_rebuilt_while_its_container_runs_and_takes_its_name_af
         assert time.monotonic() < deadline
         time.sleep(0.5)
     assert real_podman.running(done.container) and image_of(real_podman, done.container) == old
-    ended(real_service, done.id, REAL_WITHIN)
+    ended(real_service, done.id, CONTAINER_HANG_GUARD)
     now = real_service.get(done.id)
     assert (now.state, now.rebuild_state, now.rebuild_error) == ("ready", None, None), now
     plan = json.loads(now.environment)

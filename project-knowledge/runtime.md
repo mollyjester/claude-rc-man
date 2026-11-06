@@ -568,9 +568,6 @@ test holds to the recorder's, so the contract tests check each is in Claude's
 - **Unrecognised screens.** A screen in transition matches no known state, so
   a verb that waits reports `unrecognised` only once it has lasted
   `UNRECOGNISED_GRACE_SECONDS`.
-- **Its clock.** A server's deadlines, graces and paces, and its polls of the pane, are on the
-  clock it is given (`Server(clock=)`): the servers' clock, `Workspaces(servers_clock=)`, for
-  every server the service's `server` makes ([backend.md](backend.md#time)).
 
 ### The terminal's shell
 
@@ -1015,7 +1012,7 @@ the volume; it shares their smaller steps (`_read_plan`, `_pulled`, `_built`,
   (`promote_build`), or removes the old built image by name where the new plan is not built;
   only then is the phase cleared, and the channel closed again. A promotion that fails leaves
   `promoting`, which the service's periodic look (`settle_left_over`, every
-  `IDLE_CHECK_SECONDS` on the periodic checks' clock once the restore is done) finishes for a row no thread of its works on,
+  `IDLE_CHECK_SECONDS` once the restore is done) finishes for a row no thread of its works on,
   and the next restore otherwise. Holding no lock, `start_server` starts the server again
   if it ran before the switch (a start: `resume` needs the old tmux session, which is gone);
   one that does not start is logged, and the restore starts it, `wanted` being still set.
@@ -1073,8 +1070,8 @@ the volume; it shares their smaller steps (`_read_plan`, `_pulled`, `_built`,
 ## The workspaces' condition
 
 `Workspaces._changed`, a condition on a plain lock, not reentrant, is what every wait on the
-service's own state waits on, through the service's clock, and what each change of that state
-tells (`notify_all`, as the waiters look for different things). It guards:
+service's own state waits on, and what each change of that state tells (`notify_all`, as the
+waiters look for different things). It guards:
 
 - `_build_places`, the places for builds (see [Building an image](#building-an-image)), given
   back by `_give_back_build`, which refuses one more than `MAX_BUILDS`;
@@ -1149,10 +1146,9 @@ the prefix it was started with.
   its timeout. Cancelling works across processes through the row: a deletion from
   `rcman-admin`, which has none of the service's events, only marks the row, and while the
   work goes on `_working_on` keeps a thread (`_watch`) that reads the row every
-  `WORKING_POLL_SECONDS`, a poll through the service's clock, and, once it is `deleting` or gone
-  and no deletion in the service has stopped the work, calls `_stop_working` as such a deletion
-  does, which also wakes a build that waits for a place; the work's end cuts its poll short, so
-  the thread ends at once with the work. Deleting a person deletes each of theirs (see [people.md](people.md)).
+  `WORKING_POLL_SECONDS` and, once it is `deleting` or gone and no deletion in the service has
+  stopped the work, calls `_stop_working` as such a deletion does, which also wakes a build that
+  waits for a place; the work's end cuts its poll short, so the thread ends at once with the work. Deleting a person deletes each of theirs (see [people.md](people.md)).
 - **Restoring.** When rcman starts, `restore` runs in the background, so rcman answers at once:
   it waits for the runtime, trying again while it is unavailable (where the instructions for
   Claude are missing from the tools, it leaves every row as it is and brings no workspace back,

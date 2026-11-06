@@ -16,9 +16,9 @@ from rcman import db, limits, monitor
 from rcman import runtime as rt
 from rcman.monitor import Monitor, MonitorSettings
 
-from tests.clocks import PhasedClock
 from tests.conftest import ALICE, BOB, CAROL
 from tests.hang_guard import HANG_GUARD
+from tests.time_doubles import FakeTime
 
 RECORDED = Path(__file__).resolve().parent / "fakes" / "podman-monitor"
 # The install label the recordings' containers carry (container-inspect.json).
@@ -289,6 +289,14 @@ def test_the_defaults_are_within_their_bounds_and_every_scope_is_on():
 # --- the rounds, on the host runtime -----------------------------------------------
 
 
+class Clock:
+    def __init__(self, now: float = 1000.0):
+        self.now = now
+
+    def __call__(self) -> float:
+        return self.now
+
+
 def ids(settings) -> dict[str, int]:
     con = db.connect(settings.database)
     try:
@@ -329,12 +337,12 @@ def save(settings, **changes) -> MonitorSettings:
 
 @pytest.fixture
 def clock():
-    return PhasedClock()
+    return Clock()
 
 
 @pytest.fixture
 def made(settings, runtime, clock):
-    return Monitor(runtime, settings.database, clock=clock)
+    return Monitor(runtime, settings.database, clock=clock, now=lambda: f"t{clock.now}")
 
 
 def plant_usage(runtime, unit: str, nsec: int, memory: int = 1000, tasks: int = 3) -> None:
@@ -403,7 +411,7 @@ def test_a_usage_round_reads_the_host(made, clock, settings, runtime, proc):
     assert host["tasks"] == 1290
     roles = [role for disk in host["disks"] for role in disk["roles"]]
     assert sorted(roles) == ["database", "podman", "root"]  # the host runtime's folder for Podman's
-    clock.advance(60)
+    clock.now += 60
     (proc / "stat").write_text(LATER)
     made.usage_round()
     assert made.snapshot()["host"]["cpu_percent"] == 120.0
@@ -439,7 +447,7 @@ def test_a_usage_round_reads_each_persons_slice_and_each_workspaces_in_one_call(
     }
     plant_usage(runtime, limits.person_slice(people[BOB]), 4_000_000_000, memory=6000, tasks=9)
     plant_usage(runtime, limits.workspace_slice(people[BOB], first), 2_500_000_000, memory=4000)
-    clock.advance(60)
+    clock.now += 60
     made.usage_round()
     snap = made.snapshot()
     bob = by(snap["people"], "email")[BOB]
@@ -613,7 +621,7 @@ def test_a_disk_read_that_fails_twice_keeps_the_last_good_figures_and_says_why(
     good = made.snapshot()
     said = recorded("df-v-bad.stderr").strip()
     runtime.disk_failures = [rt.RuntimeFailed(said), rt.RuntimeFailed(said)]
-    clock.advance(3600)
+    clock.now += 3600
     made.disk_round()
     snap = made.snapshot()
     assert snap["disk"] == {"collected_at": good["disk"]["collected_at"], "error": said}
@@ -651,27 +659,13 @@ def test_a_failure_is_logged_when_it_starts_and_when_it_ends_and_not_in_between(
     assert made.snapshot()["usage"]["error"] is None
 
 
-def test_a_round_is_stamped_with_the_clocks_wall_time(settings, runtime):
-    import datetime as dt
-
-    clock = PhasedClock(wall_start=dt.datetime(2026, 3, 4, 5, 6, 7, tzinfo=dt.UTC).timestamp())
-    made = Monitor(runtime, settings.database, clock=clock)
-    plant_disk(runtime, settings)
-    made.usage_round()
-    clock.advance(90.5)
-    made.disk_round()
-    snap = made.snapshot()
-    assert snap["usage"]["collected_at"] == "2026-03-04T05:06:07+00:00"
-    assert snap["disk"]["collected_at"] == "2026-03-04T05:07:37+00:00"  # in whole seconds
-
-
 def test_a_failed_usage_round_keeps_the_last_good_figures(made, settings, runtime, clock):
     people = ids(settings)
     plant_usage(runtime, limits.person_slice(people[BOB]), 1)
     made.usage_round()
     good = made.snapshot()
     runtime.limits_error = rt.RuntimeFailed("no")
-    clock.advance(60)
+    clock.now += 60
     made.usage_round()
     snap = made.snapshot()
     assert snap["usage"] == {"collected_at": good["usage"]["collected_at"], "error": "no"}
@@ -778,7 +772,10 @@ def podman_runtime(tmp_path, kind=rt.PodmanRuntime, **more) -> rt.PodmanRuntime:
 
 
 def podman_monitor(tmp_path, settings, kind=rt.PodmanRuntime) -> Monitor:
-    return Monitor(podman_runtime(tmp_path, kind), settings.database, clock=PhasedClock())
+    clock = Clock()
+    return Monitor(
+        podman_runtime(tmp_path, kind), settings.database, clock=clock, now=lambda: f"t{clock.now}"
+    )
 
 
 @pytest.fixture
@@ -940,35 +937,73 @@ def alive(pid: int) -> bool:
     return state != "Z"
 
 
-def test_a_stop_kills_the_disk_read(tmp_path, settings):
+def test_a_stop_kills_the_disk_read(tmp_path, settings, monkeypatch):
+    """Its own deadline far past the test's bound: only the stop can end the read."""
+    monkeypatch.setattr(rt, "DISK_TIMEOUT", 2 * HANG_GUARD)
     program, pidfile = sleeping_podman(tmp_path)
     runtime = podman_runtime(tmp_path, podman=str(program))
-    made = Monitor(runtime, settings.database, clock=PhasedClock())
+    made = Monitor(runtime, settings.database, clock=Clock())
     add_workspace(settings, ids(settings)[BOB], "alpha")
     worker = threading.Thread(target=made.disk_round)
     worker.start()
-    deadline = time.monotonic() + 30
-    while not (pidfile.exists() and pidfile.read_text()):
-        assert time.monotonic() < deadline, "the disk read did not start"
-        time.sleep(0.05)
-    pid = int(pidfile.read_text())
+    pid = started_read(pidfile)
     assert alive(pid)  # positive control
-    started = time.monotonic()
     made.halt()
-    worker.join(30)
+    worker.join(HANG_GUARD)
     assert not worker.is_alive()
-    assert time.monotonic() - started < rt.DISK_TIMEOUT / 4
     assert not alive(pid)
     assert pidfile.read_text() == str(pid)  # it was not run again after the stop
 
 
+def started_read(pidfile: Path) -> int:
+    """The pid of the stand-in podman's read, once it has written it."""
+    deadline = time.monotonic() + HANG_GUARD
+    while not (pidfile.exists() and pidfile.read_text()):
+        assert time.monotonic() < deadline, "the disk read did not start"
+        time.sleep(0.05)
+    return int(pidfile.read_text())
+
+
 def test_a_disk_read_that_outlasts_its_time_is_killed_and_a_failure(tmp_path, monkeypatch):
+    """On the runtime's time, which only the test moves (tests/time_doubles.py): only the read's
+    own thread's looks at it are counted, so that a thread left over from another test that reads
+    it moves nothing. Its time is moved past its deadline once the read
+    has taken it and the stand-in, which never finishes, runs."""
     program, pidfile = sleeping_podman(tmp_path)
-    monkeypatch.setattr(rt, "DISK_TIMEOUT", 0.5)
+    fake, told, reads = FakeTime(), threading.Condition(), []
+    real = fake.monotonic
+
+    def monotonic() -> float:  # each read recorded with its thread
+        now = real()
+        with told:
+            reads.append(threading.current_thread())
+            told.notify_all()
+        return now
+
+    fake.monotonic = monotonic
+    monkeypatch.setattr(rt, "time", fake)
     runtime = podman_runtime(tmp_path, podman=str(program))
-    with pytest.raises(rt.RuntimeFailed, match="in time"):
-        runtime.disk_usage(threading.Event())
-    assert not alive(int(pidfile.read_text()))
+    failed: list = []
+
+    def read():
+        try:
+            runtime.disk_usage(threading.Event())
+        except rt.RuntimeFailed as error:
+            failed.append(error)
+
+    reading = threading.Thread(target=read, daemon=True)
+    reading.start()
+    pid = started_read(pidfile)
+    with told:  # the read's first look at the time is its deadline's; a thread left over from
+        # another test that reads the runtime's time is not counted
+        assert told.wait_for(lambda: reading in reads, HANG_GUARD)
+    assert alive(pid)  # positive control
+    fake.advance(rt.DISK_TIMEOUT + 1)
+    reading.join(HANG_GUARD)
+    assert not reading.is_alive()
+    [error] = failed
+    assert "in time" in str(error)
+    assert not alive(pid)
 
 
 def test_the_host_runtime_records_what_it_is_asked_and_answers_what_is_planted(runtime):
@@ -1009,7 +1044,7 @@ def test_the_host_runtimes_disk_read_is_made_from_its_workspaces(settings, runti
     assert monitor.read_headers(runtime.disk_usage(threading.Event())) == monitor.read_headers(
         recorded("df-v.txt")
     )
-    made = Monitor(runtime, settings.database, clock=PhasedClock())
+    made = Monitor(runtime, settings.database)
     made.disk_round()
     (row,) = made.snapshot()["containers"]
     assert row["disk_bytes"] == disk.volumes[name]
@@ -1023,13 +1058,13 @@ def test_the_host_runtime_prints_sizes_as_podman_does(count, shown):
 
 
 def test_before_the_restore_the_loops_wait_without_end(settings, runtime):
-    made, clock, rounds = looping(settings, runtime)
+    made, times, rounds = looping(settings, runtime)
 
     async def scenario():
         made.start()
         try:
-            await parked(clock)
-            assert [w.deadline for w in clock.waiters()] == [None, None]
+            await parked(times)
+            assert times.asked == [(made._restored, None)] * 2  # both, on the restore alone
             assert rounds.ran == []
         finally:
             await made.stop()
@@ -1038,15 +1073,16 @@ def test_before_the_restore_the_loops_wait_without_end(settings, runtime):
 
 
 def test_a_restore_told_before_the_loops_start_is_not_missed(settings, runtime):
-    made, clock, rounds = looping(settings, runtime)
-    began = clock.now()
+    made, times, rounds = looping(settings, runtime)
+    began = times.now
     made.restored_now()  # before start: no loop to tell yet
 
     async def scenario():
         made.start()
         try:
-            await until(lambda: rounds.of("usage"))
-            assert clock.now() == began
+            await parked(times)  # both loops wait again: the usage round is done, or never began
+            assert rounds.of("usage")
+            assert times.now == began
         finally:
             await made.stop()
 
@@ -1056,17 +1092,17 @@ def test_a_restore_told_before_the_loops_start_is_not_missed(settings, runtime):
 def test_a_restore_told_from_another_thread_runs_the_usage_round_with_no_time_moved(
     settings, runtime
 ):
-    async def scenario(made, clock, rounds):
-        began = clock.now()
+    async def scenario(made, times, rounds):
+        began = times.now
         made.start()
         try:
-            await parked(clock)
+            await parked(times)
             telling = threading.Thread(target=made.restored_now)
             telling.start()
             telling.join(HANG_GUARD)
             assert not telling.is_alive()
             await until(lambda: rounds.of("usage"))
-            assert rounds.of("disk") == [] and clock.now() == began
+            assert rounds.of("disk") == [] and times.now == began
         finally:
             await made.stop()
 
@@ -1075,7 +1111,7 @@ def test_a_restore_told_from_another_thread_runs_the_usage_round_with_no_time_mo
 
 
 def test_a_loop_whose_settings_cannot_be_read_says_so_once(settings, runtime, caplog):
-    made, clock, rounds = looping(settings, runtime)
+    made, times, rounds = looping(settings, runtime)
 
     def unreadable():
         raise sqlite3.OperationalError("planted")
@@ -1087,16 +1123,16 @@ def test_a_loop_whose_settings_cannot_be_read_says_so_once(settings, runtime, ca
         made.restored_now()
         try:
             for _ in range(3):
-                await parked(clock)
-                clock.advance(monitor.LOOP_RETRY_SECONDS)
-            await parked(clock)
+                await parked(times)
+                times.advance(monitor.LOOP_RETRY_SECONDS)
+            await parked(times)
         finally:
             await made.stop()
 
     with caplog.at_level(logging.ERROR, logger=monitor.log.name):
         asyncio.run(scenario())
     said = [r for r in caplog.records if r.name == monitor.log.name]
-    assert sum(seconds == monitor.LOOP_RETRY_SECONDS for _, seconds, _ in clock.waits) >= 6
+    assert len([c for c in times.asked if c[1] == monitor.LOOP_RETRY_SECONDS]) >= 6
     assert len(said) == 2  # once for each loop
     assert rounds.ran == []
 
@@ -1104,25 +1140,76 @@ def test_a_loop_whose_settings_cannot_be_read_says_so_once(settings, runtime, ca
 # --- the loops --------------------------------------------------------------------------
 
 
-async def until(condition, within: float = 10.0) -> None:
+class Time:
+    """Time as the loops see it, moved on only by the test: a clock and a wait that ends when
+    its event is set or the clock passes its deadline. Each move (``advance``, ``poke``) is a
+    new generation, and a loop is parked when it waits again having looked at the latest."""
+
+    def __init__(self):
+        self.now = 1000.0
+        self.asked: list[tuple[asyncio.Event, float | None]] = []
+        self._tick: asyncio.Event | None = None
+        self.generation = 0
+        self.seen: dict[int, int] = {}  # each waiting loop's task: the generation it looked at
+
+    def clock(self) -> float:
+        return self.now
+
+    async def wait(self, event: asyncio.Event, timeout: float | None) -> None:
+        self.asked.append((event, timeout))
+        deadline = None if timeout is None else self.now + timeout
+        me = id(asyncio.current_task())
+        try:
+            while True:
+                self.seen[me] = self.generation
+                if event.is_set() or (deadline is not None and self.now >= deadline):
+                    return
+                if self._tick is None:
+                    self._tick = asyncio.Event()
+                tick = self._tick
+                waiting = [asyncio.create_task(event.wait()), asyncio.create_task(tick.wait())]
+                try:
+                    await asyncio.wait(waiting, return_when=asyncio.FIRST_COMPLETED)
+                finally:
+                    for task in waiting:
+                        task.cancel()
+        finally:
+            self.seen.pop(me, None)
+
+    def poke(self) -> None:
+        """A new generation with no time passing: every waiting loop looks again."""
+        self.generation += 1
+        if self._tick is not None:
+            self._tick.set()
+            self._tick = None
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
+        self.poke()
+
+    def parked(self, loops: int) -> bool:
+        return len(self.seen) == loops and all(g == self.generation for g in self.seen.values())
+
+
+async def until(condition, within: float = HANG_GUARD) -> None:
     deadline = time.monotonic() + within
     while not condition():
         assert time.monotonic() < deadline, "the condition did not come about"
         await asyncio.sleep(0.01)
 
 
-async def parked(clock: PhasedClock, loops: int = 2) -> None:
+async def parked(times: Time, loops: int = 2) -> None:
     """Until ``loops`` loops wait again having seen the latest move of time or the latest save:
     what they had to do then is done. A save wakes them by their events, so it is poked first."""
-    clock.poke()
-    await clock.until_parked(loops)
+    times.poke()
+    await until(lambda: times.parked(loops))
 
 
 class Rounds:
     """Stands in for the two rounds: records when each ran, and holds one while asked to."""
 
-    def __init__(self, clock: PhasedClock):
-        self.clock = clock
+    def __init__(self, times: Time):
+        self.times = times
         self.ran: list[tuple[str, float]] = []
         self.hold = {"usage": threading.Event(), "disk": threading.Event()}
         for event in self.hold.values():
@@ -1136,8 +1223,8 @@ class Rounds:
             with self._lock:
                 self.running[which] += 1
                 self.overlapped |= self.running[which] > 1
-                self.ran.append((which, self.clock.now()))
-            self.hold[which].wait(30)
+                self.ran.append((which, self.times.now))
+            self.hold[which].wait(HANG_GUARD)
             with self._lock:
                 self.running[which] -= 1
 
@@ -1150,38 +1237,38 @@ class Rounds:
 def looping(settings, runtime, **changes):
     """A monitor on test time with stand-in rounds, its settings ``changes`` of the defaults."""
     save(settings, **changes)
-    clock = PhasedClock()
-    made = Monitor(runtime, settings.database, clock=clock)
-    rounds = Rounds(clock)
+    times = Time()
+    made = Monitor(runtime, settings.database, clock=times.clock, wait=times.wait)
+    rounds = Rounds(times)
     made.usage_round = rounds.make("usage")
     made.disk_round = rounds.make("disk")
     made.prepare = lambda: None
-    return made, clock, rounds
+    return made, times, rounds
 
 
 def test_the_first_usage_round_waits_for_the_restore_and_the_first_disk_round_a_whole_interval(
     settings, runtime
 ):
-    made, clock, rounds = looping(settings, runtime)
+    made, times, rounds = looping(settings, runtime)
     disk = monitor.DEFAULTS.disk_interval_seconds
 
     async def scenario():
         made.start()
         try:
             for _ in range(3):
-                clock.advance(monitor.DEFAULTS.usage_interval_seconds)
-                await parked(clock)
+                times.advance(monitor.DEFAULTS.usage_interval_seconds)
+                await parked(times)
             assert rounds.ran == []  # nothing before the restore
             made.restored_now()
             await until(lambda: rounds.of("usage"))
-            await parked(clock)  # the round has ended: its interval counts from its end
-            assert rounds.of("usage") == [clock.now()]
+            await parked(times)  # the round has ended: its interval counts from its end
+            assert rounds.of("usage") == [times.now]
             assert rounds.of("disk") == []
-            start = clock.now()
-            clock.advance(disk - 2)
-            await parked(clock)
+            start = times.now
+            times.advance(disk - 2)
+            await parked(times)
             assert rounds.of("disk") == []
-            clock.advance(2)
+            times.advance(2)
             await until(lambda: rounds.of("disk"))
             assert rounds.of("disk")[0] >= start + disk - 1
         finally:
@@ -1191,7 +1278,7 @@ def test_the_first_usage_round_waits_for_the_restore_and_the_first_disk_round_a_
 
 
 def test_the_loops_run_apart_and_neither_overlaps_itself(settings, runtime):
-    made, clock, rounds = looping(settings, runtime, disk_interval_seconds=600)
+    made, times, rounds = looping(settings, runtime, disk_interval_seconds=600)
     usage = monitor.DEFAULTS.usage_interval_seconds
 
     async def scenario():
@@ -1199,21 +1286,21 @@ def test_the_loops_run_apart_and_neither_overlaps_itself(settings, runtime):
         made.restored_now()
         try:
             await until(lambda: rounds.of("usage"))
-            await parked(clock)  # the round has ended: its interval counts from its end
+            await parked(times)  # the round has ended: its interval counts from its end
             rounds.hold["usage"].clear()
-            clock.advance(usage)
+            times.advance(usage)
             await until(lambda: len(rounds.of("usage")) == 2)  # this one is held
             for _ in range(4):  # time passes and the settings are saved: still the one round
-                clock.advance(usage)
+                times.advance(usage)
                 made.changed(made.settings())
-                await parked(clock, loops=1)  # the disk loop; the usage loop is in its round
+                await parked(times, loops=1)  # the disk loop; the usage loop is in its round
             assert len(rounds.of("usage")) == 2
-            clock.advance(600)  # the disk loop runs while the usage loop is held
+            times.advance(600)  # the disk loop runs while the usage loop is held
             await until(lambda: rounds.of("disk"))
             rounds.hold["usage"].set()
-            await parked(clock)
+            await parked(times)
             assert len(rounds.of("usage")) == 2  # the next is due an interval after it ended
-            clock.advance(usage)
+            times.advance(usage)
             await until(lambda: len(rounds.of("usage")) == 3)
             assert not rounds.overlapped
         finally:
@@ -1224,17 +1311,17 @@ def test_the_loops_run_apart_and_neither_overlaps_itself(settings, runtime):
 
 
 def test_a_save_wakes_the_loops_to_the_new_interval_from_their_last_round(settings, runtime):
-    made, clock, rounds = looping(settings, runtime, usage_interval_seconds=3600)
+    made, times, rounds = looping(settings, runtime, usage_interval_seconds=3600)
 
     async def scenario():
         made.start()
         made.restored_now()
         try:
             await until(lambda: rounds.of("usage"))
-            await parked(clock)  # the round has ended: its interval counts from its end
+            await parked(times)  # the round has ended: its interval counts from its end
             first = rounds.of("usage")[0]
-            clock.advance(100)
-            await parked(clock)
+            times.advance(100)
+            await parked(times)
             assert len(rounds.of("usage")) == 1
             # 100 seconds after the last round, an interval of 60 is due at once: no time passes
             made.changed(made.settings().model_copy(update={"usage_interval_seconds": 60}))
@@ -1250,7 +1337,7 @@ def test_a_round_that_ends_late_counts_the_next_from_its_end_and_a_save_too(sett
     """The interleaving the save test above once met by chance, held here on purpose: time passes
     while a round runs, so its interval, and a new one saved after, count from when it ended,
     not from when it started."""
-    made, clock, rounds = looping(settings, runtime, usage_interval_seconds=3600)
+    made, times, rounds = looping(settings, runtime, usage_interval_seconds=3600)
     rounds.hold["usage"].clear()
 
     async def scenario():
@@ -1259,16 +1346,16 @@ def test_a_round_that_ends_late_counts_the_next_from_its_end_and_a_save_too(sett
         try:
             await until(lambda: rounds.of("usage"))  # under way, and held
             started = rounds.of("usage")[0]
-            clock.advance(100)
-            await parked(clock, loops=1)  # the disk loop; the usage loop is in its round
+            times.advance(100)
+            await parked(times, loops=1)  # the disk loop; the usage loop is in its round
             rounds.hold["usage"].set()
-            await parked(clock)
-            ended = clock.now()
+            await parked(times)
+            ended = times.now
             assert ended == started + 100
             made.changed(made.settings().model_copy(update={"usage_interval_seconds": 60}))
-            await parked(clock)
+            await parked(times)
             assert len(rounds.of("usage")) == 1  # 60 from its start has passed, not from its end
-            clock.advance(60)
+            times.advance(60)
             await until(lambda: len(rounds.of("usage")) == 2)
             assert rounds.of("usage")[1] == ended + 60
         finally:
@@ -1279,7 +1366,7 @@ def test_a_round_that_ends_late_counts_the_next_from_its_end_and_a_save_too(sett
 
 
 def test_switching_a_scope_does_not_move_when_the_next_round_is_due(settings, runtime):
-    made, clock, rounds = looping(settings, runtime)
+    made, times, rounds = looping(settings, runtime)
     usage = monitor.DEFAULTS.usage_interval_seconds
 
     async def scenario():
@@ -1287,15 +1374,15 @@ def test_switching_a_scope_does_not_move_when_the_next_round_is_due(settings, ru
         made.restored_now()
         try:
             await until(lambda: rounds.of("usage"))
-            await parked(clock)  # the round has ended: its interval counts from its end
+            await parked(times)  # the round has ended: its interval counts from its end
             first = rounds.of("usage")[0]
-            clock.advance(usage / 2)
+            times.advance(usage / 2)
             made.changed(made.settings().model_copy(update={"host": False}))
-            await parked(clock)
+            await parked(times)
             made.changed(made.settings().model_copy(update={"host": True}))
-            await parked(clock)
+            await parked(times)
             assert len(rounds.of("usage")) == 1
-            clock.advance(usage / 2)
+            times.advance(usage / 2)
             await until(lambda: len(rounds.of("usage")) == 2)
             assert rounds.of("usage")[1] == first + usage
         finally:
@@ -1305,18 +1392,17 @@ def test_switching_a_scope_does_not_move_when_the_next_round_is_due(settings, ru
 
 
 def test_with_every_scope_off_the_loops_wait_without_a_deadline(settings, runtime):
-    made, clock, rounds = looping(settings, runtime, host=False, people=False, containers=False)
+    made, times, rounds = looping(settings, runtime, host=False, people=False, containers=False)
 
     async def scenario():
         made.start()
         made.restored_now()
         try:
-            await parked(clock)
-            clock.advance(10 * monitor.DEFAULTS.disk_interval_seconds)
-            await parked(clock)
+            await parked(times)
+            times.advance(10 * monitor.DEFAULTS.disk_interval_seconds)
+            await parked(times)
             assert rounds.ran == []
-            waited = [seconds for method, seconds, _ in clock.waits if method == "await_event"]
-            assert waited[-2:] == [None, None]
+            assert all(timeout is None for _, timeout in times.asked[-2:])
             made.changed(made.settings().model_copy(update={"host": True}))
             await until(lambda: rounds.of("usage"))  # the usage loop's time had long come
             assert rounds.of("disk") == []  # host alone: no disk round
@@ -1327,7 +1413,7 @@ def test_with_every_scope_off_the_loops_wait_without_a_deadline(settings, runtim
 
 
 def test_a_stop_ends_both_loops_and_waits_for_a_round_under_way(settings, runtime):
-    made, clock, rounds = looping(settings, runtime)
+    made, times, rounds = looping(settings, runtime)
     finished = []
 
     async def scenario():
@@ -1337,7 +1423,7 @@ def test_a_stop_ends_both_loops_and_waits_for_a_round_under_way(settings, runtim
         await until(lambda: rounds.of("usage"))
 
         async def release():
-            await asyncio.sleep(0.3)
+            await until(made.halted.is_set)  # the stop is under way, waiting for the round
             finished.append("released")
             rounds.hold["usage"].set()
 
@@ -1354,11 +1440,11 @@ def test_a_stop_ends_both_loops_and_waits_for_a_round_under_way(settings, runtim
 
 
 def test_a_round_that_raises_does_not_end_its_loop(settings, runtime, caplog):
-    made, clock, rounds = looping(settings, runtime)
+    made, times, rounds = looping(settings, runtime)
     calls = []
 
     def failing():
-        calls.append(clock.now())
+        calls.append(times.now)
         raise RuntimeError("planted")
 
     made.usage_round = failing
@@ -1370,8 +1456,8 @@ def test_a_round_that_raises_does_not_end_its_loop(settings, runtime, caplog):
             await until(lambda: len(calls) == 1)
             # Only once the loop waits again: time moved any earlier is read by the failure's
             # handling, which counts the next round from it.
-            await parked(clock)
-            clock.advance(monitor.DEFAULTS.usage_interval_seconds)
+            await parked(times)
+            times.advance(monitor.DEFAULTS.usage_interval_seconds)
             await until(lambda: len(calls) == 2)
         finally:
             await made.stop()

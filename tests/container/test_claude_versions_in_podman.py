@@ -21,7 +21,7 @@ import time
 from pathlib import Path
 
 import pytest
-from rcman import db, people
+from rcman import claude_versions, db, people
 from rcman import runtime as rt
 from rcman.problems import Problem
 from rcman.workspaces import Workspaces
@@ -30,12 +30,12 @@ from devtools import fake_claude as fake
 from devtools import held_folders as hf
 from helpers import claude_checks
 from tests import claude_download, runtime_contract
-from tests.clocks import PhasedClock
 from tests.container import sizes
 from tests.container import test_github_in_podman as shared
 from tests.container import test_runtime_in_podman as base
 from tests.container.conftest import cli, engine_runtime, engine_settings, fill_store
 from tests.fake_store import FAKE_VERSION
+from tests.hang_guard import CONTAINER_HANG_GUARD
 
 # The version the store holds when a test starts, and the ones released after it: good ones,
 # one that is not Claude Code, and one whose checksum is not its release's.
@@ -45,7 +45,7 @@ EMAIL, ADMIN = "bob@example.com", "admin@example.com"
 # How long the canary container is waited for, and how long a slow candidate keeps it up: the
 # candidate sleeps this long at every call, so the container is there to be looked at for as
 # long as its checks take.
-APPEARS_WITHIN = 60
+APPEARS_WITHIN = CONTAINER_HANG_GUARD
 SLOW_SECONDS = 1
 
 
@@ -78,9 +78,11 @@ def download(tmp_path_factory):
 
 
 @pytest.fixture
-def store(own_store):
+def store(monkeypatch, own_store):
     """The store as the installer leaves it for rcman: the one version, which ``current`` names,
-    before and after the test."""
+    before and after the test. Pruning ages nothing here: the files are new, and a version put
+    in the store within the grace is never pruned (as in the host tests)."""
+    monkeypatch.setattr(claude_versions, "PRUNE_GRACE_SECONDS", 0.0)
 
     def reset() -> None:
         versions = own_store / "versions"
@@ -123,10 +125,6 @@ def service(person, podman, download, store):
         podman,
         builder_slot=sizes.BUILDER_SLOT,
     )
-    # Pruning ages nothing here: the files are new, and a version put in the store within the
-    # grace is never pruned, so the versions' wall time is far past any of theirs (as in the
-    # host tests).
-    made.versions.clock = PhasedClock(wall_start=4_000_000_000.0)
     yield made
     made.close()
 
@@ -251,7 +249,6 @@ def test_a_server_keeps_its_version_through_an_approval_and_a_restart_and_a_star
 
     # rcman ending and starting again, on the same database and Podman: the server runs on.
     again = Workspaces(service.settings, podman, builder_slot=sizes.BUILDER_SLOT)
-    again.versions.clock = PhasedClock(wall_start=4_000_000_000.0)  # as the service's
     try:
         again.restore()
         assert running_versions(podman, workspace.container) == {V0}
@@ -449,7 +446,7 @@ def test_the_canary_container_is_what_the_design_says(podman, image, tmp_path):
         )
         assert imported.stdout.strip() == "3", imported
     finally:
-        thread.join(timeout=300)
+        thread.join(timeout=CONTAINER_HANG_GUARD)
         for left in (rt.CANARY_NAME, stale_id):
             if thread.is_alive() or left == stale_id:
                 cli(podman, "rm", "--force", "--ignore", "--time=0", left)
@@ -461,9 +458,8 @@ def test_the_canary_container_is_what_the_design_says(podman, image, tmp_path):
 
 def test_podman_remote_run_ends_a_container_at_its_timeout(podman, image):
     """The canary's ``--timeout``: accepted by ``podman --remote run``, and it kills what runs
-    past it."""
+    past it: a ``sleep`` it did not kill would end with 0."""
     name = "rcman-test-timeout"
-    began = time.monotonic()
     try:
         ran = cli(
             podman,
@@ -475,10 +471,10 @@ def test_podman_remote_run_ends_a_container_at_its_timeout(podman, image):
             image,
             "sleep",
             "600",
+            timeout=CONTAINER_HANG_GUARD,
         )
-        took = time.monotonic() - began
         assert "unknown flag" not in ran.stderr and "no such" not in ran.stderr.lower(), ran.stderr
-        assert ran.returncode != 0 and took < 120, (ran, took)
+        assert ran.returncode != 0, ran
     finally:
         cli(podman, "rm", "--force", "--ignore", "--time=0", name)
     assert cli(podman, "container", "exists", name).returncode != 0

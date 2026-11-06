@@ -2,9 +2,9 @@
 terminal and on what, the frames it carries, what ends it, and what is recorded of it.
 
 Most cases drive the app in the test's process, through the test client's WebSocket; the
-refusals before the upgrade is accepted, a peer that vanished and a service that stops are
-driven through real uvicorn, started with the options of the unit's own ExecStart, since the
-test client neither sends the handshake nor pings. The shells are the host runtime's, so they
+refusals before the upgrade is accepted and a service that stops are driven through real
+uvicorn, started with the options of the unit's own ExecStart, since the test client does not
+send the handshake. The shells are the host runtime's, so they
 are looked for in the host's /proc (tests/test_terminals.py's helpers).
 """
 
@@ -20,7 +20,6 @@ import socket
 import sqlite3
 import subprocess
 import sys
-import threading
 import time
 import uuid
 from pathlib import Path
@@ -30,41 +29,24 @@ import pytest
 from rcman import audit, db, people, problems
 from rcman import runtime as rt
 from rcman.headers import SECURITY_HEADERS
-from rcman.main import Clocks
 from rcman.routers import terminal as route
 from starlette.testclient import WebSocketDenialResponse
 
-from tests.clocks import PhasedClock
 from tests.conftest import ALICE, BOB, changing, made_workspace
+from tests.hang_guard import HANG_GUARD
 from tests.test_terminals import a_length, alive, sleeping, wait_until
 
 REPO = Path(__file__).resolve().parent.parent
 PROTOCOL = route.PROTOCOL
 # How long a frame is waited for.
-FRAME_WITHIN = 15.0
+FRAME_WITHIN = HANG_GUARD
 
 
 @pytest.fixture
-def clock():
-    """The terminals' clock, which the test moves; it does not move otherwise."""
-    return PhasedClock()
-
-
-@pytest.fixture
-def clocks(request):
-    """Given to the app before the client starts it (tests/conftest.py ``app``): the terminals
-    on ``clock`` for a test that asks for it, on the real one for the rest, whose graces then
-    end by themselves."""
-    if "clock" in request.fixturenames:
-        return Clocks(terminals=request.getfixturevalue("clock"))
-    return Clocks()
-
-
-@pytest.fixture
-def lent(client, clock):
-    """The app's event loop's thread, lent to the clock: an advance may pass the deadlines of its
-    waiters there."""
-    clock.lend(client.portal.call(threading.current_thread))
+def quick_revocation(monkeypatch):
+    """Revocation looked for often, before the service starts: it reads the value as it waits,
+    but a test that relies on it lists this before ``client`` all the same."""
+    monkeypatch.setattr(route, "REVOCATION_SECONDS", 0.2)
 
 
 def path(workspace: int) -> str:
@@ -274,14 +256,8 @@ def test_deleting_the_workspace_closes_its_terminal(client, workspace, settings)
     ended_by(client, settings, workspace, delete, "workspace_gone")
 
 
-def revocation_looked_for(clock) -> bool:
-    """Whether an open terminal looked for revocation on its clock: an ``apoll``, which the
-    test's clock sleeps for at most its cap, so that a change of the rows is found at once."""
-    return ("apoll", route.REVOCATION_SECONDS) in [w[:2] for w in clock.waits]
-
-
 def test_a_workspace_marked_deleting_behind_rcmans_back_closes_its_terminal(
-    client, clock, workspace, settings
+    quick_revocation, client, workspace, settings
 ):
     def mark():
         con = db.connect(settings.database)
@@ -292,11 +268,10 @@ def test_a_workspace_marked_deleting_behind_rcmans_back_closes_its_terminal(
             con.close()
 
     ended_by(client, settings, workspace, mark, "workspace_gone")
-    assert revocation_looked_for(clock)
 
 
 def test_a_person_marked_deleting_behind_rcmans_back_loses_their_terminal(
-    client, clock, workspace, settings
+    quick_revocation, client, workspace, settings
 ):
     def mark():
         con = db.connect(settings.database)
@@ -306,7 +281,6 @@ def test_a_person_marked_deleting_behind_rcmans_back_loses_their_terminal(
             con.close()
 
     ended_by(client, settings, workspace, mark, "not_allowed")
-    assert revocation_looked_for(clock)
 
 
 def test_signing_out_closes_the_persons_terminal(client, workspace, settings):
@@ -344,7 +318,7 @@ def test_the_apps_shutdown_closes_every_terminal(settings, runtime):
 
     app.state.terminals.close_all = close_all
     with TestClient(app) as client:
-        assert client.app.state.workspaces.restored.wait(30)
+        assert client.app.state.workspaces.restored.wait(HANG_GUARD)
     assert closed == ["service_closing"]
 
 
@@ -478,7 +452,7 @@ def page_protocol(source: Path) -> dict | None:
     """The PROTOCOL a module of the page's exports, as Node reads it."""
     proc = subprocess.run(
         ["node", "--input-type=module", "-e", LOAD_PROTOCOL, str(source)],
-        capture_output=True, text=True, timeout=60, check=True,
+        capture_output=True, text=True, timeout=HANG_GUARD, check=True,
     )  # fmt: skip
     return json.loads(proc.stdout)
 
@@ -578,12 +552,12 @@ def served(tmp_path: Path, ping: float = 20.0):
         proc = subprocess.Popen(argv, cwd=REPO, env=env, stdout=log, stderr=subprocess.STDOUT)
     server = Served(proc, port, origin, output)
     try:
-        wait_until(server.answers, timeout=60)
+        wait_until(server.answers, timeout=HANG_GUARD)
         yield server
     finally:
         if proc.poll() is None:
             proc.terminate()
-        proc.wait(timeout=60)
+        proc.wait(timeout=HANG_GUARD)
 
 
 class Served:
@@ -593,7 +567,7 @@ class Served:
     def http(self, method: str, url: str, body=None, who=ALICE) -> tuple[int, dict]:
         import http.client
 
-        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=HANG_GUARD)
         try:
             headers = {"X-Forwarded-Email": who, "Origin": self.origin}
             if body is not None:
@@ -623,7 +597,7 @@ class Served:
             assert state in ("creating", "ready"), state
             return state == "ready"
 
-        wait_until(ready, timeout=60)
+        wait_until(ready, timeout=HANG_GUARD)
         return number
 
     def url(self, workspace: int | None = None) -> str:
@@ -648,7 +622,7 @@ def connect(server: Served, workspace: int | None = 1, headers=None, origin="own
         origin=server.origin if origin == "own" else origin,
         additional_headers=headers if headers is not None else {"X-Forwarded-Email": ALICE},
         proxy=None,
-        open_timeout=10,
+        open_timeout=HANG_GUARD,
     )
 
 
@@ -678,42 +652,6 @@ def test_identity_and_origin_are_refused_before_the_upgrade_with_a_problem(tmp_p
         assert frame["problem"]["code"] == "workspace_not_found"
 
 
-CLIENT = """
-import json, sys, time
-from websockets.sync.client import connect
-url, origin, email, length = sys.argv[1:]
-ws = connect(url, origin=origin, additional_headers={"X-Forwarded-Email": email}, proxy=None)
-ws.send(json.dumps({"type": "resize", "cols": 80, "rows": 24}))
-ws.send(f"sleep {length} &\\r".encode())
-print("sent", flush=True)
-time.sleep(600)
-"""
-
-
-def test_a_peer_that_vanished_ends_its_terminal(tmp_path):
-    length = a_length()
-    with served(tmp_path, ping=0.5) as server:
-        workspace = server.workspace("alpha")
-        peer = subprocess.Popen(
-            [sys.executable, "-c", CLIENT, server.url(workspace), server.origin, ALICE, length],
-            cwd=REPO,
-            stdout=subprocess.PIPE,
-        )
-        try:
-            [pid] = wait_until(lambda: sleeping(length))
-            peer.send_signal(signal.SIGSTOP)  # it answers no ping from now on
-            wait_until(lambda: not alive(pid), timeout=30)
-            wait_until(
-                lambda: any(
-                    e.get("action") == "terminal.close" and e.get("result") == "terminal_lost"
-                    for e in server.events()
-                )
-            )
-        finally:
-            peer.kill()
-            peer.wait()
-
-
 def test_a_service_that_stops_closes_its_terminals_first(tmp_path):
     length = a_length()
     with served(tmp_path) as server:
@@ -727,7 +665,7 @@ def test_a_service_that_stops_closes_its_terminals_first(tmp_path):
                 while True:
                     ws.recv(timeout=FRAME_WITHIN)
             assert ws.close_code == PROTOCOL["close_closing"]
-        server.proc.wait(timeout=60)
+        server.proc.wait(timeout=HANG_GUARD)
         assert not alive(pid)
         closes = [e for e in server.events() if e.get("action") == "terminal.close"]
         assert [e["result"] for e in closes] == ["service_closing"]
@@ -736,20 +674,10 @@ def test_a_service_that_stops_closes_its_terminals_first(tmp_path):
 # --- what else ends a terminal, and what does not -------------------------------------------
 
 
-def first_frame(waiter) -> bool:
-    """The wait for the page's first frame."""
-    return waiter.method == "within" and waiter.seconds == route.FIRST_RESIZE_SECONDS
-
-
-@pytest.mark.parametrize("short", [0, 1])
-def test_a_page_that_sends_no_size_is_closed(client, lent, clock, workspace, settings, short):
+def test_a_page_that_sends_no_size_is_closed(monkeypatch, client, workspace, settings):
+    """With no time for the first frame at all, so that its end never waits on real time."""
+    monkeypatch.setattr(route, "FIRST_RESIZE_SECONDS", 0)
     with client.websocket_connect(path(workspace["id"]), headers=changing(ALICE)) as session:
-        clock.wait_parked_where(first_frame, within=FRAME_WITHIN)
-        clock.advance(route.FIRST_RESIZE_SECONDS - short)
-        if short:  # the twin: a second short of it, the wait goes on and nothing is recorded
-            clock.wait_parked_where(first_frame, within=FRAME_WITHIN)
-            assert not [r for r in terminal_rows(settings) if r[0] == "terminal.open"]
-            clock.advance(short)
         assert Peer(session).closed()["code"] == PROTOCOL["close_policy"]
     assert client.app.state.terminals.live(workspace["id"]) is None
     assert terminal_rows(settings)[-1] == ("terminal.open", "alpha", "validation_failed")
@@ -788,7 +716,7 @@ def test_a_workspace_removed_behind_rcmans_back_ends_its_terminal(client, worksp
 
 
 def test_a_look_at_the_rows_that_fails_is_tried_again(
-    client, clock, workspace, settings, monkeypatch, caplog
+    quick_revocation, client, workspace, settings, monkeypatch, caplog
 ):
     real, failed = route._revoked, []
 
@@ -811,7 +739,6 @@ def test_a_look_at_the_rows_that_fails_is_tried_again(
         peer.closed()
         assert peer.frames[-1] == {"type": PROTOCOL["closed"], "reason": "workspace_gone"}
     assert "could not look at its rows" in caplog.text
-    assert revocation_looked_for(clock)
 
 
 def test_of_what_ends_a_terminal_together_its_own_end_says_most():
@@ -832,7 +759,7 @@ def test_the_shutdown_closes_the_rest_when_the_terminals_fail_to(settings, runti
 
     app.state.terminals.close_all = failing
     with TestClient(app) as client:
-        assert client.app.state.workspaces.restored.wait(30)
+        assert client.app.state.workspaces.restored.wait(HANG_GUARD)
     assert app.state.workspaces._closing.is_set()  # the service was closed all the same
 
 

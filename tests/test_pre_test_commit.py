@@ -23,6 +23,7 @@ import pytest
 
 from devtools import pre_test_commit
 from tests.git_fixtures import FIXTURE_HOME, fixture_env, fixture_git, make_repo, write
+from tests.hang_guard import HANG_GUARD
 
 REPO = Path(__file__).resolve().parent.parent
 SCRIPT = REPO / "devtools" / "pre_test_commit.py"
@@ -134,13 +135,6 @@ def make_changes(repo: Path) -> None:
 def no_decision(out: dict) -> bool:
     """The hook leaves the call to the normal permission flow: it never decides."""
     return "permissionDecision" not in out.get("hookSpecificOutput", {})
-
-
-def wait_for(path: Path) -> None:
-    deadline = time.monotonic() + 30
-    while not path.exists():
-        assert time.monotonic() < deadline, f"{path} never appeared"
-        time.sleep(0.05)
 
 
 def recording_popen(monkeypatch) -> list[tuple[list[str], dict]]:
@@ -837,41 +831,74 @@ def hold(path: Path, release: Path, done: Path) -> None:
     path.chmod(0o755)
 
 
-def test_a_push_that_overruns_the_deadline_is_reported(tmp_path, repo, origin):
-    release, done = tmp_path / "release", tmp_path / "done"
-    hold(origin / "hooks" / "pre-receive", release, done)
-    make_changes(repo)
-
-    try:
-        out = pre_test_commit.handle(payload("make test", repo), env(repo), deadline=3)
-    finally:
-        release.touch()
-        wait_for(done)
-
-    assert not dirty(repo), "the commit is made before the push"
-    assert "timed out" in out["systemMessage"]
-    assert "stays" in out["hookSpecificOutput"]["additionalContext"]
-    assert no_decision(out)
-
-
-def test_a_commit_that_overruns_the_deadline_leaves_the_index_as_it_was(tmp_path, repo):
+def test_a_commit_that_overruns_the_deadline_leaves_the_index_as_it_was(
+    tmp_path, repo, monkeypatch
+):
+    """The commit's pre-commit hook holds until the test lets it go, after the hook has
+    returned, so the commit overruns whatever its share of the deadline: it alone is given a
+    short one, and every other call, and the stop and the restore that follow, HANG_GUARD."""
     release, done = tmp_path / "release", tmp_path / "done"
     hold(repo / ".git" / "hooks" / "pre-commit", release, done)
     make_changes(repo)
     fixture_git(repo, "add", "README.md")
     staged = index(repo)
     before = head(repo)
+    real_run, commits = pre_test_commit._run, []
+
+    def run(argv, cwd, env, timeout):
+        if argv[1:2] == ["commit"]:
+            commits.append(argv)
+            timeout = 0.05  # the hook holds: it overruns any timeout
+        return real_run(argv, cwd, env, timeout)
+
+    monkeypatch.setattr(pre_test_commit, "_run", run)
+    monkeypatch.setattr(pre_test_commit, "GRACE", HANG_GUARD)
 
     try:
-        out = pre_test_commit.handle(payload("make test", repo), env(repo), deadline=3)
+        out = pre_test_commit.handle(payload("make test", repo), env(repo), deadline=HANG_GUARD)
     finally:
         release.touch()
-        wait_for(done)
 
+    assert len(commits) == 1  # the commit was reached, and overran
     assert head(repo) == before
     assert index(repo) == staged
     assert not (repo / ".git" / "index.lock").exists()
+    assert "git commit timed out" in out["systemMessage"]
+    assert no_decision(out)
+
+
+def test_a_push_that_overruns_the_deadline_is_reported(tmp_path, repo, origin, monkeypatch):
+    """The origin's pre-receive hook holds until the test lets it go, after the hook has
+    returned, so the push overruns whatever its share of the deadline: it alone is given a short
+    one, and every other call, and the stop that follows, HANG_GUARD. The commit before it
+    stays."""
+    release, done = tmp_path / "release", tmp_path / "done"
+    hold(origin / "hooks" / "pre-receive", release, done)
+    make_changes(repo)
+    real_run, pushes = pre_test_commit._run, []
+
+    def run(argv, cwd, env, timeout):
+        if argv[1:2] == ["push"]:
+            pushes.append(argv)
+            timeout = 0.05  # the hook holds: it overruns any timeout
+        return real_run(argv, cwd, env, timeout)
+
+    monkeypatch.setattr(pre_test_commit, "_run", run)
+    monkeypatch.setattr(pre_test_commit, "GRACE", HANG_GUARD)
+
+    try:
+        out = pre_test_commit.handle(payload("make test", repo), env(repo), deadline=HANG_GUARD)
+    finally:
+        release.touch()
+    deadline = time.monotonic() + HANG_GUARD  # the hook, let go, ends
+    while not done.exists():
+        assert time.monotonic() < deadline, "the held hook did not end"
+        time.sleep(0.05)
+
+    assert len(pushes) == 1  # the push was reached, and overran
+    assert not dirty(repo), "the commit is made before the push"
     assert "timed out" in out["systemMessage"]
+    assert "stays" in out["hookSpecificOutput"]["additionalContext"]
     assert no_decision(out)
 
 

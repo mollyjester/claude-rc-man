@@ -29,7 +29,6 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Query, WebSocket
 from starlette.websockets import WebSocketDisconnect, WebSocketState
 
-from helpers.clock import Deadline, PollExternal
 from rcman import db, people, problems
 from rcman.audit import (
     OK,
@@ -53,10 +52,10 @@ router = APIRouter(tags=["terminal"])
 # browser tests' backend): the one whose keepalive ping ends a terminal whose page vanished.
 WEBSOCKETS = "websockets-sansio"
 # How often an open terminal looks whether its person and its workspace are still as it opened.
-REVOCATION_SECONDS = PollExternal(5.0)
+REVOCATION_SECONDS = 5.0
 # How long the page has, once the socket is accepted, to send the first resize; the page sends
 # it as the socket opens.
-FIRST_RESIZE_SECONDS = Deadline(15.0)
+FIRST_RESIZE_SECONDS = 15.0
 NOT_ALLOWED = "not_allowed"
 
 # The terminal's protocol: the route and its query, the frames, the sizes, the close codes and
@@ -143,9 +142,8 @@ def _revoked(websocket: WebSocket, record: Opened, workspace: int) -> str | None
 async def _watch(websocket: WebSocket, record: Opened, workspace: int) -> str:
     """Look every REVOCATION_SECONDS; a look that fails, as on a database that is busy, is
     logged and the next one tried."""
-    clock = websocket.app.state.terminals.clock
     while True:
-        await clock.apoll(REVOCATION_SECONDS)
+        await asyncio.sleep(REVOCATION_SECONDS)
         try:
             reason = await asyncio.to_thread(_revoked, websocket, record, workspace)
         except Exception:  # noqa: BLE001 - see above
@@ -209,7 +207,7 @@ async def terminal(
         return
     try:
         try:
-            message = await terminals.clock.within(websocket.receive(), FIRST_RESIZE_SECONDS)
+            message = await asyncio.wait_for(websocket.receive(), FIRST_RESIZE_SECONDS)
         except TimeoutError:
             raise Refused(PROTOCOL["close_policy"]) from None
         if message["type"] == "websocket.disconnect":

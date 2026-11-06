@@ -12,8 +12,8 @@ whatever goes wrong, nothing is left. The checksum comes from the same place as 
 it protects against a download that is damaged, not against a source that is not to be
 trusted.
 
-Python standard library and the helpers' own rules and clock only: the installer runs under the
-system interpreter.
+Python standard library and the helpers' own rules only: the installer runs under the system
+interpreter.
 """
 
 from __future__ import annotations
@@ -31,15 +31,14 @@ from pathlib import Path
 from typing import BinaryIO
 
 from helpers import rules
-from helpers.clock import RealBound
 
 DOWNLOAD = "https://downloads.claude.ai/claude-code-releases"
 # An address releases are downloaded from: http or https, with no slash at its end.
 DOWNLOAD_ADDRESS = re.compile(r"https?://[A-Za-z0-9.-]+(?::[0-9]+)?(?:/[A-Za-z0-9._~%-]+)*")
 # How long one wait of a connection may take, and how long the one question that is only a
 # suggestion may.
-TIMEOUT_SECONDS = RealBound(300.0)
-LATEST_TIMEOUT_SECONDS = RealBound(10.0)
+TIMEOUT_SECONDS = 300.0
+LATEST_TIMEOUT_SECONDS = 10.0
 # The most a program or an archive may be, and the most a text (a manifest, a list of
 # checksums, the name of a version) may be.
 MAX_BINARY_BYTES = 1024**3

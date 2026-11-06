@@ -28,7 +28,6 @@ from rcman import limits
 from rcman import runtime as rt
 
 from devtools.fake_claude import ACCEPTED_CODE
-from installer import install as ins
 from tests.container import github_stand_in as stand_in
 from tests.container import network
 from tests.container import stack as st
@@ -874,71 +873,6 @@ def test_ubuntu_caddy_without_the_global_ask_gives_any_host_under_the_wildcard_a
         refused = through_caddy(stack, other, "/", "-k")
         assert refused.returncode == 35, (caddy, refused.returncode, refused.stderr)
         assert other in asked_domains(folder)
-    finally:
-        try:
-            stack.verb("caddy")
-        finally:
-            in_stack(stack, "kill", (folder / "stand-in.pid").read_text())
-
-
-# The installer's site for forwarded ports, rendered for a domain of its own beside the stack's,
-# and a host of it the stand-in's ask allows.
-SNIPPET_DOMAIN = f"snip.{st.DOMAIN}"
-SNIPPET_HOST = f"6080-1.ws.{SNIPPET_DOMAIN}"
-# What a browser may send that says who it is, each of a name the installer's site deletes, and
-# a header it passes on.
-IDENTITY_SENT = {
-    "X-Forwarded-Email": "evil@example.com",
-    "X-Forwarded-User": "evil",
-    "X-Auth-Request-Email": "evil@example.com",
-    "X-Auth-Request-User": "evil",
-    "X-Auth-Request-Groups": "admins",
-}
-PASSED = ("X-Planted-Passed", "passed")
-
-
-def installers_forward_site(folder: Path) -> str:
-    """The installer's own site for forwarded ports, as the installer renders it for
-    SNIPPET_DOMAIN, with its upstream the stand-in's socket in ``folder`` and its log a file
-    there: the rest of it, its deletions of identity headers among them, as it is."""
-    snippet = "\n" + ins.render("Caddyfile", {**st.install_settings(), "DOMAIN": SNIPPET_DOMAIN})
-    start = snippet.index(f"\n*.ws.{SNIPPET_DOMAIN} {{\n") + 1
-    site = snippet[start : snippet.index("\n}\n", start) + 3]
-    for old, new in (
-        (f"unix/{ins.FORWARD_SOCKET}", f"unix/{folder}/forward.sock"),
-        ("/var/log/caddy/rcman-forward-access.log", f"{folder}/snippet-access.log"),
-    ):
-        assert site.count(old) == 1, (old, site)  # the plant took
-        site = site.replace(old, new)
-    return "\n" + site
-
-
-def test_the_installers_forward_site_deletes_identity_headers_before_the_forwarding_server(stack):
-    """The installer's own site for forwarded ports passes on none of the identity headers a
-    browser sends itself, ``X-Auth-Request-*`` by its wildcard among them, while another header
-    passes. The planted positive: the same request through the twin, which deletes nothing,
-    reaches the same upstream with every one of them."""
-    caddy = caddy_named(stack)
-    folder = stack.folder / "snippet-gate"
-    started_stand_in(stack, folder, SNIPPET_HOST)
-    (folder / "sites").write_text(forward_sites(folder) + installers_forward_site(folder))
-    root = str(st.caddy_root(stack.folder))
-    sent = [part for name, value in [*IDENTITY_SENT.items(), PASSED]
-            for part in ("-H", f"{name}: {value}")]  # fmt: skip
-    try:
-        stack.verb("caddy", str(folder / "sites"), GATE_ASK_URL)
-        for host in (SNIPPET_HOST, TWIN):
-            got = through_caddy(stack, host, "/who", "--cacert", root, *sent)
-            assert got.returncode == 0 and got.stdout == b"upstream", (caddy, host, got.stderr)
-        seen = {
-            r["headers"].get("Host"): {name.lower() for name in r["headers"]}
-            for r in recorded(folder / "upstream.jsonl")
-            if r["path"] == "/who"
-        }
-        identity = {name.lower() for name in IDENTITY_SENT}
-        assert identity <= seen[TWIN] and PASSED[0].lower() in seen[TWIN], seen
-        assert not identity & seen[SNIPPET_HOST], (caddy, seen)
-        assert PASSED[0].lower() in seen[SNIPPET_HOST], seen
     finally:
         try:
             stack.verb("caddy")

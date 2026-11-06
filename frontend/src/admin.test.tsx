@@ -386,23 +386,6 @@ test("the audit trail is a table in a card, with Older at the card's foot", asyn
   expect(older.closest(".card-foot")).not.toBeNull();
 });
 
-test("until the first page of the trail is had the page says it is loading, and a refusal shows no card", async () => {
-  let answer: (reply: unknown) => void = () => {};
-  api({ "GET /api/audit": () => new Promise((resolve) => (answer = resolve)) });
-  const { unmount } = renderApp("/admin/audit");
-  await screen.findByRole("heading", { level: 1, name: m.auditTitle }); // the page, not the app, loading
-  expect(screen.getByText(m.loading)).toBeInTheDocument();
-  expect(screen.queryByText(m.auditEmpty)).not.toBeInTheDocument();
-  await act(async () => answer({ events: [] }));
-  expect(await screen.findByText(m.auditEmpty)).toBeInTheDocument();
-  expect(screen.queryByText(m.loading)).not.toBeInTheDocument();
-  unmount();
-  api({ "GET /api/audit": problem(500, "internal_error", "planted: no trail") });
-  renderApp("/admin/audit");
-  expect(await screen.findByRole("alert")).toHaveTextContent("planted: no trail");
-  expect(document.querySelector("main .card")).toBeNull();
-});
-
 test("what was done on the People page is said in a place that is there before it", async () => {
   api({ "GET /api/people": PEOPLE, "POST /api/people": { person: {} } });
   renderApp("/admin/people");

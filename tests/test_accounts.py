@@ -14,6 +14,7 @@ from rcman.problems import Problem
 
 from devtools import fake_claude as fake
 from tests.conftest import ALICE, BOB, CAROL, as_user, changing, made_workspace
+from tests.hang_guard import HANG_GUARD
 
 URL_START = "https://claude.com/cai/oauth/authorize?"
 
@@ -23,7 +24,7 @@ def client(app):
     from fastapi.testclient import TestClient
 
     with TestClient(app) as c:
-        assert app.state.workspaces.restored.wait(30)
+        assert app.state.workspaces.restored.wait(HANG_GUARD)
         yield c
 
 
@@ -465,7 +466,7 @@ def test_the_status_of_a_person_being_deleted_does_not_make_their_volume_again(c
 
 
 def test_a_status_that_waits_for_the_deletion_of_the_person_does_not_make_their_volume_again(
-    client, app
+    person_locks, client, app, monkeypatch
 ):
     """The read makes the volume if it is not there: it is taken under the person's lock, and
     the person is looked at again once the lock is had."""
@@ -474,17 +475,17 @@ def test_a_status_that_waits_for_the_deletion_of_the_person_does_not_make_their_
     app.state.accounts.status(bob)  # the control: an active person's volume is there
     folder = runtime._account_file(bob.id).parent
     assert folder.exists()
-    lock = app.state.workspaces.person_lock(bob.id)
+    lock = recorded_person_lock(app, bob.id)
     lock.acquire()
     try:
         reading, out = in_thread(app.state.accounts.status, bob)
-        reading.join(1.0)
-        assert reading.is_alive()  # it waits for the lock, which a deletion holds
+        lock.wait_blocked(1, match=reading)
+        assert out == []  # it waits for the lock, which a deletion holds
         being_deleted(app, BOB)
         shutil_rmtree(folder)
     finally:
         lock.release()
-    reading.join(30)
+    reading.join(HANG_GUARD)
     assert len(out) == 1 and isinstance(out[0], Problem) and out[0].code == "not_allowed"
     assert not folder.exists()
 
@@ -525,17 +526,17 @@ def test_a_sign_in_that_was_begun_ends_with_the_deletion_of_the_person(client, a
     assert sign_ins_left(app) == [] and bob.id not in app.state.accounts._sign_ins
 
 
-def test_deleting_a_person_waits_for_what_holds_their_lock(client, app):
+def test_deleting_a_person_waits_for_what_holds_their_lock(person_locks, client, app, monkeypatch):
     bob = person(app, BOB)
-    lock = app.state.workspaces.person_lock(bob.id)
+    lock = recorded_person_lock(app, bob.id)
     lock.acquire()
     try:
         thread, out = in_thread(app.state.workspaces.delete_person, bob)
-        thread.join(1.0)
-        assert thread.is_alive() and person(app, BOB) is not None  # held back by the lock
+        lock.wait_blocked(1, match=thread)
+        assert out == [] and person(app, BOB) is not None  # held back by the lock
     finally:
         lock.release()
-    thread.join(30)
+    thread.join(HANG_GUARD)
     assert not thread.is_alive() and out == [None] and person(app, BOB) is None
 
 
@@ -564,12 +565,11 @@ import threading  # noqa: E402
 
 from rcman import accounts as acc  # noqa: E402
 from rcman import claude_server  # noqa: E402
-from rcman.main import Clocks  # noqa: E402
+from rcman import workspaces as ws  # noqa: E402
 
 from helpers.screens import LOGIN_SUCCEEDED  # noqa: E402
-from tests.clocks import PhasedClock  # noqa: E402
 from tests.conftest import fake_claude  # noqa: E402
-from tests.hang_guard import HANG_GUARD  # noqa: E402
+from tests.time_doubles import FakeTime, RecordingLock  # noqa: E402
 
 
 def in_thread(call, *args) -> tuple[threading.Thread, list]:
@@ -586,8 +586,34 @@ def in_thread(call, *args) -> tuple[threading.Thread, list]:
     return thread, out
 
 
+@pytest.fixture
+def person_locks(monkeypatch):
+    """Every person's lock (``Workspaces.person_lock``) as a RecordingLock, one for each lock,
+    put in before ``client`` starts the service, so that a test sees a take of it blocked rather
+    than waiting for one (``recorded_person_lock``)."""
+    real, made, guard = ws.Workspaces.person_lock, {}, threading.Lock()
+
+    def person_lock(self, person_id):
+        lock = real(self, person_id)
+        with guard:
+            if id(lock) not in made:
+                made[id(lock)] = (lock, RecordingLock(lock))  # the lock kept: its id stays its
+            return made[id(lock)][1]
+
+    monkeypatch.setattr(ws.Workspaces, "person_lock", person_lock)
+
+
+def recorded_person_lock(app, person_id: int) -> RecordingLock:
+    """The person's lock as ``person_locks`` put it in, which the test lists before ``client``."""
+    lock = app.state.workspaces.person_lock(person_id)
+    assert isinstance(lock, RecordingLock), "the test lists person_locks before client"
+    return lock
+
+
 @pytest.mark.parametrize("keep", [True, False])
-def test_a_start_in_progress_does_not_escape_a_sign_out(client, app, monkeypatch, keep):
+def test_a_start_in_progress_does_not_escape_a_sign_out(
+    person_locks, client, app, monkeypatch, keep
+):
     work = made_workspace(client, ALICE)
     connect(client)
     trusted(app, work)
@@ -596,19 +622,20 @@ def test_a_start_in_progress_does_not_escape_a_sign_out(client, app, monkeypatch
 
     def held(self, prefix):
         entered.set()
-        assert release.wait(30)
+        assert release.wait(HANG_GUARD)
         return real(self, prefix)
 
     monkeypatch.setattr(claude_server.Server, "start", held)
     workspaces = app.state.workspaces
+    lock = recorded_person_lock(app, person(app, ALICE).id)
     starting, _ = in_thread(workspaces.start_server, workspaces.get(work["id"]), "pfx")
-    assert entered.wait(10)
-    signing_out, _ = in_thread(app.state.accounts.sign_out, person(app, ALICE), keep)
-    signing_out.join(0.5)
-    assert signing_out.is_alive()  # it waits for the start to finish
+    assert entered.wait(HANG_GUARD)
+    signing_out, signed_out = in_thread(app.state.accounts.sign_out, person(app, ALICE), keep)
+    lock.wait_blocked(1, match=signing_out)
+    assert signed_out == []  # it waits for the start to finish
     release.set()
-    starting.join(30)
-    signing_out.join(30)
+    starting.join(HANG_GUARD)
+    signing_out.join(HANG_GUARD)
     if keep:  # the server started first, and keeps the account until it stops
         assert running(client, work)
         assert fake.signed_in(account_file(app, ALICE).parent)
@@ -648,19 +675,14 @@ def test_a_sign_in_begun_while_a_sign_out_waits_is_not_ended_by_it(client, app):
     assert r.json()["connection"] == "connected" and r.json()["signing_out"] is False
 
 
-@pytest.mark.parametrize("late", [0, 1])
-def test_a_code_too_late_for_the_sign_in_container_is_refused(client, app, clock, late):
+def test_a_code_too_late_for_the_sign_in_container_is_refused(client, app, monkeypatch):
     """The container ends itself CODE_WAIT_SECONDS after it starts; a code that would
-    reach it too close to that, past CODE_TAKEN_SECONDS, is refused rather than lost. The
-    twin, exactly at it, is taken."""
-    r = client.post("/api/claude/login", json={}, headers=changing(ALICE))
-    assert r.status_code == 200, r.text
-    clock.advance(acc.CODE_TAKEN_SECONDS + late)
+    reach it too close to that is refused rather than lost. Here a code is taken only until a
+    second before the sign-in began, so it is too late however soon it comes."""
+    monkeypatch.setattr(acc, "CODE_WAIT_SECONDS", 2 * acc.LOGIN_TIMEOUT - 1)
+    client.post("/api/claude/login", json={}, headers=changing(ALICE))
     r = client.post("/api/claude/code", json={"code": fake.ACCEPTED_CODE}, headers=changing(ALICE))
-    if late:
-        assert (r.status_code, r.json()["code"]) == (409, "no_login_in_progress")
-    else:
-        assert (r.status_code, r.json()["connection"]) == (200, "connected"), r.text
+    assert (r.status_code, r.json()["code"]) == (409, "no_login_in_progress")
     assert sign_ins_left(app) == []
 
 
@@ -684,8 +706,8 @@ def test_two_sign_ins_at_once_leave_one_which_connects(client, app):
     accounts, alice = app.state.accounts, person(app, ALICE)
     first, a = in_thread(accounts.begin, alice, ALICE)
     second, b = in_thread(accounts.begin, alice, ALICE)
-    first.join(60)
-    second.join(60)
+    first.join(HANG_GUARD)
+    second.join(HANG_GUARD)
     assert [type(x) for x in a + b] == [dict, dict], a + b
     assert len(sign_ins_left(app)) == 1  # the later replaced the earlier
     r = client.post("/api/claude/code", json={"code": fake.ACCEPTED_CODE}, headers=changing(ALICE))
@@ -693,7 +715,9 @@ def test_two_sign_ins_at_once_leave_one_which_connects(client, app):
     assert sign_ins_left(app) == []
 
 
-def test_a_start_seeds_the_account_a_sign_in_finishing_meanwhile_leaves(client, app, monkeypatch):
+def test_a_start_seeds_the_account_a_sign_in_finishing_meanwhile_leaves(
+    person_locks, client, app, monkeypatch
+):
     work = made_workspace(client, ALICE)
     connect(client, email="old@example.org")
     trusted(app, work)
@@ -704,26 +728,29 @@ def test_a_start_seeds_the_account_a_sign_in_finishing_meanwhile_leaves(client, 
 
     def held(self, sign_in, code):
         entered.set()
-        assert release.wait(30)
+        assert release.wait(HANG_GUARD)
         return real(self, sign_in, code)
 
     monkeypatch.setattr(acc.Accounts, "_give_code", held)
+    lock = recorded_person_lock(app, person(app, ALICE).id)
     finishing, _ = in_thread(accounts.finish, person(app, ALICE), fake.ACCEPTED_CODE)
-    assert entered.wait(10)
+    assert entered.wait(HANG_GUARD)
     workspaces = app.state.workspaces
     starting, answer = in_thread(workspaces.start_server, workspaces.get(work["id"]), "pfx")
-    starting.join(0.5)
-    assert starting.is_alive()  # the start waits for the sign-in
+    lock.wait_blocked(1, match=starting)
+    assert answer == []  # the start waits for the sign-in
     release.set()
-    finishing.join(60)
-    starting.join(60)
+    finishing.join(HANG_GUARD)
+    starting.join(HANG_GUARD)
     assert isinstance(answer[0], dict), answer
     layout = workspaces.runtime.layout(rt.container_name(work["id"]))
     seeded = json.loads((Path(layout.config) / fake.CONFIG_FILE).read_text())
     assert seeded["oauthAccount"]["emailAddress"] == "new@example.org"
 
 
-def test_the_sweep_leaves_a_person_whose_lock_is_held_for_its_next_round(client, app):
+def test_the_sweep_leaves_a_person_whose_lock_is_held_for_its_next_round(
+    person_locks, client, app, monkeypatch
+):
     """A sign-in holds the person's lock for up to LOGIN_TIMEOUT; the periodic sweep,
     which also closes everyone's idle channels, does not wait for it."""
     work = made_workspace(client, ALICE)
@@ -739,24 +766,27 @@ def test_the_sweep_leaves_a_person_whose_lock_is_held_for_its_next_round(client,
     finally:
         con.close()
     held, release = threading.Event(), threading.Event()
+    lock = recorded_person_lock(app, person(app, ALICE).id)
 
     def hold():
         with workspaces.person_lock(person(app, ALICE).id):
             held.set()
-            release.wait(30)
+            release.wait()  # until the test is done with it, however long that takes
 
     holder, _ = in_thread(hold)
-    assert held.wait(10)
+    assert held.wait(HANG_GUARD)
     try:
         sweeping, _ = in_thread(workspaces.settle_signing_out)
-        sweeping.join(2)
+        sweeping.join(HANG_GUARD)
         assert not sweeping.is_alive()  # it did not wait for the lock
+        assert [c.blocking for c in lock.calls if c.thread is sweeping] == [False]  # it tried
+        assert lock.waits == []  # and nothing blocked on it
         assert people.claude_account(
             db.connect(app.state.settings.database), person(app, ALICE).id
         )[1]
     finally:
         release.set()
-        holder.join(30)
+        holder.join(HANG_GUARD)
     workspaces.settle_signing_out()  # the next round finishes it
     assert account_file(app, ALICE).read_bytes() == b""
 
@@ -807,33 +837,26 @@ def test_a_login_that_ends_between_the_two_reads_is_never_an_exit_with_a_screen_
     from types import SimpleNamespace
 
     sign_in = SimpleNamespace(tmux=LoginEndingAfterTheFirstRead())
-    accounts = acc.Accounts.__new__(acc.Accounts)
-    accounts.clock = PhasedClock()
-    found = accounts._wait(sign_in, lambda state: True)
+    found = acc.Accounts.__new__(acc.Accounts)._wait(sign_in, lambda state: True)
     assert found["state"] == "succeeded", found
 
 
-# --- the waits of a sign-in, on a clock the test moves ----------------------------------------
+# --- the waits of a sign-in, on a time the test moves -------------------------------------------
 
 
 @pytest.fixture
-def clock(request):
-    """The sign-ins' clock, which the test moves; it does not move otherwise. Its wall time
-    starts where the test's parameter, if any, says."""
-    return PhasedClock(wall_start=getattr(request, "param", 1_700_000_000.0))
+def fake_time(periodic, monkeypatch) -> FakeTime:
+    """The sign-ins' time (``accounts.time``), which only the test moves (tests/time_doubles.py).
+    The periodic checks, which read it too, are held (``periodic``), so that every thread that
+    reads it is the test's own; a test asks for it before ``client``."""
+    made = FakeTime()
+    monkeypatch.setattr(acc, "time", made)
+    return made
 
 
-@pytest.fixture
-def clocks(request):
-    """Given to the app before the client starts it (tests/conftest.py ``app``): the sign-ins
-    on ``clock`` and the periodic checks on ``periodic`` for a test that asks for each, on the
-    real one for the rest."""
-    given = {"clock": "accounts", "periodic": "periodic"}
-    return Clocks(**{
-        part: request.getfixturevalue(name)
-        for name, part in given.items()
-        if name in request.fixturenames
-    })  # fmt: skip
+# How long after a sign-in begins a code is still taken: two of Claude's waits short of the
+# container's end.
+CODE_TAKEN = acc.CODE_WAIT_SECONDS - 2 * acc.LOGIN_TIMEOUT
 
 
 class Seen:
@@ -858,12 +881,6 @@ class Seen:
             assert self.told.wait_for(lambda: state in self.states, HANG_GUARD), self.states
 
 
-def lent_call(clock: PhasedClock, call, *args) -> tuple[threading.Thread, list]:
-    thread, out = in_thread(call, *args)
-    clock.lend(thread)
-    return thread, out
-
-
 def joined(thread: threading.Thread) -> None:
     thread.join(HANG_GUARD)
     assert not thread.is_alive()
@@ -871,18 +888,19 @@ def joined(thread: threading.Thread) -> None:
 
 @pytest.mark.parametrize("short", [0, 1])
 def test_a_sign_in_screen_rcman_does_not_know_is_an_answer_once_it_has_lasted_its_grace(
-    client, app, clock, monkeypatch, short
+    fake_time, client, app, monkeypatch, short
 ):
     seen = Seen(monkeypatch)
     fake_claude(app.state.settings.claude_store, env="FAKE_CLAUDE_SCENARIO=unrecognised")
-    thread, out = lent_call(clock, app.state.accounts.begin, person(app, ALICE), ALICE)
+    thread, out = in_thread(app.state.accounts.begin, person(app, ALICE), ALICE)
     seen.wait_for("unrecognised")
-    clock.wait_polled(clock.polls + 1)  # it waits on, the screen unrecognised since
-    clock.advance(claude_server.UNRECOGNISED_GRACE_SECONDS - short)
+    # A look begun after the screen was read as unrecognised: the time it was first so is taken.
+    fake_time.wait_sleep_begun(after=fake_time.mark())
+    fake_time.advance(claude_server.UNRECOGNISED_GRACE_SECONDS - short)
     if short:  # the twin: a second short of its grace, it is no answer yet
-        clock.wait_polled(clock.polls + 2)
+        fake_time.wait_sleeps_returned(after=fake_time.mark(), n=2)
         assert thread.is_alive() and out == []
-        clock.advance(short)
+        fake_time.advance(short)
     joined(thread)
     [refused] = out
     assert isinstance(refused, Problem) and refused.code == "claude_unrecognised_output"
@@ -890,20 +908,22 @@ def test_a_sign_in_screen_rcman_does_not_know_is_an_answer_once_it_has_lasted_it
 
 
 @pytest.mark.parametrize("short", [False, True])
-def test_a_sign_in_that_shows_no_link_answers_timeout_past_its_deadline(client, app, clock, short):
+def test_a_sign_in_that_shows_no_link_answers_timeout_past_its_deadline(
+    fake_time, client, app, short
+):
     fake_claude(
         app.state.settings.claude_store,
         before='[ "$1" = auth ] && [ "$2" = login ] && exec sleep 600\n',
     )
-    seen = clock.polls
-    thread, out = lent_call(clock, app.state.accounts.begin, person(app, ALICE), ALICE)
-    clock.wait_polled(seen + 1)
+    start = fake_time.mark()
+    thread, out = in_thread(app.state.accounts.begin, person(app, ALICE), ALICE)
+    fake_time.wait_sleep_begun(after=start)  # a look begun: its deadline is taken
     poll = claude_server.POLL_SECONDS
-    clock.advance(acc.LOGIN_TIMEOUT if short else acc.LOGIN_TIMEOUT + poll)
+    fake_time.advance(acc.LOGIN_TIMEOUT if short else acc.LOGIN_TIMEOUT + poll)
     if short:  # the twin: exactly at its deadline, it looks on
-        clock.wait_polled(clock.polls + 2)
+        fake_time.wait_sleeps_returned(after=fake_time.mark(), n=2)
         assert thread.is_alive() and out == []
-        clock.advance(poll)
+        fake_time.advance(poll)
     joined(thread)
     [refused] = out
     assert isinstance(refused, Problem) and refused.code == "timeout"
@@ -911,7 +931,24 @@ def test_a_sign_in_that_shows_no_link_answers_timeout_past_its_deadline(client, 
 
 
 @pytest.mark.parametrize("late", [0, 1])
-def test_a_sign_out_waits_for_a_sign_in_only_while_its_code_may_come(client, app, clock, late):
+def test_a_code_is_taken_until_two_of_claudes_waits_before_the_container_ends(
+    fake_time, client, app, late
+):
+    """The twin of the code too late: exactly at the end of its window a code is taken, a
+    second past it refused."""
+    r = client.post("/api/claude/login", json={}, headers=changing(ALICE))
+    assert r.status_code == 200, r.text
+    fake_time.advance(CODE_TAKEN + late)
+    r = client.post("/api/claude/code", json={"code": fake.ACCEPTED_CODE}, headers=changing(ALICE))
+    if late:
+        assert (r.status_code, r.json()["code"]) == (409, "no_login_in_progress")
+    else:
+        assert (r.status_code, r.json()["connection"]) == (200, "connected"), r.text
+    assert sign_ins_left(app) == []
+
+
+@pytest.mark.parametrize("late", [0, 1])
+def test_a_sign_out_waits_for_a_sign_in_only_while_its_code_may_come(fake_time, client, app, late):
     work = made_workspace(client, ALICE)
     connect(client)
     trusted(app, work)
@@ -919,7 +956,7 @@ def test_a_sign_out_waits_for_a_sign_in_only_while_its_code_may_come(client, app
     sign_out(client, True)  # it waits for the running server
     r = client.post("/api/claude/login", json={}, headers=changing(ALICE))
     assert r.status_code == 200, r.text
-    clock.advance(acc.CODE_TAKEN_SECONDS + late)
+    fake_time.advance(CODE_TAKEN + late)
     r = client.post("/api/servers/stop", json={"workspace": work["id"]}, headers=changing(ALICE))
     assert r.status_code == 200, r.text
     if late:  # past its time, the sign-in no longer holds the sign-out back
@@ -927,16 +964,3 @@ def test_a_sign_out_waits_for_a_sign_in_only_while_its_code_may_come(client, app
     else:
         assert fake.signed_in(account_file(app, ALICE).parent)
         assert sign_ins_left(app)
-
-
-@pytest.mark.parametrize("clock", [1_700_000_000.0, 4_000_000_000.0], indirect=True)
-def test_the_connection_is_read_at_the_sign_ins_clocks_time(client, app, clock):
-    connect(client)
-    expires = json.loads(account_file(app, ALICE).read_text())["claudeAiOauth"][
-        "refreshTokenExpiresAt"
-    ]
-    assert 1_700_000_000 < expires / 1000 < 4_000_000_000  # the plant lies between the two
-    r = client.get("/api/claude", headers=as_user(ALICE))
-    assert r.status_code == 200, r.text
-    wanted = "connected" if clock.wall() < expires / 1000 else "expired"
-    assert r.json()["connection"] == wanted

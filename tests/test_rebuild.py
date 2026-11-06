@@ -976,19 +976,14 @@ def test_a_switch_left_to_put_back_is_put_back_by_the_service_without_a_restart(
     assert said.count(me + "was put back after its rebuild did not finish") == 1
 
 
-def test_closing_waits_for_a_put_back_under_way(settings, runtime, publish):
+def test_closing_waits_for_a_put_back_under_way(changed, periodic, app, runtime, publish):
     from fastapi.testclient import TestClient
-    from rcman.main import Clocks, create_app
 
-    from tests.clocks import PhasedClock
     from tests.hang_guard import HANG_GUARD
 
-    clock, periodic = PhasedClock(), PhasedClock()
-    app = create_app(settings, runtime=runtime, clocks=Clocks(workspaces=clock, periodic=periodic))
     with TestClient(app) as client:
-        assert app.state.workspaces.restored.wait(30)
-        periodic.wait_parked(1)
-        periodic.lend(periodic.waiters()[0].thread)
+        assert app.state.workspaces.restored.wait(HANG_GUARD)
+        periodic.wait_parked(1, match=ws.IDLE_CHECK_SECONDS)
         found = made(client, publish)
         rewrite(runtime, found, to(postCreateCommand="exit 3"))
         real = runtime.create
@@ -998,13 +993,13 @@ def test_closing_waits_for_a_put_back_under_way(settings, runtime, publish):
         runtime.create_gate, runtime.creating = threading.Event(), threading.Event()
         runtime.create = real  # held at the gate from now on, as the put-back makes the container
         try:
-            periodic.advance(ws.IDLE_CHECK_SECONDS)  # a round begins the put-back
+            periodic.expire(ws.IDLE_CHECK_SECONDS)  # a round begins the put-back
             assert runtime.creating.wait(HANG_GUARD)
             with service._changed:
                 putting = service._putting_back[found["id"]]
             closing = threading.Thread(target=service.close)
             closing.start()
-            clock.wait_parked(1)
+            changed.wait_waiting(1, match=closing)
             assert closing.is_alive()  # it waits for the put-back
         finally:
             runtime.create_gate.set()

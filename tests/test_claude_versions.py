@@ -6,6 +6,7 @@ import datetime as dt
 import hashlib
 import os
 import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -17,14 +18,10 @@ from rcman.problems import CLAUDE_INSTALL_MESSAGES, MESSAGES, Problem
 
 from helpers import claude_checks, claude_release
 from tests import claude_download
-from tests.clocks import PhasedClock
 from tests.conftest import ALICE, BOB, FAKE_VERSION, fake_claude
+from tests.hang_guard import HANG_GUARD
 
 NEW = "2.0.0"
-
-
-# A wall time past that of any file a test writes now.
-FAR_FUTURE = 4_000_000_000.0
 
 
 @dataclass
@@ -38,14 +35,13 @@ class World:
 
 
 @pytest.fixture
-def world(tmp_path, settings, runtime):
+def world(tmp_path, settings, runtime, monkeypatch):
+    monkeypatch.setattr(cv, "PRUNE_GRACE_SECONDS", 0.0)  # tests that prune age nothing
     releases = tmp_path / "releases"
     releases.mkdir()
     with claude_download.served(releases) as url:
         settings.claude_download = url
         service = ws.Workspaces(settings, runtime)
-        # its wall time far past any real file's: no version the test puts in the store is new
-        service.versions.clock = PhasedClock(wall_start=FAR_FUTURE)
         service.versions.reconcile()
         try:
             yield World(
@@ -370,7 +366,7 @@ def test_a_second_upgrade_while_one_runs_is_refused_busy_and_the_first_goes_on(w
 
     def slow(directory, name, version):
         entered.set()
-        release.wait(30)
+        release.wait(HANG_GUARD)
         return {}
 
     world.runtime.canary_script = slow
@@ -378,13 +374,13 @@ def test_a_second_upgrade_while_one_runs_is_refused_busy_and_the_first_goes_on(w
     first = threading.Thread(target=lambda: results.append(world.versions.upgrade(NEW, ALICE)))
     first.start()
     try:
-        assert entered.wait(30)
+        assert entered.wait(HANG_GUARD)
         problem = refusal(world.versions.upgrade, "2.1.0", BOB)
         assert (problem.code, problem.status) == ("claude_upgrade_busy", 409)
         assert world.versions.report()["upgrading"] is True
     finally:
         release.set()
-        first.join(60)
+        first.join(HANG_GUARD)
     assert [r["approved"] for r in results] == [NEW]
     assert approvals(world)[-1] == (NEW, ALICE)
     assert world.versions.report()["upgrading"] is False
@@ -501,19 +497,19 @@ def test_a_sweep_leaves_a_rollout_that_runs_alone(world):
 
     def slow(directory, name, version):
         entered.set()
-        release.wait(30)
+        release.wait(HANG_GUARD)
         return {}
 
     world.runtime.canary_script = slow
     upgrading = threading.Thread(target=lambda: world.versions.upgrade(NEW, ALICE))
     upgrading.start()
     try:
-        assert entered.wait(30)
+        assert entered.wait(HANG_GUARD)
         world.versions.sweep()
         assert len(staged(world)) == 1  # the rollout's own folder is still there
     finally:
         release.set()
-        upgrading.join(60)
+        upgrading.join(HANG_GUARD)
     assert staged(world) == []
 
 
@@ -572,34 +568,50 @@ def test_prune_keeps_the_approved_the_previous_and_what_running_or_unreadable_se
     assert link(world) == "versions/1.5.0"
 
 
-def test_prune_leaves_a_version_put_in_the_store_a_moment_ago_by_an_upgrade_beside_it(world):
+def test_prune_leaves_a_version_put_in_the_store_a_moment_ago_by_an_upgrade_beside_it(
+    world, monkeypatch
+):
     """An upgrade of rcman puts its own tested version in the store while the service of the
-    release before it runs; that service does not know the version, which no approval names.
-    It is new for PRUNE_GRACE_SECONDS of the versions' clock's wall time."""
+    release before it runs; that service does not know the version, which no approval names."""
+    monkeypatch.setattr(cv, "PRUNE_GRACE_SECONDS", 3600.0)
     install(world, "2.5.0", "1.1.0")
     approve_rows(world, "1.1.0")
     world.versions.reconcile()
-    wall, grace = world.versions.clock.wall(), cv.PRUNE_GRACE_SECONDS
-    put = world.store / "versions" / "2.5.0"
-    os.utime(put, (wall - (grace - 1), wall - (grace - 1)))
+    long_ago = time.time() - 2 * cv.PRUNE_GRACE_SECONDS
+    os.utime(world.store / "versions" / FAKE_VERSION, (long_ago, long_ago))
+    os.utime(world.store / "versions" / "1.1.0", (long_ago, long_ago))
     assert world.versions.tested() not in ("2.5.0",)  # this service's tested version is another
     world.versions.prune()
-    assert "2.5.0" in present(world)  # new: a second short of its grace
-    os.utime(put, (wall - grace, wall - grace))
+    assert "2.5.0" in present(world)  # new
+    os.utime(world.store / "versions" / "2.5.0", (long_ago, long_ago))
     world.versions.prune()
-    assert "2.5.0" not in present(world)  # the control: at its grace it is an unapproved version
+    assert "2.5.0" not in present(world)  # the control: once old it is an unapproved version
 
 
-def test_approvals_and_failures_are_stamped_with_the_versions_clocks_wall_time(world):
-    at = dt.datetime.fromtimestamp(world.versions.clock.wall(), dt.UTC).isoformat()
-    con = db.connect(world.settings.database)
-    try:
-        rows = con.execute("select at from claude_approvals").fetchall()
-        assert [tuple(r) for r in rows] == [(at,)]  # adopted
-    finally:
-        con.close()
-    world.versions.mark_failed("1.1.0", ALICE, None)
-    assert [f.at for f in world.versions.failures()] == [at]
+def test_prune_leaves_a_new_version_until_its_grace_has_passed_exactly(world, monkeypatch):
+    """The grace's edge, on the module's wall time, which only the test moves: the world's service
+    runs no thread of its own, so nothing but the prune reads it. A second short of the grace the
+    version stays; at the grace it is old, and goes."""
+    from tests.time_doubles import FakeTime
+
+    grace = 3600
+    monkeypatch.setattr(cv, "PRUNE_GRACE_SECONDS", float(grace))
+    install(world, "2.5.0", "1.1.0")
+    approve_rows(world, "1.1.0")
+    world.versions.reconcile()
+    fake = FakeTime()
+    monkeypatch.setattr(cv, "time", fake)
+    now = fake.time()
+    long_ago = now - 2 * grace
+    for kept in (FAKE_VERSION, "1.1.0"):
+        os.utime(world.store / "versions" / kept, (long_ago, long_ago))
+    put_in = world.store / "versions" / "2.5.0"
+    os.utime(put_in, (now - (grace - 1), now - (grace - 1)))
+    world.versions.prune()
+    assert "2.5.0" in present(world)  # a second short of the grace: still new
+    os.utime(put_in, (now - grace, now - grace))
+    world.versions.prune()
+    assert "2.5.0" not in present(world)  # exactly the grace: old
 
 
 def test_prune_keeps_the_tested_version_whatever_is_approved(world):
@@ -665,19 +677,19 @@ def test_prune_does_nothing_while_an_upgrade_runs(world):
 
     def slow(directory, name, version):
         entered.set()
-        release.wait(30)
+        release.wait(HANG_GUARD)
         return {}
 
     world.runtime.canary_script = slow
     upgrading = threading.Thread(target=lambda: world.versions.upgrade(NEW, ALICE))
     upgrading.start()
     try:
-        assert entered.wait(30)
+        assert entered.wait(HANG_GUARD)
         world.versions.prune()
         assert "1.1.0" in present(world)
     finally:
         release.set()
-        upgrading.join(60)
+        upgrading.join(HANG_GUARD)
     world.versions.prune()
     assert "1.1.0" not in present(world)  # positive control: afterwards it goes
 
@@ -816,21 +828,21 @@ def test_a_server_that_hangs_does_not_hold_up_the_store_while_a_prune_asks_about
 
     def hangs(workspace, probe=False):
         entered.set()
-        release.wait(60)
+        release.wait(HANG_GUARD)
         return {"state": "ready", "exit_code": None}
 
     world.service.server_status = hangs
     pruning = threading.Thread(target=world.versions.prune)
     pruning.start()
     try:
-        assert entered.wait(30)
+        assert entered.wait(HANG_GUARD)
         assert done_within(world.versions.resolve)  # the lock is free
         assert done_within(world.versions.reconcile)
         assert done_within(lambda: world.service.start_server(other, "pfx"))
         assert world.service.get(other.id).claude_version == FAKE_VERSION
     finally:
         release.set()
-        pruning.join(60)
+        pruning.join(HANG_GUARD)
     assert "1.1.0" in present(world)  # the hung server was running it, as far as anyone knew
 
 
@@ -847,24 +859,24 @@ def test_a_prune_holds_up_the_version_a_start_pins_while_it_decides_what_to_dele
         calls.append(1)
         if len(calls) > 1:  # the second reading is the one under the lock
             entered.set()
-            release.wait(60)
+            release.wait(HANG_GUARD)
         return real()
 
     world.service.recorded_versions = gated
     workspace = ready_workspace(world)
     pruning = threading.Thread(target=world.versions.prune)
     pruning.start()
-    assert entered.wait(30)
+    assert entered.wait(HANG_GUARD)
     lock.waiting.clear()
     starting = threading.Thread(target=lambda: world.service.start_server(workspace, "pfx"))
     starting.start()
     try:
-        assert lock.waiting.wait(30)  # the start is at the lock the prune holds
+        assert lock.waiting.wait(HANG_GUARD)  # the start is at the lock the prune holds
         assert world.service.get(workspace.id).claude_version is None
     finally:
         release.set()
-        pruning.join(60)
-        starting.join(60)
+        pruning.join(HANG_GUARD)
+        starting.join(HANG_GUARD)
     assert world.service.get(workspace.id).claude_version == FAKE_VERSION
     assert present(world) == [FAKE_VERSION]  # the approved one was never a candidate
 
@@ -876,14 +888,14 @@ def test_a_start_that_pins_a_version_while_a_prune_reads_who_uses_what_is_not_lo
 
     def reads(candidates):
         entered.set()
-        release.wait(60)
+        release.wait(HANG_GUARD)
         return set()  # nobody ran 1.1.0 when it looked
 
     world.service.versions_in_use = reads
     pruning = threading.Thread(target=world.versions.prune)
     pruning.start()
     try:
-        assert entered.wait(30)
+        assert entered.wait(HANG_GUARD)
         approve_rows(world, "1.1.0")
         fake_claude(world.store, version="1.1.0")
         world.service.start_server(workspace, "pfx")  # pins 1.1.0, the approved version now
@@ -893,7 +905,7 @@ def test_a_start_that_pins_a_version_while_a_prune_reads_who_uses_what_is_not_lo
         fake_claude(world.store, version="1.3.0")
     finally:
         release.set()
-        pruning.join(60)
+        pruning.join(HANG_GUARD)
     assert present(world) == ["1.1.0", "1.2.0", "1.3.0"]  # kept: the record changed meanwhile
     assert FAKE_VERSION not in present(world)  # positive control: the rest went
     world.service.stop_server(world.service.get(workspace.id))
@@ -916,18 +928,18 @@ def test_a_prune_parked_while_a_rollout_completes_removes_nothing_the_rollout_ne
     def reads(candidates):
         if threading.current_thread() is pruning:
             entered.set()
-            release.wait(60)
+            release.wait(HANG_GUARD)
         return set()
 
     world.service.versions_in_use = reads
     pruning.start()
     try:
-        assert entered.wait(30)
+        assert entered.wait(HANG_GUARD)
         canary_says(world)
         world.versions.upgrade("1.9.0", ALICE)
     finally:
         release.set()
-        pruning.join(60)
+        pruning.join(HANG_GUARD)
     assert errors == []
     assert present(world) == [FAKE_VERSION, "1.9.0"]
     assert world.versions.approved() == "1.9.0"
@@ -945,11 +957,11 @@ def test_a_rollout_stages_from_the_store_under_the_lock_a_prune_deletes_under(
     rolling = threading.Thread(target=lambda: world.versions.upgrade("1.9.0", ALICE))
     rolling.start()
     try:
-        assert lock.waiting.wait(30)  # the rollout is at the lock before it reads the store
+        assert lock.waiting.wait(HANG_GUARD)  # the rollout is at the lock before it reads the store
         (world.store / "versions" / "1.9.0").unlink()  # the deletion
     finally:
         lock.inner.release()
-        rolling.join(60)
+        rolling.join(HANG_GUARD)
     assert not rolling.is_alive() and world.versions.approved() == "1.9.0"
     installed = (world.store / "versions" / "1.9.0").read_bytes()
     assert installed != stored  # it was fetched, not copied from a file that was gone
@@ -967,14 +979,14 @@ def test_a_start_that_pinned_a_version_keeps_it_from_a_prune_while_the_server_st
 
     def slow(self, prefix):
         entered.set()
-        release.wait(30)
+        release.wait(HANG_GUARD)
         return real(self, prefix)
 
     cs.Server.start = slow
     starting = threading.Thread(target=lambda: world.service.start_server(workspace, "pfx"))
     try:
         starting.start()
-        assert entered.wait(30)
+        assert entered.wait(HANG_GUARD)
         assert world.service.get(workspace.id).claude_version == FAKE_VERSION
         approve_rows(world, "1.2.0", "1.3.0")  # two approvals later, FAKE_VERSION is neither
         fake_claude(world.store, version="1.3.0")
@@ -983,7 +995,7 @@ def test_a_start_that_pinned_a_version_keeps_it_from_a_prune_while_the_server_st
     finally:
         cs.Server.start = real
         release.set()
-        starting.join(60)
+        starting.join(HANG_GUARD)
     world.service.stop_server(world.service.get(workspace.id))
     world.versions.prune()
     assert FAKE_VERSION not in present(world)  # positive control: stopped, it goes
@@ -1344,7 +1356,7 @@ def test_a_mark_waits_for_the_lock_an_approval_holds(world):
 
     def gated(version, by):
         entered.set()
-        release.wait(30)
+        release.wait(HANG_GUARD)
         real(version, by)
 
     world.versions._approve = gated
@@ -1360,16 +1372,16 @@ def test_a_mark_waits_for_the_lock_an_approval_holds(world):
             answers.append(refused.code)
 
     try:
-        assert entered.wait(30)
+        assert entered.wait(HANG_GUARD)
         lock = watched(world)
         marking = threading.Thread(target=mark)
         marking.start()
-        assert lock.waiting.wait(30)  # the mark is at the lock the approval holds
+        assert lock.waiting.wait(HANG_GUARD)  # the mark is at the lock the approval holds
         assert marks(world) == [] and answers == []
     finally:
         release.set()
-        upgrading.join(60)
-    marking.join(60)
+        upgrading.join(HANG_GUARD)
+    marking.join(HANG_GUARD)
     assert world.versions.approved() == "1.9.0"
     assert answers == ["claude_version_approved"] and marks(world) == []
 

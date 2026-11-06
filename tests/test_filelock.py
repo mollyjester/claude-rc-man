@@ -25,6 +25,29 @@ def other_process_holding(path, seconds):
     return proc
 
 
+# Holds the lock until a line, or the end, comes on its stdin.
+HOLD_UNTIL_TOLD = (
+    "import fcntl, os, sys\n"
+    "fd = os.open(sys.argv[1], os.O_RDWR | os.O_CREAT, 0o600)\n"
+    "fcntl.flock(fd, fcntl.LOCK_EX)\n"
+    "print('held', flush=True)\n"
+    "sys.stdin.readline()\n"
+)
+
+
+def other_process_holding_until_told(path):
+    """Another process holding the lock file at ``path`` until the test writes a line to its
+    stdin, or closes it."""
+    proc = subprocess.Popen(
+        [sys.executable, "-c", HOLD_UNTIL_TOLD, str(path)],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    assert proc.stdout.readline().strip() == "held"  # the control: it has the lock
+    return proc
+
+
 def test_a_lock_waits_for_another_process_that_holds_the_file(tmp_path):
     path = tmp_path / "rcman.lock"
     holder = other_process_holding(path, 1.5)

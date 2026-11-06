@@ -11,7 +11,6 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Request
 
-from helpers.clock import Clock
 from rcman import rcman_upgrade as upgrade
 from rcman.audit import Record, Recorder
 from rcman.identity import admin_user
@@ -21,10 +20,10 @@ from rcman.ratelimit import TokenBuckets
 router = APIRouter(prefix="/api/rcman", tags=["rcman"], dependencies=[Depends(admin_user)])
 
 
-def new_limit(clock: Clock) -> TokenBuckets:
+def new_limit() -> TokenBuckets:
     """Each administrator's requests for an upgrade: REQUESTS_BURST at once, then
-    REQUESTS_PER_MINUTE, by ``clock``."""
-    return TokenBuckets(upgrade.REQUESTS_BURST, upgrade.REQUESTS_PER_MINUTE / 60, clock)
+    REQUESTS_PER_MINUTE."""
+    return TokenBuckets(upgrade.REQUESTS_BURST, upgrade.REQUESTS_PER_MINUTE / 60)
 
 
 @router.get("/upgrade")

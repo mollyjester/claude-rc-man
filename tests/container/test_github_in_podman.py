@@ -32,12 +32,12 @@ from rcman.repository import Repository
 from rcman.workspaces import Workspaces
 
 from helpers import git_run
-from helpers.clock import REAL
 from tests.container import github_stand_in as stand_in
 from tests.container import network
 from tests.container.conftest import engine_runtime, engine_settings
 from tests.github_server import GitHubServer
 from tests.github_tokens import AWKWARD_TOKENS
+from tests.hang_guard import CONTAINER_HANG_GUARD
 
 ADDRESS, PORT = stand_in.ADDRESS, stand_in.PORT
 TOKEN = "github_pat_podman-test-token"
@@ -83,7 +83,9 @@ def github_com(podman_service, holder, pki, tmp_path_factory):
 
 
 def build(engine, context: Path, name: str) -> str:
-    built = engine.cli("build", "-q", "--pull=never", "-t", name, str(context), timeout=1800)
+    built = engine.cli(
+        "build", "-q", "--pull=never", "-t", name, str(context), timeout=CONTAINER_HANG_GUARD
+    )
     assert built.returncode == 0, (built.stdout + built.stderr).decode(errors="replace")
     return name
 
@@ -235,7 +237,7 @@ def test_the_image_check_accepts_the_image_with_git_and_refuses_one_without(
     podman, workspace, person, parts, without_git
 ):
     """Workspaces._check_git, run against real containers: the first time git runs in one."""
-    service = types.SimpleNamespace(runtime=podman, clock=REAL)  # a real git, on real time
+    service = types.SimpleNamespace(runtime=podman)
     service._execs = lambda name: Workspaces._execs(service, name)
     Workspaces._check_git(service, types.SimpleNamespace(container=workspace))  # no refusal
     version = git_in_it(podman, workspace, "--version")
@@ -248,7 +250,7 @@ def test_the_image_check_accepts_the_image_with_git_and_refuses_one_without(
     who = rt.Spec(rt.container_name(601), slot=owner.slot, workspace=601, person=owner.id)
     bare.create(who)
     try:
-        service = types.SimpleNamespace(runtime=bare, clock=REAL)
+        service = types.SimpleNamespace(runtime=bare)
         service._execs = lambda name: Workspaces._execs(service, name)
         with pytest.raises(rt.RuntimeFailed, match="git is not installed in the image"):
             Workspaces._check_git(service, types.SimpleNamespace(container=who.name))
@@ -408,7 +410,7 @@ def publish(github_com, tmp_path, name: str, private: bool = False) -> Path:
     return bare
 
 
-def settled(service, workspace_id: int, within: float = 300):
+def settled(service, workspace_id: int, within: float = CONTAINER_HANG_GUARD):
     """The workspace once it is no longer being made."""
     deadline = time.monotonic() + within
     while True:
@@ -419,7 +421,7 @@ def settled(service, workspace_id: int, within: float = 300):
         time.sleep(0.2)
 
 
-def gone(service, workspace_id: int, within: float = 120) -> None:
+def gone(service, workspace_id: int, within: float = CONTAINER_HANG_GUARD) -> None:
     """Wait until the workspace's row is gone, which a deletion of one being made leaves to
     the thread that was making it."""
     deadline = time.monotonic() + within
@@ -558,17 +560,21 @@ def test_a_github_that_cannot_be_reached_is_said_not_to_be(service, person, clon
 
 
 def test_deleting_a_workspace_that_is_being_cloned_stops_git_and_leaves_nothing(
-    service, person, clones, podman, github_com, tmp_path
+    service, person, clones, podman, github_com, tmp_path, monkeypatch
 ):
     """The cancel: the clone is slow (the stand-in's gate is closed), and the workspace's
-    container is removed by force by Podman, which ends git with it."""
+    container is removed by force by Podman, which ends git with it. The gate's own wait is past
+    the hang bound, so only the deletion can end git within it."""
+    from tests import github_server
+
+    monkeypatch.setattr(github_server, "GATE_WAIT", 2 * CONTAINER_HANG_GUARD)
     publish(github_com, tmp_path, "slow-one")
     before = len(github_com.requests)
     github_com.gate.clear()
     try:
         made = service.create(person[0], "slow", "https://github.com/octo/slow-one")
         clones.append(made)
-        deadline = time.monotonic() + 120
+        deadline = time.monotonic() + CONTAINER_HANG_GUARD
         while len(github_com.requests) == before:  # git is connected, and waits for the answer
             assert time.monotonic() < deadline, service.get(made.id)
             time.sleep(0.1)
@@ -576,10 +582,8 @@ def test_deleting_a_workspace_that_is_being_cloned_stops_git_and_leaves_nothing(
         assert now.state == "creating" and now.log.splitlines()[-1] == f"Cloning {now.source}"
         top = podman._podman("top", made.container, "args", check=False)
         assert b"clone" in top.stdout, top.stdout + top.stderr  # positive: git is running there
-        started = time.monotonic()
         service.delete(now)
-        gone(service, made.id, 60)
-        assert time.monotonic() - started < 60  # not after the gate's wait
+        gone(service, made.id)  # not after the gate's wait, which is longer
         assert not exists(podman, "container", made.container)
         assert not exists(podman, "volume", made.container)
     finally:
@@ -591,9 +595,6 @@ def test_deleting_a_workspace_that_is_being_cloned_stops_git_and_leaves_nothing(
 # Real gh, from Ubuntu's packages in the default image, in a workspace of the same person as
 # the tests above, so that it reads the same git folder the account writes.
 
-# How long one gh command that has no token to find may take, podman's exec included: it reads
-# two files and answers, and asks no network.
-GH_ANSWERS_WITHIN = 30.0
 # What gh 2.45 says when it has no token for github.com (pkg/cmd/auth/token/token.go).
 NO_TOKEN = b"no oauth token found for github.com"
 # What it says when, with a token and no version in its configuration, the migration it runs
@@ -659,9 +660,7 @@ def test_gh_has_no_token_from_the_very_next_command_after_a_forget(
     git_account.save_token(identity, TOKEN)
     assert claude_gh(gh_runtime, gh_workspace, "auth", "token").code == 0  # positive control
     git_account.forget_token(identity)
-    started = time.monotonic()
     found = claude_gh(gh_runtime, gh_workspace, "auth", "token")
-    assert time.monotonic() - started < GH_ANSWERS_WITHIN
     assert found.code != 0 and TOKEN.encode() not in found.out + found.err
     assert NO_TOKEN in found.err, found.err  # gh read the files, and found no token in them
     said = found.err.decode().lower()

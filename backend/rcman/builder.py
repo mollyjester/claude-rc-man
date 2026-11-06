@@ -10,8 +10,7 @@ command, the reading of the CLI's standard error (progress for the person, the e
 failure, and the cause in words), and the byte pump that copies the repository in and the image
 out.
 
-The standard library and helpers/clock.py only, and nothing of the backend: runtime.py imports
-it.
+Python standard library only, and nothing of the backend: runtime.py imports it.
 """
 
 from __future__ import annotations
@@ -31,8 +30,6 @@ from collections import deque
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import NamedTuple
-
-from helpers.clock import REAL, Clock, Deadline, Pace, PollExternal
 
 # --- what the builder is run with ----------------------------------------------------------------
 
@@ -150,10 +147,10 @@ def sink_argv(tar: Sequence[str], folder: str) -> list[str]:
 MAX_CONTEXT_BYTES = 2 * 1024**3
 MAX_IMAGE_BYTES = 20 * 1024**3
 # How long a build may take, and how long each copy may take.
-BUILD_SECONDS = Deadline(3600.0)
-COPY_SECONDS = Deadline(3600.0)
+BUILD_SECONDS = 3600.0
+COPY_SECONDS = 3600.0
 # How often a running build is looked at for a stop, and how many bytes the pump moves at once.
-BUILD_POLL_SECONDS = PollExternal(1.0)
+BUILD_POLL_SECONDS = 1.0
 CHUNK_BYTES = 1024 * 1024
 
 # The most of an image's description (``podman image inspect``) that is read from the builder,
@@ -173,7 +170,7 @@ IMAGE_ID = re.compile(r"[0-9a-f]{64}\Z")
 # How often a step of the build is reported to the person, and how many of the last lines of what
 # the builder said are kept for a failure, how long a line may be, how much of a line that has
 # not ended is held, and the most of what a command says that is kept.
-PROGRESS_SECONDS = Pace(5.0)
+PROGRESS_SECONDS = 5.0
 TAIL_LINES = 40
 MAX_LINE_CHARS = 300
 MAX_LINE_BYTES = 64 * 1024
@@ -194,13 +191,13 @@ class ProgressLines:
     """The CLI's standard error, fed in as it arrives. It is line by line, the lines ending in a
     carriage return and a newline, each led by the time, and some - apt's progress - arrive in
     pieces. The last ``keep`` lines are kept (``tail``); Podman's markers of a step are passed
-    to ``report`` at most once in ``interval`` seconds of ``clock``'s time, the latest one held back
+    to ``report`` at most once in ``interval`` seconds by ``clock``, the latest one held back
     being passed on later or at ``close``."""
 
     def __init__(
         self,
         report: Callable[[str], None],
-        clock: Clock = REAL,
+        clock: Callable[[], float] = time.monotonic,
         *,
         keep: int = TAIL_LINES,
         interval: float = PROGRESS_SECONDS,
@@ -245,7 +242,7 @@ class ProgressLines:
         """Pass on the step that waits, if the interval has passed since the last, or at the end."""
         if self._waiting is None:
             return
-        now = self._clock.now()
+        now = self._clock()
         if final or self._last is None or now - self._last >= self._interval:
             line, self._waiting, self._last = self._waiting, None, now
             self._report(line)
