@@ -1592,6 +1592,15 @@ NAMED = (
           "until's, tier_guard's and runs_out's own tests: a guard of 0 that until has run out "
           "against, the container tier read from the registry, and runs_out given a floor and "
           "a deadline it refuses"),
+    Named("H12", "devtools/tmuxctl.py",
+          ("", "Pane.wait_for", "Pane.wait_exit", "Pane.wait_stable", "Pane.close"),
+          frozenset({"P1", "P2", "P3"}),
+          "tmuxctl's look at the screen every POLL_SECONDS, and its give-up only where a caller "
+          "passes a timeout, as RealWatch does; a test passes none, or 0 (rule (a))"),
+    Named("H12", "devtools/record_claude.py", ("RealWatch",), frozenset({"P1", "P2", "P3"}),
+          "the recorder's command line's watch, against the real claude with a person at hand: "
+          "no test reaches it (test_record_claude.py's test_no_test_reaches_the_command_lines_"
+          "watch)"),
     Named("Q1", "devtools/held_folders.py", ("", "_stop_server", "unheld", "_clear"),
           frozenset({"P1", "P2", "P3"}),
           "the sweep of held folders: UNLOCKED_FOR and TMUX_GONE_WITHIN are its behaviour, and "

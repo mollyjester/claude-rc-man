@@ -4,7 +4,6 @@ import json
 import os
 import re
 import socket
-import sys
 from pathlib import Path
 
 import pytest
@@ -12,6 +11,7 @@ import pytest
 from devtools import fake_claude as fake
 from devtools import held_folders, tmuxctl
 from devtools import record_claude as rec
+from tests import claude_watches as cw
 
 FAKE = rec.FAKE_CLAUDE
 READY = r"Capacity: [1-9]"
@@ -45,6 +45,17 @@ def run(pane, args, cwd, config_dir, **extra):
     pane.run([str(FAKE), *args], cwd=cwd, env=env_for(config_dir, **extra))
 
 
+def traced(tmp_path, **extra):
+    """The fake's trace, gate and threshold (none of its answers too quick) in a folder of the
+    test's, as tests/claude_watches.py's TraceWatch gives them: a test waits on what the fake
+    traced, never for its screen to stay still. ``extra`` overrides them."""
+    return {**cw.traced_env(tmp_path / "watch"), **extra}
+
+
+def trace_of(env):
+    return Path(env[fake.TRACE])
+
+
 # --- round trip: the recorder over the fake reproduces every fixture ---------
 
 
@@ -61,6 +72,7 @@ def test_fake_reproduces_the_recorded_screens_of(sequence, tmp_path):
         sequences=[sequence],
         account_config_dir=account,
         workdir=tmp_path / "work",
+        watch=cw.TraceWatch(),
     )
     expected = {name: f for name, f in rec.load_fixtures().items() if name in sequence.captures}
     assert sequence.captures and set(expected) == set(sequence.captures)  # each has a fixture
@@ -90,6 +102,7 @@ def test_round_trip_fails_when_a_fixture_differs(tmp_path):
         sequences=[s for s in rec.SEQUENCES if s.name == "version"],
         account_config_dir=None,
         workdir=tmp_path / "work",
+        watch=cw.TraceWatch(),
     )
     planted = {"version": rec.Recorded(lines=["{version} (Not Claude)"], exit_code=0)}
     assert rec.compare(recorded, planted) != []
@@ -100,7 +113,7 @@ def test_round_trip_fails_when_a_fixture_differs(tmp_path):
 
 def test_logged_out_remote_control_refuses_before_any_trust_prompt(pane, tmp_path):
     run(pane, ["remote-control"], tmp_path, tmp_path / "cfg")
-    assert pane.wait_exit(timeout=10) == rec.load_fixtures()["rc_logged_out"].exit_code
+    assert pane.wait_exit() == rec.load_fixtures()["rc_logged_out"].exit_code
     assert "[y/N]" not in pane.text()
 
 
@@ -110,17 +123,18 @@ def test_trust_is_remembered_and_the_session_resumes(pane, tmp_path):
     folder.mkdir()
     args = ["remote-control", "--remote-control-session-name-prefix", "pfx"]
 
-    run(pane, args, folder, cfg)
-    pane.wait_for(r"\[y/N\]", timeout=10)
-    pane.wait_stable(quiet=fake.MIN_ANSWER_SECONDS * 2)
-    pane.type_line("y")
-    pane.wait_for(READY, timeout=10)
+    run(pane, args, folder, cfg, **traced(tmp_path))
+    pane.wait_for(r"\[y/N\]")
+    pane.type_line("y")  # never too quick: the threshold is 0
+    release_connected(tmp_path)
+    pane.wait_for(READY)
     first = pane.text()
     pane.interrupt()
-    assert pane.wait_exit(timeout=10) == 0
+    assert pane.wait_exit() == 0
 
-    pane.rerun([str(FAKE), *args], cwd=folder, env=env_for(cfg))
-    pane.wait_for(READY, timeout=10)
+    pane.rerun([str(FAKE), *args], cwd=folder, env=env_for(cfg, **traced(tmp_path)))
+    release_connected(tmp_path)
+    pane.wait_for(READY)
     second = pane.text()
 
     assert "[y/N]" not in second  # trusted now
@@ -130,11 +144,10 @@ def test_trust_is_remembered_and_the_session_resumes(pane, tmp_path):
 
 def test_declining_trust_does_not_remember_it(pane, tmp_path):
     cfg = logged_in(tmp_path / "cfg")
-    run(pane, ["remote-control"], tmp_path, cfg)
-    pane.wait_for(r"\[y/N\]", timeout=10)
-    pane.wait_stable(quiet=fake.MIN_ANSWER_SECONDS * 2)
-    pane.type_line("n")
-    assert pane.wait_exit(timeout=10) == rec.load_fixtures()["trust_declined"].exit_code
+    run(pane, ["remote-control"], tmp_path, cfg, **traced(tmp_path))
+    pane.wait_for(r"\[y/N\]")
+    pane.type_line("n")  # never too quick: the threshold is 0
+    assert pane.wait_exit() == rec.load_fixtures()["trust_declined"].exit_code
     assert str(tmp_path) not in json.loads((cfg / fake.STATE_FILE).read_text())["trusted"]
 
 
@@ -150,7 +163,7 @@ def test_session_name_uses_name_then_prefix_then_hostname(pane, tmp_path):
         fake.write_state(cfg, logged_in=True, trusted=[str(tmp_path)])  # no prior session
         pane.close()
         pane.run([str(FAKE), "remote-control", *args], cwd=tmp_path, env=env_for(cfg))
-        pane.wait_for(READY, timeout=10)
+        pane.wait_for(READY)
         lines = pane.screen()
         name = lines[lines.index(next(x for x in lines if "Capacity:" in x)) + 1].strip()
         assert name.startswith(expected), (args, name)
@@ -159,12 +172,12 @@ def test_session_name_uses_name_then_prefix_then_hostname(pane, tmp_path):
 def test_auth_status_reflects_state(pane, tmp_path):
     cfg = tmp_path / "cfg"
     run(pane, ["auth", "status"], tmp_path, cfg)
-    assert pane.wait_exit(timeout=10) == 1
+    assert pane.wait_exit() == 1
     assert json.loads(pane.text())["loggedIn"] is False
 
     logged_in(cfg)
     pane.rerun([str(FAKE), "auth", "status"], cwd=tmp_path, env=env_for(cfg))
-    assert pane.wait_exit(timeout=10) == 0
+    assert pane.wait_exit() == 0
     assert json.loads(pane.text())["loggedIn"] is True
 
 
@@ -175,17 +188,18 @@ def test_login_does_not_echo_the_code(pane, tmp_path):
         tmp_path,
         tmp_path / "cfg",
     )
-    pane.wait_for(r"Paste code here", timeout=10)
+    pane.wait_for(r"Paste code here")
     pane.type_line("SECRET-CODE")
-    pane.wait_exit(timeout=10)
+    pane.wait_exit()
     assert "SECRET-CODE" not in pane.text()
 
 
 def test_unrecognised_scenario_matches_no_fixture(pane, tmp_path):
     cfg = logged_in(tmp_path / "cfg")
-    run(pane, ["remote-control"], tmp_path, cfg, FAKE_CLAUDE_SCENARIO="unrecognised")
-    pane.wait_for(r"\S", timeout=10)
-    shown = pane.wait_stable(quiet=0.5)
+    env = traced(tmp_path, FAKE_CLAUDE_SCENARIO="unrecognised")
+    run(pane, ["remote-control"], tmp_path, cfg, **env)
+    shown = cw.shown(pane, trace_of(env))
+    assert shown == [fake.UNRECOGNISED_SCREEN]  # positive control: the screen it draws
     for name, fixture in rec.load_fixtures().items():
         assert shown != rec.fill("\n".join(fixture.lines), rec.ANY_VALUES).splitlines(), name
 
@@ -203,10 +217,11 @@ def test_the_screens_that_only_show_are_all_the_observed_ones_but_the_prompt():
 @pytest.mark.parametrize("scenario", SHOWN_SCENARIOS)
 def test_a_shown_scenario_shows_the_observed_screen(pane, tmp_path, scenario):
     cfg = logged_in(tmp_path / "cfg")
-    run(pane, ["remote-control"], tmp_path, cfg, FAKE_CLAUDE_SCENARIO=scenario)
-    pane.wait_for(r"Reconnected", timeout=10)
+    env = traced(tmp_path, FAKE_CLAUDE_SCENARIO=scenario)
+    run(pane, ["remote-control"], tmp_path, cfg, **env)
     ctx = rec.Context(str(tmp_path), str(cfg), rec.load_manifest()["claude_version"])
-    raw = "\n".join(pane.wait_stable(quiet=0.5))
+    raw = "\n".join(cw.shown(pane, trace_of(env)))
+    assert "Reconnected" in raw
     observed = rec.load_observed()[scenario].lines
     assert rec.sanitise(raw, ctx).split("\n") == observed
     assert pane.exit_status() is None  # still running, as it was seen
@@ -216,7 +231,7 @@ def test_a_shown_scenario_shows_the_observed_screen(pane, tmp_path, scenario):
     assert changed != raw  # the plant took effect
     assert rec.sanitise(changed, ctx).split("\n") != observed
     pane.interrupt()
-    assert pane.wait_exit(timeout=10) == 1  # what follows Ctrl+C was not observed
+    assert pane.wait_exit() == 1  # what follows Ctrl+C was not observed
 
 
 # Unlike the other observed screens, this scenario is interactive. What was seen is the
@@ -228,15 +243,21 @@ PROMPT = "Enable Remote Control"
 
 def at_the_prompt(pane, tmp_path):
     cfg = logged_in(tmp_path / "cfg")
-    run(pane, ["remote-control"], tmp_path, cfg, FAKE_CLAUDE_SCENARIO=PROMPT_SCENARIO)
-    pane.wait_for(PROMPT, timeout=10)
+    env = traced(tmp_path, FAKE_CLAUDE_SCENARIO=PROMPT_SCENARIO)
+    run(pane, ["remote-control"], tmp_path, cfg, **env)
+    pane.wait_for(PROMPT)
     return cfg
+
+
+def release_connected(tmp_path):
+    """Lets a fake given traced(tmp_path) leave its connected stage."""
+    cw.release(Path(traced(tmp_path)[fake.GATE]), fake.CONNECTED_STAGE)
 
 
 def test_the_remote_control_prompt_scenario_shows_the_observed_screen(pane, tmp_path):
     cfg = at_the_prompt(pane, tmp_path)
     ctx = rec.Context(str(tmp_path), str(cfg), rec.load_manifest()["claude_version"])
-    raw = "\n".join(pane.wait_stable(quiet=0.5))
+    raw = "\n".join(cw.shown(pane, tmp_path / "watch" / "trace"))
     observed = rec.load_observed()[PROMPT_SCENARIO].lines
     assert rec.sanitise(raw, ctx).split("\n") == observed
     assert pane.exit_status() is None  # still asking, as it was seen
@@ -251,12 +272,13 @@ def test_yes_at_the_remote_control_prompt_goes_on_to_the_server_screens(pane, tm
     """Not observed: what follows `y`. The fake goes on as after the trust question."""
     at_the_prompt(pane, tmp_path)
     pane.type_line("y")
-    pane.wait_for(r"Capacity: 0/", timeout=10)
+    pane.wait_for(r"Capacity: 0/")  # held there until released
     assert PROMPT not in pane.text()
-    pane.wait_for(READY, timeout=fake.READY_SECONDS + 10)
+    release_connected(tmp_path)
+    pane.wait_for(READY)
     assert pane.exit_status() is None
     pane.interrupt()
-    assert pane.wait_exit(timeout=10) == rec.load_fixtures()["server_stopped_after_trust"].exit_code
+    assert pane.wait_exit() == rec.load_fixtures()["server_stopped_after_trust"].exit_code
 
 
 def test_no_at_the_remote_control_prompt_ends_the_fake_with_status_one(pane, tmp_path):
@@ -264,7 +286,7 @@ def test_no_at_the_remote_control_prompt_ends_the_fake_with_status_one(pane, tmp
     at_the_prompt(pane, tmp_path)
     assert pane.exit_status() is None  # positive control: it was running until the answer
     pane.type_line("n")
-    assert pane.wait_exit(timeout=10) == 1
+    assert pane.wait_exit() == 1
     assert "Capacity:" not in pane.text()
 
 
@@ -273,23 +295,24 @@ def test_ctrl_c_at_the_remote_control_prompt_ends_the_fake_with_status_one(pane,
     at_the_prompt(pane, tmp_path)
     assert pane.exit_status() is None
     pane.interrupt()
-    assert pane.wait_exit(timeout=10) == 1
+    assert pane.wait_exit() == 1
 
 
 def test_an_answer_other_than_y_or_n_at_the_remote_control_prompt_asks_nothing_more(pane, tmp_path):
     """Not observed. Anything but `y` is taken as a no, as the trust question takes it."""
     at_the_prompt(pane, tmp_path)
     pane.type_line("maybe")
-    assert pane.wait_exit(timeout=10) == 1
+    assert pane.wait_exit() == 1
 
 
 def test_the_default_scenario_never_shows_the_remote_control_prompt(pane, tmp_path):
     cfg = at_the_prompt(pane, tmp_path)  # positive control: the scenario shows it
     pane.interrupt()
-    pane.wait_exit(timeout=10)
-    pane.rerun([str(FAKE), "remote-control"], cwd=tmp_path, env=env_for(cfg))
+    pane.wait_exit()
+    pane.rerun([str(FAKE), "remote-control"], cwd=tmp_path, env=env_for(cfg, **traced(tmp_path)))
     answer_trust(pane)
-    pane.wait_for(READY, timeout=fake.READY_SECONDS + 10)
+    release_connected(tmp_path)
+    pane.wait_for(READY)
     assert PROMPT not in pane.text()
 
 
@@ -311,7 +334,7 @@ def test_every_observed_screen_is_a_scenario_of_the_fake(tmp_path, monkeypatch, 
 
 def test_unsupported_invocation_fails_loudly(pane, tmp_path):
     run(pane, ["mcp", "list"], tmp_path, tmp_path / "cfg")
-    assert pane.wait_exit(timeout=10) == 2
+    assert pane.wait_exit() == 2
     assert "unsupported" in pane.text()
 
 
@@ -322,7 +345,7 @@ def test_the_help_of_remote_control_is_unsupported_signed_in_or_not(pane, tmp_pa
     cfg = tmp_path / "cfg"
     fake.write_state(cfg, logged_in=signed_in)
     run(pane, ["remote-control", "--help"], tmp_path, cfg)
-    assert pane.wait_exit(timeout=10) == 2
+    assert pane.wait_exit() == 2
     assert "unsupported" in pane.text()
     assert "logged in" not in pane.text() and "Capacity:" not in pane.text()
 
@@ -404,46 +427,67 @@ def test_fake_never_touches_the_real_claude_directory(tmp_path):
     assert fake.state_dir({"HOME": "/h"}) == os.path.join("/h", ".claude-fake")
 
 
-# Starts the program it is given only once a whole line waits on the terminal: on a
-# terminal in canonical mode, select reports input only when a line is complete.
-AFTER_A_TYPED_LINE = (
-    "import os, select, sys; select.select([0], [], []); os.execv(sys.argv[1], sys.argv[1:])"
-)
-
-
-def test_an_instant_trust_answer_is_refused_and_asked_again(pane, tmp_path):
-    """The answer is typed before the fake starts, so it is waiting when the question is
-    asked: however slowly this test runs, it arrives sooner than any threshold."""
+def test_a_trust_answer_sooner_than_the_threshold_is_refused_and_asked_again(pane, tmp_path):
+    """With the threshold beyond any test, every answer is too quick, however slowly this test
+    runs: refused with the recorded screen, and asked again."""
     cfg = logged_in(tmp_path / "cfg")
-    held = [sys.executable, "-c", AFTER_A_TYPED_LINE, str(FAKE), "remote-control"]
-    pane.run(held, cwd=tmp_path, env=env_for(cfg))
+    env = cw.traced_env(tmp_path / "watch", too_fast=True)
+    run(pane, ["remote-control"], tmp_path, cfg, **env)
+    pane.wait_for(r"\[y/N\]")
     pane.type_line("y")
-    pane.wait_for(r"\[y/N\]", timeout=10)
-    pane.wait_for(r"too quickly", timeout=10)
+    assert cw.decided(pane, trace_of(env), "y") == "refused"
+    assert "too quickly" in "\n".join(cw.shown(pane, trace_of(env)))
     assert pane.exit_status() is None  # still asking
-    pane.wait_stable(quiet=fake.MIN_ANSWER_SECONDS * 2)
     pane.type_line("y")
-    pane.wait_for(r"environment=", timeout=10)
+    assert cw.decided(pane, trace_of(env), "y", seen=1) == "refused"  # asked again
+    assert pane.exit_status() is None
 
 
-def test_a_paced_trust_answer_is_accepted(pane, tmp_path):
+def test_a_trust_answer_at_the_threshold_is_accepted(pane, tmp_path):
+    env = traced(tmp_path)  # a threshold of 0: no answer is sooner
     cfg = logged_in(tmp_path / "cfg")
-    run(pane, ["remote-control"], tmp_path, cfg)
-    pane.wait_for(r"\[y/N\]", timeout=10)
-    pane.wait_stable(quiet=fake.MIN_ANSWER_SECONDS * 2)
+    run(pane, ["remote-control"], tmp_path, cfg, **env)
+    pane.wait_for(r"\[y/N\]")
     pane.type_line("y")
-    pane.wait_for(r"environment=", timeout=10)
+    assert cw.decided(pane, trace_of(env), "y") == "answered"
+    pane.wait_for(r"environment=")
     assert "too quickly" not in pane.text()
+
+
+def test_the_default_threshold_refuses_an_answer_sooner_and_takes_one_at_it(monkeypatch, tmp_path):
+    """MIN_ANSWER_SECONDS, which the fake keeps when no test sets it, against a clock only this
+    test moves: an answer half of it after the question is refused with the recorded screen,
+    and the next, a whole of it after being asked again, is taken."""
+    from tests.time_doubles import FakeTime
+
+    clock = FakeTime()
+    monkeypatch.setattr(fake, "time", clock)
+    monkeypatch.chdir(tmp_path)
+    shown = []
+    replying = fake.Fake(["remote-control"], env_for(tmp_path / "cfg"))
+    answers = iter([(fake.MIN_ANSWER_SECONDS / 2, "n\n"), (fake.MIN_ANSWER_SECONDS, "y\n")])
+
+    def read_line():
+        seconds, line = next(answers)
+        clock.advance(seconds)
+        return line
+
+    monkeypatch.setattr(replying, "read_line", read_line)
+    monkeypatch.setattr(replying, "show", lambda name, prompt=False: shown.append(name))
+    assert replying.paced_answer("trust_answer_too_fast") == "y\n"
+    assert shown == ["trust_answer_too_fast"]
 
 
 def test_server_connects_first_and_becomes_ready_after(pane, tmp_path):
     cfg = logged_in(tmp_path / "cfg")
     fake.write_state(cfg, logged_in=True, trusted=[str(tmp_path)])
-    run(pane, ["remote-control"], tmp_path, cfg)
-    pane.wait_for(r"Capacity: 0/", timeout=10)
-    connected = pane.text()
-    pane.wait_for(READY, timeout=fake.READY_SECONDS + 10)
-    assert "Capacity: 0/" in connected and READY not in connected
+    env = traced(tmp_path)
+    run(pane, ["remote-control"], tmp_path, cfg, **env)
+    pane.wait_for(r"Capacity: 0/")
+    connected = "\n".join(cw.shown(pane, trace_of(env)))  # held there until released
+    release_connected(tmp_path)
+    pane.wait_for(READY)
+    assert "Capacity: 0/" in connected and not re.search(READY, connected)
 
 
 def test_output_to_a_pipe_is_plain_text(tmp_path):
@@ -461,7 +505,7 @@ def test_logout_removes_the_credentials_file_as_the_real_one_does(pane, tmp_path
     cfg = logged_in(tmp_path / "cfg")
     assert (cfg / fake.CREDENTIALS).exists()  # positive control
     run(pane, ["auth", "logout"], tmp_path, cfg)
-    assert pane.wait_exit(timeout=10) == rec.load_fixtures()["auth_logout"].exit_code
+    assert pane.wait_exit() == rec.load_fixtures()["auth_logout"].exit_code
     assert not (cfg / fake.CREDENTIALS).exists()
 
 
@@ -500,11 +544,11 @@ def test_the_accepted_code_signs_in_with_the_recorded_screens(pane, tmp_path):
     cfg.mkdir()
     (cfg / ".claude.json").write_text(json.dumps({"numStartups": 3}))
     run(pane, ["auth", "login", "--claudeai", "--email", "x@example.com"], tmp_path, cfg)
-    pane.wait_for(r"Paste code here", timeout=10)
+    pane.wait_for(r"Paste code here")
     pane.type_line(fake.ACCEPTED_CODE)
-    pane.wait_for(r"Login successful", timeout=10)
+    pane.wait_for(r"Login successful")
     pane.type_line("")
-    assert pane.wait_exit(timeout=10) == rec.load_fixtures()["login_succeeded_done"].exit_code
+    assert pane.wait_exit() == rec.load_fixtures()["login_succeeded_done"].exit_code
     credentials = cfg / fake.CREDENTIALS
     assert json.loads(credentials.read_text())["claudeAiOauth"]["refreshToken"]
     assert (credentials.stat().st_mode & 0o777) == 0o600
@@ -523,11 +567,11 @@ def test_a_sign_in_through_a_link_writes_the_file_linked_to(pane, tmp_path):
     cfg.mkdir()
     (cfg / fake.CREDENTIALS).symlink_to(shared)
     run(pane, ["auth", "login", "--claudeai", "--email", "x@example.com"], tmp_path, cfg)
-    pane.wait_for(r"Paste code here", timeout=10)
+    pane.wait_for(r"Paste code here")
     pane.type_line(fake.ACCEPTED_CODE)
-    pane.wait_for(r"Login successful", timeout=10)
+    pane.wait_for(r"Login successful")
     pane.type_line("")
-    pane.wait_exit(timeout=10)
+    pane.wait_exit()
     assert (cfg / fake.CREDENTIALS).is_symlink()
     assert "claudeAiOauth" in json.loads(shared.read_text())
 
@@ -578,20 +622,20 @@ def test_any_other_failure_of_the_rename_is_not_hidden(tmp_path, monkeypatch):
 def test_a_code_not_accepted_still_fails(pane, tmp_path):
     cfg = tmp_path / "cfg"
     run(pane, ["auth", "login", "--claudeai", "--email", "x@example.com"], tmp_path, cfg)
-    pane.wait_for(r"Paste code here", timeout=10)
+    pane.wait_for(r"Paste code here")
     pane.type_line("BAD-CODE")
-    assert pane.wait_exit(timeout=10) == rec.load_fixtures()["login_failed"].exit_code
+    assert pane.wait_exit() == rec.load_fixtures()["login_failed"].exit_code
 
 
 def test_login_help_is_the_recorded_help(pane, tmp_path):
     run(pane, ["auth", "login", "--help"], tmp_path, tmp_path / "cfg")
-    assert pane.wait_exit(timeout=10) == rec.load_fixtures()["auth_login_help"].exit_code
+    assert pane.wait_exit() == rec.load_fixtures()["auth_login_help"].exit_code
     assert "--claudeai" in pane.text() and "--email" in pane.text()
 
 
 def test_the_reported_version_can_be_overridden(pane, tmp_path):
     run(pane, ["--version"], tmp_path, tmp_path / "cfg", FAKE_CLAUDE_VERSION="7.7.7")
-    pane.wait_exit(timeout=10)
+    pane.wait_exit()
     assert pane.text() == "7.7.7 (Claude Code)"
 
 
@@ -610,43 +654,43 @@ def repository(path, branch="main"):
 
 
 def answer_trust(pane):
-    pane.wait_for(r"\[y/N\]", timeout=10)
-    pane.wait_stable(quiet=fake.MIN_ANSWER_SECONDS * 2)
+    """For a fake given traced(): its threshold is 0, so no answer is too quick."""
+    pane.wait_for(r"\[y/N\]")
     pane.type_line("y")
 
 
 def test_in_a_repository_without_spawn_it_asks_the_spawn_mode_question(pane, tmp_path):
     cfg = logged_in(tmp_path / "cfg")
     folder = repository(tmp_path / "proj")
-    run(pane, ["remote-control"], folder, cfg)
+    run(pane, ["remote-control"], folder, cfg, **traced(tmp_path))
     answer_trust(pane)
-    pane.wait_for(SPAWN_QUESTION, timeout=10)
+    pane.wait_for(SPAWN_QUESTION)
     assert "Capacity:" not in pane.text()
-    pane.wait_stable(quiet=fake.MIN_ANSWER_SECONDS * 2)
     pane.type_line("1")
-    pane.wait_for(READY, timeout=10)
+    release_connected(tmp_path)
+    pane.wait_for(READY)
     pane.interrupt()
-    assert pane.wait_exit(timeout=10) == rec.load_fixtures()["spawn_stopped_same_dir"].exit_code
+    assert pane.wait_exit() == rec.load_fixtures()["spawn_stopped_same_dir"].exit_code
 
 
 def test_after_ctrl_c_the_spawn_mode_question_takes_no_answer_and_ends_on_sigterm(pane, tmp_path):
     import signal
-    import time
 
     cfg = logged_in(tmp_path / "cfg")
     folder = repository(tmp_path / "proj")
-    run(pane, ["remote-control"], folder, cfg)
+    env = traced(tmp_path)
+    run(pane, ["remote-control"], folder, cfg, **env)
     answer_trust(pane)
-    pane.wait_for(SPAWN_QUESTION, timeout=10)
+    pane.wait_for(SPAWN_QUESTION)
     pane.interrupt()  # changes nothing, as recorded
-    time.sleep(1)
+    assert cw.decided(pane, trace_of(env), "interrupt") == "ignored"
     assert pane.exit_status() is None
     pane.type_line("1")  # taken by nothing, as recorded
-    time.sleep(1)
+    assert cw.decided(pane, trace_of(env), "1") == "ignored"
     assert pane.exit_status() is None
     assert "Capacity:" not in pane.text()
     pane.signal(signal.SIGTERM)  # ends it, as recorded
-    code = pane.wait_exit(timeout=10)
+    code = pane.wait_exit()
     assert code == 128 + signal.SIGTERM
     assert code == rec.load_fixtures()["spawn_prompt_killed"].exit_code
     assert "Capacity:" not in pane.text()
@@ -655,9 +699,10 @@ def test_after_ctrl_c_the_spawn_mode_question_takes_no_answer_and_ends_on_sigter
 def test_in_a_repository_with_spawn_same_dir_it_connects_and_shows_the_branch(pane, tmp_path):
     cfg = logged_in(tmp_path / "cfg")
     folder = repository(tmp_path / "proj", branch="feature-x")
-    run(pane, ["remote-control", "--spawn", "same-dir"], folder, cfg)
+    run(pane, ["remote-control", "--spawn", "same-dir"], folder, cfg, **traced(tmp_path))
     answer_trust(pane)
-    pane.wait_for(READY, timeout=10)
+    release_connected(tmp_path)
+    pane.wait_for(READY)
     text = pane.text()
     assert "Spawn mode" not in text
     assert re.search(r"Connected · proj · feature-x$", text, re.MULTILINE)
@@ -667,23 +712,23 @@ def test_in_a_folder_of_a_repository_it_is_in_the_repository(pane, tmp_path):
     cfg = logged_in(tmp_path / "cfg")
     folder = repository(tmp_path / "proj") / "sub"
     folder.mkdir()
-    run(pane, ["remote-control"], folder, cfg)
+    run(pane, ["remote-control"], folder, cfg, **traced(tmp_path))
     answer_trust(pane)
-    pane.wait_for(SPAWN_QUESTION, timeout=10)
+    pane.wait_for(SPAWN_QUESTION)
 
 
 def test_outside_a_repository_spawn_same_dir_changes_nothing(pane, tmp_path):
     cfg = logged_in(tmp_path / "cfg")
     fake.write_state(cfg, logged_in=True, trusted=[str(tmp_path)])
     run(pane, ["remote-control", "--spawn", "same-dir"], tmp_path, cfg)
-    pane.wait_for(READY, timeout=10)
+    pane.wait_for(READY)
     assert re.search(r"Connected · \S+ · HEAD$", pane.text(), re.MULTILINE)
 
 
 def test_a_spawn_mode_it_has_no_recording_of_fails_loudly(pane, tmp_path):
     cfg = logged_in(tmp_path / "cfg")
     run(pane, ["remote-control", "--spawn", "worktree"], tmp_path, cfg)
-    assert pane.wait_exit(timeout=10) == 2
+    assert pane.wait_exit() == 2
     assert "unsupported" in pane.text()
 
 
@@ -693,7 +738,7 @@ def test_a_trusted_repository_without_spawn_fails_loudly(pane, tmp_path):
     cfg = logged_in(tmp_path / "cfg")
     fake.write_state(cfg, logged_in=True, trusted=[str(folder)])
     run(pane, ["remote-control"], folder, cfg)
-    assert pane.wait_exit(timeout=10) == 2
+    assert pane.wait_exit() == 2
     assert "unsupported" in pane.text()
 
 
@@ -725,7 +770,7 @@ def test_remote_control_without_oauth_account_is_refused_as_the_real_one_is(tmp_
     (cfg / fake.CONFIG_FILE).write_text(json.dumps({"numStartups": 1}))
     proc = subprocess.run(
         [str(FAKE), "remote-control"], env=env_for(cfg), cwd=tmp_path,
-        capture_output=True, text=True, timeout=30,
+        capture_output=True, text=True,
     )  # fmt: skip
     recorded = rec.load_fixtures()["rc_no_oauth_account"]
     assert (proc.returncode, proc.stdout) == (recorded.exit_code, "")

@@ -19,6 +19,12 @@ Sequences marked ``submits_code`` send an invalid one-time code to Anthropic's
 sign-in service. Everything else runs with a throwaway configuration directory
 and needs no account.
 
+How the recorder waits for a screen is a :class:`Watch`, which :func:`record` is given:
+:class:`RealWatch`, the command line's, against the real `claude`, which says nothing of what
+it has done, so a screen is taken once it has stayed still a while and an ignored input once
+it has been watched a while; the tests give their own (tests/claude_watches.py), which wait
+on what the fake says it has done or on the fixture expected.
+
 Usage::
 
     uv run python devtools/record_claude.py                # no-account sequences
@@ -45,6 +51,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Protocol
 
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -66,7 +73,6 @@ ENVIRONMENT_URL_PREFIX = "https://claude.ai/code?environment="
 PROBE_EMAIL = "user@example.com"
 PROBE_PREFIX = "rcprobe"
 INVALID_CODE = "invalidcode#invalidstate"
-TIMEOUT = 60.0
 # What the folders the recorder makes in /tmp are named with.
 PANES = "rcrs-"  # each sequence's tmux socket
 VERSIONS = "rcv-"  # reading the installed version
@@ -215,18 +221,96 @@ def account_env(home: Path) -> dict[str, str]:
 CREDENTIALS = ".credentials.json"
 
 
+# --- watching ---------------------------------------------------------------------
+
+# How a screen is settled: SCREEN, one shown while the program runs; EXITED, the last of one
+# that has exited; BRIEF, a stage the program leaves by itself (the connected stage), which is
+# released once captured.
+SCREEN, EXITED, BRIEF = "screen", "exited", "brief"
+
+
+class Watch(Protocol):
+    """How a recording waits on the program it drives."""
+
+    def on_screen(self, pane: tmuxctl.Pane, pattern: str) -> re.Match:
+        """The pane's wait for ``pattern`` on its screen, with the watch's limit, if any."""
+
+    def exited(self, pane: tmuxctl.Pane) -> int:
+        """The pane's wait for its program's exit, with the watch's limit, if any."""
+
+    def env(self, sequence: Sequence, folder: Path) -> dict[str, str]:
+        """Variables the program is given beside claude_env's; ``folder`` is the watch's own."""
+
+    def settled(self, run: Run, name: str | None, kind: str) -> list[str]:
+        """The screen once it has settled; ``name`` is the capture it is for, if any."""
+
+    def took(self, run: Run, sent: str) -> None:
+        """Returns once the program has taken ``sent``, an input it is to ignore (``interrupt``
+        for Ctrl+C), so that what it did with it can be looked at."""
+
+    def release(self, run: Run, stage: str) -> None:
+        """Lets the program leave the brief ``stage`` it was captured in."""
+
+    def handed_over(self, path: Path) -> str:
+        """The line a person writes to ``path`` (:func:`_ended_line`), once written whole."""
+
+
+class RealWatch:
+    """The command line's watch, against the real `claude` with a person at hand: a screen is
+    settled once it has not changed for a while, and an ignored input taken once the program
+    has been watched a while. No test uses it: tests/claude_watches.py's watch the fake's trace,
+    or the fixtures, and test_record_claude.py holds every test to that."""
+
+    TIMEOUT = 60.0
+    # How long a screen must stay still to be settled, by its kind: the connected stage is
+    # brief, so it is captured after a short settle.
+    QUIET = {SCREEN: 1.0, EXITED: 0.5, BRIEF: 0.3}
+    # How long Claude is watched after Ctrl+C, or an answer, at the spawn-mode question.
+    IGNORED_SECONDS = 3.0
+    HUMAN_TIMEOUT = 15 * 60.0
+    HANDOFF_POLL = 0.5  # seconds between looks at the handoff folder
+
+    def on_screen(self, pane: tmuxctl.Pane, pattern: str) -> re.Match:
+        return pane.wait_for(pattern, self.TIMEOUT)
+
+    def exited(self, pane: tmuxctl.Pane) -> int:
+        return pane.wait_exit(self.TIMEOUT)
+
+    def env(self, sequence: Sequence, folder: Path) -> dict[str, str]:
+        return {}
+
+    def settled(self, run: Run, name: str | None, kind: str) -> list[str]:
+        return run.pane.wait_stable(quiet=self.QUIET[kind], timeout=15.0)
+
+    def took(self, run: Run, sent: str) -> None:
+        time.sleep(self.IGNORED_SECONDS)
+
+    def release(self, run: Run, stage: str) -> None:
+        pass
+
+    def handed_over(self, path: Path) -> str:
+        deadline = time.monotonic() + self.HUMAN_TIMEOUT
+        # Read only once the line is ended, so a code still being written is never typed.
+        while not (written := _ended_line(path)):
+            if time.monotonic() > deadline:
+                raise TimeoutError("no sign-in code was handed over")
+            time.sleep(self.HANDOFF_POLL)
+        return written
+
+
 # --- sequences --------------------------------------------------------------------
 
 
 @dataclass
 class Run:
-    """What a sequence step needs: the pane, and how to capture."""
+    """What a sequence step needs: the pane, the watch, and how to capture."""
 
     pane: tmuxctl.Pane
     argv: list[str]
     cwd: Path
     env: dict[str, str]
     ctx: Context
+    watch: Watch
     out: dict[str, Recorded] = field(default_factory=dict)
 
     def capture(self, name: str, exit_code: int | None) -> None:
@@ -234,21 +318,24 @@ class Run:
         self.out[name] = Recorded(lines=lines, exit_code=exit_code)
 
     def capture_exit(self, name: str) -> None:
-        code = self.pane.wait_exit(TIMEOUT)
-        self.pane.wait_stable(quiet=0.5)
+        code = self.watch.exited(self.pane)
+        self.watch.settled(self, name, EXITED)
         self.capture(name, code)
 
-    def capture_when(self, pattern: str, name: str, quiet: float = 1.0) -> None:
-        """Capture once ``pattern`` is on screen and the screen has settled.
+    def capture_when(self, pattern: str, name: str, stage: str | None = None) -> None:
+        """Capture once ``pattern`` is on screen and the screen has settled; a brief
+        ``stage`` is released once captured.
 
         Refuses if the settled screen no longer matches, so a screen that moves
         on while settling is never stored under the wrong name.
         """
-        self.pane.wait_for(pattern, TIMEOUT)
-        settled = "\n".join(self.pane.wait_stable(quiet=quiet))
+        self.watch.on_screen(self.pane, pattern)
+        settled = "\n".join(self.watch.settled(self, name, SCREEN if stage is None else BRIEF))
         if not re.search(pattern, settled, re.MULTILINE):
             raise RuntimeError(f"{pattern!r} no longer on screen after settling:\n{settled}")
         self.capture(name, None)
+        if stage is not None:
+            self.watch.release(self, stage)
 
 
 @dataclass(frozen=True)
@@ -264,6 +351,8 @@ class Sequence:
     # run with the account's credentials file, linked, and a configuration of its own
     # with no `.claude.json`, so no `oauthAccount`, as a workspace before rcman seeds it
     without_oauth_account: bool = False
+    # its answer is to come too quickly: a replay over the fake makes every answer so
+    answer_too_fast: bool = False
 
 
 def _exit_only(capture: str) -> Callable[[Run], None]:
@@ -275,7 +364,7 @@ def _login_prompt(r: Run) -> None:
 
 
 def _login_failed(r: Run) -> None:
-    r.pane.wait_for(r"Paste code here if prompted", TIMEOUT)
+    r.watch.on_screen(r.pane, r"Paste code here if prompted")
     r.pane.type_line(INVALID_CODE)
     r.capture_exit("login_failed")
 
@@ -287,19 +376,17 @@ def _trust_declined(r: Run) -> None:
 
 
 def _trust_too_fast(r: Run) -> None:
-    """Answer the moment the prompt appears; `claude` refuses and asks again."""
-    # Races over the fake under load: see project-knowledge/fake-claude.md, "How the fake is
-    # checked against the real binary".
-    r.pane.wait_for(r"\[y/N\]", TIMEOUT)
+    """Answer the moment the prompt appears; `claude` refuses and asks again. Over the fake
+    every answer of this sequence is too quick (``answer_too_fast``)."""
+    r.watch.on_screen(r.pane, r"\[y/N\]")
     r.pane.type_line("n")
     r.capture_when(r"too quickly", "trust_answer_too_fast")
     r.pane.interrupt()
-    r.pane.wait_exit(TIMEOUT)
+    r.watch.exited(r.pane)
 
 
 CONNECTED = r"Capacity: 0/"  # the server is up; no session has attached yet
-# The connected stage can be brief, so it is captured after a short settle.
-CONNECTED_QUIET = 0.3
+CONNECTED_STAGE = "connected"  # the stage it is, which the program leaves by itself
 READY = r"Capacity: [1-9]"  # a session has attached and is named
 
 
@@ -307,8 +394,8 @@ def _answer_trust(r: Run, capture: str | None = None) -> None:
     if capture:
         r.capture_when(r"\[y/N\]", capture)  # waits until the screen is stable
     else:
-        r.pane.wait_for(r"\[y/N\]", TIMEOUT)
-        r.pane.wait_stable()  # an answer that arrives too quickly is refused
+        r.watch.on_screen(r.pane, r"\[y/N\]")
+        r.watch.settled(r, None, SCREEN)  # an answer that arrives too quickly is refused
     r.pane.type_line("y")
 
 
@@ -317,12 +404,12 @@ def _server_steps(name: str, trust_capture: str | None = None) -> Callable[[Run]
 
     def steps(r: Run) -> None:
         _answer_trust(r, trust_capture)
-        r.capture_when(CONNECTED, f"{name}_connected_after_trust", quiet=CONNECTED_QUIET)
+        r.capture_when(CONNECTED, f"{name}_connected_after_trust", stage=CONNECTED_STAGE)
         r.capture_when(READY, f"{name}_ready_after_trust")
         r.pane.interrupt()
         r.capture_exit(f"{name}_stopped_after_trust")
         r.pane.rerun(r.argv, r.cwd, r.env)
-        r.capture_when(CONNECTED, f"{name}_connected_resumed", quiet=CONNECTED_QUIET)
+        r.capture_when(CONNECTED, f"{name}_connected_resumed", stage=CONNECTED_STAGE)
         r.capture_when(READY, f"{name}_ready_resumed")
         r.pane.interrupt()
         r.capture_exit(f"{name}_stopped_resumed")
@@ -339,15 +426,13 @@ def _server_captures(name: str) -> tuple[str, ...]:
 
 
 SPAWN_QUESTION = r"^Choose \[1/2\]"  # Claude asks for a spawn mode
-# How long Claude is watched after Ctrl+C, or an answer, at the spawn-mode question.
-IGNORED_SECONDS = 3.0
 
 
-def _still_asking(r: Run, after: str) -> None:
-    time.sleep(IGNORED_SECONDS)
+def _still_asking(r: Run, after: str, sent: str) -> None:
+    r.watch.took(r, sent)
     if r.pane.exit_status() is not None or re.search(CONNECTED, r.pane.text()):
         raise RuntimeError(f"{after} moved the spawn-mode question on:\n{r.pane.text()}")
-    r.pane.wait_stable()
+    r.watch.settled(r, None, SCREEN)
 
 
 def _spawn_prompt(r: Run) -> None:
@@ -356,10 +441,10 @@ def _spawn_prompt(r: Run) -> None:
     _answer_trust(r)
     r.capture_when(SPAWN_QUESTION, "spawn_prompt")
     r.pane.interrupt()
-    _still_asking(r, "Ctrl+C")
+    _still_asking(r, "Ctrl+C", "interrupt")
     r.capture("spawn_prompt_interrupted", None)
     r.pane.type_line("1")
-    _still_asking(r, "An answer after Ctrl+C")
+    _still_asking(r, "An answer after Ctrl+C", "1")
     r.capture("spawn_prompt_answered_after_interrupt", None)
     r.pane.signal(signal.SIGTERM)
     r.capture_exit("spawn_prompt_killed")
@@ -372,10 +457,10 @@ def _spawn_prompt(r: Run) -> None:
 def _spawn_answered(r: Run) -> None:
     """The spawn-mode question answered 1, same-dir; then as a server goes on."""
     _answer_trust(r)
-    r.pane.wait_for(SPAWN_QUESTION, TIMEOUT)
-    r.pane.wait_stable()
+    r.watch.on_screen(r.pane, SPAWN_QUESTION)
+    r.watch.settled(r, None, SCREEN)
     r.pane.type_line("1")
-    r.capture_when(CONNECTED, "spawn_connected_same_dir", quiet=CONNECTED_QUIET)
+    r.capture_when(CONNECTED, "spawn_connected_same_dir", stage=CONNECTED_STAGE)
     r.capture_when(READY, "spawn_ready_same_dir")
     r.pane.interrupt()
     r.capture_exit("spawn_stopped_same_dir")
@@ -405,10 +490,6 @@ def make_repository(folder: Path) -> None:
         subprocess.run(["git", *args], cwd=folder, env=env, check=True, capture_output=True)
 
 
-HUMAN_TIMEOUT = 15 * 60.0
-HANDOFF_POLL = 0.5  # seconds between looks at the handoff folder
-
-
 def _ended_line(path: Path) -> str | None:
     """What ``path`` holds once it is a non-empty line ended with a newline; else None."""
     try:
@@ -427,26 +508,20 @@ def _login_succeeded(r: Run) -> None:
     a line ended with a newline, types it, captures the success screens, and then logs
     out, which revokes the sign-in it just made.
     """
-    match = r.pane.wait_for(re.escape(LOGIN_URL_PREFIX) + r"\S+", TIMEOUT)
+    match = r.watch.on_screen(r.pane, re.escape(LOGIN_URL_PREFIX) + r"\S+")
     handoff = Path(tempfile.mkdtemp(prefix="handoff-", dir=r.cwd.parent))
     code_file = handoff / "code"
     # Written under another name and renamed, so whoever reads it never reads part of it.
     (handoff / ".url").write_text(match.group(0) + "\n", encoding="utf-8")
     (handoff / ".url").rename(handoff / "url")
     print(f"sign in at the URL in {handoff / 'url'}; put the code in {code_file}", file=sys.stderr)
-    deadline = time.monotonic() + HUMAN_TIMEOUT
-    # Read only once the line is ended, so a code still being written is never typed.
-    while not (written := _ended_line(code_file)):
-        if time.monotonic() > deadline:
-            raise TimeoutError("no sign-in code was handed over")
-        time.sleep(HANDOFF_POLL)
-    code = written.strip()
+    code = r.watch.handed_over(code_file).strip()
     r.pane.type_line(code)
     r.capture_when(r"Login successful", "login_succeeded")
     r.pane.type_line("")
     r.capture_exit("login_succeeded_done")
     r.pane.rerun([r.argv[0], "auth", "logout"], r.cwd, r.env)
-    r.pane.wait_exit(TIMEOUT)
+    r.watch.exited(r.pane)
 
 
 # As rcman starts a server (tests/test_claude_server.py holds the two together).
@@ -516,6 +591,7 @@ SEQUENCES: list[Sequence] = [
         ("trust_answer_too_fast",),
         _trust_too_fast,
         needs_account=True,
+        answer_too_fast=True,
     ),
     Sequence(
         "server",
@@ -582,7 +658,11 @@ def options_used() -> dict[tuple[str, ...], set[str]]:
     return used
 
 
-def help_text(claude_bin: Path | str, command: tuple[str, ...], env: dict[str, str]) -> str:
+def help_text(
+    claude_bin: Path | str,
+    command: tuple[str, ...],
+    env: dict[str, str],
+) -> str:
     """``--help`` output, run with empty stdin from a scratch folder.
 
     Logged in, ``remote-control --help`` waits on an inherited stdin.
@@ -595,7 +675,6 @@ def help_text(claude_bin: Path | str, command: tuple[str, ...], env: dict[str, s
             stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
-            timeout=60,
         )
     return proc.stdout + proc.stderr
 
@@ -606,11 +685,16 @@ def help_refused_logged_out(text: str) -> bool:
     return refusal in text
 
 
-def installed_version(claude_bin: Path | str) -> str:
+def installed_version(claude_bin: Path | str, watch: Watch | None = None) -> str:
+    """The version ``claude_bin`` reports, its exit waited for by ``watch``, or with no
+    limit."""
     with held(VERSIONS) as tmp:
         with tmuxctl.Pane(socket_dir=tmp) as pane:
             pane.run([str(claude_bin), "--version"], cwd=tmp, env=claude_env(tmp, tmp / "home"))
-            pane.wait_exit(TIMEOUT)
+            if watch is None:
+                pane.wait_exit()
+            else:
+                watch.exited(pane)
             match = VERSION_PATTERN.search(pane.text())
     if not match:
         raise RuntimeError(f"cannot read the version of {claude_bin}")
@@ -622,8 +706,10 @@ def record(
     sequences: list[Sequence],
     account_config_dir: Path | None,
     workdir: Path,
+    watch: Watch,
 ) -> dict[str, Recorded]:
-    """Run each sequence in a fresh folder and pane; return sanitised captures.
+    """Run each sequence in a fresh folder and pane; return sanitised captures. ``watch`` is
+    how the program is waited on: the command line's RealWatch, or a test's.
 
     ``account_config_dir`` is the configuration for ``needs_account`` sequences (the
     command line gives it from :func:`account_config_dir`);
@@ -631,7 +717,7 @@ def record(
     ``.claude`` and ``.claude.json`` lead to those of the home this run was started from
     (``account_home``). Every sequence has a home of its own.
     """
-    version = installed_version(claude_bin)
+    version = installed_version(claude_bin, watch)
     workdir.mkdir(parents=True, exist_ok=True)
     out: dict[str, Recorded] = {}
     for seq in sequences:
@@ -656,12 +742,13 @@ def record(
         else:
             config = Path(tempfile.mkdtemp(prefix="cfg-", dir=workdir))
             config_text = str(config)
-        env = claude_env(config, home)
+        watching = Path(tempfile.mkdtemp(prefix="watch-", dir=workdir))
+        env = {**claude_env(config, home), **watch.env(seq, watching)}
         argv = [str(claude_bin), *seq.args]
         with tmux_sockets(PANES) as sock, tmuxctl.Pane(socket_dir=sock) as pane:
             pane.run(argv, cwd=folder, env=env)
             ctx = Context(str(folder), config_text, version, branch)
-            run = Run(pane, argv, folder, env, ctx)
+            run = Run(pane, argv, folder, env, ctx, watch)
             seq.steps(run)
             out.update(run.out)
     return out
@@ -779,7 +866,8 @@ def main(argv: list[str] | None = None) -> int:
     except ValueError as error:
         parser.error(str(error))
 
-    version = installed_version(args.claude)
+    watch = RealWatch()
+    version = installed_version(args.claude, watch)
     current = (
         load_manifest(args.out).get("claude_version") if (args.out / MANIFEST).exists() else None
     )
@@ -790,7 +878,7 @@ def main(argv: list[str] | None = None) -> int:
             "re-record everything with --with-account and no --sequence"
         )
     with held(WORK, remover=remove_tree) as work:
-        recorded = record(args.claude, sequences, account_config_dir(), work)
+        recorded = record(args.claude, sequences, account_config_dir(), work, watch=watch)
     write_fixtures(recorded, version, args.out)
     for name in sorted(recorded):
         print(f"recorded {name}")

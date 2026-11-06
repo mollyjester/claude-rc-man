@@ -1,5 +1,6 @@
 """The recorder: sanitising real screens into fixtures, and the fixture set itself."""
 
+import ast
 import json
 import os
 import re
@@ -8,7 +9,6 @@ import signal
 import subprocess
 import sys
 import threading
-import time
 from pathlib import Path
 
 import pytest
@@ -18,6 +18,7 @@ from rcman.runtime import HELPERS_DIR
 from devtools import held_folders, tmuxctl
 from devtools import record_claude as rec
 from tests import killed_runs as kr
+from tests.until import until
 
 CTX = rec.Context(cwd="/work/proj-x", config_dir="/cfg/dir", version="9.9.9")
 
@@ -285,22 +286,62 @@ def test_write_then_load_round_trips(tmp_path):
     assert rec.load_fixtures(tmp_path) == recorded
 
 
+class Unread:
+    """A watch for a recording whose screens no test reads: it settles at once. (The tests'
+    watches over a program that says what it has drawn are in tests/claude_watches.py.)"""
+
+    def on_screen(self, pane, pattern):
+        return pane.wait_for(pattern)
+
+    def exited(self, pane):
+        return pane.wait_exit()
+
+    def env(self, sequence, folder):
+        return {}
+
+    def settled(self, run, name, kind):
+        return run.pane.screen()
+
+
+class MovesOn(Unread):
+    """A watch whose settling sees the program move on to its next screen: it types the line
+    the program waits for, and settles once the next screen is shown."""
+
+    def settled(self, run, name, kind):
+        run.pane.type_line("")
+        return until(lambda: (screen := run.pane.screen()) == ["stage-two"] and screen)
+
+
+# Shows stage one, and stage two on a cleared screen once a line is typed; then waits to be
+# killed.
+TWO_STAGES = (
+    "import signal\n"
+    "print('stage-one', flush=True); input()\n"
+    "print('\\x1b[H\\x1b[2Jstage-two', flush=True); signal.pause()\n"
+)
+
+
 def test_a_capture_whose_screen_changes_while_settling_is_refused(tmp_path):
     """The screen must still match when it has settled, or the capture is mislabelled."""
-    code = (
-        "import time\n"
-        "print('stage-one', flush=True); time.sleep(0.5)\n"
-        "print('\\x1b[H\\x1b[2Jstage-two', flush=True); time.sleep(30)\n"
-    )
     with held_folders.tmux_sockets("rcp-") as sockets, tmuxctl.Pane(socket_dir=sockets) as pane:
-        argv = [sys.executable, "-c", code]
+        argv = [sys.executable, "-c", TWO_STAGES]
         pane.run(argv, cwd=tmp_path, env={})
         folder = pane.socket.parent  # held, so a killed run leaves it for the next to stop
         assert held_folders.made_with("rcp-")(folder.name) and not held_folders.unheld(folder)
-        run = rec.Run(pane, argv, Path(tmp_path), {}, CTX)
+        run = rec.Run(pane, argv, Path(tmp_path), {}, CTX, MovesOn())
         with pytest.raises(RuntimeError, match="stage-one"):
             run.capture_when(r"stage-one", "planted")
     assert "planted" not in run.out
+
+
+def test_a_capture_whose_screen_stays_is_taken(tmp_path):
+    """Twin of the refusal: the same program, settled before it moves on, is captured."""
+    with held_folders.tmux_sockets("rcp-") as sockets, tmuxctl.Pane(socket_dir=sockets) as pane:
+        argv = [sys.executable, "-c", TWO_STAGES]
+        pane.run(argv, cwd=tmp_path, env={})
+        run = rec.Run(pane, argv, Path(tmp_path), {}, CTX, Unread())
+        run.capture_when(r"stage-one", "planted")
+    assert run.out["planted"].lines == ["stage-one"]
 
 
 def test_sequences_can_be_selected_by_name():
@@ -529,7 +570,7 @@ def test_reading_the_version_happens_in_a_held_folder(monkeypatch):
         def run(self, argv, cwd, env):
             seen.append(_held(cwd, rec.VERSIONS) and cwd == seen[0])
 
-        def wait_exit(self, timeout):
+        def wait_exit(self, timeout=None):
             return 0
 
         def text(self):
@@ -567,10 +608,10 @@ def test_each_sequence_runs_its_tmux_server_in_a_held_folder(tmp_path, monkeypat
         def run(self, argv, cwd, env):
             pass
 
-    monkeypatch.setattr(rec, "installed_version", lambda claude: "1.2.3")
+    monkeypatch.setattr(rec, "installed_version", lambda claude, watch=None: "1.2.3")
     monkeypatch.setattr(rec.tmuxctl, "Pane", Pane)
     sequence = rec.Sequence("probe", ["--version"], (), lambda run: None)
-    rec.record("claude", [sequence], None, tmp_path / "work")
+    rec.record("claude", [sequence], None, tmp_path / "work", watch=Unread())
     assert [held for _, held in seen] == [True]
     assert not seen[0][0].exists()
 
@@ -578,26 +619,27 @@ def test_each_sequence_runs_its_tmux_server_in_a_held_folder(tmp_path, monkeypat
 def test_a_recording_works_in_a_held_folder(tmp_path, monkeypatch):
     seen = []
 
-    def record(claude, sequences, account_config_dir, workdir):
-        seen.append(_held(workdir, rec.WORK))
+    def record(claude, sequences, account_config_dir, workdir, watch):
+        seen.append(_held(workdir, rec.WORK) and isinstance(watch, rec.RealWatch))
         return {}
 
-    monkeypatch.setattr(rec, "installed_version", lambda claude: "1.2.3")
+    monkeypatch.setattr(rec, "installed_version", lambda claude, watch=None: "1.2.3")
     monkeypatch.setattr(rec, "record", record)
     monkeypatch.setattr(rec, "write_fixtures", lambda *args, **kwargs: None)
     assert rec.main(["--claude", "claude", "--out", str(tmp_path)]) == 0
-    assert seen == [True]
+    assert seen == [True]  # the command line's watch, handed over and not run
 
 
 def test_a_sign_in_hands_its_code_over_in_the_recordings_working_folder(
     tmp_path, capsys, monkeypatch
 ):
-    """Nothing fixed in /tmp: a handoff folder of its own, named on stderr."""
+    """Nothing fixed in /tmp: a handoff folder of its own, named on stderr; the code is the
+    line the watch is handed there."""
     url = rec.LOGIN_URL_PREFIX + "x=1"
-    typed = []
+    typed, handed = [], []
 
     class Pane:
-        def wait_for(self, pattern, timeout):
+        def wait_for(self, pattern, timeout=None):
             return re.search(pattern, url)
 
         def type_line(self, text):
@@ -606,14 +648,20 @@ def test_a_sign_in_hands_its_code_over_in_the_recordings_working_folder(
         def rerun(self, *args):
             pass
 
-        def wait_exit(self, timeout):
+        def wait_exit(self, timeout=None):
             return 0
+
+    class HandsOver(Unread):
+        def handed_over(self, path):
+            handed.append(path)
+            return until(lambda: rec._ended_line(path))
 
     class Run:
         pane = Pane()
         argv = ["claude"]
         cwd = tmp_path / "work" / "login_succeeded-x"
         env = {}
+        watch = HandsOver()
 
         def capture_when(self, pattern, name):
             pass
@@ -631,24 +679,27 @@ def test_a_sign_in_hands_its_code_over_in_the_recordings_working_folder(
     monkeypatch.setattr(Path, "write_text", writing)
     signing_in = threading.Thread(target=rec._login_succeeded, args=(Run(),), daemon=True)
     signing_in.start()
-    deadline = time.monotonic() + 30
-    while not list((tmp_path / "work").glob("handoff-*/url")):
-        assert time.monotonic() < deadline and signing_in.is_alive()
-        time.sleep(0.05)
+    until(lambda: handed)  # the url is written before the code is waited for
     (handoff,) = (tmp_path / "work").glob("handoff-*")
+    assert handed == [handoff / "code"]
     assert (handoff / "url").read_text() == url + "\n"
-    # The person writes the code in place: the line is read only once it is ended.
-    with open(handoff / "code", "w") as code:
-        code.write("THE-")
-        code.flush()
-        time.sleep(3 * rec.HANDOFF_POLL)
-        assert typed == [] and signing_in.is_alive()  # half a code is not typed
-        code.write("CODE\n")
-    signing_in.join(timeout=30)
-    assert not signing_in.is_alive()
+    (handoff / "code").write_text("THE-CODE\n")
+    signing_in.join()  # within the hang guard
     assert typed[0] == "THE-CODE"
     assert str(handoff) in capsys.readouterr().err
     assert "url" not in written  # written elsewhere and renamed, so never read in part
+
+
+@pytest.mark.parametrize(
+    ("written", "read"),
+    [(None, None), ("", None), ("THE-", None), ("\n", None), ("THE-CODE\n", "THE-CODE\n")],
+)
+def test_a_handed_over_line_is_read_only_once_it_is_ended(tmp_path, written, read):
+    """What every watch's hand-off reads: half a code, still being written, is not one."""
+    path = tmp_path / "code"
+    if written is not None:
+        path.write_text(written)
+    assert rec._ended_line(path) == read
 
 
 # --- the home a recorded claude runs with --------------------------------------------------
@@ -672,7 +723,7 @@ def recorded_with(fake: Path, workdir: Path, needs_account: bool) -> None:
     sequence = rec.Sequence(
         "probe", [], ("probe",), lambda run: run.capture_exit("probe"), needs_account=needs_account
     )
-    rec.record(fake, [sequence], None, workdir)
+    rec.record(fake, [sequence], None, workdir, watch=Unread())
 
 
 def told(tmp_path: Path) -> Path:
@@ -704,7 +755,7 @@ def real_home(tmp_path, monkeypatch) -> Path:
     (home / ".claude").mkdir(parents=True)
     (home / ".claude.json").write_text("{}")
     monkeypatch.setenv("HOME", str(home))
-    monkeypatch.setattr(rec, "installed_version", lambda claude: "1.2.3")
+    monkeypatch.setattr(rec, "installed_version", lambda claude, watch=None: "1.2.3")
     return home
 
 
@@ -803,11 +854,12 @@ def test_a_full_recording_runs_in_the_accounts_folder_where_one_is_named(
     $HOME/.claude, so the recording is given it."""
     given = []
 
-    def record(claude, sequences, account_config_dir, workdir):
+    def record(claude, sequences, account_config_dir, workdir, watch):
         given.append(account_config_dir)
+        assert isinstance(watch, rec.RealWatch)  # handed over, not run
         return {}
 
-    monkeypatch.setattr(rec, "installed_version", lambda claude: "1.2.3")
+    monkeypatch.setattr(rec, "installed_version", lambda claude, watch=None: "1.2.3")
     monkeypatch.setattr(rec, "record", record)
     monkeypatch.setattr(rec, "write_fixtures", lambda *args, **kwargs: None)
     monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
@@ -825,7 +877,7 @@ def test_the_accounts_sequence_reads_the_account_in_a_named_folder(tmp_path, rea
     sequence = rec.Sequence(
         "probe", [], ("probe",), lambda run: run.capture_exit("probe"), needs_account=True
     )
-    rec.record(told(tmp_path), [sequence], account, tmp_path / "work")
+    rec.record(told(tmp_path), [sequence], account, tmp_path / "work", watch=Unread())
     seen = seen_by(tmp_path)
     assert seen["config"] == str(account)
     assert seen["home"] != str(real_home) and Path(seen["home"]).is_relative_to(tmp_path / "work")
@@ -853,3 +905,65 @@ def test_the_environment_of_the_account_is_where_the_run_names_it(
         assert "CLAUDE_CONFIG_DIR" not in env
         assert os.readlink(home / ".claude") == str(real_home / ".claude")
         assert os.readlink(home / ".claude.json") == str(real_home / ".claude.json")
+
+
+# --- no test runs the command line's watch ---------------------------------------------------
+
+TESTS = Path(__file__).resolve().parent
+
+
+def reaches_real_watch(source: str) -> list[str]:
+    """Where a test module would run RealWatch, the command line's watch, which waits on real
+    time: a RealWatch made, or the recorder's main run, in a function that does not put a
+    stand-in in place of ``record`` first. A module marked real_claude, run by hand against the
+    real `claude` as the command line is, may."""
+    tree = ast.parse(source)
+    if re.search(r"^pytestmark = pytest\.mark\.real_claude$", source, re.M):
+        return []
+    found = []
+    for function in [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)]:
+        calls = [n for n in ast.walk(function) if isinstance(n, ast.Call)]
+        patched = any(
+            isinstance(c.func, ast.Attribute) and c.func.attr == "setattr"
+            and len(c.args) > 1 and isinstance(c.args[1], ast.Constant)
+            and c.args[1].value == "record"
+            for c in calls
+        )  # fmt: skip
+        for call in calls:
+            name = getattr(call.func, "attr", None) or getattr(call.func, "id", None)
+            on = getattr(getattr(call.func, "value", None), "id", None)
+            if name == "RealWatch":
+                found.append(f"{function.name}:{call.lineno}: makes a RealWatch")
+            elif name == "main" and on in ("rec", "record_claude") and not patched:
+                found.append(f"{function.name}:{call.lineno}: runs main with record unpatched")
+    return found
+
+
+def test_no_test_reaches_the_command_lines_watch():
+    sources = {p.name: p.read_text(encoding="utf-8") for p in sorted(TESTS.rglob("*.py"))}
+    assert "test_record_claude.py" in sources  # non-vacuity: this module, which runs main
+    assert {
+        name: found for name, src in sources.items() if (found := reaches_real_watch(src))
+    } == {}
+
+
+@pytest.mark.parametrize(
+    "planted",
+    [
+        "def test_x(tmp_path):\n    rec.record('claude', [], None, tmp_path, rec.RealWatch())\n",
+        "def test_x(tmp_path):\n    rec.main(['--out', str(tmp_path)])\n",
+    ],
+    ids=["a RealWatch made", "main unpatched"],
+)
+def test_a_test_that_reaches_the_command_lines_watch_is_found(planted):
+    assert len(reaches_real_watch(planted)) == 1
+
+
+def test_main_with_record_patched_is_not_found():
+    """Twin: as this module's own tests of main run it."""
+    patched = (
+        "def test_x(tmp_path, monkeypatch):\n"
+        "    monkeypatch.setattr(rec, 'record', lambda *a, **k: {})\n"
+        "    rec.main(['--out', str(tmp_path)])\n"
+    )
+    assert reaches_real_watch(patched) == []

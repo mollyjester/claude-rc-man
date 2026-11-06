@@ -5,6 +5,11 @@ Each :class:`Pane` owns its own tmux server (a socket file under
 is given, and reads the screen back as plain text. The program is executed
 directly, never through a shell. When the program exits the pane stays, so its
 final screen and exit status can still be read.
+
+Its waits look at the screen every POLL_SECONDS. Each gives up only when its caller passes a
+``timeout``, as the recorder's command line does against the real `claude` (RealWatch in
+devtools/record_claude.py); with none it waits until what it waits for comes about, and a test,
+which passes none, is ended by its hang guard instead. ``timeout=0`` gives up after one look.
 """
 
 from __future__ import annotations
@@ -95,32 +100,33 @@ class Pane:
         fields = self._tmux("display-message", "-p", "-t", "p", fmt).strip().split(":")
         return pane_exit_status(*fields)
 
-    def wait_for(self, pattern: str, timeout: float) -> re.Match:
+    def wait_for(self, pattern: str, timeout: float | None = None) -> re.Match:
         regex = re.compile(pattern, re.MULTILINE)
-        deadline = time.monotonic() + timeout
+        deadline = None if timeout is None else time.monotonic() + timeout
         while True:
             text = self.text()
             match = regex.search(text)
             if match:
                 return match
-            if time.monotonic() > deadline:
+            if deadline is not None and time.monotonic() >= deadline:
                 raise TimeoutError(f"{pattern!r} did not appear; screen:\n{text}")
             time.sleep(POLL_SECONDS)
 
-    def wait_exit(self, timeout: float) -> int:
-        deadline = time.monotonic() + timeout
+    def wait_exit(self, timeout: float | None = None) -> int:
+        deadline = None if timeout is None else time.monotonic() + timeout
         while (status := self.exit_status()) is None:
-            if time.monotonic() > deadline:
+            if deadline is not None and time.monotonic() >= deadline:
                 raise TimeoutError(f"program still running; screen:\n{self.text()}")
             time.sleep(POLL_SECONDS)
         return status
 
-    def wait_stable(self, quiet: float = 1.0, timeout: float = 15.0) -> list[str]:
-        """Wait until the screen has not changed for ``quiet`` seconds."""
-        deadline = time.monotonic() + timeout
+    def wait_stable(self, quiet: float, timeout: float | None = None) -> list[str]:
+        """Wait until the screen has not changed for ``quiet`` seconds: the recorder's settle
+        against the real `claude` (RealWatch), which tells nothing of when it has drawn."""
+        deadline = None if timeout is None else time.monotonic() + timeout
         last, since = self.screen(), time.monotonic()
         while time.monotonic() - since < quiet:
-            if time.monotonic() > deadline:
+            if deadline is not None and time.monotonic() >= deadline:
                 raise TimeoutError(f"screen kept changing; last:\n{chr(10).join(last)}")
             time.sleep(POLL_SECONDS)
             now = self.screen()
@@ -132,8 +138,7 @@ class Pane:
         """Kill the tmux server and wait until it is gone, so the socket can be reused."""
         if self._started:
             self._tmux("kill-server", check=False)
-            deadline = time.monotonic() + 10
-            while server_running(self.socket) and time.monotonic() < deadline:
+            while server_running(self.socket):  # its caller's bound, or a test's hang guard
                 time.sleep(POLL_SECONDS)
             self.socket.unlink(missing_ok=True)
             self._started = False
