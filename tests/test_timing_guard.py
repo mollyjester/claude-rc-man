@@ -12,9 +12,11 @@ parents, owners and bindings. It flags
   ``timeout [options] N``, Python's ``time.sleep(N)``, the numbers of an argv of the ``timeout``
   tool, and a child's loop on a clock, or one that sleeps on a count; an interpolated one too,
   unless it is a multiple of the guard or RUNS_OUT;
-- P3, a timeout that is not allowed: a keyword of a timing name, a known positional, a value at
-  a position the parameter table or a parameter's flow gives, a parameter's default, a module's
-  or a class's constant of a timing name, and pytest.mark.timeout;
+- P3, a timeout that is not allowed: a keyword of a timing name; a known positional, where a
+  name or a call is seconds unless shown to be something else; a value at a position the
+  parameter table or a parameter's flow gives (at a position of a name whose definitions
+  disagree, only a value shown to be seconds); a parameter's default; a module's or a class's
+  constant of a timing name; and pytest.mark.timeout;
 - P4, a product's deadline, grace or pace shortened: monkeypatch's, mock's and the builtin
   setattr of a timing constant, a plain ``module.NAME = value``, a patch of the time module
   itself, of the guard, of a name that cannot be resolved, a restoring setattr, and runs_out
@@ -27,8 +29,9 @@ reads it, None, -1 (the standard library's "no limit") and 0; a constant whose s
 at module or class level, is allowed; and a parameter of a helper (not a test, a fixture or a
 lambda) whose default is allowed and whose every caller gives an allowed value, which the scan
 checks at each call. The only exemptions are the named patterns of NAMED, each with its reason
-and a stale check, the derived allowances H7 (a double), H8 (a turn of 0), H9 (a product's value
-as a stand-in's default), H10 (the benchmark) and H13 (a child's wait loop), and STAND_INS.
+and a stale check, the derived allowances H7 (a double: a call on one, its bound method as a
+value, and the keywords of a helper of the module that returns one it builds), H8 (a turn of
+0), H10 (the benchmark) and H13 (a child's wait loop), and STAND_INS.
 """
 
 from __future__ import annotations
@@ -86,7 +89,7 @@ RESOLVED_POSITIONAL = {
     "trio.move_on_after": 0,
 }  # fmt: skip
 QUEUE_NAME = re.compile(r"queue|inbox|outbox|_q$|^q$", re.I)
-DOUBLES = {"FakeTime", "WatchedCondition", "ControlledEvent", "RecordingLock", "Time"}
+DOUBLES = {"FakeTime", "WatchedCondition", "ControlledEvent", "RecordingLock", "Time", "Clock"}
 GUARD_ATTRIBUTES = GUARD_NAMES | {"tier", "tier_guard"}
 
 SHELL = re.compile(
@@ -181,8 +184,9 @@ def build_table(trees: Iterable[ast.AST]) -> Table:
 ALLOWANCES = {
     "none": True, "zero": True, "runs out": True, "minus one": True, "guard": True,
     "tier_guard": True, "not seconds": True, "double in a closure": True,
-    "positional not seconds": True,
-    "constant": True, "parameter": True, "double (H7)": True,
+    "positional not seconds": True, "seconds only at a disagreeing slot": True,
+    "constant": True, "parameter": True, "double (H7)": True, "a double's method (H7)": True,
+    "a double's helper (H7)": True,
     "turn (H8)": True, "child loop (H13)": True, "benchmark (H10)": True,
 }  # fmt: skip
 
@@ -428,6 +432,12 @@ class FileScan:
             if fn is not None and self.local_binds.get(fn, {}).get(node.id):
                 return False  # a local binding: a site where it is used
             return self.constant_allowed(node.id, depth)
+        if (
+            isinstance(node, ast.Attribute)
+            and self.a_double(node.value, at)
+            and self.allow("a double's method (H7)", node, "P3")
+        ):
+            return True  # a double's bound method, as the monitor's ``wait=times.wait``
         if isinstance(node, ast.Attribute):
             q = self.qual(node)
             if q and q.split(".")[0] in ("tests", "devtools"):
@@ -571,23 +581,48 @@ class FileScan:
         receiver = call.func.value
         while isinstance(receiver, ast.Attribute):
             receiver = receiver.value
+        return self.a_double(receiver, call)
+
+    def a_double(self, receiver: ast.AST, at: ast.AST) -> bool:
+        """Whether ``receiver``, used at ``at``, is a name bound to a double: the innermost
+        function's first, then the functions it is defined in."""
         if (
             not self.may_double
             or not isinstance(receiver, ast.Name)
             or receiver.id in self.module_aliases
         ):
             return False
-        fn = self.function_of(call)
-        return fn is not None and receiver.id in self.doubles_in_scope(fn)
+        fn = self.function_of(at)
+        name = receiver.id
+        scope = fn
+        while scope is not None:  # bound here or outside, or a fixture: else no walk is needed
+            if self.local_binds.get(scope, {}).get(name) or (
+                name in self.fixtures and name in self.parameter_names(scope)
+            ):
+                break
+            scope = self.function_of(scope)
+        else:
+            return False
+        return name in self.double_names(fn) or name in self.doubles_in_scope(fn)
 
-    def doubles_in_scope(self, fn: ast.AST) -> set[str]:
+    @functools.cache  # noqa: B019
+    def doubles_in_scope(self, fn: ast.AST) -> frozenset[str]:
         """The double names of ``fn`` and of the functions it is defined in (a closure's)."""
         found = set(self.double_names(fn))
         outer = self.function_of(fn)
         while outer is not None and ALLOWANCES.get("double in a closure", True):
             found |= self.double_names(outer)
             outer = self.function_of(outer)
-        return found
+        return frozenset(found)
+
+    def builds_a_double(self, call: ast.Call) -> bool:
+        """A call of a helper of this module that returns a double it builds, as the monitor's
+        ``looping`` builds the virtual Time its intervals are given to."""
+        f = call.func
+        if not self.may_double or not isinstance(f, ast.Name):
+            return False
+        helper = self.functions.get(f.id)
+        return helper is not None and self.returns_double(helper)
 
     @functools.cache  # noqa: B019
     def doubled(self, fn: ast.AST) -> frozenset[str]:
@@ -789,6 +824,9 @@ class FileScan:
         if self.on_a_double(node):
             if (node.args or node.keywords) and self.allow("double (H7)", node, "P3"):
                 return
+        elif node.keywords and self.builds_a_double(node):
+            if self.allow("a double's helper (H7)", node, "P3"):
+                return
         for kw in node.keywords:
             if kw.arg and TIMING_KEYWORD.search(kw.arg) and not self.allowed(kw.value, node):
                 if ALLOWANCES.get("P3 keywords", True):
@@ -812,18 +850,14 @@ class FileScan:
         f = node.func
         if not isinstance(f, ast.Attribute) or isinstance(f.value, ast.Constant):
             return None
+        if name == "join" and isinstance(f.value, ast.Call) and getattr(
+            f.value.func, "id", None) in ("chr", "str"):  # fmt: skip
+            return None  # str.join, as chr(10).join(lines)
         if name == "get":
             first = node.args[0] if node.args else None
             blocking = isinstance(first, ast.Constant) and isinstance(first.value, bool)
             return 1 if blocking or QUEUE_NAME.search(self.text(f.value).split(".")[-1]) else None
         return POSITIONAL.get(name)
-
-    @staticmethod
-    def an_iterable(value: ast.AST, name: str | None) -> bool:
-        """str.join's argument, not a thread's join's seconds."""
-        return name == "join" and not (
-            number(value) is not None or isinstance(value, ast.BinOp | ast.Name | ast.Attribute)
-        )
 
     def _runs_out(self, node: ast.Call) -> None:
         """runs_out's ``at``: 0, or the product's floor, a product's constant (G-FLOOR)."""
@@ -858,6 +892,8 @@ class FileScan:
                 continue
             if self.on_a_double(node) and ALLOWANCES["double (H7)"]:
                 continue
+            if self.builds_a_double(node) and ALLOWANCES["a double's helper (H7)"]:
+                continue
             before = len(self.sites)
             checked: set[int] = set()
             for i in sorted(table.positions.get(name, ())):
@@ -871,7 +907,14 @@ class FileScan:
                 value = args[i]
                 if not ALLOWANCES.get("P3 every value", True) and not self.timeish(value):
                     continue
-                if not self.not_seconds(value, node) and not self.allowed(value, node):
+                if ALLOWANCES["seconds only at a disagreeing slot"]:
+                    # a name of no agreed meaning: only what is shown to be seconds; a name
+                    # that flows from a caller is checked at that caller, through its flow
+                    if not self.positively_seconds(value, node):
+                        continue
+                elif self.not_seconds(value, node):
+                    continue
+                if not self.allowed(value, node):
                     self.site(node, "P3", f"{name} at {i}: {self.text(value)}")
             for index, pname, method in by_function.get(name, ()):
                 if not method and isinstance(f, ast.Attribute):
@@ -926,12 +969,15 @@ class FileScan:
         return False
 
     def seconds_like(self, node: ast.AST, at: ast.AST) -> bool:
-        """At a positional slot: a number, arithmetic, a timing name, or a name whose single
-        binding is a number."""
+        """At a known positional slot: a number, arithmetic, a name or a call that
+        ``not_seconds`` does not show to be something else (a parameter, a fixture, a call's
+        result), or an attribute of a timing name."""
         if not ALLOWANCES["positional not seconds"]:
             return True
         if number(node) is not None or isinstance(node, ast.BinOp | ast.UnaryOp):
             return True
+        if isinstance(node, ast.Name | ast.Call) and ALLOWANCES.get("P3 positional name", True):
+            return not self.not_seconds(node, at)
         if isinstance(node, ast.Name | ast.Attribute):
             name = node.id if isinstance(node, ast.Name) else node.attr
             if timing_constant(name) or TIMING_KEYWORD.search(name) or name in GUARD_NAMES:
@@ -944,6 +990,53 @@ class FileScan:
                     binds = [value] if value is not None else []
                 return any(number(b) is not None or isinstance(b, ast.BinOp) for b in binds)
         return False
+
+    def positively_seconds(self, node: ast.AST, at: ast.AST, depth: int = 0) -> bool:
+        """Shown to be seconds: a number, arithmetic on one, a timing name, or a name whose
+        binding is one, in the function, the module, or a module of the project it is imported
+        from."""
+        if number(node) is not None:
+            return True
+        if isinstance(node, ast.UnaryOp):
+            return self.positively_seconds(node.operand, at, depth)
+        if isinstance(node, ast.BinOp):
+            return self.positively_seconds(node.left, at, depth) or self.positively_seconds(
+                node.right, at, depth
+            )
+        if isinstance(node, ast.Name | ast.Attribute):
+            name = node.id if isinstance(node, ast.Name) else node.attr
+            if timing_constant(name) or TIMING_KEYWORD.search(name) or name in GUARD_NAMES:
+                return True
+        if depth > 3:
+            return False
+        if isinstance(node, ast.Attribute):
+            q = self.qual(node)
+            if q and q.split(".")[0] in ("tests", "devtools"):
+                module, _, attr = q.rpartition(".")
+                return self.imported_seconds(module, attr, depth)
+            return False
+        if not isinstance(node, ast.Name):
+            return False
+        fn = self.function_of(at)
+        if fn is not None:
+            binds = self.bindings_in(fn, node.id)
+            if binds:
+                return any(self.positively_seconds(b, b, depth + 1) for b in binds)
+            if node.id in self.parameter_names(fn):
+                return False  # its callers are checked through its flow
+        return self.module_seconds(node.id, depth)
+
+    def module_seconds(self, name: str, depth: int) -> bool:
+        if name in self.imported:
+            module, _, attr = self.imported[name].rpartition(".")
+            return self.imported_seconds(module, attr, depth)
+        value = self.single_binding(self.module_binds.get(name, []), name)
+        return value is not None and self.positively_seconds(value, value, depth + 1)
+
+    def imported_seconds(self, module: str, name: str, depth: int) -> bool:
+        if not ALLOWANCES.get("P3 seconds through an import", True) or module not in self.modules:
+            return False
+        return scan_of(module, self.modules).module_seconds(name, depth + 1)
 
     @staticmethod
     def timeish(node: ast.AST) -> bool:
@@ -1402,8 +1495,9 @@ NAMED = (
     Named("H3", "tests/hang_guard.py", ("tier_guard", "runs_out", "pace"),
           frozenset({"P3", "P4"}),
           "the tier's guard, and runs_out and pace, which set the name a test gives them"),
-    Named("H3", "tests/conftest.py", ("pytest_timeout_set_timer",), frozenset({"P2", "P3"}),
-          "the hang guard's timer"),
+    Named("H3", "tests/conftest.py", ("pytest_timeout_set_timer", "pytest_collection_modifyitems"),
+          frozenset({"P2", "P3"}),
+          "the hang guard's timer, and the container tests' guard read from pytest's ini"),
     Named("H4", "tests/test_time_doubles.py",
           ("frozen_waits",
            "test_a_polling_loop_that_no_advance_reaches_raises_double_hung_at_the_bound"),
@@ -1489,8 +1583,14 @@ def planted_table() -> Table:
     return build_table([ast.parse(TABLE_DEFS)])
 
 
+# A module the planted twins import their constants from.
+PLANTED_MODULES = {"tests.planted_constants": ast.parse("SHORT = 0.5\nNAME = 'x'\n")}
+
+
 def flagged(source: str, table: Table | None = None, path: str = "tests/test_planted.py"):
-    scan = scan_source(path, placed(source), planted_table() if table is None else table)
+    scan = scan_source(
+        path, placed(source), planted_table() if table is None else table, PLANTED_MODULES
+    )
     return [(s.form, s.line) for s in scan.sites]
 
 
@@ -1717,6 +1817,21 @@ PLANTED = {
         "P4", "from rcman import repository\nfrom tests.hang_guard import runs_out\n"
         + fn("runs_out(monkeypatch, m, 'X_SECONDS', at=repository.X_SECONDS)", "monkeypatch, m"),
         4, "P4 runs_out"),
+    # the review's third round: a name at a positional slot is seconds unless shown otherwise
+    "a helper's positional parameter given a number": (
+        "P3", "def helper(t, n):\n    t.join(n)\ndef test_x(t):\n    helper(t, 0.5)\n", 4,
+        "P3 positional name"),
+    "a method's positional parameter given a number": (
+        "P3", "class W:\n    def ready(self, t, n):\n        t.join(n)\n"
+        "def test_x(w, t):\n    w.ready(t, 0.5)\n", 5, "P3 positional name"),
+    "a fixture at a positional slot": ("P3", fn("e.wait(short)", "e, short"), 2,
+                                       "P3 positional name"),
+    "a name bound from a call at a positional slot": ("P3", fn("s = f()\ne.wait(s)", "e, f"), 3,
+                                                      "P3 positional name"),
+    "a call at a positional slot": ("P3", fn("e.wait(f())", "e, f"), 2, "P3 positional name"),
+    "a disagreeing name given an imported number": (
+        "P3", "from tests.planted_constants import SHORT\n" + fn("go('a', SHORT)"), 3,
+        "P3 seconds through an import"),
     # the guard's own names
     "a local HANG_GUARD": ("GUARD", "HANG_GUARD = 0.5\n", 1, "guard names"),
 }  # fmt: skip
@@ -1752,6 +1867,8 @@ CLEAN = {
                                 "        t.join(timeout=s)\ndef test_x(t, w):\n"
                                 "    w.ready(t, 'x')\n"),
     "str.join": ("structure", "def f(parts, sep):\n    return sep.join(p for p in parts)\n"),
+    "a join on chr(10)": ("structure", "def f(screen):\n    last = screen()\n"
+                          "    return chr(10).join(last)\n"),
     "dict.get": ("structure", "def f(d):\n    return d.get('k', 5)\n"),
     "os.path.join": ("structure", "import os\ndef f(a):\n    return os.path.join(a, 'b')\n"),
     "a fake's sleep and advance (H7)": (
@@ -1803,6 +1920,23 @@ CLEAN = {
         "    runs_out(monkeypatch, m, 'Y_SECONDS', at=repository.FLOOR_SECONDS)\n"),
     "a docstring that names a sleep": ("structure", "def f():\n"
                                        "    '''Waits with $SLEEP 5 in the shell.'''\n"),
+    # the review's third round
+    "a join of a name bound to a list": ("not seconds", "def f(sep):\n    parts = ['a']\n"
+                                         "    return sep.join(parts)\n"),
+    "what is not seconds at a disagreeing slot": (
+        "seconds only at a disagreeing slot",
+        "from tests.planted_constants import NAME\nfrom tests.people import BOB\n"
+        + fn("go(BOB, tmp_path)\ngo(NAME, folder)\ngo(*args)\ngo(r.json(), url)",
+             "tmp_path, folder, args, r, url")),
+    "a Clock's advance (H7)": ("double (H7)", "from tests.time_doubles import Clock\n"
+                               "def test_x():\n    clock = Clock()\n    clock.advance(600)\n"),
+    "a double's method as a value (H7)": (
+        "a double's method (H7)", "from tests.time_doubles import Time\n"
+        "def helper(m):\n    times = Time()\n    return m(clock=times.clock, wait=times.wait)\n"),
+    "a helper that builds a double given its intervals (H7)": (
+        "a double's helper (H7)", "from tests.time_doubles import Time\n"
+        "def looping(s, **changes):\n    times = Time()\n    return s, times\n"
+        "def test_x(s):\n    looping(s, disk_interval_seconds=600)\n"),
 }  # fmt: skip
 
 
