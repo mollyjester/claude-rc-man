@@ -15,6 +15,7 @@ import pytest
 
 from devtools import docs_guard
 from devtools.held_folders import held
+from tests.hang_guard import HANG_GUARD
 
 REPO = Path(__file__).resolve().parent.parent
 
@@ -305,7 +306,7 @@ def make_targets(makefile: str) -> set[str]:
             env={"PATH": os.defpath, "LC_ALL": "C"},
             capture_output=True,
             text=True,
-            timeout=60,
+            timeout=HANG_GUARD,
         )
     lines = proc.stdout.splitlines()
     assert "# Files" in lines, proc.stdout + proc.stderr  # make printed its database

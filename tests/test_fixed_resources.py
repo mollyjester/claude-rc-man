@@ -22,6 +22,8 @@ from typing import NamedTuple
 
 import pytest
 
+from tests.hang_guard import HANG_GUARD
+
 TESTS = Path(__file__).resolve().parent
 ROOT = TESTS.parent
 DEVTOOLS = ROOT / "devtools"
@@ -597,7 +599,7 @@ def parse_ts(sources: dict[str, str], cwd: Path = FRONTEND) -> dict[str, dict]:
     given = {n: [SOURCES.get(Path(n).suffix, "ts"), s] for n, s in sources.items()}
     proc = subprocess.run(
         ["node", "--input-type=module", "-e", PARSE_TS],
-        cwd=cwd, input=json.dumps(given), capture_output=True, text=True, timeout=120,
+        cwd=cwd, input=json.dumps(given), capture_output=True, text=True, timeout=HANG_GUARD,
     )  # fmt: skip
     if proc.returncode != 0:
         raise RuntimeError(proc.stderr)

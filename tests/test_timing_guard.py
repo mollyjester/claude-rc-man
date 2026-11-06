@@ -59,8 +59,10 @@ TIMING_KEYWORD = re.compile(
     r"^(timeout|within|deadline|seconds|wait|quiet|interval|delay|every|grace)$"
     r"|_(timeout|seconds|within|interval|delay|wait|grace|after)$"
 )
+# A word of a constant's name, between underscores: WORKSPACE is not PACE, nor RELAYS DELAY.
 TIMING_CONSTANT = re.compile(
-    r"TIMEOUT|SECONDS|WITHIN|DEADLINE|GRACE|WAIT|PACE|TICK|POLL|INTERVAL|DELAY|QUIET|_FOR$|_LIMIT$"
+    r"(^|_)(TIMEOUT|SECONDS|WITHIN|DEADLINE|GRACE|WAIT|PACE|TICK|POLL|INTERVAL|DELAY|QUIET)S?(_|$)"
+    r"|_FOR$|_LIMIT$"
 )
 
 
@@ -1017,7 +1019,7 @@ class FileScan:
             return node.args[0], node.args[1:], node.keywords
         return node.func, node.args, node.keywords
 
-    NOT_SECONDS = (ast.List, ast.Tuple, ast.Dict, ast.Set, ast.JoinedStr, ast.Lambda,
+    NOT_A_TIME = (ast.List, ast.Tuple, ast.Dict, ast.Set, ast.JoinedStr, ast.Lambda,
                    ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)  # fmt: skip
 
     def not_seconds(self, node: ast.AST, at: ast.AST) -> bool:
@@ -1027,7 +1029,7 @@ class FileScan:
             return False
         if isinstance(node, ast.Constant) and isinstance(node.value, str | bytes | bool):
             return True
-        if isinstance(node, self.NOT_SECONDS):
+        if isinstance(node, self.NOT_A_TIME):
             return True
         if isinstance(node, ast.Name):
             looped = self.loop_iterable(node, at)
@@ -1409,20 +1411,78 @@ class FileScan:
                 self.site(node, "P4", f"{self.text(target)} = {self.text(value)}")
 
     def resolve_name(self, node: ast.AST, at: ast.AST) -> list[str] | None:
-        """A non-literal setattr name: a loop variable over a literal tuple or list, or a
-        module-local helper's parameter given a literal at every call."""
+        """A non-literal setattr name: a loop variable over a literal tuple or list, itself or
+        as a part of a tuple the loop unpacks; a test's parameter that pytest.mark.parametrize
+        gives literals; or a module-local helper's parameter given a literal at every call."""
         if not isinstance(node, ast.Name):
             return None
-        it = self.loop_iterable(node, at)
-        if it is not None:
-            if isinstance(it, ast.Tuple | ast.List) and all(
-                isinstance(e, ast.Constant) and isinstance(e.value, str) for e in it.elts
-            ):
-                return [e.value for e in it.elts]
-            return None
         fn = self.function_of(at)
+        values = self.loop_values(node, at)
+        if values is None and isinstance(fn, FUNCTIONS):
+            values = self.parametrized(fn, node.id)
+        if values is not None:
+            if values and all(isinstance(e, ast.Constant) and isinstance(e.value, str)
+                              for e in values):  # fmt: skip
+                return [e.value for e in values]
+            return None
         if isinstance(fn, FUNCTIONS) and node.id in self.parameter_names(fn):
             return self.literal_arguments(fn, node.id)
+        return None
+
+    @staticmethod
+    def _part(items: ast.AST, at: int, of: int) -> list[ast.AST] | None:
+        """Item ``at`` of each literal tuple or list of ``of`` items in the literal ``items``."""
+        if not isinstance(items, ast.Tuple | ast.List):
+            return None
+        if of == 1:
+            return list(items.elts)
+        parts = []
+        for e in items.elts:
+            if not (isinstance(e, ast.Tuple | ast.List) and len(e.elts) == of):
+                return None
+            parts.append(e.elts[at])
+        return parts
+
+    def loop_values(self, node: ast.Name, at: ast.AST) -> list[ast.AST] | None:
+        """The values ``node`` takes, where ``at`` is in a for loop or a comprehension whose
+        target is ``node``, or a tuple that holds it, over a literal tuple or list (of literal
+        tuples as long as the target); [] where it is a loop variable over anything else; None
+        where it is no loop variable there."""
+        parent = self.parents.get(at)
+        while parent is not None:
+            if isinstance(parent, ast.For):
+                loops = [(parent.target, parent.iter)]
+            elif isinstance(parent, self.COMPREHENSIONS):
+                loops = [(g.target, g.iter) for g in parent.generators]
+            else:
+                loops = []
+            for target, it in loops:
+                names = [target] if isinstance(target, ast.Name) else (
+                    target.elts if isinstance(target, ast.Tuple) else [])  # fmt: skip
+                for i, t in enumerate(names):
+                    if isinstance(t, ast.Name) and t.id == node.id:
+                        return self._part(it, i, len(names)) or []
+            parent = self.parents.get(parent)
+        return None
+
+    def parametrized(self, fn: ast.AST, name: str) -> list[ast.AST] | None:
+        """The literal values pytest.mark.parametrize gives the parameter ``name`` of ``fn``;
+        None where it gives it none, or none that is literal."""
+        for d in getattr(fn, "decorator_list", []):
+            if not (isinstance(d, ast.Call) and len(d.args) > 1
+                    and self.text(d.func).endswith("mark.parametrize")):  # fmt: skip
+                continue
+            names = d.args[0]
+            if isinstance(names, ast.Constant) and isinstance(names.value, str):
+                argnames = [n.strip() for n in names.value.split(",")]
+            elif isinstance(names, ast.Tuple | ast.List) and all(
+                isinstance(e, ast.Constant) and isinstance(e.value, str) for e in names.elts
+            ):
+                argnames = [e.value for e in names.elts]
+            else:
+                continue
+            if name in argnames:
+                return self._part(d.args[1], argnames.index(name), len(argnames))
         return None
 
     COMPREHENSIONS = (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)
@@ -1629,6 +1689,11 @@ NAMED = (
           "the recorder's command line's watch, against the real claude with a person at hand: "
           "no test reaches it (test_record_claude.py's test_no_test_reaches_the_command_lines_"
           "watch)"),
+    Named("H14", "tests/killed_runs.py", ("hold", "shell_hold", "KilledRun.__init__"),
+          frozenset({"P1", "P2", "P2s"}),
+          "a killed run's own hang bound: hold() and shell_hold() give up at the deadline the run "
+          "is handed, the tier's guard from its start, and timeout kills the run at twice the "
+          "guard; each only ends a run nothing killed or released"),
     Named("Q1", "devtools/held_folders.py", ("", "_stop_server", "unheld", "_clear"),
           frozenset({"P1", "P2", "P3"}),
           "the sweep of held folders: UNLOCKED_FOR and TMUX_GONE_WITHIN are its behaviour, and "
@@ -1857,6 +1922,7 @@ PLANTED = {
     "tier_guard in a default": ("P3", "from tests.hang_guard import tier_guard\n"
                                 "def f(within=tier_guard()):\n    pass\n", 2, "P3 defaults"),
     "a constant": ("P3", "ANSWERS_WITHIN = 15.0\n", 1, "P3 constants"),
+    "a constant of a plural timing word": ("P3", "STOP_INTERVALS = 0.5\n", 1, "P3 constants"),
     "a class constant": ("P3", "class C:\n    POLL_SECONDS = 0.1\n", 2, "P3 constants"),
     "tier_guard at module level": ("P3", "from tests.hang_guard import tier_guard\n"
                                    "WAIT_SECONDS = tier_guard()\n", 2, "P3 constants"),
@@ -1889,6 +1955,13 @@ PLANTED = {
                              "        monkeypatch.setattr(m, name, 0.3)\n", 3, "P4 branch"),
     "an unresolved name": ("P4", fn("monkeypatch.setattr(m, name, 0.3)", "monkeypatch, m, name"),
                            2, "P4 branch"),
+    "a name a loop unpacks": ("P4", "def test_x(monkeypatch, m, n):\n"
+                              "    for module, name in ((m, 'HEAD_SECONDS'), (n, 'IDLE')):\n"
+                              "        monkeypatch.setattr(module, name, 0.3)\n", 3, "P4 branch"),
+    "a parametrized name": ("P4", "import pytest\n"
+                            "@pytest.mark.parametrize('name', ['HEAD_SECONDS', 'IDLE'])\n"
+                            "def test_x(monkeypatch, m, name):\n"
+                            "    monkeypatch.setattr(m, name, 0.3)\n", 4, "P4 branch"),
     "a patch of time itself": ("P4", "import time\ndef test_x(monkeypatch):\n"
                                "    monkeypatch.setattr(time, '$SLEEP', print)\n", 3,
                                "P4 branch"),
@@ -1978,6 +2051,9 @@ CLEAN = {
     "tier_guard in a test": ("tier_guard", "from tests.hang_guard import tier_guard\n"
                              "def f(g):\n    g(timeout=tier_guard())\n"),
     "None": ("none", "def f(g):\n    g(timeout=None)\n"),
+    "a name that holds a timing word within one of its own": (
+        "structure", "MOST_RELAYS_PER_WORKSPACE = 1\ndef test_x(monkeypatch, mod):\n"
+        "    monkeypatch.setattr(mod, 'MOST_RELAYS_PER_WORKSPACE', 100)\n"),
     "minus one": ("minus one", "def f(lock):\n    lock.acquire(True, -1)\n"),
     "zero": ("zero", "def f(e, g):\n    e.wait(0)\n    g(within=0)\n"),
     "a sleep of 0 (H8)": ("turn (H8)", "import asyncio\nasync def f():\n"
@@ -2019,6 +2095,13 @@ CLEAN = {
     "a resolved non-timing name": ("structure", "def test_x(monkeypatch, m):\n"
                                    "    for name in ('_changed', '_closing'):\n"
                                    "        monkeypatch.setattr(m, name, None)\n"),
+    "a non-timing name a loop unpacks": (
+        "structure", "def test_x(monkeypatch, m, n):\n"
+        "    for module, name in ((m, 'unlink'), (n, 'rmdir')):\n"
+        "        monkeypatch.setattr(module, name, None)\n"),
+    "a non-timing parametrized name": (
+        "structure", "import pytest\n@pytest.mark.parametrize('table', ['NODE_SHA256', 'UV'])\n"
+        "def test_x(monkeypatch, m, table):\n    monkeypatch.setattr(m, table, {})\n"),
     "a child's wait loop (H13)": ("child loop (H13)",
                                   "s = 'while [ ! -e f ]; do $SLEEP 0.05; done'\n"),
     "a child's endless loop (H13)": ("child loop (H13)", "s = 'while :; do $SLEEP 1; done'\n"),
@@ -2170,6 +2253,55 @@ def test_a_stand_in_named_only_by_the_guard_is_reported():
     """Planted twin: with only this module scanned, no stand-in is named by a test."""
     problems = stand_in_problems([GUARD_FILE])
     assert problems == [f"{p} is named in the string of no scanned file" for p in STAND_INS]
+
+
+# --- the real tree -------------------------------------------------------------------------------
+
+# The allowances the real tree's scan must have made, each at least once, and two files whose
+# doubles it must have found (H7): that each holds what it is for, and the scan sees the tree.
+DERIVED = {"double (H7)", "child loop (H13)", "benchmark (H10)"}
+UNDER_H7 = ("tests/test_workspace_limits.py", "tests/test_monitor.py")
+
+
+def real_tree_problems(tree: Tree) -> list[str]:
+    """What is wrong with the scope as ``tree`` scanned it: every site no named pattern covers;
+    the stale checks of the named patterns and the stand-ins; and the non-vacuity checks, that
+    sites were seen at all and the derived allowances were made where they are known to be."""
+    problems = [f"{s.path}:{s.line}: {s.form}: {s.text} [{s.where}]"
+                for s in unexempted(tree.sites)]  # fmt: skip
+    problems += named_problems(tree.sites)
+    problems += stand_in_problems()
+    if not tree.sites:
+        problems.append("the scan saw no site at all, not even a named pattern's")
+    kinds = {k for k, _ in tree.derived}
+    problems += [f"no site was allowed as {k}" for k in sorted(DERIVED - kinds)]
+    doubled = {s.path for k, s in tree.derived if k == "double (H7)"}
+    problems += [f"no double (H7) was found in {p}" for p in UNDER_H7 if p not in doubled]
+    return problems
+
+
+def test_no_test_waits_on_real_time():
+    """G2 over the real tree, scanned once: no site but the named patterns', which are not
+    stale, and a scan that saw what it is known to have to see."""
+    assert real_tree_problems(scan_tree()) == []
+
+
+def test_a_planted_site_in_the_tree_is_a_problem():
+    """Planted twin of the real tree's check: the tree's scan with one site more, and with its
+    known allowances missing, is reported."""
+    planted = Site("tests/test_planted.py", 2, "P2", "time.$SLEEP(1)", "test_x")
+    tree = Tree([planted], [], Table())
+    problems = real_tree_problems(tree)
+    assert "tests/test_planted.py:2: P2: time.$SLEEP(1) [test_x]" in problems
+    assert [p for p in problems if p.startswith("no site was allowed as")] == [
+        f"no site was allowed as {k}" for k in sorted(DERIVED)
+    ]
+    assert [p for p in problems if p.startswith("no double (H7)")] == [
+        f"no double (H7) was found in {p}" for p in UNDER_H7
+    ]
+    nothing = "the scan saw no site at all, not even a named pattern's"
+    assert nothing not in problems
+    assert nothing in real_tree_problems(Tree([], [], Table()))
 
 
 # --- nothing autouse is added --------------------------------------------------------------------

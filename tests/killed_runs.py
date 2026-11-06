@@ -4,8 +4,11 @@ Not a test module. KilledRun runs ``python -m pytest -n 2`` over tiny test files
 writes, in a session of its own, with the environment the tests were started with
 (tests/collected.py's child_env), the repository on PYTHONPATH and a TMPDIR of its own.
 The tiny tests say what they made with report() and wait in hold() until the run is
-killed with kill() or released with finish(). Every wait has a deadline, and the run
-itself is ended by ``timeout`` past it, so a run whose test was itself killed ends too.
+killed with kill() or released with finish(). A wait here is the test's own ``until``, which
+gives up only at the tier's hang guard; in the run, hold() gives up at a deadline the run is
+handed, the tier's guard from its start, and the run itself is ended by ``timeout`` at twice
+the guard, so that a run whose test was itself killed ends too. Those two bounds only end a run
+nothing killed or released (H14 of the timing guard, tests/test_timing_guard.py).
 FirstThreadEnded runs a process whose first thread has ended while another runs, which
 counts as running (held_folders.running).
 
@@ -33,10 +36,10 @@ from typing import IO
 
 from devtools import held_folders as hf
 from tests.collected import child_env
+from tests.hang_guard import tier_guard
+from tests.until import until
 
 REPO = Path(__file__).resolve().parent.parent
-# Seconds any wait on a killed run may take; the run itself is ended past it.
-DEADLINE = 120.0
 # What a stem's name begins with.
 STEM = "rcks-"
 ENV_REPORTS = "RCMAN_KILLED_RUN_REPORTS"
@@ -158,16 +161,21 @@ class Reports:
         self._alive = alive
         self._output = output
 
-    def wait(self, name: str, deadline: float = DEADLINE) -> dict:
-        """The report ``name`` once complete, with every path in it checked."""
-        end = time.monotonic() + deadline
-        while (data := complete_report(self.folder / f"{name}.json")) is None:
-            if self._alive is not None and not self._alive():
+    def wait(self, name: str, once: bool = False) -> dict:
+        """The report ``name`` once complete, with every path in it checked; with ``once``,
+        as it is at the first look, a TimeoutError where it is not complete (rule (a))."""
+
+        def complete() -> tuple[dict] | None:
+            ran = self._alive is None or self._alive()  # before the look: what it left is read
+            data = complete_report(self.folder / f"{name}.json")
+            if data is None and once:
+                raise TimeoutError(f"no complete report {name}")
+            if data is None and not ran:
                 said = self._output() if self._output else ""
                 raise RuntimeError(f"the run ended before reporting {name}:\n{said}")
-            if time.monotonic() > end:
-                raise TimeoutError(f"no complete report {name} within {deadline}s")
-            time.sleep(0.05)
+            return None if data is None else (data,)  # a report of {} is one too
+
+        [data] = until(complete)
         for value in data.get("paths", {}).values():
             checked(value, self.prefixes, self.tmp_path)
         for pid in data.get("pids", {}).values():
@@ -226,13 +234,9 @@ FIRST_THREAD_ENDED = ("Z", 2)
 ENDED = ("Z", 1)
 
 
-def wait_for_state(pid: int, wanted: tuple[str, int], deadline: float = DEADLINE) -> None:
+def wait_for_state(pid: int, wanted: tuple[str, int]) -> None:
     """Wait until ``pid`` reads ``wanted`` (held_folders.state_and_threads)."""
-    end = time.monotonic() + deadline
-    while (found := hf.state_and_threads(pid)) != wanted:
-        if time.monotonic() > end:
-            raise TimeoutError(f"process {pid} reads {found}, not {wanted}, after {deadline}s")
-        time.sleep(0.02)
+    until(lambda: hf.state_and_threads(pid) == wanted)
 
 
 class FirstThreadEnded:
@@ -261,7 +265,7 @@ class FirstThreadEnded:
             self._holding.close()
         if self.proc is not None:
             try:
-                self.proc.communicate(timeout=DEADLINE)
+                self.proc.communicate(timeout=tier_guard())
             except subprocess.TimeoutExpired:
                 self.proc.kill()
                 self.proc.communicate()
@@ -280,15 +284,16 @@ class FirstThreadEnded:
         if self._holding is not None:
             self._holding.close()  # the process holds it now
             self._holding = None
-        end = time.monotonic() + DEADLINE
-        while (found := hf.state_and_threads(self.proc.pid)) != FIRST_THREAD_ENDED:
+
+        def first_thread_ended() -> bool:
+            found = hf.state_and_threads(self.proc.pid)
             if found in (None, ENDED):
                 said = self.proc.communicate()[1].decode(errors="replace")
                 code = self.proc.returncode
                 raise RuntimeError(f"the process ended instead, with {code}:\n{said}")
-            if time.monotonic() > end:
-                raise TimeoutError(f"process {self.proc.pid} reads {found} after {DEADLINE}s")
-            time.sleep(0.02)
+            return found == FIRST_THREAD_ENDED
+
+        until(first_thread_ended)
         return self.proc.pid
 
     def release(self) -> None:
@@ -344,7 +349,7 @@ class KilledRun:
         ini = self.base / "pytest.ini"
         ini.write_text("[pytest]\n", encoding="utf-8")
         self.output = self.base / "output.txt"
-        self.deadline = time.time() + DEADLINE
+        self.deadline = time.time() + tier_guard()
         run_env = child_env(
             {
                 "PYTHONPATH": str(REPO),
@@ -356,7 +361,7 @@ class KilledRun:
             }
         )
         argv = [
-            "timeout", "-s", "KILL", str(int(DEADLINE) + 30),
+            "timeout", "-s", "KILL", str(int(2 * tier_guard())),
             sys.executable, "-m", "pytest", "-n", "2", "-p", "no:cacheprovider", "-q",
             "-c", str(ini), "--rootdir", str(self.base),
             "--basetemp", str(self.base / "basetemp"), str(self.inner),
@@ -382,16 +387,13 @@ class KilledRun:
     def alive(self) -> bool:
         return self.proc.poll() is None
 
-    def _gone(self, until: float) -> None:
+    def _gone(self) -> None:
         """Wait for the run and every process of its session to end."""
         try:
-            self.proc.wait(timeout=max(0.0, until - time.monotonic()))
+            self.proc.wait(timeout=tier_guard())
         except subprocess.TimeoutExpired as error:
             raise TimeoutError(f"the run is still running:\n{self.text()}") from error
-        while left := _in_session(self.proc.pid):
-            if time.monotonic() > until:
-                raise TimeoutError(f"the run's processes {left} are still running")
-            time.sleep(0.05)
+        until(lambda: not _in_session(self.proc.pid))
 
     def kill(self, sig: int) -> None:
         """Send ``sig`` to the run's process group, and to anything else in its session,
@@ -401,12 +403,12 @@ class KilledRun:
         for pid in _in_session(self.proc.pid):
             with contextlib.suppress(ProcessLookupError):
                 os.kill(pid, sig)
-        self._gone(time.monotonic() + DEADLINE)
+        self._gone()
 
     def finish(self) -> tuple[int, str]:
         """Release the run and wait for it to end; its exit status and output."""
         self.release.touch()
-        self._gone(time.monotonic() + DEADLINE)
+        self._gone()
         return self.proc.returncode, self.text()
 
     def text(self) -> str:

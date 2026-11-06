@@ -27,7 +27,7 @@ import pytest
 
 from tests.collected import collect
 from tests.container_marker import MARKER
-from tests.hang_guard import CONTAINER_GUARD, HOST_GUARD
+from tests.hang_guard import CONTAINER_GUARD, HANG_GUARD, HOST_GUARD
 
 REPO = Path(__file__).resolve().parent.parent
 MAKEFILE = REPO / "Makefile"
@@ -70,7 +70,7 @@ def recorded(tmp_path: Path, target: str, makefile: Path = MAKEFILE) -> list[Cal
         env={"PATH": str(fakebin), "MAKE_RECORD": str(log)},
         capture_output=True,
         text=True,
-        timeout=60,
+        timeout=HANG_GUARD,
     )
     assert proc.returncode == 0, proc.stdout + proc.stderr
     calls = []
@@ -683,7 +683,7 @@ def lint_tree(
         env=env,
         capture_output=True,
         text=True,
-        timeout=120,
+        timeout=HANG_GUARD,
     )
 
 
@@ -758,7 +758,7 @@ BIOME_CONFIG = FRONTEND / "biome.jsonc"
 
 def biome(*args: str) -> str:
     proc = subprocess.run(
-        [str(BIOME), *args], cwd=FRONTEND, capture_output=True, text=True, timeout=60
+        [str(BIOME), *args], cwd=FRONTEND, capture_output=True, text=True, timeout=HANG_GUARD
     )
     assert proc.returncode == 0, proc.stdout + proc.stderr
     return re.sub(r"\x1b\[[0-9;]*m", "", proc.stdout)

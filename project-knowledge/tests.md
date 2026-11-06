@@ -78,8 +78,8 @@ runtime: its socket in a held folder (`rcfw-`), each request one Caddy would pas
 connection kept open as Caddy pools one, to an app of the test's own on the host's loopback,
 which the host runtime's relays reach; the server's clock is the test's where a session's idle
 timeout, its lifetime or a way in's expiry is reached; the app holds a request (`/held`), or an
-upgrade, until the test lets it answer, and streams an answer without end (`/endless`), so that
-what is under way as a session ends is seen to end. `tests/test_main.py` holds the lifespan's
+upgrade, until the test lets it answer, and holds an answer open after its first chunk
+(`/endless`), so that what is under way as a session ends is seen to end. `tests/test_main.py` holds the lifespan's
 start and end of it.
 
 Forwarded ports' relays on the host runtime, whose relays are the host's processes, are
@@ -338,9 +338,10 @@ own cases in child pytests.
 
 **The rules.** A test that waits on time keeps these:
 
-- (a) A deadline meant to run out is patched to 0 against a stand-in that never finishes, and
-  covers nothing that must succeed; a control runs before the patch, or after
-  `monkeypatch.setattr` puts the original back.
+- (a) A deadline meant to run out is put at 0 with `runs_out`, or at the floor the product
+  refuses to go under, against a stand-in that never finishes, and covers nothing that must
+  succeed; a control runs before it, or after the `monkeypatch.context()` it was given puts the
+  original back.
 - (b) A deadline over something that must happen is left as it is, or raised to `HANG_GUARD`
   before `client`.
 - (c) To tell which of two causes ended something, never assert the time it took. Where the call
@@ -350,16 +351,65 @@ own cases in child pytests.
   the worker until the guard ends it: either the deadline that must not act is set to
   `HANG_GUARD`, so that the wrong cause ends as another problem the test asserts against, or the
   call runs in a thread joined within `HANG_GUARD`, and the test asserts it ended.
-- (d) A pace may be shortened where the test only waits, within `HANG_GUARD`, for what the pace
-  makes happen.
+- (d) A pace may be shortened, with `pace`, where the test only waits, with `until`, for what
+  the pace makes happen.
 - (e) Something is asserted not to have happened only after a point the test observed: a recorded
   wait, a blocked acquire, a parked sleep, a stand-in that says it was entered; never after a
   sleep or a `join(N)`.
-- (f) Every bound on something that must happen in a test (`wait(N)`, `join(N)`, a deadline loop,
-  a socket's or a subprocess's timeout, `fail_after`) is `HANG_GUARD`, or `CONTAINER_HANG_GUARD`
-  in a container test.
+- (f) Every bound on something that must happen in a test (`wait(N)`, `join(N)`, a socket's or a
+  subprocess's timeout, `fail_after`) is `HANG_GUARD`, or `CONTAINER_HANG_GUARD` in a container
+  test, or `tier_guard()` in code both tiers run; a wait for what the test cannot be told of is
+  `until`'s, never a deadline loop of its own.
 - (g) A stand-in meant to outlast the test sleeps beyond twice `HANG_GUARD`, or until it is
   killed.
+
+**The helpers.** `until(condition)`, in `tests/until.py`, is a test's wait for what it cannot be
+told of: it looks every `PACE`, or every `SLOW` where a look costs a process of its own, and gives
+the condition's first truthy value. It takes no limit: it gives up only at the tier's guard
+(`tier_guard()`, [the hang guard](#the-hang-guard)), with an `AssertionError` that names the
+condition and what it last gave, so that the test fails as any other does and its teardown runs.
+`until_async` is the same in a coroutine. `tests/hang_guard.py` holds the rest. `runs_out(monkeypatch,
+module, name, at=0)` puts a product's deadline at 0, or at the floor `at` where the product refuses
+0, for rule (a); `pace(monkeypatch, module, name, seconds)` shortens a product's pace for rule (d).
+Each asserts that its value is below the product's, and is undone by the `monkeypatch` it is
+given: a `monkeypatch.context()` where the test needs the product's value back within it, never a
+second setattr. `handed(guard)` gives `tier_guard()` its value in a session or module fixture,
+where no test's tier is known. In a child program's source a time comes from the guard too:
+`{3 * HANG_GUARD:g}` for a stand-in that outlasts the test (rule (g)), and `RUNS_OUT`, the
+smallest whole second every tool takes, for a `timeout` or a deadline meant to run out against a
+program that never finishes (rule (a)). A child's own wait is a loop on a condition, with a pace
+and no clock or count, as `while [ ! -e release ]; do sleep …; done`, which the test ends by
+making the file once it has seen what it needs; `tests/test_terminals.py`'s `sleep_argv` and
+`sleep_of` give the tests of the terminals a `sleep` that outlasts the test, found by a fraction
+of a second of its own added to it.
+
+**The timing guard** (`tests/test_timing_guard.py`) holds every test to these rules by a static
+scan of the Python of `tests/` and `devtools/`, `tests/container/` aside (`SCOPE`), which imports
+and runs nothing it scans; it reads `backend/` and `helpers/` too, for the parameters of a timing
+name each function takes. It flags elapsed real time compared, a clock read or a name derived
+from one in a comparison or a difference (P1); a sleep in test code, or a `threading.Timer` or a
+loop's `call_later` (P2); a sleep or a `timeout` written in a child program's source, unless it
+is a guard's multiple, `RUNS_OUT` or the pace of a child's wait loop (P2s); a timeout that is not
+allowed, at a keyword or a parameter of a timing name, at a known position of a wait, in a
+parameter's default, in a module's or a class's constant of a timing name, or in
+`pytest.mark.timeout` (P3); and a product's timing constant patched to a value that is not
+allowed, the time module patched, a value given back by a second setattr, or a name a setattr is
+given that cannot be resolved (P4). The allowed values are the tier's guard and its multiples,
+`tier_guard()` where a test reads it, `None`, `-1` and `0`. A timing name is a word of the name
+between underscores; a name a setattr is given is resolved through a loop over literals, the
+tuples such a loop unpacks, a test's literal `parametrize` and a helper's literal arguments. What
+the scan allows where it finds it is a call on a double (`tests/time_doubles.py`), a turn of 0, a
+benchmark test, and a child's wait loop. The only other exemptions are its named patterns,
+`NAMED`, each with its reason and a stale check that fails once its subject holds no site:
+`until`'s own pace and bound (H1), the doubles' hang bound (H2), the hang guard with `runs_out`
+and `pace` (H3), the short bounds the tests of these hand them (H4), tmuxctl's give-up and the
+recorder's command-line watch, which no test reaches (H12), a killed run's own hang bound in
+`tests/killed_runs.py`, derived from the tier's guard (H14), and the sweep of held folders, whose
+deadlines are its behaviour (Q1); and the programs of `STAND_INS`, which run only as another
+program, whose timing is theirs. Planted twins show each form flagged and each allowance clean;
+`test_no_test_waits_on_real_time` scans the real tree once, and fails on any site, on a stale
+named pattern or stand-in, and on a scan that saw no site or made none of the allowances it is
+known to make.
 
 A hangup ends a terminal's shell and its jobs only where SIGHUP is at its default in them, and
 an ignore survives exec: a suite started with SIGHUP ignored, as under `nohup`, would leave them
@@ -833,6 +883,11 @@ removal does.
 These hold the repository to its own rules. Each has planted twins that prove
 it can fail, and a positive control that keeps an empty input from passing.
 
+- **No test waits on real time** (`tests/test_timing_guard.py`). The timing guard of [Time in
+  tests](#time-in-tests): a static scan of the tests for clock comparisons, sleeps, timeouts
+  other than the tier's guard and shortened product deadlines, whose only exemptions are its
+  named patterns, each with a stale check. Planted twins prove each form is flagged and each
+  allowance clean, and the scan of the real tree fails where it saw nothing.
 - **References resolve** (`tests/test_docs_guard.py`). Every relative link
   and every `*.md` mention in any tracked or untracked-but-not-ignored text
   file must name a file or directory in the repository. A link resolves

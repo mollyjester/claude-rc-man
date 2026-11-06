@@ -9,6 +9,7 @@ from pathlib import Path
 
 from helpers import claude_checks as cc
 from tests import claude_download
+from tests.hang_guard import HANG_GUARD
 
 REPO = Path(__file__).resolve().parent.parent
 
@@ -24,7 +25,7 @@ def canary(candidate: Path, version: str, tmp_path: Path, **env) -> subprocess.C
         env={"PATH": os.environ["PATH"], "TMPDIR": str(scratch), **env},
         capture_output=True,
         text=True,
-        timeout=300,
+        timeout=HANG_GUARD,
     )
 
 

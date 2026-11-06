@@ -16,7 +16,6 @@ import json
 import shutil
 import subprocess
 import sys
-import time
 from pathlib import Path
 
 import pytest
@@ -24,6 +23,7 @@ import pytest
 from devtools import pre_test_commit
 from tests.git_fixtures import FIXTURE_HOME, fixture_env, fixture_git, make_repo, write
 from tests.hang_guard import HANG_GUARD
+from tests.until import until
 
 REPO = Path(__file__).resolve().parent.parent
 SCRIPT = REPO / "devtools" / "pre_test_commit.py"
@@ -102,7 +102,7 @@ def run_hook(command: str, cwd: Path, project: Path | None = None) -> tuple[int,
         env=env(project or cwd),
         capture_output=True,
         text=True,
-        timeout=120,
+        timeout=HANG_GUARD,
     )
     return proc.returncode, (json.loads(proc.stdout) if proc.stdout.strip() else None)
 
@@ -301,7 +301,7 @@ def test_a_command_that_runs_no_tests_starts_no_process(repo, monkeypatch):
         "make -j 4 test",
         "make -j test",
         "make V=1 test",
-        "timeout 600 make check",
+        f"timeout {3 * HANG_GUARD:g} make check",
         "pytest",
         "pytest tests/test_x.py -q 2>&1 | tail -20",
         "uv run pytest -n auto",
@@ -890,10 +890,7 @@ def test_a_push_that_overruns_the_deadline_is_reported(tmp_path, repo, origin, m
         out = pre_test_commit.handle(payload("make test", repo), env(repo), deadline=HANG_GUARD)
     finally:
         release.touch()
-    deadline = time.monotonic() + HANG_GUARD  # the hook, let go, ends
-    while not done.exists():
-        assert time.monotonic() < deadline, "the held hook did not end"
-        time.sleep(0.05)
+    until(done.exists)  # the hook, let go, ends
 
     assert len(pushes) == 1  # the push was reached, and overran
     assert not dirty(repo), "the commit is made before the push"
@@ -963,7 +960,7 @@ def run_wired(project: Path, cwd: Path) -> subprocess.CompletedProcess:
         env=env(project),
         capture_output=True,
         text=True,
-        timeout=120,
+        timeout=HANG_GUARD,
     )
 
 

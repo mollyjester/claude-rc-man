@@ -17,6 +17,7 @@ import pytest
 
 from devtools import held_folders as hf
 from tests import killed_runs as kr
+from tests.hang_guard import HANG_GUARD
 
 REPO = Path(__file__).resolve().parent.parent
 
@@ -263,7 +264,7 @@ def heard(listener: Listener, sock: Path) -> None:
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
         client.connect(str(sock))
         client.sendall(b"ping")
-        assert listener.got.wait(10)
+        assert listener.got.wait(HANG_GUARD)
     assert listener.received[-1] == b"ping"
     listener.received.clear()
 

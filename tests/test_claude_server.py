@@ -8,7 +8,6 @@ import os
 import signal
 import subprocess
 import threading
-import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -25,6 +24,7 @@ from tests.conftest import fake_claude
 from tests.hang_guard import HANG_GUARD
 from tests.test_screens import RECONNECTED_SCENARIOS
 from tests.time_doubles import FakeTime
+from tests.until import until
 
 REPO = Path(__file__).resolve().parent.parent
 TMUX_CONF = REPO / "backend" / "rcman" / "tmux.conf"
@@ -60,7 +60,7 @@ def world(tmp_path):
         channel = runtime.channel(NAME)
         calls = []
 
-        def run(argv, timeout=cs.REQUEST_TIMEOUT):
+        def run(argv, timeout=HANG_GUARD):
             calls.append(list(argv))
             return channel.run(argv, timeout=timeout)
 
@@ -86,12 +86,13 @@ def refused(call, *args) -> cs.ServerError:
 
 
 def within_the_guard(found, what: str):
-    """``found()`` looked at until it gives something, within HANG_GUARD."""
-    deadline = time.monotonic() + HANG_GUARD
-    while not (got := found()):
-        assert time.monotonic() < deadline, f"{what} did not come about within {HANG_GUARD}s"
-        time.sleep(0.1)
-    return got
+    """``found()`` looked at until it gives something, ``what``, within the hang guard."""
+
+    def looked() -> object:
+        return found()
+
+    looked.__qualname__ = what  # said where it does not come about
+    return until(looked)
 
 
 def wait_state(world, wanted, named=False):
@@ -502,7 +503,8 @@ def test_a_start_that_never_leaves_starting_answers_timeout_past_its_deadline(
 ):
     log_in(world)
     world.binary.write_text(
-        f'#!/bin/sh\n[ "$1" = remote-control ] || exec {rec.FAKE_CLAUDE} "$@"\nexec sleep 600\n',
+        f'#!/bin/sh\n[ "$1" = remote-control ] || exec {rec.FAKE_CLAUDE} "$@"\n'
+        f"exec sleep {3 * HANG_GUARD:g}\n",
         encoding="utf-8",
     )
     start = fake_time.mark()
@@ -524,7 +526,7 @@ def test_an_unrecognised_screen_is_an_answer_once_it_has_lasted_its_grace(world,
     log_in(world)
     world.binary.write_text(
         f'#!/bin/sh\n[ "$1" = remote-control ] || exec {rec.FAKE_CLAUDE} "$@"\n'
-        "echo a screen rcman does not know\nexec sleep 600\n",
+        f"echo a screen rcman does not know\nexec sleep {3 * HANG_GUARD:g}\n",
         encoding="utf-8",
     )
     starting = Calling(world.server.start, "pfx")
@@ -570,9 +572,9 @@ def ignoring(world, *signals, child=False, detached=False):
     returned file."""
     pid_file = world.tmp_path / "child.pid"
     if detached:
-        spawn = "setsid sleep 600 </dev/null >/dev/null 2>&1 &\n"
+        spawn = f"setsid sleep {3 * HANG_GUARD:g} </dev/null >/dev/null 2>&1 &\n"
     elif child:
-        spawn = "(trap '' HUP; exec sleep 600) </dev/null >/dev/null 2>&1 &\n"
+        spawn = f"(trap '' HUP; exec sleep {3 * HANG_GUARD:g}) </dev/null >/dev/null 2>&1 &\n"
     else:
         spawn = ""
     if spawn:
@@ -848,7 +850,7 @@ def test_a_server_whose_window_cannot_be_pinned_is_still_found(world):
     log_in(world)
     real = world.server.tmux.run_argv
 
-    def failing(argv, timeout=cs.REQUEST_TIMEOUT):
+    def failing(argv, timeout=HANG_GUARD):
         if "window-size" in argv:
             return rt.Result(1, b"", b"planted failure on window-size")
         return real(argv, timeout=timeout)
@@ -918,7 +920,8 @@ def test_a_stop_ends_a_sessions_command_in_a_session_of_its_own(world, fake_time
     log_in(world)
     pid_file = world.tmp_path / "command.pid"
     session = (
-        f"sh -c 'setsid sleep 600 </dev/null >/dev/null 2>&1 & echo $! > {pid_file}; wait' "
+        f"sh -c 'setsid sleep {3 * HANG_GUARD:g} </dev/null >/dev/null 2>&1 & "
+        f"echo $! > {pid_file}; wait' "
         "</dev/null >/dev/null 2>&1 &\n"
     )
     write_claude(
@@ -947,7 +950,8 @@ def test_a_stop_ends_what_the_server_started_after_the_stop_began(world, monkeyp
     # The command writes its pid and its session's id, then becomes sleep.
     command = world.tmp_path / "command.sh"
     command.write_text(
-        f"read -r a b c d e sid rest < /proc/$$/stat\necho $$ $sid > {pid_file}\nexec sleep 600\n"
+        f"read -r a b c d e sid rest < /proc/$$/stat\necho $$ $sid > {pid_file}\n"
+        f"exec sleep {3 * HANG_GUARD:g}\n"
     )
     quiet = "</dev/null >/dev/null 2>&1"
     late = f'sh -c "setsid sh {command} {quiet} & wait" {quiet} &'
