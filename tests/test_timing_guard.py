@@ -1,36 +1,44 @@
 """The timing guard, G2: no test waits on, or races, real time.
 
 A static scan of the test code (project-knowledge/tests.md, "Time in tests"). It imports no
-scanned module and runs nothing: each file is parsed once and walked once. It flags
+scanned module and runs nothing: each file is parsed once, and its tree walked once for its
+parents, owners and bindings. It flags
 
-- P1, elapsed real time compared: a comparison with a clock read, or with a name assigned from
-  one in the same function, and a difference of two such;
+- P1, elapsed real time compared: a comparison with a clock read, or with a name derived from
+  one through arithmetic, min or max, and a difference of two such;
 - P2, a sleep: time.sleep, asyncio.sleep, anyio.sleep and trio.sleep, resolved through imports,
   with any argument but 0, and threading.Timer, loop.call_later and loop.call_at;
-- P2s, a sleep or a timeout written in a child program's source, held in a string: the shell's
-  ``sleep N`` and ``timeout [-s S] [-k K] N``, Python's ``time.sleep(N)``, and the numbers of an
-  argv of the ``timeout`` tool; an interpolated one too, unless it is a multiple of the guard or
-  RUNS_OUT;
-- P3, a timeout that is not the guard: a keyword of a timing name, a known positional, a
-  number at a position the parameter table gives, a parameter's default, a module's or a
-  class's constant of a timing name, and pytest.mark.timeout;
+- P2s, a sleep or a timeout written in a child program's source: the shell's ``sleep N`` and
+  ``timeout [options] N``, Python's ``time.sleep(N)``, the numbers of an argv of the ``timeout``
+  tool, and a child's loop on a clock, or one that sleeps on a count; an interpolated one too,
+  unless it is a multiple of the guard or RUNS_OUT;
+- P3, a timeout that is not allowed: a keyword of a timing name, a known positional, a value at
+  a position the parameter table or a parameter's flow gives, a parameter's default, a module's
+  or a class's constant of a timing name, and pytest.mark.timeout;
 - P4, a product's deadline, grace or pace shortened: monkeypatch's, mock's and the builtin
   setattr of a timing constant, a plain ``module.NAME = value``, a patch of the time module
-  itself, a name that cannot be resolved, and a restoring setattr;
+  itself, of the guard, of a name that cannot be resolved, a restoring setattr, and runs_out
+  given anything but 0 or a product's floor;
 - a module defining HANG_GUARD, CONTAINER_HANG_GUARD or tier_guard other than
   tests/hang_guard.py.
 
-Allowed values are the tier's guard and its multiples of at least 1, tier_guard() where a test
-reads it, None, -1 (the standard library's "no limit") and 0. The only exemptions are the named
-patterns of NAMED, each with its reason and a stale check, and the stand-ins of STAND_INS.
+An allowed value is the tier's guard or a multiple of it of at least 1, tier_guard() where a test
+reads it, None, -1 (the standard library's "no limit") and 0; a constant whose single binding,
+at module or class level, is allowed; and a parameter of a helper (not a test, a fixture or a
+lambda) whose default is allowed and whose every caller gives an allowed value, which the scan
+checks at each call. The only exemptions are the named patterns of NAMED, each with its reason
+and a stale check, the derived allowances H7 (a double), H8 (a turn of 0), H9 (a product's value
+as a stand-in's default), H10 (the benchmark) and H13 (a child's wait loop), and STAND_INS.
 """
 
 from __future__ import annotations
 
 import ast
+import functools
+import operator
 import re
 import subprocess
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -39,15 +47,14 @@ import pytest
 from tests.hang_guard import HANG_GUARD
 
 REPO = Path(__file__).resolve().parent.parent
-HANG_GUARD_MODULE = "tests.hang_guard"
+GUARD_MODULE = "tests.hang_guard"
 GUARD_NAMES = {"HANG_GUARD", "CONTAINER_HANG_GUARD"}
-RUNS_OUT_NAME = "RUNS_OUT"
-
-# --- what is a timing name -----------------------------------------------------------------------
+PROJECT = {"tests", "devtools", "rcman", "helpers", "backend"}
+PRODUCT = {"rcman", "helpers"}
 
 TIMING_KEYWORD = re.compile(
     r"^(timeout|within|deadline|seconds|wait|quiet|interval|delay|every|grace)$"
-    r"|_(timeout|seconds|within|interval|delay|wait|grace)$"
+    r"|_(timeout|seconds|within|interval|delay|wait|grace|after)$"
 )
 TIMING_CONSTANT = re.compile(
     r"TIMEOUT|SECONDS|WITHIN|DEADLINE|GRACE|WAIT|PACE|TICK|POLL|INTERVAL|DELAY|QUIET|_FOR$|_LIMIT$"
@@ -58,25 +65,39 @@ def timing_constant(name: str) -> bool:
     return name.isupper() and bool(TIMING_CONSTANT.search(name))
 
 
-# The clocks: a call of one is a clock read.
-CLOCKS = {
-    f"time.{name}{ns}"
-    for name in ("monotonic", "perf_counter", "time")
-    for ns in ("", "_ns")
-} | {"datetime.datetime.now", "datetime.datetime.utcnow", "datetime.datetime.today",
-     "datetime.date.today"}  # fmt: skip
+CLOCKS = {f"time.{n}{ns}" for n in ("monotonic", "perf_counter", "time") for ns in ("", "_ns")}
+DATETIME_CLOCKS = {
+    "datetime.datetime.now", "datetime.datetime.utcnow", "datetime.datetime.today",
+    "datetime.date.today",
+}  # fmt: skip
 SLEEPS = {"time.sleep", "asyncio.sleep", "anyio.sleep", "trio.sleep"}
 TIMERS = {"threading.Timer"}
 LOOP_TIMERS = {"call_later", "call_at"}
-# A positional timeout: a method's name, the position, and what the receiver must look like
-# (None: anything but a string constant).
+# A positional timeout: the method's name and the position. A call resolved to a module is one
+# of RESOLVED_POSITIONAL's or none.
 POSITIONAL = {
-    "wait": 0, "join": 0, "settimeout": 0, "setdefaulttimeout": 0, "alarm": 0,
-    "fail_after": 0, "move_on_after": 0, "result": 0, "poll": 0,
-    "wait_for": 1, "communicate": 1, "create_connection": 1, "acquire": 1,
-    "urlopen": 2,
+    "wait": 0, "join": 0, "settimeout": 0, "result": 0, "poll": 0, "select": 0,
+    "wait_for": 1, "communicate": 1, "acquire": 1,
 }  # fmt: skip
-QUEUE_GET = re.compile(r"queue|_q$|^q$", re.I)
+RESOLVED_POSITIONAL = {
+    "signal.alarm": 0, "socket.setdefaulttimeout": 0, "socket.create_connection": 1,
+    "select.select": 3, "urllib.request.urlopen": 2, "asyncio.wait_for": 1,
+    "anyio.fail_after": 0, "anyio.move_on_after": 0, "trio.fail_after": 0,
+    "trio.move_on_after": 0,
+}  # fmt: skip
+QUEUE_NAME = re.compile(r"queue|inbox|outbox|_q$|^q$", re.I)
+DOUBLES = {"FakeTime", "WatchedCondition", "ControlledEvent", "RecordingLock", "Time"}
+GUARD_ATTRIBUTES = GUARD_NAMES | {"tier", "tier_guard"}
+
+SHELL = re.compile(
+    r"(?P<what>\bsleep\s+|\btime\.sleep\(\s*"
+    r"|\btimeout\s+(?:(?:--?[a-z][a-z-]*(?:=\S+|\s+-?\w+)?|-[sk]\S+)\s+)*)"
+    r"(?P<n>\d*\.?\d+|\{[^}]*\})"
+)
+SHELL_LOOP = re.compile(r"\bwhile\b(?P<cond>[^;]*?);\s*do\b(?P<body>.*?)\bdone\b", re.S)
+CHILD_CLOCK = re.compile(r"\bdate\b|\$SECONDS|\btime\.(monotonic|time|perf_counter)\b")
+CHILD_COUNTER = re.compile(r"-(lt|le|gt|ge|eq)\s+\S*\d")
+CHILD_SLEEP = re.compile(r"\bsleep\b")
 
 
 @dataclass(frozen=True, order=True)
@@ -88,44 +109,6 @@ class Site:
     where: str = ""  # the qualified name of the function it is in, "" at module level
 
 
-# --- the parameter table (P3) --------------------------------------------------------------------
-
-
-@dataclass
-class Table:
-    """For each function name, the positions of its parameters with a timing name, where every
-    definition of the name agrees; ``disagreeing`` holds the names left out."""
-
-    positions: dict[str, frozenset[int]] = field(default_factory=dict)
-    disagreeing: set[str] = field(default_factory=set)
-
-
-def timing_positions(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> frozenset[int]:
-    args = [a.arg for a in fn.args.posonlyargs + fn.args.args]
-    if args and args[0] in ("self", "cls"):
-        args = args[1:]
-    return frozenset(i for i, name in enumerate(args) if TIMING_KEYWORD.search(name))
-
-
-def build_table(trees: Iterable[ast.AST]) -> Table:
-    seen: dict[str, set[frozenset[int]]] = {}
-    for tree in trees:
-        for node in ast.walk(tree):
-            if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
-                seen.setdefault(node.name, set()).add(timing_positions(node))
-    table = Table()
-    for name, kinds in seen.items():
-        if len(kinds) > 1:
-            if any(kinds):
-                table.disagreeing.add(name)
-        elif only := next(iter(kinds)):
-            table.positions[name] = only
-    return table
-
-
-# --- the scan of one Python file -----------------------------------------------------------------
-
-
 def number(node: ast.AST) -> float | None:
     if isinstance(node, ast.Constant) and type(node.value) in (int, float):
         return node.value
@@ -135,243 +118,494 @@ def number(node: ast.AST) -> float | None:
     return None
 
 
-SHELL = re.compile(
-    r"(?P<what>\bsleep\s+|\btime\.sleep\(\s*|\btimeout\s+(?:-[sk]\s+\S+\s+)*)"
-    r"(?P<n>\d+(?:\.\d+)?|\{[^}]*\})"
-)
-SHELL_LOOP = re.compile(r"\bwhile\b(?P<cond>[^;]*?);\s*do\b(?P<body>.*?)\bdone\b", re.S)
-CHILD_CLOCK = re.compile(r"\bdate\b|\$SECONDS|\btime\.(monotonic|time|perf_counter)\b")
-CHILD_COUNTER = re.compile(r"-(lt|le|gt|ge|eq)\s+\S*\d")
+FUNCTIONS = (ast.FunctionDef, ast.AsyncFunctionDef)
+SCOPES = (*FUNCTIONS, ast.Lambda)
+
+
+# --- the parameter table (P3) --------------------------------------------------------------------
+
+
+@dataclass
+class Table:
+    """For each function name, the positions of its parameters with a timing name where every
+    definition agrees (``positions``), and, for a name whose definitions disagree, the union of
+    those positions (``disagreeing``)."""
+
+    positions: dict[str, frozenset[int]] = field(default_factory=dict)
+    disagreeing: dict[str, frozenset[int]] = field(default_factory=dict)
+
+
+def positional_parameters(fn: ast.AST) -> list[str]:
+    args = [a.arg for a in fn.args.posonlyargs + fn.args.args]
+    if args and args[0] in ("self", "cls"):
+        args = args[1:]
+    return args
+
+
+def defined_functions(body: list[ast.stmt]):
+    """The functions defined in ``body``, at any depth, walking statements only."""
+    for node in body:
+        if isinstance(node, FUNCTIONS):
+            yield node
+        for name in ("body", "orelse", "finalbody", "handlers"):
+            inner = getattr(node, name, None)
+            if inner:
+                yield from defined_functions(inner)
+        if isinstance(node, ast.Match):
+            for case in node.cases:
+                yield from defined_functions(case.body)
+
+
+def build_table(trees: Iterable[ast.AST]) -> Table:
+    seen: dict[str, set[frozenset[int]]] = {}
+    for tree in trees:
+        for node in defined_functions(tree.body):
+            positions = frozenset(
+                i
+                for i, name in enumerate(positional_parameters(node))
+                if TIMING_KEYWORD.search(name)
+            )
+            seen.setdefault(node.name, set()).add(positions)
+    table = Table()
+    for name, kinds in seen.items():
+        union = frozenset().union(*kinds)
+        if len(kinds) > 1 and union:
+            table.disagreeing[name] = union
+        elif len(kinds) == 1 and union:
+            table.positions[name] = union
+    return table
+
+
+# --- the allowances, each a switch the mutation run turns off ------------------------------------
+
+ALLOWANCES = {
+    "none": True, "zero": True, "runs out": True, "minus one": True, "guard": True,
+    "tier_guard": True,
+    "constant": True, "parameter": True, "product default (H9)": True, "double (H7)": True,
+    "turn (H8)": True, "child loop (H13)": True, "benchmark (H10)": True,
+}  # fmt: skip
+
+
+# --- the scan of one file ------------------------------------------------------------------------
 
 
 class FileScan:
-    """The sites of one file. ``tier`` is "host", "container" or "shared"."""
+    """The sites of one file. ``modules`` maps a module of the project to its tree, to resolve
+    a constant imported from it and a fixture of tests/conftest.py."""
 
-    def __init__(self, path: str, source: str, table: Table, tier: str = "host"):
+    def __init__(self, path: str, tree: ast.AST, source: str, modules: dict | None = None):
         self.path = path
         self.source = source
-        self.tree = ast.parse(source)
-        self.table = table
-        self.tier = tier
+        self.tree = tree
+        self.modules = modules or {}
         self.sites: list[Site] = []
-        self.derived: list[tuple[str, Site]] = []  # (named pattern, site) allowed by H7/H8/H9/H13
-        self.modules: dict[str, str] = {}  # local name -> module
-        self.names: dict[str, str] = {}  # local name -> module.name
-        self._imports()
+        self.derived: list[tuple[str, Site]] = []
+        self.flows: set[tuple[str, int, str, bool]] = set()  # (function, index, name, method)
+        self.assignments: list[tuple[ast.AST, ast.AST, ast.AST]] = []
+        self.module_aliases: dict[str, str] = {}
+        self.imported: dict[str, str] = {}
         self.parents: dict[ast.AST, ast.AST] = {}
-        for parent in ast.walk(self.tree):
-            for child in ast.iter_child_nodes(parent):
-                self.parents[child] = parent
-        self.functions = {
-            n.name: n
-            for n in self.tree.body
-            if isinstance(n, ast.FunctionDef | ast.AsyncFunctionDef)
-        }
+        self.owner: dict[ast.AST, ast.AST | None] = {}
+        self.local_binds: dict[ast.AST, dict[str, int]] = {}  # function -> name -> bindings
+        self.module_binds: dict[str, list[ast.AST]] = {}  # name -> binding statements
+        self.calls: list[ast.Call] = []
+        self.docstrings: set[ast.AST] = set()
+        self.lines = source.splitlines()
+        self._walk()
+        self.calls.sort(key=operator.attrgetter("lineno", "col_offset"))
+        self.functions = {n.name: n for n in self.tree.body if isinstance(n, FUNCTIONS)}
+        self.fixtures = dict(self._fixtures(self.tree))
+        if path != "tests/conftest.py" and "tests.conftest" in self.modules:
+            self.fixtures = {
+                **dict(self._fixtures(self.modules["tests.conftest"])),
+                **self.fixtures,
+            }
         self.benchmark_only = self._benchmark_only()
+        self.may_double = any(q.startswith("tests.time_doubles.") for q in self.imported.values())
+        if not self.may_double:
+            used = {a.arg for n in self.parents if isinstance(n, FUNCTIONS) for a in n.args.args}
+            self.may_double = any(
+                name in used and self.returns_double(f) for name, f in self.fixtures.items()
+            )
 
-    # -- names ----------------------------------------------------------------------------------
+    # -- the one walk ---------------------------------------------------------------------------
 
-    def _imports(self) -> None:
-        for node in ast.walk(self.tree):
-            if isinstance(node, ast.Import):
-                for alias in node.names:
-                    if alias.asname:
-                        self.modules[alias.asname] = alias.name
+    def _walk(self) -> None:
+        """The one walk: each node's parent and owner (the function, lambda or class it is in),
+        the imports, the calls, the bindings and the docstrings."""
+        parents, owners, calls = self.parents, self.owner, self.calls
+        scope_types = {ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef}
+        bodied = {ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef}
+        AST = ast.AST
+        stack: list[tuple[ast.AST, ast.AST | None, ast.AST | None]] = [(self.tree, None, None)]
+        pop, push = stack.pop, stack.append
+        while stack:
+            node, parent, owner = pop()
+            kind = type(node)
+            if parent is not None:
+                parents[node] = parent
+            owners[node] = owner
+            if kind is ast.Call:
+                calls.append(node)
+            elif kind is ast.Name:
+                if type(node.ctx) is ast.Store:
+                    if owner is None or type(owner) is ast.ClassDef:
+                        self.module_binds.setdefault(node.id, []).append(parent)
                     else:
-                        top = alias.name.split(".")[0]
-                        self.modules[top] = top
-            elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
-                for alias in node.names:
-                    self.names[alias.asname or alias.name] = f"{node.module}.{alias.name}"
-
-    def qual(self, node: ast.AST) -> str | None:
-        """The dotted name ``node`` stands for, through the file's imports; None for one that is
-        not rooted in an import."""
-        if isinstance(node, ast.Name):
-            return self.names.get(node.id) or self.modules.get(node.id)
-        if isinstance(node, ast.Attribute):
-            inner = self.qual(node.value)
-            return f"{inner}.{node.attr}" if inner else None
-        return None
-
-    def is_guard(self, node: ast.AST) -> bool:
-        q = self.qual(node)
-        return q is not None and q in {f"{HANG_GUARD_MODULE}.{n}" for n in GUARD_NAMES}
-
-    def is_tier_guard_call(self, node: ast.AST) -> bool:
-        return (
-            isinstance(node, ast.Call)
-            and not node.args
-            and self.qual(node.func) == f"{HANG_GUARD_MODULE}.tier_guard"
-        )
-
-    def is_runs_out(self, node: ast.AST) -> bool:
-        return self.qual(node) == f"{HANG_GUARD_MODULE}.{RUNS_OUT_NAME}"
-
-    def is_product(self, node: ast.AST) -> bool:
-        """A product's own value (rule (b), H9): a name of rcman's or of helpers."""
-        q = self.qual(node)
-        return q is not None and q.split(".")[0] in ("rcman", "helpers")
-
-    def guard_multiple(self, node: ast.AST, minimum: float = 1) -> bool:
-        if self.is_guard(node) or self.is_tier_guard_call(node):
-            return True
-        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mult):
-            for k, g in ((node.left, node.right), (node.right, node.left)):
-                if (n := number(k)) is not None and n >= minimum and self.guard_multiple(g):
-                    return True
-        return False
-
-    def allowed(self, node: ast.AST, where: ast.AST | None, read_at_test_time: bool = True) -> bool:
-        """An allowed value: the guard or a multiple of it of at least 1, tier_guard() where a
-        test reads it, None, -1 and 0, a product's own value, or a name that is checked where it
-        is given its value: a parameter of the function it is in, or a timing constant."""
-        if isinstance(node, ast.Constant) and node.value is None:
-            return True
-        if number(node) in (0, -1):
-            return True
-        if self.is_tier_guard_call(node):
-            return read_at_test_time
-        if self.guard_multiple(node):
-            return not any(self.is_tier_guard_call(n) for n in ast.walk(node)) or read_at_test_time
-        if self.is_product(node):
-            return True
-        if isinstance(node, ast.Name):
-            if node.id in self.parameters(where):
-                return True
-            if timing_constant(node.id) and node.id not in self.names:
-                return True  # a constant of this file: checked where it is set
-        return False
-
-    @staticmethod
-    def parameters(fn: ast.AST | None) -> set[str]:
-        if not isinstance(fn, ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda):
-            return set()
-        a = fn.args
-        return {x.arg for x in a.posonlyargs + a.args + a.kwonlyargs} | {
-            x.arg for x in (a.vararg, a.kwarg) if x
-        }
-
-    def timeish(self, node: ast.AST) -> bool:
-        """A value that reads as seconds: a number, or arithmetic or a name of a timing kind."""
-        for n in ast.walk(node):
-            if (v := number(n)) is not None and v not in (0, -1):
-                return True
-            if isinstance(n, ast.Name) and (timing_constant(n.id) or TIMING_KEYWORD.search(n.id)):
-                return True
-            if isinstance(n, ast.Attribute) and timing_constant(n.attr):
-                return True
-        return False
-
-    def enclosing(self, node: ast.AST) -> list[ast.AST]:
-        found = []
-        while node in self.parents:
-            node = self.parents[node]
-            if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef | ast.Lambda):
-                found.append(node)
-        return found
+                        counts = self.local_binds.setdefault(owner, {})
+                        counts[node.id] = counts.get(node.id, 0) + 1
+                continue  # a name has no child but its context
+            elif kind is ast.Constant:
+                continue
+            elif kind is ast.Import:
+                for a in node.names:
+                    top = a.name.split(".")[0]
+                    self.module_aliases[a.asname or top] = a.name if a.asname else top
+            elif kind is ast.ImportFrom and node.module and not node.level:
+                for a in node.names:
+                    self.imported[a.asname or a.name] = f"{node.module}.{a.name}"
+            if kind in bodied and node.body:
+                first = node.body[0]
+                if type(first) is ast.Expr and type(first.value) is ast.Constant:
+                    self.docstrings.add(first.value)
+            if kind in scope_types:
+                # a function's defaults and decorators belong to where it is defined
+                outer = {id(d) for d in getattr(node, "decorator_list", ())}
+                if kind is not ast.ClassDef:
+                    outer.add(id(node.args))
+                for name in node._fields:
+                    value = getattr(node, name, None)
+                    for child in value if type(value) is list else (value,):
+                        if isinstance(child, AST):
+                            push((child, node, owner if id(child) in outer else node))
+                continue
+            for name in node._fields:
+                value = getattr(node, name, None)
+                if type(value) is list:
+                    for child in value:
+                        if isinstance(child, AST):
+                            push((child, node, owner))
+                elif isinstance(value, AST):
+                    push((value, node, owner))
 
     def function_of(self, node: ast.AST) -> ast.AST | None:
-        for n in self.enclosing(node):
-            if isinstance(n, ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda):
-                return n
-        return None
+        owner = self.owner.get(node)
+        while isinstance(owner, ast.ClassDef):
+            owner = self.owner.get(owner)
+        return owner
 
     def where(self, node: ast.AST) -> str:
-        return ".".join(
-            n.name for n in reversed(self.enclosing(node)) if not isinstance(n, ast.Lambda)
-        )
+        names = []
+        owner = self.owner.get(node)
+        while owner is not None:
+            if not isinstance(owner, ast.Lambda):
+                names.append(owner.name)
+            owner = self.owner.get(owner)
+        return ".".join(reversed(names))
 
     def text(self, node: ast.AST) -> str:
-        return " ".join((ast.get_source_segment(self.source, node) or "").split())[:120]
+        """The source of ``node``, on one line."""
+        if not self.source or not hasattr(node, "lineno"):
+            return ""
+        lines = self.lines[node.lineno - 1 : (node.end_lineno or node.lineno)]
+        if not lines:
+            return ""
+        if len(lines) == 1:
+            segment = lines[0][node.col_offset : node.end_col_offset]
+        else:
+            segment = " ".join([lines[0][node.col_offset :], *lines[1:-1],
+                                lines[-1][: node.end_col_offset]])  # fmt: skip
+        return " ".join(segment.split())[:120]
 
     def site(self, node: ast.AST, form: str, text: str | None = None) -> None:
         self.sites.append(
             Site(self.path, node.lineno, form, text or self.text(node), self.where(node))
         )
 
-    # -- H7: doubles ----------------------------------------------------------------------------
-
-    DOUBLES = {"FakeTime", "WatchedCondition", "ControlledEvent", "RecordingLock", "Time"}
-
-    def makes_double(self, call: ast.AST, depth: int = 1) -> bool:
-        """A call that builds a double of tests/time_doubles.py: its constructor, or a helper of
-        this module (one level) that returns one or a tuple holding one."""
-        if not isinstance(call, ast.Call):
+    def allow(self, key: str, node: ast.AST, form: str) -> bool:
+        """Whether the derived allowance ``key`` is on; recorded where it allows a site."""
+        if not ALLOWANCES[key]:
             return False
-        q = self.qual(call.func) or ""
-        if q.startswith("tests.time_doubles.") and q.rsplit(".", 1)[1] in self.DOUBLES:
+        self.derived.append((key, Site(self.path, node.lineno, form, self.text(node))))
+        return True
+
+    # -- names ----------------------------------------------------------------------------------
+
+    def qual(self, node: ast.AST) -> str | None:
+        if isinstance(node, ast.Name):
+            fn = self.function_of(node)
+            if fn is not None and (
+                self.local_binds.get(fn, {}).get(node.id) or node.id in self.parameter_names(fn)
+            ):
+                return None  # a local name shadows the module's import
+            return self.imported.get(node.id) or self.module_aliases.get(node.id)
+        if isinstance(node, ast.Attribute):
+            inner = self.qual(node.value)
+            return f"{inner}.{node.attr}" if inner else None
+        return None
+
+    def is_guard(self, node: ast.AST) -> bool:
+        return self.qual(node) in {f"{GUARD_MODULE}.{n}" for n in GUARD_NAMES}
+
+    def is_tier_guard_call(self, node: ast.AST) -> bool:
+        return (
+            isinstance(node, ast.Call)
+            and not node.args
+            and self.qual(node.func) == f"{GUARD_MODULE}.tier_guard"
+        )
+
+    def is_runs_out(self, node: ast.AST) -> bool:
+        return self.qual(node) == f"{GUARD_MODULE}.RUNS_OUT"
+
+    def outlasts_or_runs_out(self, node: ast.AST) -> bool:
+        """A child's time: RUNS_OUT (rule (a)), or a multiple of the guard (rule (g))."""
+        if self.is_runs_out(node):
+            return ALLOWANCES["runs out"]
+        return self.guard_multiple(node) and ALLOWANCES["guard"]
+
+    def is_product(self, node: ast.AST) -> bool:
+        q = self.qual(node)
+        return q is not None and q.split(".")[0] in PRODUCT
+
+    def guard_multiple(self, node: ast.AST) -> bool:
+        if self.is_guard(node) or self.is_tier_guard_call(node):
             return True
-        if depth and isinstance(call.func, ast.Name) and call.func.id in self.functions:
-            helper = self.functions[call.func.id]
-            built = self.double_names(helper, depth - 1)
-            for ret in ast.walk(helper):
-                if isinstance(ret, ast.Return) and ret.value is not None:
-                    parts = ret.value.elts if isinstance(ret.value, ast.Tuple) else [ret.value]
-                    for part in parts:
-                        if self.makes_double(part, depth - 1) or (
-                            isinstance(part, ast.Name) and part.id in built
-                        ):
-                            return True
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mult):
+            for k, g in ((node.left, node.right), (node.right, node.left)):
+                if (n := number(k)) is not None and n >= 1 and self.guard_multiple(g):
+                    return True
         return False
 
-    def double_names(self, fn: ast.AST, depth: int = 1) -> set[str]:
-        """Names a function binds to a double, its own or a helper's (H7)."""
+    @staticmethod
+    def is_fixture(fn: ast.AST) -> bool:
+        for d in getattr(fn, "decorator_list", []):
+            target = d.func if isinstance(d, ast.Call) else d
+            if (isinstance(target, ast.Attribute) and target.attr == "fixture") or (
+                isinstance(target, ast.Name) and target.id == "fixture"
+            ):
+                return True
+        return False
+
+    def is_test(self, fn: ast.AST) -> bool:
+        return isinstance(fn, FUNCTIONS) and fn.name.startswith("test")
+
+    def allowed(
+        self,
+        node: ast.AST,
+        at: ast.AST,
+        read_at_test_time: bool = True,
+        product_ok: bool = False,
+        depth: int = 0,
+    ) -> bool:
+        """Whether ``node``, used at ``at``, is an allowed value."""
+        if isinstance(node, ast.Constant) and node.value is None:
+            return ALLOWANCES["none"]
+        if number(node) == 0:
+            return ALLOWANCES["zero"]
+        if number(node) == -1:
+            return ALLOWANCES["minus one"]
+        if self.is_tier_guard_call(node):
+            return ALLOWANCES["tier_guard"] and read_at_test_time
+        if self.guard_multiple(node):
+            uses_tier_guard = any(self.is_tier_guard_call(n) for n in ast.walk(node))
+            return ALLOWANCES["guard"] and (read_at_test_time or not uses_tier_guard)
+        if self.is_product(node):
+            return product_ok and self.allow("product default (H9)", at, "P3")
+        if depth > 3:
+            return False
+        if isinstance(node, ast.Name):
+            fn = self.function_of(at)
+            if fn is not None and node.id in self.parameter_names(fn):
+                return self.parameter_allowed(fn, node.id)
+            if fn is not None and self.local_binds.get(fn, {}).get(node.id):
+                return False  # a local binding: a site where it is used
+            return self.constant_allowed(node.id, depth)
+        if isinstance(node, ast.Attribute):
+            q = self.qual(node)
+            if q and q.split(".")[0] in ("tests", "devtools"):
+                module, _, name = q.rpartition(".")
+                return self.imported_constant_allowed(module, name, depth)
+        return False
+
+    @staticmethod
+    def parameter_names(fn: ast.AST) -> list[str]:
+        a = fn.args
+        return [x.arg for x in a.posonlyargs + a.args + a.kwonlyargs] + [
+            x.arg for x in (a.vararg, a.kwarg) if x
+        ]
+
+    def parameter_allowed(self, fn: ast.AST, name: str) -> bool:
+        """A helper's parameter: not a test's, a fixture's or a lambda's, with an allowed default
+        if it has one; its callers are checked at each call through the flow it records."""
+        if not ALLOWANCES["parameter"]:
+            return False
+        if isinstance(fn, ast.Lambda) or self.is_test(fn) or self.is_fixture(fn):
+            return False
+        default = self.default_of(fn, name)
+        if default is not None and not self.allowed(default, fn, read_at_test_time=False):
+            return False
+        params = positional_parameters(fn)
+        method = isinstance(self.owner.get(fn), ast.ClassDef)
+        index = params.index(name) if name in params else -1
+        self.flows.add((fn.name, index, name, method))
+        return True
+
+    @staticmethod
+    def default_of(fn: ast.AST, name: str) -> ast.AST | None:
+        a = fn.args
+        positional = a.posonlyargs + a.args
+        for p, d in zip(positional[len(positional) - len(a.defaults) :], a.defaults, strict=True):
+            if p.arg == name:
+                return d
+        for p, d in zip(a.kwonlyargs, a.kw_defaults, strict=True):
+            if p.arg == name:
+                return d
+        return None
+
+    def constant_allowed(self, name: str, depth: int) -> bool:
+        if not ALLOWANCES["constant"]:
+            return False
+        if name in self.imported:
+            module, _, attr = self.imported[name].rpartition(".")
+            if module.split(".")[0] in ("tests", "devtools"):
+                return self.imported_constant_allowed(module, attr, depth)
+            return False
+        value = self.single_binding(self.module_binds.get(name, []), name)
+        return value is not None and self.allowed(
+            value, value, read_at_test_time=False, depth=depth + 1
+        )
+
+    @staticmethod
+    def single_binding(binds: list[ast.AST], name: str) -> ast.AST | None:
+        """The value of a name's one binding, a plain assignment of it alone; None otherwise."""
+        if len(binds) != 1:
+            return None
+        bind = binds[0]
+        if isinstance(bind, ast.Assign) and len(bind.targets) == 1:
+            target = bind.targets[0]
+            if isinstance(target, ast.Name) and target.id == name:
+                return bind.value
+        if isinstance(bind, ast.AnnAssign) and bind.value is not None:
+            return bind.value
+        return None
+
+    def imported_constant_allowed(self, module: str, name: str, depth: int) -> bool:
+        if not ALLOWANCES["constant"]:
+            return False
+        if module == GUARD_MODULE and name in GUARD_NAMES:
+            return ALLOWANCES["guard"]
+        other = self.modules.get(module)
+        if other is None:
+            return False
+        scan = scan_of(module, self.modules)
+        value = scan.single_binding(scan.module_binds.get(name, []), name)
+        return value is not None and scan.allowed(
+            value, value, read_at_test_time=False, depth=depth + 1
+        )
+
+    # -- H7: doubles ----------------------------------------------------------------------------
+
+    def makes_double(self, node: ast.AST, depth: int = 1) -> bool:
+        """An expression that builds a double of tests/time_doubles.py: its constructor, a list
+        or tuple holding one, or a call of a helper or fixture of this module (one level) that
+        returns one."""
+        if isinstance(node, ast.List | ast.Tuple):
+            return any(self.makes_double(e, depth) for e in node.elts)
+        if not isinstance(node, ast.Call):
+            return False
+        q = self.qual(node.func) or ""
+        if q.startswith("tests.time_doubles.") and q.rsplit(".", 1)[1] in DOUBLES:
+            return True
+        if depth and isinstance(node.func, ast.Name):
+            helper = self.functions.get(node.func.id) or self.fixtures.get(node.func.id)
+            return helper is not None and self.returns_double(helper, depth - 1)
+        return False
+
+    @functools.cache  # noqa: B019 - one scan per file, freed with it
+    def returns_double(self, fn: ast.AST, depth: int = 0) -> bool:
+        built = self.double_names(fn, depth)
+        for node in ast.walk(fn):
+            if isinstance(node, ast.Return | ast.Yield) and node.value is not None:
+                values = node.value.elts if isinstance(node.value, ast.Tuple | ast.List) else [
+                    node.value]  # fmt: skip
+                for v in values:
+                    if self.makes_double(v, depth) or self.names_double(v, built):
+                        return True
+        return False
+
+    @staticmethod
+    def names_double(node: ast.AST, built: set[str]) -> bool:
+        if isinstance(node, ast.Tuple | ast.List):
+            return any(isinstance(e, ast.Name) and e.id in built for e in node.elts)
+        return isinstance(node, ast.Name) and node.id in built
+
+    @functools.cache  # noqa: B019
+    def double_names(self, fn: ast.AST, depth: int = 1) -> frozenset[str]:
+        """Names ``fn`` binds to a double, its own or a helper's, and its parameters that are
+        fixtures (of this module or tests/conftest.py) returning one."""
         found: set[str] = set()
         for node in ast.walk(fn):
             if isinstance(node, ast.Assign) and self.makes_double(node.value, depth):
                 for target in node.targets:
-                    for n in ast.walk(target):
-                        if isinstance(n, ast.Name):
-                            found.add(n.id)
-        if isinstance(fn, ast.FunctionDef | ast.AsyncFunctionDef):
-            found |= {a.arg for a in fn.args.args if a.arg in ("fake", "times", "clock")}
-        return found
+                    found |= {n.id for n in ast.walk(target) if isinstance(n, ast.Name)}
+        if isinstance(fn, FUNCTIONS):
+            for a in fn.args.args:
+                fixture = self.fixtures.get(a.arg)
+                if fixture is not None and fixture is not fn and self.returns_double(fixture):
+                    found.add(a.arg)
+        return frozenset(found)
 
     def on_a_double(self, call: ast.Call) -> bool:
-        fn = self.function_of(call)
-        if fn is None or not isinstance(call.func, ast.Attribute):
+        if not isinstance(call.func, ast.Attribute):
             return False
         receiver = call.func.value
         while isinstance(receiver, ast.Attribute):
             receiver = receiver.value
-        return isinstance(receiver, ast.Name) and receiver.id in self.double_names(fn)
+        if (
+            not self.may_double
+            or not isinstance(receiver, ast.Name)
+            or receiver.id in self.module_aliases
+        ):
+            return False
+        fn = self.function_of(call)
+        return fn is not None and receiver.id in self.double_names(fn)
 
-    def doubled_modules(self, fn: ast.AST) -> set[str]:
-        """The objects whose ``time`` (or seams for time) the function replaces with a double."""
+    @functools.cache  # noqa: B019
+    def doubled(self, fn: ast.AST) -> frozenset[str]:
+        """The objects whose ``time`` (or seams for time) ``fn`` replaces with a double."""
         found = set()
         doubles = self.double_names(fn)
         for node in ast.walk(fn):
-            if isinstance(node, ast.Call) and self.setattr_args(node):
-                obj, name, value = self.setattr_args(node)
+            if isinstance(node, ast.Call) and (got := self.setattr_args(node)):
+                obj, name, value = got
                 if name in ("time", "_changed", "_closing") or (name or "").endswith("lock"):
-                    if self.makes_double(value) or (
-                        isinstance(value, ast.Name) and value.id in doubles
-                    ):
+                    if self.makes_double(value) or self.names_double(value, doubles):
                         found.add(ast.dump(obj))
-        return found
+        return frozenset(found)
 
     # -- H10: the benchmark --------------------------------------------------------------------
 
-    def is_benchmark(self, fn: ast.AST) -> bool:
-        for d in getattr(fn, "decorator_list", []):
-            if isinstance(d, ast.Attribute) and d.attr == "benchmark":
-                return True
-        return False
+    @staticmethod
+    def is_benchmark(fn: ast.AST) -> bool:
+        return any(
+            isinstance(d, ast.Attribute) and d.attr == "benchmark"
+            for d in getattr(fn, "decorator_list", [])
+        )
 
     def _benchmark_only(self) -> set[str]:
-        """Functions of this module that only benchmark tests call (H10)."""
-        callers: dict[str, set[str]] = {name: set() for name in self.functions}
-        for fn in self.functions.values():
-            for node in ast.walk(fn):
-                if isinstance(node, ast.Name) and node.id in callers and node.id != fn.name:
-                    callers[node.id].add(fn.name)
-        for node in self.tree.body:
-            if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
-                for n in ast.walk(node):
-                    if isinstance(n, ast.Name) and n.id in callers:
-                        callers[n.id].add("<module>")
+        """Functions of this module that only benchmark tests call."""
         only = {n for n, f in self.functions.items() if self.is_benchmark(f)}
+        if not only:
+            return only
+        callers: dict[str, set[str]] = {name: set() for name in self.functions}
+        for node in self.parents:
+            if isinstance(node, ast.Name) and node.id in callers:
+                fn = self.function_of(node)
+                while fn is not None and self.owner.get(fn) is not None:
+                    fn = self.owner.get(fn)
+                caller = fn.name if isinstance(fn, FUNCTIONS) else "<module>"
+                if caller != node.id:
+                    callers[node.id].add(caller)
         changed = True
         while changed:
             changed = False
@@ -381,50 +615,55 @@ class FileScan:
                     changed = True
         return only
 
-    def in_benchmark(self, node: ast.AST) -> bool:
-        return any(
-            isinstance(n, ast.FunctionDef | ast.AsyncFunctionDef) and n.name in self.benchmark_only
-            for n in self.enclosing(node)
-        )
+    # -- the scan -------------------------------------------------------------------------------
 
-    # -- the walk -------------------------------------------------------------------------------
-
-    def scan(self) -> list[Site]:
+    def scan(self) -> FileScan:
         self._clocks()
         self._defining_the_guard()
-        for node in ast.walk(self.tree):
-            if isinstance(node, ast.Call):
-                self._call(node)
-            elif isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+        for node in self.calls:
+            self._call(node)
+        for node in self.parents:
+            if isinstance(node, FUNCTIONS):
                 self._defaults(node)
             elif isinstance(node, ast.Assign | ast.AnnAssign):
                 self._assign(node)
             elif isinstance(node, ast.Constant) and isinstance(node.value, str):
-                if not isinstance(self.parents.get(node), ast.JoinedStr):
+                if node not in self.docstrings and not isinstance(
+                    self.parents.get(node), ast.JoinedStr
+                ):
                     self._child_source(node, node.value, [])
             elif isinstance(node, ast.JoinedStr):
                 self._joined(node)
             elif isinstance(node, ast.List | ast.Tuple):
                 self._timeout_argv(node)
         self._setattrs()
-        self.sites = sorted(
-            {s for s in self.sites if not self._benchmark_site(s)},
-        )
-        return self.sites
+        return self
 
-    def _benchmark_site(self, site: Site) -> bool:
-        head = site.where.split(".")[0] if site.where else ""
-        if head in self.benchmark_only:
-            self.derived.append(("H10", site))
-            return True
-        return False
+    def finish(self, table: Table, flows: set[tuple[str, int, str, bool]]) -> list[Site]:
+        """The calls checked against the parameter table and the flows of every file, then the
+        sites, the benchmark's left out."""
+        self._table_calls(table, flows)
+        kept = []
+        for s in sorted(set(self.sites)):
+            head = s.where.split(".")[0] if s.where else ""
+            if head in self.benchmark_only and ALLOWANCES["benchmark (H10)"]:
+                self.derived.append(("benchmark (H10)", s))
+            else:
+                kept.append(s)
+        self.sites = kept
+        return kept
 
     # P1 ---------------------------------------------------------------------------------------
 
     def clock_read(self, node: ast.AST) -> bool:
-        if not isinstance(node, ast.Call) or node.args:
+        if not isinstance(node, ast.Call):
             return False
-        if self.qual(node.func) in CLOCKS:
+        q = self.qual(node.func)
+        if q in DATETIME_CLOCKS:
+            return True
+        if node.args:
+            return False
+        if q in CLOCKS:
             return True
         f = node.func
         if isinstance(f, ast.Attribute) and f.attr == "time":  # loop.time()
@@ -437,134 +676,251 @@ class FileScan:
                 return True
         return False
 
+    def clocky(self, node: ast.AST, derived: set[str]) -> bool:
+        """A clock read, a name derived from one, or arithmetic, min or max of such."""
+        if self.clock_read(node):
+            return True
+        if isinstance(node, ast.Name):
+            return node.id in derived
+        if isinstance(node, ast.BinOp):
+            return self.clocky(node.left, derived) or self.clocky(node.right, derived)
+        if isinstance(node, ast.UnaryOp):
+            return self.clocky(node.operand, derived)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in (
+            "min", "max"):  # fmt: skip
+            return any(self.clocky(a, derived) for a in node.args)
+        return False
+
     def _clocks(self) -> None:
-        scopes = [self.tree] + [
-            n for n in ast.walk(self.tree) if isinstance(n, ast.FunctionDef | ast.AsyncFunctionDef)
-        ]
-        for scope in scopes:
-            own = [n for n in ast.walk(scope) if self.function_of(n) is (
-                None if scope is self.tree else scope)]  # fmt: skip
+        if not ALLOWANCES.get("P1 branch", True):
+            return
+        by_owner: dict[ast.AST | None, list[ast.AST]] = {}
+        for node in self.parents:
+            if isinstance(
+                node, ast.Assign | ast.AugAssign | ast.AnnAssign | ast.Compare | ast.BinOp
+            ):
+                by_owner.setdefault(self.function_of(node), []).append(node)
+        for nodes in by_owner.values():
             derived: set[str] = set()
             changed = True
             while changed:
                 changed = False
-                for n in own:
-                    if isinstance(n, ast.Assign | ast.AugAssign | ast.AnnAssign) and n.value:
-                        if self._clocky(n.value, derived):
-                            targets = n.targets if isinstance(n, ast.Assign) else [n.target]
-                            for t in targets:
-                                for x in ast.walk(t):
-                                    if isinstance(x, ast.Name) and x.id not in derived:
-                                        derived.add(x.id)
-                                        changed = True
-            reported: set[int] = set()
-            for n in own:
-                if isinstance(n, ast.Compare) and any(
-                    self._clocky(x, derived) for x in [n.left, *n.comparators]
-                ):
-                    self.site(n, "P1")
-                    reported.add(n.lineno)
-            for n in own:
+                for n in nodes:
+                    for target, value in self.pairs(n):
+                        if self.clocky(value, derived) and target not in derived:
+                            derived.add(target)
+                            changed = True
+            reported = set()
+            for n in nodes:
+                if isinstance(n, ast.Compare):
+                    if all(isinstance(op, ast.Is | ast.IsNot) for op in n.ops):
+                        continue
+                    if any(self.clocky(x, derived) for x in [n.left, *n.comparators]):
+                        self.site(n, "P1")
+                        reported.add(n.lineno)
+            for n in nodes:
                 if (
                     isinstance(n, ast.BinOp)
                     and isinstance(n.op, ast.Sub)
-                    and self._clocky(n.left, derived)
-                    and self._clocky(n.right, derived)
                     and n.lineno not in reported
+                    and self.clocky(n.left, derived)
+                    and self.clocky(n.right, derived)
                 ):
                     self.site(n, "P1")
+                    reported.add(n.lineno)
 
-    def _clocky(self, node: ast.AST, derived: set[str]) -> bool:
-        return any(
-            self.clock_read(n) or (isinstance(n, ast.Name) and n.id in derived)
-            for n in ast.walk(node)
-        )
+    @staticmethod
+    def pairs(node: ast.AST) -> list[tuple[str, ast.AST]]:
+        """(name, value) for each name an assignment binds, a tuple paired element by element."""
+        if isinstance(node, ast.Assign):
+            targets, value = node.targets, node.value
+        elif isinstance(node, ast.AnnAssign | ast.AugAssign) and node.value is not None:
+            targets, value = [node.target], node.value
+        else:
+            return []
+        found = []
+        for t in targets:
+            if isinstance(t, ast.Name):
+                found.append((t.id, value))
+            elif isinstance(t, ast.Tuple) and isinstance(value, ast.Tuple):
+                for te, ve in zip(t.elts, value.elts, strict=False):
+                    if isinstance(te, ast.Name):
+                        found.append((te.id, ve))
+        return found
 
-    # P2, P3 (calls), P4 (setattr calls, collected below) ---------------------------------------
+    # P2, P3 ----------------------------------------------------------------------------------
 
     def _call(self, node: ast.Call) -> None:
         q = self.qual(node.func)
-        name = node.func.attr if isinstance(node.func, ast.Attribute) else getattr(
-            node.func, "id", None)  # fmt: skip
-        fn = self.function_of(node)
-        if q in SLEEPS:
-            if node.args and number(node.args[0]) == 0:
-                self.derived.append(("H8", Site(self.path, node.lineno, "P2", self.text(node))))
-            else:
+        f = node.func
+        name = f.attr if isinstance(f, ast.Attribute) else getattr(f, "id", None)
+        if ALLOWANCES.get("P2 branch", True):
+            if q in SLEEPS:
+                if node.args and number(node.args[0]) == 0 and self.allow("turn (H8)", node, "P2"):
+                    pass
+                else:
+                    self.site(node, "P2")
+            if q in TIMERS or name in LOOP_TIMERS:
                 self.site(node, "P2")
-        if q in TIMERS or name in LOOP_TIMERS:
-            self.site(node, "P2")
-        if self.on_a_double(node):
-            if node.args or node.keywords:
-                self.derived.append(("H7", Site(self.path, node.lineno, "P3", self.text(node))))
+        if q == f"{GUARD_MODULE}.runs_out":
+            self._runs_out(node)
             return
+        if q == f"{GUARD_MODULE}.pace":
+            return
+        if self.on_a_double(node):
+            if (node.args or node.keywords) and self.allow("double (H7)", node, "P3"):
+                return
         for kw in node.keywords:
-            if kw.arg and TIMING_KEYWORD.search(kw.arg) and not self.allowed(kw.value, fn):
-                self.site(node, "P3", f"{kw.arg}={self.text(kw.value)} in {self.text(node.func)}")
-        position = POSITIONAL.get(name)
-        if name == "get" and isinstance(node.func, ast.Attribute):
-            receiver = self.text(node.func.value)
-            position = 1 if QUEUE_GET.search(receiver.split(".")[-1]) else None
-        if name == "select" and q == "select.select":
-            position = 3
-        elif name == "select" and isinstance(node.func, ast.Attribute):
-            position = 0
-        if (
-            position is not None
-            and len(node.args) > position
-            and not (
-                isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Constant)
-            )
-        ):
+            if kw.arg and TIMING_KEYWORD.search(kw.arg) and not self.allowed(kw.value, node):
+                if ALLOWANCES.get("P3 keywords", True):
+                    self.site(node, "P3", f"{kw.arg}={self.text(kw.value)} in {self.text(f)}")
+        position = self.position_of(node, q, name)
+        if position is not None and len(node.args) > position:
             value = node.args[position]
-            if self.timeish(value) and not self.allowed(value, fn):
+            if not self.allowed(value, node) and not self.an_iterable(value, name):
                 self.site(node, "P3", f"{name}(…{self.text(value)}…)")
-        elif name in self.table.positions and q not in SLEEPS and q not in (
-            f"{HANG_GUARD_MODULE}.runs_out", f"{HANG_GUARD_MODULE}.pace"):  # fmt: skip
-            for i in sorted(self.table.positions[name]):
-                if i < len(node.args) and (v := number(node.args[i])) is not None and v not in (
-                    0, -1):  # fmt: skip
+        if q == "pytest.mark.timeout" and node.args and not self.allowed(node.args[0], node):
+            if ALLOWANCES.get("P3 mark", True):
+                self.site(node, "P3")
+
+    def position_of(self, node: ast.Call, q: str | None, name: str | None) -> int | None:
+        if q in RESOLVED_POSITIONAL:
+            return RESOLVED_POSITIONAL[q] if ALLOWANCES.get(f"P3 positional {q}", True) else None
+        if not ALLOWANCES.get(f"P3 positional {name}", True):
+            return None
+        if q is not None:
+            return None  # a module's function, not a method of a waiting object
+        f = node.func
+        if not isinstance(f, ast.Attribute) or isinstance(f.value, ast.Constant):
+            return None
+        if name == "get":
+            first = node.args[0] if node.args else None
+            blocking = isinstance(first, ast.Constant) and isinstance(first.value, bool)
+            return 1 if blocking or QUEUE_NAME.search(self.text(f.value).split(".")[-1]) else None
+        return POSITIONAL.get(name)
+
+    @staticmethod
+    def an_iterable(value: ast.AST, name: str | None) -> bool:
+        """str.join's argument, not a thread's join's seconds."""
+        return name == "join" and not (
+            number(value) is not None or isinstance(value, ast.BinOp | ast.Name | ast.Attribute)
+        )
+
+    def _runs_out(self, node: ast.Call) -> None:
+        """runs_out's ``at``: 0, or the product's floor, a product's constant (G-FLOOR)."""
+        if not ALLOWANCES.get("P4 runs_out", True):
+            return
+        at = node.args[3] if len(node.args) > 3 else None
+        for kw in node.keywords:
+            if kw.arg == "at":
+                at = kw.value
+        if at is None or number(at) == 0 or self.is_product(at):
+            return
+        self.site(node, "P4", f"runs_out at {self.text(at)}: not 0 or a product's floor")
+
+    def _table_calls(self, table: Table, flows: set[tuple[str, int, str, bool]]) -> None:
+        if not ALLOWANCES.get("P3 table", True):
+            return
+        by_function: dict[str, list[tuple[int, str, bool]]] = {}
+        for fname, index, pname, method in flows:
+            by_function.setdefault(fname, []).append((index, pname, method))
+        for node in self.calls:
+            f = node.func
+            name = f.attr if isinstance(f, ast.Attribute) else getattr(f, "id", None)
+            if name is None:
+                continue
+            q = self.qual(f)
+            if q is not None and q.split(".")[0] not in PROJECT:
+                continue  # the standard library's, or another package's
+            if q in (f"{GUARD_MODULE}.runs_out", f"{GUARD_MODULE}.pace"):
+                continue
+            if self.on_a_double(node) and ALLOWANCES["double (H7)"]:
+                continue
+            before = len(self.sites)
+            checked: set[int] = set()
+            for i in sorted(table.positions.get(name, ())):
+                checked.add(i)
+                if i < len(node.args) and not self.allowed(node.args[i], node):
                     self.site(node, "P3", f"{name} at {i}: {self.text(node.args[i])}")
-        if q in ("pytest.mark.timeout",) and node.args and not self.allowed(node.args[0], None):
-            self.site(node, "P3")
+            for i in sorted(table.disagreeing.get(name, ())):
+                if i in checked or i >= len(node.args):
+                    continue
+                checked.add(i)
+                value = node.args[i]
+                if self.timeish(value) and not self.allowed(value, node):
+                    self.site(node, "P3", f"{name} at {i}: {self.text(value)}")
+            for index, pname, method in by_function.get(name, ()):
+                if method != isinstance(f, ast.Attribute) and not method:
+                    continue
+                value = node.args[index] if 0 <= index < len(node.args) else None
+                for kw in node.keywords:
+                    if kw.arg == pname:
+                        value = kw.value
+                if value is None or index in checked:
+                    continue
+                checked.add(index)
+                if method and not self.timeish(value):
+                    continue  # a method's name is matched loosely: only seconds are checked
+                if not self.allowed(value, node):
+                    self.site(node, "P3", f"{name}'s {pname}: {self.text(value)}")
+            del self.sites[before + 1 :]  # one site per call
+
+    @staticmethod
+    def timeish(node: ast.AST) -> bool:
+        for n in ast.walk(node):
+            if (v := number(n)) is not None and v not in (0, -1):
+                return True
+            if isinstance(n, ast.Name) and (timing_constant(n.id) or TIMING_KEYWORD.search(n.id)):
+                return True
+            if isinstance(n, ast.Attribute) and timing_constant(n.attr):
+                return True
+        return False
 
     def _defaults(self, fn: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
+        if not ALLOWANCES.get("P3 defaults", True):
+            return
         a = fn.args
         positional = a.posonlyargs + a.args
         pairs = list(zip(positional[len(positional) - len(a.defaults) :], a.defaults, strict=True))
         pairs += [(x, d) for x, d in zip(a.kwonlyargs, a.kw_defaults, strict=True) if d is not None]
+        stand_in = isinstance(self.owner.get(fn), ast.ClassDef)
         for param, default in pairs:
             if TIMING_KEYWORD.search(param.arg) and not self.allowed(
-                default, None, read_at_test_time=False
+                default, fn, read_at_test_time=False, product_ok=stand_in
             ):
                 self.site(default, "P3", f"{fn.name}({param.arg}={self.text(default)})")
 
     def _assign(self, node: ast.Assign | ast.AnnAssign) -> None:
         if node.value is None:
             return
-        owner = self.enclosing(node)
-        at_module_or_class = not owner or isinstance(owner[0], ast.ClassDef)
+        at_module_or_class = self.function_of(node) is None
         targets = node.targets if isinstance(node, ast.Assign) else [node.target]
         for t in targets:
-            if isinstance(t, ast.Name) and at_module_or_class and timing_constant(t.id):
-                if not self.allowed(node.value, None, read_at_test_time=False) and (
-                    self.timeish(node.value)
-                    or any(self.is_tier_guard_call(n) for n in ast.walk(node.value))
+            names = [(t, node.value)]
+            if isinstance(t, ast.Tuple) and isinstance(node.value, ast.Tuple):
+                names = list(zip(t.elts, node.value.elts, strict=False))
+            for target, value in names:
+                if (
+                    ALLOWANCES.get("P3 constants", True)
+                    and isinstance(target, ast.Name)
+                    and at_module_or_class
+                    and timing_constant(target.id)
+                    and not self.allowed(value, value, read_at_test_time=False)
                 ):
-                    self.site(node, "P3")
+                    self.site(node, "P3", f"{target.id} = {self.text(value)}")
             if isinstance(t, ast.Attribute) and timing_constant(t.attr):
                 self.assignments.append((node, t, node.value))
 
     def _defining_the_guard(self) -> None:
-        if self.path == "tests/hang_guard.py":
+        if self.path == "tests/hang_guard.py" or not ALLOWANCES.get("guard names", True):
             return
-        for node in ast.walk(self.tree):
+        for node in self.parents:
             defined = []
             if isinstance(node, ast.Assign):
                 defined = [t.id for t in node.targets if isinstance(t, ast.Name)]
             elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
                 defined = [node.target.id]
-            elif isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+            elif isinstance(node, FUNCTIONS):
                 defined = [node.name]
             if set(defined) & (GUARD_NAMES | {"tier_guard"}):
                 self.site(node, "GUARD", f"defines {', '.join(defined)}")
@@ -572,40 +928,42 @@ class FileScan:
     # P2s --------------------------------------------------------------------------------------
 
     def _child_source(self, node: ast.AST, text: str, values: list[ast.AST]) -> None:
-        """Sleeps and timeouts in a string a child program runs. ``values`` are the
-        interpolated expressions of an f-string, written as {0}, {1}, … in ``text``."""
+        """Sleeps and timeouts in a string a child program runs; ``values`` are an f-string's
+        interpolated expressions, written {0}, {1}, … in ``text``."""
+        if not ALLOWANCES.get("P2s branch", True):
+            return
         if "sleep" not in text and "timeout" not in text and "while" not in text:
             return
-        loops = [(m.start(), m.end(), m.group("cond")) for m in SHELL_LOOP.finditer(text)]
-        for loop in loops:
-            if CHILD_CLOCK.search(loop[2]) or CHILD_COUNTER.search(loop[2]):
-                self.site(node, "P1", f"a child's loop on a clock or a count: {loop[2].strip()}")
-        python_loop_lines = self._python_loop_lines(text)
+        loops = []
+        for m in SHELL_LOOP.finditer(text):
+            cond, body = m.group("cond"), m.group("body")
+            clock = bool(CHILD_CLOCK.search(cond))
+            counted_sleep = bool(CHILD_COUNTER.search(cond)) and bool(CHILD_SLEEP.search(body))
+            if clock or counted_sleep:
+                self.site(node, "P1", f"a child's loop on a clock or a count: {cond.strip()}")
+            loops.append((m.start(), m.end(), clock or counted_sleep))
+        python_loops = self._python_loop_lines(text)
         for m in SHELL.finditer(text):
-            n = m.group("n")
-            what = m.group("what").strip()
+            n, what = m.group("n"), m.group("what").strip()
             if n.startswith("{"):
                 index = n[1:-1]
                 if index.isdigit() and int(index) < len(values):
                     value = values[int(index)]
-                    if self.is_runs_out(value) or self.guard_multiple(value):
+                    if self.outlasts_or_runs_out(value):
                         continue
                 self.site(node, "P2s", f"{what} {n}: interpolated, not the guard or RUNS_OUT")
                 continue
             if float(n) == 0:
                 continue
-            in_loop = any(start <= m.start() < end and not (
-                CHILD_CLOCK.search(cond) or CHILD_COUNTER.search(cond))
-                for start, end, cond in loops)  # fmt: skip
+            in_loop = any(s <= m.start() < e and not bad for s, e, bad in loops)
             line = text.count("\n", 0, m.start())
-            if "sleep" in what and (in_loop or line in python_loop_lines):
-                self.derived.append(("H13", Site(self.path, node.lineno, "P2s", m.group(0))))
-                continue
+            if "sleep" in what and (in_loop or line in python_loops):
+                if self.allow("child loop (H13)", node, "P2s"):
+                    continue
             self.site(node, "P2s", f"{m.group(0)!r} in a child's source")
 
-    def _python_loop_lines(self, text: str) -> set[int]:
-        """The lines (0-based) of a ``while`` body in ``text``, if it parses as Python, whose
-        test reads no clock and counts nothing."""
+    @staticmethod
+    def _python_loop_lines(text: str) -> set[int]:
         if "while" not in text:
             return set()
         try:
@@ -623,7 +981,7 @@ class FileScan:
                 ):
                     continue
                 for b in n.body:
-                    lines |= set(range(b.lineno - 1, (b.end_lineno or b.lineno)))
+                    lines |= set(range(b.lineno - 1, b.end_lineno or b.lineno))
         return lines
 
     def _joined(self, node: ast.JoinedStr) -> None:
@@ -634,35 +992,75 @@ class FileScan:
             elif isinstance(v, ast.FormattedValue):
                 parts.append("{" + str(len(values)) + "}")
                 values.append(v.value)
-        self._child_source(node, "".join(parts), values)
+        if node not in self.docstrings:
+            self._child_source(node, "".join(parts), values)
+
+    def the_timeout_tool(self, node: ast.AST, depth: int = 0) -> bool:
+        """``"timeout"``, ``*x.tool("timeout")``, or ``*name`` bound to an argv holding one."""
+        if isinstance(node, ast.Constant):
+            return node.value == "timeout"
+        if isinstance(node, ast.Starred):
+            inner = node.value
+            if isinstance(inner, ast.Call) and any(
+                isinstance(a, ast.Constant) and a.value == "timeout" for a in inner.args
+            ):
+                return True
+            if isinstance(inner, ast.Name) and depth < 2:
+                fn = self.function_of(node)
+                for bound in self.bindings_in(fn, inner.id):
+                    if isinstance(bound, ast.List | ast.Tuple) and any(
+                        self.the_timeout_tool(e, depth + 1) for e in bound.elts
+                    ):
+                        return True
+        return False
+
+    def bindings_in(self, fn: ast.AST | None, name: str) -> list[ast.AST]:
+        scope = fn if fn is not None else self.tree
+        return [
+            n.value
+            for n in ast.walk(scope)
+            if isinstance(n, ast.Assign)
+            and any(isinstance(t, ast.Name) and t.id == name for t in n.targets)
+        ]
 
     def _timeout_argv(self, node: ast.List | ast.Tuple) -> None:
+        if not ALLOWANCES.get("P2s argv", True):
+            return
         elts = node.elts
         for i, e in enumerate(elts):
-            if isinstance(e, ast.Constant) and e.value == "timeout":
-                for later in elts[i + 1 :]:
-                    if isinstance(later, ast.Constant) and isinstance(later.value, str):
-                        if re.fullmatch(r"\d+(\.\d+)?", later.value) and float(later.value):
+            if not self.the_timeout_tool(e):
+                continue
+            for later in elts[i + 1 :]:
+                if isinstance(later, ast.Constant) and isinstance(later.value, str):
+                    if re.fullmatch(r"\d*\.?\d+", later.value):
+                        if float(later.value):
                             self.site(node, "P2s", f"timeout argv: {self.text(node)}")
                             return
-                        if not later.value.startswith("-") and not re.fullmatch(
-                            r"[A-Z]+", later.value
-                        ):
-                            return  # the command begins
-                    elif isinstance(later, ast.JoinedStr | ast.FormattedValue | ast.Name):
-                        value = later.value if isinstance(later, ast.FormattedValue) else later
-                        if not (self.is_runs_out(value) or self.guard_multiple(value)):
-                            if not isinstance(later, ast.JoinedStr):
-                                self.site(node, "P2s", f"timeout argv: {self.text(node)}")
-                                return
+                        continue
+                    if later.value.startswith("-") or re.fullmatch(r"[A-Z]+", later.value):
+                        continue
+                    return  # the command begins
+                if isinstance(later, ast.Starred):
+                    return  # the command, or another argv
+                value = later
+                if isinstance(later, ast.JoinedStr):
+                    inner = [v.value for v in later.values if isinstance(v, ast.FormattedValue)]
+                    value = inner[0] if len(inner) == 1 else later
+                elif (
+                    isinstance(later, ast.Call)
+                    and isinstance(later.func, ast.Name)
+                    and later.func.id == "str"
+                    and later.args
+                ):
+                    value = later.args[0]
+                if not self.outlasts_or_runs_out(value):
+                    self.site(node, "P2s", f"timeout argv: {self.text(node)}")
+                    return
 
     # P4 ---------------------------------------------------------------------------------------
 
-    assignments: list = []
-
     def setattr_args(self, node: ast.Call):
-        """(object, name or None, value) of a setattr-like call, or None. The name is None when
-        it is not a string constant; a string target "module.NAME" gives a Name object."""
+        """(object, name or None, value) of a setattr-like call, or None."""
         f = node.func
         fname = f.attr if isinstance(f, ast.Attribute) else getattr(f, "id", None)
         q = self.qual(f) or ""
@@ -692,15 +1090,26 @@ class FileScan:
             return ast.Name(id=module), name, value
         return None
 
+    def patches_time(self, obj: ast.AST) -> bool:
+        q = self.qual(obj)
+        if q == "time" or (isinstance(obj, ast.Name) and obj.id in ("time",)):
+            return True
+        return isinstance(obj, ast.Attribute) and obj.attr == "time"
+
     def _setattrs(self) -> None:
-        by_function: dict[tuple, list[str]] = {}
-        for node in ast.walk(self.tree):
-            if not isinstance(node, ast.Call) or not (got := self.setattr_args(node)):
+        if not ALLOWANCES.get("P4 branch", True):
+            return
+        seen: dict[tuple, int] = {}
+        for node in self.calls:
+            if not (got := self.setattr_args(node)):
                 continue
             obj, name, value = got
             fn = self.function_of(node)
-            if self.qual(obj) == "time" or (isinstance(obj, ast.Name) and obj.id == "time"):
+            if self.patches_time(obj):
                 self.site(node, "P4", f"the time module patched: {self.text(node)}")
+                continue
+            if name in GUARD_ATTRIBUTES:
+                self.site(node, "P4", f"the guard patched: {self.text(node)}")
                 continue
             names = [name] if name is not None else self.resolve_name(node.args[1], node)
             if names is None:
@@ -709,158 +1118,159 @@ class FileScan:
             timing = [n for n in names if timing_constant(n)]
             if not timing:
                 continue
-            given_back = []
+            back = []
             for resolved in timing:
                 key = (id(fn), ast.dump(obj), resolved)
-                by_function.setdefault(key, []).append(resolved)
-                if len(by_function[key]) == 2:
-                    given_back.append(resolved)
-            if given_back:
-                self.site(node, "P4", f"{', '.join(given_back)} given back by a second setattr")
-            if self.allowed(value, fn) and not (
-                isinstance(value, ast.Name) and value.id in self.parameters(fn)
-                and not self._helper_values_allowed(fn, value.id)):  # fmt: skip
+                seen[key] = seen.get(key, 0) + 1
+                if seen[key] == 2:
+                    back.append(resolved)
+            if back:
+                self.site(node, "P4", f"{', '.join(back)} given back by a second setattr")
+            if self.allowed(value, node):
                 continue
-            if fn is not None and ast.dump(obj) in self.doubled_modules(fn):
-                self.derived.append(("H7", Site(self.path, node.lineno, "P4", self.text(node))))
-                continue
+            if fn is not None and ast.dump(obj) in self.doubled(fn):
+                if self.allow("double (H7)", node, "P4"):
+                    continue
             self.site(node, "P4", f"{', '.join(timing)} = {self.text(value)}")
         for node, target, value in self.assignments:
-            fn = self.function_of(node)
-            if not self.allowed(value, fn):
+            if not self.allowed(value, node):
                 self.site(node, "P4", f"{self.text(target)} = {self.text(value)}")
 
     def resolve_name(self, node: ast.AST, at: ast.AST) -> list[str] | None:
-        """The names a non-literal setattr name takes: a loop variable over a literal tuple or
-        list, or a module-local helper's parameter given literals at every call site."""
+        """A non-literal setattr name: a loop variable over a literal tuple or list, or a
+        module-local helper's parameter given a literal at every call."""
         if not isinstance(node, ast.Name):
             return None
-        for loop in self.enclosing_loops(at):
-            if isinstance(loop.target, ast.Name) and loop.target.id == node.id:
-                if isinstance(loop.iter, ast.Tuple | ast.List) and all(
-                    isinstance(e, ast.Constant) and isinstance(e.value, str) for e in loop.iter.elts
+        parent = self.parents.get(at)
+        while parent is not None:
+            if isinstance(parent, ast.For) and isinstance(parent.target, ast.Name) and (
+                parent.target.id == node.id):  # fmt: skip
+                it = parent.iter
+                if isinstance(it, ast.Tuple | ast.List) and all(
+                    isinstance(e, ast.Constant) and isinstance(e.value, str) for e in it.elts
                 ):
-                    return [e.value for e in loop.iter.elts]
+                    return [e.value for e in it.elts]
                 return None
+            parent = self.parents.get(parent)
         fn = self.function_of(at)
-        if isinstance(fn, ast.FunctionDef) and node.id in self.parameters(fn):
+        if isinstance(fn, FUNCTIONS) and node.id in self.parameter_names(fn):
             return self.literal_arguments(fn, node.id)
         return None
 
-    def enclosing_loops(self, node: ast.AST) -> Iterator[ast.For]:
-        while node in self.parents:
-            node = self.parents[node]
-            if isinstance(node, ast.For):
-                yield node
-
-    def literal_arguments(self, fn: ast.FunctionDef, param: str) -> list[str] | None:
+    def literal_arguments(self, fn: ast.AST, param: str) -> list[str] | None:
         params = [a.arg for a in fn.args.posonlyargs + fn.args.args]
         index = params.index(param) if param in params else None
         found: list[str] = []
-        calls = 0
-        for node in ast.walk(self.tree):
-            if (
-                isinstance(node, ast.Call)
-                and isinstance(node.func, ast.Name)
-                and (node.func.id == fn.name)
-            ):
-                calls += 1
-                given = None
-                if index is not None and index < len(node.args):
-                    given = node.args[index]
+        for node in self.calls:
+            if isinstance(node.func, ast.Name) and node.func.id == fn.name:
+                given = node.args[index] if index is not None and index < len(node.args) else None
                 for kw in node.keywords:
                     if kw.arg == param:
                         given = kw.value
                 if not (isinstance(given, ast.Constant) and isinstance(given.value, str)):
                     return None
                 found.append(given.value)
-        return found if calls else None
+        return found or None
 
-    def _helper_values_allowed(self, fn: ast.AST, param: str) -> bool:
-        """A helper's value parameter is allowed when every call site gives an allowed value."""
-        if not isinstance(fn, ast.FunctionDef):
-            return False
-        params = [a.arg for a in fn.args.posonlyargs + fn.args.args]
-        index = params.index(param) if param in params else None
-        calls = 0
-        for node in ast.walk(self.tree):
-            if (
-                isinstance(node, ast.Call)
-                and isinstance(node.func, ast.Name)
-                and (node.func.id == fn.name)
-            ):
-                calls += 1
-                given = node.args[index] if index is not None and index < len(node.args) else None
-                for kw in node.keywords:
-                    if kw.arg == param:
-                        given = kw.value
-                if given is None or not self.allowed(given, self.function_of(node)):
-                    return False
-        return calls > 0
+    # fixtures -------------------------------------------------------------------------------
+
+    def _fixtures(self, tree: ast.AST):
+        for n in getattr(tree, "body", []):
+            if isinstance(n, FUNCTIONS) and self.is_fixture(n):
+                yield n.name, n
 
 
-def scan_source(path: str, source: str, table: Table | None = None, tier: str = "host") -> FileScan:
-    scan = FileScan(path, source, table or Table(), tier)
-    scan.assignments = []
-    scan.scan()
+# A FileScan of a module the scan resolves names into, once per run of the scan.
+_SCANS: dict[tuple[str, int], FileScan] = {}
+
+
+def scan_of(module: str, modules: dict) -> FileScan:
+    tree = modules[module]
+    key = (module, id(tree))
+    if key not in _SCANS:
+        _SCANS[key] = FileScan(module.replace(".", "/") + ".py", tree, "", modules)
+    return _SCANS[key]
+
+
+def scan_source(
+    path: str, source: str, table: Table | None = None, modules: dict | None = None
+) -> FileScan:
+    """One file scanned alone: its own flows are the only ones its calls are checked against."""
+    scan = FileScan(path, ast.parse(source), source, modules).scan()
+    scan.finish(table or Table(), scan.flows)
     return scan
 
 
 # --- the scope -----------------------------------------------------------------------------------
 
-# Whole files that run only as another program, imitating a program rcman drives, and the
-# programs whose deadlines are their behaviour and decide no test (H11; Q1 of #149): what races
-# them is scanned in the tests that run them. Each with its reason; its stale check is
-# ``stand_in_problems``.
+# Whole files that run only as another program, imitating a program rcman drives, or programs whose
+# deadlines are their behaviour and decide no test (H11; Q1 of #149). What races them is scanned in
+# the tests that run them; ``stand_in_problems`` is their stale check.
 STAND_INS = {
     "devtools/fake_claude.py": "runs as `claude` in a workspace, imitating Claude Code's timing",
     "devtools/pre_test_commit.py": "the pre-test hook: its DEADLINE and GRACE are its behaviour",
-    "devtools/held_folders.py": "the sweep of held folders: UNLOCKED_FOR and TMUX_GONE_WITHIN "
-    "are its behaviour",
 }
+GUARD_FILE = "tests/test_timing_guard.py"
 
 # The roots of the scope now: host Python and devtools. tests/container/ and the TypeScript
 # scope join it in the later steps of #149.
 SCOPE = ("tests", "devtools")
+TABLE_ROOTS = ("backend", "helpers", "tests", "devtools")
 
 
-def scoped_files(roots: Iterable[str] = SCOPE, repo: Path = REPO) -> list[str]:
-    """The Python files of ``roots`` that git does not ignore, but the stand-ins, relative to
-    ``repo``; tests/container/ is not yet in the scope. No root: no file."""
+def listed(roots: Iterable[str], repo: Path = REPO) -> list[str]:
     roots = list(roots)
     if not roots:
         return []
-    listed = subprocess.run(
+    out = subprocess.run(
         ["git", "ls-files", "-co", "--exclude-standard", "--", *roots],
-        cwd=repo,
-        capture_output=True,
-        text=True,
-        check=True,
-        timeout=HANG_GUARD,
-    ).stdout.split()
-    return sorted(
-        f
-        for f in listed
-        if f.endswith(".py")
-        and not f.startswith("tests/container/")
-        and "/fakes/" not in f
-        and (repo / f).exists()
-        and f not in STAND_INS
-    )
-
-
-def table_trees() -> list[ast.AST]:
-    """The ASTs the parameter table is built from: backend, helpers, tests and devtools."""
-    files = subprocess.run(
-        ["git", "ls-files", "-co", "--exclude-standard", "--",
-         "backend", "helpers", "tests", "devtools"],
-        cwd=REPO, capture_output=True, text=True, check=True, timeout=HANG_GUARD,
+        cwd=repo, capture_output=True, text=True, check=True, timeout=HANG_GUARD,
     ).stdout.split()  # fmt: skip
-    trees = []
-    for f in files:
-        if f.endswith(".py") and (REPO / f).exists():
-            trees.append(ast.parse((REPO / f).read_text(encoding="utf-8")))
-    return trees
+    return sorted(f for f in out if f.endswith(".py") and (repo / f).exists())
+
+
+def scoped_files(roots: Iterable[str] = SCOPE, repo: Path = REPO) -> list[str]:
+    """The Python files of ``roots`` that git does not ignore, but the stand-ins and, for now,
+    tests/container/. No root: no file."""
+    return [
+        f
+        for f in listed(roots, repo)
+        if not f.startswith("tests/container/") and f not in STAND_INS
+    ]
+
+
+def module_name(path: str) -> str:
+    """The module a file of tests/ or devtools/ is imported as; backend's drop their root."""
+    name = path[: -len(".py")].replace("/", ".")
+    return name.removeprefix("backend.")
+
+
+@dataclass
+class Tree:
+    sites: list[Site]
+    derived: list[tuple[str, Site]]
+    table: Table
+
+
+def scan_tree(files: Iterable[str] | None = None) -> Tree:
+    """Every site of the scope, before the named patterns: each file parsed once, the parameter
+    table and the modules names resolve into built from the same trees."""
+    paths = listed(TABLE_ROOTS)
+    sources = {p: (REPO / p).read_text(encoding="utf-8") for p in paths}
+    trees = {p: ast.parse(s) for p, s in sources.items()}
+    table = build_table(trees.values())
+    modules = {module_name(p): t for p, t in trees.items()}
+    _SCANS.clear()
+    scans = [
+        FileScan(f, trees[f], sources[f], modules).scan()
+        for f in (scoped_files() if files is None else files)
+    ]
+    flows = set().union(*(s.flows for s in scans)) if scans else set()
+    sites, derived = [], []
+    for s in scans:
+        sites += s.finish(table, flows)
+        derived += s.derived
+    return Tree(sites, derived, table)
 
 
 # --- the named patterns --------------------------------------------------------------------------
@@ -869,7 +1279,7 @@ def table_trees() -> list[ast.AST]:
 @dataclass(frozen=True)
 class Named:
     """A named exemption: the sites of ``forms`` in ``path``, in the functions ``where`` names
-    (a prefix of the qualified name; "" for the whole file)."""
+    (the qualified name or a prefix of one; "" for module level)."""
 
     key: str
     path: str
@@ -881,9 +1291,7 @@ class Named:
         return (
             site.path == self.path
             and site.form in self.forms
-            and any(
-                site.where == w or site.where.startswith(w + ".") or w == "" for w in self.where
-            )
+            and any(site.where == w or (w and site.where.startswith(w + ".")) for w in self.where)
         )
 
 
@@ -893,18 +1301,31 @@ NAMED = (
     Named("H1", "tests/until.py", ("",), frozenset({"P3"}),
           "until's PACE and SLOW, the paces between looks"),
     Named("H2", "tests/time_doubles.py",
-          ("_Double._hang_left", "FakeTime._poll", "FakeTime.sleep", "WatchedCondition.wait_for"),
+          ("_Double._hang_left", "FakeTime._poll", "FakeTime.sleep", "WatchedCondition.wait_for",
+           "ControlledEvent.wait"),
           frozenset({"P1", "P2", "P3"}),
           "the doubles' hang bound, which only turns a frozen wait into DoubleHung"),
     Named("H2", "tests/time_doubles.py", ("",), frozenset({"P3"}),
-          "the doubles' POLL_CAP and POLL_GAP, and their waits at their hang bound"),
-    Named("H3", "tests/hang_guard.py", ("",), frozenset({"P1", "P2", "P3", "P4"}),
-          "the hang guard itself, and runs_out and pace, which set a name a test gives them"),
+          "the doubles' POLL_CAP and POLL_GAP"),
+    Named("H3", "tests/hang_guard.py", ("tier_guard", "runs_out", "pace"),
+          frozenset({"P3", "P4"}),
+          "the tier's guard, and runs_out and pace, which set the name a test gives them"),
     Named("H3", "tests/conftest.py", ("pytest_timeout_set_timer",), frozenset({"P2", "P3"}),
           "the hang guard's timer"),
-    Named("H4", "tests/test_time_doubles.py", ("",), frozenset({"P3"}),
-          "the doubles' own tests: the seconds they hand a double, and the short hang bounds "
-          "they give the machinery whose ending of a hang they assert"),
+    Named("H4", "tests/test_time_doubles.py",
+          ("frozen_waits",
+           "test_a_polling_loop_that_no_advance_reaches_raises_double_hung_at_the_bound"),
+          frozenset({"P3"}),
+          "the short hang bounds given to the doubles whose ending of a hang the test asserts"),
+    Named("H4", "tests/test_until.py",
+          ("test_a_condition_that_never_holds_fails_at_the_tiers_guard_with_what_it_last_gave",
+           "test_a_container_tests_tier_guard_is_the_container_hang_guard"),
+          frozenset({"P4"}),
+          "until's and tier_guard's own tests: a guard of 0 that until has run out against, and "
+          "the container tier read from the registry"),
+    Named("Q1", "devtools/held_folders.py", ("",), frozenset({"P3"}),
+          "the sweep of held folders: UNLOCKED_FOR and TMUX_GONE_WITHIN are its behaviour, and "
+          "decide no test"),
 )  # fmt: skip
 
 
@@ -919,33 +1340,28 @@ def named_problems(sites: list[Site], named: Iterable[Named] = NAMED) -> list[st
     return problems
 
 
-def stand_in_problems() -> list[str]:
-    """Stale checks of STAND_INS: each exists, and is run by a test, by its name."""
+def stand_in_problems(files: Iterable[str] | None = None) -> list[str]:
+    """Stale checks of STAND_INS: each exists, is a program (``__main__`` or a ``main``), and
+    its file is named in a string of a scanned file other than this guard's own, as an argv or
+    a path."""
     problems = []
-    scanned = [REPO / f for f in scoped_files()]
+    texts = {
+        f: (REPO / f).read_text(encoding="utf-8")
+        for f in (scoped_files() if files is None else files)
+        if f != GUARD_FILE
+    }
     for path in STAND_INS:
-        if not (REPO / path).exists():
+        full = REPO / path
+        if not full.exists():
             problems.append(f"{path} is gone")
             continue
-        stem = Path(path).stem
-        if not any(stem in f.read_text(encoding="utf-8") for f in scanned):
-            problems.append(f"{path} is named by no scanned file")
+        text = full.read_text(encoding="utf-8")
+        if "__main__" not in text and not re.search(r"^def main\(", text, re.M):
+            problems.append(f"{path} is no program")
+        named = re.compile(rf"""["'][^"'\n]*{re.escape(Path(path).name)}["']""")
+        if not any(named.search(t) for t in texts.values()):
+            problems.append(f"{path} is named in the string of no scanned file")
     return problems
-
-
-def scan_tree(
-    files: Iterable[str] | None = None,
-) -> tuple[list[Site], list[tuple[str, Site]], Table]:
-    """Every site of the scope, before the named patterns, the derived allowances, and the
-    parameter table."""
-    table = build_table(table_trees())
-    sites: list[Site] = []
-    derived: list[tuple[str, Site]] = []
-    for f in scoped_files() if files is None else files:
-        scan = scan_source(f, (REPO / f).read_text(encoding="utf-8"), table)
-        sites += scan.sites
-        derived += scan.derived
-    return sites, derived, table
 
 
 def unexempted(sites: list[Site]) -> list[Site]:
@@ -953,8 +1369,6 @@ def unexempted(sites: list[Site]) -> list[Site]:
 
 
 # --- the planted twins ---------------------------------------------------------------------------
-
-# Each planted form, written so that this module's own source holds none (``placed``).
 
 
 def placed(source: str) -> str:
@@ -966,177 +1380,423 @@ def placed(source: str) -> str:
     return source
 
 
+TABLE_DEFS = (
+    "def gone(path, within):\n    pass\n"
+    "class S:\n    def recording_held(self, seconds):\n        pass\n"
+    "def run(argv, timeout):\n    pass\n"
+    "def run(cmd, env, wait_timeout=None):\n    pass\n"
+    "class FakeTime:\n    def advance(self, seconds):\n        pass\n"
+    "def held(path, seconds):\n    pass\n"
+    "def go(argv, seconds):\n    pass\n"
+    "def go(seconds, argv):\n    pass\n"
+)
+
+
+def planted_table() -> Table:
+    return build_table([ast.parse(TABLE_DEFS)])
+
+
 def flagged(source: str, table: Table | None = None, path: str = "tests/test_planted.py"):
-    return [(s.form, s.line) for s in scan_source(path, placed(source), table).sites]
+    scan = scan_source(path, placed(source), planted_table() if table is None else table)
+    return [(s.form, s.line) for s in scan.sites]
 
 
+def fn(body: str, params: str = "t") -> str:
+    """A test whose body is ``body``, indented."""
+    return f"def test_x({params}):\n" + "".join(f"    {line}\n" for line in body.splitlines())
+
+
+# name: (form, source, line, the branch that flags it)
 PLANTED = {
     # P1
     "a deadline loop": ("P1", "import time\ndeadline = time.monotonic() + 5\n"
-                        "while time.monotonic() < deadline:\n    pass\n", 3),
+                        "while time.monotonic() < deadline:\n    pass\n", 3, "P1 branch"),
     "a difference stored": ("P1", "import time\nstarted = time.perf_counter()\n"
-                            "took = time.perf_counter() - started\n", 3),
+                            "took = time.perf_counter() - started\n", 3, "P1 branch"),
+    "time.time": ("P1", "import time\ndef f(t):\n    return time.time() > t\n", 3, "P1 branch"),
+    "monotonic_ns": ("P1", "import time\ndef f(t):\n    return time.monotonic_ns() > t\n", 3,
+                     "P1 branch"),
+    "perf_counter_ns": ("P1", "import time\ndef f(t):\n    return time.perf_counter_ns() > t\n",
+                        3, "P1 branch"),
+    "time_ns": ("P1", "import time\ndef f(t):\n    return time.time_ns() > t\n", 3, "P1 branch"),
     "datetime.now compared": ("P1", "from datetime import datetime as dt\n"
-                              "def f(t):\n    return dt.now() > t\n", 3),
-    "an aliased clock": ("P1", "import time as t\ndef f(x):\n    return t.monotonic() > x\n", 3),
-    "loop.time": ("P1", "def f(loop, end):\n    return loop.time() < end\n", 2),
+                              "def f(t):\n    return dt.now() > t\n", 3, "P1 branch"),
+    "datetime.now with a zone": ("P1", "import datetime\ndef f(t):\n"
+                                 "    return datetime.datetime.now(datetime.UTC) > t\n", 3,
+                                 "P1 branch"),
+    "utcnow": ("P1", "import datetime\ndef f(t):\n    return datetime.datetime.utcnow() > t\n",
+               3, "P1 branch"),
+    "date.today": ("P1", "from datetime import date\ndef f(t):\n    return date.today() > t\n",
+                   3, "P1 branch"),
+    "an aliased clock": ("P1", "import time as t\ndef f(x):\n    return t.monotonic() > x\n", 3,
+                         "P1 branch"),
+    "loop.time": ("P1", "def f(loop, end):\n    return loop.time() < end\n", 2, "P1 branch"),
+    "a clock through max": ("P1", "import time\ndef f(a):\n    late = max(time.monotonic(), a)\n"
+                            "    return late > 3\n", 4, "P1 branch"),
     # P2
-    "time.sleep": ("P2", "import time\ntime.$SLEEP(1)\n", 2),
-    "an aliased sleep": ("P2", "from time import $SLEEP as nap\nnap(0.5)\n", 2),
-    "asyncio.sleep": ("P2", "import asyncio\nasync def f():\n    await asyncio.$SLEEP(0.1)\n", 3),
-    "a Timer": ("P2", "import threading\nthreading.Timer(1.0, print).start()\n", 2),
-    "call_later": ("P2", "def f(loop):\n    loop.call_later(2, print)\n", 2),
+    "time.sleep": ("P2", "import time\ntime.$SLEEP(1)\n", 2, "P2 branch"),
+    "an aliased sleep": ("P2", "from time import $SLEEP as nap\nnap(0.5)\n", 2, "P2 branch"),
+    "asyncio.sleep": ("P2", "import asyncio\nasync def f():\n    await asyncio.$SLEEP(0.1)\n", 3,
+                      "P2 branch"),
+    "anyio.sleep": ("P2", "import anyio\nasync def f():\n    await anyio.$SLEEP(1)\n", 3,
+                    "P2 branch"),
+    "trio.sleep": ("P2", "import trio\nasync def f():\n    await trio.$SLEEP(1)\n", 3, "P2 branch"),
+    "a Timer": ("P2", "import threading\nthreading.Timer(1.0, print).start()\n", 2, "P2 branch"),
+    "call_later": ("P2", "def f(loop):\n    loop.call_later(2, print)\n", 2, "P2 branch"),
+    "call_at": ("P2", "def f(loop):\n    loop.call_at(2, print)\n", 2, "P2 branch"),
     # P2s
-    "a shell sleep": ("P2s", "argv = ['sh', '-c', '$SLEEP 3; echo done']\n", 1),
-    "a timeout tool": ("P2s", "argv = ['sh', '-c', '$TIMEOUT -k 1 5 cat']\n", 1),
-    "a Python sleep in a string": ("P2s", "code = 'import time; time.$SLEEP(2)'\n", 1),
-    "a timeout argv": ("P2s", "argv = ['timeout', '-s', 'KILL', '30', 'sh']\n", 1),
-    "an interpolated sleep": ("P2s", "n = 3\nscript = f'$SLEEP {n}; exit 0'\n", 2),
-    "a child's loop on a clock": ("P1", "s = 'while [ $($DATE +%s) $LT 9 ]; do :; done'\n", 1),
-    # P3
-    "a timeout keyword": ("P3", "import subprocess\nsubprocess.run(['true'], timeout=10)\n", 2),
-    "a within keyword": ("P3", "def f(g):\n    g(within=2.5)\n", 2),
-    "a _seconds keyword": ("P3", "def f(g):\n    g(hold_seconds=4)\n", 2),
-    "a join": ("P3", "def f(t):\n    t.join(5)\n", 2),
-    "a wait": ("P3", "def f(e):\n    e.wait(0.5)\n", 2),
-    "a wait_for": ("P3", "def f(c, p):\n    c.wait_for(p, 3)\n", 2),
-    "a communicate": ("P3", "def f(p):\n    p.communicate(None, 30)\n", 2),
-    "a queue get": ("P3", "def f(queue):\n    queue.get(True, 2)\n", 2),
-    "a parameter default": ("P3", "def f(x, timeout=30):\n    pass\n", 1),
-    "a constant": ("P3", "ANSWERS_WITHIN = 15.0\n", 1),
-    "a class constant": ("P3", "class C:\n    POLL_SECONDS = 0.1\n", 2),
-    "pytest.mark.timeout": ("P3", "import pytest\n@pytest.mark.timeout(5)\ndef test_x():\n"
-                            "    pass\n", 2),
+    "a shell sleep": ("P2s", "argv = ['sh', '-c', '$SLEEP 3; echo done']\n", 1, "P2s branch"),
+    "a shell sleep of .5": ("P2s", "argv = ['sh', '-c', '$SLEEP .5']\n", 1, "P2s branch"),
+    "a timeout tool": ("P2s", "argv = ['sh', '-c', '$TIMEOUT -k 1 5 cat']\n", 1, "P2s branch"),
+    "a timeout with --signal": ("P2s", "s = '$TIMEOUT --signal=KILL 5 cat'\n", 1, "P2s branch"),
+    "a timeout with -sKILL": ("P2s", "s = '$TIMEOUT -sKILL 5 cat'\n", 1, "P2s branch"),
+    "a Python sleep in a string": ("P2s", "code = 'import time; time.$SLEEP(2)'\n", 1,
+                                   "P2s branch"),
+    "an interpolated sleep": ("P2s", "n = 3\nscript = f'$SLEEP {n}; exit 0'\n", 2, "P2s branch"),
+    "a child's loop on a clock": ("P1", "s = 'while [ $($DATE +%s) $LT 9 ]; do :; done'\n", 1,
+                                  "P2s branch"),
+    "a child's loop that sleeps on a count": (
+        "P1", "s = 'while [ $n $LT 9 ]; do $SLEEP 1; n=$((n+1)); done'\n", 1, "P2s branch"),
+    "a timeout argv": ("P2s", "argv = ['timeout', '-s', 'KILL', '30', 'sh']\n", 1, "P2s argv"),
+    "a timeout argv holding a name": ("P2s", "def f(n):\n    return ['timeout', n, 'cat']\n", 2,
+                                      "P2s argv"),
+    "a timeout argv of an f-string": ("P2s", "def f(n):\n    return ['timeout', f'{n}', 'cat']\n",
+                                      2, "P2s argv"),
+    "a timeout argv of str()": ("P2s", "def f():\n    return ['timeout', str(5), 'cat']\n", 2,
+                                "P2s argv"),
+    "the timeout tool through its argv": (
+        "P2s", "def f(layout, rt):\n    t = [*layout.tool('timeout'), '-s', 'TERM']\n"
+        "    rt.exec([*t, '5', 'sh'])\n", 3, "P2s argv"),
+    "the timeout tool's -k": (
+        "P2s", "def f(layout):\n    return [*layout.tool('timeout'), '-k', '1']\n", 2, "P2s argv"),
+    # P3 keywords
+    **{
+        f"a {kw} keyword": ("P3", f"def f(g):\n    g({kw}=2.5)\n", 2, "P3 keywords")
+        for kw in ("timeout", "within", "deadline", "seconds", "wait", "quiet", "interval",
+                   "delay", "every", "grace", "hold_timeout", "hold_seconds", "hold_within",
+                   "poll_interval", "start_delay", "max_wait", "stop_grace", "hang_after")
+    },
+    # P3 positionals
+    "a join": ("P3", "def f(t):\n    t.join(5)\n", 2, "P3 positional join"),
+    "a wait": ("P3", "def f(e):\n    e.wait(0.5)\n", 2, "P3 positional wait"),
+    "a wait_for": ("P3", "def f(c, p):\n    c.wait_for(p, 3)\n", 2, "P3 positional wait_for"),
+    "a communicate": ("P3", "def f(p):\n    p.communicate(None, 30)\n", 2,
+                      "P3 positional communicate"),
+    "a queue get": ("P3", "def f(queue):\n    queue.get(True, 2)\n", 2, "P3 positional get"),
+    "an inbox get": ("P3", "def f(inbox):\n    inbox.get(True, 5)\n", 2, "P3 positional get"),
+    "a settimeout": ("P3", "def f(s):\n    s.settimeout(5)\n", 2, "P3 positional settimeout"),
+    "an acquire": ("P3", "def f(lock):\n    lock.acquire(True, 5)\n", 2,
+                   "P3 positional acquire"),
+    "a result": ("P3", "def f(future):\n    future.result(5)\n", 2, "P3 positional result"),
+    "a poll": ("P3", "def f(poller):\n    poller.poll(100)\n", 2, "P3 positional poll"),
+    "a selector's select": ("P3", "def f(selector):\n    selector.select(1)\n", 2,
+                            "P3 positional select"),
+    "select.select": ("P3", "import select\nselect.select([], [], [], 2)\n", 2,
+                      "P3 positional select.select"),
+    "setdefaulttimeout": ("P3", "import socket\nsocket.setdefaulttimeout(5)\n", 2,
+                          "P3 positional socket.setdefaulttimeout"),
+    "create_connection": ("P3", "import socket\nsocket.create_connection(('h', 1), 5)\n", 2,
+                          "P3 positional socket.create_connection"),
+    "alarm": ("P3", "import signal\nsignal.alarm(5)\n", 2, "P3 positional signal.alarm"),
+    "fail_after": ("P3", "import anyio\nanyio.fail_after(5)\n", 2,
+                   "P3 positional anyio.fail_after"),
+    "move_on_after": ("P3", "import trio\ntrio.move_on_after(5)\n", 2,
+                      "P3 positional trio.move_on_after"),
+    "urlopen": ("P3", "import urllib.request\nurllib.request.urlopen('u', None, 5)\n", 2,
+                "P3 positional urllib.request.urlopen"),
+    "asyncio.wait_for": ("P3", "import asyncio\nasync def f(c):\n"
+                         "    await asyncio.wait_for(c, 5)\n",
+                         3, "P3 positional asyncio.wait_for"),
+    "a local name shadowing an import": (
+        "P3", "from tests.other import restoring\n" + fn("restoring = make()\nrestoring.join(3)"),
+        4, "P3 positional join"),
+    "a positional constant": ("P3", "SHORT = 0.5\ndef test_x(t):\n    t.join(SHORT)\n", 3,
+                              "P3 positional join"),
+    # P3 values that are not checked where they are given
+    "a fixture's value": ("P3", "import pytest\n@pytest.fixture\ndef short():\n    return 0.5\n"
+                          "def test_x(short, t):\n    t.join(timeout=short)\n", 6, "P3 keywords"),
+    "a lambda's parameter": ("P3", "f = lambda t, n: t.join(timeout=n)\n", 1, "P3 keywords"),
+    "a local constant": ("P3", fn("TIMEOUT = 0.5\nt.join(timeout=TIMEOUT)"), 3, "P3 keywords"),
+    "a tuple constant": ("P3", "A_TIMEOUT, B = 0.5, 1\ndef test_x(t):\n"
+                         "    t.join(timeout=A_TIMEOUT)\n", 1, "P3 constants"),
+    "a constant built from a call": ("P3", "WAIT_SECONDS = float('0.5')\n", 1, "P3 constants"),
+    "a rebound constant": ("P3", "WAIT = 1\nWAIT = 2\ndef test_x(t):\n    t.join(timeout=WAIT)\n",
+                           4, "P3 keywords"),
+    "a product's value in a test": ("P3", "from rcman import channel\n"
+                                    + fn("t.join(channel.REQUEST_TIMEOUT)"), 3,
+                                    "P3 positional join"),
+    "a helper's parameter given a number": (
+        "P3", "def helper(t, n=None):\n    t.join(timeout=n)\ndef test_x(t):\n    helper(t, 0.5)\n",
+        4, "P3 table"),
+    "a helper's default that is not checked by name": (
+        "P3", "def helper(t, n=0.5):\n    t.join(timeout=n)\n", 2, "P3 keywords"),
+    # P3 table and defaults
+    "a table position": ("P3", fn("gone(p, 60)", "p"), 2, "P3 table"),
+    "a table position of a method": ("P3", fn("s.recording_held(5)", "s"), 2, "P3 table"),
+    "a table position given a constant": ("P3", "X = 5\n" + fn("held(1, X)"), 3, "P3 table"),
+    "a disagreeing name at the union": ("P3", fn("go(1, 60)\ngo(60, 1)"), 2, "P3 table"),
+    "a disagreeing name, its other position": ("P3", fn("go(1, 60)\ngo(60, 1)"), 3, "P3 table"),
+    "a disagreeing POSITIONAL name": ("P3", fn("world.run(['a'], 10)", "world"), 2, "P3 table"),
+    "a parameter default": ("P3", "def f(x, timeout=30):\n    pass\n", 1, "P3 defaults"),
+    "a product's default outside a stand-in": (
+        "P3", "from rcman import runtime as rt\ndef f(g, timeout=rt.PODMAN_TIMEOUT):\n    pass\n",
+        2, "P3 defaults"),
     "tier_guard in a default": ("P3", "from tests.hang_guard import tier_guard\n"
-                                "def f(within=tier_guard()):\n    pass\n", 2),
+                                "def f(within=tier_guard()):\n    pass\n", 2, "P3 defaults"),
+    "a constant": ("P3", "ANSWERS_WITHIN = 15.0\n", 1, "P3 constants"),
+    "a class constant": ("P3", "class C:\n    POLL_SECONDS = 0.1\n", 2, "P3 constants"),
     "tier_guard at module level": ("P3", "from tests.hang_guard import tier_guard\n"
-                                   "WAIT_SECONDS = tier_guard()\n", 2),
+                                   "WAIT_SECONDS = tier_guard()\n", 2, "P3 constants"),
+    "pytest.mark.timeout": ("P3", "import pytest\n@pytest.mark.timeout(5)\ndef test_x():\n"
+                            "    pass\n", 2, "P3 mark"),
     "a guard under 1": ("P3", "from tests.hang_guard import HANG_GUARD\n"
-                        "def f(g):\n    g(timeout=HANG_GUARD / 2)\n", 3),
+                        "def f(g):\n    g(timeout=HANG_GUARD / 2)\n", 3, "P3 keywords"),
     # P4
-    "a monkeypatched deadline": ("P4", "def test_x(monkeypatch, mod):\n"
-                                 "    monkeypatch.setattr(mod, 'STOP_TIMEOUT', 0.1)\n", 2),
-    "a string target": ("P4", "def test_x(monkeypatch):\n"
-                        "    monkeypatch.setattr('rcman.x.GRACE_SECONDS', 0.5)\n", 2),
+    "a monkeypatched deadline": ("P4", fn("monkeypatch.setattr(mod, 'STOP_TIMEOUT', 0.1)",
+                                          "monkeypatch, mod"), 2, "P4 branch"),
+    "patched.setattr": ("P4", "def test_x(monkeypatch, mod):\n"
+                        "    with monkeypatch.context() as patched:\n"
+                        "        patched.setattr(mod, 'STOP_TIMEOUT', 0.1)\n", 3, "P4 branch"),
+    "the builtin setattr": ("P4", fn("setattr(mod, 'STOP_TIMEOUT', 0.1)", "mod"), 2, "P4 branch"),
+    "a string target": ("P4", fn("monkeypatch.setattr('rcman.x.GRACE_SECONDS', 0.5)",
+                                 "monkeypatch"), 2, "P4 branch"),
     "mock.patch": ("P4", "from unittest import mock\n"
                    "def test_x():\n    with mock.patch('rcman.x.POLL_SECONDS', 0.01):\n"
-                   "        pass\n", 3),
+                   "        pass\n", 3, "P4 branch"),
     "mock.patch.object": ("P4", "from unittest import mock\ndef test_x(m):\n"
-                          "    with mock.patch.object(m, 'IDLE_SECONDS', 1):\n        pass\n", 3),
-    "a plain assignment": ("P4", "def test_x(mod):\n    mod.STOP_TIMEOUT = 0.2\n", 2),
+                          "    with mock.patch.object(m, 'IDLE_SECONDS', 1):\n        pass\n", 3,
+                          "P4 branch"),
+    "a plain assignment": ("P4", fn("mod.STOP_TIMEOUT = 0.2", "mod"), 2, "P4 branch"),
+    "a product's value shortening another": (
+        "P4", "from rcman import forward\n"
+        + fn("monkeypatch.setattr(forward, 'IDLE_SECONDS', forward.PACE_SECONDS)", "monkeypatch"),
+        3, "P4 branch"),
     "a loop-variable name": ("P4", "def test_x(monkeypatch, m):\n"
                              "    for name in ('IDLE_SECONDS', 'HEAD_SECONDS'):\n"
-                             "        monkeypatch.setattr(m, name, 0.3)\n", 3),
-    "an unresolved name": ("P4", "def test_x(monkeypatch, m, name):\n"
-                           "    monkeypatch.setattr(m, name, 0.3)\n", 2),
+                             "        monkeypatch.setattr(m, name, 0.3)\n", 3, "P4 branch"),
+    "an unresolved name": ("P4", fn("monkeypatch.setattr(m, name, 0.3)", "monkeypatch, m, name"),
+                           2, "P4 branch"),
     "a patch of time itself": ("P4", "import time\ndef test_x(monkeypatch):\n"
-                               "    monkeypatch.setattr(time, '$SLEEP', print)\n", 3),
+                               "    monkeypatch.setattr(time, '$SLEEP', print)\n", 3,
+                               "P4 branch"),
+    "a patch of time through a product": (
+        "P4", "from rcman import workspaces\n"
+        + fn("monkeypatch.setattr(workspaces.time, 'monotonic', abs)", "monkeypatch"), 3,
+        "P4 branch"),
+    "a patch of the guard": ("P4", "from tests import hang_guard\n"
+                             + fn("monkeypatch.setattr(hang_guard, 'HANG_GUARD', 0.01)",
+                                  "monkeypatch"), 3, "P4 branch"),
     "a restoring setattr": ("P4", "def test_x(monkeypatch, m):\n"
                             "    monkeypatch.setattr(m, 'WAIT_SECONDS', 0)\n"
-                            "    monkeypatch.setattr(m, 'WAIT_SECONDS', 0)\n", 3),
+                            "    monkeypatch.setattr(m, 'WAIT_SECONDS', 0)\n", 3, "P4 branch"),
+    "runs_out at a number": ("P4", "from tests.hang_guard import runs_out\n"
+                             + fn("runs_out(monkeypatch, m, 'X_SECONDS', at=0.5)",
+                                  "monkeypatch, m"), 3, "P4 runs_out"),
     # the guard's own names
-    "a local HANG_GUARD": ("GUARD", "HANG_GUARD = 0.5\n", 1),
+    "a local HANG_GUARD": ("GUARD", "HANG_GUARD = 0.5\n", 1, "guard names"),
+}  # fmt: skip
+
+
+CLEAN = {
+    "the guard": ("guard", "from tests.hang_guard import HANG_GUARD\n"
+                  "def f(g):\n    g(timeout=HANG_GUARD)\n"),
+    "a multiple of the guard": ("guard", "from tests.hang_guard import HANG_GUARD\n"
+                                "def f(g):\n    g(timeout=2 * HANG_GUARD)\n"),
+    "the guard through its module": ("guard", "from tests import hang_guard\n"
+                                     "def f(g):\n    g(timeout=hang_guard.CONTAINER_HANG_GUARD)\n"),
+    "tier_guard in a test": ("tier_guard", "from tests.hang_guard import tier_guard\n"
+                             "def f(g):\n    g(timeout=tier_guard())\n"),
+    "None": ("none", "def f(g):\n    g(timeout=None)\n"),
+    "minus one": ("minus one", "def f(lock):\n    lock.acquire(True, -1)\n"),
+    "zero": ("zero", "def f(e, g):\n    e.wait(0)\n    g(within=0)\n"),
+    "a sleep of 0 (H8)": ("turn (H8)", "import asyncio\nasync def f():\n"
+                          "    await asyncio.$SLEEP(0)\n"),
+    "a helper's parameter passed on": (
+        "parameter", "from tests.hang_guard import HANG_GUARD\n"
+        "def helper(g, timeout=None):\n    g(timeout=timeout)\n"
+        "def test_x(g):\n    helper(g, HANG_GUARD)\n"),
+    "a constant of the guard": ("constant", "from tests.hang_guard import HANG_GUARD\n"
+                                "ANSWERS = HANG_GUARD\ndef test_x(t):\n    t.join(ANSWERS)\n"),
+    "a product constant as a stand-in's default (H9)": (
+        "product default (H9)", "from rcman import runtime as rt\n"
+        "class Stand:\n    def exec(self, argv, timeout=rt.PODMAN_TIMEOUT):\n        pass\n"),
+    "str.join": ("structure", "def f(parts, sep):\n    return sep.join(p for p in parts)\n"),
+    "dict.get": ("structure", "def f(d):\n    return d.get('k', 5)\n"),
+    "os.path.join": ("structure", "import os\ndef f(a):\n    return os.path.join(a, 'b')\n"),
+    "a fake's sleep and advance (H7)": (
+        "double (H7)", "from tests.time_doubles import FakeTime\n"
+        "def test_x():\n    fake = FakeTime()\n    fake.advance(600)\n    fake.$SLEEP(5)\n"),
+    "a fixture's double (H7)": (
+        "double (H7)", "import pytest\nfrom tests.time_doubles import FakeTime\n"
+        "@pytest.fixture\ndef times():\n    return FakeTime()\n"
+        "def test_x(times):\n    times.advance(600)\n"),
+    "a constant of a module whose time is a double (H7)": (
+        "double (H7)", "from tests.time_doubles import FakeTime\n"
+        "def test_x(monkeypatch, mod):\n    fake = FakeTime()\n"
+        "    monkeypatch.setattr(mod, 'time', fake)\n"
+        "    monkeypatch.setattr(mod, 'STOP_TIMEOUT', 5)\n"),
+    "a non-timing setattr": ("structure", "def test_x(monkeypatch, m):\n"
+                             "    monkeypatch.setattr(m, 'NAME', 'x')\n"),
+    "a resolved non-timing name": ("structure", "def test_x(monkeypatch, m):\n"
+                                   "    for name in ('_changed', '_closing'):\n"
+                                   "        monkeypatch.setattr(m, name, None)\n"),
+    "a child's wait loop (H13)": ("child loop (H13)",
+                                  "s = 'while [ ! -e f ]; do $SLEEP 0.05; done'\n"),
+    "a child's endless loop (H13)": ("child loop (H13)", "s = 'while :; do $SLEEP 1; done'\n"),
+    "a child's counted loop that does not sleep": (
+        "structure", "s = 'while [ $i $LT 3 ]; do i=$((i+1)); done'\n"),
+    "a child's Python loop (H13)": ("child loop (H13)",
+                                    "code = 'import time\\nwhile True:\\n"
+                                    "    time.$SLEEP(0.01)\\n'\n"),
+    "a child's sleep at the guard (OUT)": ("guard", "from tests.hang_guard import HANG_GUARD\n"
+                                           "s = f'$SLEEP {3 * HANG_GUARD}'\n"),
+    "a child's timeout at RUNS_OUT": ("runs out", "from tests.hang_guard import RUNS_OUT\n"
+                                      "s = f'$TIMEOUT {RUNS_OUT} cat'\n"),
+    "a timeout argv at RUNS_OUT": ("runs out", "from tests.hang_guard import RUNS_OUT\n"
+                                   "argv = ['timeout', '-k', f'{RUNS_OUT}', str(RUNS_OUT), "
+                                   "'sh']\n"),
+    "a benchmark (H10)": ("benchmark (H10)", "import time\nimport pytest\ndef measure():\n"
+                          "    s = time.perf_counter()\n    return time.perf_counter() - s\n"
+                          "@pytest.mark.benchmark\ndef test_b():\n    measure()\n"),
+    "a clock read not compared": ("structure", "import time\ndef f():\n    return time.time()\n"),
+    "a clock read inside a call": ("structure", "import time\ndef f(stamp):\n"
+                                   "    label = stamp(time.time())\n    return label > 'a'\n"),
+    "a clock's None compared": ("structure", "import time\ndef f(a):\n"
+                                "    left = None if a else time.monotonic()\n"
+                                "    return left is None\n"),
+    "a tuple paired by element": ("structure", "import time\ndef f(n):\n"
+                                  "    t, count = time.time(), n\n    return count > 3\n"),
+    "runs_out at 0 and at a product's floor": (
+        "structure", "from rcman import repository\nfrom tests.hang_guard import runs_out\n"
+        "def test_x(monkeypatch, m):\n    runs_out(monkeypatch, m, 'X_SECONDS')\n"
+        "    runs_out(monkeypatch, m, 'Y_SECONDS', at=repository.FLOOR_SECONDS)\n"),
+    "a docstring that names a sleep": ("structure", "def f():\n"
+                                       "    '''Waits with $SLEEP 5 in the shell.'''\n"),
 }  # fmt: skip
 
 
 @pytest.mark.parametrize("name", sorted(PLANTED))
 def test_a_planted_form_is_flagged_where_it_is(name):
-    form, source, line = PLANTED[name]
-    assert (form, line) in flagged(source), (name, flagged(source))
-
-
-def test_the_parameter_table_flags_a_number_at_a_timing_position():
-    """B5: a position the parameter table gives, for a function, a method and several
-    definitions that agree."""
-    defs = ast.parse(
-        "def gone(path, within):\n    pass\n"
-        "class S:\n    def recording_held(self, seconds):\n        pass\n"
-        "def run(argv, timeout):\n    pass\n"
-        "def run(cmd, wait_timeout=None):\n    pass\n"
-    )
-    table = build_table([defs])
-    assert table.positions == {
-        "gone": frozenset({1}),
-        "recording_held": frozenset({0}),
-        "run": frozenset({1}),
-    }
-    source = "def test_x(s, p):\n    gone(p, 60)\n    s.recording_held(5)\n    run(['a'], 10)\n"
-    assert flagged(source, table) == [("P3", 2), ("P3", 3), ("P3", 4)]
-
-
-def test_a_name_whose_definitions_disagree_is_left_out_of_the_table_and_listed():
-    defs = ast.parse("def held(path, seconds):\n    pass\ndef held(seconds, path):\n    pass\n")
-    table = build_table([defs])
-    assert "held" not in table.positions and table.disagreeing == {"held"}
-    assert flagged("def t(p):\n    held(p, 1.5)\n", table) == []
-
-
-CLEAN = {
-    "the guard": "from tests.hang_guard import HANG_GUARD\ndef f(g):\n    g(timeout=HANG_GUARD)\n",
-    "a multiple of the guard": "from tests.hang_guard import HANG_GUARD\n"
-    "def f(g):\n    g(timeout=2 * HANG_GUARD)\n",
-    "the guard through its module": "from tests import hang_guard\n"
-    "def f(g):\n    g(timeout=hang_guard.CONTAINER_HANG_GUARD)\n",
-    "tier_guard in a test": "from tests.hang_guard import tier_guard\n"
-    "def f(g):\n    g(timeout=tier_guard())\n",
-    "None": "def f(g):\n    g(timeout=None)\n",
-    "minus one": "def f(lock):\n    lock.acquire(True, -1)\n",
-    "zero": "def f(e, g):\n    e.wait(0)\n    g(within=0)\n",
-    "a sleep of 0 (H8)": "import asyncio\nasync def f():\n    await asyncio.$SLEEP(0)\n",
-    "a parameter passed on": "def f(g, timeout):\n    g(timeout=timeout)\n",
-    "a product constant (H9)": "from rcman import runtime as rt\n"
-    "def f(g, timeout=rt.PODMAN_TIMEOUT):\n    g(timeout=rt.PODMAN_TIMEOUT)\n",
-    "str.join": "def f(parts):\n    return ', '.join(parts)\n",
-    "dict.get": "def f(d):\n    return d.get('k', 5)\n",
-    "a fake's sleep and advance (H7)": "from tests.time_doubles import FakeTime\n"
-    "def test_x():\n    fake = FakeTime()\n    fake.advance(600)\n    fake.$SLEEP(5)\n",
-    "a constant of a module whose time is a double (H7)": "from tests.time_doubles import "
-    "FakeTime\n"
-    "def test_x(monkeypatch, mod):\n    fake = FakeTime()\n"
-    "    monkeypatch.setattr(mod, 'time', fake)\n"
-    "    monkeypatch.setattr(mod, 'STOP_TIMEOUT', 5)\n",
-    "a non-timing setattr": "def test_x(monkeypatch, m):\n"
-    "    monkeypatch.setattr(m, 'NAME', 'x')\n",
-    "a resolved non-timing name": "def test_x(monkeypatch, m):\n"
-    "    for name in ('_changed', '_closing'):\n        monkeypatch.setattr(m, name, None)\n",
-    "a child's wait loop (H13)": "s = 'while [ ! -e f ]; do $SLEEP 0.05; done'\n",
-    "a child's endless loop (H13)": "s = 'while :; do $SLEEP 1; done'\n",
-    "a child's Python loop (H13)": "code = 'import time\\nwhile True:\\n"
-    "    time.$SLEEP(0.01)\\n'\n",
-    "a child's sleep at the guard (OUT)": "from tests.hang_guard import HANG_GUARD\n"
-    "s = f'$SLEEP {3 * HANG_GUARD}'\n",
-    "a child's timeout at RUNS_OUT": "from tests.hang_guard import RUNS_OUT\n"
-    "s = f'$TIMEOUT {RUNS_OUT} cat'\n",
-    "a benchmark (H10)": "import time\nimport pytest\ndef measure():\n"
-    "    s = time.perf_counter()\n    return time.perf_counter() - s\n"
-    "@pytest.mark.benchmark\ndef test_b():\n    measure()\n",
-    "a clock read not compared": "import time\ndef f():\n    return time.time()\n",
-}
+    form, source, line, _branch = PLANTED[name]
+    found = flagged(source)
+    assert found.count((form, line)) == 1, (name, found)
 
 
 @pytest.mark.parametrize("name", sorted(CLEAN))
 def test_an_allowed_form_is_not_flagged(name):
-    assert flagged(CLEAN[name]) == []
+    assert flagged(CLEAN[name][1]) == []
 
 
-def test_each_planted_twin_has_its_form_flagged_once_and_nothing_else():
-    """The planted forms are flagged as exactly one site of their form, so a twin cannot pass
-    on another form's site."""
-    for name, (form, source, line) in PLANTED.items():
-        found = flagged(source)
-        assert found.count((form, line)) == 1, (name, found)
+def test_the_parameter_table_records_agreeing_and_disagreeing_names():
+    table = planted_table()
+    assert table.positions == {
+        "gone": frozenset({1}),
+        "recording_held": frozenset({0}),
+        "held": frozenset({1}),
+        "advance": frozenset({0}),
+    }
+    assert table.disagreeing == {"run": frozenset({1, 2}), "go": frozenset({0, 1})}
 
 
-def test_the_derived_allowances_are_recorded():
-    """H7, H8, H10 and H13 are recorded where they allow a site, for the real tree's
-    non-vacuity checks."""
-    for name, key in (
-        ("a fake's sleep and advance (H7)", "H7"),
-        ("a sleep of 0 (H8)", "H8"),
-        ("a benchmark (H10)", "H10"),
-        ("a child's wait loop (H13)", "H13"),
-    ):
-        assert key in {k for k, _ in scan_source("t.py", placed(CLEAN[name])).derived}, name
+@pytest.mark.parametrize(
+    ("name", "key"),
+    [
+        ("a fake's sleep and advance (H7)", "double (H7)"),
+        ("a fixture's double (H7)", "double (H7)"),
+        ("a sleep of 0 (H8)", "turn (H8)"),
+        ("a benchmark (H10)", "benchmark (H10)"),
+        ("a child's wait loop (H13)", "child loop (H13)"),
+        ("a product constant as a stand-in's default (H9)", "product default (H9)"),
+    ],
+)
+def test_the_derived_allowances_are_recorded(name, key):
+    """Recorded where they allow a site, for the real tree's non-vacuity checks."""
+    scan = scan_source("t.py", placed(CLEAN[name][1]), planted_table())
+    assert key in {k for k, _ in scan.derived}
+
+
+@pytest.mark.parametrize("key", sorted({k for k, _ in CLEAN.values()} - {"structure"}))
+def test_each_allowance_has_a_clean_twin(key):
+    """Every allowance the scan knows is held by a CLEAN twin; the mutation run turns each off
+    and sees its twin flagged."""
+    assert key in ALLOWANCES
+
+
+def test_every_allowance_of_the_scan_has_a_clean_twin():
+    assert set(ALLOWANCES) <= {k for k, _ in CLEAN.values()}
+
+
+def test_an_allowance_turned_off_flags_its_clean_twin(monkeypatch):
+    """Planted twin of the allowances: H7 off, the fake's calls are sites."""
+    monkeypatch.setitem(ALLOWANCES, "double (H7)", False)
+    assert flagged(CLEAN["a fake's sleep and advance (H7)"][1]) != []
+
+
+# --- named patterns: clean twins and stale checks ------------------------------------------------
+
+
+@pytest.mark.parametrize("named", NAMED, ids=lambda n: f"{n.key}-{n.where[0] or 'module'}")
+def test_a_named_pattern_covers_only_its_subject(named):
+    """CLEAN twin of each named pattern: a site of its form in its subject is covered; the same
+    site in another file, or of another form, is not."""
+    site = Site(named.path, 1, sorted(named.forms)[0], "planted", named.where[0])
+    assert named.covers(site)
+    assert not named.covers(Site("tests/elsewhere.py", 1, site.form, "planted", site.where))
+    assert not named.covers(Site(named.path, 1, "GUARD", "planted", site.where))
+
+
+def test_a_named_pattern_whose_subject_is_gone_is_reported():
+    gone = Named("H1", "tests/until.py", ("no_such_function",), frozenset({"P2"}), "planted")
+    assert named_problems([], [gone]) == [
+        "H1: tests/until.py ('no_such_function',) holds no site of ['P2']"
+    ]
+    missing = Named("H1", "tests/no_such.py", ("",), frozenset({"P2"}), "planted")
+    assert named_problems([], [missing]) == ["H1: tests/no_such.py is gone"]
+
+
+def test_the_stand_ins_are_programs_that_tests_run():
+    assert stand_in_problems() == []
+
+
+def test_a_stand_in_named_only_by_the_guard_is_reported():
+    """Planted twin: with only this module scanned, no stand-in is named by a test."""
+    problems = stand_in_problems([GUARD_FILE])
+    assert problems == [f"{p} is named in the string of no scanned file" for p in STAND_INS]
+
+
+# --- nothing autouse is added --------------------------------------------------------------------
+
+AUTOUSE = {
+    ("tests/conftest.py", "collections_shared_by_the_workers"),
+    ("tests/conftest.py", "databases_that_do_not_wait_for_the_disk"),
+    ("tests/conftest.py", "github_stand_in"),
+    ("tests/time_doubles.py", "time_doubles"),
+}
+
+
+def autouse_fixtures(sources: dict[str, str]) -> set[tuple[str, str]]:
+    found = set()
+    for path, source in sources.items():
+        for node in ast.walk(ast.parse(source)):
+            if isinstance(node, FUNCTIONS):
+                for d in node.decorator_list:
+                    if isinstance(d, ast.Call) and any(
+                        k.arg == "autouse" and getattr(k.value, "value", False) for k in d.keywords
+                    ):
+                        found.add((path, node.name))
+    return found
+
+
+def test_the_guard_adds_no_autouse_fixture():
+    sources = {p: (REPO / p).read_text(encoding="utf-8") for p, _ in AUTOUSE}
+    assert autouse_fixtures(sources) == AUTOUSE
+
+
+def test_an_autouse_fixture_added_is_seen():
+    """Planted twin."""
+    sources = {p: (REPO / p).read_text(encoding="utf-8") for p, _ in AUTOUSE}
+    sources["tests/conftest.py"] += "\n@pytest.fixture(autouse=True)\ndef planted():\n    pass\n"
+    assert autouse_fixtures(sources) - AUTOUSE == {("tests/conftest.py", "planted")}
 
 
 # --- the scope -----------------------------------------------------------------------------------
@@ -1161,24 +1821,11 @@ def test_a_planted_file_in_each_root_is_read(tmp_path):
     """A file of the scanned shape, planted under each root of a scratch repository, is listed
     and its site found; one under tests/container/ and a stand-in are not listed."""
     subprocess.run(["git", "init", "-q", str(tmp_path)], check=True, timeout=HANG_GUARD)
-    planted = ["tests/planted.py", "devtools/planted.py"]
+    planted = ["devtools/planted.py", "tests/planted.py"]
     for rel in [*planted, "tests/container/planted.py", "devtools/fake_claude.py"]:
         (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
         (tmp_path / rel).write_text(placed("import time\ntime.$SLEEP(1)\n"), encoding="utf-8")
-    assert scoped_files(SCOPE, tmp_path) == sorted(planted)
+    assert scoped_files(SCOPE, tmp_path) == planted
     for rel in planted:
         source = (tmp_path / rel).read_text(encoding="utf-8")
         assert ("P2", 2) in [(s.form, s.line) for s in scan_source(rel, source).sites]
-
-
-def test_the_stand_ins_are_still_there_and_still_run():
-    assert stand_in_problems() == []
-
-
-def test_a_named_pattern_whose_subject_is_gone_is_reported():
-    gone = Named("H1", "tests/until.py", ("no_such_function",), frozenset({"P2"}), "planted")
-    assert named_problems([], [gone]) == [
-        "H1: tests/until.py ('no_such_function',) holds no site of ['P2']"
-    ]
-    missing = Named("H1", "tests/no_such.py", ("",), frozenset({"P2"}), "planted")
-    assert named_problems([], [missing]) == ["H1: tests/no_such.py is gone"]
