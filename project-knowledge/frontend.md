@@ -580,7 +580,10 @@ container tests' hang guard and outlasted by the podman client's kill of the spe
 - A test asserts that something did not happen only after a point it observed: what the page
   drew from the answer that would have caused it, the event that was to cause it, a module's
   import resolved, then one turn of the event loop (`turn` in `src/test/turn.ts`, a timer of no
-  delay) for what follows; or, for what a timer would bring, under fake timers advanced past it.
+  delay) for what follows; or, for what a timer would bring, under fake timers advanced past it,
+  or with every timer waiting run and then the renders and effects they asked for
+  (`pendingTimersRun` in `src/test/turn.ts`), where what the page might leave on a timer has no
+  known length.
   In the browser, `recordEvents` and `recorded` in `e2e/nav.ts` record a press's own events in the
   capture phase, which a spec waits for before one `frame`; `drawn` waits two frames and every
   animation that ends, before a measurement or a screenshot; and `e2e/touch.spec.ts` tells a

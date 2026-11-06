@@ -67,7 +67,7 @@ from pathlib import Path
 # tests: the checkout's root on the path, for the hang guard's values and until.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
-from tests.hang_guard import CONTAINER_HANG_GUARD, GUARD_VARIABLE  # noqa: E402
+from tests.hang_guard import CONTAINER_HANG_GUARD, EXEC_GUARD, GUARD_VARIABLE  # noqa: E402
 from tests.until import SLOW, until  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
@@ -867,12 +867,13 @@ class Stack:
 
     def exec(self, *argv: str, stdin: bytes | None = None):
         """``argv`` in the stack's container, handed its tier's hang guard (``until``'s
-        bound there)."""
+        bound there) and killed beyond it (EXEC_GUARD), so that a wait there that never ends
+        says what it waited for."""
         return self.engine.cli(
             "exec", "-i", "-w", str(SRC_IN_CONTAINER), "-e",
             f"RCMAN_STACK_CONFIG={self.folder / 'config.json'}", "-e",
             f"{GUARD_VARIABLE}={CONTAINER_HANG_GUARD}", "-e", "PYTHONDONTWRITEBYTECODE=1",
-            self.name, *argv, input=stdin, timeout=CONTAINER_HANG_GUARD,
+            self.name, *argv, input=stdin, timeout=EXEC_GUARD,
         )  # fmt: skip
 
     def request(self, method: str, url: str, who: str | None = ADMIN, body=None):

@@ -2106,6 +2106,10 @@ def _ts_zero(node: dict) -> bool:
     return node.get("type") == "Literal" and type(value) in (int, float) and value == 0
 
 
+def _ts_null(node: dict) -> bool:
+    return node.get("type") == "Literal" and node.get("raw") == "null"
+
+
 def _ts_key(prop: dict) -> str | None:
     key = prop.get("key") or {}
     if prop.get("computed"):
@@ -2299,8 +2303,14 @@ class TsScan:
             self.flag(node, "P2", where)
         elif name == "setTimeout":  # test.setTimeout(n)
             self.value(args[0] if args else None, where, node)
-        elif name == "slow" and obj == "test":
+        elif name == "slow" and obj is not None:  # test.slow(), testInfo.slow(), and so on
             self.flag(node, "P3", where)
+        elif obj == "userEvent" and name == "setup" and args:  # a delay is a sleep per action
+            options = _ts_unwrap(args[0])
+            for prop in options.get("properties", []):
+                value = _ts_unwrap(prop.get("value") or {})
+                if _ts_key(prop) == "delay" and not (_ts_zero(value) or _ts_null(value)):
+                    self.flag(prop, "P2", where)
         elif obj == "vi" and name in ("waitFor", "waitUntil"):
             options = _ts_unwrap(args[1]) if len(args) > 1 else None
             if options is None:
@@ -3397,6 +3407,19 @@ PLANTED_TS = {
         1,
     ),
     "test.slow": ("P3", {"e2e/x.spec.ts": "test.slow();\n"}, "e2e/x.spec.ts", 1),
+    "testInfo.slow": (
+        "P3",
+        {"e2e/x.spec.ts": 'test("x", async ({ page }, testInfo) => {\n  testInfo.slow();\n});\n'},
+        "e2e/x.spec.ts",
+        2,
+    ),
+    "test.info().slow": ("P3", {"e2e/x.spec.ts": "test.info().slow();\n"}, "e2e/x.spec.ts", 1),
+    "userEvent with a delay": (
+        "P2",
+        {"src/x.test.tsx": "const user = userEvent.setup({\n  delay: 50,\n});\n"},
+        "src/x.test.tsx",
+        2,
+    ),
     "vi.waitFor without a timeout": (
         "P3",
         {"src/x.test.ts": "await vi.waitFor(() => f());\n"},
@@ -3515,6 +3538,13 @@ CLEAN_TS = {
         },
     ),
     "a spy on a timer": ("structure", {"src/x.test.ts": 'vi.spyOn(globalThis, "setInterval");\n'}),
+    "userEvent with no delay": (
+        "structure",
+        {
+            "src/x.test.tsx": "userEvent.setup({ delay: null });\nuserEvent.setup({ delay: 0 });\n"
+            "userEvent.setup({ advanceTimers: vi.advanceTimersByTime });\nuserEvent.setup();\n"
+        },
+    ),
     "shouldAdvanceTime off": (
         "structure",
         {"src/x.test.ts": "vi.useFakeTimers({ shouldAdvanceTime: false });\n"},

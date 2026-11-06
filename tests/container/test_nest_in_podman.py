@@ -19,10 +19,11 @@ from rcman import runtime as rt
 from installer import install as ins
 from tests.container import sizes
 from tests.containers import asked_packages
-from tests.hang_guard import CONTAINER_HANG_GUARD, RUNS_OUT
+from tests.hang_guard import CONTAINER_HANG_GUARD
 from tests.until import SLOW, until
 
 WRAPPER = f"{rt.TOOLS_MOUNT}/{ins.PODMAN_TOOLS}/bin/podman"
+BUSYBOX = f"{rt.TOOLS_MOUNT}/bin/busybox"
 DOCKER = f"{rt.TOOLS_MOUNT}/{ins.PODMAN_TOOLS}/bin/docker"
 # Root's record of its nest: a folder of root's alone in the image's /run (the wrapper's STATE).
 STATE = rt.ROOT_PODMAN_STATE
@@ -855,14 +856,42 @@ def test_a_lock_whose_folder_is_gone_is_taken_over_and_let_go(podman, nest_works
 def test_without_making_the_claims_folder_a_lock_whose_folder_is_gone_holds_forever(
     podman, nest_workspace
 ):
-    """The twin: the claim cannot be made in a folder that is not there."""
+    """The twin: the claim cannot be made in a folder that is not there. The copy runs traced,
+    and is ended once its trace shows it tried the claim again after the first failed, a point
+    the test saw, never a time; the lock is then still the link to the folder that is gone."""
     no_nest(podman, nest_workspace)
     ok(podman.exec(nest_workspace, ["sh", "-c", DANGLING]))
     copy = without(podman, nest_workspace, "(claim's folder)")
-    held = podman.exec(nest_workspace, ["timeout", str(RUNS_OUT), copy, "version"],
-                       timeout=CONTAINER_HANG_GUARD)  # fmt: skip
-    assert held.code == 124, held  # still trying when it was stopped
-    ok(podman.exec(nest_workspace, ["rm", "-f", f"{STATE}/lock"]))
+    trace = "/root/claim-trace"
+    traced = f"setsid {BUSYBOX} sh -x {copy} version </dev/null >/dev/null 2>{trace} & echo $!"
+    pid = ok(podman.exec(nest_workspace, ["sh", "-c", traced])).strip()
+    claimed = re.compile(rf"ln -sn \S+ {re.escape(STATE)}/lock\.999999\.1/claim\.1$", re.M)
+
+    def tried_again():
+        """(True, the trace) once the claim was tried twice; (False, it) once the copy ended
+        without; None while it runs and has not."""
+        running = runs(podman, nest_workspace, pid)
+        said = podman.exec(nest_workspace, ["cat", trace]).out.decode(errors="replace")
+        if len(claimed.findall(said)) >= 2:
+            return True, said
+        return None if running else (False, said)
+
+    try:
+        again, said = until(tried_again, SLOW)
+        assert again, said[-4000:]  # it failed the claim and was back for another try
+    finally:
+        podman.exec(nest_workspace, ["kill", "-9", pid])
+        until(lambda: not runs(podman, nest_workspace, pid), SLOW)
+    link = podman.exec(nest_workspace, ["readlink", f"{STATE}/lock"])
+    assert link.out.decode().strip() == "lock.999999.1", link  # still the lock, still dangling
+    assert podman.exec(nest_workspace, ["test", "-e", f"{STATE}/lock.999999.1"]).code != 0
+    ok(podman.exec(nest_workspace, ["rm", "-f", f"{STATE}/lock", trace]))
+
+
+def runs(podman, name: str, pid: str) -> bool:
+    """Whether the process ``pid`` of the workspace runs: there, and not a zombie."""
+    state = "s=$(cut -d')' -f2 /proc/$1/stat 2>/dev/null) && set -- $s && [ \"$1\" != Z ]"
+    return podman.exec(name, ["sh", "-c", state, "sh", pid]).code == 0
 
 
 def test_letting_go_leaves_a_folder_whose_claimer_runs_and_removes_one_whose_holders_are_gone(

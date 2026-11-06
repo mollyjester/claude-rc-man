@@ -224,7 +224,7 @@ whole-stack test, which also carries the `stack` marker, gets its own, derived f
 (`stack_guard`), so that the innermost of its bounds ends first and names what hung: a spec's
 own in `frontend/playwright.stack.config.ts`, whose run has no bound of its own
 (`globalTimeout: 0`, as a run ended by it names no test); the podman client's kill of the
-specs' run (`STACK_SPECS_GUARD`, one and a half times the container tier's hang guard), beyond a
+specs' run (`EXEC_GUARD`, one and a half times the container tier's hang guard), beyond a
 hung spec's bound and every other spec; and the test's guard (`STACK_GUARD`), the container
 tests' guard for the builds and twice the specs' run. That marker outranks `--timeout`, which
 changes only the other tests' value; `-o container_timeout=N` changes the container tests', and
@@ -270,7 +270,9 @@ guard with `handed`, as the engine's `started(guard)` does for what runs while t
 handed for the whole session, while a test's own tier still comes first in the test. The
 programs the container suites run in a container from the checkout's files
 (`tests/container/stack.py`, `install_checks.py` and `installed.py`) are handed it in
-`RCMAN_HANG_GUARD` by the exec that runs them, which is how `until` there knows its bound;
+`RCMAN_HANG_GUARD` by the exec that runs them, which is how `until` there knows its bound; the
+exec kills the program at `EXEC_GUARD`, beyond that bound and within the test's guard, so that a
+wait there that never ends fails with what it waited for, not a bare timeout;
 `tier_guard` looks for the doubles' registry without importing it, as such a program has no
 pytest.
 `tests/test_hang_guard.py` holds the guard to this, each case a
@@ -279,7 +281,9 @@ short guard, in one process and under pytest-xdist: each planted twin hangs a te
 guard must still end, and the test is ended, named wherever the guard's report can be written,
 and any child it started ended with it; a test that finishes under the project's own guard
 passes; and, in a child Python, a process the first look misses is stopped and killed by the
-next, and a pid whose start time is no longer the one read is not signalled.
+next, and a pid whose start time is no longer the one read is not signalled. It also holds, by
+reading their source, that each exec that hands `RCMAN_HANG_GUARD` hands `CONTAINER_HANG_GUARD`
+and kills at `EXEC_GUARD`, and that these nest within the container tests' guard.
 `tests/test_make.py` holds that every test of every target is under its tier's guard.
 
 The frontend's tests have hang guards of their own, by tier, in `frontend/src/test/hangGuard.ts`:
@@ -457,10 +461,11 @@ In the frontend it reads the component tests `frontend/vite.config.ts`'s `includ
 everything under `frontend/src/test/`, `frontend/e2e/` and `frontend/e2e-stack/`, and the four
 configs (`ts_scope`), parsed in one call of Vite's parser (`tests/typescript.py`). It flags
 `Date.now()` or `performance.now()`, or a name given one, in a comparison, a difference or a
-matcher that compares, and `shouldAdvanceTime` (P1); `waitForTimeout`, `setTimeout` with a delay
-and `setInterval` (P2), a timer of no delay being a turn (H8); a `timeout` option or a key
-ending `Timeout` not given a guard of `frontend/src/test/hangGuard.ts` or 0, `test.setTimeout`
-likewise, `test.slow()`, and `vi.waitFor` or `vi.waitUntil` without a `timeout` (P3); a name
+matcher that compares, and `shouldAdvanceTime` (P1); `waitForTimeout`, `setTimeout` with a delay,
+`setInterval` and `userEvent.setup` given a `delay` but 0 or `null` (P2), a timer of no delay
+being a turn (H8); a `timeout` option or a key ending `Timeout` not given a guard of
+`frontend/src/test/hangGuard.ts` or 0, `test.setTimeout` likewise, a `slow()` called on anything,
+as `test.slow()`, `testInfo.slow()` and `test.info().slow()`, and `vi.waitFor` or `vi.waitUntil` without a `timeout` (P3); a name
 ending `_GUARD_MS` defined elsewhere (GUARD); another tier's guard (TIER), the tier being where
 the file is; and a config that does not set every limit, through what it spreads of another
 config too (P3c): each Playwright config's `timeout`, `globalTimeout`, `expect.timeout`,
@@ -480,6 +485,13 @@ time could tell, and these are given up:
 - in `tests/container/test_devcontainer_in_podman.py`, that two workspaces writing the shared
   credentials at once really overlapped: each now starts once it has read the other's first
   write and writes a count of rounds, and how far they overlapped is printed, not asserted;
+- in `tests/container/test_nest_in_podman.py`, that a nest slow to make its user namespace is
+  made within the real wrapper's count of tries: the slow copy waits for the namespace with that
+  count taken out, so that the test, not a count of looks, decides how slow it is;
+- that a sign-in container's own time ends it, in Podman:
+  `tests/container/test_runtime_in_podman.py` ends its process from outside, and the container's
+  going by itself is what is asserted, while that its process is a `sleep` of its seconds is read
+  from its argv on the host (`tests/test_runtime.py`);
 - the timing of `RealWatch` (`devtools/record_claude.py`), its quiet windows against the real
   `claude` and the minute after which the pane's waits give up, which only the recorder's
   command line exercises, by hand;

@@ -27,7 +27,7 @@ import pytest
 
 from devtools import held_folders as hf
 from installer import install as ins
-from tests.hang_guard import CONTAINER_HANG_GUARD, GUARD_VARIABLE
+from tests.hang_guard import CONTAINER_HANG_GUARD, EXEC_GUARD, GUARD_VARIABLE
 
 # The installer's toolchain, where the container has it.
 TOOLCHAIN = Path("/opt/rcman/toolchain")
@@ -73,11 +73,12 @@ class Installation:
 
     def exec(self, *argv: str, stdin: bytes | None = None):
         """``argv`` in the installation's container, handed its tier's hang guard (``until``'s
-        bound there)."""
+        bound there) and killed beyond it (EXEC_GUARD), so that a wait there that never ends
+        says what it waited for."""
         return self.engine.cli(
             "exec", "-i", "-w", "/src", "-e", "PYTHONDONTWRITEBYTECODE=1", "-e",
             f"{GUARD_VARIABLE}={CONTAINER_HANG_GUARD}", self.name, *argv, input=stdin,
-            timeout=CONTAINER_HANG_GUARD,
+            timeout=EXEC_GUARD,
         )  # fmt: skip
 
     def check(self, name: str) -> None:

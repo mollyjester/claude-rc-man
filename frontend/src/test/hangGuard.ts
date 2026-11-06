@@ -22,6 +22,6 @@ export const BROWSER_TEST_GUARD_MS = 2 * BROWSER_HANG_GUARD_MS;
 
 // The whole stack's browser tests (playwright.stack.config.ts), in the container tier: a spec's
 // bound is the container tests' CONTAINER_HANG_GUARD, which the podman client's kill of the
-// specs' run (STACK_SPECS_GUARD in tests/hang_guard.py) outlasts, and a step half of it.
+// specs' run (EXEC_GUARD in tests/hang_guard.py) outlasts, and a step half of it.
 export const STACK_TEST_GUARD_MS = 1_800_000;
 export const STACK_HANG_GUARD_MS = STACK_TEST_GUARD_MS / 2;

@@ -23,6 +23,7 @@ from pathlib import Path
 
 import pytest
 from rcman import claude_server, db, people
+from rcman import repository as repo_module
 from rcman import runtime as rt
 from rcman.gitaccount import GitAccount
 from rcman.identity import Identity
@@ -559,9 +560,11 @@ def test_deleting_a_workspace_that_is_being_cloned_stops_git_and_leaves_nothing(
     service, person, clones, podman, github_com, tmp_path, monkeypatch
 ):
     """The cancel: the clone is slow (the stand-in's gate is closed), and the workspace's
-    container is removed by force by Podman, which ends git with it. The gate's own wait is past
-    the hang bound (tests/github_server.py: twice the tier's), so only the deletion can end git
-    within it."""
+    container is removed by force by Podman, which ends git with it. The gate's own wait
+    (tests/github_server.py: twice the tier's guard) and the clone's own time (CLONE_TIMEOUT,
+    read as the clone is called, pushed here to twice the tier's guard, rule (c)) are both past
+    the hang bound, so only the deletion can end git within it."""
+    monkeypatch.setattr(repo_module, "CLONE_TIMEOUT", 2 * CONTAINER_HANG_GUARD)
     publish(github_com, tmp_path, "slow-one")
     before = len(github_com.requests)
     github_com.gate.clear()
@@ -574,7 +577,7 @@ def test_deleting_a_workspace_that_is_being_cloned_stops_git_and_leaves_nothing(
         top = podman._podman("top", made.container, "args", check=False)
         assert b"clone" in top.stdout, top.stdout + top.stderr  # positive: git is running there
         service.delete(now)
-        gone(service, made.id)  # not after the gate's wait, which is longer
+        gone(service, made.id)  # not after the gate's wait or the clone's time, both longer
         assert not exists(podman, "container", made.container)
         assert not exists(podman, "volume", made.container)
     finally:

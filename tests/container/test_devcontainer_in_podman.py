@@ -23,6 +23,7 @@ from pathlib import Path
 import pytest
 from rcman import claude_server, db, devcontainer, people
 from rcman import runtime as rt
+from rcman import workspaces as ws
 from rcman.problems import DEVCONTAINER_MESSAGES
 from rcman.repository import Repository
 from rcman.workspaces import READY, Workspaces
@@ -477,7 +478,7 @@ def test_a_workspace_of_the_users_own_keeps_the_limits_of_every_workspace(
 # takes no lock on the file (Claude's own lock is a file beside its configuration folder, and
 # each workspace has a folder of its own), so none is taken here either.
 WRITER = r"""
-import json, sys
+import json, sys, time
 path, who, rounds_of, salt = sys.argv[1:5]
 rounds_of, salt = int(rounds_of), int(salt)
 with open(path, "r+") as handle:  # the start: each says it is there, then waits for the other's
@@ -490,6 +491,7 @@ while True:
                 break
         except ValueError:
             pass  # the other's write, half done
+    time.sleep(0.01)  # the wait's pace, so that it loads no CPU
 rounds = saw_other = empty = torn = 0
 while rounds < rounds_of:
     with open(path, "r+") as handle:  # in place: a rename onto the bound file is refused busy
@@ -1050,8 +1052,12 @@ HOOK_STEP = f"sleep {3 * CONTAINER_HANG_GUARD:g}"
 
 
 def test_deleting_a_workspace_whose_command_is_running_kills_it_and_leaves_nothing(
-    service, person, clones, podman, github_com, tmp_path, dev_image
+    service, person, clones, podman, github_com, tmp_path, dev_image, monkeypatch
 ):
+    # The command's own time (HOOK_TIMEOUT_SECONDS, read as each command is run, and the exec's
+    # wait derived from it) is pushed to twice the hang bound (rule (c)), so that only the
+    # deletion can end the command within it.
+    monkeypatch.setattr(ws, "HOOK_TIMEOUT_SECONDS", int(2 * CONTAINER_HANG_GUARD))
     config = {
         "image": dev_image,
         "remoteUser": DEV_USER,

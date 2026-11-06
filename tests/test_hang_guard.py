@@ -12,6 +12,7 @@ long; the guard's method, and everything else, is the project's.
 
 from __future__ import annotations
 
+import ast
 import contextlib
 import json
 import os
@@ -29,10 +30,11 @@ from tests.collected import child_env
 from tests.hang_guard import (
     CONTAINER_GUARD,
     CONTAINER_HANG_GUARD,
+    EXEC_GUARD,
+    GUARD_VARIABLE,
     HANG_GUARD,
     HOST_GUARD,
     PYPROJECT,
-    STACK_SPECS_GUARD,
     configured,
     start_time,
 )
@@ -403,7 +405,86 @@ def test_each_tiers_hang_guard_is_outlived_by_its_guard_whose_method_is_thread()
     blocked in (project-knowledge/tests.md, "The hang guard")."""
     assert 0 < HANG_GUARD < HOST_GUARD
     assert 0 < CONTAINER_HANG_GUARD < CONTAINER_GUARD
+    # A program the container tests run in a container ends by its own bound, the tier's hang
+    # guard, before the exec's kill, which comes before the test's guard.
+    assert CONTAINER_HANG_GUARD < EXEC_GUARD < CONTAINER_GUARD
     assert configured()["timeout_method"] == "thread"
+
+
+# The execs that run, in a container, a program the container tests start, each handing it the
+# tier's hang guard in GUARD_VARIABLE: by file, the class whose ``exec`` it is.
+HANDING_EXECS = {
+    "tests/container/stack.py": "Stack",
+    "tests/container/test_install_in_container.py": "Installation",
+}
+
+
+def handing_problems(source: str, owner: str) -> list[str]:
+    """What is wrong with ``owner.exec`` in ``source``: it hands the program it runs
+    CONTAINER_HANG_GUARD in GUARD_VARIABLE, its ``until``'s bound there, and kills it at
+    EXEC_GUARD, beyond that bound, so that the program's own ends first and says what it
+    waited for."""
+    method = next(
+        (
+            node
+            for cls in ast.parse(source).body
+            if isinstance(cls, ast.ClassDef) and cls.name == owner
+            for node in cls.body
+            if isinstance(node, ast.FunctionDef) and node.name == "exec"
+        ),
+        None,
+    )
+    if method is None:
+        return [f"{owner}.exec is not there"]
+    problems = []
+    handed = [
+        ast.unparse(part.value)
+        for node in ast.walk(method)
+        if isinstance(node, ast.JoinedStr)
+        and any(
+            isinstance(p, ast.FormattedValue) and ast.unparse(p.value) == "GUARD_VARIABLE"
+            for p in node.values
+        )
+        for part in node.values
+        if isinstance(part, ast.FormattedValue) and ast.unparse(part.value) != "GUARD_VARIABLE"
+    ]
+    if handed != ["CONTAINER_HANG_GUARD"]:
+        problems.append(f"{owner}.exec hands {handed or 'nothing'} in {GUARD_VARIABLE}")
+    kills = [
+        ast.unparse(k.value)
+        for node in ast.walk(method)
+        if isinstance(node, ast.Call)
+        for k in node.keywords
+        if k.arg == "timeout"
+    ]
+    if kills != ["EXEC_GUARD"]:
+        problems.append(f"{owner}.exec kills at {kills or 'nothing'}, not EXEC_GUARD")
+    return problems
+
+
+def test_a_program_run_in_a_container_ends_by_its_own_bound_first():
+    """The bounds nest: a program the container tests run in a container is handed the tier's
+    hang guard, which its ``until`` gives up at with what it waited for, and the exec that runs
+    it kills it beyond that, at EXEC_GUARD, which the test of each tier's value holds within the
+    test's guard (project-knowledge/tests.md, "The hang guard")."""
+    for path, owner in HANDING_EXECS.items():
+        assert handing_problems((REPO / path).read_text(encoding="utf-8"), owner) == [], path
+
+
+def test_an_exec_that_kills_at_the_programs_own_bound_is_reported():
+    """Planted twins: the stack's exec killing at the bound it hands, as a bare timeout that
+    would always come first, and handing another value."""
+    source = (REPO / "tests/container/stack.py").read_text(encoding="utf-8")
+    killed = source.replace("timeout=EXEC_GUARD", "timeout=CONTAINER_HANG_GUARD")
+    assert killed != source  # the plant took
+    assert handing_problems(killed, "Stack") == [
+        "Stack.exec kills at ['CONTAINER_HANG_GUARD'], not EXEC_GUARD"
+    ]
+    handed = source.replace("={CONTAINER_HANG_GUARD}", "={EXEC_GUARD}")
+    assert handed != source
+    assert handing_problems(handed, "Stack") == [
+        f"Stack.exec hands ['EXEC_GUARD'] in {GUARD_VARIABLE}"
+    ]
 
 
 # The frontend tests' hang guards (frontend/src/test/hangGuard.ts), in milliseconds, each tier a
@@ -431,7 +512,7 @@ def frontend_guard_problems(values: dict[str, float]) -> list[str]:
         f"{n} is {values.get(n)}, not {v:g}" for n, v in wanted.items() if values.get(n) != v
     ]
     problems += [f"{n} is no tier's guard" for n in sorted(set(values) - set(wanted))]
-    if not values.get("STACK_TEST_GUARD_MS", 0) < 1000 * STACK_SPECS_GUARD:
+    if not values.get("STACK_TEST_GUARD_MS", 0) < 1000 * EXEC_GUARD:
         problems.append("a hung spec of the whole stack outlasts the podman client's kill")
     return problems
 
@@ -452,6 +533,6 @@ def test_a_frontend_guard_not_its_tiers_is_reported():
     assert frontend_guard_problems(planted) == [
         f"BROWSER_HANG_GUARD_MS is 15000, not {1000 * HANG_GUARD:g}"
     ]
-    beyond = 1000 * STACK_SPECS_GUARD
+    beyond = 1000 * EXEC_GUARD
     problems = frontend_guard_problems({**values, "STACK_TEST_GUARD_MS": beyond})
     assert problems[-1] == "a hung spec of the whole stack outlasts the podman client's kill"

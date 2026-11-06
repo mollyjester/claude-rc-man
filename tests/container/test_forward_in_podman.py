@@ -250,6 +250,7 @@ class Listener:
             env=ps.env(engine.folder), cwd=engine.folder,
         )  # fmt: skip
         self.lines: queue.Queue = queue.Queue()
+        self.heard_words: set[str] = set()
         threading.Thread(target=self._read, daemon=True).start()
         try:
             self.pid = int(self.said("listening")[0])
@@ -274,6 +275,17 @@ class Listener:
                 raise AssertionError(f"the listener ended before {word!r}: {said}")
             if line[0] == word:
                 return line[1:]
+
+    def heard(self, word: str) -> bool:
+        """Whether the listener has said ``word`` since ``said`` last took a line, by what it
+        said so far, without waiting."""
+        while True:
+            try:
+                line = self.lines.get_nowait()
+            except queue.Empty:
+                return word in self.heard_words
+            if line:
+                self.heard_words.add(line[0])
 
     def end(self) -> None:
         self.podman.exec(self.name, [BUSYBOX, "kill", "-KILL", str(self.pid)])
@@ -311,15 +323,12 @@ def shell_of(podman, name: str, port: int) -> int:
     return int(read.out.decode())
 
 
-def next_read(stream) -> bytes | None:
-    """What ``stream`` gives next - b"" at its end of file - or None if nothing comes within the
-    hang bound."""
+def reading(stream) -> queue.Queue:
+    """What ``stream`` gives next - b"" at its end of file - read aside, into the queue given,
+    which is empty until it comes."""
     got: queue.Queue = queue.Queue()
     threading.Thread(target=lambda: got.put(stream.read(1)), daemon=True).start()
-    try:
-        return got.get(timeout=CONTAINER_HANG_GUARD)
-    except queue.Empty:
-        return None
+    return got
 
 
 def held(relay: subprocess.Popen) -> bool:
@@ -334,14 +343,13 @@ def running_execs(podman, name: str) -> set[str]:
     return set(exec_ids(engine_of(podman), name))
 
 
-def left(read):
-    """Nothing once what ``read`` reads has gone, which it waits for; what it still reads if it
-    has not gone at the hang bound."""
+def waited(condition) -> None:
+    """Wait until ``condition`` holds, or the hang bound: one wait over all a case's absences, so
+    that a case that fails is read, each absence on its own, within one bound."""
     try:
-        until(lambda: not read(), SLOW)
+        until(condition, SLOW)
     except AssertionError:
-        return read()
-    return None
+        pass  # what did not come about is read, and asserted, by the caller
 
 
 def killed(relay: subprocess.Popen) -> None:
@@ -382,48 +390,70 @@ def bystander(podman, workspace):
         podman.exec(workspace, [BUSYBOX, "kill", "-KILL", str(pid)])
 
 
-def held_relay_left(podman, name: str, port: int, end) -> dict:
+class HeldRelay:
     """A relay to a listener that keeps its side open, its client ended by ``end`` (given the
-    client): whether the listener got the relay's end of file and still runs, and the relay's
-    processes, exec and pidfile still there if they never go, each seen while it ran first,
-    with its pidfile naming its shell. What is left is ended afterwards, so that the next
-    case starts clean."""
-    holding = Listener(podman, name, port, "hold")
-    before = running_execs(podman, name)  # the listener's own among them
-    relay = relay_started(podman, name, pidfile(port), port)
-    try:
-        holding.said("accepted")
-        shell = shell_of(podman, name, port)
-        parts = relay_parts(podman, name)
-        assert sorted(parts.values()) == expected_parts(pidfile(port), port), parts
-        assert parts[shell] == wrapper_argv(pidfile(port), port)  # the pidfile names the shell
-        # The shell leads a process group of its own, which holds the relay's parts alone, so
-        # that its ``kill 0`` takes nothing else.
-        table = groups(podman, name)
-        assert table[shell] == shell, table
-        assert {p for p, g in table.items() if g == shell} == set(parts), (table, parts)
-        [relay_exec] = running_execs(podman, name) - before  # the positive: its exec runs
-        assert pidfile_there(podman, name, port)  # the positive: its pidfile is there
-        end(relay)
+    client) once its processes, exec and pidfile were each seen while it ran, its pidfile naming
+    its shell, which leads a process group that holds the relay's parts alone. Nothing here
+    waits for what the end leaves: ``gone`` says whether all of it went, and ``found`` reads
+    each. ``close`` ends what is left, so that the next case starts clean."""
+
+    def __init__(self, podman, name: str, port: int, end):
+        self.podman, self.name, self.port = podman, name, port
+        self.holding = Listener(podman, name, port, "hold")
+        self.relay = None
         try:
-            holding.said("eof")
-            eof = True
-        except AssertionError:
-            eof = False
+            before = running_execs(podman, name)  # the listener's own among them
+            self.relay = relay_started(podman, name, pidfile(port), port)
+            self.holding.said("accepted")
+            self.shell = shell_of(podman, name, port)
+            # The shell leads a process group of its own, which holds the relay's parts alone,
+            # so that its ``kill 0`` takes nothing else: the group is the relay's processes.
+            parts = self.parts()
+            assert sorted(parts.values()) == expected_parts(pidfile(port), port), parts
+            assert parts[self.shell] == wrapper_argv(pidfile(port), port)  # it names the shell
+            assert set(parts) <= set(relay_parts(podman, name)), parts
+            [self.exec] = running_execs(podman, name) - before  # the positive: its exec runs
+            assert pidfile_there(podman, name, port)  # the positive: its pidfile is there
+            end(self.relay)
+        except BaseException:
+            self.close()
+            raise
+
+    def parts(self) -> dict[int, list[str]]:
+        """The processes of the relay's group, by id: their argvs."""
+        every = processes(self.podman, self.name)
+        table = groups(self.podman, self.name)
+        return {pid: every[pid] for pid, group in table.items() if group == self.shell
+                and pid in every}  # fmt: skip
+
+    def gone(self) -> bool:
+        """Whether the listener got the end of file and nothing of the relay is left."""
+        return (
+            self.holding.heard("eof")
+            and not self.parts()
+            and self.exec not in running_execs(self.podman, self.name)
+            and not pidfile_there(self.podman, self.name, self.port)
+        )
+
+    def found(self) -> dict:
+        """Whether the listener got the relay's end of file and still runs, and the relay's
+        processes, exec and pidfile still there, now."""
         return {
-            "listener got eof": eof,
-            "relay left": left(lambda: relay_parts(podman, name)),
-            "exec left": left(lambda: relay_exec in running_execs(podman, name)),
-            "pidfile left": left(lambda: pidfile_there(podman, name, port)),
-            "listener still runs": holding.pid in processes(podman, name),
+            "listener got eof": self.holding.heard("eof"),
+            "relay left": self.parts(),
+            "exec left": self.exec in running_execs(self.podman, self.name),
+            "pidfile left": pidfile_there(self.podman, self.name, self.port),
+            "listener still runs": self.holding.pid in processes(self.podman, self.name),
         }
-    finally:
-        for pid in relay_parts(podman, name):
-            podman.exec(name, [BUSYBOX, "kill", "-KILL", str(pid)])
-        ended(relay)
-        holding.end()
-        until(lambda: relay_parts(podman, name) == {}, SLOW)
-        podman.exec(name, [BUSYBOX, "rm", "-f", pidfile(port)])
+
+    def close(self) -> None:
+        for pid in relay_parts(self.podman, self.name):
+            self.podman.exec(self.name, [BUSYBOX, "kill", "-KILL", str(pid)])
+        if self.relay is not None:
+            ended(self.relay)
+        self.holding.end()
+        until(lambda: relay_parts(self.podman, self.name) == {}, SLOW)
+        self.podman.exec(self.name, [BUSYBOX, "rm", "-f", pidfile(self.port)])
 
 
 def test_the_busybox_relay_over_exec_is_byte_exact_both_ways_and_ends_with_its_input(
@@ -489,12 +519,18 @@ def test_the_busybox_relay_over_exec_is_byte_exact_both_ways_and_ends_with_its_i
         podman.exec(workspace, [BUSYBOX, "rm", "-f", pidfile(EXCHANGED)])
 
     # With a listener that keeps its side open, as a server holding a connection does: what is
-    # left once the client is killed, and once it only closes its input. Both are read before
-    # either is held to being gone, so that a failure tells both.
-    found = {
-        "client killed": held_relay_left(podman, workspace, HELD_KILLED, killed),
-        "input closed": held_relay_left(podman, workspace, HELD_CLOSED, input_closed),
-    }
+    # left once the client is killed, and once it only closes its input. Both are ended, then
+    # waited for by one wait, and both read before either is held to being gone, so that a
+    # failure tells both within one hang bound.
+    held: dict[str, HeldRelay] = {}
+    try:
+        held["client killed"] = HeldRelay(podman, workspace, HELD_KILLED, killed)
+        held["input closed"] = HeldRelay(podman, workspace, HELD_CLOSED, input_closed)
+        waited(lambda: all(case.gone() for case in held.values()))
+        found = {name: case.found() for name, case in held.items()}
+    finally:
+        for case in held.values():
+            case.close()
     assert all(
         f["listener got eof"] and not f["relay left"] and not f["exec left"]
         and not f["pidfile left"] and f["listener still runs"]
@@ -566,13 +602,23 @@ def app_closed_left(podman, name: str, port: int, script: str | None = None) -> 
                 "relay left": relay_parts(podman, name),
                 "pidfile left": pidfile_there(podman, name, port),
             }
-        end = next_read(relay.stdout)  # its input still open
+        end = reading(relay.stdout)  # its input still open
+        # One wait over its end of file and every absence, then each read on its own, so that
+        # a failure is read within one hang bound.
+        waited(
+            lambda: (
+                not end.empty()
+                and not relay_parts(podman, name)
+                and relay_exec not in running_execs(podman, name)
+                and not pidfile_there(podman, name, port)
+            )
+        )
         return {
             "whole answer": whole and len(back) == PAYLOAD,
-            "eof": end == b"",
-            "relay left": left(lambda: relay_parts(podman, name)),
-            "exec left": left(lambda: relay_exec in running_execs(podman, name)),
-            "pidfile left": left(lambda: pidfile_there(podman, name, port)),
+            "eof": not end.empty() and end.get_nowait() == b"",
+            "relay left": relay_parts(podman, name),
+            "exec left": relay_exec in running_execs(podman, name),
+            "pidfile left": pidfile_there(podman, name, port),
         }
     finally:
         for pid in relay_parts(podman, name):

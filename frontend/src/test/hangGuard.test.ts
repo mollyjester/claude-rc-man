@@ -25,9 +25,10 @@ test("waitForIt hands vi.waitFor the component tests' step", async () => {
   }
 });
 
-test("under fake timers, a findBy* moves the fake clock, and userEvent completes", async () => {
-  // The Jest shim of src/test/setup.ts: without it even a findBy* whose element is there waits
-  // on a clock nothing moves, and without advanceTimers userEvent waits on its own fake timer.
+test("under fake timers, the Jest shim lets a findBy* finish, and userEvent completes", async () => {
+  // The Jest shim of src/test/setup.ts: without it even a findBy* whose element is there does
+  // not finish, as Testing Library's asyncWrapper then waits on a fake timer nothing moves; and
+  // without advanceTimers userEvent waits on its own fake timer.
   vi.useFakeTimers();
   const later = document.createElement("p");
   const button = document.createElement("button");

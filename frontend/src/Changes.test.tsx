@@ -1598,6 +1598,8 @@ test("a new branch made after its form was left takes no focus", async () => {
   await waitFor(() => expect(fake.made("GET", "/api/git/status").length).toBeGreaterThan(asked));
   await waitFor(() => expect(plus).toBeEnabled()); // the + could take focus now
   hold = false;
+  // the positive: the file the held status no longer has is drawn until it comes
+  expect(await section.findByText("new.txt")).toBeInTheDocument();
   await act(async () => release());
   // the held status is drawn, which comes after what follows the request
   await waitFor(() => expect(section.queryByText("new.txt")).not.toBeInTheDocument());

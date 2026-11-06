@@ -12,7 +12,7 @@ import { resized, schemeListening, switchScheme } from "./test/fakeLayout";
 import { sockets } from "./test/fakeSocket";
 import { views } from "./test/fakeXterm";
 import { renderApp } from "./test/render";
-import { turn } from "./test/turn";
+import { pendingTimersRun } from "./test/turn";
 
 function workspace(id: number, name: string, state = "ready") {
   return {
@@ -246,13 +246,18 @@ test("a terminal taken over elsewhere is not opened again by itself; Reconnect o
   page();
   const { socket, view } = await connected();
   act(() => socket.sendBytes("old output"));
-  act(() => {
-    socket.sendText({ type: PROTOCOL.closed, reason: "terminal_replaced" });
-    socket.serverClose(PROTOCOL.close_normal);
-  });
-  await says(m.terminalClosed.terminal_replaced);
-  await turn(); // what follows the close has run
-  expect(sockets()).toHaveLength(1);
+  vi.useFakeTimers(); // so that whatever the close leaves waiting on a timer is run below
+  try {
+    act(() => {
+      socket.sendText({ type: PROTOCOL.closed, reason: "terminal_replaced" });
+      socket.serverClose(PROTOCOL.close_normal);
+    });
+    await says(m.terminalClosed.terminal_replaced);
+    await pendingTimersRun(); // what follows the close has run
+    expect(sockets()).toHaveLength(1);
+  } finally {
+    vi.useRealTimers();
+  }
   view.type("typed while closed");
   expect(socket.typed()).toBe("");
   await userEvent.click(await reconnect());
@@ -359,16 +364,22 @@ test("leaving the workspace while it connects notes no failure and asks for noth
   const fake = page();
   const { socket } = await opened(); // never accepted
   const asked = fake.made("GET", "/api/workspaces").length;
-  await userEvent.click(
-    within(await screen.findByRole("region", { name: m.navDashboard })).getByRole("button", {
-      name: "beta",
-    }),
-  );
-  await panel("beta");
-  await waitFor(() => expect(socket.readyState).toBe(socket.CLOSED)); // its close event came
-  await turn(); // and what follows it has run
-  expect(fake.made("GET", "/api/workspaces")).toHaveLength(asked);
-  expect(takeReports()).toEqual([]);
+  vi.useFakeTimers(); // so that whatever leaving leaves waiting on a timer is run below
+  try {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    await user.click(
+      within(await screen.findByRole("region", { name: m.navDashboard })).getByRole("button", {
+        name: "beta",
+      }),
+    );
+    await panel("beta");
+    await waitFor(() => expect(socket.readyState).toBe(socket.CLOSED)); // its close event came
+    await pendingTimersRun(); // and what follows it has run
+    expect(fake.made("GET", "/api/workspaces")).toHaveLength(asked);
+    expect(takeReports()).toEqual([]);
+  } finally {
+    vi.useRealTimers();
+  }
 });
 
 test("Reconnect puts focus in the screen, and the old socket's bytes are not drawn", async () => {
@@ -394,7 +405,7 @@ test("in React's strict mode, which runs every effect twice, one socket is opene
     page();
     renderApp("/?workspace=1&tab=terminal", { strict: true });
     await waitFor(() => expect(sockets().length).toBeGreaterThan(0));
-    await act(() => vi.runOnlyPendingTimersAsync());
+    await pendingTimersRun();
     expect(sockets()).toHaveLength(1);
     expect(views().filter((v) => !v.disposed)).toHaveLength(1);
   } finally {

@@ -39,24 +39,29 @@ CONTAINER_HANG_GUARD: float = CONTAINER_GUARD / 2
 
 CONTAINER_TIMEOUT = "container_timeout"
 
+# The podman client's kill of a program the container tests run in a container whose own bounds
+# are the container tier's hang guard: tests/container/stack.py's, install_checks.py's and
+# installed.py's ``until``, handed CONTAINER_HANG_GUARD in GUARD_VARIABLE by the exec that runs
+# them, and a spec's of the whole stack's browser test. Beyond those bounds, so that the
+# program's own ends first and says what it waited for, and within the container tests' guard.
+EXEC_GUARD: float = 1.5 * CONTAINER_HANG_GUARD
+
 # The whole stack's browser test, the one carrying STACK_MARKER, has bounds of its own, each
 # beyond the one inside it, so that the innermost ends first and names what hung: a spec's own,
 # in frontend/playwright.stack.config.ts, at the tier's hang guard; the podman client's kill of
-# the specs' run (STACK_SPECS_GUARD), beyond a hung spec's bound and every other spec; and
-# its hang guard (``stack_guard``), beyond the session's image builds charged to it, at the
-# container tests' guard, and twice the specs' run, for the stack's own start and its check.
-# Playwright's run has no bound of its own (its globalTimeout, which would name no test, is 0).
+# the specs' run (EXEC_GUARD), beyond a hung spec's bound and every other spec; and its hang
+# guard (``stack_guard``), beyond the session's image builds charged to it, at the container
+# tests' guard, and twice the specs' run, for the stack's own start and its check. Playwright's
+# run has no bound of its own (its globalTimeout, which would name no test, is 0).
 STACK_MARKER = "stack"
 
 
 def stack_guard(container_guard: float) -> float:
     """The whole stack's browser test's hang guard, for a container guard: the guard itself
-    and twice the specs' run (STACK_SPECS_GUARD) of its hang guard."""
-    return container_guard + 2 * (1.5 * container_guard / 2)
+    and twice the specs' run's kill (EXEC_GUARD), in proportion to it."""
+    return container_guard * (1 + 2 * EXEC_GUARD / CONTAINER_GUARD)
 
 
-# The podman client's kill of the stack's specs' run.
-STACK_SPECS_GUARD: float = 1.5 * CONTAINER_HANG_GUARD
 STACK_GUARD: float = stack_guard(CONTAINER_GUARD)
 
 # Rule (a) in a child program's source: the seconds a ``timeout`` or a deadline written there is
