@@ -97,7 +97,7 @@ function api(snapshot: Reply = SNAPSHOT, extra: Routes = {}) {
   });
 }
 
-beforeEach(() => void vi.useFakeTimers({ shouldAdvanceTime: true }));
+beforeEach(() => void vi.useFakeTimers());
 afterEach(() => void vi.useRealTimers());
 const pass = (ms: number) =>
   act(async () => {
@@ -268,7 +268,7 @@ test.each([
     for (const other of others)
       expect(within(await card(other)).queryByText(m.monitorOff)).not.toBeInTheDocument();
     // the link leads to the page that holds the monitoring settings
-    await userEvent.click(link);
+    await userEvent.setup({ advanceTimers: vi.advanceTimersByTime }).click(link);
     expect(location().pathname).toBe(ADMIN.settings.path);
     expect(
       await screen.findByRole("heading", { level: 1, name: m.serviceSettingsTitle }),

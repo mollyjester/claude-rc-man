@@ -1,5 +1,6 @@
-import { screen, waitFor, within } from "@testing-library/react";
+import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { vi } from "vitest";
 
 import { ClaudePage } from "./Claude";
 import { m } from "./messages";
@@ -111,11 +112,16 @@ test("an expired sign-in says so", async () => {
 });
 
 test("the account's state is read once, as the page opens, never polled", async () => {
-  const fake = api(CONNECTED);
-  renderAlone(<Account />);
-  expect(await accountTitle("alice@claude.test")).toBeInTheDocument();
-  await new Promise((done) => setTimeout(done, 50));
-  expect(fake.made("GET", "/api/claude")).toHaveLength(1);
+  vi.useFakeTimers();
+  try {
+    const fake = api(CONNECTED);
+    renderAlone(<Account />);
+    expect(await accountTitle("alice@claude.test")).toBeInTheDocument();
+    await act(() => vi.advanceTimersByTimeAsync(24 * 60 * 60 * 1000)); // a day: past any poll
+    expect(fake.made("GET", "/api/claude")).toHaveLength(1);
+  } finally {
+    vi.useRealTimers();
+  }
 });
 
 test("signing out of Claude keeps sessions running unless asked otherwise", async () => {

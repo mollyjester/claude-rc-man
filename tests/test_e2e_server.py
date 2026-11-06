@@ -22,7 +22,7 @@ from devtools import held_folders
 from devtools.held_folders import held, remove_tree
 from tests import e2e_server as e2e
 from tests import killed_runs as kr
-from tests.hang_guard import HANG_GUARD
+from tests.hang_guard import CONTAINER_HANG_GUARD, HANG_GUARD, HOST_GUARD
 from tests.until import until
 
 REPO = Path(__file__).resolve().parent.parent
@@ -679,6 +679,54 @@ def test_the_browser_configs_write_to_different_output_folders():
     for folder in folders.values():
         ignored = subprocess.run(["git", "check-ignore", "-q", str(folder)], cwd=REPO)
         assert ignored.returncode == 0, folder
+
+
+# Each config's limits as Playwright resolves them, in milliseconds
+# (frontend/src/test/hangGuard.ts): a test's, the run's (none: each test is bounded, and a run's
+# bound names no test), and the backend's start and stop. These are the keys --list gives; the
+# expect, action and navigation timeouts it does not give, and the timing guard
+# (tests/test_timing_guard.py, P3c) holds each config's text to setting them to a guard.
+BROWSER_LIMITS = {
+    "timeout": 1000 * HOST_GUARD,
+    "globalTimeout": 0,
+    "webServer.timeout": 1000 * HANG_GUARD,
+    "webServer.gracefulShutdown.timeout": 1000 * HANG_GUARD,
+}
+LIMITS = {
+    "playwright.config.ts": BROWSER_LIMITS,
+    "playwright.screenshots.config.ts": BROWSER_LIMITS,
+    "playwright.stack.config.ts": {"timeout": 1000 * CONTAINER_HANG_GUARD, "globalTimeout": 0},
+}
+
+
+def resolved_limits(listing: dict) -> dict[str, object]:
+    """The limits a config resolves to, from its --list."""
+    config = listing["config"]
+    (project,) = config["projects"]
+    found = {"timeout": project["timeout"], "globalTimeout": config["globalTimeout"]}
+    server = config.get("webServer")
+    if server is not None:
+        found["webServer.timeout"] = server.get("timeout")
+        found["webServer.gracefulShutdown.timeout"] = (server.get("gracefulShutdown") or {}).get(
+            "timeout"
+        )
+    return found
+
+
+def test_each_browser_config_resolves_to_its_tiers_hang_guards():
+    env = {**os.environ, "RCMAN_STACK_PORT": str(_free_port())}
+    assert set(LIMITS) == set(CONFIGS)
+    for config, limits in LIMITS.items():
+        assert resolved_limits(listed(config, env)) == limits, config
+
+
+def test_a_config_resolving_to_another_limit_is_seen():
+    """Planted twin: the browser tests' config as --list gives it, with Playwright's own
+    default for the backend's start in place of the guard."""
+    listing = listed("playwright.config.ts", dict(os.environ))
+    assert resolved_limits(listing) == BROWSER_LIMITS  # positive control
+    listing["config"]["webServer"]["timeout"] = 60_000
+    assert resolved_limits(listing) != BROWSER_LIMITS
 
 
 def _files(listing: dict) -> set[str]:

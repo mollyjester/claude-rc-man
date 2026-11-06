@@ -9,6 +9,7 @@ import { m } from "./messages";
 import { PAGES } from "./Pages";
 import { ADMIN_USER, fakeApi, ME, NOTHING_TO_ATTEND, type Reply } from "./test/fakeApi";
 import { renderApp } from "./test/render";
+import { waitForIt } from "./test/waitForIt";
 
 function api(me: Reply) {
   return fakeApi({
@@ -326,7 +327,7 @@ test("signing out of rcman keeps sessions running unless asked, then leaves for 
     if (!keep) await userEvent.click(box);
     const button = menu.getByRole("button", { name: m.signOut });
     await userEvent.click(button);
-    await vi.waitFor(() => expect(left).toHaveBeenCalledWith("/oauth2/sign_out"));
+    await waitForIt(() => expect(left).toHaveBeenCalledWith("/oauth2/sign_out"));
     expect(fake.made("POST", "/api/me/sign-out")[0].body).toEqual({ keep_sessions: keep });
     left.mockRestore();
     unmount();
@@ -389,7 +390,7 @@ test.each([
   api(ADMIN_USER);
   renderApp(path);
   await screen.findByRole("main");
-  await vi.waitFor(() => expect(document.title).toBe(m.pageTitle(name)));
+  await waitForIt(() => expect(document.title).toBe(m.pageTitle(name)));
   expect(document.title).toContain(m.appName);
 });
 

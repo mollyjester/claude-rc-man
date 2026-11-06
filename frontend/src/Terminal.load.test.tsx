@@ -2,13 +2,14 @@
 // with a dynamic import, which the page caches; each test here has a module registry of its
 // own (vi.resetModules), in which src/xtermView.ts is what the test says, and imports the
 // page afresh from it.
-import { screen, waitFor, within } from "@testing-library/react";
+import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { vi } from "vitest";
 
 import { m } from "./messages";
 import { fakeApi, ME, problem } from "./test/fakeApi";
 import { sockets } from "./test/fakeSocket";
+import { turn } from "./test/turn";
 
 const ready = (id: number, name: string) => ({
   id,
@@ -80,9 +81,13 @@ test("a screen is made only once its tab is shown, though xterm.js loaded while 
   const gate = new Promise<void>((resolve) => {
     loaded = resolve;
   });
-  const { renderApp, cleanup } = await fresh(async () => {
-    await gate;
-    return import("./test/fakeXterm");
+  let imported: Promise<unknown> = Promise.resolve();
+  const { renderApp, cleanup } = await fresh(() => {
+    imported = (async () => {
+      await gate;
+      return import("./test/fakeXterm");
+    })();
+    return imported;
   });
   const { views } = await import("./test/fakeXterm");
   try {
@@ -92,7 +97,11 @@ test("a screen is made only once its tab is shown, though xterm.js loaded while 
     await waitFor(() => expect(panel.getByRole("status")).toHaveTextContent(m.terminalConnecting));
     await userEvent.click(panel.getByRole("tab", { name: m.tabOverview }));
     loaded();
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    // xterm.js has loaded, and the page has had a turn for what follows it
+    await act(async () => {
+      await imported;
+    });
+    await turn();
     expect(views()).toEqual([]); // nothing made where it cannot be measured
     expect(sockets()).toEqual([]);
     await userEvent.click(panel.getByRole("tab", { name: m.tabTerminal }));

@@ -49,6 +49,7 @@ from __future__ import annotations
 import ast
 import functools
 import operator
+import posixpath
 import re
 import subprocess
 from collections.abc import Iterable
@@ -58,6 +59,7 @@ from pathlib import Path
 import pytest
 
 from tests.hang_guard import HANG_GUARD
+from tests.typescript import FRONTEND, parse_ts, ts_scanned
 
 REPO = Path(__file__).resolve().parent.parent
 GUARD_MODULE = "tests.hang_guard"
@@ -2041,6 +2043,363 @@ def scan_tree(files: Iterable[str] | None = None) -> Tree:
     return Tree(sites, derived, table)
 
 
+# --- the TypeScript scope ------------------------------------------------------------------------
+
+# The frontend's tests and their configs, under frontend/: the component tests vite.config.ts's
+# ``include`` names (TS_TESTS, which a test holds to it), everything under TS_DIRS, and TS_CONFIGS.
+TS_DIRS = ("src/test/", "e2e/", "e2e-stack/")
+TS_TESTS = re.compile(r"^src/(.+/)?[^/]+\.test\.tsx?$")
+TS_INCLUDE = "src/**/*.test.{ts,tsx}"
+TS_CONFIGS = (
+    "vite.config.ts", "playwright.config.ts", "playwright.stack.config.ts",
+    "playwright.screenshots.config.ts",
+)  # fmt: skip
+# The frontend's hang guards: the only names a timeout there may be given, besides 0.
+TS_GUARD_FILE = "src/test/hangGuard.ts"
+# The tier of a file, by where it is: the component tests' (Vitest in jsdom), the browser tests'
+# and the whole stack's (frontend/src/test/hangGuard.ts). A guard of another tier is a TIER site.
+TS_TIERS = (
+    ("STACK", ("e2e-stack/", "playwright.stack.config.ts")),
+    ("BROWSER", ("e2e/", "playwright.config.ts", "playwright.screenshots.config.ts")),
+    ("UNIT", ("src/", "vite.config.ts")),
+)
+# The keys every config sets (P3c): each Playwright config's, the web server's where it has one,
+# and Vitest's in vite.config.ts.
+PLAYWRIGHT_KEYS = (
+    "timeout", "globalTimeout", "expect.timeout", "use.actionTimeout", "use.navigationTimeout",
+)  # fmt: skip
+SERVER_KEYS = ("webServer.timeout",)
+VITEST_KEYS = ("test.testTimeout", "test.hookTimeout", "test.teardownTimeout")
+TS_CLOCKS = {("Date", "now"), ("performance", "now")}
+TS_COMPARE = {"<", ">", "<=", ">=", "==", "===", "!=", "!=="}
+# Matchers that compare what expect() was given, as a comparison does.
+TS_MATCHERS = {"toBeLessThan", "toBeGreaterThan", "toBeLessThanOrEqual", "toBeGreaterThanOrEqual"}
+TS_GLOBALS = {"window", "globalThis", "self"}
+TS_FUNCTIONS = {"ArrowFunctionExpression", "FunctionExpression", "FunctionDeclaration"}
+TS_WRAPPERS = {
+    "TSAsExpression", "TSSatisfiesExpression", "TSNonNullExpression", "TSTypeAssertion",
+    "ParenthesizedExpression",
+}  # fmt: skip
+
+
+def ts_tier(rel: str) -> str:
+    return next(tier for tier, where in TS_TIERS if rel.startswith(where))
+
+
+def ts_in_scope(rel: str) -> bool:
+    return rel in TS_CONFIGS or rel.startswith(TS_DIRS) or bool(TS_TESTS.match(rel))
+
+
+def ts_scope(frontend: Path = FRONTEND) -> list[str]:
+    """The TypeScript of the scope, relative to ``frontend``: what git does not ignore."""
+    return [rel for rel in ts_scanned(frontend) if ts_in_scope(rel)]
+
+
+def _ts_unwrap(node: dict) -> dict:
+    while node and node.get("type") in TS_WRAPPERS:
+        node = node["expression"]
+    return node
+
+
+def _ts_zero(node: dict) -> bool:
+    value = node.get("value")
+    return node.get("type") == "Literal" and type(value) in (int, float) and value == 0
+
+
+def _ts_key(prop: dict) -> str | None:
+    key = prop.get("key") or {}
+    if prop.get("computed"):
+        return key.get("value") if key.get("type") == "Literal" else None
+    return key.get("name") if key.get("type") == "Identifier" else key.get("value")
+
+
+def _ts_member(node: dict) -> tuple[str | None, str | None]:
+    """A call's callee as (object, property): ``vi.waitFor`` as ("vi", "waitFor"), a bare
+    ``setTimeout`` as (None, "setTimeout"); an object that is not a plain name as ""."""
+    callee = _ts_unwrap(node.get("callee") or {})
+    if callee.get("type") == "Identifier":
+        return None, callee["name"]
+    if callee.get("type") == "MemberExpression" and not callee.get("computed"):
+        obj = _ts_unwrap(callee["object"])
+        return (obj["name"] if obj.get("type") == "Identifier" else ""), callee["property"].get(
+            "name"
+        )
+    return "", None
+
+
+def _ts_children(node: dict):
+    for key, child in node.items():
+        if key in ("type", "start", "end", "range", "loc"):
+            continue
+        if isinstance(child, dict) and "type" in child:
+            yield key, child
+        elif isinstance(child, list):
+            for item in child:
+                if isinstance(item, dict) and "type" in item:
+                    yield key, item
+
+
+def _ts_resolve(rel: str, given: str) -> str | None:
+    """A relative import's file under frontend/, without its suffix."""
+    if not given.startswith("."):
+        return None
+    path = posixpath.normpath(posixpath.join(posixpath.dirname(rel), given))
+    return re.sub(r"\.(ts|tsx|js|mjs)$", "", path)
+
+
+class TsScan:
+    """The sites of one TypeScript file, ``rel`` under frontend/. ``configs`` holds the trees
+    of the configs, by ``rel``, for a config that spreads another's."""
+
+    def __init__(self, rel: str, source: str, tree: dict, configs: dict | None = None):
+        self.rel, self.source, self.tree = rel, source, tree
+        self.configs = configs or {}
+        self.encoded = source.encode("utf-16-le")
+        self.tier = ts_tier(rel)
+        self.sites: list[Site] = []
+        self.derived: list[tuple[str, Site]] = []
+        # local name -> the name it imports from hangGuard.ts; local name -> a config's rel
+        self.guards: dict[str, str] = {}
+        self.defaults: dict[str, str] = {}
+        for node in tree["body"]:
+            if node["type"] != "ImportDeclaration":
+                continue
+            target = _ts_resolve(rel, node["source"]["value"])
+            for spec in node["specifiers"]:
+                local = spec["local"]["name"]
+                if (
+                    target == TS_GUARD_FILE.removesuffix(".ts")
+                    and spec["type"] == "ImportSpecifier"
+                ):
+                    self.guards[local] = spec["imported"].get("name") or spec["imported"]["value"]
+                elif spec["type"] == "ImportDefaultSpecifier" and f"{target}.ts" in TS_CONFIGS:
+                    self.defaults[local] = f"{target}.ts"
+
+    @property
+    def path(self) -> str:
+        return f"frontend/{self.rel}"
+
+    def site(self, node: dict, form: str, where: str, text: str | None = None) -> Site:
+        line = self.encoded[: 2 * node["start"]].decode("utf-16-le").count("\n") + 1
+        if text is None:
+            text = self.encoded[2 * node["start"] : 2 * node["end"]].decode("utf-16-le")
+        return Site(self.path, line, form, " ".join(text.split())[:120], where)
+
+    def flag(self, node: dict, form: str, where: str, text: str | None = None) -> None:
+        self.sites.append(self.site(node, form, where, text))
+
+    def allow(self, key: str, node: dict, where: str) -> bool:
+        if ALLOWANCES[key]:
+            self.derived.append((key, self.site(node, "P3", where)))
+            return True
+        return False
+
+    def value(self, node: dict | None, where: str, site: dict) -> None:
+        """A timeout's value: 0, or a guard of hangGuard.ts of the file's tier; otherwise
+        flagged, at ``site``, as P3, or TIER for another tier's guard."""
+        node = _ts_unwrap(node or {})
+        if _ts_zero(node) and self.allow("zero", site, where):
+            return
+        if node.get("type") == "Identifier" and node["name"] in self.guards:
+            imported = self.guards[node["name"]]
+            if not imported.startswith(f"{self.tier}_"):
+                self.flag(site, "TIER", where)
+                return
+            if self.allow("guard", site, where):
+                return
+        self.flag(site, "P3", where)
+
+    def scan(self) -> TsScan:
+        self._visit(self.tree, "", set(), None)
+        if self.rel in TS_CONFIGS:
+            self._config_keys()
+        return self
+
+    # P1: a clock read, or a name given one in this function or one around it.
+    def _clocked(self, node: dict, derived: set[str]) -> bool:
+        node = _ts_unwrap(node)
+        kind = node.get("type")
+        if kind in TS_FUNCTIONS:
+            return False
+        if kind == "CallExpression" and _ts_member(node) in TS_CLOCKS:
+            return True
+        if kind == "Identifier":
+            return node["name"] in derived
+        for key, child in _ts_children(node):
+            if kind == "MemberExpression" and key == "property" and not node.get("computed"):
+                continue
+            if kind == "Property" and key == "key" and not node.get("computed"):
+                continue
+            if self._clocked(child, derived):
+                return True
+        return False
+
+    def _visit(self, node: dict, where: str, derived: set[str], parent: dict | None):
+        """``derived`` holds the clock-derived names of the function the node is in, which a
+        function inside starts from."""
+        kind = node.get("type")
+        if kind in TS_FUNCTIONS:
+            derived = set(derived)
+        if kind == "FunctionDeclaration" and node.get("id"):
+            where = node["id"]["name"]
+        if kind == "VariableDeclarator":
+            target = node["id"]
+            if target.get("type") == "Identifier":
+                name = target["name"]
+                if name.endswith("_GUARD_MS") and self.rel != TS_GUARD_FILE:
+                    self.flag(node, "GUARD", where)
+                if node.get("init") and self._clocked(node["init"], derived):
+                    derived.add(name)
+        if kind == "AssignmentExpression" and node["left"].get("type") == "Identifier":
+            if self._clocked(node["right"], derived):
+                derived.add(node["left"]["name"])
+        if kind == "BinaryExpression":
+            left, right = (
+                self._clocked(node["left"], derived),
+                self._clocked(node["right"], derived),
+            )
+            if node["operator"] in TS_COMPARE and (left or right):
+                self.flag(node, "P1", where)
+            elif node["operator"] == "-" and left and right:
+                self.flag(node, "P1", where)
+        if kind == "CallExpression":
+            self._call(node, where, derived)
+        if kind == "Property" and (parent or {}).get("type") != "ObjectPattern":
+            key = _ts_key(node)
+            if key == "shouldAdvanceTime":
+                value = _ts_unwrap(node["value"])
+                if not (value.get("type") == "Literal" and value.get("value") is False):
+                    self.flag(node, "P1", where)
+            elif key is not None and (key == "timeout" or key.endswith("Timeout")):
+                self.value(node["value"], where, node)
+        for key, child in _ts_children(node):
+            inner = where
+            if kind == "VariableDeclarator" and key == "init" and child["type"] in TS_FUNCTIONS:
+                inner = node["id"].get("name", where)
+            if kind == "CallExpression" and key == "arguments" and child["type"] in TS_FUNCTIONS:
+                title = _ts_unwrap(node["arguments"][0])
+                if title.get("type") == "Literal" and isinstance(title.get("value"), str):
+                    inner = title["value"]
+            self._visit(child, inner, derived, node)
+
+    def _call(self, node: dict, where: str, derived: set[str]) -> None:
+        obj, name = _ts_member(node)
+        args = node["arguments"]
+        timer = obj is None or obj in TS_GLOBALS
+        if name == "waitForTimeout" and obj is not None:
+            self.flag(node, "P2", where)
+        elif name == "setTimeout" and timer:
+            delay = _ts_unwrap(args[1]) if len(args) > 1 else None
+            if delay is None or _ts_zero(delay):
+                if ALLOWANCES["turn (H8)"]:
+                    self.derived.append(("turn (H8)", self.site(node, "P2", where)))
+                    return
+            self.flag(node, "P2", where)
+        elif name == "setInterval" and timer:
+            self.flag(node, "P2", where)
+        elif name == "setTimeout":  # test.setTimeout(n)
+            self.value(args[0] if args else None, where, node)
+        elif name == "slow" and obj == "test":
+            self.flag(node, "P3", where)
+        elif obj == "vi" and name in ("waitFor", "waitUntil"):
+            options = _ts_unwrap(args[1]) if len(args) > 1 else None
+            if options is None:
+                self.flag(node, "P3", where)
+            elif options.get("type") == "ObjectExpression":
+                if not any(_ts_key(p) == "timeout" for p in options["properties"]):
+                    self.flag(node, "P3", where)
+            else:
+                self.value(options, where, node)
+        elif name in TS_MATCHERS and obj == "":
+            target = _ts_unwrap(node["callee"]["object"])
+            given = target.get("arguments", []) if target.get("type") == "CallExpression" else []
+            if any(self._clocked(a, derived) for a in [*given, *args]):
+                self.flag(node, "P1", where)
+
+    # P3c: every config sets every key.
+    def _exported(self, tree: dict) -> dict | None:
+        for node in tree["body"]:
+            if node["type"] == "ExportDefaultDeclaration":
+                value = _ts_unwrap(node["declaration"])
+                if value.get("type") == "CallExpression" and value["arguments"]:
+                    value = _ts_unwrap(value["arguments"][0])
+                return value if value.get("type") == "ObjectExpression" else None
+        return None
+
+    def _flat(self, obj: dict, scan: TsScan, prefix: str = "") -> dict[str, dict]:
+        """The keys an object literal sets, as dotted paths, the keys of what it spreads of
+        another config among them, where it spreads that config (``...base``) or a part of it
+        (``...base.use``)."""
+        found: dict[str, dict] = {}
+        for prop in obj["properties"]:
+            if prop["type"] == "SpreadElement":
+                found |= self._spread(_ts_unwrap(prop["argument"]), scan, prefix)
+                continue
+            key = _ts_key(prop)
+            if key is None:
+                continue
+            value = _ts_unwrap(prop["value"])
+            found[prefix + key] = prop
+            if value.get("type") == "ObjectExpression":
+                found |= self._flat(value, scan, f"{prefix}{key}.")
+        return found
+
+    def _spread(self, arg: dict, scan: TsScan, prefix: str) -> dict[str, dict]:
+        part = ""
+        while arg.get("type") == "MemberExpression" and not arg.get("computed"):
+            part = f"{arg['property']['name']}.{part}"
+            arg = _ts_unwrap(arg["object"])
+        other = scan.defaults.get(arg.get("name", ""))
+        if other is None or other not in self.configs:
+            return {}
+        inner = TsScan(other, "", self.configs[other], self.configs)
+        exported = inner._exported(inner.tree)
+        if exported is None:
+            return {}
+        return {
+            prefix + key.removeprefix(part): prop
+            for key, prop in self._flat(exported, inner).items()
+            if key.startswith(part)
+        }
+
+    def _config_keys(self) -> None:
+        exported = self._exported(self.tree)
+        node = next(n for n in self.tree["body"] if n["type"] == "ExportDefaultDeclaration")
+        found = {} if exported is None else self._flat(exported, self)
+        if self.rel == "vite.config.ts":
+            wanted = VITEST_KEYS
+        else:
+            server = any(k == "webServer" or k.startswith("webServer.") for k in found)
+            wanted = PLAYWRIGHT_KEYS + (SERVER_KEYS if server else ())
+        for key in wanted:
+            if key not in found:
+                self.flag(node, "P3c", "", f"{key} is not set")
+
+
+@dataclass
+class TsTree:
+    sites: list[Site]
+    derived: list[tuple[str, Site]]
+
+
+def ts_scan_sources(sources: dict[str, str], trees: dict[str, dict] | None = None) -> TsTree:
+    """The sites of TypeScript files, by ``rel`` under frontend/, parsed together once."""
+    trees = parse_ts(sources) if trees is None else trees
+    configs = {rel: trees[rel] for rel in sources if rel in TS_CONFIGS}
+    sites, derived = [], []
+    for rel, source in sources.items():
+        scan = TsScan(rel, source, trees[rel], configs).scan()
+        sites += scan.sites
+        derived += scan.derived
+    return TsTree(sites, derived)
+
+
+def ts_scan_tree(frontend: Path = FRONTEND) -> TsTree:
+    return ts_scan_sources(
+        {rel: (frontend / rel).read_text(encoding="utf-8") for rel in ts_scope(frontend)}
+    )
+
+
 # --- the named patterns --------------------------------------------------------------------------
 
 
@@ -2108,6 +2467,12 @@ NAMED = (
     Named("H4", "tests/test_hang_guard.py",
           ("test_each_tiers_hang_guard_is_outlived_by_its_guard_whose_method_is_thread",),
           frozenset({"TIER"}), "the hang guard's own test of each tier's value, in a host test"),
+    Named("H4", "tests/test_hang_guard.py", ("frontend_guard_problems",), frozenset({"TIER"}),
+          "the frontend's hang guards held, in a host test, to each tier's, the whole stack's to "
+          "the container tier's"),
+    Named("H4", "tests/test_e2e_server.py", ("",), frozenset({"TIER"}),
+          "the whole stack's config's resolved limit held, in a host test, to the container "
+          "tier's hang guard, under which its specs run"),
     Named("H12", "devtools/tmuxctl.py",
           ("", "Pane.wait_for", "Pane.wait_exit", "Pane.wait_stable", "Pane.close"),
           frozenset({"P1", "P2", "P3"}),
@@ -2828,6 +3193,8 @@ def test_a_stand_in_named_only_by_the_guard_is_reported():
 # doubles it must have found (H7): that each holds what it is for, and the scan sees the tree.
 DERIVED = {"double (H7)", "child loop (H13)", "benchmark (H10)"}
 UNDER_H7 = ("tests/test_workspace_limits.py", "tests/test_monitor.py")
+# The allowances the scan of the frontend's TypeScript must have made, each at least once.
+TS_DERIVED = {"turn (H8)", "guard", "zero"}
 
 
 def real_tree_problems(tree: Tree) -> list[str]:
@@ -2844,13 +3211,18 @@ def real_tree_problems(tree: Tree) -> list[str]:
     problems += [f"no site was allowed as {k}" for k in sorted(DERIVED - kinds)]
     doubled = {s.path for k, s in tree.derived if k == "double (H7)"}
     problems += [f"no double (H7) was found in {p}" for p in UNDER_H7 if p not in doubled]
+    typescript = {k for k, s in tree.derived if s.path.startswith("frontend/")}
+    problems += [f"no TypeScript site was allowed as {k}" for k in sorted(TS_DERIVED - typescript)]
     return problems
 
 
 def test_no_test_waits_on_real_time():
-    """G2 over the real tree, scanned once: no site but the named patterns', which are not
-    stale, and a scan that saw what it is known to have to see."""
-    assert real_tree_problems(scan_tree()) == []
+    """G2 over the real tree, scanned once, the Python and the frontend's TypeScript: no site
+    but the named patterns', which are not stale, and a scan that saw what it is known to have
+    to see."""
+    python, typescript = scan_tree(), ts_scan_tree()
+    tree = Tree(python.sites + typescript.sites, python.derived + typescript.derived, python.table)
+    assert real_tree_problems(tree) == []
 
 
 def test_a_planted_site_in_the_tree_is_a_problem():
@@ -2865,6 +3237,9 @@ def test_a_planted_site_in_the_tree_is_a_problem():
     ]
     assert [p for p in problems if p.startswith("no double (H7)")] == [
         f"no double (H7) was found in {p}" for p in UNDER_H7
+    ]
+    assert [p for p in problems if p.startswith("no TypeScript site")] == [
+        f"no TypeScript site was allowed as {k}" for k in sorted(TS_DERIVED)
     ]
     nothing = "the scan saw no site at all, not even a named pattern's"
     assert nothing not in problems
@@ -2936,3 +3311,317 @@ def test_a_planted_file_in_each_root_is_read(tmp_path):
     for rel in planted:
         source = (tmp_path / rel).read_text(encoding="utf-8")
         assert ("P2", 2) in [(s.form, s.line) for s in scan_source(rel, source).sites]
+
+
+# --- the frontend's TypeScript: its twins and its scope ------------------------------------------
+
+UNIT_IMPORT = 'import { UNIT_HANG_GUARD_MS } from "./test/hangGuard";\n'
+GUARDS = (
+    "import { BROWSER_HANG_GUARD_MS as H, BROWSER_TEST_GUARD_MS as T }"
+    ' from "./src/test/hangGuard";\n'
+)
+CONFIG = 'import { defineConfig } from "@playwright/test";\n' + GUARDS
+# A Playwright config that sets every key; ``{more}`` adds to its object.
+WHOLE = (
+    CONFIG + "export default defineConfig({\n  timeout: T,\n  globalTimeout: 0,\n"
+    "  expect: { timeout: H },\n  use: { actionTimeout: H, navigationTimeout: H },\n{more}});\n"
+)
+
+# name: (form, {rel under frontend/: source}, the rel flagged, its line)
+PLANTED_TS = {
+    "Date.now compared": (
+        "P1",
+        {"src/x.test.ts": "const start = Date.now();\nwhile (Date.now() < start + 5) f();\n"},
+        "src/x.test.ts",
+        2,
+    ),
+    "performance.now differenced": (
+        "P1",
+        {
+            "src/x.test.ts": "const a = performance.now();\n"
+            "const b = performance.now();\nconst took = b - a;\n"
+        },
+        "src/x.test.ts",
+        3,
+    ),
+    "a clock in a matcher": (
+        "P1",
+        {
+            "e2e/x.spec.ts": "const start = Date.now();\n"
+            "expect(Date.now()).toBeLessThan(start + 9);\n"
+        },
+        "e2e/x.spec.ts",
+        2,
+    ),
+    "shouldAdvanceTime": (
+        "P1",
+        {"src/x.test.ts": "vi.useFakeTimers({ shouldAdvanceTime: true });\n"},
+        "src/x.test.ts",
+        1,
+    ),
+    "waitForTimeout": (
+        "P2",
+        {"e2e/x.spec.ts": "await page.waitForTimeout(100);\n"},
+        "e2e/x.spec.ts",
+        1,
+    ),
+    "setTimeout with a delay": (
+        "P2",
+        {"src/x.test.ts": "await new Promise((r) => setTimeout(r, 50));\n"},
+        "src/x.test.ts",
+        1,
+    ),
+    "window.setTimeout": (
+        "P2",
+        {"src/test/x.ts": "window.setTimeout(f, 10);\n"},
+        "src/test/x.ts",
+        1,
+    ),
+    "setInterval": ("P2", {"src/x.test.tsx": "setInterval(f, 1000);\n"}, "src/x.test.tsx", 1),
+    "a timeout option": (
+        "P3",
+        {"e2e/x.spec.ts": "await expect(x).toBeVisible({ timeout: 2000 });\n"},
+        "e2e/x.spec.ts",
+        1,
+    ),
+    "a Timeout key": (
+        "P3",
+        {"src/test/setup.ts": "configure({ asyncUtilTimeout: 3000 });\n"},
+        "src/test/setup.ts",
+        1,
+    ),
+    "test.setTimeout": (
+        "P3",
+        {"e2e-stack/x.spec.ts": "test.setTimeout(90_000);\n"},
+        "e2e-stack/x.spec.ts",
+        1,
+    ),
+    "test.slow": ("P3", {"e2e/x.spec.ts": "test.slow();\n"}, "e2e/x.spec.ts", 1),
+    "vi.waitFor without a timeout": (
+        "P3",
+        {"src/x.test.ts": "await vi.waitFor(() => f());\n"},
+        "src/x.test.ts",
+        1,
+    ),
+    "vi.waitUntil without a timeout": (
+        "P3",
+        {"src/x.test.ts": "await vi.waitUntil(() => f(), { interval: 5 });\n"},
+        "src/x.test.ts",
+        1,
+    ),
+    "a timeout through a parameter": (
+        "P3",
+        {
+            "e2e/nav.ts": "export async function made(p, wait) {\n"
+            "  await expect(p).toBeVisible({ timeout: wait });\n}\n"
+        },
+        "e2e/nav.ts",
+        2,
+    ),
+    "a local guard": (
+        "GUARD",
+        {"src/x.test.ts": "const UNIT_HANG_GUARD_MS = 5;\n"},
+        "src/x.test.ts",
+        1,
+    ),
+    "another tier's guard": (
+        "TIER",
+        {
+            "e2e-stack/x.spec.ts": "import { BROWSER_HANG_GUARD_MS } from "
+            '"../src/test/hangGuard";\nawait expect(x).toBeVisible('
+            "{ timeout: BROWSER_HANG_GUARD_MS });\n"
+        },
+        "e2e-stack/x.spec.ts",
+        2,
+    ),
+    "a config without a key": (
+        "P3c",
+        {
+            "playwright.config.ts": CONFIG + "export default defineConfig({\n"
+            "  timeout: T,\n  globalTimeout: 0,\n  expect: { timeout: H },\n"
+            "  use: { actionTimeout: H },\n});\n"
+        },
+        "playwright.config.ts",
+        3,
+    ),
+    "a web server without its timeout": (
+        "P3c",
+        {"playwright.config.ts": WHOLE.replace("{more}", '  webServer: { command: "x" },\n')},
+        "playwright.config.ts",
+        3,
+    ),
+    "Vitest without a hook's": (
+        "P3c",
+        {
+            "vite.config.ts": 'import { defineConfig } from "vitest/config";\n'
+            'import { UNIT_TEST_GUARD_MS as T } from "./src/test/hangGuard";\n'
+            "export default defineConfig({\n  test: { testTimeout: T, "
+            "teardownTimeout: T },\n});\n"
+        },
+        "vite.config.ts",
+        3,
+    ),
+    "a config spreading one without a key": (
+        "P3c",
+        {
+            "playwright.config.ts": WHOLE.replace("navigationTimeout: H", "").replace("{more}", ""),
+            "playwright.screenshots.config.ts": 'import { defineConfig } from "@playwright/test";\n'
+            'import base from "./playwright.config";\nexport default defineConfig({\n  ...base,\n'
+            '  use: { ...base.use, trace: "off" },\n});\n',
+        },
+        "playwright.screenshots.config.ts",
+        3,
+    ),
+}
+
+# name: (the allowance, {rel under frontend/: source})
+CLEAN_TS = {
+    "zero": ("zero", {"src/test/setup.ts": "configure({ asyncUtilTimeout: 0 });\n"}),
+    "the guard": (
+        "guard",
+        {"src/x.test.ts": UNIT_IMPORT + "configure({ asyncUtilTimeout: UNIT_HANG_GUARD_MS });\n"},
+    ),
+    "vi.waitFor given the guard": (
+        "guard",
+        {
+            "src/x.test.ts": UNIT_IMPORT + "await vi.waitFor("
+            "() => f(), { timeout: UNIT_HANG_GUARD_MS });\n"
+        },
+    ),
+    "a turn (H8)": (
+        "turn (H8)",
+        {"src/test/x.ts": "await new Promise((r) => setTimeout(r));\nsetTimeout(f, 0);\n"},
+    ),
+    "every key set, a config's own and spread": (
+        "structure",
+        {
+            "playwright.config.ts": WHOLE.replace(
+                "{more}", '  webServer: { command: "x", timeout: H },\n'
+            ),
+            "playwright.screenshots.config.ts": 'import { defineConfig } from "@playwright/test";\n'
+            'import base from "./playwright.config";\nexport default defineConfig({\n  ...base,\n'
+            '  use: { ...base.use, trace: "off" },\n});\n',
+        },
+    ),
+    "a clock read and not compared": (
+        "structure",
+        {"src/x.test.ts": "const at = Date.now();\nreport(at);\n"},
+    ),
+    "a destructured or typed timeout": (
+        "structure",
+        {
+            "src/x.test.ts": "type T = { timeout: number };\n"
+            "const f = ({ timeout }: T) => timeout;\n"
+        },
+    ),
+    "a spy on a timer": ("structure", {"src/x.test.ts": 'vi.spyOn(globalThis, "setInterval");\n'}),
+    "shouldAdvanceTime off": (
+        "structure",
+        {"src/x.test.ts": "vi.useFakeTimers({ shouldAdvanceTime: false });\n"},
+    ),
+}
+
+# Each form, as each language spells it: the name of its planted twin in PLANTED (Python) and
+# PLANTED_TS (TypeScript), or None where the language does not spell it, with the reason in
+# NOT_SPELLED.
+FORMS = {
+    "P1": ("a deadline loop", "Date.now compared"),
+    "P2": ("time.sleep", "waitForTimeout"),
+    "P2s": ("a shell sleep", None),
+    "P3": ("a join", "a timeout option"),
+    "P3c": (None, "a config without a key"),
+    "P4": ("a monkeypatched deadline", None),
+    "GUARD": ("a local HANG_GUARD", "a local guard"),
+    "TIER": (None, "another tier's guard"),
+}
+NOT_SPELLED = {
+    ("P2s", "ts"): "the frontend's tests start no child program from a source they write: what "
+    "they run is an argv (execFileSync in e2e-stack/stack.spec.ts)",
+    ("P3c", "python"): "pytest's limits are the hang guard's, in pyproject.toml, which "
+    "tests/test_hang_guard.py and tests/test_make.py hold",
+    ("P4", "ts"): "an ES module's exports are read-only bindings, which no test can set: no spec "
+    "patches a module's timing constant",
+    ("TIER", "python"): "spelled by TIERED's twins, which give the tiers that reach a helper",
+}
+
+
+@pytest.fixture(scope="module")
+def ts_twins() -> dict[str, TsTree]:
+    """Every TypeScript twin scanned, parsed in one call of node."""
+    tables = {**{f"planted {n}": t[1] for n, t in PLANTED_TS.items()},
+              **{f"clean {n}": t[1] for n, t in CLEAN_TS.items()}}  # fmt: skip
+    given = {
+        f"{i}/{rel}": src for i, files in enumerate(tables.values()) for rel, src in files.items()
+    }
+    trees = parse_ts(given)
+    out = {}
+    for i, (name, files) in enumerate(tables.items()):
+        out[name] = ts_scan_sources(files, {rel: trees[f"{i}/{rel}"] for rel in files})
+    return out
+
+
+def ts_found(tree: TsTree, rel: str | None = None) -> list[tuple[str, int]]:
+    return [(s.form, s.line) for s in tree.sites if rel is None or s.path == f"frontend/{rel}"]
+
+
+@pytest.mark.parametrize("name", sorted(PLANTED_TS))
+def test_a_planted_typescript_form_is_flagged_where_it_is(ts_twins, name):
+    form, files, rel, line = PLANTED_TS[name]
+    assert ts_found(ts_twins[f"planted {name}"], rel).count((form, line)) == 1, (name, ts_twins)
+
+
+@pytest.mark.parametrize("name", sorted(CLEAN_TS))
+def test_an_allowed_typescript_form_is_not_flagged(ts_twins, name):
+    key, _files = CLEAN_TS[name]
+    scanned = ts_twins[f"clean {name}"]
+    assert ts_found(scanned) == []
+    if key != "structure":  # the allowance made is the one the twin is for
+        assert key in {k for k, _ in scanned.derived}
+
+
+def test_an_allowance_turned_off_flags_its_typescript_twin(monkeypatch):
+    """Planted twin of the allowances: the guard not allowed, its CLEAN twin is a site."""
+    monkeypatch.setitem(ALLOWANCES, "guard", False)
+    _key, files = CLEAN_TS["the guard"]
+    assert ts_found(ts_scan_sources(files)) == [("P3", 2)]
+
+
+@pytest.mark.parametrize("form", sorted(FORMS))
+def test_each_form_is_spelled_in_each_language_or_said_why_not(form):
+    python, typescript = FORMS[form]
+    assert (python in PLANTED) if python else ((form, "python") in NOT_SPELLED)
+    assert (typescript in PLANTED_TS) if typescript else ((form, "ts") in NOT_SPELLED)
+    if python:
+        assert PLANTED[python][0] == form
+    if typescript:
+        assert PLANTED_TS[typescript][0] == form
+
+
+def test_every_form_planted_is_in_the_table():
+    planted = {t[0] for t in PLANTED.values()} | {t[0] for t in PLANTED_TS.values()}
+    assert planted | {"TIER"} == set(FORMS)
+
+
+def test_the_typescript_scope_is_the_frontends_tests_and_their_configs():
+    rels = ts_scope()
+    for known in ("src/api.test.ts", "src/test/setup.ts", "src/test/hangGuard.ts",
+                  "e2e/touch.spec.ts", "e2e-stack/stack.spec.ts", *TS_CONFIGS):  # fmt: skip
+        assert known in rels, known
+    assert "src/api.ts" not in rels  # the product's own
+    vite = (FRONTEND / "vite.config.ts").read_text(encoding="utf-8")
+    assert re.findall(r"include:\s*\[([^\]]*)\]", vite) == [f'"{TS_INCLUDE}"']
+    assert TS_TESTS.match("src/api.test.ts") and TS_TESTS.match("src/a/b.test.tsx")
+    assert not TS_TESTS.match("src/api.ts")
+
+
+def test_a_planted_typescript_file_in_each_root_is_read(tmp_path):
+    """A file of the scanned shape planted under each root of the TypeScript scope, in a
+    scratch repository, is listed and its site found; the product's own is not listed."""
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True, timeout=HANG_GUARD)
+    frontend = tmp_path / "frontend"
+    planted = sorted(["src/x.test.tsx", "src/test/x.ts", "e2e/x.ts", "e2e-stack/x.ts"])
+    for rel in [*planted, "src/x.tsx"]:
+        (frontend / rel).parent.mkdir(parents=True, exist_ok=True)
+        (frontend / rel).write_text("setInterval(f, 1);\n", encoding="utf-8")
+    assert ts_scope(frontend) == planted
+    assert ts_found(ts_scan_tree(frontend)) == [("P2", 1)] * len(planted)

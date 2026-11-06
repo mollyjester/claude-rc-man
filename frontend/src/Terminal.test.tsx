@@ -12,6 +12,7 @@ import { resized, schemeListening, switchScheme } from "./test/fakeLayout";
 import { sockets } from "./test/fakeSocket";
 import { views } from "./test/fakeXterm";
 import { renderApp } from "./test/render";
+import { turn } from "./test/turn";
 
 function workspace(id: number, name: string, state = "ready") {
   return {
@@ -250,7 +251,7 @@ test("a terminal taken over elsewhere is not opened again by itself; Reconnect o
     socket.serverClose(PROTOCOL.close_normal);
   });
   await says(m.terminalClosed.terminal_replaced);
-  await new Promise((resolve) => setTimeout(resolve, 200));
+  await turn(); // what follows the close has run
   expect(sockets()).toHaveLength(1);
   view.type("typed while closed");
   expect(socket.typed()).toBe("");
@@ -365,7 +366,7 @@ test("leaving the workspace while it connects notes no failure and asks for noth
   );
   await panel("beta");
   await waitFor(() => expect(socket.readyState).toBe(socket.CLOSED)); // its close event came
-  await new Promise((resolve) => setTimeout(resolve, 50));
+  await turn(); // and what follows it has run
   expect(fake.made("GET", "/api/workspaces")).toHaveLength(asked);
   expect(takeReports()).toEqual([]);
 });
@@ -388,12 +389,17 @@ test("Reconnect puts focus in the screen, and the old socket's bytes are not dra
 // comes only once xterm.js has loaded, after the mount whose effects strict mode runs twice,
 // so it holds whatever the effect does.
 test("in React's strict mode, which runs every effect twice, one socket is opened", async () => {
-  page();
-  renderApp("/?workspace=1&tab=terminal", { strict: true });
-  await waitFor(() => expect(sockets().length).toBeGreaterThan(0));
-  await new Promise((resolve) => setTimeout(resolve, 100));
-  expect(sockets()).toHaveLength(1);
-  expect(views().filter((v) => !v.disposed)).toHaveLength(1);
+  vi.useFakeTimers(); // so that whatever the page has left waiting on a timer is run below
+  try {
+    page();
+    renderApp("/?workspace=1&tab=terminal", { strict: true });
+    await waitFor(() => expect(sockets().length).toBeGreaterThan(0));
+    await act(() => vi.runOnlyPendingTimersAsync());
+    expect(sockets()).toHaveLength(1);
+    expect(views().filter((v) => !v.disposed)).toHaveLength(1);
+  } finally {
+    vi.useRealTimers();
+  }
 });
 
 test("leaving the page closes the socket", async () => {

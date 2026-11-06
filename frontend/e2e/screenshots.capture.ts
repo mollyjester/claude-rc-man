@@ -5,7 +5,7 @@ import { expect, type Page, test } from "@playwright/test";
 import { ADMIN_PAGES } from "../src/AdminPages";
 import { m } from "../src/messages";
 import { PAGES } from "../src/Pages";
-import { GITHUB_ADDRESS, openUpgradeDialog, personAction } from "./nav";
+import { drawn, GITHUB_ADDRESS, openUpgradeDialog, personAction } from "./nav";
 import { ALICE, BOB, signInAs } from "./people";
 
 // make screenshots (playwright.screenshots.config.ts): every page of the route table, a help
@@ -44,16 +44,14 @@ async function workspaces(page: Page): Promise<number> {
     for (const name of OTHERS) await post(page, "/api/workspaces", { name });
   }
   await expect
-    .poll(
-      () =>
-        page.evaluate(
-          async (id) =>
-            (await (await fetch("/api/workspaces")).json()).workspaces.find(
-              (w: { id: number }) => w.id === id,
-            )?.state,
-          id,
-        ),
-      { timeout: 60_000 },
+    .poll(() =>
+      page.evaluate(
+        async (id) =>
+          (await (await fetch("/api/workspaces")).json()).workspaces.find(
+            (w: { id: number }) => w.id === id,
+          )?.state,
+        id,
+      ),
     )
     .toBe("ready");
   return id;
@@ -164,11 +162,11 @@ async function paths(page: Page): Promise<string[]> {
 const named = (path: string) =>
   path === "/" ? "workspaces" : path.replace(/^\//, "").replace(/[/?=&]+/g, "-");
 
-// Lets a page settle: its fonts, what it fetched, and a moment for what that drew.
+// Lets a page settle: its fonts, what it fetched, and what that drew (e2e/nav.ts).
 async function settled(page: Page) {
   await page.waitForLoadState("networkidle");
   await page.evaluate(() => document.fonts.ready);
-  await page.waitForTimeout(300);
+  await drawn(page);
 }
 
 for (const scheme of ["light", "dark"] as const) {
@@ -216,7 +214,12 @@ for (const scheme of ["light", "dark"] as const) {
         await withChanges(page);
         await page.goto(`/?workspace=${id}`);
         await expect(page.getByRole("tab", { name: m.tabOverview })).toBeVisible();
-        await page.waitForTimeout(1000); // the Changes card's status
+        // the Changes card's status, which withChanges gives
+        await expect(
+          page
+            .getByRole("region", { name: m.changesTitle })
+            .getByText("README.md", { exact: false }),
+        ).toBeVisible();
         await shot("workspace-overview");
         if (phone) {
           await page.getByRole("button", { name: m.switchWorkspaceFrom(WORKSPACE) }).click();

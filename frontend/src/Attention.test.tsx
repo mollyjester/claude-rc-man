@@ -78,7 +78,7 @@ test("people who are not administrators never ask", async () => {
 });
 
 test("however long a page stays open, it is not fetched again", async () => {
-  vi.useFakeTimers({ shouldAdvanceTime: true });
+  vi.useFakeTimers();
   try {
     const fake = api(ADMIN_USER);
     renderApp();

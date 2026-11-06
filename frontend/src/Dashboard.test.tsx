@@ -1718,9 +1718,9 @@ test.each([
 
 // --- polls that fail ------------------------------------------------------------
 
-// The page polling every second, with fake timers that still advance by themselves.
+// The page polling every second, with fake timers that only the test advances.
 async function polling(test: () => Promise<void>) {
-  vi.useFakeTimers({ shouldAdvanceTime: true });
+  vi.useFakeTimers();
   const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
   try {
     await test();

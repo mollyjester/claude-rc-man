@@ -11,6 +11,7 @@ import {
 import { type Report, takeReports } from "./clientErrors";
 import { m } from "./messages";
 import { fakeApi, problem, SIGNED_OUT_REPLY, UNREACHABLE_REPLY } from "./test/fakeApi";
+import { waitForIt } from "./test/waitForIt";
 
 async function failure(promise: Promise<unknown>): Promise<ApiError> {
   try {
@@ -256,7 +257,7 @@ test("an unreachable request is reported after the next request that works", asy
   expect(fake.made("POST", "/api/client-errors")).toHaveLength(0);
   down = false;
   await api.get("/api/me");
-  await vi.waitFor(() => expect(fake.made("POST", "/api/client-errors")).toHaveLength(1));
+  await waitForIt(() => expect(fake.made("POST", "/api/client-errors")).toHaveLength(1));
   const sent = fake.made("POST", "/api/client-errors")[0].body as Report;
   expect(Object.keys(sent).sort()).toEqual(REPORT_FIELDS);
   expect(sent).toMatchObject({
@@ -309,11 +310,11 @@ test("a report that cannot be sent waits for the next success, and is not report
   await failure(api.get("/api/me"));
   rcman = true;
   await api.get("/api/me");
-  await vi.waitFor(() => expect(fake.made("POST", "/api/client-errors")).toHaveLength(1));
+  await waitForIt(() => expect(fake.made("POST", "/api/client-errors")).toHaveLength(1));
   await settle();
   reports = true;
   await api.get("/api/me");
-  await vi.waitFor(() => expect(fake.made("POST", "/api/client-errors")).toHaveLength(2));
+  await waitForIt(() => expect(fake.made("POST", "/api/client-errors")).toHaveLength(2));
   await settle();
   const sent = fake.made("POST", "/api/client-errors").map((c) => c.body as Report);
   expect(sent.map((r) => [r.path, r.count])).toEqual([
@@ -336,7 +337,7 @@ test("a report rcman refuses is dropped", async () => {
   await failure(api.get("/api/me"));
   down = false;
   await api.get("/api/me");
-  await vi.waitFor(() => expect(fake.made("POST", "/api/client-errors")).toHaveLength(1));
+  await waitForIt(() => expect(fake.made("POST", "/api/client-errors")).toHaveLength(1));
   await settle();
   await api.get("/api/me");
   await settle();
@@ -353,7 +354,7 @@ test("a report refused for being too many is dropped silently, not sent again, a
   await failure(api.get("/api/me"));
   down = false;
   await api.get("/api/me");
-  await vi.waitFor(() => expect(fake.made("POST", "/api/client-errors")).toHaveLength(1));
+  await waitForIt(() => expect(fake.made("POST", "/api/client-errors")).toHaveLength(1));
   await settle();
   await api.get("/api/me");
   await settle();
@@ -384,14 +385,14 @@ test("reports are sent one at a time, by one sender, and those noted meanwhile f
   await failure(api.get("/api/me"));
   down = false;
   await api.get("/api/me");
-  await vi.waitFor(() => expect(posts()).toHaveLength(1));
+  await waitForIt(() => expect(posts()).toHaveLength(1));
   // While the first report is out: a new failure, then a request that works.
   await failure(api.get("/api/servers"));
   await api.get("/api/me");
   await settle();
   expect(posts()).toHaveLength(1);
   answers[0]();
-  await vi.waitFor(() => expect(posts()).toHaveLength(2));
+  await waitForIt(() => expect(posts()).toHaveLength(2));
   answers[1]();
   await settle();
   expect(posts().map((c) => (c.body as Report).path)).toEqual(["/api/me", "/api/servers"]);
@@ -417,7 +418,7 @@ test("a report that meets an ended sign-in waits to be sent", async () => {
   await failure(api.get("/api/me"));
   down = false;
   await api.get("/api/me");
-  await vi.waitFor(() => expect(fake.made("POST", "/api/client-errors")).toHaveLength(1));
+  await waitForIt(() => expect(fake.made("POST", "/api/client-errors")).toHaveLength(1));
   await settle();
   expect(takeReports().map((r) => [r.kind, r.path])).toEqual([[UNREACHABLE, "/api/me"]]);
 });
@@ -436,7 +437,7 @@ test("a body the page cannot write is a fault in the page, not rcman unreachable
 });
 
 test("a report that gets no answer in time waits for the next success", async () => {
-  vi.useFakeTimers({ shouldAdvanceTime: true });
+  vi.useFakeTimers();
   let down = true;
   let hang = true;
   const fake = fakeApi({
@@ -447,11 +448,11 @@ test("a report that gets no answer in time waits for the next success", async ()
   await failure(api.get("/api/me"));
   down = false;
   await api.get("/api/me");
-  await vi.waitFor(() => expect(posts()).toHaveLength(1));
+  await waitForIt(() => expect(posts()).toHaveLength(1));
   await vi.advanceTimersByTimeAsync(REPORT_TIMEOUT_MS + 1);
   hang = false;
   await api.get("/api/me");
-  await vi.waitFor(() => expect(posts()).toHaveLength(2));
+  await waitForIt(() => expect(posts()).toHaveLength(2));
   await vi.advanceTimersByTimeAsync(0);
   expect((posts()[1].body as Report).path).toBe("/api/me");
   expect(takeReports()).toEqual([]);
@@ -486,7 +487,7 @@ test("a sender forgotten while a report is out drops it, rather than queueing it
   await failure(api.get("/api/me"));
   down = false;
   await api.get("/api/me");
-  await vi.waitFor(() => expect(fake.made("POST", "/api/client-errors")).toHaveLength(1));
+  await waitForIt(() => expect(fake.made("POST", "/api/client-errors")).toHaveLength(1));
   forgetSending();
   fail();
   await settle();

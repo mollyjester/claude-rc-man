@@ -426,8 +426,9 @@ the rest. Nothing of this is shown to the person.
   browser's back button, and takes `pollMs`, 0 unless a test gives one, and
   `strict`, to render in React's strict mode, as `src/main.tsx` does.
   `src/test/setup.ts` runs the role queries once
-  before each file's first test and sets how long a `findBy*` waits, both
-  so that the suite passes on a loaded machine; its comments say why. After
+  before each file's first test, so that the suite passes on a loaded machine,
+  and sets how long a `findBy*` or `waitFor` waits to the component tests' step
+  (see [Limits and time in the tests](#limits-and-time-in-the-tests)). After
   each test it empties the queue of reports (`forgetReports`) and forgets the
   sender (`forgetSending`), so that neither sends during the next test. It puts
   `src/test/fakeXterm.ts` in the place of `src/xtermView.ts` for every test,
@@ -547,3 +548,43 @@ which `make screenshots` runs and no test does ([tests.md](tests.md#screenshots)
 Each Playwright config writes to an output folder of its own under
 `test-results/`, its `outputDir`, because Playwright empties a run's output
 folder as the run starts.
+
+### Limits and time in the tests
+
+Every limit a test or a config gives is a hang guard of `src/test/hangGuard.ts`, or 0 where a
+config's bound is none; no test waits for a length of time. Each tier has a test's guard and a
+step's, half of it: the component tests' (`UNIT_*`), a tier of their own, since a step in jsdom
+is a render and a fake fetch; the browser tests' and the screenshots' (`BROWSER_*`), the host
+tests' guard and `HANG_GUARD`; and the whole stack's (`STACK_*`), whose spec is bounded by the
+container tests' hang guard and outlasted by the podman client's kill of the specs' run
+([tests.md](tests.md#the-hang-guard)). `tests/test_hang_guard.py` holds the values to those.
+
+- `vite.config.ts` gives every test, hook and teardown the component tests' guard, and
+  `src/test/setup.ts` gives Testing Library's `findBy*` and `waitFor` the step
+  (`asyncUtilTimeout`). `vi.waitFor` ignores that, and its own bound is far shorter, so a test
+  calls it only through `waitForIt` (`src/test/waitForIt.ts`), which gives it the step.
+- Each Playwright config sets the test's guard (`timeout`), the step for `expect`, every action
+  and navigation, and, in `playwright.config.ts`, the backend's start and its stop
+  (`webServer.timeout`, `gracefulShutdown`), and `globalTimeout: 0`: each test is bounded, and a
+  run's bound would name no test. `playwright.screenshots.config.ts` takes them with the rest of
+  the browser tests' config. A person's first workspace in the whole stack, which copies the
+  default image, is waited for within the step like any other.
+- Fake timers are plain `vi.useFakeTimers()`, which only the test moves. `src/test/setup.ts`
+  gives Testing Library Jest's `advanceTimersByTime` in Vitest's place, so a `findBy*` or
+  `waitFor` under fake timers moves the fake clock by its own interval between looks; a test
+  that uses `userEvent` under fake timers sets it up with
+  `userEvent.setup({ advanceTimers: vi.advanceTimersByTime })`, without which it waits on its
+  own fake timer. Since a `findBy*` there moves the clock, an assertion of an exact time, as of
+  the Changes card's "Checked …" (`m.checkedAgo`), comes right after the test advances the
+  clock, with no wait between that could move it on.
+- A test asserts that something did not happen only after a point it observed: what the page
+  drew from the answer that would have caused it, the event that was to cause it, a module's
+  import resolved, then one turn of the event loop (`turn` in `src/test/turn.ts`, a timer of no
+  delay) for what follows; or, for what a timer would bring, under fake timers advanced past it.
+  In the browser, `recordEvents` and `recorded` in `e2e/nav.ts` record a press's own events in the
+  capture phase, which a spec waits for before one `frame`; `drawn` waits two frames and every
+  animation that ends, before a measurement or a screenshot; and `e2e/touch.spec.ts` tells a
+  covered button by what `elementFromPoint` finds at its middle, where `hover()` points.
+
+The timing guard (`tests/test_timing_guard.py`, [tests.md](tests.md#time-in-tests)) holds every
+test, every file under `src/test/`, `e2e/` and `e2e-stack/`, and the four configs to this.

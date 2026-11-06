@@ -1472,7 +1472,7 @@ test("a refusal because another rollout runs reads the report again, and the pag
 });
 
 describe("while a rollout of another administrator runs", () => {
-  beforeEach(() => void vi.useFakeTimers({ shouldAdvanceTime: true }));
+  beforeEach(() => void vi.useFakeTimers());
   afterEach(() => void vi.useRealTimers());
   const pass = (ms: number) =>
     act(async () => {
@@ -1512,7 +1512,7 @@ describe("while a rollout of another administrator runs", () => {
 });
 
 test("the report is not read again at intervals while no rollout runs", async () => {
-  vi.useFakeTimers({ shouldAdvanceTime: true });
+  vi.useFakeTimers();
   try {
     const fake = versionsApi();
     renderApp("/admin/claude");

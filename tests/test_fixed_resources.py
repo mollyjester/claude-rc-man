@@ -14,7 +14,6 @@ each in both, and project-knowledge/tests.md describes them.
 
 import ast
 import ipaddress
-import json
 import re
 import subprocess
 from pathlib import Path
@@ -22,7 +21,7 @@ from typing import NamedTuple
 
 import pytest
 
-from tests.hang_guard import HANG_GUARD
+from tests.typescript import FRONTEND, SOURCES, parse_ts, ts_scanned
 
 TESTS = Path(__file__).resolve().parent
 ROOT = TESTS.parent
@@ -553,7 +552,6 @@ def test_a_new_fixed_site_beside_a_module_level_exemption_is_flagged():
 
 # The frontend's TypeScript and JavaScript: the browser tests, their configs and the rest.
 
-FRONTEND = TESTS.parent / "frontend"
 # Sites flagged on purpose: (file relative to frontend/, the function or test it is in, the
 # site's source text) -> reason. Each covers exactly one site, as EXEMPT's do.
 TS_EXEMPT = {
@@ -566,44 +564,10 @@ TS_EXEMPT = {
         "the development server's way to a backend a person runs by hand; no test runs either"
     ),
 }
-# The parser's language for each kind of source the guard reads.
-SOURCES = {
-    ".ts": "ts", ".mts": "ts", ".cts": "ts", ".tsx": "tsx",
-    ".js": "js", ".mjs": "js", ".cjs": "js", ".jsx": "jsx",
-}  # fmt: skip
 # Calls that make a uniquely named folder at the path they are given: a prefix in a folder.
 TS_UNIQUE_IN = {"mkdtemp", "mkdtempSync"}
-# Vite's own parser, from the frontend's packages: each source given on stdin as
-# {name: [language, source]}, as ESTree, with offsets in UTF-16 code units.
-PARSE_TS = """
-import { parseAst } from "vite";
-let input = "";
-for await (const chunk of process.stdin) input += chunk;
-const trees = {};
-for (const [name, [lang, source]] of Object.entries(JSON.parse(input))) {
-  try {
-    trees[name] = parseAst(source, { lang });
-  } catch (error) {
-    throw new Error(`${name}: ${error.message}`);
-  }
-}
-process.stdout.write(JSON.stringify(trees));
-"""
 FUNCTIONS = {"ArrowFunctionExpression", "FunctionExpression"}
 WRAPPERS = {"TSAsExpression", "TSSatisfiesExpression", "TSNonNullExpression", "TSTypeAssertion"}
-
-
-def parse_ts(sources: dict[str, str], cwd: Path = FRONTEND) -> dict[str, dict]:
-    """The ESTree of each source, by name, parsed as its suffix says, TypeScript where it
-    says none. Raises when any does not parse, or the parser cannot be run."""
-    given = {n: [SOURCES.get(Path(n).suffix, "ts"), s] for n, s in sources.items()}
-    proc = subprocess.run(
-        ["node", "--input-type=module", "-e", PARSE_TS],
-        cwd=cwd, input=json.dumps(given), capture_output=True, text=True, timeout=HANG_GUARD,
-    )  # fmt: skip
-    if proc.returncode != 0:
-        raise RuntimeError(proc.stderr)
-    return json.loads(proc.stdout)
 
 
 def _segment(encoded: bytes, start: int, end: int) -> str:
@@ -853,16 +817,6 @@ def ts_flagged(rel: str, source: str, tree: dict) -> list[str]:
         where = site.function or "the module"
         out.append(f"frontend/{rel}:{site.line} in {where}: fixed {site.kind} {site.text}")
     return out
-
-
-def ts_scanned(root: Path = FRONTEND) -> list[str]:
-    """Every source of a kind in SOURCES under ``root`` that git does not ignore, relative
-    to it, whatever its name."""
-    listed = subprocess.run(
-        ["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", "."],
-        cwd=root, check=True, capture_output=True,
-    ).stdout.decode().split("\0")  # fmt: skip
-    return sorted(r for r in listed if Path(r).suffix in SOURCES and (root / r).is_file())
 
 
 def test_no_frontend_source_holds_a_fixed_tmp_path_or_port():

@@ -8,6 +8,7 @@ import { m } from "./messages";
 import { fakeApi, problem, type Routes } from "./test/fakeApi";
 import { expectRefused } from "./test/fields";
 import { renderAlone } from "./test/render";
+import { turn } from "./test/turn";
 
 // Where leaving the section goes, a page of its own.
 const AWAY = "/elsewhere";
@@ -701,7 +702,7 @@ test("git's refusal is shown with what it said", async () => {
 });
 
 test("the status is polled while the section is shown, and no longer once it goes", async () => {
-  vi.useFakeTimers({ shouldAdvanceTime: true });
+  vi.useFakeTimers();
   try {
     const fake = repoApi();
     const app = renderChanges({ pollMs: 1000 });
@@ -737,8 +738,9 @@ test("an answer that arrives after a newer one is not shown", async () => {
   renderChanges();
   await userEvent.click(await (await changes()).findByRole("button", { name: m.refreshStatus }));
   expect(await (await changes()).findByText("newer.txt", { exact: false })).toBeInTheDocument();
-  answer(status([], [{ path: "older.txt", change: "untracked" }]));
-  await new Promise((resolve) => setTimeout(resolve, 50));
+  // the late answer is given, and the page has had a turn to draw it
+  await act(async () => answer(status([], [{ path: "older.txt", change: "untracked" }])));
+  await turn();
   expect((await changes()).queryByText("older.txt", { exact: false })).not.toBeInTheDocument();
 });
 
@@ -1272,7 +1274,7 @@ test.each([
 // --- the status line -----------------------------------------------------------
 
 test("the status line says when the status was checked, and moves on by itself without asking again", async () => {
-  vi.useFakeTimers({ shouldAdvanceTime: true });
+  vi.useFakeTimers();
   try {
     const fake = repoApi();
     renderChanges();
@@ -1297,7 +1299,7 @@ test("the status line says when the status was checked, and moves on by itself w
 });
 
 test("a failed refresh keeps when the status was last checked, and shows the problem", async () => {
-  vi.useFakeTimers({ shouldAdvanceTime: true });
+  vi.useFakeTimers();
   try {
     let calls = 0;
     repoApi({
@@ -1597,7 +1599,9 @@ test("a new branch made after its form was left takes no focus", async () => {
   await waitFor(() => expect(plus).toBeEnabled()); // the + could take focus now
   hold = false;
   await act(async () => release());
-  await act(async () => new Promise((resolve) => setTimeout(resolve, 20)));
+  // the held status is drawn, which comes after what follows the request
+  await waitFor(() => expect(section.queryByText("new.txt")).not.toBeInTheDocument());
+  await turn();
   expect(elsewhere).toHaveFocus();
   // positive control: what follows the request ran, as the name it emptied shows
   await userEvent.click(plus);
@@ -1679,9 +1683,10 @@ test("Commit & Push closes Commit's menu", async () => {
 
 test("the branches are listed again when the current branch changes, and not on a refresh that keeps it", async () => {
   let name = "main";
+  let answered = 0; // each answer names a file of its own, for the test to see it drawn
   const fake = repoApi({
     "GET /api/git/status": () =>
-      status([], [], {
+      status([], [{ path: `answer-${++answered}.txt`, change: "untracked" }], {
         branch: { name, commit: "0123456789abcdef", upstream: null, ahead: null, behind: null },
       }),
   });
@@ -1693,8 +1698,11 @@ test("the branches are listed again when the current branch changes, and not on 
   const before = listed();
   const statuses = fake.made("GET", "/api/git/status").length;
   fireEvent.click(section.getByRole("button", { name: m.refreshStatus }));
-  await waitFor(() => expect(fake.made("GET", "/api/git/status").length).toBeGreaterThan(statuses));
-  await act(async () => new Promise((resolve) => setTimeout(resolve, 20)));
+  // the refresh's answer is drawn, and the page has had a turn for what follows it
+  expect(
+    await section.findByText(`answer-${statuses + 1}.txt`, { exact: false }),
+  ).toBeInTheDocument();
+  await turn();
   expect(listed()).toBe(before); // the same branch: not listed again
   name = "topic"; // as when Claude switches
   fireEvent.click(section.getByRole("button", { name: m.refreshStatus }));

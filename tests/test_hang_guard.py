@@ -32,9 +32,11 @@ from tests.hang_guard import (
     HANG_GUARD,
     HOST_GUARD,
     PYPROJECT,
+    STACK_SPECS_GUARD,
     configured,
     start_time,
 )
+from tests.typescript import FRONTEND, module_numbers, parse_ts
 
 REPO = PYPROJECT.parent
 
@@ -402,3 +404,54 @@ def test_each_tiers_hang_guard_is_outlived_by_its_guard_whose_method_is_thread()
     assert 0 < HANG_GUARD < HOST_GUARD
     assert 0 < CONTAINER_HANG_GUARD < CONTAINER_GUARD
     assert configured()["timeout_method"] == "thread"
+
+
+# The frontend tests' hang guards (frontend/src/test/hangGuard.ts), in milliseconds, each tier a
+# test's and a step's, half of it.
+FRONTEND_GUARDS = FRONTEND / "src" / "test" / "hangGuard.ts"
+# The component tests' own step (Vitest in jsdom), not the host's: a render and a fake fetch come
+# far within it on a loaded machine, and a failing findBy* says so in seconds, not minutes.
+UNIT_STEP_MS = 20_000
+
+
+def frontend_guard_problems(values: dict[str, float]) -> list[str]:
+    """What is wrong with the frontend's hang guards, as hangGuard.ts gives them: the browser
+    tests' are the host tier's (HOST_GUARD and HANG_GUARD), the whole stack's a spec of the
+    container tier's hang guard and a step half of it, which the podman client's kill of the
+    specs' run outlasts, and the component tests' their own."""
+    wanted = {
+        "UNIT_TEST_GUARD_MS": 2 * UNIT_STEP_MS,
+        "UNIT_HANG_GUARD_MS": UNIT_STEP_MS,
+        "BROWSER_TEST_GUARD_MS": 1000 * HOST_GUARD,
+        "BROWSER_HANG_GUARD_MS": 1000 * HANG_GUARD,
+        "STACK_TEST_GUARD_MS": 1000 * CONTAINER_HANG_GUARD,
+        "STACK_HANG_GUARD_MS": 500 * CONTAINER_HANG_GUARD,
+    }
+    problems = [
+        f"{n} is {values.get(n)}, not {v:g}" for n, v in wanted.items() if values.get(n) != v
+    ]
+    problems += [f"{n} is no tier's guard" for n in sorted(set(values) - set(wanted))]
+    if not values.get("STACK_TEST_GUARD_MS", 0) < 1000 * STACK_SPECS_GUARD:
+        problems.append("a hung spec of the whole stack outlasts the podman client's kill")
+    return problems
+
+
+def test_the_frontends_hang_guards_are_their_tiers():
+    tree = parse_ts({"hangGuard.ts": FRONTEND_GUARDS.read_text(encoding="utf-8")})["hangGuard.ts"]
+    values = module_numbers(tree)
+    assert values  # positive control: the guards were read
+    assert frontend_guard_problems(values) == []
+
+
+def test_a_frontend_guard_not_its_tiers_is_reported():
+    """Planted twins: the browser tests' step at Playwright's old 15 s, and the whole stack's
+    spec beyond the client's kill."""
+    tree = parse_ts({"hangGuard.ts": FRONTEND_GUARDS.read_text(encoding="utf-8")})["hangGuard.ts"]
+    values = module_numbers(tree)
+    planted = {**values, "BROWSER_HANG_GUARD_MS": 15_000}
+    assert frontend_guard_problems(planted) == [
+        f"BROWSER_HANG_GUARD_MS is 15000, not {1000 * HANG_GUARD:g}"
+    ]
+    beyond = 1000 * STACK_SPECS_GUARD
+    problems = frontend_guard_problems({**values, "STACK_TEST_GUARD_MS": beyond})
+    assert problems[-1] == "a hung spec of the whole stack outlasts the podman client's kill"

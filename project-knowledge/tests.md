@@ -282,6 +282,12 @@ passes; and, in a child Python, a process the first look misses is stopped and k
 next, and a pid whose start time is no longer the one read is not signalled.
 `tests/test_make.py` holds that every test of every target is under its tier's guard.
 
+The frontend's tests have hang guards of their own, by tier, in `frontend/src/test/hangGuard.ts`:
+the browser tests' are the host tier's, the whole stack's a spec of `CONTAINER_HANG_GUARD`, and
+the component tests' a tier of their own; every timeout a frontend test or config gives is one
+of them, `tests/test_hang_guard.py` holds their values and `tests/test_e2e_server.py` what each
+Playwright config resolves to ([frontend.md](frontend.md#limits-and-time-in-the-tests)).
+
 ### Time in tests
 
 The product reads the time and waits through the standard library, beside the few callables
@@ -398,7 +404,8 @@ making the file once it has seen what it needs; `tests/test_terminals.py`'s `sle
 of a second of its own added to it.
 
 **The timing guard** (`tests/test_timing_guard.py`) holds every test to these rules by a static
-scan of the Python of `tests/`, `tests/container/` among it, and `devtools/` (`SCOPE`), which
+scan of the Python of `tests/`, `tests/container/` among it, and `devtools/` (`SCOPE`), and of the
+frontend's TypeScript (below), which
 imports and runs nothing it scans; it reads `backend/` and `helpers/` too, for the parameters of a timing
 name each function takes. It flags elapsed real time compared, a clock read or a name derived
 from one in a comparison or a difference (P1); a sleep in test code, or a `threading.Timer` or a
@@ -445,6 +452,21 @@ theirs: the fake `claude`, the pre-test hook, and the container suites' stand-in
 `test_no_test_waits_on_real_time` scans the real tree once, and fails on any site, on a stale
 named pattern or stand-in, and on a scan that saw no site or made none of the allowances it is
 known to make.
+
+In the frontend it reads the component tests `frontend/vite.config.ts`'s `include` names,
+everything under `frontend/src/test/`, `frontend/e2e/` and `frontend/e2e-stack/`, and the four
+configs (`ts_scope`), parsed in one call of Vite's parser (`tests/typescript.py`). It flags
+`Date.now()` or `performance.now()`, or a name given one, in a comparison, a difference or a
+matcher that compares, and `shouldAdvanceTime` (P1); `waitForTimeout`, `setTimeout` with a delay
+and `setInterval` (P2), a timer of no delay being a turn (H8); a `timeout` option or a key
+ending `Timeout` not given a guard of `frontend/src/test/hangGuard.ts` or 0, `test.setTimeout`
+likewise, `test.slow()`, and `vi.waitFor` or `vi.waitUntil` without a `timeout` (P3); a name
+ending `_GUARD_MS` defined elsewhere (GUARD); another tier's guard (TIER), the tier being where
+the file is; and a config that does not set every limit, through what it spreads of another
+config too (P3c): each Playwright config's `timeout`, `globalTimeout`, `expect.timeout`,
+`use.actionTimeout` and `use.navigationTimeout`, and `webServer.timeout` where it has a web
+server, and Vitest's `testTimeout`, `hookTimeout` and `teardownTimeout`. `FORMS` names each form's
+planted twin in each language, or why a language does not spell it.
 
 **What the tests no longer check.** A test that raced time checked a few things only an elapsed
 time could tell, and these are given up:
@@ -814,9 +836,9 @@ with its repository's commit, and the token the specs stored in no audit row, wo
 line of rcman's output.
 
 A person's first workspace in the stack is slow, because rootless Podman keeps one copy of the
-default image per range of ids and copies it into the person's range, so the specs wait for it
-as long as `FIRST_WORKSPACE_WITHIN` in `frontend/e2e-stack/timing.ts` says, and the test making
-it gets that much more time.
+default image per range of ids and copies it into the person's range; the specs wait for it, as
+for anything, until it is shown, within the whole stack's step
+([frontend.md](frontend.md#limits-and-time-in-the-tests)).
 
 #### What the container suite holds of its own
 
@@ -937,8 +959,9 @@ These hold the repository to its own rules. Each has planted twins that prove
 it can fail, and a positive control that keeps an empty input from passing.
 
 - **No test waits on real time** (`tests/test_timing_guard.py`). The timing guard of [Time in
-  tests](#time-in-tests): a static scan of the tests for clock comparisons, sleeps, timeouts
-  other than the tier's guard and shortened product deadlines, whose only exemptions are its
+  tests](#time-in-tests): a static scan of the tests, the Python and the frontend's
+  TypeScript, for clock comparisons, sleeps, timeouts other than the tier's guard, configs that
+  leave a limit unset and shortened product deadlines, whose only exemptions are its
   named patterns, each with a stale check. Planted twins prove each form is flagged and each
   allowance clean, and the scan of the real tree fails where it saw nothing.
 - **References resolve** (`tests/test_docs_guard.py`). Every relative link
@@ -1015,7 +1038,7 @@ it can fail, and a positive control that keeps an empty input from passing.
   stack's fixed ports, on its own network, are named exemptions), every Python module in
   `devtools/`, which the tests and
   the recorder run, and every TypeScript and JavaScript file in `frontend/`
-  that git does not ignore, of the kinds `SOURCES` in the test names — the
+  that git does not ignore, of the kinds `SOURCES` in `tests/typescript.py` names — the
   browser tests, their configs and the rest — parsed with Vite's parser from
   the frontend's packages, so a file that does not parse, or packages that
   are missing, fail it. It catches the same forms in both languages. `FORMS`
