@@ -180,8 +180,9 @@ def build_table(trees: Iterable[ast.AST]) -> Table:
 
 ALLOWANCES = {
     "none": True, "zero": True, "runs out": True, "minus one": True, "guard": True,
-    "tier_guard": True,
-    "constant": True, "parameter": True, "product default (H9)": True, "double (H7)": True,
+    "tier_guard": True, "not seconds": True, "double in a closure": True,
+    "positional not seconds": True,
+    "constant": True, "parameter": True, "double (H7)": True,
     "turn (H8)": True, "child loop (H13)": True, "benchmark (H10)": True,
 }  # fmt: skip
 
@@ -210,6 +211,9 @@ class FileScan:
         self.module_binds: dict[str, list[ast.AST]] = {}  # name -> binding statements
         self.calls: list[ast.Call] = []
         self.docstrings: set[ast.AST] = set()
+        self.flagged_calls: set[int] = set()
+        self._assigned: dict[ast.AST, dict[str, list[ast.AST]]] = {}
+        self.globals: set[str] = set()
         self.lines = source.splitlines()
         self._walk()
         self.calls.sort(key=operator.attrgetter("lineno", "col_offset"))
@@ -257,6 +261,8 @@ class FileScan:
                 continue  # a name has no child but its context
             elif kind is ast.Constant:
                 continue
+            elif kind is ast.Global:
+                self.globals.update(node.names)
             elif kind is ast.Import:
                 for a in node.names:
                     top = a.name.split(".")[0]
@@ -318,6 +324,8 @@ class FileScan:
         return " ".join(segment.split())[:120]
 
     def site(self, node: ast.AST, form: str, text: str | None = None) -> None:
+        if isinstance(node, ast.Call):
+            self.flagged_calls.add(id(node))
         self.sites.append(
             Site(self.path, node.lineno, form, text or self.text(node), self.where(node))
         )
@@ -410,7 +418,7 @@ class FileScan:
             uses_tier_guard = any(self.is_tier_guard_call(n) for n in ast.walk(node))
             return ALLOWANCES["guard"] and (read_at_test_time or not uses_tier_guard)
         if self.is_product(node):
-            return product_ok and self.allow("product default (H9)", at, "P3")
+            return False  # a product's value is the product's, not the test's bound
         if depth > 3:
             return False
         if isinstance(node, ast.Name):
@@ -470,6 +478,8 @@ class FileScan:
             if module.split(".")[0] in ("tests", "devtools"):
                 return self.imported_constant_allowed(module, attr, depth)
             return False
+        if name in self.globals and ALLOWANCES.get("P3 global", True):
+            return False  # rebound in a function, through global
         value = self.single_binding(self.module_binds.get(name, []), name)
         return value is not None and self.allowed(
             value, value, read_at_test_time=False, depth=depth + 1
@@ -568,7 +578,16 @@ class FileScan:
         ):
             return False
         fn = self.function_of(call)
-        return fn is not None and receiver.id in self.double_names(fn)
+        return fn is not None and receiver.id in self.doubles_in_scope(fn)
+
+    def doubles_in_scope(self, fn: ast.AST) -> set[str]:
+        """The double names of ``fn`` and of the functions it is defined in (a closure's)."""
+        found = set(self.double_names(fn))
+        outer = self.function_of(fn)
+        while outer is not None and ALLOWANCES.get("double in a closure", True):
+            found |= self.double_names(outer)
+            outer = self.function_of(outer)
+        return found
 
     @functools.cache  # noqa: B019
     def doubled(self, fn: ast.AST) -> frozenset[str]:
@@ -777,7 +796,7 @@ class FileScan:
         position = self.position_of(node, q, name)
         if position is not None and len(node.args) > position:
             value = node.args[position]
-            if not self.allowed(value, node) and not self.an_iterable(value, name):
+            if self.seconds_like(value, node) and not self.allowed(value, node):
                 self.site(node, "P3", f"{name}(…{self.text(value)}…)")
         if q == "pytest.mark.timeout" and node.args and not self.allowed(node.args[0], node):
             if ALLOWANCES.get("P3 mark", True):
@@ -814,9 +833,10 @@ class FileScan:
         for kw in node.keywords:
             if kw.arg == "at":
                 at = kw.value
-        if at is None or number(at) == 0 or self.is_product(at):
+        named = at.attr if isinstance(at, ast.Attribute) else getattr(at, "id", "")
+        if at is None or number(at) == 0 or "FLOOR" in named:
             return
-        self.site(node, "P4", f"runs_out at {self.text(at)}: not 0 or a product's floor")
+        self.site(node, "P4", f"runs_out at {self.text(at)}: not 0 or a floor (G-FLOOR)")
 
     def _table_calls(self, table: Table, flows: set[tuple[str, int, str, bool]]) -> None:
         if not ALLOWANCES.get("P3 table", True):
@@ -825,7 +845,9 @@ class FileScan:
         for fname, index, pname, method in flows:
             by_function.setdefault(fname, []).append((index, pname, method))
         for node in self.calls:
-            f = node.func
+            if id(node) in self.flagged_calls and ALLOWANCES.get("P3 one site", True):
+                continue  # one call, one site
+            f, args, keywords = self.unwrapped(node)
             name = f.attr if isinstance(f, ast.Attribute) else getattr(f, "id", None)
             if name is None:
                 continue
@@ -840,30 +862,88 @@ class FileScan:
             checked: set[int] = set()
             for i in sorted(table.positions.get(name, ())):
                 checked.add(i)
-                if i < len(node.args) and not self.allowed(node.args[i], node):
-                    self.site(node, "P3", f"{name} at {i}: {self.text(node.args[i])}")
+                if i < len(args) and not self.allowed(args[i], node):
+                    self.site(node, "P3", f"{name} at {i}: {self.text(args[i])}")
             for i in sorted(table.disagreeing.get(name, ())):
-                if i in checked or i >= len(node.args):
+                if i in checked or i >= len(args):
                     continue
                 checked.add(i)
-                value = node.args[i]
-                if self.timeish(value) and not self.allowed(value, node):
+                value = args[i]
+                if not ALLOWANCES.get("P3 every value", True) and not self.timeish(value):
+                    continue
+                if not self.not_seconds(value, node) and not self.allowed(value, node):
                     self.site(node, "P3", f"{name} at {i}: {self.text(value)}")
             for index, pname, method in by_function.get(name, ()):
-                if method != isinstance(f, ast.Attribute) and not method:
-                    continue
-                value = node.args[index] if 0 <= index < len(node.args) else None
-                for kw in node.keywords:
+                if not method and isinstance(f, ast.Attribute):
+                    # a module's function called through its module: only one of the project's
+                    if q is None or not ALLOWANCES.get("P3 flow through a module", True):
+                        continue
+                value = args[index] if 0 <= index < len(args) else None
+                for kw in keywords:
                     if kw.arg == pname:
                         value = kw.value
                 if value is None or index in checked:
                     continue
                 checked.add(index)
-                if method and not self.timeish(value):
-                    continue  # a method's name is matched loosely: only seconds are checked
+                if method and (
+                    self.not_seconds(value, node)
+                    or (not ALLOWANCES.get("P3 every value", True) and not self.timeish(value))
+                ):
+                    continue  # a method's name is matched loosely: what is not seconds is not
                 if not self.allowed(value, node):
                     self.site(node, "P3", f"{name}'s {pname}: {self.text(value)}")
             del self.sites[before + 1 :]  # one site per call
+
+    def unwrapped(self, node: ast.Call):
+        """The function, arguments and keywords a call gives: functools.partial's own."""
+        if (
+            self.qual(node.func) == "functools.partial"
+            and node.args
+            and ALLOWANCES.get("P3 partial", True)
+        ):
+            return node.args[0], node.args[1:], node.keywords
+        return node.func, node.args, node.keywords
+
+    NOT_SECONDS = (ast.List, ast.Tuple, ast.Dict, ast.Set, ast.JoinedStr, ast.Lambda,
+                   ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)  # fmt: skip
+
+    def not_seconds(self, node: ast.AST, at: ast.AST) -> bool:
+        """Provably not seconds: a str, bytes or bool constant, a container, an f-string, a
+        lambda or a comprehension, or a name whose single binding is one of those."""
+        if not ALLOWANCES["not seconds"]:
+            return False
+        if isinstance(node, ast.Constant) and isinstance(node.value, str | bytes | bool):
+            return True
+        if isinstance(node, self.NOT_SECONDS):
+            return True
+        if isinstance(node, ast.Name):
+            fn = self.function_of(at)
+            binds = self.bindings_in(fn, node.id) if fn is not None else []
+            if not binds:
+                value = self.single_binding(self.module_binds.get(node.id, []), node.id)
+                binds = [value] if value is not None else []
+            return len(binds) == 1 and self.not_seconds(binds[0], at)
+        return False
+
+    def seconds_like(self, node: ast.AST, at: ast.AST) -> bool:
+        """At a positional slot: a number, arithmetic, a timing name, or a name whose single
+        binding is a number."""
+        if not ALLOWANCES["positional not seconds"]:
+            return True
+        if number(node) is not None or isinstance(node, ast.BinOp | ast.UnaryOp):
+            return True
+        if isinstance(node, ast.Name | ast.Attribute):
+            name = node.id if isinstance(node, ast.Name) else node.attr
+            if timing_constant(name) or TIMING_KEYWORD.search(name) or name in GUARD_NAMES:
+                return True
+            if isinstance(node, ast.Name):
+                fn = self.function_of(at)
+                binds = self.bindings_in(fn, node.id) if fn is not None else []
+                if not binds:
+                    value = self.single_binding(self.module_binds.get(node.id, []), node.id)
+                    binds = [value] if value is not None else []
+                return any(number(b) is not None or isinstance(b, ast.BinOp) for b in binds)
+        return False
 
     @staticmethod
     def timeish(node: ast.AST) -> bool:
@@ -883,10 +963,9 @@ class FileScan:
         positional = a.posonlyargs + a.args
         pairs = list(zip(positional[len(positional) - len(a.defaults) :], a.defaults, strict=True))
         pairs += [(x, d) for x, d in zip(a.kwonlyargs, a.kw_defaults, strict=True) if d is not None]
-        stand_in = isinstance(self.owner.get(fn), ast.ClassDef)
         for param, default in pairs:
             if TIMING_KEYWORD.search(param.arg) and not self.allowed(
-                default, fn, read_at_test_time=False, product_ok=stand_in
+                default, fn, read_at_test_time=False
             ):
                 self.site(default, "P3", f"{fn.name}({param.arg}={self.text(default)})")
 
@@ -908,6 +987,14 @@ class FileScan:
                     and not self.allowed(value, value, read_at_test_time=False)
                 ):
                     self.site(node, "P3", f"{target.id} = {self.text(value)}")
+            if (
+                isinstance(t, ast.Name)
+                and at_module_or_class
+                and self.guard_multiple(node.value)
+                and self.allowed(node.value, node.value, read_at_test_time=False)
+                and ALLOWANCES.get("P3 alias", True)
+            ):
+                self.site(node, "P3", f"{t.id} = {self.text(node.value)}: an alias of the guard")
             if isinstance(t, ast.Attribute) and timing_constant(t.attr):
                 self.assignments.append((node, t, node.value))
 
@@ -1015,13 +1102,18 @@ class FileScan:
         return False
 
     def bindings_in(self, fn: ast.AST | None, name: str) -> list[ast.AST]:
+        """The values ``name`` is assigned in ``fn`` (or the module), worked out once per scope."""
         scope = fn if fn is not None else self.tree
-        return [
-            n.value
-            for n in ast.walk(scope)
-            if isinstance(n, ast.Assign)
-            and any(isinstance(t, ast.Name) and t.id == name for t in n.targets)
-        ]
+        found = self._assigned.get(scope)
+        if found is None:
+            found = {}
+            for n in ast.walk(scope):
+                if isinstance(n, ast.Assign):
+                    for t in n.targets:
+                        if isinstance(t, ast.Name):
+                            found.setdefault(t.id, []).append(n.value)
+            self._assigned[scope] = found
+        return found.get(name, [])
 
     def _timeout_argv(self, node: ast.List | ast.Tuple) -> None:
         if not ALLOWANCES.get("P2s argv", True):
@@ -1323,7 +1415,8 @@ NAMED = (
           frozenset({"P4"}),
           "until's and tier_guard's own tests: a guard of 0 that until has run out against, and "
           "the container tier read from the registry"),
-    Named("Q1", "devtools/held_folders.py", ("",), frozenset({"P3"}),
+    Named("Q1", "devtools/held_folders.py", ("", "_stop_server", "unheld", "_clear"),
+          frozenset({"P1", "P2", "P3"}),
           "the sweep of held folders: UNLOCKED_FOR and TMUX_GONE_WITHIN are its behaviour, and "
           "decide no test"),
 )  # fmt: skip
@@ -1592,6 +1685,38 @@ PLANTED = {
     "runs_out at a number": ("P4", "from tests.hang_guard import runs_out\n"
                              + fn("runs_out(monkeypatch, m, 'X_SECONDS', at=0.5)",
                                   "monkeypatch, m"), 3, "P4 runs_out"),
+    # the review's second round
+    "a module's helper called through its module": (
+        "P3", "def settle(t, n=None):\n    t.join(timeout=n)\nfrom tests import helpers_x\n"
+        "def test_x(t):\n    helpers_x.settle(t, 0.5)\n", 5, "P3 flow through a module"),
+    "a method given a name bound to a number": (
+        "P3", "class W:\n    def ready(self, t, s=None):\n        t.join(timeout=s)\n"
+        "def test_x(t, w):\n    s = 0.5\n    w.ready(t, s)\n", 6, "P3 every value"),
+    "a method given a fixture": (
+        "P3", "import pytest\nclass W:\n    def ready(self, t, s=None):\n"
+        "        t.join(timeout=s)\n@pytest.fixture\ndef short():\n    return 0.5\n"
+        "def test_x(t, short):\n    W().ready(t, short)\n", 9, "P3 every value"),
+    "a disagreeing name given a constant": ("P3", "SHORT = 0.5\n" + fn("go('a', SHORT)"), 3,
+                                            "P3 every value"),
+    "a constant rebound through global": (
+        "P3", "WAIT = 0\ndef bump():\n    global WAIT\n    WAIT = 5\n"
+        "def test_x(t):\n    t.join(timeout=WAIT)\n", 6, "P3 global"),
+    "functools.partial": (
+        "P3", "import functools\ndef helper(t, n=None):\n    t.join(timeout=n)\n"
+        "def test_x(t):\n    functools.partial(helper, n=0.5)\n", 5, "P3 partial"),
+    "a keyword and a flow in one call": (
+        "P3", "def helper(t, n=None, timeout=None):\n    t.join(timeout=n)\n"
+        "def test_x(t):\n    helper(t, 0.5, timeout=3)\n", 4, "P3 one site"),
+    "an alias of the guard": ("P3", "from tests.hang_guard import HANG_GUARD\n"
+                              "ANSWERS = HANG_GUARD\n", 2, "P3 alias"),
+    "a product's constant as a stand-in's default": (
+        "P3", "from rcman import runtime as rt\n"
+        "class Stand:\n    def exec(self, argv, timeout=rt.PODMAN_TIMEOUT):\n        pass\n",
+        3, "P3 defaults"),
+    "runs_out at a product's constant": (
+        "P4", "from rcman import repository\nfrom tests.hang_guard import runs_out\n"
+        + fn("runs_out(monkeypatch, m, 'X_SECONDS', at=repository.X_SECONDS)", "monkeypatch, m"),
+        4, "P4 runs_out"),
     # the guard's own names
     "a local HANG_GUARD": ("GUARD", "HANG_GUARD = 0.5\n", 1, "guard names"),
 }  # fmt: skip
@@ -1615,11 +1740,17 @@ CLEAN = {
         "parameter", "from tests.hang_guard import HANG_GUARD\n"
         "def helper(g, timeout=None):\n    g(timeout=timeout)\n"
         "def test_x(g):\n    helper(g, HANG_GUARD)\n"),
-    "a constant of the guard": ("constant", "from tests.hang_guard import HANG_GUARD\n"
-                                "ANSWERS = HANG_GUARD\ndef test_x(t):\n    t.join(ANSWERS)\n"),
-    "a product constant as a stand-in's default (H9)": (
-        "product default (H9)", "from rcman import runtime as rt\n"
-        "class Stand:\n    def exec(self, argv, timeout=rt.PODMAN_TIMEOUT):\n        pass\n"),
+    "a constant of zero": ("constant", "NO_WAIT = 0\ndef test_x(t):\n"
+                           "    t.join(timeout=NO_WAIT)\n"),
+    "a double in a closure (H7)": (
+        "double in a closure", "from tests.time_doubles import FakeTime\n"
+        "def test_x():\n    fake = FakeTime()\n    def loop():\n        fake.advance(5)\n"
+        "    loop()\n"),
+    "a join on an id": ("positional not seconds", "def f(threads, first):\n"
+                        "    threads.join(first.id)\n"),
+    "a method given a string": ("not seconds", "class W:\n    def ready(self, t, s=None):\n"
+                                "        t.join(timeout=s)\ndef test_x(t, w):\n"
+                                "    w.ready(t, 'x')\n"),
     "str.join": ("structure", "def f(parts, sep):\n    return sep.join(p for p in parts)\n"),
     "dict.get": ("structure", "def f(d):\n    return d.get('k', 5)\n"),
     "os.path.join": ("structure", "import os\ndef f(a):\n    return os.path.join(a, 'b')\n"),
@@ -1706,7 +1837,6 @@ def test_the_parameter_table_records_agreeing_and_disagreeing_names():
         ("a sleep of 0 (H8)", "turn (H8)"),
         ("a benchmark (H10)", "benchmark (H10)"),
         ("a child's wait loop (H13)", "child loop (H13)"),
-        ("a product constant as a stand-in's default (H9)", "product default (H9)"),
     ],
 )
 def test_the_derived_allowances_are_recorded(name, key):

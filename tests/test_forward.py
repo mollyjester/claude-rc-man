@@ -40,6 +40,7 @@ from devtools import held_folders as hf
 from tests.conftest import ALICE, BOB, ORIGIN, as_user, changing, made_workspace
 from tests.hang_guard import HANG_GUARD
 from tests.test_terminals import alive, wait_until
+from tests.time_doubles import Clock
 
 DOMAIN = "rcman.example.com"  # the host of the tests' public origin (tests/conftest.py ORIGIN)
 SETTINGS_PATH = "/api/forwarding/settings"
@@ -206,22 +207,9 @@ def turned_off(client) -> None:
     assert r.status_code == 200, r.text
 
 
-class Clock:
-    """The forwarding server's clock, moved by the test."""
-
-    def __init__(self):
-        self.now = time.monotonic()
-
-    def __call__(self) -> float:
-        return self.now
-
-    def advance(self, seconds: float) -> None:
-        self.now += seconds
-
-
 @pytest.fixture
 def clock(client):
-    made = Clock()
+    made = Clock(time.monotonic())
     client.app.state.forward.clock = made
     return made
 

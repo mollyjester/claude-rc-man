@@ -18,7 +18,7 @@ from rcman.monitor import Monitor, MonitorSettings
 
 from tests.conftest import ALICE, BOB, CAROL
 from tests.hang_guard import HANG_GUARD
-from tests.time_doubles import FakeTime
+from tests.time_doubles import Clock, FakeTime, Time
 
 RECORDED = Path(__file__).resolve().parent / "fakes" / "podman-monitor"
 # The install label the recordings' containers carry (container-inspect.json).
@@ -287,14 +287,6 @@ def test_the_defaults_are_within_their_bounds_and_every_scope_is_on():
 
 
 # --- the rounds, on the host runtime -----------------------------------------------
-
-
-class Clock:
-    def __init__(self, now: float = 1000.0):
-        self.now = now
-
-    def __call__(self) -> float:
-        return self.now
 
 
 def ids(settings) -> dict[str, int]:
@@ -1138,57 +1130,6 @@ def test_a_loop_whose_settings_cannot_be_read_says_so_once(settings, runtime, ca
 
 
 # --- the loops --------------------------------------------------------------------------
-
-
-class Time:
-    """Time as the loops see it, moved on only by the test: a clock and a wait that ends when
-    its event is set or the clock passes its deadline. Each move (``advance``, ``poke``) is a
-    new generation, and a loop is parked when it waits again having looked at the latest."""
-
-    def __init__(self):
-        self.now = 1000.0
-        self.asked: list[tuple[asyncio.Event, float | None]] = []
-        self._tick: asyncio.Event | None = None
-        self.generation = 0
-        self.seen: dict[int, int] = {}  # each waiting loop's task: the generation it looked at
-
-    def clock(self) -> float:
-        return self.now
-
-    async def wait(self, event: asyncio.Event, timeout: float | None) -> None:
-        self.asked.append((event, timeout))
-        deadline = None if timeout is None else self.now + timeout
-        me = id(asyncio.current_task())
-        try:
-            while True:
-                self.seen[me] = self.generation
-                if event.is_set() or (deadline is not None and self.now >= deadline):
-                    return
-                if self._tick is None:
-                    self._tick = asyncio.Event()
-                tick = self._tick
-                waiting = [asyncio.create_task(event.wait()), asyncio.create_task(tick.wait())]
-                try:
-                    await asyncio.wait(waiting, return_when=asyncio.FIRST_COMPLETED)
-                finally:
-                    for task in waiting:
-                        task.cancel()
-        finally:
-            self.seen.pop(me, None)
-
-    def poke(self) -> None:
-        """A new generation with no time passing: every waiting loop looks again."""
-        self.generation += 1
-        if self._tick is not None:
-            self._tick.set()
-            self._tick = None
-
-    def advance(self, seconds: float) -> None:
-        self.now += seconds
-        self.poke()
-
-    def parked(self, loops: int) -> bool:
-        return len(self.seen) == loops and all(g == self.generation for g in self.seen.values())
 
 
 async def until(condition, within: float = HANG_GUARD) -> None:
