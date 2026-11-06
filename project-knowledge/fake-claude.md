@@ -227,7 +227,7 @@ is given and has no default:
   the real `claude`, which says nothing of what it has done: a screen is taken
   once it has not changed for a while (the brief connected stage after a
   shorter while), an input Claude is to ignore is taken once Claude has been
-  watched a while, and the pane's waits give up after a minute. Only the
+  watched a while, and the pane's waits give up at its `TIMEOUT`. Only the
   command line and the real-account tests, run by hand, use it;
   `tests/test_record_claude.py` holds every other test to that.
 - `TraceWatch`, in `tests/claude_watches.py`, is the round trip's, over the

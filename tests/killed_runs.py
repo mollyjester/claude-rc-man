@@ -8,7 +8,8 @@ killed with kill() or released with finish(). A wait here is the test's own ``un
 gives up only at the tier's hang guard; in the run, hold() gives up at a deadline the run is
 handed, the tier's guard from its start, and the run itself is ended by ``timeout`` at twice
 the guard, so that a run whose test was itself killed ends too. Those two bounds only end a run
-nothing killed or released (H14 of the timing guard, tests/test_timing_guard.py).
+nothing killed or released (the timing guard's named pattern "killed run",
+tests/test_timing_guard.py).
 FirstThreadEnded runs a process whose first thread has ended while another runs, which
 counts as running (held_folders.running).
 

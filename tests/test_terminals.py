@@ -860,20 +860,29 @@ def made_terminals() -> tuple[terminals.Terminals, LoopThread]:
 
 
 def test_a_call_from_another_thread_is_given_up_after_its_deadline(caplog, monkeypatch):
-    """With no time for it at all, against a call that never finishes."""
+    """With no time for it at all, against a call that does not finish until the test lets it.
+    The call is let finish, and seen to, before the loop closes: a loop closed first would drop
+    it unstarted, a coroutine never awaited."""
     monkeypatch.setattr(terminals, "FROM_THREAD_SECONDS", 0)
     made, looping = made_terminals()
     held = asyncio.Event()
+    finished = threading.Event()
 
     async def held_call():
-        await held.wait()
+        try:
+            await held.wait()
+        finally:
+            finished.set()
 
     try:
         made._from_thread(held_call)
         assert "held_call() did not finish" in caplog.text
+        assert not finished.is_set()  # given up on while it was still held
     finally:
         looping.loop.call_soon_threadsafe(held.set)
+        ran = finished.wait(HANG_GUARD)
         looping.close()
+    assert ran, "the call given up on never ran to its end"
 
 
 def test_a_call_from_another_thread_that_fails_is_logged(caplog):

@@ -1,4 +1,4 @@
-"""The timing guard, G2: no test waits on, or races, real time.
+"""The timing guard: no test waits on, or races, real time.
 
 A static scan of the test code (project-knowledge/tests.md, "Time in tests"). It imports no
 scanned module and runs nothing: each file is parsed once, and its tree walked once for its
@@ -38,10 +38,10 @@ and whose every caller gives an allowed value, which the scan checks at each cal
 is a word of the name (a keyword's or a parameter's, ``guard`` among them, or a constant's, its
 longer words also run together, as IDLETIMEOUT); a string that reads as a number is seconds.
 The only exemptions are the named patterns of NAMED, each with its reason and a stale check,
-the derived allowances H7 (a double: a call on one, its bound method as a value, the keywords of
+the derived allowances: a double (a call on one, its bound method as a value, the keywords of
 a helper of the module that returns one it builds, and a helper's parameter typed as one where
-every call of the helper in the module gives one), H8 (a turn of 0), H10 (the benchmark) and H13
-(a child's wait loop), and STAND_INS.
+every call of the helper in the module gives one), a turn of 0, the benchmark and a child's
+wait loop; and STAND_INS.
 """
 
 from __future__ import annotations
@@ -363,10 +363,10 @@ ALLOWANCES = {
     "none": True, "zero": True, "runs out": True, "minus one": True, "guard": True,
     "tier_guard": True, "not seconds": True, "double in a closure": True,
     "positional not seconds": True, "seconds only at a disagreeing slot": True,
-    "constant": True, "parameter": True, "double (H7)": True, "a double's method (H7)": True,
-    "a double's helper (H7)": True, "typed double (H7)": True, "loop variable not seconds": True,
+    "constant": True, "parameter": True, "double": True, "a double's method": True,
+    "a double's helper": True, "typed double": True, "loop variable not seconds": True,
     "only seconds through a loose flow": True,
-    "turn (H8)": True, "child loop (H13)": True, "benchmark (H10)": True,
+    "turn": True, "child loop": True, "benchmark": True,
 }  # fmt: skip
 
 
@@ -671,7 +671,7 @@ class FileScan:
         if (
             isinstance(node, ast.Attribute)
             and self.a_double(node.value, at)
-            and self.allow("a double's method (H7)", node, "P3")
+            and self.allow("a double's method", node, "P3")
         ):
             return True  # a double's bound method, as the monitor's ``wait=times.wait``
         if isinstance(node, ast.Attribute):
@@ -759,7 +759,7 @@ class FileScan:
             value, value, read_at_test_time=False, depth=depth + 1
         )
 
-    # -- H7: doubles ----------------------------------------------------------------------------
+    # -- doubles --------------------------------------------------------------------------------
 
     def makes_double(self, node: ast.AST, depth: int = 1) -> bool:
         """An expression that builds a double of tests/time_doubles.py: its constructor, a list
@@ -879,7 +879,7 @@ class FileScan:
     def typed_double(self, annotation: ast.AST | None) -> bool:
         """A parameter's annotation that names a double of tests/time_doubles.py, as a helper
         handed the test's FakeTime declares it."""
-        if annotation is None or not ALLOWANCES["typed double (H7)"]:
+        if annotation is None or not ALLOWANCES["typed double"]:
             return False
         q = self.qual(annotation) or ""
         return q.startswith("tests.time_doubles.") and q.rsplit(".", 1)[1] in DOUBLES
@@ -947,7 +947,7 @@ class FileScan:
                         found.add(ast.dump(obj))
         return frozenset(found)
 
-    # -- H10: the benchmark --------------------------------------------------------------------
+    # -- the benchmark --------------------------------------------------------------------------
 
     @staticmethod
     def is_benchmark(fn: ast.AST) -> bool:
@@ -1013,8 +1013,8 @@ class FileScan:
         kept = []
         for s in sorted(set(self.sites)):
             head = s.where.split(".")[0] if s.where else ""
-            if head in self.benchmark_only and ALLOWANCES["benchmark (H10)"]:
-                self.derived.append(("benchmark (H10)", s))
+            if head in self.benchmark_only and ALLOWANCES["benchmark"]:
+                self.derived.append(("benchmark", s))
             else:
                 kept.append(s)
         self.sites = kept
@@ -1124,7 +1124,7 @@ class FileScan:
         self._sleep_argv(node.args, node)
         if ALLOWANCES.get("P2 branch", True):
             if q in SLEEPS:
-                if node.args and number(node.args[0]) == 0 and self.allow("turn (H8)", node, "P2"):
+                if node.args and number(node.args[0]) == 0 and self.allow("turn", node, "P2"):
                     pass
                 else:
                     self.site(node, "P2")
@@ -1136,11 +1136,11 @@ class FileScan:
         if q == f"{GUARD_MODULE}.pace":
             return
         if self.on_a_double(node):
-            if (node.args or node.keywords) and self.allow("double (H7)", node, "P3"):
+            if (node.args or node.keywords) and self.allow("double", node, "P3"):
                 return
         keywords = node.keywords
         if keywords and self.builds_a_double(node):
-            if self.allow("a double's helper (H7)", node, "P3"):
+            if self.allow("a double's helper", node, "P3"):
                 keywords = []  # its keywords go to the double; its flows are still checked
         for kw in keywords:
             if kw.arg and TIMING_KEYWORD.search(kw.arg) and not self.allowed(kw.value, node):
@@ -1175,7 +1175,7 @@ class FileScan:
         return POSITIONAL.get(name)
 
     def _runs_out(self, node: ast.Call) -> None:
-        """runs_out's ``at``: 0, or the product's floor, a product's constant (G-FLOOR)."""
+        """runs_out's ``at``: 0, or the product's floor, a product's constant."""
         if not ALLOWANCES.get("P4 runs_out", True):
             return
         at = node.args[3] if len(node.args) > 3 else None
@@ -1185,7 +1185,7 @@ class FileScan:
         named = at.attr if isinstance(at, ast.Attribute) else getattr(at, "id", "")
         if at is None or number(at) == 0 or "FLOOR" in named:
             return
-        self.site(node, "P4", f"runs_out at {self.text(at)}: not 0 or a floor (G-FLOOR)")
+        self.site(node, "P4", f"runs_out at {self.text(at)}: not 0 or a floor")
 
     def _table_calls(self, table: Table, flows: set[tuple[str, int, str, bool, bool]]) -> None:
         if not ALLOWANCES.get("P3 table", True):
@@ -1205,12 +1205,12 @@ class FileScan:
                 continue  # the standard library's, or another package's
             if q in (f"{GUARD_MODULE}.runs_out", f"{GUARD_MODULE}.pace"):
                 continue
-            if self.on_a_double(node) and ALLOWANCES["double (H7)"]:
+            if self.on_a_double(node) and ALLOWANCES["double"]:
                 continue
             if (
                 not ALLOWANCES.get("P3 flow past a double's helper", True)
                 and self.builds_a_double(node)
-                and ALLOWANCES["a double's helper (H7)"]
+                and ALLOWANCES["a double's helper"]
             ):
                 continue
             before = len(self.sites)
@@ -1560,7 +1560,7 @@ class FileScan:
             in_loop = any(s <= m.start() < e and not bad for s, e, bad in loops)
             line = text.count("\n", 0, m.start())
             if "sleep" in what and (in_loop or line in python_loops):
-                if self.allow("child loop (H13)", node, "P2s"):
+                if self.allow("child loop", node, "P2s"):
                     continue
             self.site(node, "P2s", f"{m.group(0)!r} in a child's source")
 
@@ -1794,7 +1794,7 @@ class FileScan:
             if self.allowed(value, node):
                 continue
             if fn is not None and ast.dump(obj) in self.doubled(fn):
-                if self.allow("double (H7)", node, "P4"):
+                if self.allow("double", node, "P4"):
                     continue
             self.site(node, "P4", f"{', '.join(timing)} = {self.text(value)}")
         for node, target, value in self.assignments:
@@ -1971,7 +1971,7 @@ def scan_source(
 # --- the scope -----------------------------------------------------------------------------------
 
 # Whole files that run only as another program, imitating a program rcman drives, or programs whose
-# deadlines are their behaviour and decide no test (H11; Q1 of #149). What races them is scanned in
+# deadlines are their behaviour and decide no test. What races them is scanned in
 # the tests that run them; ``stand_in_problems`` is their stale check.
 STAND_INS = {
     "devtools/fake_claude.py": "runs as `claude` in a workspace, imitating Claude Code's timing",
@@ -1983,8 +1983,8 @@ STAND_INS = {
 }
 GUARD_FILE = "tests/test_timing_guard.py"
 
-# The roots of the scope now: the Python of tests/, tests/container/ among them, and devtools.
-# The TypeScript scope joins it in a later step of #149.
+# The roots of the Python scope: tests/, tests/container/ among them, and devtools/. The
+# frontend's TypeScript is its own scope (``ts_scope``, below).
 SCOPE = ("tests", "devtools")
 TABLE_ROOTS = ("backend", "helpers", "tests", "devtools")
 
@@ -2295,8 +2295,8 @@ class TsScan:
         elif name == "setTimeout" and timer:
             delay = _ts_unwrap(args[1]) if len(args) > 1 else None
             if delay is None or _ts_zero(delay):
-                if ALLOWANCES["turn (H8)"]:
-                    self.derived.append(("turn (H8)", self.site(node, "P2", where)))
+                if ALLOWANCES["turn"]:
+                    self.derived.append(("turn", self.site(node, "P2", where)))
                     return
             self.flag(node, "P2", where)
         elif name == "setInterval" and timer:
@@ -2433,32 +2433,33 @@ class Named:
 
 
 NAMED = (
-    Named("H1", "tests/until.py", ("until", "until_async"), frozenset({"P1", "P2"}),
+    Named("until", "tests/until.py", ("until", "until_async"), frozenset({"P1", "P2"}),
           "until's pace between looks and its bound at the tier's guard, which only ends a hang"),
-    Named("H1", "tests/until.py", ("",), frozenset({"P3"}),
+    Named("until", "tests/until.py", ("",), frozenset({"P3"}),
           "until's PACE and SLOW, the paces between looks"),
-    Named("H2", "tests/time_doubles.py",
+    Named("doubles", "tests/time_doubles.py",
           ("_Double._hang_left", "FakeTime._poll", "FakeTime.sleep", "WatchedCondition.wait_for",
            "ControlledEvent.wait", "_Double._until", "FakeTime._park", "_Double.wait_waiting",
            "_Double._expire", "RecordingLock.acquire", "RecordingLock.wait_blocked"),
           frozenset({"P1", "P2", "P3"}),
           "the doubles' hang bound, which only turns a frozen wait into DoubleHung, and their "
           "wait records, whose parameters are named wait"),
-    Named("H2", "tests/time_doubles.py", ("",), frozenset({"P3"}),
+    Named("doubles", "tests/time_doubles.py", ("",), frozenset({"P3"}),
           "the doubles' POLL_CAP and POLL_GAP"),
-    Named("H3", "tests/hang_guard.py", ("tier_guard", "runs_out", "pace", "mark"),
+    Named("hang guard", "tests/hang_guard.py", ("tier_guard", "runs_out", "pace", "mark"),
           frozenset({"P3", "P4"}),
           "the tier's guard, runs_out and pace, which set the name a test gives them, and the "
           "whole stack's test's own hang guard, derived from the container tests' guard"),
-    Named("H3", "tests/conftest.py", ("pytest_timeout_set_timer", "pytest_collection_modifyitems"),
+    Named("hang guard", "tests/conftest.py",
+          ("pytest_timeout_set_timer", "pytest_collection_modifyitems"),
           frozenset({"P2", "P3"}),
           "the hang guard's timer, and the container tests' guard read from pytest's ini"),
-    Named("H4", "tests/test_time_doubles.py",
+    Named("guard tests", "tests/test_time_doubles.py",
           ("frozen_waits",
            "test_a_polling_loop_that_no_advance_reaches_raises_double_hung_at_the_bound"),
           frozenset({"P3"}),
           "the short hang bounds given to the doubles whose ending of a hang the test asserts"),
-    Named("H4", "tests/test_until.py",
+    Named("guard tests", "tests/test_until.py",
           ("test_a_condition_that_never_holds_fails_at_the_tiers_guard_with_what_it_last_gave",
            "test_a_container_tests_tier_guard_is_the_container_hang_guard",
            "test_runs_out_puts_a_deadline_at_the_floor_the_product_takes",
@@ -2467,38 +2468,41 @@ NAMED = (
           "until's, tier_guard's and runs_out's own tests: a guard of 0 that until has run out "
           "against, the container tier read from the registry, and runs_out given a floor and "
           "a deadline it refuses"),
-    Named("H4", "tests/test_until.py",
+    Named("guard tests", "tests/test_until.py",
           ("test_a_container_tests_tier_guard_is_the_container_hang_guard",
            "test_a_program_the_tests_start_takes_the_guard_it_is_handed",
            "test_a_tests_own_tier_comes_before_a_guard_handed_by_a_fixture"),
           frozenset({"TIER"}),
           "tier_guard's own tests, in a host test: that it gives the container tier's guard "
           "where the container tier asks"),
-    Named("H4", "tests/test_hang_guard.py",
+    Named("guard tests", "tests/test_hang_guard.py",
           ("test_each_tiers_hang_guard_is_outlived_by_its_guard_whose_method_is_thread",),
           frozenset({"TIER"}), "the hang guard's own test of each tier's value, in a host test"),
-    Named("H4", "tests/test_hang_guard.py", ("frontend_guard_problems",), frozenset({"TIER"}),
+    Named("guard tests", "tests/test_hang_guard.py", ("frontend_guard_problems",),
+          frozenset({"TIER"}),
           "the frontend's hang guards held, in a host test, to each tier's, the whole stack's to "
           "the container tier's"),
-    Named("H4", "tests/test_e2e_server.py", ("",), frozenset({"TIER"}),
+    Named("guard tests", "tests/test_e2e_server.py", ("",), frozenset({"TIER"}),
           "the whole stack's config's resolved limit held, in a host test, to the container "
           "tier's hang guard, under which its specs run"),
-    Named("H12", "devtools/tmuxctl.py",
+    Named("recorder's watch", "devtools/tmuxctl.py",
           ("", "Pane.wait_for", "Pane.wait_exit", "Pane.wait_stable", "Pane.close"),
           frozenset({"P1", "P2", "P3"}),
           "tmuxctl's look at the screen every POLL_SECONDS, and its give-up at the timeout a "
           "caller passes: RealWatch's, or a test's, which passes its tier's guard, which only "
           "ends a hang, or 0 (rule (a))"),
-    Named("H12", "devtools/record_claude.py", ("RealWatch",), frozenset({"P1", "P2", "P3"}),
+    Named("recorder's watch", "devtools/record_claude.py", ("RealWatch",),
+          frozenset({"P1", "P2", "P3"}),
           "the recorder's command line's watch, against the real claude with a person at hand: "
           "no test reaches it but a module marked real_claude, which is run by hand against the "
           "real claude as the command line is, and is exempt (test_record_claude.py's "
           "test_no_test_reaches_the_command_lines_watch)"),
-    Named("H14", "tests/killed_runs.py", ("hold", "shell_hold"), frozenset({"P1", "P2", "P2s"}),
+    Named("killed run", "tests/killed_runs.py", ("hold", "shell_hold"),
+          frozenset({"P1", "P2", "P2s"}),
           "a killed run's own hang bound: hold() and shell_hold() give up at the deadline the run "
           "is handed, the tier's guard from its start, which only ends a run nothing killed or "
           "released"),
-    Named("Q1", "devtools/held_folders.py", ("", "_stop_server", "unheld", "_clear"),
+    Named("held folders", "devtools/held_folders.py", ("", "_stop_server", "unheld", "_clear"),
           frozenset({"P1", "P2", "P3"}),
           "the sweep of held folders: UNLOCKED_FOR and TMUX_GONE_WITHIN are its behaviour, and "
           "decide no test"),
@@ -2843,7 +2847,6 @@ PLANTED = {
         "P3", "from tests.time_doubles import FakeTime\ndef looping(t, timeout=None):\n"
         "    t.join(timeout=timeout)\n    return FakeTime()\n"
         "def test_x(t):\n    looping(t, timeout=0.5)\n", 6, "P3 flow past a double's helper"),
-    # the review of #149 G2's first handovers
     "a guard handed short": ("P3", "from tests.hang_guard import handed\n"
                              + fn("with handed(0.5):\n    pass"), 3, "P3 table"),
     "an engine started with a short guard": (
@@ -2927,7 +2930,7 @@ CLEAN = {
         "    monkeypatch.setattr(mod, 'MOST_RELAYS_PER_WORKSPACE', 100)\n"),
     "minus one": ("minus one", "def f(lock):\n    lock.acquire(True, -1)\n"),
     "zero": ("zero", "def f(e, g):\n    e.wait(0)\n    g(within=0)\n"),
-    "a sleep of 0 (H8)": ("turn (H8)", "import asyncio\nasync def f():\n"
+    "a sleep of 0": ("turn", "import asyncio\nasync def f():\n"
                           "    await asyncio.$SLEEP(0)\n"),
     "a helper's parameter passed on": (
         "parameter", "from tests.hang_guard import HANG_GUARD\n"
@@ -2935,7 +2938,7 @@ CLEAN = {
         "def test_x(g):\n    helper(g, HANG_GUARD)\n"),
     "a constant of zero": ("constant", "NO_WAIT = 0\ndef test_x(t):\n"
                            "    t.join(timeout=NO_WAIT)\n"),
-    "a double in a closure (H7)": (
+    "a double in a closure": (
         "double in a closure", "from tests.time_doubles import FakeTime\n"
         "def test_x():\n    fake = FakeTime()\n    def loop():\n        fake.advance(5)\n"
         "    loop()\n"),
@@ -2949,15 +2952,15 @@ CLEAN = {
                           "    return chr(10).join(last)\n"),
     "dict.get": ("structure", "def f(d):\n    return d.get('k', 5)\n"),
     "os.path.join": ("structure", "import os\ndef f(a):\n    return os.path.join(a, 'b')\n"),
-    "a fake's sleep and advance (H7)": (
-        "double (H7)", "from tests.time_doubles import FakeTime\n"
+    "a fake's sleep and advance": (
+        "double", "from tests.time_doubles import FakeTime\n"
         "def test_x():\n    fake = FakeTime()\n    fake.advance(600)\n    fake.$SLEEP(5)\n"),
-    "a fixture's double (H7)": (
-        "double (H7)", "import pytest\nfrom tests.time_doubles import FakeTime\n"
+    "a fixture's double": (
+        "double", "import pytest\nfrom tests.time_doubles import FakeTime\n"
         "@pytest.fixture\ndef times():\n    return FakeTime()\n"
         "def test_x(times):\n    times.advance(600)\n"),
-    "a constant of a module whose time is a double (H7)": (
-        "double (H7)", "from tests.time_doubles import FakeTime\n"
+    "a constant of a module whose time is a double": (
+        "double", "from tests.time_doubles import FakeTime\n"
         "def test_x(monkeypatch, mod):\n    fake = FakeTime()\n"
         "    monkeypatch.setattr(mod, 'time', fake)\n"
         "    monkeypatch.setattr(mod, 'STOP_TIMEOUT', 5)\n"),
@@ -2973,12 +2976,12 @@ CLEAN = {
     "a non-timing parametrized name": (
         "structure", "import pytest\n@pytest.mark.parametrize('table', ['NODE_SHA256', 'UV'])\n"
         "def test_x(monkeypatch, m, table):\n    monkeypatch.setattr(m, table, {})\n"),
-    "a child's wait loop (H13)": ("child loop (H13)",
+    "a child's wait loop": ("child loop",
                                   "s = 'while [ ! -e f ]; do $SLEEP 0.05; done'\n"),
-    "a child's endless loop (H13)": ("child loop (H13)", "s = 'while :; do $SLEEP 1; done'\n"),
+    "a child's endless loop": ("child loop", "s = 'while :; do $SLEEP 1; done'\n"),
     "a child's counted loop that does not sleep": (
         "structure", "s = 'while [ $i $LT 3 ]; do i=$((i+1)); done'\n"),
-    "a child's Python loop (H13)": ("child loop (H13)",
+    "a child's Python loop": ("child loop",
                                     "code = 'import time\\nwhile True:\\n"
                                     "    time.$SLEEP(0.01)\\n'\n"),
     "a child's sleep at the guard (OUT)": ("guard", "from tests.hang_guard import HANG_GUARD\n"
@@ -2988,7 +2991,7 @@ CLEAN = {
     "a timeout argv at RUNS_OUT": ("runs out", "from tests.hang_guard import RUNS_OUT\n"
                                    "argv = ['timeout', '-k', f'{RUNS_OUT}', str(RUNS_OUT), "
                                    "'sh']\n"),
-    "a benchmark (H10)": ("benchmark (H10)", "import time\nimport pytest\ndef measure():\n"
+    "a benchmark": ("benchmark", "import time\nimport pytest\ndef measure():\n"
                           "    s = time.perf_counter()\n    return time.perf_counter() - s\n"
                           "@pytest.mark.benchmark\ndef test_b():\n    measure()\n"),
     "a clock read not compared": ("structure", "import time\ndef f():\n    return time.time()\n"),
@@ -3003,8 +3006,8 @@ CLEAN = {
         "structure", "from rcman import repository\nfrom tests.hang_guard import runs_out\n"
         "def test_x(monkeypatch, m):\n    runs_out(monkeypatch, m, 'X_SECONDS')\n"
         "    runs_out(monkeypatch, m, 'Y_SECONDS', at=repository.FLOOR_SECONDS)\n"),
-    "a helper's parameter typed as a double (H7)": (
-        "typed double (H7)", "from tests.time_doubles import FakeTime\n"
+    "a helper's parameter typed as a double": (
+        "typed double", "from tests.time_doubles import FakeTime\n"
         "def stepping(fake: FakeTime):\n    def run():\n        fake.advance(5)\n"
         "    return run\n"
         "def test_x():\n    stepping(FakeTime())()\n    made = FakeTime()\n    stepping(made)\n"),
@@ -3027,10 +3030,10 @@ CLEAN = {
         "loop variable not seconds",
         fn("for name in ('one', 'two'):\n    run.wait(name)\n"
            "found = [run.wait(n) for n in ('one', 'two')]", "run")),
-    "a Clock's advance (H7)": ("double (H7)", "from tests.time_doubles import Clock\n"
+    "a Clock's advance": ("double", "from tests.time_doubles import Clock\n"
                                "def test_x():\n    clock = Clock()\n    clock.advance(600)\n"),
-    "a double's method as a value (H7)": (
-        "a double's method (H7)", "from tests.time_doubles import Time\n"
+    "a double's method as a value": (
+        "a double's method", "from tests.time_doubles import Time\n"
         "def helper(m):\n    times = Time()\n    return m(clock=times.clock, wait=times.wait)\n"),
     "a sleep argv that outlasts the test": (
         "guard", "from tests.hang_guard import HANG_GUARD, tier_guard\n"
@@ -3052,8 +3055,8 @@ CLEAN = {
         "structure", "def into(monkeypatch, name, double):\n    def init(self):\n"
         "        setattr(self, name, double)\n    monkeypatch.setattr(C, 'init', init)\n"
         "def test_x(monkeypatch):\n    into(monkeypatch, '_changed', 1)\n"),
-    "a helper that builds a double given its intervals (H7)": (
-        "a double's helper (H7)", "from tests.time_doubles import Time\n"
+    "a helper that builds a double given its intervals": (
+        "a double's helper", "from tests.time_doubles import Time\n"
         "def looping(s, **changes):\n    times = Time()\n    return s, times\n"
         "def test_x(s):\n    looping(s, disk_interval_seconds=600)\n"),
 }  # fmt: skip
@@ -3087,11 +3090,11 @@ def test_the_parameter_table_records_agreeing_and_disagreeing_names():
 @pytest.mark.parametrize(
     ("name", "key"),
     [
-        ("a fake's sleep and advance (H7)", "double (H7)"),
-        ("a fixture's double (H7)", "double (H7)"),
-        ("a sleep of 0 (H8)", "turn (H8)"),
-        ("a benchmark (H10)", "benchmark (H10)"),
-        ("a child's wait loop (H13)", "child loop (H13)"),
+        ("a fake's sleep and advance", "double"),
+        ("a fixture's double", "double"),
+        ("a sleep of 0", "turn"),
+        ("a benchmark", "benchmark"),
+        ("a child's wait loop", "child loop"),
     ],
 )
 def test_the_derived_allowances_are_recorded(name, key):
@@ -3112,9 +3115,9 @@ def test_every_allowance_of_the_scan_has_a_clean_twin():
 
 
 def test_an_allowance_turned_off_flags_its_clean_twin(monkeypatch):
-    """Planted twin of the allowances: H7 off, the fake's calls are sites."""
-    monkeypatch.setitem(ALLOWANCES, "double (H7)", False)
-    assert flagged(CLEAN["a fake's sleep and advance (H7)"][1]) != []
+    """Planted twin of the allowances: the doubles' off, the fake's calls are sites."""
+    monkeypatch.setitem(ALLOWANCES, "double", False)
+    assert flagged(CLEAN["a fake's sleep and advance"][1]) != []
 
 
 # --- the tier rule ------------------------------------------------------------------------------
@@ -3179,12 +3182,12 @@ def test_a_named_pattern_covers_only_its_subject(named):
 
 
 def test_a_named_pattern_whose_subject_is_gone_is_reported():
-    gone = Named("H1", "tests/until.py", ("no_such_function",), frozenset({"P2"}), "planted")
+    gone = Named("until", "tests/until.py", ("no_such_function",), frozenset({"P2"}), "planted")
     assert named_problems([], [gone]) == [
-        "H1: tests/until.py ('no_such_function',) holds no site of ['P2']"
+        "until: tests/until.py ('no_such_function',) holds no site of ['P2']"
     ]
-    missing = Named("H1", "tests/no_such.py", ("",), frozenset({"P2"}), "planted")
-    assert named_problems([], [missing]) == ["H1: tests/no_such.py is gone"]
+    missing = Named("until", "tests/no_such.py", ("",), frozenset({"P2"}), "planted")
+    assert named_problems([], [missing]) == ["until: tests/no_such.py is gone"]
 
 
 def test_the_stand_ins_are_programs_that_tests_run():
@@ -3200,11 +3203,11 @@ def test_a_stand_in_named_only_by_the_guard_is_reported():
 # --- the real tree -------------------------------------------------------------------------------
 
 # The allowances the real tree's scan must have made, each at least once, and two files whose
-# doubles it must have found (H7): that each holds what it is for, and the scan sees the tree.
-DERIVED = {"double (H7)", "child loop (H13)", "benchmark (H10)"}
-UNDER_H7 = ("tests/test_workspace_limits.py", "tests/test_monitor.py")
+# doubles it must have found: that each holds what it is for, and the scan sees the tree.
+DERIVED = {"double", "child loop", "benchmark"}
+UNDER_DOUBLES = ("tests/test_workspace_limits.py", "tests/test_monitor.py")
 # The allowances the scan of the frontend's TypeScript must have made, each at least once.
-TS_DERIVED = {"turn (H8)", "guard", "zero"}
+TS_DERIVED = {"turn", "guard", "zero"}
 
 
 def real_tree_problems(tree: Tree) -> list[str]:
@@ -3219,15 +3222,15 @@ def real_tree_problems(tree: Tree) -> list[str]:
         problems.append("the scan saw no site at all, not even a named pattern's")
     kinds = {k for k, _ in tree.derived}
     problems += [f"no site was allowed as {k}" for k in sorted(DERIVED - kinds)]
-    doubled = {s.path for k, s in tree.derived if k == "double (H7)"}
-    problems += [f"no double (H7) was found in {p}" for p in UNDER_H7 if p not in doubled]
+    doubled = {s.path for k, s in tree.derived if k == "double"}
+    problems += [f"no double was found in {p}" for p in UNDER_DOUBLES if p not in doubled]
     typescript = {k for k, s in tree.derived if s.path.startswith("frontend/")}
     problems += [f"no TypeScript site was allowed as {k}" for k in sorted(TS_DERIVED - typescript)]
     return problems
 
 
 def test_no_test_waits_on_real_time():
-    """G2 over the real tree, scanned once, the Python and the frontend's TypeScript: no site
+    """The guard over the real tree, scanned once, the Python and the frontend's TypeScript: no site
     but the named patterns', which are not stale, and a scan that saw what it is known to have
     to see."""
     python, typescript = scan_tree(), ts_scan_tree()
@@ -3245,8 +3248,8 @@ def test_a_planted_site_in_the_tree_is_a_problem():
     assert [p for p in problems if p.startswith("no site was allowed as")] == [
         f"no site was allowed as {k}" for k in sorted(DERIVED)
     ]
-    assert [p for p in problems if p.startswith("no double (H7)")] == [
-        f"no double (H7) was found in {p}" for p in UNDER_H7
+    assert [p for p in problems if p.startswith("no double")] == [
+        f"no double was found in {p}" for p in UNDER_DOUBLES
     ]
     assert [p for p in problems if p.startswith("no TypeScript site")] == [
         f"no TypeScript site was allowed as {k}" for k in sorted(TS_DERIVED)
@@ -3511,8 +3514,8 @@ CLEAN_TS = {
             "() => f(), { timeout: UNIT_HANG_GUARD_MS });\n"
         },
     ),
-    "a turn (H8)": (
-        "turn (H8)",
+    "a turn": (
+        "turn",
         {"src/test/x.ts": "await new Promise((r) => setTimeout(r));\nsetTimeout(f, 0);\n"},
     ),
     "every key set, a config's own and spread": (
@@ -3646,12 +3649,18 @@ def test_the_typescript_scope_is_the_frontends_tests_and_their_configs():
 
 def test_a_planted_typescript_file_in_each_root_is_read(tmp_path):
     """A file of the scanned shape planted under each root of the TypeScript scope, in a
-    scratch repository, is listed and its site found; the product's own is not listed."""
+    scratch repository, is listed and its site found, each of the four configs among them,
+    whose unset limits are found too; the product's own, and another config, are not listed."""
     subprocess.run(["git", "init", "-q", str(tmp_path)], check=True, timeout=HANG_GUARD)
     frontend = tmp_path / "frontend"
-    planted = sorted(["src/x.test.tsx", "src/test/x.ts", "e2e/x.ts", "e2e-stack/x.ts"])
-    for rel in [*planted, "src/x.tsx"]:
+    planted = sorted(["src/x.test.tsx", "src/test/x.ts", "e2e/x.ts", "e2e-stack/x.ts", *TS_CONFIGS])
+    for rel in [*planted, "src/x.tsx", "other.config.ts"]:
         (frontend / rel).parent.mkdir(parents=True, exist_ok=True)
-        (frontend / rel).write_text("setInterval(f, 1);\n", encoding="utf-8")
+        (frontend / rel).write_text("setInterval(f, 1);\nexport default {};\n", encoding="utf-8")
     assert ts_scope(frontend) == planted
-    assert ts_found(ts_scan_tree(frontend)) == [("P2", 1)] * len(planted)
+    tree = ts_scan_tree(frontend)
+    for rel in planted:
+        assert ("P2", 1) in ts_found(tree, rel), rel
+    assert [s.path for s in tree.sites if s.form == "P2"] == [f"frontend/{r}" for r in planted]
+    for rel in TS_CONFIGS:
+        assert ("P3c", 2) in ts_found(tree, rel), rel

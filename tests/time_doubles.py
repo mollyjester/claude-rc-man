@@ -14,8 +14,8 @@ Not a test module. The rules are in project-knowledge/tests.md, "Time in tests".
 - ``ControlledEvent`` stands in for a ``threading.Event``: a ``wait`` given seconds is recorded
   and ends only on ``set`` or ``expire``.
 - ``RecordingLock`` wraps a lock, recording each acquire and each that blocked.
-- ``Clock`` and ``Time`` are clocks a product's seam reads, the forwarding server's and the
-  monitor's, which only the test moves.
+- ``Clock`` is a clock a product's seam reads (the forwarding server's, the monitor's, a token
+  bucket's), and ``Time`` the monitor loops' clock and wait; only the test moves either.
 
 Every wait is recorded (``Wait``) with its thread, its seconds and an ordinal of its double's,
 under the primitive's own lock and only once what it waits for has been seen not to hold: a
@@ -113,8 +113,9 @@ def matches(wait: Wait, match: Match) -> bool:
 
 
 class Clock:
-    """A clock a product's seam reads (``forward.clock``, the monitor's ``clock``), moved only
-    by the test: calling it gives ``now``, which ``advance`` moves on, or the test sets."""
+    """A clock a product's seam reads (the forwarding server's ``clock``, the monitor's, a token
+    bucket's), moved only by the test: calling it gives ``now``, which ``advance`` moves on, or
+    the test sets."""
 
     def __init__(self, now: float = 1000.0):
         self.now = now

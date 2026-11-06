@@ -295,7 +295,7 @@ Playwright config resolves to ([frontend.md](frontend.md#limits-and-time-in-the-
 ### Time in tests
 
 The product reads the time and waits through the standard library, beside the few callables
-some parts have long taken for it (forwarding's and the monitor's `clock`, the token buckets'),
+some parts take for it (forwarding's and the monitor's `clock`, the token buckets'),
 and gains no seam for a test: what a test asserts of time is made certain from the test's side
 alone. `tests/time_doubles.py`, a plugin `tests/conftest.py` loads, holds the doubles a test
 puts in place of a product's own, and its module docstring is their rules:
@@ -316,6 +316,12 @@ puts in place of a product's own, and its module docstring is their rules:
   only on `set` or `expire(match)`.
 - `RecordingLock`, around a lock or an RLock: each acquire is recorded, and one that blocked is
   recorded once a try without blocking has failed and before it blocks (`wait_blocked`).
+- `Clock`, for a clock a product's seam reads, forwarding's, the monitor's or a token bucket's:
+  calling it gives `now`, which only `advance`, or the test setting it, moves.
+- `Time`, for the monitor's loops, the `clock` and the `wait` it is given: a wait ends when its
+  event is set or the clock passes its deadline; each `advance`, and each `poke`, which moves no
+  time, is a new generation every waiting loop looks at again, and `parked(n)` tells when `n`
+  loops wait again having looked at the latest.
 
 A double is put in place before any thread that reads it starts: a module's `time` by
 `monkeypatch` before the call, and a part of the app by a fixture that runs before `client`
@@ -423,8 +429,10 @@ aside (P2s); a timeout that is not
 allowed, at a keyword or a parameter of a timing name, at a known position of a wait, in a
 parameter's default, in a module's or a class's constant of a timing name, or in
 `pytest.mark.timeout` (P3); and a product's timing constant patched to a value that is not
-allowed, the time module patched, a value given back by a second setattr, or a name a setattr is
-given that cannot be resolved (P4); and a guard of another tier (TIER): `HANG_GUARD` in what the
+allowed, the time module or the guard patched, a value given back by a second setattr, a name a
+setattr is given that cannot be resolved, or `runs_out` given anything but 0 or a product's floor
+(P4); a module other than `tests/hang_guard.py` defining `HANG_GUARD`, `CONTAINER_HANG_GUARD` or
+`tier_guard` (GUARD); and a guard of another tier (TIER): `HANG_GUARD` in what the
 container tests run, `CONTAINER_HANG_GUARD` in what the host tests run, and either in what both
 run, where only `tier_guard()` gives the asking test's. Which tests run a piece of code is worked
 out from the import graph (`tier_reach`): every top-level name of `tests/container/`, a test
@@ -442,15 +450,15 @@ allows where it finds it is a call on a double (`tests/time_doubles.py`), a help
 typed as one only where every call of the helper in its module is seen to give it one, a turn
 of 0, a benchmark test, and a child's wait loop. The only other exemptions are its named patterns,
 `NAMED`, each with its reason and a stale check that fails once its subject holds no site:
-`until`'s own pace and bound (H1), the doubles' hang bound (H2), the hang guard with `runs_out`
-and `pace` (H3), the short bounds the tests of these hand them (H4), tmuxctl's give-up, at the
+`until`'s own pace and bound, the doubles' hang bound, the hang guard with `runs_out`
+and `pace`, the short bounds the tests of these hand them, tmuxctl's give-up, at the
 timeout its caller passes, which a test gives as its tier's guard, and the recorder's
-command-line watch, which no test reaches but a module marked `real_claude`, run by hand (H12),
+command-line watch, which no test reaches but a module marked `real_claude`, run by hand,
 a killed run's own hang bound in `tests/killed_runs.py`, `hold` and `shell_hold`, derived from
-the tier's guard (H14), and the sweep of held folders, whose
-deadlines are its behaviour (Q1), the tests of `tier_guard` and of each tier's value, which name
-the container tier's guard in a host test (H4), and the whole stack's test's own hang guard in
-`mark` (H3); and the programs of `STAND_INS`, which run only as another program, whose timing is
+the tier's guard, and the sweep of held folders, whose
+deadlines are its behaviour, the tests of `tier_guard` and of each tier's value, which name
+the container tier's guard in a host test, and the whole stack's test's own hang guard in
+`mark`; and the programs of `STAND_INS`, which run only as another program, whose timing is
 theirs: the fake `claude`, the pre-test hook, and the container suites' stand-ins for
 `systemctl`, `loginctl` and rcman's `podman`, for GitHub and for Google's sign-in. Planted twins show each form flagged and each allowance clean;
 `test_no_test_waits_on_real_time` scans the real tree once, and fails on any site, on a stale
@@ -463,7 +471,7 @@ configs (`ts_scope`), parsed in one call of Vite's parser (`tests/typescript.py`
 `Date.now()` or `performance.now()`, or a name given one, in a comparison, a difference or a
 matcher that compares, and `shouldAdvanceTime` (P1); `waitForTimeout`, `setTimeout` with a delay,
 `setInterval` and `userEvent.setup` given a `delay` but 0 or `null` (P2), a timer of no delay
-being a turn (H8); a `timeout` option or a key ending `Timeout` not given a guard of
+being a turn; a `timeout` option or a key ending `Timeout` not given a guard of
 `frontend/src/test/hangGuard.ts` or 0, `test.setTimeout` likewise, a `slow()` called on anything,
 as `test.slow()`, `testInfo.slow()` and `test.info().slow()`, and `vi.waitFor` or `vi.waitUntil` without a `timeout` (P3); a name
 ending `_GUARD_MS` defined elsewhere (GUARD); another tier's guard (TIER), the tier being where
@@ -493,10 +501,13 @@ time could tell, and these are given up:
   going by itself is what is asserted, while that its process is a `sleep` of its seconds is read
   from its argv on the host (`tests/test_runtime.py`);
 - the timing of `RealWatch` (`devtools/record_claude.py`), its quiet windows against the real
-  `claude` and the minute after which the pane's waits give up, which only the recorder's
+  `claude` and its `TIMEOUT`, after which the pane's waits give up, which only the recorder's
   command line exercises, by hand;
 - how the real `claude` treats an answer typed before its question, which the `trust_too_fast`
-  replay holds on the fake's side only ([fake-claude.md](fake-claude.md)).
+  replay holds on the fake's side only ([fake-claude.md](fake-claude.md));
+- in `tests/test_filelock.py`, that two threads inside the lock at once would be caught: each
+  comes to the lock while the test holds it, so all of them contend once it is let go, but none
+  stays inside for any length of time, so an overlap is no longer made likely.
 
 A hangup ends a terminal's shell and its jobs only where SIGHUP is at its default in them, and
 an ignore survives exec: a suite started with SIGHUP ignored, as under `nohup`, would leave them

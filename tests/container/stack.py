@@ -353,8 +353,8 @@ def group_alive(pid: int) -> bool:
 
 
 def ended(name: str) -> None:
-    """The process ``name`` and its group ended, asked to as systemd asks a service's; one
-    whose group is still there at the hang bound ends the verb."""
+    """The process ``name`` and its group sent SIGTERM, and waited for until the group is gone.
+    Nothing is killed: a group still there at the hang bound ends the verb, saying so."""
     pid_file = state() / "logs" / f"{name}.pid"
     pid = int(pid_file.read_text())
     with contextlib.suppress(ProcessLookupError):
