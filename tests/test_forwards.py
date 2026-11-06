@@ -28,10 +28,10 @@ from rcman import runtime as rt
 from rcman.main import create_app
 
 from tests.conftest import ALICE, made_workspace
-from tests.test_terminals import a_length, alive, wait_until
+from tests.hang_guard import HANG_GUARD
+from tests.test_terminals import a_length, alive, sleep_argv
+from tests.until import until
 
-# How long a relay is given to end once it is told to.
-ANSWERS = 15.0
 # Run by python3 on the host: listens on 127.0.0.1 on a port the kernel gives, which it prints,
 # and holds every connection it takes open, reading and dropping what comes, as an app that
 # keeps its connections does.
@@ -89,10 +89,10 @@ class Relay:
         self.proc = subprocess.Popen(
             launch.argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, env=launch.env
         )
-        wait_until(lambda: Path(self.pidfile).exists() and Path(self.pidfile).read_text())
+        until(lambda: Path(self.pidfile).exists() and Path(self.pidfile).read_text())
         self.shell = int(Path(self.pidfile).read_text())
         # Its shell, the two subshells of its pipeline, cat and nc.
-        self.parts = wait_until(lambda: len(children_of(self.shell)) >= 4 and children_of(
+        self.parts = until(lambda: len(children_of(self.shell)) >= 4 and children_of(
             self.shell))  # fmt: skip
         assert self.shell == self.proc.pid  # setsid ran it in place
         assert alive(self.shell) and all(alive(p) for p in self.parts)  # the positive
@@ -125,9 +125,9 @@ def relays():
 
 @pytest.fixture
 def bystander():
-    """A process of the host no relay is: ``sleep`` of a length of its own."""
-    proc = subprocess.Popen(["sleep", a_length()], stdin=subprocess.DEVNULL)
-    wait_until(lambda: alive(proc.pid))
+    """A process of the host no relay is: a ``sleep`` of a length of its own."""
+    proc = subprocess.Popen(sleep_argv(a_length()), stdin=subprocess.DEVNULL)
+    until(lambda: alive(proc.pid))
     yield proc
     proc.kill()
     proc.wait()
@@ -150,7 +150,7 @@ def left(service, workspace: dict, holder: int, relays, bystander):
 
 
 def assert_swept(relay: Relay, planted: Path, bystander) -> None:
-    wait_until(relay.gone)
+    until(relay.gone)
     assert not Path(relay.pidfile).exists()
     assert alive(bystander.pid) and not planted.exists()
 
@@ -172,7 +172,7 @@ def test_a_deletion_ends_the_relays_left_in_the_workspace(client, holder, relays
     relay, planted = left(service, workspace, holder, relays, bystander)
     pidfile_folder = Path(relay.pidfile).parent
     service.delete(service.get(workspace["id"]))
-    wait_until(relay.gone)  # the host runtime's removal ends no process: the sweep did
+    until(relay.gone)  # the host runtime's removal ends no process: the sweep did
     assert alive(bystander.pid) and not pidfile_folder.exists()
 
 
@@ -188,12 +188,12 @@ def test_restoring_a_workspace_that_kept_running_ends_the_relays_left_in_it(
     settings, runtime, holder, relays, bystander
 ):
     with TestClient(create_app(settings, runtime=runtime)) as first:
-        assert first.app.state.workspaces.restored.wait(30)
+        assert first.app.state.workspaces.restored.wait(HANG_GUARD)
         workspace = made_workspace(first, ALICE, "alpha")
         relay, planted = left(first.app.state.workspaces, workspace, holder, relays, bystander)
     assert relay.proc.poll() is None  # the control: rcman's end did not end it
     with TestClient(create_app(settings, runtime=runtime)) as second:
-        assert second.app.state.workspaces.restored.wait(30)
+        assert second.app.state.workspaces.restored.wait(HANG_GUARD)
         assert_swept(relay, planted, bystander)
 
 
@@ -219,10 +219,10 @@ class Recorded:
     def __init__(self):
         self.asked: list[list[str]] = []
 
-    def __call__(self, argv: list[str], timeout: float = 60.0) -> rt.Result:
+    def __call__(self, argv: list[str], timeout: float = HANG_GUARD) -> rt.Result:
         self.asked.append(argv)
         proc = subprocess.run(
-            argv, capture_output=True, env={"PATH": "/usr/bin:/bin"}, timeout=ANSWERS
+            argv, capture_output=True, env={"PATH": "/usr/bin:/bin"}, timeout=HANG_GUARD
         )
         return rt.Result(proc.returncode, proc.stdout, proc.stderr)
 
@@ -261,7 +261,7 @@ def relay(layout, holder):
         stdout=subprocess.DEVNULL, env={"PATH": "/usr/bin:/bin"},
     )  # fmt: skip
     try:
-        wait_until(lambda: Path(pidfile).exists() and Path(pidfile).read_text())
+        until(lambda: Path(pidfile).exists() and Path(pidfile).read_text())
         proc.pidfile = pidfile
         yield proc
     finally:
@@ -275,13 +275,13 @@ def relay(layout, holder):
 def test_the_harness_sees_a_relay_it_ends(layout, relay):
     """The positive the refusals below are read against: in the same harness, a relay's
     pidfile has its shell and the processes under it ended, and is removed."""
-    parts = wait_until(lambda: len(children_of(relay.pid)) >= 4 and children_of(relay.pid))
+    parts = until(lambda: len(children_of(relay.pid)) >= 4 and children_of(relay.pid))
     run = Recorded()
     forwards.sweep(layout, run)
     assert sorted(run.signalled()) == sorted([relay.pid, *parts])
     assert run.removed() == [relay.pidfile] and not Path(relay.pidfile).exists()
-    assert relay.wait(timeout=ANSWERS) == -9
-    wait_until(lambda: not any(alive(p) for p in parts))
+    assert relay.wait(timeout=HANG_GUARD) == -9
+    until(lambda: not any(alive(p) for p in parts))
 
 
 def test_a_relay_removes_its_own_pidfile_whichever_side_ends_it(layout, holder):
@@ -296,7 +296,7 @@ def test_a_relay_removes_its_own_pidfile_whichever_side_ends_it(layout, holder):
 
             def close_one(go=go):
                 peer, _ = closing.accept()
-                go.wait(ANSWERS)
+                go.wait(HANG_GUARD)
                 peer.close()
 
             port = holder
@@ -311,13 +311,13 @@ def test_a_relay_removes_its_own_pidfile_whichever_side_ends_it(layout, holder):
             try:
                 # The positive: it is there while the relay runs.
                 held = Path(pidfile)
-                wait_until(lambda held=held: held.exists() and held.read_text())
+                until(lambda held=held: held.exists() and held.read_text())
                 if side == "its input":
                     proc.stdin.close()
                 else:
                     go.set()
-                proc.wait(timeout=ANSWERS)
-                wait_until(lambda held=held: not held.exists(), ANSWERS)
+                proc.wait(timeout=HANG_GUARD)
+                until(lambda held=held: not held.exists())
             finally:
                 go.set()
                 if proc.poll() is None:
@@ -342,15 +342,15 @@ def test_a_pidfile_is_read_only_as_echo_writes_one(layout, relay):
     Path(relay.pidfile).write_text(f"{pid}\n")
     run = Recorded()
     forwards.sweep(layout, run)
-    assert pid in run.signalled() and relay.wait(timeout=ANSWERS) == -9
+    assert pid in run.signalled() and relay.wait(timeout=HANG_GUARD) == -9
 
 
 def test_a_process_that_ends_once_its_argv_is_read_does_not_stop_the_sweep(layout, relay, tmp_path):
     """The argv is read once: a process that ends just after its argv was read, as one may at
     any moment, cannot make what is printed of it disagree with its length, and the real relay
     in the same sweep is ended."""
-    gone = subprocess.Popen(["sleep", a_length()], stdin=subprocess.DEVNULL)
-    wait_until(lambda: alive(gone.pid))
+    gone = subprocess.Popen(sleep_argv(a_length()), stdin=subprocess.DEVNULL)
+    until(lambda: alive(gone.pid))
     head = tmp_path / "head"  # the layout's head, which ends ``gone`` once its argv is read
     head.write_text(
         "#!/bin/sh\n"
@@ -366,8 +366,8 @@ def test_a_process_that_ends_once_its_argv_is_read_does_not_stop_the_sweep(layou
     try:
         run = Recorded()
         forwards.sweep(ending, run)
-        assert gone.wait(timeout=ANSWERS) == -9  # the plant took: it ended once read
-        assert relay.pid in run.signalled() and relay.wait(timeout=ANSWERS) == -9
+        assert gone.wait(timeout=HANG_GUARD) == -9  # the plant took: it ended once read
+        assert relay.pid in run.signalled() and relay.wait(timeout=HANG_GUARD) == -9
         assert not planted.exists() and not Path(relay.pidfile).exists()
     finally:
         if gone.poll() is None:
@@ -403,7 +403,7 @@ def test_what_the_workspace_plants_where_a_file_of_the_sweep_could_be_changes_no
     run = Recorded()
     forwards.sweep(regular, run)
     assert alive(bystander.pid) and bystander.pid not in run.signalled()
-    assert relay.pid in run.signalled() and relay.wait(timeout=ANSWERS) == -9
+    assert relay.pid in run.signalled() and relay.wait(timeout=HANG_GUARD) == -9
     assert list(Path(layout.run).glob("sweep-*.tmp"))  # the plant took
 
 
@@ -411,7 +411,7 @@ def test_a_fifo_where_a_file_of_the_sweep_could_be_does_not_stall_it(layout, rel
     fifo = planting_shell(tmp_path, layout, 'mkfifo "$4/sweep-$$.tmp"')
     run = Recorded()
     forwards.sweep(fifo, run)  # Recorded's runs end within their timeout, or the test fails
-    assert relay.pid in run.signalled() and relay.wait(timeout=ANSWERS) == -9
+    assert relay.pid in run.signalled() and relay.wait(timeout=HANG_GUARD) == -9
     planted = list(Path(layout.run).glob("sweep-*.tmp"))
     assert planted and stat.S_ISFIFO(planted[0].lstat().st_mode)  # the plant took
 
@@ -422,7 +422,7 @@ def test_empty_pidfiles_do_not_count_toward_the_bound(layout, relay):
         path.write_text("")
     run = Recorded()
     forwards.sweep(layout, run)
-    assert relay.pid in run.signalled() and relay.wait(timeout=ANSWERS) == -9
+    assert relay.pid in run.signalled() and relay.wait(timeout=HANG_GUARD) == -9
     assert all(p.exists() for p in empties)
 
 
@@ -450,11 +450,11 @@ def test_a_pidfile_naming_what_is_not_its_relay_signals_nothing_and_is_removed(l
         assert not Path(path).exists(), case
     # A relay's argv, but for another pidfile, and its port, under a shell that only waits.
     waiting = subprocess.Popen(
-        ["sh", "-c", "sleep 3600; :", *rt.relay_shell(layout, other, 80)],
+        ["sh", "-c", f"sleep {3 * HANG_GUARD:g}; :", *rt.relay_shell(layout, other, 80)],
         stdin=subprocess.DEVNULL,
     )
     try:
-        wait_until(lambda: alive(waiting.pid))
+        until(lambda: alive(waiting.pid))
         run = Recorded()
         path = rt.forward_pidfile(layout)
         Path(path).write_text(f"{waiting.pid}\n")
@@ -512,7 +512,7 @@ def test_a_process_that_is_no_longer_the_one_read_is_not_signalled(layout, bysta
     stat = Path(f"/proc/{bystander.pid}/stat").read_text().rpartition(")")[2].split()
     run([layout.shell, "-c", forwards._script(forwards._END, layout), "end",
          str(bystander.pid), stat[19], "--"])  # fmt: skip
-    assert bystander.wait(timeout=ANSWERS) == -9  # the control: with its own start time it is
+    assert bystander.wait(timeout=HANG_GUARD) == -9  # the control: with its own start time it is
 
 
 def test_the_argv_of_the_relay_that_writes_the_pidfile_is_its_relay_and_nothing_else(layout):
@@ -554,7 +554,7 @@ def test_a_sweep_acts_only_on_relay_pidfiles_by_name(layout):
 
 
 def test_what_the_first_script_printed_cut_short_acts_on_nothing(layout, caplog):
-    def cut(argv, timeout=60.0):
+    def cut(argv, timeout=HANG_GUARD):
         proc = subprocess.run(argv, capture_output=True, env={"PATH": "/usr/bin:/bin"})
         return rt.Result(proc.returncode, proc.stdout[:-3], proc.stderr)
 

@@ -184,7 +184,8 @@ def databases_that_do_not_wait_for_the_disk():
 # --- backend fixtures ------------------------------------------------------------
 
 import contextlib  # noqa: E402
-import time  # noqa: E402
+
+from tests.until import until  # noqa: E402
 
 REPO = Path(__file__).resolve().parent.parent
 ORIGIN = "https://rcman.example.com"
@@ -192,8 +193,6 @@ ALICE, BOB, CAROL = "alice@example.com", "bob@example.com", "carol@example.com"
 # Who the app fixtures start with: (email, administrator).
 PEOPLE = ((ALICE, True), (BOB, False), (CAROL, False))
 TMUX_CONF = REPO / "backend" / "rcman" / "tmux.conf"
-# How long the tests wait for a workspace to be made.
-MADE_WITHIN = 30.0
 
 
 @pytest.fixture(scope="session")
@@ -203,12 +202,13 @@ def podman_service():
     RCMAN_REQUIRE_CONTAINER=1, as the on-demand runs set, in which case it fails."""
     from tests import podman_service as engine
 
-    why = engine.usable()
+    # A session's fixture is in no test: it names its tier's guard, the container tests'.
+    why = engine.usable(hang_guard.CONTAINER_HANG_GUARD)
     if why is not None:
         if os.environ.get("RCMAN_REQUIRE_CONTAINER") == "1":
             pytest.fail(f"the user's rootless Podman cannot run: {why}")
         pytest.skip(f"the user's rootless Podman cannot run: {why}")
-    with engine.started() as started:
+    with engine.started(hang_guard.CONTAINER_HANG_GUARD) as started:
         yield started
 
 
@@ -378,6 +378,7 @@ def into_the_first_service(monkeypatch, name: str, double) -> None:
     rcman-admin's in a test of two processes, keeps its own."""
     from rcman.workspaces import Workspaces
 
+    assert name in ("_changed", "_closing"), name
     real, given = Workspaces.__init__, []
 
     def init(self, *args, **kwargs):
@@ -429,6 +430,38 @@ def periodic_round(client, periodic):
     return round_
 
 
+@pytest.fixture
+def person_locks(monkeypatch):
+    """Every person's lock (``Workspaces.person_lock``) as a RecordingLock, one for each lock,
+    put in before ``client`` starts the service, so that a test sees a take of it blocked rather
+    than waiting for one (``recorded_person_lock``)."""
+    import threading
+
+    from rcman import workspaces as ws
+
+    from tests.time_doubles import RecordingLock
+
+    real, made, guard = ws.Workspaces.person_lock, {}, threading.Lock()
+
+    def person_lock(self, person_id):
+        lock = real(self, person_id)
+        with guard:
+            if id(lock) not in made:
+                made[id(lock)] = (lock, RecordingLock(lock))  # the lock kept: its id stays its
+            return made[id(lock)][1]
+
+    monkeypatch.setattr(ws.Workspaces, "person_lock", person_lock)
+
+
+def recorded_person_lock(app, person_id: int):
+    """The person's lock as ``person_locks`` put it in, which the test lists before ``client``."""
+    from tests.time_doubles import RecordingLock
+
+    lock = app.state.workspaces.person_lock(person_id)
+    assert isinstance(lock, RecordingLock), "the test lists person_locks before client"
+    return lock
+
+
 # What a test puts into the app's parts, each before ``app`` makes them, where the test asks.
 SEAMS = ("changed", "periodic")
 
@@ -448,7 +481,7 @@ def client(app):
     from fastapi.testclient import TestClient
 
     with TestClient(app) as c:
-        assert app.state.workspaces.restored.wait(30)
+        assert app.state.workspaces.restored.wait(hang_guard.tier_guard())
         yield c
 
 
@@ -457,15 +490,15 @@ def made_workspace(client, who: str, name: str = "work") -> dict:
     r = client.post("/api/workspaces", json={"name": name}, headers=changing(who))
     assert r.status_code == 202, r.text
     workspace = r.json()["workspace"]
-    deadline = time.monotonic() + MADE_WITHIN
-    while True:
+
+    def made() -> dict | None:
         listed = client.get("/api/workspaces", headers=as_user(who)).json()["workspaces"]
         found = next(w for w in listed if w["id"] == workspace["id"])
-        if found["state"] != "creating":
-            assert found["state"] == "ready", found
-            return found
-        assert time.monotonic() < deadline, found
-        time.sleep(0.05)
+        return None if found["state"] == "creating" else found
+
+    found = until(made)
+    assert found["state"] == "ready", found
+    return found
 
 
 @pytest.fixture
@@ -473,16 +506,14 @@ def quick_watch(monkeypatch):
     """The watcher of work a deletion stops (workspaces.py ``_watch``) looks at the row often."""
     from rcman import workspaces
 
-    monkeypatch.setattr(workspaces, "WORKING_POLL_SECONDS", 0.02)
+    hang_guard.pace(monkeypatch, workspaces, "WORKING_POLL_SECONDS", 0.02)
 
 
 def ended(service, workspace_id: int, within: float | None = None) -> None:
     """Until no thread of ``service``'s that makes or rebuilds the workspace is left: told by
     the service's condition, within ``within`` seconds, HANG_GUARD unless given (a container
-    test gives CONTAINER_HANG_GUARD)."""
-    from tests.hang_guard import HANG_GUARD
-
-    within = HANG_GUARD if within is None else within
+    test gives CONTAINER_HANG_GUARD), the tier's unless given."""
+    within = hang_guard.tier_guard() if within is None else within
     with service._changed:
         assert service._changed.wait_for(
             lambda: not any(h.workspace_id == workspace_id for h in service._unended), within

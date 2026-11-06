@@ -61,8 +61,14 @@ import socket
 import sqlite3
 import subprocess
 import sys
-import time
 from pathlib import Path
+
+# Run in the stack's container from the checkout's files at /src, as well as imported by the
+# tests: the checkout's root on the path, for the hang guard's values and until.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
+
+from tests.hang_guard import CONTAINER_HANG_GUARD, EXEC_GUARD, GUARD_VARIABLE  # noqa: E402
+from tests.until import SLOW, until  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
 SRC = HERE.parent.parent
@@ -193,10 +199,6 @@ git push -q -u origin main
 printf 'two\\n' >> hello.txt
 printf 'new\\n' > notes.txt
 """
-# Seconds the stack may take to answer, and rcman to answer again after a restart.
-ANSWERS_WITHIN = 180
-# Seconds a process of the stack is given to end when asked, and again once killed.
-ENDS_WITHIN = 60
 
 # --- in the stack's container --------------------------------------------------------------
 
@@ -213,7 +215,7 @@ def podman(*args: str, check: bool = True) -> subprocess.CompletedProcess:
     """podman on the engine, through its socket."""
     proc = subprocess.run(
         ["podman", "--remote", "--url", f"unix://{config()['engine_socket']}", *args],
-        capture_output=True, text=True, errors="replace", timeout=300,
+        capture_output=True, text=True, errors="replace", timeout=CONTAINER_HANG_GUARD,
     )  # fmt: skip
     assert proc.returncode == 0 or not check, proc.stdout + proc.stderr
     return proc
@@ -351,19 +353,15 @@ def group_alive(pid: int) -> bool:
 
 
 def ended(name: str) -> None:
-    """The process ``name`` and its group ended: asked to end, then killed once
-    ``ENDS_WITHIN`` has passed; one whose group is still there after that ends the verb."""
+    """The process ``name`` and its group sent SIGTERM, and waited for until the group is gone.
+    Nothing is killed: a group still there at the hang bound ends the verb, saying so."""
     pid_file = state() / "logs" / f"{name}.pid"
     pid = int(pid_file.read_text())
-    for sent in (signal.SIGTERM, signal.SIGKILL):
-        with contextlib.suppress(ProcessLookupError):
-            os.killpg(pid, sent)
-        deadline = time.monotonic() + ENDS_WITHIN
-        while group_alive(pid) and time.monotonic() < deadline:
-            time.sleep(0.1)
-        if not group_alive(pid):
-            break
-    else:
+    with contextlib.suppress(ProcessLookupError):
+        os.killpg(pid, signal.SIGTERM)
+    try:
+        until(lambda: not group_alive(pid))
+    except AssertionError:
         sys.exit(f"{name} (process group {pid}) did not end")
     pid_file.unlink()
 
@@ -390,7 +388,7 @@ def socket_status(url: str) -> int:
     class Connection(http.client.HTTPConnection):
         def connect(self):
             self.sock = socket.socket(socket.AF_UNIX)
-            self.sock.settimeout(10)
+            self.sock.settimeout(CONTAINER_HANG_GUARD)
             self.sock.connect(str(SOCKET))
 
     connection = Connection("rcman")
@@ -399,20 +397,20 @@ def socket_status(url: str) -> int:
 
 
 def tcp_answers(port: int) -> bool:
-    socket.create_connection(("127.0.0.1", port), timeout=1).close()
+    socket.create_connection(("127.0.0.1", port), timeout=CONTAINER_HANG_GUARD).close()
     return True
 
 
-def wait(what: str, probe, within: float = ANSWERS_WITHIN) -> None:
-    deadline = time.monotonic() + within
-    while not answers(probe):
-        if time.monotonic() > deadline:
-            logs = "".join(
-                f"\n--- {p.name}\n{p.read_text(errors='replace')[-4000:]}"
-                for p in sorted((state() / "logs").glob("*.log"))
-            )
-            sys.exit(f"{what} does not answer{logs}")
-        time.sleep(0.5)
+def wait(what: str, probe) -> None:
+    """Until ``probe`` answers; at the hang bound the verb ends with the stack's logs."""
+    try:
+        until(lambda: answers(probe))
+    except AssertionError:
+        logs = "".join(
+            f"\n--- {p.name}\n{p.read_text(errors='replace')[-4000:]}"
+            for p in sorted((state() / "logs").glob("*.log"))
+        )
+        sys.exit(f"{what} does not answer{logs}")
 
 
 def rcman_env() -> dict[str, str]:
@@ -576,7 +574,7 @@ def request(text: str) -> None:
     class Connection(http.client.HTTPConnection):
         def connect(self):
             self.sock = socket.socket(socket.AF_UNIX)
-            self.sock.settimeout(120)
+            self.sock.settimeout(CONTAINER_HANG_GUARD)
             self.sock.connect(str(SOCKET))
 
     connection = Connection("rcman")
@@ -617,7 +615,8 @@ class Browser:
         import urllib.request
 
         try:
-            with opener.open(urllib.request.Request(url, headers=headers or {}), timeout=30) as r:
+            request = urllib.request.Request(url, headers=headers or {})
+            with opener.open(request, timeout=CONTAINER_HANG_GUARD) as r:
                 return r.status, r.read().decode(errors="replace"), r.headers.items()
         except urllib.error.HTTPError as e:
             return e.code, e.read().decode(errors="replace"), e.headers.items()
@@ -658,7 +657,7 @@ def cookies() -> None:
     """A sign-in through Caddy, oauth2-proxy and the stand-in for Google, one redirect at a
     time, as a browser makes it, then a sign-out. What is printed, the JSON of every
     ``Set-Cookie`` the sign-in's responses from rcman's host carried, and the sign-out's (see
-    ``set_cookies_of``), and what ``/api/me`` answered after each."""
+    ``set_cookies_of``) with its ``Date``, and what ``/api/me`` answered after each."""
     import urllib.parse
 
     browser = Browser()
@@ -679,10 +678,12 @@ def cookies() -> None:
     me = browser.fetch(browser.steps, f"https://{DOMAIN}/api/me")[:2]
     _, _, headers = browser.fetch(browser.steps, f"https://{DOMAIN}/oauth2/sign_out")
     signed_out = set_cookies_of(headers)
+    signed_out_at = dict((k.lower(), v) for k, v in headers).get("date")
     after, _, headers = browser.fetch(browser.steps, f"https://{DOMAIN}/api/me")
     location = dict((k.lower(), v) for k, v in headers).get("location", "")
     print(json.dumps({"set_cookies": set_cookies, "last": [status, url], "me": me,
-                      "signed_out": signed_out, "me_after": [after, location]}))  # fmt: skip
+                      "signed_out": signed_out, "signed_out_at": signed_out_at,
+                      "me_after": [after, location]}))  # fmt: skip
 
 
 def repository(workspace_id: str) -> None:
@@ -755,12 +756,11 @@ def serve_port(workspace_id: str, port: str) -> None:
     """PORT_APP started in the workspace on ``port``, once it listens."""
     container = f"rcman-ws-{int(workspace_id)}"
     podman("exec", "--detach", container, "python3", "-c", PORT_APP, str(int(port)))
-    deadline = time.monotonic() + ANSWERS_WITHIN
-    while podman("exec", container, "python3", "-c", PORT_OPEN, str(int(port)),
-                 check=False).returncode != 0:  # fmt: skip
-        if time.monotonic() > deadline:
-            sys.exit(f"nothing listens on port {port} in {container}")
-        time.sleep(0.5)
+    try:
+        until(lambda: podman("exec", container, "python3", "-c", PORT_OPEN, str(int(port)),
+                             check=False).returncode == 0, SLOW)  # fmt: skip
+    except AssertionError:
+        sys.exit(f"nothing listens on port {port} in {container}")
     print("SERVING", flush=True)
 
 
@@ -865,11 +865,15 @@ class Stack:
     def network(self) -> str:
         return f"container:{self.name}"
 
-    def exec(self, *argv: str, stdin: bytes | None = None, timeout: float = 600):
+    def exec(self, *argv: str, stdin: bytes | None = None):
+        """``argv`` in the stack's container, handed its tier's hang guard (``until``'s
+        bound there) and killed beyond it (EXEC_GUARD), so that a wait there that never ends
+        says what it waited for."""
         return self.engine.cli(
             "exec", "-i", "-w", str(SRC_IN_CONTAINER), "-e",
             f"RCMAN_STACK_CONFIG={self.folder / 'config.json'}", "-e",
-            "PYTHONDONTWRITEBYTECODE=1", self.name, *argv, input=stdin, timeout=timeout,
+            f"{GUARD_VARIABLE}={CONTAINER_HANG_GUARD}", "-e", "PYTHONDONTWRITEBYTECODE=1",
+            self.name, *argv, input=stdin, timeout=EXEC_GUARD,
         )  # fmt: skip
 
     def request(self, method: str, url: str, who: str | None = ADMIN, body=None):
@@ -885,9 +889,9 @@ class Stack:
         except ValueError:
             return status, text
 
-    def verb(self, *args: str, timeout: float = 600) -> str:
+    def verb(self, *args: str) -> str:
         """``stack.py`` with ``args`` in the container: what it printed; it must succeed."""
-        done = self.exec("python3", "tests/container/stack.py", *args, timeout=timeout)
+        done = self.exec("python3", "tests/container/stack.py", *args)
         output = (done.stdout + done.stderr).decode(errors="replace")
         assert done.returncode == 0, output[-12000:]
         return output
@@ -926,7 +930,7 @@ def launched(engine, *, name: str, system_image: str, default_image: str, builde
             "-f",
             str(context / "Containerfile"),
             str(context),
-            timeout=1800,
+            timeout=CONTAINER_HANG_GUARD,
         )
         assert built.returncode == 0, built.stderr.decode(errors="replace")
         (folder / "config.json").write_text(json.dumps({
@@ -943,12 +947,12 @@ def launched(engine, *, name: str, system_image: str, default_image: str, builde
             "-v", f"{prepared / 'dist'}:{DIST}:ro", "-v", f"{tools}:{tools}:ro",
             "-v", f"{store}:{store}", "-v", f"{folder}:{folder}",
             "-v", f"{engine.socket}:{engine.socket}", "-v", f"{stand_ins}:/usr/bin/systemctl:ro",
-            system_image, "sleep", "infinity", timeout=300,
+            system_image, "sleep", "infinity", timeout=CONTAINER_HANG_GUARD,
         )  # fmt: skip
         assert made.returncode == 0, made.stderr.decode(errors="replace")
         stack = Stack(engine, name, folder)
         try:
-            stack.verb("up", timeout=900)
+            stack.verb("up")
             yield stack
         finally:
             for kind in ("ps", "volume"):
@@ -958,8 +962,8 @@ def launched(engine, *, name: str, system_image: str, default_image: str, builde
                 )  # fmt: skip
                 for found in listed.stdout.decode().split():
                     engine.cli(*(["rm"] if kind == "ps" else ["volume", "rm"]), "--force", found)
-            engine.cli("rm", "--force", "--time=0", name, timeout=300)
-            engine.cli("rmi", "--force", image_name, timeout=300)
+            engine.cli("rm", "--force", "--time=0", name, timeout=CONTAINER_HANG_GUARD)
+            engine.cli("rmi", "--force", image_name, timeout=CONTAINER_HANG_GUARD)
 
 
 if __name__ == "__main__":

@@ -6,7 +6,6 @@ import dataclasses
 import os
 import select
 import threading
-import time
 
 import pytest
 from rcman import channel as ch
@@ -18,7 +17,6 @@ from rcman.channel import ChannelBroken
 from tests.conftest import (
     ALICE,
     BOB,
-    MADE_WITHIN,
     as_user,
     changing,
     ended,
@@ -26,8 +24,9 @@ from tests.conftest import (
     made_workspace,
     signed_in,
 )
-from tests.hang_guard import HANG_GUARD
+from tests.hang_guard import HANG_GUARD, runs_out
 from tests.time_doubles import ControlledEvent, FakeTime
+from tests.until import until
 
 
 def listed(client, who=ALICE) -> list[dict]:
@@ -51,7 +50,7 @@ def test_a_workspace_is_made_in_the_background_and_becomes_ready(client, app):
     real = runtime.create
 
     def slow(spec):
-        release.wait(30)
+        release.wait(HANG_GUARD)
         real(spec)
 
     runtime.create = slow
@@ -70,13 +69,11 @@ def test_a_workspace_is_made_in_the_background_and_becomes_ready(client, app):
 
 
 def made_workspace_ready(client, workspace_id, who=ALICE) -> dict:
-    deadline = time.monotonic() + MADE_WITHIN
-    while True:
+    def made():
         found = next(w for w in listed(client, who) if w["id"] == workspace_id)
-        if found["state"] != "creating":
-            return found
-        assert time.monotonic() < deadline
-        time.sleep(0.05)
+        return None if found["state"] == "creating" else found
+
+    return until(made)
 
 
 def test_every_workspace_of_a_person_runs_in_their_slot(client, app):
@@ -134,7 +131,7 @@ def git_answering(runtime, code: int, out: bytes, err: bytes = b""):
     asked = []
     real = runtime.exec
 
-    def exec_(name, argv, stdin=None, timeout=rt.PODMAN_TIMEOUT, cwd=None, keep=None, again=False):
+    def exec_(name, argv, stdin=None, timeout=HANG_GUARD, cwd=None, keep=None, again=False):
         if argv and argv[-1] == "--version" and "git" in argv:
             asked.append(argv)
             return rt.Result(code, out, err)
@@ -218,7 +215,7 @@ def test_a_workspace_deleted_while_it_is_made_is_removed_once_it_is(client, app)
     real = runtime.create
 
     def slow(spec):
-        release.wait(30)
+        release.wait(HANG_GUARD)
         real(spec)
 
     runtime.create = slow
@@ -228,10 +225,7 @@ def test_a_workspace_deleted_while_it_is_made_is_removed_once_it_is(client, app)
     assert r.status_code == 200, r.text
     assert [w["state"] for w in listed(client)] in ([], ["deleting"])
     release.set()
-    deadline = time.monotonic() + MADE_WITHIN
-    while listed(client) or runtime.labelled():
-        assert time.monotonic() < deadline, (listed(client), runtime.labelled())
-        time.sleep(0.05)
+    until(lambda: not listed(client) and not runtime.labelled())
 
 
 # --- what rcman brings back when it starts ---------------------------------------------
@@ -322,23 +316,44 @@ def test_restore_starts_a_wanted_server_with_its_prefix_and_leaves_a_running_one
     assert server_of(service, unwanted) is None
 
 
-def test_restore_waits_for_the_runtime(settings, tmp_path):
+def test_restore_waits_for_the_runtime(settings, tmp_path, monkeypatch):
+    """The runtime's own wait for itself runs out at once, and each answer is recorded: restore
+    asks again after the runtime said it is not there, and the second such answer holds it until
+    the test has looked."""
     from devtools.held_folders import tmux_sockets
     from tests.conftest import fake_claude
 
+    runs_out(monkeypatch, ws, "RUNTIME_WAIT_SECONDS")
     root = tmp_path / "later"
     with tmux_sockets("rcw-") as sockets:
         fake_claude(tmp_path / "claude")
         runtime = rt.HostRuntime(root, sockets, tmp_path / "claude", tmp_path / "x")
+        answers, looked, real = [], threading.Event(), runtime.wait_ready
+
+        def wait_ready(timeout):
+            try:
+                real(timeout)
+            except rt.RuntimeUnavailable:
+                answers.append("unavailable")
+                if len(answers) > 1:
+                    looked.wait(HANG_GUARD)
+                raise
+            answers.append("ready")
+
+        runtime.wait_ready = wait_ready
         service = ws.Workspaces(settings, runtime)
         creating = insert(settings, 1, "creating", "creating")
         done = threading.Thread(target=service.restore)
         done.start()
-        time.sleep(1.5)
-        assert done.is_alive() and row(settings, creating)["state"] == "creating"
-        root.mkdir()  # the runtime answers from now on
-        done.join(60)
+        try:
+            until(lambda: len(answers) > 1)  # not there, and asked again rather than gone on
+            assert done.is_alive() and row(settings, creating)["state"] == "creating"
+            root.mkdir()  # the runtime answers from now on
+        finally:
+            looked.set()
+        done.join(HANG_GUARD)
         assert not done.is_alive()
+        assert answers[0] == "unavailable" and answers[-1] == "ready"
         assert row(settings, creating)["state"] == "ready"
         service.close()
         for name in runtime.labelled():
@@ -351,14 +366,14 @@ def test_rcman_answers_while_it_restores(settings, runtime):
 
     release = threading.Event()
     real = runtime.wait_ready
-    runtime.wait_ready = lambda timeout: (release.wait(30), real(timeout))
+    runtime.wait_ready = lambda timeout: (release.wait(HANG_GUARD), real(timeout))
     app = create_app(settings, runtime=runtime)
     with TestClient(app) as client:
         assert client.get("/api/health").status_code == 200
         assert client.get("/api/workspaces", headers=as_user(ALICE)).status_code == 200
         assert not app.state.workspaces.restored.is_set()
         release.set()
-        assert app.state.workspaces.restored.wait(30)
+        assert app.state.workspaces.restored.wait(HANG_GUARD)
 
 
 # --- channels --------------------------------------------------------------------------
@@ -369,8 +384,7 @@ def test_an_idle_channel_is_closed(service, settings, runtime, monkeypatch):
     runtime.create(spec(workspace))
     service.server(service.get(workspace)).status()
     assert service.open_channels() == [rt.container_name(workspace)]
-    monkeypatch.setattr(ws, "CHANNEL_IDLE_SECONDS", 0.1)
-    time.sleep(0.2)
+    runs_out(monkeypatch, ws, "CHANNEL_IDLE_SECONDS")  # idle for longer than none at all
     service.close_idle()
     assert service.open_channels() == []
 
@@ -419,7 +433,7 @@ def held_at_making(service, monkeypatch) -> tuple[list, threading.Event, threadi
         made.append(mine)
         if len(made) == 1:
             first_in.set()
-            assert go.wait(30)
+            assert go.wait(HANG_GUARD)
         return mine
 
     monkeypatch.setattr(service.runtime, "channel", making)
@@ -441,13 +455,13 @@ def test_two_requests_racing_for_a_channel_get_one_and_the_spare_is_closed(servi
     second = threading.Thread(target=second_request)
     first.start()
     try:
-        assert first_in.wait(30)
+        assert first_in.wait(HANG_GUARD)
         second.start()
-        assert second_done.wait(30), "the second request waited on the first's making"
+        assert second_done.wait(HANG_GUARD), "the second request waited on the first's making"
     finally:
         go.set()
-        first.join(30)
-        second.join(30)
+        first.join(HANG_GUARD)
+        second.join(HANG_GUARD)
     assert len(made) == 2
     assert got == {"first": made[1], "second": made[1]}
     assert service._channels == {"w": made[1]}
@@ -472,11 +486,11 @@ def test_a_channel_closed_while_it_was_being_made_is_not_put_in_and_its_request_
     asking = threading.Thread(target=request)
     asking.start()
     try:
-        assert first_in.wait(30)
+        assert first_in.wait(HANG_GUARD)
         service.close_channel("w")
     finally:
         go.set()
-        asking.join(30)
+        asking.join(HANG_GUARD)
     assert len(failed) == 1 and made[0].closed
     assert service._channels == {}
     assert service._channel("w") is made[1]  # the control: a request afterwards gets one
@@ -501,16 +515,16 @@ def test_what_holds_a_workspaces_channel_works_after_the_idle_closer_closed_it(
     }
     monkeypatch.setattr(ws, "CHANNEL_IDLE_SECONDS", 0.0)
     for what, run in holders.items():
-        assert run(["true"], 10).code == 0, what
+        assert run(["true"], HANG_GUARD).code == 0, what
         assert service.open_channels() == [name], what  # the control: it opened one
         service.close_idle()
         assert service.open_channels() == [], what  # the control: and that one is closed
-        assert run(["true"], 10).code == 0, what
+        assert run(["true"], HANG_GUARD).code == 0, what
     service.close_idle()
     assert server.status() is None  # a server's own requests too
     assert service.open_channels() == [name]
     service.close_idle()
-    assert holders["devcontainer"](["true"], 10, cwd="/").code == 0
+    assert holders["devcontainer"](["true"], HANG_GUARD, cwd="/").code == 0
 
 
 @pytest.mark.parametrize("closer", ["idle", "close"])
@@ -523,7 +537,7 @@ def test_a_request_whose_channel_is_closed_before_it_is_sent_runs_on_a_new_one(
     runtime.create(spec(workspace))
     name = service.get(workspace).container
     run = service.run_in(service.get(workspace))
-    assert run(["true"], 10).code == 0  # opens the channel, which is idle from now
+    assert run(["true"], HANG_GUARD).code == 0  # opens the channel, which is idle from now
     [first] = [service._channels[name]]
     found, go = threading.Event(), threading.Event()
     lookup = service._channel
@@ -532,16 +546,16 @@ def test_a_request_whose_channel_is_closed_before_it_is_sent_runs_on_a_new_one(
         channel = lookup(of)
         if channel is first:
             found.set()
-            assert go.wait(30)
+            assert go.wait(HANG_GUARD)
         return channel
 
     monkeypatch.setattr(service, "_channel", held_after_the_lookup)
     monkeypatch.setattr(ws, "CHANNEL_IDLE_SECONDS", 0.0)
     answers: list = []
-    asking = threading.Thread(target=lambda: answers.append(run(["echo", "ran"], 10)))
+    asking = threading.Thread(target=lambda: answers.append(run(["echo", "ran"], HANG_GUARD)))
     asking.start()
     try:
-        assert found.wait(30)
+        assert found.wait(HANG_GUARD)
         if closer == "idle":
             service.close_idle()
         else:
@@ -549,7 +563,7 @@ def test_a_request_whose_channel_is_closed_before_it_is_sent_runs_on_a_new_one(
         assert service.open_channels() == []  # the control: the one it found is closed
     finally:
         go.set()
-        asking.join(30)
+        asking.join(HANG_GUARD)
     assert [a.out for a in answers] == [b"ran\n"]
     assert service.open_channels() == [name] and service._channels[name] is not first
 
@@ -564,7 +578,7 @@ def test_a_request_that_reaches_its_channel_as_the_idle_closer_closes_it_is_not_
     runtime.create(spec(workspace))
     name = service.get(workspace).container
     run = service.run_in(service.get(workspace))
-    assert run(["true"], 10).code == 0  # opens the channel, which is idle from now
+    assert run(["true"], HANG_GUARD).code == 0  # opens the channel, which is idle from now
     first = service._channels[name]
     files = first._files
     assert all(os.path.exists(f) for f in files)  # the control: the channel's files are there
@@ -575,7 +589,7 @@ def test_a_request_that_reaches_its_channel_as_the_idle_closer_closes_it_is_not_
         channel = lookup(of)
         if channel is first and not found.is_set():
             found.set()
-            assert go.wait(30)
+            assert go.wait(HANG_GUARD)
         return channel
 
     signal, done = tmp_path / "signal", tmp_path / "done"
@@ -587,7 +601,7 @@ def test_a_request_that_reaches_its_channel_as_the_idle_closer_closes_it_is_not_
 
     def closing():  # the idle closer's close of the channel it chose: the request comes first
         go.set()
-        assert select.select([reader], [], [], 30)[0]  # the request's command is running
+        assert select.select([reader], [], [], HANG_GUARD)[0]  # the request's command is running
         close()
 
     first.close = closing
@@ -599,19 +613,19 @@ def test_a_request_that_reaches_its_channel_as_the_idle_closer_closes_it_is_not_
     def request():
         script = f"echo sent > {signal}; read line < {done}; echo ran"
         try:
-            answers.append(run(["sh", "-c", script], 30))
+            answers.append(run(["sh", "-c", script], HANG_GUARD))
         except ChannelBroken as error:
             failed.append(error)
 
     asking = threading.Thread(target=request)
     asking.start()
     try:
-        assert found.wait(30)
+        assert found.wait(HANG_GUARD)
         service.close_idle()
     finally:
         go.set()
         os.write(finisher, b"go\n")
-        asking.join(30)
+        asking.join(HANG_GUARD)
         os.close(reader)
         os.close(finisher)
     assert failed == [] and [a.out for a in answers] == [b"ran\n"]
@@ -634,9 +648,9 @@ def test_a_request_whose_channel_is_closed_once_it_was_sent_fails_and_is_not_run
     failed: list = []
 
     def request():
-        script = f"echo x >> {count}; echo sent > {signal}; exec sleep 30"
-        try:
-            run(["sh", "-c", script], 60)
+        script = f"echo x >> {count}; echo sent > {signal}; exec sleep {3 * HANG_GUARD}"
+        try:  # only the close ends it: its own timeout comes after the test's
+            run(["sh", "-c", script], 2 * HANG_GUARD)
         except ChannelBroken as error:
             failed.append(error)
 
@@ -644,12 +658,13 @@ def test_a_request_whose_channel_is_closed_once_it_was_sent_fails_and_is_not_run
     asking.start()
     reader = os.open(signal, os.O_RDWR)  # a writer of its own: no end-of-file meanwhile
     try:
-        assert select.select([reader], [], [], 30)[0]  # the command is running
+        assert select.select([reader], [], [], HANG_GUARD)[0]  # the command is running
         assert os.read(reader, 16) == b"sent\n"
         service.close_channel(name)
     finally:
         os.close(reader)
-        asking.join(30)
+        asking.join(HANG_GUARD)
+    assert not asking.is_alive()
     assert len(failed) == 1 and not isinstance(failed[0], ch.ChannelClosed)
     assert count.read_text() == "x\n"  # run once, not again
     assert service.open_channels() == []
@@ -716,7 +731,7 @@ def test_a_workspace_made_while_restore_runs_is_left_to_be_made(service, setting
 
     def create(spec):
         calls.append(("create", spec.name))
-        release.wait(30)
+        release.wait(HANG_GUARD)
         real_create(spec)
 
     def remove(name):
@@ -727,9 +742,11 @@ def test_a_workspace_made_while_restore_runs_is_left_to_be_made(service, setting
     made = service.create(_person(settings), "racing")  # its own thread is making it
     restoring = threading.Thread(target=service.restore)
     restoring.start()
-    restoring.join(3)  # restore has run past it, unless it waits on a create of its own
-    release.set()
-    restoring.join(60)
+    try:
+        restoring.join(HANG_GUARD)  # restore runs past it, and waits on no create of its own
+        assert not restoring.is_alive()
+    finally:
+        release.set()
     ended(service, made.id)
     name = rt.container_name(made.id)
     assert [c for c in calls if c[1] == name] == [("create", name)]
@@ -762,7 +779,7 @@ def test_the_last_workspace_of_a_person_being_deleted_finishes_their_deletion(
 
     bob = _person(settings, "bob@example.com")
     release, real = threading.Event(), runtime.create
-    runtime.create = lambda spec: (release.wait(30), real(spec))
+    runtime.create = lambda spec: (release.wait(HANG_GUARD), real(spec))
     made = service.create(bob, "last")
     con = db.connect(settings.database)
     try:
@@ -782,7 +799,7 @@ def test_a_removal_that_fails_after_making_leaves_the_workspace_to_restore(
     service, settings, runtime, monkeypatch, caplog
 ):
     release, real = threading.Event(), runtime.create
-    runtime.create = lambda spec: (release.wait(30), real(spec))
+    runtime.create = lambda spec: (release.wait(HANG_GUARD), real(spec))
     made = service.create(_person(settings), "stuck")
     service.delete(service.get(made.id))
 
@@ -1112,12 +1129,8 @@ def test_a_restore_runs_its_hooks_after_the_workspaces_and_past_one_that_fails(
 
 # --- a deletion from another process (rcman-admin) stops what is being done ---------------
 
-# How soon work a deletion from another process stops must have ended: each held step below
-# would otherwise run on for MADE_WITHIN, until its gate gives up.
-STOPPED_WITHIN = 10.0
-# How long the planted twin watches a clone that no watcher stops: a great many of the
-# watcher's looks at the row, as quick_watch sets them.
-UNWATCHED_FOR = 0.5
+# Each step below is held by the test's runtime until a removal or a cancel stops it, or else
+# until the test is over: a deletion that does not stop it is not seen gone within the guard.
 
 
 @pytest.fixture
@@ -1179,65 +1192,67 @@ def watchers(workspace_id: int) -> list[threading.Thread]:
     ]
 
 
-def gone_within(settings, workspace_id: int, seconds: float) -> bool:
-    deadline = time.monotonic() + seconds
-    while row(settings, workspace_id) is not None:
-        if time.monotonic() >= deadline:
-            return False
-        time.sleep(0.02)
-    return True
+def gone(settings, workspace_id: int) -> None:
+    """Until the workspace's row is gone."""
+    until(lambda: row(settings, workspace_id) is None)
 
 
-def clone_deleted_elsewhere(settings, recording, within: float) -> tuple[bool, bool, str]:
+def clone_deleted_elsewhere(settings, recording, then) -> tuple[bool, str]:
     """A clone the service runs, its git held until its container is removed, and rcman-admin
-    deleting the workspace: whether a watcher watched it, whether it was gone within
-    ``within`` seconds, and its container's name."""
+    deleting the workspace, after which ``then(workspace_id)`` looks, the git still held unless
+    something stopped it: whether a watcher watched it, and its container's name."""
     from tests.test_clone import URL
 
     recording.gate = threading.Event()
     with two_processes(settings, recording) as (service, shell):
         try:
             made = service.create(_person(settings), None, URL)
-            assert recording.cloning.wait(MADE_WITHIN)
+            assert recording.cloning.wait(HANG_GUARD)
             watched = bool(watchers(made.id))
             assert recording.removed == []  # positive control: nothing has removed it yet
             shell.delete(shell.get(made.id))  # marks it deleting: nothing of its own to stop
             assert shell._working == {}
-            stopped = gone_within(settings, made.id, within)
+            then(made.id)
         finally:
             recording.gate.set()
-        assert gone_within(settings, made.id, MADE_WITHIN)
-    return watched, stopped, made.container
+        gone(settings, made.id)
+    return watched, made.container
 
 
 def test_a_deletion_from_another_process_stops_a_clone_promptly(settings, recording, quick_watch):
-    watched, stopped, name = clone_deleted_elsewhere(settings, recording, STOPPED_WITHIN)
-    assert watched and stopped
+    watched, name = clone_deleted_elsewhere(settings, recording, lambda made: gone(settings, made))
+    assert watched
     assert name in recording.removed and not recording.exists(name)
 
 
 def test_the_planted_twin_without_the_watcher_a_clone_deleted_elsewhere_runs_on(
     settings, recording, quick_watch, monkeypatch
 ):
+    """The deletion by rcman-admin has returned, and nothing of its own stops the git: without
+    the watcher it runs on, its row there, until the test lets it go."""
     monkeypatch.setattr(ws.Workspaces, "_watch", lambda self, *args: None)
-    watched, stopped, name = clone_deleted_elsewhere(settings, recording, UNWATCHED_FOR)
+    seen = []
+
+    def runs_on(made):
+        seen.append((list(recording.removed), row(settings, made)["state"]))
+
+    watched, name = clone_deleted_elsewhere(settings, recording, runs_on)
     assert not watched  # the plant took effect: no watcher
-    assert not stopped  # and the guard fires: git ran on, its workspace deleted
+    assert seen == [([], ws.DELETING)]  # git ran on, its workspace deleted
     assert not recording.exists(name)  # once let go, the service finished the deletion
 
 
-def deleted_elsewhere(settings, flow, made_by, held) -> tuple[int, float]:
+def deleted_elsewhere(settings, flow, made_by, held) -> int:
     """The service making a workspace until ``held`` is set, and rcman-admin deleting it then:
-    the workspace, and how long after the deletion it was gone."""
+    the workspace, once it is gone, which the step held by the runtime would not let it be
+    unless the deletion stopped it."""
     with two_processes(settings, flow) as (service, shell):
         made = made_by(service)
-        assert held.wait(MADE_WITHIN)
+        assert held.wait(HANG_GUARD)
         assert watchers(made)  # positive control: the service watches it
-        began = time.monotonic()
         shell.delete(shell.get(made))
-        assert gone_within(settings, made, STOPPED_WITHIN)
-        took = time.monotonic() - began
-    return made, took
+        gone(settings, made)
+    return made
 
 
 def cloned_by(publish, files):
@@ -1252,10 +1267,9 @@ def test_a_deletion_from_another_process_stops_a_pull(settings, flow, publish, q
 
     flow.pull_gate = threading.Event()
     try:
-        made, took = deleted_elsewhere(settings, flow, cloned_by(publish, config()), flow.pulling)
+        made = deleted_elsewhere(settings, flow, cloned_by(publish, config()), flow.pulling)
     finally:
         flow.pull_gate.set()
-    assert took < STOPPED_WITHIN
     assert flow.pulled == []  # the pull did not finish
     assert not [e for e in flow.events if e[0] == "create" and e[1] == IMAGE]
     assert flow.labelled() == {} and not (flow.root / rt.container_name(made)).exists()
@@ -1268,12 +1282,9 @@ def test_a_deletion_from_another_process_stops_a_build_and_removes_the_builder(
 
     flow.build_gate = threading.Event()
     try:
-        made, took = deleted_elsewhere(
-            settings, flow, cloned_by(publish, building()), flow.building
-        )
+        made = deleted_elsewhere(settings, flow, cloned_by(publish, building()), flow.building)
     finally:
         flow.build_gate.set()
-    assert took < STOPPED_WITHIN
     assert ("remove_build", made, False) in flow.events  # the watcher removed the builder
     assert flow.builders() == set() and flow.built_images() == {}
     assert not [e for e in flow.events if e[0] == "create" and e[1]]
@@ -1286,12 +1297,11 @@ def test_a_deletion_from_another_process_stops_a_lifecycle_command(
 
     flow.gate = threading.Event()
     try:
-        made, took = deleted_elsewhere(
+        made = deleted_elsewhere(
             settings, flow, cloned_by(publish, config(postCreateCommand="echo GATE")), flow.hooking
         )
     finally:
         flow.gate.set()
-    assert took < STOPPED_WITHIN
     name = rt.container_name(made)
     assert ("remove", name) in flow.events
     assert flow.labelled() == {} and not (flow.root / name).exists()
@@ -1307,16 +1317,15 @@ def test_a_deletion_from_another_process_stops_a_restore_remaking_a_container(
         made = ready_with_plan(service, settings, flow, a_plan(), make_container=False)
         thread = restoring(service)
         try:
-            assert flow.pulling.wait(MADE_WITHIN)
+            assert flow.pulling.wait(HANG_GUARD)
             assert watchers(made)  # positive control: the remaking is watched
-            began = time.monotonic()
             shell.delete(shell.get(made))  # a ready one: rcman-admin removes it itself
             assert row(settings, made) is None
-            thread.join(STOPPED_WITHIN)
-            assert not thread.is_alive() and time.monotonic() - began < STOPPED_WITHIN
+            thread.join(HANG_GUARD)  # the pull, held until the test is over, was stopped
+            assert not thread.is_alive()
         finally:
             flow.pull_gate.set()
-            thread.join(MADE_WITHIN)
+            thread.join(HANG_GUARD)
     name = rt.container_name(made)
     assert flow.pulled == []  # the pull was stopped
     assert not [e for e in flow.events if e[0] == "create" and e[1] == IMAGE]
@@ -1376,10 +1385,10 @@ def test_a_deletion_in_the_same_process_is_not_stopped_twice_by_the_watcher(
     with two_processes(settings, flow) as (service, _):
         try:
             made = cloned_by(publish, config())(service)
-            assert flow.pulling.wait(MADE_WITHIN)
+            assert flow.pulling.wait(HANG_GUARD)
             assert watchers(made)  # positive control: it is watched
             service.delete(service.get(made))
-            assert gone_within(settings, made, STOPPED_WITHIN)
+            gone(settings, made)
         finally:
             flow.pull_gate.set()
     assert flow.events.count(("remove_build", made, False)) == 1

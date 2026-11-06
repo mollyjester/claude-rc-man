@@ -17,6 +17,7 @@ import pytest
 
 from devtools import held_folders as hf
 from tests import killed_runs as kr
+from tests.hang_guard import HANG_GUARD
 
 REPO = Path(__file__).resolve().parent.parent
 
@@ -112,7 +113,7 @@ def used(name):
     with tmux_sockets({prefix!r}) as folder:
         sock = folder / "x.sock"
         tmux = ["tmux", "-S", str(sock), "-f", "/dev/null"]
-        subprocess.run([*tmux, "new-session", "-d", "sleep", "600"], check=True)
+        subprocess.run([*tmux, "new-session", "-d", "sleep", "infinity"], check=True)
         out = subprocess.run(
             [*tmux, "display-message", "-p", "#{{pid}}"], check=True, capture_output=True, text=True
         ).stdout
@@ -160,7 +161,7 @@ def tmux(sock, *args):
 
 def start_tmux(sock: Path) -> int:
     sock.parent.mkdir(parents=True, exist_ok=True)
-    started = tmux(sock, "-f", "/dev/null", "new-session", "-d", "sleep", "600")
+    started = tmux(sock, "-f", "/dev/null", "new-session", "-d", "sleep", f"{3 * HANG_GUARD:g}")
     assert started.returncode == 0, started.stderr
     return int(tmux(sock, "display-message", "-p", "#{pid}").stdout)
 
@@ -263,7 +264,7 @@ def heard(listener: Listener, sock: Path) -> None:
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
         client.connect(str(sock))
         client.sendall(b"ping")
-        assert listener.got.wait(10)
+        assert listener.got.wait(HANG_GUARD)
     assert listener.received[-1] == b"ping"
     listener.received.clear()
 

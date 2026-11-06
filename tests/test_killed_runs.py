@@ -14,6 +14,7 @@ import pytest
 
 from devtools import held_folders as hf
 from tests import killed_runs as kr
+from tests.hang_guard import HANG_GUARD
 
 REPO = Path(__file__).resolve().parent.parent
 TMP = hf.TMP
@@ -139,19 +140,24 @@ def test_reported_checks_the_paths_in_a_report(tmp_path, stem_prefix):
     (reports / "bad.json").write_text(json.dumps({"paths": {"a": "."}}))
     (reports / "pid.json").write_text(json.dumps({"pids": {"p": 1}}))
     read = kr.Reports(reports, (stem_prefix,), tmp_path)
-    assert read.wait("ok", deadline=5) == ok  # positive control
+    assert read.wait("ok") == ok  # positive control
     with pytest.raises(kr.UnsafePath):
-        read.wait("bad", deadline=5)
+        read.wait("bad")
     with pytest.raises(kr.UnsafePath):
-        read.wait("pid", deadline=5)
+        read.wait("pid")
 
 
-def test_reported_waits_for_an_empty_report_and_gives_up_at_its_deadline(tmp_path):
+def test_reported_does_not_take_an_empty_report(tmp_path):
+    """Looked at once (rule (a)): an empty report is no report, and gives up; the positive
+    control, a complete one, is taken at the same look."""
     reports = tmp_path / "reports"
     reports.mkdir()
     (reports / "one.json").write_text("")
+    (reports / "two.json").write_text("{}")
+    read = kr.Reports(reports, ("p-",), tmp_path)
+    assert read.wait("two", once=True) == {}
     with pytest.raises(TimeoutError):
-        kr.Reports(reports, ("p-",), tmp_path).wait("one", deadline=0.5)
+        read.wait("one", once=True)
 
 
 # --- cleanup refuses anything but its own -------------------------------------------
@@ -185,7 +191,17 @@ def test_scrub_removes_its_own_without_following_links(tmp_path, stem_prefix):
     (left / "deep").chmod(0)
     sock = left / "x.sock"
     started = subprocess.run(
-        ["tmux", "-S", str(sock), "-f", "/dev/null", "new-session", "-d", "sleep", "600"]
+        [
+            "tmux",
+            "-S",
+            str(sock),
+            "-f",
+            "/dev/null",
+            "new-session",
+            "-d",
+            "sleep",
+            f"{3 * HANG_GUARD:g}",
+        ]
     )
     assert started.returncode == 0 and stat.S_ISSOCK(sock.lstat().st_mode)
     kr.scrub(str(left), (stem_prefix,), tmp_path)

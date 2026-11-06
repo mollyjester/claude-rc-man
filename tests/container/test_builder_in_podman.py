@@ -30,7 +30,6 @@ import os
 import re
 import subprocess
 import threading
-import time
 from pathlib import Path
 
 import pytest
@@ -47,6 +46,7 @@ from tests.container import test_github_in_podman as shared
 from tests.container.conftest import cli, engine_runtime, engine_settings, image_of
 from tests.github_server import GitHubServer
 from tests.hang_guard import CONTAINER_HANG_GUARD
+from tests.until import SLOW, until
 
 exists, gone, settled = shared.exists, shared.gone, shared.settled
 # The fixtures of that module, which pytest finds here by these names.
@@ -83,8 +83,6 @@ CHOWNED_ID = 1000
 STUB_WORKSPACE, ORPHAN_BUILDER, ORPHAN_VOLUME, ORPHAN_IMAGE, WARM_BUILD, WARM_WORKSPACE = range(
     810, 816
 )
-# How long a build, a stub waiting to be told what to do, and a real build may take.
-STUB_WITHIN, REAL_WITHIN = 300, 1800
 # The repository's entry that says what the stub's standard error holds.
 STUB_SAYS = ".devcontainer/stub-says"
 # What the stub fails with, on its error stream: what the CLI says when a local feature fails.
@@ -322,15 +320,16 @@ def in_builder(runtime, name: str, *argv: str) -> str:
     return done.stdout
 
 
-def wait_recorded(runtime, name: str, within: float = STUB_WITHIN, alive=None) -> None:
+def wait_recorded(runtime, name: str, alive=None) -> None:
     """Wait until the stub in the builder ``name`` has recorded what it was run with; ``alive``
     is called meanwhile, to fail early with the row's words when the build ended."""
-    deadline = time.monotonic() + within
-    while cli(runtime, "exec", name, "test", "-e", "/stub/recorded").returncode != 0:
+
+    def recorded() -> bool:
         if alive is not None:
             alive()
-        assert time.monotonic() < deadline, f"the stub in {name} never recorded"
-        time.sleep(0.5)
+        return cli(runtime, "exec", name, "test", "-e", "/stub/recorded").returncode == 0
+
+    until(recorded, SLOW)
 
 
 def release(runtime, name: str) -> None:
@@ -516,7 +515,7 @@ def test_the_builder_runs_in_a_range_of_its_own_with_nothing_of_rcmans_and_the_f
         assert files["x"][3] == "750" and files["sub"][2] == "d"
     finally:
         stub_podman.remove_build(STUB_WORKSPACE)  # which ends the build
-        thread.join(timeout=60)
+        thread.join(timeout=CONTAINER_HANG_GUARD)
         stub_podman.remove(source)
     assert not thread.is_alive() and len(ended) == 1
     assert isinstance(ended[0], rt.RuntimeFailed)
@@ -551,10 +550,8 @@ def test_deleting_a_workspace_whose_image_is_being_built_removes_the_builder_and
     top = cli(stub_podman, "top", name, "args")
     assert "devcontainer" in top.stdout or "sleep" in top.stdout, top.stdout + top.stderr
     now = stub_service.get(made.id)
-    started = time.monotonic()
     stub_service.delete(now)
-    gone(stub_service, made.id, 60)
-    assert time.monotonic() - started < 60
+    gone(stub_service, made.id)  # the stub waits to be told, past the hang bound
     nothing_of_a_build_is_left(stub_podman, made.id)
     assert dev.left_of(stub_podman, made.container) == []
 
@@ -707,8 +704,8 @@ def test_a_dockerfile_and_a_local_feature_are_built_for_real_and_the_workspace_r
     second = real_service.create(person[0], "real-two", "https://github.com/octo/real-one")
     real_clones.append(second)
     one, two = (
-        settled(real_service, first.id, REAL_WITHIN),
-        settled(real_service, second.id, REAL_WITHIN),
+        settled(real_service, first.id),
+        settled(real_service, second.id),
     )
     assert (one.state, one.error) == ("ready", None), one
     assert (two.state, two.error) == ("ready", None), two
@@ -808,9 +805,7 @@ def test_a_feature_that_asks_for_privileges_is_refused_naming_it_before_the_imag
     risky = {"privileged": True, "mounts": [{"source": "x", "target": "/x", "type": "volume"}]}
     publish_tree(github_com, tmp_path, "real-risky", alpine_files(risky))
     images_before, copied_before = image_ids(real_podman), list(real_podman.copied)
-    done = settled(
-        real_service, start(real_service, person, real_clones, "real-risky").id, REAL_WITHIN
-    )
+    done = settled(real_service, start(real_service, person, real_clones, "real-risky").id)
     assert done.state == "failed", done
     assert "./one" in done.error and ("privileged" in done.error or "mounts" in done.error), (
         done.error
@@ -825,9 +820,7 @@ def test_a_base_that_is_not_glibc_is_built_then_refused_in_plain_words_and_leave
 ):
     publish_tree(github_com, tmp_path, "real-alpine", alpine_files({}))
     images_before, copied_before = image_ids(real_podman), list(real_podman.copied)
-    done = settled(
-        real_service, start(real_service, person, real_clones, "real-alpine").id, REAL_WITHIN
-    )
+    done = settled(real_service, start(real_service, person, real_clones, "real-alpine").id)
     assert done.state == "failed", done
     assert done.error == DEVCONTAINER_MESSAGES["musl"].format(image=rt.built_name(done.id))
     assert real_podman.copied == [*copied_before, done.id]  # built and copied out, then refused
@@ -864,9 +857,7 @@ def test_a_build_the_cli_fails_is_told_by_its_cause_with_its_last_words_and_leav
 ):
     publish_tree(github_com, tmp_path, f"real-{kind}", files)
     images_before, copied_before = image_ids(real_podman), list(real_podman.copied)
-    done = settled(
-        real_service, start(real_service, person, real_clones, f"real-{kind}").id, REAL_WITHIN
-    )
+    done = settled(real_service, start(real_service, person, real_clones, f"real-{kind}").id)
     assert done.state == "failed", done
     head = DEVCONTAINER_MESSAGES[kind].format(feature="./one", tail="")
     assert done.error.startswith(head), done.error  # the cause the real CLI's words show
@@ -877,26 +868,30 @@ def test_a_build_the_cli_fails_is_told_by_its_cause_with_its_last_words_and_leav
     assert image_ids(real_podman) == images_before and dev.probes(real_podman) == []
 
 
+# A Dockerfile's step that outlasts the test (rule (g) of "Time in tests").
+SLOW_STEP = f"sleep {3 * CONTAINER_HANG_GUARD:g}"
+
+
 def test_deleting_a_workspace_whose_image_is_really_being_built_stops_the_build_and_leaves_nothing(
     real_service, real_podman, person, real_clones, github_com, tmp_path
 ):
     files = {
         ".devcontainer/devcontainer.json": json.dumps({"build": {"dockerfile": "Dockerfile"}}),
-        ".devcontainer/Dockerfile": f"FROM {ALPINE}\nRUN echo begun; sleep 3000\n",
+        ".devcontainer/Dockerfile": f"FROM {ALPINE}\nRUN echo begun; {SLOW_STEP}\n",
     }
     publish_tree(github_com, tmp_path, "real-slow", files)
     images_before = image_ids(real_podman)
     made = start(real_service, person, real_clones, "real-slow")
     name = builder.builder_name(made.id)
-    deadline = time.monotonic() + REAL_WITHIN
-    while "sleep 3000" not in cli(real_podman, "top", name, "args").stdout:  # the Dockerfile's step
+
+    def stepping() -> bool:
+        """Whether the Dockerfile's step runs; the row's words, where the build ended."""
         _creating(real_service, made.id)
-        assert time.monotonic() < deadline, real_service.get(made.id)
-        time.sleep(1)
-    started = time.monotonic()
+        return SLOW_STEP in cli(real_podman, "top", name, "args").stdout
+
+    until(stepping, SLOW)
     real_service.delete(real_service.get(made.id))
-    gone(real_service, made.id, 60)
-    assert time.monotonic() - started < 60  # not after the step's sleep
+    gone(real_service, made.id)  # the step outlasts the hang bound: only the deletion ends it
     nothing_of_a_build_is_left(real_podman, made.id)
     assert (
         dev.left_of(real_podman, made.container) == [] and image_ids(real_podman) == images_before
@@ -930,7 +925,10 @@ def mapped_by(program: str) -> list[str]:
     """Run as the user: a user namespace of its own, whose map ``program`` writes; what it said,
     and the map."""
     script = (
-        f"unshare --user sleep 60 & p=$!; sleep 1; "
+        f"unshare --user sleep {3 * CONTAINER_HANG_GUARD:g} & p=$!; "
+        # until the namespace is made: until its process is no longer in the shell's
+        'while [ "$(readlink /proc/$p/ns/user)" = "$(readlink /proc/$$/ns/user)" ]; '
+        "do sleep 0.05; done; "
         f"{program} $p 0 {CAPABLE_ID} 1 1 {SUBORDINATE_ID} {SUBORDINATES}; "
         'echo "map=$?"; cat /proc/$p/uid_map; kill $p'
     )
@@ -945,9 +943,7 @@ def test_a_capability_a_build_gives_newuidmap_holds_in_the_persons_range(
     build set is the one newuidmap writes another user's map with there. The control is a copy
     of the same program without it, which cannot."""
     publish_tree(github_com, tmp_path, "real-capability", CAPABILITY_FILES)
-    done = settled(
-        real_service, start(real_service, person, real_clones, "real-capability").id, REAL_WITHIN
-    )
+    done = settled(real_service, start(real_service, person, real_clones, "real-capability").id)
     assert (done.state, done.error) == ("ready", None), done.error
     caps = dev.out(real_podman.exec(done.container, ["getcap", "/usr/bin/newuidmap"]))
     assert "cap_setuid=ep" in caps, caps
@@ -970,7 +966,7 @@ def test_a_built_image_is_rebuilt_while_its_container_runs_and_takes_its_name_af
 ):
     publish_tree(github_com, tmp_path, "rebuild-built", REAL_FILES)
     made = start(real_service, person, real_clones, "rebuild-built")
-    done = settled(real_service, made.id, REAL_WITHIN)
+    done = settled(real_service, made.id)
     assert (done.state, done.error) == ("ready", None), done
     old = json.loads(done.environment)["image_id"]
     layout = real_service._layout(done)
@@ -983,10 +979,7 @@ def test_a_built_image_is_rebuilt_while_its_container_runs_and_takes_its_name_af
     assert written.code == 0, written.err
     real_service.restored.set()
     real_service.rebuild(person[0], done.id, True)
-    deadline = time.monotonic() + REAL_WITHIN
-    while done.id not in real_podman.builders():  # the build runs beside the container
-        assert time.monotonic() < deadline
-        time.sleep(0.5)
+    until(lambda: done.id in real_podman.builders(), SLOW)  # the build runs beside the container
     assert real_podman.running(done.container) and image_of(real_podman, done.container) == old
     ended(real_service, done.id, CONTAINER_HANG_GUARD)
     now = real_service.get(done.id)
@@ -1009,20 +1002,17 @@ def test_a_deletion_by_rcman_admin_while_a_rebuild_builds_leaves_nothing_of_it(
 ):
     publish_tree(github_com, tmp_path, "rebuild-deleted", REAL_FILES)
     made = start(real_service, person, real_clones, "rebuild-deleted")
-    done = settled(real_service, made.id, REAL_WITHIN)
+    done = settled(real_service, made.id)
     assert done.state == "ready", done
     real_service.restored.set()
     real_service.rebuild(person[0], done.id, True)
-    deadline = time.monotonic() + REAL_WITHIN
-    while done.id not in real_podman.builders():
-        assert time.monotonic() < deadline
-        time.sleep(0.5)
+    until(lambda: done.id in real_podman.builders(), SLOW)
     admin = Workspaces(real_service.settings, real_podman, prunes=False)
     try:
         admin.delete(admin.get(done.id))
     finally:
         admin.close()
-    gone(real_service, done.id, REAL_WITHIN)
+    gone(real_service, done.id)
     assert not [
         name
         for name, labels in real_podman.labelled().items()

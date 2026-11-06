@@ -230,9 +230,6 @@ test("administrators see everyone's workspaces, and act on none of them", async 
   page,
   browser,
 }) => {
-  // A server's start, its trust question, two pages, and a stop that may wait for
-  // Claude to exit: longer than one action's share of the default timeout.
-  test.slow();
   await signInAs(page, ALICE);
   await page.goto("/");
   const seen = await makeWorkspace(page, "alice-seen");

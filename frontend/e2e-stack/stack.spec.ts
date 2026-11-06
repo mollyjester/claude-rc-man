@@ -19,7 +19,6 @@ import {
   workspaces,
 } from "../e2e/nav";
 import { m } from "../src/messages";
-import { FIRST_WORKSPACE_WITHIN, TEST_WITH_FIRST_WORKSPACE_WITHIN } from "./timing";
 
 const ALICE = "alice@example.com"; // an administrator
 const BOB = "bob@example.com";
@@ -72,12 +71,11 @@ const CODE = process.env.RCMAN_FAKE_CLAUDE_CODE ?? "";
 test("a workspace made before Claude is connected starts no server, and says why", async ({
   page,
 }) => {
-  test.setTimeout(TEST_WITH_FIRST_WORKSPACE_WITHIN); // "plain" is alice's first workspace
   expect(CODE).not.toBe("");
   await signIn(page, ALICE);
   await expectSignedInAs(page, ALICE);
   await expect(workspaces(page).getByText(m.workspacesEmpty)).toBeVisible();
-  await makeWorkspace(page, "plain", FIRST_WORKSPACE_WITHIN);
+  await makeWorkspace(page, "plain"); // alice's first workspace
   const before = await makeWorkspace(page, "before");
   await before.getByRole("button", { name: m.start }).click();
   await expect(before.getByRole("alert")).toContainText(
@@ -280,11 +278,10 @@ test("administrators see everyone's workspaces, and act on none of them", async 
   page,
   browser,
 }) => {
-  test.setTimeout(TEST_WITH_FIRST_WORKSPACE_WITHIN); // "carol-box" is carol's first workspace
   // carol has a workspace of her own, which the People page later removes with her.
   const carol = await browser.newPage();
   await signIn(carol, CAROL);
-  await makeWorkspace(carol, "carol-box", FIRST_WORKSPACE_WITHIN);
+  await makeWorkspace(carol, "carol-box"); // carol's first workspace
   await carol.close();
 
   await signIn(page, ALICE);
@@ -418,7 +415,6 @@ test("a forwarded port is reached by its owner through a plain link, a WebSocket
   page,
   browser,
 }) => {
-  test.setTimeout(TEST_WITH_FIRST_WORKSPACE_WITHIN); // "stack-ports" is bob's first workspace
   expect(GITHUB.ports).not.toBe("");
   // An administrator turns forwarding on.
   const alice = await browser.newPage();
@@ -441,9 +437,8 @@ test("a forwarded port is reached by its owner through a plain link, a WebSocket
   const form = await newWorkspace(page);
   await form.getByLabel(m.newWorkspaceSource).fill(GITHUB.ports);
   await form.getByRole("button", { name: m.create }).click();
-  await expect(panel(page, "stack-ports").getByRole("button", { name: m.start })).toBeVisible({
-    timeout: FIRST_WORKSPACE_WITHIN,
-  });
+  // bob's first workspace
+  await expect(panel(page, "stack-ports").getByRole("button", { name: m.start })).toBeVisible();
   const id = await idOf(page, "stack-ports");
   servePort(id, GITHUB.port);
   const host = `${GITHUB.port}-${id}.ws.rcman.test`;

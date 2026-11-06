@@ -15,9 +15,9 @@ folder.
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 import threading
-import time
 from pathlib import Path
 
 import pytest
@@ -36,17 +36,16 @@ from tests.container import test_runtime_in_podman as base
 from tests.container.conftest import cli, engine_runtime, engine_settings, fill_store
 from tests.fake_store import FAKE_VERSION
 from tests.hang_guard import CONTAINER_HANG_GUARD
+from tests.until import SLOW, until
 
 # The version the store holds when a test starts, and the ones released after it: good ones,
 # one that is not Claude Code, and one whose checksum is not its release's.
 V0, V1, V2 = FAKE_VERSION, "1.1.0", "1.2.0"
 BROKEN, FAILING = "1.3.0", "1.4.0"
 EMAIL, ADMIN = "bob@example.com", "admin@example.com"
-# How long the canary container is waited for, and how long a slow candidate keeps it up: the
-# candidate sleeps this long at every call, so the container is there to be looked at for as
-# long as its checks take.
-APPEARS_WITHIN = CONTAINER_HANG_GUARD
-SLOW_SECONDS = 1
+# What a held candidate waits on, in its folder: while it is there, every call of the candidate
+# waits, so that the canary container is there to be looked at for as long as the test looks.
+HOLD = "hold"
 
 
 @pytest.fixture(scope="module")
@@ -329,17 +328,38 @@ def test_a_broken_candidate_and_one_that_fails_its_checksum_change_nothing(
 # --- the canary container, as designed ----------------------------------------------------
 
 
-def slow_candidate(folder: Path) -> None:
-    """A good candidate that waits at every call, so that the canary container is up long
-    enough to be looked at: it sleeps, then runs the good one beside it."""
+def held_candidate(folder: Path) -> Path:
+    """A good candidate that waits at every call while the file it returns is there, so that
+    the canary container is up until the test has looked at it: it waits, then runs the good
+    one beside it."""
     claude_download.candidate(folder, V1)
     real = folder / "real"
     (folder / claude_download.CANDIDATE).rename(real)
+    hold = folder / HOLD
+    hold.touch()
     wrapper = folder / claude_download.CANDIDATE
+    mount = rt.CANARY_CANDIDATE_MOUNT
     wrapper.write_text(
-        f'#!/bin/sh\nsleep {SLOW_SECONDS}\nexec {rt.CANARY_CANDIDATE_MOUNT}/real "$@"\n'
+        f'#!/bin/sh\nwhile [ -e {mount}/{HOLD} ]; do sleep 0.05; done\nexec {mount}/real "$@"\n'
     )
     wrapper.chmod(0o755)
+    return hold
+
+
+def held_checks(monkeypatch, tmp_path: Path) -> None:
+    """The canary's checks given the hang bound, past the test's look while a held candidate
+    waits (rule (b) of "Time in tests"): the helpers it mounts are a copy whose checks' timeout
+    is twice the tier's guard, and the container's own timeout is past them."""
+    copy = tmp_path / rt.HELPERS_DIR.name
+    shutil.copytree(rt.HELPERS_DIR, copy, ignore=shutil.ignore_patterns("__pycache__"))
+    checks = copy / "claude_checks.py"
+    text = checks.read_text()
+    assert text.count("\nTIMEOUT = ") == 1  # the plant takes
+    checks.write_text(
+        text.replace("\nTIMEOUT = ", f"\nTIMEOUT = {2 * CONTAINER_HANG_GUARD}  # ", 1)
+    )
+    monkeypatch.setattr(rt, "HELPERS_DIR", copy)
+    monkeypatch.setattr(rt, "CANARY_SECONDS", 3 * CONTAINER_HANG_GUARD)
 
 
 def in_canary(podman, script: str) -> subprocess.CompletedProcess:
@@ -352,9 +372,10 @@ def interfaces(read: subprocess.CompletedProcess) -> list[str]:
     return [line.partition(":")[0].strip() for line in read.stdout.splitlines()[2:]]
 
 
-def test_the_canary_container_is_what_the_design_says(podman, image, tmp_path):
+def test_the_canary_container_is_what_the_design_says(podman, image, tmp_path, monkeypatch):
     folder = tmp_path / "candidate"
-    slow_candidate(folder)
+    hold = held_candidate(folder)
+    held_checks(monkeypatch, tmp_path)
     # A canary a rollout that was cut short left, which has the name and not the label.
     stale = cli(
         podman,
@@ -365,7 +386,7 @@ def test_the_canary_container_is_what_the_design_says(podman, image, tmp_path):
         "--label=stale=1",
         image,
         "sleep",
-        "600",
+        f"{3 * CONTAINER_HANG_GUARD:g}",
     )
     assert stale.returncode == 0, stale.stderr
     stale_id = stale.stdout.strip()
@@ -382,12 +403,13 @@ def test_the_canary_container_is_what_the_design_says(podman, image, tmp_path):
     thread = threading.Thread(target=run)
     thread.start()
     try:
-        deadline = time.monotonic() + APPEARS_WITHIN
         label = f"--filter=label={rt.LABEL_CANARY}"
-        while not cli(podman, "ps", label, "--format", "{{.ID}}").stdout.split():
+
+        def appeared() -> bool:
             assert "error" not in result, result
-            assert time.monotonic() < deadline, "the canary container never appeared"
-            time.sleep(0.1)
+            return bool(cli(podman, "ps", label, "--format", "{{.ID}}").stdout.split())
+
+        until(appeared, SLOW)
         found = json.loads(cli(podman, "container", "inspect", rt.CANARY_NAME).stdout)[0]
         assert found["Id"] != stale_id and found["Config"]["Labels"].get("stale") is None
         # the stale one was removed first, before this one was made
@@ -438,6 +460,7 @@ def test_the_canary_container_is_what_the_design_says(podman, image, tmp_path):
         )
         assert in_canary(podman, f"ls {rt.CANARY_CANDIDATE_MOUNT}").stdout.split() == [
             "claude",
+            HOLD,
             "real",
         ]
         # python3 is in the default image, and imports the helpers where it is told to.
@@ -446,6 +469,7 @@ def test_the_canary_container_is_what_the_design_says(podman, image, tmp_path):
         )
         assert imported.stdout.strip() == "3", imported
     finally:
+        hold.unlink()  # the candidate runs on, and the checks with it
         thread.join(timeout=CONTAINER_HANG_GUARD)
         for left in (rt.CANARY_NAME, stale_id):
             if thread.is_alive() or left == stale_id:
@@ -470,7 +494,7 @@ def test_podman_remote_run_ends_a_container_at_its_timeout(podman, image):
             "--timeout=3",
             image,
             "sleep",
-            "600",
+            f"{3 * CONTAINER_HANG_GUARD:g}",
             timeout=CONTAINER_HANG_GUARD,
         )
         assert "unknown flag" not in ran.stderr and "no such" not in ran.stderr.lower(), ran.stderr

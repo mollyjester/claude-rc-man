@@ -14,6 +14,8 @@ Not a test module. The rules are in project-knowledge/tests.md, "Time in tests".
 - ``ControlledEvent`` stands in for a ``threading.Event``: a ``wait`` given seconds is recorded
   and ends only on ``set`` or ``expire``.
 - ``RecordingLock`` wraps a lock, recording each acquire and each that blocked.
+- ``Clock`` is a clock a product's seam reads (the forwarding server's, the monitor's, a token
+  bucket's), and ``Time`` the monitor loops' clock and wait; only the test moves either.
 
 Every wait is recorded (``Wait``) with its thread, its seconds and an ordinal of its double's,
 under the primitive's own lock and only once what it waits for has been seen not to hold: a
@@ -39,6 +41,7 @@ on until what they wait for ends them.
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import threading
 import time
@@ -104,6 +107,75 @@ def matches(wait: Wait, match: Match) -> bool:
     if callable(match):
         return bool(match(wait))
     return wait.seconds == match
+
+
+# --- the clocks a product's seam reads -----------------------------------------------------------
+
+
+class Clock:
+    """A clock a product's seam reads (the forwarding server's ``clock``, the monitor's, a token
+    bucket's), moved only by the test: calling it gives ``now``, which ``advance`` moves on, or
+    the test sets."""
+
+    def __init__(self, now: float = 1000.0):
+        self.now = now
+
+    def __call__(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
+
+
+class Time:
+    """Time as the loops see it, moved on only by the test: a clock and a wait that ends when
+    its event is set or the clock passes its deadline. Each move (``advance``, ``poke``) is a
+    new generation, and a loop is parked when it waits again having looked at the latest."""
+
+    def __init__(self):
+        self.now = 1000.0
+        self.asked: list[tuple[asyncio.Event, float | None]] = []
+        self._tick: asyncio.Event | None = None
+        self.generation = 0
+        self.seen: dict[int, int] = {}  # each waiting loop's task: the generation it looked at
+
+    def clock(self) -> float:
+        return self.now
+
+    async def wait(self, event: asyncio.Event, timeout: float | None) -> None:
+        self.asked.append((event, timeout))
+        deadline = None if timeout is None else self.now + timeout
+        me = id(asyncio.current_task())
+        try:
+            while True:
+                self.seen[me] = self.generation
+                if event.is_set() or (deadline is not None and self.now >= deadline):
+                    return
+                if self._tick is None:
+                    self._tick = asyncio.Event()
+                tick = self._tick
+                waiting = [asyncio.create_task(event.wait()), asyncio.create_task(tick.wait())]
+                try:
+                    await asyncio.wait(waiting, return_when=asyncio.FIRST_COMPLETED)
+                finally:
+                    for task in waiting:
+                        task.cancel()
+        finally:
+            self.seen.pop(me, None)
+
+    def poke(self) -> None:
+        """A new generation with no time passing: every waiting loop looks again."""
+        self.generation += 1
+        if self._tick is not None:
+            self._tick.set()
+            self._tick = None
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
+        self.poke()
+
+    def parked(self, loops: int) -> bool:
+        return len(self.seen) == loops and all(g == self.generation for g in self.seen.values())
 
 
 # --- the registry -------------------------------------------------------------------------------

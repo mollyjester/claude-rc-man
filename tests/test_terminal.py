@@ -20,7 +20,6 @@ import socket
 import sqlite3
 import subprocess
 import sys
-import time
 import uuid
 from pathlib import Path
 
@@ -33,20 +32,19 @@ from rcman.routers import terminal as route
 from starlette.testclient import WebSocketDenialResponse
 
 from tests.conftest import ALICE, BOB, changing, made_workspace
-from tests.hang_guard import HANG_GUARD
-from tests.test_terminals import a_length, alive, sleeping, wait_until
+from tests.hang_guard import HANG_GUARD, pace, tier_guard
+from tests.test_terminals import a_length, alive, sleep_of, sleeping
+from tests.until import until
 
 REPO = Path(__file__).resolve().parent.parent
 PROTOCOL = route.PROTOCOL
-# How long a frame is waited for.
-FRAME_WITHIN = HANG_GUARD
 
 
 @pytest.fixture
 def quick_revocation(monkeypatch):
-    """Revocation looked for often, before the service starts: it reads the value as it waits,
-    but a test that relies on it lists this before ``client`` all the same."""
-    monkeypatch.setattr(route, "REVOCATION_SECONDS", 0.2)
+    """Revocation looked for often (rule (d)), before the service starts: it reads the value as
+    it waits, but a test that relies on it lists this before ``client`` all the same."""
+    pace(monkeypatch, route, "REVOCATION_SECONDS", 0.2)
 
 
 def path(workspace: int) -> str:
@@ -66,19 +64,19 @@ class Peer:
         self.frames: list[dict] = []
         self.close: dict | None = None
 
-    def _next(self, timeout: float) -> dict:
+    def _next(self) -> dict:
         async def receive():
-            with anyio.fail_after(timeout):
+            with anyio.fail_after(tier_guard()):
                 return await self.session._send_rx.receive()
 
         return self.session.portal.call(receive)
 
-    def read(self, until, timeout: float = FRAME_WITHIN) -> None:
-        """Take what the server sends until ``until(self)`` holds or the socket closes."""
-        deadline = time.monotonic() + timeout
+    def read(self, until) -> None:
+        """Take what the server sends until ``until(self)`` holds or the socket closes; each
+        message is waited for within the hang guard."""
         while not until(self):
             assert self.close is None, (self.close, bytes(self.output)[-500:], self.frames)
-            message = self._next(max(0.01, deadline - time.monotonic()))
+            message = self._next()
             if message["type"] == "websocket.close":
                 self.close = message
             elif message.get("bytes") is not None:
@@ -91,9 +89,9 @@ class Peer:
         self.read(lambda p: re.search(pattern, bytes(p.output)))
         return re.search(pattern, bytes(self.output))
 
-    def closed(self, timeout: float = FRAME_WITHIN) -> dict:
+    def closed(self) -> dict:
         """The close the server sent, once it has."""
-        self.read(lambda p: p.close is not None, timeout)
+        self.read(lambda p: p.close is not None)
         return self.close
 
 
@@ -122,13 +120,13 @@ def terminal_rows(settings) -> list[tuple]:
 
 
 def wait_rows(settings, count: int) -> list[tuple]:
-    return wait_until(lambda: len(found := terminal_rows(settings)) >= count and found)
+    return until(lambda: len(found := terminal_rows(settings)) >= count and found)
 
 
 def shell_of(peer: Peer, length: str) -> list[int]:
-    """Start ``sleep <length>`` in the background and wait for it."""
-    peer.ask(f"sleep {length} & echo started-$((1+2))", rb"started-3")
-    return wait_until(lambda: sleeping(length))
+    """Start ``sleep_of(length)`` in the background and wait for it."""
+    peer.ask(f"{sleep_of(length)} & echo started-$((1+2))", rb"started-3")
+    return until(lambda: sleeping(length))
 
 
 @pytest.fixture
@@ -390,7 +388,7 @@ def test_a_malformed_frame_later_closes_the_socket_and_ends_the_shell(client, wo
         [pid] = shell_of(peer, length)
         peer.session.send_json(resize(80, 0))
         assert peer.closed()["code"] == PROTOCOL["close_policy"]
-    wait_until(lambda: not alive(pid))
+    until(lambda: not alive(pid))
     assert wait_rows(settings, 2)[-1] == ("terminal.close", "alpha", "validation_failed")
 
 
@@ -552,7 +550,7 @@ def served(tmp_path: Path, ping: float = 20.0):
         proc = subprocess.Popen(argv, cwd=REPO, env=env, stdout=log, stderr=subprocess.STDOUT)
     server = Served(proc, port, origin, output)
     try:
-        wait_until(server.answers, timeout=HANG_GUARD)
+        until(server.answers)
         yield server
     finally:
         if proc.poll() is None:
@@ -597,7 +595,7 @@ class Served:
             assert state in ("creating", "ready"), state
             return state == "ready"
 
-        wait_until(ready, timeout=HANG_GUARD)
+        until(ready)
         return number
 
     def url(self, workspace: int | None = None) -> str:
@@ -648,7 +646,7 @@ def test_identity_and_origin_are_refused_before_the_upgrade_with_a_problem(tmp_p
                 assert response.headers.get(name) == value, (case, name)
         # the control: the same upgrade with an identity and the origin is accepted
         with connect(server, 999) as accepted:
-            frame = json.loads(accepted.recv(timeout=FRAME_WITHIN))
+            frame = json.loads(accepted.recv(timeout=HANG_GUARD))
         assert frame["problem"]["code"] == "workspace_not_found"
 
 
@@ -658,12 +656,12 @@ def test_a_service_that_stops_closes_its_terminals_first(tmp_path):
         workspace = server.workspace("alpha")
         with connect(server, workspace) as ws:
             ws.send(json.dumps(resize()))
-            ws.send(f"sleep {length} &\r".encode())
-            [pid] = wait_until(lambda: sleeping(length))
+            ws.send(f"{sleep_of(length)} &\r".encode())
+            [pid] = until(lambda: sleeping(length))
             server.proc.send_signal(signal.SIGTERM)
             with contextlib.suppress(Exception):
                 while True:
-                    ws.recv(timeout=FRAME_WITHIN)
+                    ws.recv(timeout=HANG_GUARD)
             assert ws.close_code == PROTOCOL["close_closing"]
         server.proc.wait(timeout=HANG_GUARD)
         assert not alive(pid)
@@ -728,7 +726,7 @@ def test_a_look_at_the_rows_that_fails_is_tried_again(
 
     monkeypatch.setattr(route, "_revoked", busy)
     with opened(client, ALICE, workspace["id"]) as peer:
-        wait_until(lambda: len(failed) == 3)
+        until(lambda: len(failed) == 3)
         peer.ask("echo still-$((3+3))", rb"still-6")  # the terminal is still open
         con = db.connect(settings.database)
         try:

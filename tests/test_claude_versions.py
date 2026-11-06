@@ -19,7 +19,7 @@ from rcman.problems import CLAUDE_INSTALL_MESSAGES, MESSAGES, Problem
 from helpers import claude_checks, claude_release
 from tests import claude_download
 from tests.conftest import ALICE, BOB, FAKE_VERSION, fake_claude
-from tests.hang_guard import HANG_GUARD
+from tests.hang_guard import HANG_GUARD, runs_out
 
 NEW = "2.0.0"
 
@@ -35,8 +35,15 @@ class World:
 
 
 @pytest.fixture
-def world(tmp_path, settings, runtime, monkeypatch):
-    monkeypatch.setattr(cv, "PRUNE_GRACE_SECONDS", 0.0)  # tests that prune age nothing
+def graced():
+    """Listed by a test that keeps the product's PRUNE_GRACE_SECONDS, which ``world`` otherwise
+    runs out."""
+
+
+@pytest.fixture
+def world(request, tmp_path, settings, runtime, monkeypatch):
+    if "graced" not in request.fixturenames:
+        runs_out(monkeypatch, cv, "PRUNE_GRACE_SECONDS")  # tests that prune age nothing
     releases = tmp_path / "releases"
     releases.mkdir()
     with claude_download.served(releases) as url:
@@ -569,11 +576,10 @@ def test_prune_keeps_the_approved_the_previous_and_what_running_or_unreadable_se
 
 
 def test_prune_leaves_a_version_put_in_the_store_a_moment_ago_by_an_upgrade_beside_it(
-    world, monkeypatch
+    graced, world
 ):
     """An upgrade of rcman puts its own tested version in the store while the service of the
     release before it runs; that service does not know the version, which no approval names."""
-    monkeypatch.setattr(cv, "PRUNE_GRACE_SECONDS", 3600.0)
     install(world, "2.5.0", "1.1.0")
     approve_rows(world, "1.1.0")
     world.versions.reconcile()
@@ -812,11 +818,11 @@ def watched(world) -> Watched:
     return world.versions.lock
 
 
-def done_within(call, seconds=30):
-    """Whether ``call`` finishes in ``seconds`` in a thread of its own."""
+def done_within(call):
+    """Whether ``call`` finishes, in a thread of its own, within the hang guard."""
     worker = threading.Thread(target=call, daemon=True)
     worker.start()
-    worker.join(seconds)
+    worker.join(HANG_GUARD)
     return not worker.is_alive()
 
 

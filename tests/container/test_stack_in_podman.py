@@ -19,7 +19,6 @@ import os
 import re
 import secrets
 import socket
-import time
 import urllib.parse
 from pathlib import Path
 
@@ -32,11 +31,11 @@ from tests.container import github_stand_in as stand_in
 from tests.container import network
 from tests.container import stack as st
 from tests.container.conftest import a_stack
+from tests.hang_guard import CONTAINER_HANG_GUARD
+from tests.until import SLOW, until
 
 BOB = "bob@example.com"
 EVE = "eve@example.com"  # added by a test
-# Seconds a workspace, or a server, may take to be what a test waits for.
-COMES_WITHIN = 300
 REPO = Path(__file__).resolve().parent.parent.parent
 
 
@@ -53,16 +52,8 @@ def stack(podman_service, system_image, default_image, builder_image, engine_too
 # --- what the tests ask the stack -----------------------------------------------------------
 
 
-def until(what, within: float = COMES_WITHIN, every: float = 1.0):
-    deadline = time.monotonic() + within
-    while not (found := what()):
-        assert time.monotonic() < deadline, f"never: {what.__doc__ or what}"
-        time.sleep(every)
-    return found
-
-
 def podman(stack, *args: str) -> str:
-    done = stack.engine.cli(*args, timeout=300)
+    done = stack.engine.cli(*args, timeout=CONTAINER_HANG_GUARD)
     assert done.returncode == 0, done.stderr
     return done.stdout.decode()
 
@@ -89,7 +80,7 @@ def made(stack, name: str, who: str = st.ADMIN) -> dict:
         found = workspace_of(stack, name, who)
         return found if found and found["state"] != "creating" else None
 
-    found = until(ready)
+    found = until(ready, SLOW)
     assert found["state"] == "ready", found
     return found
 
@@ -121,7 +112,7 @@ def ready_server(stack, name: str) -> None:
         "POST", "/api/servers/confirm", body={"workspace": found["id"], "answer": "y"}
     )
     assert status == 200, answer
-    until(lambda: server_state(stack, name) == "ready")
+    until(lambda: server_state(stack, name) == "ready", SLOW)
     assert claude_processes(stack, found["id"])
 
 
@@ -235,15 +226,15 @@ def cookie_attributes(line: str) -> tuple[str, dict[str, str]]:
     return name, found
 
 
-def clears(attributes: dict[str, str]) -> bool:
-    """Whether a cookie with ``attributes`` is one a browser deletes: Max-Age 0 or less, or an
-    Expires in the past."""
-    import email.utils
+def clears(attributes: dict[str, str], date: str) -> bool:
+    """Whether a cookie with ``attributes``, sent in a response of ``date`` (its Date header),
+    is one a browser deletes: Max-Age 0 or less, or an Expires before the response's date."""
+    from email.utils import parsedate_to_datetime
 
     if "max-age" in attributes:
         return int(attributes["max-age"]) <= 0
     if "expires" in attributes:
-        return email.utils.parsedate_to_datetime(attributes["expires"]).timestamp() < time.time()
+        return parsedate_to_datetime(attributes["expires"]) < parsedate_to_datetime(date)
     return False
 
 
@@ -267,9 +258,11 @@ def test_sign_in_sets_host_prefixed_cookies_secure_path_root_without_domain(stac
     name, planted = cookie_attributes("__Host-rcman-auth; Path=/x; Domain=rcman.test; HttpOnly")
     assert name == "__Host-rcman-auth" and planted["domain"] == "rcman.test", planted
     assert planted["path"] == "/x" and "secure" not in planted and "httponly" in planted, planted
-    assert clears({"max-age": "0"}) and clears({"expires": "Thu, 01 Jan 1970 00:00:00 GMT"})
-    assert not clears({"max-age": "60"}) and not clears({})
-    assert not clears({"expires": "Fri, 01 Jan 2100 00:00:00 GMT"})
+    date = "Fri, 06 Nov 2026 12:00:00 GMT"
+    assert clears({"max-age": "0"}, date)
+    assert clears({"expires": "Thu, 01 Jan 1970 00:00:00 GMT"}, date)
+    assert not clears({"max-age": "60"}, date) and not clears({}, date)
+    assert not clears({"expires": "Fri, 06 Nov 2026 12:00:01 GMT"}, date)
     seen = json.loads(stack.verb("cookies").strip().splitlines()[-1])
     status, body = seen["me"]
     assert status == 200 and json.loads(body)["email"] == st.ADMIN, seen  # signed in
@@ -282,7 +275,8 @@ def test_sign_in_sets_host_prefixed_cookies_secure_path_root_without_domain(stac
         host_prefixed(name, attributes)
     # Signed out: the session's cookie cleared, as a __Host- one, and rcman sends them to sign in.
     cleared = [(*cookie_attributes(line), empty) for line, empty in seen["signed_out"]]
-    ended = [name for name, attributes, _ in cleared if clears(attributes)]
+    assert seen["signed_out_at"], seen  # the sign-out's response is dated
+    ended = [name for name, attributes, _ in cleared if clears(attributes, seen["signed_out_at"])]
     assert any(session.fullmatch(name) for name in ended), cleared
     for name, attributes, _ in cleared:
         host_prefixed(name, attributes)
@@ -330,7 +324,7 @@ def test_restarting_rcman_leaves_the_server_running_as_it_was(stack):
     before = claude_processes(stack, alpha["id"])
     assert before  # positive control
     stack.verb("restart")
-    until(lambda: server_state(stack, "alpha") == "ready", within=60)
+    until(lambda: server_state(stack, "alpha") == "ready", SLOW)
     assert claude_processes(stack, alpha["id"]) == before
 
 
@@ -342,7 +336,7 @@ def test_a_stop_leaves_no_claude_process_in_the_workspace(stack):
     assert claude_processes(stack, alpha["id"]) == []
     status, answer = stack.request("POST", "/api/servers/resume", body={"workspace": alpha["id"]})
     assert status == 200, answer
-    until(lambda: server_state(stack, "alpha") == "ready")
+    until(lambda: server_state(stack, "alpha") == "ready", SLOW)
 
 
 def test_one_person_cannot_reach_anothers_workspace(stack):
@@ -383,7 +377,7 @@ def test_one_person_cannot_reach_anothers_workspace(stack):
 # The stack has no way out to a registry, so no Dockerfile can be built in it: a rebuild is held
 # instead by a create command that runs long, in the new container, from an image the stack's
 # Podman has - the one the workspace was made from.
-SLOW_COMMAND = "sleep 600"
+SLOW_COMMAND = f"sleep {3 * CONTAINER_HANG_GUARD:g}"
 
 
 def rebuild_shown(stack, who: str, workspace_id: int) -> str:
@@ -407,7 +401,7 @@ def rebuilding_with_a_slow_command(stack, who: str) -> dict:
         status, answer = stack.request("GET", "/api/workspaces", who)
         return next(w for w in answer["workspaces"] if w["id"] == workspace_id)
 
-    assert until(lambda: listed()["state"] != "creating") and listed()["state"] == "ready"
+    assert until(lambda: listed()["state"] != "creating", SLOW) and listed()["state"] == "ready"
     name = f"rcman-ws-{workspace_id}"
     image = podman(stack, "container", "inspect", "--format", "{{.ImageName}}", name).strip()
     config = json.dumps({"image": image, "postCreateCommand": SLOW_COMMAND})
@@ -421,18 +415,22 @@ def rebuilding_with_a_slow_command(stack, who: str) -> dict:
         "POST", f"/api/workspaces/{workspace_id}/rebuild", who, {"confirm": True}
     )
     assert status == 202, answer
-    deadline = time.monotonic() + COMES_WITHIN
-    while True:
+
+    def switching() -> bool:
+        """The rebuild in its switch, its slow command running in the new container."""
         rebuild = listed()["rebuild"]
         running = podman(stack, "ps", "--quiet", "--filter", f"name=^{name}$").split()
-        if (
+        return (
             rebuild["state"] == "switching"
-            and running
+            and bool(running)
             and SLOW_COMMAND in podman(stack, "top", name, "args")
-        ):
-            return answer["workspace"]
-        assert time.monotonic() < deadline, rebuild_shown(stack, who, workspace_id)
-        time.sleep(1)
+        )
+
+    try:
+        until(switching, SLOW)
+    except AssertionError as gave_up:
+        raise AssertionError(rebuild_shown(stack, who, workspace_id)) from gave_up
+    return answer["workspace"]
 
 
 def test_deleting_a_person_leaves_nothing_labelled_theirs(stack):
@@ -455,7 +453,7 @@ def test_deleting_a_person_leaves_nothing_labelled_theirs(stack):
     label = f"label=rcman.person={bob}"
     rebuilding = rebuilding_with_a_slow_command(stack, BOB)
     assert podman(stack, "ps", "--all", "--quiet", "--filter", label).split()  # it is there
-    stack.verb("admin-delete", BOB, timeout=900)
+    stack.verb("admin-delete", BOB)
     left = podman(stack, "ps", "--all", "--quiet", "--filter", label).split()
     assert left == [], rebuild_shown(stack, st.ADMIN, rebuilding["id"])
     assert podman(stack, "volume", "ls", "--quiet", "--filter", label).split() == []
@@ -513,15 +511,15 @@ def test_the_monitor_reads_a_running_workspaces_slice_through_systemctl(stack):
     status, answer = stack.request("PUT", "/api/monitor/settings", body=shortest)
     assert status == 200, answer
     try:
-        deadline = time.monotonic() + 6 * monitor.USAGE_INTERVAL_MIN
-        while True:
+
+        def known() -> dict | None:
+            """The monitor's snapshot, once it knows the workspace's memory."""
             status, snap = stack.request("GET", "/api/monitor")
             assert status == 200, snap
             (row,) = [c for c in snap["containers"] if c["id"] == alpha["id"]]
-            if row["memory_bytes"] is not None:
-                break
-            assert time.monotonic() < deadline, snap
-            time.sleep(1)
+            return snap if row["memory_bytes"] is not None else None
+
+        snap = until(known, SLOW)
         assert snap["usage"]["error"] is None
         mine = [p for p in snap["people"] if p["id"] == person_id(stack)]
         assert mine and mine[0]["memory_bytes"] is not None
@@ -740,7 +738,7 @@ def test_ubuntu_caddy_on_demand_asks_rcman_over_a_bound_loopback_site(stack):
     made = stack.engine.cli("exec", "-d", stack.name, "python3", "-c", STAND_IN, str(folder),
                             ALLOWED, SET, LOCATED)  # fmt: skip
     assert made.returncode == 0, made.stderr
-    until(lambda: (folder / "stand-in.pid").exists(), within=60, every=0.2)
+    until(lambda: (folder / "stand-in.pid").exists())
     (folder / "sites").write_text(forward_sites(folder))
     try:
         # Loaded, or Caddy's version and its words.
@@ -804,8 +802,8 @@ def test_ubuntu_caddy_on_demand_asks_rcman_over_a_bound_loopback_site(stack):
         def entries(name: str, host: str) -> list[dict]:
             return [e for e in recorded(folder / name) if e["request"]["host"] == host]
 
-        kept = until(lambda: entries("twin-access.log", TWIN), within=60, every=0.2)
-        filtered = until(lambda: entries("forward-access.log", ALLOWED), within=60, every=0.2)
+        kept = until(lambda: entries("twin-access.log", TWIN))
+        filtered = until(lambda: entries("forward-access.log", ALLOWED))
         [kept] = [e for e in kept if e["request"]["uri"].startswith("/page")]
         assert kept["request"]["uri"] == page, kept
         assert "Cookie" in kept["request"]["headers"], kept
@@ -837,7 +835,7 @@ def started_stand_in(stack, folder: Path, allowed: str) -> None:
     made = stack.engine.cli("exec", "-d", stack.name, "python3", "-c", STAND_IN, str(folder),
                             allowed, SET, LOCATED)  # fmt: skip
     assert made.returncode == 0, made.stderr
-    until(lambda: (folder / "stand-in.pid").exists(), within=60, every=0.2)
+    until(lambda: (folder / "stand-in.pid").exists())
 
 
 def caddy_named(stack) -> str:

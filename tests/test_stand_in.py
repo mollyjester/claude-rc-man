@@ -13,6 +13,7 @@ from rcman.repository import Repository
 
 from tests import git_fixtures as gf
 from tests.git_fixtures import make_repo
+from tests.hang_guard import HANG_GUARD
 
 NAME = "rcman-ws-1"
 URL = "https://github.com/octo/widget"
@@ -84,8 +85,8 @@ def test_the_git_of_an_argv_is_found_past_a_variable_whose_value_ends_in_git():
     """rcman's argv gives git its environment first: a value such as a path ending in /git
     is not git, and the git that runs is the one after the timeout tool."""
     argv = [
-        "env", "-i", "HOME=/h", "X=/a/git", "timeout", "-s", "TERM", "-k", "5", "60",
-        "git", "-C", "/w", "fetch", "--prune",
+        "env", "-i", "HOME=/h", "X=/a/git", "timeout", "-s", "TERM", "-k", f"{HANG_GUARD:g}",
+        f"{HANG_GUARD:g}", "git", "-C", "/w", "fetch", "--prune",
     ]  # fmt: skip
     out = gf.through_stand_in(argv, BASE)
     assert out[out.index("fetch") - 1] == gf.STAND_IN_CONFIG[-1]  # given to the real git

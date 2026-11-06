@@ -7,6 +7,7 @@ import threading
 import pytest
 
 from tests.container import network
+from tests.hang_guard import HANG_GUARD
 
 
 @pytest.fixture
@@ -39,7 +40,7 @@ def relay(echo):
 
 
 def asked(relay, line: bytes, then: bytes = b"") -> bytes:
-    with socket.create_connection(("127.0.0.1", relay.port), timeout=10) as client:
+    with socket.create_connection(("127.0.0.1", relay.port), timeout=HANG_GUARD) as client:
         client.sendall(line + b"\r\nHost: x\r\n\r\n")
         answer = client.recv(4096)
         if then and answer.startswith(b"HTTP/1.1 200"):

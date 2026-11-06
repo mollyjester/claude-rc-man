@@ -20,6 +20,8 @@ import pytest
 from rcman import builder, devcontainer, people
 from rcman import runtime as rt
 
+from tests.hang_guard import HANG_GUARD, pace, runs_out
+from tests.runtime_contract import ended_in_a_thread
 from tests.test_builder import (
     CONFIG,
     FEATURE_FAILED,
@@ -29,6 +31,9 @@ from tests.test_builder import (
     STEP_FAILED,
     config_of,
 )
+from tests.test_runtime import ran_out
+from tests.time_doubles import FakeTime, RecordingLock
+from tests.until import PACE, until
 
 STAND_IN = r"""#!/usr/bin/env python3
 import hashlib, io, json, os, sys, tarfile, time
@@ -144,6 +149,8 @@ elif verb == "load":
     while waited < scenario.get("load_seconds", 0):
         time.sleep(0.05)
         waited += 0.05
+    while scenario.get("load_held") and not exists("load-released"):
+        time.sleep(0.05)
     if scenario.get("load_fails"):
         print("Error: load went wrong", file=sys.stderr)
         sys.exit(125)
@@ -534,33 +541,35 @@ def test_an_image_bigger_than_the_limit_is_a_failure_of_its_own_and_is_not_left(
 
 
 def test_a_build_that_takes_too_long_is_ended_and_says_so(tmp_path, monkeypatch):
-    monkeypatch.setattr(builder, "BUILD_SECONDS", 0.5)
-    stand_in = StandIn(tmp_path, cli_seconds=60, **SUCCESS)
-    began = time.monotonic()
+    """The build's deadline at 0 (rule (a)), against a CLI that outlasts the test, in a thread
+    that ends within the hang guard."""
+    runs_out(monkeypatch, builder, "BUILD_SECONDS")
+    stand_in = StandIn(tmp_path, cli_seconds=3 * HANG_GUARD, **SUCCESS)
+    run = building(runtime_with(stand_in))[0]
     with pytest.raises(rt.BuildFailed) as failed:
-        building(runtime_with(stand_in))[0]()
-    assert failed.value.kind == "build_timeout" and time.monotonic() - began < 30
+        ended_in_a_thread(run)
+    assert failed.value.kind == "build_timeout"
     assert stand_in.has("removed-rcman-build-7")  # the builder was removed, which ends the command
     assert not stand_in.has("volume-rcman-build-7")
 
 
 def test_a_cancel_removes_the_builder_which_ends_the_command_and_nothing_is_left(tmp_path):
-    stand_in = StandIn(tmp_path, cli_seconds=60, **SUCCESS)
+    """Cancelled once the CLI runs, which outlasts the test: the build ends, in a thread that
+    ends within the hang guard, as stopped."""
+    stand_in = StandIn(tmp_path, cli_seconds=3 * HANG_GUARD, **SUCCESS)
     run, _, _ = building(runtime_with(stand_in))
     cancel = threading.Event()
 
     def stop_when_building():
-        deadline = time.monotonic() + 20
-        while not stand_in.has("cli") and time.monotonic() < deadline:
-            time.sleep(0.02)
+        until(lambda: stand_in.has("cli"))
         cancel.set()
 
     threading.Thread(target=stop_when_building, daemon=True).start()
-    began = time.monotonic()
     with pytest.raises(rt.RuntimeFailed) as stopped:
-        run(cancel)
+        ended_in_a_thread(lambda: run(cancel))
     assert not isinstance(stopped.value, rt.BuildFailed)  # a stop is no failure of the build
-    assert time.monotonic() - began < 30 and stand_in.has("removed-rcman-build-7")
+    assert str(stopped.value) == "the build was stopped"
+    assert stand_in.has("removed-rcman-build-7")
     assert not stand_in.has("volume-rcman-build-7")
 
 
@@ -728,27 +737,31 @@ def test_promoting_where_there_is_no_image_is_a_failure_that_changes_nothing(tmp
 
 
 def test_a_promotion_waits_for_another_workspaces_build_that_is_loading(tmp_path):
+    """The load is held until the promotion is seen blocked on the naming the build holds."""
     other = 9
     stand_in = StandIn(
         tmp_path,
-        load_seconds=1.0,
+        load_held=True,
         preexisting={rt.built_name(other): OLD, rt.built_name(other, rt.NEXT_TAG): "d" * 64},
         **SUCCESS,
     )
     runtime = runtime_with(stand_in)
+    naming = runtime._naming = RecordingLock(runtime._naming)
     run, _, _ = building(runtime)
     built: list[str] = []
     building_ = threading.Thread(target=lambda: built.append(run()), daemon=True)
     building_.start()
-    deadline = time.monotonic() + 30
-    while not stand_in.has("load-info") and time.monotonic() < deadline:
-        time.sleep(0.02)
-    assert stand_in.has("load-info")  # the build of 7 is loading, and holds the naming
+    until(lambda: stand_in.has("load-info"))  # the build of 7 is loading, and holds the naming
     promoted: list[str] = []
     promoting = threading.Thread(target=lambda: promoted.append(runtime.promote_build(other)))
     promoting.start()
-    building_.join(60)
-    promoting.join(60)
+    try:
+        naming.wait_blocked(1, match=promoting)
+        assert promoted == []  # it waits for the load
+    finally:
+        (stand_in.state / "load-released").write_text("")
+    building_.join(HANG_GUARD)
+    promoting.join(HANG_GUARD)
     assert built == [rt.built_name(7)]  # the move was not taken for the load's doing
     assert promoted == [rt.built_name(other)]
     calls = stand_in.calls()
@@ -850,31 +863,46 @@ def test_an_image_that_was_loaded_and_not_kept_is_removed_by_its_id(tmp_path, sc
 
 
 def test_an_image_whose_load_is_stopped_is_removed_by_its_id(tmp_path):
-    stand_in = StandIn(tmp_path, load_seconds=60, **SUCCESS)
+    """Cancelled once the load runs, which outlasts the test: the build ends, in a thread that
+    ends within the hang guard, as stopped."""
+    stand_in = StandIn(tmp_path, load_seconds=3 * HANG_GUARD, **SUCCESS)
     cancel = threading.Event()
 
     def stop_when_loading():
-        deadline = time.monotonic() + 20
-        while not stand_in.has("load-info") and time.monotonic() < deadline:
-            time.sleep(0.02)
+        until(lambda: stand_in.has("load-info"))
         cancel.set()
 
     threading.Thread(target=stop_when_loading, daemon=True).start()
-    began = time.monotonic()
     run, _, _ = building(runtime_with(stand_in))
     with pytest.raises(rt.RuntimeFailed) as stopped:
-        run(cancel)
-    assert not isinstance(stopped.value, rt.BuildFailed) and time.monotonic() - began < 30
+        ended_in_a_thread(lambda: run(cancel))
+    assert not isinstance(stopped.value, rt.BuildFailed)
+    assert str(stopped.value) == "the build was stopped"
     assert rm_by_id(stand_in) and list(stand_in.scratch.iterdir()) == []
 
 
 def test_a_load_that_takes_too_long_is_ended_and_its_image_removed_by_its_id(tmp_path, monkeypatch):
-    monkeypatch.setattr(builder, "COPY_SECONDS", 3.0)
-    stand_in = StandIn(tmp_path, load_seconds=60, **SUCCESS)
-    began = time.monotonic()
-    with pytest.raises(rt.BuildFailed) as failed:
-        building(runtime_with(stand_in))[0]()
-    assert failed.value.kind == "build_timeout" and time.monotonic() - began < 30
+    """The runtime's time is the test's (FakeTime on its ``time``), moved past COPY_SECONDS
+    once the load runs, against a load that outlasts the test; the copies before it, which
+    keep their time in the builder module, are left at theirs."""
+    pace(monkeypatch, builder, "BUILD_POLL_SECONDS", PACE)
+    fake = FakeTime()
+    monkeypatch.setattr(rt, "time", fake)
+    stand_in = StandIn(tmp_path, load_seconds=3 * HANG_GUARD, **SUCCESS)
+    run = building(runtime_with(stand_in))[0]
+    failed: list = []
+
+    def build() -> None:
+        try:
+            run()
+        except rt.BuildFailed as error:
+            failed.append(error)
+
+    building_ = threading.Thread(target=build, daemon=True)
+    building_.start()
+    until(lambda: stand_in.has("load-info"))  # the load runs
+    ran_out(fake, builder.COPY_SECONDS, building_)
+    assert len(failed) == 1 and failed[0].kind == "build_timeout", failed
     assert rm_by_id(stand_in) and list(stand_in.scratch.iterdir()) == []
 
 
@@ -1101,7 +1129,7 @@ def test_a_build_that_ends_removes_the_staging_folders_it_found_left_and_its_own
 
 
 def test_the_sweep_leaves_a_folder_alone_while_a_build_is_running_unless_it_is_old(tmp_path):
-    stand_in = StandIn(tmp_path, load_seconds=60, **SUCCESS)
+    stand_in = StandIn(tmp_path, load_seconds=3 * HANG_GUARD, **SUCCESS)
     runtime = runtime_with(stand_in)
     left, other = leftovers(stand_in)
     old = stand_in.scratch / "rcman-image-old"
@@ -1113,16 +1141,13 @@ def test_the_sweep_leaves_a_folder_alone_while_a_build_is_running_unless_it_is_o
     building_ = threading.Thread(target=lambda: _quietly(run, cancel), daemon=True)
     building_.start()
     try:
-        deadline = time.monotonic() + 30
-        while not stand_in.has("load-info") and time.monotonic() < deadline:
-            time.sleep(0.02)
-        assert stand_in.has("load-info")  # the build is loading its staged image
+        until(lambda: stand_in.has("load-info"))  # the build is loading its staged image
         runtime.clean_probes()
         assert left.exists() and other.exists()  # one of them may be the build's own
         assert not old.exists()  # the plant took effect: an old one still goes
     finally:
         cancel.set()
-        building_.join(60)
+        building_.join(HANG_GUARD)
     assert not left.exists()  # and the end of the build clears what is left
 
 

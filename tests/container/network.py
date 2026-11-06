@@ -24,11 +24,10 @@ from collections.abc import Iterator
 
 from devtools import held_folders as hf
 from tests import podman_service as ps
+from tests.hang_guard import CONTAINER_HANG_GUARD, tier_guard
 
 # What the holder runs: nothing, for as long as it is needed.
 HOLDS = ["sleep", "infinity"]
-# Seconds the helper may take to hand a socket over.
-HANDED_WITHIN = 60
 # Run by the helper in the holder's network: a TCP socket bound to the address and listening,
 # handed over the unix socket named.
 HELPER = """
@@ -51,17 +50,19 @@ def holder(engine, image: str, labels: list[str], name: str, *more: str) -> Iter
     options, before the image."""
     made = engine.cli(
         "run", "-d", "--pull=never", "--network=none", *labels, "--name", name, *more, image,
-        *HOLDS, timeout=300
+        *HOLDS, timeout=CONTAINER_HANG_GUARD
     )  # fmt: skip
     assert made.returncode == 0, made.stderr.decode(errors="replace")
     try:
         yield name
     finally:
-        engine.cli("rm", "--force", "--time=0", name, timeout=300)
+        engine.cli("rm", "--force", "--time=0", name, timeout=CONTAINER_HANG_GUARD)
 
 
 def pid_of(engine, container: str) -> int:
-    found = engine.cli("inspect", "--format", "{{.State.Pid}}", container, timeout=60)
+    found = engine.cli(
+        "inspect", "--format", "{{.State.Pid}}", container, timeout=CONTAINER_HANG_GUARD
+    )
     assert found.returncode == 0, found.stderr
     return int(found.stdout.decode())
 
@@ -69,7 +70,10 @@ def pid_of(engine, container: str) -> int:
 def namespace_of(engine, container: str) -> str:
     """The network namespace of ``container``, as ``readlink`` names it (``net:[<inode>]``)."""
     found = engine.local(
-        "unshare", "readlink", f"/proc/{pid_of(engine, container)}/ns/net", timeout=60
+        "unshare",
+        "readlink",
+        f"/proc/{pid_of(engine, container)}/ns/net",
+        timeout=CONTAINER_HANG_GUARD,
     )
     assert found.returncode == 0, found.stderr
     return found.stdout.decode().strip()
@@ -82,7 +86,7 @@ def listening(engine, container: str, port: int, host: str = "127.0.0.1") -> soc
         with socket.socket(socket.AF_UNIX) as told:
             told.bind(path)
             told.listen(1)
-            told.settimeout(HANDED_WITHIN)
+            told.settimeout(CONTAINER_HANG_GUARD)
             helper = subprocess.Popen(
                 [*ps.local(engine.folder), "unshare", "nsenter", "-t",
                  str(pid_of(engine, container)), "-n", sys.executable, "-c", HELPER, host,
@@ -96,7 +100,7 @@ def listening(engine, container: str, port: int, host: str = "127.0.0.1") -> soc
                 raise AssertionError(json.dumps(helper.communicate()[1].decode())) from None
             with connection:
                 _, fds, _, _ = socket.recv_fds(connection, 16, 1)
-            _, said = helper.communicate(timeout=HANDED_WITHIN)
+            _, said = helper.communicate(timeout=CONTAINER_HANG_GUARD)
             assert helper.returncode == 0 and len(fds) == 1, said.decode(errors="replace")
     return socket.socket(fileno=fds[0])
 
@@ -139,7 +143,7 @@ class Relay:
                 self.refused.append(line)
                 client.sendall(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n")
                 return
-            with socket.create_connection(self.target, timeout=30) as upstream:
+            with socket.create_connection(self.target, timeout=tier_guard()) as upstream:
                 client.sendall(b"HTTP/1.1 200 Connection established\r\n\r\n")
                 rest = head.split(b"\r\n\r\n", 1)[1]
                 if rest:

@@ -30,7 +30,8 @@ from tests.container.conftest import engine_runtime, engine_settings
 from tests.container.execs import exec_ids
 from tests.hang_guard import CONTAINER_HANG_GUARD
 from tests.test_terminal import opened, path, resize
-from tests.test_terminals import a_length, alive, sleeping, wait_until
+from tests.test_terminals import a_length, alive, sleep_of, sleeping
+from tests.until import until
 
 
 @pytest.fixture(scope="module")
@@ -49,7 +50,7 @@ def client(podman_service, default_image, engine_tools, engine_store, tmp_path_f
     podman = engine_runtime(podman_service, default_image, engine_tools, engine_store, folder)
     app = create_app(settings, runtime=podman, builder_slot=sizes.BUILDER_SLOT)
     with TestClient(app) as made:
-        assert made.app.state.workspaces.restored.wait(120)
+        assert made.app.state.workspaces.restored.wait(CONTAINER_HANG_GUARD)
         made.alice, made.engine = alice, podman_service
         try:
             yield made
@@ -100,7 +101,7 @@ def test_the_shell_is_root_of_the_persons_range_and_not_rcman_on_the_host(client
     length = a_length()
     with opened(client, ALICE, workspace["id"]) as peer:
         found = peer.ask(
-            f"sleep {length} & echo id-$(id -u)-$(cat /proc/self/uid_map | tr -s ' ' ,)-end",
+            f"{sleep_of(length)} & echo id-$(id -u)-$(cat /proc/self/uid_map | tr -s ' ' ,)-end",
             rb"id-(\d+)-(\S+)-end",
         )
         assert found[1] == b"0"  # root of the person's user namespace, in the default image
@@ -108,7 +109,7 @@ def test_the_shell_is_root_of_the_persons_range_and_not_rcman_on_the_host(client
             found[2].strip(b",")
             == f"0,{client.alice.slot * sizes.TEST_RANGE},{sizes.TEST_RANGE}".encode()
         )
-        [pid] = wait_until(lambda: sleeping(length))
+        [pid] = until(lambda: sleeping(length))
         uid = next(
             int(line.split()[1])
             for line in Path(f"/proc/{pid}/status").read_text().splitlines()
@@ -132,8 +133,8 @@ def test_closing_leaves_no_process_and_no_exec_of_its_own(client, workspace):
     before = exec_ids(client.engine, found.container)
     length = a_length()
     with opened(client, ALICE, workspace["id"]) as peer:
-        peer.ask(f"nohup sleep {length} >/dev/null 2>&1 & echo held-$((2+2))", rb"held-4")
-        [pid] = wait_until(lambda: sleeping(length))
+        peer.ask(f"nohup {sleep_of(length)} >/dev/null 2>&1 & echo held-$((2+2))", rb"held-4")
+        [pid] = until(lambda: sleeping(length))
         terminal = client.app.state.terminals.live(workspace["id"])
         rss = next(
             int(line.split()[1]) * 1024
@@ -143,8 +144,8 @@ def test_closing_leaves_no_process_and_no_exec_of_its_own(client, workspace):
         assert 0 < rss < base.CLIENT_MAX_RSS_BYTES, rss  # what the podman client holds
         # the control: its exec is there, running
         assert its_exec_runs(exec_ids(client.engine, found.container), before)
-    wait_until(lambda: not alive(pid), timeout=30)
-    wait_until(lambda: set(exec_ids(client.engine, found.container)) <= set(before), timeout=30)
+    until(lambda: not alive(pid))
+    until(lambda: set(exec_ids(client.engine, found.container)) <= set(before))
     shell = service.layout_of(found).shell
     table = service.run_in(found)([shell, "-c", "cat /proc/[0-9]*/cmdline"])
     assert table.code == 0 and table.out  # the control: the table was read
@@ -163,8 +164,8 @@ def test_a_terminal_closed_as_soon_as_it_opens_leaves_no_shell_and_no_exec(clien
         with client.websocket_connect(path(workspace["id"]), headers=changing(ALICE)) as session:
             session.send_json(resize())
         # closed at once: the page went as the terminal opened
-    wait_until(lambda: client.app.state.terminals.live(workspace["id"]) is None, timeout=60)
-    wait_until(lambda: set(exec_ids(client.engine, found.container)) <= before, timeout=30)
+    until(lambda: client.app.state.terminals.live(workspace["id"]) is None)
+    until(lambda: set(exec_ids(client.engine, found.container)) <= before)
     table = service.run_in(found)([shell, "-c", "cat /proc/[0-9]*/cmdline"])
     assert table.code == 0 and table.out  # the control: the table was read
     assert b"rcman-terminal" not in table.out and b"-i\0" not in table.out
@@ -199,7 +200,7 @@ def test_a_terminal_still_ending_is_not_taken_for_the_next_ones_exec(
         held.set()
     with opened(client, ALICE, workspace["id"]) as peer:
         peer.ask("echo second-$((2+2))", rb"second-4")
-        wait_until(lambda: not old & set(exec_ids(client.engine, found.container)), timeout=30)
+        until(lambda: not old & set(exec_ids(client.engine, found.container)))
         now = exec_ids(client.engine, found.container)
         assert len(now) <= len(before)  # the case: a count is met by the one that ended
         assert its_exec_runs(now, before)

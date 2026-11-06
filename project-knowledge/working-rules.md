@@ -106,6 +106,11 @@ else; this file is the full list. Rules are referred to by their bold name.
   repeated only after the operator confirms. The pull request says whether
   they were required and, if so, their totals
   ([CONTRIBUTING.md](../CONTRIBUTING.md#pull-requests)).
+- **The benchmark decides nothing.** `make benchmark` runs the tests that measure how long
+  something takes and report it ([tests.md](tests.md#the-benchmark)). It is neither the
+  gating check nor an on-demand run: no other target runs it, `make check-all` included, and
+  a change never needs it to pass. A change that moves what it measures runs it, and the
+  pull request gives its figures.
 - **A test that patches a constant the service reads when it starts does so
   before the `client` fixture starts the service.** The service takes the
   value once, at start; a patch made afterwards changes nothing the running
@@ -115,6 +120,11 @@ else; this file is the full list. Rules are referred to by their bold name.
   the same way, by a fixture that runs before `client` starts the service: one
   of the conftest's `SEAMS`, which `app` asks for first, or one the test lists
   before `client` ([tests.md](tests.md#time-in-tests)).
+- **A test shortens a product's deadline only with `runs_out`, or set to 0 for a deadline
+  meant to run out at once, and a pace only with `pace`** (`tests/hang_guard.py`), each undone by the `monkeypatch` it is given, never by a
+  second setattr; it waits for what it cannot be told of with `until`, and every other bound
+  it gives is the tier's hang guard. The timing guard holds every test to it
+  ([tests.md](tests.md#time-in-tests)).
 - **Throwaway probes go in a scratch directory** outside the repository and are
   deleted when done.
 - **The tests run alike on a developer's machine and in a workspace of

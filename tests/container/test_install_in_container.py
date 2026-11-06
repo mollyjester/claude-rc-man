@@ -27,11 +27,10 @@ import pytest
 
 from devtools import held_folders as hf
 from installer import install as ins
+from tests.hang_guard import CONTAINER_HANG_GUARD, EXEC_GUARD, GUARD_VARIABLE
 
 # The installer's toolchain, where the container has it.
 TOOLCHAIN = Path("/opt/rcman/toolchain")
-# Seconds a check may take: some run the installer again, which may build a release.
-CHECKED_WITHIN = 2400
 # The programs the stand-ins are mounted over.
 STOOD_IN = ("/usr/bin/systemctl", "/usr/bin/loginctl", "/usr/bin/podman")
 STAND_INS = "/var/lib/rcman-test-stand-ins"
@@ -60,7 +59,7 @@ def offline_caches(podman_service, system_image, source, toolchain, labelled):
         done = podman_service.cli(
             "run", "--rm", "--pull=never", "--network=host", *labelled, "-v", f"{source}:/src:ro",
             "-v", f"{toolchain}:{TOOLCHAIN}:ro", "-v", f"{folder}:/cache", system_image,
-            "sh", "-c", script, timeout=2400,
+            "sh", "-c", script, timeout=CONTAINER_HANG_GUARD,
         )  # fmt: skip
         ran(done, "the caches were not filled")
         yield folder
@@ -72,10 +71,14 @@ class Installation:
     def __init__(self, engine, name: str):
         self.engine, self.name = engine, name
 
-    def exec(self, *argv: str, stdin: bytes | None = None, timeout: float = CHECKED_WITHIN):
+    def exec(self, *argv: str, stdin: bytes | None = None):
+        """``argv`` in the installation's container, handed its tier's hang guard (``until``'s
+        bound there) and killed beyond it (EXEC_GUARD), so that a wait there that never ends
+        says what it waited for."""
         return self.engine.cli(
-            "exec", "-i", "-w", "/src", "-e", "PYTHONDONTWRITEBYTECODE=1", self.name, *argv,
-            input=stdin, timeout=timeout,
+            "exec", "-i", "-w", "/src", "-e", "PYTHONDONTWRITEBYTECODE=1", "-e",
+            f"{GUARD_VARIABLE}={CONTAINER_HANG_GUARD}", self.name, *argv, input=stdin,
+            timeout=EXEC_GUARD,
         )  # fmt: skip
 
     def check(self, name: str) -> None:
@@ -103,7 +106,7 @@ def installation(
             "run", "-d", "--init", "--pull=never", "--network=none", *labelled, "--name", name,
             "-v", f"{source}:/src:ro", "-v", f"{toolchain_copy}:{TOOLCHAIN}",
             "-v", f"{offline_caches}:/cache", *mounts, system_image, "sleep", "infinity",
-            timeout=300,
+            timeout=CONTAINER_HANG_GUARD,
         )  # fmt: skip
         try:
             ran(made, "the installation's container did not start")
@@ -116,7 +119,7 @@ def installation(
             found.check("first")
             yield found
         finally:
-            podman_service.cli("rm", "--force", "--time=0", name, timeout=300)
+            podman_service.cli("rm", "--force", "--time=0", name, timeout=CONTAINER_HANG_GUARD)
 
 
 def test_the_first_installation_puts_rcman_in_caddy_and_restarts_it(installation):

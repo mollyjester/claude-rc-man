@@ -6,7 +6,15 @@ import { ADMIN_PAGES } from "../src/AdminPages";
 import { m } from "../src/messages";
 import { PAGES } from "../src/Pages";
 import { callSites, pageSources } from "../src/test/callSites";
-import { openUpgradeDialog, panel, personAction, workspaces } from "./nav";
+import {
+  frame,
+  openUpgradeDialog,
+  panel,
+  personAction,
+  recordEvents,
+  recorded,
+  workspaces,
+} from "./nav";
 import { ALICE, BOB, signInAs } from "./people";
 
 // A workspace whose server stopped on a screen wider than any window.
@@ -315,7 +323,6 @@ for (const [width, phone] of [
     test("every dialog is a sheet from the foot of a phone's screen, and in the middle of a desktop's", async ({
       page,
     }) => {
-      test.slow(); // each dialog of the page
       await signInAs(page, ALICE);
       const sources = callSites(pageSources(SRC));
       expect(sources.faults).toEqual([]);
@@ -499,11 +506,14 @@ test.describe("a workspace's panel on a phone", () => {
     await now.click();
     await expect(sheet).toBeVisible();
     const back = await box(page.getByRole("link", { name: m.backToWorkspaces }));
+    await recordEvents(page, ["click"]);
     await page.touchscreen.tap(back.x + back.width / 2, back.y + back.height / 2);
+    // the press's click came, and a frame passed, in which one that went through would have left
+    await expect.poll(() => recorded(page)).toContain("click");
+    await frame(page);
+    expect(selected(page)).toBe(String(SECOND.id));
     await expect(sheet).toBeHidden();
     await expect(now).toBeFocused(); // back on the switcher
-    await page.waitForTimeout(300); // a press that went through would have left by now
-    expect(selected(page)).toBe(String(SECOND.id));
   });
 
   test("the list's heading row is a count of the workspaces at one edge and New at the other", async ({
@@ -625,17 +635,23 @@ test.describe("on a phone", () => {
     await expect(nav).toBeVisible();
     // positive control: the trash button is beside the drawer, where the press lands
     expect(at.x).toBeGreaterThan((await box(nav)).x + (await box(nav)).width);
+    await recordEvents(page, ["click"]);
     await page.touchscreen.tap(at.x + at.width / 2, at.y + at.height / 2);
     await expect(nav).toBeHidden();
-    await page.waitForTimeout(300); // a click that went through would open its dialog by now
+    // the press's click came, and a frame passed, in which one that went through would have
+    // opened its dialog
+    await expect.poll(() => recorded(page)).toContain("click");
+    await frame(page);
     await expect(page.locator("dialog[open]")).toHaveCount(0);
     await expect(page).toHaveURL("/");
     // and the same with a mouse's press
     await menuButton(page).click();
     await expect(nav).toBeVisible();
+    await recordEvents(page, ["click"]);
     await page.mouse.click(at.x + at.width / 2, at.y + at.height / 2);
     await expect(nav).toBeHidden();
-    await page.waitForTimeout(300);
+    await expect.poll(() => recorded(page)).toContain("click");
+    await frame(page);
     await expect(page.locator("dialog[open]")).toHaveCount(0);
   });
 

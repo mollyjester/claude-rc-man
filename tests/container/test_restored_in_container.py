@@ -35,19 +35,11 @@ from tests.container import sizes
 from tests.container import test_runtime_in_podman as base
 from tests.container.conftest import engine_runtime, engine_settings, image_of, stand_in
 from tests.e2e_server import record_sign_in
+from tests.hang_guard import CONTAINER_HANG_GUARD
+from tests.until import SLOW, until
 
-# How long the workspace and its server may take to be back.
-BACK_WITHIN = 300
 PERSON_LIMITS = {"memory": "4G", "cpu": "3", "pids": "6000"}
 WORKSPACE_LIMITS = {"memory": "2G", "cpu": "1.5", "pids": "3000"}
-
-
-def until(what, within: float = BACK_WITHIN):
-    deadline = time.monotonic() + within
-    while not (found := what()):
-        assert time.monotonic() < deadline, f"never: {what.__doc__ or what}"
-        time.sleep(1)
-    return found
 
 
 def claude_processes(podman, name: str) -> list[int]:
@@ -112,7 +104,7 @@ def restarted(
         return TestClient(create_app(settings, runtime=podman, builder_slot=sizes.BUILDER_SLOT))
 
     with app() as client:
-        assert client.app.state.workspaces.restored.wait(120)
+        assert client.app.state.workspaces.restored.wait(CONTAINER_HANG_GUARD)
         workspace = made_workspace(client, ALICE, "alpha")
         name = rt.container_name(workspace["id"])
         layout = podman.layout(name)
@@ -130,7 +122,7 @@ def restarted(
             "/api/servers", json={"workspace": workspace["id"]}, headers=changing(ALICE)
         )
         assert answer.status_code == 200, answer.text
-        until(lambda: server_state(client, workspace["id"]) in ("ready", "connected"))
+        until(lambda: server_state(client, workspace["id"]) in ("ready", "connected"), SLOW)
         for url, held in (
             (f"/api/people/{alice.id}/limits", PERSON_LIMITS),
             (f"/api/people/{alice.id}/workspaces/{workspace['id']}/limits", WORKSPACE_LIMITS),
@@ -156,7 +148,7 @@ def restarted(
         service._set(beta["id"], rebuild_state="switching")
 
     # The machine restarts: every container stops, and what the user manager held is gone.
-    stopped = podman_service.cli("stop", "--all", "--time=10", timeout=600)
+    stopped = podman_service.cli("stop", "--all", "--time=10", timeout=CONTAINER_HANG_GUARD)
     assert stopped.returncode == 0, stopped.stderr
     assert not podman.running(name)  # positive control: the workspace is down
     reboot = stand_in(folder, "reboot", state)
@@ -164,7 +156,7 @@ def restarted(
     rebooted = time.time()
 
     with app() as client:
-        assert client.app.state.workspaces.restored.wait(BACK_WITHIN)
+        assert client.app.state.workspaces.restored.wait(CONTAINER_HANG_GUARD)
         yield {
             "client": client,
             "podman": podman,
@@ -184,13 +176,13 @@ def restarted(
 
 
 def test_the_workspace_runs_again(restarted):
-    until(lambda: restarted["podman"].running(restarted["name"]))
+    until(lambda: restarted["podman"].running(restarted["name"]), SLOW)
     assert started(restarted["engine"], restarted["name"]) > restarted["rebooted"]
 
 
 def test_its_server_is_ready_again(restarted):
     client, workspace = restarted["client"], restarted["workspace"]
-    until(lambda: server_state(client, workspace) in ("ready", "connected"))
+    until(lambda: server_state(client, workspace) in ("ready", "connected"), SLOW)
     found = claude_processes(restarted["podman"], restarted["name"])
     assert found and restarted["before"]["processes"]  # it ran before, and runs again
 
@@ -199,7 +191,7 @@ def test_the_limits_are_set_again_before_the_container_starts(restarted):
     """The stand-in forgot the limits with the restart; rcman set them again from its table
     before it started the workspace."""
     me, workspace = restarted["person"], restarted["workspace"]
-    until(lambda: restarted["podman"].running(restarted["name"]))
+    until(lambda: restarted["podman"].running(restarted["name"]), SLOW)
     times = set_properties(restarted["state"], restarted["rebooted"])
     own, theirs = limits.workspace_slice(me, workspace), limits.person_slice(me)
     assert set(times) >= {own, theirs}, times
@@ -223,7 +215,7 @@ def test_the_slots_the_module_uses_are_the_suites(restarted):
 def test_a_rebuild_cut_short_by_the_restart_comes_back_on_the_old_image(restarted):
     podman, workspace = restarted["podman"], restarted["beta"]
     name = rt.container_name(workspace)
-    until(lambda: podman.exists(name) and podman.running(name))
+    until(lambda: podman.exists(name) and podman.running(name), SLOW)
     assert image_of(podman, name) == restarted["beta_image"]
     now = restarted["client"].app.state.workspaces.get(workspace)
     assert (now.state, now.rebuild_state) == ("ready", None)

@@ -10,7 +10,6 @@ import collections
 import json
 import re
 import threading
-import time
 from pathlib import Path
 
 import pytest
@@ -19,9 +18,9 @@ from rcman import devcontainer as dc
 from rcman import runtime as rt
 from rcman import workspaces as ws
 
-from tests.conftest import MADE_WITHIN, as_user, changing, ended, host_runtime, made_workspace
+from tests.conftest import as_user, changing, ended, host_runtime, made_workspace
 from tests.git_fixtures import fixture_git, make_repo
-from tests.hang_guard import HANG_GUARD
+from tests.hang_guard import HANG_GUARD, runs_out
 from tests.test_clone import (
     ALICE,
     TOKEN,
@@ -29,6 +28,7 @@ from tests.test_clone import (
     cleared,
     clone,
     cloned,
+    ended_in_a_thread,
     entry,
     finished,
     insert,
@@ -36,7 +36,8 @@ from tests.test_clone import (
     row,
     save_token,
 )
-from tests.time_doubles import WatchedCondition
+from tests.time_doubles import RecordingLock, WatchedCondition
+from tests.until import until
 
 IMAGE = "registry.example.com/team/dev:latest"
 PASSWD = "root:x:0:0:root:/root:/bin/sh\ndev:x:1234:1235::/home/dev:/bin/sh\n"
@@ -98,19 +99,38 @@ class Flow(rt.HostRuntime):
             for line in self.build_lines:
                 progress(line)
             if self.build_gate is not None:
-                deadline = time.monotonic() + MADE_WITHIN
-                while not self.build_gate.is_set():
-                    if (
-                        cancel is not None and cancel.is_set()
-                    ) or request.id not in self.builders():
-                        raise rt.RuntimeFailed("the build was stopped")
-                    assert time.monotonic() < deadline
-                    time.sleep(0.02)
+                self.held(
+                    self.build_gate,
+                    lambda: (
+                        (cancel is not None and cancel.is_set())
+                        or request.id not in self.builders()
+                    ),
+                    "the build was stopped",
+                )
             if self.build_error is not None:
                 raise self.build_error
             return self.build_facts
         finally:
             self.builds_at_once -= 1
+
+    @staticmethod
+    def held(gate: threading.Event, stopped, why: str) -> None:
+        """Until the test opens ``gate``, or, once ``stopped()`` says the work was stopped, the
+        runtime's failure ``why``. Past the hang bound it is held on, as work that never ends
+        would be, so that what waits for it rather than stopping it fails the test."""
+
+        def opened_or_stopped():
+            if gate.is_set():
+                return "opened"
+            return "stopped" if stopped() else None
+
+        try:
+            seen = until(opened_or_stopped)
+        except AssertionError:
+            gate.wait(2 * HANG_GUARD)
+            seen = "opened"
+        if seen == "stopped":
+            raise rt.RuntimeFailed(why)
 
     def remove_build(self, workspace, image=False, **more):
         self.events.append(("remove_build", workspace, image))
@@ -120,7 +140,7 @@ class Flow(rt.HostRuntime):
         self.events.append(("create", spec.image, spec.user))
         if spec.image and self.create_gate is not None:
             self.creating.set()
-            self.create_gate.wait(MADE_WITHIN)
+            self.create_gate.wait(2 * HANG_GUARD)  # until the test opens it
         if spec.image and self.fail_image_create:
             raise rt.RuntimeFailed("OCI runtime error: cannot run the image")
         super().create(spec)
@@ -150,18 +170,15 @@ class Flow(rt.HostRuntime):
             if progress is not None:
                 progress(line)
         if self.pull_gate is not None:
-            deadline = time.monotonic() + MADE_WITHIN
-            while not self.pull_gate.is_set():
-                if cancel is not None and cancel.is_set():
-                    raise rt.RuntimeFailed("the pull was stopped")
-                assert time.monotonic() < deadline
-                time.sleep(0.02)
+            self.held(
+                self.pull_gate,
+                lambda: cancel is not None and cancel.is_set(),
+                "the pull was stopped",
+            )
         super().pull(image, progress, cancel)
         self.after_pull()
 
-    def exec(
-        self, name, argv, stdin=None, timeout=rt.PODMAN_TIMEOUT, cwd=None, keep=None, again=False
-    ):
+    def exec(self, name, argv, stdin=None, timeout=HANG_GUARD, cwd=None, keep=None, again=False):
         self.execs.append((name, argv, cwd))
         self.agains.append((argv, again))
         self.kept = keep
@@ -177,7 +194,7 @@ class Flow(rt.HostRuntime):
             self.concurrent += 1
             self.most_at_once = max(self.most_at_once, self.concurrent)
             try:
-                self.gate.wait(MADE_WITHIN)
+                self.gate.wait(2 * HANG_GUARD)  # until the test opens it, or a removal does
             finally:
                 self.concurrent -= 1
             if self.release_ok:
@@ -753,11 +770,8 @@ def test_the_pull_is_shown_in_the_log_with_its_progress(client, runtime, publish
     runtime.pull_gate = threading.Event()
     publish(config())
     made = clone(client).json()["workspace"]
-    assert runtime.pulling.wait(MADE_WITHIN)
-    deadline = time.monotonic() + MADE_WITHIN
-    while "Copying blob a" not in (entry(client, made["id"])["log"] or ""):
-        assert time.monotonic() < deadline
-        time.sleep(0.05)
+    assert runtime.pulling.wait(HANG_GUARD)
+    until(lambda: "Copying blob a" in (entry(client, made["id"])["log"] or ""))
     log = entry(client, made["id"])["log"]
     assert f"Pulling {IMAGE}" in log and "Trying to pull the image" in log
     runtime.pull_gate.set()
@@ -1040,16 +1054,28 @@ def test_a_command_in_array_form_is_not_run_by_a_shell(client, runtime, publish)
 
 
 def test_the_entries_of_an_object_run_one_after_another(client, runtime, publish):
+    """The first entry is held until the test lets it go: the second is not run meanwhile."""
     publish(
         config(
             postCreateCommand={
-                "first": "sleep 0.3; echo first >> ran.txt",
+                "first": "while [ ! -e go ]; do sleep 0.05; done; echo first >> ran.txt",
                 "second": ["sh", "-c", "echo second >> ran.txt"],
             }
         )
     )
-    done = cloned(client)
-    assert (work_of(runtime, done) / "ran.txt").read_text().split() == ["first", "second"]
+    made = clone(client).json()["workspace"]
+
+    def ran(word: str) -> bool:
+        return any(f"echo {word} >> ran.txt" in " ".join(a) for a in runtime.hooks_run())
+
+    try:
+        until(lambda: ran("first"))  # under way, and held
+        assert not ran("second")
+    finally:
+        (work_of(runtime, made) / "go").touch()
+    assert finished(client, made["id"])["state"] == "ready"
+    assert ran("second")  # the positive control
+    assert (work_of(runtime, made) / "ran.txt").read_text().split() == ["first", "second"]
 
 
 def test_a_failing_create_command_fails_the_workspace_with_its_exit_code_and_tail_and_keeps_it(
@@ -1082,14 +1108,16 @@ def test_a_failing_command_stops_the_ones_after_it(client, runtime, publish):
     assert not (work_of(runtime, failed) / "ran.txt").exists()
 
 
+# The least the ``timeout`` tool is given that bounds anything: a second (0 is no bound at all).
+TOOL_FLOOR = 1
+
+
 def test_a_command_that_takes_too_long_is_stopped_and_the_message_names_no_limit(
     client, runtime, publish, monkeypatch
 ):
-    monkeypatch.setattr(ws, "HOOK_TIMEOUT_SECONDS", 1)
-    publish(config(postCreateCommand="echo started; sleep 30"))
-    began = time.monotonic()
+    runs_out(monkeypatch, ws, "HOOK_TIMEOUT_SECONDS", at=TOOL_FLOOR)
+    publish(config(postCreateCommand=f"echo started; sleep {3 * HANG_GUARD}"))
     failed = cloned(client)
-    assert time.monotonic() - began < 25
     assert failed["state"] == "failed"
     assert (
         problems.DEVCONTAINER_MESSAGES["hook_timeout"].format(command="postCreateCommand")
@@ -1145,14 +1173,14 @@ def test_deleting_a_workspace_whose_command_runs_stops_it_by_removing_the_contai
     publish(config(postCreateCommand="echo GATE"))
     made = clone(client).json()["workspace"]
     name = rt.container_name(made["id"])
-    assert runtime.hooking.wait(MADE_WITHIN)
+    assert runtime.hooking.wait(HANG_GUARD)
     removed_before = [e for e in runtime.events if e == ("remove", name)]
     assert removed_before == []  # positive control: nothing has removed it yet
-    began = time.monotonic()
-    r = client.delete(f"/api/workspaces/{made['id']}", headers=changing(ALICE))
+    r = ended_in_a_thread(
+        lambda: client.delete(f"/api/workspaces/{made['id']}", headers=changing(ALICE))
+    )
     assert r.status_code == 200, r.text
     assert ("remove", name) in runtime.events  # the delete itself did it
-    assert time.monotonic() - began < 15
     cleared(runtime, client)
     assert not (runtime.root / name).exists()
 
@@ -1162,12 +1190,12 @@ def test_deleting_a_workspace_whose_image_is_being_pulled_stops_the_pull(client,
     publish(config())
     made = clone(client).json()["workspace"]
     name = rt.container_name(made["id"])
-    assert runtime.pulling.wait(MADE_WITHIN)
-    began = time.monotonic()
-    r = client.delete(f"/api/workspaces/{made['id']}", headers=changing(ALICE))
+    assert runtime.pulling.wait(HANG_GUARD)
+    r = ended_in_a_thread(
+        lambda: client.delete(f"/api/workspaces/{made['id']}", headers=changing(ALICE))
+    )
     assert r.status_code == 200, r.text
     cleared(runtime, client)
-    assert time.monotonic() - began < 15
     assert not (runtime.root / name).exists()
     assert runtime.pulled == []  # the pull did not finish
     assert not [e for e in runtime.events if e[0] == "create" and e[1] == IMAGE]
@@ -1184,13 +1212,13 @@ def test_deleting_a_workspace_before_the_file_is_read_makes_nothing_of_it(
 
     def held(self, workspace, slot):
         reached.set()
-        gate.wait(MADE_WITHIN)
+        gate.wait(HANG_GUARD)
         return real(self, workspace, slot)
 
     monkeypatch.setattr(ws.Workspaces, "_configure", held)
     try:
         made = clone(client).json()["workspace"]
-        assert reached.wait(MADE_WITHIN)  # the clone is done
+        assert reached.wait(HANG_GUARD)  # the clone is done
         client.delete(f"/api/workspaces/{made['id']}", headers=changing(ALICE))
         gate.set()
         cleared(runtime, client)
@@ -1451,11 +1479,8 @@ def test_a_start_command_that_hangs_holds_up_neither_other_workspaces_nor_its_ow
     monkeypatch.setattr(service, "start_server", lambda w, prefix, **k: started.append(w.id))
     thread = restoring(service)
     try:
-        assert runtime.hooking.wait(MADE_WITHIN)
-        deadline = time.monotonic() + MADE_WITHIN
-        while quick not in started:  # the other workspace's server came back meanwhile
-            assert time.monotonic() < deadline
-            time.sleep(0.02)
+        assert runtime.hooking.wait(HANG_GUARD)
+        until(lambda: quick in started)  # the other workspace's server came back meanwhile
         assert slow not in started and thread.is_alive()  # positive control: it is still held
         lock = service.lock(slow)
         assert lock.acquire(blocking=False)  # nor does it hold its own workspace's lock
@@ -1463,7 +1488,7 @@ def test_a_start_command_that_hangs_holds_up_neither_other_workspaces_nor_its_ow
         assert runtime.running(rt.container_name(slow))  # its container was made already
     finally:
         runtime.gate.set()
-    thread.join(MADE_WITHIN)
+    thread.join(HANG_GUARD)
     assert not thread.is_alive()
     assert started == [quick, slow]  # its server came after its command, once that ended
 
@@ -1474,15 +1499,15 @@ def test_closing_while_a_start_command_hangs_ends_the_restore_at_once(service, s
     thread = restoring(service)
     closing = None
     try:
-        assert runtime.hooking.wait(MADE_WITHIN)
+        assert runtime.hooking.wait(HANG_GUARD)
         closing = threading.Thread(target=service.close, daemon=True)
         closing.start()  # it waits for the command, which is held
-        thread.join(15)
+        thread.join(HANG_GUARD)
         assert not thread.is_alive()
         assert service.restored.is_set()
     finally:
         runtime.gate.set()
-    closing.join(MADE_WITHIN)
+    closing.join(HANG_GUARD)
     assert not closing.is_alive()
 
 
@@ -1493,13 +1518,11 @@ def test_deleting_a_workspace_whose_start_command_hangs_in_a_restore_stops_it(
     slow = lost_with_hook(service, settings, runtime)
     thread = restoring(service)
     try:
-        assert runtime.hooking.wait(MADE_WITHIN)
-        began = time.monotonic()
-        service.delete(service.get(slow))  # does not wait for the command
-        assert time.monotonic() - began < 15
+        assert runtime.hooking.wait(HANG_GUARD)
+        ended_in_a_thread(lambda: service.delete(service.get(slow)))  # nor waits for it
     finally:
         runtime.gate.set()
-    thread.join(MADE_WITHIN)
+    thread.join(HANG_GUARD)
     assert not thread.is_alive()
     assert row(settings, slow) is None
     assert rt.container_name(slow) not in runtime.labelled()  # nothing is left of it
@@ -1899,13 +1922,14 @@ def test_a_workspace_is_not_recorded_while_images_are_being_collected(service, s
 
     def slow(keep_ids, keep_names):
         inside.set()
-        assert release.wait(MADE_WITHIN)
+        assert release.wait(HANG_GUARD)
         return real(keep_ids, keep_names)
 
     runtime.collect_images = slow
+    lock = service._images_lock = RecordingLock(service._images_lock)
     collecting = threading.Thread(target=service._collect_images, daemon=True)
     collecting.start()
-    assert inside.wait(MADE_WITHIN)
+    assert inside.wait(HANG_GUARD)
     con = db.connect(settings.database)
     try:
         alice = people.by_email(con, ALICE)
@@ -1916,11 +1940,11 @@ def test_a_workspace_is_not_recorded_while_images_are_being_collected(service, s
         target=lambda: made.append(service.create(alice, "late")), daemon=True
     )
     creating.start()
-    creating.join(1.0)
-    assert creating.is_alive() and service.everything() == []  # held back: no row yet
+    lock.wait_blocked(1, match=creating)
+    assert service.everything() == []  # held back: no row yet
     release.set()
-    collecting.join(MADE_WITHIN)
-    creating.join(MADE_WITHIN)
+    collecting.join(HANG_GUARD)
+    creating.join(HANG_GUARD)
     assert made and made[0].name == "late" and STRAY not in runtime.images  # then it goes on
 
 
@@ -2138,15 +2162,13 @@ def test_a_delete_during_the_pull_of_a_restore_stops_it_and_makes_nothing(
     workspace = lost_with_plan(service, settings)
     thread = restoring(service)
     try:
-        assert runtime.pulling.wait(MADE_WITHIN)
+        assert runtime.pulling.wait(HANG_GUARD)
         lock = service.lock(workspace)  # the pull holds nothing
         assert lock.acquire(blocking=False)
         lock.release()
-        began = time.monotonic()
-        service.delete(service.get(workspace))
-        assert time.monotonic() - began < 15
+        ended_in_a_thread(lambda: service.delete(service.get(workspace)))
     finally:
-        thread.join(MADE_WITHIN)
+        thread.join(HANG_GUARD)
     assert not thread.is_alive()
     assert row(settings, workspace) is None
     assert not [e for e in runtime.events if e[0] == "create"]
@@ -2169,7 +2191,7 @@ def test_a_delete_while_the_container_is_being_made_leaves_none_behind(service, 
     workspace = lost_with_plan(service, settings)
     thread = restoring(service)
     try:
-        assert runtime.creating.wait(MADE_WITHIN)
+        assert runtime.creating.wait(HANG_GUARD)
         lock = service.lock(workspace)
         assert lock.acquire(blocking=False)  # making it holds no lock
         lock.release()
@@ -2177,7 +2199,7 @@ def test_a_delete_while_the_container_is_being_made_leaves_none_behind(service, 
         assert row(settings, workspace) is None
     finally:
         runtime.create_gate.set()
-    thread.join(MADE_WITHIN)
+    thread.join(HANG_GUARD)
     assert not thread.is_alive()
     assert runtime.labelled() == {} and not runtime.exists(rt.container_name(workspace))
     assert [e for e in runtime.events if e[0] == "create"]  # positive control: it was made
@@ -2201,7 +2223,7 @@ def test_one_workspace_that_raises_leaves_the_others_restored_and_its_slot_free(
     fine = insert(settings, "fine", "ready", None)
     after = lost_with_plan(service, settings, "after")
     thread = restoring(service)
-    thread.join(MADE_WITHIN)
+    thread.join(HANG_GUARD)
     assert not thread.is_alive() and service.restored.is_set()
     assert runtime.running(rt.container_name(fine))
     assert runtime.running(rt.container_name(after))
@@ -2218,7 +2240,7 @@ def test_a_start_asked_for_during_a_restore_is_answered_and_not_held_up_by_it(
     thread = restoring(service)
     answers = []
     try:
-        assert runtime.pulling.wait(MADE_WITHIN)
+        assert runtime.pulling.wait(HANG_GUARD)
 
         def ask():
             try:
@@ -2228,12 +2250,12 @@ def test_a_start_asked_for_during_a_restore_is_answered_and_not_held_up_by_it(
 
         asking = threading.Thread(target=ask, daemon=True)
         asking.start()
-        asking.join(15)
+        asking.join(HANG_GUARD)
         assert not asking.is_alive()  # it neither waited for the pull nor deadlocked
         assert answers and getattr(answers[0], "code", None) == "claude_not_logged_in"
     finally:
         runtime.pull_gate.set()
-        thread.join(MADE_WITHIN)
+        thread.join(HANG_GUARD)
     assert not thread.is_alive()
 
 
@@ -2249,12 +2271,12 @@ def test_a_command_held_when_its_workspace_is_deleted_is_not_followed_by_the_nex
     set_environment(settings, workspace, plan.to_json())
     thread = restoring(service)
     try:
-        assert runtime.hooking.wait(MADE_WITHIN)
+        assert runtime.hooking.wait(HANG_GUARD)
         assert len(runtime.hooks_run()) == 1  # positive control: the first is the one held
         service.delete(service.get(workspace))
     finally:
         runtime.gate.set()
-    thread.join(MADE_WITHIN)
+    thread.join(HANG_GUARD)
     assert not thread.is_alive()
     assert len(runtime.hooks_run()) == 1  # the second never ran
     assert runtime.labelled() == {}
@@ -2457,14 +2479,14 @@ def test_deleting_a_workspace_that_is_being_built_removes_its_builder_and_stops_
     runtime.build_gate = threading.Event()
     publish(building())
     made = clone(client).json()["workspace"]
-    assert runtime.building.wait(MADE_WITHIN)
+    assert runtime.building.wait(HANG_GUARD)
     assert runtime.builders() == {made["id"]}  # the positive control
-    began = time.monotonic()
-    r = client.delete(f"/api/workspaces/{made['id']}", headers=changing(ALICE))
+    r = ended_in_a_thread(
+        lambda: client.delete(f"/api/workspaces/{made['id']}", headers=changing(ALICE))
+    )
     assert r.status_code == 200, r.text
     assert ("remove_build", made["id"], False) in runtime.events  # the delete itself did it
     cleared(runtime, client)
-    assert time.monotonic() - began < 15
     assert runtime.builders() == set() and runtime.built_images() == {}
     assert not [e for e in runtime.events if e[0] == "create" and e[1]]
 
@@ -2494,12 +2516,9 @@ def test_builds_beyond_the_bound_wait_their_turn_and_say_so_in_the_log(
     runtime.build_gate = threading.Event()
     publish(building())
     first = clone(client).json()["workspace"]["id"]
-    assert runtime.building.wait(MADE_WITHIN)
+    assert runtime.building.wait(HANG_GUARD)
     second = clone(client).json()["workspace"]["id"]
-    deadline = time.monotonic() + MADE_WITHIN
-    while not waiting_line(client, second):
-        assert time.monotonic() < deadline
-        time.sleep(0.05)
+    until(lambda: waiting_line(client, second))
     assert not waiting_line(client, first)  # the one that builds does not wait
     assert runtime.most_builds_at_once == 1 and len(runtime.builds) == 1
     runtime.build_gate.set()
@@ -2514,18 +2533,12 @@ def test_deleting_a_workspace_that_waits_for_a_build_ends_its_wait_and_builds_no
     runtime.build_gate = threading.Event()
     publish(building())
     first = clone(client).json()["workspace"]["id"]
-    assert runtime.building.wait(MADE_WITHIN)
+    assert runtime.building.wait(HANG_GUARD)
     second = clone(client).json()["workspace"]["id"]
-    deadline = time.monotonic() + MADE_WITHIN
-    while not waiting_line(client, second):
-        assert time.monotonic() < deadline
-        time.sleep(0.05)
+    until(lambda: waiting_line(client, second))
     r = client.delete(f"/api/workspaces/{second}", headers=changing(ALICE))
     assert r.status_code == 200, r.text
-    deadline = time.monotonic() + MADE_WITHIN
-    while any(w["id"] == second for w in listed(client)):
-        assert time.monotonic() < deadline
-        time.sleep(0.05)
+    until(lambda: all(w["id"] != second for w in listed(client)))
     runtime.build_gate.set()
     assert finished(client, first)["state"] == "ready"
     assert [b.id for b in runtime.builds] == [first]
@@ -2553,9 +2566,9 @@ def timed(one_build_at_a_time, settings, runtime, changed):
     made.close()
 
 
-def untimed(wait) -> bool:
+def untimed(record) -> bool:
     """A wait with no deadline: a build's for its place."""
-    return wait.seconds is None
+    return record.seconds is None
 
 
 def builder_and_waiter(service, runtime, publish, settings):
@@ -2854,7 +2867,7 @@ def test_a_build_runs_in_the_builder_slot_the_app_is_given(settings, runtime, pu
     publish(building())
     app = create_app(settings, runtime=runtime, builder_slot=6)
     with TestClient(app) as c:
-        assert app.state.workspaces.restored.wait(30)
+        assert app.state.workspaces.restored.wait(HANG_GUARD)
         done = cloned(c)
     assert done["state"] == "ready", done
     (request,) = runtime.builds
@@ -2876,7 +2889,7 @@ def test_a_users_id_beyond_the_runtimes_range_is_refused_that_the_products_takes
     publish(config(remoteUser="8192"))
     app = create_app(settings, runtime=small_runtime)
     with TestClient(app) as c:
-        assert app.state.workspaces.restored.wait(30)
+        assert app.state.workspaces.restored.wait(HANG_GUARD)
         failed = cloned(c)
     assert failed["state"] == "failed", failed
     assert small_runtime.pulled == [IMAGE]  # refused once the image was read

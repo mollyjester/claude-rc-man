@@ -21,7 +21,6 @@ import logging
 import os
 import queue
 import re
-import select
 import socket
 import sqlite3
 import threading
@@ -38,20 +37,18 @@ from rcman.ratelimit import TokenBuckets
 
 from devtools import held_folders as hf
 from tests.conftest import ALICE, BOB, ORIGIN, as_user, changing, made_workspace
-from tests.hang_guard import HANG_GUARD
-from tests.test_terminals import alive, wait_until
+from tests.hang_guard import HANG_GUARD, pace, runs_out
+from tests.test_terminals import alive
+from tests.time_doubles import Clock
+from tests.until import until
 
 DOMAIN = "rcman.example.com"  # the host of the tests' public origin (tests/conftest.py ORIGIN)
 SETTINGS_PATH = "/api/forwarding/settings"
-# How long the tests wait for an answer, or for something to end.
-ANSWERS = HANG_GUARD
 # The ask site's address, as Caddy passes it on in Host: 127.0.0.1 and the installer's ask port,
 # here one below 1024, which no test binds.
 ASK = "127.0.0.1:999"
 # A body more than a pipe holds, answered after the client has half-closed its connection.
 BIG = bytes(range(256)) * 4096
-# The pace of the app's endless answer, a chunk each TICK.
-TICK = 0.02
 # How many requests come at once in the test that holds every request under way at once.
 AT_ONCE = 4
 # What a browser sends with a navigation it starts itself, and with one from rcman's page.
@@ -68,7 +65,8 @@ class Handler(BaseHTTPRequestHandler):
     was sent, as JSON; ``/cookies`` sets cookies, rcman's names among them; ``/framed`` sends a
     policy of its own; ``/big`` answers BIG once the test says the forwarding server has its
     client's half-close (``half_closed``), and closes;
-    ``/endless`` answers chunk after chunk until its connection closes; ``/held`` says it has the
+    ``/endless`` answers its first chunk and holds the answer open until the app is shut down
+    (``closing``), an answer that never ends as far as the test goes; ``/held`` says it has the
     request (``arrived``) and answers once the test lets it (``gate``); ``/once`` answers as if it
     kept the connection, and closes it; ``/drop`` closes it unanswered; and an upgrade to a
     WebSocket is answered 101 (at ``/held-ws`` once the test lets it), then every byte that comes
@@ -97,13 +95,13 @@ class Handler(BaseHTTPRequestHandler):
         elif self.path.startswith("/framed"):
             self._send(b"framed", [("Content-Security-Policy", "default-src 'self'")])
         elif self.path.startswith("/big"):
-            self.server.half_closed.wait(ANSWERS)
+            self.server.half_closed.wait(HANG_GUARD)
             self._send(BIG, [("Connection", "close")])
         elif self.path.startswith("/endless"):
             self._endless()
         elif self.path.startswith("/held"):
             self.server.arrived.release()
-            self.server.gate.acquire(timeout=ANSWERS)
+            self.server.gate.acquire(timeout=HANG_GUARD)
             self._send(b"held", [])
         elif self.path.startswith("/once"):
             self._send(b"once", [])
@@ -125,20 +123,20 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(body)
 
     def _endless(self) -> None:
-        """Chunk after chunk, until its connection is closed."""
+        """Its first chunk, then the answer held open until the app is shut down."""
         self.send_response(200)
         self.send_header("Transfer-Encoding", "chunked")
         self.end_headers()
         self.close_connection = True
         with contextlib.suppress(OSError):
-            while True:
-                self.wfile.write(b"5\r\ntick\n\r\n")
-                time.sleep(TICK)
+            self.wfile.write(b"5\r\ntick\n\r\n")
+            self.wfile.flush()
+        self.server.closing.wait()
 
     def _echo(self) -> None:
         if self.path.startswith("/held"):
             self.server.arrived.release()
-            self.server.gate.acquire(timeout=ANSWERS)
+            self.server.gate.acquire(timeout=HANG_GUARD)
         self.send_response(101)
         self.send_header("Upgrade", "websocket")
         self.send_header("Connection", "Upgrade")
@@ -158,6 +156,7 @@ class Upstream(ThreadingHTTPServer):
         self.arrived = threading.Semaphore(0)  # a held request has come
         self.gate = threading.Semaphore(0)  # a held request may be answered
         self.half_closed = threading.Event()  # /big's client has ended its sending side
+        self.closing = threading.Event()  # the app is being shut down: /endless ends
 
     @property
     def port(self) -> int:
@@ -173,6 +172,7 @@ def upstream():
     try:
         yield served
     finally:
+        served.closing.set()
         served.shutdown()
         served.server_close()
 
@@ -206,22 +206,9 @@ def turned_off(client) -> None:
     assert r.status_code == 200, r.text
 
 
-class Clock:
-    """The forwarding server's clock, moved by the test."""
-
-    def __init__(self):
-        self.now = time.monotonic()
-
-    def __call__(self) -> float:
-        return self.now
-
-    def advance(self, seconds: float) -> None:
-        self.now += seconds
-
-
 @pytest.fixture
 def clock(client):
-    made = Clock()
+    made = Clock(time.monotonic())
     client.app.state.forward.clock = made
     return made
 
@@ -313,12 +300,12 @@ class Forward(http.client.HTTPConnection):
     pooled ones are."""
 
     def __init__(self, path: Path):
-        super().__init__("forward", timeout=ANSWERS)
+        super().__init__("forward", timeout=HANG_GUARD)
         self.unix = path
 
     def connect(self):
         self.sock = socket.socket(socket.AF_UNIX)
-        self.sock.settimeout(ANSWERS)
+        self.sock.settimeout(HANG_GUARD)
         self.sock.connect(str(self.unix))
 
     def ask(self, method: str, target: str, headers: dict, body: bytes | str | None = None):
@@ -391,7 +378,7 @@ class Socket:
     def __init__(self, path: Path, host: str, cookie: str, origin: str | None = None,
                  site: str = "same-origin"):  # fmt: skip
         self.sock = socket.socket(socket.AF_UNIX)
-        self.sock.settimeout(ANSWERS)
+        self.sock.settimeout(HANG_GUARD)
         self.sock.connect(str(path))
         lines = [
             "GET /ws HTTP/1.1", f"Host: {host}", "Upgrade: websocket", "Connection: Upgrade",
@@ -419,7 +406,7 @@ class Socket:
         return back
 
     def ended(self) -> bool:
-        """Whether the server has closed it: waits for its end, at most ANSWERS."""
+        """Whether the server has closed it: waits for its end, each read within the hang guard."""
         try:
             while self.sock.recv(65536):
                 pass
@@ -475,13 +462,13 @@ def kept(client, host: str, port: int) -> None:
     """Wait until a relay to the port is kept idle: the server keeps it once it has passed the
     answer back, a moment after the client has it."""
     idle = client.app.state.forward._idle
-    wait_until(lambda: idle.get((workspace_of(host), port)), ANSWERS)
+    until(lambda: idle.get((workspace_of(host), port)))
 
 
 def raw_request(path: Path, head: str, body: bytes = b"") -> socket.socket:
     """A connection to the forwarding server that has sent ``head`` and ``body``, as they are."""
     made = socket.socket(socket.AF_UNIX)
-    made.settimeout(ANSWERS)
+    made.settimeout(HANG_GUARD)
     made.connect(str(path))
     if head or body:  # nothing sent on a connection meant to have nothing on it, which may be
         made.sendall(head.encode() + body)  # closed at once
@@ -508,12 +495,11 @@ def upgrade_head(host: str, cookie: str, target: str) -> str:
 
 
 def read_until(sock: socket.socket, wanted: bytes) -> tuple[bytes, bool]:
-    """What comes on ``sock`` until ``wanted`` is in it, or it ends, within ANSWERS; and whether
-    it ended."""
-    got, deadline = b"", time.monotonic() + ANSWERS
-    sock.settimeout(ANSWERS)
+    """What comes on ``sock`` until ``wanted`` is in it, or it ends, each read within the hang
+    guard; and whether it ended."""
+    got = b""
+    sock.settimeout(HANG_GUARD)
     while wanted not in got:
-        assert time.monotonic() < deadline, got[:200]
         data = sock.recv(65536)
         if not data:
             return got, True
@@ -521,12 +507,13 @@ def read_until(sock: socket.socket, wanted: bytes) -> tuple[bytes, bool]:
     return got, False
 
 
-def read_to_end(sock: socket.socket, within: float = ANSWERS) -> tuple[bytes, bool]:
-    """What comes on ``sock`` for at most ``within`` seconds, and whether it ended meanwhile."""
-    got, deadline = b"", time.monotonic() + within
-    sock.settimeout(within)
+def read_to_end(sock: socket.socket) -> tuple[bytes, bool]:
+    """What comes on ``sock`` until it ends, each read within the hang guard, and whether it
+    ended: not, where a read had nothing within the hang guard."""
+    got = b""
+    sock.settimeout(HANG_GUARD)
     try:
-        while time.monotonic() < deadline:
+        while True:
             data = sock.recv(65536)
             if not data:
                 return got, True
@@ -991,9 +978,9 @@ def test_101_spliced_raw_ws_open_close_audited(client, on, conn, upstream, socke
     assert opened.echo(raw) == raw  # byte for byte, both ways, far more than a frame
     assert rows_of(client, "websocket.open") == [(ALICE, host, "ok")]
     opened.close()
-    wait_until(lambda: rows_of(client, "websocket.close"), ANSWERS)
+    until(lambda: rows_of(client, "websocket.close"))
     assert rows_of(client, "websocket.close") == [(ALICE, host, "ok")]
-    wait_until(lambda: not live_relays(client, host), ANSWERS)
+    until(lambda: not live_relays(client, host))
     assert raw.decode(errors="replace") not in json.dumps(audit_rows(client))
 
 
@@ -1017,7 +1004,7 @@ def test_a_request_whose_client_half_closes_still_gets_its_whole_answer_and_the_
 
     monkeypatch.setattr(asyncio.StreamReader, "feed_eof", feed_eof)
     raw = socket.socket(socket.AF_UNIX)
-    raw.settimeout(ANSWERS)
+    raw.settimeout(HANG_GUARD)
     raw.connect(str(client.app.state.settings.forward_socket))
     try:
         head = f"GET /big HTTP/1.1\r\nHost: {host}\r\nCookie: {cookie}\r\n" + (
@@ -1034,7 +1021,7 @@ def test_a_request_whose_client_half_closes_still_gets_its_whole_answer_and_the_
     head, _, body = got.partition(b"\r\n\r\n")
     assert head.startswith(b"HTTP/1.1 200"), head
     assert body == BIG
-    wait_until(lambda: not live_relays(client, host), ANSWERS)  # and the relay ended after it
+    until(lambda: not live_relays(client, host))  # and the relay ended after it
 
 
 # --- caps --------------------------------------------------------------------------------------
@@ -1059,7 +1046,7 @@ def test_caps_answer_503(client, on, conn, upstream, sockets, monkeypatch):
     r = Forward(path).ask("GET", "/page", own(other, other_cookie))
     assert (r.status, json.loads(r.body)["code"]) == (503, "too_many_relays")
     held.close()
-    wait_until(lambda: not live_relays(client, hers) and not live_relays(client, second), ANSWERS)
+    until(lambda: not live_relays(client, hers) and not live_relays(client, second))
     assert Forward(path).ask("GET", "/page", own(second, second_cookie)).status == 200
 
 
@@ -1070,7 +1057,7 @@ def settled(client) -> None:
     """Wait until the server has counted the end of every exchange it answered: the browser has
     the answer a moment before the session is told, and the clock is moved only after."""
     sessions = client.app.state.forward._sessions
-    wait_until(lambda: all(s.busy == len(s.splices) for s in list(sessions.values())), ANSWERS)
+    until(lambda: all(s.busy == len(s.splices) for s in list(sessions.values())))
 
 
 def test_an_idle_pooled_connection_does_not_keep_a_session_alive(
@@ -1104,7 +1091,7 @@ def test_absolute_lifetime_closes_open_websockets_and_next_request_hands_off(
     clock.advance(lifetime + 1)
     assert opened.ended()  # closed by the server, with no request to notice it
     assert conn.ask("GET", "/page", own(host, cookie)).status == 303
-    wait_until(lambda: rows_of(client, "websocket.close"), ANSWERS)
+    until(lambda: rows_of(client, "websocket.close"))
     assert rows_of(client, "websocket.close") == [(ALICE, host, "session_ended")]
 
 
@@ -1115,11 +1102,11 @@ def test_forwarding_off_closes_an_open_splice(client, on, conn, upstream, socket
     assert opened.status == 101 and opened.echo(b"x") == b"x"
     turned_off(client)
     assert opened.ended()
-    wait_until(lambda: rows_of(client, "websocket.close"), ANSWERS)
+    until(lambda: rows_of(client, "websocket.close"))
     assert rows_of(client, "websocket.close") == [(ALICE, host, "forwarding_off")]
     r = conn.ask("GET", "/page", own(host, cookie))
     assert (r.status, json.loads(r.body)["code"]) == (404, "forwarding_off")
-    wait_until(lambda: not live_relays(client, host), ANSWERS)
+    until(lambda: not live_relays(client, host))
     turned_off(client)  # off again: harmless
     r = client.put(SETTINGS_PATH, json={**DEFAULTS.model_dump(), "enabled": True},
                    headers=changing(ALICE))  # fmt: skip
@@ -1139,7 +1126,7 @@ def test_the_off_listener_from_another_thread_closes_open_splices_and_does_no_ha
     forwarding = client.app.state.forward
     called = threading.Thread(target=forwarding.off)
     called.start()
-    called.join(ANSWERS)
+    called.join(HANG_GUARD)
     assert opened.ended()
     forwarding.off()  # again, with nothing left: no harm
     forwarding.off()
@@ -1243,7 +1230,7 @@ def test_an_answer_still_streaming_when_its_session_ends_is_cut_off(
         assert ended
     finally:
         streaming.close()
-    wait_until(lambda: not live_relays(client, host), ANSWERS)
+    until(lambda: not live_relays(client, host))
 
 
 @pytest.mark.parametrize("ending", ENDINGS)
@@ -1256,14 +1243,14 @@ def test_an_upgrade_the_app_switches_after_its_session_ended_is_closed_unswitche
     # The planted positive: held the same way, while its session lasts, it is switched.
     first = raw_request(path, upgrade_head(host, cookie, "/held-ws"))
     try:
-        assert upstream.arrived.acquire(timeout=ANSWERS)
+        assert upstream.arrived.acquire(timeout=HANG_GUARD)
         upstream.gate.release()
         assert read_head(first).startswith(b"HTTP/1.1 101")
     finally:
         first.close()
     late = raw_request(path, upgrade_head(host, cookie, "/held-ws"))
     try:
-        assert upstream.arrived.acquire(timeout=ANSWERS)  # the app has it, and has not answered
+        assert upstream.arrived.acquire(timeout=HANG_GUARD)  # the app has it, and has not answered
         end_session(client, clock, ending)
         upstream.gate.release()
         got, ended = read_to_end(late)
@@ -1271,7 +1258,7 @@ def test_an_upgrade_the_app_switches_after_its_session_ended_is_closed_unswitche
     finally:
         late.close()
     assert rows_of(client, "websocket.open") == [(BOB, host, "ok")]  # the first alone opened
-    wait_until(lambda: not live_relays(client, host), ANSWERS)
+    until(lambda: not live_relays(client, host))
 
 
 def test_an_expired_session_is_reaped_with_no_request_to_notice_it(
@@ -1279,13 +1266,13 @@ def test_an_expired_session_is_reaped_with_no_request_to_notice_it(
 ):
     """The reaper's pace shortened, the test waiting for what it makes happen: the exact pace is
     not tested."""
-    monkeypatch.setattr(forward, "REAP_SECONDS", 0.05)
+    pace(monkeypatch, forward, "REAP_SECONDS", 0.05)
     [host] = forwarded(client, ALICE, [upstream.port])
     let_in(client, conn, host)
     forwarding = client.app.state.forward
     assert forwarding._sessions  # the control: it is there
     clock.advance(client.app.state.forwarding_settings.settings().absolute_seconds + 1)
-    wait_until(lambda: not forwarding._sessions, ANSWERS)
+    until(lambda: not forwarding._sessions)
 
 
 def test_turning_forwarding_off_ends_the_relays_kept_idle(client, on, conn, upstream, monkeypatch):
@@ -1297,7 +1284,7 @@ def test_turning_forwarding_off_ends_the_relays_kept_idle(client, on, conn, upst
     kept(client, host, upstream.port)
     assert live_relays(client, host)  # the planted positive: kept for the next request
     turned_off(client)
-    wait_until(lambda: not live_relays(client, host), ANSWERS)
+    until(lambda: not live_relays(client, host))
 
 
 def test_a_relay_kept_idle_is_dropped_at_its_deadline(client, on, conn, upstream, monkeypatch):
@@ -1307,7 +1294,7 @@ def test_a_relay_kept_idle_is_dropped_at_its_deadline(client, on, conn, upstream
     [host] = forwarded(client, ALICE, [upstream.port])
     cookie = let_in(client, conn, host)
     assert conn.ask("GET", "/page", own(host, cookie)).status == 200
-    wait_until(lambda: not live_relays(client, host), ANSWERS)
+    until(lambda: not live_relays(client, host))
 
 
 def test_a_persons_sessions_are_capped_ending_their_oldest_for_the_host_first(
@@ -1353,7 +1340,7 @@ def test_requests_at_once_beyond_a_cap_of_one_are_refused_but_one(
     refused = threading.Event()  # the requests but the one are refused
 
     def slowly(target):
-        assert refused.wait(ANSWERS)  # every request is under way before the first relay runs
+        assert refused.wait(HANG_GUARD)  # every request is under way before the first relay runs
         return launch(target)
 
     monkeypatch.setattr(forwarding, "_launch", slowly)
@@ -1366,15 +1353,12 @@ def test_requests_at_once_beyond_a_cap_of_one_are_refused_but_one(
     threads = [threading.Thread(target=one, daemon=True) for _ in range(AT_ONCE)]
     for thread in threads:
         thread.start()
-    early, deadline = [], time.monotonic() + ANSWERS
-    while len(early) < AT_ONCE - 1 and (left := deadline - time.monotonic()) > 0:
-        with contextlib.suppress(queue.Empty):
-            early.append(answered.get(timeout=left))
+    early = [answered.get(timeout=HANG_GUARD) for _ in range(AT_ONCE - 1)]
     refused.set()
     for _ in range(AT_ONCE):  # whatever reached the app is answered
         upstream.gate.release()
     for thread in threads:
-        thread.join(ANSWERS)
+        thread.join(HANG_GUARD)
     late = [answered.get_nowait() for _ in range(answered.qsize())]
     assert early == [503] * (AT_ONCE - 1), (early, late)  # while the one held its room
     assert late == [200], late
@@ -1413,7 +1397,7 @@ def test_a_kept_relay_that_ended_unnoticed_is_tried_again_once_on_a_new_one(
         launch, started = forwarding._launch, []
         monkeypatch.setattr(forwarding, "_launch", lambda t: started.append(t) or launch(t))
         assert conn.ask("GET", "/once", own(host, cookie)).status == 200  # then the app closes
-        wait_until(lambda: not live_relays(client, host), ANSWERS)  # and the relay ends with it
+        until(lambda: not live_relays(client, host))  # and the relay ends with it
         kept(client, host, upstream.port)  # yet kept
         assert started
         started.clear()
@@ -1567,7 +1551,6 @@ def test_a_refused_request_is_answered_without_waiting_long_for_its_body(
 
 
 def test_the_way_in_does_not_wait_long_for_its_body(client, on, conn, upstream, monkeypatch):
-    waits = forward.BODY_SECONDS
     [host] = forwarded(client, ALICE, [upstream.port])
     token = token_of(client, host)
     head = "\r\n".join([
@@ -1575,14 +1558,14 @@ def test_the_way_in_does_not_wait_long_for_its_body(client, on, conn, upstream, 
         "Content-Type: application/x-www-form-urlencoded", "Content-Length: 500",
         *(f"{k}: {v}" for k, v in FROM_RCMAN.items()),
     ]) + "\r\n\r\n"  # fmt: skip
-    monkeypatch.setattr(forward, "BODY_SECONDS", 0)  # no time for its body at all
-    dripping = raw_request(client.app.state.settings.forward_socket, head, b"token=")
-    try:
-        got, ended = read_to_end(dripping)
-        assert got.startswith(b"HTTP/1.1 408") and ended, got
-    finally:
-        dripping.close()
-    monkeypatch.setattr(forward, "BODY_SECONDS", waits)
+    with monkeypatch.context() as patched:
+        runs_out(patched, forward, "BODY_SECONDS")  # no time for its body at all
+        dripping = raw_request(client.app.state.settings.forward_socket, head, b"token=")
+        try:
+            got, ended = read_to_end(dripping)
+            assert got.startswith(b"HTTP/1.1 408") and ended, got
+        finally:
+            dripping.close()
     assert enter(conn, host, token).status == 303  # the control: its body whole, it lets in
 
 
@@ -1599,7 +1582,7 @@ def test_a_connection_with_nothing_on_it_or_a_head_that_never_ends_is_closed(
         ("HEAD_SECONDS", "GET / HTTP/1.1\r\nHost: x"),
     ):
         with monkeypatch.context() as patched:
-            patched.setattr(forward, deadline, 0)
+            runs_out(patched, forward, deadline)
             waiting = raw_request(path, head)
             try:
                 got, ended = read_to_end(waiting)
@@ -1608,28 +1591,93 @@ def test_a_connection_with_nothing_on_it_or_a_head_that_never_ends_is_closed(
                 waiting.close()
 
 
+class HeadReads:
+    """forward's ``asyncio``, as its head reads see it: the loop's time, read through
+    ``get_running_loop()``, is ``clock``, which only the test moves, and each read of a head is
+    recorded, with the seconds the product gives it and the time it read just before (None
+    where it read none since the last read). Everything else is asyncio's own."""
+
+    def __init__(self, clock: Clock):
+        self.clock = clock
+        self.read_at: float | None = None
+        self.reads: list[tuple[float, float | None]] = []
+        self.told = threading.Condition()
+
+    def __getattr__(self, name):
+        return getattr(asyncio, name)
+
+    def get_running_loop(self):
+        return LoopTimeOf(asyncio.get_running_loop(), self)
+
+    async def wait_for(self, awaited, *given):
+        """asyncio's, given the product's own seconds as they are."""
+        if getattr(awaited, "__qualname__", "") == "StreamReader.read":
+            with self.told:
+                self.reads.append((given[0], self.read_at))
+                self.read_at = None
+                self.told.notify_all()
+        return await asyncio.wait_for(awaited, *given)
+
+    def timed(self, after: int) -> tuple[int, float, float]:
+        """The first read from ``after`` on that the product reckoned from the time: its index,
+        the seconds it was given, and the time read for them."""
+
+        def found():
+            for i in range(after, len(self.reads)):
+                if self.reads[i][1] is not None:
+                    return i
+            return None
+
+        with self.told:
+            assert self.told.wait_for(lambda: found() is not None, HANG_GUARD), self.reads
+            i = found()
+            return i, *self.reads[i]
+
+
+class LoopTimeOf:
+    """The running loop, but for its ``time()``, which is the clock of ``reads``."""
+
+    def __init__(self, loop, reads: HeadReads):
+        self._loop, self._reads = loop, reads
+
+    def __getattr__(self, name):
+        return getattr(self._loop, name)
+
+    def time(self) -> float:
+        self._reads.read_at = self._reads.clock.now
+        return self._reads.read_at
+
+
 def test_a_head_dripped_a_byte_at_a_time_is_cut_off_at_its_one_deadline(client, monkeypatch):
-    """HEAD_SECONDS runs from the head's first byte: bytes that keep coming do not move it. (On
-    a machine slower than one drip each quarter of it, a deadline that moved would pass too.)"""
-    monkeypatch.setattr(forward, "HEAD_SECONDS", 1.0)
+    """HEAD_SECONDS runs from the head's first byte: bytes that keep coming do not move it. The
+    loop's time, as forward reads it, is a clock only the test moves, a quarter of HEAD_SECONDS
+    before each byte; every read after the first byte is given what is left of the one deadline,
+    its seconds and the time read for them adding up to it, so that a deadline that moved fails
+    at the first drip; and the read at the deadline, given nothing, closes the connection.
+    HEAD_SECONDS is raised to beyond the hang guard, so that each read's real wait outlasts the
+    drip it waits for."""
+    monkeypatch.setattr(forward, "HEAD_SECONDS", 4 * HANG_GUARD)
+    clock = Clock()
+    reads = HeadReads(clock)
+    monkeypatch.setattr(forward, "asyncio", reads)
+    deadline = clock.now + forward.HEAD_SECONDS
     dripping = raw_request(client.app.state.settings.forward_socket, "GET / HTTP/1.1\r\nX: ")
-    started, closed = time.monotonic(), False
     try:
-        while not closed and time.monotonic() - started < ANSWERS:
-            try:
-                dripping.sendall(b"a")
-            except OSError:
-                closed = True
+        seen, after = [], 0
+        while True:
+            index, within, now = reads.timed(after)
+            seen.append((within, now))
+            assert within + now == deadline, seen  # what is left of the one deadline
+            if within <= 0:
                 break
-            ready, _, _ = select.select([dripping], [], [], forward.HEAD_SECONDS / 4)
-            if ready:
-                try:
-                    closed = dripping.recv(65536) == b""
-                except ConnectionResetError:  # closed with drips it had not read
-                    closed = True
+            after = index + 1
+            clock.advance(forward.HEAD_SECONDS / 4)
+            dripping.sendall(b"a")
+        assert seen[-1] == (0, deadline) and len(seen) >= 5, seen  # four drips, then cut off
+        got, ended = read_to_end(dripping)
+        assert ended and got == b"", got
     finally:
         dripping.close()
-    assert closed and time.monotonic() - started < ANSWERS
 
 
 def test_a_head_longer_than_the_most_is_answered_431(client, conn):
@@ -1640,7 +1688,7 @@ def test_a_head_longer_than_the_most_is_answered_431(client, conn):
     long = f"GET {forward.HEALTH_PATH} HTTP/1.1\r\nHost: x\r\nX-Long: "
     long += "a" * (forward.MOST_HEAD + forward.READ_CHUNK) + "\r\n\r\n"
     made = socket.socket(socket.AF_UNIX)
-    made.settimeout(ANSWERS)
+    made.settimeout(HANG_GUARD)
     made.connect(str(path))
     try:
         with contextlib.suppress(BrokenPipeError, ConnectionResetError):
@@ -1728,7 +1776,7 @@ def test_each_audited_handler_writes_its_rows(client, on, conn, upstream, socket
     opened = sockets(client.app.state.settings.forward_socket, host, cookie)
     assert opened.status == 101
     opened.close()
-    wait_until(lambda: rows_of(client, "websocket.close"), ANSWERS)
+    until(lambda: rows_of(client, "websocket.close"))
     actions = {r["action"] for r in audit_rows(client)}
     wanted = {a for h in forward.HANDLERS.values() for a in h.actions}
     assert wanted and wanted <= actions, wanted - actions

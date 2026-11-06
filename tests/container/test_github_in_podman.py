@@ -18,12 +18,12 @@ import os
 import ssl
 import subprocess
 import threading
-import time
 import types
 from pathlib import Path
 
 import pytest
 from rcman import claude_server, db, people
+from rcman import repository as repo_module
 from rcman import runtime as rt
 from rcman.gitaccount import GitAccount
 from rcman.identity import Identity
@@ -38,6 +38,7 @@ from tests.container.conftest import engine_runtime, engine_settings
 from tests.github_server import GitHubServer
 from tests.github_tokens import AWKWARD_TOKENS
 from tests.hang_guard import CONTAINER_HANG_GUARD
+from tests.until import until
 
 ADDRESS, PORT = stand_in.ADDRESS, stand_in.PORT
 TOKEN = "github_pat_podman-test-token"
@@ -410,24 +411,20 @@ def publish(github_com, tmp_path, name: str, private: bool = False) -> Path:
     return bare
 
 
-def settled(service, workspace_id: int, within: float = CONTAINER_HANG_GUARD):
-    """The workspace once it is no longer being made."""
-    deadline = time.monotonic() + within
-    while True:
+def settled(service, workspace_id: int):
+    """The workspace once it is no longer being made (None for one that is gone)."""
+
+    def made():
         now = service.get(workspace_id)
-        if now is None or now.state != "creating":
-            return now
-        assert time.monotonic() < deadline, now
-        time.sleep(0.2)
+        return [now] if now is None or now.state != "creating" else None
+
+    return until(made)[0]
 
 
-def gone(service, workspace_id: int, within: float = CONTAINER_HANG_GUARD) -> None:
+def gone(service, workspace_id: int) -> None:
     """Wait until the workspace's row is gone, which a deletion of one being made leaves to
     the thread that was making it."""
-    deadline = time.monotonic() + within
-    while service.get(workspace_id) is not None:
-        assert time.monotonic() < deadline, service.get(workspace_id)
-        time.sleep(0.2)
+    until(lambda: service.get(workspace_id) is None)
 
 
 def exists(runtime: rt.PodmanRuntime, kind: str, name: str) -> bool:
@@ -563,27 +560,24 @@ def test_deleting_a_workspace_that_is_being_cloned_stops_git_and_leaves_nothing(
     service, person, clones, podman, github_com, tmp_path, monkeypatch
 ):
     """The cancel: the clone is slow (the stand-in's gate is closed), and the workspace's
-    container is removed by force by Podman, which ends git with it. The gate's own wait is past
+    container is removed by force by Podman, which ends git with it. The gate's own wait
+    (tests/github_server.py: twice the tier's guard) and the clone's own time (CLONE_TIMEOUT,
+    read as the clone is called, pushed here to twice the tier's guard, rule (c)) are both past
     the hang bound, so only the deletion can end git within it."""
-    from tests import github_server
-
-    monkeypatch.setattr(github_server, "GATE_WAIT", 2 * CONTAINER_HANG_GUARD)
+    monkeypatch.setattr(repo_module, "CLONE_TIMEOUT", 2 * CONTAINER_HANG_GUARD)
     publish(github_com, tmp_path, "slow-one")
     before = len(github_com.requests)
     github_com.gate.clear()
     try:
         made = service.create(person[0], "slow", "https://github.com/octo/slow-one")
         clones.append(made)
-        deadline = time.monotonic() + CONTAINER_HANG_GUARD
-        while len(github_com.requests) == before:  # git is connected, and waits for the answer
-            assert time.monotonic() < deadline, service.get(made.id)
-            time.sleep(0.1)
+        until(lambda: len(github_com.requests) != before)  # git connected, waits for the answer
         now = service.get(made.id)
         assert now.state == "creating" and now.log.splitlines()[-1] == f"Cloning {now.source}"
         top = podman._podman("top", made.container, "args", check=False)
         assert b"clone" in top.stdout, top.stdout + top.stderr  # positive: git is running there
         service.delete(now)
-        gone(service, made.id)  # not after the gate's wait, which is longer
+        gone(service, made.id)  # not after the gate's wait or the clone's time, both longer
         assert not exists(podman, "container", made.container)
         assert not exists(podman, "volume", made.container)
     finally:

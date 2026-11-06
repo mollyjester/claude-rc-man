@@ -7,7 +7,6 @@ from __future__ import annotations
 import json
 import re
 import threading
-import time
 from pathlib import Path
 
 import pytest
@@ -17,8 +16,10 @@ from rcman import workspaces as ws
 from rcman.problems import Problem
 
 from helpers import rules
-from tests.conftest import ALICE, BOB, MADE_WITHIN, as_user, changing, host_runtime
+from tests.conftest import ALICE, BOB, as_user, changing, host_runtime
 from tests.git_fixtures import fixture_git, make_repo
+from tests.hang_guard import HANG_GUARD
+from tests.until import until
 
 URL = "https://github.com/octo/widget"
 TOKEN = "ghp_a-token-for-the-clone-tests"
@@ -45,7 +46,8 @@ ODD = "Cloning into '.'...\nfatal: something git has not said before\n"
 class Recording(rt.HostRuntime):
     """The host runtime, noting what it is asked to run and remove. A clone is answered
     with ``answer`` when one is set, and waits for ``gate`` when one is set: released by the
-    test, or by the workspace's removal, which ends a running git as Podman's would."""
+    test, or by the workspace's removal, which ends a running git as Podman's would; else only
+    once the test is over, so that what waits for git rather than removing it fails the test."""
 
     def __init__(self, *args):
         super().__init__(*args)
@@ -55,14 +57,12 @@ class Recording(rt.HostRuntime):
         self.gate: threading.Event | None = None
         self.cloning = threading.Event()
 
-    def exec(
-        self, name, argv, stdin=None, timeout=rt.PODMAN_TIMEOUT, cwd=None, keep=None, again=False
-    ):
+    def exec(self, name, argv, stdin=None, timeout=HANG_GUARD, cwd=None, keep=None, again=False):
         self.execs.append((argv, stdin))
         if "git" in argv and "clone" in argv:
             self.cloning.set()
             if self.gate is not None:
-                self.gate.wait(30)
+                self.gate.wait(2 * HANG_GUARD)
                 if name in self.removed:
                     return rt.Result(137, b"", b"Killed\n")
             if self.answer is not None:
@@ -112,13 +112,11 @@ def entry(client, workspace_id: int, who=ALICE) -> dict:
 
 
 def finished(client, workspace_id: int, who=ALICE) -> dict:
-    deadline = time.monotonic() + MADE_WITHIN
-    while True:
+    def made():
         found = entry(client, workspace_id, who)
-        if found["state"] != "creating":
-            return found
-        assert time.monotonic() < deadline, found
-        time.sleep(0.05)
+        return None if found["state"] == "creating" else found
+
+    return until(made)
 
 
 def cloned(client, url=URL, who=ALICE, **body) -> dict:
@@ -149,10 +147,20 @@ def save_token(client, who=ALICE):
 
 
 def cleared(runtime, client) -> None:
-    deadline = time.monotonic() + MADE_WITHIN
-    while listed(client) or runtime.labelled():
-        assert time.monotonic() < deadline, (listed(client), runtime.labelled())
-        time.sleep(0.05)
+    until(lambda: not listed(client) and not runtime.labelled())
+
+
+def ended_in_a_thread(call):
+    """What ``call`` gave, run in a thread of its own that has ended within the hang guard:
+    work the test's runtime holds at a gate, which only a removal, a cancel or the test's end
+    opens, does not keep it from ending."""
+    out: list = []
+    worker = threading.Thread(target=lambda: out.append(call()), daemon=True)
+    worker.start()
+    worker.join(HANG_GUARD)
+    assert not worker.is_alive(), "it waited for the work the runtime holds"
+    [given] = out
+    return given
 
 
 # --- making ------------------------------------------------------------------------------
@@ -167,7 +175,7 @@ def test_a_clone_is_a_phase_of_creating_and_ends_ready_with_the_repository(
     made = r.json()["workspace"]
     assert (made["name"], made["state"], made["source"]) == ("widget", "creating", URL)
     assert made["source_page"] == URL
-    assert runtime.cloning.wait(MADE_WITHIN)
+    assert runtime.cloning.wait(HANG_GUARD)
     during = entry(client, made["id"])
     assert (during["state"], during["source"], during["error"]) == ("creating", URL, None)
     assert during["source_page"] == URL
@@ -600,13 +608,13 @@ def test_deleting_a_workspace_being_cloned_stops_git_by_removing_its_container(c
     r = clone(client)
     made = r.json()["workspace"]
     name = rt.container_name(made["id"])
-    assert runtime.cloning.wait(MADE_WITHIN)
+    assert runtime.cloning.wait(HANG_GUARD)
     assert runtime.removed == []  # positive control: nothing has removed it yet
-    began = time.monotonic()
-    r = client.delete(f"/api/workspaces/{made['id']}", headers=changing(ALICE))
+    r = ended_in_a_thread(
+        lambda: client.delete(f"/api/workspaces/{made['id']}", headers=changing(ALICE))
+    )
     assert r.status_code == 200, r.text
     assert name in runtime.removed  # the delete itself did it, git running
-    assert time.monotonic() - began < 15
     cleared(runtime, client)
     assert not runtime.exists(name)
 
@@ -614,7 +622,7 @@ def test_deleting_a_workspace_being_cloned_stops_git_by_removing_its_container(c
 def test_a_clone_holds_neither_the_person_s_lock_nor_the_workspace_s(client, app, runtime):
     runtime.gate = threading.Event()
     made = clone(client).json()["workspace"]
-    assert runtime.cloning.wait(MADE_WITHIN)
+    assert runtime.cloning.wait(HANG_GUARD)
     service = app.state.workspaces
     got = []
 
@@ -626,7 +634,7 @@ def test_a_clone_holds_neither_the_person_s_lock_nor_the_workspace_s(client, app
 
     thread = threading.Thread(target=try_locks)
     thread.start()
-    thread.join(10)
+    thread.join(HANG_GUARD)
     assert got == [True, True]  # sign-out, which takes them, is never held up by a clone
     runtime.gate.set()
     finished(client, made["id"])
@@ -635,13 +643,13 @@ def test_a_clone_holds_neither_the_person_s_lock_nor_the_workspace_s(client, app
 def test_deleting_a_person_during_a_clone_finishes_promptly(client, runtime, settings):
     runtime.gate = threading.Event()
     made = clone(client, who=BOB).json()["workspace"]
-    assert runtime.cloning.wait(MADE_WITHIN)
+    assert runtime.cloning.wait(HANG_GUARD)
     everyone = client.get("/api/people", headers=as_user(ALICE)).json()["people"]
     bob = next(p for p in everyone if p["email"] == BOB)
-    began = time.monotonic()
-    r = client.delete(f"/api/people/{bob['id']}", headers=changing(ALICE))
+    r = ended_in_a_thread(
+        lambda: client.delete(f"/api/people/{bob['id']}", headers=changing(ALICE))
+    )
     assert r.status_code == 200, r.text
-    assert time.monotonic() - began < 30
     assert rt.container_name(made["id"]) in runtime.removed
     assert runtime.labelled() == {}
     assert row(settings, made["id"]) is None

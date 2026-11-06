@@ -30,6 +30,7 @@ from devtools import held_folders as hf
 from installer import install as ins
 from tests import podman_service as ps
 from tests.container import sizes, stack
+from tests.hang_guard import CONTAINER_HANG_GUARD
 
 REPO = Path(__file__).resolve().parent.parent.parent
 
@@ -46,7 +47,9 @@ def readable(folder: Path) -> None:
 def built_tmux(engine, toolchain: Path) -> bytes:
     """tmux, built on ``engine`` as the installer builds it (``ensure_tools``): its argument
     list, the program on standard output and its sha256 on standard error."""
-    program = engine.cli(*ins.tmux_build_argv(ins.tmux_tarball(toolchain)), timeout=1800)
+    program = engine.cli(
+        *ins.tmux_build_argv(ins.tmux_tarball(toolchain)), timeout=CONTAINER_HANG_GUARD
+    )
     assert program.returncode == 0, program.stderr[-4000:]
     reported = ins.TMUX_SHA256_LINE.findall(program.stderr)
     assert reported and reported[-1].decode() == hashlib.sha256(program.stdout).hexdigest()
@@ -126,7 +129,7 @@ def base_image(podman_service) -> str:
     from tests.containers import digest_references
 
     reference = digest_references(ins.CONTAINERFILE)[0]
-    pulled = podman_service.cli("pull", "-q", reference, timeout=1200)
+    pulled = podman_service.cli("pull", "-q", reference, timeout=CONTAINER_HANG_GUARD)
     assert pulled.returncode == 0, pulled.stderr
     return ps.hold(podman_service, reference)
 
@@ -140,7 +143,7 @@ def default_image(podman_service, tmp_path_factory) -> str:
     ins.image_context(context)
     built = podman_service.cli(
         "build", "-q", "-t", name, "-f", str(context / "Containerfile"), str(context),
-        timeout=1800,
+        timeout=CONTAINER_HANG_GUARD,
     )  # fmt: skip
     assert built.returncode == 0, built.stdout + built.stderr
     return ps.hold(podman_service, name)
@@ -153,7 +156,7 @@ def builder_image(podman_service, tmp_path_factory) -> str:
     shutil.copytree(ins.BUILDER_DIR, context, dirs_exist_ok=True)
     name = ins.devcontainer_builder_image()
     built = podman_service.cli("build", "-q", "-t", name, "--file", str(context / "Containerfile"),
-                               str(context), timeout=1800)  # fmt: skip
+                               str(context), timeout=CONTAINER_HANG_GUARD)  # fmt: skip
     assert built.returncode == 0, built.stdout[-2000:] + built.stderr[-4000:]
     return ps.hold(podman_service, name)
 
@@ -197,7 +200,7 @@ def engine_of(runtime: rt.PodmanRuntime) -> ps.Engine:
     return ps.Engine(Path(runtime.config.socket).parent)
 
 
-def cli(runtime: rt.PodmanRuntime, *args: str, timeout: float = 1200):
+def cli(runtime: rt.PodmanRuntime, *args: str, timeout: float = CONTAINER_HANG_GUARD):
     """podman on the engine ``runtime`` drives, as text."""
     return engine_of(runtime).cli(*args, timeout=timeout, text=True, errors="replace")
 
@@ -214,7 +217,9 @@ def image_of(runtime: rt.PodmanRuntime, name: str) -> str | None:
 def on_host(runtime: rt.PodmanRuntime, path: str, format: str = "%u %g %a") -> list[str]:
     """``stat`` of a path in the engine's storage, as the engine's user namespace sees ids: a
     range's root is the range's base."""
-    found = engine_of(runtime).local("unshare", "stat", "-c", format, path, timeout=120)
+    found = engine_of(runtime).local(
+        "unshare", "stat", "-c", format, path, timeout=CONTAINER_HANG_GUARD
+    )
     assert found.returncode == 0, found.stderr
     return found.stdout.decode().split()
 
@@ -273,7 +278,7 @@ def stack_prepared(podman_service, system_image, source, toolchain, labelled):
             "run", "--rm", "--pull=never", "--network=host", *labelled, "-v", f"{source}:/src:ro",
             "-v", f"{toolchain}:{ins.TOOLCHAIN}:ro", "-v", f"{folder / 'venv'}:{stack.VENV}",
             "-v", f"{folder / 'dist'}:{stack.DIST}", system_image, "sh", "-c", script,
-            timeout=2400,
+            timeout=CONTAINER_HANG_GUARD,
         )  # fmt: skip
         assert done.returncode == 0, (done.stdout + done.stderr).decode(errors="replace")[-8000:]
         yield folder

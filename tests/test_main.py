@@ -3,11 +3,11 @@
 import os
 import subprocess
 import sys
-import time
 
 import pytest
 
 from tests.hang_guard import HANG_GUARD
+from tests.until import until
 
 
 def test_packages_import_from_the_environment_alone():
@@ -361,12 +361,11 @@ def test_the_monitor_runs_once_the_workspaces_are_restored_and_stops_before_the_
     service.close = close
     with TestClient(app) as client:
         assert service.restored.wait(HANG_GUARD)
-        deadline = time.monotonic() + HANG_GUARD
-        while not client.get("/api/monitor", headers=as_user(ALICE)).json()["usage"][
-            "collected_at"
-        ]:
-            assert time.monotonic() < deadline, "the first usage round did not run"
-            time.sleep(0.05)
+        until(
+            lambda: client.get("/api/monitor", headers=as_user(ALICE)).json()["usage"][
+                "collected_at"
+            ]
+        )
         assert seen == []  # positive control: running until the service stops
     assert seen == [(True, True, True, False)]
 

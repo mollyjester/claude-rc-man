@@ -41,6 +41,9 @@ An answer to the folder-trust prompt that arrives sooner than
 threshold has not been measured exactly; an instant answer is refused and one
 a fraction of a second later is accepted.
 
+``FAKE_CLAUDE_MIN_ANSWER_SECONDS`` replaces that threshold: at 0 no answer is too
+quick, and at more than a test can last every answer is, at any speed.
+
 A server shows the recorded *connected* screen (no session yet) for
 :data:`READY_SECONDS` — overridable with ``FAKE_CLAUDE_READY_SECONDS`` — then
 the *ready* screen. Interrupting a server before it is ready has not been
@@ -48,6 +51,16 @@ recorded, so the fake finishes becoming ready before it handles the interrupt.
 
 Signing in succeeds for ACCEPTED_CODE and fails for any other, each with the
 recorded screens. Tests that need a logged-in fake call :func:`write_state`.
+
+Two variables let a test see what the fake has done instead of waiting for it to
+have done it (TraceWatch in tests/claude_watches.py). With ``FAKE_CLAUDE_TRACE``
+naming a file, the fake appends one JSON line to it for each event: ``drawn``,
+with the screen it has just written whole, its lines as a terminal shows them
+(:func:`shown_lines`); and its decision on each input it reads, ``answered``,
+``refused`` (too quickly) or ``ignored``, with the input, ``interrupt`` for Ctrl+C.
+With ``FAKE_CLAUDE_GATE`` naming a folder, a server leaves its connected stage
+not after READY_SECONDS but once a file named ``connected`` is in it, which it
+removes. With neither set, nothing changes.
 
 ``fake-exec COMMAND [ARGUMENT...]`` is the one verb the real `claude` has no
 counterpart of: it runs the command with the environment the fake was started with
@@ -98,6 +111,31 @@ MIN_ANSWER_SECONDS = 0.25
 # How long a server shows the connected stage before its session is ready. Longer
 # than the recorder's settling time, so a recording of the fake captures it.
 READY_SECONDS = 2.0
+# What a test drives the fake with (the module docstring).
+TRACE = "FAKE_CLAUDE_TRACE"
+GATE = "FAKE_CLAUDE_GATE"
+MIN_ANSWER = "FAKE_CLAUDE_MIN_ANSWER_SECONDS"
+CONNECTED_STAGE = "connected"
+# Between two looks for a gate's file.
+GATE_POLL = 0.05
+
+
+def shown_lines(text: str) -> list[str]:
+    """``text`` as a terminal shows it once written whole, read as tmuxctl's Pane.screen
+    reads one: each line without its trailing spaces, and no blank lines at the end."""
+    lines = [line.rstrip() for line in text.split("\n")]
+    while lines and not lines[-1]:
+        lines.pop()
+    return lines
+
+
+def trace_events(path: Path | str) -> list[dict]:
+    """The events of a trace, each a whole line: one still being written is left out."""
+    try:
+        text = Path(path).read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return []
+    return [json.loads(line) for line in text.split("\n")[:-1] if line]
 
 
 def state_dir(env: dict[str, str]) -> str:
@@ -257,6 +295,9 @@ class Fake:
         )
         self.state_dir = state_dir(env)
         self.state = _load_state(self.state_dir)
+        self.trace = env.get(TRACE)
+        self.gate = env.get(GATE)
+        self.min_answer = float(env.get(MIN_ANSWER, MIN_ANSWER_SECONDS))
         self.values = rec.placeholder_values(
             rec.Context(self.cwd, self.config_dir, self.version),
             environment_url=rec.ENVIRONMENT_URL_PREFIX
@@ -267,6 +308,20 @@ class Fake:
             **FAKE_ACCOUNT,
         )
 
+    def traced(self, event: str, **fields: object) -> None:
+        """One event appended to the trace, in one write, where there is one."""
+        if not self.trace:
+            return
+        line = json.dumps({"event": event, **fields}) + "\n"
+        fd = os.open(self.trace, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+        try:
+            os.write(fd, line.encode())
+        finally:
+            os.close(fd)
+
+    def drawn(self, text: str) -> None:
+        self.traced("drawn", lines=shown_lines(text))
+
     def show(self, name: str, prompt: bool = False) -> int | None:
         return self.show_lines(self.fixtures[name].lines, self.fixtures[name].exit_code, prompt)
 
@@ -276,6 +331,7 @@ class Fake:
         clear = CLEAR if sys.stdout.isatty() else ""
         sys.stdout.write(clear + text + ("" if prompt else "\n"))
         sys.stdout.flush()
+        self.drawn(text)
         return exit_code
 
     def read_line(self) -> str:
@@ -296,9 +352,11 @@ class Fake:
         while True:
             asked = time.monotonic()
             answer = self.read_line()
-            if time.monotonic() - asked >= MIN_ANSWER_SECONDS:
+            if time.monotonic() - asked >= self.min_answer:
+                self.traced("answered", input=answer.strip())
                 return answer
             self.show(too_fast_screen, prompt=True)
+            self.traced("refused", input=answer.strip())
 
     def run(self) -> int:
         a = self.args
@@ -335,6 +393,7 @@ class Fake:
         if self.env.get("FAKE_CLAUDE_SCENARIO") == "unrecognised":
             sys.stdout.write(CLEAR + UNRECOGNISED_SCREEN + "\n")
             sys.stdout.flush()
+            self.drawn(UNRECOGNISED_SCREEN)
             self.wait_for_interrupt()
             return 1
         email = _option(self.args, "--email") or ""
@@ -377,11 +436,15 @@ class Fake:
             return self.show("rc_logged_out")
         if not isinstance(self.config().get("oauthAccount"), dict):
             refusal = self.fixtures["rc_no_oauth_account"]
-            sys.stderr.write(rec.fill("\n".join(refusal.lines), self.values) + "\n")
+            text = rec.fill("\n".join(refusal.lines), self.values)
+            sys.stderr.write(text + "\n")
+            sys.stderr.flush()
+            self.drawn(text)
             return refusal.exit_code
         if self.env.get("FAKE_CLAUDE_SCENARIO") == "unrecognised":
             sys.stdout.write(CLEAR + UNRECOGNISED_SCREEN + "\n")
             sys.stdout.flush()
+            self.drawn(UNRECOGNISED_SCREEN)
             self.wait_for_interrupt()
             return 1
         if self.env.get("FAKE_CLAUDE_SCENARIO") == REMOTE_CONTROL_PROMPT:
@@ -449,10 +512,20 @@ class Fake:
         interrupted: list[bool] = []
         signal.signal(signal.SIGINT, lambda *_: interrupted.append(True))
         self.show(connected)
-        time.sleep(float(self.env.get("FAKE_CLAUDE_READY_SECONDS", READY_SECONDS)))
+        self.leave(CONNECTED_STAGE)
         self.show(ready)
         self.wait_for_interrupt(interrupted)
         return self.show(stopped)
+
+    def leave(self, stage: str) -> None:
+        """The end of a timed stage: READY_SECONDS, or, with a gate, its file there."""
+        if not self.gate:
+            time.sleep(float(self.env.get("FAKE_CLAUDE_READY_SECONDS", READY_SECONDS)))
+            return
+        opened = Path(self.gate) / stage
+        while not opened.exists():
+            time.sleep(GATE_POLL)
+        opened.unlink()
 
     def spawn_question(self) -> str:
         """The spawn-mode answer; after Ctrl+C, which changes nothing on screen,
@@ -462,13 +535,16 @@ class Fake:
         def interrupt(*_) -> None:
             interrupted.append(True)
             self.show("spawn_prompt_interrupted", prompt=True)
+            self.traced("ignored", input="interrupt")
 
         signal.signal(signal.SIGINT, interrupt)
         self.show("spawn_prompt", prompt=True)
         answer = self.read_line()
         while interrupted:
             self.show("spawn_prompt_answered_after_interrupt", prompt=True)
-            self.read_line()
+            self.traced("ignored", input=answer.strip())
+            answer = self.read_line()
+        self.traced("answered", input=answer.strip())
         signal.signal(signal.SIGINT, signal.SIG_DFL)
         return answer.strip()
 

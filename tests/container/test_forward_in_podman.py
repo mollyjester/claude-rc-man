@@ -25,10 +25,10 @@ import fcntl
 import hashlib
 import os
 import queue
+import select
 import signal
 import subprocess
 import threading
-import time
 
 import pytest
 from rcman import forwards
@@ -38,6 +38,8 @@ from tests import podman_service as ps
 from tests.container import network, sizes
 from tests.container.conftest import engine_of, engine_runtime
 from tests.container.execs import exec_ids
+from tests.hang_guard import CONTAINER_HANG_GUARD
+from tests.until import SLOW, until
 
 # The module's workspace and its person, clear of the other modules' numbers.
 WORKSPACE = 740
@@ -54,18 +56,16 @@ EXCHANGED, PLANTED, HELD_KILLED, HELD_CLOSED, HALF_CLOSED = 6080, 6082, 6083, 60
 APP_CLOSED, APP_CLOSED_ONE_SIDED, LEFT_OVER = 6086, 6087, 6088
 # Bytes sent each way: many times what a pipe holds, so neither side can have taken it whole.
 PAYLOAD = 1024 * 1024
-# Seconds a step may take, and how long what a relay leaves is given to go.
-WITHIN = 120
-GONE_WITHIN = 15
-# What the bystander runs: a process of a separate exec, which no relay's end may take with it.
-BYSTANDER = [BUSYBOX, "sleep", "3601"]
+# What the bystander runs: a process of a separate exec, which no relay's end may take with it,
+# that outlasts the test (rule (g) of "Time in tests").
+BYSTANDER = [BUSYBOX, "sleep", f"{3 * CONTAINER_HANG_GUARD:g}"]
 # Run by the workspace's python3: listens on 127.0.0.1:<port> and takes one connection. By its
 # mode it then reads <size> bytes, saying how many and their sha256, answers <size> random bytes,
 # saying the same of them, and reads on to the end ("answer"); or does the same but closes its
 # side once it has answered, saying "closed" ("close"); or reads to the end before it answers so
 # ("after-eof"); or reads to the end and keeps its side open ("hold"). It says "eof" with how much
 # it read in all, and its sha256, when the end of file arrives.
-LISTENER = r"""
+LISTENER = rf"""
 import hashlib, os, socket, sys, time
 port, mode, size = int(sys.argv[1]), sys.argv[2], int(sys.argv[3])
 made = socket.socket()
@@ -94,7 +94,7 @@ if mode in ("answer", "close"):
 if mode == "close":
     peer.close()
     print("closed", flush=True)
-    time.sleep(3600)
+    time.sleep({3 * CONTAINER_HANG_GUARD:g})
 try:
     while chunk := peer.recv(65536):
         digest.update(chunk)
@@ -105,7 +105,7 @@ print("eof", length, digest.hexdigest(), flush=True)
 if mode == "after-eof":
     answer()
 if mode == "hold":
-    time.sleep(3600)
+    time.sleep({3 * CONTAINER_HANG_GUARD:g})
 peer.close()
 """
 # Run by the mounted busybox's shell in the workspace: every process's id and argv, a line each,
@@ -193,6 +193,12 @@ def wrapper_argv(pidfile: str, port: int) -> list[str]:
     return rt.relay_shell(rt.PODMAN_LAYOUT, pidfile, port)
 
 
+def an_nc(argv: list[str]) -> bool:
+    """Whether ``argv`` is an ``nc``'s, the mounted busybox's or another."""
+    program = os.path.basename(argv[0]) if argv else ""
+    return program == "nc" or (program == "busybox" and argv[1:2] == ["nc"])
+
+
 def relay_parts(podman, name: str) -> dict[int, list[str]]:
     """Every process of a relay running in the workspace - its shell and subshell, ``cat`` and
     ``nc``, the mounted busybox's or another ``nc`` - by its id: its argv."""
@@ -244,6 +250,7 @@ class Listener:
             env=ps.env(engine.folder), cwd=engine.folder,
         )  # fmt: skip
         self.lines: queue.Queue = queue.Queue()
+        self.heard_words: set[str] = set()
         threading.Thread(target=self._read, daemon=True).start()
         try:
             self.pid = int(self.said("listening")[0])
@@ -256,26 +263,34 @@ class Listener:
             self.lines.put(line.decode().split())
         self.lines.put(None)
 
-    def said(self, word: str, within: float = WITHIN) -> list[str]:
+    def said(self, word: str) -> list[str]:
         """What the listener said after ``word``, waiting for it."""
-        deadline = time.monotonic() + within
         while True:
-            left = deadline - time.monotonic()
-            assert left > 0, f"the listener never said {word!r}"
             try:
-                line = self.lines.get(timeout=left)
+                line = self.lines.get(timeout=CONTAINER_HANG_GUARD)
             except queue.Empty:
-                continue
+                raise AssertionError(f"the listener never said {word!r}") from None
             if line is None:
                 said = self.proc.stderr.read().decode(errors="replace")
                 raise AssertionError(f"the listener ended before {word!r}: {said}")
             if line[0] == word:
                 return line[1:]
 
+    def heard(self, word: str) -> bool:
+        """Whether the listener has said ``word`` since ``said`` last took a line, by what it
+        said so far, without waiting."""
+        while True:
+            try:
+                line = self.lines.get_nowait()
+            except queue.Empty:
+                return word in self.heard_words
+            if line:
+                self.heard_words.add(line[0])
+
     def end(self) -> None:
         self.podman.exec(self.name, [BUSYBOX, "kill", "-KILL", str(self.pid)])
         try:
-            self.proc.wait(timeout=WITHIN)
+            self.proc.wait(timeout=CONTAINER_HANG_GUARD)
         except subprocess.TimeoutExpired:
             self.proc.kill()
             self.proc.wait()
@@ -288,14 +303,6 @@ def ended(proc: subprocess.Popen) -> None:
     for stream in (proc.stdin, proc.stdout, proc.stderr):
         if stream:
             stream.close()
-
-
-def until(check, within: float = WITHIN):
-    deadline = time.monotonic() + within
-    while not (found := check()):
-        assert time.monotonic() < deadline, f"never: {check.__doc__ or check}"
-        time.sleep(0.2)
-    return found
 
 
 def pidfile(port: int) -> str:
@@ -316,15 +323,18 @@ def shell_of(podman, name: str, port: int) -> int:
     return int(read.out.decode())
 
 
-def next_read(stream, within: float) -> bytes | None:
-    """What ``stream`` gives next - b"" at its end of file - or None if nothing comes within
-    ``within`` seconds."""
+def reading(stream) -> queue.Queue:
+    """What ``stream`` gives next - b"" at its end of file - read aside, into the queue given,
+    which is empty until it comes."""
     got: queue.Queue = queue.Queue()
     threading.Thread(target=lambda: got.put(stream.read(1)), daemon=True).start()
-    try:
-        return got.get(timeout=within)
-    except queue.Empty:
-        return None
+    return got
+
+
+def held(relay: subprocess.Popen) -> bool:
+    """Whether the relay runs on with nothing for its client to read: no byte and no end of
+    file, now."""
+    return relay.poll() is None and not select.select([relay.stdout], [], [], 0)[0]
 
 
 def running_execs(podman, name: str) -> set[str]:
@@ -333,17 +343,18 @@ def running_execs(podman, name: str) -> set[str]:
     return set(exec_ids(engine_of(podman), name))
 
 
-def settled(read, within: float = GONE_WITHIN):
-    """What ``read`` gives once it is falsy, or what it gives last when ``within`` has passed."""
-    deadline = time.monotonic() + within
-    while (found := read()) and time.monotonic() < deadline:
-        time.sleep(0.2)
-    return found
+def waited(condition) -> None:
+    """Wait until ``condition`` holds, or the hang bound: one wait over all a case's absences, so
+    that a case that fails is read, each absence on its own, within one bound."""
+    try:
+        until(condition, SLOW)
+    except AssertionError:
+        pass  # what did not come about is read, and asserted, by the caller
 
 
 def killed(relay: subprocess.Popen) -> None:
     relay.send_signal(signal.SIGKILL)
-    relay.wait(timeout=WITHIN)
+    relay.wait(timeout=CONTAINER_HANG_GUARD)
 
 
 def input_closed(relay: subprocess.Popen) -> None:
@@ -379,48 +390,70 @@ def bystander(podman, workspace):
         podman.exec(workspace, [BUSYBOX, "kill", "-KILL", str(pid)])
 
 
-def held_relay_left(podman, name: str, port: int, end) -> dict:
+class HeldRelay:
     """A relay to a listener that keeps its side open, its client ended by ``end`` (given the
-    client): whether the listener got the relay's end of file and still runs, and the relay's
-    processes, exec and pidfile still there once a short while has passed, each seen while it
-    ran first, with its pidfile naming its shell. What is left is ended afterwards, so that the next
-    case starts clean."""
-    holding = Listener(podman, name, port, "hold")
-    before = running_execs(podman, name)  # the listener's own among them
-    relay = relay_started(podman, name, pidfile(port), port)
-    try:
-        holding.said("accepted")
-        shell = shell_of(podman, name, port)
-        parts = relay_parts(podman, name)
-        assert sorted(parts.values()) == expected_parts(pidfile(port), port), parts
-        assert parts[shell] == wrapper_argv(pidfile(port), port)  # the pidfile names the shell
-        # The shell leads a process group of its own, which holds the relay's parts alone, so
-        # that its ``kill 0`` takes nothing else.
-        table = groups(podman, name)
-        assert table[shell] == shell, table
-        assert {p for p, g in table.items() if g == shell} == set(parts), (table, parts)
-        [relay_exec] = running_execs(podman, name) - before  # the positive: its exec runs
-        assert pidfile_there(podman, name, port)  # the positive: its pidfile is there
-        end(relay)
+    client) once its processes, exec and pidfile were each seen while it ran, its pidfile naming
+    its shell, which leads a process group that holds the relay's parts alone. Nothing here
+    waits for what the end leaves: ``gone`` says whether all of it went, and ``found`` reads
+    each. ``close`` ends what is left, so that the next case starts clean."""
+
+    def __init__(self, podman, name: str, port: int, end):
+        self.podman, self.name, self.port = podman, name, port
+        self.holding = Listener(podman, name, port, "hold")
+        self.relay = None
         try:
-            holding.said("eof", within=GONE_WITHIN)
-            eof = True
-        except AssertionError:
-            eof = False
+            before = running_execs(podman, name)  # the listener's own among them
+            self.relay = relay_started(podman, name, pidfile(port), port)
+            self.holding.said("accepted")
+            self.shell = shell_of(podman, name, port)
+            # The shell leads a process group of its own, which holds the relay's parts alone,
+            # so that its ``kill 0`` takes nothing else: the group is the relay's processes.
+            parts = self.parts()
+            assert sorted(parts.values()) == expected_parts(pidfile(port), port), parts
+            assert parts[self.shell] == wrapper_argv(pidfile(port), port)  # it names the shell
+            assert set(parts) <= set(relay_parts(podman, name)), parts
+            [self.exec] = running_execs(podman, name) - before  # the positive: its exec runs
+            assert pidfile_there(podman, name, port)  # the positive: its pidfile is there
+            end(self.relay)
+        except BaseException:
+            self.close()
+            raise
+
+    def parts(self) -> dict[int, list[str]]:
+        """The processes of the relay's group, by id: their argvs."""
+        every = processes(self.podman, self.name)
+        table = groups(self.podman, self.name)
+        return {pid: every[pid] for pid, group in table.items() if group == self.shell
+                and pid in every}  # fmt: skip
+
+    def gone(self) -> bool:
+        """Whether the listener got the end of file and nothing of the relay is left."""
+        return (
+            self.holding.heard("eof")
+            and not self.parts()
+            and self.exec not in running_execs(self.podman, self.name)
+            and not pidfile_there(self.podman, self.name, self.port)
+        )
+
+    def found(self) -> dict:
+        """Whether the listener got the relay's end of file and still runs, and the relay's
+        processes, exec and pidfile still there, now."""
         return {
-            "listener got eof": eof,
-            "relay left": settled(lambda: relay_parts(podman, name)),
-            "exec left": settled(lambda: relay_exec in running_execs(podman, name)),
-            "pidfile left": settled(lambda: pidfile_there(podman, name, port)),
-            "listener still runs": holding.pid in processes(podman, name),
+            "listener got eof": self.holding.heard("eof"),
+            "relay left": self.parts(),
+            "exec left": self.exec in running_execs(self.podman, self.name),
+            "pidfile left": pidfile_there(self.podman, self.name, self.port),
+            "listener still runs": self.holding.pid in processes(self.podman, self.name),
         }
-    finally:
-        for pid in relay_parts(podman, name):
-            podman.exec(name, [BUSYBOX, "kill", "-KILL", str(pid)])
-        ended(relay)
-        holding.end()
-        until(lambda: relay_parts(podman, name) == {})
-        podman.exec(name, [BUSYBOX, "rm", "-f", pidfile(port)])
+
+    def close(self) -> None:
+        for pid in relay_parts(self.podman, self.name):
+            self.podman.exec(self.name, [BUSYBOX, "kill", "-KILL", str(pid)])
+        if self.relay is not None:
+            ended(self.relay)
+        self.holding.end()
+        until(lambda: relay_parts(self.podman, self.name) == {}, SLOW)
+        self.podman.exec(self.name, [BUSYBOX, "rm", "-f", pidfile(self.port)])
 
 
 def test_the_busybox_relay_over_exec_is_byte_exact_both_ways_and_ends_with_its_input(
@@ -451,7 +484,7 @@ def test_the_busybox_relay_over_exec_is_byte_exact_both_ways_and_ends_with_its_i
             planted: [BUSYBOX, "nc", "127.0.0.1", str(PLANTED)]
         }  # still running, its listener's side open
         podman.exec(workspace, [BUSYBOX, "kill", "-KILL", str(planted)])
-        until(lambda: relay_parts(podman, workspace) == {})
+        until(lambda: relay_parts(podman, workspace) == {}, SLOW)
     finally:
         holding.end()
 
@@ -465,7 +498,7 @@ def test_the_busybox_relay_over_exec_is_byte_exact_both_ways_and_ends_with_its_i
         writer = threading.Thread(target=written, args=(relay.stdin, sent), daemon=True)
         writer.start()
         back = read_exactly(relay.stdout, PAYLOAD)
-        writer.join(timeout=WITHIN)
+        writer.join(timeout=CONTAINER_HANG_GUARD)
         assert answering.said("got") == [str(len(sent)), hashlib.sha256(sent).hexdigest()]
         assert answering.said("answer") == [str(len(back)), hashlib.sha256(back).hexdigest()]
         assert len(back) == PAYLOAD
@@ -473,23 +506,31 @@ def test_the_busybox_relay_over_exec_is_byte_exact_both_ways_and_ends_with_its_i
         assert pidfile_there(podman, workspace, EXCHANGED)  # and its pidfile is there
         relay.stdin.close()  # the end of its input reaches the listener as its end of file
         assert answering.said("eof") == [str(len(sent)), hashlib.sha256(sent).hexdigest()]
-        relay.wait(timeout=WITHIN)  # the relay ended with its input; its code means nothing
+        relay.wait(
+            timeout=CONTAINER_HANG_GUARD
+        )  # the relay ended with its input; its code means nothing
         assert relay.stdout.read() == b""  # and nothing more came
-        until(lambda: relay_parts(podman, workspace) == {})
-        until(lambda: relay_exec not in running_execs(podman, workspace))
-        until(lambda: not pidfile_there(podman, workspace, EXCHANGED))  # it removed its own
+        until(lambda: relay_parts(podman, workspace) == {}, SLOW)
+        until(lambda: relay_exec not in running_execs(podman, workspace), SLOW)
+        until(lambda: not pidfile_there(podman, workspace, EXCHANGED), SLOW)  # it removed its own
     finally:
         ended(relay)
         answering.end()
         podman.exec(workspace, [BUSYBOX, "rm", "-f", pidfile(EXCHANGED)])
 
     # With a listener that keeps its side open, as a server holding a connection does: what is
-    # left once the client is killed, and once it only closes its input. Both are read before
-    # either is held to being gone, so that a failure tells both.
-    found = {
-        "client killed": held_relay_left(podman, workspace, HELD_KILLED, killed),
-        "input closed": held_relay_left(podman, workspace, HELD_CLOSED, input_closed),
-    }
+    # left once the client is killed, and once it only closes its input. Both are ended, then
+    # waited for by one wait, and both read before either is held to being gone, so that a
+    # failure tells both within one hang bound.
+    held: dict[str, HeldRelay] = {}
+    try:
+        held["client killed"] = HeldRelay(podman, workspace, HELD_KILLED, killed)
+        held["input closed"] = HeldRelay(podman, workspace, HELD_CLOSED, input_closed)
+        waited(lambda: all(case.gone() for case in held.values()))
+        found = {name: case.found() for name, case in held.items()}
+    finally:
+        for case in held.values():
+            case.close()
     assert all(
         f["listener got eof"] and not f["relay left"] and not f["exec left"]
         and not f["pidfile left"] and f["listener still runs"]
@@ -509,15 +550,17 @@ def test_the_relay_does_not_carry_a_half_close(podman, workspace, bystander):
     try:
         late.said("accepted")
         assert relay_parts(podman, workspace)  # the control: it runs
-        until(lambda: pidfile_there(podman, workspace, HALF_CLOSED))  # and its pidfile is there
+        until(lambda: pidfile_there(podman, workspace, HALF_CLOSED), SLOW)  # its pidfile, too
         sent = os.urandom(PAYLOAD)
-        back, _ = relay.communicate(sent, timeout=WITHIN)  # sends, then ends its input at once
+        back, _ = relay.communicate(
+            sent, timeout=CONTAINER_HANG_GUARD
+        )  # sends, then ends its input at once
         length, _ = late.said("eof")
         assert int(length) >= 0  # the end of file came, after however much the relay passed
         assert late.said("answer")[0] == str(PAYLOAD)  # and the listener answered in full
         assert len(back) < PAYLOAD, len(back)  # cut short
-        until(lambda: relay_parts(podman, workspace) == {})
-        until(lambda: not pidfile_there(podman, workspace, HALF_CLOSED))
+        until(lambda: relay_parts(podman, workspace) == {}, SLOW)
+        until(lambda: not pidfile_there(podman, workspace, HALF_CLOSED), SLOW)
     finally:
         ended(relay)
         late.end()
@@ -529,40 +572,60 @@ def app_closed_left(podman, name: str, port: int, script: str | None = None) -> 
     """A relay to a listener that answers in full and then closes its side, while the client
     keeps its input open, as an app that closes a connection (HTTP/1.0, ``Connection: close``,
     a WebSocket's close, a crash) does: whether the client got the whole answer, then its end of
-    file within GONE_WITHIN, and the relay's processes, exec and pidfile still there once a
-    short while has passed, each seen while it ran first. With ``script``, an exec of the same shape
-    running that script instead (the planted positive). What is left is ended afterwards."""
+    file, and the relay's processes, exec and pidfile still there if they never go, each seen
+    while it ran first. With ``script``, an exec of the same shape running that script instead
+    (the planted positive), which never ends: once its ``nc`` has ended with the connection,
+    whether it holds its client, and what of it is there then. What is left is ended
+    afterwards."""
     closing = Listener(podman, name, port, "close", PAYLOAD)
     before = running_execs(podman, name)
     relay = relay_started(podman, name, pidfile(port), port, script)
     try:
         # The positive, before anything is sent: the relay waits for its input, so its exec
         # runs until it has been read.
-        [relay_exec] = until(lambda: running_execs(podman, name) - before)
-        until(lambda: pidfile_there(podman, name, port))  # and its pidfile is written
+        [relay_exec] = until(lambda: running_execs(podman, name) - before, SLOW)
+        until(lambda: pidfile_there(podman, name, port), SLOW)  # and its pidfile is written
         sent = os.urandom(PAYLOAD)
         writer = threading.Thread(target=written, args=(relay.stdin, sent), daemon=True)
         writer.start()
         back = read_exactly(relay.stdout, PAYLOAD)
-        writer.join(timeout=WITHIN)
+        writer.join(timeout=CONTAINER_HANG_GUARD)
         answered = closing.said("answer")
         closing.said("closed")
-        end = next_read(relay.stdout, GONE_WITHIN)  # its input still open
+        whole = answered == [str(len(back)), hashlib.sha256(back).hexdigest()]
+        if script is not None:  # the twin: its nc has ended, its cat waits on the input
+            until(lambda: not any(an_nc(argv) for argv in relay_parts(podman, name).values()),
+                  SLOW)  # fmt: skip
+            return {
+                "whole answer": whole and len(back) == PAYLOAD,
+                "hung": held(relay),
+                "relay left": relay_parts(podman, name),
+                "pidfile left": pidfile_there(podman, name, port),
+            }
+        end = reading(relay.stdout)  # its input still open
+        # One wait over its end of file and every absence, then each read on its own, so that
+        # a failure is read within one hang bound.
+        waited(
+            lambda: (
+                not end.empty()
+                and not relay_parts(podman, name)
+                and relay_exec not in running_execs(podman, name)
+                and not pidfile_there(podman, name, port)
+            )
+        )
         return {
-            "whole answer": answered == [str(len(back)), hashlib.sha256(back).hexdigest()]
-            and len(back) == PAYLOAD,
-            "eof": end == b"",
-            "hung": end is None,
-            "relay left": settled(lambda: relay_parts(podman, name)),
-            "exec left": settled(lambda: relay_exec in running_execs(podman, name)),
-            "pidfile left": settled(lambda: pidfile_there(podman, name, port)),
+            "whole answer": whole and len(back) == PAYLOAD,
+            "eof": not end.empty() and end.get_nowait() == b"",
+            "relay left": relay_parts(podman, name),
+            "exec left": relay_exec in running_execs(podman, name),
+            "pidfile left": pidfile_there(podman, name, port),
         }
     finally:
         for pid in relay_parts(podman, name):
             podman.exec(name, [BUSYBOX, "kill", "-KILL", str(pid)])
         ended(relay)
         closing.end()
-        until(lambda: relay_parts(podman, name) == {})
+        until(lambda: relay_parts(podman, name) == {}, SLOW)
         podman.exec(name, [BUSYBOX, "rm", "-f", pidfile(port)])
 
 
@@ -605,12 +668,12 @@ def test_the_pidfile_wrapper_lets_sweep_end_a_leftover_relay(podman, workspace, 
         planted = podman.exec(workspace, [BUSYBOX, "sh", "-c", f'echo {bystander} >"$1"', "sh",
                                           decoy])  # fmt: skip
         assert planted.code == 0, planted
-        assert next_read(relay.stdout, 2) is None  # held open by both sides, it stays
+        assert held(relay)  # held open by both sides, it runs on
 
         forwards.sweep(rt.PODMAN_LAYOUT, channel.run)
-        assert relay.wait(timeout=WITHIN) is not None  # its exec ended with its shell
-        until(lambda: relay_parts(podman, workspace) == {})
-        until(lambda: relay_exec not in running_execs(podman, workspace))
+        assert relay.wait(timeout=CONTAINER_HANG_GUARD) is not None  # its exec ended with its shell
+        until(lambda: relay_parts(podman, workspace) == {}, SLOW)
+        until(lambda: relay_exec not in running_execs(podman, workspace), SLOW)
         for path in (pidfile(LEFT_OVER), decoy):
             assert podman.exec(workspace, [BUSYBOX, "test", "-e", path]).code != 0, path
         assert processes(podman, workspace).get(bystander) == BYSTANDER

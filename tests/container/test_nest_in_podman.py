@@ -11,6 +11,7 @@ from __future__ import annotations
 import io
 import re
 import tarfile
+import threading
 
 import pytest
 from rcman import runtime as rt
@@ -18,8 +19,11 @@ from rcman import runtime as rt
 from installer import install as ins
 from tests.container import sizes
 from tests.containers import asked_packages
+from tests.hang_guard import CONTAINER_HANG_GUARD
+from tests.until import SLOW, until
 
 WRAPPER = f"{rt.TOOLS_MOUNT}/{ins.PODMAN_TOOLS}/bin/podman"
+BUSYBOX = f"{rt.TOOLS_MOUNT}/bin/busybox"
 DOCKER = f"{rt.TOOLS_MOUNT}/{ins.PODMAN_TOOLS}/bin/docker"
 # Root's record of its nest: a folder of root's alone in the image's /run (the wrapper's STATE).
 STATE = rt.ROOT_PODMAN_STATE
@@ -90,7 +94,9 @@ def run(podman, name: str, *args: str, cwd: str | None = None, stdin: bytes | No
                 *argv]  # fmt: skip
     elif environment:
         argv = ["env", *environment, *argv]
-    return podman.exec(name, argv, cwd=cwd or podman.layout(name).work, stdin=stdin, timeout=900)
+    return podman.exec(
+        name, argv, cwd=cwd or podman.layout(name).work, stdin=stdin, timeout=CONTAINER_HANG_GUARD
+    )
 
 
 def ok(result: rt.Result) -> str:
@@ -223,7 +229,15 @@ def test_roots_storage_is_native_overlay_in_the_volume_and_its_mounts_are_in_the
     assert rootless == "false"  # root of the nest
     running = ok(
         run(
-            podman, nest_workspace, "run", "-d", "--pull=never", imported, "busybox", "sleep", "600"
+            podman,
+            nest_workspace,
+            "run",
+            "-d",
+            "--pull=never",
+            imported,
+            "busybox",
+            "sleep",
+            f"{3 * CONTAINER_HANG_GUARD:g}",
         )
     )
     try:
@@ -537,7 +551,7 @@ def test_calls_at_once_with_no_nest_and_a_stale_lock_make_one_nest(podman, nest_
                  f"ln -s lock.999999.1 {STATE}/lock")  # fmt: skip
         ok(podman.exec(nest_workspace, ["sh", "-c", plant]))
         at_once = f"for i in 1 2 3 4 5 6 7 8; do {WRAPPER} version >/dev/null & done; wait"
-        ok(podman.exec(nest_workspace, ["sh", "-c", at_once], timeout=600))
+        ok(podman.exec(nest_workspace, ["sh", "-c", at_once], timeout=CONTAINER_HANG_GUARD))
         made = nests(podman, nest_workspace)
         record = ok(podman.exec(nest_workspace, ["cat", f"{STATE}/nest"])).split()
         assert len(made) == 1, made  # one nest, though eight asked for one at once
@@ -545,27 +559,58 @@ def test_calls_at_once_with_no_nest_and_a_stale_lock_make_one_nest(podman, nest_
         assert podman.exec(nest_workspace, ["test", "-L", f"{STATE}/lock"]).code != 0  # let go
 
 
-def delayed(podman, name: str, wait: bool) -> str:
-    """A copy of the wrapper whose nest is slow to make its user namespace, as under load; and,
-    without ``wait``, with the wait for it taken out, as the wrapper once wrote the maps."""
+# The file a delayed nest waits for before it makes its user namespace.
+GO = "/root/nest-go"
+
+
+def delayed(podman, name: str, waiting: bool) -> str:
+    """A copy of the wrapper whose nest is slow to make its user namespace, as under load: it
+    makes it only once GO is there, which the test makes. With ``waiting``, the copy waits for it
+    with no count of its own, so that the test, not a count of looks, decides how slow it is;
+    without, the wait for it is taken out, as the wrapper once wrote the maps."""
+    ok(podman.exec(name, ["rm", "-f", GO]))
     script = ok(podman.exec(name, ["cat", WRAPPER]))
     slow = script.replace(
         "\t$B setsid $B unshare -U",
-        "\t$B setsid $B sh -c '$0 sleep 1; exec \"$@\"' $B $B unshare -U",
+        f"\t$B setsid $B sh -c 'while [ ! -e {GO} ]; do $0 usleep 10000; done; exec \"$@\"' "
+        "$B $B unshare -U",
     )
     assert slow != script  # the plant took effect
-    if not wait:
+    if waiting:
+        counted = ' || [ "$tries" -ge 1000 ]; then\n\t\t\tsay "the nest did not start"'
+        assert counted in slow  # and this one too
+        slow = slow.replace(counted, '; then\n\t\t\tsay "the nest did not start"', 1)
+    else:
         start, end = slow.index("\t# (waits for the unshare)"), slow.index("\t# (has waited")
         slow = slow[:start] + slow[end:]
-    copy = f"/root/podman-{'wait' if wait else 'nowait'}"
+    copy = f"/root/podman-{'wait' if waiting else 'nowait'}"
     ok(podman.exec(name, ["sh", "-c", f"cat > {copy} && chmod 755 {copy}"], stdin=slow.encode()))
     return copy
 
 
+def held_nest(podman, name: str) -> bool:
+    """Whether a delayed nest waits for GO to make its user namespace."""
+    found = podman.exec(name, ["sh", "-c", f"grep -l '{GO[:-1]}[{GO[-1]}]' /proc/[0-9]*/cmdline"])
+    return found.code == 0
+
+
 def test_a_nest_slow_to_make_its_namespace_is_still_made(podman, nest_workspace):
+    """The nest is let make its namespace only once it is seen waiting to, while the wrapper
+    waits for it."""
     no_nest(podman, nest_workspace)
-    made = run(podman, nest_workspace, "version", program=delayed(podman, nest_workspace, True))
-    assert made.code == 0, made
+    program = delayed(podman, nest_workspace, True)
+    made: list[rt.Result] = []
+    thread = threading.Thread(
+        target=lambda: made.append(run(podman, nest_workspace, "version", program=program)),
+        daemon=True,
+    )
+    thread.start()
+    # held, or ended already, as a wrapper that does not wait ends
+    until(lambda: held_nest(podman, nest_workspace) or not thread.is_alive(), SLOW)
+    ok(podman.exec(nest_workspace, ["touch", GO]))
+    thread.join(CONTAINER_HANG_GUARD)
+    assert not thread.is_alive() and len(made) == 1
+    assert made[0].code == 0, made
     assert len(nests(podman, nest_workspace)) == 1
 
 
@@ -760,7 +805,7 @@ echo "zip $(cat out/zip/file)"
 
 
 def test_the_default_image_has_the_tools_a_repositorys_setup_needs(podman, nest_workspace):
-    shown = ok(podman.exec(nest_workspace, ["sh", "-c", TOOLS], timeout=300))
+    shown = ok(podman.exec(nest_workspace, ["sh", "-c", TOOLS], timeout=CONTAINER_HANG_GUARD))
     said = [line.split(" ", 1) for line in shown.splitlines()]
     tools = {rest.split()[0]: rest.split()[1:] for label, rest in said if label == "tool"}
     assert set(tools) == {"make", "tar", "xz", "zip", "unzip"}, shown
@@ -811,20 +856,49 @@ def test_a_lock_whose_folder_is_gone_is_taken_over_and_let_go(podman, nest_works
 def test_without_making_the_claims_folder_a_lock_whose_folder_is_gone_holds_forever(
     podman, nest_workspace
 ):
-    """The twin: the claim cannot be made in a folder that is not there."""
+    """The twin: the claim cannot be made in a folder that is not there. The copy runs traced,
+    and is ended once its trace shows it tried the claim again after the first failed, a point
+    the test saw, never a time; the lock is then still the link to the folder that is gone."""
     no_nest(podman, nest_workspace)
     ok(podman.exec(nest_workspace, ["sh", "-c", DANGLING]))
     copy = without(podman, nest_workspace, "(claim's folder)")
-    held = podman.exec(nest_workspace, ["timeout", "15", copy, "version"], timeout=60)
-    assert held.code == 124, held  # still trying when it was stopped
-    ok(podman.exec(nest_workspace, ["rm", "-f", f"{STATE}/lock"]))
+    trace = "/root/claim-trace"
+    traced = f"setsid {BUSYBOX} sh -x {copy} version </dev/null >/dev/null 2>{trace} & echo $!"
+    pid = ok(podman.exec(nest_workspace, ["sh", "-c", traced])).strip()
+    claimed = re.compile(rf"ln -sn \S+ {re.escape(STATE)}/lock\.999999\.1/claim\.1$", re.M)
+
+    def tried_again():
+        """(True, the trace) once the claim was tried twice; (False, it) once the copy ended
+        without; None while it runs and has not."""
+        running = runs(podman, nest_workspace, pid)
+        said = podman.exec(nest_workspace, ["cat", trace]).out.decode(errors="replace")
+        if len(claimed.findall(said)) >= 2:
+            return True, said
+        return None if running else (False, said)
+
+    try:
+        again, said = until(tried_again, SLOW)
+        assert again, said[-4000:]  # it failed the claim and was back for another try
+    finally:
+        podman.exec(nest_workspace, ["kill", "-9", pid])
+        until(lambda: not runs(podman, nest_workspace, pid), SLOW)
+    link = podman.exec(nest_workspace, ["readlink", f"{STATE}/lock"])
+    assert link.out.decode().strip() == "lock.999999.1", link  # still the lock, still dangling
+    assert podman.exec(nest_workspace, ["test", "-e", f"{STATE}/lock.999999.1"]).code != 0
+    ok(podman.exec(nest_workspace, ["rm", "-f", f"{STATE}/lock", trace]))
+
+
+def runs(podman, name: str, pid: str) -> bool:
+    """Whether the process ``pid`` of the workspace runs: there, and not a zombie."""
+    state = "s=$(cut -d')' -f2 /proc/$1/stat 2>/dev/null) && set -- $s && [ \"$1\" != Z ]"
+    return podman.exec(name, ["sh", "-c", state, "sh", pid]).code == 0
 
 
 def test_letting_go_leaves_a_folder_whose_claimer_runs_and_removes_one_whose_holders_are_gone(
     podman, nest_workspace
 ):
     no_nest(podman, nest_workspace)
-    sleeper = ["sh", "-c", "setsid sleep 300 >/dev/null 2>&1 & echo $!"]
+    sleeper = ["sh", "-c", f"setsid sleep {3 * CONTAINER_HANG_GUARD:g} >/dev/null 2>&1 & echo $!"]
     claimer = ok(podman.exec(nest_workspace, sleeper))
     pid = claimer.strip()
     start = ok(podman.exec(nest_workspace, ["sh", "-c", f"cut -d')' -f2 /proc/{pid}/stat"]))

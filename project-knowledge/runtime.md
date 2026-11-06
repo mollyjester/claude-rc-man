@@ -514,7 +514,8 @@ unopened. Every close through `Workspaces.close_channel`, as a workspace's conta
 is replaced and as the service stops, is counted, so one made while such a close came is closed
 and not put in, and its request is refused as sent nowhere; the idle closer's closes are not
 counted. `LATENCY_P95_SECONDS` in
-`channel.py` is what a request may cost, and the container suites hold the
+`channel.py` is what a request may cost, which the benchmark measures and reports
+([tests.md](tests.md#the-benchmark)), and the container suites hold the
 podman client of a channel to a memory bound of its own.
 
 ## A workspace's server

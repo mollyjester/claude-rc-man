@@ -52,10 +52,10 @@ export async function openAdminPage(page: Page, label: string) {
 }
 
 // Makes a workspace from the Workspaces page, which it is on, and waits until it
-// is ready; it is then selected, and its panel is returned. `wait` is how long to
-// wait for that, in milliseconds, and the expectation timeout when it is not given;
-// a caller whose workspace takes longer than that says so (e2e-stack/timing.ts).
-export async function makeWorkspace(page: Page, name: string, wait?: number) {
+// is ready, however long that takes within a step's hang guard (src/test/hangGuard.ts): a
+// person's first workspace in the whole stack copies the default image first. It is then
+// selected, and its panel is returned.
+export async function makeWorkspace(page: Page, name: string) {
   const dialog = await newWorkspace(page);
   await dialog.getByLabel(m.newWorkspaceName).fill(name);
   await dialog.getByRole("button", { name: m.create }).click();
@@ -63,8 +63,8 @@ export async function makeWorkspace(page: Page, name: string, wait?: number) {
   const opened = panel(page, name);
   await expect(
     opened.getByRole("heading", { name: m.serverTitle }),
-    `workspace "${name}" was not ready${wait === undefined ? "" : ` within ${wait} ms`}`,
-  ).toBeVisible({ timeout: wait });
+    `workspace "${name}" was not ready`,
+  ).toBeVisible();
   return opened;
 }
 
@@ -115,3 +115,40 @@ export async function openUpgradeDialog(page: Page) {
   await expect(dialog).toBeVisible();
   return dialog;
 }
+
+// One frame of the page passes: what the last action changed is laid out and painted.
+export async function frame(page: Page) {
+  await page.evaluate(() => new Promise<void>((done) => requestAnimationFrame(() => done())));
+}
+
+// What the page drew settles: two frames pass, and every animation that ends has ended, a
+// dialog's or a pop-up's opening among them (one that repeats without end, a spinner's, is left
+// out). A wait on what the page itself says, never on a time.
+export async function drawn(page: Page) {
+  await page.evaluate(async () => {
+    await new Promise<void>((done) =>
+      requestAnimationFrame(() => requestAnimationFrame(() => done())),
+    );
+    const ending = document
+      .getAnimations()
+      .filter((a) => a.effect?.getComputedTiming().iterations !== Infinity);
+    await Promise.all(ending.map((a) => a.finished.catch(() => undefined)));
+  });
+}
+
+// Records each event of `types` that reaches the page, in the capture phase, before any handler
+// of the page's sees it, from now on: a press's own events, which a test waits for (`recorded`)
+// before it asserts what the press did not do. Called again, it starts the record afresh.
+export async function recordEvents(page: Page, types: string[]) {
+  await page.evaluate((types) => {
+    const held = window as unknown as { recorded?: string[] };
+    if (held.recorded === undefined)
+      for (const type of types)
+        addEventListener(type, (event) => held.recorded?.push(event.type), true);
+    held.recorded = [];
+  }, types);
+}
+
+// The events recordEvents has seen since it was last called.
+export const recorded = (page: Page) =>
+  page.evaluate(() => (window as unknown as { recorded?: string[] }).recorded ?? []);

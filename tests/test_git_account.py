@@ -21,8 +21,18 @@ from rcman.gitaccount import (
 )
 from rcman.runtime import container_name
 
-from tests.conftest import ALICE, BOB, CAROL, as_user, changing, host_runtime, made_workspace
+from tests.conftest import (
+    ALICE,
+    BOB,
+    CAROL,
+    as_user,
+    changing,
+    host_runtime,
+    made_workspace,
+    recorded_person_lock,
+)
 from tests.github_tokens import AWKWARD_TOKENS
+from tests.hang_guard import HANG_GUARD
 
 TOKEN = "ghp_a-token-for-the-tests"
 
@@ -53,9 +63,7 @@ class Recording(rt.HostRuntime):
             self.landed_but_failed.discard(name)
             raise rt.RuntimeFailed("the write landed, then podman failed")
 
-    def exec(
-        self, name, argv, stdin=None, timeout=rt.PODMAN_TIMEOUT, cwd=None, keep=None, again=False
-    ):
+    def exec(self, name, argv, stdin=None, timeout=HANG_GUARD, cwd=None, keep=None, again=False):
         self.execs.append((argv, stdin))
         return super().exec(name, argv, stdin, timeout, cwd, keep, again)
 
@@ -430,8 +438,8 @@ def test_the_status_is_answered_from_sqlite_without_asking_the_runtime(
     def asked(*args, **kwargs):
         raise AssertionError("the runtime was asked")
 
-    for name in rt.Runtime.__abstractmethods__:
-        monkeypatch.setattr(runtime, name, asked)
+    every = dict.fromkeys(rt.Runtime.__abstractmethods__, asked)
+    monkeypatch.setattr(runtime, "__class__", type("Refusing", (type(runtime),), every))
     assert client.get("/api/github", headers=as_user(ALICE)).json() == {"token": True}
 
 
@@ -472,17 +480,20 @@ def test_a_failed_write_changes_nothing(client, app, runtime, failure, status, c
     assert written(runtime, "hosts.yml") == gh_hosts_text(TOKEN)
 
 
-def test_a_save_and_a_forget_take_the_persons_lock(client, app, runtime):
-    lock = app.state.workspaces.person_lock(1)
+def test_a_save_and_a_forget_take_the_persons_lock(person_locks, client, app, runtime):
+    lock = recorded_person_lock(app, 1)
+    here = threading.current_thread()
     done = threading.Event()
     lock.acquire()
     try:
         worker = threading.Thread(target=lambda: (save(client), done.set()), daemon=True)
         worker.start()
-        assert not done.wait(0.5)  # waits for the lock
+        # the request's thread, the server's and not the worker's, which waits for the answer
+        lock.wait_blocked(1, match=lambda w: w.thread not in (worker, here))
+        assert not done.is_set()
     finally:
         lock.release()
-    assert done.wait(10)
+    assert done.wait(HANG_GUARD)
     assert token_rows(app) == [(1, TOKEN)]
 
 
@@ -785,11 +796,13 @@ def test_a_backfill_that_fails_for_one_person_goes_on_to_the_others(client, app,
     assert written(runtime, "config.yml", bob) == gh_config_text()
 
 
-def test_the_backfill_takes_each_persons_lock_and_reads_the_token_under_it(client, app, runtime):
+def test_the_backfill_takes_each_persons_lock_and_reads_the_token_under_it(
+    person_locks, client, app, runtime
+):
     alice = person_id(app, ALICE)
     save(client)
     (git_dir(runtime, alice) / "hosts.yml").write_text("")  # as the forget left it
-    lock = app.state.workspaces.person_lock(alice)
+    lock = recorded_person_lock(app, alice)
     done = threading.Event()
     lock.acquire()
     try:
@@ -798,7 +811,8 @@ def test_the_backfill_takes_each_persons_lock_and_reads_the_token_under_it(clien
             daemon=True,
         )
         worker.start()
-        assert not done.wait(0.5)  # waits for the lock
+        lock.wait_blocked(1, match=worker)  # waits for the lock
+        assert not done.is_set()
         # a forget that came first, under the lock: what the backfill writes is read after it
         con = db.connect(app.state.settings.database)
         try:
@@ -808,5 +822,5 @@ def test_the_backfill_takes_each_persons_lock_and_reads_the_token_under_it(clien
             con.close()
     finally:
         lock.release()
-    assert done.wait(10)
+    assert done.wait(HANG_GUARD)
     assert TOKEN not in written(runtime, "hosts.yml", alice)

@@ -20,7 +20,6 @@ import pwd
 import socket
 import subprocess
 import sys
-import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -29,6 +28,9 @@ from clone import CLONE, SRC, make_clone, sh  # noqa: E402
 
 sys.path.insert(0, str(SRC / "backend"))
 sys.path.insert(0, str(SRC))
+
+from tests.hang_guard import CONTAINER_HANG_GUARD  # noqa: E402
+from tests.until import until  # noqa: E402
 
 ROOT = Path("/opt/rcman")
 ETC = Path("/etc/rcman")
@@ -51,8 +53,6 @@ STAND_INS = Path("/var/lib/rcman-test-stand-ins")
 CACHE = Path("/cache")
 # What the first installation printed, for the checks that read it.
 FIRST = Path("/var/tmp/rcman-first-install.json")
-# Seconds rcman may take to answer after it starts.
-ANSWERS_WITHIN = 120
 
 
 def serve_releases() -> str:
@@ -72,15 +72,17 @@ def serve_releases() -> str:
         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         start_new_session=True,
     )  # fmt: skip
-    address = f"http://127.0.0.1:{port}"
-    deadline = time.monotonic() + 30
-    while True:
+
+    def served() -> bool:
+        """Whether the releases are served."""
         try:
-            socket.create_connection(("127.0.0.1", port), timeout=1).close()
-            return address
+            socket.create_connection(("127.0.0.1", port), timeout=CONTAINER_HANG_GUARD).close()
         except OSError:
-            assert time.monotonic() < deadline, "the releases are not served"
-            time.sleep(0.2)
+            return False
+        return True
+
+    until(served)
+    return f"http://127.0.0.1:{port}"
 
 
 def offline() -> None:
@@ -107,7 +109,7 @@ def install(*args, env=None) -> subprocess.CompletedProcess:
         capture_output=True,
         text=True,
         errors="replace",
-        timeout=2400,
+        timeout=CONTAINER_HANG_GUARD,
     )
 
 
@@ -180,11 +182,9 @@ def api(method: str, url: str, who: str = ADMIN, body=None) -> tuple[int, object
         return status, text
 
 
-def healthy(within: float = ANSWERS_WITHIN) -> None:
-    deadline = time.monotonic() + within
-    while app("/api/health")[0] != 200:
-        assert time.monotonic() < deadline, "rcman does not answer"
-        time.sleep(0.5)
+def healthy() -> None:
+    """Until rcman answers its health check."""
+    until(lambda: app("/api/health")[0] == 200)
 
 
 def rcman_uid() -> int:
@@ -204,14 +204,3 @@ def journal(unit: str = "rcman.service") -> str:
     except OSError as error:
         text = str(error)
     return f"\n--- {unit}\n{text[-8000:]}"
-
-
-def until(what, within: float = 300, every: float = 1.0):
-    """``what()`` once it is true: waited for until ``within`` seconds have passed."""
-    deadline = time.monotonic() + within
-    while True:
-        found = what()
-        if found:
-            return found
-        assert time.monotonic() < deadline, f"never: {what.__doc__ or what}"
-        time.sleep(every)

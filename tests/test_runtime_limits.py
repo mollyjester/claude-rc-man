@@ -12,6 +12,8 @@ from rcman import limits, people
 from rcman import runtime as rt
 from rcman.limits import Limits, Usage
 
+from tests.hang_guard import HANG_GUARD, runs_out
+from tests.runtime_contract import ended_in_a_thread
 from tests.test_runtime import Recorder, account_recorder, podman_runtime, runs
 
 # --- a systemctl that records what it is asked ----------------------------------------
@@ -169,12 +171,15 @@ def test_a_systemctl_that_is_not_there_is_the_runtime_being_unavailable(tmp_path
 
 
 def test_a_systemctl_that_does_not_answer_in_time_is_a_failure(tmp_path, monkeypatch):
+    """At a timeout of 0 (rule (a)), against a systemctl that outlasts the test, in a thread
+    that ends within the hang guard."""
     systemctl = Systemctl(tmp_path)
     program = Path(systemctl.program)
-    program.write_text("#!/bin/sh\nexec sleep 30\n")
-    monkeypatch.setattr(rt, "SYSTEMCTL_TIMEOUT", 0.3)
+    program.write_text(f"#!/bin/sh\nexec sleep {3 * HANG_GUARD:g}\n")
+    runs_out(monkeypatch, rt, "SYSTEMCTL_TIMEOUT")
+    runtime = runtime_with(tmp_path, systemctl)
     with pytest.raises(rt.RuntimeFailed, match="in time"):
-        runtime_with(tmp_path, systemctl).apply_limits(7, None, LIMITED)
+        ended_in_a_thread(lambda: runtime.apply_limits(7, None, LIMITED))
 
 
 # --- what is in use --------------------------------------------------------------------
@@ -313,7 +318,7 @@ def test_signing_in_and_the_account_are_in_no_slice_so_signing_out_is_never_held
     recorder = account_recorder(tmp_path, volume_exists=0)
     runtime = podman_runtime(tmp_path, recorder)
     runtime.ensure_account(2, 3)
-    runtime.start_sign_in(2, 3, seconds=900)
+    runtime.start_sign_in(2, 3, seconds=HANG_GUARD)
     runtime.clear_account(2, 3)
     runtime.read_account(2, 3)
     runtime.put_account(2, 3, "config", b"x")

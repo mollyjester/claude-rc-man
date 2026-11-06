@@ -29,10 +29,9 @@ from pathlib import Path
 from socketserver import ThreadingMixIn
 from wsgiref.simple_server import WSGIRequestHandler, WSGIServer
 
+from tests.hang_guard import tier_guard
+
 GITHUB = "https://github.com/"
-# The longest a request waits for a closed gate, so that a test that forgets to open it
-# ends a server's threads all the same.
-GATE_WAIT = 120.0
 
 
 class _Server(ThreadingMixIn, WSGIServer):
@@ -56,7 +55,8 @@ class GitHubServer:
         self.attempts: list[tuple[str, bool]] = []
         self.requests: list[tuple[str, str]] = []
         # Closed (cleared) by a test that needs a slow GitHub: every request is logged and then
-        # waits for it, up to GATE_WAIT seconds, so that a git clone is under way and stays so.
+        # waits for it, up to twice the tier's hang guard, so that a git clone is under way and
+        # stays so.
         self.gate = threading.Event()
         self.gate.set()
         self._private: set[str] = set()  # "/<owner>/<name>.git" of each private repository
@@ -158,7 +158,11 @@ class GitHubServer:
             parts[1] += ".git"  # GitHub's address without .git reaches the same repository
         path = "/" + "/".join(parts)
         self.requests.append((environ.get("REQUEST_METHOD", "GET"), path))
-        self.gate.wait(GATE_WAIT)
+        if not self.gate.is_set():
+            # A closed gate is waited for past the test (rule (g)), so that a test that forgets
+            # to open it ends the server's threads all the same; the bound is read only then,
+            # in a test's server.
+            self.gate.wait(2 * tier_guard())
         pushing = path.endswith("/git-receive-pack") or "service=git-receive-pack" in query
         private = "/" + "/".join(parts[:2]) in self._private
         needs_token = pushing or private

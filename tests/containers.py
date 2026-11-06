@@ -7,7 +7,9 @@ container it starts with the holder's path (labels()), and removes the container
 when it ends (holder()), with their anonymous volumes, never a named one. A run killed by a signal
 leaves its engine, and the next run that starts one removes it whole, its containers and volumes
 with it (tests/podman_service.py), so nothing here sweeps for another run's. The rules are in
-project-knowledge/tests.md, "What a killed run leaves".
+project-knowledge/tests.md, "What a killed run leaves". Its podman calls and its wait for a
+removal are bounded by the tier's hang guard (tests.hang_guard.tier_guard), which the session's
+engine hands to its fixtures.
 """
 
 from __future__ import annotations
@@ -16,17 +18,16 @@ import contextlib
 import json
 import re
 import subprocess
-import time
 from collections.abc import Iterator
 from pathlib import Path
 
 from devtools import held_folders as hf
+from tests.hang_guard import tier_guard
+from tests.until import until
 
 # What a holder's name begins with.
 HOLDERS = "rcct-"
 HOLDER = "rcman.test.holder"
-# Seconds a removed container may take to be gone.
-GONE_WITHIN = 60
 
 
 # The image a FROM line names, but for its options, when a digest pins it.
@@ -86,7 +87,7 @@ def _listed(engine: list[str], *label: str) -> list[str]:
         [*engine, "ps", "-a", "-q", "--no-trunc", *filters],
         capture_output=True,
         text=True,
-        timeout=60,
+        timeout=tier_guard(),
     )
     if listed.returncode != 0:
         raise RuntimeError(f"podman ps failed: {listed.stderr}")
@@ -102,7 +103,7 @@ def _labelled(engine: list[str], *label: str) -> dict[str, dict[str, str]]:
         [*engine, "inspect", "--format", "{{.Id}} {{json .Config.Labels}}", *ids],
         capture_output=True,
         text=True,
-        timeout=60,
+        timeout=tier_guard(),
     )
     found = {}
     # One gone meanwhile is not listed, or listed as an empty line.
@@ -119,12 +120,9 @@ def _remove(engine: list[str], containers: list[str]) -> None:
     progress, for a while."""
     if not containers:
         return
-    subprocess.run([*engine, "rm", "-f", "-v", *containers], capture_output=True, timeout=120)
-    deadline = time.monotonic() + GONE_WITHIN
-    while left := set(containers) & set(_listed(engine)):
-        if time.monotonic() > deadline:
-            raise RuntimeError(f"containers not removed: {sorted(left)}")
-        time.sleep(0.2)
+    removing = [*engine, "rm", "-f", "-v", *containers]
+    subprocess.run(removing, capture_output=True, timeout=tier_guard())
+    until(lambda: not set(containers) & set(_listed(engine)))
 
 
 @contextlib.contextmanager

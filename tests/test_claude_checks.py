@@ -5,6 +5,7 @@ import os
 import re
 import shutil
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -13,6 +14,10 @@ import pytest
 from devtools import record_claude as rec
 from helpers import claude_checks as cc
 from helpers import screens
+from tests.hang_guard import HANG_GUARD
+from tests.runtime_contract import ended_in_a_thread
+from tests.time_doubles import FakeTime
+from tests.until import until
 
 REAL = shutil.which("claude")
 
@@ -107,27 +112,43 @@ def test_auth_status_is_judged_on_its_standard_output_only(tmp_path):
     assert "auth_status" not in cc.candidate_failures(runner_for(on_stdout, tmp_path), "1.2.3")
 
 
-def test_auth_status_that_does_not_exit_fails_and_says_so(tmp_path):
-    """Its JSON is complete before it hangs, and the check still fails it."""
+def test_auth_status_that_does_not_exit_fails_and_says_so(tmp_path, monkeypatch):
+    """Its JSON is complete before it hangs, and the check still fails it. On the checks' time,
+    which only the test moves (tests/time_doubles.py): the run's timeout is passed once the
+    program has seen the run read all it wrote, from a program that outlasts the test."""
+    read = tmp_path / "read"
     hangs = script(
         tmp_path,
         "if sys.argv[1:] == ['auth', 'status']:\n"
+        "    import fcntl, struct, termios\n"
         "    print('{\"loggedIn\": false}', flush=True)\n"
         "    print('still going', file=sys.stderr, flush=True)\n"
-        "    time.sleep(60)",
+        "    def queued(fd):\n"
+        "        return struct.unpack('i', fcntl.ioctl(fd, termios.FIONREAD, bytes(4)))[0]\n"
+        "    while queued(1) or queued(2):\n"
+        "        time.sleep(0.01)\n"
+        f"    open({str(read)!r}, 'w').close()\n"
+        f"    time.sleep({3 * HANG_GUARD:g})",
     )
+    fake = FakeTime()
+    monkeypatch.setattr(cc, "time", fake)
     run = runner_for(hangs, tmp_path)
-
-    def quick(args, until=None, timeout=cc.TIMEOUT, terminal=True):
-        return run(args, until=until, timeout=2, terminal=terminal)
-
-    detail = said(cc.candidate_failures(quick, "1.2.3")["auth_status"])
+    checking = threading.Thread(
+        target=lambda: failures.append(cc.candidate_failures(run, "1.2.3")), daemon=True
+    )
+    failures: list[dict] = []
+    checking.start()
+    until(read.exists)  # the run has read both streams, and goes on waiting for the exit
+    fake.advance(cc.TIMEOUT)
+    checking.join(HANG_GUARD)
+    assert not checking.is_alive()
+    detail = said(failures[0]["auth_status"])
     assert "did not exit" in detail
     assert '{"loggedIn": false}' in detail and "still going" in detail
 
 
 def test_a_check_that_raises_reports_the_exception(tmp_path):
-    def raising(args, until=None, timeout=cc.TIMEOUT, terminal=True):
+    def raising(args, until=None, timeout=HANG_GUARD, terminal=True):
         raise RuntimeError("the runner broke")
 
     failures = cc.candidate_failures(raising, "1.2.3")
@@ -322,26 +343,69 @@ def test_ordinary_words_beside_a_sign_in_url_are_kept(tmp_path):
     assert words in detail
 
 
-def test_redacting_a_screen_with_many_secrets_written_takes_no_longer_than_its_size_does():
-    emails = " ".join(f"a{i}@b.io" for i in range(22000))
-    assert len(emails) <= cc.MAX_CAPTURE_BYTES
-    started = time.monotonic()
-    assert cc.redact_screen("on the screen", emails) == "on the screen"
-    assert time.monotonic() - started < 10
-    values = " ".join(f"token={i:08d}abcdefghijkl" for i in range(cc.MAX_CREDENTIALS + 1))
-    started = time.monotonic()
-    assert cc.redact_screen("on the screen", values) == cc.WITHHELD
-    assert time.monotonic() - started < 10
-    few = " ".join(f"token={i:08d}abcdefghijkl" for i in range(cc.MAX_CREDENTIALS))
-    assert cc.redact_screen("00000001abcdefghijkl shown", few) == f"{cc.CREDENTIAL} shown"
+# Screens and written values whose redaction must take time in proportion to their size: a
+# pattern that backtracks would take time exponential in it, and never end in a test's time.
+MANY_EMAILS = " ".join(f"a{i}@b.io" for i in range(22000))
+TOO_MANY_VALUES = " ".join(f"token={i:08d}abcdefghijkl" for i in range(cc.MAX_CREDENTIALS + 1))
+FEW_VALUES = " ".join(f"token={i:08d}abcdefghijkl" for i in range(cc.MAX_CREDENTIALS))
+MANY_LINES = "\n" * (cc.MAX_CAPTURE_BYTES * 4)
 
 
-def test_redacting_a_screen_of_many_lines_takes_no_longer_than_its_size_does():
-    started = time.monotonic()
-    assert cc.redact_screen("\n" * (cc.MAX_CAPTURE_BYTES * 4), "") == "\n" * (
-        cc.MAX_CAPTURE_BYTES * 4
-    )
-    assert time.monotonic() - started < 10
+def redacted(screen: str, written: str, within: float = HANG_GUARD, redact=None) -> str:
+    """What ``redact`` (cc.redact_screen) gives for ``screen`` and ``written``, run in a thread
+    joined within ``within``: one that has not ended by then fails the test, with its teardown
+    run, rather than hanging until the hang guard ends the run."""
+    redact = cc.redact_screen if redact is None else redact
+    result: list[str] = []
+    worker = threading.Thread(target=lambda: result.append(redact(screen, written)), daemon=True)
+    worker.start()
+    worker.join(within)
+    assert not worker.is_alive(), f"the redaction did not end within {within}s"
+    return result[0]
+
+
+def test_a_screen_with_many_secrets_written_is_redacted():
+    assert len(MANY_EMAILS) <= cc.MAX_CAPTURE_BYTES
+    assert redacted("on the screen", MANY_EMAILS) == "on the screen"
+    assert redacted("on the screen", TOO_MANY_VALUES) == cc.WITHHELD
+    assert redacted("00000001abcdefghijkl shown", FEW_VALUES) == f"{cc.CREDENTIAL} shown"
+
+
+def test_a_screen_of_many_lines_is_redacted():
+    assert redacted(MANY_LINES, "") == MANY_LINES
+
+
+def test_a_redaction_that_does_not_end_fails_the_test():
+    """Planted twin: a redaction that never ends is reported, not waited for; at 0, as it is
+    still running at any speed."""
+    release = threading.Event()
+
+    def stuck(screen, written):
+        release.wait()
+        return screen
+
+    try:
+        with pytest.raises(AssertionError, match="did not end within 0s"):
+            redacted("on the screen", "", within=0, redact=stuck)
+    finally:
+        release.set()
+
+
+@pytest.mark.benchmark
+def test_how_long_redacting_a_screen_takes_by_its_size(record_property):
+    """Reports how long each of the redactions above takes against the size of what it reads:
+    measures and reports, and decides nothing (make benchmark)."""
+    for name, screen, written in (
+        ("many secrets written", "on the screen", MANY_EMAILS),
+        ("too many values written", "on the screen", TOO_MANY_VALUES),
+        ("many lines", MANY_LINES, ""),
+    ):
+        size = len(screen) + len(written)
+        started = time.perf_counter()
+        cc.redact_screen(screen, written)
+        took = time.perf_counter() - started
+        record_property(name, {"bytes": size, "seconds": took})
+        print(f"redacting {name}: {size} bytes in {took:.3f}s, {took / size * 1e6:.3f} s per MB")
 
 
 def test_a_line_after_a_url_that_did_not_reach_the_edge_is_kept(tmp_path):
@@ -473,7 +537,7 @@ def test_the_terminal_run_keeps_at_most_its_cap_and_still_finishes(tmp_path):
         f"sys.stdout.write('first\\n' + 'x' * {size})\nsys.stdout.flush()\nsys.exit(0)",
     )
     run = cc.local_runner(str(loud), env={}, cwd=tmp_path, config_dir=tmp_path / "cfg")
-    ran = run([], timeout=30)
+    ran = run([], timeout=HANG_GUARD)
     assert ran[0] == 0  # it was read to the end, not left blocked on a full terminal
     assert ran[1] == "first"  # the line the cap cut is left out
     assert ran.dropped >= size - cc.MAX_CAPTURE_BYTES
@@ -486,7 +550,7 @@ def test_the_piped_run_keeps_at_most_its_cap_and_still_finishes(tmp_path):
         f"sys.stdout.write('first\\n' + 'x' * {size})\nsys.stderr.write('e' * {size})\nsys.exit(0)",
     )
     run = cc.local_runner(str(loud), env={}, cwd=tmp_path, config_dir=tmp_path / "cfg")
-    ran = run([], timeout=30, terminal=False)
+    ran = run([], timeout=HANG_GUARD, terminal=False)
     assert ran[0] == 0
     assert ran.stdout == "first\n" and ran.stderr == ""  # the lines the cap cut are left out
     assert ran.dropped >= 2 * (size - cc.MAX_CAPTURE_BYTES)
@@ -501,22 +565,21 @@ def test_a_capture_can_keep_its_tail(tmp_path):
 
 
 def test_a_capture_without_a_deadline_ends_once_its_program_has_exited(tmp_path):
-    """As the installer is run: a process it leaves behind holding its output does not
-    keep the run waiting."""
+    """As the installer is run: a process it leaves behind holding its output, past the test's
+    end, does not keep the run waiting; the run ends in a thread within the hang guard."""
     pid_file = tmp_path / "sleeper"
     leaves = tmp_path / "leaves"
-    leaves.write_text(f"#!/bin/sh\nsleep 60 &\necho $! > {pid_file}\necho done\nexit 0\n")
+    leaves.write_text(
+        f"#!/bin/sh\nsleep {3 * HANG_GUARD:g} &\necho $! > {pid_file}\necho done\nexit 0\n"
+    )
     leaves.chmod(0o755)
-    started = time.monotonic()
     try:
-        ran = cc.capture([str(leaves)], {"PATH": os.environ["PATH"]}, tmp_path, merge=True)
-        assert time.monotonic() - started < 10
+        ran = ended_in_a_thread(
+            lambda: cc.capture([str(leaves)], {"PATH": os.environ["PATH"]}, tmp_path, merge=True)
+        )
         assert (ran[0], ran.stdout) == (0, "done\n")
         sleeper = int(pid_file.read_text())
-        deadline = time.monotonic() + 5
-        while alive(sleeper) and time.monotonic() < deadline:
-            time.sleep(0.05)
-        assert not alive(sleeper)
+        until(lambda: not alive(sleeper))
     finally:
         if pid_file.exists() and alive(int(pid_file.read_text())):
             os.kill(int(pid_file.read_text()), 9)
@@ -528,7 +591,7 @@ def leader_and_child(tmp_path, child_body, leader_then):
     started = tmp_path / "child-started"
     child = script(
         tmp_path,
-        f"print('first', flush=True)\nopen({str(started)!r}, 'w').close()\n{child_body}",
+        f"import os\nprint('first', flush=True)\nopen({str(started)!r}, 'w').close()\n{child_body}",
         "child",
     )
     return script(
@@ -539,49 +602,81 @@ def leader_and_child(tmp_path, child_body, leader_then):
     )
 
 
-def slow_drain(monkeypatch):
-    """A quiet window and a drain long enough that a loaded machine does not end them early."""
-    monkeypatch.setattr(cc, "POLL_SECONDS", 0.5)
-    monkeypatch.setattr(cc, "DRAIN_SECONDS", 3.0)
+@pytest.fixture
+def fed(monkeypatch):
+    """What each terminal run has read, as it is fed to its Screen: the run's own point, which
+    a test waits on before it lets its program go on."""
+    pieces: list[str] = []
+
+    class Fed(cc.Screen):
+        def feed(self, text: str, final: bool = False) -> None:
+            pieces.append(text)
+            super().feed(text, final)
+
+    monkeypatch.setattr(cc, "Screen", Fed)
+    return pieces
 
 
 def test_a_run_stopped_at_its_pattern_after_its_program_exited_keeps_the_exit_code(
     tmp_path, monkeypatch
 ):
     """What it started writes the pattern once it has exited, while the terminal is
-    still read for what was written last."""
-    slow_drain(monkeypatch)
+    still read for what was written last. The child writes it only once the run has seen its
+    leader's exit; the quiet window and the drain are raised to the hang guard (rule (b)), so
+    that they wait for it at any speed."""
+    monkeypatch.setattr(cc, "POLL_SECONDS", HANG_GUARD)
+    monkeypatch.setattr(cc, "DRAIN_SECONDS", HANG_GUARD)
+    seen, real = threading.Event(), cc._exited
+
+    def exited(proc) -> bool:
+        if gone := real(proc):
+            seen.set()  # the run has seen its program's exit
+        return gone
+
+    monkeypatch.setattr(cc, "_exited", exited)
+    release = tmp_path / "release"
     says = leader_and_child(
         tmp_path,
-        "for i in range(20): print(i, flush=True); time.sleep(0.01)\n"
-        "print('ready', flush=True); time.sleep(60)",
+        f"while not os.path.exists({str(release)!r}): time.sleep(0.01)\n"
+        f"print('ready', flush=True)\ntime.sleep({3 * HANG_GUARD:g})",
         "sys.exit(4)",
     )
-    ran = cc.run_in_pty([str(says)], {}, tmp_path, "ready", 10)
-    assert "first" in ran[1]  # the child started before its leader exited
-    assert "ready" in ran[1]  # it stopped at its pattern
-    assert ran[0] == 4
+    ran: list = []
+    running = threading.Thread(
+        target=lambda: ran.append(
+            cc.run_in_pty([str(says)], {}, tmp_path, "ready", 2 * HANG_GUARD)
+        ),
+        daemon=True,
+    )
+    running.start()
+    assert seen.wait(HANG_GUARD)
+    release.touch()
+    running.join(HANG_GUARD)
+    assert not running.is_alive()
+    assert "first" in ran[0][1]  # the child started before its leader exited
+    assert "ready" in ran[0][1]  # it stopped at its pattern
+    assert ran[0][0] == 4
 
 
 def test_a_child_left_holding_the_pipes_is_ended_and_the_exit_code_kept(tmp_path):
+    """The child outlasts the test, and the run's timeout is twice the hang guard: the run
+    ends, in a thread within the hang guard, only by its program's exit (rule (c))."""
     pid_file = tmp_path / "grandchild"
     lingers = script(
         tmp_path,
         "import subprocess\n"
-        "child = subprocess.Popen(['sleep', '60'])\n"
+        f"child = subprocess.Popen(['sleep', '{3 * HANG_GUARD:g}'])\n"
         f"open({str(pid_file)!r}, 'w').write(str(child.pid))\n"
         "print('done', flush=True)",
     )
-    started = time.monotonic()
+    env = {"PATH": os.environ["PATH"]}
     try:
-        ran = cc.capture([str(lingers)], {"PATH": os.environ["PATH"]}, tmp_path, timeout=2)
+        ran = ended_in_a_thread(
+            lambda: cc.capture([str(lingers)], env, tmp_path, timeout=2 * HANG_GUARD)
+        )
         grandchild = int(pid_file.read_text())
-        assert time.monotonic() - started < 10
         assert (ran[0], ran[1]) == (0, "done\n")  # its own exit, and what it wrote
-        deadline = time.monotonic() + 5
-        while alive(grandchild) and time.monotonic() < deadline:
-            time.sleep(0.05)
-        assert not alive(grandchild)
+        until(lambda: not alive(grandchild))
     finally:
         if pid_file.exists() and alive(int(pid_file.read_text())):
             os.kill(int(pid_file.read_text()), 9)
@@ -598,43 +693,62 @@ def alive(pid):
 def test_the_line_the_cap_cut_is_counted_as_not_kept(tmp_path, monkeypatch):
     monkeypatch.setattr(cc, "MAX_CAPTURE_BYTES", 40)
     cut = script(tmp_path, "sys.stdout.write('kept\\n' + 'x' * 100)")
-    ran = cc.capture([str(cut)], {}, tmp_path, timeout=10)
+    ran = cc.capture([str(cut)], {}, tmp_path, timeout=HANG_GUARD)
     assert ran.stdout == "kept\n" and ran.dropped == 100
 
 
-def test_a_program_that_closes_the_terminal_but_does_not_exit_keeps_its_output(tmp_path):
+def test_a_program_that_closes_the_terminal_but_does_not_exit_keeps_its_output(
+    tmp_path, monkeypatch
+):
+    """On the checks' time, which only the test moves (tests/time_doubles.py): once the run,
+    the terminal closed, waits for an exit that never comes, its timeout is passed."""
     closes = script(
         tmp_path,
         "import os\nprint('said before closing', flush=True)\n"
-        "for fd in (0, 1, 2): os.close(fd)\ntime.sleep(60)",
+        f"for fd in (0, 1, 2): os.close(fd)\ntime.sleep({3 * HANG_GUARD:g})",
     )
+    fake = FakeTime()
+    monkeypatch.setattr(cc, "time", fake)
     run = cc.local_runner(str(closes), env={}, cwd=tmp_path, config_dir=tmp_path / "cfg")
-    started = time.monotonic()
-    code, output = run([], timeout=3)
+    ran: list = []
+    running = threading.Thread(target=lambda: ran.append(run([], timeout=HANG_GUARD)), daemon=True)
+    running.start()
+    fake.wait_sleep_begun(after=0)  # the terminal read to its end, it waits for the exit
+    fake.advance(HANG_GUARD)
+    running.join(HANG_GUARD)
+    assert not running.is_alive()
+    code, output = ran[0]
     assert code is None and "said before closing" in output
-    assert time.monotonic() - started < 10
 
 
-def test_a_terminal_run_ends_when_its_program_exits_though_a_child_writes_on(tmp_path, monkeypatch):
-    slow_drain(monkeypatch)
-    pid_file = tmp_path / "grandchild"
+def test_a_terminal_run_ends_when_its_program_exits_though_a_child_writes_on(tmp_path, fed):
+    """The leader exits only once the run has read what it and its child wrote; the run's
+    timeout is twice the hang guard, so it ends, in a thread within the hang guard, only by
+    the leader's exit and its drain (rule (c))."""
+    pid_file, release = tmp_path / "grandchild", tmp_path / "release"
     noisy = leader_and_child(
         tmp_path,
         "while True: print('noise', flush=True); time.sleep(0.01)",
         f"open({str(pid_file)!r}, 'w').write(str(child.pid))\n"
-        "print('leader done', flush=True)\nsys.exit(5)",
+        "print('leader done', flush=True)\n"
+        f"while not os.path.exists({str(release)!r}): time.sleep(0.01)\n"
+        "sys.exit(5)",
     )
     run = cc.local_runner(str(noisy), env={}, cwd=tmp_path, config_dir=tmp_path / "cfg")
-    started = time.monotonic()
+    ran: list = []
+    running = threading.Thread(
+        target=lambda: ran.append(run([], timeout=2 * HANG_GUARD)), daemon=True
+    )
+    running.start()
     try:
-        code, output = run([], timeout=30)
-        assert time.monotonic() - started < 15
+        until(lambda: "leader done" in "".join(fed) and "noise" in "".join(fed))
+        release.touch()
+        running.join(HANG_GUARD)
+        assert not running.is_alive()
+        code, output = ran[0]
         assert code == 5 and "leader done" in output and "noise" in output
         grandchild = int(pid_file.read_text())
-        deadline = time.monotonic() + 5
-        while alive(grandchild) and time.monotonic() < deadline:
-            time.sleep(0.05)
-        assert not alive(grandchild)
+        until(lambda: not alive(grandchild))
     finally:
         if pid_file.exists() and alive(int(pid_file.read_text())):
             os.kill(int(pid_file.read_text()), 9)
@@ -643,7 +757,7 @@ def test_a_terminal_run_ends_when_its_program_exits_though_a_child_writes_on(tmp
 def test_a_program_that_cannot_start_leaves_no_terminal_open(tmp_path):
     before = len(os.listdir("/proc/self/fd"))
     with pytest.raises(FileNotFoundError):
-        cc.run_in_pty([str(tmp_path / "missing")], {}, tmp_path, None, 5)
+        cc.run_in_pty([str(tmp_path / "missing")], {}, tmp_path, None, HANG_GUARD)
     assert len(os.listdir("/proc/self/fd")) == before
 
 
@@ -694,27 +808,41 @@ def test_a_cursor_move_goes_no_further_than_the_terminal_is_wide():
     assert render("a\x1b[99999999Gb") == "a" + " " * (screens.WIDTH - 2) + "b"
 
 
-def test_the_pty_runner_finds_its_pattern_across_reads(tmp_path):
+def test_the_pty_runner_finds_its_pattern_across_reads(tmp_path, fed):
+    """The rest of the prompt is written only once the run has read its start: two reads."""
+    release = tmp_path / "release"
     slow = script(
         tmp_path,
-        "sys.stdout.write('Paste code'); sys.stdout.flush(); time.sleep(0.5)\n"
-        "sys.stdout.write(' here if prompted >'); sys.stdout.flush(); time.sleep(60)",
+        "import os\nsys.stdout.write('Paste code'); sys.stdout.flush()\n"
+        f"while not os.path.exists({str(release)!r}): time.sleep(0.01)\n"
+        "sys.stdout.write(' here if prompted >'); sys.stdout.flush()\n"
+        f"time.sleep({3 * HANG_GUARD:g})",
     )
     run = cc.local_runner(str(slow), env={}, cwd=tmp_path, config_dir=tmp_path / "cfg")
-    started = time.monotonic()
-    exit_code, output = run([], until=re.escape(screens.LOGIN_PROMPT), timeout=20)
+    ran: list = []
+    pattern = re.escape(screens.LOGIN_PROMPT)
+    running = threading.Thread(
+        target=lambda: ran.append(run([], until=pattern, timeout=2 * HANG_GUARD)), daemon=True
+    )
+    running.start()
+    until(lambda: "Paste code" in "".join(fed))
+    assert screens.LOGIN_PROMPT not in "".join(fed)  # the control: only its start is read
+    release.touch()
+    running.join(HANG_GUARD)
+    assert not running.is_alive()
+    exit_code, output = ran[0]
     assert exit_code is None and screens.LOGIN_PROMPT in output
-    assert time.monotonic() - started < 10
 
 
 def test_the_pty_runner_stops_at_its_pattern_and_kills_the_rest(tmp_path):
     script = tmp_path / "slow"
     script.write_text(
-        f"#!{sys.executable}\nimport time\nprint('ready', flush=True)\ntime.sleep(60)\n"
+        f"#!{sys.executable}\nimport time\nprint('ready', flush=True)\n"
+        f"time.sleep({3 * HANG_GUARD:g})\n"
     )
     script.chmod(0o755)
     run = cc.local_runner(str(script), env={}, cwd=tmp_path, config_dir=tmp_path / "cfg")
-    exit_code, output = run([], until="ready", timeout=10)
+    exit_code, output = run([], until="ready", timeout=HANG_GUARD)
     assert exit_code is None and "ready" in output
 
 
@@ -767,7 +895,7 @@ def test_auth_status_is_read_through_pipes_as_rcman_reads_it(tmp_path):
     assert json.loads(output) == {"loggedIn": False, "terminal": True}
     seen = []
 
-    def recording(args, until=None, timeout=cc.TIMEOUT, terminal=True):
+    def recording(args, until=None, timeout=HANG_GUARD, terminal=True):
         seen.append((args, terminal))
         return run(args, until=until, timeout=timeout, terminal=terminal)
 

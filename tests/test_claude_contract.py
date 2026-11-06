@@ -16,6 +16,8 @@ from pathlib import Path
 import pytest
 
 from devtools import record_claude as rec
+from tests.claude_watches import ExpectWatch
+from tests.hang_guard import HANG_GUARD
 
 REAL = shutil.which("claude")
 REQUIRED = os.environ.get("RCMAN_REQUIRE_REAL_CLAUDE") == "1"
@@ -36,12 +38,15 @@ def test_real_claude_is_installed():
 
 def test_no_account_screens_match_the_fixtures(tmp_path):
     assert NO_ACCOUNT  # non-vacuity
-    recorded = rec.record(REAL, NO_ACCOUNT, account_config_dir=None, workdir=tmp_path)
     expected = {
         c: f
         for c, f in rec.load_fixtures().items()
         if c in {x for s in NO_ACCOUNT for x in s.captures}
     }
+    # Each screen is waited for as its fixture has it, so none is taken half drawn.
+    recorded = rec.record(
+        REAL, NO_ACCOUNT, account_config_dir=None, workdir=tmp_path, watch=ExpectWatch(expected)
+    )
     assert set(recorded) == set(expected)
     assert rec.compare(recorded, expected) == []
 
@@ -74,7 +79,7 @@ def _claude(args: list[str], config_dir) -> subprocess.CompletedProcess:
         stdin=subprocess.DEVNULL,
         capture_output=True,
         text=True,
-        timeout=60,
+        timeout=HANG_GUARD,
     )
 
 

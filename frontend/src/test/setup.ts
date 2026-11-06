@@ -8,6 +8,7 @@ import { forgetDialogs, installDialog } from "./fakeDialog";
 import { FakeResizeObserver, fakeMatchMedia, forgetLayout } from "./fakeLayout";
 import { FakeSocket } from "./fakeSocket";
 import { FakeView } from "./fakeXterm";
+import { UNIT_HANG_GUARD_MS } from "./hangGuard";
 
 // xterm.js draws on a canvas and measures the page's layout, neither of which jsdom has: every
 // test has the stand-in in its place.
@@ -17,11 +18,18 @@ vi.mock("../xtermView", () => import("./fakeXterm"));
 // e2e/touch.spec.ts holds the browser's own to.
 installDialog();
 
-// How long a findBy* or waitFor waits. The wait covers the page's own fetches
-// and renders and every query over the whole page, and on a slow or busy
-// machine that takes longer than the library's default; a test that fails
-// waits this long before saying so, and one that passes is not slowed.
-configure({ asyncUtilTimeout: 3000 });
+// How long a findBy* or waitFor waits: the component tests' step (src/test/hangGuard.ts), a bound
+// that ends only a hang. A test that passes is not slowed; one that fails waits this long before
+// saying so.
+configure({ asyncUtilTimeout: UNIT_HANG_GUARD_MS });
+
+// Testing Library advances fake timers only through Jest's: with this, a findBy* or waitFor under
+// vi.useFakeTimers() moves the fake clock by its own interval between looks, as it does under
+// Jest, where without it it would wait on a clock that only the test moves. Under real timers it
+// does nothing. userEvent is given vi.advanceTimersByTime where a test fakes the timers.
+(globalThis as unknown as { jest: unknown }).jest = {
+  advanceTimersByTime: (ms: number) => vi.advanceTimersByTime(ms),
+};
 
 // Each test file evaluates the testing tools afresh, so its first role query
 // runs cold: what is hidden and what each element is called are worked out by

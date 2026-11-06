@@ -29,7 +29,6 @@ import subprocess
 import tempfile
 import termios
 import threading
-import time
 from pathlib import Path
 
 import pytest
@@ -38,9 +37,8 @@ from rcman.channel import ChannelBroken
 from rcman.runtime import TIMED_OUT
 
 from helpers import instructions
-
-# How long a tmux server started through a channel is waited for.
-SETTLES_WITHIN = 10.0
+from tests.hang_guard import RUNS_OUT, tier_guard
+from tests.until import until
 
 
 @contextlib.contextmanager
@@ -54,6 +52,29 @@ def made(runtime: rt.Runtime, spec: rt.Spec):
 
 def _sh(layout: rt.Layout, script: str) -> list[str]:
     return [layout.shell, "-c", script]
+
+
+def ended_in_a_thread(call):
+    """What ``call`` gave, or the error it raised, once it has run in a thread of its own
+    that has ended within the tier's hang guard (rule (c)): what must end it does, and what
+    must not is pushed past the guard, so the case is judged by its result, never by how long
+    it took."""
+    out: list = []
+
+    def run() -> None:
+        try:
+            out.append((call(), None))
+        except Exception as error:  # noqa: BLE001 - handed back to the case
+            out.append((None, error))
+
+    worker = threading.Thread(target=run, daemon=True)
+    worker.start()
+    worker.join(tier_guard())
+    assert not worker.is_alive(), f"{call!r} had not ended within the hang guard"
+    [(given, error)] = out
+    if error is not None:
+        raise error
+    return given
 
 
 def a_workspace_that_is_made_exists_runs_and_is_labelled(runtime, spec):
@@ -121,14 +142,12 @@ def a_tmux_server_started_through_a_channel_outlives_it_and_not_a_stop(runtime, 
         layout = runtime.layout(name)
         channel = runtime.channel(name)
         try:
-            started = channel.run(tmux(layout, "new-session", "-d", "-s", "probe", "sleep 600"))
+            outlasts = f"sleep {3 * tier_guard():g}"
+            started = channel.run(tmux(layout, "new-session", "-d", "-s", "probe", outlasts))
             assert started.code == 0, started
         finally:
             channel.close()
-        deadline = time.monotonic() + SETTLES_WITHIN
-        while _sessions(runtime, name, layout) != b"probe\n":
-            assert time.monotonic() < deadline
-            time.sleep(0.2)
+        until(lambda: _sessions(runtime, name, layout) == b"probe\n")
         runtime.stop(name)
         assert not runtime.running(name)
         runtime.start(name)
@@ -145,15 +164,12 @@ def a_workspaces_files_outlive_a_stop(runtime, spec):
         assert runtime.exec(name, [*layout.tool("cat"), f"{layout.work}/file"]).out == b"kept\n"
 
 
-# How long the request in flight in the case below may wait: far past any stop, so that the case
-# is judged by whether the stop ended the request, never by the request's own timeout.
-IN_FLIGHT_LIMIT = 10 * (rt.STOP_TIMEOUT_SECONDS + SETTLES_WITHIN)
-
-
 def a_stop_ends_a_channels_request_in_flight(runtime, spec):
     """A stop ends every exec in the workspace, a channel's shell among them: a request in flight
     has failed as broken by the time the stop is done, rather than waiting on a workspace that
-    stopped under it. Its FIFOs are in the work folder, and go with the workspace."""
+    stopped under it. Its FIFOs are in the work folder, and go with the workspace. The request
+    may wait twice the hang guard, so that the case is judged by whether the stop ended it,
+    never by its own timeout (rule (c))."""
     with made(runtime, spec(20)) as name:
         layout = runtime.layout(name)
         assert layout.busybox, "mkfifo is busybox's here"
@@ -166,7 +182,7 @@ def a_stop_ends_a_channels_request_in_flight(runtime, spec):
         def request():
             script = f"echo running > {signal}; read line < {hold}"  # held: no one writes it
             try:
-                channel.run(_sh(layout, script), timeout=IN_FLIGHT_LIMIT)
+                channel.run(_sh(layout, script), timeout=2 * tier_guard())
             except Exception as error:  # noqa: BLE001 - whichever it is, the case says
                 failed.append(error)
 
@@ -174,15 +190,15 @@ def a_stop_ends_a_channels_request_in_flight(runtime, spec):
         asking.start()
         try:
             # Answered once the request's command has opened the FIFO: it is running.
-            said = runtime.exec(name, [*layout.tool("cat"), signal], timeout=SETTLES_WITHIN)
+            said = runtime.exec(name, [*layout.tool("cat"), signal], timeout=tier_guard())
             assert said == rt.Result(0, b"running\n", b""), said
             runtime.stop(name)
-            asking.join(SETTLES_WITHIN)  # judged once the stop is done
+            asking.join(tier_guard())  # judged once the stop is done
             assert not asking.is_alive(), "the request outlived the stop"
             assert len(failed) == 1 and isinstance(failed[0], ChannelBroken), failed
         finally:
             channel.close()  # ends the shell, if the stop left it
-            asking.join(SETTLES_WITHIN)
+            asking.join(tier_guard())
 
 
 def a_whole_process_group_is_ended_by_kill_group_of(runtime, spec):
@@ -190,26 +206,22 @@ def a_whole_process_group_is_ended_by_kill_group_of(runtime, spec):
         layout = runtime.layout(name)
         pids = f"{layout.work}/pids"
         group = (
-            f"setsid {layout.shell} -c 'sleep 600 & echo $$ $! > {pids}; wait' "
+            f"setsid {layout.shell} -c 'sleep {3 * tier_guard():g} & echo $$ $! > {pids}; wait' "
             "</dev/null >/dev/null 2>&1 &"
         )
         assert runtime.exec(name, _sh(layout, group)).code == 0
-        deadline = time.monotonic() + SETTLES_WITHIN
-        while True:
+
+        def written():
             found = runtime.exec(name, [*layout.tool("cat"), pids]).out.split()
-            if len(found) == 2:
-                break
-            assert time.monotonic() < deadline
-            time.sleep(0.1)
+            return found if len(found) == 2 else None
+
+        found = until(written)
         leader, child = (int(pid) for pid in found)
         alive = [*layout.tool("kill"), "-0"]
         assert runtime.exec(name, [*alive, str(leader)]).code == 0  # positive control
         assert runtime.exec(name, [*alive, str(child)]).code == 0
         assert runtime.exec(name, layout.kill_group_of(leader)).code == 0
-        deadline = time.monotonic() + SETTLES_WITHIN
-        while runtime.exec(name, [*alive, str(child)]).code == 0:
-            assert time.monotonic() < deadline
-            time.sleep(0.1)
+        until(lambda: runtime.exec(name, [*alive, str(child)]).code != 0)
 
 
 def _credentials(layout: rt.Layout) -> str:
@@ -253,7 +265,7 @@ def a_persons_workspaces_share_one_credentials_file_written_in_place(runtime, sp
 
 def a_sign_in_container_has_the_persons_file_and_is_no_workspace(runtime, spec):
     who = spec(11)
-    name = runtime.start_sign_in(who.person, who.slot, seconds=600)
+    name = runtime.start_sign_in(who.person, who.slot, seconds=2 * tier_guard())  # outlasts it
     try:
         assert runtime.exists(name) and runtime.running(name)
         assert name not in runtime.labelled()  # restore never takes it for an orphan
@@ -340,37 +352,43 @@ def a_git_file_is_a_name_in_the_directory_and_nothing_else(runtime, spec):
 
 
 def an_exec_that_outlasts_its_timeout_fails(runtime, spec):
+    """An exec whose timeout, 0, has run out at any speed (rule (a)) against a program that
+    outlasts the case (rule (g)) fails, in a thread that ends within the hang guard: an exec
+    that waited for the program instead would still be running there."""
     with made(runtime, spec(13)) as name:
         layout = runtime.layout(name)
-        began = time.monotonic()
-        try:
-            runtime.exec(name, _sh(layout, "exec sleep 30"), timeout=1.0)
-        except rt.RuntimeFailed:
-            pass
-        else:
-            raise AssertionError("an exec past its timeout answered")
-        assert time.monotonic() - began < 10
+        outlasting = _sh(layout, f"exec sleep {3 * tier_guard():g}")
+        with pytest.raises(rt.RuntimeFailed):
+            ended_in_a_thread(lambda: runtime.exec(name, outlasting, timeout=0))
         assert runtime.exec(name, _sh(layout, "echo after")).out == b"after\n"  # still usable
 
 
 def the_timeout_tool_ends_a_program_that_outlasts_it_and_one_that_ignores_term(runtime, spec):
+    """The tool given RUNS_OUT, against a program that outlasts the case and one that also
+    ignores TERM (rule (a)), ends each, in a thread that ends within the hang guard while the
+    exec's own timeout is twice it (rule (c)); given the guard, it lets a program that ends keep
+    its status (rule (b))."""
     with made(runtime, spec(13)) as name:
         layout = runtime.layout(name)
-        timeout = [*layout.tool("timeout"), "-s", "TERM", "-k", "1"]
+        timeout = [*layout.tool("timeout"), "-s", "TERM", "-k", f"{RUNS_OUT}"]
         # exec, so that nothing is left behind holding the exec's streams open
-        ignoring = _sh(layout, "trap '' TERM; exec sleep 30")
-        for argv in (_sh(layout, "exec sleep 30"), ignoring):
-            began = time.monotonic()
-            ended = runtime.exec(name, [*timeout, "1", *argv])
-            assert time.monotonic() - began < 10, ended
+        sleeping = f"exec sleep {3 * tier_guard():g}"
+        ignoring = _sh(layout, f"trap '' TERM; {sleeping}")
+        for argv in (_sh(layout, sleeping), ignoring):
+            ended = ended_in_a_thread(
+                lambda argv=argv: runtime.exec(
+                    name, [*timeout, f"{RUNS_OUT}", *argv], timeout=2 * tier_guard()
+                )
+            )
             assert ended.code in TIMED_OUT, ended  # GNU timeout's and busybox's differ
-        done = runtime.exec(name, [*timeout, "5", *_sh(layout, "exit 7")])
+        done = runtime.exec(name, [*timeout, f"{tier_guard():g}", *_sh(layout, "exit 7")])
         assert done.code == 7  # a program that ends in time keeps its status
-        missing = runtime.exec(name, [*timeout, "5", "no-such-program"])
+        missing = runtime.exec(name, [*timeout, f"{tier_guard():g}", "no-such-program"])
         assert missing.code == 127, missing
         # A program named without a path is found on the PATH of the environment it is
         # given, as git is when a repository's verbs run it.
-        listing = layout.with_env({"PATH": layout.path}, [*timeout, "5", "ls", "/"])
+        listing = [*timeout, f"{tier_guard():g}", "ls", "/"]
+        listing = layout.with_env({"PATH": layout.path}, listing)
         assert runtime.exec(name, listing).code == 0
 
 
@@ -639,17 +657,21 @@ def ending_a_canary_that_is_not_there_is_nothing(runtime, spec):
     runtime.end_canary(rt.CANARY_NAME)
 
 
-def _read_until(master: int, pattern: bytes, timeout: float = SETTLES_WITHIN) -> re.Match:
+def _read_until(master: int, pattern: bytes) -> re.Match:
     """Read the terminal ``master`` until ``pattern`` is in what it printed."""
-    seen, deadline = b"", time.monotonic() + timeout
-    while not (found := re.search(pattern, seen)):
-        left = deadline - time.monotonic()
-        assert left > 0, seen[-2000:]
-        if select.select([master], [], [], left)[0]:
+    seen, closed = b"", False
+
+    def looked() -> bool:
+        nonlocal seen, closed
+        while not closed and select.select([master], [], [], 0)[0]:
             try:
                 seen += os.read(master, 65536)
             except OSError:  # every writer has closed it
-                break
+                closed = True
+        return closed or re.search(pattern, seen) is not None
+
+    until(looked)
+    found = re.search(pattern, seen)
     assert found, seen[-2000:]
     return found
 
@@ -689,7 +711,7 @@ def a_terminal_runs_a_shell_on_its_pty_as_the_user_and_writes_its_pidfile(runtim
             fields = stat.rpartition(")")[2].split()
             assert (int(fields[3]), fields[19]) == (shell, start)  # its session's leader
             os.write(master, b"exit 5\r")
-            assert proc.wait(timeout=SETTLES_WITHIN) == 5
+            assert proc.wait(timeout=tier_guard()) == 5
         finally:
             os.close(master)
             if proc.poll() is None:
@@ -730,14 +752,15 @@ peer.close()
 PORT_BYTES = 256 * 1024
 
 
-def _read_in(runtime, name: str, path: str, within: float = SETTLES_WITHIN) -> bytes:
+def _read_in(runtime, name: str, path: str) -> bytes:
     """The file ``path`` of the workspace, once it is there."""
     layout = runtime.layout(name)
-    deadline = time.monotonic() + within
-    while (found := runtime.exec(name, [*layout.tool("cat"), path])).code != 0:
-        assert time.monotonic() < deadline, f"{path} never came: {found}"
-        time.sleep(0.1)
-    return found.out
+
+    def there():
+        found = runtime.exec(name, [*layout.tool("cat"), path])
+        return found if found.code == 0 else None
+
+    return until(there).out
 
 
 def _alive_in(runtime, name: str, pid: int) -> bool:
@@ -783,12 +806,12 @@ def port_argv_carries_bytes_both_ways(runtime, spec):
                 while len(back) < PORT_BYTES and (part := relay.stdout.read1(65536)):
                     parts.append(part)
                     back = b"".join(parts)
-                writer.join(timeout=SETTLES_WITHIN)
+                writer.join(timeout=tier_guard())
                 assert back == sent[::-1]
                 shell = int(_read_in(runtime, name, pidfile))
                 assert _alive_in(runtime, name, shell)  # the positive for its end below
                 relay.stdin.close()
-                assert relay.wait(timeout=SETTLES_WITHIN) is not None
+                assert relay.wait(timeout=tier_guard()) is not None
                 assert relay.stdout.read() == b""
             finally:
                 if relay.poll() is None:
@@ -798,10 +821,7 @@ def port_argv_carries_bytes_both_ways(runtime, spec):
                     stream.close()
             eof = _read_in(runtime, name, f"{layout.run}/listener.eof").decode()
             assert eof.split()[0] == str(PORT_BYTES), eof
-            deadline = time.monotonic() + SETTLES_WITHIN
-            while _alive_in(runtime, name, shell):
-                assert time.monotonic() < deadline, "the relay's shell is still there"
-                time.sleep(0.1)
+            until(lambda: not _alive_in(runtime, name, shell))  # the relay's shell is gone
         finally:
             runtime.exec(name, [*layout.tool("kill"), "-KILL", str(listener)])
 

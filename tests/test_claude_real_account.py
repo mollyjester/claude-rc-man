@@ -25,8 +25,14 @@ ACCOUNT = [s for s in rec.SEQUENCES if (s.needs_account or s.submits_code) and n
 def test_account_screens_match_the_fixtures(tmp_path):
     assert REAL is not None, "claude is not on PATH"
     assert ACCOUNT  # non-vacuity
+    # Run by hand, against the real `claude` with a person at hand, as the command line is:
+    # the command line's watch.
     recorded = rec.record(
-        REAL, ACCOUNT, account_config_dir=rec.account_config_dir(), workdir=tmp_path
+        REAL,
+        ACCOUNT,
+        account_config_dir=rec.account_config_dir(),
+        workdir=tmp_path,
+        watch=rec.RealWatch(),
     )
     names = {c for s in ACCOUNT for c in s.captures}
     expected = {c: f for c, f in rec.load_fixtures().items() if c in names}

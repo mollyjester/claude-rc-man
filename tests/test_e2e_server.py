@@ -22,9 +22,13 @@ from devtools import held_folders
 from devtools.held_folders import held, remove_tree
 from tests import e2e_server as e2e
 from tests import killed_runs as kr
+from tests.hang_guard import CONTAINER_HANG_GUARD, HANG_GUARD, HOST_GUARD
+from tests.until import until
 
 REPO = Path(__file__).resolve().parent.parent
 FRONTEND = REPO / "frontend"
+# The length of a sleep that outlasts the test (rule (g) of "Time in tests").
+OUTLASTING = f"{3 * HANG_GUARD:g}"
 CONFIGS = ("playwright.config.ts", "playwright.stack.config.ts", "playwright.screenshots.config.ts")
 # The screenshots make screenshots takes, which no test run reads (project-knowledge/tests.md).
 SCREENSHOTS = "e2e/screenshots.capture.ts"
@@ -74,7 +78,7 @@ def world(monkeypatch):
 def _start_tmux(sock: Path, started: list[int]) -> int:
     sock.parent.mkdir(parents=True, exist_ok=True)
     subprocess.run(
-        ["tmux", "-S", str(sock), "-f", "/dev/null", "new-session", "-d", "sleep", "600"],
+        ["tmux", "-S", str(sock), "-f", "/dev/null", "new-session", "-d", "sleep", OUTLASTING],
         check=True,
     )
     pid = int(
@@ -176,7 +180,7 @@ def test_a_backend_that_cannot_take_its_port_removes_its_world(world):
         proc = subprocess.run(
             [sys.executable, "-m", "uvicorn", "--factory", "tests.e2e_server:create_app",
              "--host", "127.0.0.1", "--port", str(port)],
-            cwd=REPO, env=os.environ, capture_output=True, text=True, timeout=120,
+            cwd=REPO, env=os.environ, capture_output=True, text=True, timeout=HANG_GUARD,
         )  # fmt: skip
     assert proc.returncode != 0
     assert "address already in use" in proc.stderr  # positive control: the bind failed
@@ -399,7 +403,7 @@ def _odd_sockets_folder_link(parent, name, started):
 
 
 @pytest.mark.parametrize(
-    "odd",
+    "oddity",
     [
         _odd_symlinked_world,
         _odd_lock_folder,
@@ -410,15 +414,15 @@ def _odd_sockets_folder_link(parent, name, started):
         _odd_sockets_folder_link,
     ],
 )
-def test_clearing_harms_nothing_but_abandoned_worlds_of_its_own(world, odd):
+def test_clearing_harms_nothing_but_abandoned_worlds_of_its_own(world, oddity):
     """What a name like a world's may be besides: none of it stops the clearing, nothing
     outside a world is touched, and no tmux server outside one is stopped."""
     root, started = world
-    kept, victims = odd(root.parent, _named("a-odd", lead="0"), started)
+    kept, victims = oddity(root.parent, _named("a-odd", lead="0"), started)
     later, later_pid = _later_world(root.parent, started)
     clearing = threading.Thread(target=e2e.clear_abandoned, args=(root.parent,), daemon=True)
     clearing.start()
-    clearing.join(timeout=60)
+    clearing.join(timeout=HANG_GUARD)
     if clearing.is_alive():  # stuck opening a FIFO: give it a writer, then fail
         os.close(os.open(kept, os.O_WRONLY | os.O_NONBLOCK))
         pytest.fail("clearing hung")
@@ -495,42 +499,40 @@ def test_alices_workspaces_are_signed_in_and_bobs_are_not(world):
 
 
 def _made(client, who):
-    import time
-
     from tests.conftest import as_user
 
     r = client.post(
         "/api/workspaces", json={"name": "work"}, headers={**as_user(who), "Origin": ORIGIN}
     )
     assert r.status_code == 202, r.text
-    for _ in range(200):
+
+    def made():
         [found] = client.get("/api/workspaces", headers=as_user(who)).json()["workspaces"]
-        if found["state"] == "ready":
-            return found
-        time.sleep(0.05)
-    raise AssertionError(found)
+        return None if found["state"] == "creating" else found
+
+    found = until(made)
+    assert found["state"] == "ready", found
+    return found
 
 
 def _cloned(client, who, url, name=None):
     """The workspace a clone of ``url`` made, once it is no longer being made."""
-    import time
-
     from tests.conftest import as_user
 
     body = {"url": url, **({"name": name} if name else {})}
     r = client.post("/api/git/clone", json=body, headers={**as_user(who), "Origin": ORIGIN})
     assert r.status_code == 202, r.text
     made = r.json()["workspace"]
-    for _ in range(400):
+
+    def cloned():
         [found] = [
             w
             for w in client.get("/api/workspaces", headers=as_user(who)).json()["workspaces"]
             if w["id"] == made["id"]
         ]
-        if found["state"] != "creating":
-            return found
-        time.sleep(0.05)
-    raise AssertionError(found)
+        return None if found["state"] == "creating" else found
+
+    return until(cloned)
 
 
 def test_the_world_clones_an_address_on_github_from_a_repository_of_its_own(world):
@@ -611,7 +613,7 @@ def listed(config: str, env: dict[str, str]) -> dict:
     """What Playwright makes of a config, read with --list, which starts no web server."""
     proc = subprocess.run(
         [playwright_binary(), "test", "--config", config, "--list", "--reporter=json"],
-        cwd=FRONTEND, env=env, capture_output=True, text=True, timeout=120,
+        cwd=FRONTEND, env=env, capture_output=True, text=True, timeout=HANG_GUARD,
     )  # fmt: skip
     assert proc.returncode == 0, proc.stderr
     return json.loads(proc.stdout)
@@ -623,7 +625,7 @@ def test_the_stack_browser_config_refuses_to_run_without_the_stack_port():
     env = {k: v for k, v in os.environ.items() if k != "RCMAN_STACK_PORT"}
     proc = subprocess.run(
         [playwright_binary(), "test", "--config", "playwright.stack.config.ts", "--list"],
-        cwd=FRONTEND, env=env, capture_output=True, text=True, timeout=120,
+        cwd=FRONTEND, env=env, capture_output=True, text=True, timeout=HANG_GUARD,
     )  # fmt: skip
     assert proc.returncode != 0, proc.stdout
     assert "RCMAN_STACK_PORT" in proc.stdout + proc.stderr
@@ -631,7 +633,7 @@ def test_the_stack_browser_config_refuses_to_run_without_the_stack_port():
     env["RCMAN_STACK_PORT"] = str(_free_port())
     listing = subprocess.run(
         [playwright_binary(), "test", "--config", "playwright.stack.config.ts", "--list"],
-        cwd=FRONTEND, env=env, capture_output=True, text=True, timeout=120,
+        cwd=FRONTEND, env=env, capture_output=True, text=True, timeout=HANG_GUARD,
     )  # fmt: skip
     assert listing.returncode == 0, listing.stderr  # positive control: given one, it loads
 
@@ -677,6 +679,54 @@ def test_the_browser_configs_write_to_different_output_folders():
     for folder in folders.values():
         ignored = subprocess.run(["git", "check-ignore", "-q", str(folder)], cwd=REPO)
         assert ignored.returncode == 0, folder
+
+
+# Each config's limits as Playwright resolves them, in milliseconds
+# (frontend/src/test/hangGuard.ts): a test's, the run's (none: each test is bounded, and a run's
+# bound names no test), and the backend's start and stop. These are the keys --list gives; the
+# expect, action and navigation timeouts it does not give, and the timing guard
+# (tests/test_timing_guard.py, P3c) holds each config's text to setting them to a guard.
+BROWSER_LIMITS = {
+    "timeout": 1000 * HOST_GUARD,
+    "globalTimeout": 0,
+    "webServer.timeout": 1000 * HANG_GUARD,
+    "webServer.gracefulShutdown.timeout": 1000 * HANG_GUARD,
+}
+LIMITS = {
+    "playwright.config.ts": BROWSER_LIMITS,
+    "playwright.screenshots.config.ts": BROWSER_LIMITS,
+    "playwright.stack.config.ts": {"timeout": 1000 * CONTAINER_HANG_GUARD, "globalTimeout": 0},
+}
+
+
+def resolved_limits(listing: dict) -> dict[str, object]:
+    """The limits a config resolves to, from its --list."""
+    config = listing["config"]
+    (project,) = config["projects"]
+    found = {"timeout": project["timeout"], "globalTimeout": config["globalTimeout"]}
+    server = config.get("webServer")
+    if server is not None:
+        found["webServer.timeout"] = server.get("timeout")
+        found["webServer.gracefulShutdown.timeout"] = (server.get("gracefulShutdown") or {}).get(
+            "timeout"
+        )
+    return found
+
+
+def test_each_browser_config_resolves_to_its_tiers_hang_guards():
+    env = {**os.environ, "RCMAN_STACK_PORT": str(_free_port())}
+    assert set(LIMITS) == set(CONFIGS)
+    for config, limits in LIMITS.items():
+        assert resolved_limits(listed(config, env)) == limits, config
+
+
+def test_a_config_resolving_to_another_limit_is_seen():
+    """Planted twin: the browser tests' config as --list gives it, with Playwright's own
+    default for the backend's start in place of the guard."""
+    listing = listed("playwright.config.ts", dict(os.environ))
+    assert resolved_limits(listing) == BROWSER_LIMITS  # positive control
+    listing["config"]["webServer"]["timeout"] = 60_000
+    assert resolved_limits(listing) != BROWSER_LIMITS
 
 
 def _files(listing: dict) -> set[str]:

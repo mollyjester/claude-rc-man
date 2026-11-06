@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 from installer import install as ins
+from tests.hang_guard import HANG_GUARD
 
 REPO = Path(__file__).resolve().parent.parent
 PODMAN_SOURCES = REPO / "backend" / "rcman" / "podman"
@@ -46,7 +47,7 @@ def explained(name: str, *args: str, then: str = "echo ran") -> subprocess.Compl
     script = f"{head}HERE={shlex.quote(str(PODMAN_SOURCES))}\n{SOURCED}{then}\n"
     return subprocess.run(
         [str(ins.BUSYBOX), "sh", "-c", script, f"/opt/rcman/podman/bin/{name}", *args],
-        capture_output=True, text=True, env={"PATH": "/nowhere"}, timeout=30,
+        capture_output=True, text=True, env={"PATH": "/nowhere"}, timeout=HANG_GUARD,
     )  # fmt: skip
 
 

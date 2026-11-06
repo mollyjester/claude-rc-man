@@ -6,6 +6,7 @@ runs it; tests/container/test_runtime_in_podman.py runs the same protocol throug
 """
 
 import hashlib
+import shlex
 import shutil
 import threading
 import time
@@ -13,6 +14,10 @@ from pathlib import Path
 
 import pytest
 from rcman import channel as ch
+
+from tests.hang_guard import HANG_GUARD
+from tests.runtime_contract import ended_in_a_thread
+from tests.until import until
 
 SH = shutil.which("sh")
 
@@ -56,9 +61,9 @@ def test_arguments_reach_the_program_as_they_are(channel, tmp_path):
 
 
 def test_a_command_reads_nothing(channel):
-    started = time.monotonic()
+    """A ``cat`` that read the channel's own input would wait there until the request's
+    timeout, and fail as ChannelTimeout."""
     assert channel.run([shutil.which("cat")]) == ch.Result(0, b"", b"")
-    assert time.monotonic() - started < 5
 
 
 @pytest.mark.parametrize("bad", ["two\nlines", "nul\0char"])
@@ -117,10 +122,11 @@ def test_a_request_the_channel_died_running_is_not_run_again(channel, tmp_path):
 
 
 def test_a_request_that_outlasts_its_timeout_closes_the_channel(channel):
-    started = time.monotonic()
+    """At a timeout of 0 (rule (a)), against a program that outlasts the test, in a thread that
+    ends within the hang guard."""
+    outlasting = [shutil.which("sleep"), f"{3 * HANG_GUARD:g}"]
     with pytest.raises(ch.ChannelTimeout):
-        channel.run([shutil.which("sleep"), "30"], timeout=0.5)
-    assert time.monotonic() - started < 10
+        ended_in_a_thread(lambda: channel.run(outlasting, timeout=0))
     assert channel.run([shutil.which("echo"), "after"]).out == b"after\n"
 
 
@@ -232,11 +238,11 @@ def test_only_a_channel_still_idle_is_marked_closed_and_a_marked_one_refuses_a_r
     with channel._lock:  # a request holds it
         assert not channel.mark_closed_if_idle(0.0)
     assert channel.run(true).code == 0  # it was not marked
-    channel._last -= 100
-    assert not channel.mark_closed_if_idle(1000.0)  # not idle that long
+    channel._last -= 2 * HANG_GUARD
+    assert not channel.mark_closed_if_idle(4 * HANG_GUARD)  # not idle that long
     assert channel.run(true).code == 0
-    channel._last -= 100
-    assert channel.mark_closed_if_idle(50.0)
+    channel._last -= 2 * HANG_GUARD
+    assert channel.mark_closed_if_idle(HANG_GUARD)
     with pytest.raises(ch.ChannelClosed):
         channel.run(true)
     # The refusal leaves the shell to the close, which removes the channel's files through it.
@@ -256,8 +262,8 @@ def p95_of_a_hundred(channel, true: str) -> float:
     return times[94]
 
 
-# How many batches of a hundred requests the latency test may take before the bound is
-# judged broken: noise on a busy host passes in one of them, a slow channel in none.
+# How many batches of a hundred requests the latency benchmark takes before it reports the
+# bound as broken: noise on a busy host passes in one of them, a slow channel in none.
 LATENCY_BATCHES = 3
 
 
@@ -273,16 +279,32 @@ def batches_over_the_bound(measure) -> list[float]:
     return over
 
 
-def test_the_channels_latency_on_the_host(channel):
-    """A command through the channel costs a few milliseconds, not the hundreds a new exec
-    costs; tests/container/test_runtime_in_podman.py pins the same through podman, on the tests'
-    rootless engine.
-    On a busy host, as under ``make test``'s parallel workers, a few scheduler stalls can
-    push one batch's 95th percentile past the bound, so a batch may be taken again; a
-    channel that is slow is over the bound in every batch."""
+@pytest.mark.benchmark
+def test_the_channels_latency_on_the_host(channel, record_property):
+    """Reports the 95th percentile of a command through the channel, a few milliseconds where
+    a new exec costs hundreds, against ch.LATENCY_P95_SECONDS; tests/container/
+    test_runtime_in_podman.py reports the same through podman, on the tests' rootless engine.
+    It measures and reports, and decides nothing (make benchmark). On a busy host a few
+    scheduler stalls can push one batch's 95th percentile past the bound, so a batch is taken
+    again; a channel that is slow is over the bound in every batch."""
     true = shutil.which("true")
     channel.run([true])
-    assert batches_over_the_bound(lambda: p95_of_a_hundred(channel, true)) == []
+    batches: list[float] = []
+
+    def measured() -> float:
+        batches.append(p95_of_a_hundred(channel, true))
+        return batches[-1]
+
+    over = batches_over_the_bound(measured)
+    assert batches  # it measured
+    record_property("p95_seconds", batches)
+    record_property("bound_seconds", ch.LATENCY_P95_SECONDS)
+    verdict = "over the bound in every batch" if over else "within the bound"
+    figures = ", ".join(f"{p95 * 1000:.2f} ms" for p95 in batches)
+    print(
+        f"the channel's 95th percentile on the host: {figures}, against "
+        f"{ch.LATENCY_P95_SECONDS * 1000:.0f} ms: {verdict}"
+    )
 
 
 def test_only_a_channel_over_the_bound_in_every_batch_is_reported():
@@ -300,39 +322,49 @@ def test_only_a_channel_over_the_bound_in_every_batch_is_reported():
     assert batches_over_the_bound(measuring(fast)) == []
 
 
-def test_closing_does_not_wait_for_a_request_in_flight(run_dir):
+def test_closing_does_not_wait_for_a_request_in_flight(run_dir, tmp_path):
+    """Closed once the request's program says it runs, a program that outlasts the test on a
+    request whose own timeout is twice the hang guard: the close ends, in a thread that ends
+    within the hang guard, and the request fails as broken (rule (c))."""
     c = ch.Channel([SH, "-s"], tools, str(run_dir))
     failed = []
+    running = tmp_path / "running"
+    script = f"touch {shlex.quote(str(running))}; exec sleep {3 * HANG_GUARD:g}"
 
     def ask():
         try:
-            c.run([shutil.which("sleep"), "30"])
+            c.run([SH, "-c", script], timeout=2 * HANG_GUARD)
         except ch.ChannelBroken as error:
             failed.append(error)
 
     asking = threading.Thread(target=ask)
     asking.start()
-    time.sleep(0.5)
-    started = time.monotonic()
-    c.close()
-    assert time.monotonic() - started < 5
-    asking.join(10)
+    until(running.exists)  # the request is in flight
+    ended_in_a_thread(c.close)
+    asking.join(HANG_GUARD)
     assert not asking.is_alive() and failed  # the request fails as broken
     with pytest.raises(ch.ChannelBroken):
         c.run([shutil.which("true")])  # and the channel stays closed
     assert c.process is None
 
 
-def test_a_channel_running_a_request_is_not_idle(channel):
-    """A request on a channel unused for long is no idleness to close it for."""
-    channel._last -= 1000  # unused for long before the request
-    asking = threading.Thread(target=channel.run, args=([shutil.which("sleep"), "2"],))
+def test_a_channel_running_a_request_is_not_idle(channel, tmp_path):
+    """A request on a channel unused for long is no idleness to close it for: asked while
+    the request's program says it runs, and holds until the test releases it."""
+    running, release = tmp_path / "running", tmp_path / "release"
+    script = (
+        f"touch {shlex.quote(str(running))}; "
+        f"while [ ! -e {shlex.quote(str(release))} ]; do sleep 0.05; done"
+    )
+    channel._last -= 2 * HANG_GUARD  # unused for long before the request
+    asking = threading.Thread(target=channel.run, args=([SH, "-c", script],))
     asking.start()
-    time.sleep(0.5)
     try:
-        assert not channel.mark_closed_if_idle(100.0)
+        until(running.exists)  # the request is in flight
+        assert not channel.mark_closed_if_idle(HANG_GUARD)
     finally:
-        asking.join(10)
+        release.touch()
+        asking.join(HANG_GUARD)
     assert channel.run([shutil.which("true")]).code == 0  # it was not marked
 
 
@@ -346,24 +378,31 @@ def thread_errors():
     threading.excepthook = real
 
 
-# The channel's shell, with a program it started that writes to the shell's stderr for a while,
-# and holds it past the shell's own end.
-STILL_WRITING = (
-    "(end=$(( $(date +%s) + 2 )); while [ $(date +%s) -lt $end ]; do echo e >&2; sleep 0.01; "
-    "done) & exec sh -s"
-)
+def still_writing(release: Path) -> str:
+    """The channel's shell, with a program it started that writes to the shell's stderr until
+    ``release`` is there, and holds it past the shell's own end."""
+    there = shlex.quote(str(release))
+    return f"(while [ ! -e {there} ]; do echo e >&2; sleep 0.01; done) & exec sh -s"
 
 
-def test_closing_while_stderr_is_still_written_raises_nothing_in_the_reader(run_dir, thread_errors):
+def test_closing_while_stderr_is_still_written_raises_nothing_in_the_reader(
+    run_dir, tmp_path, thread_errors
+):
     """The reader of what the shell writes on stderr is reading while the channel closes: it
     is the one that closes the stream, once nothing writes to it any more, so it never reads
-    one that was closed under it."""
-    c = ch.Channel([SH, "-c", STILL_WRITING], tools, str(run_dir))
+    one that was closed under it. The program writes until the test releases it, after the
+    close."""
+    release = tmp_path / "release"
+    c = ch.Channel([SH, "-c", still_writing(release)], tools, str(run_dir))
     c.run([shutil.which("true")])
     reader, process = c._error_reader, c.process
-    c.close()
-    assert process.poll() is not None  # the shell is gone; its program still writes
-    reader.join(timeout=10)
+    until(lambda: c._errors)  # the control: what the program writes reaches the reader
+    try:
+        c.close()
+        assert process.poll() is not None  # the shell is gone
+    finally:
+        release.touch()
+    reader.join(timeout=HANG_GUARD)
     assert not reader.is_alive()
     assert process.stderr.closed  # closed by the reader, once the program was done
     assert thread_errors == []

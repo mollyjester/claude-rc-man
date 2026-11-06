@@ -18,6 +18,9 @@ import pytest
 
 from installer import install as ins
 from tests.containers import asked_packages, package_lines
+from tests.hang_guard import HANG_GUARD
+from tests.time_doubles import FakeTime
+from tests.until import until
 
 REPO = Path(__file__).resolve().parent.parent
 PODMAN_SOURCES = REPO / "backend" / "rcman" / "podman"
@@ -959,15 +962,13 @@ def test_toolchain_directories_are_repaired_to_be_readable(tmp_path):
     assert stat.S_IMODE((tmp_path / "a" / "b").stat().st_mode) == 0o755
 
 
-def fake_downloads(monkeypatch):
+def fake_downloads(monkeypatch, held=None):
     """The toolchain's downloads served from archives made here, each with its checksum
-    file; returns the URLs fetched. The first archive fetched waits briefly for another
-    caller to start fetching, so that two unlocked callers overlap."""
+    file; returns the URLs fetched. With ``held``, an event, the first fetch of Node.js's
+    archive waits until it is set, so that a test can have another caller come meanwhile."""
     import hashlib
     import io
     import tarfile
-    import threading
-    import time
 
     def archive(top: str, member: str, mode: str) -> bytes:
         data = io.BytesIO()
@@ -995,21 +996,15 @@ def fake_downloads(monkeypatch):
         ins, "OAUTH2_PROXY_SHA256",
         {(ins.OAUTH2_PROXY_VERSION, arch): sums[f"{proxy}.tar.gz"]},
     )  # fmt: skip
-    fetched, started = [], threading.Event()
+    fetched = []
     tmux = b"tmux source"
     monkeypatch.setattr(ins, "TMUX_SHA256", hashlib.sha256(tmux).hexdigest())
 
     def download(url: str) -> bytes:
         name = url.rsplit("/", 1)[1]
         fetched.append(url)
-        if name == f"{node}.tar.xz":
-            if started.is_set():
-                started.clear()
-            else:
-                started.set()
-                deadline = time.monotonic() + 1
-                while started.is_set() and time.monotonic() < deadline:
-                    time.sleep(0.01)
+        if name == f"{node}.tar.xz" and held is not None and fetched.count(url) == 1:
+            assert held.wait(HANG_GUARD)
             return archives[name]
         if name == f"tmux-{ins.TMUX_VERSION}.tar.gz":
             return tmux
@@ -1046,10 +1041,28 @@ def test_the_toolchain_is_fetched_once_and_complete(tmp_path, monkeypatch):
 
 def test_two_callers_at_once_make_one_complete_toolchain(tmp_path, monkeypatch):
     """Two callers filling the same empty toolchain at once, as two parallel test runs
-    sharing a cache do: one fetches and unpacks each tool, the other then finds it."""
+    sharing a cache do: one fetches and unpacks each tool, the other then finds it. The first
+    fetch is held until the other caller has come to the toolchain's lock, or, were there no
+    lock, to its own fetch."""
+    import fcntl
     import threading
 
-    fetched = fake_downloads(monkeypatch)
+    go = threading.Event()
+    fetched = fake_downloads(monkeypatch, held=go)
+    locking: list[str] = []
+
+    class Locks:
+        """The installer's fcntl, each exclusive lock it asks for recorded as it asks."""
+
+        def __getattr__(self, name):
+            return getattr(fcntl, name)
+
+        def flock(self, fd, operation):
+            if operation == fcntl.LOCK_EX:
+                locking.append(threading.current_thread().name)
+            return fcntl.flock(fd, operation)
+
+    monkeypatch.setattr(ins, "fcntl", Locks())
     toolchain = tmp_path / "toolchain"
     results, errors = [], []
 
@@ -1062,8 +1075,10 @@ def test_two_callers_at_once_make_one_complete_toolchain(tmp_path, monkeypatch):
     threads = [threading.Thread(target=call) for _ in range(2)]
     for thread in threads:
         thread.start()
+    until(lambda: len(locking) == 2 or len(fetched) > len(set(fetched)))
+    go.set()
     for thread in threads:
-        thread.join(timeout=60)
+        thread.join(timeout=HANG_GUARD)
     assert errors == []
     assert sorted(len(r) for r in results) == [0, MADE]
     downloaded(fetched)  # each file once
@@ -3427,6 +3442,31 @@ def inspect_source(function) -> str:
     return inspect.getsource(function)
 
 
+def unhealthy(monkeypatch) -> ins.InstallError:
+    """What ins.health raises, on the installer's time, which only the test moves: once it has
+    looked and waits to look again, its HEALTH_TIMEOUT is passed. It runs in a thread joined
+    within the hang guard."""
+    import threading
+
+    fake = FakeTime()
+    monkeypatch.setattr(ins, "time", fake)
+    failed: list[ins.InstallError] = []
+
+    def check() -> None:
+        with pytest.raises(ins.InstallError) as refused:
+            ins.health(HEALTH_SETTINGS)
+        failed.append(refused.value)
+
+    checking = threading.Thread(target=check, daemon=True)
+    checking.start()
+    fake.wait_sleep_begun(after=0)  # it has looked, and waits to look again
+    fake.advance(ins.HEALTH_TIMEOUT + 1)
+    checking.join(HANG_GUARD)
+    assert not checking.is_alive()
+    [error] = failed
+    return error
+
+
 @pytest.mark.parametrize("answer", [(1, ""), (0, "503\n"), (0, "")])
 def test_rcman_that_does_not_answer_ok_is_not_healthy(monkeypatch, answer):
     code, out = answer
@@ -3435,10 +3475,7 @@ def test_rcman_that_does_not_answer_ok_is_not_healthy(monkeypatch, answer):
         ins, "run", lambda argv, **kw: subprocess.CompletedProcess(argv, code, out, "")
     )
     monkeypatch.setattr(ins, "_status_over_tcp", lambda host, port, path: 200)
-    monkeypatch.setattr(ins, "HEALTH_TIMEOUT", 0.0)
-    monkeypatch.setattr(ins.time, "sleep", lambda seconds: None)
-    with pytest.raises(ins.InstallError, match="rcman"):
-        ins.health(HEALTH_SETTINGS)
+    assert "rcman" in str(unhealthy(monkeypatch))
 
 
 def test_a_forwarding_server_that_does_not_answer_is_not_healthy(monkeypatch):
@@ -3451,11 +3488,9 @@ def test_a_forwarding_server_that_does_not_answer_is_not_healthy(monkeypatch):
 
     monkeypatch.setattr(ins, "run", run)
     monkeypatch.setattr(ins, "_status_over_tcp", lambda host, port, path: 200)
-    monkeypatch.setattr(ins, "HEALTH_TIMEOUT", 0.0)
-    monkeypatch.setattr(ins.time, "sleep", lambda seconds: None)
-    with pytest.raises(ins.InstallError, match="forwarding") as refused:
-        ins.health(HEALTH_SETTINGS)
-    assert "rcman," not in str(refused.value)  # the control: rcman itself was healthy
+    refused = unhealthy(monkeypatch)
+    assert "forwarding" in str(refused)
+    assert "rcman," not in str(refused)  # the control: rcman itself was healthy
 
 
 def test_the_health_script_reports_the_status_rcman_answers_on_its_socket(tmp_path):
@@ -4408,7 +4443,7 @@ class Scratch:
                 "PATH": f"{self.bin}:/usr/bin:/bin", **(env or {})}  # fmt: skip
         return subprocess.run(
             command or [str(self.clone / "install.sh"), *args],
-            env=full, stdin=stdin, capture_output=True, text=True, timeout=60, **kw,
+            env=full, stdin=stdin, capture_output=True, text=True, timeout=HANG_GUARD, **kw,
         )  # fmt: skip
 
     def reported(self) -> dict:

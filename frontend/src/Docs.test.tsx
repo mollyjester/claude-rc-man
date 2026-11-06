@@ -1,10 +1,10 @@
 import { screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { vi } from "vitest";
 
 import { m } from "./messages";
 import { fakeApi, ME, problem } from "./test/fakeApi";
 import { renderApp } from "./test/render";
+import { waitForIt } from "./test/waitForIt";
 
 const PAGES = {
   pages: [
@@ -72,9 +72,9 @@ test("a help page is titled with its own name, and the index with Help", async (
     "GET /api/docs/servers": { slug: "servers", title: "Servers", markdown: "# Servers\n\nText." },
   });
   const { navigate } = renderApp("/help");
-  await vi.waitFor(() => expect(document.title).toBe(m.pageTitle(m.docsTitle)));
+  await waitForIt(() => expect(document.title).toBe(m.pageTitle(m.docsTitle)));
   await navigate("/help/servers");
-  await vi.waitFor(() => expect(document.title).toBe(m.pageTitle("Servers")));
+  await waitForIt(() => expect(document.title).toBe(m.pageTitle("Servers")));
 });
 
 const WITH_TABLE = [

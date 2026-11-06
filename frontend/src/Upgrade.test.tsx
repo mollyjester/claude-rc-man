@@ -243,7 +243,7 @@ test("a finished upgrade's facts are shown, its commits as code", async () => {
 });
 
 describe("following an upgrade", () => {
-  beforeEach(() => void vi.useFakeTimers({ shouldAdvanceTime: true }));
+  beforeEach(() => void vi.useFakeTimers());
   afterEach(() => void vi.useRealTimers());
   const pass = (ms: number) =>
     act(async () => {
@@ -267,7 +267,8 @@ describe("following an upgrade", () => {
     expect(await screen.findByText(m.upgradeSucceeded)).toBeInTheDocument();
     expect(takeReports()).toEqual([]); // nothing noted as a failure for rcman
     expect(fake.made("POST", "/api/client-errors")).toHaveLength(0);
-    await userEvent.click(screen.getByRole("button", { name: m.upgradeReload }));
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    await user.click(screen.getByRole("button", { name: m.upgradeReload }));
     expect(reload).toHaveBeenCalledTimes(1);
     const polls = fake.made("GET", "/api/rcman/upgrade").length;
     await pass(RCMAN_POLL_MS * 3);

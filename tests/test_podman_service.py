@@ -12,7 +12,7 @@ import signal
 import subprocess
 import sys
 import tarfile
-import time
+import threading
 from pathlib import Path
 
 import pytest
@@ -20,6 +20,8 @@ import pytest
 from devtools import held_folders as hf
 from tests import killed_runs as kr
 from tests import podman_service as ps
+from tests.hang_guard import CONTAINER_HANG_GUARD, tier_guard
+from tests.until import until
 
 REPO = Path(__file__).resolve().parent.parent
 
@@ -55,18 +57,19 @@ def test_the_engines_runroot_is_one_podman_takes():
 
 def engine_left(prefix: str) -> tuple[subprocess.Popen, Path]:
     """An engine started by a process of its own, which is then killed, as a run killed by a
-    signal is: what it reported, once its container runs."""
+    signal is: what it reported, once its container runs. It is handed the test's tier's
+    guard, and outlasts the test."""
     script = (
         "import sys, time\n"
         "from tests import podman_service as ps\n"
-        f"with ps.started({prefix!r}) as engine:\n"
+        f"with ps.started({tier_guard()!r}, {prefix!r}) as engine:\n"
         "    made = engine.cli('import', '-', 'localhost/bb', input=sys.stdin.buffer.read())\n"
         "    assert made.returncode == 0, made.stderr\n"
         "    ran = engine.cli('run', '-d', '--name=left', 'localhost/bb', 'busybox', 'sleep',\n"
-        "                     '600')\n"
+        f"                     '{3 * tier_guard():g}')\n"
         "    assert ran.returncode == 0, ran.stderr\n"
         "    print(engine.folder, flush=True)\n"
-        "    time.sleep(600)\n"
+        f"    time.sleep({3 * tier_guard()})\n"
     )
     child = subprocess.Popen(
         [sys.executable, "-c", script],
@@ -91,14 +94,14 @@ def test_an_engine_a_killed_run_left_is_removed_by_the_next_with_its_container(p
         try:
             assert folder.name.startswith(prefix) and folder.is_dir()
             os.killpg(child.pid, signal.SIGKILL)
-            child.wait(timeout=30)
+            child.wait(timeout=tier_guard())
             # positive control: what the kill left, the service and the container's conmon
             left = ps._processes_naming(folder)
             assert left and folder.is_dir()
             commands = [Path(f"/proc/{p}/cmdline").read_bytes() for p in left]
             assert any(b"system\0service" in c for c in commands)
             assert any(b"conmon" in c for c in commands)
-            with ps.started(prefix):
+            with ps.started(tier_guard(), prefix):
                 assert not folder.exists()
                 assert ps._processes_naming(folder) == []
         finally:
@@ -109,28 +112,27 @@ def test_an_engine_a_killed_run_left_is_removed_by_the_next_with_its_container(p
 def test_an_engine_that_ends_leaves_no_process_and_no_folder(podman_service):
     """Its own engine beside the session's; the fixture gives it the container marker."""
     with kr.stem() as stem:
-        with ps.started(stem + "rp") as engine:
+        with ps.started(tier_guard(), stem + "rp") as engine:
             folder = engine.folder
             made = engine.cli("import", "-", "localhost/bb", input=busybox_tarball())
             assert made.returncode == 0, made.stderr
-            ran = engine.cli("run", "-d", "localhost/bb", "busybox", "sleep", "600")
+            ran = engine.cli(
+                "run", "-d", "localhost/bb", "busybox", "sleep", f"{3 * tier_guard():g}"
+            )
             assert ran.returncode == 0, ran.stderr
             assert ps._processes_naming(folder)  # positive control
-        deadline = time.monotonic() + 10
-        while ps._processes_naming(folder) and time.monotonic() < deadline:
-            time.sleep(0.1)
-        assert ps._processes_naming(folder) == []
+        until(lambda: ps._processes_naming(folder) == [])
         assert not folder.exists()
 
 
 # --- an engine left with something mounted in its storage ---------------------------------------
 
 
-def unshare(engine: ps.Engine, *argv: str, timeout: float = 60) -> subprocess.CompletedProcess:
+def unshare(engine: ps.Engine, *argv: str) -> subprocess.CompletedProcess:
     """``argv`` in the user's rootless namespace, as root there, which is where every engine's
     mounts are made; with the environment of ``engine``, one that outlasts the engine looked at."""
     return subprocess.run([ps.PODMAN, "unshare", *argv], capture_output=True, text=True,
-                          timeout=timeout, env=ps.env(engine.folder))  # fmt: skip
+                          timeout=tier_guard(), env=ps.env(engine.folder))  # fmt: skip
 
 
 def mounts_under(engine: ps.Engine, folder: Path) -> list[str]:
@@ -156,7 +158,7 @@ def test_an_engine_left_with_a_mount_in_its_storage_is_removed_by_the_next(podma
         planted = folder / "g" / "planted"
         try:
             os.killpg(child.pid, signal.SIGKILL)
-            child.wait(timeout=30)
+            child.wait(timeout=tier_guard())
             plant = (  # two, stacked on one path
                 'mkdir -p "$1" && mount -t tmpfs tmpfs "$1" && touch "$1/file" && '
                 'mount -t tmpfs tmpfs "$1"'
@@ -165,7 +167,7 @@ def test_an_engine_left_with_a_mount_in_its_storage_is_removed_by_the_next(podma
             assert made.returncode == 0, made.stderr
             found = mounts_under(podman_service, folder)
             assert found.count(str(planted)) == 2, found  # the plant took effect, and lasts
-            with ps.started(prefix):
+            with ps.started(tier_guard(), prefix):
                 assert not folder.exists()
                 assert mounts_under(podman_service, folder) == []
         finally:
@@ -174,8 +176,9 @@ def test_an_engine_left_with_a_mount_in_its_storage_is_removed_by_the_next(podma
                 ps.remove(folder)
 
 
-# The length of the sleep of a build's RUN that no other test runs, by which it is found.
-BUILD_SLEEP = "4711"
+# The length of the sleep of a build's RUN: beyond the test (rule (g) of "Time in tests"), and
+# no other test's, by which it is found.
+BUILD_SLEEP = f"{3 * CONTAINER_HANG_GUARD + 7:g}"
 
 
 def processes_sleeping(length: str) -> list[int]:
@@ -213,7 +216,7 @@ def engine_building(prefix: str, context: Path) -> tuple[subprocess.Popen, Path]
     script = (
         "import sys\n"
         "from tests import podman_service as ps\n"
-        f"with ps.started({prefix!r}) as engine:\n"
+        f"with ps.started({tier_guard()!r}, {prefix!r}) as engine:\n"
         "    made = engine.cli('import', '-', 'localhost/bb', input=sys.stdin.buffer.read())\n"
         "    assert made.returncode == 0, made.stderr\n"
         "    print(engine.folder, flush=True)\n"
@@ -242,17 +245,14 @@ def test_an_engine_killed_during_a_build_is_removed_by_the_next(podman_service, 
         prefix = stem + ps.PREFIX[:2]
         child, folder = engine_building(prefix, tmp_path)
         try:
-            deadline = time.monotonic() + 300
-            while not processes_sleeping(BUILD_SLEEP) and time.monotonic() < deadline:
-                time.sleep(0.5)
-            assert processes_sleeping(BUILD_SLEEP)  # the RUN runs
+            until(lambda: processes_sleeping(BUILD_SLEEP))  # the RUN runs
             merged = [p for p in mounts_under(podman_service, folder) if p.endswith("/merged")]
             assert merged, mounts_under(
                 podman_service, folder
             )  # positive control: its layer is mounted
             os.killpg(child.pid, signal.SIGKILL)
-            child.wait(timeout=30)
-            with ps.started(prefix):
+            child.wait(timeout=tier_guard())
+            with ps.started(tier_guard(), prefix):
                 assert not folder.exists()
                 assert mounts_under(podman_service, folder) == []
                 left = processes_sleeping(BUILD_SLEEP)
@@ -339,22 +339,20 @@ def test_what_is_left_mounted_is_said_with_why_its_last_unmount_failed():
 def test_what_a_named_process_started_is_stopped_with_it_and_nothing_above(tmp_path):
     """A build's RUN names nothing of the engine's folder, and its root and working folder read as
     / from outside its namespaces; it is found below the service that started it."""
-    parent = subprocess.Popen(["sh", "-c", "sleep 60 & wait"], start_new_session=True)
-    beside = subprocess.Popen(["sleep", "60"])
+    parent = subprocess.Popen(
+        ["sh", "-c", f"sleep {3 * tier_guard():g} & wait"], start_new_session=True
+    )
+    beside = subprocess.Popen(["sleep", f"{3 * tier_guard():g}"])
     try:
-        deadline = time.monotonic() + 30
-        while not (below := set(ps._with_descendants([parent.pid])) - {parent.pid}) and (
-            time.monotonic() < deadline
-        ):
-            time.sleep(0.1)
+        below = until(lambda: set(ps._with_descendants([parent.pid])) - {parent.pid})
         found = ps._with_descendants([parent.pid])
         assert parent.pid in found and below and beside.pid not in found
         assert os.getpid() not in ps._with_descendants([os.getppid()])  # never this one
     finally:
         os.killpg(parent.pid, signal.SIGKILL)
-        parent.wait(timeout=30)
+        parent.wait(timeout=tier_guard())
         beside.kill()
-        beside.wait(timeout=30)
+        beside.wait(timeout=tier_guard())
 
 
 def test_a_process_that_may_not_be_signalled_is_left_and_said_and_the_rest_stopped(
@@ -362,7 +360,7 @@ def test_a_process_that_may_not_be_signalled_is_left_and_said_and_the_rest_stopp
 ):
     """One the user may not signal (a setuid one, say) is left out of the wait and said; the
     removal goes on."""
-    others = [subprocess.Popen(["sleep", "60"]) for _ in range(2)]
+    others = [subprocess.Popen(["sleep", f"{3 * tier_guard():g}"]) for _ in range(2)]
     refused, stopped = others
     real_kill = os.kill
 
@@ -374,7 +372,7 @@ def test_a_process_that_may_not_be_signalled_is_left_and_said_and_the_rest_stopp
     monkeypatch.setattr(os, "kill", kill)
     try:
         ps._stop(ps._found([refused.pid, stopped.pid]))
-        assert stopped.wait(timeout=30) == -signal.SIGKILL
+        assert stopped.wait(timeout=tier_guard()) == -signal.SIGKILL
         assert refused.poll() is None  # left
         said = capsys.readouterr().err
         assert f"left process {refused.pid}" in said and "not permitted" in said, said
@@ -382,40 +380,56 @@ def test_a_process_that_may_not_be_signalled_is_left_and_said_and_the_rest_stopp
         monkeypatch.setattr(os, "kill", real_kill)
         for child in others:
             child.kill()
-            child.wait(timeout=30)
+            child.wait(timeout=tier_guard())
 
 
 def test_a_process_whose_first_thread_has_ended_is_waited_on_while_another_runs(
     tmp_path, monkeypatch
 ):
     """A process whose first thread has ended still holds its files while another thread runs:
-    the wait goes on until it has ended. The kill is withheld, so it never does."""
+    the wait goes on until it has ended. The kill is withheld; once the wait has looked at the
+    process again and found it running, it is still waiting, and it ends once the helper lets
+    the process end."""
     with kr.FirstThreadEnded(tmp_path) as helper:
         pid = helper.start()
         # the control: its first thread has ended
         assert hf.state_and_threads(pid) == kr.FIRST_THREAD_ENDED
-        real_kill = os.kill
+        real_kill, real_running, looks = os.kill, hf.running, []
+
+        def running(p: int) -> bool:
+            found = real_running(p)
+            if p == pid:
+                looks.append(found)
+            return found
+
         with monkeypatch.context() as patched:  # undone before the helper is ended and reaped
             patched.setattr(os, "kill", lambda p, sig: None if p == pid else real_kill(p, sig))
-            patched.setattr(ps, "GONE_WITHIN", 0.5)
-            with pytest.raises(RuntimeError, match=f"processes not gone: \\[{pid}\\]"):
-                ps._stop(ps._found([pid]))
+            patched.setattr(hf, "running", running)
+            stopping = threading.Thread(target=ps._stop, args=(ps._found([pid]),), daemon=True)
+            stopping.start()
+            try:
+                until(lambda: len(looks) >= 2)  # looked at again
+                assert all(looks) and stopping.is_alive()  # running, and waited on
+            finally:
+                helper.release()
+            stopping.join(tier_guard())
+            assert not stopping.is_alive()
 
 
 def test_a_pid_given_again_since_it_was_found_is_not_signalled():
     """Found with its start time, and signalled only while that is still its start time."""
-    child = subprocess.Popen(["sleep", "60"])
+    child = subprocess.Popen(["sleep", f"{3 * tier_guard():g}"])
     try:
         found = ps._found([child.pid])
         assert found[child.pid] == ps._start_time(child.pid) is not None  # the positive
         ps._stop({child.pid: found[child.pid] + 1})  # as though another had the pid now
         assert child.poll() is None  # not signalled
         ps._stop(found)
-        assert child.wait(timeout=30) == -signal.SIGKILL  # the control: its own is
+        assert child.wait(timeout=tier_guard()) == -signal.SIGKILL  # the control: its own is
     finally:
         if child.poll() is None:
             child.kill()
-            child.wait(timeout=30)
+            child.wait(timeout=tier_guard())
 
 
 # --- where the engine's processes run ---------------------------------------------------------
@@ -442,7 +456,7 @@ def test_the_engines_service_runs_in_its_own_folder(monkeypatch):
     monkeypatch.setattr(ps, "remove", lambda folder: hf.remove(folder))  # nothing of podman's
     monkeypatch.setattr(ps.subprocess, "Popen", popen)
     folder = None
-    with pytest.raises(Stop), ps.started("rcoomtest-") as engine:
+    with pytest.raises(Stop), ps.started(tier_guard(), "rcoomtest-") as engine:
         folder = engine.folder  # never reached: the service is not started
     assert folder is None and len(seen) == 1
     held = Path(seen[0]["env"]["CONTAINERS_STORAGE_CONF"]).parent

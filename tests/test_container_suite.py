@@ -17,6 +17,7 @@ from pathlib import Path
 
 from tests import containers
 from tests.git_fixtures import fixture_git, make_repo, write
+from tests.hang_guard import CONTAINER_HANG_GUARD
 from tests.snapshot import snapshot
 
 REPO = Path(__file__).resolve().parent.parent
@@ -65,12 +66,12 @@ def _worktree(tmp_path: Path) -> Path:
 
 
 def _clone_at_src(engine, image, labelled, source, checkout):
-    """CLONES in a container of ``image`` with no network, ``checkout`` read-only at /src."""
+    """CLONES in a container of ``image`` with no network, ``checkout`` read-only at /src, within
+    the tier's hang guard, the engine's own bound."""
     tools = source / "tests" / "container"
     return engine.cli(
         "run", "--rm", "--pull=never", "--network=none", *labelled, "-v", f"{checkout}:/src:ro",
-        "-v", f"{tools}:/tools:ro", "-w", "/src", image, "python3", "-c", CLONES,
-        timeout=600, text=True,
+        "-v", f"{tools}:/tools:ro", "-w", "/src", image, "python3", "-c", CLONES, text=True,
     )  # fmt: skip
 
 
@@ -106,9 +107,9 @@ def test_a_worktree_mounted_as_it_is_is_not_a_repository_in_a_container(
 
 # --- the containers a run starts itself ----------------------------------------------------
 
-# What a probe container runs: long enough to outlive a check, never so long that one a
-# failed test leaves runs on.
-PROBE = ["sleep", "300"]
+# What a probe container runs: a sleep that outlasts the test (rule (g) of "Time in tests"). One
+# a failed test leaves is removed by a later run, as its run's (tests/containers.py).
+PROBE = ["sleep", f"{3 * CONTAINER_HANG_GUARD:g}"]
 
 
 def _probe(engine: list[str], image: str, labels: list[str]) -> str:

@@ -26,7 +26,7 @@ from tests.git_fixtures import (
     push_branch_to_origin,
     write,
 )
-from tests.hang_guard import HANG_GUARD
+from tests.hang_guard import HANG_GUARD, runs_out
 from tests.time_doubles import FakeTime
 
 NAME = "rcman-ws-1"
@@ -1367,7 +1367,7 @@ def test_git_runs_with_the_allowlisted_environment(git, repo, world):
     git.stage(["a.txt"])
     git.commit("m")
     seen = dict(line.split("=", 1) for line in dumped.read_text().splitlines() if "=" in line)
-    probe = world.run([*world.layout.tool("env")], 10)
+    probe = world.run([*world.layout.tool("env")], HANG_GUARD)
     assert b"RCMAN_DECOY=present" in probe.out  # positive control: the runner had it
     assert "RCMAN_DECOY" not in seen
     assert seen["HOME"] == world.layout.home and seen["LC_ALL"] == "C"
@@ -1390,14 +1390,20 @@ def test_git_runs_in_the_workspaces_folder_and_wrapped_in_a_timeout(git, repo, w
 
 def test_a_git_past_its_deadline_is_git_timeout(git, repo, monkeypatch):
     hook = repo / ".git" / "hooks" / "pre-commit"
-    hook.write_text(f"#!/bin/sh\nsleep {int(3 * HANG_GUARD)}\n")  # until it is killed
+    hook.write_text(f"#!/bin/sh\nsleep {3 * HANG_GUARD}\n")  # until it is killed
     hook.chmod(0o755)
     write(repo / "a.txt")
     git.stage(["a.txt"])
-    monkeypatch.setattr(repo_module, "GIT_TIMEOUT", 1.0)
-    monkeypatch.setattr(repo_module, "KILL_GRACE_SECONDS", 1)
+    # each at its floor, against a hook that never ends
+    runs_out(monkeypatch, repo_module, "GIT_TIMEOUT", at=GIT_FLOOR)
+    runs_out(monkeypatch, repo_module, "KILL_GRACE_SECONDS", at=GIT_FLOOR)
     refused(lambda: git.commit("m"), "git_timeout")
     assert fixture_git(repo, "log", "--format=%s") == "First commit\n"  # nothing committed
+
+
+# The product's floor for git's deadlines: a second, the least Repository._seconds hands git
+# (it refuses less) and the least ``timeout -k`` takes as a grace (0 would be none).
+GIT_FLOOR = 1
 
 
 def handed(argv: list[str]) -> int:

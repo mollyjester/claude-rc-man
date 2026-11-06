@@ -6,7 +6,16 @@ import { ADMIN_PAGES } from "../src/AdminPages";
 import { m } from "../src/messages";
 import { PAGES } from "../src/Pages";
 import { callSites, pageSources } from "../src/test/callSites";
-import { GITHUB_ADDRESS, panel, personAction, plantUpgradeOffered, workspaces } from "./nav";
+import {
+  drawn,
+  GITHUB_ADDRESS,
+  panel,
+  personAction,
+  plantUpgradeOffered,
+  recordEvents,
+  recorded,
+  workspaces,
+} from "./nav";
 import { ALICE, BOB, signInAs } from "./people";
 
 // What the stylesheet and the page's dialogs build on, proved in the browser itself: the
@@ -79,10 +88,10 @@ test("a native modal dialog takes focus, keeps it, closes on Escape and gives it
   expect(await page.evaluate(() => document.getElementById("dialog")!.matches(":modal"))).toBe(
     true,
   );
-  await page
-    .locator("#outside")
-    .click({ force: true, timeout: 2000 })
-    .catch(() => {});
+  // the press is seen to reach the page before what it did not do is asserted
+  await recordEvents(page, ["pointerdown"]);
+  await page.locator("#outside").click({ force: true });
+  await expect.poll(() => recorded(page)).toContain("pointerdown");
   await expect(page.locator("#outside")).not.toBeFocused();
   for (let i = 0; i < 6; i++) {
     await page.keyboard.press("Tab");
@@ -432,12 +441,18 @@ async function hoverFaults(
   for (const probe of probes) {
     if (seen.has(probe.look)) continue;
     const target = page.locator(`[data-hover-probe="${probe.i}"]`);
-    try {
-      await target.hover({ timeout: 2000 });
-    } catch {
+    // what the pointer would reach at its middle, where hover() points, once it is in view
+    await target.scrollIntoViewIfNeeded();
+    const reached = await target.evaluate((el) => {
+      const at = el.getBoundingClientRect();
+      const hit = document.elementFromPoint(at.left + at.width / 2, at.top + at.height / 2);
+      return hit !== null && el.contains(hit);
+    });
+    if (!reached) {
       covered.add(probe.look); // covered by something: to be met uncovered in another view
       continue;
     }
+    await target.hover();
     seen.add(probe.look);
     for (const kind of probe.kinds) kinds[kind] = (kinds[kind] ?? 0) + 1;
     const read = await target.evaluate((el) => {
@@ -529,16 +544,14 @@ async function clonedWorkspace(page: Page, name: string): Promise<number> {
     { url: GITHUB_ADDRESS, name },
   );
   await expect
-    .poll(
-      () =>
-        page.evaluate(
-          async (id) =>
-            (await (await fetch("/api/workspaces")).json()).workspaces.find(
-              (w: { id: number }) => w.id === id,
-            )?.state,
-          id,
-        ),
-      { timeout: 30_000 },
+    .poll(() =>
+      page.evaluate(
+        async (id) =>
+          (await (await fetch("/api/workspaces")).json()).workspaces.find(
+            (w: { id: number }) => w.id === id,
+          )?.state,
+        id,
+      ),
     )
     .toBe("ready");
   return id;
@@ -855,7 +868,6 @@ for (const [width, phone, touch] of [
     test("no view is wider than the window, every control is big enough, every icon-only button is named, and every view is drawn by the design system's rules", async ({
       page,
     }) => {
-      test.slow(); // every page, and each dialog and menu, at one width
       await signInAs(page, ALICE);
       await page.goto("/");
       expect(await page.evaluate(coarse)).toBe(touch); // positive control: the pointer's rules apply
@@ -879,7 +891,7 @@ for (const [width, phone, touch] of [
         const didOpen = (await view.open?.(page)) ?? false;
         if (didOpen) opened += await page.locator('dialog[open], [aria-expanded="true"]').count();
         faults.push(...(await labelFaults(page, view, didOpen)));
-        await page.waitForTimeout(100); // a pop-up's or a dialog's first frame
+        await drawn(page); // a pop-up or a dialog drawn
         const found = await survey(page, measure);
         checked += found.checked;
         for (const [name, count] of Object.entries(found.allowed))
@@ -931,7 +943,6 @@ test.describe("with a mouse 1280px wide in a dark scheme", () => {
   test("every look of button keeps its contrast while hovered, every kind met", async ({
     page,
   }) => {
-    test.slow(); // every page, and each dialog and menu
     await signInAs(page, ALICE);
     await page.goto("/");
     expect(await page.evaluate(() => matchMedia("(prefers-color-scheme: dark)").matches)).toBe(
@@ -947,7 +958,7 @@ test.describe("with a mouse 1280px wide in a dark scheme", () => {
       await page.goto(view.path);
       await expect(page.getByRole("heading", { level: 1 }).first()).toBeVisible();
       await view.open?.(page);
-      await page.waitForTimeout(100); // a pop-up's or a dialog's first frame
+      await drawn(page); // a pop-up or a dialog drawn
       faults.push(
         ...(await hoverFaults(page, hovered, kinds, covered)).map((f) => `${view.name}: ${f}`),
       );

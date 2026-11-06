@@ -13,6 +13,8 @@ from rcman import limits
 from rcman import runtime as rt
 from rcman.limits import Caps, Limits
 
+from tests.hang_guard import HANG_GUARD
+
 STAND_INS = Path(__file__).resolve().parent / "container" / "stand_ins.py"
 
 
@@ -103,7 +105,7 @@ def stand_in(tmp_path, units, *args) -> subprocess.CompletedProcess:
            "RCMAN_STAND_IN_UNITS": str(units)}  # fmt: skip
     return subprocess.run(
         [sys.executable, str(STAND_INS), "systemctl", *args], env=env, capture_output=True,
-        text=True, timeout=60,
+        text=True, timeout=HANG_GUARD,
     )  # fmt: skip
 
 
