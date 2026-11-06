@@ -11,7 +11,8 @@ How the test suite is organised and run. The rules the suite follows are in
 | `make test` | Runs every Python test that runs on the host, in parallel with pytest-xdist: all but those marked `container`, those marked `benchmark`, which `make benchmark` runs, and those marked `real_claude`, which no target runs. `TEST_WORKERS` (in the `Makefile`, which says why) is the number of workers; `--dist worksteal` gives an idle worker the queue of a busy one |
 | `make test-container` | On demand: runs the Python tests marked `container`, except the whole-stack one, in one process; the `Makefile` says why. It sets `RCMAN_REQUIRE_CONTAINER=1`, so they fail instead of skipping where the user's rootless Podman cannot run |
 | `make check-ui` | On demand: runs the whole-stack test, the one marked `stack`, in one process; it needs `make frontend-setup` once, like `make e2e`. It sets `RCMAN_REQUIRE_CONTAINER=1` |
-| `make benchmark` | On demand, and not a check: runs the tests marked `benchmark`, which measure and report, in one process, printing what each reports; each fails only when it cannot measure. It sets `RCMAN_REQUIRE_CONTAINER=1`, as one of them runs through Podman. No other target runs them, `make check-all` included; see [The benchmark](#the-benchmark) |
+| `make check-containers` | On demand: `make test-container`, then `make check-ui`, stopping at the first red one (`make -k check-containers` runs both and reports each red one); it does not run `make check`. When the working rules require the on-demand runs, and before the live reinstall |
+| `make benchmark` | On demand, and not a check: runs the tests marked `benchmark`, which measure and report, in one process, printing what each reports; each fails only when it cannot measure. It sets `RCMAN_REQUIRE_CONTAINER=1`, as one of them runs through Podman. No other target runs them, `make check-containers` included; see [The benchmark](#the-benchmark) |
 | `make lint` | Checks formatting and lint: ruff for the Python code, Biome for the frontend, with the frontend's packages `make frontend-setup` installs |
 | `make format` | Applies formatting and safe lint fixes: ruff for the Python code, Biome for the frontend |
 | `make frontend-setup` | Installs the frontend's packages and Playwright's browser |
@@ -19,11 +20,11 @@ How the test suite is organised and run. The rules the suite follows are in
 | `make frontend-build` | Builds the frontend into `frontend/dist` |
 | `make e2e` | Builds the frontend and runs the browser tests |
 | `make screenshots` | Not a test: builds the frontend and captures every page, at a phone's and a desktop's width, light and dark, into `frontend/test-results/screenshots/`, for a look at the design; see [Screenshots](#screenshots) |
-| `make check` | Lint, `make test`, the frontend tests and the browser tests; no on-demand run. It sets `RCMAN_REQUIRE_REAL_CLAUDE=1`, so tests that would skip for want of the real `claude` fail instead |
-| `make check-all` | `make check`, `make test-container` and `make check-ui`, one after the other, which is every test but the benchmark's: for the end of a change and before the live reinstall |
+| `make check` | The full check: lint, `make test`, the frontend tests and the browser tests; no on-demand run. It sets `RCMAN_REQUIRE_REAL_CLAUDE=1`, so tests that would skip for want of the real `claude` fail instead |
 
-`make check` is the gating check; `make test-container` and `make check-ui` are
-the on-demand runs. When each runs, and how a run is read, are working rules:
+`make check` is the gating check and the full check; `make test-container` and
+`make check-ui` are the on-demand runs, which `make check-containers` runs
+together. When each runs, and how a run is read, are working rules:
 [the full check runs at the edges of a change](working-rules.md#tests-and-guards),
 and the on-demand runs happen once, at the end, when required. The pre-test
 hook counts every one of these targets as a test run (see
@@ -38,8 +39,8 @@ below), run on demand: `make test-container` runs them but the whole-stack
 test, which carries the `stack` marker as well and which `make check-ui` runs.
 `tests/test_make.py` holds the split: every test is in exactly one of
 `make test`, `make test-container`, `make check-ui` and `make benchmark`, `make check` holds no
-on-demand run, and `make check-all` runs every test but the benchmark's. To work on
-what a container suite covers, run its module directly, as in
+on-demand run, and `make check-containers` runs every container test and no host test. To
+work on what a container suite covers, run its module directly, as in
 `RCMAN_REQUIRE_CONTAINER=1 uv run pytest tests/container/test_github_in_podman.py -k gh`.
 
 What keeps `make test` fast, none of it losing an assertion: it runs
@@ -1120,22 +1121,20 @@ it can fail, and a positive control that keeps an empty input from passing.
   in a child process for it.
 - **Every test runs, and container tests cannot skip** (`tests/test_make.py`).
   It runs `make test`, `make test-container`, `make check-ui`, `make check`
-  and `make check-all` with `uv`, `npm` and `npx` replaced by recorders, and
-  reads which tests each pytest command they ran selects from pytest's own
+  and `make check-containers` with `uv`, `npm` and `npx` replaced by recorders,
+  and reads which tests each pytest command they ran selects from pytest's own
   collection: every test is in exactly one of `make test`,
   `make test-container`, `make check-ui` and `make benchmark`. The benchmark's part of that is
   read without make, from the Makefile's rules and pyproject's `addopts`, each pytest call's
   `-m` worked out for every set of the markers a test may carry: `make benchmark` runs the
   `benchmark` tests, in one process, with `-s` and `RCMAN_REQUIRE_CONTAINER=1`, no other
   target's pytest call, nor a bare `pytest`, runs one, and no target makes `make benchmark`, as
-  a prerequisite or with `$(MAKE)` in its recipe, `make check-all` included; the three other runs' split is read from what make ran.
-  `make test-container`
+  a prerequisite or with `$(MAKE)` in its recipe, `make check-containers` included; the
+  three other runs' split is read from what make ran. `make test-container`
   runs the `container` tests but the `stack` one, which `make check-ui` runs;
-  `make check` runs the host tests and holds no on-demand run;
-  `make check-all` runs every test
-  but the benchmark's, its container tests with
-  `RCMAN_REQUIRE_CONTAINER=1`, and `make check` with
-  `RCMAN_REQUIRE_REAL_CLAUDE=1`; none of them runs a test a
+  `make check` runs the host tests with `RCMAN_REQUIRE_REAL_CLAUDE=1` and holds no
+  on-demand run; `make check-containers` runs every container test, with
+  `RCMAN_REQUIRE_CONTAINER=1`, and no host test; none of them runs a test a
   bare `pytest` leaves out for a real Claude account, as a target's own `-m` replaces the
   `-m` of pyproject's `addopts`; and every test that any target
   `.PHONY` names runs is under its tier's hang guard, the whole-stack test under its own

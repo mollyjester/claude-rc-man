@@ -96,7 +96,7 @@ else; this file is the full list. Rules are referred to by their bold name.
 - **The on-demand runs happen once, at the end, when required.** `make check`
   holds no container test. The container tests (`make test-container`) and
   the whole-stack browser test (`make check-ui`) are the on-demand runs, and
-  `make check-all` runs `make check` and both. They are required when the
+  `make check-containers` runs both. They are required when the
   change touches the runtime, the uid mapping, the installer, the restore
   after a restart or reboot, or the container-based stack, and before the live
   reinstall; otherwise they are not run. They run once, at the end of the
@@ -108,8 +108,8 @@ else; this file is the full list. Rules are referred to by their bold name.
   ([CONTRIBUTING.md](../CONTRIBUTING.md#pull-requests)).
 - **The benchmark decides nothing.** `make benchmark` runs the tests that measure how long
   something takes and report it ([tests.md](tests.md#the-benchmark)). It is neither the
-  gating check nor an on-demand run: no other target runs it, `make check-all` included, and
-  a change never needs it to pass. A change that moves what it measures runs it, and the
+  gating check nor an on-demand run: no other target runs it, `make check-containers`
+  included, and a change never needs it to pass. A change that moves what it measures runs it, and the
   pull request gives its figures.
 - **A test that patches a constant the service reads when it starts does so
   before the `client` fixture starts the service.** The service takes the

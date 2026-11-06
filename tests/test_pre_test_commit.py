@@ -443,7 +443,7 @@ def test_make_runs_where_its_directory_option_says(repo, command):
         ("test", True),
         ("test-container", True),
         ("check-ui", True),
-        ("check-all", True),
+        ("check-containers", True),
         ("check", True),
         ("e2e", True),
         ("frontend-test", True),

@@ -138,8 +138,8 @@ as a comment on it.
   `--bail`) suits only the one test being fixed, never a module or a gating
   run, whose failures are all read and fixed together.
 - The on-demand runs (`make test-container`, `make check-ui`, together
-  `make check-all`) happen once, at the end of the implementation, only when
-  the working rules require them for this change, and have no baseline. A
+  `make check-containers`) happen once, at the end of the implementation, only
+  when the working rules require them for this change, and have no baseline. A
   subagent has the modules it changes run directly, on its small-model
   runner, not the whole on-demand run.
   If one is red, fix everything red together and repeat the run only after

@@ -1,9 +1,9 @@
 """The Makefile's test targets: make test runs every test that runs on the host, make
 test-container the tests that need a container but not the whole stack, make check-ui
-the whole-stack browser test, make benchmark the tests that measure and report, make check
-the host tests with the lint and the frontend's tests, and make check-all all of those but
-the benchmark. The two on-demand runs, test-container and check-ui, are not part of make
-check, and no target but make benchmark runs a benchmark test. A container test that cannot
+the whole-stack browser test, make benchmark the tests that measure and report, make check,
+the full check, the host tests with the lint and the frontend's tests, and make
+check-containers both on-demand runs, test-container and check-ui, which make check leaves
+out. No target but make benchmark runs a benchmark test. A container test that cannot
 run, or a test of the real claude, fails rather than skips where make requires it, none of
 the runs runs a test that needs a real Claude account, and every test of every run is under
 the hang guard (tests/hang_guard.py). make lint and make format cover both the Python code
@@ -186,22 +186,22 @@ def check_problems(check: list[Call]) -> list[str]:
     return problems + left_out(ran, tests.full, "make check") + without_real_claude(runs)
 
 
-def check_all_problems(check_all: list[Call]) -> list[str]:
-    """What make check-all would get wrong: a test none of its pytest calls selects, a
-    test a bare pytest leaves out, a call selecting container tests without
-    RCMAN_REQUIRE_CONTAINER=1, where they would skip, or a call selecting host tests
-    without RCMAN_REQUIRE_REAL_CLAUDE=1, where the tests of the real claude would."""
+def on_demand_problems(calls: list[Call]) -> list[str]:
+    """What make check-containers would get wrong: a container test none of its pytest calls
+    selects, a host test it runs, which make check runs, a test a bare pytest leaves out, or
+    a call selecting container tests without RCMAN_REQUIRE_CONTAINER=1, where they would
+    skip."""
     tests = everything()
-    runs = selected(check_all)
+    runs = selected(calls)
     ran = set().union(*runs.values()) if runs else set()
-    problems = [f"not run by make check-all: {n}" for n in sorted(tests.full - ran)]
-    problems += left_out(ran, tests.full, "make check-all")
-    problems += [
+    problems = [f"not run by make check-containers: {n}" for n in sorted(tests.container - ran)]
+    problems += [f"a host test in make check-containers: {n}" for n in sorted(ran & tests.host)]
+    problems += left_out(ran, tests.full, "make check-containers")
+    return problems + [
         f"container tests without RCMAN_REQUIRE_CONTAINER=1: {' '.join(call.argv)}"
         for call, found in runs.items()
         if found & tests.container and ("RCMAN_REQUIRE_CONTAINER", "1") not in call.env
     ]
-    return problems + without_real_claude(runs, tests.host)
 
 
 def split_of(tmp_path: Path, **makefiles: Path) -> list[str]:
@@ -240,10 +240,10 @@ def test_make_check_runs_the_host_tests_and_no_on_demand_run(tmp_path):
     assert check_problems(check) == []
 
 
-def test_make_check_all_runs_every_test_and_container_tests_cannot_skip(tmp_path):
-    check_all = recorded(tmp_path, "check-all")
-    assert len([c for c in check_all if c.pytest_args() is not None]) >= 3  # non-vacuity
-    assert check_all_problems(check_all) == []
+def test_make_check_containers_runs_every_container_test_and_none_can_skip(tmp_path):
+    calls = recorded(tmp_path, "check-containers")
+    assert len([c for c in calls if c.pytest_args() is not None]) >= 2  # non-vacuity
+    assert on_demand_problems(calls) == []
 
 
 def planted(tmp_path: Path, old: str, new: str, count: int = 1) -> Path:
@@ -270,7 +270,8 @@ def runs_in_parallel(makefile: Path) -> bool:
 
 
 def test_no_target_runs_beside_another_under_make_j():
-    """make -j check-all must run its parts one after the other, as it does without -j."""
+    """make -j check-containers must run its parts one after the other, as it does without
+    -j."""
     assert not runs_in_parallel(MAKEFILE)
 
 
@@ -335,23 +336,29 @@ def test_make_check_without_the_host_run_is_reported(tmp_path):
     assert problems == [f"not run by make check: {n}" for n in sorted(everything().host)]
 
 
-def test_make_check_all_without_the_container_run_is_reported(tmp_path):
-    """Planted twin: make check-all without test-container misses those container tests."""
-    makefile = planted(tmp_path, "check-all: check test-container ", "check-all: check ")
+def test_make_check_containers_with_the_host_run_for_the_container_run_is_reported(tmp_path):
+    """Planted twin: make check-containers making make test in place of make test-container
+    misses those container tests and runs the host tests, which make check runs."""
+    makefile = planted(
+        tmp_path, "check-containers: test-container check-ui", "check-containers: test check-ui"
+    )
     tests = everything()
-    problems = check_all_problems(recorded(tmp_path, "check-all", makefile))
+    problems = on_demand_problems(recorded(tmp_path, "check-containers", makefile))
     assert problems == [
-        f"not run by make check-all: {n}" for n in sorted(tests.container - tests.stack)
+        *(f"not run by make check-containers: {n}" for n in sorted(tests.container - tests.stack)),
+        *(f"a host test in make check-containers: {n}" for n in sorted(tests.host)),
     ]
 
 
-def test_make_check_all_without_the_whole_stack_run_is_reported(tmp_path):
-    """Planted twin: make check-all without check-ui misses the whole-stack test."""
+def test_make_check_containers_without_the_whole_stack_run_is_reported(tmp_path):
+    """Planted twin: make check-containers without check-ui misses the whole-stack test."""
     makefile = planted(
-        tmp_path, "check-all: check test-container check-ui", "check-all: check test-container"
+        tmp_path, "check-containers: test-container check-ui", "check-containers: test-container"
     )
-    problems = check_all_problems(recorded(tmp_path, "check-all", makefile))
-    assert problems == [f"not run by make check-all: {n}" for n in sorted(everything().stack)]
+    problems = on_demand_problems(recorded(tmp_path, "check-containers", makefile))
+    assert problems == [
+        f"not run by make check-containers: {n}" for n in sorted(everything().stack)
+    ]
 
 
 def test_container_tests_that_could_skip_are_reported(tmp_path):
@@ -360,7 +367,7 @@ def test_container_tests_that_could_skip_are_reported(tmp_path):
     for target in ("test-container", "check-ui"):
         (tmp_path / target).mkdir()
         makefile = planted(tmp_path / target, f"{target}: export RCMAN_REQUIRE_CONTAINER = 1\n", "")
-        problems = check_all_problems(recorded(tmp_path / target, "check-all", makefile))
+        problems = on_demand_problems(recorded(tmp_path / target, "check-containers", makefile))
         assert len(problems) == 1, problems
         assert problems[0].startswith("container tests without RCMAN_REQUIRE_CONTAINER=1")
         assert "pytest" in problems[0]
@@ -411,14 +418,6 @@ def test_make_check_without_the_real_claude_requirement_is_reported(tmp_path):
     assert check_problems(calls) == [
         f"without RCMAN_REQUIRE_REAL_CLAUDE=1: {' '.join(c.argv)}" for c in calls
     ]
-
-
-def test_make_check_all_without_the_real_claude_requirement_is_reported(tmp_path):
-    """Planted twin: make check, which make check-all runs, not setting it."""
-    makefile = planted(tmp_path, CHECK_REAL, "")
-    problems = check_all_problems(recorded(tmp_path, "check-all", makefile))
-    assert len(problems) == 1, problems
-    assert problems[0].startswith("without RCMAN_REQUIRE_REAL_CLAUDE=1: uv run pytest")
 
 
 # --- make benchmark: on demand, and in no other target, read from the Makefile itself ---
@@ -591,14 +590,16 @@ def test_only_make_benchmark_runs_the_benchmark_and_in_one_process():
     """The four runs' split, as far as the benchmark goes, and make benchmark's own arguments,
     read without make. make benchmark takes the benchmark tests, those of a real Claude account
     aside, and no other target's pytest call, nor a bare pytest, takes one; no target makes it,
-    check-all included. The three other runs' split of what is left is held with make itself
+    check-containers included. The three other runs' split of what is left is held with make itself
     (test_every_test_is_in_exactly_one_of_the_three_runs)."""
     makefile = MAKEFILE.read_text(encoding="utf-8")
     rules = makefile_rules(makefile)
     # Non-vacuity: the targets' pytest calls are read, and the benchmark's tests are marked.
     assert {t for t, r in rules.items() if pytest_calls(r)} == {*RUNS, BENCHMARK}
     assert pytest_calls(rules[BENCHMARK]) == [shlex.split(BENCH_M) + ["-s"]]
-    assert "check-ui" in made_with(rules, "check-all") and "lint" in made_with(rules, "check")
+    assert "check-ui" in made_with(rules, "check-containers") and "lint" in made_with(
+        rules, "check"
+    )
     assert benchmark_marked() == BENCHMARK_TESTS
     assert benchmark_problems(makefile, PYPROJECT.read_text(encoding="utf-8")) == []
 
@@ -619,12 +620,12 @@ def test_only_make_benchmark_runs_the_benchmark_and_in_one_process():
          "make benchmark runs a test carrying ['benchmark', 'real_claude']"),
         (BENCH_M, '-m "benchmark and not real_claude and not container"', False,
          "make benchmark leaves out a test carrying ['benchmark', 'container']"),
-        ("check-all: check test-container check-ui",
-         "check-all: check test-container check-ui benchmark", False,
-         "make check-all makes make benchmark"),
+        ("check-containers: test-container check-ui",
+         "check-containers: test-container check-ui benchmark", False,
+         "make check-containers makes make benchmark"),
         ("before the live reinstall\n",
          "before the live reinstall\n\t@$(MAKE) --no-print-directory benchmark  # planted\n",
-         False, "make check-all makes make benchmark"),
+         False, "make check-containers makes make benchmark"),
         (f"{BENCH_M} -s", BENCH_M, False,
          "make benchmark does not show what its tests report (-s)"),
         (f"{BENCH_M} -s", f"{BENCH_M} -s -n 8", False,
@@ -751,7 +752,7 @@ def test_make_screenshots_builds_the_frontend_then_takes_the_screenshots_with_th
     ]
 
 
-@pytest.mark.parametrize("target", ["e2e", "check", "check-all"])
+@pytest.mark.parametrize("target", ["e2e", "check"])
 def test_no_test_run_takes_the_screenshots(tmp_path, target):
     calls = recorded(tmp_path, target)
     assert any(c.argv[:3] == ("npx", "playwright", "test") for c in calls)  # positive control

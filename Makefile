@@ -1,9 +1,9 @@
-# No target runs beside another under make -j: check-all runs its parts one after the other,
-# stopping at the first red one, and each on-demand run starts an engine of its own and builds
-# the same images, which side by side would only compete for the machine.
+# No target runs beside another under make -j: check-containers runs its parts one after the
+# other, stopping at the first red one, and each on-demand run starts an engine of its own and
+# builds the same images, which side by side would only compete for the machine.
 .NOTPARALLEL:
 
-.PHONY: setup test test-container check-ui benchmark lint format frontend-setup frontend-test frontend-build e2e screenshots check check-all
+.PHONY: setup test test-container check-ui benchmark lint format frontend-setup frontend-test frontend-build e2e screenshots check check-containers
 
 setup: frontend-setup  ## install the development environment
 	uv sync
@@ -27,9 +27,14 @@ check-ui: export RCMAN_REQUIRE_CONTAINER = 1
 check-ui:  ## on demand: the whole stack in a browser; needs make frontend-setup once, like e2e
 	uv run pytest -m "stack and not real_claude and not benchmark"
 
+# One after the other (.NOTPARALLEL above). It stops at the first part that is red;
+# make -k check-containers runs both parts and reports each red one, so that everything red
+# is fixed together.
+check-containers: test-container check-ui  ## on demand: both on-demand runs, stopping at the first red one (make -k: both); when the working rules require them, and before the live reinstall
+
 benchmark: export RCMAN_REQUIRE_CONTAINER = 1
 # In one process, like test-container, as its Podman test needs the tests' engine; -s shows
-# what each test reports. In no other target, check-all included: it decides nothing.
+# what each test reports. In no other target, check-containers included: it decides nothing.
 benchmark:  ## on demand, not a check: the tests that measure and report; they fail only when they cannot measure
 	uv run pytest -m "benchmark and not real_claude" -s
 
@@ -60,9 +65,4 @@ screenshots: frontend-build  ## not a test: every page at a phone's and a deskto
 	cd frontend && npx playwright test --config playwright.screenshots.config.ts
 
 check: export RCMAN_REQUIRE_REAL_CLAUDE = 1
-check: lint test frontend-test e2e  ## lint and every test that runs on the host; tests that would skip fail instead
-
-# One after the other (.NOTPARALLEL above). It stops at the first part that is red;
-# make -k check-all runs every part and reports each red one, so that everything red is fixed
-# together.
-check-all: check test-container check-ui  ## check and both on-demand runs, stopping at the first red part (make -k: all parts): for the end of a change and before the live reinstall
+check: lint test frontend-test e2e  ## the full check: lint and every test that runs on the host; tests that would skip fail instead
