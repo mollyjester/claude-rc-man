@@ -22,6 +22,8 @@ from devtools import held_folders
 from devtools.held_folders import held, remove_tree
 from tests import e2e_server as e2e
 from tests import killed_runs as kr
+from tests.hang_guard import HANG_GUARD
+from tests.until import until
 
 REPO = Path(__file__).resolve().parent.parent
 FRONTEND = REPO / "frontend"
@@ -176,7 +178,7 @@ def test_a_backend_that_cannot_take_its_port_removes_its_world(world):
         proc = subprocess.run(
             [sys.executable, "-m", "uvicorn", "--factory", "tests.e2e_server:create_app",
              "--host", "127.0.0.1", "--port", str(port)],
-            cwd=REPO, env=os.environ, capture_output=True, text=True, timeout=120,
+            cwd=REPO, env=os.environ, capture_output=True, text=True, timeout=HANG_GUARD,
         )  # fmt: skip
     assert proc.returncode != 0
     assert "address already in use" in proc.stderr  # positive control: the bind failed
@@ -399,7 +401,7 @@ def _odd_sockets_folder_link(parent, name, started):
 
 
 @pytest.mark.parametrize(
-    "odd",
+    "oddity",
     [
         _odd_symlinked_world,
         _odd_lock_folder,
@@ -410,15 +412,15 @@ def _odd_sockets_folder_link(parent, name, started):
         _odd_sockets_folder_link,
     ],
 )
-def test_clearing_harms_nothing_but_abandoned_worlds_of_its_own(world, odd):
+def test_clearing_harms_nothing_but_abandoned_worlds_of_its_own(world, oddity):
     """What a name like a world's may be besides: none of it stops the clearing, nothing
     outside a world is touched, and no tmux server outside one is stopped."""
     root, started = world
-    kept, victims = odd(root.parent, _named("a-odd", lead="0"), started)
+    kept, victims = oddity(root.parent, _named("a-odd", lead="0"), started)
     later, later_pid = _later_world(root.parent, started)
     clearing = threading.Thread(target=e2e.clear_abandoned, args=(root.parent,), daemon=True)
     clearing.start()
-    clearing.join(timeout=60)
+    clearing.join(timeout=HANG_GUARD)
     if clearing.is_alive():  # stuck opening a FIFO: give it a writer, then fail
         os.close(os.open(kept, os.O_WRONLY | os.O_NONBLOCK))
         pytest.fail("clearing hung")
@@ -495,42 +497,40 @@ def test_alices_workspaces_are_signed_in_and_bobs_are_not(world):
 
 
 def _made(client, who):
-    import time
-
     from tests.conftest import as_user
 
     r = client.post(
         "/api/workspaces", json={"name": "work"}, headers={**as_user(who), "Origin": ORIGIN}
     )
     assert r.status_code == 202, r.text
-    for _ in range(200):
+
+    def made():
         [found] = client.get("/api/workspaces", headers=as_user(who)).json()["workspaces"]
-        if found["state"] == "ready":
-            return found
-        time.sleep(0.05)
-    raise AssertionError(found)
+        return None if found["state"] == "creating" else found
+
+    found = until(made)
+    assert found["state"] == "ready", found
+    return found
 
 
 def _cloned(client, who, url, name=None):
     """The workspace a clone of ``url`` made, once it is no longer being made."""
-    import time
-
     from tests.conftest import as_user
 
     body = {"url": url, **({"name": name} if name else {})}
     r = client.post("/api/git/clone", json=body, headers={**as_user(who), "Origin": ORIGIN})
     assert r.status_code == 202, r.text
     made = r.json()["workspace"]
-    for _ in range(400):
+
+    def cloned():
         [found] = [
             w
             for w in client.get("/api/workspaces", headers=as_user(who)).json()["workspaces"]
             if w["id"] == made["id"]
         ]
-        if found["state"] != "creating":
-            return found
-        time.sleep(0.05)
-    raise AssertionError(found)
+        return None if found["state"] == "creating" else found
+
+    return until(cloned)
 
 
 def test_the_world_clones_an_address_on_github_from_a_repository_of_its_own(world):
@@ -611,7 +611,7 @@ def listed(config: str, env: dict[str, str]) -> dict:
     """What Playwright makes of a config, read with --list, which starts no web server."""
     proc = subprocess.run(
         [playwright_binary(), "test", "--config", config, "--list", "--reporter=json"],
-        cwd=FRONTEND, env=env, capture_output=True, text=True, timeout=120,
+        cwd=FRONTEND, env=env, capture_output=True, text=True, timeout=HANG_GUARD,
     )  # fmt: skip
     assert proc.returncode == 0, proc.stderr
     return json.loads(proc.stdout)
@@ -623,7 +623,7 @@ def test_the_stack_browser_config_refuses_to_run_without_the_stack_port():
     env = {k: v for k, v in os.environ.items() if k != "RCMAN_STACK_PORT"}
     proc = subprocess.run(
         [playwright_binary(), "test", "--config", "playwright.stack.config.ts", "--list"],
-        cwd=FRONTEND, env=env, capture_output=True, text=True, timeout=120,
+        cwd=FRONTEND, env=env, capture_output=True, text=True, timeout=HANG_GUARD,
     )  # fmt: skip
     assert proc.returncode != 0, proc.stdout
     assert "RCMAN_STACK_PORT" in proc.stdout + proc.stderr
@@ -631,7 +631,7 @@ def test_the_stack_browser_config_refuses_to_run_without_the_stack_port():
     env["RCMAN_STACK_PORT"] = str(_free_port())
     listing = subprocess.run(
         [playwright_binary(), "test", "--config", "playwright.stack.config.ts", "--list"],
-        cwd=FRONTEND, env=env, capture_output=True, text=True, timeout=120,
+        cwd=FRONTEND, env=env, capture_output=True, text=True, timeout=HANG_GUARD,
     )  # fmt: skip
     assert listing.returncode == 0, listing.stderr  # positive control: given one, it loads
 

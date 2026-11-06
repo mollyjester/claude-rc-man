@@ -10,7 +10,6 @@ import json
 import os
 import tarfile
 import threading
-import time
 from pathlib import Path
 
 import pytest
@@ -19,6 +18,7 @@ from rcman import runtime as rt
 
 from tests.hang_guard import HANG_GUARD
 from tests.time_doubles import FakeTime
+from tests.until import until
 
 # --- what the builder is run with ----------------------------------------------------------------
 
@@ -160,7 +160,7 @@ def make_repository(root: Path) -> None:
 
 def copy_through(source_argv: list[str], sink_argv: list[str]) -> None:
     pumped = builder.pump(
-        source_argv, sink_argv, env=os.environ, limit=None, cancel=None, seconds=30
+        source_argv, sink_argv, env=os.environ, limit=None, cancel=None, seconds=HANG_GUARD
     )
     assert pumped.source_code == 0 and pumped.sink_code == 0, pumped
 
@@ -212,7 +212,7 @@ def test_a_member_with_a_parent_folder_in_its_name_is_not_written_outside(tmp_pa
     (evil / "payload").write_text("x")
     crafted = ["tar", "-c", "--transform=s,^evil/,../,", "-C", str(tmp_path), "evil/payload"]
     pumped = builder.pump(crafted, builder.sink_argv(["tar"], str(destination)),
-                          env=os.environ, limit=None, cancel=None, seconds=30)  # fmt: skip
+                          env=os.environ, limit=None, cancel=None, seconds=HANG_GUARD)  # fmt: skip
     assert not (tmp_path / "payload").exists()  # GNU tar's own refusal is what holds this
     assert pumped.sink_code != 0 or not (tmp_path / "payload").exists()
 
@@ -237,7 +237,7 @@ def test_the_pump_hands_every_byte_over_and_counts_them(tmp_path):
     seen: list[int] = []
     pumped = builder.pump(
         zeros(3_000_000), ["sh", "-c", f"cat > {out}"],
-        env=os.environ, limit=None, cancel=None, seconds=30, progress=seen.append,
+        env=os.environ, limit=None, cancel=None, seconds=HANG_GUARD, progress=seen.append,
     )  # fmt: skip
     assert pumped.sent == 3_000_000 == out.stat().st_size
     assert pumped.source_code == 0 and pumped.sink_code == 0
@@ -249,7 +249,7 @@ def test_the_pump_hands_bytes_over_unchanged(tmp_path):
     (tmp_path / "in").write_bytes(data)
     pumped = builder.pump(
         ["cat", str(tmp_path / "in")], ["sh", "-c", f"cat > {tmp_path / 'out'}"],
-        env=os.environ, limit=None, cancel=None, seconds=30,
+        env=os.environ, limit=None, cancel=None, seconds=HANG_GUARD,
     )  # fmt: skip
     assert (tmp_path / "out").read_bytes() == data and pumped.sent == len(data)
 
@@ -258,7 +258,7 @@ def test_the_pump_stops_at_the_limit_and_ends_both_commands(tmp_path):
     source = ["sh", "-c", f"echo $$ > {tmp_path}/source.pid; exec cat /dev/zero"]
     sink = ["sh", "-c", f"echo $$ > {tmp_path}/sink.pid; exec cat > /dev/null"]
     with pytest.raises(builder.PumpStopped) as stopped:
-        builder.pump(source, sink, env=os.environ, limit=2_000_000, cancel=None, seconds=30)
+        builder.pump(source, sink, env=os.environ, limit=2_000_000, cancel=None, seconds=HANG_GUARD)
     assert stopped.value.reason == builder.TOO_BIG
     assert 2_000_000 <= stopped.value.sent < 2_000_000 + 4 * builder.CHUNK_BYTES
     for name in ("source", "sink"):
@@ -268,7 +268,7 @@ def test_the_pump_stops_at_the_limit_and_ends_both_commands(tmp_path):
 def held_pump(tmp_path, **more) -> tuple[threading.Thread, list]:
     """A pump whose source sends nothing until it is killed, in a thread of the test's, once both
     of its commands run: the thread, and what the pump raised."""
-    source = ["sh", "-c", f"echo $$ > {tmp_path}/source.pid; exec sleep {int(3 * HANG_GUARD)}"]
+    source = ["sh", "-c", f"echo $$ > {tmp_path}/source.pid; exec sleep {3 * HANG_GUARD:g}"]
     sink = ["sh", "-c", f"echo $$ > {tmp_path}/sink.pid; exec cat > /dev/null"]
     raised: list = []
 
@@ -280,13 +280,12 @@ def held_pump(tmp_path, **more) -> tuple[threading.Thread, list]:
 
     thread = threading.Thread(target=run, daemon=True)
     thread.start()
-    deadline = time.monotonic() + HANG_GUARD
-    while not all(
-        (tmp_path / f"{name}.pid").exists() and (tmp_path / f"{name}.pid").read_text().strip()
-        for name in ("source", "sink")
-    ):
-        assert time.monotonic() < deadline, "the pump's commands never started"
-        time.sleep(0.05)
+    until(  # the pump's commands run
+        lambda: all(
+            (tmp_path / f"{name}.pid").exists() and (tmp_path / f"{name}.pid").read_text().strip()
+            for name in ("source", "sink")
+        )
+    )
     return thread, raised
 
 
@@ -301,7 +300,7 @@ def ended(tmp_path, thread: threading.Thread, raised: list) -> builder.PumpStopp
 
 def test_a_cancel_ends_both_commands_at_once(tmp_path):
     cancel = threading.Event()
-    thread, raised = held_pump(tmp_path, cancel=cancel, seconds=60)
+    thread, raised = held_pump(tmp_path, cancel=cancel, seconds=2 * HANG_GUARD)
     cancel.set()
     assert ended(tmp_path, thread, raised).reason == builder.CANCELLED
 
@@ -321,11 +320,11 @@ def test_a_pump_that_takes_too_long_is_ended_with_both_commands(tmp_path, monkey
 
     fake.monotonic = monotonic
     monkeypatch.setattr(builder, "time", fake)
-    thread, raised = held_pump(tmp_path, cancel=None, seconds=60)
+    thread, raised = held_pump(tmp_path, cancel=None, seconds=2 * HANG_GUARD)
     with told:  # the pump thread's first read is its deadline's: any move from here on is past
         # it; a thread left over from another test that reads the module's time is not counted
         assert told.wait_for(lambda: thread in reads, HANG_GUARD)
-    fake.advance(61)
+    fake.advance(2 * HANG_GUARD + 1)
     assert ended(tmp_path, thread, raised).reason == builder.TIMED_OUT
 
 
@@ -334,14 +333,14 @@ def test_a_cancel_set_before_the_pump_starts_stops_it_without_running_anything(t
     cancel.set()
     with pytest.raises(builder.PumpStopped) as stopped:
         builder.pump(["sh", "-c", f"touch {tmp_path}/ran"], ["cat"], env=os.environ,
-                     limit=None, cancel=cancel, seconds=30)  # fmt: skip
+                     limit=None, cancel=cancel, seconds=HANG_GUARD)  # fmt: skip
     assert stopped.value.reason == builder.CANCELLED and not (tmp_path / "ran").exists()
 
 
 def test_a_sink_that_fails_early_does_not_hang_the_pump_and_says_why():
     pumped = builder.pump(
         zeros(50_000_000), ["sh", "-c", "echo sink-said-this >&2; exit 3"],
-        env=os.environ, limit=None, cancel=None, seconds=30,
+        env=os.environ, limit=None, cancel=None, seconds=HANG_GUARD,
     )  # fmt: skip
     assert pumped.sink_code == 3 and b"sink-said-this" in pumped.sink_err
 
@@ -349,7 +348,7 @@ def test_a_sink_that_fails_early_does_not_hang_the_pump_and_says_why():
 def test_a_source_that_fails_has_its_code_and_what_it_said():
     pumped = builder.pump(
         ["sh", "-c", "printf partial; echo oops >&2; exit 4"], ["cat"],
-        env=os.environ, limit=None, cancel=None, seconds=30,
+        env=os.environ, limit=None, cancel=None, seconds=HANG_GUARD,
     )  # fmt: skip
     assert pumped.source_code == 4 and b"oops" in pumped.source_err
     assert pumped.sent == len(b"partial") and pumped.sink_out == b"partial"
@@ -358,7 +357,7 @@ def test_a_source_that_fails_has_its_code_and_what_it_said():
 def test_what_the_commands_say_is_kept_to_the_tail_it_is_asked_for():
     pumped = builder.pump(
         ["sh", "-c", "yes noise | head -c 5000000 >&2"], ["cat"],
-        env=os.environ, limit=None, cancel=None, seconds=30,
+        env=os.environ, limit=None, cancel=None, seconds=HANG_GUARD,
     )  # fmt: skip
     assert 0 < len(pumped.source_err) <= builder.SAID_BYTES
 
@@ -366,7 +365,7 @@ def test_what_the_commands_say_is_kept_to_the_tail_it_is_asked_for():
 def test_the_environment_of_the_pump_is_exactly_the_one_given(tmp_path):
     pumped = builder.pump(
         ["sh", "-c", 'printf %s "${ONLY:-unset}-${HOME:-nohome}"'], ["cat"],
-        env={"PATH": "/usr/bin:/bin", "ONLY": "this"}, limit=None, cancel=None, seconds=30,
+        env={"PATH": "/usr/bin:/bin", "ONLY": "this"}, limit=None, cancel=None, seconds=HANG_GUARD,
     )  # fmt: skip
     assert pumped.sink_out == b"this-nohome"
 

@@ -12,6 +12,7 @@ are in project-knowledge/tests.md, "The hang guard".
 
 from __future__ import annotations
 
+import contextlib
 import os
 import signal
 import sys
@@ -47,18 +48,23 @@ RUNS_OUT = 1
 # install checks among them) is handed its tier's hang guard, as it runs outside any test.
 GUARD_VARIABLE = "RCMAN_HANG_GUARD"
 
+# The guards handed by fixtures of wider scope than a test (``handed``), the innermost last.
+_HANDED: list[float] = []
+
 
 def tier_guard() -> float:
     """The hang guard of the tier that asks: in a test, its tier's, HANG_GUARD or, for a test
     carrying the container marker, CONTAINER_HANG_GUARD, as the test's registry of time doubles
-    (tests/time_doubles.py) took it from the marker; in a program the tests start, the one
-    handed to it in RCMAN_HANG_GUARD. Read when asked, never at import or in a parameter's
-    default, where no test's tier is known. A session or module fixture, which no test's
-    registry covers, names its tier's guard itself."""
+    (tests/time_doubles.py) took it from the marker; in a session or module fixture, which no
+    test's registry covers, the one it names itself with ``handed``; in a program the tests
+    start, the one handed to it in RCMAN_HANG_GUARD. Read when asked, never at import or in a
+    parameter's default, where no test's tier is known."""
     from tests import time_doubles  # it imports this module
 
     if time_doubles._running:
         return float(globals()[time_doubles._running[-1].tier])
+    if _HANDED:
+        return _HANDED[-1]
     handed = os.environ.get(GUARD_VARIABLE)
     if handed is None:
         raise RuntimeError(
@@ -66,6 +72,18 @@ def tier_guard() -> float:
             f"tests start and hand {GUARD_VARIABLE}"
         )
     return float(handed)
+
+
+@contextlib.contextmanager
+def handed(guard: float):
+    """tier_guard() gives ``guard`` within, where no test's registry is current: a session or
+    module fixture names its tier's guard so (HANG_GUARD or CONTAINER_HANG_GUARD), for the
+    shared code it runs. A test's own tier still comes first."""
+    _HANDED.append(guard)
+    try:
+        yield
+    finally:
+        _HANDED.pop()
 
 
 def runs_out(monkeypatch, module, name: str, at: float = 0) -> None:

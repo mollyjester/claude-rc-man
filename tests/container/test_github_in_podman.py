@@ -564,10 +564,8 @@ def test_deleting_a_workspace_that_is_being_cloned_stops_git_and_leaves_nothing(
 ):
     """The cancel: the clone is slow (the stand-in's gate is closed), and the workspace's
     container is removed by force by Podman, which ends git with it. The gate's own wait is past
-    the hang bound, so only the deletion can end git within it."""
-    from tests import github_server
-
-    monkeypatch.setattr(github_server, "GATE_WAIT", 2 * CONTAINER_HANG_GUARD)
+    the hang bound (tests/github_server.py: twice the tier's), so only the deletion can end git
+    within it."""
     publish(github_com, tmp_path, "slow-one")
     before = len(github_com.requests)
     github_com.gate.clear()

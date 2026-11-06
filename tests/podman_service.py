@@ -15,6 +15,10 @@ service and every process of the user's that names its folder with what they sta
 of the user's namespace, unmounts what is still mounted below the folder and empties it before the
 folder goes. A run killed by a signal leaves an engine that nothing holds; the next run's
 ``started`` removes it the same way.
+
+Its waits are bounded by the tier's hang guard (tests.hang_guard.tier_guard): a test's, or the
+one ``started`` is given and hands (tests.hang_guard.handed) to what runs while the engine lasts
+outside any test, as the session's fixtures do.
 """
 
 from __future__ import annotations
@@ -27,21 +31,19 @@ import re
 import signal
 import subprocess
 import sys
-import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
 from devtools import held_folders as hf
+from tests.hang_guard import handed, tier_guard
+from tests.until import until
 
 REPO = Path(__file__).resolve().parent.parent
 SHARED = REPO / "backend" / "rcman" / "podman"
 PREFIX = "rcpod-"
 # What Podman refuses a longer run folder than.
 RUNROOT_MAX = 50
-# Seconds the service may take to answer, and a process to go once it is killed.
-ANSWERS_WITHIN = 60
-GONE_WITHIN = 30
 PODMAN = "/usr/bin/podman"
 
 
@@ -91,7 +93,12 @@ class Engine:
     def argv(self, *args: str) -> list[str]:
         return ["podman", "--remote", "--url", f"unix://{self.socket}", *args]
 
-    def cli(self, *args: str, timeout: float = 600, **kwargs) -> subprocess.CompletedProcess:
+    def cli(
+        self, *args: str, timeout: float | None = None, **kwargs
+    ) -> subprocess.CompletedProcess:
+        """podman through the engine's socket; ``timeout`` the tier's hang guard unless given."""
+        if timeout is None:
+            timeout = tier_guard()
         return subprocess.run(
             self.argv(*args),
             capture_output=True,
@@ -100,7 +107,12 @@ class Engine:
             **{"cwd": self.folder, **kwargs},
         )
 
-    def local(self, *args: str, timeout: float = 600, **kwargs) -> subprocess.CompletedProcess:
+    def local(
+        self, *args: str, timeout: float | None = None, **kwargs
+    ) -> subprocess.CompletedProcess:
+        """podman on the engine's storage, not through its socket; ``timeout`` as ``cli``'s."""
+        if timeout is None:
+            timeout = tier_guard()
         return subprocess.run(
             [*local(self.folder), *args],
             capture_output=True,
@@ -128,10 +140,11 @@ def hold(engine: Engine, image: str) -> str:
     return image
 
 
-def usable() -> str | None:
-    """Why the user's rootless Podman cannot be the engine, or None."""
+def usable(guard: float) -> str | None:
+    """Why the user's rootless Podman cannot be the engine, or None; asked within ``guard``,
+    the hang guard of the tier that asks, named by a session's fixture."""
     try:
-        proc = subprocess.run([PODMAN, "unshare", "true"], capture_output=True, timeout=60)
+        proc = subprocess.run([PODMAN, "unshare", "true"], capture_output=True, timeout=guard)
     except (FileNotFoundError, subprocess.TimeoutExpired) as error:
         return f"podman unshare: {error}"
     if proc.returncode != 0:
@@ -217,11 +230,7 @@ def _stop(found: dict[int, int | None]) -> None:
             print(f"podman_service: left process {pid}: {error.strerror}", file=sys.stderr)
             continue
         killed.append(pid)
-    deadline = time.monotonic() + GONE_WITHIN
-    while [p for p in killed if hf.running(p) and _start_time(p) == found[p]]:
-        if time.monotonic() > deadline:
-            raise RuntimeError(f"processes not gone: {[p for p in killed if hf.running(p)]}")
-        time.sleep(0.1)
+    until(lambda: not [p for p in killed if hf.running(p) and _start_time(p) == found[p]])
 
 
 # A mount point as /proc/self/mountinfo writes it: a space, a tab, a newline and a backslash in
@@ -318,7 +327,11 @@ def remove(folder: Path) -> None:
         run = [*local(folder)]
         for args in (["rm", "--all", "--force", "--time=0"], ["volume", "rm", "--all", "--force"]):
             subprocess.run(
-                [*run, *args], capture_output=True, timeout=300, env=env(folder), cwd=folder
+                [*run, *args],
+                capture_output=True,
+                timeout=tier_guard(),
+                env=env(folder),
+                cwd=folder,
             )
     _stop(_found(_with_descendants(_processes_naming(folder))))
     held = [str(parts[k]) for k in ("root", "runroot", "tmpdir") if parts[k].exists()]
@@ -326,7 +339,7 @@ def remove(folder: Path) -> None:
         unmounted = subprocess.run(
             [PODMAN, "unshare", sys.executable, "-c", UNMOUNT, str(REPO), str(folder)],
             capture_output=True,
-            timeout=300,
+            timeout=tier_guard(),
             env=env(folder),
             cwd=folder,
         )
@@ -335,7 +348,7 @@ def remove(folder: Path) -> None:
         emptied = subprocess.run(
             [PODMAN, "unshare", "rm", "-r", "-f", "--one-file-system", *held],
             capture_output=True,
-            timeout=300,
+            timeout=tier_guard(),
             env=env(folder),
             cwd=folder,
         )
@@ -345,10 +358,12 @@ def remove(folder: Path) -> None:
 
 
 @contextlib.contextmanager
-def started(prefix: str = PREFIX) -> Iterator[Engine]:
+def started(guard: float, prefix: str = PREFIX) -> Iterator[Engine]:
     """A running engine in a held folder of ``prefix``; engines of the same prefix that a killed
-    run left are removed first, and this one afterwards."""
-    with hf.held(prefix, remover=remove) as folder:
+    run left are removed first, and this one afterwards. ``guard`` is the hang guard of the tier
+    that starts it, HANG_GUARD or CONTAINER_HANG_GUARD, handed (tests.hang_guard.handed) to its
+    waits and to what runs outside a test while it lasts: a session's fixture is in no test."""
+    with handed(guard), hf.held(prefix, remover=remove) as folder:
         parts = _parts(folder)
         if len(str(parts["runroot"])) > RUNROOT_MAX:
             raise RuntimeError(f"{parts['runroot']} is longer than Podman takes")
@@ -369,13 +384,11 @@ def started(prefix: str = PREFIX) -> Iterator[Engine]:
             )
         parts["pid"].write_text(f"{service.pid}\n")
         engine = Engine(folder)
-        deadline = time.monotonic() + ANSWERS_WITHIN
-        while engine.cli("version", timeout=30).returncode != 0:
-            if service.poll() is not None or time.monotonic() > deadline:
-                raise RuntimeError("the engine did not answer: " + parts["log"].read_text())
-            time.sleep(0.2)
+        until(lambda: service.poll() is not None or engine.cli("version").returncode == 0)
+        if service.poll() is not None:
+            raise RuntimeError("the engine did not answer: " + parts["log"].read_text())
         try:
             yield engine
         finally:
             service.kill()
-            service.wait(timeout=GONE_WITHIN)
+            service.wait(timeout=tier_guard())

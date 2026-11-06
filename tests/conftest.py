@@ -202,12 +202,13 @@ def podman_service():
     RCMAN_REQUIRE_CONTAINER=1, as the on-demand runs set, in which case it fails."""
     from tests import podman_service as engine
 
-    why = engine.usable()
+    # A session's fixture is in no test: it names its tier's guard, the container tests'.
+    why = engine.usable(hang_guard.CONTAINER_HANG_GUARD)
     if why is not None:
         if os.environ.get("RCMAN_REQUIRE_CONTAINER") == "1":
             pytest.fail(f"the user's rootless Podman cannot run: {why}")
         pytest.skip(f"the user's rootless Podman cannot run: {why}")
-    with engine.started() as started:
+    with engine.started(hang_guard.CONTAINER_HANG_GUARD) as started:
         yield started
 
 

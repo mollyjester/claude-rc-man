@@ -65,12 +65,12 @@ def _worktree(tmp_path: Path) -> Path:
 
 
 def _clone_at_src(engine, image, labelled, source, checkout):
-    """CLONES in a container of ``image`` with no network, ``checkout`` read-only at /src."""
+    """CLONES in a container of ``image`` with no network, ``checkout`` read-only at /src, within
+    the tier's hang guard, the engine's own bound."""
     tools = source / "tests" / "container"
     return engine.cli(
         "run", "--rm", "--pull=never", "--network=none", *labelled, "-v", f"{checkout}:/src:ro",
-        "-v", f"{tools}:/tools:ro", "-w", "/src", image, "python3", "-c", CLONES,
-        timeout=600, text=True,
+        "-v", f"{tools}:/tools:ro", "-w", "/src", image, "python3", "-c", CLONES, text=True,
     )  # fmt: skip
 
 

@@ -6,13 +6,15 @@ make every test that relies on it meaningless.
 """
 
 import subprocess
-import time
 from pathlib import Path
 
 import pytest
 
 from tests.git_fixtures import fixture_env, fixture_git, make_repo, write
 from tests.github_server import GitHubServer
+from tests.hang_guard import HANG_GUARD
+from tests.time_doubles import ControlledEvent
+from tests.until import until
 
 TOKEN = "test-token-of-the-server"
 
@@ -207,11 +209,11 @@ def test_every_request_is_logged_by_its_path(server, remote, tmp_path):
 
 
 def test_requests_wait_while_the_gate_is_closed_and_go_on_once_it_is_opened(
-    server, remote, tmp_path
+    server, remote, tmp_path, monkeypatch
 ):
     """A test that needs a slow GitHub closes the gate: a request is logged, then waits."""
     _, url = remote
-    server.gate.clear()
+    monkeypatch.setattr(server, "gate", ControlledEvent())  # closed, and its waits recorded
     try:
         before = len(server.requests)
         waiting = subprocess.Popen(
@@ -225,16 +227,12 @@ def test_requests_wait_while_the_gate_is_closed_and_go_on_once_it_is_opened(
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
-        for _ in range(100):
-            if len(server.requests) > before:
-                break
-            time.sleep(0.05)
-        assert len(server.requests) > before  # positive control: it reached the server
-        time.sleep(0.5)
-        assert waiting.poll() is None  # and has no answer yet
+        until(lambda: len(server.requests) > before)  # positive control: it reached the server
+        server.gate.wait_waiting(1)  # and waits at the gate
+        assert waiting.poll() is None  # so it has no answer yet
     finally:
         server.gate.set()
-    assert waiting.wait(timeout=30) == 0, waiting.stderr.read()
+    assert waiting.wait(timeout=HANG_GUARD) == 0, waiting.stderr.read()
 
 
 def test_the_gate_is_open_by_default(server):

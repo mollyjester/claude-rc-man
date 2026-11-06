@@ -11,7 +11,6 @@ import select
 import shutil
 import subprocess
 import threading
-import time
 from pathlib import Path
 
 import pytest
@@ -21,6 +20,10 @@ from rcman.channel import ChannelBroken
 from devtools.held_folders import tmux_sockets
 from helpers import instructions
 from tests import runtime_contract
+from tests.hang_guard import HANG_GUARD, pace
+from tests.runtime_contract import ended_in_a_thread
+from tests.time_doubles import FakeTime
+from tests.until import PACE, until
 
 REPO = Path(__file__).resolve().parent.parent
 FRAGMENTS = REPO / "backend" / "rcman" / instructions.FOLDER
@@ -69,7 +72,7 @@ def test_a_host_runtime_whose_folder_is_gone_is_unavailable(host):
     with pytest.raises(rt.RuntimeUnavailable):
         host.exists("rcman-ws-1")
     with pytest.raises(rt.RuntimeUnavailable):
-        host.wait_ready(0.1)
+        host.wait_ready(0)
 
 
 def test_no_workspace_runs_in_slot_zero(host):
@@ -600,11 +603,11 @@ def test_a_workspace_binds_only_its_persons_credentials_file(tmp_path):
 
 def test_a_sign_in_container_removes_itself_and_is_labelled_with_its_person_only(tmp_path):
     recorder = account_recorder(tmp_path, volume_exists=0)
-    name = podman_runtime(tmp_path, recorder).start_sign_in(2, 3, seconds=900)
+    name = podman_runtime(tmp_path, recorder).start_sign_in(2, 3, seconds=HANG_GUARD)
     assert name == rt.sign_in_name(2)
     started = next(r for r in runs(recorder) if f"--name={name}" in r)
     assert "--rm" in started and "--detach" in started and "--init" in started
-    assert started[-2:] == ["sleep", "900"]
+    assert started[-2:] == ["sleep", str(int(HANG_GUARD))]
     labels = [a for a in started if a.startswith("--label")]
     assert labels == ["--label=rcman.person=2"]
     assert f"--uidmap=0:{3 * rt.RANGE}:{rt.RANGE}" in started
@@ -1171,7 +1174,8 @@ def test_a_cancelled_pull_does_not_fall_back_to_the_image_here(tmp_path):
     import threading
 
     runtime = fake_podman(
-        tmp_path, "if args[:2] == ['image', 'exists']:\n    sys.exit(0)\ntime.sleep(60)\n"
+        tmp_path,
+        f"if args[:2] == ['image', 'exists']:\n    sys.exit(0)\ntime.sleep({3 * HANG_GUARD})\n",
     )
     cancel = threading.Event()
     cancel.set()
@@ -1202,29 +1206,41 @@ def alive(pid: int) -> bool:
     return True
 
 
-def waited_for(path: Path, seconds: float = 30.0) -> int:
-    """The process id a fake podman wrote in ``path`` once it was running: waited for, up to a
-    bound that only a fake that never ran can reach."""
-    deadline = time.monotonic() + seconds
-    while True:
+def waited_for(path: Path) -> int:
+    """The process id a fake podman wrote in ``path`` once it was running, waited for."""
+
+    def written():
         text = path.read_text() if path.exists() else ""
-        if text.strip().isdigit():
-            return int(text)
-        assert time.monotonic() < deadline, f"{path} was never written"
-        time.sleep(0.02)
+        return int(text) if text.strip().isdigit() else None
+
+    return until(written)
+
+
+def ran_out(fake: FakeTime, past: float, worker: threading.Thread) -> None:
+    """Advance ``fake`` by more than ``past`` again and again until ``worker`` has ended: past
+    any deadline it read, whenever it read it, so that one that runs out has at any speed."""
+
+    def ended() -> bool:
+        fake.advance(past + 1)
+        return not worker.is_alive()
+
+    until(ended)
 
 
 def test_a_pull_is_stopped_when_it_is_cancelled_and_podman_ends_with_it(tmp_path, monkeypatch):
+    """The cancel's own failure, while the pull's deadline is the hang guard: a pull that
+    went on past the cancel would fail as not finished in time instead (rule (c))."""
     import threading
 
-    monkeypatch.setattr(rt, "PULL_POLL_SECONDS", 0.05)
+    pace(monkeypatch, rt, "PULL_POLL_SECONDS", PACE)
+    monkeypatch.setattr(rt, "PULL_TIMEOUT", HANG_GUARD)
     marker, pid_file = tmp_path / "ended", tmp_path / "pid"
     runtime = fake_podman(
         tmp_path,
         LOCAL_IMAGE  # one that is here is no reason to go on with a pull that was stopped
         + f"open({str(pid_file)!r}, 'w').write(str(os.getpid()))\n"
         "print('Copying blob a', flush=True)\n"
-        f"time.sleep(60)\nopen({str(marker)!r}, 'w').write('finished')\n",
+        f"time.sleep({3 * HANG_GUARD})\nopen({str(marker)!r}, 'w').write('finished')\n",
     )
     cancel = threading.Event()
     seen = threading.Event()
@@ -1233,11 +1249,10 @@ def test_a_pull_is_stopped_when_it_is_cancelled_and_podman_ends_with_it(tmp_path
         seen.set()
         cancel.set()
 
-    began = time.monotonic()
-    with pytest.raises(rt.RuntimeFailed):
+    with pytest.raises(rt.RuntimeFailed) as failed:
         runtime.pull("x", progress, cancel)
     assert seen.is_set()  # positive control: it was running
-    assert time.monotonic() - began < 30
+    assert str(failed.value) == "the pull was stopped"
     assert not alive(waited_for(pid_file))  # the child ended, not merely was left
     assert not marker.exists()
     assert [c for c in fake_calls(tmp_path) if c[:2] == ["image", "exists"]] == []
@@ -1246,17 +1261,31 @@ def test_a_pull_is_stopped_when_it_is_cancelled_and_podman_ends_with_it(tmp_path
 def test_a_pull_that_takes_too_long_is_stopped_and_does_not_fall_back_to_a_local_image(
     tmp_path, monkeypatch
 ):
-    monkeypatch.setattr(rt, "PULL_POLL_SECONDS", 0.05)
-    monkeypatch.setattr(rt, "PULL_TIMEOUT", 3.0)
+    """The pull's time is the test's (FakeTime on the runtime's ``time``), moved past its
+    deadline once podman runs, against a podman that outlasts the test."""
+    pace(monkeypatch, rt, "PULL_POLL_SECONDS", PACE)
+    fake = FakeTime()
+    monkeypatch.setattr(rt, "time", fake)
     pid_file = tmp_path / "pid"
     runtime = fake_podman(
         tmp_path,
-        LOCAL_IMAGE + f"open({str(pid_file)!r}, 'w').write(str(os.getpid()))\ntime.sleep(60)\n",
+        LOCAL_IMAGE
+        + f"open({str(pid_file)!r}, 'w').write(str(os.getpid()))\ntime.sleep({3 * HANG_GUARD})\n",
     )
-    with pytest.raises(rt.RuntimeFailed) as failed:
-        runtime.pull("x")
-    assert "in time" in str(failed.value)
-    assert not alive(waited_for(pid_file))
+    failed: list = []
+
+    def pull() -> None:
+        try:
+            runtime.pull("x")
+        except rt.RuntimeFailed as error:
+            failed.append(error)
+
+    pulling = threading.Thread(target=pull, daemon=True)
+    pulling.start()
+    pid = waited_for(pid_file)  # podman runs
+    ran_out(fake, rt.PULL_TIMEOUT, pulling)
+    assert len(failed) == 1 and "in time" in str(failed[0]), failed
+    assert not alive(pid)
     assert [c for c in fake_calls(tmp_path) if c[:2] == ["image", "exists"]] == []
     # The control: a pull that fails by itself does use the local image, so that the above is
     # the timeout's own doing.
@@ -1368,8 +1397,11 @@ def test_only_podman_saying_the_file_is_not_there_means_the_image_has_none(tmp_p
 
 
 def test_a_podman_cp_that_stalls_is_stopped_at_the_timeout_and_is_a_failure(tmp_path, monkeypatch):
-    monkeypatch.setattr(rt, "PULL_POLL_SECONDS", 0.05)
-    monkeypatch.setattr(rt, "PODMAN_TIMEOUT", 3.0)
+    """As the pull's: the copy's time is the test's, moved past PODMAN_TIMEOUT once podman cp
+    runs, against a podman cp that outlasts the test."""
+    pace(monkeypatch, rt, "PULL_POLL_SECONDS", PACE)
+    fake = FakeTime()
+    monkeypatch.setattr(rt, "time", fake)
     pid_file = tmp_path / "pid"
     runtime = fake_podman(
         tmp_path,
@@ -1377,26 +1409,39 @@ def test_a_podman_cp_that_stalls_is_stopped_at_the_timeout_and_is_a_failure(tmp_
         "elif args[0] == 'cp':\n"
         f"    open({str(pid_file)!r}, 'w').write(str(os.getpid()))\n"
         "    sys.stdout.buffer.write(b'partial')\n    sys.stdout.flush()\n"
-        "    time.sleep(60)\n",
+        f"    time.sleep({3 * HANG_GUARD})\n",
     )
-    with pytest.raises(rt.RuntimeFailed) as failed:
-        runtime.image_facts("x")
-    assert "in time" in str(failed.value)
-    assert not alive(waited_for(pid_file))
+    failed: list = []
+
+    def read() -> None:
+        try:
+            runtime.image_facts("x")
+        except rt.RuntimeFailed as error:
+            failed.append(error)
+
+    reading = threading.Thread(target=read, daemon=True)
+    reading.start()
+    pid = waited_for(pid_file)  # podman cp runs
+    ran_out(fake, rt.PODMAN_TIMEOUT, reading)
+    assert len(failed) == 1 and "in time" in str(failed[0]), failed
+    assert not alive(pid)
     assert any(c[0] == "rm" for c in fake_calls(tmp_path))  # and the probe container is gone
 
 
 def test_a_podman_cp_is_stopped_when_the_workspace_is_cancelled(tmp_path, monkeypatch):
+    """The cancel's own failure, while podman's deadline is the hang guard: a copy that went
+    on past the cancel would fail as not finished in time instead (rule (c))."""
     import threading
 
-    monkeypatch.setattr(rt, "PULL_POLL_SECONDS", 0.05)
+    pace(monkeypatch, rt, "PULL_POLL_SECONDS", PACE)
+    monkeypatch.setattr(rt, "PODMAN_TIMEOUT", HANG_GUARD)
     pid_file = tmp_path / "pid"
     runtime = fake_podman(
         tmp_path,
         "if args[:2] == ['image', 'inspect']:\n    sys.stdout.write('{}')\n"
         "elif args[0] == 'cp':\n"
         f"    open({str(pid_file)!r}, 'w').write(str(os.getpid()))\n"
-        "    time.sleep(60)\n",
+        f"    time.sleep({3 * HANG_GUARD})\n",
     )
     cancel = threading.Event()
 
@@ -1405,10 +1450,9 @@ def test_a_podman_cp_is_stopped_when_the_workspace_is_cancelled(tmp_path, monkey
         cancel.set()
 
     threading.Thread(target=cancel_once_it_runs, daemon=True).start()
-    began = time.monotonic()
-    with pytest.raises(rt.RuntimeFailed):
+    with pytest.raises(rt.RuntimeFailed) as failed:
         runtime.image_facts("x", cancel)
-    assert time.monotonic() - began < 30  # not the timeout
+    assert str(failed.value) == "reading the image was stopped"  # not the timeout
     assert not alive(waited_for(pid_file))
     assert any(c[0] == "rm" for c in fake_calls(tmp_path))
 
@@ -1706,11 +1750,11 @@ def test_a_kept_tail_cut_in_a_multi_byte_character_is_text_only_after_decoding(t
 
 
 def test_a_podman_exec_that_keeps_a_tail_still_times_out(tmp_path):
-    runtime = fake_podman(tmp_path, "if args[0] == 'exec':\n    time.sleep(60)\n")
-    began = time.monotonic()
+    """At a timeout of 0 (rule (a)), against an exec that outlasts the test, in a thread that
+    ends within the hang guard."""
+    runtime = fake_podman(tmp_path, f"if args[0] == 'exec':\n    time.sleep({3 * HANG_GUARD})\n")
     with pytest.raises(rt.RuntimeFailed):
-        runtime.exec("rcman-ws-7", ["x"], timeout=0.5, keep=100)
-    assert time.monotonic() - began < 20
+        ended_in_a_thread(lambda: runtime.exec("rcman-ws-7", ["x"], timeout=0, keep=100))
 
 
 def test_a_podman_exec_that_keeps_a_tail_passes_its_input_and_workdir_on(tmp_path):
@@ -2094,7 +2138,9 @@ def test_a_workspace_takes_the_injected_range_and_network_and_no_slice_without_s
     assert "--pids-limit=-1" in run  # the limit of Podman's own is still lifted
     (tmp_path / "s").mkdir()
     sign_in = account_recorder(tmp_path / "s")
-    podman_runtime(tmp_path / "s", sign_in, range=8192, network="host").start_sign_in(2, 3, 60)
+    podman_runtime(tmp_path / "s", sign_in, range=8192, network="host").start_sign_in(
+        2, 3, HANG_GUARD
+    )
     started = next(r for r in runs(sign_in) if "--name=" + rt.sign_in_name(2) in r)
     assert "--network=host" in started and "--uidmap=0:24576:8192" in started
     accounts = [r for r in runs(sign_in) if "--name=" + rt.sign_in_name(2) not in r]
@@ -2120,7 +2166,7 @@ def test_every_workspace_container_unmasks_proc_and_takes_the_workspace_seccomp_
     security = workspace_security(runtime.config.tools_dir)
     assert [a for a in workspace_run(recorder) if a.startswith("--security-opt")] == security
     assert rt.UNMASK_PROC == "--security-opt=unmask=/proc/*"
-    runtime.start_sign_in(2, 3, 60)
+    runtime.start_sign_in(2, 3, HANG_GUARD)
     others = [r for r in runs(recorder) if "--name=rcman-ws-7" not in r]
     assert any("--name=" + rt.sign_in_name(2) in r for r in others)  # positive control
     for other in others:
@@ -2150,7 +2196,7 @@ def test_every_workspace_has_a_tmpfs_of_its_roots_for_roots_podman(tmp_path):
     assert [a for a in run if a.startswith(f"--tmpfs={rt.ROOT_PODMAN_STATE}")] == [state]
     (tmp_path / "s").mkdir()
     sign_in = account_recorder(tmp_path / "s")
-    podman_runtime(tmp_path / "s", sign_in).start_sign_in(2, 3, 60)
+    podman_runtime(tmp_path / "s", sign_in).start_sign_in(2, 3, HANG_GUARD)
     assert not [a for r in runs(sign_in) for a in r if rt.ROOT_PODMAN_STATE in a]
 
 
@@ -2169,7 +2215,7 @@ def test_every_workspace_has_a_tmp_of_its_own_off_the_root(tmp_path):
         assert run.count(tmp) == 1, run
     (tmp_path / "s").mkdir()
     sign_in = account_recorder(tmp_path / "s")
-    podman_runtime(tmp_path / "s", sign_in).start_sign_in(2, 3, 60)
+    podman_runtime(tmp_path / "s", sign_in).start_sign_in(2, 3, HANG_GUARD)
     started = next(r for r in runs(sign_in) if "--name=" + rt.sign_in_name(2) in r)
     assert tmp not in started
     assert not [a for r in runs(sign_in) for a in r if a == tmp]
@@ -2635,7 +2681,7 @@ def test_only_a_workspace_container_binds_the_instructions(tmp_path):
     recorder = account_recorder(tmp_path)
     runtime = podman_runtime(tmp_path, recorder)
     runtime.create(owned_spec())
-    runtime.start_sign_in(2, 3, 60)
+    runtime.start_sign_in(2, 3, HANG_GUARD)
     assert bound_instructions(workspace_run(recorder))  # the positive
     others = [r for r in runs(recorder) if "--name=rcman-ws-7" not in r]
     assert any("--name=" + rt.sign_in_name(2) in r for r in others)
@@ -2694,7 +2740,7 @@ def test_a_channel_reopened_while_the_host_runtime_stops_does_not_outlive_the_st
 
         def request():
             try:
-                channel.run([layout.shell, "-c", script], timeout=600)
+                channel.run([layout.shell, "-c", script], timeout=2 * HANG_GUARD)
             except Exception as error:  # noqa: BLE001 - whichever it is, the test says
                 failed.append(error)
 
@@ -2705,7 +2751,7 @@ def test_a_channel_reopened_while_the_host_runtime_stops_does_not_outlive_the_st
         def reopened_first(path, *args, **kwargs):
             if str(path) == layout.run and asking.ident is None:
                 asking.start()  # this request opens the channel again
-                assert select.select([reader], [], [], 30)[0]  # and its command runs
+                assert select.select([reader], [], [], HANG_GUARD)[0]  # and its command runs
                 reopened.append(channel.process)
             return rmtree(path, *args, **kwargs)
 
@@ -2716,14 +2762,14 @@ def test_a_channel_reopened_while_the_host_runtime_stops_does_not_outlive_the_st
             # The controls: the request ran in the gap, in a shell opened anew for it.
             assert asking.ident is not None and len(reopened) == 1
             assert reopened[0] is not first and reopened[0].pid != first.pid
-            asking.join(10)
+            asking.join(HANG_GUARD)
             assert not asking.is_alive(), "the reopened shell outlived the stop"
             assert len(failed) == 1 and isinstance(failed[0], ChannelBroken), failed
         finally:
             monkeypatch.undo()
             channel.close()
             os.write(holder, b"go\n")
-            asking.join(10)
+            asking.join(HANG_GUARD)
             os.close(reader)
             os.close(holder)
 
@@ -2797,7 +2843,7 @@ def probed_podman(tmp_path: Path, found: dict[str, bytes], linger: bool = False)
         "        sys.exit(125)\n"
         "    sys.stdout.buffer.write(open(tars[path], 'rb').read())\n"
         "    sys.stdout.buffer.flush()\n"
-        f"    if {linger}:\n        time.sleep(60)\n",
+        f"    if {linger}:\n        time.sleep({3 * HANG_GUARD})\n",
     )
 
 
@@ -2871,15 +2917,19 @@ def test_an_extension_header_of_a_negative_size_is_not_told_and_ends_the_reading
     found: list = []
     reading = threading.Thread(target=lambda: found.append(runtime.image_facts("x")), daemon=True)
     reading.start()
-    reading.join(30)
+    reading.join(HANG_GUARD)
     assert not reading.is_alive(), "the probe went round the header for ever"
     assert found[0].managed == {ETC: instructions.IS_OTHER}
 
 
-def test_the_probe_reads_the_first_header_alone_and_does_not_wait_for_the_rest(tmp_path):
-    """What is at /etc is a folder, whose copy is the whole of /etc."""
+def test_the_probe_reads_the_first_header_alone_and_does_not_wait_for_the_rest(
+    tmp_path, monkeypatch
+):
+    """What is at /etc is a folder, whose copy is the whole of /etc. Each copy lingers past
+    the test once it has printed: a probe that waited for the rest would still be reading when
+    its thread is judged, within the hang guard."""
+    monkeypatch.setattr(rt, "PODMAN_TIMEOUT", 2 * HANG_GUARD)  # never what ends a copy here
     found = {ETC: header("folder"), FOLDER_OF: header("folder"), MANAGED: header("file")}
-    began = time.monotonic()
-    facts = probed_podman(tmp_path, found, linger=True).image_facts("x")
-    assert time.monotonic() - began < 30  # not the minute each copy waits
+    runtime = probed_podman(tmp_path, found, linger=True)
+    facts = ended_in_a_thread(lambda: runtime.image_facts("x"))
     assert facts.managed == {ETC: FOLDER_IS, FOLDER_OF: FOLDER_IS, MANAGED: FILE_IS}

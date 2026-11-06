@@ -255,7 +255,11 @@ are what a test hands a product call as its timeout for something expected to ha
 `HANG_GUARD` in the host tests, `CONTAINER_HANG_GUARD` in the container tests. A call given it
 early in a test ends, and the test fails as any other does, its teardown run, before the guard
 of its tier would end its process; successive waits that add up to more than the guard do not,
-and the guard ends the test. `tests/test_hang_guard.py` holds the guard to this, each case a
+and the guard ends the test. Code both tiers run (`tests/runtime_contract.py`,
+`tests/podman_service.py`, `tests/containers.py`) reads `tier_guard()` when it waits, the tier of
+the test that asks; a session or module fixture, which no test's tier covers, names its tier's
+guard with `handed`, as the engine's `started(guard)` does for what runs while the engine lasts.
+`tests/test_hang_guard.py` holds the guard to this, each case a
 child pytest with the project's configuration, `tests/conftest.py` loaded as a plugin, and a
 short guard, in one process and under pytest-xdist: each planted twin hangs a test in a way the
 guard must still end, and the test is ended, named wherever the guard's report can be written,

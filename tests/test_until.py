@@ -118,6 +118,39 @@ def test_a_program_handed_no_guard_has_no_tier_and_says_so():
     assert "RCMAN_HANG_GUARD" in done.stderr
 
 
+HANDED_IN_A_FIXTURE = """
+from tests.hang_guard import handed, tier_guard
+with handed(7.0):
+    with handed(5.0):
+        print(tier_guard())
+    print(tier_guard())
+try:
+    tier_guard()
+except RuntimeError:
+    print("none")
+"""
+
+
+def test_a_fixture_of_wider_scope_hands_its_tiers_guard_while_it_needs_one():
+    """In a session or module fixture, which no test's registry covers, as in a program with
+    nothing handed in its environment: the innermost guard handed, and none once it is over."""
+    done = subprocess.run(
+        [sys.executable, "-c", HANDED_IN_A_FIXTURE],
+        cwd=REPO,
+        env=child_env({"PYTHONPATH": str(REPO)}),
+        capture_output=True,
+        text=True,
+        timeout=HANG_GUARD,
+    )
+    assert done.returncode == 0, done.stderr
+    assert done.stdout.split() == ["5.0", "7.0", "none"]
+
+
+def test_a_tests_own_tier_comes_before_a_guard_handed_by_a_fixture():
+    with hang_guard.handed(CONTAINER_HANG_GUARD):
+        assert tier_guard() == HANG_GUARD
+
+
 # --- runs_out and pace --------------------------------------------------------------------------
 
 
