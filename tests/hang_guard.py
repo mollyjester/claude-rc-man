@@ -38,6 +38,55 @@ CONTAINER_HANG_GUARD: float = CONTAINER_GUARD / 2
 
 CONTAINER_TIMEOUT = "container_timeout"
 
+# Rule (a) in a child program's source: the seconds a ``timeout`` or a deadline written there is
+# given to run out against a stand-in that never finishes. 1, the smallest whole second every
+# tool takes; it has run out at any speed, as what it bounds never ends.
+RUNS_OUT = 1
+
+# The variable through which a program the tests start (tests/container/stack.py and the
+# install checks among them) is handed its tier's hang guard, as it runs outside any test.
+GUARD_VARIABLE = "RCMAN_HANG_GUARD"
+
+
+def tier_guard() -> float:
+    """The hang guard of the tier that asks: in a test, its tier's, HANG_GUARD or, for a test
+    carrying the container marker, CONTAINER_HANG_GUARD, as the test's registry of time doubles
+    (tests/time_doubles.py) took it from the marker; in a program the tests start, the one
+    handed to it in RCMAN_HANG_GUARD. Read when asked, never at import or in a parameter's
+    default, where no test's tier is known. A session or module fixture, which no test's
+    registry covers, names its tier's guard itself."""
+    from tests import time_doubles  # it imports this module
+
+    if time_doubles._running:
+        return float(globals()[time_doubles._running[-1].tier])
+    handed = os.environ.get(GUARD_VARIABLE)
+    if handed is None:
+        raise RuntimeError(
+            f"no tier's hang guard here: tier_guard() is asked in a test, or in a program the "
+            f"tests start and hand {GUARD_VARIABLE}"
+        )
+    return float(handed)
+
+
+def runs_out(monkeypatch, module, name: str, at: float = 0) -> None:
+    """Rule (a) of project-knowledge/tests.md, "Time in tests": the product's deadline
+    ``module.name`` put at ``at``, 0 or the floor the product refuses to go under, against a
+    program or a wait that never finishes, so that the deadline has run out at any speed. The
+    test asserts what the product does once it has. Undone with ``monkeypatch``."""
+    now = getattr(module, name)
+    assert at < now, f"{name} at {at} is not shorter than its {now}: nothing runs out sooner"
+    monkeypatch.setattr(module, name, at)
+
+
+def pace(monkeypatch, module, name: str, seconds: float) -> None:
+    """Rule (d) of project-knowledge/tests.md, "Time in tests": the product's pace
+    ``module.name``, how long it waits between looks, made ``seconds``, shorter, so that what
+    the test waits for with tests.until comes sooner; nothing the test asserts depends on it.
+    Undone with ``monkeypatch``."""
+    now = getattr(module, name)
+    assert 0 < seconds < now, f"{name} at {seconds} is not a shorter pace than its {now}"
+    monkeypatch.setattr(module, name, seconds)
+
 
 def mark(items, container_guard: float) -> None:
     """Give every item that carries the container marker (tests/container_marker.py, which
