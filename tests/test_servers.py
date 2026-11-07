@@ -20,10 +20,16 @@ def server_of(client, workspace, who=ALICE):
     return next(w for w in workspaces(client, who) if w["id"] == workspace["id"])["server"]
 
 
-def wait_state(client, workspace, state, who=ALICE):
+def wait_state(client, workspace, state, who=ALICE, named=False):
+    """The server once it is read as ``state``; with ``named``, once its session's name and
+    its environment's URL are read too. A ready screen is drawn line by line: it is read as
+    ready from its Capacity line, before the name's line below it and the URL's below that
+    are drawn, and the name's line is whole once the URL is read."""
+
     def reached():
         server = server_of(client, workspace, who)
-        return server if server and server["state"] == state else None
+        drawn = server and (not named or (server["session_name"] and server["environment_url"]))
+        return server if drawn and server["state"] == state else None
 
     return until(reached)
 
@@ -62,7 +68,7 @@ def test_the_lifecycle_records_what_should_be_running(client, app, settings):
     assert wanted(settings, made) == (1, 1, "alpha")  # named after the workspace by default
     r = post(client, "confirm", made, answer="y")
     assert r.json()["server"]["state"] in ("connected", "ready")
-    ready = wait_state(client, made, "ready")
+    ready = wait_state(client, made, "ready", named=True)
     assert ready["session_name"].startswith("alpha-")
 
     output = client.get(
@@ -86,7 +92,7 @@ def test_the_prefix_set_names_the_sessions(client, app, settings):
     made = made_workspace(client, ALICE, "alpha")
     signed_in(app, made, trusted=True)
     post(client, "", made)
-    assert wait_state(client, made, "ready")["session_name"].startswith("mine-")
+    assert wait_state(client, made, "ready", named=True)["session_name"].startswith("mine-")
     assert wanted(settings, made)[2] == "mine"
 
 
@@ -211,7 +217,7 @@ def test_yes_at_the_remote_control_prompt_starts_the_server(client, app, setting
     r = post(client, "confirm", made, answer="y")
     assert r.status_code == 200, r.text
     assert r.json()["server"]["state"] in ("connected", "ready")
-    assert wait_state(client, made, "ready")["session_name"].startswith("alpha-")
+    assert wait_state(client, made, "ready", named=True)["session_name"].startswith("alpha-")
     assert last_audit(settings) == ("server.confirm", "alpha", "ok")
     assert post(client, "confirm", made, answer="y").status_code == 409  # no longer asked
 

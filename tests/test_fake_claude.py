@@ -16,6 +16,9 @@ from tests.hang_guard import HANG_GUARD
 
 FAKE = rec.FAKE_CLAUDE
 READY = r"Capacity: [1-9]"
+# The ready screen drawn as far as its environment's URL, below the session's name: it is
+# drawn line by line, and the name's line is whole once the URL's line below it is drawn.
+NAMED = READY + r"(?:.*\n)+.*environment=\S"
 
 
 @pytest.fixture
@@ -128,14 +131,14 @@ def test_trust_is_remembered_and_the_session_resumes(pane, tmp_path):
     pane.wait_for(r"\[y/N\]", timeout=HANG_GUARD)
     pane.type_line("y")  # never too quick: the threshold is 0
     release_connected(tmp_path)
-    pane.wait_for(READY, timeout=HANG_GUARD)
+    pane.wait_for(NAMED, timeout=HANG_GUARD)
     first = pane.text()
     pane.interrupt()
     assert pane.wait_exit(timeout=HANG_GUARD) == 0
 
     pane.rerun([str(FAKE), *args], cwd=folder, env=env_for(cfg, **traced(tmp_path)))
     release_connected(tmp_path)
-    pane.wait_for(READY, timeout=HANG_GUARD)
+    pane.wait_for(NAMED, timeout=HANG_GUARD)
     second = pane.text()
 
     assert "[y/N]" not in second  # trusted now
@@ -164,7 +167,7 @@ def test_session_name_uses_name_then_prefix_then_hostname(pane, tmp_path):
         fake.write_state(cfg, logged_in=True, trusted=[str(tmp_path)])  # no prior session
         pane.close()
         pane.run([str(FAKE), "remote-control", *args], cwd=tmp_path, env=env_for(cfg))
-        pane.wait_for(READY, timeout=HANG_GUARD)
+        pane.wait_for(NAMED, timeout=HANG_GUARD)
         lines = pane.screen()
         name = lines[lines.index(next(x for x in lines if "Capacity:" in x)) + 1].strip()
         assert name.startswith(expected), (args, name)
