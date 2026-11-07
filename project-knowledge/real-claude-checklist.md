@@ -155,7 +155,7 @@ runuser -u rcman -- env -i PATH=/usr/bin:/bin HOME=/var/lib/rcman \
     test-container` there: it collects the container suites and runs them, and the totals it
     prints show them passed, none skipped.
 19. **The repository's own checks in a workspace.** In that workspace run `make check` and
-    `make test-container`: every part passes, as on a development machine.
+    `make test-container`: both pass, as on a development machine.
 20. **Forwarded ports.** As [Forwarded ports](../docs/installation.md#forwarded-ports) says:
     `dig +short 6080-1.ws.<DOMAIN>` (any name under the wildcard) gives the machine's address;
     the global options of `/etc/caddy/Caddyfile` hold the `on_demand_tls` block, asking rcman,

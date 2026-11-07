@@ -4,7 +4,7 @@ time, in pytest-xdist's workers or in two runs, would share.
 A test's files go under tmp_path; a folder that must be under /tmp, for a short socket
 path, is made with a unique name (tempfile.mkdtemp(dir="/tmp")); a port is one the system
 picks (port 0) or one held for the test. The guard reads the tests' own source and the
-frontend's TypeScript and JavaScript, where the browser tests and their configs are. The
+frontend's TypeScript and JavaScript: its tests, their config and the screenshot tool. The
 container suites are read too, but for the files that run only inside a container of their own
 (IN_CONTAINERS), whose /tmp and ports are that container's.
 

@@ -13,10 +13,10 @@ How the test suite is organised and run. The rules the suite follows are in
 | `make benchmark` | On demand, and not a check: runs the tests marked `benchmark`, which measure and report, in one process, printing what each reports; each fails only when it cannot measure. It sets `RCMAN_REQUIRE_CONTAINER=1`, as one of them runs through Podman. No other target runs them; see [The benchmark](#the-benchmark) |
 | `make lint` | Checks formatting and lint: ruff for the Python code, Biome for the frontend, with the frontend's packages `make frontend-setup` installs |
 | `make format` | Applies formatting and safe lint fixes: ruff for the Python code, Biome for the frontend |
-| `make frontend-setup` | Installs the frontend's packages and Playwright's Chromium, which `make screenshots` drives |
+| `make frontend-setup` | Installs the frontend's packages and Playwright's Chromium, which `make screenshot` drives |
 | `make frontend-test` | Type-checks the frontend and runs its component tests |
 | `make frontend-build` | Builds the frontend into `frontend/dist` |
-| `make screenshots` | Not a test: builds the frontend and runs `devtools/screenshots.py`, which captures every page, at a phone's and a desktop's width, light and dark, into `frontend/test-results/screenshots/`, for a look at the design; see [Screenshots](#screenshots) |
+| `make screenshot` | Not a test: builds the frontend and runs `devtools/screenshots.py`, which captures one page, `PAGE`, in the state `STATE` if one is given, at a phone's and a desktop's width, light and dark, into `frontend/test-results/screenshots/`, for a look at the design; see [Screenshots](#screenshots) |
 | `make check` | The full check: lint, `make test`, the frontend tests and the frontend's build; no on-demand run. It sets `RCMAN_REQUIRE_REAL_CLAUDE=1`, so tests that would skip for want of the real `claude` fail instead |
 
 `make check` is the gating check and the full check; `make test-container` is
@@ -272,7 +272,7 @@ and kills at `EXEC_GUARD`, and that these nest within the container tests' guard
 
 The frontend's component tests have hang guards of their own, a tier of their own, in
 `frontend/src/test/hangGuard.ts`; every timeout a frontend test or its config gives is one of
-them, and `tests/test_hang_guard.py` holds their values
+them or 0, and `tests/test_hang_guard.py` holds their values
 ([frontend.md](frontend.md#limits-and-time-in-the-tests)).
 
 ### Time in tests
@@ -458,7 +458,7 @@ being a turn; a `timeout` option or a key ending `Timeout` not given a guard of
 as `test.slow()`, `testInfo.slow()` and `test.info().slow()`, and `vi.waitFor` or `vi.waitUntil` without a `timeout` (P3); a name
 ending `_GUARD_MS` defined elsewhere (GUARD); and a config that does not set every limit
 (P3c): Vitest's `testTimeout`, `hookTimeout` and `teardownTimeout`. The frontend's tests are one
-tier, so no guard there is another tier's (TIER). `FORMS` names each form's planted twin in each
+tier, so the scan has no tier rule there (TIER). `FORMS` names each form's planted twin in each
 language, or why a language does not spell it.
 
 #### What the tests no longer check
@@ -491,8 +491,8 @@ given up:
   comes to the lock while the test holds it, so all of them contend once it is let go, but none
   stays inside for any length of time, so an overlap is no longer made likely.
 
-No test drives the page in a real browser. `make screenshots` shows the pages for someone to
-look at, and asserts nothing. What only a browser could check is given up:
+No test drives the page in a real browser. `make screenshot` shows a page for someone to look
+at, and asserts nothing. What only a browser could check is given up:
 
 - the stand-ins the component tests put in for the browser are held to nothing real:
   `frontend/src/test/fakeDialog.ts` against the native modal dialog (its focus on opening,
@@ -503,8 +503,8 @@ look at, and asserts nothing. What only a browser could check is given up:
   every control, fields that zoom in on focus, icon-only buttons with a name, the design
   system's checks, the places allowed to scroll, and every dialog and pop-up opened there (the
   sites `frontend/src/test/callSites.ts` names of pop-ups are opened by no test); mouse-sized
-  controls on a desktop; hover contrast in the dark scheme; and the phone's way from the list to
-  a workspace and to another;
+  controls on a desktop; hover contrast in the dark scheme; the planted twins of the walk's
+  checks and of the hover check; and the phone's way from the list to a workspace and to another;
 - the layout: the workspace card's scrolling at narrow widths, the list's dots and their
   alignment, the sidebar painted to the page's foot, the semibold face, guide tables that
   scroll, the skip link and the page titles, the top bar at a phone's and a desktop's width,
@@ -520,14 +520,28 @@ look at, and asserts nothing. What only a browser could check is given up:
   refused and kept, the attention banner, a stranger refused, and the favicon;
 - the Terminal tab: the real shell and its size following the window, a takeover from a second
   page, and a tab left and shown again fitted to its screen;
-- the workspaces' flows in a browser: making, cloning, deleting and switching them, and their
-  panels, as the page drives them;
-- the whole stack in a browser: Caddy and oauth2-proxy in front of a real browser, the fake
-  `claude` connected on the **Claude** page, staging, committing and pushing from the panel,
-  a private clone with a stored token, a person reaching only their own workspaces, people and
-  the audit trail, the terminal through Caddy, a forwarded port with its WebSocket and the
-  refused way in; and what that left: a deleted person's containers and volumes gone, the
-  pushes' author, and the token in no audit row or line of rcman's output;
+- the workspaces in a browser against the real backend: a workspace made and ready, its device
+  name in its row and its panel and its address opening it again; one made from a repository's
+  address, named after it, showing its branch; New workspace as a modal dialog, focus in its
+  name, Escape closing it, focus back on its button and the page behind out of reach; a refused
+  address or name shown under its label and kept; a repository that is not there failing with
+  git's words and deleted; a server's life: start, trust, stop, resume, stop and forget; a start
+  refused while Claude is not signed in, saying so; a workspace deleted with its server, after
+  asking; people never seeing each other's workspaces or reaching them by id; administrators
+  seeing everyone's workspaces and acting on none of them; and a refresh that cannot reach rcman
+  saying so, going once rcman answers, and reported;
+- the whole stack in a browser: Caddy and oauth2-proxy in front of a real browser; a workspace
+  made before Claude is connected starting no server and saying why; the fake `claude` connected
+  once on the **Claude** page, and workspaces made before and after both running; staging,
+  committing and pushing from the panel; a clone from GitHub, a private one once a token is
+  stored; another person seeing none of it and finding nothing by its id; an address not on the
+  allowed list getting nowhere; administrators seeing everyone's workspaces and acting on none
+  of them; the People page adding a person and removing another with her workspaces; the audit
+  trail recording what people did; the terminal through Caddy and oauth2-proxy; a forwarded port
+  reached by its owner through a plain link, its WebSocket included, its way in refused when
+  posted from the port's own page, and anyone else refused it; and what that left: a
+  deleted person's containers and volumes gone, the pushes' author, and the token in no audit
+  row or line of rcman's output;
 - the rules [frontend.md](frontend.md#rules-it-keeps) lists that a browser would show are kept
   by hand.
 
@@ -575,7 +589,7 @@ rcman's has its own `/tmp`, a volume off its overlay root ([runtime.md](runtime.
 the repository's `.devcontainer` has the rest of it
 (`tests/test_repository_devcontainer.py` holds its pins). In such a workspace, `make check` runs
 `TEST_WORKERS` workers (the `Makefile`), each starting tmux servers, git and the fake `claude`,
-and `make screenshots` runs Chromium: a workspace whose limits on processes or memory are below
+and `make screenshot` runs Chromium: a workspace whose limits on processes or memory are below
 what those take fails them, and its limits are an administrator's
 ([users.md](../docs/users.md)).
 
@@ -821,7 +835,7 @@ container, in order (see [installer.md](installer.md#tests)).
 `tests/container/stack.py` is the whole of rcman in one container of the system image with no
 network but its own loopback, which the stack's workspaces join:
 rcman's app made as `devtools/world.py` makes one but with the Podman runtime at the suites'
-sizes on the engine, whose socket it is given, alice its first administrator, bob and carol let
+sizes on the engine, whose socket it is given, alice its first administrator, bob let
 in; oauth2-proxy from the installer's toolchain with the installer's own configuration, its
 Google endpoints pointed at `tests/container/oidc_stub.py`; Caddy with the installer's own site
 block for `rcman.test`, its own certificate authority, its admin API off and on-demand
@@ -1125,8 +1139,8 @@ it can fail, and a positive control that keeps an empty input from passing.
   `-m` of pyproject's `addopts`; and every test that any target
   `.PHONY` names runs is under its tier's hang guard, as pytest-timeout itself works out
   each test's settings (see [The hang guard](#the-hang-guard)). `make lint` and
-  `make format` run ruff and the frontend's script of the same name, `make screenshots`
-  builds the frontend and runs `devtools/screenshots.py`, and the
+  `make format` run ruff and the frontend's script of the same name, `make screenshot`
+  builds the frontend and runs `devtools/screenshots.py` with `PAGE` and `STATE`, and the
   real `make lint`, run over a frontend file planted in a scratch tree, fails
   when Biome would reformat it, when Biome finds a lint finding it reports as
   an info, and when the frontend's packages are missing; it checks the
@@ -1152,22 +1166,32 @@ it can fail, and a positive control that keeps an empty input from passing.
 
 ## Screenshots
 
-`make screenshots` captures the pages for someone to look at; it asserts nothing, and is
-neither a test nor part of any test run, and it sets no time limit: Ctrl-C ends a run that
+`make screenshot PAGE=<path>`, with `STATE=<state>` or without, captures one page for someone to
+look at, as in `make screenshot PAGE=/settings` or
+`make screenshot PAGE=/ STATE=rebuild-failed`; it asserts nothing, and is neither a test nor part
+of any test run, and it sets no time limit and waits on no length of time: Ctrl-C ends a run that
 hangs. It builds the frontend, then `devtools/screenshots.py` starts the world's backend
 (`python -m devtools.world`, see [frontend.md](frontend.md#the-screenshots)), reads the origin it
 prints, and runs `frontend/screenshots/capture.ts` with Node against it, which uses Playwright
 as a library to drive Chromium; then it closes the backend's standard input, and the backend
-shuts down and removes its world.
+shuts down and removes its world. Its exit code is the capture's.
 
-The capture visits every page the sidebar links to, as alice, an administrator, has them, and
-the first help page, standing for every help page, and the views a page shows only when asked,
-such as an open dialog or pop-up, which the file lists. It takes each at a phone's width
-(`isMobile`) and a desktop's, in the light and the dark scheme, each combination in a browser
-context of its own, as the file names; the widths are in the file. The world's workspaces are
-plain ones: the capture plants the screenshot workspace's repository, its status, branches and
-address, in what the page fetches. It writes to `frontend/test-results/screenshots/`, ignored by
-git, which it empties first. The pre-test hook does not count it as a test run.
+`PAGE` is a path the frontend routes (`src/Pages.tsx` and `src/AdminPages.tsx`, from which the
+capture reads them), a `:name` segment standing for any one, as `/help/:slug` does for every
+help page. Without `STATE` the page is shot as the world draws it; a state is one of the views a
+page shows only when asked, such as an open dialog or pop-up, or a planted answer, each named in
+the capture's table of states with the pages it is a state of. A page or state the capture does
+not know, or a state the page does not have, ends it before it starts the browser, with a
+non-zero exit code and the pages and states there are. A page is taken at a phone's width
+(`isMobile`) and a desktop's, in the light and the dark scheme, each in a browser context of its
+own, as the file names; a state only a phone has is taken at the phone's width only. The widths
+are in the file. Each screenshot waits for what its view shows, then for every request the page
+made to be answered and what the answers drew to be drawn, its animations ended. The world's
+workspaces are plain ones: the capture plants the screenshot workspace's repository, its status,
+branches and address, in what the page fetches. It writes to
+`frontend/test-results/screenshots/`, ignored by git, which it empties first, a file per
+screenshot named by the page, the state, the width and the scheme. The pre-test hook does not
+count it as a test run.
 
 ## Edit-time hook
 

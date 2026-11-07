@@ -2,7 +2,7 @@
 // for one step of a test, a wait for something expected to happen. A bound ends only a genuine
 // hang and never decides a test that would have finished; a test waits on what it observes,
 // never on a time (project-knowledge/tests.md, "Time in tests"). Every timeout a test or a config
-// gives is one of these; the timing guard (tests/test_timing_guard.py) holds every test and
+// gives is one of these, or 0; the timing guard (tests/test_timing_guard.py) holds every test and
 // config to that, and tests/test_hang_guard.py holds these values.
 
 // The component tests (Vitest in jsdom), a tier of their own: a step there is a render and a

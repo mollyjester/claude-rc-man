@@ -2051,11 +2051,9 @@ TS_DIRS = ("src/test/",)
 TS_TESTS = re.compile(r"^src/(.+/)?[^/]+\.test\.tsx?$")
 TS_INCLUDE = "src/**/*.test.{ts,tsx}"
 TS_CONFIGS = ("vite.config.ts",)
-# The frontend's hang guards: the only names a timeout there may be given, besides 0.
+# The frontend's hang guards, of its one tier, the component tests' (Vitest in jsdom): the only
+# names a timeout there may be given, besides 0.
 TS_GUARD_FILE = "src/test/hangGuard.ts"
-# The tier of a file, by where it is: the component tests' (Vitest in jsdom), the one tier
-# (frontend/src/test/hangGuard.ts). A guard of another tier would be a TIER site.
-TS_TIERS = (("UNIT", ("src/", "vite.config.ts")),)
 # The keys the config sets (P3c): Vitest's in vite.config.ts.
 VITEST_KEYS = ("test.testTimeout", "test.hookTimeout", "test.teardownTimeout")
 TS_CLOCKS = {("Date", "now"), ("performance", "now")}
@@ -2068,10 +2066,6 @@ TS_WRAPPERS = {
     "TSAsExpression", "TSSatisfiesExpression", "TSNonNullExpression", "TSTypeAssertion",
     "ParenthesizedExpression",
 }  # fmt: skip
-
-
-def ts_tier(rel: str) -> str:
-    return next(tier for tier, where in TS_TIERS if rel.startswith(where))
 
 
 def ts_in_scope(rel: str) -> bool:
@@ -2145,7 +2139,6 @@ class TsScan:
     def __init__(self, rel: str, source: str, tree: dict):
         self.rel, self.source, self.tree = rel, source, tree
         self.encoded = source.encode("utf-16-le")
-        self.tier = ts_tier(rel)
         self.sites: list[Site] = []
         self.derived: list[tuple[str, Site]] = []
         # local name -> the name it imports from hangGuard.ts
@@ -2182,18 +2175,17 @@ class TsScan:
         return False
 
     def value(self, node: dict | None, where: str, site: dict) -> None:
-        """A timeout's value: 0, or a guard of hangGuard.ts of the file's tier; otherwise
-        flagged, at ``site``, as P3, or TIER for another tier's guard."""
+        """A timeout's value: 0, or a guard of hangGuard.ts; otherwise flagged, at ``site``,
+        as P3."""
         node = _ts_unwrap(node or {})
         if _ts_zero(node) and self.allow("zero", site, where):
             return
-        if node.get("type") == "Identifier" and node["name"] in self.guards:
-            imported = self.guards[node["name"]]
-            if not imported.startswith(f"{self.tier}_"):
-                self.flag(site, "TIER", where)
-                return
-            if self.allow("guard", site, where):
-                return
+        if (
+            node.get("type") == "Identifier"
+            and node["name"] in self.guards
+            and self.allow("guard", site, where)
+        ):
+            return
         self.flag(site, "P3", where)
 
     def scan(self) -> TsScan:
@@ -3468,8 +3460,8 @@ NOT_SPELLED = {
     ("P4", "ts"): "an ES module's exports are read-only bindings, which no test can set: no spec "
     "patches a module's timing constant",
     ("TIER", "python"): "spelled by TIERED's twins, which give the tiers that reach a helper",
-    ("TIER", "ts"): "one tier: the component tests' (frontend/src/test/hangGuard.ts), so no "
-    "guard is another tier's",
+    ("TIER", "ts"): "one tier: the component tests' (frontend/src/test/hangGuard.ts), so the "
+    "scan has no tier rule there",
 }
 
 

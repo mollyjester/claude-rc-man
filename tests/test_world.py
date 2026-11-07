@@ -1,4 +1,4 @@
-"""The world make screenshots shows (devtools/world.py): the backend makes it in a held folder
+"""The world make screenshot shows (devtools/world.py): the backend makes it in a held folder
 of its own and removes it when it shuts down, whether it stops, fails to build or cannot take
 its port, stopping the tmux servers it started; alice's Claude is signed in and bob's is not."""
 

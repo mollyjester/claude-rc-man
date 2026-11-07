@@ -444,7 +444,7 @@ def test_make_runs_where_its_directory_option_says(repo, command):
         ("format", False),
         ("setup", False),
         ("frontend-build", False),
-        ("screenshots", False),
+        ("screenshot", False),
     ],
 )
 def test_this_repositorys_make_targets_count_by_their_recipes(target, runs_tests):

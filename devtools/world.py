@@ -1,4 +1,4 @@
-"""The world make screenshots shows: real rcman on the host runtime, with the fake claude.
+"""The world make screenshot shows: real rcman on the host runtime, with the fake claude.
 
 ``create_app`` makes the world in a held folder of its own under /tmp
 (devtools/held_folders.py ``held``), holds it for the app's life and removes it, with

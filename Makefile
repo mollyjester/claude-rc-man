@@ -3,7 +3,7 @@
 # the machine.
 .NOTPARALLEL:
 
-.PHONY: setup test test-container benchmark lint format frontend-setup frontend-test frontend-build screenshots check
+.PHONY: setup test test-container benchmark lint format frontend-setup frontend-test frontend-build screenshot check
 
 setup: frontend-setup  ## install the development environment
 	uv sync
@@ -38,7 +38,7 @@ format:  ## apply formatting and safe lint fixes, to the Python code and the fro
 	uv run ruff check --fix .
 	cd frontend && npm run format
 
-frontend-setup:  ## install the frontend's packages and the browser make screenshots drives
+frontend-setup:  ## install the frontend's packages and the browser make screenshot drives
 	cd frontend && npm ci && npx playwright install chromium
 
 frontend-test:  ## type-check the frontend and run its component tests
@@ -47,9 +47,10 @@ frontend-test:  ## type-check the frontend and run its component tests
 frontend-build:  ## build the frontend into frontend/dist
 	cd frontend && npm run build
 
-# Not a test: it asserts nothing (devtools/screenshots.py).
-screenshots: frontend-build  ## not a test: every page at a phone's and a desktop's width, light and dark, into frontend/test-results/screenshots/
-	uv run python -m devtools.screenshots
+# Not a test: it asserts nothing (devtools/screenshots.py). PAGE is a page's path, STATE one of
+# its states, or none; frontend/screenshots/capture.ts says which there are.
+screenshot: frontend-build  ## not a test: PAGE, in STATE if given, at a phone's and a desktop's width, light and dark, into frontend/test-results/screenshots/
+	uv run python -m devtools.screenshots "$(PAGE)" "$(STATE)"
 
 check: export RCMAN_REQUIRE_REAL_CLAUDE = 1
-check: lint test frontend-test frontend-build  ## the full check: lint and every test that runs on the host; tests that would skip fail instead
+check: lint test frontend-test frontend-build  ## the full check: lint, every test that runs on the host, the frontend's tests and its build; tests that would skip fail instead

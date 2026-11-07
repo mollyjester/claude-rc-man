@@ -5,7 +5,7 @@ leaving out make test-container, the on-demand run. No target but make benchmark
 benchmark test. A container test that cannot run, or a test of the real claude, fails rather
 than skips where make requires it, none of the runs runs a test that needs a real Claude
 account, and every test of every run is under the hang guard (tests/hang_guard.py). make lint
-and make format cover both the Python code and the frontend, and make screenshots takes the
+and make format cover both the Python code and the frontend, and make screenshot takes a page's
 screenshots with devtools/screenshots.py.
 
 Each target is run by the real make with uv, npm and npx replaced by recorders, so
@@ -652,13 +652,14 @@ def test_a_program_the_recorder_does_not_stand_in_for_fails_the_target(tmp_path,
         recorded(tmp_path, target, makefile)
 
 
-# --- make screenshots: no test, the tool devtools/screenshots.py ---
+# --- make screenshot: no test, the tool devtools/screenshots.py ---
 
-SHOTS = ("uv", "run", "python", "-m", "devtools.screenshots")
+# Given no PAGE and no STATE.
+SHOTS = ("uv", "run", "python", "-m", "devtools.screenshots", "", "")
 
 
-def test_make_screenshots_builds_the_frontend_then_runs_the_screenshot_tool(tmp_path):
-    calls = recorded(tmp_path, "screenshots")
+def test_make_screenshot_builds_the_frontend_then_runs_the_screenshot_tool(tmp_path):
+    calls = recorded(tmp_path, "screenshot")
     assert [(c.argv, c.cwd) for c in calls] == [
         (("npm", "run", "build"), str(FRONTEND)),
         (SHOTS, str(REPO)),

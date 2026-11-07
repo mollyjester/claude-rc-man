@@ -459,7 +459,7 @@ that mean it did.
 `HostRuntime` keeps the same interface with a folder per workspace and the
 host's own programs — a person's credentials file in `ACCOUNTS` under its
 folder, linked to from each workspace's, and a sign-in container a folder that
-only `end_sign_in` removes — for the tests and `make screenshots`. Its stop ends what a
+only `end_sign_in` removes — for the tests and `make screenshot`. Its stop ends what a
 container's stop ends of rcman's own: the tmux server, and the shell of every channel
 made to the workspace (`HostRuntime._end_channels`), once its runtime folder is removed,
 so a request in flight, or one that opened its channel again meanwhile, fails as broken

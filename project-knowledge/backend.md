@@ -128,7 +128,7 @@ the OpenAPI description it serves at `/api/openapi.json`, browsable at
 
 `create_app` takes the runtime workspaces run in: by default Podman, through
 rcman's own user manager's socket (`main.podman_runtime`); the tests and
-`make screenshots` give it the host runtime. `builder_slot`, the slot of builds and the canary, is the
+`make screenshot` give it the host runtime. `builder_slot`, the slot of builds and the canary, is the
 product's unless a test engine gives its own (see [runtime.md](runtime.md#the-runtime)). Everything about workspaces, their
 channels and servers, and what rcman brings back when it starts, is in
 [runtime.md](runtime.md).

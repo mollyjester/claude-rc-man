@@ -9,7 +9,7 @@ it, as processes of their own, run:
 
 - rcman's app, made as devtools/world.py makes one but with the Podman runtime at the suites'
   sizes (tests/container/sizes.py) on the engine, whose socket it is given; alice@example.com its
-  first administrator, bob and carol let in; the fake claude in the store; its listeners the unix
+  first administrator, bob let in; the fake claude in the store; its listeners the unix
   sockets the installer gives it, its own and its forwarding server's;
 - oauth2-proxy (from the installer's toolchain) with the installer's own configuration, its Google
   endpoints pointed at tests/container/oidc_stub.py;
@@ -63,7 +63,7 @@ SRC = HERE.parent.parent
 DOMAIN = "rcman.test"
 AUTH = "auth.test"
 ADMIN = "alice@example.com"
-OTHERS = ("bob@example.com", "carol@example.com")
+OTHER = "bob@example.com"
 # The loopback ports of the stack's own network, which nothing else shares.
 STUB_PORT, GITHUB_PORT, RELEASES_PORT, PROXY_PORT = 9100, 9200, 9300, 4180
 # Where Caddy asks whether it may get a certificate for a host on demand (on_demand_tls), which
@@ -156,8 +156,7 @@ def create_app():
         con = db.connect(made.database)
         try:
             rcman_people.add(con, ADMIN, True, last_slot=sizes.PEOPLE_SLOTS[-1])
-            for email in OTHERS:
-                rcman_people.add(con, email, False, last_slot=sizes.PEOPLE_SLOTS[-1])
+            rcman_people.add(con, OTHER, False, last_slot=sizes.PEOPLE_SLOTS[-1])
         finally:
             con.close()
     return rcman_app(made, runtime=runtime_of(made), builder_slot=sizes.BUILDER_SLOT)
@@ -570,10 +569,6 @@ class Stack:
 
     def __init__(self, engine, name: str, folder: Path):
         self.engine, self.name, self.folder = engine, name, folder
-
-    @property
-    def network(self) -> str:
-        return f"container:{self.name}"
 
     def exec(self, *argv: str, stdin: bytes | None = None):
         """``argv`` in the stack's container, handed its tier's hang guard (``until``'s

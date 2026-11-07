@@ -437,8 +437,8 @@ the rest. Nothing of this is shown to the person.
 
 ### The screenshots
 
-`make screenshots` ([tests.md](tests.md#screenshots)) captures the built frontend served by
-the real backend from `devtools/world.py`: workspaces on the host runtime with the fake
+`make screenshot` ([tests.md](tests.md#screenshots)) captures a page of the built frontend
+served by the real backend from `devtools/world.py`: workspaces on the host runtime with the fake
 `claude`, and the people alice, an administrator whose Claude account is signed in, and bob,
 whose is not, each signed in by oauth2-proxy's identity header, which the capture sets for each
 browser context. Run as `python -m devtools.world`, the backend serves on a port of 127.0.0.1
@@ -451,12 +451,13 @@ share a world, a port or a tmux server. The world has no repository and reaches 
 `frontend/screenshots/capture.ts` plants the screenshot workspace's repository in what the page
 fetches. The capture gives Chromium `--disable-dev-shm-usage`, since `/dev/shm` is small in a
 container, a workspace's among them, and runs in Node, which strips its types, so it imports
-`src/messages.ts` by its file name (`allowImportingTsExtensions` in `tsconfig.json`).
+`src/messages.ts` by its file name (`allowImportingTsExtensions` in `tsconfig.json`); Node runs
+no `.tsx`, so it reads the pages' paths from `src/Pages.tsx` and `src/AdminPages.tsx` as text.
 
 ### Limits and time in the tests
 
-Every limit a test or the config gives is a hang guard of `src/test/hangGuard.ts`; no test
-waits for a length of time. The component tests have a test's guard and a step's, half of it
+Every limit a test or the config gives is a hang guard of `src/test/hangGuard.ts`, or 0; no
+test waits for a length of time. The component tests have a test's guard and a step's, half of it
 (`UNIT_*`), a tier of their own, since a step in jsdom is a render and a fake fetch.
 `tests/test_hang_guard.py` holds the values.
 

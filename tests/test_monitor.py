@@ -1017,7 +1017,7 @@ def test_the_host_runtime_records_what_it_is_asked_and_answers_what_is_planted(r
 def test_the_host_runtimes_disk_read_is_made_from_its_workspaces(settings, runtime):
     """Where nothing is planted, the host runtime's disk read has each workspace's folder as its
     volume, in Podman's tables, so that the monitor shows the disk of the host runtime's
-    workspaces (make screenshots)."""
+    workspaces (make screenshot)."""
     alice = ids(settings)[ALICE]
     workspace = add_workspace(settings, alice, "alpha")
     name = rt.container_name(workspace)
