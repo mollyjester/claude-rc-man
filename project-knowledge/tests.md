@@ -1278,11 +1278,3 @@ a `cd` after the start of the command, in a subshell, or a `pushd`; where a
 command substitution would take it; and the
 paired test the edit-time hook runs after an edit, which is not a Bash
 command. Before such a run, the working rule is kept by hand.
-
-Its own tests are in `tests/test_pre_test_commit.py`. They act only in
-scratch repositories under `tmp_path`, each with a local bare repository as
-its origin, with git under the fixtures' configuration, which refuses every
-transport but a local repository's; an autouse fixture checks that the
-repository the tests run from has the same HEAD, branch, upstream and index
-after each test, and a planted twin shows the same check sees a commit and a
-push. One test runs the command the wiring gives, as a shell runs it.
