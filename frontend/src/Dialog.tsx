@@ -14,8 +14,8 @@ import { m } from "./messages";
 // Tab reaches the cross after it. On a phone it is a sheet from the foot of the screen, and on
 // a wider one it sits in the middle; a row of its buttons marked footer keeps to its foot
 // (src/styles.css).
-// owner is the name of the component that draws it, put on the element as data-component for
-// e2e/touch.spec.ts to read off what opened; src/test/callSites.ts holds each site to it.
+// owner is the name of the component that draws it, put on the element as data-component, which
+// says what opened; src/test/callSites.ts holds each site to it.
 export function Dialog({
   owner,
   title,

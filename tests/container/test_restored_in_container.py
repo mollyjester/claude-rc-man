@@ -30,11 +30,11 @@ from rcman.main import create_app
 from rcman.problems import REBUILD_MESSAGES
 
 from devtools import fake_claude as fake
+from devtools.world import record_sign_in
 from tests.conftest import ALICE, ORIGIN, as_user, changing, made_workspace
 from tests.container import sizes
 from tests.container import test_runtime_in_podman as base
 from tests.container.conftest import engine_runtime, engine_settings, image_of, stand_in
-from tests.e2e_server import record_sign_in
 from tests.hang_guard import CONTAINER_HANG_GUARD
 from tests.until import SLOW, until
 

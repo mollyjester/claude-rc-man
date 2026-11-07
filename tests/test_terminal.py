@@ -503,14 +503,10 @@ def unit_options() -> list[str]:
     return options
 
 
-def test_the_service_and_the_browser_tests_backend_run_the_same_websocket_implementation():
+def test_the_service_runs_the_websocket_implementation_the_route_names():
     options = unit_options()
     assert "--ws" in options
-    implementation = options[options.index("--ws") + 1]
-    config = (REPO / "frontend" / "playwright.config.ts").read_text(encoding="utf-8")
-    command = re.search(r"command: `(uv run uvicorn [^`]*)`", config).group(1)
-    assert f"--ws {implementation}" in command
-    assert implementation == route.WEBSOCKETS
+    assert options[options.index("--ws") + 1] == route.WEBSOCKETS
 
 
 def free_port() -> int:
@@ -521,14 +517,13 @@ def free_port() -> int:
 
 @contextlib.contextmanager
 def served(tmp_path: Path, ping: float = 20.0):
-    """The browser tests' backend (tests/e2e_server.py) under real uvicorn with the unit's
+    """The screenshots' backend (devtools/world.py) under real uvicorn with the unit's
     options, on a port of its own, pinging every ``ping`` seconds; its output in a file."""
     port = free_port()
-    world = tmp_path / f"rcman-e2e-{uuid.uuid4()}"
     argv = [
         str(Path(sys.executable).parent / "uvicorn"),
         "--factory",
-        "tests.e2e_server:create_app",
+        "devtools.world:create_app",
         *unit_options(),
         "--host",
         "127.0.0.1",
@@ -543,7 +538,6 @@ def served(tmp_path: Path, ping: float = 20.0):
     env = {
         "PATH": os.environ["PATH"],
         "RCMAN_PUBLIC_ORIGIN": origin,
-        "RCMAN_E2E_DIR": str(world),
     }
     output = tmp_path / f"uvicorn-{port}.log"
     with output.open("wb") as log:

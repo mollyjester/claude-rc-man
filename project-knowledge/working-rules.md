@@ -93,23 +93,22 @@ else; this file is the full list. Rules are referred to by their bold name.
   as the full check; every run is read by its totals, its collected count and
   its failing test names. What each target runs is in
   [tests.md](tests.md#running).
-- **The on-demand runs happen once, at the end, when required.** `make check`
-  holds no container test. The container tests (`make test-container`) and
-  the whole-stack browser test (`make check-ui`) are the on-demand runs, and
-  `make check-containers` runs both. They are required when the
+- **The on-demand run happens once, at the end, when required.** `make check`
+  holds no container test. The container tests (`make test-container`) are the
+  on-demand run. It is required when the
   change touches the runtime, the uid mapping, the installer, the restore
   after a restart or reboot, or the container-based stack, and before the live
-  reinstall; otherwise they are not run. They run once, at the end of the
-  implementation, after the gating check is green. They have no baseline: a
-  red on-demand test is triaged by running that test on `main`. When an
+  reinstall; otherwise it is not run. It runs once, at the end of the
+  implementation, after the gating check is green. It has no baseline: a
+  red on-demand test is triaged by running that test on `main`. When the
   on-demand run is red, everything red is fixed together, and the run is
   repeated only after the operator confirms. The pull request says whether
-  they were required and, if so, their totals
+  it was required and, if so, its totals
   ([CONTRIBUTING.md](../CONTRIBUTING.md#pull-requests)).
 - **The benchmark decides nothing.** `make benchmark` runs the tests that measure how long
   something takes and report it ([tests.md](tests.md#the-benchmark)). It is neither the
-  gating check nor an on-demand run: no other target runs it, `make check-containers`
-  included, and a change never needs it to pass. A change that moves what it measures runs it, and the
+  gating check nor an on-demand run: no other target runs it, and a change never needs it
+  to pass. A change that moves what it measures runs it, and the
   pull request gives its figures.
 - **A test that patches a constant the service reads when it starts does so
   before the `client` fixture starts the service.** The service takes the

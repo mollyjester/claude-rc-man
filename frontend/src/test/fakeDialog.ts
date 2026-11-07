@@ -1,9 +1,9 @@
 // A stand-in for the native modal <dialog>, which jsdom has as an element only, with none of
-// its behaviour; src/test/setup.ts installs it for every test. It does what the page relies
-// on and what e2e/touch.spec.ts proves the browser does: showModal() opens the dialog and
-// moves focus into it, Escape cancels it (a cancel event the page may refuse, then the
-// close), and close() closes it, gives focus back to what had it before, and fires close.
-// What it cannot do is keep the rest of the page out of reach; that is proved in the browser.
+// its behaviour; src/test/setup.ts installs it for every test. It does what the page relies on
+// the browser's dialog to do, which no test checks against a real browser: showModal() opens
+// the dialog and moves focus into it, Escape cancels it (a cancel event the page may refuse,
+// then the close), and close() closes it, gives focus back to what had it before, and fires
+// close. What it cannot do is keep the rest of the page out of reach.
 
 // What takes focus as a dialog opens, in order, as the browser's focusing steps look for it.
 const FOCUSABLE = [

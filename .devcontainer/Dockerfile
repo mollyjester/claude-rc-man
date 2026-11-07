@@ -33,7 +33,8 @@ RUN case "$(dpkg --print-architecture)" in \
  && echo "$node_sum  /tmp/node.tar.xz" | sha256sum -c - \
  && tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1 \
  && rm /tmp/uv.tar.gz /tmp/node.tar.xz
-# What Playwright's Chromium needs of the system; make setup installs the browser itself.
+# What Playwright's Chromium, which make screenshot drives, needs of the system; make setup
+# installs the browser itself.
 RUN apt-get update -qq \
  && npx --yes "playwright@$PLAYWRIGHT_VERSION" install-deps chromium \
  && rm -rf /var/lib/apt/lists/* /root/.npm

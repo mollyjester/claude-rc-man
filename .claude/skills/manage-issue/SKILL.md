@@ -40,7 +40,7 @@ and keep iterating with them until you are satisfied with the outcome.
   you or to an implementation, review or documentation subagent. You dispatch
   the `make check` baseline, every gating `make check` (an implementer's at
   handover and after each round of review findings included), and the
-  on-demand runs. Implementation, review and documentation subagents have
+  on-demand run. Implementation, review and documentation subagents have
   only the targeted tests of what they change run, each on a runner of their
   own, briefed as below, and read its report. Every brief says so, and every
   brief that would otherwise end in a gating or on-demand run says so too and
@@ -137,12 +137,11 @@ as a comment on it.
   whether the run is green or red. Stopping at the first failure (`-x`,
   `--bail`) suits only the one test being fixed, never a module or a gating
   run, whose failures are all read and fixed together.
-- The on-demand runs (`make test-container`, `make check-ui`, together
-  `make check-containers`) happen once, at the end of the implementation, only
-  when the working rules require them for this change, and have no baseline. A
-  subagent has the modules it changes run directly, on its small-model
-  runner, not the whole on-demand run.
-  If one is red, fix everything red together and repeat the run only after
+- The on-demand run (`make test-container`) happens once, at the end of the
+  implementation, only when the working rules require it for this change, and
+  has no baseline. A subagent has the modules it changes run directly, on its
+  small-model runner, not the whole on-demand run.
+  If it is red, fix everything red together and repeat the run only after
   the operator confirms.
 
 ## 5. Documentation review
@@ -171,6 +170,6 @@ an on-demand run already green is not repeated for documentation edits.
   that section too.
 - Report faithfully: what was done, which tests were written first and which
   were not, what documentation changed, the `make check` totals, whether the
-  on-demand runs were required and, if so, their totals (or why they were
+  on-demand run was required and, if so, its totals (or why it was
   not), what coverage was given up, anything skipped, deferred or unsettled,
   and anything deliberately left in place with the reason.

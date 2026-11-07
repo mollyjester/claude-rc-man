@@ -320,7 +320,7 @@ another checksum, which the download refuses. `release` writes the release and t
 container suite gives that address to the installer and to rcman (`RCMAN_CLAUDE_DOWNLOAD`),
 which roll out the fake as they do the real program.
 
-On the host, `tests/fake_store.py` (`fake_claude`) makes a Claude Code store as the installer
+On the host, `devtools/fake_store.py` (`fake_claude`) makes a Claude Code store as the installer
 leaves it, holding a version that runs the fake: `versions/<version>`, `current` and
 `bin/claude`. Not a test module.
 

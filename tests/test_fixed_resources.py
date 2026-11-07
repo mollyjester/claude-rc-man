@@ -4,7 +4,7 @@ time, in pytest-xdist's workers or in two runs, would share.
 A test's files go under tmp_path; a folder that must be under /tmp, for a short socket
 path, is made with a unique name (tempfile.mkdtemp(dir="/tmp")); a port is one the system
 picks (port 0) or one held for the test. The guard reads the tests' own source and the
-frontend's TypeScript and JavaScript, where the browser tests and their configs are. The
+frontend's TypeScript and JavaScript: its tests, their config and the screenshot tool. The
 container suites are read too, but for the files that run only inside a container of their own
 (IN_CONTAINERS), whose /tmp and ports are that container's.
 
@@ -550,15 +550,12 @@ def test_a_new_fixed_site_beside_a_module_level_exemption_is_flagged():
             assert len(flagged(rel, planted)) == 1, (rel, extra)
 
 
-# The frontend's TypeScript and JavaScript: the browser tests, their configs and the rest.
+# The frontend's TypeScript and JavaScript: the component tests, the config, the screenshot tool
+# and the rest.
 
 # Sites flagged on purpose: (file relative to frontend/, the function or test it is in, the
 # site's source text) -> reason. Each covers exactly one site, as EXEMPT's do.
 TS_EXEMPT = {
-    ("e2e/world.ts", "", f'join("{TMP}", `rcman-e2e-${{randomUUID()}}`)'): (
-        "a world no other run names, which the backend makes only where nothing is"
-        " (project-knowledge/frontend.md)"
-    ),
     # Its port is filled in, as planted text's is below, so that this module does not hold it.
     ("vite.config.ts", "", '"http://127.0.0.1:<port>"'.replace("<port>", "8000")): (
         "the development server's way to a backend a person runs by hand; no test runs either"
@@ -820,7 +817,7 @@ def ts_flagged(rel: str, source: str, tree: dict) -> list[str]:
 
 
 def test_no_frontend_source_holds_a_fixed_tmp_path_or_port():
-    """The browser tests, their configs and everything else in the frontend's TypeScript."""
+    """The component tests, the config and everything else in the frontend's TypeScript."""
     rels = ts_scanned()
     sources = {rel: (FRONTEND / rel).read_text(encoding="utf-8") for rel in rels}
     trees = parse_ts(sources)
@@ -836,10 +833,7 @@ def test_no_frontend_source_holds_a_fixed_tmp_path_or_port():
 def test_the_scan_reads_every_typescript_and_javascript_file_in_the_frontend():
     """Derived from git: every such file in frontend/ that is not ignored."""
     rels = set(ts_scanned())
-    named = {"playwright.config.ts", "playwright.stack.config.ts", "vite.config.ts"}
-    named |= {"e2e/people.ts", "e2e/world.ts", "src/api.ts"}
-    named |= {p.relative_to(FRONTEND).as_posix() for p in (FRONTEND / "e2e-stack").glob("*.ts")}
-    assert any(r.startswith("e2e-stack/") for r in named)
+    named = {"vite.config.ts", "src/api.ts"}
     assert named <= rels
     for ignored in ("node_modules", "dist", "test-results"):
         assert not any(r.startswith(ignored + "/") for r in rels), ignored
@@ -892,15 +886,6 @@ def test_a_new_fixed_site_beside_a_typescript_exemption_is_flagged():
     flags = [ts_flagged(rel, s, trees[f"p{i}.ts"]) for i, s in enumerate(plants.values())]
     assert flags[0] == []  # positive control: the exempt site passes
     assert [len(f) for f in flags[1:]] == [1, 1], flags
-
-
-def test_the_world_named_without_a_unique_name_is_flagged():
-    """Planted twin: the exemption covers the world's unique name, not any name in /tmp."""
-    rel, _, text = next(iter(TS_EXEMPT))
-    source = (FRONTEND / rel).read_text(encoding="utf-8")
-    fixed = source.replace(text, f'join("{TMP}", "rcman-e2e")')
-    assert fixed != source  # the plant took effect
-    assert len(ts_flagged(rel, fixed, parse_ts({rel: fixed})[rel])) == 1
 
 
 def test_a_typescript_site_is_named_by_the_function_or_test_it_is_in():

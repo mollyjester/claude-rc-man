@@ -2,7 +2,7 @@ import userEvent from "@testing-library/user-event";
 
 import { modalDialogs } from "./fakeDialog";
 
-// The stand-in does what e2e/touch.spec.ts proves the browser's modal dialog does.
+// The stand-in does what the page relies on the browser's modal dialog to do.
 
 function page() {
   document.body.innerHTML = `

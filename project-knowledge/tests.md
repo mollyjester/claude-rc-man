@@ -9,25 +9,21 @@ How the test suite is organised and run. The rules the suite follows are in
 |---|---|
 | `make setup` | Creates the development environment: `make frontend-setup`, then `uv sync` |
 | `make test` | Runs every Python test that runs on the host, in parallel with pytest-xdist: all but those marked `container`, those marked `benchmark`, which `make benchmark` runs, and those marked `real_claude`, which no target runs. `TEST_WORKERS` (in the `Makefile`, which says why) is the number of workers; `--dist worksteal` gives an idle worker the queue of a busy one |
-| `make test-container` | On demand: runs the Python tests marked `container`, except the whole-stack one, in one process; the `Makefile` says why. It sets `RCMAN_REQUIRE_CONTAINER=1`, so they fail instead of skipping where the user's rootless Podman cannot run |
-| `make check-ui` | On demand: runs the whole-stack test, the one marked `stack`, in one process; it needs `make frontend-setup` once, like `make e2e`. It sets `RCMAN_REQUIRE_CONTAINER=1` |
-| `make check-containers` | On demand: `make test-container`, then `make check-ui`, stopping at the first red one (`make -k check-containers` runs both and reports each red one); it does not run `make check`. When the working rules require the on-demand runs, and before the live reinstall |
-| `make benchmark` | On demand, and not a check: runs the tests marked `benchmark`, which measure and report, in one process, printing what each reports; each fails only when it cannot measure. It sets `RCMAN_REQUIRE_CONTAINER=1`, as one of them runs through Podman. No other target runs them, `make check-containers` included; see [The benchmark](#the-benchmark) |
+| `make test-container` | On demand: runs the Python tests marked `container`, in one process; the `Makefile` says why. It sets `RCMAN_REQUIRE_CONTAINER=1`, so they fail instead of skipping where the user's rootless Podman cannot run. When the working rules require it, and before the live reinstall |
+| `make benchmark` | On demand, and not a check: runs the tests marked `benchmark`, which measure and report, in one process, printing what each reports; each fails only when it cannot measure. It sets `RCMAN_REQUIRE_CONTAINER=1`, as one of them runs through Podman. No other target runs them; see [The benchmark](#the-benchmark) |
 | `make lint` | Checks formatting and lint: ruff for the Python code, Biome for the frontend, with the frontend's packages `make frontend-setup` installs |
 | `make format` | Applies formatting and safe lint fixes: ruff for the Python code, Biome for the frontend |
-| `make frontend-setup` | Installs the frontend's packages and Playwright's browser |
+| `make frontend-setup` | Installs the frontend's packages and Playwright's Chromium, which `make screenshot` drives |
 | `make frontend-test` | Type-checks the frontend and runs its component tests |
 | `make frontend-build` | Builds the frontend into `frontend/dist` |
-| `make e2e` | Builds the frontend and runs the browser tests |
-| `make screenshots` | Not a test: builds the frontend and captures every page, at a phone's and a desktop's width, light and dark, into `frontend/test-results/screenshots/`, for a look at the design; see [Screenshots](#screenshots) |
-| `make check` | The full check: lint, `make test`, the frontend tests and the browser tests; no on-demand run. It sets `RCMAN_REQUIRE_REAL_CLAUDE=1`, so tests that would skip for want of the real `claude` fail instead |
+| `make screenshot` | Not a test: builds the frontend and runs `devtools/screenshots.py`, which captures one page, `PAGE`, in the state `STATE` if one is given, at a phone's and a desktop's width, light and dark, into `frontend/test-results/screenshots/`, for a look at the design; see [Screenshots](#screenshots) |
+| `make check` | The full check: lint, `make test`, the frontend tests and the frontend's build; no on-demand run. It sets `RCMAN_REQUIRE_REAL_CLAUDE=1`, so tests that would skip for want of the real `claude` fail instead |
 
-`make check` is the gating check and the full check; `make test-container` and
-`make check-ui` are the on-demand runs, which `make check-containers` runs
-together. When each runs, and how a run is read, are working rules:
+`make check` is the gating check and the full check; `make test-container` is
+the on-demand run. When each runs, and how a run is read, are working rules:
 [the full check runs at the edges of a change](working-rules.md#tests-and-guards),
-and the on-demand runs happen once, at the end, when required. The pre-test
-hook counts every one of these targets as a test run (see
+and the on-demand run happens once, at the end, when required. The pre-test
+hook counts every one of these targets that runs tests as a test run (see
 [Pre-test hook](#pre-test-hook)).
 
 Run pytest from the repository root; `pyproject.toml` holds its configuration.
@@ -35,11 +31,10 @@ The Python tests are split by where they run, not by how long they take:
 `make test` runs everything that runs on the host, slow tests included, and a
 slow host test is made cheaper or split into cases that workers share rather
 than moved out; the tests that need a container, marked `container` (see
-below), run on demand: `make test-container` runs them but the whole-stack
-test, which carries the `stack` marker as well and which `make check-ui` runs.
+below), run on demand: `make test-container` runs them.
 `tests/test_make.py` holds the split: every test is in exactly one of
-`make test`, `make test-container`, `make check-ui` and `make benchmark`, `make check` holds no
-on-demand run, and `make check-containers` runs every container test and no host test. To
+`make test`, `make test-container` and `make benchmark`, `make check` holds no
+on-demand run, and no container test of `make test-container` can skip. To
 work on what a container suite covers, run its module directly, as in
 `RCMAN_REQUIRE_CONTAINER=1 uv run pytest tests/container/test_github_in_podman.py -k gh`.
 
@@ -50,8 +45,7 @@ with SQLite's `synchronous = off` (a backend started as a subprocess keeps the
 default), since no test is about surviving a crash and production
 keeps the default; the collections `tests/test_make.py` reads are made once per
 run and shared by all the workers through pytest's basetemp
-(`tests/collected.py`); and `tests/test_e2e_server.py` calls the Playwright
-binary directly, without `npx`.
+(`tests/collected.py`).
 The suite needs `tmux`, `git`, procps' `kill` and a busybox with `nc` and `setsid`
 on the host, as `busybox-static`, which `.devcontainer/Dockerfile` installs, has
 them. Each test's tmux sockets are in a folder of its own, made under `/tmp` by
@@ -168,8 +162,8 @@ session, and the sweeps, the opening's and the restore's among them), and `tests
 the route through the test client's WebSocket (who may open what, the frames, what closes a
 terminal, the audit, nothing typed recorded or logged, the protocol held to backend.md's table and
 to the page's, `frontend/src/terminalSocket.ts`, loaded with Node) and, for a refused upgrade
-and a service that stops, through real uvicorn running `tests/e2e_server.py`
-with the options of the unit's `ExecStart`. `tests/container/test_terminal_in_podman.py` runs on
+and a service that stops, through real uvicorn running the screenshots' backend
+(`devtools/world.py`) with the options of the unit's `ExecStart`. `tests/container/test_terminal_in_podman.py` runs on
 the tests' engine, with the default workspace image built from the installer's build file and
 workspaces made through the app: the shell through `podman --remote exec` on a tty of its own, a
 resize reaching it (seen by the SIGWINCH a process in the container gets, as the podman client
@@ -179,12 +173,8 @@ default image, the podman client's memory, and no process and no running exec of
 left in the container once it is closed. A remote exec's record stays after it ends until
 Podman's own cleanup removes it, once the exit delay conmon is given has passed, so whether an
 exec runs is read from Podman's API. The runtime contract's terminal case (`tests/runtime_contract.py`) runs on both
-runtimes. In a browser, `frontend/e2e/terminal.spec.ts` types into the tab on the host runtime and
-reads what the shell works out, narrows the window and finds the size `stty size` gives follow it,
-opens the terminal in a second page, which takes it over, and finds a tab left at once and shown
-again fitted to its screen; a test of `frontend/e2e-stack/stack.spec.ts` opens it through
-Caddy and oauth2-proxy in a workspace of real Podman, as the container's root, reloads it and ends
-its shell. The page's side of the protocol, its states and its fakes are in
+runtimes. No test opens the tab in a real browser
+([What the tests no longer check](#what-the-tests-no-longer-check)). The page's side of the protocol, its states and its fakes are in
 [frontend.md](frontend.md).
 
 What needs a real Claude account, and what needs systemd, the kernel's limits or a real
@@ -220,16 +210,9 @@ A test that hangs is ended by pytest-timeout, the suite's one hang guard, with t
 pytest-timeout's own `timeout`, which every test gets, and `container_timeout`, which
 `tests/conftest.py` registers and gives, as a `timeout` marker derived alongside the container
 marker (`tests/hang_guard.py`), to every test that carries the container marker, since the image
-builds of their session fixtures are charged to the test that first asks for them. The
-whole-stack test, which also carries the `stack` marker, gets its own, derived from it
-(`stack_guard`), so that the innermost of its bounds ends first and names what hung: a spec's
-own in `frontend/playwright.stack.config.ts`, whose run has no bound of its own
-(`globalTimeout: 0`, as a run ended by it names no test); the podman client's kill of the
-specs' run (`EXEC_GUARD`, one and a half times the container tier's hang guard), beyond a
-hung spec's bound and every other spec; and the test's guard (`STACK_GUARD`), the container
-tests' guard for the builds and twice the specs' run. That marker outranks `--timeout`, which
-changes only the other tests' value; `-o container_timeout=N` changes the container tests', and
-the whole-stack test's with it. Each value is far beyond any
+builds of their session fixtures are charged to the test that first asks for them. That
+marker outranks `--timeout`, which changes only the other tests' value;
+`-o container_timeout=N` changes the container tests'. Each value is far beyond any
 plausible slowness of its tier, so the guard ends only a genuine hang and never decides a test
 that would have finished. The guard counts from a test's setup to the end of its teardown, also
 after its setup or call failed: pytest-timeout on its own stops the guard then, so a teardown
@@ -255,7 +238,7 @@ masked, or a call that retries it, the signal never arrives. What ending the pro
 test's teardown does not run, so it leaves what a killed run leaves (see [What a killed run
 leaves](#what-a-killed-run-leaves)); in `make test` pytest-xdist reports the worker as crashed
 while running the test, fails that test and starts another worker, and the run goes on; in the
-one-process runs, `make test-container` and `make check-ui`, the run ends there, its last output
+one-process run, `make test-container`, the run ends there, its last output
 the guard's report with the test's frame in the stacks.
 
 `HANG_GUARD` and `CONTAINER_HANG_GUARD` in `tests/hang_guard.py`, each half its tier's guard,
@@ -287,11 +270,10 @@ reading their source, that each exec that hands `RCMAN_HANG_GUARD` hands `CONTAI
 and kills at `EXEC_GUARD`, and that these nest within the container tests' guard.
 `tests/test_make.py` holds that every test of every target is under its tier's guard.
 
-The frontend's tests have hang guards of their own, by tier, in `frontend/src/test/hangGuard.ts`:
-the browser tests' are the host tier's, the whole stack's a spec of `CONTAINER_HANG_GUARD`, and
-the component tests' a tier of their own; every timeout a frontend test or config gives is one
-of them, `tests/test_hang_guard.py` holds their values and `tests/test_e2e_server.py` what each
-Playwright config resolves to ([frontend.md](frontend.md#limits-and-time-in-the-tests)).
+The frontend's component tests have hang guards of their own, a tier of their own, in
+`frontend/src/test/hangGuard.ts`; every timeout a frontend test or its config gives is one of
+them or 0, and `tests/test_hang_guard.py` holds their values
+([frontend.md](frontend.md#limits-and-time-in-the-tests)).
 
 ### Time in tests
 
@@ -458,8 +440,8 @@ command-line watch, which no test reaches but a module marked `real_claude`, run
 a killed run's own hang bound in `tests/killed_runs.py`, `hold` and `shell_hold`, derived from
 the tier's guard, and the sweep of held folders, whose
 deadlines are its behaviour, the tests of `tier_guard` and of each tier's value, which name
-the container tier's guard in a host test, and the whole stack's test's own hang guard in
-`mark`; and the programs of `STAND_INS`, which run only as another program, whose timing is
+the container tier's guard in a host test, and the container tests' guard `mark` gives
+each of them; and the programs of `STAND_INS`, which run only as another program, whose timing is
 theirs: the fake `claude`, the pre-test hook, and the container suites' stand-ins for
 `systemctl`, `loginctl` and rcman's `podman`, for GitHub and for Google's sign-in. Planted twins show each form flagged and each allowance clean;
 `test_no_test_waits_on_real_time` scans the real tree once, and fails on any site, on a stale
@@ -467,23 +449,22 @@ named pattern or stand-in, and on a scan that saw no site or made none of the al
 known to make.
 
 In the frontend it reads the component tests `frontend/vite.config.ts`'s `include` names,
-everything under `frontend/src/test/`, `frontend/e2e/` and `frontend/e2e-stack/`, and the four
-configs (`ts_scope`), parsed in one call of Vite's parser (`tests/typescript.py`). It flags
+everything under `frontend/src/test/`, and that config (`ts_scope`), parsed in one call of Vite's parser (`tests/typescript.py`). It flags
 `Date.now()` or `performance.now()`, or a name given one, in a comparison, a difference or a
 matcher that compares, and `shouldAdvanceTime` (P1); `waitForTimeout`, `setTimeout` with a delay,
 `setInterval` and `userEvent.setup` given a `delay` but 0 or `null` (P2), a timer of no delay
 being a turn; a `timeout` option or a key ending `Timeout` not given a guard of
 `frontend/src/test/hangGuard.ts` or 0, `test.setTimeout` likewise, a `slow()` called on anything,
 as `test.slow()`, `testInfo.slow()` and `test.info().slow()`, and `vi.waitFor` or `vi.waitUntil` without a `timeout` (P3); a name
-ending `_GUARD_MS` defined elsewhere (GUARD); another tier's guard (TIER), the tier being where
-the file is; and a config that does not set every limit, through what it spreads of another
-config too (P3c): each Playwright config's `timeout`, `globalTimeout`, `expect.timeout`,
-`use.actionTimeout` and `use.navigationTimeout`, and `webServer.timeout` where it has a web
-server, and Vitest's `testTimeout`, `hookTimeout` and `teardownTimeout`. `FORMS` names each form's
-planted twin in each language, or why a language does not spell it.
+ending `_GUARD_MS` defined elsewhere (GUARD); and a config that does not set every limit
+(P3c): Vitest's `testTimeout`, `hookTimeout` and `teardownTimeout`. The frontend's tests are one
+tier, so the scan has no tier rule there (TIER). `FORMS` names each form's planted twin in each
+language, or why a language does not spell it.
 
-**What the tests no longer check.** A test that raced time checked a few things only an elapsed
-time could tell, and these are given up:
+#### What the tests no longer check
+
+A test that raced time checked a few things only an elapsed time could tell, and these are
+given up:
 
 - whether the channel's 95th percentile is under `LATENCY_P95_SECONDS`, on the host and through
   Podman, and how long a redaction takes against its size: [the benchmark](#the-benchmark)
@@ -509,6 +490,60 @@ time could tell, and these are given up:
 - in `tests/test_filelock.py`, that two threads inside the lock at once would be caught: each
   comes to the lock while the test holds it, so all of them contend once it is let go, but none
   stays inside for any length of time, so an overlap is no longer made likely.
+
+No test drives the page in a real browser. `make screenshot` shows a page for someone to look
+at, and asserts nothing. What only a browser could check is given up:
+
+- the stand-ins the component tests put in for the browser are held to nothing real:
+  `frontend/src/test/fakeDialog.ts` against the native modal dialog (its focus on opening,
+  Escape and the cancel event, focus given back on closing) and
+  `frontend/src/test/fakeLayout.ts` against the browser's layout and colour scheme, and with
+  them whether a phone's pointer is coarse and a mouse's fine;
+- on a phone and at every width: each page walked at every width for overflow, the size of
+  every control, fields that zoom in on focus, icon-only buttons with a name, the design
+  system's checks, the places allowed to scroll, and every dialog and pop-up opened there (the
+  sites `frontend/src/test/callSites.ts` names of pop-ups are opened by no test); mouse-sized
+  controls on a desktop; hover contrast in the dark scheme; the planted twins of the walk's
+  checks and of the hover check; and the phone's way from the list to a workspace and to another;
+- the layout: the workspace card's scrolling at narrow widths, the list's dots and their
+  alignment, the sidebar painted to the page's foot, the semibold face, guide tables that
+  scroll, the skip link and the page titles, the top bar at a phone's and a desktop's width,
+  the navigation and the administrators' group, dialogs as sheets or centred, the panel bar and
+  the switcher's sheet, the list's heading row, the desktop's columns, the drawer's Escape,
+  outside press, focus and click-through, the sheet dialog's focus trap and room for the
+  keyboard, Settings and Help at both sizes, People and the audit trail as lists with More
+  actions on a phone and People as a table on a desktop, Monitor as lists, the versions table's
+  scrolling and the large Limits dialog;
+- the pages against the real backend: the settings' verdict, a GitHub token never shown, the
+  commit author's fallback, help links, administration for administrators only, the Claude Code
+  versions page and marking one failed, adding and removing people with the audit trail, limits
+  refused and kept, the attention banner, a stranger refused, and the favicon;
+- the Terminal tab: the real shell and its size following the window, a takeover from a second
+  page, and a tab left and shown again fitted to its screen;
+- the workspaces in a browser against the real backend: a workspace made and ready, its device
+  name in its row and its panel and its address opening it again; one made from a repository's
+  address, named after it, showing its branch; New workspace as a modal dialog, focus in its
+  name, Escape closing it, focus back on its button and the page behind out of reach; a refused
+  address or name shown under its label and kept; a repository that is not there failing with
+  git's words and deleted; a server's life: start, trust, stop, resume, stop and forget; a start
+  refused while Claude is not signed in, saying so; a workspace deleted with its server, after
+  asking; people never seeing each other's workspaces or reaching them by id; administrators
+  seeing everyone's workspaces and acting on none of them; and a refresh that cannot reach rcman
+  saying so, going once rcman answers, and reported;
+- the whole stack in a browser: Caddy and oauth2-proxy in front of a real browser; a workspace
+  made before Claude is connected starting no server and saying why; the fake `claude` connected
+  once on the **Claude** page, and workspaces made before and after both running; staging,
+  committing and pushing from the panel; a clone from GitHub, a private one once a token is
+  stored; another person seeing none of it and finding nothing by its id; an address not on the
+  allowed list getting nowhere; administrators seeing everyone's workspaces and acting on none
+  of them; the People page adding a person and removing another with her workspaces; the audit
+  trail recording what people did; the terminal through Caddy and oauth2-proxy; a forwarded port
+  reached by its owner through a plain link, its WebSocket included, its way in refused when
+  posted from the port's own page, and anyone else refused it; and what that left: a
+  deleted person's containers and volumes gone, the pushes' author, and the token in no audit
+  row or line of rcman's output;
+- the rules [frontend.md](frontend.md#rules-it-keeps) lists that a browser would show are kept
+  by hand.
 
 A hangup ends a terminal's shell and its jobs only where SIGHUP is at its default in them, and
 an ignore survives exec: a suite started with SIGHUP ignored, as under `nohup`, would leave them
@@ -554,7 +589,7 @@ rcman's has its own `/tmp`, a volume off its overlay root ([runtime.md](runtime.
 the repository's `.devcontainer` has the rest of it
 (`tests/test_repository_devcontainer.py` holds its pins). In such a workspace, `make check` runs
 `TEST_WORKERS` workers (the `Makefile`), each starting tmux servers, git and the fake `claude`,
-and the browser tests run Chromium: a workspace whose limits on processes or memory are below
+and `make screenshot` runs Chromium: a workspace whose limits on processes or memory are below
 what those take fails them, and its limits are an administrator's
 ([users.md](../docs/users.md)).
 
@@ -798,15 +833,15 @@ container, in order (see [installer.md](installer.md#tests)).
 #### The whole stack
 
 `tests/container/stack.py` is the whole of rcman in one container of the system image with no
-network but its own loopback, which the stack's workspaces and the browser's container join:
-rcman's app made as `tests/e2e_server.py` makes one but with the Podman runtime at the suites'
-sizes on the engine, whose socket it is given, alice its first administrator, bob and carol let
+network but its own loopback, which the stack's workspaces join:
+rcman's app made as `devtools/world.py` makes one but with the Podman runtime at the suites'
+sizes on the engine, whose socket it is given, alice its first administrator, bob let
 in; oauth2-proxy from the installer's toolchain with the installer's own configuration, its
 Google endpoints pointed at `tests/container/oidc_stub.py`; Caddy with the installer's own site
 block for `rcman.test`, its own certificate authority, its admin API off and on-demand
 certificates asked of a site on its loopback (`global_options` in `stack.py`), in front of
 `rcman.test`, `auth.test` and `github.com`; the stand-in GitHub, `tests/github_server.py` through
-`github_stand_in.py serve`, with a public and a private repository, under a certificate of an
+`github_stand_in.py serve`, with a public repository, under a certificate of an
 authority of its own; the fake `claude`'s releases, served; and `systemctl` the stand-in. The
 tools, the store and the stack's own state are at the same paths in the container as on the
 machine, as the engine resolves what the stack's rcman asks it to mount. The backend's packages
@@ -827,42 +862,11 @@ certificate got for any name under the wildcard, asking no one, against the same
 and refusing. Those sites are under a name of their
 own (`gate`) with an ask site on a port of its own, beside the installer's sites for
 forwarded ports, which the stack's Caddy holds too, the stack's global options asking the gate's
-for the while. `tests/container/test_stack_in_a_browser.py` holds the one test `make check-ui`
-runs, which starts a stack of its own (the two stacks would number their workspaces alike, so
-they are never up at once) and runs the specs of `frontend/e2e-stack/` with
-`frontend/playwright.stack.config.ts` in Playwright's own image (`PLAYWRIGHT_IMAGE` in
-`stack.py`, by digest, at the version `frontend/package-lock.json` pins, which
-`tests/test_stack.py` holds it to) in a container that joins the stack's network, with the
-frontend's packages from `make frontend-setup`. The specs connect the fake `claude` on the
-**Claude** page with the code it accepts, which the suite passes them in
-`RCMAN_FAKE_CLAUDE_CODE`, and the stand-in GitHub's token and addresses in `RCMAN_STACK_GITHUB`.
-`stack.py repository <workspace id>` and `stack.py serve-port <workspace id> <port>` are the
-verbs a spec runs, through `RCMAN_STACK_EXEC`: a relay (`tests/container/stack_exec.mjs`) hands
-it to the suite, which runs it in the stack's container and nothing else, answering 2 to
-anything else, on a socket in a folder that are the user's alone (`command_relay` in `stack.py`;
-`tests/test_stack.py` holds it, with the node client, and `tests/test_network.py` the relay git
-reaches the builder module's stand-in through, each against what it refuses); the first makes a
-repository in that workspace with a bare origin of its own and changes to stage, the second
-starts an app on that port in that workspace (`PORT_APP`), which the last spec reaches as a
-forwarded port of a workspace cloned from the stand-in GitHub's repository that lists it: its
-owner opens the workspace's page and follows the port's link on its **Ports** card, which opens
-the port in a new tab through the hand-off; a plain link from rcman's page signs its owner in
-and lands on its path and query, a WebSocket from its page echoes, and its way in, read from the
-hand-off's page opened with scripts off, posted from the port's own origin is refused, while
-posted by that page's own button it is taken (rcman's other pages post to another origin with
-`Origin: null`); and an administrator and another person opening the same address are sent to
-the hand-off, which refuses them. Caddy gets a certificate only for a host marked as wanted,
-which the owner's workspace page showing its link does, and the spec forgets the session the
-link made before the plain link. `stack.py check` then finds carol, whom the specs deleted, with
-nothing labelled hers left, the changes the specs staged, committed and pushed in the origin, as
-the author the spec set, with an audit row for each step, each workspace made by cloning ready
-with its repository's commit, and the token the specs stored in no audit row, workspace row or
-line of rcman's output.
+for the while.
 
 A person's first workspace in the stack is slow, because rootless Podman keeps one copy of the
-default image per range of ids and copies it into the person's range; the specs wait for it, as
-for anything, until it is shown, within the whole stack's step
-([frontend.md](frontend.md#limits-and-time-in-the-tests)).
+default image per range of ids and copies it into the person's range; the tests wait for it, as
+for anything, with `until`.
 
 #### What the container suite holds of its own
 
@@ -888,7 +892,7 @@ snapshot is removed when the session ends.
 | `tests/fakes/` | The fake `claude`, its recorded fixtures and the screens observed on a live server — see [fake-claude.md](fake-claude.md); Podman's default seccomp profile as recorded (`podman-seccomp.json`), which `tests/test_seccomp.py` holds to the machine's; Podman's help for the subcommands `publish.sh` reads and for its global options, recorded from the default image's Podman (`podman-help/`), which `tests/test_podman_wrapper.py` holds the wrapper's lists to and `tests/container/test_nest_in_podman.py` holds to that Podman's own help; and what the monitor reads of Podman, recorded from Podman on the tests' engine (`podman-monitor/`: `system df -v` with one workspace and with two, and with one holding many files, what it says when a volume cannot be read, `container inspect` and `info`), which `tests/test_monitor.py` reads and `tests/container/test_runtime_in_podman.py` holds to that Podman; and Ubuntu's own `/etc/caddy/Caddyfile`, the caddy package's conffile (`ubuntu-Caddyfile`), which `tests/test_install.py` edits with the installer's `edit_caddyfile` and holds to the package's md5 |
 | `helpers/` | What the backend shares with the installer and the fake `claude`, the standard library only: the rules values are refused by, what Claude's screens mean, running git, Claude Code's releases and their checked download (`claude_release.py`), and the checks a Claude Code version is held to with the canary program that runs them (`claude_checks.py`, `claude_canary.py`) |
 | `backend/` | The FastAPI application — see [backend.md](backend.md) |
-| `frontend/` | The React application, its component tests and its browser tests — see [frontend.md](frontend.md) |
+| `frontend/` | The React application, its component tests and the screenshot capture — see [frontend.md](frontend.md) |
 | `tests/container/` | The container suites, what they run in their containers, and the system image they run rcman's installer and the whole stack in (`tests/container/system/`) |
 | `install.sh`, `installer/` | The installer — see [installer.md](installer.md) |
 | `devtools/` | Development tooling, run by hand, by the edit-time hook or by the tests, which never imports the tests; each module's docstring says what it is |
@@ -936,10 +940,9 @@ a test makes depends on its own run to remove it:
   with the folder. What it cannot read or remove, or what a removal refuses or fails at in a way of
   its own (the engine's removal failing, say), it leaves, says so on stderr, and goes on past, to
   the others and to the run's own folder; one another run removed first it passes over in silence. The
-  browser tests' worlds are held and cleared the same way, chosen by the
-  exact shape of their name (see [frontend.md](frontend.md#tests)).
-- A held folder a test may fill with anything, as the `world` fixture in
-  `tests/test_e2e_server.py` does, is removed with `remove_tree`, which also
+  screenshots' world (`devtools/world.py`) is a held folder too.
+- A held folder that may be filled with anything, as the screenshots' world is, is removed
+  with `remove_tree`, which also
   stops a tmux server anywhere in it, by the same rule, and makes each folder of the user's in
   it removable, following no link.
 - Every removal refuses, and raises, for a path that is not absolute or holds
@@ -1063,7 +1066,7 @@ it can fail, and a positive control that keeps an empty input from passing.
   `devtools/`, which the tests and
   the recorder run, and every TypeScript and JavaScript file in `frontend/`
   that git does not ignore, of the kinds `SOURCES` in `tests/typescript.py` names — the
-  browser tests, their configs and the rest — parsed with Vite's parser from
+  component tests, their config, the screenshot capture and the rest — parsed with Vite's parser from
   the frontend's packages, so a file that does not parse, or packages that
   are missing, fail it. It catches the same forms in both languages. `FORMS`
   in the test spells each form in both, and an entry one language does not
@@ -1120,27 +1123,24 @@ it can fail, and a positive control that keeps an empty input from passing.
   held in a variable is not followed. `tests/collected.py`, which is not a test module, collects the suite
   in a child process for it.
 - **Every test runs, and container tests cannot skip** (`tests/test_make.py`).
-  It runs `make test`, `make test-container`, `make check-ui`, `make check`
-  and `make check-containers` with `uv`, `npm` and `npx` replaced by recorders,
-  and reads which tests each pytest command they ran selects from pytest's own
-  collection: every test is in exactly one of `make test`,
-  `make test-container`, `make check-ui` and `make benchmark`. The benchmark's part of that is
+  It runs `make test`, `make test-container` and `make check` with `uv`, `npm` and `npx`
+  replaced by recorders, and reads which tests each pytest command they ran selects from
+  pytest's own collection: every test is in exactly one of `make test`,
+  `make test-container` and `make benchmark`. The benchmark's part of that is
   read without make, from the Makefile's rules and pyproject's `addopts`, each pytest call's
   `-m` worked out for every set of the markers a test may carry: `make benchmark` runs the
   `benchmark` tests, in one process, with `-s` and `RCMAN_REQUIRE_CONTAINER=1`, no other
   target's pytest call, nor a bare `pytest`, runs one, and no target makes `make benchmark`, as
-  a prerequisite or with `$(MAKE)` in its recipe, `make check-containers` included; the
-  three other runs' split is read from what make ran. `make test-container`
-  runs the `container` tests but the `stack` one, which `make check-ui` runs;
-  `make check` runs the host tests with `RCMAN_REQUIRE_REAL_CLAUDE=1` and holds no
-  on-demand run; `make check-containers` runs every container test, with
-  `RCMAN_REQUIRE_CONTAINER=1`, and no host test; none of them runs a test a
+  a prerequisite or with `$(MAKE)` in its recipe; the two other runs' split is read from
+  what make ran. `make test-container` runs the `container` tests, with
+  `RCMAN_REQUIRE_CONTAINER=1`; `make check` runs the host tests with
+  `RCMAN_REQUIRE_REAL_CLAUDE=1` and holds no on-demand run; none of them runs a test a
   bare `pytest` leaves out for a real Claude account, as a target's own `-m` replaces the
   `-m` of pyproject's `addopts`; and every test that any target
-  `.PHONY` names runs is under its tier's hang guard, the whole-stack test under its own
-  (`STACK_GUARD`), as pytest-timeout itself works out
+  `.PHONY` names runs is under its tier's hang guard, as pytest-timeout itself works out
   each test's settings (see [The hang guard](#the-hang-guard)). `make lint` and
-  `make format` run ruff and the frontend's script of the same name, and the
+  `make format` run ruff and the frontend's script of the same name, `make screenshot`
+  builds the frontend and runs `devtools/screenshots.py` with `PAGE` and `STATE`, and the
   real `make lint`, run over a frontend file planted in a scratch tree, fails
   when Biome would reformat it, when Biome finds a lint finding it reports as
   an info, and when the frontend's packages are missing; it checks the
@@ -1166,20 +1166,32 @@ it can fail, and a positive control that keeps an empty input from passing.
 
 ## Screenshots
 
-`make screenshots` captures the pages for someone to look at; it asserts nothing, and is
-neither a test nor part of any test run. `frontend/e2e/screenshots.capture.ts` visits every
-page of the route table (`PAGES` and `ADMIN_PAGES`, a help page standing for every help page),
-and the views a page shows only when asked, such as an open dialog or pop-up, which the file
-lists. It takes each at a phone's width (`isMobile`) and a desktop's, in the light and the
-dark scheme, as the file names; the widths are in the file.
+`make screenshot PAGE=<path>`, with `STATE=<state>` or without, captures one page for someone to
+look at, as in `make screenshot PAGE=/settings` or
+`make screenshot PAGE=/ STATE=rebuild-failed`; it asserts nothing, and is neither a test nor part
+of any test run, and it sets no time limit and waits on no length of time: Ctrl-C ends a run that
+hangs. It builds the frontend, then `devtools/screenshots.py` starts the world's backend
+(`python -m devtools.world`, see [frontend.md](frontend.md#the-screenshots)), reads the origin it
+prints, and runs `frontend/screenshots/capture.ts` with Node against it, which uses Playwright
+as a library to drive Chromium; then it closes the backend's standard input, and the backend
+shuts down and removes its world. Its exit code is the capture's.
 
-It runs with `frontend/playwright.screenshots.config.ts`, which takes the browser tests' config,
-their backend and world (see [frontend.md](frontend.md#tests)) and so a world and a port of its
-own, and writes to an output folder of its own, which Playwright empties as a run starts:
-`frontend/test-results/screenshots/`, ignored by git. The browser tests' config does not match
-the file, and no test target runs its config; `tests/test_e2e_server.py` and
-`tests/test_make.py` hold both. The pre-test hook counts it as a test run, since it runs
-`playwright test`.
+`PAGE` is a path the frontend routes (`src/Pages.tsx` and `src/AdminPages.tsx`, from which the
+capture reads them), a `:name` segment standing for any one, as `/help/:slug` does for every
+help page. Without `STATE` the page is shot as the world draws it; a state is one of the views a
+page shows only when asked, such as an open dialog or pop-up, or a planted answer, each named in
+the capture's table of states with the pages it is a state of. A page or state the capture does
+not know, or a state the page does not have, ends it before it starts the browser, with a
+non-zero exit code and the pages and states there are. A page is taken at a phone's width
+(`isMobile`) and a desktop's, in the light and the dark scheme, each in a browser context of its
+own, as the file names; a state only a phone has is taken at the phone's width only. The widths
+are in the file. Each screenshot waits for what its view shows, then for every request the page
+made to be answered and what the answers drew to be drawn, its animations ended. The world's
+workspaces are plain ones: the capture plants the screenshot workspace's repository, its status,
+branches and address, in what the page fetches. It writes to
+`frontend/test-results/screenshots/`, ignored by git, which it empties first, a file per
+screenshot named by the page, the state, the width and the scheme. The pre-test hook does not
+count it as a test run.
 
 ## Edit-time hook
 
@@ -1248,7 +1260,7 @@ agent.
 
 Which commands run tests is read from the command alone, as the shell splits
 it, and a command that runs none starts no process. One runs tests when it
-is pytest, Vitest or `playwright test`, without an option such as
+is pytest or Vitest, without an option such as
 `--version`, `--help` or `--collect-only` (`NOT_A_RUN` in the module), once
 shell keywords, assignments and wrappers such as `uv run`, `npx`,
 `python -m` and `timeout` are taken off; an npm script whose text does; or a

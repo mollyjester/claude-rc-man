@@ -5,7 +5,7 @@ which test it was; a test that finishes is not touched.
 
 Each case is a child pytest over a planted test file, with the project's own configuration
 (pyproject.toml) and tests/conftest.py loaded as a plugin, in one process as make
-test-container and make check-ui run, and with a pytest-xdist worker as make test does. A
+test-container runs it, and with a pytest-xdist worker as make test does. A
 planted test that blocks for ever is run with a guard of a second, so that it does not wait
 long; the guard's method, and everything else, is the project's.
 """
@@ -496,24 +496,16 @@ UNIT_STEP_MS = 20_000
 
 
 def frontend_guard_problems(values: dict[str, float]) -> list[str]:
-    """What is wrong with the frontend's hang guards, as hangGuard.ts gives them: the browser
-    tests' are the host tier's (HOST_GUARD and HANG_GUARD), the whole stack's a spec of the
-    container tier's hang guard and a step half of it, which the podman client's kill of the
-    specs' run outlasts, and the component tests' their own."""
+    """What is wrong with the frontend's hang guards, as hangGuard.ts gives them: the
+    component tests' own, a test's and a step's, and no other."""
     wanted = {
         "UNIT_TEST_GUARD_MS": 2 * UNIT_STEP_MS,
         "UNIT_HANG_GUARD_MS": UNIT_STEP_MS,
-        "BROWSER_TEST_GUARD_MS": 1000 * HOST_GUARD,
-        "BROWSER_HANG_GUARD_MS": 1000 * HANG_GUARD,
-        "STACK_TEST_GUARD_MS": 1000 * CONTAINER_HANG_GUARD,
-        "STACK_HANG_GUARD_MS": 500 * CONTAINER_HANG_GUARD,
     }
     problems = [
         f"{n} is {values.get(n)}, not {v:g}" for n, v in wanted.items() if values.get(n) != v
     ]
     problems += [f"{n} is no tier's guard" for n in sorted(set(values) - set(wanted))]
-    if not values.get("STACK_TEST_GUARD_MS", 0) < 1000 * EXEC_GUARD:
-        problems.append("a hung spec of the whole stack outlasts the podman client's kill")
     return problems
 
 
@@ -525,14 +517,10 @@ def test_the_frontends_hang_guards_are_their_tiers():
 
 
 def test_a_frontend_guard_not_its_tiers_is_reported():
-    """Planted twins: the browser tests' step at Playwright's old 15 s, and the whole stack's
-    spec beyond the client's kill."""
+    """Planted twins: the component tests' step at another value, and a guard of no tier."""
     tree = parse_ts({"hangGuard.ts": FRONTEND_GUARDS.read_text(encoding="utf-8")})["hangGuard.ts"]
     values = module_numbers(tree)
-    planted = {**values, "BROWSER_HANG_GUARD_MS": 15_000}
-    assert frontend_guard_problems(planted) == [
-        f"BROWSER_HANG_GUARD_MS is 15000, not {1000 * HANG_GUARD:g}"
-    ]
-    beyond = 1000 * EXEC_GUARD
-    problems = frontend_guard_problems({**values, "STACK_TEST_GUARD_MS": beyond})
-    assert problems[-1] == "a hung spec of the whole stack outlasts the podman client's kill"
+    planted = {**values, "UNIT_HANG_GUARD_MS": 15_000}
+    assert frontend_guard_problems(planted) == ["UNIT_HANG_GUARD_MS is 15000, not 20000"]
+    extra = {**values, "OTHER_HANG_GUARD_MS": 1}
+    assert frontend_guard_problems(extra) == ["OTHER_HANG_GUARD_MS is no tier's guard"]

@@ -125,7 +125,7 @@ def ready_workspace(world, person=1, name="mine"):
     from rcman import runtime as rt
 
     from devtools import fake_claude as fake
-    from tests.e2e_server import record_sign_in
+    from devtools.world import record_sign_in
 
     con = db.connect(world.settings.database)
     try:

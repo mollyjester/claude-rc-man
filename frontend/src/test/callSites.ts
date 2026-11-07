@@ -1,13 +1,12 @@
-// Which components of the page's own source open a dialog (<Dialog>) or a pop-up (usePopup()),
-// by name, read from the source itself: the tests that open every dialog and pop-up hold the
-// ones they open to these, so that a new one cannot go unvisited. What it cannot name a site
-// by for sure, it reports as a fault: the shared Dialog or usePopup reached other than by an
-// import of its name, a site outside a component, whose users are not followed, a component
-// with a site that is used more than once, since each use is a dialog or pop-up of its own,
-// and a site not marked with its component's name (Dialog's owner, usePopup's argument),
-// which the browser's walk in e2e/touch.spec.ts reads off what opened. Uses are counted for
-// the component that holds a site only, one level: a component used once inside a wrapper that
-// is itself used more than once is not caught.
+// Which components of the page's own source open a dialog (<Dialog>) or a pop-up (usePopup()), by
+// name, read from the source itself: the tests that open every dialog (src/forms.test.tsx) hold the
+// ones they open to these, so that a new one cannot go unvisited. What it cannot name a site by for
+// sure, it reports as a fault: the shared Dialog or usePopup reached other than by an import of its
+// name, a site outside a component, whose users are not followed, a component with a site that is
+// used more than once, since each use is a dialog or pop-up of its own, and a site not marked with
+// its component's name (Dialog's owner, usePopup's argument), which says what opened. Uses are
+// counted for the component that holds a site only, one level: a component used once inside a
+// wrapper that is itself used more than once is not caught.
 import { readdirSync, readFileSync } from "node:fs";
 import { posix, resolve, sep } from "node:path";
 import { parseAst } from "vite";

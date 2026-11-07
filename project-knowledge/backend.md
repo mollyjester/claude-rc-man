@@ -128,7 +128,7 @@ the OpenAPI description it serves at `/api/openapi.json`, browsable at
 
 `create_app` takes the runtime workspaces run in: by default Podman, through
 rcman's own user manager's socket (`main.podman_runtime`); the tests and
-`make e2e` give it the host runtime. `builder_slot`, the slot of builds and the canary, is the
+`make screenshot` give it the host runtime. `builder_slot`, the slot of builds and the canary, is the
 product's unless a test engine gives its own (see [runtime.md](runtime.md#the-runtime)). Everything about workspaces, their
 channels and servers, and what rcman brings back when it starts, is in
 [runtime.md](runtime.md).
@@ -437,9 +437,9 @@ shells, one per workspace (`Terminals`, `app.state.terminals`).
   or a daemon does, is not the terminal's.
 - **uvicorn.** uvicorn speaks WebSocket only through a package it does not depend on itself;
   rcman depends on `websockets`. uvicorn's `auto` picks `WEBSOCKETS`, the implementation over it,
-  already; `--ws` names it all the same in the unit's `ExecStart` and in the browser tests'
-  backend (`frontend/playwright.config.ts`), so that which one runs is written down, and
-  `tests/test_terminal.py` holds the two to each other and to `WEBSOCKETS`.
+  already; `--ws` names it all the same in the unit's `ExecStart`, so that which one runs is
+  written down, and `tests/test_terminal.py` holds it to `WEBSOCKETS`, which the screenshots'
+  backend (`devtools/world.py`) runs with too.
 - **Audit.** The route depends on `audit.Session("terminal")`, which records `terminal.open`
   (`ok`, or the problem it was refused with) and, after an open that worked, `terminal.close`
   with how it ended (see [Audit](#audit)).

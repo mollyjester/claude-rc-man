@@ -208,8 +208,8 @@ matters, so a suppression at the site is preferred.
   are (`m.workspaceCount`) and **New workspace** in its short words
   (`m.newWorkspaceShort`), its `h1` and the button's whole name, its
   `aria-label`, kept for assistive technology; what is scrolled to stops below the bar over a panel
-  too (`--panel-bar`). `e2e/touch.spec.ts` holds every page of the route
-  table to it at two phones' widths.
+  too (`--panel-bar`). No test holds a page to it in a browser
+  ([tests.md](tests.md#what-the-tests-no-longer-check)).
 - **Big enough for a finger, and not zoomed in on.** On a touch screen
   (`pointer: coarse`), at any width, everything pressed is at least as high as
   WCAG 2.2's 2.5.5 asks, and a button or a navigation link as wide, as the touch
@@ -222,47 +222,33 @@ matters, so a suppression at the site is preferred.
   viewport's meta tag in `index.html` never stops the page being zoomed, and asks for the on-screen keyboard to resize the page (`interactive-widget=resizes-content`), which `src/styles.test.ts` checks.
   With a mouse (`pointer: fine`) a control is a mouse's size, the `--control`
   token, which is at least WCAG 2.2's 2.5.8 minimum.
-  `e2e/touch.spec.ts` measures every control on every page, with each dialog
-  and pop-up open and a workspace on each of its tabs, on touch screens and
-  with a mouse, and fails on one too small for the pointer (a text link is
-  measured on a touch screen only, as 2.5.8 lets one be smaller where nothing
-  else is near it) but for what `SMALL_ALLOWED` describes, a link inside a sentence (in a
-  table's cell, one with three words or more besides it), on a box that scrolls
-  sideways but for what `SCROLL_ALLOWED` describes, and on an icon-only button
-  with no name; its views name the dialog or pop-up each opens, which is held to
-  the `data-component` read off what opened, and are held to the components
-  that draw a `<Dialog>` or call `usePopup()` in the sources (`callSites` in
+  No test measures the controls in a browser ([tests.md](tests.md#what-the-tests-no-longer-check)). The components that
+  draw a `<Dialog>` or call `usePopup()` are named in the sources (`callSites` in
   `src/test/callSites.ts`, which reads every `.ts` and `.tsx` file of the page,
   knows the two by their import under any name, and fails on a site outside a
   component, in a component used more than once, or not marked with its
-  component's name; it counts only the direct uses of the component that holds
-  a site, so a component used once inside a wrapper that is itself used more
-  than once is not caught). On a
+  component's name, the `data-component` that says what opened; it counts only the
+  direct uses of the component that holds a site, so a component used once inside a
+  wrapper that is itself used more than once is not caught). On a
   phone the top bar is one row: the menu button that opens the sidebar as a
   drawer, where you are, and the avatar that opens the **Account** menu.
-- **Drawn by the design system.** `e2e/touch.spec.ts`'s walk also fails, at
-  every width it walks, on a button's label off its middle, the controls of an
-  action row (`.actions`) of differing heights, the fields of a form drawn
-  unlike each other, a box (a block bordered on every side, not a control)
-  inside another outside a dialog or pop-up, but for what `NESTED_ALLOWED`
-  describes, each of which a walk must meet, and an underlined link in the top
-  bar or the sidebar. With a mouse, in the light scheme and again in the dark,
-  it also hovers each look of button once (its element, classes, whether it is
-  the current one, and its colours at rest) and fails on its text under WCAG
-  AA's contrast, or its icon under 3:1, against what is behind it while
-  hovered, on a kind in `HOVERED_KINDS` it never hovered, and on a look it met
-  only with something lying over it. `src/styles.test.ts` holds the stylesheet to the
+- **Drawn by the design system.** A button's label sits in its middle, the controls of an
+  action row (`.actions`) are of one height, the fields of a form are drawn alike, no box (a
+  block bordered on every side, not a control) is inside another outside a dialog or pop-up,
+  no link in the top bar or the sidebar is underlined, and a hovered button's text meets WCAG
+  AA's contrast, and its icon 3:1, against what is behind it, in the light scheme and the dark;
+  no test checks these in a browser ([tests.md](tests.md#what-the-tests-no-longer-check)). `src/styles.test.ts` holds the stylesheet to the
   [design system](#design-system)'s tokens, its buttons laid out alike for
   `<button>` and `a.button`, a field's visible focus, and the dialog's sheet.
 - **Every dialog is the shared one.** `src/Dialog.tsx` is the browser's own modal
   `<dialog>`; `src/forms.test.tsx` opens every page and dialog it knows, and
   checks that every component that draws a `<Dialog>` (`callSites` in
   `src/test/callSites.ts`) is opened by one of them, each as a modal, and that no
-  other file draws a dialog of its own. `e2e/layout.spec.ts` opens each of
-  them, held to the same list, and checks that it sits in the middle of a
-  desktop's window and is a sheet from the foot of a phone's, and that a sheet
+  other file draws a dialog of its own. A dialog sits in the middle of a
+  desktop's window and is a sheet from the foot of a phone's, and a sheet
   keeps focus in it, closes on Escape and keeps its footer (a row of its
-  buttons marked `footer`) above the on-screen keyboard.
+  buttons marked `footer`) above the on-screen keyboard; no test checks that in
+  a browser ([tests.md](tests.md#what-the-tests-no-longer-check)).
 - **Every colour is a custom property in `src/styles.css`**, with a value for
   a light scheme and one for a dark scheme, which the browser picks between by
   the system's setting; `src/styles.test.ts` holds the stylesheet to that and
@@ -355,8 +341,8 @@ The tests that hold the stylesheet to them are under
 | File | What it is |
 |---|---|
 | `src/App.tsx` | Who is signed in, the routes, from `PAGES` and `ADMIN_PAGES`, the skip link and `main`'s focus target, and the chrome (`Navigation`): the top bar, with rcman's mark leading home, the name of the page where you are, an icon link to Help and the person's avatar, the first letter of their address, which opens the **Account** menu, a `usePopup` holding the address they are signed in as (`m.signedInAs`) and **Sign out of rcman**, a plain button in one group with **Keep servers running after sign-out**, which leaves through `away` for oauth2-proxy's sign-out; and one `<nav>`, the sidebar of the pages that have an icon in `PAGES`, then, for administrators only, the **Administration** group built from `ADMIN_PAGES`, the page where you are marked. On a phone the stylesheet makes the same `<nav>` a drawer, which the top bar's menu button opens as a `usePopup` that also closes when a page is chosen and when the page changes; opened, it puts focus on the page where you are, a page chosen in it puts focus on `main`, and the page dimmed beside it is a scrim of its own, inside the pop-up, which takes a press and closes the drawer, so that the press reaches nothing under it |
-| `src/Pages.tsx` | `PAGES`, the pages everyone signed in is offered, with each one's name, its title and, for those the sidebar offers, its icon; the routes, the sidebar and `e2e/touch.spec.ts`'s walk over every page are built from it |
-| `src/Dialog.tsx` | Every dialog: the native `<dialog>`, opened with `showModal()` as it is drawn and closed as it goes, so that focus moves in and stays, the page behind cannot be reached, and focus returns to what had it; named by its heading, in its head, what it holds in its body; Escape asks its parent to close it unless `closable` is false, as while the Limits dialog saves, and so does the cross after its body, **Close dialog**, which comes last so that focus starts on what the dialog asks and is disabled while it cannot be closed; focus on its first control, or on itself (`focusDialog`); `large` for one that holds several forms; marked with the name of the component that draws it (`owner`, as `data-component`), for `e2e/touch.spec.ts` to read off what opened. The stylesheet centres it, and on a phone makes it a sheet from the screen's foot; a row of its buttons marked `footer` keeps to its foot while the rest scrolls |
+| `src/Pages.tsx` | `PAGES`, the pages everyone signed in is offered, with each one's name, its title and, for those the sidebar offers, its icon; the routes and the sidebar are built from it |
+| `src/Dialog.tsx` | Every dialog: the native `<dialog>`, opened with `showModal()` as it is drawn and closed as it goes, so that focus moves in and stays, the page behind cannot be reached, and focus returns to what had it; named by its heading, in its head, what it holds in its body; Escape asks its parent to close it unless `closable` is false, as while the Limits dialog saves, and so does the cross after its body, **Close dialog**, which comes last so that focus starts on what the dialog asks and is disabled while it cannot be closed; focus on its first control, or on itself (`focusDialog`); `large` for one that holds several forms; marked with the name of the component that draws it (`owner`, as `data-component`), which says what opened. The stylesheet centres it, and on a phone makes it a sheet from the screen's foot; a row of its buttons marked `footer` keeps to its foot while the rest scrolls |
 | `src/AdminPages.tsx` | `ADMIN`, the administrators' pages by name, each with its icon, which the links in the administrators' warning and Monitor's link to **Service settings** use, and `ADMIN_PAGES`, the same pages in order, which the sidebar's **Administration** group and the routes are built from |
 | `src/Dashboard.tsx` | The Workspaces page, under its own `h1`, beside which **New workspace**, a primary button with its icon, opens its dialog (a name, and an optional GitHub address, each with one line of help, the whole story in `docs/workspaces.md`: with an address it posts to `/api/git/clone`, naming the workspace only when a name is typed, and otherwise to `/api/workspaces`; the server judges both and its refusal of either is shown under the field's label, the dialog staying open with what was typed; once made, the dialog closes and the new workspace is selected); the person's workspaces, a list in a card named by that heading, each a row (`.list-row`, the selected one marked) of its name's button, which holds its dot (`dotFor` in `src/Servers.tsx`) before the name, the dot's room kept where it has none, and under the name, with no label, its `device` (`WorkspaceNames`: small, muted, monospace, `translate="no"`, cut short with an ellipsis), hidden from the button's name and read as its description after the dot's kind, so that the button stays named by the workspace, its state as a pill while it is not ready (`WorkspaceBadge`), and its trash button, named after it, which opens the question for that workspace whatever is selected, or says why it cannot be deleted now; with no workspaces, the list is an empty state that offers **New workspace** in the heading's place, and there is no panel; beside the list the selected workspace's panel, or a placeholder saying to select one, and over the panel, shown only on a phone (`PanelBar`), a bar of an icon link back to the list (`m.backToWorkspaces`) and the switcher, a button showing the workspace's name, which its name holds (`m.switchWorkspaceFrom`), that opens a `usePopup` of the workspaces, each with its `device` under its name as in the list, drawn as a sheet from the screen's foot over the page dimmed by a scrim of its own, focus on the workspace shown; the selection kept in the address as `?workspace=`; the workspaces refreshed every `POLL_MS`, a refresh's failure shown until a later refresh works, and an answer older than one asked for since dropped. The panel's head holds its name, its state as a pill, where `source_page` is not null the repository it names, owner first, after its icon, a link to the page in a new tab named by the whole address (`source_page`, which the server derives; the page derives nothing from `source`), and then its `device` after the label **Device** (`m.device`), joined to it by a space that does not break, all in every state; the panel says in a message bar what a workspace being made, deleted or failed is, with the steps (`log`) in a figure while it is not ready, and for a ready one has two ARIA tabs (`TABS`), **Overview**, chosen first, and **Terminal**, moved between with the arrow keys, Home and End, each panel taking focus (`tabIndex` 0) as the WAI-ARIA tab pattern has it, the one chosen kept in the address as `?tab=` (none for Overview), replacing the entry, so that Back leaves the workspace rather than the tab; Overview holds sibling cards, **Claude server**, which says the server is not read while a rebuild replaces the container (`server_error` `workspace_rebuilding`, which is no problem and gives the list's row no dot), **Container** (`ContainerCard`: what the container is made from, the server's `GET /api/workspaces/{id}/devcontainer` asked as the card opens and every `pollMs`, a failed or older answer taken as not known, an info message bar where it answers `changed` true, Rebuild, the rebuild's steps (`rebuild.log`) in a figure that announces new steps politely while one runs, and why the last one did not finish, `rebuild.error`, as a problem message bar, its first line in the open and the rest behind **Details**), then, only while the listing says forwarding is on (`forwarding`), **Ports** (`PortsCard`: each port the entry's `ports` gives, a list row of its label, or `m.portNumbered` where it has none, and its address, the server's `url` as it is, as a plain link in the monospace face that opens a new tab (`rel="noopener"`), described by the port's name (`aria-describedby`), with no button beside it, wrapping under the name at the left where it is too long for the line; a quiet line naming `forwardPorts` where it has none, and one saying the ports open once the container is made again, in the links' place, while a rebuild replaces it, `server_error` `workspace_rebuilding`; the server marks each host shown as wanted, the page does nothing for it), and **Changes** (`src/Changes.tsx`, polled at the page's own `pollMs`), and Terminal `src/Terminal.tsx`, mounted when the tab is first shown, so that visiting a workspace takes over no terminal; each tab's panel stays mounted, hidden, while the other is shown, so that the terminal stays open; a workspace that failed says why in a sentence (`src/workspaceError.ts`) with what the server said behind **Details**, and Rebuild where it may be rebuilt; while it is rebuilt, the panel says so in its place, and its steps are the last rebuild's (`rebuild.log`) wherever it had one. Rebuild asks first (`RebuildWorkspaceDialog`, whose button is primary: a rebuild keeps the workspace's files), saying what ends, what is kept and that the repository's commands run again, and for a failed workspace that there is nothing earlier to go back to; it posts `{"confirm": true}` to `/api/workspaces/{id}/rebuild`, puts the entry the answer gives in the list's place and refreshes it, and moves focus to the card's heading, or the panel's for a failed workspace, since the button waits from then on; a refusal is shown in the dialog, and the list refreshed. The question before a delete asks `/api/git/status` itself for a ready workspace, names the files not committed and the commits not pushed (`unsavedIn` in `src/Changes.tsx`), says so where it could not ask (a workspace with no repository has nothing to lose), and offers **Delete** only once the check has answered; after a delete the page says what was deleted, focus goes to the list's heading, since the trash button went with its row, and no workspace is selected where the deleted one was |
 | `src/Changes.tsx` | The Changes card of a ready workspace's panel, for the repository of the workspace it is given by id: its heading with the branch bar (`src/BranchBar.tsx`) beside it as its toolbar, what keeps a push or a commit from being offered as message bars, the staged and not staged files, each list a flat group folding under a heading that counts its files and more, with its Stage selected or Unstage selected, a subtle button, beside it, its files' rows divided by strokes, a checkbox for each file that can be selected and Select all, and each file's change as its letter (`m.changeLetters`) in a colour of its own, with its word (`m.changes`) as its accessible text and title; and at the card's foot, under a stroke, Commit, a split button whose menu holds Commit & Push, or why it is not offered, and the status line, "Checked …" (`m.checkedAgo`) worked out again every `CHECKED_TICK_MS` while the section is shown, and Refresh changes. `src/Changes.test.tsx` holds every change to a letter and a word, and the letters to differing. A list is open at first while it has files, opens when files come to it, and otherwise stays as the person left it. The status is fetched when the section opens, every `POLL_MS` while it is open and after every action; an answer older than one asked for since is dropped. Its branches are fetched when it opens, after every action and when the current branch changes. What is checked is kept across refreshes, for files still listed. A refusal is shown beside what was tried until any later action there works |
@@ -364,7 +350,7 @@ The tests that hold the stylesheet to them are under
 | `src/terminalSocket.ts` | The terminal's protocol: `PROTOCOL`, which `tests/test_terminal.py` holds to the backend's (and so to [backend.md](backend.md#the-terminals-protocol)'s table) by loading the module with Node, for which it imports nothing; the resize frame and the reading of rcman's text frames |
 | `src/xtermView.ts`, `src/terminalTheme.ts` | xterm.js and its fit add-on behind the few calls the Terminal tab makes, which the component tests replace (jsdom has neither a canvas nor a layout): a `minimumContrastRatio` of WCAG AA's, so that colours a program asks for are readable too, and a cursor that blinks only where the system does not ask for reduced motion; the theme read from the `--terminal-*` properties. Both packages are pinned exactly in `frontend/package.json`, as Biome is: the stylesheet copies xterm.js's own rules, which name its classes, and the fit add-on reads xterm.js's internals, so a new release of either is taken only on purpose |
 | `src/BranchBar.tsx` | The branch bar: the branch lookup, a subtle button naming where the repository is, its branch's name in the monospace face, whose pop-up has a filter, which asks rcman nothing, over the local and remote branches listed, each a switch where one is offered; New branch, a subtle icon button of a plus, as Refresh is, whose pop-up holds its form; Refresh branches, which posts `/api/git/fetch`, or, where the section says a sync can run (`syncable`), Sync in its place, which posts `/api/git/sync`, each label calling only its own route, its icon turning while either runs; ahead and behind as muted arrows and counts, with `m.tracking` as their accessible text; and Push, a plain button. It is shown once either the status or the branches are known, so a status that cannot be had leaves the branches to switch to; the arrows and Push wait for the status |
-| `src/usePopup.ts` | A pop-up opened by a button, as a disclosure: it closes on Escape, putting focus back on the button, on a press outside it and when focus moves outside it. Every pop-up a button opens uses it, the phone's drawer of the sidebar, the **Account** menu, the Workspaces page's switcher and People's **More actions** among them. It is called with the name of the component that calls it, which its panel carries as `data-component`, for `e2e/touch.spec.ts` to read off what opened. The stylesheet places the branch bar's pop-ups against the Changes heading's row, so they stay inside the card at any width |
+| `src/usePopup.ts` | A pop-up opened by a button, as a disclosure: it closes on Escape, putting focus back on the button, on a press outside it and when focus moves outside it. Every pop-up a button opens uses it, the phone's drawer of the sidebar, the **Account** menu, the Workspaces page's switcher and People's **More actions** among them. It is called with the name of the component that calls it, which its panel carries as `data-component`, which says what opened. The stylesheet places the branch bar's pop-ups against the Changes heading's row, so they stay inside the card at any width |
 | `public/favicon.svg` | The tab's icon, `*rc` in white on a black circle, which `index.html` links; Vite copies `public/` into the build as it is |
 | `src/TableScroll.tsx`, `src/markdownTables.ts`, `src/useTitle.ts`, `src/workspaceError.ts` | The box a table scrolls in, and `ROLE`, a table's roles said outright for one a phone draws as a list; the pipe tables of a help page; the browser tab's title; a failed workspace's sentence |
 | `src/Icons.tsx` | rcman's own icons, inline SVG strokes on one grid drawn in the text's colour and hidden from assistive technology; the button or text they are in carries the name, from `src/messages.ts`. A new icon is drawn here in the same way; the page takes no icon package |
@@ -439,136 +425,46 @@ the rest. Nothing of this is shown to the person.
   which jsdom lacks, and whose layout change and colour scheme a test brings
   about. jsdom has the `<dialog>` element but not its behaviour, so
   `src/test/fakeDialog.ts` stands in for `showModal()`, `close()` and Escape,
-  as `e2e/touch.spec.ts` proves the browser's own dialog behaves:
-  focus moves into it, Escape cancels it and closes it, and focus returns; what
-  it cannot do, keep the page behind out of reach, is proved in the browser. The tests that hold a guide in `docs/` to the page read its tables with
+  as the page relies on the browser's own dialog to behave:
+  focus moves into it, Escape cancels it and closes it, and focus returns; it
+  cannot keep the page behind out of reach. No test holds it, or
+  `src/test/fakeLayout.ts`, to a real browser ([tests.md](tests.md#what-the-tests-no-longer-check)). The tests that hold a guide in `docs/` to the page read its tables with
   `guideTable` in `src/test/guideTable.ts`, and the tests that read
   `src/styles.css` take its comments out with `uncommented` in
   `src/test/css.ts`.
-- **Browser tests** (Playwright): `e2e/*.spec.ts`, against the built frontend
-  served by the real backend from `tests/e2e_server.py` — workspaces on the
-  host runtime with the fake `claude`, the people in `e2e/people.ts`, an
-  administrator whose workspaces' Claude the world signs in as each is made
-  and another person whose it does not, and oauth2-proxy's identity header
-  set per test. The parts that are on no page are not in the browser tests.
-  No fake `claude` there shows a screen rcman does not recognise, so the
-  test of the administrators' warning plants `/api/attention`'s answer.
-  `e2e/touch.spec.ts` first proves what the stylesheet and the dialogs build on:
-  that Playwright's `isMobile` and `hasTouch` make the pointer coarse, and a
-  mouse does not, that a desktop's controls with a mouse are a mouse's size,
-  under a finger's, and that the native modal dialog takes focus, keeps it,
-  closes on Escape and gives it back. It then walks every page of the route
-  table at two phones' widths and a tablet's, on a touch screen, and a
-  desktop's with a mouse, with each
-  dialog and pop-up open and a workspace on each of its tabs, and fails on a
-  page wider than the window, a box that scrolls sideways, inside a dialog or a
-  pop-up too, but for those `SCROLL_ALLOWED` names (a data table's, a help
-  page's command), a control too small for the pointer, a field's text
-  small enough for a phone to zoom in on, an icon-only button with no name,
-  and what the design system's checks find (see
-  [Rules it keeps](#rules-it-keeps)); each exemption must be met; a planted
-  twin of each shows the walk sees it. It also goes from the list to a
-  workspace, to another and back on a phone. `e2e/layout.spec.ts` holds the
-  shell at two phones' widths and a desktop's: the top bar one row, the one
-  navigation as a sidebar or a drawer, with the administrators' group for
-  administrators only, the drawer closing on Escape, a page chosen and a press
-  outside it, every dialog a sheet or in the middle, and the Workspaces page:
-  the list a column of its own beside the panel on a desktop, its selected row
-  marked by the accent's bar on a quiet tint, and on a phone the panel under one
-  sticky bar of the way back and the switcher, whose sheet rises from the
-  screen's foot; the Settings page's parts, each title beside its form on a
-  desktop and over it on a phone; the help pages' contents, a column that stays
-  in view on a desktop and a disclosure over the article on a phone; a table
-  that scrolls sideways inside its card on a phone, the Versions page's, a cell
-  planted wider than the window showing the measurement sees it; People and the
-  Audit trail as lists at two phones' widths, with a long person and a failed
-  event planted, the box not scrolling, each row's shown cells inside it and
-  apart, its lead not squeezed (with a planted twin), People's More actions in view and a finger's size, and a planted twin,
-  the table not reflowed with its actions kept sticky at its right edge, which
-  the check catches; the menu of More actions inside the window and over the
-  rows, closed by Escape back to its button; People on a desktop a table with
-  its own buttons; Monitor's two tables as lists at the same widths, its answer planted
-  with a long address and name and figures not known, each row's shown cells inside it and
-  apart; and the Limits dialog, larger
-  than the others on a desktop.
+- **No browser tests.** No test drives the page in a real browser; what that leaves
+  unchecked is in [tests.md](tests.md#what-the-tests-no-longer-check).
 
-  Each run has a world and a port of its own, which `e2e/world.ts` names:
-  the world a folder under `/tmp`, with a name no other run has, the prefix
-  and a random UUID, whose exact shape the backend's `WORLDS` in
-  `tests/e2e_server.py` matches, and the port one the
-  system has free. Playwright loads the config again in each worker, so
-  `e2e/world.ts` keeps both in the environment, `RCMAN_E2E_DIR` and
-  `RCMAN_E2E_PORT`, which the workers and the backend inherit, and keeps
-  any already given there; `playwright.config.ts` gives the backend the
-  world as `WORLD` from there.
+### The screenshots
 
-  The world holds one public repository, `https://github.com/octo/widget`
-  (`SEEDED_ADDRESS` in `tests/e2e_server.py`), which the specs that make a
-  workspace from an address clone; `keep_off_github` gives every git command
-  the host runtime runs that may reach a remote, as `tests/git_fixtures.py`
-  judges one, the world's folder in place of github.com and refuses one not
-  told so, so that nothing typed into the page reaches the real GitHub (see
-  [tests.md](tests.md)).
-
-  The backend makes the world, and refuses a folder that already exists.
-  It holds the world as a held folder is held, and clears the worlds beside
-  it that a killed run left, those whose names `WORLDS` matches, and
-  nothing else that begins the same way, as a held folder's prefix is cleared: the
-  rules are in [tests.md](tests.md#what-a-killed-run-leaves). When it shuts
-  down — Playwright stops it with SIGTERM for that — or fails to start, it
-  stops the tmux servers on the sockets in the world's `tmux/` directory
-  and removes the world; it stops only those, in the world itself, when it
-  clears a world too.
-
-  So runs at the same time, from different checkouts or worktrees, or two
-  in one, do not share a world, a port or a tmux server. Two runs in one
-  checkout share `dist/`, which `make e2e` builds before each, and the
-  config's output folder, whose files one run's Playwright removes while
-  the other's still writes there; runs at the same time are each in a
-  checkout or worktree of their own.
-- **Whole-stack browser tests**: `e2e-stack/*.spec.ts` with
-  `playwright.stack.config.ts`, against the whole stack, rcman behind real Caddy and
-  oauth2-proxy in a container of the tests' engine — see [tests.md](tests.md#the-whole-stack).
-  They run in Playwright's own image, in a container that joins the stack's network. They are
-  run on demand by `make check-ui` (not by `make e2e`, `make check` or `make test-container`),
-  which needs `make frontend-setup` once, like `make e2e`: the browser's container uses the
-  frontend's packages. The config takes the port Caddy listens on in the stack's network from
-  `RCMAN_STACK_PORT`, which `tests/container/test_stack_in_a_browser.py` sets, and refuses to load
-  without it. A spec that needs something done inside the stack, such as a repository in a
-  workspace (`stack.py repository`), runs the command in `RCMAN_STACK_EXEC`, a JSON argv
-  prefix that hands it to the suite (`tests/container/stack_exec.mjs`), which runs it in the
-  stack's container. The specs that make a workspace from a GitHub address clone from the
-  stack's stand-in GitHub.
-
-Every config gives Chromium `--disable-dev-shm-usage`: `/dev/shm` is small in a container, a
-workspace's and the browser's container of the whole stack among them;
-`tests/test_e2e_server.py` holds every config to it, `playwright.screenshots.config.ts`,
-which `make screenshots` runs and no test does ([tests.md](tests.md#screenshots)), among them.
-
-Each Playwright config writes to an output folder of its own under
-`test-results/`, its `outputDir`, because Playwright empties a run's output
-folder as the run starts.
+`make screenshot` ([tests.md](tests.md#screenshots)) captures a page of the built frontend
+served by the real backend from `devtools/world.py`: workspaces on the host runtime with the fake
+`claude`, and the people alice, an administrator whose Claude account is signed in, and bob,
+whose is not, each signed in by oauth2-proxy's identity header, which the capture sets for each
+browser context. Run as `python -m devtools.world`, the backend serves on a port of 127.0.0.1
+the system gives, prints its origin, and shuts down when its standard input closes or on
+SIGTERM. It makes its world in a held folder under `/tmp` (`held` in
+`devtools/held_folders.py`), holds it while it runs, and when it shuts down, or fails to start,
+stops the tmux servers in it and removes it; one a killed run left is cleared by the next, by
+the rules in [tests.md](tests.md#what-a-killed-run-leaves). So runs at the same time do not
+share a world, a port or a tmux server. The world has no repository and reaches no GitHub:
+`frontend/screenshots/capture.ts` plants the screenshot workspace's repository in what the page
+fetches. The capture gives Chromium `--disable-dev-shm-usage`, since `/dev/shm` is small in a
+container, a workspace's among them, and runs in Node, which strips its types, so it imports
+`src/messages.ts` by its file name (`allowImportingTsExtensions` in `tsconfig.json`); Node runs
+no `.tsx`, so it reads the pages' paths from `src/Pages.tsx` and `src/AdminPages.tsx` as text.
 
 ### Limits and time in the tests
 
-Every limit a test or a config gives is a hang guard of `src/test/hangGuard.ts`, or 0 where a
-config's bound is none; no test waits for a length of time. Each tier has a test's guard and a
-step's, half of it: the component tests' (`UNIT_*`), a tier of their own, since a step in jsdom
-is a render and a fake fetch; the browser tests' and the screenshots' (`BROWSER_*`), the host
-tests' guard and `HANG_GUARD`; and the whole stack's (`STACK_*`), whose spec is bounded by the
-container tests' hang guard and outlasted by the podman client's kill of the specs' run
-([tests.md](tests.md#the-hang-guard)). `tests/test_hang_guard.py` holds the values to those.
+Every limit a test or the config gives is a hang guard of `src/test/hangGuard.ts`, or 0; no
+test waits for a length of time. The component tests have a test's guard and a step's, half of it
+(`UNIT_*`), a tier of their own, since a step in jsdom is a render and a fake fetch.
+`tests/test_hang_guard.py` holds the values.
 
 - `vite.config.ts` gives every test, hook and teardown the component tests' guard, and
   `src/test/setup.ts` gives Testing Library's `findBy*` and `waitFor` the step
   (`asyncUtilTimeout`). `vi.waitFor` ignores that, and its own bound is far shorter, so a test
   calls it only through `waitForIt` (`src/test/waitForIt.ts`), which gives it the step.
-- Each Playwright config sets the test's guard (`timeout`), the step for `expect`, every action
-  and navigation, and, in `playwright.config.ts`, the backend's start and its stop
-  (`webServer.timeout`, `gracefulShutdown`), and `globalTimeout: 0`: each test is bounded, and a
-  run's bound would name no test. `playwright.screenshots.config.ts` takes them with the rest of
-  the browser tests' config. A person's first workspace in the whole stack, which copies the
-  default image, is waited for within the step like any other.
 - Fake timers are plain `vi.useFakeTimers()`, which only the test moves. `src/test/setup.ts`
   gives Testing Library Jest's `advanceTimersByTime` in Vitest's place, so a `findBy*` or
   `waitFor` under fake timers moves the fake clock by its own interval between looks; a test
@@ -584,10 +480,6 @@ container tests' hang guard and outlasted by the podman client's kill of the spe
   or with every timer waiting run and then the renders and effects they asked for
   (`pendingTimersRun` in `src/test/turn.ts`), where what the page might leave on a timer has no
   known length.
-  In the browser, `recordEvents` and `recorded` in `e2e/nav.ts` record a press's own events in the
-  capture phase, which a spec waits for before one `frame`; `drawn` waits two frames and every
-  animation that ends, before a measurement or a screenshot; and `e2e/touch.spec.ts` tells a
-  covered button by what `elementFromPoint` finds at its middle, where `hover()` points.
 
 The timing guard (`tests/test_timing_guard.py`, [tests.md](tests.md#time-in-tests)) holds every
-test, every file under `src/test/`, `e2e/` and `e2e-stack/`, and the four configs to this.
+test, every file under `src/test/`, and `vite.config.ts` to this.

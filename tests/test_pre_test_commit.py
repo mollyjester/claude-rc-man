@@ -313,7 +313,6 @@ def test_a_command_that_runs_no_tests_starts_no_process(repo, monkeypatch):
         "uv run python -m pytest",
         ".venv/bin/pytest",
         "npx vitest run",
-        "npx playwright test",
         "vitest",
         "git status; make test",
         "git status\nmake test",
@@ -350,7 +349,6 @@ def test_test_commands_are_recognised(repo, command):
         "pytest --co",
         "pytest -h",
         "npx vitest --help",
-        "npx playwright test --help",
         "",
     ],
 )
@@ -361,11 +359,9 @@ def test_other_commands_are_not(repo, command):
 def test_an_npm_script_counts_by_what_it_runs(tmp_path):
     write(
         tmp_path / "package.json",
-        json.dumps(
-            {"scripts": {"test": "vitest run", "e2e": "playwright test", "lint": "biome ci"}}
-        ),
+        json.dumps({"scripts": {"test": "vitest run", "lint": "biome ci"}}),
     )
-    for command in ("npm test", "npm run e2e", "npm run test -- --reporter dot"):
+    for command in ("npm test", "npm run test -- --reporter dot"):
         assert pre_test_commit.test_directory(command, tmp_path) == tmp_path, command
     for command in ("npm run lint", "npm ci", "npm run missing"):
         assert pre_test_commit.test_directory(command, tmp_path) is None, command
@@ -442,15 +438,13 @@ def test_make_runs_where_its_directory_option_says(repo, command):
     [
         ("test", True),
         ("test-container", True),
-        ("check-ui", True),
-        ("check-containers", True),
         ("check", True),
-        ("e2e", True),
         ("frontend-test", True),
         ("lint", False),
         ("format", False),
         ("setup", False),
         ("frontend-build", False),
+        ("screenshot", False),
     ],
 )
 def test_this_repositorys_make_targets_count_by_their_recipes(target, runs_tests):
@@ -461,7 +455,6 @@ def test_this_repositorys_make_targets_count_by_their_recipes(target, runs_tests
 def test_this_repositorys_frontend_scripts_count_by_what_they_run():
     frontend = REPO / "frontend"
     assert pre_test_commit.test_directory("npm test", frontend) == frontend
-    assert pre_test_commit.test_directory("npm run e2e", frontend) == frontend
     assert pre_test_commit.test_directory("npm run lint", frontend) is None
 
 
@@ -1001,7 +994,6 @@ def test_the_wired_command_commits_before_tests(repo):
         "frontend/node_modules/x/index.js",
         "frontend/dist/index.html",
         "frontend/test-results/run.json",
-        "frontend/playwright-report/index.html",
     ],
 )
 def test_what_git_add_must_not_sweep_in_is_ignored(path):

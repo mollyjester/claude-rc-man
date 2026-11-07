@@ -49,7 +49,7 @@ log = logging.getLogger("rcman.terminals")
 router = APIRouter(tags=["terminal"])
 
 # uvicorn's implementation of WebSockets that rcman runs with (its unit's ExecStart and the
-# browser tests' backend): the one whose keepalive ping ends a terminal whose page vanished.
+# screenshots' backend): the one whose keepalive ping ends a terminal whose page vanished.
 WEBSOCKETS = "websockets-sansio"
 # How often an open terminal looks whether its person and its workspace are still as it opened.
 REVOCATION_SECONDS = 5.0

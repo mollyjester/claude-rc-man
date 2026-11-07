@@ -11,14 +11,10 @@
     "noFallthroughCasesInSwitch": true,
     "skipLibCheck": true,
     "isolatedModules": true,
+    // screenshots/capture.ts runs in Node by type stripping, which resolves an import by its
+    // file name, .ts included.
+    "allowImportingTsExtensions": true,
     "types": ["vitest/globals", "@testing-library/jest-dom", "node"]
   },
-  "include": [
-    "src",
-    "e2e",
-    "e2e-stack",
-    "vite.config.ts",
-    "playwright.config.ts",
-    "playwright.stack.config.ts"
-  ]
+  "include": ["src", "screenshots", "vite.config.ts"]
 }
