@@ -582,8 +582,7 @@ import the installer; `rcman_upgrade.Upgrades` is `app.state.upgrade`.
   those properties for each of the two units, an `ActiveState` among `ACTIVE_STATES`; anything
   else is an error, never idle. The service in one of `RUNNING` is a run under way, and the
   status's fields are given only where the status names the same invocation. Otherwise the
-  status (`read_status`: exactly its fields once the older wrapper's `LEFTOVER` key is dropped,
-  as the installer's own `read_status` does, of their types, the error within `ERROR_LENGTH`)
+  status (`read_status`: exactly its fields, of their types, the error within `ERROR_LENGTH`)
   says how the last one ended; none, or one it does not take, is `unknown`, never an error. A
   status that says `running` is `failed` where it is of another boot (`BOOT_ID`) or systemd
   shows the service not running, and `running` only where systemd cannot be read.
@@ -623,9 +622,9 @@ import the installer; `rcman_upgrade.Upgrades` is `app.state.upgrade`.
   report carry it as `rcman_upgrading`, for the pages to say why they offer none of them.
 - **Tests.** `tests/test_rcman_upgrade.py` holds the report's shape and every reason, the states
   from recorded `systemctl show` output (`shown()`, which the real-machine checklist compares
-  with the real thing), malformed output and status, the release read once, the admission's
-  race and locks, `rcman_upgrading` from a creation, a clone and a roll-out, and an upgrade and a
-  rebuild each refusing the other.
+  with the real thing), malformed `systemctl show` output, the release read once, the
+  admission's race and locks, `rcman_upgrading` from a creation, a clone and a roll-out, and an
+  upgrade and a rebuild each refusing the other.
 
 ## Monitor
 

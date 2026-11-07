@@ -230,13 +230,7 @@ The status, `upgrade.STATUS`, is `/opt/rcman/upgrade/status.json`: root's and gr
 `STATUS_MODE` (0640), written whole by a rename (`write_status`, which refuses where the
 installer's folder is not there rather than make it, so that no record is left: no status, or
 one `read_status` does not take, reads to rcman as an upgrade whose state is unknown), and read
-back by
-`read_status`, which takes only a JSON object with exactly `FIELDS` once it has dropped
-`LEFTOVER`, a key outside `FIELDS` that the wrapper of an earlier release writes: the first
-upgrade from the web interface onto this release is finished by that wrapper, still in memory,
-and without the drop `--finish` would take the status of an upgrade that succeeded for none and
-mark it failed. rcman's own `read_status` drops it too (see
-[backend.md](backend.md#upgrading-rcman)):
+back by `read_status`, which takes only a JSON object with exactly `FIELDS`:
 
 | Field | Value |
 |---|---|
