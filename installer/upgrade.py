@@ -38,11 +38,6 @@ STATES = ("running", "succeeded", "failed")
 # the unit that ran it ($INVOCATION_ID); when it started and finished; the commit of the
 # current release before and after; and the last line of what went wrong.
 FIELDS = ("state", "boot_id", "invocation", "started", "finished", "from", "to", "error")
-# A key no longer in FIELDS that a status read may still hold, dropped before it is checked: the
-# first upgrade from the web interface onto this release is finished by the old wrapper, still in
-# memory, which writes it; read with it, the status is not one, and --finish would mark the
-# upgrade that succeeded failed.
-LEFTOVER = "notices"
 ERROR_LENGTH = 500  # the most of the error line kept
 BOOT_ID = Path("/proc/sys/kernel/random/boot_id")
 
@@ -300,10 +295,7 @@ def read_status(path: Path | None = None) -> dict | None:
         found = json.loads((path or STATUS).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
-    if not isinstance(found, dict):
-        return None
-    found.pop(LEFTOVER, None)
-    if set(found) != set(FIELDS):
+    if not isinstance(found, dict) or set(found) != set(FIELDS):
         return None
     return found if found["state"] in STATES else None
 

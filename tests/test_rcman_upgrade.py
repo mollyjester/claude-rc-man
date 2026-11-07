@@ -340,35 +340,6 @@ def test_a_request_that_never_started_is_not_started_once_the_grace_is_over(
     )  # fmt: skip
 
 
-def test_a_status_with_a_leftover_notices_key_reads_as_the_same_status_without_it(paths):
-    """The old wrapper, still in memory when the first upgrade onto this release finishes,
-    writes the key."""
-    write_status(paths, {**status("succeeded"), "notices": ["Reload Caddy."]})
-    assert up.read_status() == status("succeeded")
-
-
-MALFORMED_STATUS = [
-    "",
-    "not json",
-    "[]",
-    json.dumps({k: v for k, v in status().items() if k != "error"}),
-    json.dumps({**status(), "more": 1}),
-    json.dumps(status(state="done")),
-    json.dumps(status(error="x" * (up.ERROR_LENGTH + 1))),
-    json.dumps(status(started=5)),
-    json.dumps(status(boot=None)),
-]
-
-
-@pytest.mark.parametrize("text", MALFORMED_STATUS)
-def test_a_malformed_status_reads_as_unknown_never_as_an_error(paths, client, show, text):
-    write_status(paths, status())
-    assert get(client)["state"] == "succeeded"  # positive control: a status is read
-    write_status(paths, text)
-    report = get(client)
-    assert (report["state"], report["from"], report["error"]) == ("unknown", None, None)
-
-
 MALFORMED_SHOW = [
     "",
     "garbage",

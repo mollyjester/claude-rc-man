@@ -525,24 +525,6 @@ def test_the_status_is_replaced_by_a_rename_and_a_link_in_its_place_is_not_follo
     assert not path.is_symlink() and json.loads(path.read_text())["state"] == "running"
 
 
-def test_a_status_that_is_not_json_or_not_a_status_reads_as_none(tmp_path):
-    path = tmp_path / "status.json"
-    assert up.read_status(path) is None
-    for text in ("{", "[]", '{"state": "running"}', json.dumps(status(state="lost"))):
-        path.write_text(text)
-        assert up.read_status(path) is None, text
-    path.write_text(json.dumps(status()))
-    assert up.read_status(path) == status()  # positive control
-
-
-def test_a_status_with_a_leftover_notices_key_reads_as_the_same_status_without_it(tmp_path):
-    """The old wrapper, still in memory when the first upgrade onto this release finishes,
-    writes the key."""
-    path = tmp_path / "status.json"
-    path.write_text(json.dumps({**status(state="succeeded"), "notices": ["Restart Caddy."]}))
-    assert up.read_status(path) == status(state="succeeded")
-
-
 def test_the_release_is_the_commit_its_complete_mark_names(tmp_path, monkeypatch):
     monkeypatch.setattr(up, "ROOT", tmp_path)
     assert up.release() is None

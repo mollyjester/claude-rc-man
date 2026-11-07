@@ -45,10 +45,6 @@ COMMIT = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 
 # The status's fields and states, and the longest error it holds (installer/upgrade.py).
 FIELDS = ("state", "boot_id", "invocation", "started", "finished", "from", "to", "error")
-# A key no longer in FIELDS that a status may still hold, dropped before it is checked: the first
-# upgrade from the web interface onto this release is finished by the old wrapper, still in
-# memory, which writes it; read with it, the status is not one, and the report says unknown.
-LEFTOVER = "notices"
 STATES = ("running", "succeeded", "failed")
 ERROR_LENGTH = 500
 
@@ -130,16 +126,13 @@ def _text(value) -> bool:
 
 def read_status(path: Path | None = None) -> dict | None:
     """The status at ``path`` (STATUS), or None where there is none, rcman cannot read it, or it
-    is not one: exactly FIELDS once LEFTOVER is dropped, a state of STATES, text or null where
-    text is, and an error no longer than ERROR_LENGTH."""
+    is not one: exactly FIELDS, a state of STATES, text or null where text is, and an error no
+    longer than ERROR_LENGTH."""
     try:
         found = json.loads((path or STATUS).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
-    if not isinstance(found, dict):
-        return None
-    found.pop(LEFTOVER, None)
-    if set(found) != set(FIELDS) or found["state"] not in STATES:
+    if not isinstance(found, dict) or set(found) != set(FIELDS) or found["state"] not in STATES:
         return None
     if not isinstance(found["boot_id"], str):
         return None
