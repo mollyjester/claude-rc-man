@@ -98,12 +98,15 @@ def within_the_guard(found, what: str):
 
 
 def wait_state(world, wanted, named=False):
-    """The server once it is read as ``wanted``; with ``named``, once its session's name is
-    read too, which a screen still being drawn may not show yet."""
+    """The server once it is read as ``wanted``; with ``named``, once its session's name and
+    its environment's URL are read too. A ready screen is drawn line by line: it is read as
+    ready from its Capacity line, before the name's line below it and the URL's below that
+    are drawn, and the name's line is whole once the URL is read."""
 
     def found():
         server = world.server.status()
-        if server and server["state"] == wanted and (server["session_name"] or not named):
+        drawn = server and (not named or (server["session_name"] and server["environment_url"]))
+        if drawn and server["state"] == wanted:
             return server
         return None
 
@@ -220,7 +223,7 @@ def test_start_trust_confirm_ready_stop_resume_forget(world):
 
     confirmed = world.server.confirm("y")
     assert confirmed["server"]["state"] in ("connected", "ready")
-    ready = wait_state(world, "ready")
+    ready = wait_state(world, "ready", named=True)
     assert ready["session_name"].startswith("pfx-")
     assert ready["environment_url"].startswith(rec.ENVIRONMENT_URL_PREFIX)
 
@@ -234,7 +237,7 @@ def test_start_trust_confirm_ready_stop_resume_forget(world):
 
     resumed = world.server.resume("pfx")
     assert resumed["server"]["state"] in ("connected", "ready")
-    assert wait_state(world, "ready")["session_name"] == ready["session_name"]
+    assert wait_state(world, "ready", named=True)["session_name"] == ready["session_name"]
 
     world.server.stop()
     assert world.server.forget() == {"forgotten": 1}
@@ -280,13 +283,13 @@ def test_a_server_that_died_can_be_resumed(world):
     log_in(world)
     world.server.start("pfx")
     world.server.confirm("y")
-    ready = wait_state(world, "ready")
+    ready = wait_state(world, "ready", named=True)
     _dead, pid = world.server.tmux.pane()
     os.kill(pid, signal.SIGKILL)
     died = wait_state(world, "exited")
     assert died["exit_code"] == 128 + signal.SIGKILL
     assert world.server.resume("pfx")["server"]["state"] in ("connected", "ready")
-    assert wait_state(world, "ready")["session_name"] == ready["session_name"]
+    assert wait_state(world, "ready", named=True)["session_name"] == ready["session_name"]
 
 
 def test_a_server_whose_claude_finds_itself_signed_out_is_logged_out(world, tmp_path):
@@ -361,7 +364,7 @@ def test_yes_at_the_remote_control_prompt_starts_the_server(world):
     at_the_remote_control_prompt(world)
     confirmed = world.server.confirm("y")
     assert confirmed["server"]["state"] in ("connected", "ready")
-    ready = wait_state(world, "ready")
+    ready = wait_state(world, "ready", named=True)
     assert ready["session_name"].startswith("pfx-")
     assert refused(world.server.confirm, "y").code == "nothing_to_confirm"  # no longer asked
 
