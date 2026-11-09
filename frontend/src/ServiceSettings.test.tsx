@@ -24,6 +24,7 @@ const MONITORING = {
   host: true,
   people: true,
   containers: true,
+  storage: true,
 };
 const FORWARDING = { enabled: false, idle_minutes: 5, absolute_hours: 12 };
 
@@ -99,7 +100,7 @@ test("people who are not administrators are sent on from the Service settings pa
 
 // --- monitoring, moved from the Monitor page ---
 
-test("the monitoring form shows the settings saved, two whole numbers in seconds and the three scopes", async () => {
+test("the monitoring form shows the settings saved, two whole numbers in seconds and the four scopes", async () => {
   api();
   renderApp(PATH);
   const usage = await field(monitoring(), m.monitorUsageInterval);
@@ -121,6 +122,7 @@ test("the monitoring form shows the settings saved, two whole numbers in seconds
     ["host", m.monitorHost],
     ["people", m.monitorPeople],
     ["containers", m.monitorContainers],
+    ["storage", m.monitorStorage],
   ]) {
     const box = within(part).getByRole("checkbox", { name: label });
     expect(box).toBeChecked();
@@ -131,7 +133,7 @@ test("the monitoring form shows the settings saved, two whole numbers in seconds
   }
 });
 
-test("Save sends all five monitoring settings, the intervals as whole numbers, and says they were saved", async () => {
+test("Save sends all six monitoring settings, the intervals as whole numbers, and says they were saved", async () => {
   const fake = api();
   renderApp(PATH);
   const usage = await field(monitoring(), m.monitorUsageInterval);
@@ -147,6 +149,7 @@ test("Save sends all five monitoring settings, the intervals as whole numbers, a
     host: false,
     people: true,
     containers: true,
+    storage: true,
   });
   await waitFor(() => expect(statusOf(part)).toHaveTextContent(m.monitorSaved));
   // the other card saved nothing and says nothing

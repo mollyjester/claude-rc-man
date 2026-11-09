@@ -1870,6 +1870,20 @@ def test_a_restart_collects_the_images_nothing_refers_to_and_keeps_the_rest(
     assert runtime.exists(rt.container_name(named)) and moved
 
 
+def test_a_stale_image_id_beside_a_stored_plan_keeps_no_image(service, settings, runtime):
+    """A workspace made from the default image and later given a plan keeps the default image's
+    id in its row, which nothing reads once it has a plan: it keeps no image."""
+    stale_name, pinned_name = "registry.example.com/stale:1", "registry.example.com/pinned:1"
+    stray_images(runtime, stale_name, pinned_name)
+    planned = ready_with_plan(service, settings, runtime, a_plan())
+    set_environment(settings, planned, a_plan().to_json(), image_id=runtime.images[stale_name].id)
+    pinned = insert(settings, "pinned", "ready", None)  # no plan: its image_id is what it runs
+    set_environment(settings, pinned, None, image_id=runtime.images[pinned_name].id)
+    service._collect_images()
+    assert stale_name not in runtime.images
+    assert pinned_name in runtime.images  # the control: a row with no plan keeps its image
+
+
 def test_an_image_a_container_is_made_from_is_not_collected(service, settings, runtime):
     stray_images(runtime, STRAY)
     runtime.create(rt.Spec("rcman-ws-9", slot=1, workspace=9, person=1, image=STRAY))

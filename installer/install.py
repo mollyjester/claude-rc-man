@@ -1420,6 +1420,15 @@ def image_context(context: Path) -> None:
     os.chmod(context / "Containerfile", 0o644)
 
 
+def build_argv(image: str, context: Path) -> list[str]:
+    """The podman arguments that build ``image`` from the Containerfile in the folder
+    ``context``, keeping no image of each step (--layers=false): a plain build keeps one,
+    which nothing names. The images are built again only when their files change, so the
+    cache those step images make is worth little."""
+    return ["build", "--layers=false", "--tag", image, "--file", str(context / "Containerfile"),
+            str(context)]  # fmt: skip
+
+
 def ensure_image() -> list[str]:
     """The default workspace image, built with rcman's Podman unless it is there."""
     uid, image = app_uid(), workspace_image()
@@ -1428,8 +1437,7 @@ def ensure_image() -> list[str]:
     context = Path(tempfile.mkdtemp(prefix="rcman-image."))
     try:
         image_context(context)
-        run(as_rcman_podman(uid, "build", "--tag", image, "--file",
-                            str(context / "Containerfile"), str(context)))  # fmt: skip
+        run(as_rcman_podman(uid, *build_argv(image, context)))
     finally:
         shutil.rmtree(context, ignore_errors=True)
     return [f"image {image}"]
@@ -1477,8 +1485,7 @@ def ensure_devcontainer_builder() -> list[str]:
             shutil.copytree(BUILDER_DIR, context, dirs_exist_ok=True)
             for path in (context, *context.rglob("*")):  # rcman reads it, not the clone's owner
                 os.chmod(path, 0o755 if path.is_dir() else 0o644)
-            run(as_rcman_podman(uid, "build", "--tag", image, "--file",
-                                str(context / "Containerfile"), str(context)))  # fmt: skip
+            run(as_rcman_podman(uid, *build_argv(image, context)))
         finally:
             shutil.rmtree(context, ignore_errors=True)
         changes.append(f"image {image}")

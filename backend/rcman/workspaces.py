@@ -221,8 +221,9 @@ class Workspace:
     # What the workspace may use (limits.py), beyond what its person's limits hold it to.
     limits: Limits = Limits()
     # The id of rcman's default image its container was made from, so that one made again is
-    # made from it and not from a newer default; None for a workspace with a plan, whose plan
-    # holds the id, and until the first container of an older row is made.
+    # made from it and not from a newer default; None until the first container of an older row
+    # is made. Read only while the workspace has no plan: a plan holds its own image's id, and
+    # what a workspace given a plan later still has here is stale, and keeps no image.
     image_id: str | None = None
     # The digest of the devcontainer.json it was made or last rebuilt from (devcontainer.digest);
     # None where it is not known.
@@ -3002,10 +3003,10 @@ class Workspaces:
         """Remove the images in the runtime's storage that no workspace refers to: pulled
         images and old default images that nothing stored names, and what a load that was
         killed left. Kept: what a stored plan names (its image and its id), the id of the
-        default image each workspace was made from, the image built for each workspace, and
-        what the runtime itself keeps (the current default image and any made after it, the
-        builder's). An image a container is made from stays whatever is said here, since it is
-        never removed by force.
+        default image a workspace with no stored plan was made from, the image built for each
+        workspace, and what the runtime itself keeps (the current default image and any made
+        after it, the builder's, an image a container is made from, and every image a kept one
+        is built on).
         Nothing is collected while a workspace is being made, whose image may be pulled and not
         yet in a plan, or when a stored plan cannot be read: what is kept is then not known."""
         if not self.prunes:
@@ -3025,13 +3026,14 @@ class Workspaces:
         for workspace in everything:
             names.add(built_name(workspace.id))
             names.add(built_name(workspace.id, NEXT_TAG))  # a rebuild's, until it is moved
-            if workspace.image_id:
-                ids.add(workspace.image_id)
             try:
                 plan = self._plan(workspace)
             except RuntimeFailed:
                 return
-            if plan is not None:
+            if plan is None:
+                if workspace.image_id:  # beside a plan it is stale: the plan holds the id
+                    ids.add(workspace.image_id)
+            else:
                 names.add(plan.image)
                 if plan.image_id:
                     ids.add(plan.image_id)

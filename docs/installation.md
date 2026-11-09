@@ -228,7 +228,8 @@ run and kept.
      lock file that pins it, and the image is named after the content of the
      folder, so that a change makes a new image. Older ones are removed at the
      end, once rcman has restarted with the new one's name, and only those
-     nothing runs from. It is built as the default image is, with the network;
+     nothing runs from. It is built as the default image is, with the network.
+     Neither build keeps an image of each of its steps;
    - the Claude Code store, `/var/lib/rcman/claude`: the version rcman is
      tested with (`helpers/claude-version`), downloaded and checked against its
      release's checksum (see [Claude Code versions](claude-version.md)). The store

@@ -16,11 +16,13 @@ router = APIRouter(prefix="/api/monitor", tags=["monitor"], dependencies=[Depend
 
 @router.get("")
 def snapshot(request: Request) -> dict:
-    """What is known now. ``scopes``: which of ``host``, ``people`` and ``containers`` are
-    collected; ``usage`` and ``disk``: when each round last collected (``collected_at``, null
-    before its first) and why its last run failed (``error``, null where it did not). ``host``,
-    ``people`` and ``containers`` are null for a scope that is off; any figure not known is
-    null, never 0. CPU is a percent of one core."""
+    """What is known now. ``scopes``: which of ``host``, ``people``, ``containers`` and
+    ``storage`` are collected; ``usage`` and ``disk``: when each round last collected
+    (``collected_at``, null before its first) and why its last run failed (``error``, null where
+    it did not); ``refreshing``: whether a round is asked for or under way. ``host``,
+    ``storage`` (rcman's own use of the disk, by part), ``people`` and ``containers`` are null
+    for a scope that is off; any figure not known is null, never 0. CPU is a percent of one
+    core."""
     return request.app.state.monitor.snapshot()
 
 
@@ -41,3 +43,16 @@ def save(
     record.target = json.dumps(body.model_dump())
     request.app.state.monitor.save(body)
     return {"settings": body.model_dump()}
+
+
+@router.post("/refresh", status_code=202)
+def refresh(
+    request: Request,
+    _record: Record = Depends(Recorder("monitor.refresh")),
+) -> dict:
+    """Collect again at once: a round of each that is on, whatever its interval. A round under
+    way, or already asked for, is joined, from this administrator or another, so no second of it
+    starts. The figures come in with ``GET /api/monitor``, whose ``refreshing`` is true until
+    they do; a round that fails says so in its ``error``."""
+    request.app.state.monitor.refresh()
+    return {"refreshing": True}

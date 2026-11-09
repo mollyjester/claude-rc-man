@@ -595,6 +595,7 @@ CALLS = {
     ("GET", "/api/monitor/settings"): {},
     # the monitor's defaults, from its settings model
     ("PUT", "/api/monitor/settings"): {"json": monitor_defaults.model_dump()},
+    ("POST", "/api/monitor/refresh"): {},
     ("GET", "/api/forwarding/settings"): {},
     # the forwarding defaults, from its settings model
     ("PUT", "/api/forwarding/settings"): {"json": forwarding_defaults.model_dump()},

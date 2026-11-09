@@ -210,6 +210,13 @@ and a workspace's **Terminal** tab open with `sleep` running in its shell:
    message, and the approved version is the one written down.
 4. The Terminal tab says rcman is restarting and offers **Reconnect**, and neither the
    shell nor its `sleep` is left in the workspace (`podman top` as `rcman`).
+5. On the host's own Podman (the container tests ran on another version): as `rcman`,
+   `podman images -a --format json` gives each image `ParentId` and `Containers`; after the
+   upgrade's collection, the nameless images under images that are kept are still there, and
+   the old nameless images that nothing is built on are gone. So is the old default image a
+   workspace was first made from, once that workspace has a stored plan and nothing else keeps
+   the image: on the live host, `localhost/rcman-workspace:d3e200d4cd43`, which workspace 9's
+   stale `image_id` kept.
 
 ## Upgrading from the web interface
 
@@ -350,6 +357,12 @@ engine has no user manager of rcman's, so this is checked here.
 3. **A failure is said once.** Stop the Podman service rcman uses for a moment, wait past a
    disk round, and start it again: the journal (`journalctl -u rcman`) holds one line from
    `rcman.monitor` when the disk round started to fail and one when it collected again.
+4. **Storage and Refresh on the host's Podman.** The recording of `system df --format json`
+   (`tests/fakes/podman-monitor/df-summary.json`) is from the tests' engine, not the host's
+   Podman: as `rcman`, run it and check that its `Images` row has `RawSize` in bytes. Press
+   **Refresh**: it reads **Refreshing…** until both rounds are in, a second press meanwhile
+   starts no second `podman system df` (`ps` as `rcman`), and the **Storage** card then shows
+   every part and their total.
 
 ## The shared sign-in
 

@@ -137,26 +137,23 @@ def base_image(podman_service) -> str:
 @pytest.fixture(scope="session")
 def default_image(podman_service, tmp_path_factory) -> str:
     """The default workspace image, built on the engine from the build context the installer
-    makes for it."""
+    makes for it, with the installer's own arguments."""
     name = ins.workspace_image()  # the installer's own name for it
     context = tmp_path_factory.mktemp("default-image")
     ins.image_context(context)
-    built = podman_service.cli(
-        "build", "-q", "-t", name, "-f", str(context / "Containerfile"), str(context),
-        timeout=CONTAINER_HANG_GUARD,
-    )  # fmt: skip
+    built = podman_service.cli(*ins.build_argv(name, context), timeout=CONTAINER_HANG_GUARD)
     assert built.returncode == 0, built.stdout + built.stderr
     return ps.hold(podman_service, name)
 
 
 @pytest.fixture(scope="session")
 def builder_image(podman_service, tmp_path_factory) -> str:
-    """The builder image, built on the engine from the installer's own folder."""
+    """The builder image, built on the engine from the installer's own folder, with the
+    installer's own arguments."""
     context = tmp_path_factory.mktemp("builder-image")
     shutil.copytree(ins.BUILDER_DIR, context, dirs_exist_ok=True)
     name = ins.devcontainer_builder_image()
-    built = podman_service.cli("build", "-q", "-t", name, "--file", str(context / "Containerfile"),
-                               str(context), timeout=CONTAINER_HANG_GUARD)  # fmt: skip
+    built = podman_service.cli(*ins.build_argv(name, context), timeout=CONTAINER_HANG_GUARD)
     assert built.returncode == 0, built.stdout[-2000:] + built.stderr[-4000:]
     return ps.hold(podman_service, name)
 

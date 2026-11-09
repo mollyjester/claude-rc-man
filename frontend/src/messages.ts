@@ -417,6 +417,7 @@ export const m = {
     "claude.clear_failed": "Removed a Claude Code version's failed mark",
     "rcman.upgrade": "Asked for rcman to be upgraded",
     "monitor.settings": "Changed the monitoring settings",
+    "monitor.refresh": "Refreshed the monitor's figures",
     "forwarding.settings": "Changed the port forwarding settings",
     "terminal.open": "Opened a terminal",
     "terminal.close": "A terminal closed",
@@ -703,7 +704,11 @@ export const m = {
   // these words, which src/monitor-guide.test.ts holds it to.
   monitorTitle: "Monitor",
   monitorIntro:
-    "What the host, each person and each workspace container use now, as rcman last collected it.",
+    "What the host, rcman's own storage, each person and each workspace container use now, as rcman last collected it.",
+  // The button beside the title that collects every reading again at once, and what it says
+  // while it does.
+  monitorRefresh: "Refresh",
+  monitorRefreshing: "Refreshing…",
   // The two rounds, by name, in the page's live region and in the guide.
   monitorUsage: "Usage",
   monitorDisk: "Disk",
@@ -716,6 +721,15 @@ export const m = {
   monitorHost: "Host",
   monitorPeople: "People",
   monitorContainers: "Containers",
+  monitorStorage: "Storage",
+  // The parts of rcman's own use of the disk, and their total.
+  monitorImages: "Images",
+  monitorWorkspaceVolumes: "Workspace volumes",
+  monitorOtherVolumes: "Other volumes",
+  monitorClaudeVersions: "Claude Code versions",
+  monitorStorageTotal: "Total",
+  monitorStorageLine:
+    "What of the disk is rcman's own. Images count each layer once, layers that belong to no image among them.",
   monitorCpu: "CPU",
   monitorMemory: "Memory",
   monitorMemoryWithSwap: "Memory with swap",
@@ -723,6 +737,8 @@ export const m = {
   monitorPerson: "Person",
   monitorState: "State",
   monitorFilesystems: "Filesystems",
+  monitorFilesystemsLine:
+    "Each is the whole filesystem: what everything on it uses, not only rcman. rcman's own share is under Storage.",
   monitorNoContainers: "No workspaces.",
   // Beside the host's CPU, a percent of one core.
   monitorCores: (cores: number) =>
@@ -754,7 +770,7 @@ export const m = {
   monitorUsageIntervalHelp: "How often CPU, memory and processes are read. A read costs little.",
   monitorDiskInterval: "Disk interval (seconds)",
   monitorDiskIntervalHelp:
-    "How often the disk of every workspace is read. A read walks every file, so keep it rare.",
+    "How often the disk of every workspace, and rcman's own storage, is read. A read walks every file, so keep it rare.",
   monitorCollect: "Collect",
   monitorCollectHelp: "A part switched off is neither collected nor shown on the Monitor page.",
   monitorSave: "Save monitoring settings",

@@ -433,6 +433,37 @@ def test_an_image_with_no_name_stays_while_it_is_young_enough_to_belong_to_a_bui
     assert removed == ["2" * 64, "3" * 64]
 
 
+# `podman images -a` of a plain two-step build on the tests' engine
+# (tests/container/test_runtime_in_podman.py): the leaf, its nameless step image and the base.
+RECORDED_STEPS = json.loads(
+    (Path(__file__).parent / "fakes" / "podman-images" / "images-a.json").read_text()
+)
+
+
+def recorded_steps(step_age: int) -> tuple[dict, dict, dict]:
+    """The recording's leaf, step and base, the step made ``step_age`` seconds ago."""
+    import time
+
+    leaf, step, base = (dict(entry) for entry in RECORDED_STEPS)
+    assert leaf["ParentId"] == step["Id"] and step["ParentId"] == base["Id"] and not step["Names"]
+    step["Created"] = int(time.time()) - step_age
+    return leaf, step, base
+
+
+def test_a_nameless_image_a_kept_image_is_built_on_stays_and_is_not_tried(tmp_path):
+    leaf, step, base = recorded_steps(2 * int(rt.IMAGE_GRACE_SECONDS))
+    loose = {**step, "Id": "e" * 64, "ParentId": base["Id"]}  # the control: built on by nothing
+    recorder = Recorder(tmp_path, {"images": (0, json.dumps([leaf, step, base, loose]), "")})
+    removed = podman_runtime(tmp_path, recorder).collect_images(set(), set(leaf["Names"]))
+    assert removed == [loose["Id"]]  # a nameless image past the grace with no child goes
+    asked = next(c for c in recorder.calls() if "images" in c)
+    assert "-a" in asked  # the step images are listed too
+    tried = [c[-1] for c in recorder.calls() if c[3:5] == ["image", "rm"]]
+    # Podman removes an image with a child: neither the step nor the base, which images listed
+    # are built on, is asked.
+    assert tried == [loose["Id"]]
+
+
 def test_names_are_compared_fully_qualified_as_podman_lists_them(tmp_path):
     listed = [
         image_entry("1" * 64, "docker.io/library/ubuntu:24.04"),

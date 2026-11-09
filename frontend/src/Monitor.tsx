@@ -4,7 +4,7 @@ import { Link } from "react-router-dom";
 import { ADMIN } from "./AdminPages";
 import { type ApiError, api } from "./api";
 import { formatBytes, formatCount, formatPercent, formatSeconds, utcMoment } from "./format";
-import { MonitorIcon } from "./Icons";
+import { MonitorIcon, RefreshIcon } from "./Icons";
 import { MessageBar } from "./MessageBar";
 import { m } from "./messages";
 import { asApiError, ProblemView } from "./ProblemView";
@@ -42,11 +42,22 @@ type Host = {
   tasks: number | null;
   disks: Filesystem[];
 };
+// rcman's own use of the disk, by part, in bytes.
+type Storage = {
+  images_bytes: number | null;
+  workspace_volumes_bytes: number | null;
+  other_volumes_bytes: number | null;
+  claude_versions_bytes: number | null;
+  total_bytes: number | null;
+};
 type Round = { collected_at: string | null; error: string | null };
 type Snapshot = {
   usage: Round;
   disk: Round;
+  // Whether a round is asked for or under way: a refresh is not over until it is false.
+  refreshing: boolean;
   host: Host | null;
+  storage: Storage | null;
   people: PersonFigures[] | null;
   containers: ContainerFigures[] | null;
 };
@@ -59,9 +70,10 @@ type Settings = { usage_interval_seconds: number; disk_interval_seconds: number 
 // How often the page reads what is known again: it reads what rcman collected, and collects
 // nothing itself, so a read costs rcman little.
 export const MONITOR_POLL_MS = 5000;
-// The Monitor page, for administrators: what the host, each person and each workspace container
-// use now, as rcman last collected it, read again every MONITOR_POLL_MS; and how often each
-// round runs, from the monitor's settings, read once.
+// The Monitor page, for administrators: what the host, rcman's own storage, each person and each
+// workspace container use now, as rcman last collected it, read again every MONITOR_POLL_MS; how
+// often each round runs, from the monitor's settings, read once; and Refresh, which asks rcman
+// to collect every reading again at once.
 export function Monitor() {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   // Why the last read of the figures failed; the figures read before stay shown.
@@ -69,8 +81,13 @@ export function Monitor() {
   // The settings as saved, for the live region to say how often each round runs.
   const [saved, setSaved] = useState<Settings | null>(null);
   const [settingsError, setSettingsError] = useState<ApiError | null>(null);
-  // The read that is out, settled either way, which a read waits for: reads never overlap.
-  const inflight = useRef<Promise<unknown> | null>(null);
+  // The last read asked for, settled either way, which the next waits for: reads never overlap.
+  const inflight = useRef<Promise<void>>(Promise.resolve());
+  // A read now, after those out, its answer shown as a poll's is; set by the reading effect.
+  const readNow = useRef<() => Promise<void>>(() => Promise.resolve());
+  // Whether Refresh's request is out, and why it was refused.
+  const [posting, setPosting] = useState(false);
+  const [refreshError, setRefreshError] = useState<ApiError | null>(null);
 
   useEffect(() => {
     api.get<{ settings: Settings }>("/api/monitor/settings").then(
@@ -79,24 +96,19 @@ export function Monitor() {
     );
   }, []);
 
-  // The figures, read now and then again a while after each answer, a read out already waited
-  // for first, so that reads never overlap. The read as the page opens notes its failure for
-  // rcman; every later one is quiet: its failure is shown here.
+  // The figures, read now and then again a while after each answer, each read after the one
+  // asked for before it has settled, so that reads never overlap; one timer waits at a time. The
+  // read as the page opens notes its failure for rcman; every later one is quiet: its failure is
+  // shown here.
   useEffect(() => {
     let stopped = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const read = async (first: boolean) => {
-      await inflight.current;
+    const reading = async (first: boolean) => {
       if (stopped) return;
-      const request = first
-        ? api.get<Snapshot>("/api/monitor")
-        : api.poll<Snapshot>("/api/monitor");
-      inflight.current = request.then(
-        () => undefined,
-        () => undefined,
-      );
       try {
-        const answer = await request;
+        const answer = await (first
+          ? api.get<Snapshot>("/api/monitor")
+          : api.poll<Snapshot>("/api/monitor"));
         if (stopped) return;
         setSnapshot(answer);
         setReadError(null);
@@ -104,14 +116,39 @@ export function Monitor() {
         if (stopped) return;
         setReadError(asApiError(e));
       }
-      if (!stopped) timer = setTimeout(() => read(false), MONITOR_POLL_MS);
+      if (stopped) return;
+      clearTimeout(timer);
+      timer = setTimeout(() => read(false), MONITOR_POLL_MS);
     };
+    const read = (first: boolean) => {
+      const next = inflight.current.then(() => reading(first));
+      inflight.current = next.catch(() => undefined);
+      return inflight.current;
+    };
+    readNow.current = () => read(false);
     read(true);
     return () => {
       stopped = true;
       clearTimeout(timer);
     };
   }, []);
+
+  // Refresh: rcman collects every reading again at once, and the page reads again as soon as it
+  // has asked; it stays busy until the snapshot says the rounds are in.
+  const refreshing = posting || snapshot?.refreshing === true;
+  async function refresh() {
+    if (refreshing) return; // disabled, while keeping its focus
+    setPosting(true);
+    setRefreshError(null);
+    try {
+      await api.post("/api/monitor/refresh");
+      await readNow.current();
+    } catch (e) {
+      setRefreshError(asApiError(e));
+    } finally {
+      setPosting(false);
+    }
+  }
 
   // The live region's words change only when a round collects, or the intervals saved change:
   // a read that finds the same times leaves it as it is.
@@ -134,6 +171,17 @@ export function Monitor() {
     <section className="cards">
       <div className="page-head">
         <h1>{m.monitorTitle}</h1>
+        {/* its name stays Refresh while its words say it is busy */}
+        <button
+          type="button"
+          className={refreshing ? "spinning" : undefined}
+          aria-label={m.monitorRefresh}
+          aria-disabled={refreshing}
+          onClick={refresh}
+        >
+          <RefreshIcon />
+          {refreshing ? m.monitorRefreshing : m.monitorRefresh}
+        </button>
       </div>
       <p className="page-intro muted">{m.monitorIntro}</p>
       {/* the live region of the collection: when each round last collected */}
@@ -141,6 +189,7 @@ export function Monitor() {
         {collected}
       </p>
       <ProblemView error={readError} />
+      <ProblemView error={refreshError} />
       <ProblemView error={settingsError} />
       {snapshot?.usage.error && (
         <RoundFailed said={m.monitorUsageFailed} error={snapshot.usage.error} />
@@ -152,6 +201,7 @@ export function Monitor() {
       {snapshot && (
         <>
           <HostCard host={snapshot.host} />
+          <StorageCard storage={snapshot.storage} />
           <PeopleCard people={snapshot.people} />
           <ContainersCard containers={snapshot.containers} />
         </>
@@ -264,6 +314,7 @@ function HostCard({ host }: { host: Host | null }) {
               <h3 id={filesystems} className="monitor-subhead">
                 {m.monitorFilesystems}
               </h3>
+              <p className="monitor-note muted">{m.monitorFilesystemsLine}</p>
               <dl className="facts monitor-figures">
                 {host.disks.map((disk) => (
                   <Fragment key={`${disk.path}|${disk.roles.join()}`}>
@@ -293,6 +344,48 @@ function HostCard({ host }: { host: Host | null }) {
               </dl>
             </section>
           )}
+        </>
+      )}
+    </section>
+  );
+}
+
+// rcman's own use of the disk: each part and their total, each large in tabular numerals, the
+// total set apart by a rule; a part not read is Not known, and so is the total then. Each name
+// and its figure are a group of their own (a div, as a list of facts may have), the total's the
+// row the rule is drawn on.
+function StorageCard({ storage }: { storage: Storage | null }) {
+  const heading = useId();
+  const parts: [string, number | null][] =
+    storage === null
+      ? []
+      : [
+          [m.monitorImages, storage.images_bytes],
+          [m.monitorWorkspaceVolumes, storage.workspace_volumes_bytes],
+          [m.monitorOtherVolumes, storage.other_volumes_bytes],
+          [m.monitorClaudeVersions, storage.claude_versions_bytes],
+          [m.monitorStorageTotal, storage.total_bytes],
+        ];
+  return (
+    <section aria-labelledby={heading} className="card monitor-storage">
+      <h2 id={heading} className="card-title">
+        {m.monitorStorage}
+      </h2>
+      {storage === null ? (
+        <Off scope={m.monitorStorage} />
+      ) : (
+        <>
+          <p className="monitor-note muted">{m.monitorStorageLine}</p>
+          <dl className="facts monitor-figures">
+            {parts.map(([term, value], i) => (
+              <div key={term} className={i === parts.length - 1 ? "monitor-total" : "monitor-part"}>
+                <dt>{term}</dt>
+                <dd>
+                  <Figure value={value === null ? null : formatBytes(value)} />
+                </dd>
+              </div>
+            ))}
+          </dl>
         </>
       )}
     </section>

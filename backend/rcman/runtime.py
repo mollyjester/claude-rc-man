@@ -26,9 +26,10 @@ in the builder's uid range with no network, which runs the checks of helpers/cla
 against the candidate and reports the ones it fails.
 
 The monitor (monitor.py) reads what the slices use (``show_slices``), the disk of the
-containers and volumes (``disk_usage``, a read it can kill), the volume at each workspace's /tmp
-(``inspect_containers``) and where Podman keeps its storage (``storage_root``), each as the text
-the program prints.
+containers and volumes (``disk_usage``, a read it can kill), the summary of the images'
+size (``disk_summary``, likewise), the volume at each workspace's /tmp (``inspect_containers``)
+and where Podman keeps its storage (``storage_root``), each as the text the program prints, and
+what the Claude Code store holds (``claude_versions_bytes``, a walk it can stop).
 
 Python standard library, the helpers and the backend's own channel and builder only.
 """
@@ -807,9 +808,12 @@ class Runtime(ABC):
         itself keep (the configured default image and those whose Created time is later, which
         for the installer's default image, built here, is when it was built, and for an image
         configured otherwise is that image's own build time; every builder's).
-        An old default image goes with the rest unless its id is kept. Never by force: an image
-        a container is made from stays, and so does one that cannot be removed, which is not an
-        error. The names (or ids, of those with none) that were removed."""
+        An old default image goes with the rest unless its id is kept. The images with no name
+        that a build keeps for its steps are among them, once they are past the grace for a build
+        under way. An image a container is made from is kept, and an image anything listed is
+        built on is never tried, so everything a kept image is built on is kept with it: it goes
+        at a later collection, once nothing is. Never by force: one that cannot be removed stays,
+        which is not an error. The names (or ids, of those with none) that were removed."""
 
     @abstractmethod
     def default_image_id(self) -> str:
@@ -993,6 +997,17 @@ class Runtime(ABC):
         """What ``podman system df --verbose`` prints (monitor.read_disk), read to its end, or
         killed and a RuntimeFailed when ``cancel`` is set or it outlasts DISK_TIMEOUT. One
         volume that cannot be read fails the whole read."""
+
+    @abstractmethod
+    def disk_summary(self, cancel: threading.Event) -> str:
+        """What ``podman system df --format json`` prints, the summary of the images, the
+        containers and the volumes (monitor.read_images_bytes), read to its end, or killed and a
+        RuntimeFailed as ``disk_usage`` is."""
+
+    @abstractmethod
+    def claude_versions_bytes(self, cancel: threading.Event) -> int:
+        """What the files of the Claude Code store hold, in bytes, links not followed; a
+        RuntimeFailed when ``cancel`` is set while it walks."""
 
     @abstractmethod
     def inspect_containers(self, names: list[str]) -> str:
@@ -1291,11 +1306,22 @@ class PodmanRuntime(Runtime):
         return self._systemctl("show", *asked, *slices)
 
     def disk_usage(self, cancel: threading.Event) -> str:
+        return self._killable_df(cancel, "--verbose")
+
+    def disk_summary(self, cancel: threading.Event) -> str:
+        return self._killable_df(cancel, "--format", "json")
+
+    def claude_versions_bytes(self, cancel: threading.Event) -> int:
+        return _folder_bytes(self.config.claude_store, cancel)
+
+    def _killable_df(self, cancel: threading.Event, *args: str) -> str:
+        """``podman system df`` with ``args``, read to its end, or killed and a RuntimeFailed
+        when ``cancel`` is set or it outlasts DISK_TIMEOUT."""
         if cancel.is_set():
             raise RuntimeFailed("the disk read was stopped")
         try:
             proc = subprocess.Popen(
-                self._argv("system", "df", "--verbose"),
+                self._argv("system", "df", *args),
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -1783,35 +1809,58 @@ class PodmanRuntime(Runtime):
         default_repository = repository_of(default)
         builder_repository = repository_of(qualified_name(self.config.builder_image))
         wanted = {qualified_name(n) for n in keep_names} | {default}
-        listed = json.loads(self._podman("images", "--format=json").stdout or b"[]") or []
-        named = [(entry, _names_of(entry)) for entry in listed]
-        configured = [e for e, names in named if default in {qualified_name(n) for n in names}]
+        keep_ids = {i.removeprefix("sha256:") for i in keep_ids}
+        # Every image, the nameless ones a build keeps for its steps among them (-a); each is
+        # linked by ParentId to the image it is built on, and one with none is a root.
+        listed = json.loads(self._podman("images", "-a", "--format=json").stdout or b"[]") or []
+        entries = [
+            (str(e.get("Id") or "").removeprefix("sha256:"), e, _names_of(e)) for e in listed
+        ]
+        parent = {
+            image: str(e.get("ParentId") or "").removeprefix("sha256:") for image, e, _ in entries
+        }
+        configured = [e for _, e, names in entries if default in {qualified_name(n) for n in names}]
         made = float(configured[0].get("Created") or 0) if configured else None
-        kept = {builder_repository} | ({default_repository} if made is None else set())
-        removed: list[str] = []
+        repositories = {builder_repository} | ({default_repository} if made is None else set())
         young = time.time() - IMAGE_GRACE_SECONDS
-        for entry, names in named:
-            image = str(entry.get("Id") or "").removeprefix("sha256:")
-            qualified = [qualified_name(n) for n in names]
-            later = made is not None and float(entry.get("Created") or 0) > made
-            if image in keep_ids or any(
-                n in wanted
-                or repository_of(n) in kept
-                or (later and repository_of(n) == default_repository)
-                for n in qualified
-            ):
+
+        def keeps_itself(image: str, entry: dict, names: list[str]) -> bool:
+            created = float(entry.get("Created") or 0)
+            later = made is not None and created > made
+            return (
+                image in keep_ids
+                or any(
+                    n in wanted
+                    or repository_of(n) in repositories
+                    or (later and repository_of(n) == default_repository)
+                    for n in (qualified_name(n) for n in names)
+                )
+                or (not names and created > young)  # perhaps a step of a build under way
+                or int(entry.get("Containers") or 0) > 0
+            )
+
+        # An image anything listed is built on is never tried, which keeps everything a kept
+        # image is built on: Podman does not refuse to remove an image with a child (it removes
+        # its record, and the child is a root after it). It goes once nothing is.
+        kept = {image for image, entry, names in entries if keeps_itself(image, entry, names)}
+        built_on = set(parent.values())
+        removed: list[str] = []
+        for image, _, names in entries:
+            if image in kept or image in built_on:
                 continue
-            if not names and float(entry.get("Created") or 0) > young:
-                continue  # no name and not old: a layer of a build that may be under way
             # By name where there are names: removing an image by its id when it has more than
             # one is refused, and a name that is the last one takes the image with it.
             for target in names or [image]:
-                if not (target == image and not builder.is_image_id(image)):
-                    gone = self._podman("image", "rm", target, check=False)
-                    if gone.returncode == 0:
-                        removed.append(target)
-                    else:
-                        log.info("the image %s stays: %s", target, self._said(gone.stderr, ""))
+                if target == image and not builder.is_image_id(image):
+                    continue
+                gone = self._podman("image", "rm", target, check=False)
+                if gone.returncode == 0:
+                    removed.append(target)
+                elif b"image not known" in gone.stderr:
+                    # Something else removed it meanwhile.
+                    log.debug("the image %s was gone already", target)
+                else:
+                    log.info("the image %s stays: %s", target, self._said(gone.stderr, ""))
         return removed
 
     def default_image_id(self) -> str:
@@ -2703,10 +2752,13 @@ def df_text(rows: dict[str, list[tuple[str, ...]]]) -> str:
     return "".join(out)
 
 
-def _folder_bytes(folder: Path) -> int:
-    """What the files under a folder hold, links not followed."""
+def _folder_bytes(folder: Path, cancel: threading.Event | None = None) -> int:
+    """What the files under a folder hold, links not followed; nothing for a folder that is not
+    there. A RuntimeFailed when ``cancel`` is set, which is looked at between folders."""
     total = 0
     for path, _, files in os.walk(folder):
+        if cancel is not None and cancel.is_set():
+            raise RuntimeFailed("the disk read was stopped")
         for name in files:
             with contextlib.suppress(OSError):
                 total += os.lstat(os.path.join(path, name)).st_size
@@ -2739,6 +2791,9 @@ class HostRuntime(Runtime):
         self, root: Path, sockets: Path, claude: Path, tmux_conf: Path, *, range: int = RANGE
     ):
         self.root, self.sockets, self.claude, self.tmux_conf = root, sockets, claude, tmux_conf
+        # The Claude Code store as a folder of files, which the monitor's walk sizes
+        # (``claude_versions_bytes``); never a path that runs Claude.
+        self.claude_store = claude
         self.id_range = range
         # There are no images here and no uids to map: the images a test plants, by name, what
         # was pulled, and the last spec each workspace was made from, so that a test can see
@@ -2791,6 +2846,9 @@ class HostRuntime(Runtime):
         self.slices_shown: dict[str, dict[str, str]] = {}
         self.disk_report: str | None = None
         self.disk_failures: list[Exception] = []
+        # The disk summary's text where a test gives one (one made from ``images`` otherwise,
+        # ``_disk_summary``).
+        self.summary_report: str | None = None
         self.inspect_report: str | None = None
         self.monitor_calls: list[tuple] = []
 
@@ -3248,6 +3306,44 @@ class HostRuntime(Runtime):
         if self.disk_failures:
             raise self.disk_failures.pop(0)
         return self.disk_report if self.disk_report is not None else self._disk_report()
+
+    def disk_summary(self, cancel: threading.Event) -> str:
+        self.monitor_calls.append(("disk_summary",))
+        if cancel.is_set():
+            raise RuntimeFailed("the disk read was stopped")
+        return self.summary_report if self.summary_report is not None else self._disk_summary()
+
+    def _disk_summary(self) -> str:
+        """A disk summary in the shape of Podman's, made from what is here: the images planted,
+        which hold no layers here, so nothing; the workspaces as containers; and their folders
+        as volumes (``_disk_report``)."""
+        workspaces = [name for name in self.labelled() if self.exists(name)]
+        volumes = sum(_folder_bytes(self.root / name) for name in workspaces)
+
+        def row(kind: str, total: int, size: int) -> dict:
+            return {
+                "Type": kind,
+                "Total": total,
+                "Active": 0,
+                "RawSize": size,
+                "RawReclaimable": 0,
+                "TotalCount": total,
+                "Size": si_size(size),
+                "Reclaimable": "0B (0%)",
+            }
+
+        return json.dumps(
+            [
+                row("Images", len(self.images), 0),
+                row("Containers", len(workspaces), 0),
+                row("Local Volumes", 2 * len(workspaces), volumes),
+            ]
+        )
+
+    def claude_versions_bytes(self, cancel: threading.Event) -> int:
+        """What the Claude Code store here holds."""
+        self.monitor_calls.append(("claude_versions_bytes",))
+        return _folder_bytes(self.claude_store, cancel)
 
     def _disk_report(self) -> str:
         """A disk read made from the workspaces here: each one's folder is its volume, and its

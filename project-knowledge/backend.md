@@ -28,7 +28,7 @@ the OpenAPI description it serves at `/api/openapi.json`, browsable at
 | `journal.py` | `install(log)`: sends a logger's events to standard error, one bare line each, which systemd sends to the journal |
 | `unrecognised.py` | The watch on every server rcman reads, which writes output rcman does not recognise to the journal (see [Output rcman does not recognise](#output-rcman-does-not-recognise)) |
 | `everyone.py` | Everyone's workspaces and servers, for administrators |
-| `monitor.py`, `routers/monitor.py` | What the host, each person and each workspace container use now, collected in two rounds, and the monitor's settings, for administrators (see [Monitor](#monitor)) |
+| `monitor.py`, `routers/monitor.py` | What the host, rcman's own storage, each person and each workspace container use now, collected in two rounds, on their intervals or at once on a refresh, and the monitor's settings, for administrators (see [Monitor](#monitor)) |
 | `forwarding_settings.py`, `routers/forwarding_settings.py` | The settings of port forwarding, for administrators, and the hook that hears of forwarding being turned off (see [Port forwarding's settings](#port-forwardings-settings)) |
 | `headers.py` | The security headers every answer carries (see [Requests](#requests)) |
 | `ratelimit.py`, `filelock.py` | A token bucket for each name, refilled by the clock it is given (the limits on a page's reports, see [Errors from the page](#errors-from-the-page), on requests for an upgrade of rcman, see [Upgrading rcman](#upgrading-rcman), and on the forwarding server's new hosts and ways in, see [Port forwarding](#port-forwarding)), and a re-entrant lock that is also a lock file, shared with `rcman-admin` (see [Limits](#limits)) |
@@ -646,15 +646,24 @@ are the monotonic clock, the wait between rounds and the wall time a round is st
   header's columns, sizes decimal SI) and for `container inspect` of every workspace's container
   (`read_inspected`), and sums a workspace's volume, its `/tmp` volume and its container's layer
   where the container's labels name the workspace, its person and this database's install
-  (`workspace_disk`). Each of the two disk reads that fails is tried once more (`DISK_ATTEMPTS`),
+  (`workspace_disk`). With the scope `storage` on, it also asks for `system df --format json`'s
+  summary (`disk_summary`, read for the images' `RawSize` by `read_images_bytes`, which counts a
+  layer two images share once and a layer that belongs to no image too) and for what the Claude
+  Code store holds (`claude_versions_bytes`), and splits rcman's own use (`storage_figures`, kept
+  under the key `storage`): the images; the workspace volumes, `rcman-ws-<id>` of the
+  workspaces' rows and the `/tmp` volume inspect names for each of their containers; every other
+  volume; the Claude Code versions; and their total. With `storage` off the summary and the walk
+  do not run. The disk round runs when `people`, `containers` or `storage` is on
+  (`MonitorSettings.disk_on`). Each disk read that fails is tried once more (`DISK_ATTEMPTS`),
   one that worked not again; a round that fails, in any part, keeps all the figures of the last
   one that did not, and its `collected_at`. Each round
   catches `Exception`, keeps its own `error`, and logs on `rcman.monitor` only when its failure
   starts, changes or ends. An unknown figure is `None`, never 0.
 - **The settings.** `MonitorSettings`: the two intervals, with their defaults and bounds
-  (`Field(ge, le)` on a `StrictInt`), and the three scopes (`StrictBool`); every one is sent
+  (`Field(ge, le)` on a `StrictInt`), and the scopes `SCOPES` (`StrictBool`); every one is sent
   on a save. They are kept in the table `monitor_settings`, one row (`id = 1`) the first save
-  makes; no row is `DEFAULTS`. `Monitor.changed` takes up a save: a new generation, the figures
+  makes, a column for each field, which `read_settings` and `write_settings` take from the
+  model's fields; no row is `DEFAULTS`. `Monitor.changed` takes up a save: a new generation, the figures
   of a scope now off dropped, and both loops woken with `loop.call_soon_threadsafe`. A round
   takes the settings and the generation as it starts, and what it read of a scope that is off
   by its end is dropped (`_keep`).
@@ -672,19 +681,35 @@ are the monotonic clock, the wait between rounds and the wall time a round is st
   waits for a save. `Monitor.stop`, which the lifespan awaits before anything closes, sets
   `halted` (which kills a disk read and starts no round), cancels both tasks and awaits a round
   under way.
+- **Refresh.** `Monitor.refresh()`, from any thread, marks each round that is on as asked for
+  unless it is running (`_asked`, `_running`, under `_lock`), and wakes both loops with
+  `loop.call_soon_threadsafe`; it does nothing once halted. A loop takes an asked round as due
+  now, and clears asked and sets running in one `_lock` section before `_in_thread`, so a press
+  while a round runs or is asked for joins it and no second disk round starts. Asked and running
+  are cleared when the round ends, on the loop's branch for a round that is off, on its
+  exception path and when the loop ends, so `snapshot()["refreshing"]`, true while either is set
+  for either round, cannot stay true. A failure of the loop itself, outside its round (such as
+  the settings not read), is kept as the round's `error` as well as logged. The next timed round
+  counts from the refreshed one's end. A press during a timed round joins it with the settings
+  that round took as it started, so a scope switched on after it began, Storage say, stays
+  unknown until the next round.
 - **The routes**, for administrators (`routers/monitor.py`): `GET /api/monitor` is
   `Monitor.snapshot`, built from the database's people and workspaces as they are now and the
   figures kept; `GET /api/monitor/settings` answers `{"settings": ...}`; `PUT
   /api/monitor/settings` saves the whole set (`Monitor.save`) and answers the same, audited as
   `monitor.settings` with the settings as JSON. A value outside its bounds, or of the wrong
-  type, is refused at its field.
+  type, is refused at its field. `POST /api/monitor/refresh` calls `Monitor.refresh` and answers
+  202 `{"refreshing": true}`, audited as `monitor.refresh`; what the rounds read, or why they
+  failed, comes with the snapshot.
 
 `tests/test_monitor.py` holds the readers to the recordings, the rounds on the host runtime,
 the loops on a clock and a wait of its own, and what a round costs: with `subprocess` stubbed
 on a `PodmanRuntime`, a usage round runs `systemctl` once and Podman never, a disk round one
-`system df` and one `container inspect` (one more of each on its retry) and no `systemctl`, and
-nothing runs with every scope off; a planted runtime that asks `systemctl` once per slice fails
-it. `tests/test_monitor_routes.py` holds the routes. The page that changes the settings is
+`system df --verbose`, one `container inspect` and, with `storage` on, one `system df --format
+json` (one more of each on its retry) and no `systemctl`, and nothing runs with every scope off; a planted runtime that asks `systemctl` once per slice fails
+it. `tests/test_monitor_routes.py` holds the routes, Refresh among them: two presses while a
+disk round runs start one, a failed round shows its error, and a press with the disk round's
+scopes off runs no disk round. The page that changes the settings is
 **Service settings** ([the guide](../docs/service-settings.md#monitoring)).
 
 ## Port forwarding's settings

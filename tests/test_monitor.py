@@ -283,7 +283,8 @@ def test_the_defaults_are_within_their_bounds_and_every_scope_is_on():
         bounds = {type(m).__name__: m for m in fields[name].metadata}
         low, high = bounds["Ge"].ge, bounds["Le"].le
         assert low <= getattr(monitor.DEFAULTS, name) <= high
-    assert monitor.DEFAULTS.host and monitor.DEFAULTS.people and monitor.DEFAULTS.containers
+    assert all(getattr(monitor.DEFAULTS, scope) for scope in monitor.SCOPES)
+    assert monitor.SCOPES == ("host", "people", "containers", "storage")
 
 
 # --- the rounds, on the host runtime -----------------------------------------------
@@ -355,7 +356,8 @@ def test_nothing_is_known_before_a_round(made, settings):
     snap = made.snapshot()
     assert snap["usage"] == {"collected_at": None, "error": None}
     assert snap["disk"] == {"collected_at": None, "error": None}
-    assert snap["scopes"] == {"host": True, "people": True, "containers": True}
+    assert snap["scopes"] == {"host": True, "people": True, "containers": True, "storage": True}
+    assert snap["refreshing"] is False
     assert snap["host"] == {
         "cpu_percent": None,
         "cpus": None,
@@ -476,14 +478,12 @@ def test_a_scope_that_is_off_is_not_read_and_not_shown(made, settings, runtime, 
 
 
 def test_with_every_scope_off_nothing_is_called(made, runtime):
-    made.changed(
-        made.settings().model_copy(update={"host": False, "people": False, "containers": False})
-    )
+    made.changed(made.settings().model_copy(update=dict.fromkeys(monitor.SCOPES, False)))
     made.usage_round()
     made.disk_round()
     assert runtime.monitor_calls == []
     snap = made.snapshot()
-    assert snap["host"] is None and snap["people"] is None and snap["containers"] is None
+    assert all(snap[scope] is None for scope in monitor.SCOPES)
     assert snap["usage"]["collected_at"] is None and snap["disk"]["collected_at"] is None
 
 
@@ -515,6 +515,17 @@ def test_switching_a_scope_off_drops_what_was_read_of_it_at_once(made, settings,
     made.changed(made.settings().model_copy(update={"people": False}))
     made.changed(made.settings().model_copy(update={"people": True}))
     assert by(made.snapshot()["people"], "email")[BOB]["memory_bytes"] is None
+
+
+# What a disk round asks the runtime for rcman's own use, with Storage on, after its two reads.
+STORAGE_CALLS = ["disk_summary", "claude_versions_bytes"]
+STORAGE_PARTS = (
+    "images_bytes",
+    "workspace_volumes_bytes",
+    "other_volumes_bytes",
+    "claude_versions_bytes",
+    "total_bytes",
+)
 
 
 def plant_disk(runtime, settings) -> tuple[int, int, int]:
@@ -550,7 +561,7 @@ def test_a_disk_round_sums_each_workspaces_volume_tmp_and_container(made, settin
     assert people[BOB]["disk_bytes"] == 0  # no workspace: nothing
     assert snap["disk"]["error"] is None and snap["disk"]["collected_at"] is not None
     calls = [call[0] for call in runtime.monitor_calls]
-    assert calls == ["disk_usage", "inspect_containers"]
+    assert calls == ["disk_usage", "inspect_containers", *STORAGE_CALLS]
     asked = next(call[1] for call in runtime.monitor_calls if call[0] == "inspect_containers")
     assert list(asked) == [rt.container_name(first), rt.container_name(second)]
 
@@ -600,7 +611,12 @@ def test_an_inspect_that_failed_is_tried_again_alone(made, settings, runtime):
 
     runtime.inspect_containers = failing_once
     made.disk_round()
-    assert [c[0] for c in runtime.monitor_calls] == ["disk_usage", "inspect_containers"]
+    # the disk read that worked is kept for the retry, and read once
+    assert [c[0] for c in runtime.monitor_calls] == [
+        "disk_usage",
+        "inspect_containers",
+        *STORAGE_CALLS,
+    ]
     assert failed  # the plant took effect
     assert made.snapshot()["disk"]["error"] is None
 
@@ -621,14 +637,63 @@ def test_a_disk_read_that_fails_twice_keeps_the_last_good_figures_and_says_why(
     assert [c[0] for c in runtime.monitor_calls].count("disk_usage") == 3
 
 
-def test_a_disk_round_runs_only_if_people_or_containers_is_on(made, settings, runtime):
+def test_a_disk_round_runs_only_if_people_containers_or_storage_is_on(made, settings, runtime):
     plant_disk(runtime, settings)
-    made.changed(made.settings().model_copy(update={"people": False, "containers": False}))
+    made.changed(
+        made.settings().model_copy(update={"people": False, "containers": False, "storage": False})
+    )
     made.disk_round()
     assert runtime.monitor_calls == []
     made.changed(made.settings().model_copy(update={"containers": True}))
     made.disk_round()
     assert [c[0] for c in runtime.monitor_calls] == ["disk_usage", "inspect_containers"]
+    runtime.monitor_calls.clear()
+    made.changed(made.settings().model_copy(update={"containers": False, "storage": True}))
+    made.disk_round()  # Storage alone runs it
+    assert [c[0] for c in runtime.monitor_calls] == [
+        "disk_usage",
+        "inspect_containers",
+        *STORAGE_CALLS,
+    ]
+    assert made.snapshot()["storage"]["total_bytes"] is not None
+
+
+def with_volume(text: str, name: str, size: str) -> str:
+    """A disk read with one more volume, its cells at the offsets of its table's header."""
+    header = next(line for line in text.splitlines() if line.startswith("VOLUME NAME"))
+    links, at = header.index("LINKS"), header.index("SIZE")
+    return text.rstrip("\n") + f"\n{name:<{links}}{'1':<{at - links}}{size}\n"
+
+
+def test_a_disk_round_reads_rcmans_own_use_by_part(made, settings, runtime):
+    plant_disk(runtime, settings)
+    runtime.disk_report = with_volume(runtime.disk_report, "a-persons-volume", "5MB")
+    runtime.summary_report = recorded("df-summary.json")
+    assert made.snapshot()["storage"] == dict.fromkeys(STORAGE_PARTS)  # before a round
+    made.disk_round()
+    storage = made.snapshot()["storage"]
+    versions = storage["claude_versions_bytes"]
+    assert storage == {
+        "images_bytes": 369_453_856,  # the summary's Images RawSize
+        # rcman-ws-1 and rcman-ws-2, and the volumes at their /tmp
+        "workspace_volumes_bytes": 1_000_000 + 26 + 0 + 0,
+        "other_volumes_bytes": 5_000_000,
+        "claude_versions_bytes": versions,
+        "total_bytes": 369_453_856 + 1_000_026 + 5_000_000 + versions,
+    }
+    planted = runtime.claude_store / "versions" / "planted"
+    planted.parent.mkdir(parents=True, exist_ok=True)
+    planted.write_bytes(b"x" * 5000)
+    made.disk_round()
+    assert made.snapshot()["storage"]["claude_versions_bytes"] == versions + 5000
+    # Storage off: none of it is read or shown, and the round reads the rest
+    runtime.monitor_calls.clear()
+    made.changed(made.settings().model_copy(update={"storage": False}))
+    made.disk_round()
+    snap = made.snapshot()
+    assert snap["storage"] is None and snap["scopes"]["storage"] is False
+    assert [c[0] for c in runtime.monitor_calls] == ["disk_usage", "inspect_containers"]
+    assert by(snap["containers"], "id")[1]["disk_bytes"]  # positive control: the round ran
 
 
 def test_a_failure_is_logged_when_it_starts_and_when_it_ends_and_not_in_between(
@@ -690,6 +755,8 @@ class Programs:
             blocks = [shown(u, **self.units.get(u, INACTIVE)) for u in asked]
             return 0, ("\n\n".join(blocks) + "\n").encode(), b""
         words = [a for a in argv[1:] if not a.startswith(("-", "unix:"))]
+        if words[:2] == ["system", "df"] and "--format" in argv:
+            return 0, recorded("df-summary.json").encode(), b""
         if words[:2] == ["system", "df"]:
             if self.df_fails:
                 self.df_fails -= 1
@@ -728,7 +795,8 @@ class Programs:
         return Process()
 
     def counted(self) -> dict[str, int]:
-        """How many times each program ran: systemctl, and Podman by its verb."""
+        """How many times each program ran: systemctl, and Podman by its verb, ``system df`` by
+        whether it is the verbose read or the summary."""
         found: dict[str, int] = {}
         for argv in self.calls:
             if Path(argv[0]).name == "systemctl":
@@ -736,14 +804,23 @@ class Programs:
             else:
                 words = [a for a in argv[1:] if not a.startswith(("-", "unix:"))]
                 key = "podman " + " ".join(words[:2])
+                if words[:2] == ["system", "df"]:
+                    key += " --format" if "--format" in argv else " --verbose"
             found[key] = found.get(key, 0) + 1
         return found
 
 
 # What a round may cost: the most each program may run, and nothing else may.
 USAGE_COST = {"systemctl": 1}
-DISK_COST = {"podman system df": 1, "podman container inspect": 1}
-DISK_COST_WITH_RETRY = {key: 2 * count for key, count in DISK_COST.items()}
+
+
+def disk_cost(storage: bool, retry: bool = False) -> dict[str, int]:
+    """One of each read, the summary only with Storage on; twice each where the round tries
+    again."""
+    cost = {"podman system df --verbose": 1, "podman container inspect": 1}
+    if storage:
+        cost["podman system df --format"] = 1
+    return {key: (2 if retry else 1) * count for key, count in cost.items()}
 
 
 def over_cost(counted: dict[str, int], allowed: dict[str, int]) -> dict[str, int]:
@@ -801,8 +878,19 @@ def test_a_disk_round_runs_one_df_and_one_inspect_and_no_systemctl(
     made = podman_monitor(tmp_path, settings)
     made.disk_round()
     counted = programs.counted()
-    assert counted == {"podman system df": 1, "podman container inspect": 1}
-    assert over_cost(counted, DISK_COST) == {}
+    assert counted == {
+        "podman system df --verbose": 1,
+        "podman container inspect": 1,
+        "podman system df --format": 1,
+    }
+    assert over_cost(counted, disk_cost(storage=True)) == {}
+    assert made.snapshot()["storage"]["images_bytes"] == 369_453_856  # the summary was read
+    programs.calls.clear()
+    made.changed(made.settings().model_copy(update={"storage": False}))
+    made.disk_round()
+    counted = programs.counted()
+    assert counted == {"podman system df --verbose": 1, "podman container inspect": 1}
+    assert over_cost(counted, disk_cost(storage=False)) == {}
 
 
 def test_a_disk_round_that_tries_again_runs_at_most_one_more_of_each(
@@ -812,15 +900,17 @@ def test_a_disk_round_that_tries_again_runs_at_most_one_more_of_each(
     made = podman_monitor(tmp_path, settings)
     made.disk_round()
     counted = programs.counted()
-    assert counted == {"podman system df": 2}
-    assert over_cost(counted, DISK_COST_WITH_RETRY) == {}
+    assert counted == {"podman system df --verbose": 2}
+    assert over_cost(counted, disk_cost(storage=True, retry=True)) == {}
     assert made.snapshot()["disk"]["error"]
 
 
 def test_with_every_scope_off_no_program_runs(tmp_path, settings, programs, busy):
     made = podman_monitor(tmp_path, settings)
     made.changed(
-        made.settings().model_copy(update={"host": False, "people": False, "containers": False})
+        made.settings().model_copy(
+            update={"host": False, "people": False, "containers": False, "storage": False}
+        )
     )
     made.usage_round()
     made.disk_round()
@@ -1322,7 +1412,7 @@ def test_switching_a_scope_does_not_move_when_the_next_round_is_due(settings, ru
 
 
 def test_with_every_scope_off_the_loops_wait_without_a_deadline(settings, runtime):
-    made, times, rounds = looping(settings, runtime, host=False, people=False, containers=False)
+    made, times, rounds = looping(settings, runtime, **dict.fromkeys(monitor.SCOPES, False))
 
     async def scenario():
         made.start()
