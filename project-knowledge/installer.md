@@ -200,14 +200,15 @@ The wrapper (`upgrade.upgrade`) writes the status as `running`, with the release
 account by name; a clone missing one of `REQUIRED` or whose `.git` is not a folder; and, in
 `checked_paths`, every file and folder of the clone, walked without following a link, but
 `OWNER_ONLY` (`frontend/node_modules` and `frontend/dist`, which only the owner's npm makes and
-uses), and every folder above it, refused where anyone but root and the owner can write it (another owner, the world's write bit, the sticky folder's too, or a group's
+uses, and `.venv`, the owner's virtualenv, whose `.lock` uv makes writable by anyone and which
+root never reads: a release is built from `git archive` and gets a virtualenv of its own), and every folder above it, refused where anyone but root and the owner can write it (another owner, the world's write bit, the sticky folder's too, or a group's
 write bit where the group has another member), or where it has an ACL (`ACL_ATTRIBUTES` among
 its extended attributes, read without following a link). A link is refused at a path of `REQUIRED`, under
 `LINKS_REFUSED_UNDER` (`.git`, `installer`, `helpers`, which root reads by their path from the
 clone), where git tracks a path or a folder of one (`tracked`: `git ls-files -z` as the owner,
 under `env -i` with `GIT_ENVIRONMENT` and `core.fsmonitor=false`, with no terminal), and above
 the clone; elsewhere it is not followed, its mode means nothing, and only its owner is held to
-root or the owner, so the links `make setup` and the owner's tools leave (`.venv`, a worktree's
+root or the owner, so the links the owner's tools leave (a worktree's
 `node_modules/.bin`) pass. `REQUIRED`, all of `.git` and the folders above the clone are checked
 first, before `tracked` runs git, which reads `.git`, as the owner; then the whole clone. The whole clone is walked, not only
 what install.sh names, because root runs, reads or builds from all of it: `installer/`, the
