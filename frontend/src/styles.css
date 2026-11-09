@@ -537,7 +537,8 @@ a.button.secondary-danger {
   border-color: var(--danger-text);
   color: var(--danger-text);
 }
-button:disabled {
+button:disabled,
+button[aria-disabled="true"] {
   opacity: 0.5;
   cursor: default;
 }
@@ -2160,9 +2161,9 @@ fieldset.choices > legend {
   padding: 0;
   font-weight: 600;
 }
-/* The Monitor page: when each round collected, under the page's line; the host's main figures
-   large, in tabular numerals, each on its name's baseline; under a filesystem's figures, the
-   folders it holds; what a failed round said, as it said it. */
+/* The Monitor page: when each round collected, under the page's line; the host's and the
+   storage's main figures large, in tabular numerals, each on its name's baseline; under a
+   filesystem's figures, the folders it holds; what a failed round said, as it said it. */
 .cards > .monitor-collected {
   margin: calc(-1 * var(--space-2)) 0 0;
 }
@@ -2191,6 +2192,26 @@ dl.monitor-figures {
 .monitor-error {
   overflow-wrap: anywhere;
   font-family: var(--font-mono);
+}
+/* One line on what a part's figures are of, under its title or subhead. */
+.monitor-note {
+  max-width: 72ch;
+  margin: 0 0 var(--space-2);
+  font-size: var(--text-small);
+}
+/* rcman's own storage: the parts, then their total under one rule across both columns, as a
+   sum is written; the total's name and figure keep the list's columns and baseline. */
+.monitor-part {
+  display: contents;
+}
+.monitor-total {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: subgrid;
+  align-items: baseline;
+  margin-top: var(--space-1);
+  padding-top: var(--space-1);
+  border-top: 1px solid var(--border);
 }
 /* The People page's Limits dialog: a part for each scope under a stroke, its title and what
    it uses in one row, its three fields side by side. */
@@ -2439,7 +2460,7 @@ td.result-failed {
   }
   /* the plain hover weighs nothing, so that any kind drawn by a class of its own keeps its
      colours; a kind that changes on hover says so itself, below */
-  :where(button:not(:disabled), a.button):hover {
+  :where(button:not(:disabled):not([aria-disabled="true"]), a.button):hover {
     background: var(--surface-hover);
   }
   button.primary:not(:disabled):hover,

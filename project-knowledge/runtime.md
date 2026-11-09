@@ -267,7 +267,7 @@ minimums) are in `helpers/rules.py`.
 ### What the monitor reads
 
 The monitor (`backend/rcman/monitor.py`, see [backend.md](backend.md#monitor)) reads through
-four methods of the runtime, each a text it parses itself:
+these methods of the runtime, each but `claude_versions_bytes` a text it parses itself:
 
 - `show_slices(slices)`: one `systemctl --user show` of `limits.MONITORED` for every slice
   given, through `_systemctl`; a slice that never ran is shown inactive with nothing counted.
@@ -282,12 +282,21 @@ four methods of the runtime, each a text it parses itself:
   containers, whose `Mounts` name the anonymous volume at `TMP_MOUNT` (`ps` lists only a mount's
   destination). A name that is not there makes Podman fail (`NO_SUCH_CONTAINER`) after it
   printed those that are, which are taken.
+- `disk_summary(cancel)`: `podman --remote system df --format json`, the summary whose
+  `Images` row's `RawSize` is the images' size in bytes, each layer counted once and a layer that
+  belongs to no image counted too. It runs as `disk_usage` does (`_killable_df`), killed when
+  `cancel` is set or after `DISK_TIMEOUT`; the Podman service walks every volume for it too.
 - `storage_root()`: `store.graphRoot` of `podman --remote info`, asked once.
+- `claude_versions_bytes(cancel)`: what the files of the Claude Code store (`claude_store`) hold,
+  links not followed, walked by rcman itself (`_folder_bytes`), which looks at `cancel` between
+  folders and fails when it is set.
 
 The host runtime records each call in `monitor_calls` and answers what a test plants:
 `slices_shown` by slice, `disk_report` (otherwise made from its workspaces' folders, each a
-volume, in Podman's tables) with `disk_failures` raised first, `inspect_report` (otherwise made
-from its workspaces), and its own folder as the storage.
+volume, in Podman's tables) with `disk_failures` raised first, `summary_report` (otherwise made
+in Podman's shape from its planted images, which hold nothing here, and its workspaces' folders),
+`inspect_report` (otherwise made from its workspaces), its own folder as the storage, and the store it was given
+(`claude_store`) as the Claude Code store.
 The recordings the tests read are in `tests/fakes/podman-monitor/`, recorded from Podman on the
 tests' engine; `tests/container/test_runtime_in_podman.py` holds them to that Podman.
 

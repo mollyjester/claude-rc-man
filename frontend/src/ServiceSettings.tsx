@@ -12,9 +12,10 @@ type Monitoring = {
   host: boolean;
   people: boolean;
   containers: boolean;
+  storage: boolean;
 };
 type Interval = "usage_interval_seconds" | "disk_interval_seconds";
-type Scope = "host" | "people" | "containers";
+type Scope = "host" | "people" | "containers" | "storage";
 
 // Port forwarding's settings, as GET and PUT /api/forwarding/settings have them, in the units
 // the labels name; their defaults and bounds are the server's
@@ -30,6 +31,7 @@ const SCOPES: [Scope, string][] = [
   ["host", m.monitorHost],
   ["people", m.monitorPeople],
   ["containers", m.monitorContainers],
+  ["storage", m.monitorStorage],
 ];
 const MONITORING_LABELS = Object.fromEntries([
   ...INTERVALS.map(([name, label]) => [name, label]),
@@ -207,6 +209,7 @@ function MonitoringForm({ initial }: { initial: Monitoring }) {
         host: values.host,
         people: values.people,
         containers: values.containers,
+        storage: values.storage,
       });
       setValues(monitoringTyped(answer.settings));
       setStatus("saved");

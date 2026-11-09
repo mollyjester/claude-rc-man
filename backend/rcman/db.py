@@ -195,6 +195,12 @@ MIGRATIONS = [
             check (absolute_seconds > 0 and absolute_seconds % 3600 = 0)
     );
     """,
+    """
+    -- Whether the monitor collects rcman's own use of the disk (monitor.py, the scope storage):
+    -- on unless an administrator switched it off, in a row saved before it was there too.
+    alter table monitor_settings add column storage integer not null default 1
+        check (storage in (0, 1));
+    """,
 ]
 
 

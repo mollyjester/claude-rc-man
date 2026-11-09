@@ -795,11 +795,12 @@ def ownerless_layer(engine, folder: Path) -> tuple[list[str], str]:
     return ["containers-storage", "delete-layer", *store, layer], layer
 
 
-def test_the_df_summary_counts_a_shared_layer_once(podman_service, base_image, tmp_path):
+def test_the_df_summary_counts_a_shared_layer_once(podman_service, podman, base_image, tmp_path):
     """What the monitor's Storage reads of this Podman's `system df --format json`: the Images
     size counts a layer two images share once, in bytes, and counts a layer that belongs to no
     image too; and the recording the unit tests read
-    (tests/fakes/podman-monitor/df-summary.json) to this Podman's summary."""
+    (tests/fakes/podman-monitor/df-summary.json) to this Podman's summary; the runtime's own
+    read (disk_summary) is that summary."""
     engine = podman_service
     before = images_row(df_summary(engine))
     names = ["localhost/rcman-test-share:a", "localhost/rcman-test-share:b"]
@@ -811,6 +812,8 @@ def test_the_df_summary_counts_a_shared_layer_once(podman_service, base_image, t
             built_on(engine, base_image, folder, name, [f"RUN echo {name} > /mark"])
         summary = df_summary(engine)
         after = images_row(summary)
+        read = monitor.read_images_bytes(podman.disk_summary(threading.Event()))
+        assert read == after["RawSize"]
         base = engine.cli("image", "inspect", "--format", "{{.Size}}", base_image)
         base_size = int(base.stdout.decode().strip())
         removal, _ = ownerless_layer(engine, tmp_path)

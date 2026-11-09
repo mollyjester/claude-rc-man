@@ -45,7 +45,8 @@ Implemented and tested:
 - **Limits** on memory, CPU and processes, per person and per workspace, set by
   administrators.
 - **Monitor**: what the host, each person and each workspace container use now
-  (CPU, memory, processes and disk), collected in the background for administrators
+  (CPU, memory, processes and disk), and how much of the disk is rcman's own, collected
+  in the background, or at once with **Refresh**, for administrators
   (see [docs/monitor.md](docs/monitor.md)), with its settings and those of port forwarding
   on the **Service settings** page (see [docs/service-settings.md](docs/service-settings.md)).
 - The backend API with its audit trail, the web interface, the installer and the

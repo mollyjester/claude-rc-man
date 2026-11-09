@@ -1,5 +1,5 @@
-"""What the host, each person and each workspace container use now, for administrators: the
-Monitor page (routers/monitor.py).
+"""What the host, rcman's own storage, each person and each workspace container use now, for
+administrators: the Monitor page (routers/monitor.py).
 
 Two rounds collect it, each on an interval of its own, from the settings (``MonitorSettings``,
 kept in the table ``monitor_settings``, the defaults ``DEFAULTS`` where no row is):
@@ -9,10 +9,13 @@ kept in the table ``monitor_settings``, the defaults ``DEFAULTS`` where no row i
   storage, and asks the runtime once for the slices (limits.py) of the people and of the
   workspaces, as far as each scope is on: one ``systemctl --user show``;
 - the *disk round* asks the runtime once for ``podman system df -v`` and once for
-  ``podman container inspect`` of the workspace containers, and runs only when people or
-  containers are on. A workspace's disk is its volume, the anonymous volume at its /tmp and its
-  container's own layer; a person's is the sum over their workspaces. A read that fails is tried
-  once more; one that fails again keeps the figures of the last that did not, with their time.
+  ``podman container inspect`` of the workspace containers, and, with storage on, once for
+  ``podman system df --format json``'s summary and for the size of the Claude Code store; it runs
+  only when people, containers or storage are on. A workspace's disk is its volume, the anonymous
+  volume at its /tmp and its container's own layer; a person's is the sum over their workspaces.
+  rcman's own storage is its images, the workspaces' volumes, the other volumes and the Claude
+  Code versions (``storage_figures``). A read that fails is tried once more; one that fails again
+  keeps the figures of the last that did not, with their time.
 
 Each figure that is not known is None, never 0. CPU is a percent of one core, the average since
 the round before. Each round is stamped with the generation of the settings it ran under, and
@@ -24,7 +27,9 @@ run their round in a thread and never two of it at once. The first usage round r
 workspaces are restored, which the restore tells (``Monitor.restored_now``), the first disk round
 a whole disk interval after that. A save of the
 settings wakes both, from the request's thread, to their new intervals counted from their last
-round. ``Monitor.stop`` ends both and waits for a round under way, killing a disk read.
+round. ``Monitor.refresh`` asks for a round of each that is on at once, joining a round under
+way or already asked for. ``Monitor.stop`` ends both and waits for a round under way, killing a
+disk read.
 """
 
 from __future__ import annotations
@@ -74,13 +79,24 @@ class MonitorSettings(BaseModel):
         Field(
             ge=DISK_INTERVAL_MIN,
             le=DISK_INTERVAL_MAX,
-            description="Seconds between readings of the disk the workspaces use.",
+            description=(
+                "Seconds between readings of the disk the workspaces and rcman's own storage use."
+            ),
         ),
     ]
     host: Annotated[StrictBool, Field(description="Collect the host's figures.")]
     people: Annotated[StrictBool, Field(description="Collect each person's figures.")]
     containers: Annotated[
         StrictBool, Field(description="Collect each workspace container's figures.")
+    ]
+    storage: Annotated[
+        StrictBool,
+        Field(
+            description=(
+                "Collect rcman's own use of the disk: its images, the workspaces' volumes, the "
+                "other volumes and the Claude Code versions."
+            )
+        ),
     ]
 
     @property
@@ -89,7 +105,7 @@ class MonitorSettings(BaseModel):
 
     @property
     def disk_on(self) -> bool:
-        return self.people or self.containers
+        return self.people or self.containers or self.storage
 
 
 DEFAULTS = MonitorSettings(
@@ -98,8 +114,9 @@ DEFAULTS = MonitorSettings(
     host=True,
     people=True,
     containers=True,
+    storage=True,
 )
-SCOPES = ("host", "people", "containers")
+SCOPES = ("host", "people", "containers", "storage")
 # Column names are the model's own fields, never anything from a request.
 COLUMNS = tuple(MonitorSettings.model_fields)
 
@@ -462,6 +479,59 @@ def workspace_disk(
     return None if None in parts else sum(parts)
 
 
+# --- rcman's own storage ----------------------------------------------------------------
+
+# The type of the images' row of ``system df --format json``'s summary.
+SUMMARY_IMAGES = "Images"
+
+
+def read_images_bytes(text: str) -> int:
+    """The images' size in ``system df --format json``'s summary, in bytes (``RawSize``), which
+    counts a layer two images share once, and a layer that belongs to no image too."""
+    for row in json.loads(text or "[]") or []:
+        if isinstance(row, dict) and row.get("Type") == SUMMARY_IMAGES:
+            size = row.get("RawSize")
+            if isinstance(size, int) and not isinstance(size, bool) and size >= 0:
+                return size
+            raise ValueError(f"the disk summary's images have no size: {size!r}")
+    raise ValueError("the disk summary has no images")
+
+
+def storage_figures(
+    workspaces: list[int],
+    person_of: dict[int, int],
+    install: str,
+    images: int,
+    versions: int,
+    disk: DiskReport,
+    inspected: dict[str, Inspected],
+) -> dict:
+    """rcman's own use of the disk, by part: its images, the volumes of the workspaces (each
+    one's own and the one at its /tmp), every other volume, and the Claude Code versions, and
+    their total; in bytes."""
+    ours: set[str] = set()
+    for workspace in workspaces:
+        name = rt.container_name(workspace)
+        if name in disk.volumes:
+            ours.add(name)
+        found = inspected.get(name)
+        if (
+            found is not None
+            and found.tmp_volume in disk.volumes
+            and _ours(found, workspace, person_of[workspace], install)
+        ):
+            ours.add(found.tmp_volume)
+    volumes = sum(disk.volumes[name] for name in ours)
+    others = sum(size for name, size in disk.volumes.items() if name not in ours)
+    return {
+        "images_bytes": images,
+        "workspace_volumes_bytes": volumes,
+        "other_volumes_bytes": others,
+        "claude_versions_bytes": versions,
+        "total_bytes": images + volumes + others + versions,
+    }
+
+
 # --- the collector ----------------------------------------------------------------------
 
 # How long a loop waits after it failed outside its round before it tries again.
@@ -529,6 +599,10 @@ class Monitor:
         self.disk_wake: asyncio.Event | None = None
         self.tasks: list[asyncio.Task] = []
         self._inflight: set[asyncio.Future] = set()
+        # Under _lock: each round a refresh asked for and its loop has not begun, and each round
+        # under way (``refresh``, ``_looping``).
+        self._asked = {"usage": False, "disk": False}
+        self._running = {"usage": False, "disk": False}
 
     # --- settings ---
 
@@ -679,9 +753,9 @@ class Monitor:
         self._succeeded("usage")
 
     def disk_round(self) -> None:
-        """Read the disk of the workspaces, and keep what was read: once more where it fails, and
-        the last figures read where it fails again. Nothing is read unless people or containers
-        is on."""
+        """Read the disk of the workspaces, and with storage on rcman's own, and keep what was
+        read: once more where it fails, and the last figures read where it fails again. Nothing
+        is read unless people, containers or storage is on."""
         with self._lock:
             settings, generation = self._settings_now(), self.generation
         if not settings.disk_on or self.halted.is_set():
@@ -689,9 +763,11 @@ class Monitor:
         try:
             _, workspaces, install = self._rows()
             names = [rt.container_name(w["id"]) for w in workspaces]
-            # Each of the two reads is tried once more where it failed; one that worked is kept.
+            # Each read is tried once more where it failed; one that worked is kept.
             disk: DiskReport | None = None
             inspected: dict[str, Inspected] | None = None
+            images: int | None = None
+            versions: int | None = None
             failure: Exception | None = None
             for _ in range(DISK_ATTEMPTS):
                 if self.halted.is_set():
@@ -702,6 +778,10 @@ class Monitor:
                         disk = read_disk(self.runtime.disk_usage(self.halted))
                     if inspected is None:
                         inspected = read_inspected(self.runtime.inspect_containers(names))
+                    if settings.storage and images is None:
+                        images = read_images_bytes(self.runtime.disk_summary(self.halted))
+                    if settings.storage and versions is None:
+                        versions = self.runtime.claude_versions_bytes(self.halted)
                 except Exception as error:  # noqa: BLE001 - tried once more
                     failure = error
                     continue
@@ -715,10 +795,23 @@ class Monitor:
                 w["id"]: workspace_disk(w["id"], w["person"], install, disk, inspected)
                 for w in workspaces
             }
+            figures: dict = {
+                scope: sizes for scope in ("people", "containers") if getattr(settings, scope)
+            }
+            if settings.storage:
+                assert images is not None and versions is not None
+                figures["storage"] = storage_figures(
+                    [w["id"] for w in workspaces],
+                    {w["id"]: w["person"] for w in workspaces},
+                    install,
+                    images,
+                    versions,
+                    disk,
+                    inspected,
+                )
         except Exception as error:  # noqa: BLE001 - kept, said once, and the next round tries
             self._failed("disk", error)
             return
-        figures = {scope: sizes for scope in ("people", "containers") if getattr(settings, scope)}
         with self._lock:
             self._keep(self._disk, figures, generation)
         self._succeeded("disk")
@@ -741,12 +834,14 @@ class Monitor:
         state.figures.update(figures)
         state.collected_at = self.now()
 
-    def _failed(self, which: str, error: Exception) -> None:
+    def _failed(self, which: str, error: Exception, *, logged: bool = False) -> None:
+        """Keep why a round failed, for the page; logged when it starts or changes, unless the
+        loop already said it (``logged``)."""
         said = str(error) or type(error).__name__
         state = self._usage if which == "usage" else self._disk
         with self._lock:
             before, state.error = state.error, said
-        if before != said:
+        if before != said and not logged:
             log.error("the monitor's %s round failed: %s", which, said)
 
     def _succeeded(self, which: str) -> None:
@@ -759,8 +854,9 @@ class Monitor:
     # --- the snapshot ---
 
     def snapshot(self) -> dict:
-        """What is known now: the scopes, each round's time and failure, and the host, each
-        person and each workspace container; a scope that is off is None."""
+        """What is known now: the scopes, each round's time and failure, whether a refresh is
+        under way, and the host, rcman's own storage, each person and each workspace container;
+        a scope that is off is None."""
         people, workspaces, _ = self._rows()
         settings = self.settings()
         with self._lock:
@@ -770,8 +866,14 @@ class Monitor:
                 name: {"collected_at": state.collected_at, "error": state.error}
                 for name, state in (("usage", self._usage), ("disk", self._disk))
             }
-        answer: dict = {"scopes": {s: getattr(settings, s) for s in SCOPES}, **rounds}
+            refreshing = any(self._asked.values()) or any(self._running.values())
+        answer: dict = {
+            "scopes": {s: getattr(settings, s) for s in SCOPES},
+            **rounds,
+            "refreshing": refreshing,
+        }
         answer["host"] = (usage.get("host") or _NO_HOST) if settings.host else None
+        answer["storage"] = (disk.get("storage") or _NO_STORAGE) if settings.storage else None
         if settings.people:
             theirs: dict[int, list[int]] = {p["id"]: [] for p in people}
             for w in workspaces:
@@ -832,6 +934,26 @@ class Monitor:
             with contextlib.suppress(RuntimeError):  # the loop is closed: nothing to tell
                 loop.call_soon_threadsafe(restored.set)
 
+    def refresh(self) -> None:
+        """From any thread: a round of each that is on, at once, whatever its interval; a round
+        under way or already asked for is joined, so that no second of it starts. Nothing once
+        halted."""
+        if self.halted.is_set():
+            return
+        settings = self.settings()
+        on = {"usage": settings.usage_on, "disk": settings.disk_on}
+        with self._lock:
+            for which, wanted in on.items():
+                if wanted and not self._running[which]:
+                    self._asked[which] = True
+            loop = self._loop
+        if loop is not None:
+            for event in (self.usage_wake, self.disk_wake):
+                if event is None:  # the loops are being started, and will see what was asked
+                    continue
+                with contextlib.suppress(RuntimeError):  # the loop is closed: nothing to wake
+                    loop.call_soon_threadsafe(event.set)
+
     def halt(self) -> None:
         """From any thread: a round under way ends, killing a disk read, and none starts."""
         self.halted.set()
@@ -859,7 +981,18 @@ class Monitor:
         # A stop cancels the loop and not the round, which it waits for (``stop``).
         return await asyncio.shield(future)
 
+    def _ended(self, which: str) -> None:
+        """A round is no longer asked for nor under way: ``refreshing`` cannot stay set."""
+        with self._lock:
+            self._asked[which] = self._running[which] = False
+
     async def _looping(self, which: str, wake: asyncio.Event) -> None:
+        try:
+            await self._loop_rounds(which, wake)
+        finally:
+            self._ended(which)
+
+    async def _loop_rounds(self, which: str, wake: asyncio.Event) -> None:
         await self.wait(self._restored, None)
         wake.clear()
         # The disk round's first is a whole interval away; the usage round's is now.
@@ -873,21 +1006,34 @@ class Monitor:
                 else:
                     on, interval = settings.disk_on, settings.disk_interval_seconds
                 timeout = None
-                if on:
-                    due = 0.0 if last is None else last + interval - self.clock()
+                if not on:
+                    self._ended(which)  # a refresh of a round that is off asks for nothing
+                else:
+                    with self._lock:
+                        asked = self._asked[which]
+                    due = 0.0 if last is None or asked else last + interval - self.clock()
                     if due <= 0:
-                        if which == "usage":
-                            if settings.host:  # where Podman's storage is: for the host's disks
-                                await self._in_thread(self.prepare)
-                            await self._in_thread(self.usage_round)
-                        else:
-                            await self._in_thread(self.disk_round)
+                        with self._lock:
+                            self._asked[which], self._running[which] = False, True
+                        try:
+                            if which == "usage":
+                                if settings.host:  # where Podman's storage is: the host's disks
+                                    await self._in_thread(self.prepare)
+                                await self._in_thread(self.usage_round)
+                            else:
+                                await self._in_thread(self.disk_round)
+                        finally:
+                            with self._lock:
+                                self._running[which] = False
                         last = self.clock()
                         continue
                     timeout = due
             except asyncio.CancelledError:
                 raise
             except Exception as error:  # noqa: BLE001 - the loop goes on, and says it once
+                self._ended(which)
+                # shown as a round's failure is, a refresh's among them; the loop says it below
+                self._failed(which, error, logged=True)
                 said = f"{type(error).__name__}: {error}"
                 if self._loop_errors[which] != said:
                     log.exception("the monitor's %s loop failed", which)
@@ -907,6 +1053,15 @@ _NO_HOST = {
     "disks": [],
 }
 _NO_USAGE = {"cpu_percent": None, "memory_bytes": None, "tasks": None}
+_NO_STORAGE = dict.fromkeys(
+    (
+        "images_bytes",
+        "workspace_volumes_bytes",
+        "other_volumes_bytes",
+        "claude_versions_bytes",
+        "total_bytes",
+    )
+)
 
 
 def _usage_figures(reading: UnitReading | None, cpu: float | None) -> dict:

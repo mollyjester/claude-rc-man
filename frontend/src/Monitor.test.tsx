@@ -26,9 +26,18 @@ const UNKNOWN = { cpu_percent: null, memory_bytes: null, tasks: null, disk_bytes
 
 // What GET /api/monitor answers with every scope on, after a round of each.
 const SNAPSHOT: Snapshot = {
-  scopes: { host: true, people: true, containers: true },
+  scopes: { host: true, people: true, containers: true, storage: true },
   usage: { collected_at: USAGE_AT, error: null },
   disk: { collected_at: DISK_AT, error: null },
+  refreshing: false,
+  // rcman's own use of the disk; one part not known, and so not its total
+  storage: {
+    images_bytes: 13_500_000_000,
+    workspace_volumes_bytes: 10_600_000_000,
+    other_volumes_bytes: 250_000_000,
+    claude_versions_bytes: null,
+    total_bytes: null,
+  },
   host: {
     cpu_percent: 250.5,
     cpus: 8,
@@ -85,6 +94,7 @@ const SETTINGS = {
   host: true,
   people: true,
   containers: true,
+  storage: true,
 };
 
 function api(snapshot: Reply = SNAPSHOT, extra: Routes = {}) {
@@ -133,7 +143,7 @@ test("the page is headed Monitor, and says what it shows", async () => {
   expect(screen.getByText(m.monitorIntro)).toBeInTheDocument();
 });
 
-test("the host card shows CPU beside the cores, memory of its total, processes and each filesystem", async () => {
+test("the host card shows CPU, memory, processes and each whole filesystem, and the Storage card rcman's own use by part", async () => {
   api();
   renderApp(PATH);
   const host = await card(m.monitorHost);
@@ -151,6 +161,24 @@ test("the host card shows CPU beside the cores, memory of its total, processes a
   expect(read(fact(host, "/srv/podman/storage"))).toBe(
     `${m.monitorNotKnown} ${m.monitorFilesystemOf("Podman's storage")}`,
   );
+  // each filesystem said to be the whole of it, not rcman's share
+  expect(within(host).getByText(m.monitorFilesystemsLine)).toBeInTheDocument();
+  // rcman's own use, by part, and their total; a part not known reads so, and so does the total
+  const storage = await card(m.monitorStorage);
+  expect(within(storage).getByText(m.monitorStorageLine)).toBeInTheDocument();
+  expect([...storage.querySelectorAll("dt")].map((dt) => dt.textContent)).toEqual([
+    m.monitorImages,
+    m.monitorWorkspaceVolumes,
+    m.monitorOtherVolumes,
+    m.monitorClaudeVersions,
+    m.monitorStorageTotal,
+  ]);
+  expect(read(fact(storage, m.monitorImages))).toBe("13.5 GB");
+  expect(read(fact(storage, m.monitorWorkspaceVolumes))).toBe("10.6 GB");
+  expect(read(fact(storage, m.monitorOtherVolumes))).toBe("250 MB");
+  expect(read(fact(storage, m.monitorClaudeVersions))).toBe(m.monitorNotKnown);
+  expect(read(fact(storage, m.monitorStorageTotal))).toBe(m.monitorNotKnown);
+  expect(fact(storage, m.monitorImages)?.querySelector(".figure")).not.toBeNull();
 });
 
 test("the People table shows what each person's workspaces use together, and Not known for what was not read", async () => {
@@ -250,6 +278,7 @@ test.each([
   ["host", () => m.monitorHost],
   ["people", () => m.monitorPeople],
   ["containers", () => m.monitorContainers],
+  ["storage", () => m.monitorStorage],
 ] as const)(
   "%s switched off shows an empty state that leads to the Service settings page",
   async (scope, name) => {
@@ -262,7 +291,7 @@ test.each([
     expect(link).toHaveAttribute("href", ADMIN.settings.path);
     expect(within(off).queryByRole("table")).not.toBeInTheDocument();
     // the others are shown
-    const others = [m.monitorHost, m.monitorPeople, m.monitorContainers].filter(
+    const others = [m.monitorHost, m.monitorStorage, m.monitorPeople, m.monitorContainers].filter(
       (n) => n !== name(),
     );
     for (const other of others)
@@ -423,4 +452,62 @@ test("with the settings not read, the live region says when each round collected
   );
   expect(read(collected())).not.toContain("every");
   expect(screen.queryByLabelText(m.monitorUsageInterval)).not.toBeInTheDocument();
+});
+
+// The Refresh button beside the page's title, by the name it keeps while it is busy too.
+const refreshButton = () => screen.findByRole("button", { name: m.monitorRefresh });
+
+test("Refresh posts, says Refreshing… and is disabled until the snapshot stops refreshing", async () => {
+  let snapshot: Snapshot = SNAPSHOT;
+  const posted = held();
+  const fake = api(() => snapshot, {
+    "POST /api/monitor/refresh": () => posted.reply,
+  });
+  renderApp(PATH);
+  const button = await refreshButton();
+  await card(m.monitorHost);
+  expect(button).toHaveAttribute("aria-disabled", "false");
+  expect(button).not.toHaveClass("primary"); // a plain button
+  expect(button).toHaveTextContent(m.monitorRefresh);
+  expect(button.querySelector("svg")).toHaveAttribute("aria-hidden", "true");
+  expect(button.closest(".page-head")).not.toBeNull(); // beside the title
+  const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+  await user.click(button);
+  await waitFor(() => expect(fake.made("POST", "/api/monitor/refresh")).toHaveLength(1));
+  // while the request is out: busy, and the same name; disabled, and still focused
+  expect(button).toHaveAttribute("aria-disabled", "true");
+  expect(button).toHaveFocus();
+  expect(button).toHaveTextContent(m.monitorRefreshing);
+  expect(button).toHaveClass("spinning");
+  expect(button).toHaveAccessibleName(m.monitorRefresh);
+  // the rounds run: the page reads again at once, and stays busy while they do
+  snapshot = { ...SNAPSHOT, refreshing: true };
+  const before = fake.made("GET", "/api/monitor").length;
+  posted.release({ refreshing: true });
+  await waitFor(() => expect(fake.made("GET", "/api/monitor").length).toBe(before + 1));
+  await pass(0);
+  expect(button).toHaveAttribute("aria-disabled", "true");
+  expect(button).toHaveTextContent(m.monitorRefreshing);
+  await user.click(button); // pressing again does nothing
+  expect(fake.made("POST", "/api/monitor/refresh")).toHaveLength(1);
+  // the rounds are in: the new figures, and the button is free
+  snapshot = { ...SNAPSHOT, host: { ...(SNAPSHOT.host as object), tasks: 999 } };
+  await pass(MONITOR_POLL_MS);
+  await waitFor(() => expect(button).toHaveAttribute("aria-disabled", "false"));
+  expect(button).toHaveTextContent(m.monitorRefresh);
+  expect(button).not.toHaveClass("spinning");
+  expect(read(fact(await card(m.monitorHost), m.monitorProcesses))).toBe("999");
+});
+
+test("a refused refresh shows its problem", async () => {
+  api(SNAPSHOT, {
+    "POST /api/monitor/refresh": problem(403, "admin_only", "planted: for administrators only"),
+  });
+  renderApp(PATH);
+  const button = await refreshButton();
+  await card(m.monitorHost);
+  await userEvent.setup({ advanceTimers: vi.advanceTimersByTime }).click(button);
+  expect(await screen.findByText("planted: for administrators only")).toBeInTheDocument();
+  await waitFor(() => expect(button).toHaveAttribute("aria-disabled", "false"));
+  expect(button).toHaveTextContent(m.monitorRefresh);
 });

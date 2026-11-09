@@ -14,8 +14,9 @@ and apply at once, for every administrator.
 ## Monitoring
 
 How often the two rounds of the [Monitor](monitor.md) page run, in **Usage interval
-(seconds)** and **Disk interval (seconds)**, and which of **Host**, **People** and
-**Containers** are collected. A save applies at once: a scope switched off is hidden
+(seconds)** and **Disk interval (seconds)**, and which of **Host**, **People**,
+**Containers** and **Storage** are collected. The disk round runs only while **People**,
+**Containers** or **Storage** is collected. A save applies at once: a scope switched off is hidden
 on the Monitor page at once, and a new interval counts from that round's last run, so a
 round whose new interval has passed already runs at once. Switching a scope off and on
 does not move a round. With every scope off, nothing is collected. The defaults, and the

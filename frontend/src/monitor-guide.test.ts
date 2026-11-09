@@ -6,13 +6,15 @@ import { missingNames as missing, names, unknownNames } from "./test/guideNames"
 const GUIDE = resolve(__dirname, "../../docs/monitor.md");
 
 // The names the guide must give in bold, as the page shows them: where the page is, its parts,
-// its two rounds, and the page its settings are on.
+// its two rounds, the button that runs them at once, and the page its settings are on.
 const NAMED = [
   m.navAdmin,
   m.navMonitor,
   m.monitorHost,
   m.monitorPeople,
   m.monitorContainers,
+  m.monitorStorage,
+  m.monitorRefresh,
   m.monitorUsage,
   m.monitorDisk,
   m.monitorNotKnown,

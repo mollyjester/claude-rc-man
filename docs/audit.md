@@ -46,6 +46,7 @@ address, and its refusal of a request for what is no port's.
 | `person.limits` | sets the limits on what a person's workspaces may use together (administrators) | the person's address and the limits set: `memory`, `cpu` and `pids`, each `none` for no limit |
 | `workspace.limits` | sets the limits on one workspace (administrators) | the person's address, a slash and the workspace's name, then the limits set as above |
 | `monitor.settings` | saves the monitoring settings on the **Service settings** page (administrators; see [Monitoring](service-settings.md#monitoring)) | the settings saved, as JSON; none when they were refused |
+| `monitor.refresh` | presses **Refresh** on the **Monitor** page, to collect every reading again at once (administrators; see [Refresh](monitor.md#refresh)) | none |
 | `forwarding.settings` | saves the port forwarding settings on the **Service settings** page (administrators; see [Port forwarding](service-settings.md#port-forwarding)) | the settings saved, as JSON; none when they were refused |
 | `git.stage` | stages files in a workspace's repository | the workspace's name |
 | `git.unstage` | unstages files | the workspace's name |

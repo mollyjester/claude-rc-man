@@ -322,6 +322,19 @@ const STATES: Record<string, State> = {
       await plain(page, path, id);
     },
   },
+  // Refresh pressed, once the rounds are in and the Storage card has its figures
+  refreshed: {
+    pages: ["/admin/monitor"],
+    opens: async (page, path, id) => {
+      await plain(page, path, id);
+      const storage = page.getByRole("region", { name: m.monitorStorage });
+      await storage.getByText(m.monitorStorageLine).waitFor();
+      await page.getByRole("button", { name: m.monitorRefresh }).click();
+      // the total, which is a figure only once every part is
+      await storage.locator(".monitor-total .figure").waitFor();
+      await page.locator('.page-head button[aria-disabled="false"]').waitFor();
+    },
+  },
   // a help page's contents, unfolded
   contents: { pages: ["/help/:slug"], phone: true, window: true, opens: popUp(m.docsContents) },
 };

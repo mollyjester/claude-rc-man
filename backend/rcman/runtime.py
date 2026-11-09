@@ -26,9 +26,10 @@ in the builder's uid range with no network, which runs the checks of helpers/cla
 against the candidate and reports the ones it fails.
 
 The monitor (monitor.py) reads what the slices use (``show_slices``), the disk of the
-containers and volumes (``disk_usage``, a read it can kill), the volume at each workspace's /tmp
-(``inspect_containers``) and where Podman keeps its storage (``storage_root``), each as the text
-the program prints.
+containers and volumes (``disk_usage``, a read it can kill), the summary of the images'
+size (``disk_summary``, likewise), the volume at each workspace's /tmp (``inspect_containers``)
+and where Podman keeps its storage (``storage_root``), each as the text the program prints, and
+what the Claude Code store holds (``claude_versions_bytes``, a walk it can stop).
 
 Python standard library, the helpers and the backend's own channel and builder only.
 """
@@ -998,6 +999,17 @@ class Runtime(ABC):
         volume that cannot be read fails the whole read."""
 
     @abstractmethod
+    def disk_summary(self, cancel: threading.Event) -> str:
+        """What ``podman system df --format json`` prints, the summary of the images, the
+        containers and the volumes (monitor.read_images_bytes), read to its end, or killed and a
+        RuntimeFailed as ``disk_usage`` is."""
+
+    @abstractmethod
+    def claude_versions_bytes(self, cancel: threading.Event) -> int:
+        """What the files of the Claude Code store hold, in bytes, links not followed; a
+        RuntimeFailed when ``cancel`` is set while it walks."""
+
+    @abstractmethod
     def inspect_containers(self, names: list[str]) -> str:
         """What ``podman container inspect`` prints of the containers (monitor.read_inspected):
         those that are there, where some are not. RuntimeFailed where it failed otherwise."""
@@ -1294,11 +1306,22 @@ class PodmanRuntime(Runtime):
         return self._systemctl("show", *asked, *slices)
 
     def disk_usage(self, cancel: threading.Event) -> str:
+        return self._killable_df(cancel, "--verbose")
+
+    def disk_summary(self, cancel: threading.Event) -> str:
+        return self._killable_df(cancel, "--format", "json")
+
+    def claude_versions_bytes(self, cancel: threading.Event) -> int:
+        return _folder_bytes(self.config.claude_store, cancel)
+
+    def _killable_df(self, cancel: threading.Event, *args: str) -> str:
+        """``podman system df`` with ``args``, read to its end, or killed and a RuntimeFailed
+        when ``cancel`` is set or it outlasts DISK_TIMEOUT."""
         if cancel.is_set():
             raise RuntimeFailed("the disk read was stopped")
         try:
             proc = subprocess.Popen(
-                self._argv("system", "df", "--verbose"),
+                self._argv("system", "df", *args),
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -2729,10 +2752,13 @@ def df_text(rows: dict[str, list[tuple[str, ...]]]) -> str:
     return "".join(out)
 
 
-def _folder_bytes(folder: Path) -> int:
-    """What the files under a folder hold, links not followed."""
+def _folder_bytes(folder: Path, cancel: threading.Event | None = None) -> int:
+    """What the files under a folder hold, links not followed; nothing for a folder that is not
+    there. A RuntimeFailed when ``cancel`` is set, which is looked at between folders."""
     total = 0
     for path, _, files in os.walk(folder):
+        if cancel is not None and cancel.is_set():
+            raise RuntimeFailed("the disk read was stopped")
         for name in files:
             with contextlib.suppress(OSError):
                 total += os.lstat(os.path.join(path, name)).st_size
@@ -2765,6 +2791,9 @@ class HostRuntime(Runtime):
         self, root: Path, sockets: Path, claude: Path, tmux_conf: Path, *, range: int = RANGE
     ):
         self.root, self.sockets, self.claude, self.tmux_conf = root, sockets, claude, tmux_conf
+        # The Claude Code store as a folder of files, which the monitor's walk sizes
+        # (``claude_versions_bytes``); never a path that runs Claude.
+        self.claude_store = claude
         self.id_range = range
         # There are no images here and no uids to map: the images a test plants, by name, what
         # was pulled, and the last spec each workspace was made from, so that a test can see
@@ -2817,6 +2846,9 @@ class HostRuntime(Runtime):
         self.slices_shown: dict[str, dict[str, str]] = {}
         self.disk_report: str | None = None
         self.disk_failures: list[Exception] = []
+        # The disk summary's text where a test gives one (one made from ``images`` otherwise,
+        # ``_disk_summary``).
+        self.summary_report: str | None = None
         self.inspect_report: str | None = None
         self.monitor_calls: list[tuple] = []
 
@@ -3274,6 +3306,44 @@ class HostRuntime(Runtime):
         if self.disk_failures:
             raise self.disk_failures.pop(0)
         return self.disk_report if self.disk_report is not None else self._disk_report()
+
+    def disk_summary(self, cancel: threading.Event) -> str:
+        self.monitor_calls.append(("disk_summary",))
+        if cancel.is_set():
+            raise RuntimeFailed("the disk read was stopped")
+        return self.summary_report if self.summary_report is not None else self._disk_summary()
+
+    def _disk_summary(self) -> str:
+        """A disk summary in the shape of Podman's, made from what is here: the images planted,
+        which hold no layers here, so nothing; the workspaces as containers; and their folders
+        as volumes (``_disk_report``)."""
+        workspaces = [name for name in self.labelled() if self.exists(name)]
+        volumes = sum(_folder_bytes(self.root / name) for name in workspaces)
+
+        def row(kind: str, total: int, size: int) -> dict:
+            return {
+                "Type": kind,
+                "Total": total,
+                "Active": 0,
+                "RawSize": size,
+                "RawReclaimable": 0,
+                "TotalCount": total,
+                "Size": si_size(size),
+                "Reclaimable": "0B (0%)",
+            }
+
+        return json.dumps(
+            [
+                row("Images", len(self.images), 0),
+                row("Containers", len(workspaces), 0),
+                row("Local Volumes", 2 * len(workspaces), volumes),
+            ]
+        )
+
+    def claude_versions_bytes(self, cancel: threading.Event) -> int:
+        """What the Claude Code store here holds."""
+        self.monitor_calls.append(("claude_versions_bytes",))
+        return _folder_bytes(self.claude_store, cancel)
 
     def _disk_report(self) -> str:
         """A disk read made from the workspaces here: each one's folder is its volume, and its
