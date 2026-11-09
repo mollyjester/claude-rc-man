@@ -19,9 +19,11 @@ import contextlib
 import hashlib
 import io
 import json
+import os
 import pathlib
 import posixpath
 import re
+import signal
 import subprocess
 import tarfile
 import threading
@@ -369,89 +371,114 @@ def pump(
     A watchdog ends both commands when ``cancel`` is set, when ``seconds`` have passed, and the
     pump itself when more than ``limit`` bytes have passed: each is a :class:`PumpStopped`.
     Otherwise both commands' ends are returned, whatever their codes; a sink that ends early
-    ends the source with it."""
+    ends the source with it. A stop, the watchdog's or the limit's, signals both commands
+    through pidfds held from their start, so it never signals a pid that has been reaped, and
+    may have been given again; only the pump's own thread reaps them, and its other kills go
+    through their Popen."""
     if cancel is not None and cancel.is_set():
         raise PumpStopped(CANCELLED, 0)
-    source_proc = subprocess.Popen(
-        list(source),
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        env=dict(env),
-    )
+    pidfds: list[int] = []
     try:
-        sink_proc = subprocess.Popen(
-            list(sink),
-            stdin=subprocess.PIPE,
+        source_proc = subprocess.Popen(
+            list(source),
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             env=dict(env),
         )
-    except BaseException:
-        source_proc.kill()
-        source_proc.wait()
-        raise
-    tails = {name: bytearray() for name in ("source_err", "sink_out", "sink_err")}
-    readers = [
-        threading.Thread(
-            target=_drain, args=(source_proc.stderr, tails["source_err"]), daemon=True
-        ),
-        threading.Thread(target=_drain, args=(sink_proc.stdout, tails["sink_out"]), daemon=True),
-        threading.Thread(target=_drain, args=(sink_proc.stderr, tails["sink_err"]), daemon=True),
-    ]
-    for reader in readers:
-        reader.start()
-    stopped: list[str] = []
-    finished = threading.Event()
-    deadline = time.monotonic() + seconds
-
-    def stop(reason: str) -> None:
-        if not stopped:
-            stopped.append(reason)
-        for proc in (source_proc, sink_proc):
-            with contextlib.suppress(OSError):
-                proc.kill()
-
-    def watch() -> None:
-        while not finished.wait(WATCH_SECONDS):
-            if cancel is not None and cancel.is_set():
-                stop(CANCELLED)
-            elif time.monotonic() > deadline:
-                stop(TIMED_OUT)
-
-    watchdog = threading.Thread(target=watch, daemon=True)
-    watchdog.start()
-    sent = 0
-    try:
-        while chunk := source_proc.stdout.read1(CHUNK_BYTES):
-            try:
-                sink_proc.stdin.write(chunk)
-            except OSError:  # the sink has ended: what it said is why
-                with contextlib.suppress(OSError):
-                    source_proc.kill()
-                break
-            sent += len(chunk)
-            if progress is not None:
-                progress(sent)
-            if limit is not None and sent > limit:
-                stop(TOO_BIG)
-                break
-        with contextlib.suppress(OSError):
-            sink_proc.stdin.close()
-        source_code, sink_code = source_proc.wait(), sink_proc.wait()
-    finally:
-        finished.set()
-        for proc in (source_proc, sink_proc):
-            if proc.poll() is None:
-                proc.kill()
-                proc.wait()
-        watchdog.join()
+        sink_proc = None
+        try:
+            pidfds.append(os.pidfd_open(source_proc.pid))
+            sink_proc = subprocess.Popen(
+                list(sink),
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=dict(env),
+            )
+            pidfds.append(os.pidfd_open(sink_proc.pid))
+        except BaseException:
+            for proc in (source_proc, sink_proc):
+                if proc is not None:
+                    proc.kill()
+                    proc.wait()
+                    for stream in (proc.stdin, proc.stdout, proc.stderr):
+                        if stream is not None:
+                            stream.close()
+            raise
+        tails = {name: bytearray() for name in ("source_err", "sink_out", "sink_err")}
+        readers = [
+            threading.Thread(
+                target=_drain, args=(source_proc.stderr, tails["source_err"]), daemon=True
+            ),
+            threading.Thread(
+                target=_drain, args=(sink_proc.stdout, tails["sink_out"]), daemon=True
+            ),
+            threading.Thread(
+                target=_drain, args=(sink_proc.stderr, tails["sink_err"]), daemon=True
+            ),
+        ]
         for reader in readers:
-            reader.join()
-        for stream in (source_proc.stdout, source_proc.stderr, sink_proc.stdout, sink_proc.stderr):
-            stream.close()
-        with contextlib.suppress(OSError):
-            sink_proc.stdin.close()
+            reader.start()
+        stopped: list[str] = []
+        finished = threading.Event()
+        deadline = time.monotonic() + seconds
+
+        def stop(reason: str) -> None:
+            if not stopped:
+                stopped.append(reason)
+            for pidfd in pidfds:
+                with contextlib.suppress(OSError):
+                    signal.pidfd_send_signal(pidfd, signal.SIGKILL)
+
+        def watch() -> None:
+            while not finished.wait(WATCH_SECONDS):
+                if cancel is not None and cancel.is_set():
+                    stop(CANCELLED)
+                elif time.monotonic() > deadline:
+                    stop(TIMED_OUT)
+
+        watchdog = threading.Thread(target=watch, daemon=True)
+        watchdog.start()
+        sent = 0
+        try:
+            while chunk := source_proc.stdout.read1(CHUNK_BYTES):
+                try:
+                    sink_proc.stdin.write(chunk)
+                except OSError:  # the sink has ended: what it said is why
+                    with contextlib.suppress(OSError):
+                        source_proc.kill()
+                    break
+                sent += len(chunk)
+                if progress is not None:
+                    progress(sent)
+                if limit is not None and sent > limit:
+                    stop(TOO_BIG)
+                    break
+            with contextlib.suppress(OSError):
+                sink_proc.stdin.close()
+            source_code, sink_code = source_proc.wait(), sink_proc.wait()
+        finally:
+            finished.set()
+            for proc in (source_proc, sink_proc):
+                if proc.poll() is None:
+                    proc.kill()
+                    proc.wait()
+            watchdog.join()
+            for reader in readers:
+                reader.join()
+            for stream in (
+                source_proc.stdout,
+                source_proc.stderr,
+                sink_proc.stdout,
+                sink_proc.stderr,
+            ):
+                stream.close()
+            with contextlib.suppress(OSError):
+                sink_proc.stdin.close()
+    finally:
+        for pidfd in pidfds:
+            os.close(pidfd)
     if stopped:
         raise PumpStopped(stopped[0], sent)
     return Pumped(
