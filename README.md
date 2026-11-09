@@ -38,6 +38,8 @@ Implemented and tested:
 - **Forwarded ports**: the ports a workspace's devcontainer.json lists in `forwardPorts`,
   each opened by the workspace's owner alone in their browser, through rcman, while an
   administrator has turned forwarding on (see [docs/workspaces.md](docs/workspaces.md#ports)).
+- **rcman as an app**, installed from the browser on a computer, Android or iOS, in a window
+  of its own (see [docs/app.md](docs/app.md)).
 - **Claude Code versions** rolled out by an administrator after checks in a
   throwaway container; servers keep the version they started with.
 - **Upgrading rcman from its web interface**, off unless the installer turns it on:

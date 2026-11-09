@@ -325,15 +325,17 @@ forwarding server (see [Forwarded ports](#forwarded-ports)). rcman believes the 
 Caddy passes it, so this is what keeps anyone else on the machine from
 passing one. The health check at the end of every run asks both.
 
-The installer keeps rcman's site block for Caddy in `/etc/rcman/Caddyfile.snippet`,
-and has your Caddyfile, `/etc/caddy/Caddyfile`, import it. It sends oauth2-proxy's
-own pages to oauth2-proxy, asks oauth2-proxy whether each other request is
-signed in, sends people who are not to the Google sign-in, and passes the
-signed-in address to rcman through the socket. It also removes any address a
-browser sends itself, so only oauth2-proxy can tell rcman who someone is. Two more sites in it
-are for forwarded ports: `*.ws.<DOMAIN>`, which passes every request for one to the
-forwarding server, and `http://127.0.0.1:<ask port>`, where Caddy asks rcman whether it may get
-a certificate (see [Forwarded ports](#forwarded-ports)).
+The installer keeps rcman's site block for Caddy in `/etc/rcman/Caddyfile.snippet`, and has
+your Caddyfile, `/etc/caddy/Caddyfile`, import it. It sends oauth2-proxy's own pages to
+oauth2-proxy, asks oauth2-proxy whether each other request is signed in, sends people who are
+not to the Google sign-in, which brings them back to the page they asked for, and passes the
+signed-in address to rcman through the socket. The files a browser fetches to
+[install rcman as an app](app.md), its manifest and its icons, reach rcman without a sign-in,
+and with no address: they hold nothing private, and only their exact paths are let through. It
+also removes any address a browser sends itself, so only oauth2-proxy can tell rcman who
+someone is. Two more sites in it are for forwarded ports: `*.ws.<DOMAIN>`, which passes every
+request for one to the forwarding server, and `http://127.0.0.1:<ask port>`, where Caddy asks
+rcman whether it may get a certificate (see [Forwarded ports](#forwarded-ports)).
 
 On every run the installer, as root:
 

@@ -406,6 +406,23 @@ connected on the **Claude** page.
 10. **Another person.** A second person's workspace uses their own account:
     their sessions appear under theirs, and nothing of the first person's.
 
+## rcman as an app
+
+On real devices, against an installed server: no test drives a browser's install, the
+systems' fetches of the icons, or Google's sign-in from an installed app.
+
+1. **Installing.** Install rcman from Chrome on a desktop, from Chrome on Android and from
+   Safari on iOS (**Add to Home Screen**), as [docs/app.md](../docs/app.md) says. Each shows
+   rcman's name and icon, the maskable icon uncropped on Android, and opens on the Workspaces
+   page in a window without the browser's bar.
+2. **Signing in.** Signed out, open the installed app and sign in through Google: the sign-in
+   comes back into the app's window, not a browser tab, signed in.
+3. **Signing in again.** Let the session end, or sign out of rcman in a browser, then act in
+   the app: the page says the sign-in has ended and offers **Sign in again**, which signs in
+   and comes back to the page it was on.
+4. **An upgrade.** Upgrade rcman with the app open, then reload it or close and open it
+   again: it loads the new build.
+
 ## Screens with no recording yet
 
 Some screens rcman has no recording of, and has not kept as observed, and so

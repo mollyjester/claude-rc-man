@@ -12,6 +12,14 @@
 	handle /oauth2/* {
 		reverse_proxy 127.0.0.1:@PROXY_PORT@
 	}
+	# The installed app's files, which browsers and systems fetch without the sign-in's cookie:
+	# exactly the paths the manifest and index.html name, as they came and in their case, since
+	# rcman answers any other path with index.html. They hold nothing private, and no identity.
+	@app_files expression "{http.request.orig_uri.path} == '/manifest.webmanifest' || {http.request.orig_uri.path} == '/icons/icon-192.png' || {http.request.orig_uri.path} == '/icons/icon-512.png' || {http.request.orig_uri.path} == '/icons/maskable-512.png' || {http.request.orig_uri.path} == '/icons/apple-touch-icon.png' || {http.request.orig_uri.path} == '/favicon.svg'"
+	handle @app_files {
+		request_header -X-Forwarded-Email
+		reverse_proxy unix/@SOCKET@
+	}
 	handle {
 		route {
 			# rcman trusts X-Forwarded-Email; only oauth2-proxy may set it.
@@ -20,8 +28,9 @@
 				uri /oauth2/auth
 				copy_headers X-Auth-Request-Email>X-Forwarded-Email
 				@unauthenticated status 401
+				# Back to the page asked for, as a path, which oauth2-proxy takes as it is.
 				handle_response @unauthenticated {
-					redir * /oauth2/start?rd={scheme}://{host}{uri}
+					redir * /oauth2/start?rd={uri}
 				}
 			}
 			reverse_proxy unix/@SOCKET@

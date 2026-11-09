@@ -395,6 +395,27 @@ account of uid 0. Each
 edit is in the summary line as `<CADDYFILE>: <what>`, the snippet's path where it changed, and
 `caddy.service restarted`.
 
+The main site sends every request outside `/oauth2/*` through `forward_auth`, but for the
+installed app's files: browsers fetch a manifest without cookies, and a system may fetch the
+icons so, which a redirect to Google would leave uninstallable. `@app_files`, a handle ahead of
+the signed-in one, sends exactly the manifest, each icon it names, the `apple-touch-icon` and
+`/favicon.svg` to rcman, with `X-Forwarded-Email` taken off, so rcman sees no identity on them;
+they hold nothing private. It matches `{http.request.orig_uri.path}` with `==`, the path as it
+came and in its case: Caddy's `path` matcher ignores case and cleans the path, and
+`backend/rcman/spa.py` answers a path that is no file with `index.html`, so a folder matched
+there would let any spelling under it reach rcman unsigned. Every other path, a miss beside
+those files among them, still goes through `forward_auth`. `tests/test_install.py` holds the
+list to what `frontend/public/manifest.webmanifest` and `frontend/index.html` name (see
+[frontend.md](frontend.md#layout)).
+
+A request without a sign-in is redirected to `/oauth2/start?rd={uri}`, the page asked for as a
+path: oauth2-proxy refuses an absolute `rd` unless its domain is in `whitelist_domains`, and then
+sends the browser to `/`. Caddy cannot escape `{uri}` into the query, so oauth2-proxy reads `rd`
+only up to the first `&` of the page's query: a deep link keeps its first query parameter
+(`docs/app.md` tells colleagues). A `+` in it comes back as a space, and a `;` loses the page
+altogether, oauth2-proxy falling back to the start page. The page's own
+**Sign in again** escapes the whole of it ([frontend.md](frontend.md#reporting-failures)).
+
 Not covered: `caddy validate` does not see variables a drop-in of the unit sets, and there is no
 health check through Caddy; the stubbed installation runs no Caddy.
 
@@ -406,7 +427,8 @@ health check through Caddy; the stubbed installation runs no Caddy.
   static program from another, the tmux source's and Claude Code's checksums,
   the image's tag and the builder image's, a range that is too small getting a
   second one, no range added while a container runs, the rollback refusal, the pins,
-  the snippet's sites for forwarded ports, the ask port, the Caddyfile's edits and refusals,
+  the snippet's sites for forwarded ports, the installed app's files let through without
+  sign-in or identity and the redirect's relative `rd`, the ask port, the Caddyfile's edits and refusals,
   `ensure_caddy`'s check and restart, the summary line as all a run prints, and two callers filling one toolchain at once, and the steps that
   write in rcman's home with `runuser` stood in for by the test's own user — and the
   guide held to the installer. It also holds the lock, through `install.sh` itself run from a
@@ -449,7 +471,9 @@ health check through Caddy; the stubbed installation runs no Caddy.
 - `tests/container/test_stack_in_podman.py`: what an installation does once people and
   workspaces are there, in the whole stack (see [tests.md](tests.md#the-whole-stack)): the
   services answering, the stack's administrator, no listener taking an identity a request gives
-  itself and Caddy letting only oauth2-proxy set it, every cookie oauth2-proxy sets while
+  itself and Caddy letting only oauth2-proxy set it, the installed app's files answered
+  without a sign-in while a path beside them or spelt otherwise is sent to sign in, a page asked
+  for without a sign-in being where the sign-in ends, every cookie oauth2-proxy sets while
   someone signs in, and its clearing of the session when they sign out, a `__Host-rcman-auth`
   one (Secure, `Path=/`, no `Domain`), after which a request is sent to sign in, a person added,
   a workspace made, its server refused until the person connects the fake `claude` once, after
