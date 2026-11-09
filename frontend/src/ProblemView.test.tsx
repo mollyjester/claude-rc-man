@@ -2,7 +2,7 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 
-import { ApiError, UNEXPECTED_RESPONSE } from "./api";
+import { ApiError, SIGNED_OUT, UNEXPECTED_RESPONSE } from "./api";
 import { PAGE_ERROR, takeReports } from "./clientErrors";
 import { m } from "./messages";
 import { asApiError, ProblemView, useFieldErrors } from "./ProblemView";
@@ -29,6 +29,21 @@ test("names a field by the form's label when given one, and by its name otherwis
   expect(screen.getByText("Planted label: planted reason")).toBeInTheDocument();
   expect(screen.queryByText("prefix: planted reason")).not.toBeInTheDocument();
   expect(screen.getByText("request: planted reason about the whole request")).toBeInTheDocument();
+});
+
+test("an ended sign-in offers to sign in again and come back to the page", () => {
+  const before = window.location.href;
+  window.history.pushState({}, "", "/settings?x=1");
+  try {
+    render(<ProblemView error={new ApiError(0, SIGNED_OUT, m.signedOut)} />);
+    expect(screen.getByRole("alert")).toHaveTextContent(m.signedOut);
+    expect(screen.getByRole("link", { name: m.signInAgain })).toHaveAttribute(
+      "href",
+      "/oauth2/start?rd=%2Fsettings%3Fx%3D1",
+    );
+  } finally {
+    window.history.replaceState({}, "", before);
+  }
 });
 
 test("shows a raw screen the server passed on", () => {

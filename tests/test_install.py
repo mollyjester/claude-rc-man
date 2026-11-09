@@ -345,13 +345,45 @@ def test_units_run_as_their_own_users_and_the_app_on_its_socket():
 def test_caddy_snippet_strips_the_identity_header_before_authenticating():
     snippet = ins.render("Caddyfile", SETTINGS)
     assert snippet.startswith("rcman.example.com {")
-    strip = snippet.index("request_header -X-Forwarded-Email")
+    signed_in = snippet.rindex("\thandle {\n", 0, snippet.index("forward_auth"))
+    strip = snippet.index("request_header -X-Forwarded-Email", signed_in)
     auth = snippet.index("forward_auth 127.0.0.1:444")
-    assert strip < auth and "route {" in snippet[:strip]
+    assert strip < auth and "route {" in snippet[signed_in:strip]
     assert "copy_headers X-Auth-Request-Email>X-Forwarded-Email" in snippet
     assert "reverse_proxy unix//run/rcman/rcman.sock\n" in snippet
-    # oauth2-proxy's pages, rcman, the forwarded ports and the ask
-    assert snippet.count("reverse_proxy") == 4
+    # oauth2-proxy's pages, the installed app's files, rcman, the forwarded ports and the ask
+    assert snippet.count("reverse_proxy") == 5
+    # Back to the page asked for, as a path: oauth2-proxy refuses an absolute rd it is not told
+    # to trust, and sends the browser to / instead.
+    assert "redir * /oauth2/start?rd={uri}\n" in snippet
+
+
+def test_the_app_files_reach_rcman_without_sign_in_or_an_identity():
+    """Browsers fetch the manifest, and the system its icons, without the sign-in's cookie, so the
+    main site sends exactly the files the manifest and index.html name to rcman, ahead of the
+    signed-in handle, with no identity; every other path still goes through forward_auth."""
+    frontend = REPO / "frontend"
+    manifest = json.loads((frontend / "public" / "manifest.webmanifest").read_text())
+    index = (frontend / "index.html").read_text()
+    linked = re.findall(r'<link rel="(?:icon|apple-touch-icon)"[^>]*href="([^"]+)"', index)
+    assert "/favicon.svg" in linked  # the reader finds the links index.html has
+    named = sorted({"/manifest.webmanifest", *(i["src"] for i in manifest["icons"]), *linked})
+    snippet = ins.render("Caddyfile", SETTINGS)
+    site = snippet_site(snippet, "rcman.example.com")
+    matcher = re.search(r'\n\t@app_files expression "([^"]+)"\n', site)
+    assert matcher, site
+    target = "{http.request.orig_uri.path}"
+    matched = re.findall(re.escape(target) + r" == '([^']+)'", matcher.group(1))
+    assert sorted(matched) == named
+    assert matcher.group(1) == " || ".join(f"{target} == '{path}'" for path in matched)
+    exempt = site.index("\thandle @app_files {\n")
+    signed_in = site.rindex("\thandle {\n")
+    assert exempt < signed_in
+    block = site[exempt : site.index("\n\t}\n", exempt) + 1]
+    strip = block.index("request_header -X-Forwarded-Email\n")
+    assert strip < block.index("reverse_proxy unix//run/rcman/rcman.sock\n")
+    assert "forward_auth" not in block
+    assert "forward_auth 127.0.0.1:444" in site[signed_in:]
 
 
 def test_caddy_snippet_logs_each_request_to_a_file_it_rotates_and_expires():

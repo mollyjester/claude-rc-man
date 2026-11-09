@@ -6,7 +6,9 @@ export const m = {
   skipToContent: "Skip to content",
   unexpectedResponse: "rcman answered in a way the page does not understand.",
   unreachable: "The page could not reach rcman. Check the connection, then try again.",
-  signedOut: "Your sign-in has ended. Reload the page to sign in again.",
+  signedOut: "Your sign-in has ended.",
+  // The link an ended sign-in offers, back through Google's sign-in to the page.
+  signInAgain: "Sign in again",
   loading: "Loading…",
   cancel: "Cancel",
   close: "Close",

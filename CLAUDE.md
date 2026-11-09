@@ -41,6 +41,7 @@ the on-demand run, `make test-container`, and what each does:
 | The audit trail and its retention, for administrators | [docs/audit.md](docs/audit.md) |
 | What rcman writes to the system journal, and how to read it, for administrators | [docs/journal.md](docs/journal.md) |
 | Connecting a Claude account, signing out of Claude and of rcman, for colleagues | [docs/claude-account.md](docs/claude-account.md) |
+| Installing rcman as an app on a computer, Android or iOS, and signing in again from it, for colleagues | [docs/app.md](docs/app.md) |
 | git in workspaces, for colleagues | [docs/git.md](docs/git.md) |
 | A colleague's own settings, for colleagues | [docs/settings.md](docs/settings.md) |
 | The Claude Code version workspaces run, rolling out another, going back and marking one as failed, for administrators | [docs/claude-version.md](docs/claude-version.md) |

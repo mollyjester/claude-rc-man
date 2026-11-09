@@ -1,6 +1,6 @@
 import { type ReactNode, type RefObject, useEffect, useId, useRef } from "react";
 
-import { ApiError, UNEXPECTED_RESPONSE } from "./api";
+import { ApiError, SIGNED_OUT, UNEXPECTED_RESPONSE } from "./api";
 import { noteFailure, PAGE_ERROR } from "./clientErrors";
 import { MessageBar } from "./MessageBar";
 import { m } from "./messages";
@@ -48,6 +48,13 @@ export function ProblemView({
             <li key={i}>{`${labels[e.field] ?? e.field}: ${e.message}`}</li>
           ))}
         </ul>
+      )}
+      {error.code === SIGNED_OUT && (
+        <p>
+          <a className="button" href={signInAgain()}>
+            {m.signInAgain}
+          </a>
+        </p>
       )}
       {Array.isArray(failed) && (
         <p>
@@ -131,6 +138,11 @@ export function useFieldErrors(error: ApiError | null): {
     },
   };
 }
+
+// oauth2-proxy's sign-in, which comes back to this page: the installed app has no address bar to
+// reload it from.
+const signInAgain = () =>
+  `/oauth2/start?rd=${encodeURIComponent(window.location.pathname + window.location.search)}`;
 
 // A check's name as the server gives it, with its underscores as the spaces they stand for.
 const readable = (check: string) => check.replace(/_/g, " ");

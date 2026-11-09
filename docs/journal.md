@@ -109,8 +109,8 @@ something. Some failures never reach rcman, so the page reports them itself:
   not be opened, and the page asks rcman for the workspaces again, which says so
   when rcman cannot be reached or the sign-in has ended.
 - **`signed_out`**: the person's sign-in has ended, and the request was sent
-  to sign in again instead of reaching rcman. The person is told to reload the
-  page to sign in again.
+  to sign in again instead of reaching rcman. The person is told so and offered
+  **Sign in again**, which signs them in and brings them back to the page.
 - **`unexpected_response`**: an answer came that the page could not read —
   one that is not rcman's own, such as an error page from a proxy between the
   browser and Caddy. The person is told rcman answered in a way the page does

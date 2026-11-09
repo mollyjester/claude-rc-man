@@ -79,7 +79,7 @@ matters, so a suppression at the site is preferred.
   `UNREACHABLE` when `fetch` rejects, or when the answer is a 502, 503 or 504
   that is not JSON — the proxy in front of rcman saying it could not reach it,
   since rcman's own answers are JSON; `SIGNED_OUT` when the answer is a
-  redirect, which oauth2-proxy sends once the sign-in has ended and rcman's own
+  redirect, which Caddy sends to the sign-in once the sign-in has ended and rcman's own
   routes never do, seen as an `opaqueredirect` because every request is sent
   with `redirect: "manual"`; and `UNEXPECTED_RESPONSE` for an answer that is
   not JSON, or an error without the server's `code`. A request's body is
@@ -353,6 +353,8 @@ The tests that hold the stylesheet to them are under
 | `src/BranchBar.tsx` | The branch bar: the branch lookup, a subtle button naming where the repository is, its branch's name in the monospace face, whose pop-up has a filter, which asks rcman nothing, over the local and remote branches listed, each a switch where one is offered; New branch, a subtle icon button of a plus, as Refresh is, whose pop-up holds its form; Refresh branches, which posts `/api/git/fetch`, or, where the section says a sync can run (`syncable`), Sync in its place, which posts `/api/git/sync`, each label calling only its own route, its icon turning while either runs; ahead and behind as muted arrows and counts, with `m.tracking` as their accessible text; and Push, a plain button. It is shown once either the status or the branches are known, so a status that cannot be had leaves the branches to switch to; the arrows and Push wait for the status |
 | `src/usePopup.ts` | A pop-up opened by a button, as a disclosure: it closes on Escape, putting focus back on the button, on a press outside it and when focus moves outside it. Every pop-up a button opens uses it, the phone's drawer of the sidebar, the **Account** menu, the Workspaces page's switcher and People's **More actions** among them. It is called with the name of the component that calls it, which its panel carries as `data-component`, which says what opened. The stylesheet places the branch bar's pop-ups against the Changes heading's row, so they stay inside the card at any width |
 | `public/favicon.svg` | The tab's icon, `*rc` in white on a black circle, which `index.html` links; Vite copies `public/` into the build as it is |
+| `public/manifest.webmanifest` | The installed app's manifest, which `index.html` links with no `crossorigin`: its name, its start and scope (the whole site), its own window (`standalone`), its colours and its icons. `src/styles.test.ts` holds its fields and colours, and `src/manifest.test.ts` every icon it names to a PNG of the size it states, and `index.html`'s links to it and to a 180-pixel `apple-touch-icon` |
+| `public/icons/` | The installed app's icons: the favicon as it is, on a transparent ground, at the sizes the manifest names; a maskable one, the mark on a black square within the safe zone's circle; and the `apple-touch-icon` that `index.html` links for iOS, laid out as the maskable one |
 | `src/TableScroll.tsx`, `src/markdownTables.ts`, `src/useTitle.ts`, `src/workspaceError.ts` | The box a table scrolls in, and `ROLE`, a table's roles said outright for one a phone draws as a list; the pipe tables of a help page; the browser tab's title; a failed workspace's sentence |
 | `src/Icons.tsx` | rcman's own icons, inline SVG strokes on one grid drawn in the text's colour and hidden from assistive technology; the button or text they are in carries the name, from `src/messages.ts`. A new icon is drawn here in the same way; the page takes no icon package |
 | `src/Servers.tsx` | A server's states, what each allows and shows, and its card: its state's pill and version, what to do next, a question it asks as a message bar, and its actions in one row; a workspace as the page lists it, `dotFor`, the dot it carries, and `WORKSPACE_KIND`, the kind of pill its own state is drawn as |
@@ -369,6 +371,23 @@ The tests that hold the stylesheet to them are under
 | `src/Attention.tsx` | The administrators' warning at the top of every page, a warning's message bar, from `/api/attention`, naming each server on an unrecognised screen by its person and workspace, with a link to everyone's workspaces; fetched on load and on every change of page |
 | `src/Docs.tsx` | The help pages, from `/api/docs`: their contents, a column beside the article that stays in view, the page you are on marked, and the article in a card set for reading; on a phone the contents fold under **Help pages**, a disclosure button over the article, open on the index and folded on a page and whenever a page is chosen; a page chosen in them puts focus on `main`, as the sidebar's does |
 | `src/clientErrors.ts` | The failures noted for rcman, kept until they are sent (see [Reporting failures](#reporting-failures)) |
+
+The icons are `public/favicon.svg` rasterised by Playwright's Chromium and committed, not made
+by the build: the mark is text, so what it looks like depends on the fonts of the machine that
+draws it. They are made again whenever `favicon.svg` changes. Caddy lets the manifest and each
+icon through without a sign-in, by their exact paths ([installer.md](installer.md#caddy)), so
+a file added to the manifest or linked from `index.html` is added there too, which
+`tests/test_install.py` holds.
+
+A manifest has one set of colours for both schemes. Both its `background_color`, the splash while the
+app opens, and its `theme_color` are the dark scheme's `--surface`, by choice; once the page
+has loaded, the `theme-color` tags in `index.html` follow each scheme. There are no iOS startup
+images.
+
+There is no service worker. `backend/rcman/spa.py` relies on `index.html` being fetched again on
+every load, so a page loaded after an upgrade names the new build's files, which a caching
+worker would defeat; Chrome, Edge and Safari install the app without one, and it does nothing
+offline.
 
 ## Reporting failures
 
@@ -397,6 +416,14 @@ the queue for the next request that works. Each is given up after
 `REPORT_TIMEOUT_MS` in `src/api.ts`, so one never answered does not hold up
 the rest. Nothing of this is shown to the person.
 
+What the person is shown of an ended sign-in is `src/ProblemView.tsx`'s: the `SIGNED_OUT`
+error says so and offers **Sign in again** (`m.signInAgain`), a plain link, as a button, to
+oauth2-proxy's sign-in with the page's own path and query, encoded, as where to come back to;
+the installed app has no address bar to reload from. It is a plain button, not a primary one,
+since `ProblemView` often sits in a form that already has its one primary action. Caddy's own
+redirect of a page asked for without a sign-in comes back with less of the query
+([installer.md](installer.md#caddy)).
+
 ## Tests
 
 - **Component tests** (Vitest, Testing Library, jsdom): `src/*.test.ts(x)`.
@@ -408,7 +435,7 @@ the rest. Nothing of this is shown to the person.
   answers from a table of routes in the backend's problem-details shape and
   records every call; a route answering `UNREACHABLE_REPLY` makes `fetch`
   reject, as a browser's does, and one answering `SIGNED_OUT_REPLY` answers an
-  opaque redirect, as oauth2-proxy's redirect is seen. `renderApp` and `renderAlone` also return the
+  opaque redirect, as Caddy's redirect to the sign-in is seen. `renderApp` and `renderAlone` also return the
   router's current location and a `navigate`, whose `navigate(-1)` is the
   browser's back button, and takes `pollMs`, 0 unless a test gives one, and
   `strict`, to render in React's strict mode, as `src/main.tsx` does.

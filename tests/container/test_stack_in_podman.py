@@ -203,12 +203,29 @@ def test_no_listener_takes_an_identity_a_request_gives_itself(stack):
 
 
 def test_caddy_lets_only_oauth2_proxy_set_the_identity(stack):
-    """A request that names someone itself, with no session, is sent to sign in; signed in as
-    alice through the stand-in for Google, the name the request gives is not what rcman hears."""
+    """A request that names someone itself, with no session, is sent to sign in, as is one for a
+    path beside the installed app's files or spelt otherwise, while each of those files, named
+    by the build's manifest and index.html, is answered as it is; a page asked for without a
+    session is where the sign-in through the stand-in for Google ends; signed in as alice, the
+    name the request gives is not what rcman hears. No file's answer shows whether Caddy took
+    the identity header off it: the text test in tests/test_install.py guards that strip."""
     seen = json.loads(stack.verb("identity").strip().splitlines()[-1])
     status, headers = seen["unsigned"]
     assert status == 302 and headers["Location"].startswith("/oauth2/start?rd="), seen
-    assert seen["signed_in"] == 200
+    files = seen["app_files"]
+    assert "/manifest.webmanifest" in files and "/favicon.svg" in files, files
+    for path, (status, body) in files.items():
+        assert status == 200, (path, status, body)
+        if path.endswith(".png"):
+            assert body[1:4] == "PNG", (path, body)
+        elif path.endswith(".webmanifest"):
+            assert json.loads(body)["name"] == "rcman", (path, body)
+        else:
+            assert body.startswith("<svg"), (path, body)
+    assert len(seen["beside"]) == 3, seen["beside"]
+    for path, (status, location) in seen["beside"].items():
+        assert status == 302 and location.startswith("/oauth2/start?rd="), (path, status)
+    assert seen["signed_in"] == [200, f"https://{st.DOMAIN}/settings?workspace=1"], seen
     status, body = seen["me"]
     assert status == 200 and json.loads(body)["email"] == st.ADMIN, seen
     assert "evil" not in body

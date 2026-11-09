@@ -32,9 +32,10 @@ naming the stack's configuration:
   given or the stack's own ask site, failing with Caddy's version and its words where Caddy does
   not load the result;
 - ``request <json>`` makes one request to rcman's socket as Caddy passes one on, and
-  ``identity`` signs in through Caddy, oauth2-proxy and the stand-in for Google as a browser
-  does, and ``cookies`` signs in the same way one redirect at a time and then out, each printing
-  what it was answered.
+  ``identity`` asks for the installed app's files and paths beside them without a sign-in, and
+  signs in to a page asked for through Caddy, oauth2-proxy and the stand-in for Google as a
+  browser does, and ``cookies`` signs in the same way one redirect at a time and then out, each
+  printing what it was answered.
 """
 
 from __future__ import annotations
@@ -462,8 +463,8 @@ class Browser:
     """Requests to the stack's sites through Caddy, as a browser makes them, through one of
     three openers: ``plain`` keeps no cookies and answers redirects as they are; ``follows``
     keeps the cookies it is given in ``jar`` and follows redirects; ``steps`` keeps them in the
-    same ``jar`` and answers redirects as they are. ``fetch`` answers the status, the body and
-    the headers as a list of pairs."""
+    same ``jar`` and answers redirects as they are. ``fetch`` answers the status, the body, the
+    headers as a list of pairs and the address it ended at."""
 
     def __init__(self):
         import http.cookiejar
@@ -492,26 +493,50 @@ class Browser:
         try:
             request = urllib.request.Request(url, headers=headers or {})
             with opener.open(request, timeout=CONTAINER_HANG_GUARD) as r:
-                return r.status, r.read().decode(errors="replace"), r.headers.items()
+                return r.status, r.read().decode(errors="replace"), r.headers.items(), r.geturl()
         except urllib.error.HTTPError as e:
-            return e.code, e.read().decode(errors="replace"), e.headers.items()
+            return e.code, e.read().decode(errors="replace"), e.headers.items(), e.geturl()
+
+
+def app_files() -> list[str]:
+    """The paths of the installed app's files in the stack's build: the manifest, each icon it
+    names and each icon index.html links."""
+    manifest = json.loads((Path(DIST) / "manifest.webmanifest").read_text())
+    index = (Path(DIST) / "index.html").read_text()
+    linked = re.findall(r'<link rel="(?:icon|apple-touch-icon)"[^>]*href="([^"]+)"', index)
+    return ["/manifest.webmanifest", *(icon["src"] for icon in manifest["icons"]), *linked]
 
 
 def identity() -> None:
     """Through Caddy and oauth2-proxy, as a browser: a request that sets the identity header
-    itself and has no session is sent to sign in, and once signed in through the stand-in for
-    Google its header is not what rcman is told. What is printed, the JSON of what was seen."""
+    itself and has no session is sent to sign in, as is one for a path beside the installed
+    app's files, while each of those files is answered as it is; a page asked for without a
+    session is signed in for through the stand-in for Google and is where the sign-in ends,
+    and once signed in the request's own header is not what rcman is told. What is printed,
+    the JSON of what was seen."""
     import urllib.parse
 
     browser = Browser()
     spoof = {"X-Forwarded-Email": "evil@example.com"}
-    status, _, headers = browser.fetch(browser.plain, f"https://{DOMAIN}/api/me", spoof)
+    status, _, headers, _ = browser.fetch(browser.plain, f"https://{DOMAIN}/api/me", spoof)
     seen = {"unsigned": [status, dict(headers)]}
-    status, page, _ = browser.fetch(browser.follows, f"https://{DOMAIN}/oauth2/start?rd=/")
+    exempt = app_files()
+    seen["app_files"] = {}
+    for path in exempt:
+        status, body, _, _ = browser.fetch(browser.plain, f"https://{DOMAIN}{path}", spoof)
+        seen["app_files"][path] = [status, body if path.endswith(".webmanifest") else body[:16]]
+    icon = next(path for path in exempt if path.startswith("/icons/"))
+    beside = ["/icons/made-up.png", icon.upper(), "/manifest.webmanifest/x"]
+    seen["beside"] = {}
+    for path in beside:
+        status, _, headers, _ = browser.fetch(browser.plain, f"https://{DOMAIN}{path}", spoof)
+        seen["beside"][path] = [status, dict(headers).get("Location", "")]
+    asked = f"https://{DOMAIN}/settings?workspace=1"
+    status, page, _, _ = browser.fetch(browser.follows, asked)
     form = dict(re.findall(r'name="([^"]+)" value="([^"]*)"', page))
     query = urllib.parse.urlencode({**form, "email": ADMIN})
-    status, _, _ = browser.fetch(browser.follows, f"https://{AUTH}/authorize?{query}")
-    seen["signed_in"] = status  # back through the callback
+    status, _, _, landed = browser.fetch(browser.follows, f"https://{AUTH}/authorize?{query}")
+    seen["signed_in"] = [status, landed]  # back through the callback
     seen["me"] = browser.fetch(browser.follows, f"https://{DOMAIN}/api/me", spoof)[:2]
     print(json.dumps(seen))
 
@@ -539,7 +564,7 @@ def cookies() -> None:
     set_cookies = []
     url = f"https://{DOMAIN}/oauth2/start?rd=/"
     for _ in range(10):
-        status, page, headers = browser.fetch(browser.steps, url)
+        status, page, headers, _ = browser.fetch(browser.steps, url)
         if urllib.parse.urlsplit(url).hostname == DOMAIN:
             set_cookies += set_cookies_of(headers)
         location = dict((k.lower(), v) for k, v in headers).get("location")
@@ -547,14 +572,14 @@ def cookies() -> None:
             break
         url = urllib.parse.urljoin(url, location)
         if urllib.parse.urlsplit(url).path == "/authorize" and "email=" not in url:
-            status, page, _ = browser.fetch(browser.steps, url)  # the stand-in's form
+            status, page, _, _ = browser.fetch(browser.steps, url)  # the stand-in's form
             form = dict(re.findall(r'name="([^"]+)" value="([^"]*)"', page))
             url = f"https://{AUTH}/authorize?" + urllib.parse.urlencode({**form, "email": ADMIN})
     me = browser.fetch(browser.steps, f"https://{DOMAIN}/api/me")[:2]
-    _, _, headers = browser.fetch(browser.steps, f"https://{DOMAIN}/oauth2/sign_out")
+    _, _, headers, _ = browser.fetch(browser.steps, f"https://{DOMAIN}/oauth2/sign_out")
     signed_out = set_cookies_of(headers)
     signed_out_at = dict((k.lower(), v) for k, v in headers).get("date")
-    after, _, headers = browser.fetch(browser.steps, f"https://{DOMAIN}/api/me")
+    after, _, headers, _ = browser.fetch(browser.steps, f"https://{DOMAIN}/api/me")
     location = dict((k.lower(), v) for k, v in headers).get("location", "")
     print(json.dumps({"set_cookies": set_cookies, "last": [status, url], "me": me,
                       "signed_out": signed_out, "signed_out_at": signed_out_at,

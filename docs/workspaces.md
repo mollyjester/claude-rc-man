@@ -147,8 +147,9 @@ for.
 
 When a refresh cannot reach rcman — the connection has dropped, or rcman is
 restarting — the page says it could not reach rcman, and when your sign-in has
-ended it says to reload the page to sign in again. Either stays until a later
-refresh works, and until then the page shows the workspaces as they last were.
+ended it says so and offers **Sign in again** (see [rcman as an app](app.md#signing-in-again)).
+Either stays until a later refresh works, and until then the page shows the workspaces as they
+last were.
 The page reports these failures to rcman once it reaches it again, so that
 administrators can see them in the [system journal](journal.md).
 

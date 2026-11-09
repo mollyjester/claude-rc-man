@@ -1176,3 +1176,20 @@ test("the browser's bar takes the top bar's colour in each scheme", () => {
   }
   expect(ruleOf(".topbar")).toMatch(/background:\s*var\(--surface\)/);
 });
+
+test("the installed app's manifest names rcman and takes the top bar's dark colour", () => {
+  const manifest = JSON.parse(
+    readFileSync(resolve(__dirname, "..", "public", "manifest.webmanifest"), "utf-8"),
+  );
+  expect(manifest.name).toBe("rcman");
+  expect(manifest.short_name).toBe("rcman");
+  expect(manifest.start_url).toBe("/");
+  expect(manifest.scope).toBe("/");
+  expect(manifest.display).toBe("standalone");
+  // A manifest has one colour for either scheme: the dark --surface, the operator's choice
+  // for the splash while the app opens; the theme-color tags follow each scheme once loaded.
+  const surface = schemeValues(STYLES, "dark")["--surface"];
+  expect(surface).toMatch(/^#/); // the reader found the colour
+  expect(manifest.background_color).toBe(surface);
+  expect(manifest.theme_color).toBe(surface);
+});
